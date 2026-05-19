@@ -327,6 +327,136 @@ const plugin = {
       },
       { name: "pinchy_read" }
     );
+
+    api.registerTool(
+      (ctx: PluginToolContext) => {
+        const agentId = ctx.agentId;
+        if (!agentId) return null;
+
+        const config = agentConfigs[agentId];
+        if (!config) return null;
+
+        const writePaths = config.write_paths;
+        if (!writePaths || writePaths.length === 0) return null;
+
+        const pathList = writePaths.join(", ");
+
+        return {
+          name: "pinchy_write",
+          label: "Write File",
+          description: `Write content to a file. Fails if the file already exists — set overwrite=true to replace. Writable paths: ${pathList}`,
+          parameters: {
+            type: "object",
+            properties: {
+              path: {
+                type: "string",
+                description: `Full file path. Must be under: ${pathList}`,
+              },
+              content: {
+                type: "string",
+                description: "Full file content as a string.",
+              },
+              overwrite: {
+                type: "boolean",
+                description: "Set to true to replace an existing file. Default: false.",
+              },
+            },
+            required: ["path", "content"],
+          },
+          async execute(_toolCallId: string, params: Record<string, unknown>) {
+            try {
+              const requestedPath = params.path as string;
+              const content = params.content as string;
+              const overwrite = params.overwrite === true;
+
+              if (typeof content !== "string") {
+                throw new Error("content must be a string");
+              }
+
+              const resolved = validateAccess(
+                { allowed_paths: config.allowed_paths, write_paths: writePaths },
+                requestedPath,
+                "write"
+              );
+
+              const buffer = Buffer.from(content, "utf-8");
+              if (buffer.byteLength > MAX_FILE_SIZE) {
+                throw new Error(
+                  `Content too large (${buffer.byteLength} bytes). Maximum: ${MAX_FILE_SIZE} bytes.`
+                );
+              }
+
+              const { open, writeFile, readFile: readFileAsync } = await import("fs/promises");
+              const { createHash: hash } = await import("crypto");
+
+              let mode: "create" | "overwrite";
+              let previousContentHash: string | undefined;
+
+              if (overwrite) {
+                try {
+                  const existing = await readFileAsync(resolved);
+                  previousContentHash = hash("sha256").update(existing).digest("hex");
+                  mode = "overwrite";
+                } catch (err) {
+                  if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
+                  mode = "create";
+                }
+                await writeFile(resolved, buffer);
+              } else {
+                try {
+                  const fh = await open(resolved, "wx");
+                  try {
+                    await fh.writeFile(buffer);
+                  } finally {
+                    await fh.close();
+                  }
+                  mode = "create";
+                } catch (err) {
+                  if ((err as NodeJS.ErrnoException).code === "EEXIST") {
+                    return {
+                      isError: true,
+                      content: [
+                        {
+                          type: "text",
+                          text: `File already exists at ${requestedPath}. Set overwrite=true to replace.`,
+                        },
+                      ],
+                    };
+                  }
+                  throw err;
+                }
+              }
+
+              const contentHash = hash("sha256").update(buffer).digest("hex");
+
+              return {
+                content: [
+                  {
+                    type: "text",
+                    text: `Wrote ${buffer.byteLength} bytes to ${requestedPath} (mode: ${mode}).`,
+                  },
+                ],
+                details: {
+                  path: requestedPath,
+                  mode,
+                  sizeBytes: buffer.byteLength,
+                  contentHash,
+                  ...(previousContentHash !== undefined ? { previousContentHash } : {}),
+                  overwrite,
+                },
+              };
+            } catch (error) {
+              const message = error instanceof Error ? error.message : "Unknown error";
+              return {
+                isError: true,
+                content: [{ type: "text", text: message }],
+              };
+            }
+          },
+        };
+      },
+      { name: "pinchy_write" }
+    );
   },
 };
 

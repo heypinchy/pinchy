@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach, afterAll } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach, afterAll } from "vitest";
 import { readFileSync as realReadFileSync, mkdtempSync, rmSync, mkdirSync, writeFileSync } from "fs";
 import { join } from "path";
 import { tmpdir } from "os";
@@ -22,7 +22,7 @@ vi.mock("./validate", async (importOriginal) => {
 
 const mockRegisterTool = vi.fn();
 
-function createMockApi(agentConfigs: Record<string, { allowed_paths: string[] }>) {
+function createMockApi(agentConfigs: Record<string, { allowed_paths: string[]; write_paths?: string[] }>) {
   return {
     id: "pinchy-files",
     name: "Pinchy Files",
@@ -56,7 +56,7 @@ describe("pinchy-files plugin", () => {
     const { default: plugin } = await import("./index");
     plugin.register!(api as any);
 
-    expect(mockRegisterTool).toHaveBeenCalledTimes(2);
+    expect(mockRegisterTool).toHaveBeenCalledTimes(3);
   });
 
   it("registers tool factories (functions), not static tools", async () => {
@@ -588,5 +588,147 @@ describe("pinchy_read DOCX integration", () => {
     expect(result.isError).toBe(true);
     expect(result.content[0].type).toBe("text");
     expect(result.content[0].text).toMatch(/ENOENT|no such file/);
+  });
+});
+
+describe("pinchy_write tool", () => {
+  let tmpDir: string;
+
+  beforeEach(async () => {
+    vi.clearAllMocks();
+    tmpDir = mkdtempSync(join(tmpdir(), "pinchy-write-test-"));
+  });
+
+  afterEach(() => {
+    rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  function getWriteFactory() {
+    return mockRegisterTool.mock.calls.find(
+      (call: any[]) => call[1]?.name === "pinchy_write"
+    )?.[0];
+  }
+
+  it("does not register pinchy_write when agent has no write_paths", async () => {
+    const api = createMockApi({
+      "agent-1": { allowed_paths: ["/data/docs/"] },
+      // no write_paths
+    });
+    const { default: plugin } = await import("./index");
+    plugin.register!(api as any);
+
+    const factory = getWriteFactory();
+    expect(factory).toBeDefined(); // factory is registered
+    const tool = factory({ agentId: "agent-1" });
+    expect(tool).toBeNull(); // but returns null for this agent
+  });
+
+  it("does not register pinchy_write when write_paths is empty", async () => {
+    const api = createMockApi({
+      "agent-1": { allowed_paths: ["/data/docs/"], write_paths: [] },
+    });
+    const { default: plugin } = await import("./index");
+    plugin.register!(api as any);
+
+    const factory = getWriteFactory();
+    const tool = factory({ agentId: "agent-1" });
+    expect(tool).toBeNull();
+  });
+
+  it("returns tool when write_paths has entries", async () => {
+    const api = createMockApi({
+      "agent-1": { allowed_paths: [tmpDir], write_paths: [tmpDir] },
+    });
+    const { default: plugin } = await import("./index");
+    plugin.register!(api as any);
+
+    const factory = getWriteFactory();
+    const tool = factory({ agentId: "agent-1" });
+    expect(tool).not.toBeNull();
+    expect(tool.name).toBe("pinchy_write");
+    expect(tool.label).toBe("Write File");
+  });
+
+  it("creates a new file with fail-on-exists default", async () => {
+    const api = createMockApi({
+      "agent-1": { allowed_paths: [tmpDir], write_paths: [tmpDir] },
+    });
+    const { default: plugin } = await import("./index");
+    plugin.register!(api as any);
+
+    const factory = getWriteFactory();
+    const tool = factory({ agentId: "agent-1" });
+
+    const filePath = join(tmpDir, "report.csv");
+    const result = await tool.execute("call-1", {
+      path: filePath,
+      content: "name,age\nAlice,30\n",
+    });
+
+    expect(result.isError).toBeFalsy();
+    const written = realReadFileSync(filePath, "utf-8");
+    expect(written).toBe("name,age\nAlice,30\n");
+    expect(result.details).toMatchObject({
+      mode: "create",
+      sizeBytes: expect.any(Number),
+      contentHash: expect.stringMatching(/^[a-f0-9]{64}$/),
+      overwrite: false,
+    });
+    // content must NOT be in details (PII protection)
+    expect(JSON.stringify(result.details)).not.toContain("name,age");
+  });
+
+  it("fails with isError when file exists and overwrite=false (default)", async () => {
+    const filePath = join(tmpDir, "existing.csv");
+    writeFileSync(filePath, "old content");
+
+    const api = createMockApi({
+      "agent-1": { allowed_paths: [tmpDir], write_paths: [tmpDir] },
+    });
+    const { default: plugin } = await import("./index");
+    plugin.register!(api as any);
+
+    const factory = getWriteFactory();
+    const tool = factory({ agentId: "agent-1" });
+
+    const result = await tool.execute("call-1", {
+      path: filePath,
+      content: "new content",
+    });
+
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toMatch(/already exists/i);
+
+    // Original file must be unchanged
+    expect(realReadFileSync(filePath, "utf-8")).toBe("old content");
+  });
+
+  it("overwrites when overwrite=true, returns previousContentHash", async () => {
+    const filePath = join(tmpDir, "overwriteme.csv");
+    writeFileSync(filePath, "old content");
+
+    const api = createMockApi({
+      "agent-1": { allowed_paths: [tmpDir], write_paths: [tmpDir] },
+    });
+    const { default: plugin } = await import("./index");
+    plugin.register!(api as any);
+
+    const factory = getWriteFactory();
+    const tool = factory({ agentId: "agent-1" });
+
+    const result = await tool.execute("call-1", {
+      path: filePath,
+      content: "new content",
+      overwrite: true,
+    });
+
+    expect(result.isError).toBeFalsy();
+    expect(result.details).toMatchObject({
+      mode: "overwrite",
+      previousContentHash: expect.stringMatching(/^[a-f0-9]{64}$/),
+      overwrite: true,
+    });
+
+    expect(realReadFileSync(filePath, "utf-8")).toBe("new content");
   });
 });
