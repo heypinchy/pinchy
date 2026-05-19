@@ -1,6 +1,7 @@
 import { readFileSync, existsSync } from "fs";
 import { CONFIG_PATH } from "./paths";
 import { writeConfigAtomic, readExistingConfig } from "./write";
+import { restartState } from "@/server/restart-state";
 
 /**
  * Remove stale Pinchy plugins from the allow list that have no matching entry.
@@ -186,6 +187,15 @@ export function updateTelegramChannelConfig(
   }
 
   writeConfigAtomic(newContent);
+
+  // channels.telegram and bindings sit in OC's restart-trigger set — every
+  // mutation here causes inotify → full Gateway restart. Mark restart-state so
+  // /api/health/openclaw returns "restarting" and the client overlay stays up
+  // until OC's Telegram polling is actually back (server.ts calls notifyReady()
+  // on Gateway reconnect, closing the loop). Co-located with the write so any
+  // future caller inherits the invariant; gated by the dedup above so spurious
+  // no-op writes don't strand the UI behind a 30 s overlay.
+  restartState.notifyRestart();
 }
 
 /**

@@ -19,20 +19,6 @@ vi.mock("@/lib/telegram-allow-store", () => ({
   clearAllAllowStores: (...args: unknown[]) => mockClearAllAllowStores(...args),
 }));
 
-const mockNotifyRestart = vi.fn();
-vi.mock("@/server/restart-state", () => ({
-  restartState: {
-    notifyRestart: (...args: unknown[]) => mockNotifyRestart(...args),
-    notifyReady: vi.fn(),
-    get isRestarting() {
-      return false;
-    },
-    triggeredAt: null,
-    on: vi.fn(),
-    emit: vi.fn(),
-  },
-}));
-
 vi.mock("@/lib/audit", () => ({
   appendAuditLog: vi.fn().mockResolvedValue(undefined),
 }));
@@ -122,13 +108,6 @@ describe("DELETE /api/settings/telegram/all", () => {
     expect(response.status).toBe(200);
 
     expect(mockUpdateTelegramChannelConfig).toHaveBeenCalled();
-  });
-
-  it("notifies restart state so the health endpoint reflects pending OC restart", async () => {
-    const response = await DELETE();
-    expect(response.status).toBe(200);
-
-    expect(mockNotifyRestart).toHaveBeenCalled();
   });
 
   it("logs audit event", async () => {
