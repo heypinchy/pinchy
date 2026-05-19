@@ -29,6 +29,8 @@ import { isNull, sql, relations } from "drizzle-orm";
 export type AgentPluginConfig = {
   "pinchy-files"?: {
     allowed_paths: string[];
+    write_paths?: string[];
+    allowed_extensions?: string[];
   };
   "pinchy-web"?: {
     allowedDomains?: string[];
