@@ -10,6 +10,7 @@ const REPRESENTATIVE_EMITTED_CONFIG = {
   agents: {
     "agent-uuid": {},
   },
+  publicBaseUrl: "https://docs.heypinchy.com",
 };
 
 describe("pinchy-docs manifest contract", () => {
@@ -26,5 +27,24 @@ describe("pinchy-docs manifest contract", () => {
 
   it("uses additionalProperties: false", () => {
     expect((manifest.configSchema as Record<string, unknown>).additionalProperties).toBe(false);
+  });
+
+  it("treats publicBaseUrl as optional (air-gapped forks ship without it)", () => {
+    const result = validatePluginEntry(manifest, {
+      docsPath: "/pinchy-docs",
+      agents: { "agent-uuid": {} },
+    });
+    if (!result.ok) throw new Error(result.errors.join("\n"));
+    expect(result.ok).toBe(true);
+  });
+
+  it("rejects non-string publicBaseUrl", () => {
+    expect(
+      validatePluginEntry(manifest, {
+        docsPath: "/pinchy-docs",
+        agents: { "agent-uuid": {} },
+        publicBaseUrl: 42,
+      }).ok
+    ).toBe(false);
   });
 });

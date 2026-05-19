@@ -2022,6 +2022,87 @@ describe("regenerateOpenClawConfig", () => {
     expect(config.plugins.allow).toContain("pinchy-docs");
   });
 
+  it("defaults pinchy-docs publicBaseUrl to https://docs.heypinchy.com when the setting is unset", async () => {
+    mockedDb.select.mockReturnValue({
+      from: mockFrom([
+        {
+          id: "smithers-1",
+          name: "Smithers",
+          model: "anthropic/claude-haiku-4-5-20251001",
+          isPersonal: true,
+          ownerId: "user-1",
+          allowedTools: [],
+          createdAt: new Date(),
+        },
+      ]),
+    } as never);
+
+    await regenerateOpenClawConfig();
+
+    const written = mockedWriteFileSync.mock.calls[0][1] as string;
+    const config = JSON.parse(written);
+
+    expect(config.plugins.entries["pinchy-docs"].config.publicBaseUrl).toBe(
+      "https://docs.heypinchy.com"
+    );
+  });
+
+  it("honours an admin-set docs_public_base_url setting for self-hosted docs", async () => {
+    mockedGetSetting.mockImplementation(async (key: string) => {
+      if (key === "docs_public_base_url") return "https://docs.example.com";
+      return null;
+    });
+    mockedDb.select.mockReturnValue({
+      from: mockFrom([
+        {
+          id: "smithers-1",
+          name: "Smithers",
+          model: "anthropic/claude-haiku-4-5-20251001",
+          isPersonal: true,
+          ownerId: "user-1",
+          allowedTools: [],
+          createdAt: new Date(),
+        },
+      ]),
+    } as never);
+
+    await regenerateOpenClawConfig();
+
+    const written = mockedWriteFileSync.mock.calls[0][1] as string;
+    const config = JSON.parse(written);
+
+    expect(config.plugins.entries["pinchy-docs"].config.publicBaseUrl).toBe(
+      "https://docs.example.com"
+    );
+  });
+
+  it("omits publicBaseUrl when the admin explicitly clears the setting (air-gapped fork)", async () => {
+    mockedGetSetting.mockImplementation(async (key: string) => {
+      if (key === "docs_public_base_url") return "";
+      return null;
+    });
+    mockedDb.select.mockReturnValue({
+      from: mockFrom([
+        {
+          id: "smithers-1",
+          name: "Smithers",
+          model: "anthropic/claude-haiku-4-5-20251001",
+          isPersonal: true,
+          ownerId: "user-1",
+          allowedTools: [],
+          createdAt: new Date(),
+        },
+      ]),
+    } as never);
+
+    await regenerateOpenClawConfig();
+
+    const written = mockedWriteFileSync.mock.calls[0][1] as string;
+    const config = JSON.parse(written);
+
+    expect("publicBaseUrl" in config.plugins.entries["pinchy-docs"].config).toBe(false);
+  });
+
   it("writes per-agent auth-profiles.json scoped to each agent's model provider", async () => {
     const agentsData = [
       {

@@ -465,12 +465,22 @@ export async function regenerateOpenClawConfig() {
   // platform documentation on demand. The plugin scopes itself to listed agents.
   const personalAgentIds = allAgents.filter((a) => a.isPersonal && !a.deletedAt).map((a) => a.id);
   if (personalAgentIds.length > 0) {
+    // Empty-string setting means the operator explicitly opted out (air-gapped
+    // fork without published docs) — keep path-only behaviour. `null` means
+    // unset, fall back to Pinchy's hosted docs.
+    const docsBaseUrlSetting = await getSetting("docs_public_base_url");
+    const docsConfig: Record<string, unknown> = {
+      docsPath: "/pinchy-docs",
+      agents: Object.fromEntries(personalAgentIds.map((id) => [id, {}])),
+    };
+    const resolvedDocsBaseUrl =
+      docsBaseUrlSetting === null ? "https://docs.heypinchy.com" : docsBaseUrlSetting;
+    if (resolvedDocsBaseUrl) {
+      docsConfig.publicBaseUrl = resolvedDocsBaseUrl;
+    }
     entries["pinchy-docs"] = {
       enabled: true,
-      config: {
-        docsPath: "/pinchy-docs",
-        agents: Object.fromEntries(personalAgentIds.map((id) => [id, {}])),
-      },
+      config: docsConfig,
     };
   }
 

@@ -43,6 +43,19 @@ platform-related — you MUST follow this exact procedure:
    next most relevant file. Repeat up to three files.
 5. Answer the user based ONLY on what you read.
 
+### Citing docs to the user
+
+When the user asks for a documentation link, or you want to point them at a
+page, always prefer the public URL. Each \`docs_list\` entry includes a \`url\`
+field, and \`docs_read\` prepends a "Public URL:" line, whenever a public docs
+site is configured.
+
+- Cite the public URL verbatim (e.g. \`https://docs.heypinchy.com/guides/connect-email/\`).
+- Never quote the on-disk \`.mdx\` path back to the user — they cannot open it.
+- If no URL is available (air-gapped fork without a public docs site), summarise
+  the relevant content and tell the user the docs are bundled with their
+  Pinchy instance rather than published online.
+
 ### When the docs do not cover the question
 
 This is the most important rule and you must follow it literally.

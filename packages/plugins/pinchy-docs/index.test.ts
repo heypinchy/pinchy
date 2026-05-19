@@ -8,6 +8,7 @@ const mockRegisterTool = vi.fn();
 function createMockApi(config: {
   docsPath: string;
   agents: Record<string, Record<string, unknown>>;
+  publicBaseUrl?: string;
 }) {
   return {
     id: "pinchy-docs",
@@ -442,5 +443,153 @@ describe("pinchy-docs plugin", () => {
     expect(plugin.id).toBe("pinchy-docs");
     expect(plugin.name).toBe("Pinchy Docs");
     expect(plugin.configSchema).toBeDefined();
+  });
+
+  describe("publicBaseUrl → url mapping", () => {
+    it("docs_list includes a url field for each entry when publicBaseUrl is set", async () => {
+      writeMdx("guides/connect-email.mdx", { title: "Connect", description: "x" }, "body");
+
+      const api = createMockApi({
+        docsPath: docsRoot,
+        agents: { "agent-1": {} },
+        publicBaseUrl: "https://docs.heypinchy.com",
+      });
+      const { default: plugin } = await import("./index");
+      plugin.register!(api as any);
+
+      const factory = mockRegisterTool.mock.calls.find(
+        (c: any[]) => c[1]?.name === "docs_list"
+      )?.[0];
+      const tool = factory({ agentId: "agent-1" });
+      const result = await tool.execute("call-1", {});
+      const parsed = JSON.parse(result.content[0].text);
+      const entry = parsed.find((p: any) => p.path === "guides/connect-email.mdx");
+      expect(entry.url).toBe("https://docs.heypinchy.com/guides/connect-email/");
+    });
+
+    it("docs_list omits url field when publicBaseUrl is not set (air-gapped fork)", async () => {
+      writeMdx("guides/connect-email.mdx", { title: "Connect", description: "x" }, "body");
+
+      const api = createMockApi({ docsPath: docsRoot, agents: { "agent-1": {} } });
+      const { default: plugin } = await import("./index");
+      plugin.register!(api as any);
+
+      const factory = mockRegisterTool.mock.calls.find(
+        (c: any[]) => c[1]?.name === "docs_list"
+      )?.[0];
+      const tool = factory({ agentId: "agent-1" });
+      const result = await tool.execute("call-1", {});
+      const parsed = JSON.parse(result.content[0].text);
+      const entry = parsed.find((p: any) => p.path === "guides/connect-email.mdx");
+      expect(entry).toEqual({
+        path: "guides/connect-email.mdx",
+        title: "Connect",
+        description: "x",
+      });
+      expect("url" in entry).toBe(false);
+    });
+
+    it("docs_list maps index.mdx at the root to the bare base URL", async () => {
+      writeMdx("index.mdx", { title: "Home", description: "x" }, "body");
+
+      const api = createMockApi({
+        docsPath: docsRoot,
+        agents: { "agent-1": {} },
+        publicBaseUrl: "https://docs.heypinchy.com",
+      });
+      const { default: plugin } = await import("./index");
+      plugin.register!(api as any);
+
+      const factory = mockRegisterTool.mock.calls.find(
+        (c: any[]) => c[1]?.name === "docs_list"
+      )?.[0];
+      const tool = factory({ agentId: "agent-1" });
+      const result = await tool.execute("call-1", {});
+      const parsed = JSON.parse(result.content[0].text);
+      const entry = parsed.find((p: any) => p.path === "index.mdx");
+      expect(entry.url).toBe("https://docs.heypinchy.com/");
+    });
+
+    it("docs_list maps subdir index.mdx to the subdir slug", async () => {
+      writeMdx("guides/index.mdx", { title: "Guides", description: "x" }, "body");
+
+      const api = createMockApi({
+        docsPath: docsRoot,
+        agents: { "agent-1": {} },
+        publicBaseUrl: "https://docs.heypinchy.com",
+      });
+      const { default: plugin } = await import("./index");
+      plugin.register!(api as any);
+
+      const factory = mockRegisterTool.mock.calls.find(
+        (c: any[]) => c[1]?.name === "docs_list"
+      )?.[0];
+      const tool = factory({ agentId: "agent-1" });
+      const result = await tool.execute("call-1", {});
+      const parsed = JSON.parse(result.content[0].text);
+      const entry = parsed.find((p: any) => p.path === "guides/index.mdx");
+      expect(entry.url).toBe("https://docs.heypinchy.com/guides/");
+    });
+
+    it("docs_list strips a trailing slash on publicBaseUrl before building urls", async () => {
+      writeMdx("guides/foo.mdx", { title: "Foo", description: "x" }, "body");
+
+      const api = createMockApi({
+        docsPath: docsRoot,
+        agents: { "agent-1": {} },
+        publicBaseUrl: "https://docs.heypinchy.com/",
+      });
+      const { default: plugin } = await import("./index");
+      plugin.register!(api as any);
+
+      const factory = mockRegisterTool.mock.calls.find(
+        (c: any[]) => c[1]?.name === "docs_list"
+      )?.[0];
+      const tool = factory({ agentId: "agent-1" });
+      const result = await tool.execute("call-1", {});
+      const parsed = JSON.parse(result.content[0].text);
+      const entry = parsed.find((p: any) => p.path === "guides/foo.mdx");
+      expect(entry.url).toBe("https://docs.heypinchy.com/guides/foo/");
+    });
+
+    it("docs_read prepends a citation line with the public URL when publicBaseUrl is set", async () => {
+      writeMdx("guides/connect-email.mdx", { title: "Connect", description: "x" }, "Hello body.");
+
+      const api = createMockApi({
+        docsPath: docsRoot,
+        agents: { "agent-1": {} },
+        publicBaseUrl: "https://docs.heypinchy.com",
+      });
+      const { default: plugin } = await import("./index");
+      plugin.register!(api as any);
+
+      const factory = mockRegisterTool.mock.calls.find(
+        (c: any[]) => c[1]?.name === "docs_read"
+      )?.[0];
+      const tool = factory({ agentId: "agent-1" });
+      const result = await tool.execute("call-1", { path: "guides/connect-email.mdx" });
+
+      expect(result.content[0].text).toMatch(
+        /Public URL:\s*https:\/\/docs\.heypinchy\.com\/guides\/connect-email\//
+      );
+      expect(result.content[0].text).toContain("Hello body.");
+    });
+
+    it("docs_read does not prepend a citation line when publicBaseUrl is unset", async () => {
+      writeMdx("guides/connect-email.mdx", { title: "Connect", description: "x" }, "Hello body.");
+
+      const api = createMockApi({ docsPath: docsRoot, agents: { "agent-1": {} } });
+      const { default: plugin } = await import("./index");
+      plugin.register!(api as any);
+
+      const factory = mockRegisterTool.mock.calls.find(
+        (c: any[]) => c[1]?.name === "docs_read"
+      )?.[0];
+      const tool = factory({ agentId: "agent-1" });
+      const result = await tool.execute("call-1", { path: "guides/connect-email.mdx" });
+
+      expect(result.content[0].text).not.toContain("Public URL:");
+      expect(result.content[0].text).toContain("Hello body.");
+    });
   });
 });

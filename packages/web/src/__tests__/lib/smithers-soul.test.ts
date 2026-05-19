@@ -56,6 +56,19 @@ describe("SMITHERS_SOUL_MD", () => {
     expect(SMITHERS_SOUL_MD).toContain("available in your context");
   });
 
+  it("instructs Smithers to cite the public URL rather than the file path when available", () => {
+    // The docs_list/docs_read plugin output includes a `url` field whenever the
+    // operator has a public docs site configured. The SOUL must teach Smithers
+    // to surface that URL to the user instead of the on-disk `.mdx` path, which
+    // the user cannot open. Tracked in #202.
+    const lower = SMITHERS_SOUL_MD.toLowerCase();
+    expect(lower).toContain("url");
+    expect(lower).toMatch(/prefer.*url|cite.*url|public url/);
+    // It must also acknowledge the air-gapped fallback so Smithers stays
+    // useful when no public docs URL is configured.
+    expect(lower).toMatch(/(no url|url is unavailable|url is missing|no public url)/);
+  });
+
   it("does not duplicate platform knowledge that lives in the docs", () => {
     // Docs are the single source of truth — Smithers reads them on demand via
     // docs_list/docs_read. Inlining feature summaries here makes the SOUL drift

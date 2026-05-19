@@ -17,6 +17,9 @@
         "additionalProperties": {
           "type": "object"
         }
+      },
+      "publicBaseUrl": {
+        "type": "string"
       }
     },
     "required": ["docsPath", "agents"]

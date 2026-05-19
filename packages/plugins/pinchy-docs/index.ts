@@ -8,6 +8,7 @@ interface PluginToolContext {
 interface PluginConfig {
   docsPath: string;
   agents: Record<string, Record<string, unknown>>;
+  publicBaseUrl?: string;
 }
 
 interface PluginApi {
@@ -38,6 +39,25 @@ interface DocEntry {
   path: string;
   title: string;
   description: string;
+  url?: string;
+}
+
+/**
+ * Map a doc-relative `.mdx`/`.md` path to its rendered Astro Starlight URL.
+ * Rules mirror Starlight defaults:
+ *   - strip extension and trailing `/index`
+ *   - append trailing slash
+ *   - `index.mdx` at the root collapses to the bare base URL
+ * Returns null when `baseUrl` is falsy (air-gapped fork — keep path-only output).
+ */
+export function buildPublicUrl(baseUrl: string | undefined, relPath: string): string | null {
+  if (!baseUrl) return null;
+  const base = baseUrl.replace(/\/+$/, "");
+  const slug = relPath
+    .replace(/\.(mdx|md)$/i, "")
+    .replace(/\/index$/i, "")
+    .replace(/^index$/i, "");
+  return slug ? `${base}/${slug}/` : `${base}/`;
 }
 
 function parseFrontmatter(content: string): { title: string; description: string } {
@@ -64,7 +84,7 @@ function parseFrontmatter(content: string): { title: string; description: string
   return { title, description };
 }
 
-function listMdxFiles(root: string): DocEntry[] {
+function listMdxFiles(root: string, publicBaseUrl?: string): DocEntry[] {
   const results: DocEntry[] = [];
 
   function walk(dir: string, relBase: string) {
@@ -83,7 +103,10 @@ function listMdxFiles(root: string): DocEntry[] {
         try {
           const content = readFileSync(fullPath, "utf-8");
           const { title, description } = parseFrontmatter(content);
-          results.push({ path: relPath, title, description });
+          const docEntry: DocEntry = { path: relPath, title, description };
+          const url = buildPublicUrl(publicBaseUrl, relPath);
+          if (url) docEntry.url = url;
+          results.push(docEntry);
         } catch {
           // skip unreadable file
         }
@@ -201,7 +224,7 @@ const plugin = {
     const config = api.pluginConfig;
     if (!config) return;
 
-    const { docsPath, agents } = config;
+    const { docsPath, agents, publicBaseUrl } = config;
 
     api.registerTool(
       (ctx: PluginToolContext) => {
@@ -220,7 +243,7 @@ const plugin = {
           },
           async execute() {
             try {
-              const files = listMdxFiles(docsPath);
+              const files = listMdxFiles(docsPath, publicBaseUrl);
               return {
                 content: [
                   { type: "text", text: JSON.stringify(files, null, 2) },
@@ -285,7 +308,10 @@ const plugin = {
                 };
               }
               const content = readFileSync(safe, "utf-8");
-              return { content: [{ type: "text", text: preprocessMdx(content) }] };
+              const body = preprocessMdx(content);
+              const url = buildPublicUrl(publicBaseUrl, relPath);
+              const text = url ? `Public URL: ${url}\n\n${body}` : body;
+              return { content: [{ type: "text", text }] };
             } catch (error) {
               const message =
                 error instanceof Error ? error.message : "Unknown error";
