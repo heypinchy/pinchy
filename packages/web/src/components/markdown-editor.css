@@ -1,64 +1,77 @@
-/* Markdown syntax highlighting for PrismJS tokens */
+/* Markdown syntax highlighting for PrismJS tokens.
+ *
+ * IMPORTANT — read before adding any rule here:
+ * react-simple-code-editor renders the highlight <pre> as an overlay above
+ * an invisible <textarea>. The two layers MUST have identical text metrics
+ * for the visual caret to align with the logical cursor. Any per-token
+ * styling that changes glyph width or line-box height — `font-size`,
+ * `font-weight`, `font-style`, `letter-spacing`, `padding`, `margin`,
+ * `border`, `transform`, etc. — desynchronises the layers and lands clicks
+ * on the wrong character (issue #336). The drift can be horizontal
+ * (per-token width inflation) or vertical (per-token taller line boxes
+ * accumulating over a long file with headings/bold/italic spans).
+ *
+ * Safe properties: `color`, `background`, `border-radius`, `box-shadow`,
+ * `text-decoration` (line-through, underline). These paint inside the
+ * existing layout box without changing it.
+ */
 
-/* Headings: # ## ### etc. — title and important are on the SAME element */
+/* Headings: # ## ### etc. — title and important are on the SAME element. */
 .markdown-editor .token.title.important {
   color: var(--color-primary);
-  font-weight: bold;
-  font-size: 1.1em;
 }
 
-/* Heading punctuation (the # characters) */
+/* Heading punctuation (the # characters). */
 .markdown-editor .token.title .token.punctuation {
   color: oklch(0.65 0.1 60);
 }
 
-.markdown-editor .token.bold {
-  font-weight: bold;
-}
-
+/* Bold/italic — emphasise via colour only (font-weight/-style would change
+ * glyph metrics; see header comment). */
+.markdown-editor .token.bold,
 .markdown-editor .token.italic {
-  font-style: italic;
+  color: oklch(0.45 0 0);
 }
 
-/* Strikethrough: ~~text~~ — content is nested inside strike */
+/* Strikethrough: ~~text~~ — content is nested inside strike. line-through
+ * is a paint-only decoration and does not affect layout. */
 .markdown-editor .token.strike .token.content {
   text-decoration: line-through;
 }
 
-/* Links and URLs */
+/* Links and URLs. */
 .markdown-editor .token.url,
 .markdown-editor .token.url-reference .token.string {
   color: oklch(0.5 0.15 250);
 }
 
-/* List markers (-, *, 1.) */
+/* List markers (-, *, 1.). */
 .markdown-editor .token.list.punctuation {
   color: oklch(0.5 0.15 150);
-  font-weight: bold;
 }
 
-/* Blockquotes */
+/* Blockquotes. */
 .markdown-editor .token.blockquote.punctuation,
 .markdown-editor .token.blockquote {
   color: oklch(0.55 0 0);
-  font-style: italic;
 }
 
-/* Horizontal rules */
+/* Horizontal rules. */
 .markdown-editor .token.hr.punctuation {
   color: oklch(0.55 0 0);
 }
 
-/* Inline code */
+/* Inline code — see header comment: `box-shadow` extends the tint visually
+ * without affecting layout, unlike `padding`. */
 .markdown-editor .token.code-snippet,
 .markdown-editor .token.code.keyword {
   color: oklch(0.5 0.12 20);
   background: oklch(0.95 0 0);
   border-radius: 3px;
-  padding: 1px 4px;
+  box-shadow: 0 0 0 2px oklch(0.95 0 0);
 }
 
-/* HTML comments */
+/* HTML comments. */
 .markdown-editor .token.comment {
   color: oklch(0.6 0 0);
 }
