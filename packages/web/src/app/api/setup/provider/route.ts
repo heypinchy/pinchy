@@ -59,18 +59,21 @@ export async function POST(request: NextRequest) {
       }
       // #296 — Host won't pass OpenClaw's isLocalBaseUrl allowlist. Saving it
       // would let the URL sail through and fail silently at chat time with
-      // "No API key found for provider 'ollama'". Surface a one-line hint
-      // pointing at option B of the Ollama setup guide so the user can fix
-      // the hostname (e.g. ollama → ollama.docker.local) without reading the
-      // full troubleshooting section.
+      // "No API key found for provider 'ollama'". Surface a short message
+      // naming the offending host, plus a structured `docs` link pointing at
+      // option B of the Ollama setup guide. The client renders `docs.label`
+      // as a real <a> next to the error so users can click instead of having
+      // to copy-paste a URL out of inline text (#296 review follow-up).
       if (validation.error === "unsupported_local_host") {
-        const setupUrl = docsUrl("guides/ollama-setup", "b-ollama-as-a-docker-service");
         return NextResponse.json(
           {
             error:
               `Host "${validation.host}" is not an allowed local Ollama host. ` +
-              `Use localhost, a *.local alias, or a private IP. ` +
-              `See ${setupUrl} for the recommended Docker setup.`,
+              `Use localhost, a *.local alias, or a private IP.`,
+            docs: {
+              href: docsUrl("guides/ollama-setup", "b-ollama-as-a-docker-service"),
+              label: "See the recommended Docker setup",
+            },
           },
           { status: 422 }
         );

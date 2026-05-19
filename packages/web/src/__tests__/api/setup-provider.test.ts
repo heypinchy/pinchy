@@ -357,7 +357,7 @@ describe("POST /api/setup/provider", () => {
   // isLocalBaseUrl allowlist. The unit test in providers.test.ts covers the
   // detection; here we just pin the route's surface contract so the UI can
   // render a helpful hint instead of silent runtime failure at chat time.
-  it("returns 422 with a docs-link hint when ollama-local URL host is not on OpenClaw's allowlist (#296)", async () => {
+  it("returns 422 with an inline message that names the offending host (#296)", async () => {
     vi.mocked(validateProviderUrl).mockResolvedValueOnce({
       valid: false,
       error: "unsupported_local_host",
@@ -373,11 +373,39 @@ describe("POST /api/setup/provider", () => {
     expect(response.status).toBe(422);
     const data = await response.json();
     // The error must name the offending host so the user can find their
-    // typo, and link to the option-B section of the Ollama setup guide so
-    // they have an actionable fix (the docs change in #295 explains why).
+    // typo. The docs link is returned as a structured `docs` field (see the
+    // next test) so the UI can render it as a clickable anchor rather than
+    // a long URL squashed into the prose.
     expect(data.error).toContain("ollama");
-    expect(data.error).toMatch(/ollama-setup/);
-    expect(data.error).toMatch(/b-ollama-as-a-docker-service/);
+    expect(data.error).not.toMatch(/https?:\/\//); // no URL in the prose
+  });
+
+  // #296 review follow-up — return docs link as structured metadata so the
+  // form can render it as a clickable <a>, instead of forcing the user to
+  // copy-paste a URL from inline error text.
+  it("returns structured docs metadata so the UI can render a clickable hint (#296)", async () => {
+    vi.mocked(validateProviderUrl).mockResolvedValueOnce({
+      valid: false,
+      error: "unsupported_local_host",
+      host: "ollama",
+    });
+
+    const response = await POST(
+      makeRequest({
+        provider: "ollama-local",
+        url: "http://ollama:11434",
+      }) as any
+    );
+    expect(response.status).toBe(422);
+    const data = await response.json();
+    expect(data.docs).toBeDefined();
+    expect(typeof data.docs.label).toBe("string");
+    expect(data.docs.label.length).toBeGreaterThan(0);
+    // Must point at option B of the Ollama setup guide so the fix is one
+    // click away, not buried in a longer troubleshooting page.
+    expect(data.docs.href).toMatch(/^https?:\/\//);
+    expect(data.docs.href).toMatch(/guides\/ollama-setup/);
+    expect(data.docs.href).toMatch(/b-ollama-as-a-docker-service/);
   });
 
   it("does not save the provider when ollama-local URL host is unsupported (#296)", async () => {

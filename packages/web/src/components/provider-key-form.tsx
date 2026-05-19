@@ -192,6 +192,11 @@ export function ProviderKeyForm({
   const [removing, setRemoving] = useState(false);
   const [validationStatus, setValidationStatus] = useState<"idle" | "success" | "error">("idle");
   const [error, setError] = useState("");
+  // #296 — when the API returns a structured `docs` hint alongside the error
+  // (currently only for `unsupported_local_host` from /api/setup/provider),
+  // we render it as a clickable <a> next to the inline error text instead of
+  // letting a long URL squat inside the prose.
+  const [errorDocs, setErrorDocs] = useState<{ href: string; label: string } | null>(null);
   const { triggerRestart } = useRestart();
 
   const form = useForm<ProviderKeyFormValues>({
@@ -220,6 +225,7 @@ export function ProviderKeyForm({
 
     setLoading(true);
     setError("");
+    setErrorDocs(null);
     setValidationStatus("idle");
 
     try {
@@ -240,12 +246,23 @@ export function ProviderKeyForm({
           return;
         }
         let message = "Setup failed";
+        let docs: { href: string; label: string } | null = null;
         try {
           const data = await res.json();
           if (data.error) message = data.error;
+          // Validate the docs shape defensively — a route that returns
+          // partial/malformed metadata shouldn't break the inline error.
+          if (
+            data.docs &&
+            typeof data.docs.href === "string" &&
+            typeof data.docs.label === "string"
+          ) {
+            docs = { href: data.docs.href, label: data.docs.label };
+          }
         } catch {
           // response body was not JSON; use default message
         }
+        setErrorDocs(docs);
         throw new Error(message);
       }
 
@@ -282,6 +299,7 @@ export function ProviderKeyForm({
                       setGuideOpen(false);
                       setValidationStatus("idle");
                       setError("");
+                      setErrorDocs(null);
                     }}
                   >
                     {config.name}
@@ -348,7 +366,20 @@ export function ProviderKeyForm({
 
             {error && (
               <div className="flex items-start justify-between gap-2">
-                <p className="text-sm text-destructive">{error}</p>
+                <div className="space-y-1">
+                  <p className="text-sm text-destructive">{error}</p>
+                  {errorDocs && (
+                    <a
+                      href={errorDocs.href}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="inline-flex items-center gap-1 text-sm font-medium text-primary hover:underline"
+                    >
+                      {errorDocs.label}
+                      <ExternalLink className="size-3" />
+                    </a>
+                  )}
+                </div>
                 <ReportIssueLink error={error} />
               </div>
             )}
