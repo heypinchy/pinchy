@@ -365,7 +365,10 @@ const plugin = {
           },
           async execute(_toolCallId: string, params: Record<string, unknown>) {
             try {
-              const requestedPath = params.path as string;
+              if (typeof params.path !== "string") {
+                throw new Error("path must be a string");
+              }
+              const requestedPath = params.path;
 
               if (typeof params.content !== "string") {
                 throw new Error("content must be a string");
