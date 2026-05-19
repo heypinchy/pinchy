@@ -37,6 +37,7 @@ import plugin, {
   normalizeFields,
   sortFieldsByPriority,
   compactSchema,
+  PRODUCT_REF_DISAMBIGUATION_HINT,
 } from "../index";
 
 interface AgentTool {
@@ -499,7 +500,11 @@ describe("compactSchema", () => {
       expect(out.fields.id).toBe("int");
     });
 
-    it("does not annotate default_code when id is filtered out", () => {
+    // Behavior widened post-review: annotate based on what the *model
+    // declares*, not just what the current response window happens to show.
+    // Filtering down to one of the two fields is exactly when the agent is
+    // most likely to confuse them — that's when the warning matters most.
+    it("annotates default_code when filtered alone but id is declared in the model", () => {
       const fs: OdooField[] = [
         { name: "id", type: "integer" },
         { name: "default_code", type: "char" },
@@ -509,7 +514,36 @@ describe("compactSchema", () => {
         limit: 40,
         verbose: false,
       });
-      expect(out.fields.default_code).toBe("char");
+      expect(String(out.fields.default_code)).toMatch(/NOT the database id/i);
+      expect(String(out.fields.default_code)).toMatch(
+        /SKU|internal reference/i,
+      );
+    });
+
+    // Symmetric case to the one above.
+    it("annotates id when filtered alone but default_code is declared in the model", () => {
+      const fs: OdooField[] = [
+        { name: "id", type: "integer" },
+        { name: "default_code", type: "char" },
+      ];
+      const out = compactSchema(fs, {
+        fields: ["id"],
+        limit: 40,
+        verbose: false,
+      });
+      expect(String(out.fields.id)).toMatch(/NOT the SKU/i);
+    });
+
+    // Noise control: non-product models that happen to expose `id` (every
+    // model does) but lack `default_code` must stay quiet.
+    it("does not annotate id on a model that does not declare default_code", () => {
+      const fs: OdooField[] = [
+        { name: "id", type: "integer" },
+        { name: "amount_total", type: "float" },
+        { name: "state", type: "char" },
+      ];
+      const out = compactSchema(fs, { limit: 40, verbose: false });
+      expect(out.fields.id).toBe("int");
     });
 
     it("annotates id and default_code in verbose mode too", () => {
@@ -639,12 +673,18 @@ describe("odoo_describe_model", () => {
 
   // Issue #377: tool description itself should call out the distinction
   // between `id` and `default_code` so the LLM picks the right field even
-  // before it has read any model's schema.
+  // before it has read any model's schema. Directional assertions — a typo
+  // that swapped which field is the SKU would still match `/default_code/`
+  // and `/SKU/i` individually but would fail the ordered phrases below.
   it("tool description disambiguates id from default_code", () => {
     const tools = createApi({ [agentId]: agentConfig });
     const tool = findTool(tools, "odoo_describe_model", agentId)!;
-    expect(tool.description).toMatch(/default_code/);
-    expect(tool.description).toMatch(/SKU|internal reference/i);
+    // `id` is described as NOT-the-SKU.
+    expect(tool.description).toMatch(/`id`[^.]*NOT the SKU/);
+    // SKU / internal reference IS `default_code`.
+    expect(tool.description).toMatch(
+      /(SKU|internal reference)[^.]*`default_code`/i,
+    );
   });
 });
 
@@ -709,6 +749,30 @@ describe("odoo_schema deprecated alias", () => {
   });
 });
 
+// Issue #377: the shared product-ref disambiguation hint is spliced verbatim
+// into every filter-accepting tool's description (odoo_read, odoo_count,
+// odoo_aggregate). Each consumer test asserts `.toContain(...)` on the
+// constant, so those tests would *also* pass if a future edit swapped the
+// rule inside the constant itself. This block pins the rule direction
+// directly on the constant so that swap-typo fails here loudly.
+describe("PRODUCT_REF_DISAMBIGUATION_HINT (issue #377)", () => {
+  it("directs SKU / internal-reference wording to `default_code` (not `id`)", () => {
+    expect(PRODUCT_REF_DISAMBIGUATION_HINT).toMatch(
+      /(SKU|internal reference)[^.]*`default_code`/i,
+    );
+  });
+
+  it("directs 'record ID' / 'URL' wording to `id` (not `default_code`)", () => {
+    expect(PRODUCT_REF_DISAMBIGUATION_HINT).toMatch(
+      /(record ID|URL)[^.]*`id`/i,
+    );
+  });
+
+  it("contains the explicit anti-direction `default_code`, not `id`", () => {
+    expect(PRODUCT_REF_DISAMBIGUATION_HINT).toMatch(/`default_code`, not `id`/);
+  });
+});
+
 describe("odoo_read", () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -718,12 +782,14 @@ describe("odoo_read", () => {
   // Issue #377: when a user references "the SKU" or "internal reference" the
   // model frequently filters by `id` (the numeric DB primary key) and silently
   // returns nothing. The tool description should steer the model toward
-  // `default_code` for human-given references.
-  it("tool description disambiguates default_code vs id for product references", () => {
+  // `default_code` for human-given references. We assert the shared
+  // disambiguation hint is present verbatim — directional correctness of the
+  // hint itself is pinned by the dedicated `PRODUCT_REF_DISAMBIGUATION_HINT`
+  // suite below, so a typo'd swap would fail there, not silently here.
+  it("tool description includes the shared product-ref disambiguation hint", () => {
     const tools = createApi({ [agentId]: agentConfig });
     const tool = findTool(tools, "odoo_read", agentId)!;
-    expect(tool.description).toMatch(/default_code/);
-    expect(tool.description).toMatch(/SKU|internal reference/i);
+    expect(tool.description).toContain(PRODUCT_REF_DISAMBIGUATION_HINT);
   });
 
   it("reads records with correct parameters", async () => {
@@ -945,12 +1011,11 @@ describe("odoo_count", () => {
   // Issue #377: `odoo_count` accepts the same domain-filter shape as
   // `odoo_read`, so an agent counting `[["id", "=", "WIDGET-12"]]` silently
   // returns 0 with no signal that it should have used `default_code`. The
-  // description should carry the same disambiguation hint.
-  it("tool description disambiguates default_code vs id for product references", () => {
+  // description should carry the same shared disambiguation hint.
+  it("tool description includes the shared product-ref disambiguation hint", () => {
     const tools = createApi({ [agentId]: agentConfig });
     const tool = findTool(tools, "odoo_count", agentId)!;
-    expect(tool.description).toMatch(/default_code/);
-    expect(tool.description).toMatch(/SKU|internal reference/i);
+    expect(tool.description).toContain(PRODUCT_REF_DISAMBIGUATION_HINT);
   });
 
   it("counts records for a permitted model", async () => {
@@ -992,12 +1057,12 @@ describe("odoo_aggregate", () => {
 
   // Issue #377: same domain-filter shape as `odoo_read`/`odoo_count` — an
   // agent grouping by `id` when the user said "the SKU" silently aggregates
-  // the wrong dimension. Description carries the same disambiguation hint.
-  it("tool description disambiguates default_code vs id for product references", () => {
+  // the wrong dimension. Description carries the same shared disambiguation
+  // hint.
+  it("tool description includes the shared product-ref disambiguation hint", () => {
     const tools = createApi({ [agentId]: agentConfig });
     const tool = findTool(tools, "odoo_aggregate", agentId)!;
-    expect(tool.description).toMatch(/default_code/);
-    expect(tool.description).toMatch(/SKU|internal reference/i);
+    expect(tool.description).toContain(PRODUCT_REF_DISAMBIGUATION_HINT);
   });
 
   it("aggregates data for a permitted model", async () => {

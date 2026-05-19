@@ -340,12 +340,25 @@ const DEFAULT_FIELD_LIMIT = 40;
 // internal numeric primary key `id` with `default_code` (the human-readable
 // SKU / internal reference). Each silent mismatch returns no results, the
 // model guesses, and the downstream action lands on the wrong record. When a
-// model exposes both fields, surface a one-line hint next to each so the LLM
-// sees the distinction at the point of decision.
+// model declares both fields in its schema, surface a one-line hint next to
+// each so the LLM sees the distinction at the point of decision.
 const ID_DISAMBIGUATION_NOTE =
   "Odoo's internal numeric primary key. NOT the SKU.";
 const DEFAULT_CODE_DISAMBIGUATION_NOTE =
   "Human-readable internal reference / SKU. NOT the database id.";
+
+/**
+ * Shared hint for tool descriptions whose tools accept domain filters
+ * (`odoo_read`, `odoo_count`, `odoo_aggregate`). Spliced verbatim into every
+ * such description so the disambiguation wording stays in lockstep across
+ * tools — and so the test suite can pin its directional correctness in one
+ * place (`PRODUCT_REF_DISAMBIGUATION_HINT (issue #377)` in `tools.test.ts`).
+ *
+ * Exported so consumer tests can assert `.toContain(constant)` without
+ * re-encoding the rule, which would defeat the point.
+ */
+export const PRODUCT_REF_DISAMBIGUATION_HINT =
+  "When the user mentions a product reference, SKU, or 'internal reference', use `default_code`, not `id`. When they reference 'the record ID' or pass a number from a URL, use `id`.";
 
 export function compactSchema(
   allFields: OdooField[],
@@ -382,17 +395,24 @@ export function compactSchema(
     selected = sorted.slice(0, safeLimit);
   }
 
-  // Detect models that expose both `id` and `default_code` *in this schema
-  // response window* — note that this is about the describe-model output the
-  // LLM is reading right now, NOT about the records `odoo_read` returns
-  // (Odoo always returns `id` on records regardless of the requested field
-  // list). Annotating an `id` field in the schema is only useful if
-  // `default_code` is also visible to the LLM in the same response,
-  // otherwise the note adds noise to models that happen to share a column
-  // name with products.
-  const selectedNames = new Set(selected.map((f) => f.name));
+  // Detect models that *declare* both `id` and `default_code` in their full
+  // schema. We deliberately check `allFields` here, not `selected`: when an
+  // agent narrows the request to e.g. `fields: ["id"]` on a product, that's
+  // exactly when the disambiguation matters most — the agent is about to
+  // use `id` without `default_code` next to it. Scoping to the request
+  // window would hide the warning in the case that needs it.
+  //
+  // Non-product models (`account.move`, `res.users`, ...) lack
+  // `default_code`, so they never trigger the annotation. This keeps the
+  // note off models that happen to share a column name with products.
+  //
+  // Scope reminder: this is the *describe-model* output the LLM is reading
+  // right now, NOT records returned by `odoo_read` (Odoo always returns
+  // `id` on records regardless of the requested field list — annotating
+  // runtime records would be misplaced).
+  const allFieldNames = new Set(allFields.map((f) => f.name));
   const annotateIdVsCode =
-    selectedNames.has("id") && selectedNames.has("default_code");
+    allFieldNames.has("id") && allFieldNames.has("default_code");
 
   function noteFor(name: string): string | undefined {
     if (!annotateIdVsCode) return undefined;
@@ -1152,8 +1172,7 @@ const plugin = {
         return {
           name: "odoo_read",
           label: "Odoo Read",
-          description:
-            "Query records from Odoo. Returns matching records with field selection and pagination. Always returns { records, total, limit, offset } so you know if there's more data. When the user mentions a product reference, SKU, or 'internal reference', filter by `default_code`, not `id`. When they reference 'the record ID' or pass a number from a URL, filter by `id`.",
+          description: `Query records from Odoo. Returns matching records with field selection and pagination. Always returns { records, total, limit, offset } so you know if there's more data. ${PRODUCT_REF_DISAMBIGUATION_HINT}`,
           parameters: {
             type: "object",
             properties: {
@@ -1251,8 +1270,7 @@ const plugin = {
         return {
           name: "odoo_count",
           label: "Odoo Count",
-          description:
-            "Count matching records without transferring data. Much faster than reading all records. When the user mentions a product reference, SKU, or 'internal reference', filter by `default_code`, not `id`. When they reference 'the record ID' or pass a number from a URL, filter by `id`.",
+          description: `Count matching records without transferring data. Much faster than reading all records. ${PRODUCT_REF_DISAMBIGUATION_HINT}`,
           parameters: {
             type: "object",
             properties: {
@@ -1306,8 +1324,7 @@ const plugin = {
         return {
           name: "odoo_aggregate",
           label: "Odoo Aggregate",
-          description:
-            "Server-side aggregation — sums, averages, counts, grouped by fields. Use this instead of reading records and calculating yourself. Fields support aggregation: 'amount_total:sum', 'amount_total:avg', 'partner_id:count_distinct'. Groupby supports date granularity: 'date_order:month', 'date_order:week', 'date_order:year'. When the user mentions a product reference, SKU, or 'internal reference', filter or group by `default_code`, not `id`. When they reference 'the record ID' or pass a number from a URL, use `id`.",
+          description: `Server-side aggregation — sums, averages, counts, grouped by fields. Use this instead of reading records and calculating yourself. Fields support aggregation: 'amount_total:sum', 'amount_total:avg', 'partner_id:count_distinct'. Groupby supports date granularity: 'date_order:month', 'date_order:week', 'date_order:year'. ${PRODUCT_REF_DISAMBIGUATION_HINT}`,
           parameters: {
             type: "object",
             properties: {
