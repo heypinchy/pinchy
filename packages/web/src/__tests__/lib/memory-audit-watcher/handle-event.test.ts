@@ -4,11 +4,13 @@ import { handleMemoryFileEvent } from "@/lib/memory-audit-watcher/handle-event";
 describe("handleMemoryFileEvent", () => {
   const root = "/openclaw-config";
   let snapshots: Map<string, string>;
+  let inflight: Map<string, Promise<void>>;
   let mockAppend: ReturnType<typeof vi.fn>;
   let mockLookupAgent: ReturnType<typeof vi.fn>;
 
   beforeEach(() => {
     snapshots = new Map();
+    inflight = new Map();
     mockAppend = vi.fn().mockResolvedValue(undefined);
     mockLookupAgent = vi.fn().mockResolvedValue({ id: "agent-1", name: "Smithers" });
   });
@@ -23,6 +25,7 @@ describe("handleMemoryFileEvent", () => {
       {
         root,
         snapshots,
+        inflight,
         lookupAgent: mockLookupAgent,
         appendAuditLog: mockAppend,
         readyState: "ready",
@@ -56,6 +59,7 @@ describe("handleMemoryFileEvent", () => {
       {
         root,
         snapshots,
+        inflight,
         lookupAgent: mockLookupAgent,
         appendAuditLog: mockAppend,
         readyState: "scanning",
@@ -76,6 +80,7 @@ describe("handleMemoryFileEvent", () => {
       {
         root,
         snapshots,
+        inflight,
         lookupAgent: mockLookupAgent,
         appendAuditLog: mockAppend,
         readyState: "ready",
@@ -102,6 +107,7 @@ describe("handleMemoryFileEvent", () => {
       {
         root,
         snapshots,
+        inflight,
         lookupAgent: mockLookupAgent,
         appendAuditLog: mockAppend,
         readyState: "ready",
@@ -126,6 +132,7 @@ describe("handleMemoryFileEvent", () => {
       {
         root,
         snapshots,
+        inflight,
         lookupAgent: mockLookupAgent,
         appendAuditLog: mockAppend,
         readyState: "ready",
@@ -141,6 +148,7 @@ describe("handleMemoryFileEvent", () => {
       {
         root,
         snapshots,
+        inflight,
         lookupAgent: mockLookupAgent,
         appendAuditLog: mockAppend,
         readyState: "ready",
@@ -162,6 +170,7 @@ describe("handleMemoryFileEvent", () => {
       {
         root,
         snapshots,
+        inflight,
         lookupAgent: mockLookupAgent,
         appendAuditLog: mockAppend,
         recordAuditFailure: mockRecordFailure,
@@ -174,5 +183,89 @@ describe("handleMemoryFileEvent", () => {
         eventType: "agent.memory_changed",
       })
     );
+  });
+
+  it("rethrows when appendAuditLog throws and recordAuditFailure is not supplied", async () => {
+    const failure = new Error("DB unreachable");
+    mockAppend.mockRejectedValueOnce(failure);
+    await expect(
+      handleMemoryFileEvent(
+        {
+          kind: "add",
+          absolutePath: "/openclaw-config/agents/agent-1/MEMORY.md",
+          newContent: "hi\n",
+        },
+        {
+          root,
+          snapshots,
+          inflight,
+          lookupAgent: mockLookupAgent,
+          appendAuditLog: mockAppend,
+          readyState: "ready",
+        }
+      )
+    ).rejects.toThrow("DB unreachable");
+  });
+
+  it("serializes concurrent events for the same path (no TOCTOU on snapshots)", async () => {
+    // Build a deferred appendAuditLog: the first call returns a promise the test
+    // resolves manually so we can fire a second event while the first is still
+    // mid-flight. Subsequent calls resolve immediately.
+    let firstResolve: (() => void) | undefined;
+    const firstAppendPromise = new Promise<void>((resolve) => {
+      firstResolve = () => resolve();
+    });
+    mockAppend.mockImplementationOnce(() => firstAppendPromise).mockResolvedValue(undefined);
+
+    const absolutePath = "/openclaw-config/agents/agent-1/MEMORY.md";
+    // Seed: snapshot starts empty (file did not exist before).
+
+    const deps = {
+      root,
+      snapshots,
+      inflight,
+      lookupAgent: mockLookupAgent,
+      appendAuditLog: mockAppend,
+      readyState: "ready" as const,
+    };
+
+    // Fire two events back-to-back for the SAME path. Do not await the first.
+    const p1 = handleMemoryFileEvent({ kind: "change", absolutePath, newContent: "first\n" }, deps);
+    const p2 = handleMemoryFileEvent(
+      { kind: "change", absolutePath, newContent: "first\nsecond\n" },
+      deps
+    );
+
+    // Resolve the first append so the second invocation can proceed.
+    firstResolve!();
+    await Promise.all([p1, p2]);
+
+    // Both events must emit; nothing is swallowed.
+    expect(mockAppend).toHaveBeenCalledTimes(2);
+
+    // First call diff: baseline "" -> "first\n" => 1 added, 0 removed.
+    const firstCallEntry = mockAppend.mock.calls[0][0];
+    expect(firstCallEntry.detail).toMatchObject({
+      file: "MEMORY.md",
+      addedLines: 1,
+      removedLines: 0,
+    });
+
+    // Second call MUST see the first event's newContent as its baseline.
+    // baseline "first\n" -> "first\nsecond\n" => 1 added, 0 removed.
+    // (Without serialization the old code would diff "" -> "first\nsecond\n",
+    // producing addedLines: 2 — that's the bug we're fixing.)
+    const secondCallEntry = mockAppend.mock.calls[1][0];
+    expect(secondCallEntry.detail).toMatchObject({
+      file: "MEMORY.md",
+      addedLines: 1,
+      removedLines: 0,
+    });
+
+    // Final snapshot reflects the second event.
+    expect(snapshots.get(absolutePath)).toBe("first\nsecond\n");
+
+    // Inflight map is fully drained.
+    expect(inflight.has(absolutePath)).toBe(false);
   });
 });

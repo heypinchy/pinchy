@@ -9,6 +9,11 @@ export type MemoryFileEvent =
 export type HandleMemoryEventDeps = {
   root: string;
   snapshots: Map<string, string>;
+  // Per-path promise queue. Serializes concurrent events for the SAME path so
+  // the snapshots Map cannot be read-then-written racily across two flushes
+  // (chokidar can fire `change` twice in quick succession during a compaction).
+  // Different paths still run concurrently because each path has its own entry.
+  inflight: Map<string, Promise<void>>;
   lookupAgent: (agentId: string) => Promise<{ id: string; name: string } | null>;
   appendAuditLog: (entry: AuditLogEntry) => Promise<void>;
   recordAuditFailure?: (err: unknown, entry: AuditLogEntry) => void;
@@ -22,6 +27,32 @@ export async function handleMemoryFileEvent(
   const parsed = parseAgentMemoryPath(deps.root, event.absolutePath);
   if (!parsed) return;
 
+  // Chain onto whatever is currently in flight for this path (if anything),
+  // then store the new work. The chain ensures `doHandle` for the second event
+  // doesn't read `snapshots` until the first event has written to it.
+  const prev = deps.inflight.get(event.absolutePath) ?? Promise.resolve();
+  const work: Promise<void> = prev
+    .catch(() => {
+      // Swallow prior errors here so this invocation still runs. The prior
+      // invocation already surfaced its error to its own caller.
+    })
+    .then(() => doHandle(event, parsed, deps))
+    .finally(() => {
+      // Only delete if our promise is still the head — otherwise a newer event
+      // has chained on us and owns the slot now.
+      if (deps.inflight.get(event.absolutePath) === work) {
+        deps.inflight.delete(event.absolutePath);
+      }
+    });
+  deps.inflight.set(event.absolutePath, work);
+  return work;
+}
+
+async function doHandle(
+  event: MemoryFileEvent,
+  parsed: { agentId: string; file: string },
+  deps: HandleMemoryEventDeps
+): Promise<void> {
   // During chokidar's initial scan we only populate the snapshot store; we never
   // emit audit entries, because those files predate Pinchy's process lifecycle
   // and are not state changes the user/agent just made.
@@ -33,7 +64,14 @@ export async function handleMemoryFileEvent(
   }
 
   const agent = await deps.lookupAgent(parsed.agentId);
-  if (!agent) return;
+  if (!agent) {
+    // Orphan file: the agent has no DB row (e.g. it was deleted but its memory
+    // directory was not). Skip BOTH the audit (we have no agent name to snapshot)
+    // AND the snapshot store (don't grow unbounded with files we'll never audit).
+    // If the agent row is re-created later, the next write looks like a fresh
+    // `add` against an empty snapshot — correct behavior.
+    return;
+  }
 
   const oldContent = deps.snapshots.get(event.absolutePath) ?? "";
   const newContent = event.kind === "unlink" ? "" : event.newContent;
@@ -50,6 +88,7 @@ export async function handleMemoryFileEvent(
       file: parsed.file,
       addedLines,
       removedLines,
+      // For kind: "unlink" we set newContent = "" above, so byteSize === 0.
       byteSize: Buffer.byteLength(newContent, "utf8"),
     },
   };
