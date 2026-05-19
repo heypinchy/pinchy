@@ -69,6 +69,16 @@ jobs:
       - name: Test (root scripts)
         run: pnpm test:scripts
 
+      - name: Cache Next.js build
+        uses: actions/cache@v4
+        with:
+          path: |
+            packages/web/.next/cache
+          key: nextjs-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml') }}-${{ hashFiles('packages/web/**/*.[jt]s', 'packages/web/**/*.[jt]sx') }}
+          restore-keys: |
+            nextjs-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml') }}-
+            nextjs-${{ runner.os }}-
+
       - name: Build
         run: pnpm build
 
