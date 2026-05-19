@@ -38,6 +38,16 @@ export async function startMemoryAuditWatcher(
   const watcher = chokidar.watch(agentsRoot, {
     ignoreInitial: false,
     persistent: true,
+    // Polling rather than fs.watch / fsevents. The watch root is typically a
+    // Docker bind-mounted directory (production `/openclaw-config`, integration
+    // `/tmp/pinchy-integration-openclaw`). Native fs.watch on macOS does not
+    // reliably propagate events for files created from inside a container into
+    // host watchers, so a dir created by OpenClaw is silently missed and any
+    // later host-side write to that dir never fires either. Polling every
+    // 250 ms is well within budget for a watch tree of a few dozen agents and
+    // makes the watcher behave identically across all host/container setups.
+    usePolling: true,
+    interval: 250,
     // Wait for writes to settle before firing add/change — prevents emitting
     // on partial writes during editor saves or atomic-replace flows.
     awaitWriteFinish: { stabilityThreshold: 200, pollInterval: 50 },

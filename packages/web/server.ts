@@ -240,23 +240,31 @@ ${domain ? `<p><a href="https://${domain}">Go to ${domain} →</a></p>` : ""}
   const betterAuthUrlWarning = getBetterAuthUrlStartupWarning(process.env, getCachedDomain());
   if (betterAuthUrlWarning) console.warn(betterAuthUrlWarning);
 
-  // Start the memory-audit watcher after bootInits resolves. Guarded by
-  // setupWasComplete: on a fresh install the `agents/` directory under
-  // OPENCLAW_DATA_PATH may not exist yet and the agents table is empty,
-  // so we skip and let the next process restart (after setup) pick it up.
+  // Start the memory-audit watcher after bootInits resolves. We start it
+  // unconditionally — chokidar copes with a missing watch root by emitting
+  // `ready` with an empty snapshot map, and `handleMemoryFileEvent` short-
+  // circuits to no-op for files whose agentId has no row in `agents`. This
+  // means the watcher is correctly active across all process states:
+  //
+  //   - Fresh install pre-setup: nothing to watch, nothing fires.
+  //   - Post-setup, same process: the user completes the wizard, OpenClaw
+  //     comes online, and Smithers' first MEMORY.md write is captured
+  //     without requiring a Pinchy restart.
+  //   - Production cold start: identical to today, plus tightens the
+  //     "first boot after setup" window where the previous guard left
+  //     the watcher dormant until the next container restart.
+  //
   // The lazy `await import(...)` is intentional — bootstrap pulls in `@/db`
   // and we want DB modules evaluated only after bootInits has completed.
   // Errors during watcher boot are logged but not rethrown: this watcher is
   // non-critical to Pinchy's operation (the API audit log works without it).
   let stopMemoryAuditWatcher: (() => Promise<void>) | null = null;
-  if (setupWasComplete) {
-    try {
-      const { bootstrapMemoryAuditWatcher } = await import("./src/lib/memory-audit-watcher");
-      stopMemoryAuditWatcher = await bootstrapMemoryAuditWatcher({});
-      console.log("[pinchy] memory audit watcher started");
-    } catch (err) {
-      console.error("[pinchy] failed to start memory audit watcher", err);
-    }
+  try {
+    const { bootstrapMemoryAuditWatcher } = await import("./src/lib/memory-audit-watcher");
+    stopMemoryAuditWatcher = await bootstrapMemoryAuditWatcher({});
+    console.log("[pinchy] memory audit watcher started");
+  } catch (err) {
+    console.error("[pinchy] failed to start memory audit watcher", err);
   }
 
   // Graceful shutdown: stop the usage poller interval, close the memory-audit
