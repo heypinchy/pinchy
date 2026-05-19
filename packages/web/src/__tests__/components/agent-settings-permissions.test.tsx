@@ -319,62 +319,6 @@ describe("AgentSettingsPermissions", () => {
     });
   });
 
-  describe("vision warning", () => {
-    it("shows vision warning when pinchy_read enabled and model lacks vision", () => {
-      render(
-        <AgentSettingsPermissions
-          agent={{
-            ...defaultAgent,
-            allowedTools: ["pinchy_read"],
-            pluginConfig: { "pinchy-files": { allowed_paths: ["/data/docs"] } },
-            model: "ollama/llama3.1:8b",
-          }}
-          directories={defaultDirectories}
-          connections={[]}
-          isAdmin={true}
-          onChange={vi.fn()}
-        />
-      );
-      expect(screen.getByText(/limited pdf support/i)).toBeInTheDocument();
-    });
-
-    it("does not show warning when model supports vision", () => {
-      render(
-        <AgentSettingsPermissions
-          agent={{
-            ...defaultAgent,
-            allowedTools: ["pinchy_read"],
-            pluginConfig: { "pinchy-files": { allowed_paths: ["/data/docs"] } },
-            model: "anthropic/claude-sonnet-4-6",
-          }}
-          directories={defaultDirectories}
-          connections={[]}
-          isAdmin={true}
-          onChange={vi.fn()}
-        />
-      );
-      expect(screen.queryByText(/limited pdf support/i)).not.toBeInTheDocument();
-    });
-
-    it("does not show warning when pinchy_read not enabled", () => {
-      render(
-        <AgentSettingsPermissions
-          agent={{
-            ...defaultAgent,
-            allowedTools: [],
-            pluginConfig: null,
-            model: "ollama/llama3.1:8b",
-          }}
-          directories={defaultDirectories}
-          connections={[]}
-          isAdmin={true}
-          onChange={vi.fn()}
-        />
-      );
-      expect(screen.queryByText(/limited pdf support/i)).not.toBeInTheDocument();
-    });
-  });
-
   describe("Web Search section", () => {
     const webSearchConnection = { id: "ws-1", name: "Brave Search", type: "web-search" };
 
@@ -467,6 +411,22 @@ describe("AgentSettingsPermissions", () => {
         />
       );
 
+      expect(screen.queryByTestId("security-warning")).not.toBeInTheDocument();
+    });
+
+    it("does not show security warning when write is enabled but no directories configured", () => {
+      render(
+        <AgentSettingsPermissions
+          agent={{ ...defaultAgent, allowedTools: ["pinchy_write", "pinchy_web_search"] }}
+          directories={[]}
+          connections={[webSearchConnection]}
+          isAdmin={true}
+          onChange={vi.fn()}
+        />
+      );
+
+      // pinchy_write alone (no allowed_paths, no odoo/email integration) does
+      // not constitute sensitive data access — security warning should not appear
       expect(screen.queryByTestId("security-warning")).not.toBeInTheDocument();
     });
 

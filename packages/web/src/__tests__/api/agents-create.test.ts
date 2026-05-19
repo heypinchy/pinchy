@@ -1026,6 +1026,74 @@ describe("POST /api/agents", () => {
     expect(body.docsUrl).toContain("ollama-setup");
   });
 
+  it("merges defaultAllowedTools from request body into template allowedTools", async () => {
+    const request = new NextRequest("http://localhost:7777/api/agents", {
+      method: "POST",
+      body: JSON.stringify({
+        name: "HR Knowledge Base",
+        templateId: "knowledge-base",
+        pluginConfig: {
+          "pinchy-files": { allowed_paths: ["/data/hr-docs/"] },
+        },
+        defaultAllowedTools: ["pinchy_write"],
+      }),
+    });
+
+    await POST(request);
+
+    // Template already has ["pinchy_ls", "pinchy_read"]; defaultAllowedTools adds "pinchy_write"
+    expect(insertValuesMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        allowedTools: expect.arrayContaining(["pinchy_ls", "pinchy_read", "pinchy_write"]),
+      })
+    );
+    // Ensure no duplicates
+    const insertedValues = insertValuesMock.mock.calls[0]?.[0] as { allowedTools: string[] };
+    expect(new Set(insertedValues.allowedTools).size).toBe(insertedValues.allowedTools.length);
+  });
+
+  it("does not duplicate tools when defaultAllowedTools overlaps template tools", async () => {
+    const request = new NextRequest("http://localhost:7777/api/agents", {
+      method: "POST",
+      body: JSON.stringify({
+        name: "HR Knowledge Base",
+        templateId: "knowledge-base",
+        pluginConfig: {
+          "pinchy-files": { allowed_paths: ["/data/hr-docs/"] },
+        },
+        defaultAllowedTools: ["pinchy_ls", "pinchy_write"],
+      }),
+    });
+
+    await POST(request);
+
+    const insertedValues = insertValuesMock.mock.calls[0]?.[0] as { allowedTools: string[] };
+    // pinchy_ls should appear only once
+    expect(insertedValues.allowedTools.filter((t) => t === "pinchy_ls").length).toBe(1);
+    expect(insertedValues.allowedTools).toContain("pinchy_write");
+  });
+
+  it("uses template allowedTools unchanged when defaultAllowedTools is absent", async () => {
+    const request = new NextRequest("http://localhost:7777/api/agents", {
+      method: "POST",
+      body: JSON.stringify({
+        name: "HR Knowledge Base",
+        templateId: "knowledge-base",
+        pluginConfig: {
+          "pinchy-files": { allowed_paths: ["/data/hr-docs/"] },
+        },
+      }),
+    });
+
+    await POST(request);
+
+    expect(insertValuesMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        allowedTools: ["pinchy_ls", "pinchy_read"],
+      })
+    );
+  });
+
   it("audit log includes modelSelection source and reason", async () => {
     const { appendAuditLog } = await import("@/lib/audit");
     const spy = vi.mocked(appendAuditLog);
