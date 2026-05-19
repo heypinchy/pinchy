@@ -46,7 +46,15 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        package: [pinchy, pinchy-openclaw]
+        include:
+          - package: pinchy
+            is_ci_image: false
+          - package: pinchy-openclaw
+            is_ci_image: false
+          - package: pinchy-ci
+            is_ci_image: true
+          - package: pinchy-openclaw-ci
+            is_ci_image: true
     steps:
       - uses: actions/checkout@v4
 
@@ -55,6 +63,7 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           ORG: heypinchy
           PACKAGE: ${{ matrix.package }}
+          IS_CI_IMAGE: ${{ matrix.is_ci_image }}
           EVENT_NAME: ${{ github.event_name }}
           # GHA ternaries trip on falsy boolean inputs (`false || 'true'`
           # evaluates to 'true'), so derive dry-run in bash instead.
@@ -70,13 +79,20 @@ jobs:
             workflow_dispatch) dry_run="$DISPATCH_DRY_RUN" ;;
             *)                 dry_run=true ;;
           esac
-          args=(--org "$ORG" --package "$PACKAGE" --keep "$KEEP")
+          # CI images (pinchy-ci, pinchy-openclaw-ci) use aggressive retention
+          # because they accumulate on every PR push. Standard release images
+          # use the user-configurable workflow inputs.
+          if [ "$IS_CI_IMAGE" = "true" ]; then
+            args=(--org "$ORG" --package "$PACKAGE" --keep 10 --older-than-days 7)
+          else
+            args=(--org "$ORG" --package "$PACKAGE" --keep "$KEEP")
+            if [ -n "$OLDER_THAN_DAYS" ]; then
+              args+=(--older-than-days "$OLDER_THAN_DAYS")
+            fi
+          fi
           if [ "$dry_run" = "false" ]; then
             args+=(--no-dry-run)
           else
             args+=(--dry-run)
-          fi
-          if [ -n "$OLDER_THAN_DAYS" ]; then
-            args+=(--older-than-days "$OLDER_THAN_DAYS")
           fi
           node scripts/prune-ghcr-sha-tags.mjs "${args[@]}"
