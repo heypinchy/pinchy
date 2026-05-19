@@ -717,7 +717,7 @@ describe("PATCH /api/agents/[agentId] config regeneration", () => {
     PATCH = mod.PATCH;
   });
 
-  it("should not call regenerateOpenClawConfig directly when allowedTools change (updateAgent handles it)", async () => {
+  it("calls regenerateOpenClawConfig when allowedTools change", async () => {
     vi.mocked(auth.api.getSession).mockResolvedValueOnce({
       user: { id: "user-1", role: "admin" },
       expires: "",
@@ -747,6 +747,6 @@ describe("PATCH /api/agents/[agentId] config regeneration", () => {
     });
     expect(response.status).toBe(200);
 
-    expect(regenerateOpenClawConfig).not.toHaveBeenCalled();
+    expect(regenerateOpenClawConfig).toHaveBeenCalled();
   });
 });

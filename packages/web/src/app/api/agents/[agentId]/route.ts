@@ -15,6 +15,7 @@ import { getAgentGroupIds } from "@/lib/groups";
 import { recalculateTelegramAllowStores } from "@/lib/telegram-allow-store";
 import { validatePinchyWebConfig, pluginConfigSchema } from "@/lib/domain-validation";
 import { parseRequestBody } from "@/lib/api-validation";
+import { regenerateOpenClawConfig } from "@/lib/openclaw-config";
 
 const updateAgentSchema = z.object({
   name: z
@@ -233,6 +234,12 @@ export const PATCH = withAuth<RouteContext>(async (request, { params }, session)
   // Recalculate Telegram allow-from stores when visibility or groups change
   if (body.visibility !== undefined || body.groupIds !== undefined) {
     await recalculateTelegramAllowStores();
+  }
+
+  // Rebuild OpenClaw config when tool permissions or plugin config change — these
+  // fields affect the generated openclaw.json (e.g. write_paths for pinchy_write).
+  if (data.allowedTools !== undefined || data.pluginConfig !== undefined) {
+    await regenerateOpenClawConfig();
   }
 
   return NextResponse.json(agent);

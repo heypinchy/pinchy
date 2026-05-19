@@ -57,14 +57,6 @@ async function apiPost(path: string, body: unknown, cookie: string): Promise<Res
   });
 }
 
-async function apiPatch(path: string, body: unknown, cookie: string): Promise<Response> {
-  return fetch(`${PINCHY_URL}${path}`, {
-    method: "PATCH",
-    headers: mutatingHeaders(cookie),
-    body: JSON.stringify(body),
-  });
-}
-
 async function apiDelete(path: string, cookie: string): Promise<Response> {
   return fetch(`${PINCHY_URL}${path}`, {
     method: "DELETE",
@@ -112,31 +104,30 @@ test.describe("Workspace filesystem dispatch probe (pinchy-files plugin coverage
     cookie = await login();
 
     // 5. Create a fresh shared agent for the dispatch probes.
-    //    pinchy_write requires allowedTools to include "pinchy_write"  — the
-    //    config-builder only emits write_paths when that tool is listed.
+    //    defaultAllowedTools includes pinchy_write so regenerateOpenClawConfig()
+    //    is called immediately with write_paths set — no follow-up PATCH needed.
+    //    pinchy_ls and pinchy_read are implicit (always-on) and do not need to
+    //    appear in allowedTools.
     const createRes = await apiPost(
       "/api/agents",
-      { name: "E2E Workspace FS Probe", templateId: "custom" },
+      {
+        name: "E2E Workspace FS Probe",
+        templateId: "custom",
+        defaultAllowedTools: ["pinchy_write"],
+      },
       cookie
     );
     const createBody = await createRes.text();
     expect(createRes.status, createBody).toBeLessThan(300);
     agentId = (JSON.parse(createBody) as { id: string }).id;
 
-    // 6. Grant workspace filesystem tools — triggers regenerateOpenClawConfig()
-    //    which now reads default_provider=ollama-local.
-    const patchRes = await apiPatch(
-      `/api/agents/${agentId}`,
-      { allowedTools: ["pinchy_ls", "pinchy_read", "pinchy_write"] },
-      cookie
-    );
-    const patchBody = await patchRes.text();
-    expect(patchRes.status, patchBody).toBe(200);
-
-    // 7. Wait for OpenClaw to stabilise with the new config (provider swap +
-    //    new agent with write_paths). Granting pinchy_write adds write_paths
-    //    which modifies the plugin config block — OC does a full restart.
-    await waitForOpenClawStable(() => apiGet("/api/health/openclaw", cookie));
+    // 6. Wait for OpenClaw to stabilise with the new config. The agent creation
+    //    triggers regenerateOpenClawConfig() which writes write_paths and causes
+    //    OC to restart. Use a 180 s deadline (vs the default 90 s) to accommodate
+    //    CI environments where OC restart + inotify double-reload takes longer.
+    await waitForOpenClawStable(() => apiGet("/api/health/openclaw", cookie), {
+      deadlineMs: 180_000,
+    });
   });
 
   test.afterAll(async () => {

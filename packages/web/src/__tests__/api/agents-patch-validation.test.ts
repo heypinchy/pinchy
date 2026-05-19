@@ -53,6 +53,7 @@ vi.mock("@/db/schema", async (importOriginal) => {
 
 import { auth } from "@/lib/auth";
 import { updateAgent } from "@/lib/agents";
+import { regenerateOpenClawConfig } from "@/lib/openclaw-config";
 import { db } from "@/db";
 
 function mockAgent(agent: Record<string, unknown>) {
@@ -221,6 +222,60 @@ describe("PATCH /api/agents/[agentId] — pluginConfig validation", () => {
     const body = await res.json();
     expect(body.error).toBe("Validation failed");
     expect(body.details.fieldErrors.name).toBeDefined();
+  });
+
+  it("calls regenerateOpenClawConfig when allowedTools changes", async () => {
+    adminSession();
+    mockAgent({
+      id: "agent-1",
+      name: "Test Agent",
+      model: "m",
+      isPersonal: false,
+      ownerId: null,
+      allowedTools: [],
+    });
+    vi.mocked(updateAgent).mockResolvedValueOnce({
+      id: "agent-1",
+      name: "Test Agent",
+      allowedTools: ["pinchy_write"],
+    } as never);
+
+    const req = new NextRequest("http://localhost/api/agents/agent-1", {
+      method: "PATCH",
+      body: JSON.stringify({ allowedTools: ["pinchy_write"] }),
+      headers: { "Content-Type": "application/json" },
+    });
+
+    const res = await PATCH(req, { params: Promise.resolve({ agentId: "agent-1" }) });
+    expect(res.status).toBe(200);
+    expect(vi.mocked(regenerateOpenClawConfig)).toHaveBeenCalled();
+  });
+
+  it("does not call regenerateOpenClawConfig when only name changes", async () => {
+    adminSession();
+    mockAgent({
+      id: "agent-1",
+      name: "Old Name",
+      model: "m",
+      isPersonal: false,
+      ownerId: null,
+      allowedTools: [],
+    });
+    vi.mocked(updateAgent).mockResolvedValueOnce({
+      id: "agent-1",
+      name: "New Name",
+      allowedTools: [],
+    } as never);
+
+    const req = new NextRequest("http://localhost/api/agents/agent-1", {
+      method: "PATCH",
+      body: JSON.stringify({ name: "New Name" }),
+      headers: { "Content-Type": "application/json" },
+    });
+
+    const res = await PATCH(req, { params: Promise.resolve({ agentId: "agent-1" }) });
+    expect(res.status).toBe(200);
+    expect(vi.mocked(regenerateOpenClawConfig)).not.toHaveBeenCalled();
   });
 
   it("accepts null pluginConfig (clears config)", async () => {
