@@ -1,72 +1,48 @@
 # docker-compose.integration.yml
-#
-# Overlay for the integration test suite. Layered on top of the production
-# compose chain so Pinchy runs from `Dockerfile.pinchy` (uid 999 demotion
-# via entrypoint.sh), matching what end users deploy.
-#
-# Usage:
-#   docker compose -f docker-compose.yml \
-#                  -f docker-compose.e2e.yml \
-#                  -f docker-compose.integration.yml up --build -d
-#
-# Pre-issue #196 this file was a standalone compose definition that only
-# started OpenClaw + DB; Pinchy ran as a Playwright `webServer` on the
-# host. That setup ran Pinchy as the CI runner uid (root on
-# ubuntu-latest) and silently passed the EACCES bug class from #195
-# because root could read OpenClaw's 0600 files. Now the integration
-# suite uses the production image like every other E2E job.
+# Minimal stack for integration tests: OpenClaw + DB only.
+# Pinchy is started by Playwright's webServer on the host.
+# Fake Ollama runs on the host, accessible via host.docker.internal.
 services:
-  pinchy:
-    # Inherit `build` from docker-compose.e2e.yml (Dockerfile.pinchy).
-    # Replace docker-compose.yml's `127.0.0.1:7777` mapping with `:7779` so
-    # CI runs of multiple suites against the integration overlay don't
-    # collide on the default port and so existing test code that hits
-    # localhost:7779 keeps working without changes.
-    ports: !override
-      - "7779:7777"
-    environment:
-      # Exercises Pinchy's audit HMAC code path. Bare-bones non-empty 64-byte hex.
-      - AUDIT_HMAC_SECRET=deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef
-      # Emit a dummy API-key SecretRef for the local Ollama provider so OpenClaw
-      # authenticates when routing to host.docker.internal (not treated as local).
-      # Same intent as docker-compose.odoo-test.yml — Ollama-Cloud needs a SecretRef
-      # in openclaw.json to make OpenClaw exercise the strict secrets.json owner
-      # check (defends against the #200 secrets-reload race).
-      - PINCHY_E2E_OLLAMA_LOCAL_API_KEY=1
-      # Domain Lock normally restarts the Pinchy server so cookie security
-      # settings pick up the new domain. The integration suite sets and
-      # clears Domain Lock inside a running test process — without this
-      # flag the restart kills the in-flight HTTP request mid-test
-      # ("socket hang up") and the next test races against a still-booting
-      # Pinchy with ECONNREFUSED. Same env contract the pre-#196 host-Pinchy
-      # config used; the var name encodes that it's an E2E-only behavior.
-      - PINCHY_E2E_DISABLE_DOMAIN_RESTART=1
-    extra_hosts:
-      # Pinchy probes ollama_local_url from regenerateOpenClawConfig(); when the
-      # URL points at the host-side fake Ollama via host.docker.internal it must
-      # be reachable from inside the Pinchy container too. OpenClaw already gets
-      # this mapping from docker-compose.yml.
-      - "host.docker.internal:host-gateway"
-      - "ollama.local:host-gateway"
-
   openclaw:
-    # Inherit `build` from docker-compose.e2e.yml (Dockerfile.openclaw).
+    image: ${OPENCLAW_IMAGE:-ghcr.io/heypinchy/pinchy-openclaw:latest}
+    # Image is published amd64-only. Pin platform so Mac/arm64 dev machines
+    # pull and run the amd64 variant under Rosetta instead of failing with
+    # "no matching manifest for linux/arm64/v8".
+    platform: linux/amd64
+    ports:
+      - "18790:18789"
+    environment:
+      # Must match OPENCLAW_SECRETS_PATH in playwright.integration.config.ts
+      - OPENCLAW_SECRETS_PATH=/tmp/pinchy-integration-secrets/secrets.json
+    volumes:
+      # Shared config dir: Pinchy (host) writes here, OpenClaw reads here
+      - /tmp/pinchy-integration-openclaw:/root/.openclaw
+      # Secrets dir: same host path bind-mounted at identical path so SecretRef resolution works
+      - /tmp/pinchy-integration-secrets:/tmp/pinchy-integration-secrets
+      # Plugin source bind-mounts (same as dev)
+      - ./packages/plugins/pinchy-files:/root/.openclaw/extensions/pinchy-files
+      - ./packages/plugins/pinchy-context:/root/.openclaw/extensions/pinchy-context
+      - ./packages/plugins/pinchy-audit:/root/.openclaw/extensions/pinchy-audit
+      - ./packages/plugins/pinchy-docs:/root/.openclaw/extensions/pinchy-docs
+      - ./packages/plugins/pinchy-odoo:/root/.openclaw/extensions/pinchy-odoo
+      - ./packages/plugins/pinchy-web:/root/.openclaw/extensions/pinchy-web
+      - ./packages/plugins/pinchy-email:/root/.openclaw/extensions/pinchy-email
+    # Allow OpenClaw to reach host services (fake Ollama) on Linux
     extra_hosts:
-      # OpenClaw routes Pinchy's internal plugin callbacks back to
-      # http://pinchy:7777, but PINCHY_INTERNAL_URL/host.docker.internal
-      # fallbacks must also resolve so tools that compose Pinchy URLs from
-      # process.env keep working.
       - "host.docker.internal:host-gateway"
 
   db:
-    ports: !override
-      # Playwright tests read/seed the DB directly from the host (see
-      # global-setup.ts settings INSERT). Production compose keeps the DB
-      # network-internal; tests need a back door.
+    image: postgres:17
+    ports:
       - "5435:5432"
-    # Overrides docker-compose.yml's `pgdata` named volume with an in-memory
-    # tmpfs — integration tests start from a fresh DB each run, no persistence
-    # required and tmpfs is faster.
+    environment:
+      - POSTGRES_DB=pinchy
+      - POSTGRES_USER=pinchy
+      - POSTGRES_PASSWORD=pinchy_dev
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U pinchy"]
+      interval: 3s
+      timeout: 3s
+      retries: 10
     tmpfs:
-      - /var/lib/postgresql/data
-    volumes: !reset []
+      - /var/lib/postgresql/data # in-memory — faster, no cleanup needed
