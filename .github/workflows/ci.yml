@@ -252,6 +252,9 @@ jobs:
       (needs.build-image.result == 'success' ||
        needs.build-image.result == 'skipped')
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: read
     # Dev-mode CI test: images are built locally and tagged :latest. Satisfy
     # the compose fail-loud check on ${PINCHY_VERSION:?} without depending on
     # a .env file.
