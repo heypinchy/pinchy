@@ -9,7 +9,7 @@
 import { test, expect } from "@playwright/test";
 import path from "path";
 import { login, getSmithersAgentId, waitForOpenClawConnected } from "./helpers";
-import { FAKE_OLLAMA_RESPONSE } from "./fake-ollama-server";
+import { FAKE_OLLAMA_RESPONSE } from "../shared/fake-ollama/fake-ollama-server";
 
 test.describe("upload and send — happy path", () => {
   test("PDF upload chip reaches ready state and message embed uses uploads URL with zero 404s", async ({
