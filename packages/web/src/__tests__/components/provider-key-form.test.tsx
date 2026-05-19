@@ -543,7 +543,7 @@ describe("ProviderKeyForm", () => {
       expect(errorText.textContent).not.toMatch(/https?:\/\//);
     });
 
-    it("does not render a docs link when the response has no docs field", async () => {
+    it("does not render a docs link inside the error region when the response has no docs field", async () => {
       vi.mocked(global.fetch).mockResolvedValueOnce({
         ok: false,
         json: async () => ({ error: "Could not connect to Ollama at this URL." }),
@@ -552,13 +552,16 @@ describe("ProviderKeyForm", () => {
       render(<ProviderKeyForm onSuccess={onSuccess} />);
       await submitOllamaLocal();
 
-      await screen.findByText(/could not connect to ollama/i);
-      // The setup-guide link from the help guide is hidden inside the
-      // collapsed Collapsible — when the user hasn't expanded the guide, no
-      // ollama-setup link should be visible.
-      expect(
-        screen.queryByRole("link", { name: /see the recommended docker setup/i })
-      ).not.toBeInTheDocument();
+      // Scope the assertion to the error region itself rather than relying on
+      // the collapsed-Collapsible side-effect from elsewhere in the form.
+      // The error text lives in a `<div className="space-y-1">` that also
+      // holds the optional docs anchor — so the closest <div> ancestor is
+      // exactly the region we care about. If a future change ever renders
+      // an unrelated link inside that region, this test catches it.
+      const errorText = await screen.findByText(/could not connect to ollama/i);
+      const errorRegion = errorText.closest("div");
+      expect(errorRegion).not.toBeNull();
+      expect(errorRegion!.querySelector("a")).toBeNull();
     });
 
     it("clears the docs link when switching providers", async () => {
@@ -576,6 +579,83 @@ describe("ProviderKeyForm", () => {
       expect(
         screen.queryByRole("link", { name: /see the recommended docker setup/i })
       ).not.toBeInTheDocument();
+    });
+
+    // Regression guard: if a future refactor drops the `setErrorDocs(null)`
+    // at the start of onSubmit, two consecutive errors would leave the first
+    // submission's docs link hanging next to the second submission's error
+    // prose. That's worse than no link at all — it points users at a fix
+    // that doesn't match the current error.
+    it("clears a previously-shown docs link when the next error response has no docs", async () => {
+      vi.mocked(global.fetch)
+        .mockResolvedValueOnce(unsupportedHostResponse)
+        .mockResolvedValueOnce({
+          ok: false,
+          json: async () => ({ error: "Could not connect to Ollama at this URL." }),
+        } as Response);
+
+      render(<ProviderKeyForm onSuccess={onSuccess} />);
+      await submitOllamaLocal();
+      await screen.findByRole("link", { name: /see the recommended docker setup/i });
+
+      // Second submit — same provider, different error, no docs field.
+      fireEvent.click(screen.getByRole("button", { name: /continue/i }));
+
+      await screen.findByText(/could not connect to ollama/i);
+      expect(
+        screen.queryByRole("link", { name: /see the recommended docker setup/i })
+      ).not.toBeInTheDocument();
+    });
+
+    // Security hardening: even if the route is ever compromised or a future
+    // route forwards user input into the `docs` field, the client must not
+    // render a `javascript:` URL as a clickable anchor. The defensive parse
+    // requires the href to start with http(s):// — anything else falls back
+    // to the plain error prose with no link.
+    it("rejects a docs.href that is not a http(s) URL (e.g. javascript: scheme)", async () => {
+      vi.mocked(global.fetch).mockResolvedValueOnce({
+        ok: false,
+        json: async () => ({
+          error: 'Host "ollama" is not an allowed local Ollama host.',
+          docs: {
+            href: "javascript:alert(1)",
+            label: "See the recommended Docker setup",
+          },
+        }),
+      } as Response);
+
+      render(<ProviderKeyForm onSuccess={onSuccess} />);
+      await submitOllamaLocal();
+
+      await screen.findByText(/is not an allowed local ollama host/i);
+      // No anchor at all — neither the malicious href nor any fallback.
+      expect(
+        screen.queryByRole("link", { name: /see the recommended docker setup/i })
+      ).not.toBeInTheDocument();
+    });
+
+    // Belt-and-braces: an empty label would render an anchor that's just the
+    // ExternalLink icon — a click target with no visible text. Treat it the
+    // same as a missing docs field.
+    it("rejects a docs.label that is an empty string", async () => {
+      vi.mocked(global.fetch).mockResolvedValueOnce({
+        ok: false,
+        json: async () => ({
+          error: 'Host "ollama" is not an allowed local Ollama host.',
+          docs: {
+            href: "https://docs.heypinchy.com/guides/ollama-setup/",
+            label: "",
+          },
+        }),
+      } as Response);
+
+      render(<ProviderKeyForm onSuccess={onSuccess} />);
+      await submitOllamaLocal();
+
+      const errorText = await screen.findByText(/is not an allowed local ollama host/i);
+      const errorRegion = errorText.closest("div");
+      expect(errorRegion).not.toBeNull();
+      expect(errorRegion!.querySelector("a")).toBeNull();
     });
   });
 

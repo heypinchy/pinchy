@@ -251,11 +251,17 @@ export function ProviderKeyForm({
           const data = await res.json();
           if (data.error) message = data.error;
           // Validate the docs shape defensively — a route that returns
-          // partial/malformed metadata shouldn't break the inline error.
+          // partial/malformed metadata shouldn't break the inline error, and
+          // the href must be a real http(s) URL so a compromised/buggy route
+          // can never coax the client into rendering a `javascript:` anchor.
+          // An empty label would render an icon-only click target, which is
+          // worse than no link — treat it as "no docs".
           if (
             data.docs &&
             typeof data.docs.href === "string" &&
-            typeof data.docs.label === "string"
+            /^https?:\/\//i.test(data.docs.href) &&
+            typeof data.docs.label === "string" &&
+            data.docs.label.length > 0
           ) {
             docs = { href: data.docs.href, label: data.docs.label };
           }
