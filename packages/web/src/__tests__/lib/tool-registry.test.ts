@@ -16,8 +16,9 @@ describe("TOOL_REGISTRY", () => {
   it("contains safe tools", () => {
     const safe = TOOL_REGISTRY.filter((t) => t.category === "safe");
     expect(safe.length).toBeGreaterThanOrEqual(2);
-    expect(safe.map((t) => t.id)).toContain("pinchy_ls");
-    expect(safe.map((t) => t.id)).toContain("pinchy_read");
+    // pinchy_ls and pinchy_read are now implicit — not in registry
+    expect(safe.map((t) => t.id)).not.toContain("pinchy_ls");
+    expect(safe.map((t) => t.id)).not.toContain("pinchy_read");
   });
 
   it("does not expose docs_list / docs_read as admin-configurable tools", () => {
@@ -36,7 +37,7 @@ describe("TOOL_REGISTRY", () => {
 
   it("contains powerful tools", () => {
     const powerful = TOOL_REGISTRY.filter((t) => t.category === "powerful");
-    expect(powerful.length).toBe(8);
+    expect(powerful.length).toBe(9);
     expect(powerful.map((t) => t.id)).toEqual([
       "pinchy_web_search",
       "pinchy_web_fetch",
@@ -46,6 +47,7 @@ describe("TOOL_REGISTRY", () => {
       "odoo_attach_file",
       "email_draft",
       "email_send",
+      "pinchy_write",
     ]);
   });
 
@@ -103,8 +105,8 @@ describe("TOOL_REGISTRY", () => {
 
 describe("getToolById", () => {
   it("returns a tool by ID", () => {
-    const tool = getToolById("pinchy_ls");
-    expect(tool?.label).toBe("List approved directories");
+    const tool = getToolById("odoo_list_models");
+    expect(tool?.label).toBe("Odoo: List models");
   });
 
   it("returns undefined for unknown ID", () => {
@@ -407,5 +409,24 @@ describe("Email operation helpers", () => {
     it("returns empty for empty input", () => {
       expect(detectEmailOperations([])).toEqual([]);
     });
+  });
+});
+
+describe("filesystem tools migration", () => {
+  it("does not list pinchy_ls (now implicit, not user-toggleable)", () => {
+    expect(getToolById("pinchy_ls")).toBeUndefined();
+    expect(TOOL_REGISTRY.map((t) => t.id)).not.toContain("pinchy_ls");
+  });
+
+  it("does not list pinchy_read (now implicit, not user-toggleable)", () => {
+    expect(getToolById("pinchy_read")).toBeUndefined();
+    expect(TOOL_REGISTRY.map((t) => t.id)).not.toContain("pinchy_read");
+  });
+
+  it("lists pinchy_write as powerful with no requiresDirectories", () => {
+    const tool = getToolById("pinchy_write");
+    expect(tool).toBeDefined();
+    expect(tool!.category).toBe("powerful");
+    expect(tool).not.toHaveProperty("requiresDirectories");
   });
 });
