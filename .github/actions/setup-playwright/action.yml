@@ -1,0 +1,35 @@
+name: "Setup Playwright with browser cache"
+description: "Caches ~/.cache/ms-playwright between runs. Installs missing browsers + system deps."
+
+inputs:
+  browsers:
+    description: "Browsers to install (space-separated)"
+    required: false
+    default: "chromium"
+
+runs:
+  using: composite
+  steps:
+    - name: Resolve Playwright version
+      id: pw-version
+      shell: bash
+      run: |
+        version=$(node -e "console.log(require('./packages/web/node_modules/@playwright/test/package.json').version)" 2>/dev/null || echo "unknown")
+        echo "version=${version}" >> $GITHUB_OUTPUT
+
+    - name: Cache Playwright browsers
+      id: pw-cache
+      uses: actions/cache@v4
+      with:
+        path: ~/.cache/ms-playwright
+        key: pw-${{ runner.os }}-${{ steps.pw-version.outputs.version }}-${{ inputs.browsers }}
+
+    - name: Install Playwright browsers + deps
+      if: steps.pw-cache.outputs.cache-hit != 'true'
+      shell: bash
+      run: pnpm -C packages/web exec playwright install --with-deps ${{ inputs.browsers }}
+
+    - name: Install Playwright system deps only (cache hit)
+      if: steps.pw-cache.outputs.cache-hit == 'true'
+      shell: bash
+      run: pnpm -C packages/web exec playwright install-deps ${{ inputs.browsers }}
