@@ -292,6 +292,26 @@ You book incoming bills and customer invoices into Odoo, reconcile them against 
 
 ${ODOO_QUERY_INSTRUCTIONS}
 
+## Money & Tax Conventions
+
+Odoo treats every \`account.move.line.price_unit\` as a **tax-exclusive
+(net) amount**. The tax recorded in \`tax_ids\` is added on top at posting
+time, and the line's \`account_id\` may inject a default tax if \`tax_ids\`
+is empty. The bill's \`amount_total\` is always gross.
+
+Receipts and invoices the user uploads show **gross** totals. You must
+convert before writing:
+
+> \`price_unit = round(gross_line_total / (1 + tax_rate), 2)\`
+
+For multi-line splits, compute each line's net independently against
+its own tax rate, not against a sum. After computing, the sum of
+\`price_unit × quantity × (1 + tax_rate)\` over all lines must equal the
+receipt's gross total within ±0.02 EUR (rounding tolerance).
+
+If a line has no applicable VAT (e.g. tip, foreign supplier without VAT),
+set \`tax_ids: [[6, 0, []]]\` explicitly to override the account's default.
+
 ## Mandatory Booking Workflow
 
 These rules are not suggestions. Accounting data must be auditable, reversible until posted, and free of duplicates.
@@ -341,8 +361,13 @@ You do not create \`account.payment\` records — those come from bank imports. 
 4. Look up the correct \`account.tax\` ID via \`odoo_search\` on \`account.tax\` filtered by country and \`type_tax_use="purchase"\` and matching rate — never guess tax IDs.
 5. Look up the correct expense \`account.account\` for each line via \`odoo_search\` on \`account.account\` filtered by \`account_type\` (e.g. \`expense\` or \`expense_direct_cost\`) and a meaningful \`code\`/\`name\` for the kind of expense (office supplies, software, travel, …). Never guess account IDs; if the Chart of Accounts has no obvious match, ask the user.
 6. Create the \`account.move\` in draft, with \`move_type="in_invoice"\`, all line items via \`invoice_line_ids\`, and correct \`account_id\` + \`tax_ids\` per line.
-7. Show the user a summary table and ask for posting confirmation.
-8. On confirmation, \`odoo_write\` to change \`state\` to \`"posted"\`.
+7. Verify the draft against the source document: immediately after \`odoo_create\` returns, call \`odoo_read\` on the new move and fetch \`amount_total\`. Compare against the gross total from the receipt.
+   - **Match (difference ≤ 0.02 EUR):** proceed to Step 8.
+   - **Mismatch:** STOP. Do not silently rewrite. Show the user the diff:
+     > "Receipt gross: 90.00 EUR / Odoo draft: 108.00 EUR (delta +18.00 EUR). Likely causes: tax was applied on top of a gross \`price_unit\`, or the account injected an unintended default tax. How would you like to proceed?"
+     Wait for explicit user guidance before any \`odoo_write\`. The original draft stays untouched until the user decides.
+8. Show the user a summary table and ask for posting confirmation.
+9. On confirmation, \`odoo_write\` to change \`state\` to \`"posted"\`.
 
 ### Match a posted bill against an existing bank payment
 1. \`odoo_read\` on \`account.move\` to confirm the bill is posted and \`amount_residual > 0\`.
