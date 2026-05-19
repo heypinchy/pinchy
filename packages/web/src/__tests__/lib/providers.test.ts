@@ -188,4 +188,53 @@ describe("validateProviderUrl", () => {
     const result = await validateProviderUrl("http://localhost:11434");
     expect(result).toEqual({ valid: false, error: "provider_error", status: 500 });
   });
+
+  // #296 — Reject hosts that won't pass OpenClaw's isLocalBaseUrl predicate at
+  // save time, instead of letting them sail through and fail silently at chat
+  // time with "No API key found for provider 'ollama'". A bare Docker service
+  // name like `http://ollama:11434` reaches Ollama (so the network probe
+  // passes) but the emitted baseUrl will be rejected by OpenClaw at request
+  // time — see __tests__/lib/openclaw-config.test.ts:1862 for the dual.
+  describe("unsupported_local_host (#296)", () => {
+    it("returns unsupported_local_host for a bare Docker service hostname like http://ollama:11434", async () => {
+      // Network check must NOT run for unsupported hosts — we short-circuit
+      // before the fetch to surface the structured error.
+      const result = await validateProviderUrl("http://ollama:11434");
+      expect(result).toEqual({ valid: false, error: "unsupported_local_host", host: "ollama" });
+      expect(fetch).not.toHaveBeenCalled();
+    });
+
+    it("accepts http://ollama.docker.local:11434 (option B alias, ends in .local)", async () => {
+      vi.mocked(fetch).mockResolvedValue(
+        new Response(JSON.stringify({ models: [] }), { status: 200 })
+      );
+      const result = await validateProviderUrl("http://ollama.docker.local:11434");
+      expect(result).toEqual({ valid: true });
+      expect(fetch).toHaveBeenCalledWith("http://ollama.docker.local:11434/api/tags");
+    });
+
+    it("accepts http://host.docker.internal:11434 (Docker host alias, rewritten to ollama.local at config-emit time)", async () => {
+      vi.mocked(fetch).mockResolvedValue(
+        new Response(JSON.stringify({ models: [] }), { status: 200 })
+      );
+      const result = await validateProviderUrl("http://host.docker.internal:11434");
+      expect(result).toEqual({ valid: true });
+    });
+
+    it("accepts private-IPv4 hostnames (e.g. 192.168.1.50) that already pass isLocalBaseUrl", async () => {
+      vi.mocked(fetch).mockResolvedValue(new Response("{}", { status: 200 }));
+      const result = await validateProviderUrl("http://192.168.1.50:11434");
+      expect(result).toEqual({ valid: true });
+    });
+
+    it("rejects public hostnames (e.g. example.com) at save time", async () => {
+      const result = await validateProviderUrl("http://example.com:11434");
+      expect(result).toEqual({
+        valid: false,
+        error: "unsupported_local_host",
+        host: "example.com",
+      });
+      expect(fetch).not.toHaveBeenCalled();
+    });
+  });
 });

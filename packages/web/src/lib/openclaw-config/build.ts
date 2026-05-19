@@ -28,6 +28,9 @@ import {
   readGatewayTokenFromConfig,
 } from "./secrets-bundle";
 import { writeAgentAuthProfiles, type AuthProfilesProvider } from "./agent-auth-profiles";
+// Docker host aliases live in @/lib/openclaw-local-url so they can be shared
+// with `validateProviderUrl`'s save-time allowlist check (#296).
+import { DOCKER_HOST_ALIASES } from "@/lib/openclaw-local-url";
 import { validateBuiltConfig } from "./validate-built-config";
 
 // OC 2026.4.27+ requires `baseUrl` in `models.providers.<name>` for every configured
@@ -45,30 +48,6 @@ const BUILTIN_PROVIDER_BASE_URL_ENV_VARS: Record<"anthropic" | "openai" | "googl
   openai: "OPENAI_BASE_URL",
   google: "GOOGLE_BASE_URL",
 };
-
-/**
- * Hostnames that all resolve to "the Docker host machine" — none of them are
- * in OpenClaw's `isLocalBaseUrl` allowlist, so all need to be rewritten to
- * `ollama.local` (which `*.local` matches). docker-compose maps `ollama.local`
- * to `host-gateway`, preserving connectivity.
- *
- * Sourced from Docker docs:
- * - `host.docker.internal` — Docker Desktop 18.03+ and modern Docker on Linux
- *   (with `--add-host=host.docker.internal:host-gateway`)
- * - `gateway.docker.internal` — Docker Desktop's bridge gateway alias
- * - `docker.for.mac.host.internal` / `docker.for.win.host.internal` — legacy
- *   aliases still emitted on older Docker Desktop installs
- *
- * Anything not in this set is left as-is. Public IPs and bare hostnames may
- * still fail OpenClaw's allowlist, but rewriting them to `ollama.local`
- * would silently misroute traffic — the user picked that host on purpose.
- */
-const DOCKER_HOST_ALIASES: ReadonlySet<string> = new Set([
-  "host.docker.internal",
-  "gateway.docker.internal",
-  "docker.for.mac.host.internal",
-  "docker.for.win.host.internal",
-]);
 
 /**
  * Rewrites the user-supplied Ollama URL so OpenClaw's `isLocalBaseUrl` check

@@ -353,6 +353,51 @@ describe("POST /api/setup/provider", () => {
     expect(response.status).toBe(400);
   });
 
+  // #296 — Save-time rejection of hosts that won't pass OpenClaw's
+  // isLocalBaseUrl allowlist. The unit test in providers.test.ts covers the
+  // detection; here we just pin the route's surface contract so the UI can
+  // render a helpful hint instead of silent runtime failure at chat time.
+  it("returns 422 with a docs-link hint when ollama-local URL host is not on OpenClaw's allowlist (#296)", async () => {
+    vi.mocked(validateProviderUrl).mockResolvedValueOnce({
+      valid: false,
+      error: "unsupported_local_host",
+      host: "ollama",
+    });
+
+    const response = await POST(
+      makeRequest({
+        provider: "ollama-local",
+        url: "http://ollama:11434",
+      }) as any
+    );
+    expect(response.status).toBe(422);
+    const data = await response.json();
+    // The error must name the offending host so the user can find their
+    // typo, and link to the option-B section of the Ollama setup guide so
+    // they have an actionable fix (the docs change in #295 explains why).
+    expect(data.error).toContain("ollama");
+    expect(data.error).toMatch(/ollama-setup/);
+    expect(data.error).toMatch(/b-ollama-as-a-docker-service/);
+  });
+
+  it("does not save the provider when ollama-local URL host is unsupported (#296)", async () => {
+    vi.mocked(validateProviderUrl).mockResolvedValueOnce({
+      valid: false,
+      error: "unsupported_local_host",
+      host: "ollama",
+    });
+
+    await POST(
+      makeRequest({
+        provider: "ollama-local",
+        url: "http://ollama:11434",
+      }) as any
+    );
+    // No setSetting calls at all — the URL must not land in the DB.
+    expect(setSetting).not.toHaveBeenCalled();
+    expect(regenerateOpenClawConfig).not.toHaveBeenCalled();
+  });
+
   it("should return 502 when ollama-local URL is unreachable", async () => {
     vi.mocked(validateProviderUrl).mockResolvedValueOnce({
       valid: false,

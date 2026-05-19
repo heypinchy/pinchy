@@ -18,6 +18,7 @@ import { agents } from "@/db/schema";
 import { eq } from "drizzle-orm";
 import { appendAuditLog } from "@/lib/audit";
 import { parseRequestBody } from "@/lib/api-validation";
+import { docsUrl } from "@/components/docs-link";
 
 const VALID_PROVIDERS = Object.keys(PROVIDERS) as ProviderName[];
 
@@ -54,6 +55,24 @@ export async function POST(request: NextRequest) {
               "Could not connect to Ollama at this URL. Ensure Ollama is running and accessible.",
           },
           { status: 502 }
+        );
+      }
+      // #296 — Host won't pass OpenClaw's isLocalBaseUrl allowlist. Saving it
+      // would let the URL sail through and fail silently at chat time with
+      // "No API key found for provider 'ollama'". Surface a one-line hint
+      // pointing at option B of the Ollama setup guide so the user can fix
+      // the hostname (e.g. ollama → ollama.docker.local) without reading the
+      // full troubleshooting section.
+      if (validation.error === "unsupported_local_host") {
+        const setupUrl = docsUrl("guides/ollama-setup", "b-ollama-as-a-docker-service");
+        return NextResponse.json(
+          {
+            error:
+              `Host "${validation.host}" is not an allowed local Ollama host. ` +
+              `Use localhost, a *.local alias, or a private IP. ` +
+              `See ${setupUrl} for the recommended Docker setup.`,
+          },
+          { status: 422 }
         );
       }
       return NextResponse.json(

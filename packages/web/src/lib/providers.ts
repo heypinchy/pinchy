@@ -1,3 +1,5 @@
+import { isOpenClawCompatibleOllamaUrl } from "@/lib/openclaw-local-url";
+
 export type ProviderName = "anthropic" | "openai" | "google" | "ollama-cloud" | "ollama-local";
 
 interface ProviderConfig {
@@ -57,7 +59,8 @@ export type ValidationResult =
   | { valid: false; error: "invalid_key" }
   | { valid: false; error: "network_error" }
   | { valid: false; error: "provider_error"; status: number }
-  | { valid: false; error: "no_compatible_models" };
+  | { valid: false; error: "no_compatible_models" }
+  | { valid: false; error: "unsupported_local_host"; host: string };
 
 function makeValidationRequest(provider: ProviderName, apiKey: string): Promise<Response> {
   switch (provider) {
@@ -95,6 +98,22 @@ function makeValidationRequest(provider: ProviderName, apiKey: string): Promise<
 }
 
 export async function validateProviderUrl(url: string): Promise<ValidationResult> {
+  // Layered guardrail #2 for #280 (#296): reject hosts that won't pass
+  // OpenClaw's isLocalBaseUrl allowlist BEFORE the URL is saved. A bare
+  // Docker service name like `http://ollama:11434` happily answers
+  // /api/tags, so the network probe alone can't catch it — but the
+  // emitted baseUrl is rejected by OpenClaw at chat time and the user
+  // sees the opaque "No API key found for provider 'ollama'" error.
+  let parsedHost: string | null = null;
+  try {
+    parsedHost = new URL(url).hostname;
+  } catch {
+    // Malformed URL — fall through to the network probe so the existing
+    // network_error path handles it.
+  }
+  if (parsedHost && !isOpenClawCompatibleOllamaUrl(url)) {
+    return { valid: false, error: "unsupported_local_host", host: parsedHost };
+  }
   try {
     const response = await fetch(`${url.replace(/\/$/, "")}/api/tags`);
     if (response.ok) return { valid: true };
