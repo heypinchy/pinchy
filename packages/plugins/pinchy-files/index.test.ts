@@ -592,8 +592,6 @@ describe("pinchy_read DOCX integration", () => {
   });
 
   it("rejects .docx files larger than MAX_DOCX_FILE_SIZE with isError=true", async () => {
-    const { writeFileSync, mkdtempSync, rmSync } = await import("fs");
-    const { tmpdir } = await import("os");
     const tmpDir = mkdtempSync(join(tmpdir(), "pinchy-files-test-"));
     const oversizedPath = join(tmpDir, "big.docx");
     // 51 MB of zero bytes — 1 MB over the 50 MB DOCX limit. The content
