@@ -5,7 +5,7 @@
  * Regenerate with: `pnpm -C packages/web generate-pwa-assets`
  */
 import { describe, it, expect } from "vitest";
-import { existsSync } from "fs";
+import { existsSync, readdirSync } from "fs";
 import { resolve, join } from "path";
 import { DEVICES } from "@/lib/pwa/devices";
 
@@ -21,5 +21,18 @@ describe("PWA assets drift guard", () => {
 
   it("maskable icon exists", () => {
     expect(existsSync(join(PUBLIC_DIR, "icon-maskable-512.png"))).toBe(true);
+  });
+
+  it("DEVICES is non-empty", () => {
+    expect(DEVICES.length).toBeGreaterThan(0);
+  });
+
+  it("public/splash contains no orphaned PNGs", () => {
+    const expected = new Set(
+      DEVICES.flatMap((d) => [`${d.slug}-portrait.png`, `${d.slug}-landscape.png`])
+    );
+    const actual = readdirSync(join(PUBLIC_DIR, "splash")).filter((f) => f.endsWith(".png"));
+    const orphans = actual.filter((f) => !expected.has(f));
+    expect(orphans, `orphaned splash assets: ${orphans.join(", ")}`).toEqual([]);
   });
 });
