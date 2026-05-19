@@ -109,6 +109,11 @@ export async function POST(request: NextRequest) {
   if (resultDetails) {
     delete detail.params;
     Object.assign(detail, resultDetails);
+    // Plugins must not override these system fields.
+    detail.toolName = payload.toolName;
+    detail.success = !payload.error;
+    if (payload.error) detail.error = payload.error;
+    else delete detail.error;
   }
 
   // Change 3: Actor becomes the user extracted from sessionKey when possible

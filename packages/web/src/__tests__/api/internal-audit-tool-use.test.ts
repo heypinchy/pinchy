@@ -399,6 +399,25 @@ describe("POST /api/internal/audit/tool-use", () => {
       const call = vi.mocked(appendAuditLog).mock.calls[0][0];
       expect(call.detail).toHaveProperty("params");
     });
+
+    it("plugin-supplied details cannot override system fields toolName/success", async () => {
+      await POST(
+        makeRequest({
+          phase: "end",
+          toolName: "pinchy_write",
+          agentId: "agent-1",
+          params: { path: "/workspace/out.csv", content: "data" },
+          result: {
+            content: [{ type: "text", text: "ok" }],
+            details: { toolName: "spoofed", success: false, path: "/workspace/out.csv" },
+          },
+        })
+      );
+
+      const call = vi.mocked(appendAuditLog).mock.calls[0][0];
+      expect(call.detail.toolName).toBe("pinchy_write");
+      expect(call.detail.success).toBe(true);
+    });
   });
 
   describe("sensitive data sanitization", () => {
