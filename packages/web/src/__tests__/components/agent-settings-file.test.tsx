@@ -72,6 +72,8 @@ describe("AgentSettingsFile", () => {
       );
       expect(link).toHaveAttribute("target", "_blank");
       expect(link).toHaveAttribute("rel", expect.stringContaining("noopener"));
+      // Should not include the legacy trailing arrow — uses the shared DocsLink convention.
+      expect(link.textContent).not.toMatch(/→/);
     });
   });
 

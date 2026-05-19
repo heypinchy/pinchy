@@ -2,17 +2,22 @@
 
 import { useState, useEffect, useRef } from "react";
 import { MarkdownEditor } from "@/components/markdown-editor";
+import { DocsLink } from "@/components/docs-link";
 
-const EXPLANATIONS: Record<string, string> = {
-  "SOUL.md":
-    "This is your agent's personality and identity. Describe who the agent is, how it should behave, and what values it represents. The agent reads this file at the start of every conversation.",
-  "AGENTS.md":
-    "These are your agent's operating instructions — what it should do, how it should handle tasks, and any domain-specific rules. Think of it as the agent's job description.",
-};
+type Filename = "SOUL.md" | "AGENTS.md";
+
+function explanationFor(filename: Filename): string {
+  switch (filename) {
+    case "SOUL.md":
+      return "This is your agent's personality and identity. Describe who the agent is, how it should behave, and what values it represents. The agent reads this file at the start of every conversation.";
+    case "AGENTS.md":
+      return "These are your agent's operating instructions — what it should do, how it should handle tasks, and any domain-specific rules. Think of it as the agent's job description.";
+  }
+}
 
 interface AgentSettingsFileProps {
   agentId: string;
-  filename: "SOUL.md" | "AGENTS.md";
+  filename: Filename;
   content: string;
   onChange: (content: string, isDirty: boolean) => void;
 }
@@ -40,18 +45,16 @@ export function AgentSettingsFile({
   return (
     <div className="space-y-4">
       <p className="text-sm text-muted-foreground">
-        {EXPLANATIONS[filename]}
+        {explanationFor(filename)}
         {filename === "AGENTS.md" && (
           <>
             {" "}
-            <a
-              href="https://docs.heypinchy.com/explanation/instructions-vs-memory/"
-              target="_blank"
-              rel="noopener noreferrer"
+            <DocsLink
+              path="explanation/instructions-vs-memory"
               className="underline underline-offset-4 hover:text-foreground"
             >
-              Instructions vs. Memory →
-            </a>
+              Instructions vs. Memory
+            </DocsLink>
           </>
         )}
       </p>

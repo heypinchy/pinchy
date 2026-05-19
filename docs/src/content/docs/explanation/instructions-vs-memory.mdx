@@ -35,7 +35,7 @@ Memory and Instructions have different lifetimes and load rules:
 
 - **Memory survives compaction.** When a conversation gets long, the agent runtime compacts the chat history into a summary — older messages disappear. Memory entries do not. Anything important enough to outlive a single thread belongs in Memory, not in the chat itself.
 - **Auto-memory flushes before compaction.** The agent writes pending memory entries to disk right before compacting, so a long conversation doesn't lose unsaved learnings.
-- **Subagent and cron sessions don't load MEMORY.md.** Background and delegated sessions intentionally skip Memory to stay focused on their task. If a piece of knowledge needs to be available to _every_ session — including cron jobs and subagents — it belongs in **Instructions**, not Memory. See [openclaw#24404](https://github.com/openclaw/openclaw/issues/24404) for the exact filter logic.
+- **Subagent and cron sessions don't load MEMORY.md.** Background and delegated sessions intentionally skip Memory to stay focused on their task. If a piece of knowledge needs to be available to _every_ session — including cron jobs and subagents — it belongs in **Instructions**, not Memory. See the [OpenClaw memory docs](https://docs.openclaw.ai/concepts/memory) for the underlying filter logic.
 
 <Aside type="tip" title="Rule of thumb">
   If a fact must reach every session (including cron and subagents), put it in
