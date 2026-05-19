@@ -86,7 +86,16 @@ function readConfigSafely(): string {
         }
       );
     } catch (err) {
-      if (attempt === 9) throw err;
+      // Only retry on the chmod-tick race: OpenClaw briefly leaves the file
+      // as root:0600 and start-openclaw.sh's 0.2 s loop widens it back to
+      // 0666. `cat` on a 0600 file surfaces as `cat: <path>: Permission denied`
+      // on stderr with exit 1. Any other failure shape — container down,
+      // compose misconfig, file missing, host docker socket gone — must
+      // surface immediately; the pre-#196 code retried only on EACCES for
+      // the same reason, and we want to keep that signal.
+      const stderr = String((err as { stderr?: Buffer | string }).stderr ?? "");
+      const isPermissionRace = /Permission denied/i.test(stderr);
+      if (!isPermissionRace || attempt === 9) throw err;
       execSync("sleep 0.1");
     }
   }

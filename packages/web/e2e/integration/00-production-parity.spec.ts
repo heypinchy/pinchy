@@ -66,12 +66,25 @@ test.describe("Production parity — integration stack runs production images", 
     // Reproduces the #195 file-permission shape end-to-end. OpenClaw drops a
     // root:0600 probe file into the shared config volume; the chmod tick in
     // start-openclaw.sh must widen it so uid 999 Pinchy can read it back.
-    const probePath = "/root/.openclaw/credentials/__pinchy_uid_probe.txt";
+    //
+    // Probe filename embeds the test-run timestamp so that re-running the
+    // suite locally without `down -v` doesn't conflict with leftover probes
+    // from earlier runs (the cleanup hook below tidies up afterwards, but
+    // randomising the name keeps the assertion correct even if cleanup is
+    // skipped — e.g. an aborted run).
+    const probeName = `__pinchy_uid_probe_${Date.now()}.txt`;
+    const probeOpenClawPath = `/root/.openclaw/credentials/${probeName}`;
+    const probePinchyPath = `/openclaw-config/credentials/${probeName}`;
     const expectedContent = `probe-${Date.now()}`;
+
+    // Write the probe via stdin instead of embedding the content in the
+    // shell command — keeps arbitrary content safe even if a future change
+    // makes it user-influenced. `docker compose exec -T` accepts stdin
+    // because -T disables TTY allocation.
     execSync(
       `docker compose ${COMPOSE_FILES} exec -T --user 0 openclaw sh -c ` +
-        `"mkdir -p /root/.openclaw/credentials && echo -n '${expectedContent}' > '${probePath}' && chmod 0600 '${probePath}' && chown 0:0 '${probePath}'"`,
-      { cwd: REPO_ROOT, env: COMPOSE_ENV, stdio: "pipe" }
+        `"mkdir -p /root/.openclaw/credentials && cat > '${probeOpenClawPath}' && chmod 0600 '${probeOpenClawPath}' && chown 0:0 '${probeOpenClawPath}'"`,
+      { cwd: REPO_ROOT, env: COMPOSE_ENV, stdio: ["pipe", "pipe", "pipe"], input: expectedContent }
     );
 
     // The chmod tick runs at 0.2s cadence inside start-openclaw.sh. Give it
@@ -83,23 +96,35 @@ test.describe("Production parity — integration stack runs production images", 
     // assertion; a `--user 0` read would succeed regardless of the chmod tick.
     let lastError: unknown = null;
     const deadline = Date.now() + 5000;
-    while (Date.now() < deadline) {
+    try {
+      while (Date.now() < deadline) {
+        try {
+          const readBack = composeExecAs("pinchy", "pinchy", `cat ${probePinchyPath}`);
+          expect(readBack).toBe(expectedContent);
+          return;
+        } catch (err) {
+          lastError = err;
+          // back off and retry
+        }
+      }
+      throw new Error(
+        `Pinchy (uid 999) could not read root:0600 file in shared volume within 5s.\n` +
+          `Last error: ${String(lastError)}`
+      );
+    } finally {
+      // Best-effort cleanup so local re-runs don't accumulate probes in the
+      // shared volume. CI tears the stack down with `down -v`, so this only
+      // matters for developer workstations.
       try {
-        const readBack = composeExecAs(
-          "pinchy",
-          "pinchy",
-          `cat /openclaw-config/credentials/__pinchy_uid_probe.txt`
+        execSync(
+          `docker compose ${COMPOSE_FILES} exec -T --user 0 openclaw rm -f '${probeOpenClawPath}'`,
+          { cwd: REPO_ROOT, env: COMPOSE_ENV, stdio: "pipe" }
         );
-        expect(readBack).toBe(expectedContent);
-        return;
-      } catch (err) {
-        lastError = err;
-        // back off and retry
+      } catch {
+        // Cleanup failure is non-fatal; the test outcome already covers the
+        // important case (read succeeded / failed). Surfacing a teardown
+        // error here would mask the real assertion failure.
       }
     }
-    throw new Error(
-      `Pinchy (uid 999) could not read root:0600 file in shared volume within 5s.\n` +
-        `Last error: ${String(lastError)}`
-    );
   });
 });
