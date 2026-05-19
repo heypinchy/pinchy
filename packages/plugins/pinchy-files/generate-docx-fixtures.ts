@@ -19,14 +19,14 @@ import {
   TableCell,
   ImageRun,
 } from "docx";
+import { writeFileSync, mkdirSync } from "node:fs";
+import { join } from "node:path";
 
 // Minimal 1×1 px red PNG (base64). This byte array is a valid PNG.
 const TINY_PNG = Buffer.from(
   "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8/5+hHgAHggJ/PchI6QAAAABJRU5ErkJggg==",
   "base64",
 );
-import { writeFileSync, mkdirSync } from "node:fs";
-import { join } from "node:path";
 
 const FIXTURES_DIR = join(import.meta.dirname!, "test-fixtures");
 mkdirSync(FIXTURES_DIR, { recursive: true });
