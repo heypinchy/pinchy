@@ -27,10 +27,13 @@ function validatePinchyFilesConfig(pluginConfig: unknown, errors: string[]): voi
     if (!Array.isArray(writePaths) || writePaths.length === 0) continue;
 
     const allowedSet = new Set<string>(
-      Array.isArray(allowedPaths) ? (allowedPaths as string[]) : []
+      Array.isArray(allowedPaths)
+        ? allowedPaths.filter((p): p is string => typeof p === "string")
+        : []
     );
 
-    for (const wp of writePaths as string[]) {
+    const writePathStrings = writePaths.filter((p): p is string => typeof p === "string");
+    for (const wp of writePathStrings) {
       // Invariant 1: write_paths must be a subset of allowed_paths
       if (!allowedSet.has(wp)) {
         errors.push(
