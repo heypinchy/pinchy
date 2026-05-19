@@ -311,7 +311,28 @@ export class OfficeDocumentAttachmentAdapter {
   async send(attachment: { id?: string; name: string; file: File }) {
     const arrayBuffer = await attachment.file.arrayBuffer();
     const { default: mammoth } = await import("mammoth");
-    const { value } = await mammoth.extractRawText({ arrayBuffer });
+    const { default: TurndownService } = await import("turndown");
+    const { gfm } = await import("turndown-plugin-gfm");
+
+    const { value: html } = await mammoth.convertToHtml({
+      arrayBuffer,
+      convertImage: mammoth.images.imgElement(() => Promise.resolve({ src: "" })),
+    });
+
+    const normalizedHtml = normalizeDocxTableHtml(html);
+
+    const turndown = new TurndownService({
+      headingStyle: "atx",
+      codeBlockStyle: "fenced",
+      bulletListMarker: "-",
+    });
+    turndown.use(gfm);
+    turndown.addRule("strip-image", {
+      filter: "img",
+      replacement: () => "[image]",
+    });
+    const value = turndown.turndown(normalizedHtml);
+
     return {
       id: attachment.id ?? uuid(),
       type: "document" as const,
@@ -330,6 +351,38 @@ export class OfficeDocumentAttachmentAdapter {
   async remove(): Promise<void> {
     // No-op — local files require no cleanup
   }
+}
+
+/**
+ * Normalize mammoth-generated table HTML so turndown's GFM plugin produces
+ * pipe tables.
+ *
+ * Mammoth emits `<table><tr><td>…</td></tr></table>` — no `<thead>`, no
+ * `<th>`, and cell content wrapped in `<p>`. The turndown-plugin-gfm table
+ * rule only activates when the first row is a heading row (all-`<th>` or
+ * inside `<thead>`). This function:
+ *  1. Strips `<p>` wrappers inside cells so content is inline.
+ *  2. Promotes the first `<tr>` into a `<thead>` with `<th>` cells.
+ *
+ * Mirrors the same helper in `packages/plugins/pinchy-files/docx-extract.ts`.
+ */
+function normalizeDocxTableHtml(html: string): string {
+  // Step 1: strip <p> wrappers inside <td>/<th> cells.
+  let out = html.replace(/<(td|th)([^>]*)><p>([\s\S]*?)<\/p><\/(td|th)>/g, "<$1$2>$3</$4>");
+
+  // Step 2: for each <table>…</table>, promote the first <tr> into a
+  // <thead> with <th> cells. Mammoth emits no <tbody>, so rows sit
+  // directly under <table>.
+  out = out.replace(/<table>([\s\S]*?)<\/table>/g, (_, inner: string) => {
+    const firstRowMatch = inner.match(/^(<tr>[\s\S]*?<\/tr>)/);
+    if (!firstRowMatch) return `<table>${inner}</table>`;
+    const firstRow = firstRowMatch[1];
+    const rest = inner.slice(firstRow.length);
+    const headingRow = firstRow.replace(/<td([^>]*)>/g, "<th$1>").replace(/<\/td>/g, "</th>");
+    return `<table><thead>${headingRow}</thead><tbody>${rest}</tbody></table>`;
+  });
+
+  return out;
 }
 
 function escapeXmlAttribute(value: string): string {
