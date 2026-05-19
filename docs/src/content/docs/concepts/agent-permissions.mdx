@@ -21,17 +21,16 @@ Pinchy organizes tools into two categories:
 
 ### Safe Tools
 
-Safe tools provide **sandboxed access** to directories the admin has approved. The agent cannot access anything outside those directories.
+Safe tools provide **sandboxed access** to approved directories and the agent's own workspace. The agent cannot access anything outside those boundaries.
 
-| Tool                          | What it does                                                                                                                     |
-| ----------------------------- | -------------------------------------------------------------------------------------------------------------------------------- |
-| **List approved directories** | List files in directories the admin has selected                                                                                 |
-| **Read approved files**       | Read file contents from approved directories, including PDF text extraction and image analysis                                   |
-| **Write files**               | Save files back to the agent's own workspace (`uploads/` directory). Agents must explicitly request overwrite on existing files. |
+Every agent can always list and read files from its own workspace — any text-based file you upload in a chat is immediately accessible. This includes Markdown, CSV, JSON, source code, and more, in addition to PDF text extraction and image analysis.
 
-`pinchy_ls` and `pinchy_read` are always-on for an agent's own workspace — the agent can already list and read files you've uploaded. The **Write files** permission (`pinchy_write`) is optional and must be explicitly enabled.
+| Tool               | Always on? | What it does                                                                                              |
+| ------------------ | ---------- | --------------------------------------------------------------------------------------------------------- |
+| **Read workspace** | ✓ always   | List and read any file the agent's workspace (`uploads/` directory), including PDFs and images            |
+| **Write files**    | optional   | Save files back to the agent's own workspace. Agents must explicitly request overwrite on existing files. |
 
-When you enable **List approved directories** or **Read approved files**, a directory picker appears so you can select which directories under `/data/` the agent can access. Every file access request is validated against these directories at runtime.
+The **Knowledge Base** section below the tools lets you select which directories under `/data/` this agent can also read. These are admin-curated directories mounted into the container — separate from the agent's own workspace. Every access request is validated at runtime against the configured paths.
 
 ### Web Search Tools
 
@@ -77,7 +76,7 @@ For the full list of tabs in Agent Settings and who sees which, see [Agent Setti
 
 ### Configuring directory access
 
-When you enable a safe tool (like "List approved directories" or "Read approved files"), the **Allowed Directories** picker appears below the safe tools section. Select which directories under `/data/` this agent should be able to access.
+The **Allowed Directories** picker appears in the Knowledge Base section of the Permissions tab. Select which directories under `/data/` this agent should be able to read — these are in addition to the agent's own workspace files.
 
 For example, if you mounted your HR policies at `/data/hr-policies`, select that directory to let the agent read those documents — and nothing else.
 
