@@ -2,12 +2,6 @@ import mammoth from "mammoth";
 
 export interface DocxExtractionResult {
   text: string;
-  /**
-   * Non-fatal messages mammoth produced (e.g. unsupported elements). Surfaced
-   * so callers can log or attach them to the audit detail later without
-   * breaking the public API.
-   */
-  messages?: string[];
 }
 
 /**
@@ -21,9 +15,6 @@ export interface DocxExtractionResult {
 export async function extractDocxText(
   buffer: Buffer,
 ): Promise<DocxExtractionResult> {
-  const { value, messages } = await mammoth.extractRawText({ buffer });
-  return {
-    text: value,
-    messages: messages.length > 0 ? messages.map((m) => m.message) : undefined,
-  };
+  const { value } = await mammoth.extractRawText({ buffer });
+  return { text: value };
 }

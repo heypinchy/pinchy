@@ -22,7 +22,6 @@ import {
 } from "@/lib/limits";
 import { compressImageForChat } from "@/lib/image-compression";
 import { dataUrlToFile, fileToDataUrl } from "@/lib/data-url";
-import mammoth from "mammoth";
 
 /** Lightweight metadata for binary file attachments shown next to user messages. */
 export interface WsFileMeta {
@@ -236,8 +235,15 @@ export class SimpleBinaryFileAttachmentAdapter {
  * the archive. We extract the text with mammoth at upload time and ship it
  * as a text part, mirroring SimpleTextAttachmentAdapter for .txt files.
  *
- * Filename is preserved in the `<attachment name=…>` wrapper so the agent
- * can cite the source document.
+ * Mammoth is dynamically imported inside send() so it doesn't land in the
+ * initial chat bundle for users who never attach a .docx.
+ *
+ * Filename is XML-escaped into the `<attachment name="…">` wrapper so the
+ * agent can cite the source document even when the name contains spaces,
+ * ampersands, or angle brackets.
+ *
+ * Exported only so the size-rejection contract and the wrapper escaping
+ * can be unit-tested in isolation.
  */
 export class OfficeDocumentAttachmentAdapter {
   public accept = "application/vnd.openxmlformats-officedocument.wordprocessingml.document,.docx";
@@ -251,7 +257,7 @@ export class OfficeDocumentAttachmentAdapter {
       );
     }
     return {
-      id: file.name,
+      id: uuid(),
       type: "document" as const,
       name: file.name,
       contentType: file.type,
@@ -262,9 +268,10 @@ export class OfficeDocumentAttachmentAdapter {
 
   async send(attachment: { id?: string; name: string; file: File }) {
     const arrayBuffer = await attachment.file.arrayBuffer();
+    const { default: mammoth } = await import("mammoth");
     const { value } = await mammoth.extractRawText({ arrayBuffer });
     return {
-      id: attachment.id ?? attachment.name,
+      id: attachment.id ?? uuid(),
       type: "document" as const,
       name: attachment.name,
       file: attachment.file,
@@ -272,7 +279,7 @@ export class OfficeDocumentAttachmentAdapter {
       content: [
         {
           type: "text" as const,
-          text: `<attachment name=${attachment.name}>\n${value}\n</attachment>`,
+          text: `<attachment name="${escapeXmlAttribute(attachment.name)}">\n${value}\n</attachment>`,
         },
       ],
     };
@@ -281,6 +288,14 @@ export class OfficeDocumentAttachmentAdapter {
   async remove(): Promise<void> {
     // No-op — local files require no cleanup
   }
+}
+
+function escapeXmlAttribute(value: string): string {
+  return value
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
 }
 
 const attachmentAdapter = new CompositeAttachmentAdapter([

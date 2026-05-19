@@ -57,6 +57,19 @@ describe("OfficeDocumentAttachmentAdapter.add", () => {
     expect(result.name).toBe("briefing.docx");
   });
 
+  it("assigns a unique id to every add call, even when two files share a name", async () => {
+    // Regression guard: a previous version used `file.name` as the id, which
+    // collided when a user dropped two copies of the same filename into the
+    // composer (e.g. one from Desktop and one from Downloads). The composite
+    // adapter's downstream bookkeeping breaks when ids collide.
+    const adapter = new OfficeDocumentAttachmentAdapter();
+    const a = await adapter.add({ file: fakeDocxFile({ size: 1024, name: "report.docx" }) });
+    const b = await adapter.add({ file: fakeDocxFile({ size: 1024, name: "report.docx" }) });
+    expect(a.id).not.toBe(b.id);
+    expect(typeof a.id).toBe("string");
+    expect(a.id.length).toBeGreaterThan(0);
+  });
+
   it("rejects a file over the limit BEFORE encoding (size check happens in add)", async () => {
     const adapter = new OfficeDocumentAttachmentAdapter();
     const file = fakeDocxFile({
@@ -81,7 +94,7 @@ describe("OfficeDocumentAttachmentAdapter.send", () => {
     vi.clearAllMocks();
   });
 
-  it("extracts text with mammoth and returns a text content part", async () => {
+  it("extracts text with mammoth and returns a quoted-attribute text content part", async () => {
     const adapter = new OfficeDocumentAttachmentAdapter();
     const file = fakeDocxFile({ size: 1024, name: "briefing.docx" });
     const pending = await adapter.add({ file });
@@ -93,9 +106,28 @@ describe("OfficeDocumentAttachmentAdapter.send", () => {
     expect(result.content).toEqual([
       {
         type: "text",
-        text: "<attachment name=briefing.docx>\nHello extracted world\n</attachment>",
+        text: '<attachment name="briefing.docx">\nHello extracted world\n</attachment>',
       },
     ]);
+  });
+
+  it("escapes XML-special characters in the filename when wrapping content", async () => {
+    // Filenames may legally contain spaces, ampersands, angle brackets,
+    // and quotes. Without escaping, those leak into the wrapper tag and
+    // either produce invalid XML or, worse, look like a different tag to
+    // the model (e.g. `<attachment name=Q3 <draft>.docx>`).
+    const adapter = new OfficeDocumentAttachmentAdapter();
+    const file = fakeDocxFile({ size: 1024, name: "Q3 & <draft>.docx" });
+    const pending = await adapter.add({ file });
+
+    const result = await adapter.send(pending);
+    const text = (result.content[0] as { type: "text"; text: string }).text;
+
+    expect(text.startsWith('<attachment name="Q3 &amp; &lt;draft&gt;.docx">')).toBe(true);
+    expect(text.endsWith("</attachment>")).toBe(true);
+    // Raw special characters must not survive in the wrapper attribute.
+    expect(text).not.toContain("name=Q3");
+    expect(text).not.toContain("<draft>");
   });
 });
 
