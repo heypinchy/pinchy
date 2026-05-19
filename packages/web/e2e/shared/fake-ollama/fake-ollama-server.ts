@@ -158,6 +158,8 @@ const WORKSPACE_WRITE_RESPONSE = "File written: coverage probe complete.";
 // because it resolves only against the per-agent catalog (v0.5.8 finding).
 const PDF_ATTACHMENT_READ_TRIGGER = "E2E_PDF_ATTACHMENT_READ_TOOL";
 const PDF_ATTACHMENT_READ_RESPONSE = "PDF read: coverage probe complete.";
+const IMAGE_CROP_TRIGGER = "E2E_IMAGE_CROP_TOOL";
+const IMAGE_CROP_RESPONSE = "Image cropped: coverage probe complete.";
 
 interface TriggerConfig {
   trigger: string;
@@ -242,6 +244,12 @@ const TOOL_TRIGGERS: TriggerConfig[] = [
     response: PDF_ATTACHMENT_READ_RESPONSE,
     toolName: "pinchy_read",
     arguments: { path: "uploads/test.pdf" },
+  },
+  {
+    trigger: IMAGE_CROP_TRIGGER,
+    response: IMAGE_CROP_RESPONSE,
+    toolName: "image_crop",
+    arguments: { source: "receipt.png", x: 0, y: 0, width: 10, height: 10 },
   },
 ];
 
@@ -941,6 +949,8 @@ export const FAKE_OLLAMA_WORKSPACE_WRITE_TOOL_TRIGGER = WORKSPACE_WRITE_TRIGGER;
 export const FAKE_OLLAMA_WORKSPACE_WRITE_TOOL_RESPONSE = WORKSPACE_WRITE_RESPONSE;
 export const FAKE_OLLAMA_PDF_ATTACHMENT_READ_TOOL_TRIGGER = PDF_ATTACHMENT_READ_TRIGGER;
 export const FAKE_OLLAMA_PDF_ATTACHMENT_READ_TOOL_RESPONSE = PDF_ATTACHMENT_READ_RESPONSE;
+export const FAKE_OLLAMA_IMAGE_CROP_TOOL_TRIGGER = IMAGE_CROP_TRIGGER;
+export const FAKE_OLLAMA_IMAGE_CROP_TOOL_RESPONSE = IMAGE_CROP_RESPONSE;
 
 let server: http.Server | null = null;
 

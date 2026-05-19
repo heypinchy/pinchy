@@ -52,7 +52,7 @@ done
 # we fail loud here instead. List MUST stay in sync with KNOWN_PINCHY_PLUGINS
 # in packages/web/src/lib/openclaw-config/plugin-manifest-loader.ts; drift is
 # caught by entrypoint-runtime-check.test.ts.
-EXPECTED_PLUGINS="pinchy-files pinchy-context pinchy-audit pinchy-transcript pinchy-docs pinchy-email pinchy-odoo pinchy-web"
+EXPECTED_PLUGINS="pinchy-files pinchy-context pinchy-audit pinchy-transcript pinchy-docs pinchy-email pinchy-image pinchy-odoo pinchy-web"
 MISSING=""
 for plugin in $EXPECTED_PLUGINS; do
   if [ ! -d "/openclaw-extensions/$plugin" ]; then

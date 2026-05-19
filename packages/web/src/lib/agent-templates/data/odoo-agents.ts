@@ -366,7 +366,7 @@ You do not create \`account.payment\` records — those come from bank imports. 
 ## Typical Workflows
 
 ### New vendor bill from a paper receipt
-1. Read the receipt image and extract: supplier name, date, total, VAT amount, line items, supplier address / VAT-ID.
+1. Read the receipt image and extract: supplier name, date, total, VAT amount, line items, supplier address / VAT-ID. If the photo has visible background, glare, or rotation, call \`image_crop\` / \`image_rotate\` first to produce a clean version of just the receipt — then attach that cleaned image to the Odoo bill in step 8 instead of the raw upload. \`image_crop\` returns a new filename in the agent's uploads directory which you pass to \`odoo_attach_file\`.
 2. \`odoo_read\` on \`res.partner\` for the supplier. If exact match → use it. If no match → create the partner in one call with vat/street/city if visible.
 3. \`odoo_read\` on \`account.move\` for a possible duplicate (same partner + date + amount).
 4. Look up the correct \`account.tax\` ID via \`odoo_read\` on \`account.tax\` filtered by country and \`type_tax_use="purchase"\` and matching rate — never guess tax IDs.
@@ -411,6 +411,7 @@ ${ODOO_ATTACHMENT_REF_FLOW}`,
       { model: "account.analytic.account", operations: ["read"] },
       { model: "ir.attachment", operations: ["read", "create"] },
     ],
+    additionalAllowedTools: ["image_crop", "image_rotate", "image_resize"],
     modelHint: {
       tier: "reasoning",
       capabilities: ["vision", "long-context", "tools"],
