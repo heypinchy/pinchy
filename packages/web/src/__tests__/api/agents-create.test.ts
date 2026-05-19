@@ -1052,25 +1052,22 @@ describe("POST /api/agents", () => {
     expect(new Set(insertedValues.allowedTools).size).toBe(insertedValues.allowedTools.length);
   });
 
-  it("does not duplicate tools when defaultAllowedTools overlaps template tools", async () => {
+  it("does not duplicate tools when defaultAllowedTools contains a repeated entry", async () => {
+    // Sending "pinchy_write" twice in defaultAllowedTools — Set dedup must keep it once
     const request = new NextRequest("http://localhost:7777/api/agents", {
       method: "POST",
       body: JSON.stringify({
         name: "HR Knowledge Base",
         templateId: "knowledge-base",
-        pluginConfig: {
-          "pinchy-files": { allowed_paths: ["/data/hr-docs/"] },
-        },
-        defaultAllowedTools: ["pinchy_ls", "pinchy_write"],
+        pluginConfig: { "pinchy-files": { allowed_paths: ["/data/hr-docs/"] } },
+        defaultAllowedTools: ["pinchy_write", "pinchy_write"],
       }),
     });
 
     await POST(request);
 
     const insertedValues = insertValuesMock.mock.calls[0]?.[0] as { allowedTools: string[] };
-    // pinchy_ls should appear only once
-    expect(insertedValues.allowedTools.filter((t) => t === "pinchy_ls").length).toBe(1);
-    expect(insertedValues.allowedTools).toContain("pinchy_write");
+    expect(insertedValues.allowedTools.filter((t) => t === "pinchy_write").length).toBe(1);
   });
 
   it("uses template allowedTools unchanged when defaultAllowedTools is absent", async () => {
