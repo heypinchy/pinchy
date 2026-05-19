@@ -45,4 +45,32 @@ describe("pinchy-files manifest contract", () => {
   it("uses additionalProperties: false at the top level", () => {
     expect((manifest.configSchema as Record<string, unknown>).additionalProperties).toBe(false);
   });
+
+  it("accepts agent config with write_paths", () => {
+    const config = {
+      apiBaseUrl: "http://pinchy:7777",
+      gatewayToken: "test-token",
+      agents: {
+        "agent-1": {
+          allowed_paths: ["/data/kb"],
+          write_paths: ["/data/kb"],
+        },
+      },
+    };
+    const result = validatePluginEntry(manifest, config);
+    if (!result.ok) throw new Error(result.errors.join("\n"));
+    expect(result.ok).toBe(true);
+  });
+
+  it("rejects unknown fields in agent config (additionalProperties: false)", () => {
+    const config = {
+      apiBaseUrl: "http://pinchy:7777",
+      gatewayToken: "test-token",
+      agents: {
+        "agent-1": { allowed_paths: ["/data/kb"], evil_field: "x" },
+      },
+    };
+    const result = validatePluginEntry(manifest, config);
+    expect(result.ok).toBe(false);
+  });
 });

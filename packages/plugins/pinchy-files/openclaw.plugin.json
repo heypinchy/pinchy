@@ -1,9 +1,9 @@
 {
   "id": "pinchy-files",
   "name": "Pinchy Files",
-  "description": "Scoped read-only file access for Pinchy Knowledge Base agents.",
+  "description": "Scoped file access for Pinchy agents (KB + workspace).",
   "contracts": {
-    "tools": ["pinchy_ls", "pinchy_read"]
+    "tools": ["pinchy_ls", "pinchy_read", "pinchy_write"]
   },
   "configSchema": {
     "type": "object",
@@ -15,22 +15,16 @@
         "type": "object",
         "additionalProperties": {
           "type": "object",
+          "additionalProperties": false,
           "properties": {
-            "allowed_paths": {
-              "type": "array",
-              "items": {
-                "type": "string"
-              }
-            }
+            "allowed_paths": { "type": "array", "items": { "type": "string" } },
+            "write_paths": { "type": "array", "items": { "type": "string" } },
+            "allowed_extensions": { "type": "array", "items": { "type": "string" } }
           },
-          "required": [
-            "allowed_paths"
-          ]
+          "required": ["allowed_paths"]
         }
       }
     },
-    "required": [
-      "agents"
-    ]
+    "required": ["agents"]
   }
 }
