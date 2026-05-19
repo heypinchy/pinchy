@@ -1281,6 +1281,13 @@ describe("odoo_create", () => {
       is_company: true,
     });
   });
+
+  it("description documents price_unit net convention for invoice/order line models", () => {
+    const tools = createApi({ [agentId]: agentConfig });
+    const tool = findTool(tools, "odoo_create", agentId)!;
+    expect(tool.description).toMatch(/price_unit/);
+    expect(tool.description).toMatch(/tax-exclusive|net/i);
+  });
 });
 
 describe("odoo_write", () => {
@@ -1369,6 +1376,13 @@ describe("odoo_write", () => {
       email: "updated@example.com",
       city: "Linz",
     });
+  });
+
+  it("description documents price_unit net convention for invoice/order line models", () => {
+    const tools = createApi({ [agentId]: agentConfig });
+    const tool = findTool(tools, "odoo_write", agentId)!;
+    expect(tool.description).toMatch(/price_unit/);
+    expect(tool.description).toMatch(/tax-exclusive|net/i);
   });
 });
 
