@@ -3,8 +3,22 @@ name: CI
 on:
   push:
     branches: [main]
+    paths-ignore:
+      - "docs/**"
+      - "**/*.md"
+      - ".github/ISSUE_TEMPLATE/**"
+      - "PERSONALITY.md"
+      - "sample-data/**"
+      - "screenshots/**"
   pull_request:
     branches: [main]
+    paths-ignore:
+      - "docs/**"
+      - "**/*.md"
+      - ".github/ISSUE_TEMPLATE/**"
+      - "PERSONALITY.md"
+      - "sample-data/**"
+      - "screenshots/**"
 
 # Cancel in-progress runs on the same PR/branch when a new commit is pushed.
 # For main, never cancel — release/post-merge runs must always complete.
