@@ -368,7 +368,7 @@ export class OfficeDocumentAttachmentAdapter {
  */
 function normalizeDocxTableHtml(html: string): string {
   // Step 1: strip <p> wrappers inside <td>/<th> cells.
-  let out = html.replace(/<(td|th)([^>]*)><p>([\s\S]*?)<\/p><\/(td|th)>/g, "<$1$2>$3</$4>");
+  let out = html.replace(/<(td|th)([^>]*)><p>([\s\S]*?)<\/p><\/(td|th)>/g, "<$1$2>$3</$1>");
 
   // Step 2: for each <table>…</table>, promote the first <tr> into a
   // <thead> with <th> cells. Mammoth emits no <tbody>, so rows sit
