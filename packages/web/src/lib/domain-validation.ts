@@ -19,7 +19,10 @@ export const pluginConfigSchema = z
     "pinchy-files": z
       .object({
         allowed_paths: z.array(z.string()),
+        write_paths: z.array(z.string()).optional(),
+        allowed_extensions: z.array(z.string()).optional(),
       })
+      .strict()
       .optional(),
     "pinchy-web": z
       .object({

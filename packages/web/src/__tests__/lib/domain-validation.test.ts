@@ -1,5 +1,9 @@
 import { describe, it, expect } from "vitest";
-import { isValidDomain, validatePinchyWebConfig } from "@/lib/domain-validation";
+import {
+  isValidDomain,
+  validatePinchyWebConfig,
+  pluginConfigSchema,
+} from "@/lib/domain-validation";
 
 describe("isValidDomain", () => {
   it.each(["example.com", "docs.example.com", "a.b.c.d.example.com", "xn--bcher-kva.example"])(
@@ -75,5 +79,28 @@ describe("validatePinchyWebConfig", () => {
 
   it("rejects non-object pinchy-web entry", () => {
     expect(validatePinchyWebConfig({ "pinchy-web": "yes" })).toMatch(/pinchy-web/i);
+  });
+});
+
+describe("pluginConfigSchema — pinchy-files", () => {
+  it("accepts write_paths and allowed_extensions as optional fields", () => {
+    const result = pluginConfigSchema.safeParse({
+      "pinchy-files": {
+        allowed_paths: ["/data/kb"],
+        write_paths: ["/root/.openclaw/workspaces/agent-1/uploads"],
+        allowed_extensions: [".csv", ".txt"],
+      },
+    });
+    expect(result.success).toBe(true);
+  });
+
+  it("rejects unknown fields in pinchy-files config", () => {
+    const result = pluginConfigSchema.safeParse({
+      "pinchy-files": {
+        allowed_paths: ["/data/kb"],
+        evil_field: "x",
+      },
+    });
+    expect(result.success).toBe(false);
   });
 });
