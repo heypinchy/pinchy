@@ -21,6 +21,10 @@ const SLOW_STREAM_DELAY_MS = 500;
 // that the plugin loaded and registerTool() worked end-to-end.
 const FILES_LS_TRIGGER = "E2E_FILES_LS_TOOL";
 const FILES_LS_RESPONSE = "Files listed: coverage probe complete.";
+const FILES_READ_DOCX_TRIGGER = "E2E_FILES_READ_DOCX_TOOL";
+const FILES_READ_DOCX_RESPONSE = "Docx read: coverage probe complete.";
+// Sits inside /data so the default Smithers knowledge-base path matches.
+const FILES_READ_DOCX_PATH = "/data/e2e-briefing.docx";
 const CONTEXT_SAVE_USER_TRIGGER = "E2E_CONTEXT_SAVE_USER_TOOL";
 const CONTEXT_SAVE_USER_RESPONSE = "Context saved: coverage probe complete.";
 const ODOO_LIST_MODELS_TRIGGER = "E2E_ODOO_LIST_MODELS_TOOL";
@@ -49,6 +53,12 @@ const TOOL_TRIGGERS: TriggerConfig[] = [
     response: FILES_LS_RESPONSE,
     toolName: "pinchy_ls",
     arguments: { path: "/data" },
+  },
+  {
+    trigger: FILES_READ_DOCX_TRIGGER,
+    response: FILES_READ_DOCX_RESPONSE,
+    toolName: "pinchy_read",
+    arguments: { path: FILES_READ_DOCX_PATH },
   },
   {
     trigger: CONTEXT_SAVE_USER_TRIGGER,
@@ -416,6 +426,9 @@ export const FAKE_OLLAMA_SLOW_STREAM_RESPONSE = SLOW_STREAM_RESPONSE;
 export const FAKE_OLLAMA_SLOW_STREAM_DELAY_MS = SLOW_STREAM_DELAY_MS;
 export const FAKE_OLLAMA_FILES_LS_TOOL_TRIGGER = FILES_LS_TRIGGER;
 export const FAKE_OLLAMA_FILES_LS_TOOL_RESPONSE = FILES_LS_RESPONSE;
+export const FAKE_OLLAMA_FILES_READ_DOCX_TOOL_TRIGGER = FILES_READ_DOCX_TRIGGER;
+export const FAKE_OLLAMA_FILES_READ_DOCX_TOOL_RESPONSE = FILES_READ_DOCX_RESPONSE;
+export const FAKE_OLLAMA_FILES_READ_DOCX_PATH = FILES_READ_DOCX_PATH;
 export const FAKE_OLLAMA_CONTEXT_SAVE_USER_TOOL_TRIGGER = CONTEXT_SAVE_USER_TRIGGER;
 export const FAKE_OLLAMA_CONTEXT_SAVE_USER_TOOL_RESPONSE = CONTEXT_SAVE_USER_RESPONSE;
 export const FAKE_OLLAMA_ODOO_LIST_MODELS_TOOL_TRIGGER = ODOO_LIST_MODELS_TRIGGER;

@@ -6,6 +6,7 @@ import {
   FAKE_OLLAMA_DOMAIN_LOCK_TOOL_RESPONSE,
   FAKE_OLLAMA_DOMAIN_LOCK_TOOL_TRIGGER,
   FAKE_OLLAMA_FILES_LS_TOOL_TRIGGER,
+  FAKE_OLLAMA_FILES_READ_DOCX_TOOL_TRIGGER,
   FAKE_OLLAMA_RESPONSE,
 } from "../shared/fake-ollama/fake-ollama-server";
 import { login, getSmithersAgentId, waitForOpenClawConnected } from "./helpers";
@@ -318,6 +319,72 @@ test.describe("Plugin behavior — pinchy-files", () => {
         found = audit.entries.some(
           (entry: { resource: string | null; detail: { toolName?: string } | null }) =>
             entry.resource === `agent:${agentId}` && entry.detail?.toolName === "pinchy_ls"
+        );
+        if (found) break;
+        await new Promise((r) => setTimeout(r, 500));
+      }
+      expect(found).toBe(true);
+    } finally {
+      await page.request.patch(`/api/agents/${agentId}`, {
+        data: {
+          allowedTools: originalAllowedTools,
+          pluginConfig: originalPluginConfig,
+        },
+      });
+    }
+  });
+
+  // Skipped for the same /tmp ownership reasons as pinchy_ls above. Kept as
+  // a static coverage probe so the plugin-tool-coverage guard sees a
+  // `eventType=tool.pinchy_read` reference for the .docx code path. The
+  // real .docx extraction is exercised by docx-extract.test.ts and the
+  // pinchy_read DOCX integration block in pinchy-files/index.test.ts.
+  test.skip("pinchy_read dispatches on .docx via fake-LLM and writes audit entry", async ({
+    page,
+  }) => {
+    await login(page);
+    const agentId = await getSmithersAgentId(page);
+
+    const beforeRes = await page.request.get(`/api/agents/${agentId}`);
+    expect(beforeRes.status()).toBe(200);
+    const before = (await beforeRes.json()) as {
+      allowedTools: string[] | null;
+      pluginConfig: Record<string, unknown> | null;
+    };
+    const originalAllowedTools = before.allowedTools ?? [];
+    const originalPluginConfig = before.pluginConfig ?? null;
+
+    const patchRes = await page.request.patch(`/api/agents/${agentId}`, {
+      data: {
+        allowedTools: [...new Set([...originalAllowedTools, "pinchy_ls", "pinchy_read"])],
+        pluginConfig: {
+          ...(originalPluginConfig ?? {}),
+          "pinchy-files": { allowed_paths: ["/data"] },
+        },
+      },
+    });
+    expect(patchRes.status()).toBe(200);
+
+    try {
+      await waitForOpenClawConnected(page);
+
+      await page.goto(`/chat/${agentId}`);
+      await expect(page).toHaveURL(`/chat/${agentId}`, { timeout: 10000 });
+
+      const input = page.getByPlaceholder(/send a message/i);
+      await expect(input).toBeVisible({ timeout: 10000 });
+      await input.fill(`${FAKE_OLLAMA_FILES_READ_DOCX_TOOL_TRIGGER}: read the briefing docx`);
+      await input.press("Enter");
+
+      const deadline = Date.now() + 30000;
+      let found = false;
+      while (Date.now() < deadline) {
+        const res = await page.request.get("/api/audit?eventType=tool.pinchy_read&limit=10");
+        expect(res.status()).toBe(200);
+        const audit = await res.json();
+        found = audit.entries.some(
+          (entry: { resource: string | null; detail: { toolName?: string } | null }) =>
+            entry.resource === `agent:${agentId}` && entry.detail?.toolName === "pinchy_read"
         );
         if (found) break;
         await new Promise((r) => setTimeout(r, 500));
