@@ -13,7 +13,13 @@ import { vi } from "vitest";
 
 vi.mock("mammoth", () => ({
   default: {
-    extractRawText: vi.fn(async () => ({ value: "Hello extracted world", messages: [] })),
+    convertToHtml: vi.fn(async () => ({
+      value: "<h1>Hello extracted world</h1>",
+      messages: [],
+    })),
+    images: {
+      imgElement: vi.fn((fn) => fn),
+    },
   },
 }));
 
@@ -101,12 +107,12 @@ describe("OfficeDocumentAttachmentAdapter.send", () => {
 
     const result = await adapter.send(pending);
 
-    expect(mammoth.extractRawText).toHaveBeenCalledOnce();
+    expect(mammoth.convertToHtml).toHaveBeenCalledOnce();
     expect(result.status).toEqual({ type: "complete" });
     expect(result.content).toEqual([
       {
         type: "text",
-        text: '<attachment name="briefing.docx">\nHello extracted world\n</attachment>',
+        text: '<attachment name="briefing.docx">\n# Hello extracted world\n</attachment>',
       },
     ]);
   });
@@ -128,6 +134,35 @@ describe("OfficeDocumentAttachmentAdapter.send", () => {
     // Raw special characters must not survive in the wrapper attribute.
     expect(text).not.toContain("name=Q3");
     expect(text).not.toContain("<draft>");
+  });
+
+  it("converts table HTML to GFM pipe tables via turndown", async () => {
+    // Override the default mock for this test only.
+    (mammoth.convertToHtml as any).mockResolvedValueOnce({
+      value: "<table><tr><td>SKU</td><td>Qty</td></tr><tr><td>WIDGET</td><td>20</td></tr></table>",
+      messages: [],
+    });
+    const adapter = new OfficeDocumentAttachmentAdapter();
+    const file = fakeDocxFile({ size: 1024, name: "table.docx" });
+    const pending = await adapter.add({ file });
+    const result = await adapter.send(pending);
+    const text = (result.content[0] as { type: "text"; text: string }).text;
+    expect(text).toMatch(/\|\s*SKU\s*\|\s*Qty\s*\|/);
+    expect(text).toMatch(/\|\s*WIDGET\s*\|\s*20\s*\|/);
+  });
+
+  it("replaces <img> elements with the [image] placeholder", async () => {
+    (mammoth.convertToHtml as any).mockResolvedValueOnce({
+      value: '<p>Before <img src="x" /> after</p>',
+      messages: [],
+    });
+    const adapter = new OfficeDocumentAttachmentAdapter();
+    const file = fakeDocxFile({ size: 1024, name: "with-image.docx" });
+    const pending = await adapter.add({ file });
+    const result = await adapter.send(pending);
+    const text = (result.content[0] as { type: "text"; text: string }).text;
+    expect(text).toContain("[image]");
+    expect(text).not.toMatch(/<img/);
   });
 });
 
