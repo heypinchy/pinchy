@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
+import { isOpenClawLocalBaseUrl } from "@/lib/openclaw-local-url";
 
 vi.mock("fs", async (importOriginal) => {
   const actual = await importOriginal<typeof import("fs")>();
@@ -187,47 +188,12 @@ beforeEach(() => {
   });
 });
 
-/**
- * Mirror of OpenClaw's `isLocalBaseUrl` predicate
- * (model-auth-CsyLGY9m.js:111-118 + isPrivateIpv4Host:120-126). The function
- * isn't exported through any of openclaw's public subpath exports, so the
- * tests below re-implement it as a drift guard: if upstream changes the
- * allowlist, this mirror won't auto-detect that — but anyone bumping the
- * `openclaw` version pin should grep for `OPENCLAW_ISLOCAL_PIN` and
- * re-verify the predicate, then update the docs in ollama-setup.mdx if
- * the allowlist semantics changed.
- *
- * OPENCLAW_ISLOCAL_PIN: 2026.4.27 (re-verify on bump; see PR #279)
- */
-function mirrorOpenClawIsLocalBaseUrl(baseUrl: string): boolean {
-  try {
-    let host = new URL(baseUrl).hostname.toLowerCase();
-    // Defensive parity with upstream — on Node/V8 `URL.hostname` already
-    // returns IPv6 literals without brackets, so this branch is currently
-    // dead. Keep it so the mirror stays a 1:1 port of the upstream source
-    // and a future Node engine change can't silently diverge us.
-    if (host.startsWith("[") && host.endsWith("]")) host = host.slice(1, -1);
-    return (
-      host === "localhost" ||
-      host === "127.0.0.1" ||
-      host === "0.0.0.0" ||
-      host === "::1" ||
-      host === "::ffff:7f00:1" ||
-      host === "::ffff:127.0.0.1" ||
-      host.endsWith(".local") ||
-      mirrorIsPrivateIpv4Host(host)
-    );
-  } catch {
-    return false;
-  }
-}
-function mirrorIsPrivateIpv4Host(host: string): boolean {
-  if (!/^\d+\.\d+\.\d+\.\d+$/.test(host)) return false;
-  const octets = host.split(".").map((o) => Number.parseInt(o, 10));
-  if (octets.some((p) => !Number.isInteger(p) || p < 0 || p > 255)) return false;
-  const [a, b] = octets;
-  return a === 10 || (a === 172 && b >= 16 && b <= 31) || (a === 192 && b === 168);
-}
+// Drift guard: re-export the shared `isOpenClawLocalBaseUrl` (see
+// @/lib/openclaw-local-url) under the local name used by the assertions in
+// this file. The shared module is a 1:1 port of OpenClaw's `isLocalBaseUrl`
+// predicate and now also backs save-time rejection in `validateProviderUrl`
+// (#296), so this file no longer ships a private duplicate.
+const mirrorOpenClawIsLocalBaseUrl = isOpenClawLocalBaseUrl;
 
 describe("regenerateOpenClawConfig", () => {
   beforeEach(() => {
