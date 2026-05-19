@@ -33,9 +33,10 @@ jobs:
     permissions:
       contents: read
       packages: write
-    # Fork PRs cannot push to GHCR (read-only GITHUB_TOKEN).
-    # They fall back to per-job local build in downstream jobs.
-    if: github.event.pull_request.head.repo.fork != true
+    # Skip on fork PRs: GITHUB_TOKEN is read-only for forks and cannot push
+    # to GHCR. Non-PR pushes (main) and same-repo PRs always run.
+    # Downstream jobs fall back to per-job local build when this is skipped.
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.fork != true
     outputs:
       pinchy-image: ${{ steps.tags.outputs.pinchy }}
       openclaw-image: ${{ steps.tags.outputs.openclaw }}
