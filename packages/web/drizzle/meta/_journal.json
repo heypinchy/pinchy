@@ -232,6 +232,13 @@
       "when": 1779408060000,
       "tag": "0032_odoo_schema_compat_alias",
       "breakpoints": true
+    },
+    {
+      "idx": 33,
+      "version": "7",
+      "when": 1747612800000,
+      "tag": "0033_remove_implicit_filesystem_tools",
+      "breakpoints": true
     }
   ]
 }
