@@ -11,12 +11,11 @@
 // Everything else (DB writes to uploaded_files, audit_log; FS ops) runs for real.
 
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { mkdtempSync, rmSync, mkdirSync, writeFileSync, existsSync } from "fs";
-import { readFile } from "fs/promises";
+import { mkdtempSync, rmSync, mkdirSync, writeFileSync } from "fs";
 import { join } from "path";
 import { tmpdir } from "os";
 import { createHash } from "crypto";
-import { eq, and, inArray } from "drizzle-orm";
+import { eq } from "drizzle-orm";
 
 import { db } from "@/db";
 import { users, agents, uploadedFiles, auditLog } from "@/db/schema";
