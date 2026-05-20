@@ -219,6 +219,16 @@ Every read-write Odoo operator template now declares the `vision` capability in 
 
 When an Odoo tool returns a record, related-record references are now emitted as opaque, encrypted tokens (`pinchy_ref:v1:…`) rather than raw `(id, label)` tuples. The pinchy-odoo plugin transparently resolves these tokens on subsequent calls, so an agent can no longer fabricate or substitute a numeric ID it never saw. Existing agents pick up the new behavior automatically; no configuration change is required.
 
+#### Self-refs on `odoo_create` and `odoo_read` (`_pinchy_ref`)
+
+Every record the plugin returns now carries a `_pinchy_ref` field — an opaque, encrypted token that identifies the record itself (alongside the raw integer `id`). `odoo_create` returns `{id, _pinchy_ref}` instead of just `{id}`, and every record returned by `odoo_read` carries one.
+
+This closes a release-blocker gap surfaced on staging in late v0.5.3 testing: the `odoo_attach_file` tool only accepts opaque references for `targetRef`, but `odoo_create`'s old `{id}`-only response left agents no path to a valid token for a record they had just created. They would fabricate strings like `"account.move,37"`, which the plugin correctly rejected with `"Invalid integration reference"` — making `odoo_create` → `odoo_attach_file` chains (the entire Bookkeeper "book this bill and attach the PDF" flow) effectively unreachable.
+
+The field is named `_pinchy_ref` rather than `ref` to avoid shadowing Odoo's own `ref` field, which exists on `account.move`, `account.payment`, and others as a string holding payment-reference identifiers (`"INV/2026/0001"` etc.). The underscore prefix signals "Pinchy-added, not Odoo data" so the LLM's view of actual Odoo records stays lossless.
+
+Tools that already accept raw integer IDs (`odoo_write`, `odoo_delete`) are unchanged. Existing agents pick up the new behavior automatically; the operator-template `AGENTS.md` files have been updated to teach agents about the `_pinchy_ref` field, so old agents continue to work via the shared instruction shipped in their template prompt.
+
 #### Odoo file attachment (new `odoo_attach_file` tool)
 
 Read-write Odoo operator templates can now attach uploaded files to Odoo records as `ir.attachment`. The Bookkeeper template uses this to link receipt images to the corresponding vendor bill; the Warehouse Operator can attach delivery notes to pickings; the HR Operator can attach medical certificates to leave requests; and so on for the Project Manager, Production Operator, and Approval Manager.
@@ -239,7 +249,7 @@ Open chats keep running in the background while you navigate within Pinchy — a
 - **Dead-key composer freeze.** Typing characters that involve dead keys (e.g. `^` + `e` → `ê`) no longer desyncs the composer input.
 - **Payload rejection visibility.** When OpenClaw rejects a payload mid-stream, the chat now surfaces a clear error status instead of leaving the spinner running.
 - **Silent stream-end retry.** A run that finishes without producing any assistant text — typically a cold-path tool call that timed out inside OpenClaw's embedded layer — now shows the standard error bubble with a **Retry** button instead of an indistinguishable "successful empty reply". Each occurrence writes a throttled `chat.silent_stream` audit entry so admins get an operational signal.
-- **Gemini 3 `thought_signature` errors are now named and explained.** When the upstream provider drops Gemini 3's required `thought_signature` field on a tool-call replay turn (upstream `openclaw/openclaw#72879` — fixed in OpenClaw 2026.5.18 for the native Google path, still open for OpenAI-compat in `openclaw/openclaw#34008`), Pinchy now shows a dedicated **transient upstream issue bubble** that names the cause and tells the user that **Retry usually clears it on the next try**. The bubble deliberately offers no "Switch model" link — the model is fine. Each occurrence writes a throttled `agent.upstream_format_error` audit entry so admins can track frequency from the audit page rather than grepping gateway logs. ([#338](https://github.com/heypinchy/pinchy/issues/338))
+- **Gemini 3 `thought_signature` errors are now named and explained.** When the upstream provider drops Gemini 3's required `thought_signature` field on a tool-call replay turn (upstream `openclaw/openclaw#72879`), Pinchy now shows a dedicated **transient upstream issue bubble** that names the cause and tells the user that **Retry usually clears it on the next try**. The bubble deliberately offers no "Switch model" link — the model is fine. Each occurrence writes a throttled `agent.upstream_format_error` audit entry so admins can track frequency from the audit page rather than grepping gateway logs. The upstream fix for the native Google path lands in OpenClaw 2026.5.18; %%PINCHY_VERSION%% is still pinned at 2026.5.7 and ships with the transient-issue bubble as the user-facing mitigation. The OpenClaw bump is scheduled for the next Pinchy release. ([#338](https://github.com/heypinchy/pinchy/issues/338))
 
 #### Permissions tab no longer reports false-positive dirty state
 
@@ -251,10 +261,17 @@ You can now confirm which Pinchy and OpenClaw versions are actually running with
 
 The upgrading guide's "Verify" step is updated to use `/api/version` instead of opening `http://localhost:7777` directly — the old instruction returned 403 on Domain-Lock-enabled deployments.
 
+#### Startup warning when Domain Lock is set but `BETTER_AUTH_URL` is unset
+
+Better Auth's own `baseURL` autodetection does not read Pinchy's Domain Lock value (verified on a staging v0.5.4 install where Better Auth still logged `Base URL could not be determined`). On a Domain-Locked deployment, that gap silently sends password-reset and email-verification links pointing at the wrong host.
+
+Pinchy now logs a clear `⚠ Domain Lock is configured (<your-domain>) but BETTER_AUTH_URL is unset…` warning on every startup of such a deployment, with the exact env-var assignment to copy-paste into your `.env`. The existing `BETTER_AUTH_URL is set` line is retained for the positive case. If you are running with Domain Lock today, check your pinchy container logs after this upgrade and add `BETTER_AUTH_URL=https://<your-domain>` to `/opt/pinchy/.env` if the warning appears. ([#352](https://github.com/heypinchy/pinchy/issues/352))
+
 #### Runtime and dependency updates
 
-- **OpenClaw 2026.5.7** (was 2026.5.3) — picked up via `Dockerfile.openclaw` and the bundled `openclaw-node 0.8.0`.
+- **OpenClaw 2026.5.7** (was 2026.5.3) — picked up via `Dockerfile.openclaw` and the bundled `openclaw-node 0.9.0`.
 - **Next.js 16.2.6** (was 16.2.4) — addresses [GHSA-wfc6-r584-vfw7](https://github.com/advisories/GHSA-wfc6-r584-vfw7) and [GHSA-26hh-7cqf-hhc6](https://github.com/advisories/GHSA-26hh-7cqf-hhc6).
+- **`ws` 8.20.1** (was 8.20.0) — addresses [GHSA-58qx-3vcg-4xpx](https://github.com/advisories/GHSA-58qx-3vcg-4xpx) (uninitialized memory disclosure).
 
 ## Upgrading from v0.5.2 to v0.5.3
 

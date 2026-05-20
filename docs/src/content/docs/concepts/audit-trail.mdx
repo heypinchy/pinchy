@@ -98,15 +98,23 @@ Pinchy watches these files and emits an audit entry on every change so an audito
 
 The detail never contains file contents — only counts and the relative filename. Deletions surface as `byteSize: 0` and `removedLines` equal to the previous line count.
 
+### Chat runtime
+
+| Event Type                      | Description                                                                                                                                                                                                                                                                                                                                               |
+| ------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `chat.background_run_completed` | A chat run finished after the user navigated away from the chat page (a "background run"). Detail records `agent.{id,name}` and the run's wall-clock `durationMs`. Used together with the sidebar pulse dot for the per-agent background-runtime feature.                                                                                                 |
+| `chat.silent_stream`            | A streaming run ended without producing any assistant text — typically a cold-path tool call that timed out inside OpenClaw's embedded layer. Throttled per `(agent, model)` so a degraded provider can't flood the log via user retries. Detail captures `agent.{id,name}`, `model`, the originating `providerError`, and `reason: "silent_stream_end"`. |
+
 ### User management
 
-| Event Type            | Description                                     |
-| --------------------- | ----------------------------------------------- |
-| `user.invited`        | An admin invited a new user                     |
-| `user.updated`        | A user's profile was changed                    |
-| `user.role_updated`   | A user's role was changed (e.g. member → admin) |
-| `user.groups_updated` | A user's group memberships were changed         |
-| `user.deleted`        | A user account was deleted                      |
+| Event Type            | Description                                                                                                                                                                                                                                        |
+| --------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `user.invited`        | An admin invited a new user                                                                                                                                                                                                                        |
+| `user.invite_blocked` | An admin attempted to invite a user but the action was refused by a licence/seat-cap guard. Detail records the (redacted) `email`, the chosen `role`, the `reason` (e.g. `seat_cap`), and the relevant licence counters (`seatsUsed`, `maxUsers`). |
+| `user.updated`        | A user's profile was changed                                                                                                                                                                                                                       |
+| `user.role_updated`   | A user's role was changed (e.g. member → admin)                                                                                                                                                                                                    |
+| `user.groups_updated` | A user's group memberships were changed                                                                                                                                                                                                            |
+| `user.deleted`        | A user account was deleted                                                                                                                                                                                                                         |
 
 ### Group management
 
