@@ -306,6 +306,76 @@ describe("POST /api/internal/audit/tool-use", () => {
     );
   });
 
+  it("detail.success and detail.error stay consistent with outcome when result.isError=true", async () => {
+    // Issue #404: pinchy_write returns { isError: true, content, details } on
+    // EEXIST. The endpoint must keep detail.success aligned with outcome and
+    // surface the error inside detail too, otherwise the audit detail JSON
+    // contradicts the failure outcome (success: true with no error field).
+    await POST(
+      makeRequest({
+        phase: "end",
+        toolName: "pinchy_write",
+        agentId: "agent-1",
+        params: {
+          path: "/workspace/notiz.txt",
+          content: "secret content",
+          overwrite: false,
+        },
+        result: {
+          isError: true,
+          content: [
+            {
+              type: "text",
+              text: "File already exists at /workspace/notiz.txt. Set overwrite=true to replace.",
+            },
+          ],
+          details: {
+            path: "notiz.txt",
+            mode: "create",
+            overwrite: false,
+            error: "File already exists",
+          },
+        },
+      })
+    );
+
+    const call = vi.mocked(appendAuditLog).mock.calls[0]?.[0];
+    expect(call?.outcome).toBe("failure");
+    expect(call?.error).toEqual({
+      message: "File already exists at /workspace/notiz.txt. Set overwrite=true to replace.",
+    });
+    const detail = call?.detail as Record<string, unknown>;
+    expect(detail.success).toBe(false);
+    expect(typeof detail.error).toBe("string");
+    expect(detail.error).toMatch(/File already exists/);
+    expect(detail.path).toBe("notiz.txt");
+    expect(detail.toolName).toBe("pinchy_write");
+    // params must still be suppressed (PII protection via details override).
+    expect(detail).not.toHaveProperty("params");
+  });
+
+  it("detail.success=false and detail.error set when result.isError=true without details", async () => {
+    // No result.details override — endpoint must still mark detail.success
+    // as false and lift the semantic error message into detail.error.
+    await POST(
+      makeRequest({
+        phase: "end",
+        toolName: "pinchy_read",
+        agentId: "agent-1",
+        params: { path: "/data/missing.md" },
+        result: {
+          isError: true,
+          content: [{ type: "text", text: "ENOENT: no such file or directory" }],
+        },
+      })
+    );
+
+    const call = vi.mocked(appendAuditLog).mock.calls[0]?.[0];
+    const detail = call?.detail as Record<string, unknown>;
+    expect(detail.success).toBe(false);
+    expect(detail.error).toBe("ENOENT: no such file or directory");
+  });
+
   it("returns 500 with error message when appendAuditLog fails", async () => {
     vi.mocked(appendAuditLog).mockRejectedValueOnce(new Error("DB connection lost"));
 

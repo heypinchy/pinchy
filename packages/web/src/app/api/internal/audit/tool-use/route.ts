@@ -86,17 +86,33 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ success: true });
   }
 
+  // Derive outcome from two signals up-front so detail.success / detail.error
+  // stay consistent with the audit row's outcome / error columns:
+  //   1. payload.error (transport/dispatch-level failure from OpenClaw's hook)
+  //   2. result.isError (semantic failure — MCP convention for tools that
+  //      returned normally at the protocol level but reported an error
+  //      inside the result, e.g. ENOENT on pinchy_read, EEXIST on pinchy_write)
+  // Transport errors take precedence because they're the more fundamental
+  // failure. For semantic errors, we lift the first text content entry as
+  // the error message.
+  const resultObj = isObject(payload.result) ? payload.result : null;
+  const resultIsError = resultObj?.isError === true;
+  const semanticErrorMessage =
+    resultIsError && resultObj
+      ? (extractFirstTextContent(resultObj) ?? "Tool returned an error")
+      : null;
+  const outcome: "success" | "failure" = payload.error || resultIsError ? "failure" : "success";
+
   // Audit entries should answer: who, what, when, on what, outcome.
   // No full result payloads (contain business data), no OpenClaw-internal IDs.
   const detail: Record<string, unknown> = {
     toolName: payload.toolName,
-    success: !payload.error,
+    success: outcome === "success",
   };
-
-  const resultObj = isObject(payload.result) ? payload.result : null;
 
   if (payload.params !== undefined) detail.params = payload.params;
   if (payload.error) detail.error = payload.error;
+  else if (semanticErrorMessage) detail.error = semanticErrorMessage;
   if (payload.durationMs !== undefined) detail.durationMs = payload.durationMs;
 
   // Plugin can override the audit detail by returning result.details.
@@ -111,9 +127,15 @@ export async function POST(request: NextRequest) {
     Object.assign(detail, resultDetails);
     // Plugins must not override these system fields.
     detail.toolName = payload.toolName;
-    detail.success = !payload.error;
-    if (payload.error) detail.error = payload.error;
-    else delete detail.error;
+    detail.success = outcome === "success";
+    if (payload.error) {
+      detail.error = payload.error;
+    } else if (typeof detail.error !== "string" && semanticErrorMessage) {
+      detail.error = semanticErrorMessage;
+    } else if (outcome === "success") {
+      delete detail.error;
+    }
+    // Otherwise: keep detail.error from resultDetails (plugin-supplied).
   }
 
   // Change 3: Actor becomes the user extracted from sessionKey when possible
@@ -123,21 +145,6 @@ export async function POST(request: NextRequest) {
 
   const sanitizedDetail = sanitizeDetail(detail);
 
-  // Derive outcome from two signals:
-  //   1. payload.error (transport/dispatch-level failure from OpenClaw's hook)
-  //   2. result.isError (semantic failure — MCP convention for tools that
-  //      returned normally at the protocol level but reported an error
-  //      inside the result, e.g. ENOENT on pinchy_read)
-  // Transport errors take precedence because they're the more fundamental
-  // failure. For semantic errors, we try to lift the first text content
-  // entry as the error message.
-  const resultIsError = resultObj?.isError === true;
-  const semanticErrorMessage =
-    resultIsError && resultObj
-      ? (extractFirstTextContent(resultObj) ?? "Tool returned an error")
-      : null;
-
-  const outcome: "success" | "failure" = payload.error || resultIsError ? "failure" : "success";
   const error = payload.error
     ? { message: payload.error }
     : semanticErrorMessage
