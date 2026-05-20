@@ -40,7 +40,7 @@ const SECRET_PATTERNS: RegExp[] = [
 
 const ENV_SECRET_LINE = /^([A-Z_]*(SECRET|KEY|TOKEN|PASSWORD|CREDENTIAL)[A-Z_]*)=(.+)$/gim;
 
-function redactPatterns(value: string): string {
+export function redactPatterns(value: string): string {
   if (value === REDACTED) return value;
 
   let result = value;
