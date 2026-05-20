@@ -7,6 +7,14 @@ export interface BundleInput {
   scope: {
     agentId: string;
     sessionKey: string;
+    /**
+     * 1-based count of turns included up to and through the anchor turn.
+     * `null` when no anchor (Settings-triggered exports include the last N
+     * turns of the session). `skippedTurnsAfterAnchor` is then computed as
+     * `sessionTurnCount - anchorTurnIndex`. Reminder: this is a count, not
+     * a 0-based array index — passing a 0-based index will over-report
+     * skipped turns by one.
+     */
     anchorTurnIndex: number | null;
     sessionTurnCount: number;
     includedTurnRange: [number, number];

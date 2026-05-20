@@ -33,6 +33,15 @@ describe("buildBundle", () => {
     expect(b.scope.skippedTurnsAfterAnchor).toBe(7); // 12 - 5
   });
 
+  it("returns skippedTurnsAfterAnchor=0 when anchorTurnIndex is null", () => {
+    const b = buildBundle({
+      ...baseInput,
+      scope: { ...baseInput.scope, anchorTurnIndex: null },
+    });
+    expect(b.scope.skippedTurnsAfterAnchor).toBe(0);
+    expect(b.scope.anchorTurnIndex).toBeNull();
+  });
+
   it("hashes sessionKey to SHA-256, never emits raw key", () => {
     const b = buildBundle(baseInput);
     expect(b.scope.sessionKeyHash).toMatch(/^sha256:[a-f0-9]{64}$/);
