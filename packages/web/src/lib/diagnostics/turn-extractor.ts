@@ -21,6 +21,9 @@ export interface AssistantResponse {
 
 export interface Turn {
   index: number;
+  // Always "user" — each Turn is user-initiated and contains both userMessage and
+  // the assistantResponse that followed. The field exists for downstream code that
+  // treats turns as a flat role-tagged sequence.
   role: "user" | "assistant";
   userMessage?: { text: string; timestamp?: number };
   assistantResponse?: AssistantResponse;
@@ -40,6 +43,7 @@ interface SnapshotMessage {
   stopReason?: unknown;
   toolCallId?: unknown;
   isError?: unknown;
+  timestamp?: unknown;
 }
 
 function asRecord(value: unknown): Record<string, unknown> | undefined {
@@ -143,10 +147,14 @@ function buildTurn(event: Record<string, unknown>, index: number): Turn {
   if (usage) assistantResponse.usage = usage;
   if (toolCalls.length > 0) assistantResponse.toolCalls = toolCalls;
 
+  const firstSnapshotMessage = snapshot[0];
+  const userMessageTimestamp =
+    firstSnapshotMessage?.role === "user" ? asNumber(firstSnapshotMessage.timestamp) : undefined;
+
   return {
     index,
     role: "user",
-    userMessage: { text: finalPromptText, timestamp },
+    userMessage: { text: finalPromptText, timestamp: userMessageTimestamp },
     assistantResponse,
   };
 }
