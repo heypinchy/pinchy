@@ -32,6 +32,7 @@ describe("extractTurns", () => {
     const firstToolCall = turnsWithTools[0].assistantResponse!.toolCalls![0];
     expect(firstToolCall.name).toBeTruthy();
     expect(firstToolCall.arguments).toBeDefined();
+    expect(firstToolCall.result).toBeDefined();
   });
 
   it("returns finishReason='aborted' for the aborted turn, with empty text and no usage", () => {
