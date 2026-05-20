@@ -15,6 +15,17 @@ export type MemoryAuditWatcherDeps = {
   pollingInterval?: number;
   /** Write stabilization threshold in ms (default: 200). Events fire only after the file hasn't changed for this long. */
   stabilityThreshold?: number;
+  /**
+   * Whether chokidar should use fs.stat polling (default: `true`) or native
+   * fs.watch (inotify on Linux, fsevents on macOS). Production keeps polling
+   * because the watch root is typically a Docker bind-mounted directory
+   * where fs.watch is unreliable. Integration tests pass `false` because
+   * polling is at the mercy of the JS event loop — under vitest's parallel-
+   * test load on slow CI runners, the polling timer gets starved and events
+   * miss their 5 s budget. Native fs.watch is delivered from the kernel and
+   * is immune to event-loop pressure.
+   */
+  usePolling?: boolean;
 };
 
 /**
@@ -50,7 +61,10 @@ export async function startMemoryAuditWatcher(
     // later host-side write to that dir never fires either. Polling every
     // 250 ms is well within budget for a watch tree of a few dozen agents and
     // makes the watcher behave identically across all host/container setups.
-    usePolling: true,
+    // Tests override via `usePolling: false` so events come from inotify/
+    // fsevents and aren't subject to event-loop starvation under parallel
+    // vitest load (see PR #403 CI flake history).
+    usePolling: deps.usePolling ?? true,
     interval: deps.pollingInterval ?? 250,
     // Wait for writes to settle before firing add/change — prevents emitting
     // on partial writes during editor saves or atomic-replace flows.
