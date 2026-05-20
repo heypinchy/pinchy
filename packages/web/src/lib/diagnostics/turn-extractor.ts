@@ -72,14 +72,14 @@ function findFinishReason(
   snapshot: SnapshotMessage[],
   data: Record<string, unknown>
 ): string | undefined {
+  if (data.aborted === true) return "aborted";
+  if (data.timedOut === true) return "timeout";
   for (let i = snapshot.length - 1; i >= 0; i--) {
     const msg = snapshot[i];
     if (msg.role !== "assistant") continue;
     const stopReason = asString(msg.stopReason);
     if (stopReason) return stopReason;
   }
-  if (data.aborted === true) return "aborted";
-  if (data.timedOut === true) return "timeout";
   return undefined;
 }
 

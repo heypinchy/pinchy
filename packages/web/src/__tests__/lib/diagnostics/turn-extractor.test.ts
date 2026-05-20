@@ -33,4 +33,13 @@ describe("extractTurns", () => {
     expect(firstToolCall.name).toBeTruthy();
     expect(firstToolCall.arguments).toBeDefined();
   });
+
+  it("returns finishReason='aborted' for the aborted turn, with empty text and no usage", () => {
+    const events = parseJsonlLines(FIXTURE);
+    const turns = extractTurns(events);
+    const aborted = turns.find((t) => t.assistantResponse?.finishReason === "aborted");
+    expect(aborted).toBeDefined();
+    expect(aborted!.assistantResponse?.text).toBe("");
+    expect(aborted!.assistantResponse?.usage).toBeUndefined();
+  });
 });
