@@ -429,7 +429,11 @@ const AssistantActionBar: FC = () => {
       </ActionBarPrimitive.Copy>
       <ActionBarMorePrimitive.Root>
         <ActionBarMorePrimitive.Trigger asChild>
-          <TooltipIconButton tooltip="More" className="data-[state=open]:bg-accent">
+          <TooltipIconButton
+            tooltip="More"
+            className="data-[state=open]:bg-accent"
+            data-testid="assistant-action-bar-more-trigger"
+          >
             <MoreHorizontalIcon />
           </TooltipIconButton>
         </ActionBarMorePrimitive.Trigger>
@@ -446,6 +450,7 @@ const AssistantActionBar: FC = () => {
           </ActionBarPrimitive.ExportMarkdown>
           <ActionBarMorePrimitive.Item
             onSelect={() => setReportIssueOpen(true)}
+            data-testid="report-issue-menu-item"
             className="aui-action-bar-more-item flex cursor-pointer select-none items-center gap-2 rounded-sm px-2 py-1.5 text-sm outline-none hover:bg-accent hover:text-accent-foreground focus:bg-accent focus:text-accent-foreground"
           >
             <BugIcon className="size-4" />
