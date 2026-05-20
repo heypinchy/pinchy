@@ -58,7 +58,8 @@ export type AuditEventType =
   | "agent.memory_changed"
   | "agent.upstream_format_error"
   | "audit.exported"
-  | "attachment.uploaded";
+  | "attachment.uploaded"
+  | "diagnostics.exported";
 
 interface HmacFieldsV1 {
   timestamp: Date;
@@ -326,6 +327,19 @@ export type AuditLogEntry =
           reused: boolean;
         };
         sessionKey: string;
+      };
+    })
+  | (AuditLogBase & {
+      eventType: "diagnostics.exported";
+      detail: {
+        agent: { id: string; name: string };
+        scope: {
+          anchorTurnIndex: number | null;
+          includedTurnRange: [number, number];
+        };
+        byteSize: number;
+        droppedTurns: number;
+        truncated: boolean;
       };
     });
 
