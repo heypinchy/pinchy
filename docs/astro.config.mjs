@@ -141,6 +141,7 @@ export default defineConfig({
             { label: 'Set Up Web Search', slug: 'guides/web-search-setup' },
             { label: 'Message Delivery & Retry', slug: 'guides/retry-messages' },
             { label: 'Image Attachments', slug: 'guides/image-attachments' },
+            { label: 'Reporting Issues', slug: 'guides/reporting-issues' },
           ],
         },
         {
