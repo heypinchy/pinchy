@@ -24,6 +24,7 @@ import {
 import {
   ArrowDownIcon,
   ArrowUpIcon,
+  BugIcon,
   CheckIcon,
   CopyIcon,
   DownloadIcon,
@@ -33,10 +34,12 @@ import {
 import { type FC, useState, useEffect, useRef, useContext } from "react";
 import {
   AgentIdContext,
+  AgentNameContext,
   RetryResendContext,
   RetryContinueContext,
   ChatStatusContext,
 } from "@/components/chat";
+import { DiagnosticsExportDialog } from "@/components/diagnostics-export-dialog";
 import { RetryButton } from "@/components/chat/retry-button";
 import { useComposerRuntime } from "@assistant-ui/react";
 import { getDraft, saveDraft } from "@/lib/draft-store";
@@ -402,6 +405,11 @@ export const AssistantMessage: FC = () => {
 };
 
 const AssistantActionBar: FC = () => {
+  const messageId = useMessage((s) => s.id);
+  const agentId = useContext(AgentIdContext) ?? "";
+  const agentName = useContext(AgentNameContext) ?? "Unknown";
+  const [reportIssueOpen, setReportIssueOpen] = useState(false);
+
   return (
     <ActionBarPrimitive.Root
       hideWhenRunning
@@ -436,8 +444,22 @@ const AssistantActionBar: FC = () => {
               Export as Markdown
             </ActionBarMorePrimitive.Item>
           </ActionBarPrimitive.ExportMarkdown>
+          <ActionBarMorePrimitive.Item
+            onSelect={() => setReportIssueOpen(true)}
+            className="aui-action-bar-more-item flex cursor-pointer select-none items-center gap-2 rounded-sm px-2 py-1.5 text-sm outline-none hover:bg-accent hover:text-accent-foreground focus:bg-accent focus:text-accent-foreground"
+          >
+            <BugIcon className="size-4" />
+            Report issue to support
+          </ActionBarMorePrimitive.Item>
         </ActionBarMorePrimitive.Content>
       </ActionBarMorePrimitive.Root>
+      <DiagnosticsExportDialog
+        open={reportIssueOpen}
+        agentId={agentId}
+        agentName={agentName}
+        anchorMessageId={messageId}
+        onClose={() => setReportIssueOpen(false)}
+      />
     </ActionBarPrimitive.Root>
   );
 };
