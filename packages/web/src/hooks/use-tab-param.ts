@@ -7,6 +7,7 @@ export const SETTINGS_TABS = [
   "context",
   "profile",
   "telegram",
+  "support",
   "provider",
   "users",
   "groups",

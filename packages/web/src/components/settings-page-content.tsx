@@ -15,6 +15,7 @@ import { SettingsIntegrations } from "@/components/settings-integrations";
 import { SettingsLicense } from "@/components/settings-license";
 import { TelegramLinkSettings } from "@/components/telegram-link-settings";
 import { SettingsSecurity } from "@/components/settings-security";
+import { SettingsSupport } from "@/components/settings-support";
 import type { LicenseInfo } from "@/lib/enterprise";
 
 interface ProviderStatus {
@@ -43,13 +44,14 @@ export function SettingsPageContent({
   const { data: session } = authClient.useSession();
   const visibleTabs: SettingsTab[] = isAdmin
     ? [...SETTINGS_TABS]
-    : ["context", "profile", "telegram"];
+    : ["context", "profile", "telegram", "support"];
   const [activeTab, setActiveTab] = useTabParam("context", visibleTabs, initialTab);
 
   const [status, setStatus] = useState<ProviderStatus | null>(null);
   const [loading, setLoading] = useState(true);
   const [userContext, setUserContext] = useState("");
   const [orgContext, setOrgContext] = useState("");
+  const [supportAgents, setSupportAgents] = useState<Array<{ id: string; name: string }>>([]);
 
   const [providerDirty, setProviderDirty] = useState(false);
   const [contextDirty, setContextDirty] = useState(false);
@@ -88,6 +90,25 @@ export function SettingsPageContent({
     }
   }, []);
 
+  const fetchSupportAgents = useCallback(async () => {
+    try {
+      const res = await fetch("/api/agents");
+      if (!res.ok) return;
+      const data = await res.json();
+      const list = Array.isArray(data) ? data : [];
+      setSupportAgents(
+        list
+          .filter(
+            (a: { id?: unknown; name?: unknown }) =>
+              typeof a?.id === "string" && typeof a?.name === "string"
+          )
+          .map((a: { id: string; name: string }) => ({ id: a.id, name: a.name }))
+      );
+    } catch {
+      // Best-effort: the Support tab degrades to an empty state.
+    }
+  }, []);
+
   useEffect(() => {
     let cancelled = false;
     void Promise.resolve().then(() => {
@@ -97,11 +118,12 @@ export function SettingsPageContent({
         void fetchOrgContext();
       }
       void fetchContext();
+      void fetchSupportAgents();
     });
     return () => {
       cancelled = true;
     };
-  }, [isAdmin, fetchStatus, fetchContext, fetchOrgContext]);
+  }, [isAdmin, fetchStatus, fetchContext, fetchOrgContext, fetchSupportAgents]);
 
   const handleProviderDirtyChange = useCallback((isDirty: boolean) => {
     setProviderDirty(isDirty);
@@ -126,6 +148,7 @@ export function SettingsPageContent({
               <TabsTrigger value="context">Context {contextDirty && <DirtyDot />}</TabsTrigger>
               <TabsTrigger value="profile">Profile {profileDirty && <DirtyDot />}</TabsTrigger>
               <TabsTrigger value="telegram">Telegram</TabsTrigger>
+              <TabsTrigger value="support">Support</TabsTrigger>
               {isAdmin && (
                 <TabsTrigger value="provider">Provider {providerDirty && <DirtyDot />}</TabsTrigger>
               )}
@@ -161,6 +184,10 @@ export function SettingsPageContent({
 
           <TabsContent value="telegram">
             <TelegramLinkSettings isAdmin={isAdmin} />
+          </TabsContent>
+
+          <TabsContent value="support">
+            <SettingsSupport agents={supportAgents} />
           </TabsContent>
 
           {isAdmin && (
