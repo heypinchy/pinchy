@@ -229,7 +229,10 @@ in this fixture, replaced by `"[fixture] tool result body redacted"`.
 - `responseId` values in this fixture were normalized across turns during
   sanitization. In production data each call has a unique id — do not
   assert uniqueness against this fixture, and don't use `responseId` as a
-  join key when reading from it.
+  join key when reading from it. This affects the "filter by `responseId`"
+  tip in the `usage` row of the per-message snapshot table above: that
+  approach is sound against production data, but for this fixture use
+  tail-slicing instead.
 - All `cost.*` values are `0` in this fixture because the source provider
   was `ollama-cloud`, which does not surface per-call cost. To exercise
   non-zero-cost rendering, mutate a copy of the fixture rather than
