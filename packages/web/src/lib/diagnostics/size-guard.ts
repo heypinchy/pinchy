@@ -2,7 +2,11 @@ import type { Bundle } from "./bundle-builder";
 
 export const BUNDLE_SIZE_CAP_BYTES = 5 * 1024 * 1024;
 
-export function enforceSizeCap(bundle: Bundle): { bundle: Bundle; dropped: number } {
+export function enforceSizeCap(bundle: Bundle): {
+  bundle: Bundle;
+  dropped: number;
+  truncated: boolean;
+} {
   let working: Bundle = bundle;
   let dropped = 0;
   while (
@@ -22,5 +26,6 @@ export function enforceSizeCap(bundle: Bundle): { bundle: Bundle; dropped: numbe
     };
     dropped += 1;
   }
-  return { bundle: working, dropped };
+  const truncated = Buffer.byteLength(JSON.stringify(working), "utf8") > BUNDLE_SIZE_CAP_BYTES;
+  return { bundle: working, dropped, truncated };
 }
