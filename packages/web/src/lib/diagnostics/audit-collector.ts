@@ -1,17 +1,23 @@
-// Fetch audit log entries for a single chat session so a diagnostics bundle
-// can show what the agent's tool calls did from the platform's point of view.
+// Fetch audit log entries for a single user's interactions with an agent so a
+// diagnostics bundle can show what the agent's tool calls did from the
+// platform's point of view.
 //
-// v1 scope: rows whose `resource` column exactly matches the sessionKey. The
-// chat path stamps the sessionKey on tool.* rows, so this is the simplest
-// link between a session and its audit footprint. Future iterations may
-// broaden the query (e.g. agent-scoped chat.* events that pre-date the
-// session key field).
+// v1 scope: rows whose `resource` column matches `agent:<agentId>` AND whose
+// `actorId` matches the requesting user. Every production code path
+// (chat.send, tool.*, agent.* events) stamps `resource = "agent:<agentId>"` on
+// audit rows — this is the canonical link between an audit row and an agent.
+// Filtering on `actorId` ensures we never leak another user's audit rows into
+// this user's diagnostics bundle.
+//
+// Time-range scoping is intentionally deferred: over-collecting is better than
+// under-collecting for diagnostics, and the bundle size-cap trims aggressively
+// when needed.
 //
 // We strip the HMAC + integrity fields before returning so they never leak
 // into a downloadable bundle — they're useless outside the audit DB context
 // and we want fewer secret-shaped bytes flying around in support archives.
 
-import { asc, eq } from "drizzle-orm";
+import { and, asc, eq } from "drizzle-orm";
 import { db } from "@/db";
 import { auditLog } from "@/db/schema";
 
@@ -26,11 +32,9 @@ export interface CollectedAuditEntry {
   error: unknown;
 }
 
-// `agentId` is accepted for future broadening (per-agent fallback queries) but
-// currently unused — the sessionKey already encodes the agent.
 export async function fetchAuditEntriesForSession(
-  _agentId: string,
-  sessionKey: string
+  agentId: string,
+  userId: string
 ): Promise<CollectedAuditEntry[]> {
   const rows = await db
     .select({
@@ -44,7 +48,7 @@ export async function fetchAuditEntriesForSession(
       error: auditLog.error,
     })
     .from(auditLog)
-    .where(eq(auditLog.resource, sessionKey))
+    .where(and(eq(auditLog.resource, `agent:${agentId}`), eq(auditLog.actorId, userId)))
     .orderBy(asc(auditLog.timestamp));
 
   return rows;

@@ -79,4 +79,18 @@ describe("readTrajectoryJsonl", () => {
   it("throws a typed error when the trajectory file is missing", async () => {
     await expect(readTrajectoryJsonl("agt_missing", "ses_none")).rejects.toThrow();
   });
+
+  it("throws on a path-traversal sessionId without touching the filesystem", async () => {
+    await expect(readTrajectoryJsonl("agt_abc", "../../etc/passwd")).rejects.toThrow(
+      /unsafe path segment/
+    );
+  });
+});
+
+describe("path-traversal defense", () => {
+  it("resolveSessionId throws on an unsafe agentId without touching the filesystem", async () => {
+    await expect(resolveSessionId("../etc", "agent:x:direct:u")).rejects.toThrow(
+      /unsafe path segment/
+    );
+  });
 });

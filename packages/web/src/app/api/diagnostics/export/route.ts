@@ -21,8 +21,8 @@
 import { NextResponse } from "next/server";
 
 import { withAuth } from "@/lib/api-auth";
-import { appendAuditLog, type AuditLogEntry } from "@/lib/audit";
-import { recordAuditFailure } from "@/lib/audit-deferred";
+import { type AuditLogEntry } from "@/lib/audit";
+import { deferAuditLog } from "@/lib/audit-deferred";
 import { getAgentWithAccess } from "@/lib/agent-access";
 import { parseRequestBody } from "@/lib/api-validation";
 import { buildBundle } from "@/lib/diagnostics/bundle-builder";
@@ -79,7 +79,7 @@ export const POST = withAuth(async (request, _ctx, session) => {
   const scope = computeScope(turns, anchorMessageId, DEFAULT_TURN_WINDOW);
   const selectedTurns = turns.slice(scope.includedTurnRange[0], scope.includedTurnRange[1] + 1);
   const spans = buildOtelSpans(selectedTurns);
-  const auditEntries = await fetchAuditEntriesForSession(agentId, sessionKey);
+  const auditEntries = await fetchAuditEntriesForSession(agentId, session.user.id);
 
   const bundle = buildBundle({
     spans,
@@ -114,11 +114,7 @@ export const POST = withAuth(async (request, _ctx, session) => {
     },
     outcome: "success",
   };
-  try {
-    await appendAuditLog(auditEntry);
-  } catch (err) {
-    recordAuditFailure(err, auditEntry);
-  }
+  deferAuditLog(auditEntry);
 
   return NextResponse.json(capped);
 });

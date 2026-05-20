@@ -15,6 +15,21 @@ function getStateDir(): string {
   return process.env.OPENCLAW_STATE_DIR ?? DEFAULT_STATE_DIR;
 }
 
+// Defense-in-depth against path traversal: even though `agentId` is
+// DB-validated by the route, `sessionId` comes from a JSON file on a shared
+// volume. Reject any segment that could escape the per-agent sessions
+// directory rather than trying to normalize it.
+function assertSafeSegment(segment: string, kind: string): void {
+  if (
+    segment.includes("/") ||
+    segment.includes("\\") ||
+    segment.includes("..") ||
+    segment.includes("\0")
+  ) {
+    throw new Error(`Invalid ${kind}: refusing to join unsafe path segment`);
+  }
+}
+
 function sessionsDir(agentId: string): string {
   return join(getStateDir(), "agents", agentId, "sessions");
 }
@@ -46,6 +61,7 @@ export async function resolveSessionId(
   agentId: string,
   sessionKey: string
 ): Promise<string | null> {
+  assertSafeSegment(agentId, "agentId");
   const path = join(sessionsDir(agentId), "sessions.json");
   let raw: string;
   try {
@@ -73,6 +89,8 @@ export async function resolveSessionId(
  * errors propagate untouched.
  */
 export async function readTrajectoryJsonl(agentId: string, sessionId: string): Promise<string> {
+  assertSafeSegment(agentId, "agentId");
+  assertSafeSegment(sessionId, "sessionId");
   const path = join(sessionsDir(agentId), `${sessionId}.trajectory.jsonl`);
   try {
     return await readFile(path, "utf8");

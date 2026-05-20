@@ -26,6 +26,40 @@ vi.mock("next/headers", () => ({
   headers: vi.fn().mockResolvedValue(new Headers()),
 }));
 
+// `after()` from next/server requires a real request scope. The route
+// schedules its audit write via deferAuditLog -> after(), so we run the
+// callback synchronously in tests to keep audit-row assertions deterministic.
+// Mirrors src/test-setup.ts (which only applies to the unit suite).
+//
+// Because the callback is itself async (appendAuditLog writes via Drizzle),
+// we track in-flight promises so the test body can `await flushAfter()` before
+// querying the DB.
+const pendingAfter: Promise<unknown>[] = [];
+async function flushAfter(): Promise<void> {
+  while (pendingAfter.length > 0) {
+    const all = pendingAfter.splice(0);
+    await Promise.allSettled(all);
+  }
+}
+vi.mock("next/server", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("next/server")>();
+  return {
+    ...actual,
+    after: vi.fn((fn: () => void | Promise<void>) => {
+      try {
+        const result = fn();
+        if (result instanceof Promise) {
+          // Track so tests can await completion. .catch swallows to match
+          // Next's after() error handling (errors stay inside after()).
+          pendingAfter.push(result.catch(() => {}));
+        }
+      } catch {
+        // Swallowed — matches Next's after() error handling.
+      }
+    }),
+  };
+});
+
 vi.mock("@/lib/auth", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@/lib/auth")>();
   return { ...actual, getSession: vi.fn() };
@@ -38,6 +72,7 @@ vi.mock("@/lib/diagnostics/jsonl-reader", () => ({
 
 import { db } from "@/db";
 import { agents, auditLog, users } from "@/db/schema";
+import { appendAuditLog } from "@/lib/audit";
 import { auth } from "@/lib/auth";
 import { getSession } from "@/lib/auth";
 import { resolveSessionId, readTrajectoryJsonl } from "@/lib/diagnostics/jsonl-reader";
@@ -151,6 +186,7 @@ describe("POST /api/diagnostics/export (integration)", () => {
       makeRequest({ agentId: agent.id, userDescription: "Stuck on tool error" })
     );
     expect(response.status).toBe(200);
+    await flushAfter();
 
     const rows = await db
       .select()
@@ -178,5 +214,53 @@ describe("POST /api/diagnostics/export (integration)", () => {
 
     const response = await POST(makeRequest({ agentId: agent.id }));
     expect(response.status).toBe(404);
+  });
+
+  it("includes audit rows for the caller's interactions with the agent", async () => {
+    const owner = await seedUser();
+    mockSession(owner);
+    const agent = await seedPersonalAgent(owner.id);
+
+    // Seed audit rows with the REAL production shape: resource = agent:<id>,
+    // actorId = the user. The collector should surface these in the bundle.
+    await appendAuditLog({
+      actorType: "user",
+      actorId: owner.id,
+      eventType: "tool.pinchy_ls",
+      resource: `agent:${agent.id}`,
+      detail: { agentId: agent.id },
+      outcome: "success",
+    });
+    await appendAuditLog({
+      actorType: "user",
+      actorId: owner.id,
+      eventType: "tool.pinchy_read",
+      resource: `agent:${agent.id}`,
+      detail: { agentId: agent.id, path: "/x" },
+      outcome: "success",
+    });
+
+    const response = await POST(makeRequest({ agentId: agent.id }));
+    expect(response.status).toBe(200);
+    const bundle = await response.json();
+    const toolEntries = (bundle.auditEntries as Array<{ eventType: string }>).filter((e) =>
+      e.eventType.startsWith("tool.")
+    );
+    expect(toolEntries).toHaveLength(2);
+    const eventTypes = toolEntries.map((e) => e.eventType).sort();
+    expect(eventTypes).toEqual(["tool.pinchy_ls", "tool.pinchy_read"]);
+  });
+
+  it("returns an empty-spans bundle when the trajectory file is empty", async () => {
+    const owner = await seedUser();
+    mockSession(owner);
+    const agent = await seedPersonalAgent(owner.id);
+    vi.mocked(readTrajectoryJsonl).mockResolvedValue("");
+
+    const response = await POST(makeRequest({ agentId: agent.id }));
+    expect(response.status).toBe(200);
+    const bundle = await response.json();
+    expect(bundle.spans).toEqual([]);
+    expect(bundle.scope.includedTurnRange).toEqual([0, -1]);
   });
 });
