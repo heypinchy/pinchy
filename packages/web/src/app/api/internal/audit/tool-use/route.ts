@@ -23,6 +23,23 @@ function extractFirstTextContent(result: Record<string, unknown>): string | null
   return typeof text === "string" && text.trim().length > 0 ? text : null;
 }
 
+// Resolve detail.error from the three possible sources in fixed precedence:
+//   payload.error (transport)  >  resultDetails.error (plugin-supplied string)
+//   >  semanticErrorMessage (lifted from result.content)
+// Returns undefined when no string source is available, so the caller can
+// either omit the field (non-override path) or delete it after Object.assign
+// (override path).
+function resolveDetailError(args: {
+  payloadError: string | undefined;
+  resultDetailsError: unknown;
+  semanticErrorMessage: string | null;
+}): string | undefined {
+  if (args.payloadError) return args.payloadError;
+  if (typeof args.resultDetailsError === "string") return args.resultDetailsError;
+  if (args.semanticErrorMessage) return args.semanticErrorMessage;
+  return undefined;
+}
+
 function extractAgentIdFromSessionKey(sessionKey: string | undefined): string | undefined {
   if (!sessionKey) return undefined;
   return /^agent:([^:]+):/.exec(sessionKey)?.[1];
@@ -103,6 +120,20 @@ export async function POST(request: NextRequest) {
       : null;
   const outcome: "success" | "failure" = payload.error || resultIsError ? "failure" : "success";
 
+  // Plugin can override the audit detail by returning result.details.
+  // Used by tools whose params contain sensitive data (e.g. pinchy_write.content).
+  // When details is set, raw params are not logged.
+  const resultDetails =
+    resultObj && isObject(resultObj.details)
+      ? (resultObj.details as Record<string, unknown>)
+      : null;
+
+  const detailError = resolveDetailError({
+    payloadError: payload.error,
+    resultDetailsError: resultDetails?.error,
+    semanticErrorMessage,
+  });
+
   // Audit entries should answer: who, what, when, on what, outcome.
   // No full result payloads (contain business data), no OpenClaw-internal IDs.
   const detail: Record<string, unknown> = {
@@ -111,31 +142,17 @@ export async function POST(request: NextRequest) {
   };
 
   if (payload.params !== undefined) detail.params = payload.params;
-  if (payload.error) detail.error = payload.error;
-  else if (semanticErrorMessage) detail.error = semanticErrorMessage;
+  if (detailError !== undefined) detail.error = detailError;
   if (payload.durationMs !== undefined) detail.durationMs = payload.durationMs;
 
-  // Plugin can override the audit detail by returning result.details.
-  // Used by tools whose params contain sensitive data (e.g. pinchy_write.content).
-  // When details is set, raw params are not logged.
-  const resultDetails =
-    resultObj && isObject(resultObj.details)
-      ? (resultObj.details as Record<string, unknown>)
-      : null;
   if (resultDetails) {
     delete detail.params;
     Object.assign(detail, resultDetails);
-    // Plugins must not override these system fields.
+    // Plugins must not override these system fields. Re-apply after merge.
     detail.toolName = payload.toolName;
     detail.success = outcome === "success";
-    if (payload.error) {
-      detail.error = payload.error;
-    } else if (typeof detail.error !== "string" && semanticErrorMessage) {
-      detail.error = semanticErrorMessage;
-    } else if (outcome === "success") {
-      delete detail.error;
-    }
-    // Otherwise: keep detail.error from resultDetails (plugin-supplied).
+    if (detailError !== undefined) detail.error = detailError;
+    else delete detail.error;
   }
 
   // Change 3: Actor becomes the user extracted from sessionKey when possible

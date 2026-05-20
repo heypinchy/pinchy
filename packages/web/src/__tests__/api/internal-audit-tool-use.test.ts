@@ -288,6 +288,75 @@ describe("POST /api/internal/audit/tool-use", () => {
     );
   });
 
+  it("detail.error reflects transport error, not semantic error, when both are present", async () => {
+    // Transport precedence must propagate into detail.error too — otherwise
+    // the audit row's error column and detail JSON disagree.
+    await POST(
+      makeRequest({
+        phase: "end",
+        toolName: "pinchy_read",
+        agentId: "agent-1",
+        error: "Plugin crashed",
+        result: { isError: true, content: [{ type: "text", text: "inner semantic message" }] },
+      })
+    );
+
+    const call = vi.mocked(appendAuditLog).mock.calls[0]?.[0];
+    const detail = call?.detail as Record<string, unknown>;
+    expect(detail.success).toBe(false);
+    expect(detail.error).toBe("Plugin crashed");
+  });
+
+  it("detail.error reflects transport error even when plugin supplies result.details.error", async () => {
+    // Transport precedence must also win over plugin-supplied result.details.error.
+    await POST(
+      makeRequest({
+        phase: "end",
+        toolName: "pinchy_write",
+        agentId: "agent-1",
+        error: "Plugin crashed",
+        result: {
+          isError: true,
+          content: [{ type: "text", text: "inner semantic message" }],
+          details: { path: "notiz.txt", error: "plugin-curated message" },
+        },
+      })
+    );
+
+    const call = vi.mocked(appendAuditLog).mock.calls[0]?.[0];
+    const detail = call?.detail as Record<string, unknown>;
+    expect(detail.success).toBe(false);
+    expect(detail.error).toBe("Plugin crashed");
+  });
+
+  it("non-string result.details.error is replaced by semantic message", async () => {
+    // The audit error column expects a string. If a plugin supplies a
+    // structured (non-string) error inside result.details, the endpoint must
+    // fall back to the semantic text-content message so detail.error remains
+    // a string and consumers don't have to special-case shapes.
+    await POST(
+      makeRequest({
+        phase: "end",
+        toolName: "pinchy_write",
+        agentId: "agent-1",
+        result: {
+          isError: true,
+          content: [{ type: "text", text: "File already exists" }],
+          details: {
+            path: "notiz.txt",
+            error: { code: 42, message: "structured plugin error" },
+          },
+        },
+      })
+    );
+
+    const call = vi.mocked(appendAuditLog).mock.calls[0]?.[0];
+    const detail = call?.detail as Record<string, unknown>;
+    expect(detail.success).toBe(false);
+    expect(typeof detail.error).toBe("string");
+    expect(detail.error).toBe("File already exists");
+  });
+
   it("result.isError=true without content falls back to a generic message", async () => {
     await POST(
       makeRequest({
