@@ -2,7 +2,7 @@ export type JsonlEvent = Record<string, unknown>;
 
 export function parseJsonlLines(input: string): JsonlEvent[] {
   return input
-    .split("\n")
+    .split(/\r?\n/)
     .filter((line) => line.trim().length > 0)
     .flatMap((line) => {
       try {

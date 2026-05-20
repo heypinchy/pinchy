@@ -23,4 +23,18 @@ describe("parseJsonlLines", () => {
       { type: "also_ok" },
     ]);
   });
+
+  it("handles CRLF line endings", () => {
+    expect(parseJsonlLines('{"type":"a"}\r\n{"type":"b"}\r\n')).toEqual([
+      { type: "a" },
+      { type: "b" },
+    ]);
+  });
+
+  it("drops a torn final line without affecting earlier valid events", () => {
+    // OpenClaw writer crashed mid-flush — final line is an incomplete JSON object.
+    // Earlier events must still be returned.
+    const input = '{"type":"a"}\n{"type":"b"}\n{"type":"c","text":"hi';
+    expect(parseJsonlLines(input)).toEqual([{ type: "a" }, { type: "b" }]);
+  });
 });
