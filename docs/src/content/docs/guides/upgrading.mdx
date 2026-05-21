@@ -149,7 +149,38 @@ If you need to roll back after an upgrade:
   backup step matters.
 </Aside>
 
-## Upgrading from v0.5.3 to %%PINCHY_VERSION%%
+## Upgrading from v0.5.4 to %%PINCHY_VERSION%%
+
+### Breaking changes
+
+None.
+
+### Upgrade notes
+
+%%PINCHY_VERSION%% fixes a confusing failure mode for the built-in `image` tool on Ollama Cloud stacks and adds an explicit image-model default to remove a class of provider-selection drift.
+
+Upgrade with the standard flow:
+
+```bash
+cd /opt/pinchy
+sed -i 's/PINCHY_VERSION=v0.5.4/PINCHY_VERSION=%%PINCHY_VERSION%%/' .env
+docker compose pull && docker compose up -d && docker image prune -f
+```
+
+No database migration, no `docker-compose.yml` change, and no env-var changes are required.
+
+#### Image tool no longer routes to `devstral-small-2:24b`
+
+On Ollama Cloud stacks without an explicit image model, Pinchy's built-in `image` tool could pick `devstral-small-2:24b` and fail with `HTTP 400 "Image input is not enabled for this model"` mid-chat — confusing because the user never selected devstral. Two fixes ship together:
+
+- **Data correction.** `devstral-small-2:24b` is now flagged `vision: false`. Its ollama.com library page lists "Text, Image" as input types, but an empirical smoke test against the live `/v1/chat/completions` endpoint (see `scripts/verify-ollama-cloud-vision.mjs`) confirms the runtime API rejects images with HTTP 400. Devstral is Mistral's coding series, not a vision model.
+- **Explicit image-model default.** Pinchy now emits `agents.defaults.imageModel.primary` into the OpenClaw config, parallel to the existing `pdfModel` selection. Provider preference order: anthropic > google > openai > ollama-cloud. For ollama-cloud the canonical-vision line wins (`qwen3-vl:235b-instruct` > `qwen3-vl:235b` > `gemini-3-flash-preview` > `gemma4:31b`), avoiding models like `mistral-large-3:675b` or `qwen3.5:397b` that accept image input but mislabel colors.
+
+**No action required.** The new field is regenerated on startup from your existing provider settings. Operators who want to override the auto-pick can hand-edit `agents.defaults.imageModel.primary` in `openclaw.json`.
+
+A companion verification script lives at `scripts/verify-ollama-cloud-vision.mjs` and can be re-run whenever the Ollama Cloud catalog changes: it tests each curated model against the live API and reports any drift between the `vision` flag in `ollama-cloud-models.ts` and runtime acceptance.
+
+## Upgrading from v0.5.3 to v0.5.4
 
 ### Breaking changes
 
@@ -157,20 +188,20 @@ If you need to roll back after an upgrade:
 
 ### Upgrade notes
 
-%%PINCHY_VERSION%% extends the Odoo template library with read-write operator agents, hardens how those agents reference Odoo records, and irons out several chat-reliability edges. It also picks up Next.js security patches and OpenClaw 2026.5.7.
+v0.5.4 extends the Odoo template library with read-write operator agents, hardens how those agents reference Odoo records, and irons out several chat-reliability edges. It also picks up Next.js security patches and OpenClaw 2026.5.7.
 
 Upgrade with the standard flow:
 
 ```bash
 cd /opt/pinchy
-sed -i 's/PINCHY_VERSION=v0.5.3/PINCHY_VERSION=%%PINCHY_VERSION%%/' .env
+sed -i 's/PINCHY_VERSION=v0.5.3/PINCHY_VERSION=v0.5.4/' .env
 docker compose pull && docker compose up -d && docker image prune -f
 ```
 
 No database migration, no `docker-compose.yml` change, and no env-var changes are required.
 
 <Aside type="tip">
-  **Odoo users: re-sync your schema after upgrade.** %%PINCHY_VERSION%% adds six
+  **Odoo users: re-sync your schema after upgrade.** v0.5.4 adds six
   new agent templates (Bookkeeper, Project Manager, HR Operator, Warehouse
   Operator, Production Operator, Approval Manager) whose `requiredModels`
   reference Odoo models that previous Pinchy versions didn't probe (e.g.
@@ -193,7 +224,7 @@ The `odoo_schema` tool has been replaced by two narrower tools: `odoo_list_model
 
 **No action required.** A startup migration rewrites every agent's `allowed_tools` to use the new names, and the read-write Odoo operator templates (Bookkeeper, Warehouse Operator, HR Operator, etc.) ship with updated guidance for the agent.
 
-For existing agents created before %%PINCHY_VERSION%%, the old `odoo_schema` tool name is kept as a deprecated alias. The `AGENTS.md` files those agents store in their workspace still contain literal `odoo_schema` references — the alias keeps them working without any manual file editing, and routes the call through the new compact code path. You can safely ignore the alias; it will be removed in v0.6.x.
+For existing agents created before v0.5.4, the old `odoo_schema` tool name is kept as a deprecated alias. The `AGENTS.md` files those agents store in their workspace still contain literal `odoo_schema` references — the alias keeps them working without any manual file editing, and routes the call through the new compact code path. You can safely ignore the alias; it will be removed in v0.6.x.
 
 #### Six new Odoo agent templates
 
@@ -249,7 +280,7 @@ Open chats keep running in the background while you navigate within Pinchy — a
 - **Dead-key composer freeze.** Typing characters that involve dead keys (e.g. `^` + `e` → `ê`) no longer desyncs the composer input.
 - **Payload rejection visibility.** When OpenClaw rejects a payload mid-stream, the chat now surfaces a clear error status instead of leaving the spinner running.
 - **Silent stream-end retry.** A run that finishes without producing any assistant text — typically a cold-path tool call that timed out inside OpenClaw's embedded layer — now shows the standard error bubble with a **Retry** button instead of an indistinguishable "successful empty reply". Each occurrence writes a throttled `chat.silent_stream` audit entry so admins get an operational signal.
-- **Gemini 3 `thought_signature` errors are now named and explained.** When the upstream provider drops Gemini 3's required `thought_signature` field on a tool-call replay turn (upstream `openclaw/openclaw#72879`), Pinchy now shows a dedicated **transient upstream issue bubble** that names the cause and tells the user that **Retry usually clears it on the next try**. The bubble deliberately offers no "Switch model" link — the model is fine. Each occurrence writes a throttled `agent.upstream_format_error` audit entry so admins can track frequency from the audit page rather than grepping gateway logs. The upstream fix for the native Google path lands in OpenClaw 2026.5.18; %%PINCHY_VERSION%% is still pinned at 2026.5.7 and ships with the transient-issue bubble as the user-facing mitigation. The OpenClaw bump is scheduled for the next Pinchy release. ([#338](https://github.com/heypinchy/pinchy/issues/338))
+- **Gemini 3 `thought_signature` errors are now named and explained.** When the upstream provider drops Gemini 3's required `thought_signature` field on a tool-call replay turn (upstream `openclaw/openclaw#72879`), Pinchy now shows a dedicated **transient upstream issue bubble** that names the cause and tells the user that **Retry usually clears it on the next try**. The bubble deliberately offers no "Switch model" link — the model is fine. Each occurrence writes a throttled `agent.upstream_format_error` audit entry so admins can track frequency from the audit page rather than grepping gateway logs. The upstream fix for the native Google path lands in OpenClaw 2026.5.18; v0.5.4 is still pinned at 2026.5.7 and ships with the transient-issue bubble as the user-facing mitigation. The OpenClaw bump is scheduled for the next Pinchy release. ([#338](https://github.com/heypinchy/pinchy/issues/338))
 
 #### Permissions tab no longer reports false-positive dirty state
 
@@ -257,7 +288,7 @@ If an Odoo or Email connection was configured on an agent, the **Settings → Ag
 
 #### New `/api/version` endpoint + OCI image labels
 
-You can now confirm which Pinchy and OpenClaw versions are actually running without opening the UI. `GET /api/version` returns `{ pinchyVersion, openclawVersion, build, nodeEnv }` and is exempt from Domain Lock so it works from monitoring tools and the host shell. Docker images now also carry standard OCI labels (`org.opencontainers.image.version`, `org.opencontainers.image.revision`, …), so `docker inspect ghcr.io/heypinchy/pinchy:%%PINCHY_VERSION%%` reports the version and git SHA the image was built from.
+You can now confirm which Pinchy and OpenClaw versions are actually running without opening the UI. `GET /api/version` returns `{ pinchyVersion, openclawVersion, build, nodeEnv }` and is exempt from Domain Lock so it works from monitoring tools and the host shell. Docker images now also carry standard OCI labels (`org.opencontainers.image.version`, `org.opencontainers.image.revision`, …), so `docker inspect ghcr.io/heypinchy/pinchy:v0.5.4` reports the version and git SHA the image was built from.
 
 The upgrading guide's "Verify" step is updated to use `/api/version` instead of opening `http://localhost:7777` directly — the old instruction returned 403 on Domain-Lock-enabled deployments.
 
