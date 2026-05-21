@@ -74,11 +74,18 @@ export const TOOL_CAPABLE_OLLAMA_CLOUD_MODELS = [
     vision: false,
   },
   {
+    // ollama.com/library/devstral-small-2 lists "Text, Image" in the input
+    // types, but the live `/v1/chat/completions` endpoint returns HTTP 400
+    // "Image input is not enabled for this model" on image_url payloads —
+    // confirmed by the empirical API smoke test in #416. Devstral is
+    // Mistral's coding series, not a vision model; the library page is
+    // misleading. Flagged `vision: false` so it isn't picked as an image
+    // model fallback.
     id: "devstral-small-2:24b",
     contextWindow: 393216,
     maxTokens: 8192,
     reasoning: false,
-    vision: true,
+    vision: false,
   },
   {
     id: "gemini-3-flash-preview",

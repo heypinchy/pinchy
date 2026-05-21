@@ -1442,9 +1442,11 @@ describe("regenerateOpenClawConfig", () => {
     }>;
     const byId = Object.fromEntries(models.map((m) => [m.id, m]));
 
-    // Vision-capable cloud models per ollama.com/search?c=vision&c=cloud
+    // Vision-capable cloud models per the empirical API smoke test in #416
+    // (live `/v1/chat/completions` accepts image_url payloads with HTTP 200).
+    // devstral-small-2:24b is explicitly excluded — its library page claims
+    // "Text, Image" but the runtime API rejects images with HTTP 400.
     const visionModels = [
-      "devstral-small-2:24b",
       "gemini-3-flash-preview",
       "gemma4:31b",
       "kimi-k2.5",
@@ -1461,10 +1463,12 @@ describe("regenerateOpenClawConfig", () => {
       expect(byId[id].input).toEqual(["text", "image"]);
     }
     // Spot-check that text-only models stay text-only (gemma4 was the
-    // specific counter-example the user flagged during review)
+    // specific counter-example the user flagged during review). devstral-
+    // small-2:24b joined this list after the #416 smoke test demoted it.
     expect(byId["rnj-1:8b"].input).toEqual(["text"]);
     expect(byId["qwen3-coder:480b"].input).toEqual(["text"]);
     expect(byId["deepseek-v3.2"].input).toEqual(["text"]);
+    expect(byId["devstral-small-2:24b"].input).toEqual(["text"]);
 
     // Reasoning-capable cloud models per ollama.com/search?c=thinking&c=cloud
     const reasoningModels = [
@@ -5842,5 +5846,84 @@ describe("regenerateOpenClawConfig size-drop guard (#311)", () => {
 
     const config = JSON.parse(mockedWriteFileSync.mock.calls[0][1] as string);
     expect(config.agents.defaults.pdfModel.primary).toBe("google/gemini-2.5-flash");
+  });
+
+  // `agents.defaults.imageModel.primary` mirrors `pdfModel` but for the
+  // built-in `image` tool. Without it, OpenClaw scans providers in their
+  // declared order and picks the first vision-flagged model — which on an
+  // ollama-cloud-only stack used to land on `devstral-small-2:24b`
+  // alphabetically, even though the live API rejects images for that model
+  // with HTTP 400 (#416). Pinning the choice via `imageModel.primary`
+  // removes that fragility.
+  it("auto-sets agents.defaults.imageModel.primary when Anthropic is configured", async () => {
+    mockedGetSetting.mockImplementation(async (key: string) =>
+      key === "anthropic_api_key" ? "sk-ant-test" : null
+    );
+    await regenerateOpenClawConfig();
+
+    const config = JSON.parse(mockedWriteFileSync.mock.calls[0][1] as string);
+    expect(config.agents.defaults.imageModel).toEqual({
+      primary: "anthropic/claude-haiku-4-5-20251001",
+    });
+  });
+
+  it("does not set agents.defaults.imageModel when no provider is configured", async () => {
+    mockedGetSetting.mockResolvedValue(null);
+    await regenerateOpenClawConfig();
+
+    const config = JSON.parse(mockedWriteFileSync.mock.calls[0][1] as string);
+    expect(config.agents?.defaults?.imageModel).toBeUndefined();
+  });
+
+  it("prefers anthropic over google when both native vision providers are configured (image)", async () => {
+    mockedGetSetting.mockImplementation(async (key: string) => {
+      if (key === "anthropic_api_key") return "sk-ant-test";
+      if (key === "google_api_key") return "AIza-test";
+      return null;
+    });
+    await regenerateOpenClawConfig();
+
+    const config = JSON.parse(mockedWriteFileSync.mock.calls[0][1] as string);
+    expect(config.agents.defaults.imageModel.primary).toBe("anthropic/claude-haiku-4-5-20251001");
+  });
+
+  it("prefers openai over ollama-cloud in the vision-capable fallback (image)", async () => {
+    mockedGetSetting.mockImplementation(async (key: string) => {
+      if (key === "openai_api_key") return "sk-openai-test";
+      if (key === "ollama_cloud_api_key") return "ollama-test";
+      return null;
+    });
+    await regenerateOpenClawConfig();
+
+    const config = JSON.parse(mockedWriteFileSync.mock.calls[0][1] as string);
+    expect(config.agents.defaults.imageModel.primary).toBe("openai/gpt-5.4-mini");
+  });
+
+  it("picks the canonical-vision ollama-cloud model when only ollama-cloud is configured", async () => {
+    // The provider's general balanced default is `qwen3-next:80b` (text-only)
+    // and several other ollama-cloud models accept image input but mislabel
+    // colors (mistral-large-3, qwen3.5:397b, kimi-k2.5/k2.6 — see the #416
+    // empirical smoke test). The image-default picker explicitly prefers the
+    // "canonical vision line" — qwen3-vl > gemini-3-flash > gemma4 — over
+    // those weaker models.
+    mockedGetSetting.mockImplementation(async (key: string) =>
+      key === "ollama_cloud_api_key" ? "test-key" : null
+    );
+    await regenerateOpenClawConfig();
+
+    const config = JSON.parse(mockedWriteFileSync.mock.calls[0][1] as string);
+    expect(config.agents.defaults.imageModel.primary).toBe("ollama-cloud/qwen3-vl:235b-instruct");
+  });
+
+  it("native vision providers (anthropic, google) beat ollama-cloud for imageModel", async () => {
+    mockedGetSetting.mockImplementation(async (key: string) => {
+      if (key === "google_api_key") return "AIza-test";
+      if (key === "ollama_cloud_api_key") return "ollama-test";
+      return null;
+    });
+    await regenerateOpenClawConfig();
+
+    const config = JSON.parse(mockedWriteFileSync.mock.calls[0][1] as string);
+    expect(config.agents.defaults.imageModel.primary).toBe("google/gemini-2.5-flash");
   });
 });

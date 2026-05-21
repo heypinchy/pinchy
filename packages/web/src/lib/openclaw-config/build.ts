@@ -15,7 +15,11 @@ import {
 import { getSetting } from "@/lib/settings";
 import { computeDeniedGroups } from "@/lib/tool-registry";
 import type { AgentPluginConfig } from "@/db/schema";
-import { TOOL_CAPABLE_OLLAMA_CLOUD_MODELS, OLLAMA_CLOUD_COST } from "@/lib/ollama-cloud-models";
+import {
+  TOOL_CAPABLE_OLLAMA_CLOUD_MODELS,
+  OLLAMA_CLOUD_COST,
+  type OllamaCloudModelId,
+} from "@/lib/ollama-cloud-models";
 import { getModelCatalogForProvider } from "@/lib/openclaw-builtin-models";
 import { getOpenClawWorkspacePath } from "@/lib/workspace";
 import { CONFIG_PATH } from "./paths";
@@ -186,6 +190,66 @@ async function resolveDefaultPdfModel(): Promise<string | null> {
   return null;
 }
 
+/**
+ * Resolve a vision-capable model to use for the built-in `image` tool.
+ *
+ * Same provider order as PDF: native vision (anthropic, google) > vision
+ * fallback (openai, ollama-cloud). Without this field, OpenClaw scans
+ * providers in their declared order and picks the first vision-flagged
+ * model — which on an ollama-cloud-only stack used to land on
+ * `devstral-small-2:24b` alphabetically, even though the live API rejects
+ * images for that model with HTTP 400 (#416). Pinning the choice removes
+ * that fragility.
+ *
+ * For `ollama-cloud`, the empirical smoke test in #416 showed several
+ * vision-flagged models (`mistral-large-3:675b`, `qwen3.5:397b`,
+ * `kimi-k2.5`/`k2.6`) accept image input but mislabel colors. Prefer the
+ * canonical vision line (`qwen3-vl` > `gemini-3-flash-preview` > `gemma4`)
+ * for the explicit primary, falling back to `getDefaultModel` if none of
+ * those are surfaced (defensive — the curated list guarantees they are).
+ */
+const IMAGE_MODEL_PREFERENCE: readonly ProviderName[] = [
+  "anthropic", // native vision
+  "google", // native vision
+  "openai", // native vision
+  "ollama-cloud", // vision fallback
+];
+
+// Best-vision ollama-cloud picks, in preference order. Subset of
+// TOOL_CAPABLE_OLLAMA_CLOUD_MODELS — TypeScript rejects unknown IDs.
+const OLLAMA_CLOUD_IMAGE_PREFERENCE: readonly OllamaCloudModelId[] = [
+  "qwen3-vl:235b-instruct",
+  "qwen3-vl:235b",
+  "gemini-3-flash-preview",
+  "gemma4:31b",
+];
+
+function pickOllamaCloudImageModel(): string | null {
+  for (const id of OLLAMA_CLOUD_IMAGE_PREFERENCE) {
+    if (TOOL_CAPABLE_OLLAMA_CLOUD_MODELS.some((m) => m.id === id)) {
+      return `ollama-cloud/${id}`;
+    }
+  }
+  return null;
+}
+
+async function resolveDefaultImageModel(): Promise<string | null> {
+  for (const provider of IMAGE_MODEL_PREFERENCE) {
+    // eslint-disable-next-line security/detect-object-injection
+    const key = await getSetting(PROVIDERS[provider].settingsKey);
+    if (!key) continue;
+    if (provider === "ollama-cloud") {
+      const picked = pickOllamaCloudImageModel();
+      if (picked) return picked;
+      continue;
+    }
+    const model = await getDefaultModel(provider);
+    if (!model) continue;
+    if (isModelVisionCapable(model)) return model;
+  }
+  return null;
+}
+
 export async function regenerateOpenClawConfig() {
   // `readExistingConfig` distinguishes two recoverable failure modes:
   //   - ENOENT / parse error → returns {} (cold start; we build the first config from scratch).
@@ -307,6 +371,16 @@ export async function regenerateOpenClawConfig() {
   const pdfModel = await resolveDefaultPdfModel();
   if (pdfModel) {
     pinchyDefaults.pdfModel = { primary: pdfModel };
+  }
+
+  // Auto-set imageModel for the built-in `image` tool. Without this,
+  // OpenClaw falls through to provider image defaults and may pick a
+  // vision-flagged model whose runtime API rejects images (e.g.
+  // devstral-small-2 on ollama-cloud, #416). The explicit pin removes that
+  // failure mode and lets ops override via settings if needed.
+  const imageModel = await resolveDefaultImageModel();
+  if (imageModel) {
+    pinchyDefaults.imageModel = { primary: imageModel };
   }
 
   // Build agents list with OpenClaw-side workspace paths, tools.deny, and plugin configs

@@ -63,9 +63,15 @@ describe("isModelVisionCapable", () => {
       expect(isModelVisionCapable("ollama-cloud/gemma4:31b")).toBe(true);
     });
 
-    it("should return true for devstral-small-2:24b", () => {
-      // Devstral Small 2's library page lists "Text, Image" input type.
-      expect(isModelVisionCapable("ollama-cloud/devstral-small-2:24b")).toBe(true);
+    it("should return false for devstral-small-2:24b", () => {
+      // Although ollama.com/library/devstral-small-2 lists "Text, Image" as
+      // input types, the live Ollama Cloud `/v1/chat/completions` endpoint
+      // rejects image inputs with HTTP 400 "Image input is not enabled for
+      // this model". Empirical API smoke test in #416 confirmed devstral is
+      // text-only at runtime — the library-page metadata is misleading. We
+      // mark it `vision: false` so it stops being picked as an image model
+      // fallback.
+      expect(isModelVisionCapable("ollama-cloud/devstral-small-2:24b")).toBe(false);
     });
 
     it("should return false for tool-capable cloud models that are text-only", () => {
