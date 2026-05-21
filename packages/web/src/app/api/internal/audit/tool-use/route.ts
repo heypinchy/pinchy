@@ -103,22 +103,24 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ success: true });
   }
 
-  // Derive outcome from two signals up-front so detail.success / detail.error
+  // Derive outcome from three signals up-front so detail.success / detail.error
   // stay consistent with the audit row's outcome / error columns:
   //   1. payload.error (transport/dispatch-level failure from OpenClaw's hook)
   //   2. result.isError (semantic failure — MCP convention for tools that
   //      returned normally at the protocol level but reported an error
   //      inside the result, e.g. ENOENT on pinchy_read, EEXIST on pinchy_write)
+  //   3. result.details.error (plugin-curated semantic error message) —
+  //      defence against the upstream gap noted in issue #404: OpenClaw's
+  //      tool-use audit hook was observed on staging v0.5.4 stripping the
+  //      MCP `isError` flag before forwarding the result to /api/internal/
+  //      audit/tool-use, so this is sometimes the only failure signal we
+  //      receive. Only non-empty strings count to avoid false-positive
+  //      failures from plugins that emit `details.error: ""`.
   // Transport errors take precedence because they're the more fundamental
   // failure. For semantic errors, we lift the first text content entry as
   // the error message.
   const resultObj = isObject(payload.result) ? payload.result : null;
   const resultIsError = resultObj?.isError === true;
-  const semanticErrorMessage =
-    resultIsError && resultObj
-      ? (extractFirstTextContent(resultObj) ?? "Tool returned an error")
-      : null;
-  const outcome: "success" | "failure" = payload.error || resultIsError ? "failure" : "success";
 
   // Plugin can override the audit detail by returning result.details.
   // Used by tools whose params contain sensitive data (e.g. pinchy_write.content).
@@ -127,6 +129,25 @@ export async function POST(request: NextRequest) {
     resultObj && isObject(resultObj.details)
       ? (resultObj.details as Record<string, unknown>)
       : null;
+  const detailsErrorString =
+    typeof resultDetails?.error === "string" && resultDetails.error.length > 0
+      ? resultDetails.error
+      : null;
+
+  // semantic = "the tool returned successfully at protocol level but
+  // signalled a failure inside its result". That covers both `isError: true`
+  // (the MCP convention) and the OC-hook-strips-isError fallback path where
+  // only `details.error` arrives. In both cases the most user-friendly
+  // message lives in content[0].text; fall back to details.error and finally
+  // a generic string so the audit row's `error.message` is never empty when
+  // outcome=failure.
+  const hasSemanticFailure = resultIsError || Boolean(detailsErrorString);
+  const semanticErrorMessage =
+    hasSemanticFailure && resultObj
+      ? (extractFirstTextContent(resultObj) ?? detailsErrorString ?? "Tool returned an error")
+      : null;
+  const outcome: "success" | "failure" =
+    payload.error || hasSemanticFailure ? "failure" : "success";
 
   const detailError = resolveDetailError({
     payloadError: payload.error,

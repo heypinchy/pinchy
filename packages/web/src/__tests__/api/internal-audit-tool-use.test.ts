@@ -423,6 +423,73 @@ describe("POST /api/internal/audit/tool-use", () => {
     expect(detail).not.toHaveProperty("params");
   });
 
+  it("derives outcome='failure' from result.details.error when result.isError is missing (defense-in-depth)", async () => {
+    // Issue #404 root cause: OpenClaw's tool-use audit hook strips the MCP
+    // `isError: true` flag from the result before posting to /api/internal/
+    // audit/tool-use, so the only failure signal Pinchy receives is the
+    // plugin's curated `details.error` string. Observed on staging v0.5.4:
+    // every failed `pinchy_write` (ENOENT, "Access denied: path not in
+    // write_paths", etc.) was recorded as `outcome: success` with a green
+    // checkmark, even though detail.error contained the failure message —
+    // a CISO-blocking inconsistency.
+    //
+    // Defense: when `details.error` is a non-empty string, treat it as a
+    // failure signal even if `result.isError` is absent. This lets Pinchy
+    // surface plugin-curated semantic errors correctly without waiting on
+    // the upstream OpenClaw hook to forward `isError`.
+    await POST(
+      makeRequest({
+        phase: "end",
+        toolName: "pinchy_write",
+        agentId: "agent-1",
+        params: { path: "/workspace/uploads/test.txt", content: "x", overwrite: true },
+        result: {
+          // No isError — simulating the OC-hook-strips-isError case.
+          content: [
+            {
+              type: "text",
+              text: "ENOENT: no such file or directory, open " + "'/workspace/uploads/test.txt'",
+            },
+          ],
+          details: {
+            path: "/workspace/uploads/test.txt",
+            overwrite: true,
+            error: "ENOENT: no such file or directory, open " + "'/workspace/uploads/test.txt'",
+          },
+        },
+      })
+    );
+
+    const call = vi.mocked(appendAuditLog).mock.calls[0]?.[0];
+    expect(call?.outcome).toBe("failure");
+    expect(call?.error?.message).toMatch(/ENOENT/);
+    const detail = call?.detail as Record<string, unknown>;
+    expect(detail.success).toBe(false);
+    expect(detail.error).toMatch(/ENOENT/);
+  });
+
+  it("empty-string result.details.error is NOT treated as a failure signal", async () => {
+    // Guard against false-positive failure derivation: an empty
+    // `details.error` (some plugins emit `""` to mean "no error") must not
+    // flip outcome to failure. Only meaningful (non-empty) strings count.
+    await POST(
+      makeRequest({
+        phase: "end",
+        toolName: "pinchy_write",
+        agentId: "agent-1",
+        result: {
+          content: [{ type: "text", text: "Wrote 5 bytes" }],
+          details: { path: "/workspace/uploads/x.txt", error: "" },
+        },
+      })
+    );
+
+    const call = vi.mocked(appendAuditLog).mock.calls[0]?.[0];
+    expect(call?.outcome).toBe("success");
+    const detail = call?.detail as Record<string, unknown>;
+    expect(detail.success).toBe(true);
+  });
+
   it("detail.success=false and detail.error set when result.isError=true without details", async () => {
     // No result.details override — endpoint must still mark detail.success
     // as false and lift the semantic error message into detail.error.
