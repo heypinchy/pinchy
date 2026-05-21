@@ -30,7 +30,7 @@ import {
   MoreHorizontalIcon,
   SquareIcon,
 } from "lucide-react";
-import { type ChangeEvent, type FC, useState, useEffect, useRef, useContext } from "react";
+import { type FC, useState, useEffect, useRef, useContext } from "react";
 import {
   AgentIdContext,
   RetryResendContext,
@@ -268,42 +268,16 @@ export const Composer: FC = () => {
       <DraftPersistence />
       <ComposerPrimitive.AttachmentDropzone className="aui-composer-attachment-dropzone flex w-full flex-col rounded-2xl border border-input bg-background px-1 pt-2 outline-none transition-shadow has-[textarea:focus-visible]:border-ring has-[textarea:focus-visible]:ring-2 has-[textarea:focus-visible]:ring-ring/20 data-[dragging=true]:border-ring data-[dragging=true]:border-dashed data-[dragging=true]:bg-accent/50">
         <ComposerAttachments />
-        <ComposerTextInput />
+        <ComposerPrimitive.Input
+          placeholder="Send a message..."
+          className="aui-composer-input mb-0.5 md:mb-1 max-h-32 min-h-10 md:min-h-14 w-full resize-none bg-transparent px-4 pt-2 pb-1 md:pb-3 text-sm outline-none placeholder:text-muted-foreground focus-visible:ring-0"
+          rows={1}
+          autoFocus
+          aria-label="Message input"
+        />
         <ComposerAction />
       </ComposerPrimitive.AttachmentDropzone>
     </ComposerPrimitive.Root>
-  );
-};
-
-const ComposerTextInput: FC = () => {
-  const composerRuntime = useComposerRuntime({ optional: true });
-
-  const syncNonComposingChange = (event: ChangeEvent<HTMLTextAreaElement>) => {
-    const isComposing = (event.nativeEvent as { isComposing?: boolean }).isComposing === true;
-    if (isComposing || !composerRuntime?.getState().isEditing) return;
-    const newValue = event.currentTarget.value;
-    // Skip the sync when the primitive already absorbed the change (the
-    // common case for regular typing). Calling setText() here would still
-    // make assistant-ui's primitive imperatively rewrite textarea.value on
-    // every keystroke, which collapses the cursor selection to the end and
-    // breaks mid-text editing. The setText path stays available for the
-    // dead-key recovery covered by the sibling test: when composition
-    // started without a matching compositionend, runtime text diverges
-    // from the textarea's actual value and the next regular keystroke
-    // pushes the divergence back into runtime here.
-    if (composerRuntime.getState().text === newValue) return;
-    composerRuntime.setText(newValue);
-  };
-
-  return (
-    <ComposerPrimitive.Input
-      placeholder="Send a message..."
-      className="aui-composer-input mb-0.5 md:mb-1 max-h-32 min-h-10 md:min-h-14 w-full resize-none bg-transparent px-4 pt-2 pb-1 md:pb-3 text-sm outline-none placeholder:text-muted-foreground focus-visible:ring-0"
-      rows={1}
-      autoFocus
-      aria-label="Message input"
-      onChange={syncNonComposingChange}
-    />
   );
 };
 
