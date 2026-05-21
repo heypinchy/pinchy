@@ -541,6 +541,37 @@ describe("Composer input vs send disabled state", () => {
 
     expect(setText).toHaveBeenCalledWith("é");
   });
+
+  it("does NOT call setText when the change keeps runtime text in sync (mid-text cursor preservation)", async () => {
+    // Regression guard for the cursor-jump bug introduced alongside the
+    // dead-key fix: the unconditional setText() on every change caused
+    // assistant-ui's primitive to imperatively rewrite textarea.value on
+    // every keystroke, which collapses the cursor selection to the end of
+    // the text. Effect for the user: when editing in the middle of an
+    // existing draft, every typed character jumps the cursor back to the
+    // end — only the first character lands at the intended position.
+    //
+    // Fix: skip setText when runtime state already matches the textarea's
+    // current value. The dead-key sync still fires (test above) because
+    // there runtime is stale; here runtime is fresh and there is nothing
+    // to sync, so the primitive's own state handling stays uninterrupted
+    // and cursor selection is preserved by the browser.
+    const { useComposerRuntime } = await import("@assistant-ui/react");
+    const setText = vi.fn();
+    vi.mocked(useComposerRuntime).mockReturnValue({
+      getState: () => ({ isEditing: true, text: "helloX world" }),
+      setText,
+    } as never);
+
+    await renderComposerWith({ kind: "ready" });
+
+    const input = screen.getByRole("textbox");
+    // User typed "X" in the middle of "hello world", runtime's own onChange
+    // handler already absorbed it — getState().text matches the textarea.
+    fireEvent.change(input, { target: { value: "helloX world" } });
+
+    expect(setText).not.toHaveBeenCalled();
+  });
 });
 
 describe("ComposerAction Send/Stop mutual exclusion (#207)", () => {
