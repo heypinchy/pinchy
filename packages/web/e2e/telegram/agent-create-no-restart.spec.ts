@@ -143,6 +143,19 @@ function isOpenClawPortResponsive(): boolean {
  * normal happy path. We can't distinguish via logs — so we TCP-probe the
  * gateway port as the definitive liveness signal. A successful connect
  * means the Node.js event loop is processing accept()s, ergo not blocked.
+ *
+ * Zombie-startup guard: SIGUSR1 → child restart → on rare CI timing the
+ * child fails to load config with `ConfigMutationConflictError` and writes
+ * a `gateway.restart_startup_failed.json` stability bundle. The process
+ * stays alive (per OpenClaw's own design) but the gateway is in a
+ * degraded state — TCP listens, WS can't fully handshake, new
+ * config.apply RPCs are rejected with "invalid handshake". Without a
+ * subsequent `[gateway] ready` line confirming recovery, declaring this
+ * state "quiet" gives the caller a false green that propagates into the
+ * actual test — which then sees ~zero log activity around its POST
+ * because OpenClaw can't process the agent-create config change.
+ * Scan a wider window for the failed-bundle marker and require a later
+ * "ready" before considering the gateway recoverable.
  */
 async function waitForOpenClawQuiet(quietMs = 30000, timeout = 240000): Promise<void> {
   const start = Date.now();
@@ -153,6 +166,27 @@ async function waitForOpenClawQuiet(quietMs = 30000, timeout = 240000): Promise<
       .filter((l) =>
         /received SIGUSR1|received SIGTERM|requires gateway restart|\[gateway\] ready/.test(l)
       );
+
+    // Zombie-startup detection. Look at a wider window than `quietMs`
+    // because the failed-bundle marker can land 30+ s before the test
+    // calls in. Pattern matches OpenClaw's actual log line:
+    //   [gateway] wrote stability bundle: .../gateway.restart_startup_failed.json
+    const wideLookback = Math.max(quietMs + 5000, 120000);
+    const wideLogs = openClawLogsSince(new Date(Date.now() - wideLookback).toISOString());
+    const failedBundleMatch = wideLogs.match(
+      /\[gateway\] wrote stability bundle:[^\n]*gateway\.restart_startup_failed/
+    );
+    if (failedBundleMatch && failedBundleMatch.index !== undefined) {
+      const afterFailure = wideLogs.slice(failedBundleMatch.index);
+      if (!/\[gateway\] ready/.test(afterFailure)) {
+        // Gateway tried to restart, hit ConfigMutationConflictError, and
+        // has not logged a successful ready line since. Port-probe lies:
+        // TCP listens but gateway is functionally dead. Keep waiting.
+        await new Promise((r) => setTimeout(r, 1000));
+        continue;
+      }
+    }
+
     if (restartMarkers.length === 0) {
       if (!isOpenClawPortResponsive()) {
         // Port unreachable → event loop blocked or container down. Keep
@@ -257,13 +291,24 @@ test.describe.serial("Agent create — no gateway restart cascade (#193)", () =>
     });
     expect(createRes.status, await createRes.text()).toBeLessThan(300);
 
-    // Give OpenClaw 10 s to process the config.apply RPC. A real restart
-    // takes ~12 s (SIGUSR1 → process exit → respawn → ready); 10 s would
-    // catch the SIGUSR1 line at minimum if a restart was triggered, even
-    // if the new gateway hasn't reported ready yet.
-    await new Promise((r) => setTimeout(r, 10000));
-
-    const logs = openClawLogsSince(beforeMark);
+    // Poll instead of fixed-sleep. config.apply latency on CI varies
+    // widely: typical 1–3 s on a fresh runner, 20–40 s after an earlier
+    // restart-startup-failed bundle has slowed the gateway. The
+    // previous fixed 10 s sleep false-failed runs where Pinchy's
+    // POST returned before OpenClaw had logged the reload-detected
+    // line. Polling exits on the first match — happy path stays fast,
+    // slow path no longer flakes. After the match, a 3 s grace window
+    // ensures any follow-up `requires gateway restart` cascade lands
+    // in the captured logs (the negative assertions below need it).
+    const pollDeadline = Date.now() + 60000;
+    let logs = "";
+    while (Date.now() < pollDeadline) {
+      logs = openClawLogsSince(beforeMark);
+      if (/\[reload\] config change detected.*agents/.test(logs)) break;
+      await new Promise((r) => setTimeout(r, 1000));
+    }
+    await new Promise((r) => setTimeout(r, 3000));
+    logs = openClawLogsSince(beforeMark);
 
     // (a) Positive: the config change reached OpenClaw and was evaluated
     //     for reload. Without this, we'd be testing nothing — the config
