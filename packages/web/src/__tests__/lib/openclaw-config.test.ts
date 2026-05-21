@@ -932,6 +932,7 @@ describe("regenerateOpenClawConfig", () => {
         "/data/hr-docs/",
         "/data/policies/",
         "/root/.openclaw/workspaces/kb-agent-id/uploads",
+        "/root/.openclaw/workspaces/kb-agent-id/workbench",
       ],
     });
   });
@@ -968,7 +969,11 @@ describe("regenerateOpenClawConfig", () => {
     expect(typeof config.plugins.entries["pinchy-files"].config.gatewayToken).toBe("string");
     // Per-agent allowed_paths is still nested under .agents
     expect(config.plugins.entries["pinchy-files"].config.agents["kb-agent-id"]).toEqual({
-      allowed_paths: ["/data/hr-docs/", "/root/.openclaw/workspaces/kb-agent-id/uploads"],
+      allowed_paths: [
+        "/data/hr-docs/",
+        "/root/.openclaw/workspaces/kb-agent-id/uploads",
+        "/root/.openclaw/workspaces/kb-agent-id/workbench",
+      ],
     });
   });
 
@@ -1041,7 +1046,38 @@ describe("regenerateOpenClawConfig", () => {
     const config = JSON.parse(written);
     const agentConfig = config.plugins.entries["pinchy-files"]?.config?.agents?.["writer"];
 
-    expect(agentConfig.write_paths).toEqual(["/root/.openclaw/workspaces/writer/uploads"]);
+    // workbench/ is the agent's primary write zone. uploads/ stays writable
+    // for backward-compat with custom AGENTS.md files that historically told
+    // the agent to write there (#418).
+    expect(agentConfig.write_paths).toEqual([
+      "/root/.openclaw/workspaces/writer/uploads",
+      "/root/.openclaw/workspaces/writer/workbench",
+    ]);
+  });
+
+  it("injects workspace/workbench into allowed_paths so pinchy_read can see agent-written files", async () => {
+    mockedDb.select.mockReturnValue({
+      from: mockFrom([
+        {
+          id: "writer",
+          name: "Writer Agent",
+          model: "anthropic/claude-opus-4-7",
+          createdAt: new Date(),
+          allowedTools: ["pinchy_write", "pinchy_read"],
+          pluginConfig: null,
+        },
+      ]),
+    } as never);
+
+    await regenerateOpenClawConfig();
+
+    const written = mockedWriteFileSync.mock.calls[0][1] as string;
+    const config = JSON.parse(written);
+    const agentConfig = config.plugins.entries["pinchy-files"]?.config?.agents?.["writer"];
+
+    // Subset invariant in validate.ts requires write_paths ⊆ allowed_paths.
+    expect(agentConfig.allowed_paths).toContain("/root/.openclaw/workspaces/writer/uploads");
+    expect(agentConfig.allowed_paths).toContain("/root/.openclaw/workspaces/writer/workbench");
   });
 
   it("does not inject write_paths when pinchy_write is not in allowedTools", async () => {

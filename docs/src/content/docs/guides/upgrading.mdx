@@ -153,11 +153,11 @@ If you need to roll back after an upgrade:
 
 ### Breaking changes
 
-None.
+None for stock templates. If you maintain a **custom `AGENTS.md`** that tells the agent to save files into `uploads/`, see [Agent writable area moved to `workbench/`](#agent-writable-area-moved-to-workbench) below for the recommended (non-mandatory) migration.
 
 ### Upgrade notes
 
-%%PINCHY_VERSION%% fixes a confusing failure mode for the built-in `image` tool on Ollama Cloud stacks and adds an explicit image-model default to remove a class of provider-selection drift.
+%%PINCHY_VERSION%% gives every agent a dedicated `workbench/` subdirectory in its workspace for files it produces, separate from the user's `uploads/`. This unblocks `pinchy_write` on fresh agents that had never received a user upload, and clarifies which directory the agent should target when saving notes, exports, or drafts. It also fixes a confusing failure mode for the built-in `image` tool on Ollama Cloud stacks and adds an explicit image-model default to remove a class of provider-selection drift.
 
 Upgrade with the standard flow:
 
@@ -168,6 +168,30 @@ docker compose pull && docker compose up -d && docker image prune -f
 ```
 
 No database migration, no `docker-compose.yml` change, and no env-var changes are required.
+
+#### Agent writable area moved to `workbench/`
+
+Each agent workspace now has three zones (see [Agent Workspaces](/concepts/workspaces/) for the full model):
+
+- **Workspace root** — system files like `SOUL.md`, `AGENTS.md`, `IDENTITY.md`. Read-only for the agent.
+- **`uploads/`** — files the user attached in chat. Created on workspace spawn; previously created lazily by the first upload.
+- **`workbench/`** _(new)_ — the agent's own writable area. Created on workspace spawn. `pinchy_write` accepts paths under here without prior user upload.
+
+On v0.5.4 and earlier, a fresh agent could not call `pinchy_write` until the user had attached at least one file via the chat upload button — `pinchy_write` to `<workspace>/uploads/foo.txt` failed with `ENOENT` because the `uploads/` directory didn't exist yet, and writing anywhere else (e.g. the workspace root) was rejected. %%PINCHY_VERSION%% provisions both `uploads/` and `workbench/` on workspace creation, and adds `workbench/` to the `pinchy_write` allow-list as the canonical agent write target.
+
+**Existing custom `AGENTS.md` files keep working.** `uploads/` remains writable for backward compatibility, so any custom instruction telling the agent to save into `uploads/` continues to function. If you maintain such an `AGENTS.md`, consider updating it to use `workbench/` instead — the separation makes "user-uploaded" vs. "agent-produced" easier to reason about. There is no automatic migration; this is a documentation-level switch.
+
+Stock templates do not currently instruct agents to write to either location, so most deployments need no action.
+
+#### Improved `pinchy_write` rejection messages
+
+When `pinchy_write` (or `pinchy_read`) refuses a path, the error message now includes the configured allow-list so the LLM can retry against the right location:
+
+```
+Access denied: path not in write_paths (allowed: /root/.openclaw/workspaces/<id>/uploads, /root/.openclaw/workspaces/<id>/workbench)
+```
+
+This eliminates a class of stalls where the model would repeatedly try the same wrong path. The error string format is unchanged at the prefix (`Access denied: path not in write_paths`) so any external monitoring that matched on it continues to work.
 
 #### Image tool no longer routes to `devstral-small-2:24b`
 

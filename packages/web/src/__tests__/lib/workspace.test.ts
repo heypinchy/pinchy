@@ -216,6 +216,30 @@ describe("ensureWorkspace", () => {
     );
     expect(agentsCall).toBeUndefined();
   });
+
+  it("creates an uploads/ subdir alongside the workspace root", () => {
+    // Regression: fresh workspaces had no uploads/ dir until the chat UI
+    // attached its first file, which broke any tool whose write_paths or
+    // allowed_paths pointed at uploads/ (#418).
+    ensureWorkspace("agent-123");
+
+    expect(mockedMkdirSync).toHaveBeenCalledWith("/openclaw-config/workspaces/agent-123/uploads", {
+      recursive: true,
+    });
+  });
+
+  it("creates a workbench/ subdir for agent writes (pinchy_write target)", () => {
+    // workbench/ is the agent's writable area, distinct from uploads/
+    // (which is the user's). The dir must exist on workspace spawn
+    // so pinchy_write to workbench/<file> on a fresh agent does not
+    // ENOENT (#418).
+    ensureWorkspace("agent-123");
+
+    expect(mockedMkdirSync).toHaveBeenCalledWith(
+      "/openclaw-config/workspaces/agent-123/workbench",
+      { recursive: true }
+    );
+  });
 });
 
 describe("readWorkspaceFile", () => {

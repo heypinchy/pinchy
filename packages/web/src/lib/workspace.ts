@@ -44,6 +44,12 @@ export function ensureWorkspace(agentId: string): void {
   const workspacePath = getWorkspacePath(agentId);
 
   mkdirSync(workspacePath, { recursive: true });
+  // uploads/ is the user's zone (chat attachments); workbench/ is the
+  // agent's writable zone (pinchy_write target). Both must exist on
+  // workspace spawn — see #418: lazy creation by the upload endpoint
+  // left pinchy_write ENOENT'ing on fresh workspaces.
+  mkdirSync(join(workspacePath, "uploads"), { recursive: true });
+  mkdirSync(join(workspacePath, "workbench"), { recursive: true });
 
   for (const file of ALLOWED_FILES) {
     const filePath = join(workspacePath, file);

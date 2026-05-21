@@ -426,17 +426,25 @@ export async function regenerateOpenClawConfig() {
       fs: { workspaceOnly: true },
     };
 
-    // pinchy-files: always inject workspace uploads; merge with admin-configured KB paths
+    // pinchy-files: always inject workspace uploads + workbench; merge with
+    // admin-configured KB paths. `uploads/` is the user's zone (chat
+    // attachments); `workbench/` is the agent's writable zone for pinchy_write.
+    // Both are read+write so an agent can revisit deliverables it produced
+    // earlier (#418).
     const adminFilesConfig = (agent.pluginConfig as AgentPluginConfig)?.["pinchy-files"];
     const adminPaths: string[] = adminFilesConfig?.allowed_paths ?? [];
     const workspaceUploads = `${getOpenClawWorkspacePath(agent.id)}/uploads`;
-    const allowedPaths = [...adminPaths, workspaceUploads];
+    const workspaceWorkbench = `${getOpenClawWorkspacePath(agent.id)}/workbench`;
+    const allowedPaths = [...adminPaths, workspaceUploads, workspaceWorkbench];
 
     if (!pluginConfigs["pinchy-files"]) pluginConfigs["pinchy-files"] = {};
 
     const agentFilesConfig: Record<string, unknown> = { allowed_paths: allowedPaths };
     if (allowedTools.includes("pinchy_write")) {
-      agentFilesConfig.write_paths = [workspaceUploads];
+      // uploads/ stays writable for backward-compat with existing custom
+      // AGENTS.md that told the agent to write there. New guidance points
+      // agents at workbench/.
+      agentFilesConfig.write_paths = [workspaceUploads, workspaceWorkbench];
     }
     pluginConfigs["pinchy-files"][agent.id] = agentFilesConfig;
 

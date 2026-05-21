@@ -16,7 +16,20 @@ A workspace typically contains:
 - **The agent's identity** — its name, role, and personality.
 - **Context files** — your personal context (for personal agents) or your organization's context (for shared agents). See [Context Management](/concepts/context/).
 - **Uploaded files** — files you drop into the chat. These land in an `uploads/` folder where the agent can read them on demand. See [Upload Files in Chat](/guides/file-uploads/).
+- **Agent deliverables** — files the agent itself produces (notes, exports, drafts) live in a `workbench/` folder. The agent can read and write here; it cannot write elsewhere.
 - **Working notes** — anything the agent or its plugins write down to remember between conversations.
+
+### The three zones
+
+Each workspace has three zones with distinct ownership. Knowing which zone owns what keeps the agent, the user, and Pinchy itself from stepping on each other:
+
+| Zone           | Who writes                           | What lives here                                                                                |
+| -------------- | ------------------------------------ | ---------------------------------------------------------------------------------------------- |
+| Workspace root | Pinchy (system)                      | Identity, personality, context, memory: SOUL.md, AGENTS.md, IDENTITY.md, USER.md, MEMORY.md, … |
+| `uploads/`     | The user, via the chat upload button | Receipts, PDFs, images, documents the user attaches                                            |
+| `workbench/`   | The agent, via `pinchy_write`        | Notes, drafts, exports, reports — anything the agent produces                                  |
+
+The agent can **read** all three zones. It can only **write** to `workbench/` and (for backward compatibility) `uploads/`. Attempts to write into the workspace root are rejected by the file plugin, so the agent cannot overwrite the files Pinchy uses to know who it is.
 
 ## Personal vs. shared agent workspaces
 
@@ -54,9 +67,9 @@ Workspaces are stored in the `pinchy-workspaces` Docker volume. They survive con
 
 If a workspace is ever lost, the agent starts with a fresh one rebuilt from your database (identity, personality, and context files). Files that were only attached to past conversations would not return.
 
-### Uploads accumulate
+### Uploads and workbench files accumulate
 
-Files uploaded into a chat stay in `uploads/<filename>` indefinitely — Pinchy does not currently age them out. For an active shared agent, this volume can grow over time. Plan for it: include `pinchy-workspaces` in your backup rotation, monitor its size as part of your normal disk-usage checks, and prune obsolete files manually if the agent no longer needs them. A future release will add an admin-visible size view and retention controls.
+Files in `uploads/` and `workbench/` stay there indefinitely — Pinchy does not currently age them out. For an active shared agent, both volumes can grow over time. Plan for it: include `pinchy-workspaces` in your backup rotation, monitor its size as part of your normal disk-usage checks, and prune obsolete files manually if the agent no longer needs them. A future release will add an admin-visible size view and retention controls.
 
 Uploaded files are also reachable through an authenticated API
 (`GET /api/agents/<agent-id>/uploads/<filename>`) so the chat can render

@@ -120,3 +120,66 @@ describe("multi-root + mode validation", () => {
     expect(ALLOWED_ROOTS).toContain("/root/.openclaw/workspaces/");
   });
 });
+
+describe("write-mode rejection lists allowed write paths (LLM hint)", () => {
+  // When pinchy_write rejects a path, the LLM has no way to know which
+  // paths it CAN write to unless the error message tells it. Without
+  // this hint, the LLM tends to retry the same wrong path or give up.
+  // See #418.
+  it("includes the configured write_paths in the rejection message", () => {
+    try {
+      validateAccess(
+        {
+          allowed_paths: [
+            "/root/.openclaw/workspaces/a/uploads",
+            "/root/.openclaw/workspaces/a/workbench",
+          ],
+          write_paths: [
+            "/root/.openclaw/workspaces/a/uploads",
+            "/root/.openclaw/workspaces/a/workbench",
+          ],
+        },
+        "/root/.openclaw/workspaces/a/test.txt",
+        "write"
+      );
+      throw new Error("expected validateAccess to throw");
+    } catch (e) {
+      const message = (e as Error).message;
+      expect(message).toContain("not in write_paths");
+      expect(message).toContain("/root/.openclaw/workspaces/a/uploads");
+      expect(message).toContain("/root/.openclaw/workspaces/a/workbench");
+    }
+  });
+
+  it("read-mode rejection still mentions allowed directories", () => {
+    try {
+      validateAccess(
+        { allowed_paths: ["/data/kb/"] },
+        "/data/other/x.csv",
+        "read"
+      );
+      throw new Error("expected validateAccess to throw");
+    } catch (e) {
+      const message = (e as Error).message;
+      expect(message).toContain("not in allowed directories");
+      expect(message).toContain("/data/kb/");
+    }
+  });
+
+  it("does not include write_paths when none are configured", () => {
+    // No write_paths configured → don't dangle an empty list in the error.
+    try {
+      validateAccess(
+        { allowed_paths: ["/data/kb/"], write_paths: [] },
+        "/data/kb/x.csv",
+        "write"
+      );
+      throw new Error("expected validateAccess to throw");
+    } catch (e) {
+      const message = (e as Error).message;
+      expect(message).toContain("not in write_paths");
+      // Empty list — error should not show a trailing colon with nothing after.
+      expect(message).not.toMatch(/:\s*$/);
+    }
+  });
+});

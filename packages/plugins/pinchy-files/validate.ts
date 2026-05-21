@@ -36,11 +36,11 @@ export function validateAccess(
     (p) => resolved.startsWith(p) || (resolved + "/").startsWith(p)
   );
   if (!allowed) {
-    throw new Error(
-      mode === "write"
-        ? "Access denied: path not in write_paths"
-        : "Access denied: path not in allowed directories"
-    );
+    // Include the allow-list so an LLM that hit a wrong path can retry
+    // against the right one without guessing (#418).
+    const label = mode === "write" ? "write_paths" : "allowed directories";
+    const hint = pathList.length > 0 ? ` (allowed: ${pathList.join(", ")})` : "";
+    throw new Error(`Access denied: path not in ${label}${hint}`);
   }
 
   // Defense in depth: build-time validator enforces write_paths ⊆ allowed_paths,
