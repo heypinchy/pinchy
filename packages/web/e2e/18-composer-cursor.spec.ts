@@ -50,16 +50,15 @@ test.describe("Composer cursor preservation", () => {
     await page.keyboard.type("hello world");
     await expect(input).toHaveValue("hello world");
 
-    // Position the caret between "hello" and " world" (index 5) by
-    // navigating from the end of the line. Earlier revisions used
-    // `input.evaluate(() => ta.setSelectionRange(5, 5))`, but the DOM
-    // element reference inside Playwright's evaluate handle went stale
-    // across React re-renders and the subsequent `keyboard.type`
-    // appeared to operate against a different element (received "XYZ"
-    // instead of any insertion outcome). Keyboard navigation re-uses
-    // the textarea's live focus and is robust against re-mounts.
-    await input.focus();
-    await page.keyboard.press("End");
+    // Move the caret from the end of the typed text back to position 5,
+    // between "hello" and " world". Pure keyboard navigation, no
+    // explicit focus/evaluate calls — earlier revisions of this test
+    // tried `input.focus() + setSelectionRange(5, 5)` via input.evaluate
+    // and the textarea's value disappeared between that step and the
+    // next assertion (Received: "XYZ"), almost certainly because the
+    // evaluate-handle's element reference went stale across React's
+    // controlled re-render. Sticking to keyboard events keeps the test
+    // in the textarea's natural focus path.
     for (let i = 0; i < " world".length; i++) {
       await page.keyboard.press("ArrowLeft");
     }
