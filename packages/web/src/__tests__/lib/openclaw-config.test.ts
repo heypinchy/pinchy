@@ -125,6 +125,7 @@ import {
   updateIdentityLinks,
   sanitizeOpenClawConfig,
   seedRestartClassOverridesIfMissing,
+  seedGatewayTokenIfMissing,
   updateTelegramChannelConfig,
   DEFAULT_DOCS_PUBLIC_BASE_URL,
   DOCS_PUBLIC_BASE_URL_SETTING_KEY,
@@ -3332,6 +3333,100 @@ describe("seedRestartClassOverridesIfMissing", () => {
     expect(written.gateway.controlUi.allowedOrigins).toEqual(["http://localhost:18789"]);
     expect(written.agents).toEqual(existing.agents);
     expect(written.plugins).toEqual(existing.plugins);
+  });
+});
+
+describe("seedGatewayTokenIfMissing", () => {
+  // Background: OC 2026.5.12+ strictly requires gateway.auth.token in
+  // openclaw.json before it will bind on a non-loopback interface (log line:
+  // "Refusing to bind gateway to lan without auth"). Earlier OC versions
+  // self-bootstrapped a random token at first start when the field was
+  // missing. With the new strict check, the OC container fails to start on
+  // a fresh install (no setup wizard run yet) because no upstream writer
+  // ever lands a token in the config — Pinchy gates regenerateOpenClawConfig()
+  // behind isSetupComplete() and the wizard hasn't run.
+  //
+  // seedGatewayTokenIfMissing() closes this gap: it runs unconditionally in
+  // bootInits() and lands gateway.auth.token = (DB token or freshly generated)
+  // before markOpenClawConfigReady() unblocks the OC compose dependency.
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockedExistsSync.mockReturnValue(true);
+    mockedGetSetting.mockResolvedValue(null);
+  });
+
+  it("writes gateway.auth.token when the file is empty / missing", async () => {
+    // Fresh-install scenario: bind-mount target is empty (no baked-in config
+    // got through), so the file doesn't exist yet. OC would refuse to start
+    // until the wizard runs — except we seed the token here.
+    mockedReadFileSync.mockImplementation(() => {
+      throw Object.assign(new Error("ENOENT"), { code: "ENOENT" });
+    });
+
+    const changed = await seedGatewayTokenIfMissing();
+
+    expect(changed).toBe(true);
+    const writtenAtomic = mockedWriteFileSync.mock.calls.find(
+      (c) => typeof c[0] === "string" && (c[0] as string).includes("openclaw.json.tmp")
+    );
+    expect(writtenAtomic).toBeDefined();
+    const written = JSON.parse(String(writtenAtomic![1]));
+    expect(typeof written.gateway?.auth?.token).toBe("string");
+    expect(written.gateway.auth.token.length).toBeGreaterThan(0);
+  });
+
+  it("returns false (no write) when the token is already present", async () => {
+    // Existing-install scenario: regenerateOpenClawConfig() has already
+    // landed a token (post-wizard), or a previous bootInits() call already
+    // seeded one. Don't churn the file.
+    const existing = {
+      gateway: { mode: "local", bind: "lan", auth: { token: "already-seeded-xyz" } },
+    };
+    mockedReadFileSync.mockReturnValue(JSON.stringify(existing) as unknown as Buffer);
+
+    const changed = await seedGatewayTokenIfMissing();
+
+    expect(changed).toBe(false);
+    const writtenAtomic = mockedWriteFileSync.mock.calls.find(
+      (c) => typeof c[0] === "string" && (c[0] as string).includes("openclaw.json.tmp")
+    );
+    expect(writtenAtomic).toBeUndefined();
+  });
+
+  it("preserves existing fields outside gateway.auth.token", async () => {
+    // Don't clobber other Pinchy/OC state — only land gateway.auth.token.
+    // The file may already carry restart-class overrides written by
+    // seedRestartClassOverridesIfMissing() in the same boot pass.
+    const existing = {
+      gateway: {
+        mode: "local",
+        bind: "lan",
+        controlUi: { enabled: false },
+      },
+      discovery: { mdns: { mode: "off" } },
+      update: { checkOnStart: false },
+      canvasHost: { enabled: false },
+    };
+    mockedReadFileSync.mockReturnValue(JSON.stringify(existing) as unknown as Buffer);
+
+    await seedGatewayTokenIfMissing();
+
+    const writtenAtomic = mockedWriteFileSync.mock.calls.find(
+      (c) => typeof c[0] === "string" && (c[0] as string).includes("openclaw.json.tmp")
+    );
+    const written = JSON.parse(String(writtenAtomic![1]));
+
+    // Token landed:
+    expect(typeof written.gateway.auth?.token).toBe("string");
+    expect(written.gateway.auth.token.length).toBeGreaterThan(0);
+
+    // Other restart-class fields and gateway settings preserved:
+    expect(written.gateway.mode).toBe("local");
+    expect(written.gateway.bind).toBe("lan");
+    expect(written.gateway.controlUi.enabled).toBe(false);
+    expect(written.discovery.mdns.mode).toBe("off");
+    expect(written.update.checkOnStart).toBe(false);
+    expect(written.canvasHost.enabled).toBe(false);
   });
 });
 

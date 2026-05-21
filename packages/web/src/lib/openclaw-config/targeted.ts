@@ -2,6 +2,7 @@ import { readFileSync, existsSync } from "fs";
 import { CONFIG_PATH } from "./paths";
 import { writeConfigAtomic, readExistingConfig } from "./write";
 import { restartState } from "@/server/restart-state";
+import { getOrCreateGatewayToken } from "@/lib/gateway-token-source";
 
 /**
  * Remove stale Pinchy plugins from the allow list that have no matching entry.
@@ -228,6 +229,53 @@ export function updateTelegramChannelConfig(
  * volume content matches Pinchy's expected overrides → no write → no diff
  * surface for OC to react to.
  */
+/**
+ * Land `gateway.auth.token` in `openclaw.json` if it's not already set, so
+ * the OpenClaw container can start on a fresh install (pre-setup-wizard).
+ *
+ * OC 2026.5.12+ strictly refuses to bind on a non-loopback interface without
+ * an auth token — the log line is "Refusing to bind gateway to lan without
+ * auth". Earlier OC versions self-bootstrapped a random token at first start
+ * when `gateway.auth.token` was missing; with the new strict check, the OC
+ * container fails health-check and the whole compose stack stays stuck at
+ * "Wait for services" on a fresh install.
+ *
+ * This function runs unconditionally in bootInits() — before the
+ * `OpenClaw container may now start` signal — so the file always carries a
+ * valid token by the time OC reads it. `getOrCreateGatewayToken()` persists
+ * the token in the settings DB so a subsequent regenerateOpenClawConfig()
+ * after the wizard finishes uses the same value (no reconnect storm).
+ *
+ * Idempotent: if `gateway.auth.token` is already a non-empty string, this
+ * is a no-op and returns false.
+ */
+export async function seedGatewayTokenIfMissing(): Promise<boolean> {
+  let existing: Record<string, unknown>;
+  try {
+    existing = readExistingConfig();
+  } catch {
+    existing = {};
+  }
+
+  const gateway = (existing.gateway as Record<string, unknown>) || {};
+  const auth = (gateway.auth as Record<string, unknown>) || {};
+  const existingToken = typeof auth.token === "string" ? auth.token : "";
+  if (existingToken.length > 0) return false;
+
+  const token = await getOrCreateGatewayToken();
+
+  const updated: Record<string, unknown> = {
+    ...existing,
+    gateway: {
+      ...gateway,
+      auth: { ...auth, token },
+    },
+  };
+
+  writeConfigAtomic(JSON.stringify(updated, null, 2).trimEnd() + "\n");
+  return true;
+}
+
 export function seedRestartClassOverridesIfMissing(): boolean {
   let existing: Record<string, unknown>;
   try {

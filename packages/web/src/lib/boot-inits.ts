@@ -5,6 +5,7 @@ import { migrateGatewayTokenToDb } from "@/lib/migrate-gateway-token";
 import {
   sanitizeOpenClawConfig,
   seedRestartClassOverridesIfMissing,
+  seedGatewayTokenIfMissing,
   regenerateOpenClawConfig,
 } from "@/lib/openclaw-config";
 import { isSetupComplete } from "@/lib/setup";
@@ -90,6 +91,25 @@ export async function bootInits(): Promise<boolean> {
   } catch (err) {
     console.error(
       "[pinchy] Failed to seed restart-class overrides:",
+      err instanceof Error ? err.message : err
+    );
+  }
+
+  // Seed gateway.auth.token before OC starts. OC 2026.5.12+ refuses to bind
+  // on a non-loopback interface without an auth token ("Refusing to bind
+  // gateway to lan without auth"). Earlier OC versions self-bootstrapped a
+  // random token at first start; the strict check made the OC container
+  // fail health-check on fresh installs because regenerateOpenClawConfig()
+  // is gated behind isSetupComplete() and the wizard hasn't run yet.
+  // Idempotent: no-op if the token is already present (post-wizard, or set
+  // by a previous boot).
+  try {
+    if (await seedGatewayTokenIfMissing()) {
+      console.log("[pinchy] Seeded gateway.auth.token into openclaw.json (pre-wizard bootstrap)");
+    }
+  } catch (err) {
+    console.error(
+      "[pinchy] Failed to seed gateway token:",
       err instanceof Error ? err.message : err
     );
   }
