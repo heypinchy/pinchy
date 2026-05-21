@@ -281,7 +281,18 @@ const ComposerTextInput: FC = () => {
   const syncNonComposingChange = (event: ChangeEvent<HTMLTextAreaElement>) => {
     const isComposing = (event.nativeEvent as { isComposing?: boolean }).isComposing === true;
     if (isComposing || !composerRuntime?.getState().isEditing) return;
-    composerRuntime.setText(event.currentTarget.value);
+    const newValue = event.currentTarget.value;
+    // Skip the sync when the primitive already absorbed the change (the
+    // common case for regular typing). Calling setText() here would still
+    // make assistant-ui's primitive imperatively rewrite textarea.value on
+    // every keystroke, which collapses the cursor selection to the end and
+    // breaks mid-text editing. The setText path stays available for the
+    // dead-key recovery covered by the sibling test: when composition
+    // started without a matching compositionend, runtime text diverges
+    // from the textarea's actual value and the next regular keystroke
+    // pushes the divergence back into runtime here.
+    if (composerRuntime.getState().text === newValue) return;
+    composerRuntime.setText(newValue);
   };
 
   return (
