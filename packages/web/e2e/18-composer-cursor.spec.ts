@@ -50,14 +50,19 @@ test.describe("Composer cursor preservation", () => {
     await page.keyboard.type("hello world");
     await expect(input).toHaveValue("hello world");
 
-    // Position the caret between "hello" and " world" (index 5). Setting
-    // selectionStart/End via DOM is more reliable than arrow-key
-    // navigation across IME/locale variations.
-    await input.evaluate((el) => {
-      const ta = el as HTMLTextAreaElement;
-      ta.focus();
-      ta.setSelectionRange(5, 5);
-    });
+    // Position the caret between "hello" and " world" (index 5) by
+    // navigating from the end of the line. Earlier revisions used
+    // `input.evaluate(() => ta.setSelectionRange(5, 5))`, but the DOM
+    // element reference inside Playwright's evaluate handle went stale
+    // across React re-renders and the subsequent `keyboard.type`
+    // appeared to operate against a different element (received "XYZ"
+    // instead of any insertion outcome). Keyboard navigation re-uses
+    // the textarea's live focus and is robust against re-mounts.
+    await input.focus();
+    await page.keyboard.press("End");
+    for (let i = 0; i < " world".length; i++) {
+      await page.keyboard.press("ArrowLeft");
+    }
 
     // Insert "XYZ" at the caret. With the cursor-jump bug present, the
     // first character lands at position 5 but the caret then snaps to
