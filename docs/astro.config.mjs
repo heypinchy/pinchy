@@ -166,7 +166,7 @@ export default defineConfig({
         {
           label: 'Upgrade Notes',
           items: [
-            { label: 'v0.5.4', slug: 'upgrading/v0-5-4' },
+            { label: 'v0.5.5', slug: 'upgrading/v0-5-5' },
           ],
         },
         {
