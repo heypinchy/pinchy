@@ -13,3 +13,7 @@ reason = "Transitive devDep via openclaw (test tool only — not in production b
 [[IgnoredVulns]]
 id = "MAL-2026-3432"
 reason = "Transitive devDep via openclaw (test tool only — not in production build)"
+
+[[IgnoredVulns]]
+id = "GHSA-w5hq-g745-h8pq"
+reason = "Transitive devDep via openclaw → @anthropic-ai/vertex-sdk → google-auth-library → gaxios → uuid@9.0.1 (test tool only — not in production build; openclaw container has its own dep chain)"
