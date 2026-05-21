@@ -27,7 +27,7 @@ import { fileURLToPath } from "node:url";
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const MODELS_TS = resolve(
   __dirname,
-  "../packages/web/src/lib/ollama-cloud-models.ts"
+  "../packages/web/src/lib/ollama-cloud-models.ts",
 );
 
 // 64×64 solid-red PNG (base64). Small but big enough that vision pipelines
@@ -52,21 +52,47 @@ function parseArgs(argv) {
   return args;
 }
 
+// Tight allowlist for model IDs as they appear in the curated source file.
+// Ollama Cloud IDs use lowercase letters, digits, and the punctuation set
+// `[.:_-]` (e.g. `qwen3-vl:235b-instruct`, `gpt-oss:120b`, `deepseek-v3.1:671b`).
+// Validating against this pattern at parse time gives the outbound HTTP
+// request a guaranteed-safe shape and prevents anything pathological from
+// flowing from the file into the network sink. CodeQL recognises this as
+// a sanitizer for the "file data → outbound request" finding.
+const MODEL_ID_PATTERN = /^[a-z0-9][a-z0-9.:_-]*$/;
+
 function extractModelEntries(source) {
-  // Parse the literal-object entries inside TOOL_CAPABLE_OLLAMA_CLOUD_MODELS.
-  // The file is a const tuple of objects with `id` and `vision` fields. A
-  // proper TS parser is overkill for this one-shot script; the regex
-  // matches the exact layout the file already uses.
+  // Parse the `id` / `vision` pairs inside TOOL_CAPABLE_OLLAMA_CLOUD_MODELS.
+  // Strategy: strip line and block comments first (each with a simple
+  // non-backtracking regex — no nested quantifiers, no ReDoS risk), then
+  // run a flat match-pair regex over the cleaned source. The previous
+  // single-regex approach used an alternation-with-quantifier inside the
+  // object body that could backtrack catastrophically on adversarial input.
+  // A proper TS parser is overkill for a one-shot script; this two-pass
+  // approach is both faster and easier to reason about.
+  const stripped = source
+    // Line comments: `//…\n`. `[^\n]*` cannot backtrack across newlines.
+    .replace(/\/\/[^\n]*/g, "")
+    // Block comments: `/*…*/`. Lazy `[\s\S]*?` paired with a single
+    // terminator means no alternation-induced backtracking.
+    .replace(/\/\*[\s\S]*?\*\//g, "");
+
   const entries = [];
-  const objectRegex =
-    /\{\s*(?:\/\/[^\n]*\n\s*|\/\*[\s\S]*?\*\/\s*)*id:\s*"([^"]+)"[\s\S]*?vision:\s*(true|false)[\s\S]*?\}/g;
+  const pairRegex = /id:\s*"([^"]+)"\s*,[\s\S]*?vision:\s*(true|false)/g;
   let match;
-  while ((match = objectRegex.exec(source)) !== null) {
-    entries.push({ id: match[1], vision: match[2] === "true" });
+  while ((match = pairRegex.exec(stripped)) !== null) {
+    const id = match[1];
+    if (!MODEL_ID_PATTERN.test(id)) {
+      throw new Error(
+        `verify-ollama-cloud-vision: parsed model ID "${id}" does not match the safe ID allowlist (${MODEL_ID_PATTERN}). ` +
+          `Refusing to send this to the Ollama Cloud API — fix the source file or widen the pattern deliberately.`,
+      );
+    }
+    entries.push({ id, vision: match[2] === "true" });
   }
   if (entries.length === 0) {
     throw new Error(
-      "verify-ollama-cloud-vision: no model entries parsed from ollama-cloud-models.ts"
+      "verify-ollama-cloud-vision: no model entries parsed from ollama-cloud-models.ts",
     );
   }
   return entries;
@@ -80,7 +106,10 @@ async function testModel(id, apiKey) {
       {
         role: "user",
         content: [
-          { type: "text", text: "What color is this image? Respond with one word." },
+          {
+            type: "text",
+            text: "What color is this image? Respond with one word.",
+          },
           { type: "image_url", image_url: { url: TEST_IMAGE_DATA_URL } },
         ],
       },
@@ -106,7 +135,7 @@ async function main() {
   const apiKey = process.env.OLLAMA_CLOUD_API_KEY;
   if (!apiKey) {
     process.stdout.write(
-      "OLLAMA_CLOUD_API_KEY is unset — skipping verify-ollama-cloud-vision (exit 0).\n"
+      "OLLAMA_CLOUD_API_KEY is unset — skipping verify-ollama-cloud-vision (exit 0).\n",
     );
     process.exit(0);
   }
@@ -122,7 +151,9 @@ async function main() {
 
   const drift = [];
   for (const model of targets) {
-    process.stdout.write(`testing ${model.id} (flag: vision=${model.vision})… `);
+    process.stdout.write(
+      `testing ${model.id} (flag: vision=${model.vision})… `,
+    );
     let result;
     try {
       result = await testModel(model.id, apiKey);
@@ -138,7 +169,8 @@ async function main() {
     }
 
     const apiAccepts = result.status === 200;
-    const apiRejectsImage = result.status >= 400 && bodyRejectsImage(result.body);
+    const apiRejectsImage =
+      result.status >= 400 && bodyRejectsImage(result.body);
 
     if (model.vision && apiAccepts) {
       process.stdout.write("OK (api accepts)\n");
@@ -171,7 +203,7 @@ async function main() {
     process.stderr.write(JSON.stringify(drift, null, 2) + "\n");
     process.stderr.write(
       `\n${drift.length} model(s) drift from runtime API. ` +
-        "Fix flags in packages/web/src/lib/ollama-cloud-models.ts.\n"
+        "Fix flags in packages/web/src/lib/ollama-cloud-models.ts.\n",
     );
     process.exit(1);
   }
