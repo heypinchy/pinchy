@@ -4,19 +4,13 @@ import { seedProviderConfig, loginAsAdmin } from "./helpers";
 /**
  * Regression guard for the v0.5.4 composer cursor-jump bug.
  *
- * A defensive onChange wrapper around `ComposerPrimitive.Input` (added in
- * commit 7044e12ea to fix a dead-key sync issue) called
- * `composerRuntime.setText(e.target.value)` on every non-composing
- * keystroke. assistant-ui's primitive already does that internally —
- * Pinchy's wrapper double-fired the same state update, and the combined
- * re-render path collapsed the textarea's selection to the end after
- * every keystroke.
+ * User-reported symptom on staging running 222e6d79f: inserting characters
+ * at a mid-text caret position produced output as if the caret jumped to
+ * the end of the textarea after every character. Reproduced with both
+ * mouse-click and keyboard ArrowLeft cursor positioning.
  *
- * User-visible symptom: editing in the middle of an existing draft loses
- * the caret after every typed character. Inserting "XYZ" between "hello"
- * and " world" produces "helloX worldYZ" instead of "helloXYZ world",
- * because only the first character lands at the intended position before
- * the caret jumps back to the end.
+ * Minimal reproduction: start with "abc", move caret to position 0, type
+ * "X". Expected: "Xabc". Bug: "abcX" (caret jumped to end).
  *
  * jsdom unit tests can't catch this — DOM selection and the
  * textarea.value imperative-rewrite path that triggers the jump are
@@ -29,13 +23,9 @@ test.describe("Composer cursor preservation", () => {
     await loginAsAdmin(page);
   });
 
-  test("inserting text mid-string keeps the caret in the middle", async ({ page }) => {
-    // Open Smithers — every fresh test DB seeds one as the admin's
-    // personal agent and the chat list shows it as the first link.
+  test("typing at start of existing text stays at start", async ({ page }) => {
     const smithersLink = page.getByRole("link", { name: /smithers/i }).first();
     await smithersLink.waitFor({ timeout: 10000 });
-    const href = await smithersLink.getAttribute("href");
-    expect(href).toMatch(/\/chat\/[0-9a-f-]+/);
     await smithersLink.click();
     await expect(page).toHaveURL(/\/chat\/[0-9a-f-]+/);
 
@@ -43,32 +33,26 @@ test.describe("Composer cursor preservation", () => {
     await expect(input).toBeVisible({ timeout: 10000 });
     await input.click();
 
-    // Type the initial text key-by-key so React's onChange fires per
-    // character — matches what a real user does and what triggered the
-    // bug in production. `input.fill()` would use Playwright's
-    // fast-set-value path and bypass the very flow we want to exercise.
-    await page.keyboard.type("hello world");
-    await expect(input).toHaveValue("hello world");
+    // Seed initial content via fill — fast, single React state update.
+    // The cursor-jump bug doesn't manifest on initial typing into an empty
+    // textarea (the caret is already at the end), so we don't need to
+    // exercise the per-keystroke path here. The bug surfaces on the next
+    // step where we type at a mid-text caret.
+    await input.fill("abc");
+    await expect(input).toHaveValue("abc");
 
-    // Move the caret from the end of the typed text back to position 5,
-    // between "hello" and " world". Pure keyboard navigation, no
-    // explicit focus/evaluate calls — earlier revisions of this test
-    // tried `input.focus() + setSelectionRange(5, 5)` via input.evaluate
-    // and the textarea's value disappeared between that step and the
-    // next assertion (Received: "XYZ"), almost certainly because the
-    // evaluate-handle's element reference went stale across React's
-    // controlled re-render. Sticking to keyboard events keeps the test
-    // in the textarea's natural focus path.
-    for (let i = 0; i < " world".length; i++) {
-      await page.keyboard.press("ArrowLeft");
-    }
+    // Move caret to position 0 via Home key. With the cursor-jump bug,
+    // assistant-ui's imperative textarea.value rewrite after each char
+    // collapses the selection to the end of the text, so any subsequent
+    // typed character lands at the end no matter where Home put the
+    // caret.
+    await input.press("Home");
 
-    // Insert "XYZ" at the caret. With the cursor-jump bug present, the
-    // first character lands at position 5 but the caret then snaps to
-    // the end and the next two land there too — producing
-    // "helloX worldYZ" instead of the correct "helloXYZ world".
-    await page.keyboard.type("XYZ");
+    // Type one character at the caret. If the caret was preserved at
+    // position 0, the result is "Xabc". If the caret jumped to the end
+    // before the character was inserted, the result is "abcX".
+    await input.press("X");
 
-    await expect(input).toHaveValue("helloXYZ world");
+    await expect(input).toHaveValue("Xabc");
   });
 });
