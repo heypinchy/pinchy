@@ -28,9 +28,31 @@ vi.mock("@/lib/openclaw-config", () => ({
   regenerateOpenClawConfig: vi.fn().mockResolvedValue(undefined),
 }));
 
+// Partial-mock invites so individual tests can force `claimInvite` to
+// throw mid-flow — that's the only way to exercise the reset-path
+// transaction rollback without faking out the DB layer itself. Default
+// behavior delegates to the real implementation; tests use
+// `vi.mocked(claimInvite).mockImplementationOnce(...)` to override.
+vi.mock("@/lib/invites", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/lib/invites")>();
+  return {
+    ...actual,
+    claimInvite: vi.fn(actual.claimInvite),
+  };
+});
+
 import { db } from "@/db";
-import { invites, users, userGroups, groups, inviteGroups } from "@/db/schema";
-import { createInvite } from "@/lib/invites";
+import {
+  invites,
+  users,
+  userGroups,
+  groups,
+  inviteGroups,
+  sessions,
+  accounts,
+  auditLog,
+} from "@/db/schema";
+import { createInvite, claimInvite } from "@/lib/invites";
 import { seedPersonalAgent } from "@/lib/personal-agent";
 import { regenerateOpenClawConfig } from "@/lib/openclaw-config";
 import { auth } from "@/lib/auth";
@@ -347,6 +369,132 @@ describe("POST /api/invite/claim (integration)", () => {
     const response = await POST(makeRequest({ token, password: "newpassword123" }));
     expect(response.status).toBe(404);
     expect(await response.json()).toEqual({ error: "User not found" });
+  });
+
+  // ── Session revocation, atomicity, and audit on reset ─────────────
+
+  it("revokes all existing sessions for the user when password is reset", async () => {
+    // Reset must invalidate any active sessions on the account being
+    // recovered — otherwise a stale/leaked session token survives the reset
+    // and the reset's recovery semantics are broken.
+    const adminId = await seedAdmin();
+    await auth.api.signUpEmail({
+      body: { name: "Stale Sessions", email: "stale@test.local", password: "originalpassword1" },
+    });
+
+    // Sign the user in twice so we have multiple session rows to revoke.
+    await auth.api.signInEmail({
+      body: { email: "stale@test.local", password: "originalpassword1" },
+      asResponse: true,
+    });
+    await auth.api.signInEmail({
+      body: { email: "stale@test.local", password: "originalpassword1" },
+      asResponse: true,
+    });
+
+    const targetUser = await db.query.users.findFirst({
+      where: eq(users.email, "stale@test.local"),
+    });
+    const sessionsBefore = await db
+      .select()
+      .from(sessions)
+      .where(eq(sessions.userId, targetUser!.id));
+    expect(sessionsBefore.length).toBeGreaterThanOrEqual(2);
+
+    const { token } = await createInvite({
+      email: "stale@test.local",
+      role: "member",
+      type: "reset",
+      createdBy: adminId,
+    });
+    const response = await POST(makeRequest({ token, password: "newpassword456" }));
+    expect(response.status).toBe(200);
+
+    const sessionsAfter = await db
+      .select()
+      .from(sessions)
+      .where(eq(sessions.userId, targetUser!.id));
+    expect(sessionsAfter).toHaveLength(0);
+  });
+
+  it("rolls back password and session writes if claimInvite fails mid-flow", async () => {
+    // Atomicity guard: if claimInvite throws after the password has been
+    // updated, the whole reset must roll back. Otherwise a partial
+    // failure leaves the user with a new password AND the invite token
+    // still claimable, which lets the reset link be replayed.
+    const adminId = await seedAdmin();
+    await auth.api.signUpEmail({
+      body: { name: "Atomic", email: "atomic@test.local", password: "originalpassword1" },
+    });
+
+    const { token, tokenHash } = await createInvite({
+      email: "atomic@test.local",
+      role: "member",
+      type: "reset",
+      createdBy: adminId,
+    });
+
+    // Force the route's claimInvite call to throw — every prior write
+    // (password hash, session deletion) must roll back.
+    const claimInviteMock = vi.mocked(claimInvite);
+    claimInviteMock.mockImplementationOnce(async () => {
+      throw new Error("simulated DB failure");
+    });
+
+    const response = await POST(makeRequest({ token, password: "newpassword456" }));
+    expect(response.status).toBe(500);
+
+    // Original password still works → password update was rolled back.
+    const signIn = await auth.api.signInEmail({
+      body: { email: "atomic@test.local", password: "originalpassword1" },
+      asResponse: true,
+    });
+    expect(signIn.status).toBe(200);
+
+    // New password does NOT work.
+    const signInNew = await auth.api.signInEmail({
+      body: { email: "atomic@test.local", password: "newpassword456" },
+      asResponse: true,
+    });
+    expect(signInNew.status).toBe(401);
+
+    // Invite is still claimable.
+    const inviteRow = await db.query.invites.findFirst({
+      where: eq(invites.tokenHash, tokenHash),
+    });
+    expect(inviteRow?.claimedAt).toBeNull();
+  });
+
+  it("writes an auth.password_reset_completed audit entry on successful reset", async () => {
+    const adminId = await seedAdmin();
+    await auth.api.signUpEmail({
+      body: { name: "Audit Me", email: "audit-reset@test.local", password: "originalpassword1" },
+    });
+    const targetUser = await db.query.users.findFirst({
+      where: eq(users.email, "audit-reset@test.local"),
+    });
+
+    const { token } = await createInvite({
+      email: "audit-reset@test.local",
+      role: "member",
+      type: "reset",
+      createdBy: adminId,
+    });
+    const response = await POST(makeRequest({ token, password: "newpassword456" }));
+    expect(response.status).toBe(200);
+
+    const entries = await db
+      .select()
+      .from(auditLog)
+      .where(eq(auditLog.eventType, "auth.password_reset_completed"));
+    expect(entries).toHaveLength(1);
+    const entry = entries[0];
+    expect(entry.actorType).toBe("user");
+    expect(entry.actorId).toBe(targetUser!.id);
+    expect(entry.outcome).toBe("success");
+    // PII must NOT appear in detail (audit policy).
+    const serializedDetail = JSON.stringify(entry.detail ?? {});
+    expect(serializedDetail).not.toContain("audit-reset@test.local");
   });
 
   it("does not assign groups for password reset invites", async () => {
