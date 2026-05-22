@@ -12,6 +12,19 @@ export interface AgentFileConfig {
 
 export type AccessMode = "read" | "write";
 
+/**
+ * Is `resolved` either the directory `dir` itself, or a descendant of it?
+ *
+ * Treats both inputs as filesystem paths and matches only on directory
+ * boundaries. Without this, an allow-list entry like `/foo/uploads` would
+ * match any sibling whose name shared the prefix (`/foo/uploadsevil`)
+ * because the older raw `startsWith` had no boundary requirement.
+ */
+function isUnderPath(resolved: string, dir: string): boolean {
+  const dirWithSlash = dir.endsWith("/") ? dir : `${dir}/`;
+  return (resolved + "/").startsWith(dirWithSlash);
+}
+
 export function validateAccess(
   config: AgentFileConfig,
   requestedPath: string,
@@ -32,9 +45,7 @@ export function validateAccess(
   }
 
   const pathList = mode === "write" ? (config.write_paths ?? []) : config.allowed_paths;
-  const allowed = pathList.some(
-    (p) => resolved.startsWith(p) || (resolved + "/").startsWith(p)
-  );
+  const allowed = pathList.some((p) => isUnderPath(resolved, p));
   if (!allowed) {
     // Include the allow-list so an LLM that hit a wrong path can retry
     // against the right one without guessing (#418).
@@ -46,9 +57,7 @@ export function validateAccess(
   // Defense in depth: build-time validator enforces write_paths ⊆ allowed_paths,
   // but a tampered or buggy config must not bypass the invariant at runtime.
   if (mode === "write") {
-    const inAllowed = config.allowed_paths.some(
-      (p) => resolved.startsWith(p) || (resolved + "/").startsWith(p)
-    );
+    const inAllowed = config.allowed_paths.some((p) => isUnderPath(resolved, p));
     if (!inAllowed) {
       throw new Error("Access denied: path not in allowed_paths (subset invariant)");
     }

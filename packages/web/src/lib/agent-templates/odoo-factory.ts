@@ -79,23 +79,6 @@ The same \`_pinchy_ref\` field appears on every record returned by \`odoo_read\`
 Never construct ref strings yourself. Formats like \`"account.move,37"\`, \`"37"\`, or any other guess will be rejected. The token is encrypted — only the plugin can produce a valid one.`;
 
 /**
- * Shared docstring for read-write Odoo operator templates that grant
- * \`pinchy_write\`. Tells the agent which subdir of its workspace is its own
- * writable area (workbench/), versus the user's upload zone (uploads/),
- * versus the system files at the workspace root which it must not touch.
- * See #418 for the three-zone model.
- */
-export const ODOO_AGENT_WORKBENCH_HINT = `## Where to save files you produce
-
-Your workspace has three zones. Use the right one when you call \`pinchy_write\`:
-
-- **\`workbench/\`** — Your writable area. Drafts, notes, exported reports, CSVs, anything you produce for the user before deciding what to do with it. Subdirectories are fine (\`workbench/2026-05/notes.md\`). This is your default; write here unless you have a specific reason not to.
-- **\`uploads/\`** — Files the user attached in the chat. You can read these, but you should not write here — that's the user's zone.
-- **Workspace root** — System files maintained by Pinchy (SOUL.md, AGENTS.md, IDENTITY.md, etc.). \`pinchy_write\` will reject writes here. Never try.
-
-When in doubt, use \`workbench/<filename>\`.`;
-
-/**
  * Derive the minimal Odoo access level that satisfies the given per-model
  * operations. `delete` requires `full`, `create`/`write` require `read-write`,
  * everything else is `read-only`. This is the inverse of

@@ -183,3 +183,62 @@ describe("write-mode rejection lists allowed write paths (LLM hint)", () => {
     }
   });
 });
+
+describe("path-boundary matching (sibling-directory escape)", () => {
+  // Allow-list entries without trailing slashes (`/foo/uploads`) used to
+  // match any sibling whose name shared the prefix (`/foo/uploadsevil`)
+  // because the check was a raw `String.startsWith` with no path-boundary
+  // requirement. The matcher must treat allow-list entries as directory
+  // boundaries: only the dir itself or a child of it counts as a match.
+  // Discovered while reviewing #418; pre-existing in the codebase.
+  it("rejects a sibling directory whose name shares a prefix with an allowed read path", () => {
+    expect(() =>
+      validateAccess(
+        { allowed_paths: ["/root/.openclaw/workspaces/a/uploads"] },
+        "/root/.openclaw/workspaces/a/uploadsevil/leak.txt",
+        "read"
+      )
+    ).toThrow(/not in allowed/i);
+  });
+
+  it("rejects a sibling directory whose name shares a prefix with a write_paths entry", () => {
+    expect(() =>
+      validateAccess(
+        {
+          allowed_paths: [
+            "/root/.openclaw/workspaces/a/workbench",
+            // Include the sibling in allowed_paths so the subset-invariant
+            // check isn't what catches it — we want this to fall over on
+            // the write_paths check specifically.
+            "/root/.openclaw/workspaces/a/workbenchevil",
+          ],
+          write_paths: ["/root/.openclaw/workspaces/a/workbench"],
+        },
+        "/root/.openclaw/workspaces/a/workbenchevil/leak.txt",
+        "write"
+      )
+    ).toThrow(/not in write/i);
+  });
+
+  it("still allows reading a file inside an allow-listed directory (no over-correction)", () => {
+    // The fix must not regress the common case.
+    expect(() =>
+      validateAccess(
+        { allowed_paths: ["/root/.openclaw/workspaces/a/uploads"] },
+        "/root/.openclaw/workspaces/a/uploads/file.txt",
+        "read"
+      )
+    ).not.toThrow();
+  });
+
+  it("still allows allow-list entries that already end with a slash", () => {
+    // Pre-existing entries (admin-configured KB paths) commonly end with /.
+    expect(() =>
+      validateAccess(
+        { allowed_paths: ["/data/hr-docs/"] },
+        "/data/hr-docs/vacation.md",
+        "read"
+      )
+    ).not.toThrow();
+  });
+});

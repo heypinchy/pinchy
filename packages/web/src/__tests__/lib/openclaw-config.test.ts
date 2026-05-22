@@ -1104,6 +1104,46 @@ describe("regenerateOpenClawConfig", () => {
     expect(agentConfig.write_paths).toBeUndefined();
   });
 
+  it("never lists the workspace root in allowed_paths or write_paths (hard-deny invariant)", async () => {
+    // Regression guard: the workspace root holds Pinchy-managed system files
+    // (SOUL.md, AGENTS.md, IDENTITY.md, USER.md, MEMORY.md). Including it in
+    // either list would let the agent overwrite its own identity. Only the
+    // uploads/ and workbench/ subdirs may appear. See #418 acceptance criteria.
+    mockedDb.select.mockReturnValue({
+      from: mockFrom([
+        {
+          id: "rooted",
+          name: "Rooted Agent",
+          model: "anthropic/claude-opus-4-7",
+          createdAt: new Date(),
+          allowedTools: ["pinchy_write", "pinchy_read"],
+          pluginConfig: {
+            "pinchy-files": {
+              // Even an admin trying to inject the workspace root via admin
+              // pluginConfig.allowed_paths is rendered moot by the subset
+              // invariant — but the runtime build should also keep things
+              // tidy by not echoing the root itself.
+              allowed_paths: ["/data/kb/"],
+            },
+          },
+        },
+      ]),
+    } as never);
+
+    await regenerateOpenClawConfig();
+
+    const written = mockedWriteFileSync.mock.calls[0][1] as string;
+    const config = JSON.parse(written);
+    const agentConfig = config.plugins.entries["pinchy-files"]?.config?.agents?.["rooted"];
+
+    const workspaceRoot = "/root/.openclaw/workspaces/rooted";
+    // Neither the bare root nor the root-with-slash may be in either list.
+    expect(agentConfig.allowed_paths).not.toContain(workspaceRoot);
+    expect(agentConfig.allowed_paths).not.toContain(`${workspaceRoot}/`);
+    expect(agentConfig.write_paths).not.toContain(workspaceRoot);
+    expect(agentConfig.write_paths).not.toContain(`${workspaceRoot}/`);
+  });
+
   it("should not keep stale env vars from previous config", async () => {
     const existingConfig = {
       gateway: {
