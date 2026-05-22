@@ -468,15 +468,20 @@ export function compactSchema(
  * see which company each record belongs to without having to know to ask.
  *
  * Returns the original list unchanged when:
- * - The LLM asked for all fields (`undefined`),
+ * - The LLM asked for all fields (`undefined`) OR an empty fields list (`[]`),
  * - The model has no `company_id` field,
  * - The LLM already included `company_id`.
+ *
+ * The empty-array case mirrors `compactSchema` in the same file: `fields: []`
+ * is treated as "didn't ask" — Odoo then returns its default field set. If we
+ * appended `company_id` to `[]` we'd silently flip the request into "only
+ * company_id, please", changing behaviour vs. pre-Task-1.
  */
 export function augmentFieldsWithCompanyId(
   requested: string[] | undefined,
   modelFields: OdooField[],
 ): string[] | undefined {
-  if (!requested) return undefined;
+  if (!requested || requested.length === 0) return requested;
   const hasCompany = modelFields.some(
     (f) => f.name === "company_id" && f.type === "many2one",
   );
