@@ -6,6 +6,7 @@ import requireAuditLog from "./eslint-rules/require-audit-log.js";
 import requireParseRequestBody from "./eslint-rules/require-parse-request-body.js";
 import noDirectSession from "./eslint-rules/no-direct-session.js";
 import noPiiInAuditDetail from "./eslint-rules/no-pii-in-audit-detail.js";
+import noUntrackedSkips from "./eslint-rules/no-untracked-skips.js";
 
 const pinchyPlugin = {
   rules: {
@@ -13,6 +14,7 @@ const pinchyPlugin = {
     "no-direct-session": noDirectSession,
     "no-pii-in-audit-detail": noPiiInAuditDetail,
     "require-parse-request-body": requireParseRequestBody,
+    "no-untracked-skips": noUntrackedSkips,
   },
 };
 
@@ -63,6 +65,24 @@ const eslintConfig = defineConfig([
     plugins: { pinchy: pinchyPlugin },
     rules: {
       "pinchy/require-audit-log": "error",
+    },
+  },
+  // Pinchy custom rules — every test file in the repo:
+  // - no-untracked-skips: forbid permanent test skips (`.skip`, `.todo`,
+  //   `.fixme`, `xit`, `xdescribe`) unless the leading 40 lines contain a
+  //   tracking-issue reference (`#NNN` or a github.com issue URL). The
+  //   companion vitest drift-guard in
+  //   src/__tests__/lib/no-untracked-skips.test.ts enforces the same
+  //   contract at test time. `.skipIf(...)` is always allowed.
+  {
+    files: [
+      "src/**/*.{test,spec}.{ts,tsx,js,jsx}",
+      "../**/*.{test,spec}.{ts,tsx,js,jsx}",
+      "e2e/**/*.{ts,tsx,js,jsx}",
+    ],
+    plugins: { pinchy: pinchyPlugin },
+    rules: {
+      "pinchy/no-untracked-skips": "error",
     },
   },
   // Pinchy custom rules — API route handlers only:

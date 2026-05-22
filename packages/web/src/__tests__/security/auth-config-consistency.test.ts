@@ -31,18 +31,14 @@ describe("auth config consistency", () => {
   for (const file of CONFIG_FILES) {
     describe(file, () => {
       const filePath = resolve(PROJECT_ROOT, file);
-      let content: string;
-
-      try {
-        content = readFileSync(filePath, "utf-8");
-      } catch {
-        // File might not exist in some environments (e.g., CI without full checkout)
-        it.skip(`${file} not found`, () => {});
-        return;
-      }
 
       for (const { pattern, replacement } of LEGACY_PATTERNS) {
         it(`should not reference legacy ${pattern.source}`, () => {
+          // Read inside the test so a missing CONFIG_FILES entry surfaces as
+          // a loud failure, not a silent skip. Every path listed above ships
+          // with the repo; if one disappears, that's a real regression and
+          // the test should turn the CI red.
+          const content = readFileSync(filePath, "utf-8");
           const matches = content.match(pattern);
           expect(
             matches,
