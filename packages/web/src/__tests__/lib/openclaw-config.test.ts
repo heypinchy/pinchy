@@ -319,15 +319,17 @@ describe("regenerateOpenClawConfig", () => {
     // empty new transcript with the cron message as the only content.
     //
     // Pinchy is an enterprise chat platform: users expect continuous chat
-    // history. Setting `mode: "idle"` with `idleMinutes: 0` matches what
-    // OpenClaw's `evaluateSessionFreshness` treats as "never expire"
-    // (no daily branch, idle branch needs `idleMinutes > 0`). Manual `/new`
-    // / `/reset` are still respected when a user explicitly wants a fresh
-    // chat — this only disables the silent auto-rotation.
+    // history. Setting `mode: "idle"` with `idleMinutes: 525600` (1 year)
+    // passes OpenClaw's schema validation (`idleMinutes` must be > 0) while
+    // being large enough to never trigger in practice. No daily branch fires
+    // (mode is not "daily"), and the idle branch only fires after a full year
+    // of inactivity. Manual `/new` / `/reset` are still respected when a
+    // user explicitly wants a fresh chat — this only disables the silent
+    // auto-rotation.
     await regenerateOpenClawConfig();
 
     const config = JSON.parse(mockedWriteFileSync.mock.calls[0][1] as string);
-    expect(config.session?.reset).toEqual({ mode: "idle", idleMinutes: 0 });
+    expect(config.session?.reset).toEqual({ mode: "idle", idleMinutes: 525600 });
   });
 
   it("preserves OpenClaw-enriched sub-fields under discovery, update, canvasHost across regenerate (C1)", async () => {

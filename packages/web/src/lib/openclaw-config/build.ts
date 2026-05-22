@@ -536,13 +536,15 @@ export async function regenerateOpenClawConfig() {
     // with the cron message as the only content (see openclaw@2026.5.7
     // dist/reset-L5yC6_6J.js — `const DEFAULT_RESET_MODE = "daily"`).
     //
-    // `mode: "idle"` + `idleMinutes: 0` matches what OpenClaw's
-    // `evaluateSessionFreshness` treats as "never expire": no daily branch
-    // fires (mode is not "daily"), and the idle branch requires
-    // `idleMinutes > 0` to expire. Manual `/new` / `/reset` slash commands
-    // are still respected for users who explicitly want a fresh chat —
-    // this only disables the silent auto-rotation.
-    session: { reset: { mode: "idle", idleMinutes: 0 } },
+    // `mode: "idle"` with a very large `idleMinutes` value disables the
+    // daily reset without using an invalid config. OpenClaw's schema
+    // requires `idleMinutes > 0`; using 525600 (1 year) is valid and
+    // practically never triggers. No daily branch fires (mode is not
+    // "daily"), and the idle branch only fires after a full year of
+    // inactivity. Manual `/new` / `/reset` slash commands are still
+    // respected for users who explicitly want a fresh chat — this only
+    // disables the silent auto-rotation.
+    session: { reset: { mode: "idle", idleMinutes: 525600 } },
   };
 
   // Preserve OpenClaw-enriched top-level fields that Pinchy doesn't manage
