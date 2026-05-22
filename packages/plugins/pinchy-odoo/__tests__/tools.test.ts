@@ -39,6 +39,7 @@ import plugin, {
   compactSchema,
   augmentFieldsWithCompanyId,
   extractCompanyLabel,
+  formatMultiMatchError,
   PRODUCT_REF_DISAMBIGUATION_HINT,
 } from "../index";
 
@@ -651,6 +652,75 @@ describe("extractCompanyLabel", () => {
     expect(extractCompanyLabel("GmbH A")).toBeNull();
     expect(extractCompanyLabel(42)).toBeNull();
     expect(extractCompanyLabel({})).toBeNull();
+  });
+});
+
+describe("formatMultiMatchError", () => {
+  const field = { name: "account_id", string: "Account", type: "many2one", required: true, readonly: false, relation: "account.account" } as OdooField;
+
+  it("emits a multi-company collision message when matches span 2+ companies", () => {
+    const msg = formatMultiMatchError(
+      field,
+      { name: "1000 Wareneinsatz" },
+      [
+        { id: 42, name: "Wareneinsatz", display_name: "1000 Wareneinsatz", company_id: [1, "GmbH A"] },
+        { id: 87, name: "Wareneinsatz", display_name: "1000 Wareneinsatz", company_id: [2, "GmbH B"] },
+      ],
+    );
+    expect(msg).toMatch(/multi-company collision/);
+    expect(msg).toContain('"GmbH A"');
+    expect(msg).toContain('"GmbH B"');
+    expect(msg).toMatch(/company_id/);
+    expect(msg).toMatch(/_pinchy_ref/);
+  });
+
+  it("falls back to the plain message when all matches are in the same company", () => {
+    const msg = formatMultiMatchError(
+      field,
+      { name: "Foo" },
+      [
+        { id: 1, name: "Foo", display_name: "Foo", company_id: [1, "GmbH A"] },
+        { id: 2, name: "Foo", display_name: "Foo", company_id: [1, "GmbH A"] },
+      ],
+    );
+    expect(msg).toMatch(/multiple Account records match "Foo"/);
+    expect(msg).not.toMatch(/multi-company collision/);
+  });
+
+  it("falls back to the plain message when no records carry company_id at all", () => {
+    const msg = formatMultiMatchError(
+      field,
+      { name: "Bar" },
+      [
+        { id: 1, name: "Bar", display_name: "Bar" },
+        { id: 2, name: "Bar", display_name: "Bar" },
+      ],
+    );
+    expect(msg).not.toMatch(/multi-company collision/);
+  });
+
+  it("uses code over name when present in the lookup", () => {
+    const msg = formatMultiMatchError(
+      field,
+      { code: "AT", name: "Austria" },
+      [
+        { id: 1, name: "x", display_name: "x", company_id: [1, "GmbH A"] },
+        { id: 2, name: "x", display_name: "x", company_id: [2, "GmbH B"] },
+      ],
+    );
+    expect(msg).toContain('"AT"');
+  });
+
+  it("uses field.string for the human label, falling back to field.name", () => {
+    const noStringField = { ...field, string: undefined } as OdooField;
+    const msg = formatMultiMatchError(
+      noStringField,
+      { name: "x" },
+      [
+        { id: 1, name: "x", display_name: "x", company_id: [1, "GmbH A"] },
+      ],
+    );
+    expect(msg).toMatch(/multiple account_id records/);
   });
 });
 
@@ -2537,5 +2607,117 @@ describe("odoo_read multi-company auto-include", () => {
     const wrappedCompany = payload.records[0].company_id;
     expect(wrappedCompany).toMatchObject({ label: "GmbH A", model: "res.company" });
     expect(typeof wrappedCompany.ref).toBe("string");
+  });
+});
+
+describe("m2o lookup multi-company error", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.stubEnv("PINCHY_REF_TOKEN_KEY", "a".repeat(64));
+  });
+
+  it("explains multi-match as a multi-company collision and suggests company_id filter", async () => {
+    // Fields for the parent model (account.move.line) so create can resolve
+    mockFields.mockImplementation(async (model: string) => {
+      if (model === "account.move.line") {
+        return [
+          { name: "id", type: "integer", required: false, readonly: true },
+          { name: "account_id", type: "many2one", relation: "account.account", required: true, readonly: false },
+        ];
+      }
+      return [];
+    });
+    // Lookup finds two matches across companies
+    mockSearchRead.mockResolvedValue({
+      records: [
+        { id: 42, name: "Wareneinsatz", display_name: "1000 Wareneinsatz", company_id: [1, "GmbH A"] },
+        { id: 87, name: "Wareneinsatz", display_name: "1000 Wareneinsatz", company_id: [2, "GmbH B"] },
+      ],
+      total: 2, limit: 20, offset: 0,
+    });
+
+    const tools = createApi({
+      [agentId]: {
+        ...agentConfig,
+        permissions: { "account.move.line": ["create"] },
+      },
+    });
+    const tool = findTool(tools, "odoo_create", agentId)!;
+
+    const result = await tool.execute("call-multi", {
+      model: "account.move.line",
+      values: { account_id: "1000 Wareneinsatz" },
+    });
+
+    expect(result.isError).toBe(true);
+    const text = result.content[0].text;
+    expect(text).toMatch(/multiple/i);
+    expect(text).toMatch(/GmbH A/);
+    expect(text).toMatch(/GmbH B/);
+    expect(text).toMatch(/company_id/);
+  });
+
+  it("still includes company_id in the relation searchRead so the breakdown is possible", async () => {
+    mockFields.mockImplementation(async (model: string) => {
+      if (model === "account.move.line") {
+        return [
+          { name: "id", type: "integer", required: false, readonly: true },
+          { name: "account_id", type: "many2one", relation: "account.account", required: true, readonly: false },
+        ];
+      }
+      return [];
+    });
+    mockSearchRead.mockResolvedValue({ records: [], total: 0, limit: 20, offset: 0 });
+
+    const tools = createApi({
+      [agentId]: { ...agentConfig, permissions: { "account.move.line": ["create"] } },
+    });
+    const tool = findTool(tools, "odoo_create", agentId)!;
+    await tool.execute("call-fields", {
+      model: "account.move.line",
+      values: { account_id: "Wareneinsatz" },
+    }).catch(() => {});
+
+    const lookupCall = mockSearchRead.mock.calls.find(
+      ([model]) => model === "account.account",
+    );
+    expect(lookupCall).toBeDefined();
+    expect(lookupCall![2]?.fields).toEqual(
+      expect.arrayContaining(["id", "name", "display_name", "company_id"]),
+    );
+  });
+
+  it("falls back to the plain multi-match error when all matches are in the same company", async () => {
+    // Edge case: two records, same company → should NOT mention "multi-company collision"
+    // (the original generic message is appropriate)
+    mockFields.mockImplementation(async (model: string) => {
+      if (model === "account.move.line") {
+        return [
+          { name: "id", type: "integer", required: false, readonly: true },
+          { name: "account_id", type: "many2one", relation: "account.account", required: true, readonly: false },
+        ];
+      }
+      return [];
+    });
+    mockSearchRead.mockResolvedValue({
+      records: [
+        { id: 1, name: "Foo", display_name: "Foo", company_id: [1, "GmbH A"] },
+        { id: 2, name: "Foo", display_name: "Foo", company_id: [1, "GmbH A"] },
+      ],
+      total: 2, limit: 20, offset: 0,
+    });
+
+    const tools = createApi({
+      [agentId]: { ...agentConfig, permissions: { "account.move.line": ["create"] } },
+    });
+    const tool = findTool(tools, "odoo_create", agentId)!;
+    const result = await tool.execute("call-same", {
+      model: "account.move.line",
+      values: { account_id: "Foo" },
+    });
+
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toMatch(/multiple/i);
+    expect(result.content[0].text).not.toMatch(/multi-company collision/);
   });
 });

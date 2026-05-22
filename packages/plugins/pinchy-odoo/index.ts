@@ -588,6 +588,39 @@ function formatSuggestions(records: OdooRecord[]): string {
   return labels.length > 0 ? ` Suggestions: ${labels.join(", ")}.` : "";
 }
 
+/**
+ * Build a multi-match error that explains *why* the lookup is ambiguous when
+ * the matches differ only by company. If at least two matches sit in different
+ * companies, surface the breakdown so the LLM (and the user reading the chat)
+ * can react with a `company_id` filter or an exact `_pinchy_ref` instead of
+ * silently picking one. Falls back to the plain message when matches are
+ * single-company or untagged.
+ */
+export function formatMultiMatchError(
+  field: OdooField,
+  lookup: { name?: string | null; code?: string | null },
+  matches: OdooRecord[],
+): string {
+  const label = field.string ?? field.name;
+  const input = lookup.code ?? lookup.name ?? "";
+  const companies = matches
+    .map((m) => extractCompanyLabel(m.company_id))
+    .filter((c): c is string => Boolean(c));
+  const distinctCompanies = Array.from(new Set(companies));
+
+  if (distinctCompanies.length >= 2) {
+    const list = distinctCompanies.map((c) => `"${c}"`).join(", ");
+    return (
+      `Could not resolve ${field.name}: multiple ${label} records match "${input}" ` +
+      `across companies (${list}). This is a multi-company collision — add a ` +
+      `\`company_id\` filter to your odoo_read first (e.g. ` +
+      `[["company_id", "=", <company _pinchy_ref or id>]]), then pass the exact ` +
+      `\`_pinchy_ref\` of the right record.`
+    );
+  }
+  return `Could not resolve ${field.name}: multiple ${label} records match "${input}".`;
+}
+
 function rankedSuggestions(input: string, records: OdooRecord[]): OdooRecord[] {
   const requested = normalizeLookupText(input);
   const startsWith = records.filter((record) => {
@@ -661,9 +694,7 @@ function resolveReferenceFromRecords(
   const ids = uniqueIds(exactMatches);
   if (ids.length === 1) return ids[0];
   if (ids.length > 1) {
-    throw new Error(
-      `Could not resolve ${field.name}: multiple ${label} records match "${input}".`,
-    );
+    throw new Error(formatMultiMatchError(field, lookup, exactMatches));
   }
 
   throw new Error(
@@ -743,7 +774,7 @@ async function resolveRelationValue(
           field.relation,
           [["name", "ilike", lookup.name ?? ""]],
           {
-            fields: ["id", "name", "display_name"],
+            fields: ["id", "name", "display_name", "company_id"],
             limit: 20,
           },
         );
