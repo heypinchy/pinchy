@@ -2072,6 +2072,41 @@ describe("regenerateOpenClawConfig", () => {
     expect(config?.models?.providers?.anthropic).toBeUndefined();
   });
 
+  it("sets allowPrivateNetwork: true on the ollama-local provider so the OC SSRF guard accepts host.docker.internal / .local / RFC 1918", async () => {
+    // OC 2026.5.x ships an SSRF filter that default-denies fetches to RFC
+    // 1918 / loopback / .local addresses. The Email/Odoo/Web/Telegram E2E
+    // suites — and any real self-hosted Ollama deployment — point the
+    // provider at `http://ollama.local:11435` (or host.docker.internal,
+    // or 192.168.x.x). Without explicit opt-in, OC blocks every model
+    // fetch with `SsrFBlockedError: Blocked hostname or private/internal/
+    // special-use IP address`, the run aborts with
+    // "LLM request failed: network connection error", and no audit entry
+    // is ever written. This assertion locks in the opt-in.
+    vi.mocked(fetchOllamaLocalModelsFromUrl).mockResolvedValue([
+      {
+        id: "ollama/llama3.2",
+        name: "llama3.2",
+        parameterSize: "3B",
+        compatible: true,
+        capabilities: { tools: true, vision: false, completion: true, thinking: false },
+      },
+    ]);
+    mockedGetSetting.mockImplementation(async (key: string) => {
+      if (key === "ollama_local_url") return "http://ollama.local:11435";
+      return null;
+    });
+
+    await regenerateOpenClawConfig();
+
+    const written = mockedWriteFileSync.mock.calls[0][1] as string;
+    const config = JSON.parse(written);
+    // Pinchy emits the local Ollama provider under the OC-native key
+    // `ollama` (not `ollama-local`) so pi-ai's built-in openai-completions
+    // provider handles the stream; the Pinchy-side settings key is
+    // `default_provider=ollama-local`.
+    expect(config?.models?.providers?.ollama?.allowPrivateNetwork).toBe(true);
+  });
+
   it("emits models: [] when fetchOllamaLocalModelsFromUrl returns empty (Ollama unreachable at config-regen time)", async () => {
     // The setup wizard validates that ≥1 tool-capable model exists before
     // saving the URL, so this state means Ollama went away after setup.

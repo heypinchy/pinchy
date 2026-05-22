@@ -998,6 +998,15 @@ export async function regenerateOpenClawConfig() {
     const ollamaModels = await fetchOllamaLocalModelsFromUrl(ollamaLocalUrl);
     const providerConfig: Record<string, unknown> = {
       baseUrl: rewriteOllamaHostForOpenClaw(ollamaLocalUrl),
+      // OC 2026.5.x ships an SSRF guard that blocks fetches to RFC 1918 /
+      // loopback / .local addresses by default (log fingerprint:
+      // "SsrFBlockedError: Blocked hostname or private/internal/special-use
+      // IP address"). For a self-hosted Ollama this is the expected target
+      // (host.docker.internal / 192.168.x.x / ollama.local), so opt the
+      // ollama-local provider into the private-network allowlist. Other
+      // built-in providers stay on the default-deny because they all
+      // resolve to public registries.
+      allowPrivateNetwork: true,
       // Use openai-completions (not "ollama") so pi-ai's built-in provider handles
       // the stream. The "ollama" api type requires OpenClaw's bundled Ollama runtime
       // plugin to register itself with pi-ai dynamically — that registration only
