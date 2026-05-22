@@ -777,6 +777,18 @@ async function normalizeMany2OneValues(
   return normalized;
 }
 
+/**
+ * Pull a human-readable company name out of a raw Odoo `company_id` value.
+ * Odoo returns m2o values as `[id, "display_name"]` tuples (before we wrap
+ * them) or `false` for single-company tenants. Returns `null` for any other
+ * shape so the label stays unsuffixed — never throws.
+ */
+export function extractCompanyLabel(value: unknown): string | null {
+  if (!Array.isArray(value)) return null;
+  if (typeof value[1] !== "string" || value[1].length === 0) return null;
+  return value[1];
+}
+
 function wrapMany2OneValue(
   connectionId: string,
   field: OdooField,
@@ -821,12 +833,16 @@ function wrapReadResult(
     // Field name is `_pinchy_ref` (not `ref`) to avoid shadowing the real
     // Odoo `ref` field that exists on account.move, account.payment, etc.
     if (typeof record.id === "number") {
-      const label =
+      const baseLabel =
         typeof record.display_name === "string"
           ? record.display_name
           : typeof record.name === "string"
             ? record.name
             : `${model}#${record.id}`;
+      // Read company_id from the RAW record (still a [id, "Name"] tuple);
+      // do this before the m2o-wrap loop below replaces it with {ref, label, model}.
+      const companyLabel = extractCompanyLabel(record.company_id);
+      const label = companyLabel ? `${baseLabel} [${companyLabel}]` : baseLabel;
       wrapped._pinchy_ref = encodeRef({
         integrationType: "odoo",
         connectionId,

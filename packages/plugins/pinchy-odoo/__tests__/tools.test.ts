@@ -38,6 +38,7 @@ import plugin, {
   sortFieldsByPriority,
   compactSchema,
   augmentFieldsWithCompanyId,
+  extractCompanyLabel,
   PRODUCT_REF_DISAMBIGUATION_HINT,
 } from "../index";
 
@@ -627,6 +628,29 @@ describe("augmentFieldsWithCompanyId", () => {
     ];
     const result = augmentFieldsWithCompanyId(requested, modelFields);
     expect(result).toBe(requested);
+  });
+});
+
+describe("extractCompanyLabel", () => {
+  it("returns the string label from a [id, name] tuple", () => {
+    expect(extractCompanyLabel([1, "GmbH A"])).toBe("GmbH A");
+  });
+  it("returns null when value is false (single-company tenant)", () => {
+    expect(extractCompanyLabel(false)).toBeNull();
+  });
+  it("returns null when value is undefined or missing", () => {
+    expect(extractCompanyLabel(undefined)).toBeNull();
+    expect(extractCompanyLabel(null)).toBeNull();
+  });
+  it("returns null when the second tuple element is not a non-empty string", () => {
+    expect(extractCompanyLabel([1, ""])).toBeNull();
+    expect(extractCompanyLabel([1, 42])).toBeNull();
+    expect(extractCompanyLabel([1])).toBeNull();
+  });
+  it("returns null when value is not an array", () => {
+    expect(extractCompanyLabel("GmbH A")).toBeNull();
+    expect(extractCompanyLabel(42)).toBeNull();
+    expect(extractCompanyLabel({})).toBeNull();
   });
 });
 
@@ -2395,5 +2419,78 @@ describe("odoo_read multi-company auto-include", () => {
       [],
       expect.objectContaining({ fields: undefined }),
     );
+  });
+
+  it("appends company suffix to the _pinchy_ref label when company_id is present", async () => {
+    mockFields.mockResolvedValue([
+      { name: "id", type: "integer", required: false, readonly: true },
+      { name: "name", type: "char", required: false, readonly: false },
+      { name: "display_name", type: "char", required: false, readonly: false },
+      { name: "company_id", type: "many2one", relation: "res.company", required: true, readonly: false },
+    ]);
+    mockSearchRead.mockResolvedValue({
+      records: [
+        { id: 42, name: "Wareneinsatz", display_name: "1000 Wareneinsatz", company_id: [1, "GmbH A"] },
+        { id: 87, name: "Wareneinsatz", display_name: "1000 Wareneinsatz", company_id: [2, "GmbH B"] },
+      ],
+      total: 2, limit: 2, offset: 0,
+    });
+
+    const tools = createApi({
+      [agentId]: { ...agentConfig, permissions: { "account.account": ["read"] } },
+    });
+    const tool = findTool(tools, "odoo_read", agentId)!;
+
+    const result = await tool.execute("call-5", {
+      model: "account.account",
+      filters: [],
+      fields: ["name", "display_name"],
+    });
+
+    const payload = JSON.parse(result.content[0].text);
+    const refs = payload.records.map((r: { _pinchy_ref: string }) => decodeRef(r._pinchy_ref));
+    expect(refs[0].label).toBe("1000 Wareneinsatz [GmbH A]");
+    expect(refs[1].label).toBe("1000 Wareneinsatz [GmbH B]");
+  });
+
+  it("does NOT append the suffix when company_id is absent on the record", async () => {
+    mockFields.mockResolvedValue([
+      { name: "id", type: "integer", required: false, readonly: true },
+      { name: "display_name", type: "char", required: false, readonly: false },
+    ]);
+    mockSearchRead.mockResolvedValue({
+      records: [{ id: 14, display_name: "Austria" }],
+      total: 1, limit: 1, offset: 0,
+    });
+
+    const tools = createApi({
+      [agentId]: { ...agentConfig, permissions: { "res.country": ["read"] } },
+    });
+    const tool = findTool(tools, "odoo_read", agentId)!;
+
+    const result = await tool.execute("call-6", { model: "res.country", filters: [], fields: ["display_name"] });
+    const payload = JSON.parse(result.content[0].text);
+    expect(decodeRef(payload.records[0]._pinchy_ref).label).toBe("Austria");
+  });
+
+  it("does NOT append the suffix when company_id is false (single-company tenant)", async () => {
+    mockFields.mockResolvedValue([
+      { name: "id", type: "integer", required: false, readonly: true },
+      { name: "display_name", type: "char", required: false, readonly: false },
+      { name: "company_id", type: "many2one", relation: "res.company", required: false, readonly: false },
+    ]);
+    mockSearchRead.mockResolvedValue({
+      records: [{ id: 99, display_name: "Generic Account", company_id: false }],
+      total: 1, limit: 1, offset: 0,
+    });
+
+    const tools = createApi({
+      [agentId]: { ...agentConfig, permissions: { "account.account": ["read"] } },
+    });
+    const tool = findTool(tools, "odoo_read", agentId)!;
+
+    const result = await tool.execute("call-7", { model: "account.account", filters: [], fields: ["display_name"] });
+    const payload = JSON.parse(result.content[0].text);
+    expect(decodeRef(payload.records[0]._pinchy_ref).label).toBe("Generic Account");
   });
 });
