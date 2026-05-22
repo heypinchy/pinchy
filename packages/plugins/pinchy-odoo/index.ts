@@ -461,6 +461,30 @@ export function compactSchema(
   };
 }
 
+/**
+ * If the LLM asked for a specific fields list AND the model has a `company_id`
+ * many2one field, append `company_id` so the wrapper can surface the company
+ * in `_pinchy_ref` labels. Multi-company UX hinges on the LLM being able to
+ * see which company each record belongs to without having to know to ask.
+ *
+ * Returns the original list unchanged when:
+ * - The LLM asked for all fields (`undefined`),
+ * - The model has no `company_id` field,
+ * - The LLM already included `company_id`.
+ */
+export function augmentFieldsWithCompanyId(
+  requested: string[] | undefined,
+  modelFields: OdooField[],
+): string[] | undefined {
+  if (!requested) return undefined;
+  const hasCompany = modelFields.some(
+    (f) => f.name === "company_id" && f.type === "many2one",
+  );
+  if (!hasCompany) return requested;
+  if (requested.includes("company_id")) return requested;
+  return [...requested, "company_id"];
+}
+
 function getSearchReadRecords(result: unknown): OdooRecord[] {
   if (Array.isArray(result)) return result.filter(isRecord);
   if (isRecord(result) && Array.isArray(result.records)) {
@@ -1225,11 +1249,15 @@ const plugin = {
                   const modelFields = normalizeFields(
                     await client.fields(model),
                   );
+                  const effectiveFields = augmentFieldsWithCompanyId(
+                    params.fields as string[] | undefined,
+                    modelFields,
+                  );
                   const records = await client.searchRead(
                     model,
                     params.filters as unknown[],
                     {
-                      fields: params.fields as string[] | undefined,
+                      fields: effectiveFields,
                       limit: params.limit as number | undefined,
                       offset: params.offset as number | undefined,
                       order: params.order as string | undefined,

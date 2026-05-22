@@ -2181,3 +2181,149 @@ describe("odoo_attach_file", () => {
     });
   });
 });
+
+describe("odoo_read multi-company auto-include", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.stubEnv("PINCHY_REF_TOKEN_KEY", "a".repeat(64));
+  });
+
+  it("auto-includes company_id when the model has the field and the LLM did not ask for it", async () => {
+    mockFields.mockResolvedValue([
+      { name: "id", type: "integer", required: false, readonly: true },
+      { name: "code", type: "char", required: false, readonly: false },
+      { name: "name", type: "char", required: false, readonly: false },
+      {
+        name: "company_id",
+        type: "many2one",
+        relation: "res.company",
+        required: true,
+        readonly: false,
+      },
+    ]);
+    mockSearchRead.mockResolvedValue({
+      records: [
+        { id: 42, code: "1000", name: "Wareneinsatz", company_id: [1, "GmbH A"] },
+      ],
+      total: 1,
+      limit: 1,
+      offset: 0,
+    });
+
+    const tools = createApi({
+      [agentId]: { ...agentConfig, permissions: { "account.account": ["read"] } },
+    });
+    const tool = findTool(tools, "odoo_read", agentId)!;
+
+    await tool.execute("call-1", {
+      model: "account.account",
+      filters: [],
+      fields: ["code", "name"], // LLM did NOT ask for company_id
+    });
+
+    expect(mockSearchRead).toHaveBeenCalledWith(
+      "account.account",
+      [],
+      expect.objectContaining({
+        fields: expect.arrayContaining(["code", "name", "company_id"]),
+      }),
+    );
+  });
+
+  it("does NOT auto-include company_id when the model lacks the field", async () => {
+    mockFields.mockResolvedValue([
+      { name: "id", type: "integer", required: false, readonly: true },
+      { name: "code", type: "char", required: false, readonly: false },
+    ]);
+    mockSearchRead.mockResolvedValue({
+      records: [],
+      total: 0,
+      limit: 0,
+      offset: 0,
+    });
+
+    const tools = createApi({
+      [agentId]: { ...agentConfig, permissions: { "res.country": ["read"] } },
+    });
+    const tool = findTool(tools, "odoo_read", agentId)!;
+
+    await tool.execute("call-2", {
+      model: "res.country",
+      filters: [],
+      fields: ["code"],
+    });
+
+    expect(mockSearchRead).toHaveBeenCalledWith(
+      "res.country",
+      [],
+      expect.not.objectContaining({
+        fields: expect.arrayContaining(["company_id"]),
+      }),
+    );
+  });
+
+  it("does NOT duplicate company_id if the LLM already asked for it", async () => {
+    mockFields.mockResolvedValue([
+      { name: "id", type: "integer", required: false, readonly: true },
+      {
+        name: "company_id",
+        type: "many2one",
+        relation: "res.company",
+        required: true,
+        readonly: false,
+      },
+    ]);
+    mockSearchRead.mockResolvedValue({
+      records: [],
+      total: 0,
+      limit: 0,
+      offset: 0,
+    });
+
+    const tools = createApi({
+      [agentId]: { ...agentConfig, permissions: { "account.move": ["read"] } },
+    });
+    const tool = findTool(tools, "odoo_read", agentId)!;
+
+    await tool.execute("call-3", {
+      model: "account.move",
+      filters: [],
+      fields: ["company_id", "name"],
+    });
+
+    const fieldsArg = mockSearchRead.mock.calls[0][2]?.fields as string[];
+    const occurrences = fieldsArg.filter((f) => f === "company_id").length;
+    expect(occurrences).toBe(1);
+  });
+
+  it("leaves the LLM's fields list untouched when fields is undefined (all-fields mode)", async () => {
+    mockFields.mockResolvedValue([
+      {
+        name: "company_id",
+        type: "many2one",
+        relation: "res.company",
+        required: true,
+        readonly: false,
+      },
+    ]);
+    mockSearchRead.mockResolvedValue({
+      records: [],
+      total: 0,
+      limit: 0,
+      offset: 0,
+    });
+
+    const tools = createApi({
+      [agentId]: { ...agentConfig, permissions: { "account.move": ["read"] } },
+    });
+    const tool = findTool(tools, "odoo_read", agentId)!;
+
+    await tool.execute("call-4", { model: "account.move", filters: [] }); // no fields
+
+    expect(mockSearchRead).toHaveBeenCalledWith(
+      "account.move",
+      [],
+      expect.objectContaining({ fields: undefined }),
+    );
+  });
+});
