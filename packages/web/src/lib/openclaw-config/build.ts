@@ -544,7 +544,14 @@ export async function regenerateOpenClawConfig() {
     // inactivity. Manual `/new` / `/reset` slash commands are still
     // respected for users who explicitly want a fresh chat — this only
     // disables the silent auto-rotation.
-    session: { reset: { mode: "idle", idleMinutes: 525600 } },
+    // Spread existing session fields so OpenClaw-enriched sibling keys are
+    // preserved across regenerations (same pattern as gateway, discovery, etc.).
+    // Only `reset` is Pinchy-owned; everything else OpenClaw may stamp belongs
+    // to OpenClaw and must survive a config regenerate unchanged.
+    session: {
+      ...(existing.session as Record<string, unknown>),
+      reset: { mode: "idle" as const, idleMinutes: 525600 },
+    },
   };
 
   // Preserve OpenClaw-enriched top-level fields that Pinchy doesn't manage
