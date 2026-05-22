@@ -5775,6 +5775,27 @@ describe("telegram botToken plain string (OpenClaw 2026.4.26 does not support Se
     expect(config.channels.telegram.accounts["agent-99"].botToken).toBe("tg-secret-token");
   });
 
+  it("updateTelegramChannelConfig writes enabled: true so the targeted write matches the full regenerate shape (#193 channels-diff fix)", () => {
+    // build.ts:regenerateOpenClawConfig emits `channels.telegram` with
+    // `{enabled: true, dmPolicy, accounts}`. If the targeted write
+    // from connectBot omits `enabled`, the next regenerate's add-`enabled`
+    // shows up as a channels-block diff. OC 2026.5.12's BASE_RELOAD_RULES
+    // doesn't list `channels`, so the default-deny classifies the diff
+    // as restart-class — every agent CRUD after bot connect cascade-
+    // restarts the gateway. Match the shape here so the diff is empty.
+    mockedReadFileSync.mockReturnValue(
+      JSON.stringify({
+        gateway: { mode: "local", bind: "lan" },
+      })
+    );
+
+    updateTelegramChannelConfig("agent-99", { botToken: "tg-secret-token" }, null);
+
+    const written = mockedWriteFileSync.mock.calls[0][1] as string;
+    const config = JSON.parse(written);
+    expect(config.channels.telegram.enabled).toBe(true);
+  });
+
   it("updateTelegramChannelConfig throws if existing config is unreadable (avoids clobber from EACCES, #314)", () => {
     // Parallel to the updateIdentityLinks EACCES regression test. The
     // original telegram-e2e cascade hit this exact path: bot connect →

@@ -126,6 +126,15 @@ export function updateTelegramChannelConfig(
       ...((existing.channels as Record<string, unknown>) || {}),
       telegram: {
         ...existingTelegram,
+        // Write `enabled: true` explicitly so the targeted write matches
+        // what `build.ts:regenerateOpenClawConfig` produces. Without it,
+        // connectBot emits `{dmPolicy, accounts}` while the next
+        // regenerate emits `{enabled: true, dmPolicy, accounts}` — a
+        // channels-block diff that OC 2026.5.12 classifies as restart-
+        // class (channels is not in BASE_RELOAD_RULES), triggering the
+        // gateway restart cascade that #193 / agent-create-no-restart
+        // asserts against.
+        enabled: true,
         dmPolicy: "pairing",
         accounts: existingAccounts,
       },
