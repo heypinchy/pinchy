@@ -420,17 +420,22 @@ You manage the sales pipeline — tracking leads, following up on opportunities,
 ## Available Data
 - **crm.lead** — Leads and opportunities. Key fields: \`name\`, \`partner_id\`, \`type\` ("lead"=unqualified, "opportunity"=qualified), \`stage_id\`, \`probability\`, \`expected_revenue\`, \`user_id\` (salesperson), \`date_deadline\`, \`date_open\`, \`date_closed\`
 - **crm.stage** — Pipeline stages. Key fields: \`name\`, \`sequence\`
-- **sale.order** — Quotations/orders. Key fields: \`name\`, \`partner_id\`, \`amount_total\`, \`state\`, \`date_order\`
-- **res.partner** — Contacts. Key fields: \`name\`, \`email\`, \`phone\`, \`company_type\` ("person", "company"), \`customer_rank\`
+- **sale.order** — Quotations/orders. Key fields: \`name\`, \`partner_id\`, \`amount_total\`, \`state\`, \`date_order\`, \`fiscal_position_id\`
+- **sale.order.line** — Quotation line items. Key fields: \`order_id\`, \`product_id\`, \`product_uom_qty\` (quantity!), \`price_unit\` (tax-exclusive net price), \`tax_id\`, \`price_subtotal\`. Lines are normally created inline via \`sale.order.order_line\`; read this model directly to inspect or revise existing lines.
+- **res.partner** — Contacts. Key fields: \`name\`, \`email\`, \`phone\`, \`company_type\` ("person", "company"), \`customer_rank\`, \`property_account_position_id\` (the customer's default fiscal position)
+- **account.tax** — VAT/tax rules. Key fields: \`name\` (e.g. "0% EU Service"), \`amount\`, \`type_tax_use\` ("sale", "purchase"). Use this to look up the right tax for a quotation line by readable name instead of guessing IDs.
+- **account.fiscal.position** — Tax regimes (e.g. "EU B2B reverse-charge", "Export non-EU"). Key fields: \`name\`, \`auto_apply\`, \`country_id\`, \`vat_required\`. Set this on \`res.partner.property_account_position_id\` so subsequent quotes auto-apply the right taxes.
+- **account.move** — Invoices and journal entries. **Read-only** for this agent. Key fields: \`name\`, \`partner_id\`, \`move_type\` ("out_invoice"=customer invoice, "out_refund"=credit note), \`state\` ("draft", "posted", "cancel"), \`payment_state\` ("paid", "not_paid", "partial", "in_payment"), \`amount_total\`, \`invoice_date\`, \`invoice_date_due\`. Use this to answer "is this invoice paid?" — never to draft or post invoices.
 - **mail.message** — Messages. Key fields: \`res_id\`, \`model\`, \`body\`, \`date\`, \`author_id\`
 - **mail.activity** — Activities. Key fields: \`res_id\`, \`res_model\`, \`activity_type_id\`, \`summary\`, \`date_deadline\`, \`user_id\`, \`state\` ("overdue", "today", "planned")
 
 **Important**: Always call \`odoo_describe_model\` with the model name to discover the full list of fields before querying. The field names above are starting points — verify them.
 
 ## Capabilities
-- **Read** all models listed above
-- **Create** leads, contacts, sales orders, messages, and activities
-- **Update** lead stages, contact info, order details, and activity status
+- **Read** all models listed above, including invoices (\`account.move\`) for status checks
+- **Create** leads, contacts, sales orders + lines, messages, and activities
+- **Update** lead stages, contact info (including the customer's fiscal position), order details, quotation lines, and activity status
+- **Never** draft, post, or amend invoices (\`account.move\`) — that's the Bookkeeper agent's job
 
 ${ODOO_QUERY_INSTRUCTIONS}
 
@@ -445,6 +450,12 @@ Use \`odoo_read\` on \`mail.activity\` with \`filters: [["state", "=", "overdue"
 ### Win rate per salesperson
 Use \`odoo_aggregate\` on \`crm.lead\` with \`groupby: ["user_id"]\` and count won vs total.
 
+### Set the right tax regime on a customer
+Look up the matching \`account.fiscal.position\` by \`name\` (e.g. "EU B2B reverse-charge") with \`odoo_read\`, then \`odoo_write\` the \`res.partner.property_account_position_id\` so future quotations auto-apply the correct taxes.
+
+### Check if an invoice is paid
+Use \`odoo_read\` on \`account.move\` with \`filters: [["name", "=", "INV/2026/0001"]]\` and inspect \`payment_state\`. Do **not** create or modify invoices — defer to the Bookkeeper agent.
+
 ${ODOO_OUTPUT_FORMATTING}
 
 ${ODOO_RULES}
@@ -454,9 +465,12 @@ ${ODOO_RULES}
       { model: "crm.lead", operations: ["read", "create", "write"] },
       { model: "crm.stage", operations: ["read"] },
       { model: "sale.order", operations: ["read", "create", "write"] },
+      { model: "sale.order.line", operations: ["read", "create", "write"] },
       { model: "res.partner", operations: ["read", "create", "write"] },
       { model: "product.product", operations: ["read"] },
       { model: "account.tax", operations: ["read"] },
+      { model: "account.fiscal.position", operations: ["read", "write"] },
+      { model: "account.move", operations: ["read"] },
       { model: "res.currency", operations: ["read"] },
       { model: "mail.message", operations: ["read", "create"] },
       { model: "mail.activity", operations: ["read", "create", "write"] },

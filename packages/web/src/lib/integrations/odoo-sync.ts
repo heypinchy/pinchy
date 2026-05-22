@@ -76,6 +76,7 @@ export const MODEL_CATEGORIES: ModelCategory[] = [
       { model: "account.journal", name: "Journals" },
       { model: "account.account", name: "Accounts" },
       { model: "account.tax", name: "Taxes" },
+      { model: "account.fiscal.position", name: "Fiscal Positions" },
       { model: "account.payment.term", name: "Payment Terms" },
       { model: "account.analytic.account", name: "Analytic Accounts" },
       { model: "account.analytic.line", name: "Analytic Lines" },

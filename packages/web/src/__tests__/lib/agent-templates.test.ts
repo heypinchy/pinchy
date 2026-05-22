@@ -8,6 +8,7 @@ import {
   generateAgentsMd,
   pickSuggestedName,
 } from "@/lib/agent-templates";
+import { MODEL_CATEGORIES } from "@/lib/integrations/odoo-sync";
 import { PERSONALITY_PRESETS } from "@/lib/personality-presets";
 import { TEMPLATE_ICON_COMPONENTS } from "@/lib/template-icons";
 import { getOdooToolsForAccessLevel } from "@/lib/tool-registry";
@@ -1469,5 +1470,87 @@ describe("Odoo Approval Manager template (cross-module approvals)", () => {
 
   it("appears in getTemplateList", () => {
     expect(getTemplateList().some((t) => t.id === "odoo-approval-manager")).toBe(true);
+  });
+});
+
+describe("Odoo CRM & Sales Assistant template — quotation-ready model coverage", () => {
+  // The CRM template builds quotations end-to-end: leads → opportunities →
+  // sale.order with priced lines and the correct VAT regime on the customer.
+  // That workflow needs three extras beyond the original Sales/CRM models:
+  //
+  //   - account.fiscal.position (read+write) — store the customer's tax
+  //     regime on res.partner so subsequent quotes auto-apply the right
+  //     taxes. Without write, the agent can never set up a new customer.
+  //   - sale.order.line (read+create+write) — quotation line items are
+  //     written via the parent sale.order in normal flows, but reading and
+  //     editing individual lines is required for revisions and inspections.
+  //   - account.move (read) — let the agent check invoice/payment status
+  //     when a customer asks "is this paid?". Deliberately read-only;
+  //     invoice creation belongs to the Bookkeeper template.
+  const id = "odoo-crm-assistant";
+
+  it("grants read+write on account.fiscal.position (tax regime on contacts)", () => {
+    const t = getTemplate(id)!;
+    const fp = t.odooConfig!.requiredModels.find((m) => m.model === "account.fiscal.position");
+    expect(fp, "account.fiscal.position missing from requiredModels").toBeDefined();
+    expect(fp!.operations).toContain("read");
+    expect(fp!.operations).toContain("write");
+  });
+
+  it("grants read+create+write on sale.order.line (quotation line items)", () => {
+    const t = getTemplate(id)!;
+    const line = t.odooConfig!.requiredModels.find((m) => m.model === "sale.order.line");
+    expect(line, "sale.order.line missing from requiredModels").toBeDefined();
+    expect(line!.operations).toContain("read");
+    expect(line!.operations).toContain("create");
+    expect(line!.operations).toContain("write");
+  });
+
+  it("grants read on account.move but never create or write (Bookkeeper owns invoicing)", () => {
+    // Status lookups only: a Sales agent must not draft, post, or amend
+    // invoices. That's the Bookkeeper template's responsibility and is
+    // regulated (UID, sequential numbering, posting rules).
+    const t = getTemplate(id)!;
+    const move = t.odooConfig!.requiredModels.find((m) => m.model === "account.move");
+    expect(move, "account.move missing from requiredModels").toBeDefined();
+    expect(move!.operations).toContain("read");
+    expect(move!.operations).not.toContain("create");
+    expect(move!.operations).not.toContain("write");
+  });
+
+  it("keeps account.tax as read-only (already in template — guards against regression)", () => {
+    const t = getTemplate(id)!;
+    const tax = t.odooConfig!.requiredModels.find((m) => m.model === "account.tax");
+    expect(tax).toBeDefined();
+    expect(tax!.operations).toContain("read");
+    expect(tax!.operations).not.toContain("write");
+  });
+
+  it("AGENTS.md mentions account.fiscal.position with its quotation purpose", () => {
+    const t = getTemplate(id)!;
+    expect(t.defaultAgentsMd).toContain("account.fiscal.position");
+  });
+
+  it("AGENTS.md mentions sale.order.line for quotation line items", () => {
+    const t = getTemplate(id)!;
+    expect(t.defaultAgentsMd).toContain("sale.order.line");
+  });
+
+  it("AGENTS.md mentions account.move for invoice/payment status lookups", () => {
+    const t = getTemplate(id)!;
+    expect(t.defaultAgentsMd).toContain("account.move");
+  });
+});
+
+describe("MODEL_CATEGORIES — accounting category covers fiscal positions", () => {
+  // The schema sync only probes models listed in MODEL_CATEGORIES. Any model
+  // a template requires must be in this list, otherwise the
+  // template-integration-coverage drift guard fails (and the Create button
+  // stays disabled forever). This direct check makes the intent obvious in
+  // failure output.
+  it("includes account.fiscal.position in the accounting category", () => {
+    const accounting = MODEL_CATEGORIES.find((c) => c.id === "accounting");
+    expect(accounting, "accounting category missing").toBeDefined();
+    expect(accounting!.models.some((m) => m.model === "account.fiscal.position")).toBe(true);
   });
 });
