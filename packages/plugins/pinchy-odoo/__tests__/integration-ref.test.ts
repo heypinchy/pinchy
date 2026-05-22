@@ -191,4 +191,119 @@ describe("integration refs", () => {
 
     expect(() => decodeRef(tampered)).toThrow(/Invalid integration reference/);
   });
+
+  describe("optional company fields", () => {
+    beforeEach(() => {
+      _resetKeyCacheForTest();
+      vi.stubEnv("PINCHY_REF_TOKEN_KEY", "a".repeat(64));
+    });
+
+    it("roundtrips a payload with companyId and companyLabel", () => {
+      const ref = encodeRef({
+        integrationType: "odoo",
+        connectionId: "conn-mc",
+        model: "account.account",
+        id: 42,
+        label: "1000 Wareneinsatz [GmbH A]",
+        companyId: 1,
+        companyLabel: "GmbH A",
+      });
+      expect(decodeRef(ref)).toEqual({
+        integrationType: "odoo",
+        connectionId: "conn-mc",
+        model: "account.account",
+        id: 42,
+        label: "1000 Wareneinsatz [GmbH A]",
+        companyId: 1,
+        companyLabel: "GmbH A",
+      });
+    });
+
+    it("still accepts a payload without company fields (back-compat with old tokens)", () => {
+      const ref = encodeRef({
+        integrationType: "odoo",
+        connectionId: "conn-legacy",
+        model: "res.country",
+        id: 14,
+        label: "Austria",
+      });
+      expect(decodeRef(ref)).toEqual({
+        integrationType: "odoo",
+        connectionId: "conn-legacy",
+        model: "res.country",
+        id: 14,
+        label: "Austria",
+      });
+    });
+
+    it("rejects a payload where companyId is not a positive integer", () => {
+      expect(() =>
+        encodeRef({
+          integrationType: "odoo",
+          connectionId: "conn-bad",
+          model: "account.account",
+          id: 42,
+          label: "x",
+          companyId: -1,
+          companyLabel: "Bad",
+        }),
+      ).toThrow(/Invalid integration reference payload/);
+    });
+
+    it("rejects a payload where companyLabel is present but companyId is not", () => {
+      expect(() =>
+        encodeRef({
+          integrationType: "odoo",
+          connectionId: "conn-bad-2",
+          model: "account.account",
+          id: 42,
+          label: "x",
+          // @ts-expect-error: deliberate mis-shape for the validator
+          companyLabel: "Orphan",
+        }),
+      ).toThrow(/Invalid integration reference payload/);
+    });
+
+    it("rejects a payload where companyId is present but companyLabel is not", () => {
+      expect(() =>
+        encodeRef({
+          integrationType: "odoo",
+          connectionId: "conn-bad-3",
+          model: "account.account",
+          id: 42,
+          label: "x",
+          // @ts-expect-error: deliberate mis-shape for the validator
+          companyId: 1,
+        }),
+      ).toThrow(/Invalid integration reference payload/);
+    });
+
+    it("rejects a payload where companyId is not an integer", () => {
+      expect(() =>
+        encodeRef({
+          integrationType: "odoo",
+          connectionId: "conn-bad-4",
+          model: "account.account",
+          id: 42,
+          label: "x",
+          companyId: 1.5,
+          companyLabel: "Half",
+        }),
+      ).toThrow(/Invalid integration reference payload/);
+    });
+
+    it("rejects a payload where companyLabel is an empty string", () => {
+      expect(() =>
+        encodeRef({
+          integrationType: "odoo",
+          connectionId: "conn-bad-5",
+          model: "account.account",
+          id: 42,
+          label: "x",
+          companyId: 1,
+          companyLabel: "",
+        }),
+      ).toThrow(/Invalid integration reference payload/);
+    });
+  });
 });

@@ -13,6 +13,12 @@ export interface IntegrationRefPayload {
   model: string;
   id: number;
   label: string;
+  // Optional company tag for multi-company tenants. Present when the encoder
+  // could see the record's company_id at wrap time. Allows downstream
+  // consumers (refToId) to refuse cross-company writes without an extra
+  // Odoo round-trip. Both fields appear together or not at all.
+  companyId?: number;
+  companyLabel?: string;
 }
 
 let cachedKey: Buffer | null = null;
@@ -28,7 +34,7 @@ export function _resetKeyCacheForTest(): void {
 function isPayload(value: unknown): value is IntegrationRefPayload {
   if (!value || typeof value !== "object") return false;
   const obj = value as Record<string, unknown>;
-  return (
+  const base =
     obj.integrationType === "odoo" &&
     typeof obj.connectionId === "string" &&
     obj.connectionId.length > 0 &&
@@ -37,8 +43,25 @@ function isPayload(value: unknown): value is IntegrationRefPayload {
     typeof obj.id === "number" &&
     Number.isInteger(obj.id) &&
     obj.id > 0 &&
-    typeof obj.label === "string"
-  );
+    typeof obj.label === "string";
+  if (!base) return false;
+
+  // Company tag rules: both present together, both correct shape, or neither.
+  const hasId = "companyId" in obj && obj.companyId !== undefined;
+  const hasLabel = "companyLabel" in obj && obj.companyLabel !== undefined;
+  if (hasId !== hasLabel) return false;
+  if (hasId) {
+    if (
+      typeof obj.companyId !== "number" ||
+      !Number.isInteger(obj.companyId) ||
+      obj.companyId <= 0
+    )
+      return false;
+    if (typeof obj.companyLabel !== "string" || obj.companyLabel.length === 0) {
+      return false;
+    }
+  }
+  return true;
 }
 
 function readKeyFromSecretsBundle(): string | null {
