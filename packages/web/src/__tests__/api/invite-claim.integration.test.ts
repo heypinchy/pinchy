@@ -42,16 +42,7 @@ vi.mock("@/lib/invites", async (importOriginal) => {
 });
 
 import { db } from "@/db";
-import {
-  invites,
-  users,
-  userGroups,
-  groups,
-  inviteGroups,
-  sessions,
-  accounts,
-  auditLog,
-} from "@/db/schema";
+import { invites, users, userGroups, groups, inviteGroups, sessions, auditLog } from "@/db/schema";
 import { createInvite, claimInvite } from "@/lib/invites";
 import { seedPersonalAgent } from "@/lib/personal-agent";
 import { regenerateOpenClawConfig } from "@/lib/openclaw-config";
