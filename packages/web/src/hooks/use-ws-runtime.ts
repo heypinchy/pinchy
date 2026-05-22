@@ -318,6 +318,8 @@ export class OfficeDocumentAttachmentAdapter {
     const { value: html } = await mammoth.convertToHtml(
       { arrayBuffer },
       {
+        // Empty src skips mammoth's base64 encoding; the strip-image
+        // turndown rule below replaces <img> with [image] downstream.
         convertImage: mammoth.images.imgElement(() => Promise.resolve({ src: "" })),
       }
     );
@@ -372,12 +374,9 @@ export class OfficeDocumentAttachmentAdapter {
  * rationale for the intentional duplication.
  */
 function normalizeDocxTableHtml(html: string): string {
-  // Step 1: strip <p> wrappers inside <td>/<th> cells.
   let out = html.replace(/<(td|th)([^>]*)><p>([\s\S]*?)<\/p><\/(td|th)>/g, "<$1$2>$3</$1>");
 
-  // Step 2: for each <table>…</table>, promote the first <tr> into a
-  // <thead> with <th> cells. Mammoth emits no <tbody>, so rows sit
-  // directly under <table>.
+  // Mammoth emits no <tbody>, so rows sit directly under <table>.
   out = out.replace(/<table>([\s\S]*?)<\/table>/g, (_, inner: string) => {
     const firstRowMatch = inner.match(/^(<tr>[\s\S]*?<\/tr>)/);
     if (!firstRowMatch) return `<table>${inner}</table>`;

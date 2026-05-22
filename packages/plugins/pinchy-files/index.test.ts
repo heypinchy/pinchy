@@ -4,6 +4,7 @@ import { readFileSync as realReadFileSync, mkdtempSync, rmSync, mkdirSync, write
 import { join } from "path";
 import { tmpdir } from "os";
 import Database from "better-sqlite3";
+import { MAX_DOCX_FILE_SIZE } from "./validate";
 
 const FIXTURES = join(import.meta.dirname, "test-fixtures");
 
@@ -594,10 +595,9 @@ describe("pinchy_read DOCX integration", () => {
   it("rejects .docx files larger than MAX_DOCX_FILE_SIZE with isError=true", async () => {
     const tmpDir = mkdtempSync(join(tmpdir(), "pinchy-files-test-"));
     const oversizedPath = join(tmpDir, "big.docx");
-    // 51 MB of zero bytes — 1 MB over the 50 MB DOCX limit. The content
-    // doesn't need to be a valid ZIP because the size gate runs before
-    // mammoth ever sees the buffer.
-    writeFileSync(oversizedPath, Buffer.alloc(51 * 1024 * 1024));
+    // 1 byte over the DOCX limit — content doesn't need to be a valid ZIP
+    // because the size gate runs before mammoth ever sees the buffer.
+    writeFileSync(oversizedPath, Buffer.alloc(MAX_DOCX_FILE_SIZE + 1));
 
     try {
       const api = createMockApi({ "agent-1": { allowed_paths: [tmpDir + "/"] } });
@@ -607,8 +607,8 @@ describe("pinchy_read DOCX integration", () => {
 
       expect(result.isError).toBe(true);
       expect(result.content[0].text).toMatch(/too large/i);
-      // The cited limit must be the 50 MB DOCX cap, not the 10 MB generic one.
-      expect(result.content[0].text).toMatch(/52428800/);
+      // The cited limit must be the DOCX cap, not the generic one.
+      expect(result.content[0].text).toContain(String(MAX_DOCX_FILE_SIZE));
     } finally {
       rmSync(tmpDir, { recursive: true, force: true });
     }
