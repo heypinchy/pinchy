@@ -264,11 +264,21 @@ export async function seedGatewayTokenIfMissing(): Promise<boolean> {
 
   const token = await getOrCreateGatewayToken();
 
+  // Set `mode: "token"` together with the token. Without it, the eventual
+  // post-wizard regenerateOpenClawConfig() (which always writes
+  // `auth: { mode: "token", token }`) produces a diff at gateway.auth.mode,
+  // and OC's reload classifier flags that as restart-class:
+  //   [reload] config change requires gateway restart (gateway.auth.mode)
+  // The restart then loads only `activation.onStartup: true` plugins (e.g.
+  // pinchy-audit), and lazy plugins (pinchy-context, pinchy-docs, pinchy-files)
+  // disappear from the running runtime. Setting mode here keeps the seeded
+  // shape byte-equal to what the wizard would produce, so the post-wizard
+  // write is a no-op restart-class-wise and the lazy plugins stay loaded.
   const updated: Record<string, unknown> = {
     ...existing,
     gateway: {
       ...gateway,
-      auth: { ...auth, token },
+      auth: { ...auth, mode: "token", token },
     },
   };
 

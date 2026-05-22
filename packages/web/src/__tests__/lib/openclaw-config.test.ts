@@ -3355,10 +3355,18 @@ describe("seedGatewayTokenIfMissing", () => {
     mockedGetSetting.mockResolvedValue(null);
   });
 
-  it("writes gateway.auth.token when the file is empty / missing", async () => {
+  it("writes gateway.auth.token AND auth.mode='token' when the file is empty / missing", async () => {
     // Fresh-install scenario: bind-mount target is empty (no baked-in config
     // got through), so the file doesn't exist yet. OC would refuse to start
     // until the wizard runs — except we seed the token here.
+    //
+    // Critically, we must seed `mode: "token"` together with the token.
+    // Without it, the post-wizard regenerateOpenClawConfig() (which always
+    // writes `auth: { mode: "token", token }`) produces a restart-class diff
+    // at `gateway.auth.mode`, which forces an OC gateway restart that drops
+    // all lazy pinchy-* plugins from the runtime (only `onStartup: true`
+    // plugins survive). Matching the wizard's auth shape byte-for-byte at
+    // seed time keeps the eventual post-wizard write a no-op restart-wise.
     mockedReadFileSync.mockImplementation(() => {
       throw Object.assign(new Error("ENOENT"), { code: "ENOENT" });
     });
@@ -3373,6 +3381,7 @@ describe("seedGatewayTokenIfMissing", () => {
     const written = JSON.parse(String(writtenAtomic![1]));
     expect(typeof written.gateway?.auth?.token).toBe("string");
     expect(written.gateway.auth.token.length).toBeGreaterThan(0);
+    expect(written.gateway.auth.mode).toBe("token");
   });
 
   it("returns false (no write) when the token is already present", async () => {
@@ -3416,9 +3425,12 @@ describe("seedGatewayTokenIfMissing", () => {
     );
     const written = JSON.parse(String(writtenAtomic![1]));
 
-    // Token landed:
+    // Token landed with full auth shape (mode + token) to avoid the
+    // gateway.auth.mode restart-class diff from the eventual post-wizard
+    // regenerateOpenClawConfig() write:
     expect(typeof written.gateway.auth?.token).toBe("string");
     expect(written.gateway.auth.token.length).toBeGreaterThan(0);
+    expect(written.gateway.auth.mode).toBe("token");
 
     // Other restart-class fields and gateway settings preserved:
     expect(written.gateway.mode).toBe("local");
