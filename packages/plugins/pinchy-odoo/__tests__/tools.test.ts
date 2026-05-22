@@ -2470,7 +2470,9 @@ describe("odoo_read multi-company auto-include", () => {
 
     const result = await tool.execute("call-6", { model: "res.country", filters: [], fields: ["display_name"] });
     const payload = JSON.parse(result.content[0].text);
-    expect(decodeRef(payload.records[0]._pinchy_ref).label).toBe("Austria");
+    const label = decodeRef(payload.records[0]._pinchy_ref).label;
+    expect(label).toBe("Austria");
+    expect(label).not.toMatch(/\[.*\]$/);
   });
 
   it("does NOT append the suffix when company_id is false (single-company tenant)", async () => {
@@ -2491,6 +2493,49 @@ describe("odoo_read multi-company auto-include", () => {
 
     const result = await tool.execute("call-7", { model: "account.account", filters: [], fields: ["display_name"] });
     const payload = JSON.parse(result.content[0].text);
-    expect(decodeRef(payload.records[0]._pinchy_ref).label).toBe("Generic Account");
+    const label = decodeRef(payload.records[0]._pinchy_ref).label;
+    expect(label).toBe("Generic Account");
+    expect(label).not.toMatch(/\[.*\]$/);
+  });
+
+  it("appends company suffix even when company_id is explicitly in the requested fields list (ordering invariant)", async () => {
+    mockFields.mockResolvedValue([
+      { name: "id", type: "integer", required: false, readonly: true },
+      { name: "name", type: "char", required: false, readonly: false },
+      { name: "display_name", type: "char", required: false, readonly: false },
+      { name: "company_id", type: "many2one", relation: "res.company", required: true, readonly: false },
+    ]);
+    mockSearchRead.mockResolvedValue({
+      records: [
+        { id: 42, name: "Wareneinsatz", display_name: "1000 Wareneinsatz", company_id: [1, "GmbH A"] },
+      ],
+      total: 1, limit: 1, offset: 0,
+    });
+
+    const tools = createApi({
+      [agentId]: { ...agentConfig, permissions: { "account.account": ["read"] } },
+    });
+    const tool = findTool(tools, "odoo_read", agentId)!;
+
+    // company_id IS in the requested fields list, so the m2o-wrap loop will
+    // transform it from [1, "GmbH A"] into {ref, label, model}. The self-ref's
+    // label suffix must still pick up the company name — that only works if the
+    // self-ref encoding reads record.company_id BEFORE the wrap loop runs.
+    const result = await tool.execute("call-order", {
+      model: "account.account",
+      filters: [],
+      fields: ["name", "display_name", "company_id"],
+    });
+
+    const payload = JSON.parse(result.content[0].text);
+    const ref = decodeRef(payload.records[0]._pinchy_ref);
+    expect(ref.label).toBe("1000 Wareneinsatz [GmbH A]");
+
+    // Sanity: company_id in the returned record IS now the wrapped m2o object,
+    // confirming the wrap loop did run on this field. (This is the condition
+    // that, if it ran first, would have made extractCompanyLabel return null.)
+    const wrappedCompany = payload.records[0].company_id;
+    expect(wrappedCompany).toMatchObject({ label: "GmbH A", model: "res.company" });
+    expect(typeof wrappedCompany.ref).toBe("string");
   });
 });
