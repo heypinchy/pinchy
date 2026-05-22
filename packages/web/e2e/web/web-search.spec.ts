@@ -243,6 +243,14 @@ test.describe("Web dispatch probe (pinchy-web plugin coverage)", () => {
 
     const input = page.getByPlaceholder(/send a message/i);
     await expect(input).toBeVisible({ timeout: 10_000 });
+    // Capture `since` BEFORE the dispatch — the previous test
+    // ("pinchy_web_search dispatches via fake-LLM and writes audit entry")
+    // already wrote a `tool.pinchy_web_search` audit entry on the same
+    // agent. Without the filter, pollAuditForTool matches that stale entry
+    // and returns true before the new dispatch has actually reached
+    // brave-mock, then the request-log assertion races and fails. See
+    // run 26289436861.
+    const since = new Date().toISOString();
     await input.fill(`${FAKE_OLLAMA_WEB_SEARCH_TOOL_TRIGGER}: round-trip search`);
     await input.press("Enter");
 
@@ -252,6 +260,7 @@ test.describe("Web dispatch probe (pinchy-web plugin coverage)", () => {
     const dispatched = await pollAuditForTool(page, {
       toolName: "pinchy_web_search",
       agentId: dispatchAgentId,
+      since,
     });
     expect(dispatched).toBe(true);
 

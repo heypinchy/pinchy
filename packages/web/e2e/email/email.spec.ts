@@ -259,6 +259,13 @@ test.describe("Email dispatch probe (pinchy-email plugin coverage)", () => {
 
     const input = page.getByPlaceholder(/send a message/i);
     await expect(input).toBeVisible({ timeout: 10_000 });
+    // Capture `since` BEFORE the dispatch — the previous test
+    // ("email_list dispatches via fake-LLM and writes audit entry") already
+    // wrote a `tool.email_list` audit entry on the same agent. Without the
+    // filter, pollAuditForTool matches that stale entry and returns true
+    // before the new dispatch has actually reached gmail-mock, then the
+    // /control/requests assertion races and fails. See run 26289436861.
+    const since = new Date().toISOString();
     await input.fill(`${FAKE_OLLAMA_EMAIL_LIST_TOOL_TRIGGER}: round-trip list`);
     await input.press("Enter");
 
@@ -266,6 +273,7 @@ test.describe("Email dispatch probe (pinchy-email plugin coverage)", () => {
     const dispatched = await pollAuditForTool(page, {
       toolName: "email_list",
       agentId: dispatchAgentId,
+      since,
     });
     expect(dispatched).toBe(true);
 
@@ -290,12 +298,20 @@ test.describe("Email dispatch probe (pinchy-email plugin coverage)", () => {
 
     const input = page.getByPlaceholder(/send a message/i);
     await expect(input).toBeVisible({ timeout: 10_000 });
+    // Capture `since` BEFORE the dispatch. email_send is currently
+    // dispatched only by this test, so the stale-match race that broke
+    // the email_list round-trip doesn't apply here today — but pinning
+    // the `since`-based pattern across all round-trip tests means a
+    // future "email_send dispatches via fake-LLM" probe won't silently
+    // re-introduce the same flake.
+    const since = new Date().toISOString();
     await input.fill(`${FAKE_OLLAMA_EMAIL_SEND_TOOL_TRIGGER}: round-trip send`);
     await input.press("Enter");
 
     const dispatched = await pollAuditForTool(page, {
       toolName: "email_send",
       agentId: dispatchAgentId,
+      since,
     });
     expect(dispatched).toBe(true);
 

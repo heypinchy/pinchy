@@ -147,12 +147,31 @@ export async function loginViaUI(page: Page, email: string, password: string): P
  */
 export async function pollAuditForTool(
   page: Page,
-  params: { toolName: string; agentId: string; deadlineMs?: number; intervalMs?: number }
+  params: {
+    toolName: string;
+    agentId: string;
+    deadlineMs?: number;
+    intervalMs?: number;
+    /**
+     * ISO-8601 timestamp. When provided, the audit query filters out
+     * entries written before this moment. Tests that re-use the same
+     * tool name on the same agent within a single spec file MUST
+     * capture `since = new Date().toISOString()` BEFORE triggering the
+     * dispatch and pass it here — otherwise the helper would return
+     * `true` immediately by matching a previous test's audit entry, and
+     * a follow-up "side-effect actually happened" assertion would race
+     * against the still-in-flight dispatch.
+     */
+    since?: string;
+  }
 ): Promise<boolean> {
   const deadline = Date.now() + (params.deadlineMs ?? 60_000);
   const interval = params.intervalMs ?? 500;
+  const sinceQs = params.since ? `&from=${encodeURIComponent(params.since)}` : "";
   while (Date.now() < deadline) {
-    const res = await page.request.get(`/api/audit?eventType=tool.${params.toolName}&limit=10`);
+    const res = await page.request.get(
+      `/api/audit?eventType=tool.${params.toolName}&limit=10${sinceQs}`
+    );
     if (res.status() === 200) {
       const audit = (await res.json()) as {
         entries: Array<{ resource: string | null; detail: { toolName?: string } | null }>;
