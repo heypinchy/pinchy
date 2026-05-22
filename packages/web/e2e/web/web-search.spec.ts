@@ -4,6 +4,7 @@ import {
   waitForPinchy,
   waitForBraveMock,
   resetBraveMock,
+  seedBraveResults,
   getBraveRequests,
   getAdminEmail,
   getAdminPassword,
@@ -96,25 +97,6 @@ test.describe("pinchy-web — Brave Search E2E", () => {
     const webConn = list.find((c) => c.type === "web-search");
     expect(webConn).toBeDefined();
     expect(webConn!.id).toBe(connectionId);
-  });
-
-  test.skip("Brave mock receives actual search request when tool is invoked via chat", async () => {
-    // TODO: this test requires fake-ollama to support tool-call responses.
-    //
-    // Currently fake-ollama (packages/web/e2e/integration/fake-ollama-server.ts)
-    // always returns a fixed string "Integration test response." — it does NOT
-    // produce tool_use blocks. Until fake-ollama is extended to emit a
-    // pinchy_web_search tool call for specific trigger phrases, we cannot
-    // drive the full round-trip through the chat UI.
-    //
-    // When fake-ollama gains tool-call support:
-    //   1. Seed brave-mock with custom results via seedBraveResults().
-    //   2. Send a message through the chat WebSocket (or via the UI) that
-    //      triggers the pinchy_web_search tool.
-    //   3. Assert getBraveRequests() shows the expected query + a valid apiKey.
-    //   4. Assert the apiKey is NOT the literal string "test-brave-api-key"
-    //      (plugin must fetch credentials from Pinchy, not embed the raw value).
-    void getBraveRequests; // referenced to avoid "unused import" lint errors
   });
 });
 
@@ -231,5 +213,57 @@ test.describe("Web dispatch probe (pinchy-web plugin coverage)", () => {
       agentId: dispatchAgentId,
     });
     expect(found).toBe(true);
+  });
+
+  // Round-trip test: prove the plugin actually called brave-mock and used
+  // the credentials it fetched through Pinchy's internal API (not a hard-
+  // coded constant or an unresolved SecretRef baked into openclaw.json).
+  //
+  // Previously a `test.skip` with a TODO that said fake-ollama doesn't
+  // support tool calls. fake-ollama gained WEB_SEARCH_TRIGGER long ago, so
+  // the original blocker is gone — implementing the assertion now.
+  test("brave-mock receives actual search request when tool is invoked via chat", async ({
+    page,
+  }) => {
+    // Seed brave-mock with a deterministic result + clear its request log
+    // before the chat send, so the assertion can attribute the request to
+    // this test and not to anything left over from the dispatch test above.
+    await resetBraveMock();
+    await seedBraveResults([
+      {
+        title: "Pinchy probe result",
+        url: "https://example.com/probe",
+        description: "Seeded for E2E coverage.",
+      },
+    ]);
+
+    await loginViaUI(page, getAdminEmail(), getAdminPassword());
+    await page.goto(`/chat/${dispatchAgentId}`);
+    await expect(page).toHaveURL(`/chat/${dispatchAgentId}`, { timeout: 10_000 });
+
+    const input = page.getByPlaceholder(/send a message/i);
+    await expect(input).toBeVisible({ timeout: 10_000 });
+    await input.fill(`${FAKE_OLLAMA_WEB_SEARCH_TOOL_TRIGGER}: round-trip search`);
+    await input.press("Enter");
+
+    // Wait for the audit entry first — that confirms the tool was actually
+    // dispatched, which means a brave-mock request must have already
+    // happened (or imminently will). pollAuditForTool already retries.
+    const dispatched = await pollAuditForTool(page, {
+      toolName: "pinchy_web_search",
+      agentId: dispatchAgentId,
+    });
+    expect(dispatched).toBe(true);
+
+    // Now assert the brave-mock saw at least one request, with the apiKey
+    // we configured on the connection. If the plugin had embedded a stale
+    // placeholder, or — worse — failed to fetch from /api/internal/integ-
+    // rations at all, the apiKey would either be empty or wrong.
+    const reqs = await getBraveRequests();
+    expect(reqs.length, "brave-mock did not receive any search request").toBeGreaterThan(0);
+    // `createWebSearchConnection` seeds `apiKey: "test-brave-api-key"` —
+    // the plugin must report exactly that value back, which only works if
+    // it pulled the live credential through the Pinchy internal API.
+    expect(reqs.some((r) => r.apiKey === "test-brave-api-key")).toBe(true);
   });
 });
