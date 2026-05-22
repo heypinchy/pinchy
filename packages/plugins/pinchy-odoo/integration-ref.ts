@@ -31,6 +31,27 @@ export function _resetKeyCacheForTest(): void {
   cachedKey = null;
 }
 
+/**
+ * Validate the optional company-tag pair. Both fields must be present together
+ * (`companyId` + `companyLabel`) or both absent — exactly one is an error. When
+ * present, `companyId` must be a positive integer and `companyLabel` must be a
+ * non-empty string. Separated from `isPayload` so the rule can grow (e.g. add
+ * `companyCode`) without bloating the main validator.
+ */
+function isValidCompanyTag(obj: Record<string, unknown>): boolean {
+  const hasId = obj.companyId !== undefined;
+  const hasLabel = obj.companyLabel !== undefined;
+  if (hasId !== hasLabel) return false;
+  if (!hasId) return true;
+  return (
+    typeof obj.companyId === "number" &&
+    Number.isInteger(obj.companyId) &&
+    obj.companyId > 0 &&
+    typeof obj.companyLabel === "string" &&
+    obj.companyLabel.length > 0
+  );
+}
+
 function isPayload(value: unknown): value is IntegrationRefPayload {
   if (!value || typeof value !== "object") return false;
   const obj = value as Record<string, unknown>;
@@ -45,23 +66,7 @@ function isPayload(value: unknown): value is IntegrationRefPayload {
     obj.id > 0 &&
     typeof obj.label === "string";
   if (!base) return false;
-
-  // Company tag rules: both present together, both correct shape, or neither.
-  const hasId = "companyId" in obj && obj.companyId !== undefined;
-  const hasLabel = "companyLabel" in obj && obj.companyLabel !== undefined;
-  if (hasId !== hasLabel) return false;
-  if (hasId) {
-    if (
-      typeof obj.companyId !== "number" ||
-      !Number.isInteger(obj.companyId) ||
-      obj.companyId <= 0
-    )
-      return false;
-    if (typeof obj.companyLabel !== "string" || obj.companyLabel.length === 0) {
-      return false;
-    }
-  }
-  return true;
+  return isValidCompanyTag(obj);
 }
 
 function readKeyFromSecretsBundle(): string | null {
