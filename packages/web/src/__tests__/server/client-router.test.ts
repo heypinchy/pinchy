@@ -83,12 +83,16 @@ vi.mock("drizzle-orm", () => ({
 
 vi.mock("@/lib/audit", () => ({
   appendAuditLog: mockAppendAuditLog,
-  // Pass-through: client-router calls this on free-text providerError before
-  // writing to the audit row. The unit-level behaviour of scrubEmails is
-  // covered by audit.test.ts; here we just need the function to exist so
-  // the import doesn't resolve to undefined and crash writeAgentErrorAudit.
-  scrubEmails: (text: string) =>
-    text.replace(/[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/g, "<email-redacted>"),
+  // Pass-through: every providerError audit write inside client-router
+  // routes through this helper (scrub emails, then truncate to 1024).
+  // Unit-level behaviour of safeProviderError + scrubEmails is covered
+  // by audit.test.ts; here we just need the same observable behaviour
+  // so client-router integration tests can assert against scrubbed +
+  // truncated detail without spinning up the real audit module.
+  safeProviderError: (text: string) =>
+    text
+      .replace(/[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/g, "<email-redacted>")
+      .slice(0, 1024),
 }));
 
 vi.mock("@/lib/groups", () => ({
@@ -3533,6 +3537,50 @@ describe("ClientRouter", () => {
       consoleSpy.mockRestore();
     });
 
+    it("scrubs emails out of providerError in agent.model_unavailable audit detail", async () => {
+      // Defence-in-depth: HTTP 5xx envelopes from some providers echo back
+      // the offending request body or identity hints — e.g.
+      // "HTTP 500: user user@example.com hit internal error". The audit log
+      // is append-only and HMAC-signed, so once an email lands in detail
+      // GDPR Art. 17 erasure is impossible by design. Same protection the
+      // chat.agent_error umbrella applies (#355) — consistency across every
+      // providerError audit field.
+      const clientWs = createMockClientWs();
+      const consoleSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+
+      mockFindFirst.mockResolvedValue({
+        ...defaultAgent,
+        model: "ollama-cloud/x",
+      });
+      mockShouldEmitModelUnavailableAudit.mockReturnValue(true);
+
+      mockChat.mockImplementation(() => {
+        return (async function* () {
+          yield {
+            type: "error" as const,
+            text: "HTTP 500: internal error for user user.name@example.com",
+          };
+        })();
+      });
+
+      await router.handleMessage(clientWs as any, {
+        type: "message",
+        content: "Hi",
+        agentId: "agent-1",
+      });
+
+      const call = mockAppendAuditLog.mock.calls.find(
+        (c: any[]) => c[0]?.eventType === "agent.model_unavailable"
+      );
+      expect(call).toBeDefined();
+      const providerError = call![0].detail.providerError as string;
+      expect(providerError).not.toContain("user.name@example.com");
+      expect(providerError).not.toContain("user.name");
+      expect(providerError).toContain("<email-redacted>");
+
+      consoleSpy.mockRestore();
+    });
+
     it("includes upstreamFormatError in error frame when error chunk contains thought_signature (issue #338)", async () => {
       // Pinchy chat surface: when the upstream provider rejects a tool-call
       // replay because OpenClaw dropped the Gemini 3 `thought_signature`
@@ -3737,6 +3785,49 @@ describe("ClientRouter", () => {
       );
       expect(call).toBeDefined();
       expect(call![0].detail.providerError.length).toBeLessThanOrEqual(1024);
+
+      consoleSpy.mockRestore();
+    });
+
+    it("scrubs emails out of providerError in agent.upstream_format_error audit detail", async () => {
+      // Same defence-in-depth as the model_unavailable scrub test above.
+      // Schema-rejection envelopes from Gemini occasionally include identity
+      // fragments from the offending tool-call replay payload — strip any
+      // email shape before the HMAC seals it into the append-only log.
+      const clientWs = createMockClientWs();
+      const consoleSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+
+      mockFindFirst.mockResolvedValue({
+        ...defaultAgent,
+        model: "ollama-cloud/gemini-3-flash-preview",
+      });
+      mockShouldEmitUpstreamFormatErrorAudit.mockReturnValue(true);
+
+      mockChat.mockImplementation(() => {
+        return (async function* () {
+          yield {
+            type: "error" as const,
+            text:
+              `rawError=400 "Function call is missing a thought_signature ` +
+              `for user.name@example.com replay"`,
+          };
+        })();
+      });
+
+      await router.handleMessage(clientWs as any, {
+        type: "message",
+        content: "Hi",
+        agentId: "agent-1",
+      });
+
+      const call = mockAppendAuditLog.mock.calls.find(
+        (c: any[]) => c[0]?.eventType === "agent.upstream_format_error"
+      );
+      expect(call).toBeDefined();
+      const providerError = call![0].detail.providerError as string;
+      expect(providerError).not.toContain("user.name@example.com");
+      expect(providerError).not.toContain("user.name");
+      expect(providerError).toContain("<email-redacted>");
 
       consoleSpy.mockRestore();
     });

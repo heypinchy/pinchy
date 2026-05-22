@@ -16,12 +16,17 @@
  * `client-router.ts` silent-stream branch.
  */
 
-// TRANSIENT_PATTERN and PROVIDER_CONFIG_PATTERN are shared with error-hints.ts
-// via error-patterns.ts — see that file for the canonical regexes and the
-// reasoning behind their boundaries. Order is significant at the call site:
-// `transient` is checked before `provider_config` because "rate limit
-// exceeded" contains "exceeded" which would otherwise match provider-config.
-import { TRANSIENT_PATTERN, PROVIDER_CONFIG_PATTERN } from "@/server/error-patterns";
+// Shared regexes live in error-patterns.ts — see that file for the canonical
+// definitions and the reasoning behind their boundaries. Order is significant
+// at the call site: `transient` is checked before `provider_config` because
+// "rate limit exceeded" contains "exceeded" which would otherwise match
+// provider-config. `HTTP_5XX_PATTERN` is also imported from there so a future
+// regex tweak doesn't require editing two files.
+import {
+  TRANSIENT_PATTERN,
+  PROVIDER_CONFIG_PATTERN,
+  HTTP_5XX_PATTERN,
+} from "@/server/error-patterns";
 
 export type AgentErrorClass =
   | "failover_incomplete_stream"
@@ -40,8 +45,6 @@ const FAILOVER_INCOMPLETE_STREAM_PATTERN = /FailoverError[\s\S]*incomplete termi
 // unrelated text cannot hijack this branch.
 const THOUGHT_SIGNATURE_SNAKE = /thought_signature/i;
 const THOUGHT_SIGNATURE_CAMEL = /thoughtSignature/;
-
-const HTTP_5XX_PATTERN = /HTTP\s+5\d\d\b/i;
 
 export function classifyAgentError(errorText: string): AgentErrorClass {
   if (FAILOVER_INCOMPLETE_STREAM_PATTERN.test(errorText)) {

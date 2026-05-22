@@ -34,3 +34,17 @@ export const TRANSIENT_PATTERN =
  */
 export const PROVIDER_CONFIG_PATTERN =
   /credit|balance|api[_ ]?key|invalid.*key|authenticat|unauthorized|quota/i;
+
+/**
+ * Matches an "HTTP <5xx>" prefix as emitted by the OpenClaw error envelope
+ * for upstream model failures. Capture group exposes the status code for
+ * consumers (model-error-classifier) that need to record it; consumers
+ * that only need a yes/no signal (agent-error-classifier) ignore it.
+ *
+ * Requires the literal "HTTP " prefix on purpose — matching bare 3-digit
+ * numbers would false-positive on file sizes, port numbers, sums in error
+ * envelopes. If real production traffic produces unprefixed "5xx Internal
+ * Server Error" payloads they'll show up in the `unknown` audit class
+ * before we widen this anchor.
+ */
+export const HTTP_5XX_PATTERN = /HTTP\s+(5\d\d)\b/i;

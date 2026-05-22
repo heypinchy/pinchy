@@ -48,6 +48,7 @@ export type AuditEventType =
   | "channel.created"
   | "channel.deleted"
   | "chat.retry_triggered"
+  | "chat.agent_error"
   | "agent.model_unavailable"
   | "agent.memory_changed"
   | "agent.upstream_format_error"
@@ -190,6 +191,26 @@ const EMAIL_LIKE_PATTERN = /[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/g;
 
 export function scrubEmails(text: string): string {
   return text.replace(EMAIL_LIKE_PATTERN, "<email-redacted>");
+}
+
+/**
+ * Canonical way to land an upstream `providerError` string in audit
+ * detail. Single source of truth so every `providerError` field across
+ * every audit event (chat.agent_error, agent.model_unavailable,
+ * agent.upstream_format_error, chat.silent_stream, …) gets the same
+ * scrub + truncate treatment without each call site rediscovering the
+ * rules.
+ *
+ * - `scrubEmails` first, then truncate — never the other way round, so
+ *   we don't accidentally slice in the middle of an email address and
+ *   leave a partial `user@example` fragment behind.
+ * - 1024-byte cap matches the existing limit on every providerError
+ *   audit field; well under the 2048-byte AGENTS.md detail cap, which
+ *   leaves headroom for surrounding detail fields.
+ */
+const PROVIDER_ERROR_MAX_BYTES = 1024;
+export function safeProviderError(text: string): string {
+  return scrubEmails(text).slice(0, PROVIDER_ERROR_MAX_BYTES);
 }
 
 const MAX_DETAIL_BYTES = 2048;

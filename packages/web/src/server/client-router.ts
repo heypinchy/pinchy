@@ -3,7 +3,7 @@ import type { WebSocket } from "ws";
 import { assertAgentAccess, effectiveVisibility } from "@/lib/agent-access";
 import { getUserGroupIds, getAgentGroupIds } from "@/lib/groups";
 import { isEnterprise } from "@/lib/enterprise";
-import { appendAuditLog, scrubEmails } from "@/lib/audit";
+import { appendAuditLog, safeProviderError } from "@/lib/audit";
 import { recordAuditFailure } from "@/lib/audit-deferred";
 import {
   shouldEmitModelUnavailableAudit,
@@ -644,7 +644,7 @@ export class ClientRouter {
                 detail: {
                   agent: { id: agent.id, name: agent.name },
                   model: agent.model,
-                  providerError: chunk.text.slice(0, 1024),
+                  providerError: safeProviderError(chunk.text),
                   ...(modelUnavailable.ref ? { ref: modelUnavailable.ref } : {}),
                   httpStatus: modelUnavailable.httpStatus,
                 },
@@ -673,7 +673,7 @@ export class ClientRouter {
                 detail: {
                   agent: { id: agent.id, name: agent.name },
                   model: agent.model,
-                  providerError: chunk.text.slice(0, 1024),
+                  providerError: safeProviderError(chunk.text),
                   errorPattern: upstreamFormatError.errorPattern,
                   ...(upstreamFormatError.ref ? { ref: upstreamFormatError.ref } : {}),
                 },
@@ -748,7 +748,12 @@ export class ClientRouter {
             detail: {
               agent: { id: agent.id, name: agent.name },
               model: agent.model ?? null,
-              providerError,
+              // safeProviderError is a no-op on the synthesised Pinchy
+              // string today (no email, fits under 1024 bytes), but
+              // routing every providerError through the same helper
+              // means future refactors that change the synthesised text
+              // can't silently regress the audit-PII contract.
+              providerError: safeProviderError(providerError),
               reason: "silent_stream_end" as const,
             },
             outcome: "failure" as const,
@@ -848,12 +853,13 @@ export class ClientRouter {
    * stream terminates after it), so the audit await runs at most once per
    * failed request — not in a hot loop.
    *
-   * PII: `providerError` is run through `scrubEmails()` before truncation.
-   * The umbrella covers the long tail (`errorClass="unknown"`) where we
-   * can't pre-validate what providers echo back — e.g. validation errors
-   * sometimes include the offending input. The audit table is append-only
-   * and HMAC-signed, so GDPR Art. 17 erasure is impossible by design;
-   * scrubbing at write time is the only protection.
+   * PII: `providerError` is routed through `safeProviderError()` from
+   * `lib/audit.ts` — single source of truth for "scrub emails, then
+   * truncate to 1024 bytes" across every providerError audit field.
+   * The umbrella covers the long tail (`errorClass="unknown"`) where
+   * we can't pre-validate what providers echo back. The audit table is
+   * append-only and HMAC-signed, so GDPR Art. 17 erasure is impossible
+   * by design; scrubbing at write time is the only protection.
    */
   private async writeAgentErrorAudit(args: {
     agent: { id: string; name: string; model?: string | null };
@@ -869,7 +875,7 @@ export class ClientRouter {
         agent: { id: args.agent.id, name: args.agent.name },
         model: args.agent.model ?? null,
         errorClass: args.errorClass,
-        providerError: scrubEmails(args.providerError).slice(0, 1024),
+        providerError: safeProviderError(args.providerError),
       },
       outcome: "failure" as const,
     };

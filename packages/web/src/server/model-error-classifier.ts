@@ -1,8 +1,8 @@
 import type { ModelUnavailableError, UpstreamFormatError } from "@/lib/schemas/chat-frames";
+import { HTTP_5XX_PATTERN } from "@/server/error-patterns";
 
 export type { ModelUnavailableError, UpstreamFormatError };
 
-const HTTP_5XX_PATTERN = /HTTP\s+(5\d\d)\b/i;
 const REF_PATTERN = /ref:\s*([\w-]+)/i;
 // Matches `thought_signature` (snake_case, native Google path) and
 // `thoughtSignature` (camelCase, OpenAI-compat replay paths). Each variant
