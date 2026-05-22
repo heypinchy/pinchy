@@ -136,6 +136,42 @@ async function waitForOpenClawQuiet(quietMs = 30000, timeout = 240000): Promise<
   throw new Error(`OpenClaw never quiet for ${quietMs}ms within ${timeout}ms`);
 }
 
+/**
+ * Wait until Pinchy has written its full startup config to openclaw.json.
+ *
+ * `waitForOpenClawQuiet()` tells us OC log-markers have been absent for
+ * `quietMs` — it cannot tell us whether Pinchy's regenerateOpenClawConfig()
+ * has run yet. After a `docker compose restart openclaw` (done in
+ * globalSetup), OC becomes ready and quiets before Pinchy's reconnect
+ * handler fires its async config.apply() call. On a slow CI runner the
+ * write can arrive after the 30 s quiet window closes, so `readConfigSafely()`
+ * returns the 22-line baked-in + OC-meta file instead of the full ~800-line
+ * Pinchy config — causing the byte-equality assertion to diff `22a23,810`.
+ *
+ * The baked-in config never contains `plugins.entries`; Pinchy always emits
+ * it on the first full write. Polling until that key is present is a
+ * deterministic and version-stable settled-state indicator.
+ */
+async function waitForPinchyConfigSettled(timeoutMs = 120000): Promise<void> {
+  const start = Date.now();
+  while (Date.now() - start < timeoutMs) {
+    const raw = readConfigSafely();
+    try {
+      const parsed = JSON.parse(raw) as Record<string, unknown>;
+      const plugins = parsed.plugins as Record<string, unknown> | undefined;
+      if (plugins?.entries !== undefined) return;
+    } catch {
+      // OC may be mid-write (0600 chmod race); readConfigSafely() retries EACCES
+      // but a truncated JSON parse can still throw — just retry.
+    }
+    await new Promise((r) => setTimeout(r, 2000));
+  }
+  throw new Error(
+    `Pinchy config never settled: plugins.entries absent after ${timeoutMs / 1000}s. ` +
+      `Pinchy may not have called regenerateOpenClawConfig() after reconnect.`
+  );
+}
+
 let sessionCookie: string | null = null;
 
 async function login(): Promise<void> {
@@ -237,10 +273,20 @@ test.describe("regenerateOpenClawConfig — cold-start & idempotency contract", 
     //    inside a restart chain. Quiet means no restart marker for 30 s.
     await waitForOpenClawQuiet();
 
-    // 2. Snapshot openclaw.json *after* OpenClaw has stamped its enrichments
-    //    (auto-enable markers, agents.defaults.*, gateway.controlUi.allowedOrigins,
-    //    meta.lastTouchedAt etc.). This is the baseline we expect Pinchy to
-    //    preserve byte-for-byte.
+    // 1b. Wait for Pinchy to have written its full startup config. OC being
+    //     quiet is a necessary but insufficient condition: after a container
+    //     restart, Pinchy's async config.apply() call can land after the 30 s
+    //     quiet window closes. Without this guard, `before` captures the
+    //     22-line baked-in+meta file, and the subsequent PATCH (which triggers
+    //     regenerateOpenClawConfig for the first time) writes 810 lines,
+    //     producing a spurious diff. See waitForPinchyConfigSettled() for detail.
+    await waitForPinchyConfigSettled();
+
+    // 2. Snapshot openclaw.json *after* both OpenClaw has stamped its
+    //    enrichments (auto-enable markers, agents.defaults.*,
+    //    gateway.controlUi.allowedOrigins, meta.lastTouchedAt etc.) AND
+    //    Pinchy has completed its full startup write. This is the baseline
+    //    we expect Pinchy to preserve byte-for-byte.
     const before = readConfigSafely();
     const beforeMark = new Date(Date.now() - 1000).toISOString();
 
