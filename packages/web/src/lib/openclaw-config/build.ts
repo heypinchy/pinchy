@@ -1172,10 +1172,17 @@ export async function regenerateOpenClawConfig() {
     const existingChannels = (existing.channels as Record<string, unknown>) || {};
     const existingTelegramForCompare = (existingChannels.telegram as Record<string, unknown>) || {};
     if (!isDeepStrictEqual(existingTelegramForCompare, desiredTelegram)) {
-      config.channels = { telegram: desiredTelegram };
+      // Real telegram change. Preserve every other channel sub-block OC
+      // may have enriched at the top of `channels` (e.g. `defaults` for
+      // botLoopProtection / heartbeat-visibility, `modelByChannel`, other
+      // channels' configs). Without this spread, writing `{telegram: ...}`
+      // alone would strip the OC-enriched siblings and the resulting
+      // channels diff still classifies as restart-class (channels has no
+      // entry in BASE_RELOAD_RULES; fallback is restart).
+      config.channels = { ...existingChannels, telegram: desiredTelegram };
     } else if (Object.keys(existingChannels).length > 0) {
-      // No telegram-level change but other channel sub-blocks may exist —
-      // pass them through byte-for-byte to keep OC's file watcher quiet.
+      // No telegram-level change either — pass channels through byte-for-
+      // byte to keep OC's file watcher quiet.
       config.channels = existingChannels;
     }
     config.bindings = bindings;
