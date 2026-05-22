@@ -609,12 +609,17 @@ export function formatMultiMatchError(
   const distinctCompanies = Array.from(new Set(companies));
 
   if (distinctCompanies.length >= 2) {
-    const list = distinctCompanies.map((c) => `"${c}"`).join(", ");
+    const shown = distinctCompanies.slice(0, 5);
+    const overflow =
+      distinctCompanies.length > shown.length
+        ? ` (+${distinctCompanies.length - shown.length} more)`
+        : "";
+    const list = shown.map((c) => `"${c}"`).join(", ") + overflow;
     return (
       `Could not resolve ${field.name}: multiple ${label} records match "${input}" ` +
       `across companies (${list}). This is a multi-company collision — add a ` +
       `\`company_id\` filter to your odoo_read first (e.g. ` +
-      `[["company_id", "=", <company _pinchy_ref or id>]]), then pass the exact ` +
+      `[["company_id", "=", <company _pinchy_ref>]]), then pass the exact ` +
       `\`_pinchy_ref\` of the right record.`
     );
   }
@@ -727,6 +732,33 @@ function refToId(
   return ref.id;
 }
 
+/**
+ * Run the `name ilike` lookup on `field.relation`, requesting `company_id`
+ * only when the relation actually has it. Models like `res.currency`,
+ * `res.country`, `res.lang`, or `res.company` itself lack `company_id` —
+ * asking for it makes Odoo throw "Invalid field 'company_id' on model …".
+ *
+ * The gating mirrors `augmentFieldsWithCompanyId`, which is also used by
+ * `odoo_read` to keep multi-company UX consistent. One extra `client.fields`
+ * call per non-country lookup is the cost.
+ */
+async function searchRelationByName(
+  client: OdooClient,
+  field: OdooField,
+  lookup: RelationLookup,
+): Promise<unknown> {
+  const relation = field.relation as string;
+  const relationFields = normalizeFields(await client.fields(relation));
+  const lookupFields = augmentFieldsWithCompanyId(
+    ["id", "name", "display_name"],
+    relationFields,
+  ) ?? ["id", "name", "display_name"];
+  return client.searchRead(relation, [["name", "ilike", lookup.name ?? ""]], {
+    fields: lookupFields,
+    limit: 20,
+  });
+}
+
 async function resolveRelationValue(
   client: OdooClient,
   connectionId: string,
@@ -770,14 +802,7 @@ async function resolveRelationValue(
           fields: ["id", "name", "display_name", "code"],
           limit: 1000,
         })
-      : await client.searchRead(
-          field.relation,
-          [["name", "ilike", lookup.name ?? ""]],
-          {
-            fields: ["id", "name", "display_name", "company_id"],
-            limit: 20,
-          },
-        );
+      : await searchRelationByName(client, field, lookup);
 
   return resolveReferenceFromRecords(
     field,

@@ -656,17 +656,30 @@ describe("extractCompanyLabel", () => {
 });
 
 describe("formatMultiMatchError", () => {
-  const field = { name: "account_id", string: "Account", type: "many2one", required: true, readonly: false, relation: "account.account" } as OdooField;
+  const field = {
+    name: "account_id",
+    string: "Account",
+    type: "many2one",
+    required: true,
+    readonly: false,
+    relation: "account.account",
+  } as OdooField;
 
   it("emits a multi-company collision message when matches span 2+ companies", () => {
-    const msg = formatMultiMatchError(
-      field,
-      { name: "1000 Wareneinsatz" },
-      [
-        { id: 42, name: "Wareneinsatz", display_name: "1000 Wareneinsatz", company_id: [1, "GmbH A"] },
-        { id: 87, name: "Wareneinsatz", display_name: "1000 Wareneinsatz", company_id: [2, "GmbH B"] },
-      ],
-    );
+    const msg = formatMultiMatchError(field, { name: "1000 Wareneinsatz" }, [
+      {
+        id: 42,
+        name: "Wareneinsatz",
+        display_name: "1000 Wareneinsatz",
+        company_id: [1, "GmbH A"],
+      },
+      {
+        id: 87,
+        name: "Wareneinsatz",
+        display_name: "1000 Wareneinsatz",
+        company_id: [2, "GmbH B"],
+      },
+    ]);
     expect(msg).toMatch(/multi-company collision/);
     expect(msg).toContain('"GmbH A"');
     expect(msg).toContain('"GmbH B"');
@@ -675,52 +688,50 @@ describe("formatMultiMatchError", () => {
   });
 
   it("falls back to the plain message when all matches are in the same company", () => {
-    const msg = formatMultiMatchError(
-      field,
-      { name: "Foo" },
-      [
-        { id: 1, name: "Foo", display_name: "Foo", company_id: [1, "GmbH A"] },
-        { id: 2, name: "Foo", display_name: "Foo", company_id: [1, "GmbH A"] },
-      ],
-    );
+    const msg = formatMultiMatchError(field, { name: "Foo" }, [
+      { id: 1, name: "Foo", display_name: "Foo", company_id: [1, "GmbH A"] },
+      { id: 2, name: "Foo", display_name: "Foo", company_id: [1, "GmbH A"] },
+    ]);
     expect(msg).toMatch(/multiple Account records match "Foo"/);
     expect(msg).not.toMatch(/multi-company collision/);
   });
 
   it("falls back to the plain message when no records carry company_id at all", () => {
-    const msg = formatMultiMatchError(
-      field,
-      { name: "Bar" },
-      [
-        { id: 1, name: "Bar", display_name: "Bar" },
-        { id: 2, name: "Bar", display_name: "Bar" },
-      ],
-    );
+    const msg = formatMultiMatchError(field, { name: "Bar" }, [
+      { id: 1, name: "Bar", display_name: "Bar" },
+      { id: 2, name: "Bar", display_name: "Bar" },
+    ]);
     expect(msg).not.toMatch(/multi-company collision/);
   });
 
   it("uses code over name when present in the lookup", () => {
-    const msg = formatMultiMatchError(
-      field,
-      { code: "AT", name: "Austria" },
-      [
-        { id: 1, name: "x", display_name: "x", company_id: [1, "GmbH A"] },
-        { id: 2, name: "x", display_name: "x", company_id: [2, "GmbH B"] },
-      ],
-    );
+    const msg = formatMultiMatchError(field, { code: "AT", name: "Austria" }, [
+      { id: 1, name: "x", display_name: "x", company_id: [1, "GmbH A"] },
+      { id: 2, name: "x", display_name: "x", company_id: [2, "GmbH B"] },
+    ]);
     expect(msg).toContain('"AT"');
   });
 
   it("uses field.string for the human label, falling back to field.name", () => {
     const noStringField = { ...field, string: undefined } as OdooField;
-    const msg = formatMultiMatchError(
-      noStringField,
-      { name: "x" },
-      [
-        { id: 1, name: "x", display_name: "x", company_id: [1, "GmbH A"] },
-      ],
-    );
+    const msg = formatMultiMatchError(noStringField, { name: "x" }, [
+      { id: 1, name: "x", display_name: "x", company_id: [1, "GmbH A"] },
+    ]);
     expect(msg).toMatch(/multiple account_id records/);
+  });
+
+  it("caps the displayed company list at 5 and indicates overflow", () => {
+    const records = Array.from({ length: 8 }, (_, i) => ({
+      id: i + 1,
+      name: "X",
+      display_name: "X",
+      company_id: [i + 1, `Co${i + 1}`] as [number, string],
+    }));
+    const msg = formatMultiMatchError(field, { name: "X" }, records);
+    expect(msg).toContain('"Co1"');
+    expect(msg).toContain('"Co5"');
+    expect(msg).not.toContain('"Co6"');
+    expect(msg).toMatch(/\+3 more/);
   });
 });
 
@@ -2367,7 +2378,12 @@ describe("odoo_read multi-company auto-include", () => {
     ]);
     mockSearchRead.mockResolvedValue({
       records: [
-        { id: 42, code: "1000", name: "Wareneinsatz", company_id: [1, "GmbH A"] },
+        {
+          id: 42,
+          code: "1000",
+          name: "Wareneinsatz",
+          company_id: [1, "GmbH A"],
+        },
       ],
       total: 1,
       limit: 1,
@@ -2375,7 +2391,10 @@ describe("odoo_read multi-company auto-include", () => {
     });
 
     const tools = createApi({
-      [agentId]: { ...agentConfig, permissions: { "account.account": ["read"] } },
+      [agentId]: {
+        ...agentConfig,
+        permissions: { "account.account": ["read"] },
+      },
     });
     const tool = findTool(tools, "odoo_read", agentId)!;
 
@@ -2496,18 +2515,39 @@ describe("odoo_read multi-company auto-include", () => {
       { name: "id", type: "integer", required: false, readonly: true },
       { name: "name", type: "char", required: false, readonly: false },
       { name: "display_name", type: "char", required: false, readonly: false },
-      { name: "company_id", type: "many2one", relation: "res.company", required: true, readonly: false },
+      {
+        name: "company_id",
+        type: "many2one",
+        relation: "res.company",
+        required: true,
+        readonly: false,
+      },
     ]);
     mockSearchRead.mockResolvedValue({
       records: [
-        { id: 42, name: "Wareneinsatz", display_name: "1000 Wareneinsatz", company_id: [1, "GmbH A"] },
-        { id: 87, name: "Wareneinsatz", display_name: "1000 Wareneinsatz", company_id: [2, "GmbH B"] },
+        {
+          id: 42,
+          name: "Wareneinsatz",
+          display_name: "1000 Wareneinsatz",
+          company_id: [1, "GmbH A"],
+        },
+        {
+          id: 87,
+          name: "Wareneinsatz",
+          display_name: "1000 Wareneinsatz",
+          company_id: [2, "GmbH B"],
+        },
       ],
-      total: 2, limit: 2, offset: 0,
+      total: 2,
+      limit: 2,
+      offset: 0,
     });
 
     const tools = createApi({
-      [agentId]: { ...agentConfig, permissions: { "account.account": ["read"] } },
+      [agentId]: {
+        ...agentConfig,
+        permissions: { "account.account": ["read"] },
+      },
     });
     const tool = findTool(tools, "odoo_read", agentId)!;
 
@@ -2518,7 +2558,9 @@ describe("odoo_read multi-company auto-include", () => {
     });
 
     const payload = JSON.parse(result.content[0].text);
-    const refs = payload.records.map((r: { _pinchy_ref: string }) => decodeRef(r._pinchy_ref));
+    const refs = payload.records.map((r: { _pinchy_ref: string }) =>
+      decodeRef(r._pinchy_ref),
+    );
     expect(refs[0].label).toBe("1000 Wareneinsatz [GmbH A]");
     expect(refs[1].label).toBe("1000 Wareneinsatz [GmbH B]");
   });
@@ -2530,7 +2572,9 @@ describe("odoo_read multi-company auto-include", () => {
     ]);
     mockSearchRead.mockResolvedValue({
       records: [{ id: 14, display_name: "Austria" }],
-      total: 1, limit: 1, offset: 0,
+      total: 1,
+      limit: 1,
+      offset: 0,
     });
 
     const tools = createApi({
@@ -2538,7 +2582,11 @@ describe("odoo_read multi-company auto-include", () => {
     });
     const tool = findTool(tools, "odoo_read", agentId)!;
 
-    const result = await tool.execute("call-6", { model: "res.country", filters: [], fields: ["display_name"] });
+    const result = await tool.execute("call-6", {
+      model: "res.country",
+      filters: [],
+      fields: ["display_name"],
+    });
     const payload = JSON.parse(result.content[0].text);
     const label = decodeRef(payload.records[0]._pinchy_ref).label;
     expect(label).toBe("Austria");
@@ -2549,19 +2597,34 @@ describe("odoo_read multi-company auto-include", () => {
     mockFields.mockResolvedValue([
       { name: "id", type: "integer", required: false, readonly: true },
       { name: "display_name", type: "char", required: false, readonly: false },
-      { name: "company_id", type: "many2one", relation: "res.company", required: false, readonly: false },
+      {
+        name: "company_id",
+        type: "many2one",
+        relation: "res.company",
+        required: false,
+        readonly: false,
+      },
     ]);
     mockSearchRead.mockResolvedValue({
       records: [{ id: 99, display_name: "Generic Account", company_id: false }],
-      total: 1, limit: 1, offset: 0,
+      total: 1,
+      limit: 1,
+      offset: 0,
     });
 
     const tools = createApi({
-      [agentId]: { ...agentConfig, permissions: { "account.account": ["read"] } },
+      [agentId]: {
+        ...agentConfig,
+        permissions: { "account.account": ["read"] },
+      },
     });
     const tool = findTool(tools, "odoo_read", agentId)!;
 
-    const result = await tool.execute("call-7", { model: "account.account", filters: [], fields: ["display_name"] });
+    const result = await tool.execute("call-7", {
+      model: "account.account",
+      filters: [],
+      fields: ["display_name"],
+    });
     const payload = JSON.parse(result.content[0].text);
     const label = decodeRef(payload.records[0]._pinchy_ref).label;
     expect(label).toBe("Generic Account");
@@ -2573,17 +2636,33 @@ describe("odoo_read multi-company auto-include", () => {
       { name: "id", type: "integer", required: false, readonly: true },
       { name: "name", type: "char", required: false, readonly: false },
       { name: "display_name", type: "char", required: false, readonly: false },
-      { name: "company_id", type: "many2one", relation: "res.company", required: true, readonly: false },
+      {
+        name: "company_id",
+        type: "many2one",
+        relation: "res.company",
+        required: true,
+        readonly: false,
+      },
     ]);
     mockSearchRead.mockResolvedValue({
       records: [
-        { id: 42, name: "Wareneinsatz", display_name: "1000 Wareneinsatz", company_id: [1, "GmbH A"] },
+        {
+          id: 42,
+          name: "Wareneinsatz",
+          display_name: "1000 Wareneinsatz",
+          company_id: [1, "GmbH A"],
+        },
       ],
-      total: 1, limit: 1, offset: 0,
+      total: 1,
+      limit: 1,
+      offset: 0,
     });
 
     const tools = createApi({
-      [agentId]: { ...agentConfig, permissions: { "account.account": ["read"] } },
+      [agentId]: {
+        ...agentConfig,
+        permissions: { "account.account": ["read"] },
+      },
     });
     const tool = findTool(tools, "odoo_read", agentId)!;
 
@@ -2605,7 +2684,10 @@ describe("odoo_read multi-company auto-include", () => {
     // confirming the wrap loop did run on this field. (This is the condition
     // that, if it ran first, would have made extractCompanyLabel return null.)
     const wrappedCompany = payload.records[0].company_id;
-    expect(wrappedCompany).toMatchObject({ label: "GmbH A", model: "res.company" });
+    expect(wrappedCompany).toMatchObject({
+      label: "GmbH A",
+      model: "res.company",
+    });
     expect(typeof wrappedCompany.ref).toBe("string");
   });
 });
@@ -2622,7 +2704,32 @@ describe("m2o lookup multi-company error", () => {
       if (model === "account.move.line") {
         return [
           { name: "id", type: "integer", required: false, readonly: true },
-          { name: "account_id", type: "many2one", relation: "account.account", required: true, readonly: false },
+          {
+            name: "account_id",
+            type: "many2one",
+            relation: "account.account",
+            required: true,
+            readonly: false,
+          },
+        ];
+      }
+      if (model === "account.account") {
+        return [
+          { name: "id", type: "integer", required: false, readonly: true },
+          { name: "name", type: "char", required: false, readonly: false },
+          {
+            name: "display_name",
+            type: "char",
+            required: false,
+            readonly: false,
+          },
+          {
+            name: "company_id",
+            type: "many2one",
+            relation: "res.company",
+            required: true,
+            readonly: false,
+          },
         ];
       }
       return [];
@@ -2630,10 +2737,22 @@ describe("m2o lookup multi-company error", () => {
     // Lookup finds two matches across companies
     mockSearchRead.mockResolvedValue({
       records: [
-        { id: 42, name: "Wareneinsatz", display_name: "1000 Wareneinsatz", company_id: [1, "GmbH A"] },
-        { id: 87, name: "Wareneinsatz", display_name: "1000 Wareneinsatz", company_id: [2, "GmbH B"] },
+        {
+          id: 42,
+          name: "Wareneinsatz",
+          display_name: "1000 Wareneinsatz",
+          company_id: [1, "GmbH A"],
+        },
+        {
+          id: 87,
+          name: "Wareneinsatz",
+          display_name: "1000 Wareneinsatz",
+          company_id: [2, "GmbH B"],
+        },
       ],
-      total: 2, limit: 20, offset: 0,
+      total: 2,
+      limit: 20,
+      offset: 0,
     });
 
     const tools = createApi({
@@ -2662,21 +2781,56 @@ describe("m2o lookup multi-company error", () => {
       if (model === "account.move.line") {
         return [
           { name: "id", type: "integer", required: false, readonly: true },
-          { name: "account_id", type: "many2one", relation: "account.account", required: true, readonly: false },
+          {
+            name: "account_id",
+            type: "many2one",
+            relation: "account.account",
+            required: true,
+            readonly: false,
+          },
+        ];
+      }
+      if (model === "account.account") {
+        return [
+          { name: "id", type: "integer", required: false, readonly: true },
+          { name: "name", type: "char", required: false, readonly: false },
+          {
+            name: "display_name",
+            type: "char",
+            required: false,
+            readonly: false,
+          },
+          {
+            name: "company_id",
+            type: "many2one",
+            relation: "res.company",
+            required: true,
+            readonly: false,
+          },
         ];
       }
       return [];
     });
-    mockSearchRead.mockResolvedValue({ records: [], total: 0, limit: 20, offset: 0 });
+    mockSearchRead.mockResolvedValue({
+      records: [],
+      total: 0,
+      limit: 20,
+      offset: 0,
+    });
 
     const tools = createApi({
-      [agentId]: { ...agentConfig, permissions: { "account.move.line": ["create"] } },
+      [agentId]: {
+        ...agentConfig,
+        permissions: { "account.move.line": ["create"] },
+      },
     });
     const tool = findTool(tools, "odoo_create", agentId)!;
-    await tool.execute("call-fields", {
-      model: "account.move.line",
-      values: { account_id: "Wareneinsatz" },
-    }).catch(() => {});
+    await tool
+      .execute("call-fields", {
+        model: "account.move.line",
+        values: { account_id: "Wareneinsatz" },
+      })
+      .catch(() => {});
 
     const lookupCall = mockSearchRead.mock.calls.find(
       ([model]) => model === "account.account",
@@ -2687,6 +2841,63 @@ describe("m2o lookup multi-company error", () => {
     );
   });
 
+  it("does NOT request company_id from relations that lack it (e.g. res.currency)", async () => {
+    mockFields.mockImplementation(async (model: string) => {
+      if (model === "account.move") {
+        return [
+          { name: "id", type: "integer", required: false, readonly: true },
+          {
+            name: "currency_id",
+            type: "many2one",
+            relation: "res.currency",
+            required: true,
+            readonly: false,
+          },
+        ];
+      }
+      if (model === "res.currency") {
+        // No company_id on res.currency — would make Odoo throw if we requested it
+        return [
+          { name: "id", type: "integer", required: false, readonly: true },
+          { name: "name", type: "char", required: false, readonly: false },
+          {
+            name: "display_name",
+            type: "char",
+            required: false,
+            readonly: false,
+          },
+        ];
+      }
+      return [];
+    });
+    mockSearchRead.mockResolvedValue({
+      records: [],
+      total: 0,
+      limit: 20,
+      offset: 0,
+    });
+
+    const tools = createApi({
+      [agentId]: {
+        ...agentConfig,
+        permissions: { "account.move": ["create"] },
+      },
+    });
+    const tool = findTool(tools, "odoo_create", agentId)!;
+    await tool
+      .execute("call-no-cid", {
+        model: "account.move",
+        values: { currency_id: "USD" },
+      })
+      .catch(() => {});
+
+    const currencyLookup = mockSearchRead.mock.calls.find(
+      ([model]) => model === "res.currency",
+    );
+    expect(currencyLookup).toBeDefined();
+    expect(currencyLookup![2]?.fields).not.toContain("company_id");
+  });
+
   it("falls back to the plain multi-match error when all matches are in the same company", async () => {
     // Edge case: two records, same company → should NOT mention "multi-company collision"
     // (the original generic message is appropriate)
@@ -2694,7 +2905,13 @@ describe("m2o lookup multi-company error", () => {
       if (model === "account.move.line") {
         return [
           { name: "id", type: "integer", required: false, readonly: true },
-          { name: "account_id", type: "many2one", relation: "account.account", required: true, readonly: false },
+          {
+            name: "account_id",
+            type: "many2one",
+            relation: "account.account",
+            required: true,
+            readonly: false,
+          },
         ];
       }
       return [];
@@ -2704,11 +2921,16 @@ describe("m2o lookup multi-company error", () => {
         { id: 1, name: "Foo", display_name: "Foo", company_id: [1, "GmbH A"] },
         { id: 2, name: "Foo", display_name: "Foo", company_id: [1, "GmbH A"] },
       ],
-      total: 2, limit: 20, offset: 0,
+      total: 2,
+      limit: 20,
+      offset: 0,
     });
 
     const tools = createApi({
-      [agentId]: { ...agentConfig, permissions: { "account.move.line": ["create"] } },
+      [agentId]: {
+        ...agentConfig,
+        permissions: { "account.move.line": ["create"] },
+      },
     });
     const tool = findTool(tools, "odoo_create", agentId)!;
     const result = await tool.execute("call-same", {
