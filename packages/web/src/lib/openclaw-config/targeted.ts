@@ -210,35 +210,6 @@ export function updateTelegramChannelConfig(
 }
 
 /**
- * Ensure Pinchy's restart-class overrides are present in openclaw.json BEFORE
- * OpenClaw starts. Writes ONLY the fields that, when missing-then-added later
- * via WS config.apply, hit OC 5.3's BASE_RELOAD_RULES_TAIL `gateway` /
- * `discovery` / `canvasHost` / `update` rules (kind:"restart") and trigger
- * a SIGUSR1 → in-process restart that crashes with
- * `ConfigMutationConflictError: config changed since last load` (OC 5.3
- * stale-snapshot bug in `prepareGatewayStartupConfig → ensureGatewayStartupAuth →
- * replaceConfigFile`). The cascade is the failure mode behind the Telegram
- * E2E `agent-create-no-restart.spec.ts` "OpenClaw never quiet for 30000ms"
- * flake on this branch.
- *
- * Why a targeted write rather than running full `regenerateOpenClawConfig()`
- * unconditionally in bootInits: the full regenerate broke the integration
- * test's basic chat (`Pinchy agent responds via OpenClaw`) — the agent failed
- * with `404 status code (no body)` from fake-ollama on `ollama/llama3.2`,
- * apparently because the bootInits-time regenerate's models/agents block
- * (built from an empty DB) interfered with later setup-wizard regenerate +
- * OC's model registry refresh on hot-reload. Restricting the bootInits write
- * to ONLY the gateway/discovery/canvasHost/update fields avoids that
- * interaction while still aligning OC's compare baseline.
- *
- * This function is idempotent: if the file already has all four overrides
- * with their expected values, no write happens. The skip path also handles
- * the production case (Docker-managed named volume populated from the image's
- * baked-in `config/openclaw.json`, which already carries these fields) — the
- * volume content matches Pinchy's expected overrides → no write → no diff
- * surface for OC to react to.
- */
-/**
  * Land `gateway.auth.token` in `openclaw.json` if it's not already set, so
  * the OpenClaw container can start on a fresh install (pre-setup-wizard).
  *
@@ -313,6 +284,35 @@ export async function seedGatewayTokenIfMissing(): Promise<boolean> {
   return true;
 }
 
+/**
+ * Ensure Pinchy's restart-class overrides are present in openclaw.json BEFORE
+ * OpenClaw starts. Writes ONLY the fields that, when missing-then-added later
+ * via WS config.apply, hit OC 5.3's BASE_RELOAD_RULES_TAIL `gateway` /
+ * `discovery` / `canvasHost` / `update` rules (kind:"restart") and trigger
+ * a SIGUSR1 → in-process restart that crashes with
+ * `ConfigMutationConflictError: config changed since last load` (OC 5.3
+ * stale-snapshot bug in `prepareGatewayStartupConfig → ensureGatewayStartupAuth →
+ * replaceConfigFile`). The cascade is the failure mode behind the Telegram
+ * E2E `agent-create-no-restart.spec.ts` "OpenClaw never quiet for 30000ms"
+ * flake on this branch.
+ *
+ * Why a targeted write rather than running full `regenerateOpenClawConfig()`
+ * unconditionally in bootInits: the full regenerate broke the integration
+ * test's basic chat (`Pinchy agent responds via OpenClaw`) — the agent failed
+ * with `404 status code (no body)` from fake-ollama on `ollama/llama3.2`,
+ * apparently because the bootInits-time regenerate's models/agents block
+ * (built from an empty DB) interfered with later setup-wizard regenerate +
+ * OC's model registry refresh on hot-reload. Restricting the bootInits write
+ * to ONLY the gateway/discovery/canvasHost/update fields avoids that
+ * interaction while still aligning OC's compare baseline.
+ *
+ * This function is idempotent: if the file already has all four overrides
+ * with their expected values, no write happens. The skip path also handles
+ * the production case (Docker-managed named volume populated from the image's
+ * baked-in `config/openclaw.json`, which already carries these fields) — the
+ * volume content matches Pinchy's expected overrides → no write → no diff
+ * surface for OC to react to.
+ */
 export function seedRestartClassOverridesIfMissing(): boolean {
   let existing: Record<string, unknown>;
   try {

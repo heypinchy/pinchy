@@ -91,6 +91,20 @@ vi.mock("@/lib/openclaw-config", () => ({
   regenerateOpenClawConfig: vi.fn().mockResolvedValue(undefined),
 }));
 
+// Mocks for the post-regenerate "wait until OC has the agent" gate. Without
+// these the route falls through the `getOpenClawClient()` catch (no global
+// __openclawClient set in test env) and the polling code is never exercised
+// here — leaving a regression like "someone removes the try/catch" invisible
+// to the route's own unit tests.
+const mockOpenClawClient = { config: { get: vi.fn() } };
+vi.mock("@/server/openclaw-client", () => ({
+  getOpenClawClient: vi.fn(() => mockOpenClawClient),
+}));
+const mockWaitForAgentInRuntime = vi.fn().mockResolvedValue(true);
+vi.mock("@/lib/wait-for-agent-in-runtime", () => ({
+  waitForAgentInRuntime: (...args: unknown[]) => mockWaitForAgentInRuntime(...args),
+}));
+
 vi.mock("@/lib/path-validation", () => ({
   validateAllowedPaths: vi.fn((paths: string[]) =>
     paths.map((p) => (p.endsWith("/") ? p : p + "/"))
@@ -179,6 +193,34 @@ import { regenerateOpenClawConfig } from "@/lib/openclaw-config";
 describe("POST /api/agents", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+  });
+
+  it("waits for the freshly-created agent to land in OC's runtime before returning 201", async () => {
+    // The route's contract is "201 means the agent is dispatch-ready" — not
+    // "201 means we've queued a config.apply". Without the post-regenerate
+    // `waitForAgentInRuntime` gate, an immediate programmatic dispatch
+    // (Odoo / Web Search / Email / Telegram E2E suites) races the OC
+    // hot-reload and hits `invalid agent params: unknown agent id`. Lock
+    // the gate in so a future refactor can't silently drop it back to the
+    // fire-and-forget regenerate.
+    const request = new NextRequest("http://localhost:7777/api/agents", {
+      method: "POST",
+      body: JSON.stringify({ name: "Race Guard", templateId: "custom" }),
+    });
+
+    const response = await POST(request);
+    expect(response.status).toBe(201);
+
+    expect(regenerateOpenClawConfig).toHaveBeenCalled();
+    expect(mockWaitForAgentInRuntime).toHaveBeenCalledTimes(1);
+    expect(mockWaitForAgentInRuntime).toHaveBeenCalledWith(mockOpenClawClient, "new-agent-id");
+
+    // Order matters: the wait must be called AFTER the regenerate, not before
+    // (otherwise we'd poll for an agent OC doesn't know about yet) and AFTER
+    // the workspace/audit setup is committed in the route.
+    const regenInvocations = vi.mocked(regenerateOpenClawConfig).mock.invocationCallOrder;
+    const waitInvocations = mockWaitForAgentInRuntime.mock.invocationCallOrder;
+    expect(waitInvocations[0]).toBeGreaterThan(regenInvocations[0]);
   });
 
   it("should return 403 for non-admin users", async () => {

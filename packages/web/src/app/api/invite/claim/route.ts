@@ -8,6 +8,8 @@ import { eq } from "drizzle-orm";
 import { validateInviteToken, claimInvite, getInviteGroupIds } from "@/lib/invites";
 import { seedPersonalAgent } from "@/lib/personal-agent";
 import { regenerateOpenClawConfig } from "@/lib/openclaw-config";
+import { waitForAgentInRuntime } from "@/lib/wait-for-agent-in-runtime";
+import { getOpenClawClient } from "@/server/openclaw-client";
 import { validatePassword } from "@/lib/validate-password";
 import { parseRequestBody } from "@/lib/api-validation";
 
@@ -86,9 +88,26 @@ export async function POST(request: NextRequest) {
       .values(groupIds.map((groupId) => ({ userId: result.user.id, groupId })));
   }
 
-  await seedPersonalAgent(result.user.id, invite.role === "admin");
+  const personalAgent = await seedPersonalAgent(result.user.id, invite.role === "admin");
   await claimInvite(invite.tokenHash, result.user.id);
   await regenerateOpenClawConfig();
+
+  // Same race POST /api/agents guards against (#193 follow-up): the
+  // newly-seeded personal agent isn't visible in OC's runtime until the
+  // fire-and-forget config.apply finishes its hot-reload. The invite-
+  // claimed user typically lands on the chat page immediately after this
+  // response, so we wait until OC's runtime acknowledges the agent before
+  // returning 201. Best-effort with a 5 s cap; falls through silently if
+  // OC isn't connected (test env, pre-setup state).
+  let client = null;
+  try {
+    client = getOpenClawClient();
+  } catch {
+    // OC client not initialised — skip the wait.
+  }
+  if (personalAgent?.id) {
+    await waitForAgentInRuntime(client, personalAgent.id);
+  }
 
   return NextResponse.json({ success: true }, { status: 201 });
 }
