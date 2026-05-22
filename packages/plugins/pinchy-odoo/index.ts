@@ -742,6 +742,12 @@ function refToId(
  *
  * Throws when a tagged sibling disagrees on company. The caller's try/catch
  * converts the throw into the standard `{ isError: true }` shape.
+ *
+ * Scope: only top-level fields of `values` are inspected. Nested 2many/o2m
+ * command tuples (e.g. `invoice_line_ids: [[0, 0, { account_id: ... }]]`)
+ * are not walked — that broader check would require following Odoo's
+ * Command structure, which is out of scope for this guard. Odoo's
+ * server-side `company_id` constraint remains the ultimate authority.
  */
 export function assertNoCrossCompanyRefs(
   values: Record<string, unknown>,
