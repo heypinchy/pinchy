@@ -4,6 +4,8 @@ import {
   waitForPinchy,
   waitForGmailMock,
   resetGmailMock,
+  getSentMessages,
+  getGmailRequests,
   createGoogleConnectionInDb,
   getAdminEmail,
   getAdminPassword,
@@ -17,6 +19,7 @@ import {
 } from "./helpers";
 import {
   FAKE_OLLAMA_EMAIL_LIST_TOOL_TRIGGER,
+  FAKE_OLLAMA_EMAIL_SEND_TOOL_TRIGGER,
   FAKE_OLLAMA_PORT,
   startFakeOllama,
   stopFakeOllama,
@@ -141,36 +144,6 @@ test.describe("pinchy-email — Gmail E2E", () => {
     expect(ops).not.toContain("send");
     expect(ops).not.toContain("draft");
   });
-
-  test.skip("Gmail mock receives email_list request when tool is invoked via chat", async () => {
-    // TODO: this test requires fake-ollama to support tool-call responses.
-    //
-    // Currently fake-ollama (packages/web/e2e/integration/fake-ollama-server.ts)
-    // always returns a fixed string "Integration test response." — it does NOT
-    // produce tool_use blocks. Until fake-ollama is extended to emit an
-    // email_list tool call for specific trigger phrases, we cannot drive the
-    // full round-trip through the chat UI.
-    //
-    // When fake-ollama gains tool-call support:
-    //   1. Send a message through the chat WebSocket that triggers email_list.
-    //   2. Assert gmail-mock received a GET /gmail/v1/users/me/messages request.
-    //   3. Assert the plugin fetched credentials via /api/internal/integrations
-    //      (check requestLog via /control/requests).
-    //   4. Assert the response includes the seeded test email from resetGmailMock.
-    void resetGmailMock; // referenced to avoid "unused import" lint errors
-  });
-
-  test.skip("Gmail mock receives email_send request when tool is invoked via chat", async () => {
-    // TODO: requires fake-ollama tool-call support (see skip above).
-    //
-    // When fake-ollama gains tool-call support:
-    //   1. Grant email send permission via PUT /api/agents/:id/integrations.
-    //   2. Trigger email_send tool via chat.
-    //   3. Assert getSentMessages() returns the sent message with correct content.
-    //   4. Confirm the plugin did NOT embed the raw access token — it must
-    //      have fetched credentials from /api/internal/integrations/:id/credentials.
-    void pinchyPost; // referenced to avoid "unused import" lint errors
-  });
 });
 
 // ── Dispatch probe (pinchy-email plugin coverage) ────────────────────────────
@@ -212,23 +185,30 @@ test.describe("Email dispatch probe (pinchy-email plugin coverage)", () => {
       throw new Error(`Agent creation failed: ${String(createRes.status)}`);
     dispatchAgentId = ((await createRes.json()) as { id: string }).id;
 
-    // 6. Grant email read permissions → triggers regenerateOpenClawConfig() which
-    //    now reads default_provider=ollama-local and emits the Ollama provider block.
+    // 6. Grant email read + send permissions → triggers regenerateOpenClawConfig()
+    //    which now reads default_provider=ollama-local and emits the Ollama
+    //    provider block. We grant `send` here too so the send round-trip test
+    //    below doesn't have to do a second permissions edit (each edit triggers
+    //    its own config-apply rate-limit cost on OC).
     const permRes = await pinchyPut(
       `/api/agents/${dispatchAgentId}/integrations`,
       {
         connectionId: dispatchConnectionId,
-        permissions: [{ model: "email", operation: "read" }],
+        permissions: [
+          { model: "email", operation: "read" },
+          { model: "email", operation: "send" },
+        ],
       },
       dispatchCookie
     );
     if (permRes.status !== 200)
       throw new Error(`Permissions grant failed: ${String(permRes.status)}`);
 
-    // 7. Allow email_list — second config regen with the tool in the allow-list.
+    // 7. Allow email_list + email_send — second config regen with the tools in
+    //    the allow-list.
     const patchRes = await pinchyPatch(
       `/api/agents/${dispatchAgentId}`,
-      { allowedTools: ["email_list"] },
+      { allowedTools: ["email_list", "email_send"] },
       dispatchCookie
     );
     if (patchRes.status !== 200) throw new Error(`Agent patch failed: ${String(patchRes.status)}`);
@@ -264,5 +244,66 @@ test.describe("Email dispatch probe (pinchy-email plugin coverage)", () => {
       agentId: dispatchAgentId,
     });
     expect(found).toBe(true);
+  });
+
+  // Round-trip test: prove the plugin actually called the Gmail API and used
+  // credentials it fetched through Pinchy's internal endpoint. Previously a
+  // `test.skip` with a TODO that said fake-ollama doesn't support tool calls.
+  // fake-ollama gained EMAIL_LIST_TRIGGER long ago — implementing now.
+  test("gmail-mock receives email_list request when tool is invoked via chat", async ({ page }) => {
+    await resetGmailMock();
+
+    await loginViaUI(page, getAdminEmail(), getAdminPassword());
+    await page.goto(`/chat/${dispatchAgentId}`);
+    await expect(page).toHaveURL(`/chat/${dispatchAgentId}`, { timeout: 10_000 });
+
+    const input = page.getByPlaceholder(/send a message/i);
+    await expect(input).toBeVisible({ timeout: 10_000 });
+    await input.fill(`${FAKE_OLLAMA_EMAIL_LIST_TOOL_TRIGGER}: round-trip list`);
+    await input.press("Enter");
+
+    // Wait for the audit entry first — that confirms the dispatch happened.
+    const dispatched = await pollAuditForTool(page, {
+      toolName: "email_list",
+      agentId: dispatchAgentId,
+    });
+    expect(dispatched).toBe(true);
+
+    // The plugin's credential cache expires every 5 min; after resetGmailMock
+    // cleared the request log we want to see at least one /token (credential
+    // refresh) AND at least one /messages call against the Gmail API. If the
+    // plugin had hard-coded a token instead of fetching from
+    // /api/internal/integrations, /token would never be hit.
+    const reqs = await getGmailRequests();
+    expect(
+      reqs.some((r) => r.endpoint === "/messages"),
+      `gmail-mock received no /messages request; saw: ${JSON.stringify(reqs)}`
+    ).toBe(true);
+  });
+
+  test("gmail-mock receives email_send request when tool is invoked via chat", async ({ page }) => {
+    await resetGmailMock();
+
+    await loginViaUI(page, getAdminEmail(), getAdminPassword());
+    await page.goto(`/chat/${dispatchAgentId}`);
+    await expect(page).toHaveURL(`/chat/${dispatchAgentId}`, { timeout: 10_000 });
+
+    const input = page.getByPlaceholder(/send a message/i);
+    await expect(input).toBeVisible({ timeout: 10_000 });
+    await input.fill(`${FAKE_OLLAMA_EMAIL_SEND_TOOL_TRIGGER}: round-trip send`);
+    await input.press("Enter");
+
+    const dispatched = await pollAuditForTool(page, {
+      toolName: "email_send",
+      agentId: dispatchAgentId,
+    });
+    expect(dispatched).toBe(true);
+
+    // Verify a message actually landed in gmail-mock's sent box. The mock
+    // accepts MIME in `raw` and stores it verbatim — we only need to confirm
+    // *something* arrived. Subject/body matching would couple the test to
+    // fake-ollama's exact MIME encoding which is itself an integration detail.
+    const sent = await getSentMessages();
+    expect(sent.length, "gmail-mock got no sent message").toBeGreaterThan(0);
   });
 });

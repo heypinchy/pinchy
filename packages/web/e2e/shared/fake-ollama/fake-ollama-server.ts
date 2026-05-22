@@ -31,6 +31,8 @@ const ODOO_LIST_MODELS_TRIGGER = "E2E_ODOO_LIST_MODELS_TOOL";
 const ODOO_LIST_MODELS_RESPONSE = "Models listed: coverage probe complete.";
 const EMAIL_LIST_TRIGGER = "E2E_EMAIL_LIST_TOOL";
 const EMAIL_LIST_RESPONSE = "Emails listed: coverage probe complete.";
+const EMAIL_SEND_TRIGGER = "E2E_EMAIL_SEND_TOOL";
+const EMAIL_SEND_RESPONSE = "Email sent: coverage probe complete.";
 const WEB_SEARCH_TRIGGER = "E2E_WEB_SEARCH_TOOL";
 const WEB_SEARCH_RESPONSE = "Search complete: coverage probe complete.";
 const WORKSPACE_LS_TRIGGER = "E2E_WORKSPACE_LS_TOOL";
@@ -83,6 +85,16 @@ const TOOL_TRIGGERS: TriggerConfig[] = [
     response: EMAIL_LIST_RESPONSE,
     toolName: "email_list",
     arguments: {},
+  },
+  {
+    trigger: EMAIL_SEND_TRIGGER,
+    response: EMAIL_SEND_RESPONSE,
+    toolName: "email_send",
+    arguments: {
+      to: "probe@example.com",
+      subject: "Pinchy E2E probe",
+      body: "This is an E2E coverage probe.",
+    },
   },
   {
     trigger: WEB_SEARCH_TRIGGER,
@@ -506,6 +518,8 @@ export const FAKE_OLLAMA_ODOO_LIST_MODELS_TOOL_TRIGGER = ODOO_LIST_MODELS_TRIGGE
 export const FAKE_OLLAMA_ODOO_LIST_MODELS_TOOL_RESPONSE = ODOO_LIST_MODELS_RESPONSE;
 export const FAKE_OLLAMA_EMAIL_LIST_TOOL_TRIGGER = EMAIL_LIST_TRIGGER;
 export const FAKE_OLLAMA_EMAIL_LIST_TOOL_RESPONSE = EMAIL_LIST_RESPONSE;
+export const FAKE_OLLAMA_EMAIL_SEND_TOOL_TRIGGER = EMAIL_SEND_TRIGGER;
+export const FAKE_OLLAMA_EMAIL_SEND_TOOL_RESPONSE = EMAIL_SEND_RESPONSE;
 export const FAKE_OLLAMA_WEB_SEARCH_TOOL_TRIGGER = WEB_SEARCH_TRIGGER;
 export const FAKE_OLLAMA_WEB_SEARCH_TOOL_RESPONSE = WEB_SEARCH_RESPONSE;
 export const FAKE_OLLAMA_WORKSPACE_LS_TOOL_TRIGGER = WORKSPACE_LS_TRIGGER;

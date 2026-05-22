@@ -166,6 +166,19 @@ export async function getSentMessages(): Promise<Array<{ raw: string; sentAt: st
   return res.json();
 }
 
+export async function getGmailRequests(): Promise<
+  Array<{
+    endpoint: string;
+    grant_type?: string;
+    hasRefreshToken?: boolean;
+    query?: Record<string, string>;
+  }>
+> {
+  const res = await fetch(`${GMAIL_MOCK_URL}/control/requests`);
+  if (!res.ok) throw new Error(`Failed to get gmail requests: ${res.status}`);
+  return res.json();
+}
+
 export async function login(email = _adminEmail, password = _adminPassword): Promise<string> {
   const res = await fetch(`${PINCHY_URL}/api/auth/sign-in/email`, {
     method: "POST",
