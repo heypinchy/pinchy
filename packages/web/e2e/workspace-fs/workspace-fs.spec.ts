@@ -81,18 +81,19 @@ async function login(email = ADMIN_USER.email, password = ADMIN_USER.password): 
 // with pinchy_ls + pinchy_read + pinchy_write allowed, and proves that each
 // fake-LLM trigger produces an audit entry.
 //
-// SKIPPED: the main E2E config (playwright.config.ts) does not run an
-// OpenClaw container — Pinchy starts standalone and `/api/health/openclaw`
-// always reports `connected=false`. The integration config has OpenClaw but
-// bind-mounts the workspace dir as root (container) while Pinchy runs on the
-// host as a non-root user; creating a brand-new agent then fails with EACCES
-// (same blocker as the skipped pinchy_ls probe in
-// e2e/integration/agent-chat.spec.ts).
+// SKIPPED (tracked in #427): the main E2E config (playwright.config.ts)
+// does not run an OpenClaw container — Pinchy starts standalone and
+// `/api/health/openclaw` always reports `connected=false`. The integration
+// config has OpenClaw but bind-mounts the workspace dir as root (container)
+// while Pinchy runs on the host as a non-root user; creating a brand-new
+// agent then fails with EACCES (same blocker as the skipped pinchy_ls
+// probe in e2e/integration/agent-chat.spec.ts).
 //
 // The tests stay in the file (skipped) so the plugin-tool-coverage drift
 // guard still finds the `pollAuditForTool` references for pinchy_ls,
-// pinchy_read, and pinchy_write. Re-enable once the integration stack
-// supports uid-aligned mounts for shared-agent creation.
+// pinchy_read, and pinchy_write. Re-enable once #427 ships uid-aligned
+// mounts for shared-agent creation (or an internal test-only "create
+// shared agent" API).
 test.describe.skip("Workspace filesystem dispatch probe (pinchy-files plugin coverage)", () => {
   let cookie: string;
   let agentId: string;

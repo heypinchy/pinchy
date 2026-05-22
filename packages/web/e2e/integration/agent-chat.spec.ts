@@ -262,13 +262,13 @@ test.describe("Plugin behavior — pinchy-context", () => {
 // registerTool() fires + the audit hook posts; the agent identity does not
 // matter, so reuse is the simpler, more robust path.
 //
-// SKIPPED: reusing Smithers fails — PATCH allowedTools on a personal agent
-// returns 400 ("Cannot change permissions for personal agents"). The
-// pre-#196 /tmp-ownership blocker on the create-new-agent path is gone
-// (the integration stack now runs Pinchy in a container with uid 999
-// matching production), but the personal-agent permission rule still
-// prevents the easier reuse path. Leaving the test code in place so the
-// dispatch-probe coverage guard still sees the pinchy_ls token (skipped
+// SKIPPED (tracked in #427): reusing Smithers fails — PATCH allowedTools
+// on a personal agent returns 400 ("Cannot change permissions for personal
+// agents"). The pre-#196 /tmp-ownership blocker on the create-new-agent
+// path is gone (the integration stack now runs Pinchy in a container with
+// uid 999 matching production), but the personal-agent permission rule
+// still prevents the easier reuse path. Leaving the test code in place so
+// the dispatch-probe coverage guard still sees the pinchy_ls token (skipped
 // tests count for static scans). Re-enable once Pinchy supports either
 // (a) creating a shared agent via API for tests, or (b) overriding the
 // permissions guard for the integration admin.
