@@ -274,15 +274,8 @@ describe("POST /api/invite/claim (integration)", () => {
   });
 
   // ── Password reset (type "reset") ──────────────────────────────────
-  //
-  // The three reset cases below are .skip() pending the auth fix tracked
-  // separately. The pre-#229 mock-based suite hid a real bug here: the route
-  // calls auth.api.setUserPassword (admin plugin endpoint) without an admin
-  // session, so Better Auth rejects every reset attempt with 401 UNAUTHORIZED.
-  // The mocked test never exercised the real Better Auth path, so this went
-  // undetected. Surfacing this is exactly the value of the integration suite.
 
-  it.skip("resets the password of an existing user and claims the invite", async () => {
+  it("resets the password of an existing user and claims the invite", async () => {
     const adminId = await seedAdmin();
 
     // Create the user being reset.
@@ -323,7 +316,7 @@ describe("POST /api/invite/claim (integration)", () => {
     expect(invite?.claimedByUserId).toBe(targetId);
   });
 
-  it.skip("does NOT seed a personal agent or regenerate config on reset", async () => {
+  it("does NOT seed a personal agent or regenerate config on reset", async () => {
     const adminId = await seedAdmin();
     await auth.api.signUpEmail({
       body: { name: "Reset User", email: "reset@test.local", password: "originalpassword1" },
@@ -341,7 +334,7 @@ describe("POST /api/invite/claim (integration)", () => {
     expect(regenerateOpenClawConfig).not.toHaveBeenCalled();
   });
 
-  it.skip("returns 404 when the reset target user no longer exists", async () => {
+  it("returns 404 when the reset target user no longer exists", async () => {
     const adminId = await seedAdmin();
     // Create invite for an email that has no corresponding user row.
     const { token } = await createInvite({
@@ -356,7 +349,7 @@ describe("POST /api/invite/claim (integration)", () => {
     expect(await response.json()).toEqual({ error: "User not found" });
   });
 
-  it.skip("does not assign groups for password reset invites", async () => {
+  it("does not assign groups for password reset invites", async () => {
     const adminId = await seedAdmin();
     await auth.api.signUpEmail({
       body: { name: "ResetGroups", email: "resetgroups@test.local", password: "originalpassword1" },

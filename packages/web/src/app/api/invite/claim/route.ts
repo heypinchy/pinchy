@@ -1,10 +1,11 @@
 // audit-exempt: invite claim is a self-service action by the invited user, not an admin action
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
+import { hashPassword } from "better-auth/crypto";
 import { auth } from "@/lib/auth";
 import { db } from "@/db";
-import { users, userGroups } from "@/db/schema";
-import { eq } from "drizzle-orm";
+import { users, userGroups, accounts } from "@/db/schema";
+import { eq, and } from "drizzle-orm";
 import { validateInviteToken, claimInvite, getInviteGroupIds } from "@/lib/invites";
 import { seedPersonalAgent } from "@/lib/personal-agent";
 import { regenerateOpenClawConfig } from "@/lib/openclaw-config";
@@ -43,17 +44,18 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: "User not found" }, { status: 404 });
     }
 
-    // Use Better Auth admin API to set password
-    // setUserPassword is provided by the admin plugin but not included in the inferred API type
-    await (
-      auth.api as unknown as {
-        setUserPassword: (opts: {
-          body: { userId: string; newPassword: string };
-        }) => Promise<unknown>;
-      }
-    ).setUserPassword({
-      body: { userId: existingUser.id, newPassword: password },
-    });
+    // Hash the new password and write it directly to the Better Auth
+    // accounts table. We can't use Better Auth's admin-plugin endpoint
+    // `setUserPassword` here: it requires an admin session in the request
+    // headers, which a self-service invite-claim flow does not have.
+    // (The admin plugin rejects every unauthenticated call with 401,
+    // which is the bug that left every reset invite broken until this
+    // fix landed.) Same primitive used by lib/reset-admin.ts.
+    const hashedPassword = await hashPassword(password);
+    await db
+      .update(accounts)
+      .set({ password: hashedPassword })
+      .where(and(eq(accounts.userId, existingUser.id), eq(accounts.providerId, "credential")));
 
     if (name) {
       await db.update(users).set({ name }).where(eq(users.id, existingUser.id));
