@@ -115,6 +115,12 @@ If a user forgets their password, an admin can generate a reset link:
 
 Reset links follow the same rules as invite tokens: valid for 7 days, single-use.
 
+When a reset completes:
+
+- The user's existing sessions are **revoked** in the same database transaction as the password update. Any browser or device that was logged in with the old password must sign in again with the new one. This guards against the case where the password was reset because the previous one might be compromised.
+- An `auth.password_reset_completed` entry is written to the audit log with `outcome: success`, the target user, and the invite id. See [Audit trail › Authentication](/concepts/audit-trail/#authentication).
+- If any part of the reset fails (database error, etc.), the whole flow rolls back: the user keeps their old password and the reset link stays usable. A matching `outcome: failure` audit entry is written.
+
 ### Deactivating a user
 
 Deactivation prevents a user from logging in without permanently deleting their data.

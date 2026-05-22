@@ -11,6 +11,11 @@ const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
 // chokidar against a real tmpdir) is flaky under vitest's parallel load on
 // macOS, and what we want to test here is the WIRING (Pinchy reacts to
 // each event type correctly), not OS-level event delivery.
+//
+// The trade-off is that we no longer exercise real chokidar against a real
+// fs in this file. A Linux-only real-fs smoke is tracked separately in #433
+// to close the production-cadence coverage gap without re-introducing the
+// macOS flake.
 type FakeListener = (...args: unknown[]) => void;
 class FakeChokidarWatcher {
   private listeners = new Map<string, FakeListener[]>();
