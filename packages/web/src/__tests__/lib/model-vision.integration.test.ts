@@ -73,9 +73,12 @@ describe("Ollama cloud vision models (from DB seed)", () => {
     expect(isModelVisionCapable("ollama-cloud/gemma4:31b")).toBe(true);
   });
 
-  it("returns true for devstral-small-2:24b", () => {
-    // Devstral Small 2's library page lists "Text, Image" input type.
-    expect(isModelVisionCapable("ollama-cloud/devstral-small-2:24b")).toBe(true);
+  it("returns false for devstral-small-2:24b", () => {
+    // Devstral Small 2's library page lists "Text, Image" but the live
+    // `/v1/chat/completions` endpoint returns HTTP 400 on image_url payloads
+    // (confirmed by empirical API smoke test in #416). It's Mistral's coding
+    // series, not a vision model — the library page is misleading.
+    expect(isModelVisionCapable("ollama-cloud/devstral-small-2:24b")).toBe(false);
   });
 
   it("returns false for a model without vision (e.g. deepseek-v4-pro)", () => {
