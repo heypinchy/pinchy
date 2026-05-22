@@ -300,6 +300,45 @@ function streamOpenAiText(res: http.ServerResponse, text: string) {
   sseDone(res);
 }
 
+/**
+ * OpenAI-compatible slow stream: emits words one-by-one via SSE with
+ * SLOW_STREAM_DELAY_MS between tokens. Mirrors streamTextResponseSlow() but
+ * uses the SSE format expected by OC's openai-completions provider (which
+ * Pinchy emits for ollama providers via `api: "openai-completions"`).
+ *
+ * Required because pi-ai in OC uses /v1/chat/completions (not /api/chat), so
+ * the Ollama-native slow-stream path at POST /api/chat is never reached. The
+ * stream-persistence and in-app-navigation integration tests rely on seeing
+ * the first word of the response before the full response arrives, so they
+ * need a genuinely slow per-word stream — not just a fast bulk response.
+ */
+async function streamOpenAiTextSlow(res: http.ServerResponse, text: string) {
+  sseHeaders(res);
+  // Disable Nagle's algorithm so each small SSE chunk is sent immediately
+  // rather than being coalesced at the kernel level. Mirrors the same
+  // setNoDelay call in streamTextResponseSlow.
+  res.socket?.setNoDelay(true);
+  res.socket?.on("error", (err: NodeJS.ErrnoException) => {
+    if (err.code !== "EPIPE" && err.code !== "ECONNRESET") {
+      console.error("[fake-ollama] socket error:", err);
+    }
+  });
+  const words = text.split(" ");
+  try {
+    for (let i = 0; i < words.length; i++) {
+      const piece = i === 0 ? words[i] : " " + words[i];
+      sseWrite(res, chatCompletionChunk({ content: piece }));
+      if (i < words.length - 1) {
+        await new Promise((r) => setTimeout(r, SLOW_STREAM_DELAY_MS));
+      }
+    }
+    sseWrite(res, chatCompletionChunk({ finishReason: "stop" }));
+    sseDone(res);
+  } catch {
+    // Client disconnected mid-stream — normal in mid-stream disconnect tests.
+  }
+}
+
 function streamOpenAiToolCalls(
   res: http.ServerResponse,
   toolName: string,
@@ -429,8 +468,16 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
       return;
     }
 
-    // Slow-stream path is integration-only (uses /api/chat); /v1 callers fall
-    // through to the standard text response.
+    // Slow-stream trigger: Pinchy emits ollama as api: "openai-completions" so
+    // OC's pi-ai uses /v1/chat/completions, not /api/chat. The slow-stream
+    // handler must live on this path too or stream-persistence tests never
+    // see the first token within their 30 s window.
+    const isSlowStreamPrompt = lastContent.includes(SLOW_STREAM_TRIGGER);
+    if (isSlowStreamPrompt && !hasToolResult) {
+      await streamOpenAiTextSlow(res, SLOW_STREAM_RESPONSE);
+      return;
+    }
+
     streamOpenAiText(res, activeTrigger ? activeTrigger.response : FAKE_RESPONSE);
     return;
   }
