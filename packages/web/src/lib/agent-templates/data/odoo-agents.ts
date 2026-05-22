@@ -1,6 +1,7 @@
 import {
   createOdooTemplate,
   ODOO_ATTACHMENT_REF_FLOW,
+  ODOO_MULTI_COMPANY_GUIDANCE,
   ODOO_OUTPUT_FORMATTING,
   ODOO_QUERY_INSTRUCTIONS,
   ODOO_RULES,
@@ -255,7 +256,9 @@ Group open invoices by \`invoice_date_due:month\` to see when payments are due.
 ${ODOO_OUTPUT_FORMATTING}
 
 ${ODOO_RULES}
-- Double-check totals — financial data must be accurate`,
+- Double-check totals — financial data must be accurate
+
+${ODOO_MULTI_COMPANY_GUIDANCE}`,
     requiredModels: [
       { model: "account.move", operations: ["read"] },
       { model: "account.move.line", operations: ["read"] },
@@ -380,6 +383,8 @@ ${ODOO_RULES}
 - Accounting data is permanent once posted. When in doubt, leave it draft and ask.
 - Never delete a posted record. The proper reversal is a credit note or cancellation (state → cancel via write).
 - VAT and tax_ids matter — always look up the correct \`account.tax\` ID, never guess.
+
+${ODOO_MULTI_COMPANY_GUIDANCE}
 
 ### Attach the source document to the bill/invoice
 After creating a draft \`account.move\`, offer to attach the uploaded receipt or invoice image to it. Use \`odoo_attach_file\` with a \`targetRef\` pointing to the \`account.move\` record and the filename of the uploaded file. Source documents attached to accounting records provide the audit trail required by external auditors.
