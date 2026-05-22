@@ -1,3 +1,4 @@
+// @vitest-environment node
 import { describe, it, expect, vi } from "vitest";
 
 // odoo-node is mocked the same way as in tools.test.ts so the plugin can

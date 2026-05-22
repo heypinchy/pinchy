@@ -10,16 +10,13 @@ export default defineConfig({
     globals: true,
     include: [
       "src/**/*.{test,spec}.?(c|m)[jt]s?(x)",
-      // Contract tests for all Pinchy plugins — validate the emitted config shape
-      // against each plugin's openclaw.plugin.json manifest. These files only import
-      // from @pinchy/web helpers and have no heavy plugin-specific native deps.
-      "../plugins/pinchy-audit/config-schema.test.ts",
-      "../plugins/pinchy-context/config-schema.test.ts",
-      "../plugins/pinchy-docs/**/*.{test,spec}.?(c|m)[jt]s?(x)",
-      "../plugins/pinchy-email/config-schema.test.ts",
-      "../plugins/pinchy-files/config-schema.test.ts",
-      "../plugins/pinchy-odoo/**/*.{test,spec}.?(c|m)[jt]s?(x)",
-      "../plugins/pinchy-web/config-schema.test.ts",
+      // Every test under packages/plugins/pinchy-* runs here. The root
+      // `pnpm test` script is `pnpm --filter @pinchy/web test`, so plugin
+      // packages' own `vitest run` scripts are never invoked in CI — this
+      // include is the single source of truth for plugin test coverage.
+      // The plugin-test-coverage drift guard
+      // (src/__tests__/lib/plugin-test-coverage.test.ts) enforces it.
+      "../plugins/pinchy-*/**/*.{test,spec}.?(c|m)[jt]s?(x)",
     ],
     // Integration tests run against a real PostgreSQL database via
     // vitest.integration.config.ts (`pnpm test:db`). Excluded here so

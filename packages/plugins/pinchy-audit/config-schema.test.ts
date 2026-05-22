@@ -1,3 +1,4 @@
+// @vitest-environment node
 import { describe, it, expect } from "vitest";
 import { validatePluginEntry } from "../../web/src/lib/openclaw-config/plugin-schema";
 import { loadPluginManifest } from "../../web/src/lib/openclaw-config/plugin-manifest-loader";

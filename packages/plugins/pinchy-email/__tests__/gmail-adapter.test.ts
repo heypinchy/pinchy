@@ -1,3 +1,4 @@
+// @vitest-environment node
 import { describe, it, expect, vi, beforeEach } from "vitest";
 
 // Mock googleapis before importing the adapter
@@ -6,27 +7,35 @@ const mockGet = vi.fn();
 const mockDraftsCreate = vi.fn();
 const mockSend = vi.fn();
 
-vi.mock("googleapis", () => ({
-  google: {
-    gmail: vi.fn(() => ({
-      users: {
-        messages: {
-          list: mockList,
-          get: mockGet,
-          send: mockSend,
+// Mock googleapis. `google.auth.OAuth2` is invoked with `new` in
+// gmail-adapter.ts, so the mock must expose a real (constructable) class,
+// not an arrow-function factory — vitest 4 (unlike vitest 3) only treats
+// the latter as callable, not constructable. The class is defined inside the
+// factory because `vi.mock` is hoisted to the top of the file.
+vi.mock("googleapis", () => {
+  class MockOAuth2 {
+    setCredentials = vi.fn();
+  }
+  return {
+    google: {
+      gmail: vi.fn(() => ({
+        users: {
+          messages: {
+            list: mockList,
+            get: mockGet,
+            send: mockSend,
+          },
+          drafts: {
+            create: mockDraftsCreate,
+          },
         },
-        drafts: {
-          create: mockDraftsCreate,
-        },
-      },
-    })),
-    auth: {
-      OAuth2: vi.fn(() => ({
-        setCredentials: vi.fn(),
       })),
+      auth: {
+        OAuth2: MockOAuth2,
+      },
     },
-  },
-}));
+  };
+});
 
 import { GmailAdapter } from "../gmail-adapter.js";
 

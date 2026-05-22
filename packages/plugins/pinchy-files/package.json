@@ -19,10 +19,5 @@
     "pdf-lib": "^1.17.1",
     "typescript": "^6.0.2",
     "vitest": "^4.1.4"
-  },
-  "pnpm": {
-    "onlyBuiltDependencies": [
-      "better-sqlite3"
-    ]
   }
 }

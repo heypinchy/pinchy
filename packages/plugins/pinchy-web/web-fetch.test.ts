@@ -1,3 +1,4 @@
+// @vitest-environment node
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import dns from "node:dns/promises";
 
@@ -333,6 +334,13 @@ describe("webFetch", () => {
     });
 
     it("does not attach a dispatcher when the URL is already an IP literal", async () => {
+      // Reset the call-history on the dns mocks. vitest 4 no longer
+      // clears call-history between `it` blocks automatically (vitest 3 did),
+      // so without this the earlier SSRF tests' resolve* calls would still be
+      // counted here.
+      resolve4Mock.mockClear();
+      resolve6Mock.mockClear();
+
       // No DNS to rebind — the URL itself names the destination address.
       mockHtmlResponse("<html><body><p>Direct</p></body></html>");
 
@@ -346,15 +354,27 @@ describe("webFetch", () => {
     });
 
     it("rejects too many redirects", async () => {
-      // 6 consecutive redirects (limit is 5)
+      // Reset DNS mocks to a clean public-IP baseline. vitest 4 carries
+      // `mockResolvedValue` state across tests within a describe block (an
+      // earlier test sets `resolve6Mock.mockResolvedValue([])`, which would
+      // otherwise persist as the default here and make every fall-through
+      // resolution see only the public ipv4 array — fine — but a single
+      // unexpected fall-through to the private-IP branch from another
+      // accumulated mock state would mask the real assertion). Pin both
+      // mocks to a public-IP default for this test alone.
+      resolve4Mock.mockReset().mockResolvedValue(["93.184.216.34"]);
+      resolve6Mock.mockReset().mockResolvedValue(["2606:2800:220:1:248:1893:25c8:1946"]);
+
+      // 6 consecutive 302 responses. webFetch's loop is
+      // `for (i=0; i <= MAX_REDIRECT_HOPS; i++)`, so it fires
+      // MAX_REDIRECT_HOPS + 1 = 6 fetches before the "Too many redirects"
+      // branch trips at `i === MAX_REDIRECT_HOPS`.
       for (let i = 0; i < 6; i++) {
         fetchMock.mockResolvedValueOnce({
           status: 302,
           ok: false,
           headers: new Map([["location", `https://example.com/hop${i + 1}`]]),
         });
-        resolve4Mock.mockResolvedValueOnce(["93.184.216.34"]);
-        resolve6Mock.mockResolvedValueOnce([]);
       }
 
       const result = await webFetch("https://example.com/start");

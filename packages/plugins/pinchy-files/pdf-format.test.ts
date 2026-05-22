@@ -1,3 +1,4 @@
+// @vitest-environment node
 import { describe, it, expect } from "vitest";
 import { formatPdfResult } from "./pdf-format";
 import type { PdfExtractionResult } from "./pdf-extract";

@@ -1,3 +1,4 @@
+// @vitest-environment node
 /**
  * Integration tests for pinchy-odoo against real mock-odoo and mock-pinchy
  * HTTP servers. Layer 2 of the #209 guardrails: catches anything that

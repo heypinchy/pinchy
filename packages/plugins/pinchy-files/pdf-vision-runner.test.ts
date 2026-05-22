@@ -1,3 +1,4 @@
+// @vitest-environment node
 import { describe, it, expect, vi } from "vitest";
 import { runVisionTasks, type VisionRunnerPage } from "./pdf-vision-runner";
 import type { VisionApiConfig } from "./pdf-vision-api";

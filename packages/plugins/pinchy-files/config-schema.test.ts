@@ -1,3 +1,4 @@
+// @vitest-environment node
 /**
  * Validates that the pinchy-files plugin configSchema declares all fields
  * that Pinchy's regenerateOpenClawConfig() writes into it.

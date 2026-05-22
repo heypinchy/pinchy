@@ -1,3 +1,4 @@
+// @vitest-environment node
 import { describe, it, expect } from "vitest";
 import { validateAccess, MAX_FILE_SIZE, MAX_PDF_FILE_SIZE, ALLOWED_ROOTS } from "./validate";
 
