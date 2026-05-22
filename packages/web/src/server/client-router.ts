@@ -3,7 +3,7 @@ import type { WebSocket } from "ws";
 import { assertAgentAccess, effectiveVisibility } from "@/lib/agent-access";
 import { getUserGroupIds, getAgentGroupIds } from "@/lib/groups";
 import { isEnterprise } from "@/lib/enterprise";
-import { appendAuditLog } from "@/lib/audit";
+import { appendAuditLog, scrubEmails } from "@/lib/audit";
 import { recordAuditFailure } from "@/lib/audit-deferred";
 import {
   shouldEmitModelUnavailableAudit,
@@ -841,6 +841,19 @@ export class ClientRouter {
    *
    * Called from WebSocket handler scope (not Next request scope), so uses
    * the appendAuditLog + recordAuditFailure pattern per audit-deferred.ts.
+   *
+   * The call site `await`s this against forwarding to the browser. That's
+   * deliberate, not an oversight: the AGENTS.md rule forbids fire-and-forget
+   * audit writes, and there is exactly one error chunk per stream (the
+   * stream terminates after it), so the audit await runs at most once per
+   * failed request — not in a hot loop.
+   *
+   * PII: `providerError` is run through `scrubEmails()` before truncation.
+   * The umbrella covers the long tail (`errorClass="unknown"`) where we
+   * can't pre-validate what providers echo back — e.g. validation errors
+   * sometimes include the offending input. The audit table is append-only
+   * and HMAC-signed, so GDPR Art. 17 erasure is impossible by design;
+   * scrubbing at write time is the only protection.
    */
   private async writeAgentErrorAudit(args: {
     agent: { id: string; name: string; model?: string | null };
@@ -856,7 +869,7 @@ export class ClientRouter {
         agent: { id: args.agent.id, name: args.agent.name },
         model: args.agent.model ?? null,
         errorClass: args.errorClass,
-        providerError: args.providerError.slice(0, 1024),
+        providerError: scrubEmails(args.providerError).slice(0, 1024),
       },
       outcome: "failure" as const,
     };

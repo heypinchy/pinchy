@@ -170,6 +170,28 @@ export function redactEmail(email: string): RedactedEmail {
   };
 }
 
+/**
+ * Defence-in-depth for free-text audit fields (e.g. `providerError` on
+ * `chat.agent_error`). When an upstream provider validation error gets
+ * echoed back — `"Invalid input: user@example.com is not …"` — we never
+ * want the raw address to land in the append-only HMAC-signed audit
+ * table: GDPR Art. 17 erasure on an HMAC-signed row is impossible by
+ * design, so we substitute any email-shaped run with `<email-redacted>`.
+ *
+ * Distinct from `redactEmail`, which returns a structured
+ * `{emailHash, emailPreview}` pair for fields where we KNOW an email
+ * is identity data and may want to match it later. Here we operate on
+ * opaque free text — the only goal is "don't store the raw address".
+ *
+ * The regex deliberately requires a TLD (`\.[A-Za-z]{2,}`) so social
+ * `@handle` mentions in free text don't get mistaken for emails.
+ */
+const EMAIL_LIKE_PATTERN = /[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/g;
+
+export function scrubEmails(text: string): string {
+  return text.replace(EMAIL_LIKE_PATTERN, "<email-redacted>");
+}
+
 const MAX_DETAIL_BYTES = 2048;
 
 export function truncateDetail(detail: AuditDetail | null | undefined): AuditDetail | null {

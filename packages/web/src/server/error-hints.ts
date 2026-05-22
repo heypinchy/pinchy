@@ -1,7 +1,4 @@
-const PROVIDER_CONFIG_PATTERN =
-  /credit|balance|api[_ ]?key|invalid.*key|authenticat|unauthorized|quota|exceeded/i;
-
-const TRANSIENT_PATTERN = /rate[_ ]?limit|too many requests|time[_ ]?d?[_ ]?out|overloaded|529/i;
+import { TRANSIENT_PATTERN, PROVIDER_CONFIG_PATTERN } from "@/server/error-patterns";
 
 export const PROVIDER_SETTINGS_HINT = "Go to Settings > Providers to check your API configuration.";
 

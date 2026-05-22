@@ -83,6 +83,12 @@ vi.mock("drizzle-orm", () => ({
 
 vi.mock("@/lib/audit", () => ({
   appendAuditLog: mockAppendAuditLog,
+  // Pass-through: client-router calls this on free-text providerError before
+  // writing to the audit row. The unit-level behaviour of scrubEmails is
+  // covered by audit.test.ts; here we just need the function to exist so
+  // the import doesn't resolve to undefined and crash writeAgentErrorAudit.
+  scrubEmails: (text: string) =>
+    text.replace(/[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/g, "<email-redacted>"),
 }));
 
 vi.mock("@/lib/groups", () => ({
@@ -4007,6 +4013,93 @@ describe("ClientRouter", () => {
       );
       expect(call).toBeDefined();
       expect(call![0].detail.providerError.length).toBeLessThanOrEqual(1024);
+
+      consoleSpy.mockRestore();
+    });
+
+    it("scrubs emails out of providerError before writing the audit row", async () => {
+      // The audit table is append-only and HMAC-signed — GDPR Art. 17
+      // erasure on a signed row is impossible by design. The umbrella
+      // `chat.agent_error` covers the long tail (errorClass=`unknown`)
+      // where we can't pre-validate what the provider echoes back. If
+      // an upstream validation error contains a user email — e.g.
+      // "Invalid input: user@example.com is not a registered identity"
+      // — we must redact it before storage. Mirrors the existing
+      // `redactEmail()` PII rule from AGENTS.md for free-text fields.
+      const clientWs = createMockClientWs();
+      const consoleSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+
+      mockFindFirst.mockResolvedValue({ ...defaultAgent, model: "openai/gpt-4o-mini" });
+
+      mockChat.mockImplementation(() => {
+        return (async function* () {
+          yield {
+            type: "error" as const,
+            text: "Provider rejected request: user.name@example.com is not authorised",
+          };
+        })();
+      });
+
+      await router.handleMessage(clientWs as any, {
+        type: "message",
+        content: "Hi",
+        agentId: "agent-1",
+      });
+
+      const call = mockAppendAuditLog.mock.calls.find(
+        (c: any[]) => c[0]?.eventType === "chat.agent_error"
+      );
+      expect(call).toBeDefined();
+      const providerError = call![0].detail.providerError as string;
+      expect(providerError).not.toContain("user.name@example.com");
+      expect(providerError).not.toContain("user.name");
+      expect(providerError).toContain("<email-redacted>");
+
+      consoleSpy.mockRestore();
+    });
+
+    it("writes chat.agent_error even when the client WebSocket is already closed", async () => {
+      // Pinning regression test for the universal-logging contract: the
+      // umbrella audit must fire regardless of WS state. The inline
+      // comment in client-router.ts ("operators most need these signals
+      // during nav-aways") describes a property that's easy to break
+      // accidentally by wrapping the audit call in an `if (clientWsOpen)`
+      // block during a refactor. This test catches that.
+      const clientWs = createMockClientWs();
+      // Simulate the browser having navigated away: WS is in CLOSED state
+      // before the error chunk arrives.
+      clientWs.readyState = 3; // ws.CLOSED
+      const consoleSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+
+      mockFindFirst.mockResolvedValue({
+        ...defaultAgent,
+        model: "openai/gpt-4o-mini",
+      });
+
+      mockChat.mockImplementation(() => {
+        return (async function* () {
+          yield {
+            type: "error" as const,
+            text: "FailoverError: ended with an incomplete terminal response",
+          };
+        })();
+      });
+
+      await router.handleMessage(clientWs as any, {
+        type: "message",
+        content: "Hi",
+        agentId: "agent-1",
+      });
+
+      // Audit row written despite the browser being gone.
+      expect(mockAppendAuditLog).toHaveBeenCalledWith(
+        expect.objectContaining({
+          eventType: "chat.agent_error",
+          detail: expect.objectContaining({
+            errorClass: "failover_incomplete_stream",
+          }),
+        })
+      );
 
       consoleSpy.mockRestore();
     });

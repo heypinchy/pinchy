@@ -6,6 +6,7 @@ import {
   ROW_HMAC_VERIFIERS,
   truncateDetail,
   redactEmail,
+  scrubEmails,
 } from "@/lib/audit";
 
 describe("computeRowHmac", () => {
@@ -290,5 +291,54 @@ describe("redactEmail", () => {
 
   it("preview uses lowercased domain (mirrors hashing input)", () => {
     expect(redactEmail("Alice@EXAMPLE.com").emailPreview).toBe("al…ce@example.com");
+  });
+});
+
+describe("scrubEmails", () => {
+  // Defence-in-depth for free-text audit fields (e.g. `providerError` on
+  // `chat.agent_error`). When a provider validation error gets echoed back
+  // — "Invalid input: user@example.com is not a valid X" — we never want
+  // the raw address to land in the append-only HMAC-signed audit table.
+  // GDPR Art. 17 erasure on an HMAC-signed row is impossible by design.
+  //
+  // This is distinct from `redactEmail` which returns a structured
+  // `{emailHash, emailPreview}` pair for fields where we know an email is
+  // identity data. Here we operate on opaque free text and just substitute
+  // any email-shaped run with a fixed sentinel — we never need to look it
+  // up later, the goal is purely "don't store the raw address".
+
+  it("replaces a single email with the redacted sentinel", () => {
+    expect(scrubEmails("Invalid input for user@example.com is invalid")).toBe(
+      "Invalid input for <email-redacted> is invalid"
+    );
+  });
+
+  it("replaces every email when multiple are present", () => {
+    expect(scrubEmails("Conflict between alice@a.io and bob@b.io for the row")).toBe(
+      "Conflict between <email-redacted> and <email-redacted> for the row"
+    );
+  });
+
+  it("returns the input unchanged when no email shape is present", () => {
+    expect(scrubEmails("FailoverError: model ended with incomplete response")).toBe(
+      "FailoverError: model ended with incomplete response"
+    );
+    expect(scrubEmails("")).toBe("");
+  });
+
+  it("handles plus-aliases, dots, and multi-segment TLDs", () => {
+    // These are all valid local/domain shapes that show up in real
+    // provider error envelopes — make sure none of them slip through.
+    expect(scrubEmails("user.name+tag@sub.example.co.uk failed validation")).toBe(
+      "<email-redacted> failed validation"
+    );
+  });
+
+  it("does not leave the raw address anywhere in the result", () => {
+    const input = "Auth error: clemens.helm@devcraft.academy was rejected by upstream";
+    const out = scrubEmails(input);
+    expect(out).not.toContain("clemens.helm");
+    expect(out).not.toContain("devcraft.academy");
+    expect(out).not.toContain("@");
   });
 });

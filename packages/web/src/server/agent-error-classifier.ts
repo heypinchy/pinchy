@@ -16,6 +16,13 @@
  * `client-router.ts` silent-stream branch.
  */
 
+// TRANSIENT_PATTERN and PROVIDER_CONFIG_PATTERN are shared with error-hints.ts
+// via error-patterns.ts — see that file for the canonical regexes and the
+// reasoning behind their boundaries. Order is significant at the call site:
+// `transient` is checked before `provider_config` because "rate limit
+// exceeded" contains "exceeded" which would otherwise match provider-config.
+import { TRANSIENT_PATTERN, PROVIDER_CONFIG_PATTERN } from "@/server/error-patterns";
+
 export type AgentErrorClass =
   | "failover_incomplete_stream"
   | "schema_rejection"
@@ -35,14 +42,6 @@ const THOUGHT_SIGNATURE_SNAKE = /thought_signature/i;
 const THOUGHT_SIGNATURE_CAMEL = /thoughtSignature/;
 
 const HTTP_5XX_PATTERN = /HTTP\s+5\d\d\b/i;
-
-// Order is significant — `transient` is checked before `provider_config`
-// because "rate limit exceeded" contains "exceeded" which would otherwise
-// match the provider-config family. Same precedence rule as error-hints.ts.
-const TRANSIENT_PATTERN = /rate[_ ]?limit|too many requests|time[_ ]?d?[_ ]?out|overloaded|529/i;
-
-const PROVIDER_CONFIG_PATTERN =
-  /credit|balance|api[_ ]?key|invalid.*key|authenticat|unauthorized|quota|exceeded/i;
 
 export function classifyAgentError(errorText: string): AgentErrorClass {
   if (FAILOVER_INCOMPLETE_STREAM_PATTERN.test(errorText)) {
