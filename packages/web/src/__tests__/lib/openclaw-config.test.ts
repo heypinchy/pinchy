@@ -2104,7 +2104,12 @@ describe("regenerateOpenClawConfig", () => {
     // `ollama` (not `ollama-local`) so pi-ai's built-in openai-completions
     // provider handles the stream; the Pinchy-side settings key is
     // `default_provider=ollama-local`.
-    expect(config?.models?.providers?.ollama?.allowPrivateNetwork).toBe(true);
+    // OC's ConfiguredModelProviderRequest schema places allowPrivateNetwork
+    // inside the provider's `request` block (sibling of headers/auth/proxy/
+    // tls), not directly on the provider config — emitting it at the
+    // outer level produces `Unrecognized key` and the gateway refuses to
+    // start with "Invalid config at /root/.openclaw/openclaw.json".
+    expect(config?.models?.providers?.ollama?.request?.allowPrivateNetwork).toBe(true);
   });
 
   it("emits models: [] when fetchOllamaLocalModelsFromUrl returns empty (Ollama unreachable at config-regen time)", async () => {
