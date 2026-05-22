@@ -581,10 +581,20 @@ function recordLabel(record: OdooRecord): string {
   );
 }
 
+/**
+ * Cap on how many distinct labels we splice into a "too many matches"-style
+ * error message. Five is enough for the LLM to recognize the ambiguity
+ * pattern without blowing past the context window when a query lands on a
+ * malformed Odoo table; the overflow suffix tells the model the list was
+ * truncated. Shared between suggestion lists and multi-company breakdowns so
+ * the two error shapes stay visually consistent.
+ */
+const MAX_DISPLAYED_LABELS = 5;
+
 function formatSuggestions(records: OdooRecord[]): string {
   const labels = [
     ...new Set(records.map(recordLabel).filter((label) => label.length > 0)),
-  ].slice(0, 5);
+  ].slice(0, MAX_DISPLAYED_LABELS);
   return labels.length > 0 ? ` Suggestions: ${labels.join(", ")}.` : "";
 }
 
@@ -609,7 +619,7 @@ export function formatMultiMatchError(
   const distinctCompanies = Array.from(new Set(companies));
 
   if (distinctCompanies.length >= 2) {
-    const shown = distinctCompanies.slice(0, 5);
+    const shown = distinctCompanies.slice(0, MAX_DISPLAYED_LABELS);
     const overflow =
       distinctCompanies.length > shown.length
         ? ` (+${distinctCompanies.length - shown.length} more)`
@@ -743,6 +753,14 @@ function refToId(
  * Throws when a tagged sibling disagrees on company. The caller's try/catch
  * converts the throw into the standard `{ isError: true }` shape.
  *
+ * Audit visibility: the throw propagates to `errorResult`, which sets
+ * `isError: true` on the tool response. `pinchy-audit`'s `after_tool_call`
+ * hook captures the full result + error on every tool call, so cross-company
+ * rejections already land in `audit_log` as a failed `tool.odoo_create` /
+ * `tool.odoo_write` entry with the literal "Cross-company write rejected"
+ * prefix in `detail`. Admins can grep / filter for that string — no separate
+ * audit pipeline is needed here.
+ *
  * Scope: only top-level fields of `values` are inspected. Nested 2many/o2m
  * command tuples (e.g. `invoice_line_ids: [[0, 0, { account_id: ... }]]`)
  * are not walked — that broader check would require following Odoo's
@@ -752,17 +770,16 @@ function refToId(
 export function assertNoCrossCompanyRefs(
   values: Record<string, unknown>,
 ): void {
-  const intended = readRefCompanyId(values.company_id);
+  const intended = readRefCompanyTag(values.company_id);
   if (intended === null) return;
-  const intendedLabel =
-    readRefCompanyLabel(values.company_id) ?? `id=${intended}`;
+  const intendedLabel = intended.label ?? `id=${intended.id}`;
 
   for (const [field, value] of Object.entries(values)) {
     if (field === "company_id") continue;
-    const companyId = readRefCompanyId(value);
-    if (companyId === null) continue;
-    if (companyId !== intended) {
-      const otherLabel = readRefCompanyLabel(value) ?? `id=${companyId}`;
+    const sibling = readRefCompanyTag(value);
+    if (sibling === null) continue;
+    if (sibling.id !== intended.id) {
+      const otherLabel = sibling.label ?? `id=${sibling.id}`;
       throw new Error(
         `Cross-company write rejected: values.company_id points to "${intendedLabel}" ` +
           `but values.${field} points to a record in "${otherLabel}". ` +
@@ -772,19 +789,21 @@ export function assertNoCrossCompanyRefs(
   }
 }
 
-function readRefCompanyId(value: unknown): number | null {
+/**
+ * Decode the company tag (id + label) from a `{ ref }` shape in one pass.
+ * Returns null when the value is not a tagged ref, when decoding fails, or
+ * when the payload lacks a `companyId` tag (legacy / untagged refs). The
+ * label may still be null even when the id is present, mirroring the
+ * encoder's tolerance of partial tags on the read side.
+ */
+function readRefCompanyTag(
+  value: unknown,
+): { id: number; label: string | null } | null {
   if (!isRecord(value) || typeof value.ref !== "string") return null;
   try {
-    return decodeRef(value.ref).companyId ?? null;
-  } catch {
-    return null;
-  }
-}
-
-function readRefCompanyLabel(value: unknown): string | null {
-  if (!isRecord(value) || typeof value.ref !== "string") return null;
-  try {
-    return decodeRef(value.ref).companyLabel ?? null;
+    const payload = decodeRef(value.ref);
+    if (payload.companyId === undefined) return null;
+    return { id: payload.companyId, label: payload.companyLabel ?? null };
   } catch {
     return null;
   }
@@ -906,7 +925,13 @@ export function extractCompanyLabel(value: unknown): string | null {
 /**
  * Pull the numeric company id out of a raw Odoo `company_id` value. Mirrors
  * `extractCompanyLabel`: tuples `[id, "Name"]` → id; `false` / non-arrays /
- * non-positive integers → `null`. Never throws.
+ * non-positive integers / partial tuples without a usable label → `null`.
+ * Never throws.
+ *
+ * Mutual-presence rule: requires `extractCompanyLabel(value)` to also resolve.
+ * Without this, an exported helper could feed `{ companyId, companyLabel: undefined }`
+ * into encodeRef and trip `isValidCompanyTag` at runtime. Keeping the asymmetry
+ * out of the public surface is cheaper than documenting it.
  */
 export function extractCompanyId(value: unknown): number | null {
   if (!Array.isArray(value)) return null;
@@ -917,6 +942,7 @@ export function extractCompanyId(value: unknown): number | null {
   ) {
     return null;
   }
+  if (extractCompanyLabel(value) === null) return null;
   return value[0];
 }
 

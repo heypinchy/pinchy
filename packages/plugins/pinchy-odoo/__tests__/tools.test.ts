@@ -679,13 +679,16 @@ describe("extractCompanyId", () => {
     expect(extractCompanyId(7)).toBeNull();
     expect(extractCompanyId({})).toBeNull();
   });
-  it("returns the id even when the label slot is missing (caller cross-checks)", () => {
-    // `extractCompanyId` does NOT cross-validate the label slot. A malformed
-    // tuple like [7] still yields 7; the wrap site combines both helpers to
-    // enforce mutual presence (see isValidCompanyTag).
-    expect(extractCompanyId([7])).toBe(7);
-    expect(extractCompanyId([7, undefined])).toBe(7);
-    expect(extractCompanyId([7, ""])).toBe(7);
+  it("returns null when the label slot is missing or empty (mutual presence)", () => {
+    // Symmetry with `extractCompanyLabel`: a partial tuple is treated as
+    // unusable. Without this guard, an exported helper would let a future
+    // out-of-tree caller spread `{ companyId: 7, companyLabel: undefined }`
+    // into encodeRef and trip the validator at runtime. Refusing the partial
+    // shape here keeps the foot-gun out of the public surface.
+    expect(extractCompanyId([7])).toBeNull();
+    expect(extractCompanyId([7, undefined])).toBeNull();
+    expect(extractCompanyId([7, ""])).toBeNull();
+    expect(extractCompanyId([7, 42])).toBeNull(); // wrong type
   });
 });
 
@@ -2838,7 +2841,11 @@ describe("odoo_read multi-company auto-include", () => {
     ]);
     mockSearchRead.mockResolvedValue({
       records: [
-        { id: 42, display_name: "1000 Wareneinsatz", company_id: [7, "GmbH A"] },
+        {
+          id: 42,
+          display_name: "1000 Wareneinsatz",
+          company_id: [7, "GmbH A"],
+        },
       ],
       total: 1,
       limit: 1,
@@ -2884,7 +2891,9 @@ describe("odoo_read multi-company auto-include", () => {
       filters: [],
       fields: ["display_name"],
     });
-    const decoded = decodeRef(JSON.parse(result.content[0].text).records[0]._pinchy_ref);
+    const decoded = decodeRef(
+      JSON.parse(result.content[0].text).records[0]._pinchy_ref,
+    );
     expect(decoded.companyId).toBeUndefined();
     expect(decoded.companyLabel).toBeUndefined();
   });
@@ -2920,7 +2929,9 @@ describe("odoo_read multi-company auto-include", () => {
       filters: [],
       fields: ["display_name"],
     });
-    const decoded = decodeRef(JSON.parse(result.content[0].text).records[0]._pinchy_ref);
+    const decoded = decodeRef(
+      JSON.parse(result.content[0].text).records[0]._pinchy_ref,
+    );
     expect(decoded.companyId).toBeUndefined();
     expect(decoded.companyLabel).toBeUndefined();
   });

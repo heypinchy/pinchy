@@ -14,6 +14,17 @@ describe("multi-company guidance is spliced into accounting templates", () => {
     //
     // Keeps the splice tight to real bookkeeping roles and auto-extends as
     // new core-ledger templates land.
+    //
+    // HEURISTIC, NOT A DEFINITION: `account.move.line` is a proxy for "this
+    // template walks the general ledger and can produce cross-company writes."
+    // It happens to match Penny + Bookkeeper today. If a future template
+    // covers cross-company accounting WITHOUT touching `account.move.line`
+    // (e.g. a Tax Auditor that reads `account.move`, `account.account`, and
+    // `account.journal` only), this predicate will *forbid* the guidance —
+    // wrongly. When that happens, widen the predicate (e.g. union of any
+    // `account.*` write op + `account.move` read) rather than carve an
+    // ad-hoc allow-list. The test's job is to prevent silent drift, not to
+    // adjudicate which templates need accounting context.
     for (const [id, template] of Object.entries(ODOO_TEMPLATES)) {
       const touchesCoreLedger = (template.odooConfig?.requiredModels ?? []).some(
         (m) => m.model === "account.move.line"
