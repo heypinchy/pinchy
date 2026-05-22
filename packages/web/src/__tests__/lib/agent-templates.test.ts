@@ -1540,6 +1540,31 @@ describe("Odoo CRM & Sales Assistant template — quotation-ready model coverage
     const t = getTemplate(id)!;
     expect(t.defaultAgentsMd).toContain("account.move");
   });
+
+  it("AGENTS.md spells out the Bookkeeper boundary so a reword can't silently drop it", () => {
+    // Critical safety boundary: a CRM agent must never draft, post, or amend
+    // invoices. Test #3 enforces this at the permission level
+    // (account.move = read only), this test guards the prose instruction the
+    // LLM actually reads at runtime. If someone reworks AGENTS.md and drops
+    // the boundary sentence, this fails.
+    const t = getTemplate(id)!;
+    expect(t.defaultAgentsMd).toMatch(/never.*(draft|post|amend).*invoic/i);
+    expect(t.defaultAgentsMd.toLowerCase()).toContain("bookkeeper");
+  });
+
+  it("AGENTS.md warns about the sale.order confirmation → invoice path explicitly", () => {
+    // sale.order write access lets the agent confirm a quotation (state →
+    // "sale"). Confirming a sale order in Odoo doesn't auto-post an invoice,
+    // but the downstream workflow has an explicit "Create Invoice" action
+    // (Odoo method: `_create_invoices`) that would bypass the account.move
+    // read-only boundary. A generic "don't modify invoices" isn't enough —
+    // the AGENTS.md must name the confirmation path so the LLM understands
+    // *why* this is a separate restriction from generic account.move writes.
+    const t = getTemplate(id)!;
+    const lower = t.defaultAgentsMd.toLowerCase();
+    expect(lower).toContain("confirm"); // mentions sale order confirmation
+    expect(lower).toMatch(/_create_invoices|create invoice/); // names the forbidden action
+  });
 });
 
 describe("MODEL_CATEGORIES — accounting category covers fiscal positions", () => {
