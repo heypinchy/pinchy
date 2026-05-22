@@ -3480,6 +3480,30 @@ describe("seedGatewayTokenIfMissing", () => {
     expect(written.update.checkOnStart).toBe(false);
     expect(written.canvasHost.enabled).toBe(false);
   });
+
+  it("refuses to write when readExistingConfig throws EACCES (avoids clobbering enriched OC state during chmod race, #314)", async () => {
+    // OC's SIGUSR1 restart pipeline rewrites openclaw.json as root 0600;
+    // start-openclaw.sh's tight chmod loop reopens it to 0666 within
+    // ~50 ms, but Pinchy (uid 999) can hit a window where read fails with
+    // EACCES even though the file holds a fully-populated post-wizard
+    // config. Catching that and seeding `{gateway: {auth: {token}}}` over
+    // an empty `existing` would erase every OC-enriched block on disk —
+    // exactly the regression integration test #00 ("PATCH agent with no
+    // DB change must not modify openclaw.json") guards against. Skip
+    // the seed in that case; the next bootInits run or the post-wizard
+    // regenerate heals once chmod catches up.
+    mockedReadFileSync.mockImplementation(() => {
+      throw Object.assign(new Error("EACCES"), { code: "EACCES" });
+    });
+
+    const changed = await seedGatewayTokenIfMissing();
+
+    expect(changed).toBe(false);
+    const writtenAtomic = mockedWriteFileSync.mock.calls.find(
+      (c) => typeof c[0] === "string" && (c[0] as string).includes("openclaw.json.tmp")
+    );
+    expect(writtenAtomic).toBeUndefined();
+  });
 });
 
 describe("pinchy-web config", () => {

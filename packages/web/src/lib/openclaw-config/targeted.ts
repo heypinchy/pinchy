@@ -262,7 +262,25 @@ export async function seedGatewayTokenIfMissing(): Promise<boolean> {
   let existing: Record<string, unknown>;
   try {
     existing = readExistingConfig();
-  } catch {
+  } catch (err) {
+    // EACCES means the file exists but is unreadable right now (race with
+    // OC's 0600 → 0666 chmod loop). Refuse to seed in that case — writing
+    // `{gateway: {auth: {...}}}` on top of an empty `existing` would clobber
+    // every OC-enriched field the file currently carries (agents, plugins,
+    // models, secrets blocks) and undo the post-setup-wizard regenerate.
+    // Bail out; the next bootInits run (or the regenerate cascade once
+    // chmod catches up) will land the token. Same defence pattern as
+    // regenerateOpenClawConfig (#314).
+    if ((err as NodeJS.ErrnoException)?.code === "EACCES") {
+      console.error(
+        "[openclaw-config] seedGatewayTokenIfMissing skipped: openclaw.json " +
+          "is currently EACCES (likely OC's 0600 restart-write race). The " +
+          "next regenerate (or boot-inits) will heal once the file is " +
+          "readable again. Skipping rather than clobbering existing state."
+      );
+      return false;
+    }
+    // ENOENT / parse-error means we're on a true cold start with no file.
     existing = {};
   }
 
