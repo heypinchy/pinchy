@@ -332,11 +332,12 @@ test.describe("Plugin behavior — pinchy-files", () => {
     }
   });
 
-  // Skipped for the same /tmp ownership reasons as pinchy_ls above. Kept as
-  // a static coverage probe so the plugin-tool-coverage guard sees a
-  // `eventType=tool.pinchy_read` reference for the .docx code path. The
-  // real .docx extraction is exercised by docx-extract.test.ts and the
-  // pinchy_read DOCX integration block in pinchy-files/index.test.ts.
+  // Skipped (tracked in #427) for the same /tmp ownership reasons as
+  // pinchy_ls above. Kept as a static coverage probe so the
+  // plugin-tool-coverage guard sees a `eventType=tool.pinchy_read`
+  // reference for the .docx code path. The real .docx extraction is
+  // exercised by docx-extract.test.ts and the pinchy_read DOCX
+  // integration block in pinchy-files/index.test.ts.
   test.skip("pinchy_read dispatches on .docx via fake-LLM and writes audit entry", async ({
     page,
   }) => {
