@@ -108,8 +108,18 @@ export async function bootInits(): Promise<boolean> {
       console.log("[pinchy] Seeded gateway.auth.token into openclaw.json (pre-wizard bootstrap)");
     }
   } catch (err) {
+    // The seed needs the DB (`getOrCreateGatewayToken` reads/writes a settings
+    // row). If it fails here on a fresh install, openclaw.json carries no
+    // `gateway.auth.token` and OC 2026.5.12+ will sit in its "Refusing to bind
+    // gateway to lan without auth" restart loop until either the DB recovers
+    // and a later `regenerateOpenClawConfig` writes the token, or the wizard
+    // is run. Don't gate `markOpenClawConfigReady()` on this — Pinchy itself
+    // must come up so the operator can fix the underlying DB issue. But make
+    // the consequence loud so the operator isn't left wondering why OC's
+    // healthcheck stays red.
     console.error(
-      "[pinchy] Failed to seed gateway token:",
+      "[pinchy] FATAL: gateway token seed failed — OpenClaw will refuse to bind " +
+        "until the token is written. Underlying error:",
       err instanceof Error ? err.message : err
     );
   }

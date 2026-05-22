@@ -374,6 +374,42 @@ describe("supplementPayloadWithOcConfig", () => {
     expect(result.update.lastCheckedAt).toBe("T1");
     expect(result.canvasHost.port).toBe(18790);
   });
+
+  it("merges OC-enriched sibling channel sub-blocks (e.g. channels.defaults) absent from payload (#193 follow-up)", () => {
+    // OC 2026.5.x enriches `channels.defaults` (heartbeat visibility,
+    // botLoopProtection) at runtime alongside Pinchy-owned `channels.telegram`.
+    // Without merging absent siblings, the supplemented config.apply payload
+    // would lack `channels.defaults` and OC's reload classifier would flag a
+    // channels diff. Since `channels` has no entry in BASE_RELOAD_RULES, that
+    // diff falls through to the restart-class default-deny and triggers the
+    // cascade #193 catches.
+    const payload = JSON.stringify({
+      gateway: { mode: "local" },
+      channels: {
+        telegram: { enabled: true, dmPolicy: "pairing", accounts: { "agent-1": {} } },
+      },
+    });
+    const result = JSON.parse(
+      supplementPayloadWithOcConfig(payload, {
+        channels: {
+          defaults: { heartbeat: { mode: "visible" } },
+          modelByChannel: { telegram: { primary: "ollama/llama3.2" } },
+          telegram: { enabled: true, dmPolicy: "pairing", accounts: { "agent-1": {} } },
+        },
+      })
+    );
+
+    // Sibling sub-blocks absent from payload land from source.
+    expect(result.channels.defaults).toEqual({ heartbeat: { mode: "visible" } });
+    expect(result.channels.modelByChannel).toEqual({
+      telegram: { primary: "ollama/llama3.2" },
+    });
+    // Pinchy-owned telegram block is untouched (source merge would have
+    // skipped duplicate-key fields anyway, but this pin documents the
+    // intent: payload wins for keys it owns).
+    expect(result.channels.telegram.enabled).toBe(true);
+    expect(result.channels.telegram.accounts).toEqual({ "agent-1": {} });
+  });
 });
 
 describe("configsAreEquivalentUpToOpenClawMetadata", () => {

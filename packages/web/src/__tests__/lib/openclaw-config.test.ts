@@ -2112,6 +2112,87 @@ describe("regenerateOpenClawConfig", () => {
     expect(config?.models?.providers?.ollama?.request?.allowPrivateNetwork).toBe(true);
   });
 
+  it("does NOT set allowPrivateNetwork on the public LLM providers (anthropic/openai/google/ollama-cloud)", async () => {
+    // The SSRF opt-in is scoped to `ollama-local` because that's the only
+    // built-in provider that legitimately targets private / .local / RFC
+    // 1918 addresses. Public providers all resolve to TLS-protected
+    // public APIs and must stay on the default-deny so a misconfigured
+    // URL can't accidentally hit an internal service.
+    mockedGetSetting.mockImplementation(async (key: string) => {
+      if (key === "anthropic_api_key") return "sk-ant-test";
+      if (key === "openai_api_key") return "sk-test";
+      if (key === "google_api_key") return "gk-test";
+      if (key === "ollama_cloud_api_key") return "ol-test";
+      return null;
+    });
+
+    await regenerateOpenClawConfig();
+
+    const written = mockedWriteFileSync.mock.calls[0][1] as string;
+    const config = JSON.parse(written);
+    const providers = config?.models?.providers ?? {};
+    for (const name of ["anthropic", "openai", "google", "ollama-cloud"] as const) {
+      // The flag must be absent — not `false`, not present at all.
+      // eslint-disable-next-line security/detect-object-injection
+      expect(providers[name]?.request?.allowPrivateNetwork).toBeUndefined();
+      // And no other shape leaks the flag at the outer level either.
+      // eslint-disable-next-line security/detect-object-injection
+      expect(providers[name]?.allowPrivateNetwork).toBeUndefined();
+    }
+  });
+
+  it("preserves OC-enriched sibling channels sub-blocks (e.g. channels.defaults) on a real telegram change (#193 follow-up)", async () => {
+    // build.ts:1182 spreads `...existingChannels` into the new config.channels
+    // when the telegram block changed. Without that spread, OC-side enriched
+    // sibling sub-blocks (`channels.defaults` for heartbeat/botLoopProtection,
+    // `channels.modelByChannel`, other channels' configs) would get stripped
+    // — and since OC 2026.5.x has no `channels` entry in BASE_RELOAD_RULES,
+    // the resulting diff falls through to restart-class and re-triggers the
+    // very cascade #193 / agent-create-no-restart is supposed to catch.
+    // This pin guards against an accidental revert to `{ telegram: ... }`
+    // only.
+    mockedGetSetting.mockImplementation(async (key: string) => {
+      if (key === "telegram_bot_token:agent-id-with-bot") return "BOT123:secret";
+      return null;
+    });
+    // Mock an agent in the DB with a telegram bot, plus an OC-enriched
+    // `channels.defaults` block already on disk.
+    mockedDb.select.mockReturnValueOnce({
+      from: vi.fn().mockResolvedValue([
+        {
+          id: "agent-id-with-bot",
+          name: "Bot Agent",
+          isPersonal: false,
+          ownerId: "user-1",
+          createdAt: new Date(),
+          deletedAt: null,
+        },
+      ]),
+    } as unknown as ReturnType<typeof mockedDb.select>);
+    mockedReadFileSync.mockReturnValue(
+      JSON.stringify({
+        gateway: { mode: "local", bind: "lan" },
+        channels: {
+          defaults: { heartbeat: { mode: "visible" } },
+          telegram: { enabled: true, dmPolicy: "pairing", accounts: { "stale-agent": {} } },
+        },
+      }) as unknown as Buffer
+    );
+
+    await regenerateOpenClawConfig();
+
+    const written = mockedWriteFileSync.mock.calls.find(
+      (c) => typeof c[0] === "string" && (c[0] as string).includes("openclaw.json.tmp")
+    );
+    expect(written).toBeDefined();
+    const config = JSON.parse(String(written![1]));
+    // The OC-enriched sibling sub-block survives the regenerate even though
+    // telegram itself changed (accounts swapped from "stale-agent" to the
+    // current bot agent).
+    expect(config.channels.defaults).toEqual({ heartbeat: { mode: "visible" } });
+    expect(config.channels.telegram.accounts).toHaveProperty("agent-id-with-bot");
+  });
+
   it("emits models: [] when fetchOllamaLocalModelsFromUrl returns empty (Ollama unreachable at config-regen time)", async () => {
     // The setup wizard validates that ≥1 tool-capable model exists before
     // saving the URL, so this state means Ollama went away after setup.
