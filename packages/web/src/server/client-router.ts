@@ -13,6 +13,7 @@ import {
 import { SessionCache } from "@/server/session-cache";
 import { getErrorHint } from "@/server/error-hints";
 import { classifyModelError, classifyUpstreamFormatError } from "@/server/model-error-classifier";
+import { classifyAgentError, type AgentErrorClass } from "@/server/agent-error-classifier";
 import {
   SILENT_REPLY_TOKEN,
   safeEmitLength,
@@ -569,6 +570,26 @@ export class ClientRouter {
         // failures during nav-aways.
         if (chunk.type === "error") {
           console.error("OpenClaw error chunk:", chunk.text);
+
+          // Issue #355: universal `chat.agent_error` audit. Fires for every
+          // error chunk regardless of clientWs state and regardless of
+          // whether a more specialised event (agent.model_unavailable,
+          // agent.upstream_format_error, chat.silent_stream further below)
+          // also fires. The specialised events stay in their role as
+          // throttled operational signals with richer per-class detail; this
+          // umbrella exists so a single query grouped by `errorClass` covers
+          // every failure shape — including the long tail (FailoverError
+          // incomplete-stream, unclassified) that currently has no audit
+          // signal at all.
+          //
+          // PII note: same reasoning as the existing model_unavailable
+          // branch — provider error envelopes don't echo user prompt text on
+          // these failures. Truncated to 1024 bytes as a belt-and-braces.
+          await this.writeAgentErrorAudit({
+            agent,
+            errorClass: classifyAgentError(chunk.text),
+            providerError: chunk.text,
+          });
         }
 
         // Consumer forwarding — only meaningful while the browser WS is open.
@@ -705,6 +726,16 @@ export class ClientRouter {
           messageId,
         });
 
+        // Issue #355: umbrella `chat.agent_error` for the silent-stream
+        // synthesised error too, so the universal measurement signal
+        // captures this class alongside the throttled `chat.silent_stream`
+        // operational signal below.
+        await this.writeAgentErrorAudit({
+          agent,
+          errorClass: "silent_stream_timeout",
+          providerError,
+        });
+
         // Operational signal: a silent timeout shouldn't be invisible to
         // admins reviewing the audit trail. Throttled per (agentId, model)
         // so a degraded provider can't flood the log via user retries.
@@ -795,6 +826,44 @@ export class ClientRouter {
   private sendToClient(ws: WebSocket, data: Record<string, unknown>): void {
     if (ws.readyState === WS_OPEN) {
       ws.send(JSON.stringify(data));
+    }
+  }
+
+  /**
+   * Write the `chat.agent_error` umbrella audit row (issue #355).
+   *
+   * Universal measurement signal: fires for every error chunk that reaches
+   * the chat WS error surface, plus the silent-stream synthesised error.
+   * Specialised events (agent.model_unavailable, agent.upstream_format_error,
+   * chat.silent_stream) remain in their role as throttled operational
+   * signals; this umbrella exists so a single query grouped by errorClass
+   * captures every failure shape, including the long tail.
+   *
+   * Called from WebSocket handler scope (not Next request scope), so uses
+   * the appendAuditLog + recordAuditFailure pattern per audit-deferred.ts.
+   */
+  private async writeAgentErrorAudit(args: {
+    agent: { id: string; name: string; model?: string | null };
+    errorClass: AgentErrorClass;
+    providerError: string;
+  }): Promise<void> {
+    const auditEntry = {
+      actorType: "user" as const,
+      actorId: this.userId,
+      eventType: "chat.agent_error" as const,
+      resource: `agent:${args.agent.id}`,
+      detail: {
+        agent: { id: args.agent.id, name: args.agent.name },
+        model: args.agent.model ?? null,
+        errorClass: args.errorClass,
+        providerError: args.providerError.slice(0, 1024),
+      },
+      outcome: "failure" as const,
+    };
+    try {
+      await appendAuditLog(auditEntry);
+    } catch (err) {
+      recordAuditFailure(err, auditEntry);
     }
   }
 }

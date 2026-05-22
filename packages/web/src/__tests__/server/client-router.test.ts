@@ -3780,4 +3780,235 @@ describe("ClientRouter", () => {
       consoleSpy.mockRestore();
     });
   });
+
+  describe("chat.agent_error audit log (issue #355 — universal measurement)", () => {
+    // The umbrella audit event fires for EVERY error chunk that reaches the
+    // chat WS error surface, regardless of whether a more specialised event
+    // (agent.model_unavailable, agent.upstream_format_error, chat.silent_stream)
+    // also fires. Goal: a single queryable signal that captures every
+    // user-visible chat failure, classified by family. The specialised events
+    // remain in their role as throttled operational signals with richer
+    // per-class detail.
+
+    it("writes chat.agent_error with errorClass 'failover_incomplete_stream' for the production FailoverError chunk", async () => {
+      const clientWs = createMockClientWs();
+      const consoleSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+
+      mockFindFirst.mockResolvedValue({
+        ...defaultAgent,
+        model: "ollama-cloud/gemini-3-flash-preview",
+      });
+
+      mockChat.mockImplementation(() => {
+        return (async function* () {
+          yield {
+            type: "error" as const,
+            text:
+              "FailoverError: ollama-cloud/gemini-3-flash-preview ended with " +
+              "an incomplete terminal response",
+          };
+        })();
+      });
+
+      await router.handleMessage(clientWs as any, {
+        type: "message",
+        content: "Hi",
+        agentId: "agent-1",
+      });
+
+      expect(mockAppendAuditLog).toHaveBeenCalledWith(
+        expect.objectContaining({
+          eventType: "chat.agent_error",
+          outcome: "failure",
+          actorType: "user",
+          resource: "agent:agent-1",
+          detail: expect.objectContaining({
+            agent: expect.objectContaining({ id: "agent-1", name: defaultAgent.name }),
+            model: "ollama-cloud/gemini-3-flash-preview",
+            errorClass: "failover_incomplete_stream",
+          }),
+        })
+      );
+
+      consoleSpy.mockRestore();
+    });
+
+    it("writes chat.agent_error with errorClass 'silent_stream_timeout' when the stream ends without text or error (#320 safety net)", async () => {
+      // The synthesised timeout error from the no-chunks safety net at the
+      // bottom of pipeStream must also be captured by the umbrella audit, so
+      // a query for "all chat failures" doesn't miss the silent class.
+      const clientWs = createMockClientWs();
+      const consoleSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+
+      mockFindFirst.mockResolvedValue({
+        ...defaultAgent,
+        model: "openai/gpt-4o-mini",
+      });
+
+      // Stream completes with no text and no error — the #320 safety net
+      // synthesises a "did not produce a response" error frame.
+      mockChat.mockImplementation(() => {
+        return (async function* () {
+          // intentionally empty
+        })();
+      });
+
+      await router.handleMessage(clientWs as any, {
+        type: "message",
+        content: "Hi",
+        agentId: "agent-1",
+      });
+
+      expect(mockAppendAuditLog).toHaveBeenCalledWith(
+        expect.objectContaining({
+          eventType: "chat.agent_error",
+          outcome: "failure",
+          detail: expect.objectContaining({
+            agent: expect.objectContaining({ id: "agent-1" }),
+            errorClass: "silent_stream_timeout",
+          }),
+        })
+      );
+
+      consoleSpy.mockRestore();
+    });
+
+    it("writes chat.agent_error ALONGSIDE the specialised agent.model_unavailable event (universal logging)", async () => {
+      // Regression guard for the universal-logging contract: the umbrella
+      // audit must fire in addition to, not instead of, the specialised
+      // operational events. If someone refactors the error handler into an
+      // if/else chain by accident, this test catches it.
+      const clientWs = createMockClientWs();
+      const consoleSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+
+      mockFindFirst.mockResolvedValue({
+        ...defaultAgent,
+        model: "openai/gpt-4o-mini",
+      });
+      mockShouldEmitModelUnavailableAudit.mockReturnValue(true);
+
+      mockChat.mockImplementation(() => {
+        return (async function* () {
+          yield { type: "error" as const, text: "HTTP 500: upstream error" };
+        })();
+      });
+
+      await router.handleMessage(clientWs as any, {
+        type: "message",
+        content: "Hi",
+        agentId: "agent-1",
+      });
+
+      // Both events fired for the same chunk
+      expect(mockAppendAuditLog).toHaveBeenCalledWith(
+        expect.objectContaining({ eventType: "agent.model_unavailable" })
+      );
+      expect(mockAppendAuditLog).toHaveBeenCalledWith(
+        expect.objectContaining({
+          eventType: "chat.agent_error",
+          detail: expect.objectContaining({ errorClass: "model_unavailable" }),
+        })
+      );
+
+      consoleSpy.mockRestore();
+    });
+
+    it("classifies an unrecognised error as 'unknown' but still writes the audit row", async () => {
+      // The whole point of the umbrella event is to capture the long tail of
+      // errors that don't match any specialised classifier. Currently those
+      // have no audit signal at all — the bug this issue exists to fix.
+      const clientWs = createMockClientWs();
+      const consoleSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+
+      mockFindFirst.mockResolvedValue({ ...defaultAgent, model: "openai/gpt-4o-mini" });
+
+      mockChat.mockImplementation(() => {
+        return (async function* () {
+          yield { type: "error" as const, text: "Some weird unprecedented thing" };
+        })();
+      });
+
+      await router.handleMessage(clientWs as any, {
+        type: "message",
+        content: "Hi",
+        agentId: "agent-1",
+      });
+
+      expect(mockAppendAuditLog).toHaveBeenCalledWith(
+        expect.objectContaining({
+          eventType: "chat.agent_error",
+          detail: expect.objectContaining({ errorClass: "unknown" }),
+        })
+      );
+
+      consoleSpy.mockRestore();
+    });
+
+    it("writes chat.agent_error with model:null when the agent has no model configured", async () => {
+      // Specialised events skip null-model cases because they need to tell
+      // the user *which* model failed. The umbrella has no such constraint —
+      // it's pure measurement, so missing model context is recorded as null
+      // rather than suppressing the row entirely.
+      const clientWs = createMockClientWs();
+      const consoleSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+
+      mockFindFirst.mockResolvedValue({ ...defaultAgent, model: null });
+
+      mockChat.mockImplementation(() => {
+        return (async function* () {
+          yield {
+            type: "error" as const,
+            text: "FailoverError: x ended with an incomplete terminal response",
+          };
+        })();
+      });
+
+      await router.handleMessage(clientWs as any, {
+        type: "message",
+        content: "Hi",
+        agentId: "agent-1",
+      });
+
+      expect(mockAppendAuditLog).toHaveBeenCalledWith(
+        expect.objectContaining({
+          eventType: "chat.agent_error",
+          detail: expect.objectContaining({
+            model: null,
+            errorClass: "failover_incomplete_stream",
+          }),
+        })
+      );
+
+      consoleSpy.mockRestore();
+    });
+
+    it("truncates providerError to 1024 chars in chat.agent_error detail", async () => {
+      const clientWs = createMockClientWs();
+      const consoleSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+
+      mockFindFirst.mockResolvedValue({ ...defaultAgent, model: "openai/gpt-4o-mini" });
+
+      const longError =
+        "FailoverError: ended with an incomplete terminal response " + "x".repeat(2000);
+      mockChat.mockImplementation(() => {
+        return (async function* () {
+          yield { type: "error" as const, text: longError };
+        })();
+      });
+
+      await router.handleMessage(clientWs as any, {
+        type: "message",
+        content: "Hi",
+        agentId: "agent-1",
+      });
+
+      const call = mockAppendAuditLog.mock.calls.find(
+        (c: any[]) => c[0]?.eventType === "chat.agent_error"
+      );
+      expect(call).toBeDefined();
+      expect(call![0].detail.providerError.length).toBeLessThanOrEqual(1024);
+
+      consoleSpy.mockRestore();
+    });
+  });
 });
