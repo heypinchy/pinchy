@@ -10,6 +10,11 @@
 // outcome was a production-breaking password-reset bug that sat behind four
 // silent `.skip()`s for weeks. See `feedback_no_unilateral_skips.md` in the
 // user's memory and AGENTS.md § "No untracked test skips" for the policy.
+//
+// Companion to the ESLint rule at
+// `packages/web/eslint-rules/no-untracked-skips.js`. When you add a new skip
+// syntax to one checker, add it to the other — the parity test at
+// `no-untracked-skips-parity.test.ts` will fail if they drift apart.
 
 import { describe, it, expect } from "vitest";
 import { readdirSync, readFileSync, statSync } from "node:fs";
@@ -122,11 +127,13 @@ describe("no-untracked-skips", () => {
     for (const root of SCAN_ROOTS) {
       testFiles.push(...walkTestFiles(resolve(REPO_ROOT, root)));
     }
-    // Don't let this guard catch itself or the eslint rule's own fixture.
+    // Don't let this guard catch itself, the parity test's fixture
+    // literals, or the eslint rule's own fixture file.
     const filtered = testFiles.filter((f) => {
       const rel = relative(REPO_ROOT, f);
       return (
         rel !== "packages/web/src/__tests__/lib/no-untracked-skips.test.ts" &&
+        rel !== "packages/web/src/__tests__/lib/no-untracked-skips-parity.test.ts" &&
         !rel.startsWith("packages/web/eslint-rules/") &&
         !rel.includes("/__tests__/eslint/")
       );

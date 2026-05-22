@@ -10,6 +10,16 @@
 // packages/web/src/__tests__/lib/no-untracked-skips.test.ts — the lint rule
 // catches the same problem at edit time, before the file lands in git.
 //
+// IMPORTANT: when adding a new skip syntax (e.g. a future `suite.skip` from
+// Vitest 5), update BOTH this rule AND the drift-guard regexes. The parity
+// test at packages/web/src/__tests__/lib/no-untracked-skips-parity.test.ts
+// pins them together — it feeds the same fixtures through both and asserts
+// matching verdicts, so if you only update one, CI will tell you.
+//
+// Known false-negative window: the leading-comment scan reaches 40 lines
+// above the skip call. An unrelated `#NNN` inside that window will pass
+// the check. Documented limitation; a code review will catch it.
+//
 // Background: the 2026-05-22 audit found five separate skip clusters that
 // all followed the same pattern (quick fix → honest "tracked separately"
 // comment → no issue actually filed → forgotten). One of them hid a

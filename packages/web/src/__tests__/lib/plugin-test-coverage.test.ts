@@ -104,6 +104,73 @@ function globToRegex(glob: string): RegExp {
   return new RegExp(re);
 }
 
+describe("globToRegex (escape safety)", () => {
+  // CodeQL alerts 141/142 flagged the previous implementation, which only
+  // escaped `.` inside `{a,b}` / `?(a|b)` alternates. These tests pin the
+  // current behaviour: every regex metacharacter is escaped, so a literal
+  // metachar in a glob alternate matches itself rather than being
+  // (silently) interpreted as a regex token.
+  //
+  // Our config-supplied globs never contain these characters today, but
+  // the function should be safe in general.
+
+  it("matches a literal extension via brace alternation", () => {
+    const re = globToRegex("foo.{ts,tsx}");
+    expect(re.test("foo.ts")).toBe(true);
+    expect(re.test("foo.tsx")).toBe(true);
+    expect(re.test("fooXts")).toBe(false); // `.` must not act as any-char
+  });
+
+  it("matches a literal extension via extglob optional alternation", () => {
+    const re = globToRegex("foo.?(c|m)js");
+    expect(re.test("foo.js")).toBe(true);
+    expect(re.test("foo.cjs")).toBe(true);
+    expect(re.test("foo.mjs")).toBe(true);
+    expect(re.test("foo.xjs")).toBe(false);
+  });
+
+  it("escapes backslash in brace alternates (CodeQL fix)", () => {
+    // A literal `\` in an alternate must match itself, NOT be treated as
+    // a regex escape. (Practical inputs don't have this; safety check.)
+    const re = globToRegex("{a\\b,c}");
+    expect(re.test("a\\b")).toBe(true);
+    expect(re.test("ab")).toBe(false);
+    expect(re.test("c")).toBe(true);
+  });
+
+  it("escapes backslash in extglob alternates (CodeQL fix)", () => {
+    const re = globToRegex("?(a\\b|c)x");
+    expect(re.test("a\\bx")).toBe(true);
+    expect(re.test("abx")).toBe(false);
+    expect(re.test("cx")).toBe(true);
+  });
+
+  it("escapes other regex metacharacters in alternates", () => {
+    // Each metachar should match itself, not act as a regex operator.
+    // We exclude `{`, `}`, `[`, `]`, `|`, `,` because those are structural
+    // in globs (they delimit alternates) and never make it INTO an
+    // alternate's text in the first place.
+    for (const meta of ["+", "*", "?", "^", "$", "(", ")"]) {
+      const re = globToRegex(`{a${meta}b,c}`);
+      expect(re.test(`a${meta}b`), `metachar "${meta}" should match literally`).toBe(true);
+      // Adversarial: the metachar must NOT produce a regex match that the
+      // literal text wouldn't (e.g. `+` mustn't make `b` repeat).
+      if (meta === "+" || meta === "*") {
+        expect(re.test("abb"), `metachar "${meta}" must not enable repetition`).toBe(false);
+      }
+    }
+  });
+
+  it("matches the standard vitest include glob shapes against absolute paths", () => {
+    const re = globToRegex("/abs/src/**/*.{test,spec}.?(c|m)[jt]s?(x)");
+    expect(re.test("/abs/src/foo.test.ts")).toBe(true);
+    expect(re.test("/abs/src/a/b/foo.spec.tsx")).toBe(true);
+    expect(re.test("/abs/src/foo.test.cjs")).toBe(true);
+    expect(re.test("/abs/src/foo.spec.mjsx")).toBe(true);
+    expect(re.test("/abs/src/foo.test.coffee")).toBe(false);
+  });
+});
+
 describe("plugin-test-coverage", () => {
   it("every *.test.ts under packages/plugins/pinchy-* is matched by vitest.config.ts include patterns", () => {
     // Source the include globs from the resolved config object instead of

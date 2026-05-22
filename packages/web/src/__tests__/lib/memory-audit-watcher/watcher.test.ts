@@ -33,6 +33,11 @@ let lastFakeWatcher: FakeChokidarWatcher | null = null;
 // initial-scan semantics, which the watcher relies on to seed snapshots.
 // Individual tests can set this false to drive the scan→ready transition
 // manually (see the "scanning" branch test).
+//
+// NOTE: this is module-level mutable state. Every `beforeEach` block in
+// this file MUST reset it (alongside `lastFakeWatcher`) before calling
+// `startMemoryAuditWatcher`, otherwise a previous test's override leaks
+// into the next test's setup and produces deceptive failures.
 let mockInitialScan = true;
 
 function walkAndEmitAdds(w: FakeChokidarWatcher, dir: string): void {
@@ -238,6 +243,7 @@ describe("startMemoryAuditWatcher (handler error resilience)", () => {
     unhandled = [];
     lookupShouldThrow = true;
     lastFakeWatcher = null;
+    mockInitialScan = true;
 
     unhandledHandler = (reason) => {
       unhandled.push(reason);
