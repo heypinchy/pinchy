@@ -678,6 +678,14 @@ describe("extractCompanyId", () => {
     expect(extractCompanyId(7)).toBeNull();
     expect(extractCompanyId({})).toBeNull();
   });
+  it("returns the id even when the label slot is missing (caller cross-checks)", () => {
+    // `extractCompanyId` does NOT cross-validate the label slot. A malformed
+    // tuple like [7] still yields 7; the wrap site combines both helpers to
+    // enforce mutual presence (see isValidCompanyTag).
+    expect(extractCompanyId([7])).toBe(7);
+    expect(extractCompanyId([7, undefined])).toBe(7);
+    expect(extractCompanyId([7, ""])).toBe(7);
+  });
 });
 
 describe("formatMultiMatchError", () => {

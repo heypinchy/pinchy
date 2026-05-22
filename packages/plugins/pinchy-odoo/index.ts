@@ -917,10 +917,11 @@ function wrapReadResult(
       const companyId = extractCompanyId(record.company_id);
       const companyLabel = extractCompanyLabel(record.company_id);
       const label = companyLabel ? `${baseLabel} [${companyLabel}]` : baseLabel;
-      // Spread the company tag only when BOTH fields are non-null. The payload
-      // validator (integration-ref.ts) requires mutual presence — neither or
-      // both. The `companyLabel !== null` check is redundant in practice (any
-      // well-formed [id, "Name"] tuple yields both) but documents the invariant.
+      // Spread the company tag only when BOTH fields are non-null. This is
+      // mandatory, not cosmetic: a malformed Odoo tuple like [7] (id without
+      // name) yields companyId=7 but companyLabel=null, and the integration-ref
+      // validator (isValidCompanyTag) rejects unpaired tags — so a one-sided
+      // spread would trip encodeRef at runtime.
       wrapped._pinchy_ref = encodeRef({
         integrationType: "odoo",
         connectionId,
