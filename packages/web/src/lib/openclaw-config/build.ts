@@ -1003,10 +1003,12 @@ export async function regenerateOpenClawConfig() {
       // "SsrFBlockedError: Blocked hostname or private/internal/special-use
       // IP address"). For a self-hosted Ollama this is the expected target
       // (host.docker.internal / 192.168.x.x / ollama.local), so opt the
-      // ollama-local provider into the private-network allowlist. Other
-      // built-in providers stay on the default-deny because they all
-      // resolve to public registries.
-      allowPrivateNetwork: true,
+      // ollama-local provider into the private-network allowlist via the
+      // provider's `request` sub-block — that's where OC's
+      // `ConfiguredModelProviderRequest` schema accepts the flag (sibling
+      // of headers/auth/proxy/tls). Other built-in providers stay on the
+      // default-deny because they all resolve to public registries.
+      request: { allowPrivateNetwork: true },
       // Use openai-completions (not "ollama") so pi-ai's built-in provider handles
       // the stream. The "ollama" api type requires OpenClaw's bundled Ollama runtime
       // plugin to register itself with pi-ai dynamically — that registration only
