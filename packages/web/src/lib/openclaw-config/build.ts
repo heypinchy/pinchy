@@ -203,10 +203,16 @@ async function resolveDefaultPdfModel(): Promise<string | null> {
  *
  * For `ollama-cloud`, the empirical smoke test in #416 showed several
  * vision-flagged models (`mistral-large-3:675b`, `qwen3.5:397b`,
- * `kimi-k2.5`/`k2.6`) accept image input but mislabel colors. Prefer the
- * canonical vision line (`qwen3-vl` > `gemini-3-flash-preview` > `gemma4`)
- * for the explicit primary, falling back to `getDefaultModel` if none of
- * those are surfaced (defensive — the curated list guarantees they are).
+ * `kimi-k2.5`/`k2.6`) accept image input but mislabel colors. We pin the
+ * choice to the canonical vision line (`qwen3-vl` >
+ * `gemini-3-flash-preview` > `gemma4`) via the typed
+ * `OLLAMA_CLOUD_IMAGE_PREFERENCE` list. The TypeScript constraint on that
+ * list (must be `OllamaCloudModelId`) means an unknown ID fails to
+ * compile, so a runtime fallback to `getDefaultModel("ollama-cloud")`
+ * would only fire if every preference entry were removed from the curated
+ * list — at which point the right action is to update the preference list,
+ * not silently route to the provider's balanced text-only default. So we
+ * skip the provider in that case and continue down the preference order.
  */
 const IMAGE_MODEL_PREFERENCE: readonly ProviderName[] = [
   "anthropic", // native vision
@@ -217,7 +223,13 @@ const IMAGE_MODEL_PREFERENCE: readonly ProviderName[] = [
 
 // Best-vision ollama-cloud picks, in preference order. Subset of
 // TOOL_CAPABLE_OLLAMA_CLOUD_MODELS — TypeScript rejects unknown IDs.
-const OLLAMA_CLOUD_IMAGE_PREFERENCE: readonly OllamaCloudModelId[] = [
+// Exported for the drift-guard test in
+// `__tests__/lib/ollama-cloud-image-preference-drift.test.ts`, which
+// asserts every entry here is still flagged `vision: true` in the curated
+// catalog. That keeps the preference list and the vision flags from
+// silently de-syncing (e.g. if a future catalog update demotes one of
+// these models the way #416 demoted devstral).
+export const OLLAMA_CLOUD_IMAGE_PREFERENCE: readonly OllamaCloudModelId[] = [
   "qwen3-vl:235b-instruct",
   "qwen3-vl:235b",
   "gemini-3-flash-preview",

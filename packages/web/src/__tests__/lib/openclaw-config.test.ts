@@ -5847,14 +5847,34 @@ describe("regenerateOpenClawConfig size-drop guard (#311)", () => {
     const config = JSON.parse(mockedWriteFileSync.mock.calls[0][1] as string);
     expect(config.agents.defaults.pdfModel.primary).toBe("google/gemini-2.5-flash");
   });
+});
 
-  // `agents.defaults.imageModel.primary` mirrors `pdfModel` but for the
-  // built-in `image` tool. Without it, OpenClaw scans providers in their
-  // declared order and picks the first vision-flagged model — which on an
-  // ollama-cloud-only stack used to land on `devstral-small-2:24b`
-  // alphabetically, even though the live API rejects images for that model
-  // with HTTP 400 (#416). Pinning the choice via `imageModel.primary`
-  // removes that fragility.
+// `agents.defaults.imageModel.primary` mirrors `pdfModel` but for the
+// built-in `image` tool. Without it, OpenClaw scans providers in their
+// declared order and picks the first vision-flagged model — which on an
+// ollama-cloud-only stack used to land on `devstral-small-2:24b`
+// alphabetically, even though the live API rejects images for that model
+// with HTTP 400 (#416). Pinning the choice via `imageModel.primary`
+// removes that fragility.
+//
+// These tests rely on the same mock shape as the size-drop guard block
+// above — minimal `existsSync`/secrets/validation stubs plus `getSetting`
+// indirection — so the `beforeEach` is duplicated verbatim. Kept in a
+// separate `describe` so a future bisect on #311 isn't misled by hits in
+// imageModel tests, and vice versa.
+describe("regenerateOpenClawConfig imageModel.primary (#416)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockedGetOrCreateGatewayToken.mockResolvedValue("test-gateway-token");
+    mockedExistsSync.mockReturnValue(true);
+    mockReadSecretsFile.mockReturnValue({});
+    mockValidateBuiltConfig.mockReturnValue({ ok: true });
+    mockGetClient.mockImplementation(() => {
+      throw new Error("OpenClaw client not initialized");
+    });
+    _resetPushGeneration();
+  });
+
   it("auto-sets agents.defaults.imageModel.primary when Anthropic is configured", async () => {
     mockedGetSetting.mockImplementation(async (key: string) =>
       key === "anthropic_api_key" ? "sk-ant-test" : null

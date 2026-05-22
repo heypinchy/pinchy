@@ -302,13 +302,34 @@ test.describe.serial("Agent create — no gateway restart cascade (#193)", () =>
     // in the captured logs (the negative assertions below need it).
     const pollDeadline = Date.now() + 60000;
     let logs = "";
+    let observedReloadDetected = false;
     while (Date.now() < pollDeadline) {
       logs = openClawLogsSince(beforeMark);
-      if (/\[reload\] config change detected.*agents/.test(logs)) break;
+      if (/\[reload\] config change detected.*agents/.test(logs)) {
+        observedReloadDetected = true;
+        break;
+      }
       await new Promise((r) => setTimeout(r, 1000));
     }
     await new Promise((r) => setTimeout(r, 3000));
     logs = openClawLogsSince(beforeMark);
+
+    // Clear failure path: if 60 s elapsed without ever seeing the
+    // reload-detected line, the bug isn't "config change triggered a
+    // restart" (which the negative assertions below cover) — it's
+    // "config.apply never reached OpenClaw at all". That distinction
+    // matters for triage. Without this guard, the test would fall through
+    // to the positive assertion below and report "expected '<empty>' to
+    // match /\\[reload\\] config change detected.*agents/", which gives no
+    // hint that the timeout was the cause. Surface it explicitly so the
+    // CI log says exactly what happened.
+    if (!observedReloadDetected) {
+      throw new Error(
+        `config.apply was not observed within 60 s after POST /api/agents returned ` +
+          `${createRes.status}. OpenClaw either dropped the apply RPC or is in a degraded ` +
+          `state. Logs captured since ${beforeMark}:\n${logs || "(empty)"}`
+      );
+    }
 
     // (a) Positive: the config change reached OpenClaw and was evaluated
     //     for reload. Without this, we'd be testing nothing — the config
