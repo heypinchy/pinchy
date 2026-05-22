@@ -524,6 +524,25 @@ export async function regenerateOpenClawConfig() {
       defaults: pinchyDefaults,
       list: agentsList,
     }),
+    // Disable OpenClaw's default daily session reset (4:00 AM gateway-local
+    // time). Pinchy's chat UI loads history via the deterministic session key
+    // `agent:<agentId>:direct:<userId>` (see client-router.ts:81 —
+    // `computeSessionKey`), and OpenClaw's reset rotates the underlying
+    // `sessionId` for that key at the boundary — leaving the old transcript
+    // JSONL on disk but unreachable from Pinchy. For users in an enterprise
+    // chat context, this looks like their entire conversation vanished
+    // every morning; the first user to notice was the one whose cron job
+    // ran into the post-reset session and surfaced the empty transcript
+    // with the cron message as the only content (see openclaw@2026.5.7
+    // dist/reset-L5yC6_6J.js — `const DEFAULT_RESET_MODE = "daily"`).
+    //
+    // `mode: "idle"` + `idleMinutes: 0` matches what OpenClaw's
+    // `evaluateSessionFreshness` treats as "never expire": no daily branch
+    // fires (mode is not "daily"), and the idle branch requires
+    // `idleMinutes > 0` to expire. Manual `/new` / `/reset` slash commands
+    // are still respected for users who explicitly want a fresh chat —
+    // this only disables the silent auto-rotation.
+    session: { reset: { mode: "idle", idleMinutes: 0 } },
   };
 
   // Preserve OpenClaw-enriched top-level fields that Pinchy doesn't manage
@@ -1143,7 +1162,14 @@ export async function regenerateOpenClawConfig() {
       telegram: { ...preservedTelegram, enabled: true, dmPolicy: "pairing", accounts },
     };
     config.bindings = bindings;
+    // Merge into the existing session block — config.session already carries
+    // `reset: { mode: "idle", idleMinutes: 0 }` from the initial config
+    // assembly above. Overwriting the whole block here would re-enable
+    // OpenClaw's default daily session reset whenever telegram is configured,
+    // silently losing chat history at 4:00 AM gateway-local time.
+    const existingSession = (config.session as Record<string, unknown>) ?? {};
     config.session = {
+      ...existingSession,
       dmScope: "per-peer",
       ...(Object.keys(identityLinks).length > 0 && { identityLinks }),
     };

@@ -305,6 +305,31 @@ describe("regenerateOpenClawConfig", () => {
     expect(config.canvasHost?.enabled).toBe(false);
   });
 
+  it("disables OpenClaw's default daily session reset so chat history persists across days", async () => {
+    // OpenClaw's default session reset (`session.reset.mode: "daily"`,
+    // `atHour: 4` — confirmed in openclaw@2026.5.7
+    // dist/reset-L5yC6_6J.js: `const DEFAULT_RESET_MODE = "daily"`) rotates
+    // the `sessionId` for each session key at 4:00 AM local gateway time.
+    // The old transcript JSONL stays on disk but the live session pointer
+    // moves to a fresh empty transcript, so Pinchy's UI — which loads
+    // history for the deterministic `agent:<agentId>:direct:<userId>` key
+    // via `client-router.ts:computeSessionKey` — appears to "lose" every
+    // user's conversation every morning. The first user to notice was the
+    // one whose cron job fired into the post-reset session, surfacing the
+    // empty new transcript with the cron message as the only content.
+    //
+    // Pinchy is an enterprise chat platform: users expect continuous chat
+    // history. Setting `mode: "idle"` with `idleMinutes: 0` matches what
+    // OpenClaw's `evaluateSessionFreshness` treats as "never expire"
+    // (no daily branch, idle branch needs `idleMinutes > 0`). Manual `/new`
+    // / `/reset` are still respected when a user explicitly wants a fresh
+    // chat — this only disables the silent auto-rotation.
+    await regenerateOpenClawConfig();
+
+    const config = JSON.parse(mockedWriteFileSync.mock.calls[0][1] as string);
+    expect(config.session?.reset).toEqual({ mode: "idle", idleMinutes: 0 });
+  });
+
   it("preserves OpenClaw-enriched sub-fields under discovery, update, canvasHost across regenerate (C1)", async () => {
     // Regression guard for review feedback on PR #269: writing
     // `discovery`, `update`, `canvasHost` as fresh objects without
