@@ -204,6 +204,24 @@ On Ollama Cloud stacks without an explicit image model, Pinchy's built-in `image
 
 A companion verification script lives at `scripts/verify-ollama-cloud-vision.mjs` and can be re-run whenever the Ollama Cloud catalog changes: it tests each curated model against the live API and reports any drift between the `vision` flag in `ollama-cloud-models.ts` and runtime acceptance.
 
+#### CRM & Sales Assistant template gains quotation-ready Odoo models
+
+The CRM & Sales Assistant template now declares three additional Odoo models so a Sales agent can build quotations end-to-end (lead → opportunity → quote with the right VAT regime) and answer "is this invoice paid?":
+
+- **`account.fiscal.position`** _(read + write)_ — set the customer's tax regime (e.g. "EU B2B reverse-charge") on `res.partner.property_account_position_id` so future quotations auto-apply the correct taxes.
+- **`sale.order.line`** _(read + create + write)_ — inspect and revise quotation line items directly. Normal happy-path writes still go through `sale.order.order_line`.
+- **`account.move`** _(read-only)_ — look up invoice payment status. Drafting, posting, or amending invoices remains exclusive to the Bookkeeper template, which is governed by a regulated draft-first / four-eyes flow.
+
+A new `Fiscal Positions` row also appears in the Permissions UI for **every** Odoo connection (regardless of which template the agent uses), because the schema sync now probes `account.fiscal.position` as part of the standard accounting category.
+
+**Action required for existing CRM agents.** Template changes only affect newly-created agents. To grant an existing CRM & Sales Assistant agent access to the new models:
+
+1. Open the agent's settings → Permissions.
+2. Tick `account.fiscal.position` (Read + Write), `sale.order.line` (Read + Create + Write), and `account.move` (Read).
+3. Save.
+
+If you skip this step, the existing agent keeps its previous (narrower) permission set — there is no automatic migration. Newly-created agents from this template pick up the new models automatically.
+
 ## Upgrading from v0.5.3 to v0.5.4
 
 ### Breaking changes
