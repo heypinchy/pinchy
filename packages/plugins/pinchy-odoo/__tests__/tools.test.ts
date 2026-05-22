@@ -41,6 +41,7 @@ import plugin, {
   extractCompanyLabel,
   extractCompanyId,
   formatMultiMatchError,
+  assertNoCrossCompanyRefs,
   PRODUCT_REF_DISAMBIGUATION_HINT,
 } from "../index";
 
@@ -685,6 +686,105 @@ describe("extractCompanyId", () => {
     expect(extractCompanyId([7])).toBe(7);
     expect(extractCompanyId([7, undefined])).toBe(7);
     expect(extractCompanyId([7, ""])).toBe(7);
+  });
+});
+
+describe("assertNoCrossCompanyRefs", () => {
+  beforeEach(() => {
+    vi.stubEnv("PINCHY_REF_TOKEN_KEY", "a".repeat(64));
+  });
+
+  function tagged(
+    model: string,
+    id: number,
+    companyId: number,
+    companyLabel: string,
+  ) {
+    return {
+      ref: encodeRef({
+        integrationType: "odoo",
+        connectionId: "u",
+        model,
+        id,
+        label: "x",
+        companyId,
+        companyLabel,
+      }),
+    };
+  }
+  function untagged(model: string, id: number) {
+    return {
+      ref: encodeRef({
+        integrationType: "odoo",
+        connectionId: "u",
+        model,
+        id,
+        label: "x",
+      }),
+    };
+  }
+
+  it("is a no-op when values has no company_id key", () => {
+    expect(() =>
+      assertNoCrossCompanyRefs({
+        account_id: tagged("account.account", 1, 1, "A"),
+      }),
+    ).not.toThrow();
+  });
+
+  it("is a no-op when values.company_id ref is untagged (legacy)", () => {
+    expect(() =>
+      assertNoCrossCompanyRefs({
+        company_id: untagged("res.company", 1),
+        account_id: tagged("account.account", 1, 2, "B"),
+      }),
+    ).not.toThrow();
+  });
+
+  it("is a no-op when all other refs are untagged", () => {
+    expect(() =>
+      assertNoCrossCompanyRefs({
+        company_id: tagged("res.company", 1, 1, "A"),
+        partner_id: untagged("res.partner", 99),
+      }),
+    ).not.toThrow();
+  });
+
+  it("throws when a tagged sibling disagrees on companyId", () => {
+    expect(() =>
+      assertNoCrossCompanyRefs({
+        company_id: tagged("res.company", 1, 1, "GmbH A"),
+        account_id: tagged("account.account", 42, 2, "GmbH B"),
+      }),
+    ).toThrow(/cross-company/i);
+  });
+
+  it("includes both company labels in the error message", () => {
+    try {
+      assertNoCrossCompanyRefs({
+        company_id: tagged("res.company", 1, 1, "GmbH A"),
+        account_id: tagged("account.account", 42, 2, "GmbH B"),
+      });
+      throw new Error("did not throw");
+    } catch (err) {
+      expect(String(err)).toMatch(/GmbH A/);
+      expect(String(err)).toMatch(/GmbH B/);
+      expect(String(err)).toMatch(/account_id/);
+    }
+  });
+
+  it("does not throw when values is empty", () => {
+    expect(() => assertNoCrossCompanyRefs({})).not.toThrow();
+  });
+
+  it("ignores non-ref values (raw strings, numbers, etc.) for both target and siblings", () => {
+    expect(() =>
+      assertNoCrossCompanyRefs({
+        company_id: tagged("res.company", 1, 1, "A"),
+        account_id: "1000 Wareneinsatz", // string lookup, not a ref
+        partner_id: 42, // raw id (would be rejected later, but not by this guard)
+      }),
+    ).not.toThrow();
   });
 });
 
@@ -3075,5 +3175,299 @@ describe("m2o lookup multi-company error", () => {
     expect(result.isError).toBe(true);
     expect(result.content[0].text).toMatch(/multiple/i);
     expect(result.content[0].text).not.toMatch(/multi-company collision/);
+  });
+});
+
+describe("cross-company write guard", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.stubEnv("PINCHY_REF_TOKEN_KEY", "a".repeat(64));
+  });
+
+  it("rejects when a values.company_id ref disagrees with another m2o ref's companyId", async () => {
+    const companyRefA = encodeRef({
+      integrationType: "odoo",
+      connectionId: "conn-test-1",
+      model: "res.company",
+      id: 1,
+      label: "GmbH A",
+      companyId: 1,
+      companyLabel: "GmbH A",
+    });
+    const accountRefBInCompanyB = encodeRef({
+      integrationType: "odoo",
+      connectionId: "conn-test-1",
+      model: "account.account",
+      id: 87,
+      label: "1000 Wareneinsatz [GmbH B]",
+      companyId: 2,
+      companyLabel: "GmbH B",
+    });
+
+    mockFields.mockImplementation(async (model: string) => {
+      if (model === "account.move.line") {
+        return [
+          { name: "id", type: "integer", required: false, readonly: true },
+          {
+            name: "company_id",
+            type: "many2one",
+            relation: "res.company",
+            required: false,
+            readonly: false,
+          },
+          {
+            name: "account_id",
+            type: "many2one",
+            relation: "account.account",
+            required: true,
+            readonly: false,
+          },
+        ];
+      }
+      return [];
+    });
+
+    const tools = createApi({
+      [agentId]: {
+        ...agentConfig,
+        permissions: { "account.move.line": ["create"] },
+      },
+    });
+    const tool = findTool(tools, "odoo_create", agentId)!;
+    const result = await tool.execute("call-xc", {
+      model: "account.move.line",
+      values: {
+        company_id: { ref: companyRefA },
+        account_id: { ref: accountRefBInCompanyB },
+      },
+    });
+
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toMatch(/cross-company/i);
+    expect(result.content[0].text).toMatch(/GmbH A/);
+    expect(result.content[0].text).toMatch(/GmbH B/);
+    expect(mockCreate).not.toHaveBeenCalled();
+  });
+
+  it("allows the write when all refs agree on the company", async () => {
+    const refCompanyA = encodeRef({
+      integrationType: "odoo",
+      connectionId: "conn-test-1",
+      model: "res.company",
+      id: 1,
+      label: "GmbH A",
+      companyId: 1,
+      companyLabel: "GmbH A",
+    });
+    const refAccountA = encodeRef({
+      integrationType: "odoo",
+      connectionId: "conn-test-1",
+      model: "account.account",
+      id: 42,
+      label: "1000 Wareneinsatz [GmbH A]",
+      companyId: 1,
+      companyLabel: "GmbH A",
+    });
+
+    mockFields.mockImplementation(async (model: string) => {
+      if (model === "account.move.line") {
+        return [
+          { name: "id", type: "integer", required: false, readonly: true },
+          {
+            name: "company_id",
+            type: "many2one",
+            relation: "res.company",
+            required: false,
+            readonly: false,
+          },
+          {
+            name: "account_id",
+            type: "many2one",
+            relation: "account.account",
+            required: true,
+            readonly: false,
+          },
+        ];
+      }
+      return [];
+    });
+    mockCreate.mockResolvedValue(99);
+
+    const tools = createApi({
+      [agentId]: {
+        ...agentConfig,
+        permissions: { "account.move.line": ["create"] },
+      },
+    });
+    const tool = findTool(tools, "odoo_create", agentId)!;
+    const result = await tool.execute("call-ok", {
+      model: "account.move.line",
+      values: {
+        company_id: { ref: refCompanyA },
+        account_id: { ref: refAccountA },
+      },
+    });
+    expect(result.isError).toBeFalsy();
+    expect(mockCreate).toHaveBeenCalled();
+  });
+
+  it("allows legacy refs (no companyId tag) to pass through without the guard tripping", async () => {
+    const legacyRef = encodeRef({
+      integrationType: "odoo",
+      connectionId: "conn-test-1",
+      model: "account.account",
+      id: 42,
+      label: "1000 Wareneinsatz",
+    });
+    const companyRef = encodeRef({
+      integrationType: "odoo",
+      connectionId: "conn-test-1",
+      model: "res.company",
+      id: 1,
+      label: "GmbH A",
+      companyId: 1,
+      companyLabel: "GmbH A",
+    });
+
+    mockFields.mockImplementation(async (model: string) => {
+      if (model === "account.move.line") {
+        return [
+          { name: "id", type: "integer", required: false, readonly: true },
+          {
+            name: "company_id",
+            type: "many2one",
+            relation: "res.company",
+            required: false,
+            readonly: false,
+          },
+          {
+            name: "account_id",
+            type: "many2one",
+            relation: "account.account",
+            required: true,
+            readonly: false,
+          },
+        ];
+      }
+      return [];
+    });
+    mockCreate.mockResolvedValue(100);
+
+    const tools = createApi({
+      [agentId]: {
+        ...agentConfig,
+        permissions: { "account.move.line": ["create"] },
+      },
+    });
+    const tool = findTool(tools, "odoo_create", agentId)!;
+    const result = await tool.execute("call-legacy", {
+      model: "account.move.line",
+      values: {
+        company_id: { ref: companyRef },
+        account_id: { ref: legacyRef },
+      },
+    });
+    expect(result.isError).toBeFalsy();
+    expect(mockCreate).toHaveBeenCalled();
+  });
+
+  it("does not trip when values has no company_id ref (e.g. write to a company-implicit model)", async () => {
+    const refTagged = encodeRef({
+      integrationType: "odoo",
+      connectionId: "conn-test-1",
+      model: "account.account",
+      id: 42,
+      label: "x",
+      companyId: 1,
+      companyLabel: "GmbH A",
+    });
+    mockFields.mockImplementation(async () => [
+      { name: "id", type: "integer", required: false, readonly: true },
+      {
+        name: "account_id",
+        type: "many2one",
+        relation: "account.account",
+        required: true,
+        readonly: false,
+      },
+    ]);
+    mockCreate.mockResolvedValue(101);
+
+    const tools = createApi({
+      [agentId]: {
+        ...agentConfig,
+        permissions: { "account.move.line": ["create"] },
+      },
+    });
+    const tool = findTool(tools, "odoo_create", agentId)!;
+    const result = await tool.execute("call-no-cid", {
+      model: "account.move.line",
+      values: { account_id: { ref: refTagged } },
+    });
+    expect(result.isError).toBeFalsy();
+    expect(mockCreate).toHaveBeenCalled();
+  });
+
+  it("also fires on odoo_write (not only odoo_create)", async () => {
+    const companyRefA = encodeRef({
+      integrationType: "odoo",
+      connectionId: "conn-test-1",
+      model: "res.company",
+      id: 1,
+      label: "GmbH A",
+      companyId: 1,
+      companyLabel: "GmbH A",
+    });
+    const accountRefB = encodeRef({
+      integrationType: "odoo",
+      connectionId: "conn-test-1",
+      model: "account.account",
+      id: 87,
+      label: "x",
+      companyId: 2,
+      companyLabel: "GmbH B",
+    });
+
+    mockFields.mockImplementation(async (model: string) => {
+      if (model === "account.move.line") {
+        return [
+          { name: "id", type: "integer", required: false, readonly: true },
+          {
+            name: "company_id",
+            type: "many2one",
+            relation: "res.company",
+            required: false,
+            readonly: false,
+          },
+          {
+            name: "account_id",
+            type: "many2one",
+            relation: "account.account",
+            required: true,
+            readonly: false,
+          },
+        ];
+      }
+      return [];
+    });
+
+    const tools = createApi({
+      [agentId]: {
+        ...agentConfig,
+        permissions: { "account.move.line": ["write"] },
+      },
+    });
+    const tool = findTool(tools, "odoo_write", agentId)!;
+    const result = await tool.execute("call-xc-write", {
+      model: "account.move.line",
+      ids: [99],
+      values: {
+        company_id: { ref: companyRefA },
+        account_id: { ref: accountRefB },
+      },
+    });
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toMatch(/cross-company/i);
+    expect(mockWrite).not.toHaveBeenCalled();
   });
 });

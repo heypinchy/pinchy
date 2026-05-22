@@ -733,6 +733,58 @@ function refToId(
 }
 
 /**
+ * Guard against cross-company writes. When the `values` map contains a
+ * `company_id` ref AND other m2o refs that carry a `companyId` tag, every
+ * tagged ref must point to the same company. Untagged refs (legacy or
+ * company-shared models like `res.partner`, `res.country`) pass through.
+ * We never fetch Odoo for this check — only the encrypted tag in the ref
+ * is consulted, so the cost is zero.
+ *
+ * Throws when a tagged sibling disagrees on company. The caller's try/catch
+ * converts the throw into the standard `{ isError: true }` shape.
+ */
+export function assertNoCrossCompanyRefs(
+  values: Record<string, unknown>,
+): void {
+  const intended = readRefCompanyId(values.company_id);
+  if (intended === null) return;
+  const intendedLabel =
+    readRefCompanyLabel(values.company_id) ?? `id=${intended}`;
+
+  for (const [field, value] of Object.entries(values)) {
+    if (field === "company_id") continue;
+    const companyId = readRefCompanyId(value);
+    if (companyId === null) continue;
+    if (companyId !== intended) {
+      const otherLabel = readRefCompanyLabel(value) ?? `id=${companyId}`;
+      throw new Error(
+        `Cross-company write rejected: values.company_id points to "${intendedLabel}" ` +
+          `but values.${field} points to a record in "${otherLabel}". ` +
+          `Re-resolve ${field} in the right company first.`,
+      );
+    }
+  }
+}
+
+function readRefCompanyId(value: unknown): number | null {
+  if (!isRecord(value) || typeof value.ref !== "string") return null;
+  try {
+    return decodeRef(value.ref).companyId ?? null;
+  } catch {
+    return null;
+  }
+}
+
+function readRefCompanyLabel(value: unknown): string | null {
+  if (!isRecord(value) || typeof value.ref !== "string") return null;
+  try {
+    return decodeRef(value.ref).companyLabel ?? null;
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Run the `name ilike` lookup on `field.relation`, requesting `company_id`
  * only when the relation actually has it. Models like `res.currency`,
  * `res.country`, `res.lang`, or `res.company` itself lack `company_id` —
@@ -1562,14 +1614,19 @@ const plugin = {
                 agentId,
                 config,
                 async (client) => {
-                  const values = isRecord(params.values)
-                    ? await normalizeMany2OneValues(
-                        client,
-                        config.connectionId,
-                        model,
-                        unquoteFieldKeys(params.values),
-                      )
-                    : (params.values as Record<string, unknown>);
+                  let values: Record<string, unknown>;
+                  if (isRecord(params.values)) {
+                    const cleaned = unquoteFieldKeys(params.values);
+                    assertNoCrossCompanyRefs(cleaned);
+                    values = await normalizeMany2OneValues(
+                      client,
+                      config.connectionId,
+                      model,
+                      cleaned,
+                    );
+                  } else {
+                    values = params.values as Record<string, unknown>;
+                  }
                   return client.create(model, values);
                 },
               );
@@ -1655,14 +1712,19 @@ const plugin = {
                 agentId,
                 config,
                 async (client) => {
-                  const values = isRecord(params.values)
-                    ? await normalizeMany2OneValues(
-                        client,
-                        config.connectionId,
-                        model,
-                        unquoteFieldKeys(params.values),
-                      )
-                    : (params.values as Record<string, unknown>);
+                  let values: Record<string, unknown>;
+                  if (isRecord(params.values)) {
+                    const cleaned = unquoteFieldKeys(params.values);
+                    assertNoCrossCompanyRefs(cleaned);
+                    values = await normalizeMany2OneValues(
+                      client,
+                      config.connectionId,
+                      model,
+                      cleaned,
+                    );
+                  } else {
+                    values = params.values as Record<string, unknown>;
+                  }
                   return client.write(model, params.ids as number[], values);
                 },
               );
