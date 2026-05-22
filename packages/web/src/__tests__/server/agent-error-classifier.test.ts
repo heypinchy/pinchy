@@ -79,4 +79,26 @@ describe("classifyAgentError", () => {
     // cannot hijack the schema_rejection branch.
     expect(classifyAgentError("thoughtsignature mismatch detected by linter")).toBe("unknown");
   });
+
+  it("does not classify 'context window exceeded' as provider_config", () => {
+    // `exceeded` alone is too broad — "context window exceeded" is a
+    // model-capability issue (input too large for the model), not a
+    // configuration issue. Misclassifying it would route the admin hint to
+    // "check your API configuration" which is the wrong fix. The user
+    // should swap to a larger-context model, not touch their API key.
+    //
+    // The remaining `*_exceeded` cases we DO want to catch are covered by
+    // their specific keywords: `quota exceeded` matches via `quota`,
+    // `rate limit exceeded` matches via `rate limit` in TRANSIENT_PATTERN.
+    expect(classifyAgentError("context window exceeded for this prompt")).toBe("unknown");
+  });
+
+  it("still classifies 'quota exceeded' as provider_config via the 'quota' keyword", () => {
+    // Regression guard: dropping bare `exceeded` from the regex must not
+    // regress the quota-exhaustion path, which is the canonical
+    // provider-config failure shape.
+    expect(classifyAgentError("You exceeded your current quota for the month")).toBe(
+      "provider_config"
+    );
+  });
 });

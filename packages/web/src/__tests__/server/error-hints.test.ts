@@ -65,8 +65,20 @@ describe("getErrorHint", () => {
     });
 
     it("should classify 'You exceeded your current quota' as provider", () => {
-      // "exceeded" alone (without "rate limit") correctly falls through to provider pattern
+      // "quota" matches the provider pattern. Bare `exceeded` is deliberately
+      // NOT in the pattern so e.g. "context window exceeded" doesn't get
+      // misrouted to the provider-config admin hint.
       expect(getErrorHint("You exceeded your current quota", "admin")).toBe(PROVIDER_SETTINGS_HINT);
+    });
+
+    it("should return null for 'context window exceeded' (model capability, not config)", () => {
+      // Context-window overflow is a model-capability issue: the user should
+      // swap to a larger-context model or trim the input. Telling them to
+      // "check your API configuration" would be misleading. Keeping bare
+      // `exceeded` out of PROVIDER_CONFIG_PATTERN is what makes this fall
+      // through to `null` (no hint) instead.
+      expect(getErrorHint("context window exceeded for this prompt", "admin")).toBeNull();
+      expect(getErrorHint("context window exceeded for this prompt", "member")).toBeNull();
     });
   });
 });

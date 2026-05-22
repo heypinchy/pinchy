@@ -1,0 +1,36 @@
+/**
+ * Shared error-text classification patterns used by both the user-facing
+ * hint generator (`error-hints.ts`) and the audit umbrella classifier
+ * (`agent-error-classifier.ts`).
+ *
+ * Single source of truth: keeping these in one file prevents the two
+ * consumers from drifting — if a future provider's error wording forces
+ * a pattern tweak, both the UI hint and the audit class update together.
+ *
+ * Order-of-evaluation matters at each call site (transient must be checked
+ * before provider_config so `"rate limit exceeded"` doesn't classify as
+ * a config issue). Both consumers implement the same precedence — see
+ * their respective files for the reasoning.
+ */
+
+/**
+ * Matches retryable, time-limited failures. Users should "try again in a
+ * moment"; admins shouldn't reach for the provider config.
+ *
+ * `529` covers Anthropic's canonical "overloaded, retry" status code.
+ */
+export const TRANSIENT_PATTERN =
+  /rate[_ ]?limit|too many requests|time[_ ]?d?[_ ]?out|overloaded|529/i;
+
+/**
+ * Matches errors caused by missing/invalid provider configuration:
+ * absent or invalid API key, depleted credit, exhausted quota.
+ *
+ * Deliberately does NOT include the bare word `exceeded` — that would
+ * misclassify `"context window exceeded"` (a model-capability issue) as
+ * a configuration issue and tell admins to "check your API configuration"
+ * which is the wrong fix. `"quota exceeded"` still matches via `quota`,
+ * and `"rate limit exceeded"` is caught earlier by TRANSIENT_PATTERN.
+ */
+export const PROVIDER_CONFIG_PATTERN =
+  /credit|balance|api[_ ]?key|invalid.*key|authenticat|unauthorized|quota/i;
