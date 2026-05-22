@@ -38,9 +38,21 @@ describe.skipIf(process.platform !== "linux")(
     let stop: (() => Promise<void>) | undefined;
 
     beforeEach(async () => {
+      // Start the watcher BEFORE creating MEMORY.md. Earlier versions
+      // pre-created the file and then modified it in the test body, but
+      // that races: chokidar's initial-scan "add" event captures
+      // readyState="scanning" synchronously, then runs `await readFile()`
+      // asynchronously. If the test body's modification lands before
+      // the detached readFile completes, the snapshot ends up storing
+      // the NEW content — making the subsequent diff degenerate to
+      // addedLines=0. Run 26291361464 hit exactly that on Linux.
+      //
+      // Instead: empty agents/ at startup, then create MEMORY.md after
+      // the watcher is ready. The "add" event now fires in "ready"
+      // state and emits an audit directly with no scan-phase snapshot
+      // to race against.
       root = mkdtempSync(join(tmpdir(), "pinchy-memwatch-realfs-"));
-      mkdirSync(join(root, "agents", "agent-1"), { recursive: true });
-      writeFileSync(join(root, "agents", "agent-1", "MEMORY.md"), "initial\n", "utf8");
+      mkdirSync(join(root, "agents"), { recursive: true });
       appended = [];
 
       // `usePolling: false` → inotify on Linux. We deliberately do NOT use
@@ -55,7 +67,7 @@ describe.skipIf(process.platform !== "linux")(
         },
         recordAuditFailure: () => {},
         usePolling: false,
-        stabilityThreshold: 50,
+        stabilityThreshold: 100,
       });
     });
 
@@ -64,7 +76,12 @@ describe.skipIf(process.platform !== "linux")(
       rmSync(root, { recursive: true, force: true });
     });
 
-    it("emits one agent.memory_changed when MEMORY.md is modified", async () => {
+    it("emits one agent.memory_changed when MEMORY.md is created post-ready", async () => {
+      // Create the agent dir + MEMORY.md AFTER the watcher signalled ready.
+      // The "add" event for the new file fires in "ready" state, so it
+      // becomes a real audit emission with a clean diff: empty snapshot
+      // → 2 added lines.
+      mkdirSync(join(root, "agents", "agent-1"), { recursive: true });
       writeFileSync(join(root, "agents", "agent-1", "MEMORY.md"), "initial\nadded line\n", "utf8");
 
       // Poll for the event rather than sleeping a fixed amount — inotify is
@@ -86,7 +103,7 @@ describe.skipIf(process.platform !== "linux")(
       expect(appended[0]).toMatchObject({
         eventType: "agent.memory_changed",
         resource: "agent:agent-1",
-        detail: { file: "MEMORY.md", addedLines: 1, removedLines: 0 },
+        detail: { file: "MEMORY.md", addedLines: 2, removedLines: 0 },
       });
     });
   }
