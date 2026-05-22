@@ -20,6 +20,8 @@ import {
 } from "@/lib/workspace";
 import { getContextForAgent } from "@/lib/context-sync";
 import { regenerateOpenClawConfig } from "@/lib/openclaw-config";
+import { waitForAgentInRuntime } from "@/lib/wait-for-agent-in-runtime";
+import { getOpenClawClient } from "@/server/openclaw-client";
 import { getSetting } from "@/lib/settings";
 import { type ProviderName } from "@/lib/providers";
 import { getDefaultModel } from "@/lib/provider-models";
@@ -280,6 +282,20 @@ export const POST = withAdmin(async (request, _ctx, session) => {
   writeWorkspaceFileInternal(agent.id, "USER.md", context);
 
   await regenerateOpenClawConfig();
+
+  // Wait until OC's runtime has the new agent visible in `agents.list`.
+  // Pinchy's regenerate is fire-and-forget (`pushConfigInBackground`) and OC
+  // applies the hot reload asynchronously; without this gate the first
+  // dispatch after POST /api/agents can race the reload and fail with
+  // `invalid agent params: unknown agent id`. Best-effort with a 5 s cap so
+  // we don't block the interactive save flow if OC is restarting.
+  let client = null;
+  try {
+    client = getOpenClawClient();
+  } catch {
+    // OC client not initialised (rare in tests / pre-setup). Skip the wait.
+  }
+  await waitForAgentInRuntime(client, agent.id);
 
   revalidatePath("/", "layout");
 
