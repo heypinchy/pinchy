@@ -39,6 +39,7 @@ import plugin, {
   compactSchema,
   augmentFieldsWithCompanyId,
   extractCompanyLabel,
+  extractCompanyId,
   formatMultiMatchError,
   PRODUCT_REF_DISAMBIGUATION_HINT,
 } from "../index";
@@ -652,6 +653,30 @@ describe("extractCompanyLabel", () => {
     expect(extractCompanyLabel("GmbH A")).toBeNull();
     expect(extractCompanyLabel(42)).toBeNull();
     expect(extractCompanyLabel({})).toBeNull();
+  });
+});
+
+describe("extractCompanyId", () => {
+  it("returns the numeric id from a [id, name] tuple", () => {
+    expect(extractCompanyId([7, "GmbH A"])).toBe(7);
+  });
+  it("returns null when value is false (single-company tenant)", () => {
+    expect(extractCompanyId(false)).toBeNull();
+  });
+  it("returns null when value is undefined / null", () => {
+    expect(extractCompanyId(undefined)).toBeNull();
+    expect(extractCompanyId(null)).toBeNull();
+  });
+  it("returns null when the first element is not a positive integer", () => {
+    expect(extractCompanyId([0, "x"])).toBeNull();
+    expect(extractCompanyId([-1, "x"])).toBeNull();
+    expect(extractCompanyId([1.5, "x"])).toBeNull();
+    expect(extractCompanyId(["7", "x"])).toBeNull();
+  });
+  it("returns null when value is not an array", () => {
+    expect(extractCompanyId("GmbH A")).toBeNull();
+    expect(extractCompanyId(7)).toBeNull();
+    expect(extractCompanyId({})).toBeNull();
   });
 });
 
@@ -2689,6 +2714,107 @@ describe("odoo_read multi-company auto-include", () => {
       model: "res.company",
     });
     expect(typeof wrappedCompany.ref).toBe("string");
+  });
+
+  it("encodes companyId/companyLabel into self-ref when record has company_id", async () => {
+    mockFields.mockResolvedValue([
+      { name: "id", type: "integer", required: false, readonly: true },
+      { name: "display_name", type: "char", required: false, readonly: false },
+      {
+        name: "company_id",
+        type: "many2one",
+        relation: "res.company",
+        required: true,
+        readonly: false,
+      },
+    ]);
+    mockSearchRead.mockResolvedValue({
+      records: [
+        { id: 42, display_name: "1000 Wareneinsatz", company_id: [7, "GmbH A"] },
+      ],
+      total: 1,
+      limit: 1,
+      offset: 0,
+    });
+
+    const tools = createApi({
+      [agentId]: {
+        ...agentConfig,
+        permissions: { "account.account": ["read"] },
+      },
+    });
+    const tool = findTool(tools, "odoo_read", agentId)!;
+    const result = await tool.execute("call-tag", {
+      model: "account.account",
+      filters: [],
+      fields: ["display_name"],
+    });
+    const payload = JSON.parse(result.content[0].text);
+    const decoded = decodeRef(payload.records[0]._pinchy_ref);
+    expect(decoded.companyId).toBe(7);
+    expect(decoded.companyLabel).toBe("GmbH A");
+  });
+
+  it("encodes no company tag when the record has no company_id field", async () => {
+    mockFields.mockResolvedValue([
+      { name: "id", type: "integer", required: false, readonly: true },
+      { name: "display_name", type: "char", required: false, readonly: false },
+    ]);
+    mockSearchRead.mockResolvedValue({
+      records: [{ id: 14, display_name: "Austria" }],
+      total: 1,
+      limit: 1,
+      offset: 0,
+    });
+
+    const tools = createApi({
+      [agentId]: { ...agentConfig, permissions: { "res.country": ["read"] } },
+    });
+    const tool = findTool(tools, "odoo_read", agentId)!;
+    const result = await tool.execute("call-notag", {
+      model: "res.country",
+      filters: [],
+      fields: ["display_name"],
+    });
+    const decoded = decodeRef(JSON.parse(result.content[0].text).records[0]._pinchy_ref);
+    expect(decoded.companyId).toBeUndefined();
+    expect(decoded.companyLabel).toBeUndefined();
+  });
+
+  it("encodes no company tag when company_id is false (single-company tenant)", async () => {
+    mockFields.mockResolvedValue([
+      { name: "id", type: "integer", required: false, readonly: true },
+      { name: "display_name", type: "char", required: false, readonly: false },
+      {
+        name: "company_id",
+        type: "many2one",
+        relation: "res.company",
+        required: false,
+        readonly: false,
+      },
+    ]);
+    mockSearchRead.mockResolvedValue({
+      records: [{ id: 99, display_name: "Generic", company_id: false }],
+      total: 1,
+      limit: 1,
+      offset: 0,
+    });
+
+    const tools = createApi({
+      [agentId]: {
+        ...agentConfig,
+        permissions: { "account.account": ["read"] },
+      },
+    });
+    const tool = findTool(tools, "odoo_read", agentId)!;
+    const result = await tool.execute("call-false", {
+      model: "account.account",
+      filters: [],
+      fields: ["display_name"],
+    });
+    const decoded = decodeRef(JSON.parse(result.content[0].text).records[0]._pinchy_ref);
+    expect(decoded.companyId).toBeUndefined();
+    expect(decoded.companyLabel).toBeUndefined();
   });
 });
 

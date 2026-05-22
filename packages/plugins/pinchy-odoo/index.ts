@@ -845,6 +845,23 @@ export function extractCompanyLabel(value: unknown): string | null {
   return value[1];
 }
 
+/**
+ * Pull the numeric company id out of a raw Odoo `company_id` value. Mirrors
+ * `extractCompanyLabel`: tuples `[id, "Name"]` → id; `false` / non-arrays /
+ * non-positive integers → `null`. Never throws.
+ */
+export function extractCompanyId(value: unknown): number | null {
+  if (!Array.isArray(value)) return null;
+  if (
+    typeof value[0] !== "number" ||
+    !Number.isInteger(value[0]) ||
+    value[0] <= 0
+  ) {
+    return null;
+  }
+  return value[0];
+}
+
 function wrapMany2OneValue(
   connectionId: string,
   field: OdooField,
@@ -897,14 +914,22 @@ function wrapReadResult(
             : `${model}#${record.id}`;
       // Read company_id from the RAW record (still a [id, "Name"] tuple);
       // do this before the m2o-wrap loop below replaces it with {ref, label, model}.
+      const companyId = extractCompanyId(record.company_id);
       const companyLabel = extractCompanyLabel(record.company_id);
       const label = companyLabel ? `${baseLabel} [${companyLabel}]` : baseLabel;
+      // Spread the company tag only when BOTH fields are non-null. The payload
+      // validator (integration-ref.ts) requires mutual presence — neither or
+      // both. The `companyLabel !== null` check is redundant in practice (any
+      // well-formed [id, "Name"] tuple yields both) but documents the invariant.
       wrapped._pinchy_ref = encodeRef({
         integrationType: "odoo",
         connectionId,
         model,
         id: record.id,
         label,
+        ...(companyId !== null && companyLabel !== null
+          ? { companyId, companyLabel }
+          : {}),
       });
     }
 
