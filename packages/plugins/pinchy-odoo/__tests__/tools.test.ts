@@ -37,6 +37,7 @@ import plugin, {
   normalizeFields,
   sortFieldsByPriority,
   compactSchema,
+  augmentFieldsWithCompanyId,
   PRODUCT_REF_DISAMBIGUATION_HINT,
 } from "../index";
 
@@ -557,6 +558,75 @@ describe("compactSchema", () => {
       expect(idField.note).toMatch(/NOT the SKU/i);
       expect(dcField.note).toMatch(/NOT the database id/i);
     });
+  });
+});
+
+describe("augmentFieldsWithCompanyId", () => {
+  it("returns undefined when requested is undefined", () => {
+    const modelFields: OdooField[] = [
+      { name: "company_id", type: "many2one", relation: "res.company" },
+    ];
+    expect(augmentFieldsWithCompanyId(undefined, modelFields)).toBeUndefined();
+  });
+
+  it("returns the original list (referentially equal) when the model has no company_id field", () => {
+    const requested = ["name", "code"];
+    const modelFields: OdooField[] = [
+      { name: "id", type: "integer" },
+      { name: "name", type: "char" },
+      { name: "code", type: "char" },
+    ];
+    const result = augmentFieldsWithCompanyId(requested, modelFields);
+    expect(result).toBe(requested);
+  });
+
+  it("returns the original list (referentially equal) when company_id is named but is not a many2one (the discriminator's other half)", () => {
+    const requested = ["name"];
+    const modelFields: OdooField[] = [
+      { name: "name", type: "char" },
+      // Some hypothetical model that exposes `company_id` as a non-relational
+      // field — the helper must only auto-include the real m2o multi-company
+      // foreign key, not a column that happens to share the name.
+      { name: "company_id", type: "integer" },
+    ];
+    const result = augmentFieldsWithCompanyId(requested, modelFields);
+    expect(result).toBe(requested);
+  });
+
+  it("returns the original list (referentially equal) when company_id is already in the requested list", () => {
+    const requested = ["company_id", "name"];
+    const modelFields: OdooField[] = [
+      { name: "name", type: "char" },
+      { name: "company_id", type: "many2one", relation: "res.company" },
+    ];
+    const result = augmentFieldsWithCompanyId(requested, modelFields);
+    expect(result).toBe(requested);
+  });
+
+  it("returns a NEW array appending company_id when the model has it and the LLM did not ask for it", () => {
+    const requested = ["code", "name"];
+    const modelFields: OdooField[] = [
+      { name: "code", type: "char" },
+      { name: "name", type: "char" },
+      { name: "company_id", type: "many2one", relation: "res.company" },
+    ];
+    const result = augmentFieldsWithCompanyId(requested, modelFields);
+    expect(result).not.toBe(requested);
+    expect(result).toEqual(["code", "name", "company_id"]);
+  });
+
+  it("treats requested === [] as 'didn't ask' — returns [] unchanged (referentially equal)", () => {
+    // Parity with compactSchema, which normalizes `fields: []` ≡ `undefined`.
+    // An empty fields list is the LLM saying "I didn't pick anything" — the
+    // helper must not silently turn that into `["company_id"]`, which would
+    // make Odoo return only company_id and silently change behaviour vs.
+    // pre-Task-1.
+    const requested: string[] = [];
+    const modelFields: OdooField[] = [
+      { name: "company_id", type: "many2one", relation: "res.company" },
+    ];
+    const result = augmentFieldsWithCompanyId(requested, modelFields);
+    expect(result).toBe(requested);
   });
 });
 
@@ -2224,9 +2294,7 @@ describe("odoo_read multi-company auto-include", () => {
     expect(mockSearchRead).toHaveBeenCalledWith(
       "account.account",
       [],
-      expect.objectContaining({
-        fields: expect.arrayContaining(["code", "name", "company_id"]),
-      }),
+      expect.objectContaining({ fields: ["code", "name", "company_id"] }),
     );
   });
 
@@ -2291,9 +2359,11 @@ describe("odoo_read multi-company auto-include", () => {
       fields: ["company_id", "name"],
     });
 
-    const fieldsArg = mockSearchRead.mock.calls[0][2]?.fields as string[];
-    const occurrences = fieldsArg.filter((f) => f === "company_id").length;
-    expect(occurrences).toBe(1);
+    expect(mockSearchRead).toHaveBeenCalledWith(
+      "account.move",
+      [],
+      expect.objectContaining({ fields: ["company_id", "name"] }),
+    );
   });
 
   it("leaves the LLM's fields list untouched when fields is undefined (all-fields mode)", async () => {
