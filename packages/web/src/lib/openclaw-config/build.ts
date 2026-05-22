@@ -1,5 +1,6 @@
 import { readFileSync, writeFileSync } from "fs";
 import { dirname } from "path";
+import { isDeepStrictEqual } from "util";
 import { writeSecretsFile, secretRef, type SecretsBundle } from "@/lib/openclaw-secrets";
 import { PROVIDERS, type ProviderName } from "@/lib/providers";
 import { getDefaultModel, fetchOllamaLocalModelsFromUrl } from "@/lib/provider-models";
@@ -1150,9 +1151,33 @@ export async function regenerateOpenClawConfig() {
     // presence depends on OpenClaw's auto-enable side-effect having run
     // first, and any regenerate before that side-effect fires would strip
     // it and trigger the ping-pong.
-    config.channels = {
-      telegram: { ...preservedTelegram, enabled: true, dmPolicy: "pairing", accounts },
+    // OC 2026.5.12's BASE_RELOAD_RULES does not list `channels` — the
+    // fallback for unmatched prefixes is restart-class. Any structural
+    // diff in the emitted `channels` block (including spurious key-order
+    // shifts from spread-then-override and OC-side enrichment ping-pongs)
+    // triggers `[reload] config change requires gateway restart (channels)`.
+    // Build the telegram channel sub-config the same way as before, then
+    // skip the write entirely when the new payload is deep-equal to what's
+    // already on disk. The downstream equivalence guard
+    // (configsAreEquivalentUpToOpenClawMetadata) covers the whole-config
+    // case; this nested guard handles the targeted case where everything
+    // BUT channels changed — without it the channels write still produces
+    // a same-value-different-key-order diff to OC's file watcher.
+    const desiredTelegram = {
+      ...preservedTelegram,
+      enabled: true,
+      dmPolicy: "pairing",
+      accounts,
     };
+    const existingChannels = (existing.channels as Record<string, unknown>) || {};
+    const existingTelegramForCompare = (existingChannels.telegram as Record<string, unknown>) || {};
+    if (!isDeepStrictEqual(existingTelegramForCompare, desiredTelegram)) {
+      config.channels = { telegram: desiredTelegram };
+    } else if (Object.keys(existingChannels).length > 0) {
+      // No telegram-level change but other channel sub-blocks may exist —
+      // pass them through byte-for-byte to keep OC's file watcher quiet.
+      config.channels = existingChannels;
+    }
     config.bindings = bindings;
     config.session = {
       dmScope: "per-peer",
