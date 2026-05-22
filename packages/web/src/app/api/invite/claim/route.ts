@@ -1,10 +1,14 @@
-// audit-exempt: invite claim is a self-service action by the invited user, not an admin action
+// audit-exempt: new-user claim is a self-service action covered by the
+// inviter's `user.invited` audit row on the creation side. The reset
+// branch is NOT exempt and writes an `auth.password_reset_completed`
+// row below, because a password change is security-sensitive regardless
+// of who triggers it.
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 import { hashPassword } from "better-auth/crypto";
 import { auth } from "@/lib/auth";
 import { db } from "@/db";
-import { users, userGroups, accounts } from "@/db/schema";
+import { users, userGroups, accounts, sessions } from "@/db/schema";
 import { eq, and } from "drizzle-orm";
 import { validateInviteToken, claimInvite, getInviteGroupIds } from "@/lib/invites";
 import { seedPersonalAgent } from "@/lib/personal-agent";
@@ -13,6 +17,7 @@ import { waitForAgentInRuntime } from "@/lib/wait-for-agent-in-runtime";
 import { getOpenClawClient } from "@/server/openclaw-client";
 import { validatePassword } from "@/lib/validate-password";
 import { parseRequestBody } from "@/lib/api-validation";
+import { appendAuditLog } from "@/lib/audit";
 
 const claimInviteSchema = z.object({
   token: z.string().min(1),
@@ -52,21 +57,65 @@ export async function POST(request: NextRequest) {
     // which is the bug that left every reset invite broken until this
     // fix landed.) Same primitive used by lib/reset-admin.ts.
     const hashedPassword = await hashPassword(password);
-    await db
-      .update(accounts)
-      .set({ password: hashedPassword })
-      .where(and(eq(accounts.userId, existingUser.id), eq(accounts.providerId, "credential")));
 
-    if (name) {
-      await db.update(users).set({ name }).where(eq(users.id, existingUser.id));
+    try {
+      // All four writes participate in a single transaction:
+      //   1. update credential password
+      //   2. update display name (if provided)
+      //   3. revoke every active session for this user — without this, a
+      //      stale or leaked session token survives the reset and the
+      //      reset's recovery semantics are broken
+      //   4. mark the invite claimed
+      // If any step fails the whole reset rolls back; the user keeps
+      // their old password and the invite token stays usable.
+      await db.transaction(async (tx) => {
+        await tx
+          .update(accounts)
+          .set({ password: hashedPassword })
+          .where(and(eq(accounts.userId, existingUser.id), eq(accounts.providerId, "credential")));
+
+        if (name) {
+          await tx.update(users).set({ name }).where(eq(users.id, existingUser.id));
+        }
+
+        await tx.delete(sessions).where(eq(sessions.userId, existingUser.id));
+
+        await claimInvite(invite.tokenHash, existingUser.id, tx);
+      });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "unknown";
+      await appendAuditLog({
+        actorType: "user",
+        actorId: existingUser.id,
+        eventType: "auth.password_reset_completed",
+        resource: existingUser.id,
+        outcome: "failure",
+        error: { message },
+        detail: { inviteId: invite.id, type: "reset" },
+      });
+      return NextResponse.json({ error: "Password reset failed" }, { status: 500 });
     }
-    await claimInvite(invite.tokenHash, existingUser.id);
+
+    await appendAuditLog({
+      actorType: "user",
+      actorId: existingUser.id,
+      eventType: "auth.password_reset_completed",
+      resource: existingUser.id,
+      outcome: "success",
+      detail: {
+        inviteId: invite.id,
+        type: "reset",
+        target: { id: existingUser.id, name: existingUser.name },
+      },
+    });
 
     return NextResponse.json({ success: true }, { status: 200 });
   }
 
-  // New user invite
-  if (!name || typeof name !== "string" || !name.trim()) {
+  // New user invite. Name is `z.string().optional()` so the `typeof` check
+  // is already guaranteed by the schema; just verify it was supplied and
+  // isn't whitespace-only.
+  if (!name || !name.trim()) {
     return NextResponse.json({ error: "Name is required" }, { status: 400 });
   }
 

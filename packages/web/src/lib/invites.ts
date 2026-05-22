@@ -60,8 +60,20 @@ export async function validateInviteToken(token: string) {
   return invite ?? null;
 }
 
-export async function claimInvite(tokenHash: string, userId: string) {
-  const [updated] = await db
+/**
+ * Mark the invite identified by `tokenHash` as claimed by `userId`.
+ *
+ * `executor` lets the caller pass a Drizzle transaction handle so this
+ * write participates in a wrapping transaction (used by the password-reset
+ * flow to keep accounts/sessions/invite updates atomic). When omitted,
+ * the global `db` is used.
+ */
+export async function claimInvite(
+  tokenHash: string,
+  userId: string,
+  executor: Pick<typeof db, "update"> = db
+) {
+  const [updated] = await executor
     .update(invites)
     .set({ claimedAt: new Date(), claimedByUserId: userId })
     .where(and(eq(invites.tokenHash, tokenHash), isNull(invites.claimedAt)))
