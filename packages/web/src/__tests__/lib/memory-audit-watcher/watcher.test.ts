@@ -12,10 +12,10 @@ const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
 // macOS, and what we want to test here is the WIRING (Pinchy reacts to
 // each event type correctly), not OS-level event delivery.
 //
-// The trade-off is that we no longer exercise real chokidar against a real
-// fs in this file. A Linux-only real-fs smoke is tracked separately in #433
-// to close the production-cadence coverage gap without re-introducing the
-// macOS flake.
+// End-to-end real-chokidar coverage lives in the sibling file
+// `watcher-real-fs.test.ts`. That file is gated to Linux (inotify is
+// kernel-delivered and immune to JS event-loop pressure) so it doesn't
+// re-introduce the macOS flake.
 type FakeListener = (...args: unknown[]) => void;
 class FakeChokidarWatcher {
   private listeners = new Map<string, FakeListener[]>();
