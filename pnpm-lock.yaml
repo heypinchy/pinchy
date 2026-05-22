@@ -24,6 +24,7 @@ overrides:
   postcss@<8.5.10: '>=8.5.10'
   fast-uri@<3.1.2: '>=3.1.2'
   protobufjs@<7.5.8: '>=7.5.8'
+  ws@>=8.0.0 <8.20.1: '>=8.20.1'
 
 packageExtensionsChecksum: sha256-Z4t9Uf0HcxYkO7zWHwm3rH14i6p+ghtNFOa7bSyEucY=
 
@@ -5447,7 +5448,7 @@ packages:
     resolution: {integrity: sha512-zd23dbWTjiJ6sSAX6s0HrCZi41JwTA1bQVs0wLQPZ2/5o2gxOJA5wh7yOAUgwYybfhDXyhwlpeQf7Mlgx8EOCA==}
     hasBin: true
     peerDependencies:
-      ws: ^8.18.0
+      ws: '>=8.20.1'
       zod: ^3.25 || ^4.0
     peerDependenciesMeta:
       ws:
@@ -5459,7 +5460,7 @@ packages:
     resolution: {integrity: sha512-0H5dEGFmmLv6KSd0W1w2nyL8WsLkX6yoLeQpU+dZAOuGcany5qkYQMmj35ZrKgb6yiyYqpUzFOpR8mZQkgqeEQ==}
     hasBin: true
     peerDependencies:
-      ws: ^8.18.0
+      ws: '>=8.20.1'
       zod: ^3.25 || ^4.0
     peerDependenciesMeta:
       ws:
@@ -6761,18 +6762,6 @@ packages:
   wrappy@1.0.2:
     resolution: {integrity: sha512-l4Sp/DRseor9wL6EvV2+TuQn63dMkPjZ/sp9XkghTEbV9KlPS1xUsZ3u7/IQO4wxtcFB4bgpQPRcR3QCvezPcQ==}
 
-  ws@8.20.0:
-    resolution: {integrity: sha512-sAt8BhgNbzCtgGbt2OxmpuryO63ZoDk/sqaB/znQm94T4fCEsy/yV+7CdC1kJhOU9lboAEU7R3kquuycDoibVA==}
-    engines: {node: '>=10.0.0'}
-    peerDependencies:
-      bufferutil: ^4.0.1
-      utf-8-validate: '>=5.0.2'
-    peerDependenciesMeta:
-      bufferutil:
-        optional: true
-      utf-8-validate:
-        optional: true
-
   ws@8.20.1:
     resolution: {integrity: sha512-It4dO0K5v//JtTXuPkfEOaI3uUN87iYPnqo/ZzqCoG3g8uhA66QUMs/SrM0YK7/NAu+r4LMh/9dq2A7k+rHs+w==}
     engines: {node: '>=10.0.0'}
@@ -7705,9 +7694,9 @@ snapshots:
 
   '@drizzle-team/brocli@0.10.2': {}
 
-  '@earendil-works/pi-agent-core@0.74.0(@modelcontextprotocol/sdk@1.29.0(zod@4.4.3))(ws@8.20.0)(zod@4.4.3)':
+  '@earendil-works/pi-agent-core@0.74.0(@modelcontextprotocol/sdk@1.29.0(zod@4.4.3))(ws@8.20.1)(zod@4.4.3)':
     dependencies:
-      '@earendil-works/pi-ai': 0.74.0(@modelcontextprotocol/sdk@1.29.0(zod@4.4.3))(ws@8.20.0)(zod@4.4.3)
+      '@earendil-works/pi-ai': 0.74.0(@modelcontextprotocol/sdk@1.29.0(zod@4.4.3))(ws@8.20.1)(zod@4.4.3)
       typebox: 1.1.38
     transitivePeerDependencies:
       - '@modelcontextprotocol/sdk'
@@ -7718,14 +7707,14 @@ snapshots:
       - ws
       - zod
 
-  '@earendil-works/pi-ai@0.74.0(@modelcontextprotocol/sdk@1.29.0(zod@4.4.3))(ws@8.20.0)(zod@4.4.3)':
+  '@earendil-works/pi-ai@0.74.0(@modelcontextprotocol/sdk@1.29.0(zod@4.4.3))(ws@8.20.1)(zod@4.4.3)':
     dependencies:
       '@anthropic-ai/sdk': 0.91.1(zod@4.4.3)
       '@aws-sdk/client-bedrock-runtime': 3.1043.0
       '@google/genai': 1.52.0(@modelcontextprotocol/sdk@1.29.0(zod@4.4.3))
       '@mistralai/mistralai': 2.2.1
       chalk: 5.6.2
-      openai: 6.26.0(ws@8.20.0)(zod@4.4.3)
+      openai: 6.26.0(ws@8.20.1)(zod@4.4.3)
       partial-json: 0.1.7
       proxy-agent: 6.5.0
       typebox: 1.1.38
@@ -7740,10 +7729,10 @@ snapshots:
       - ws
       - zod
 
-  '@earendil-works/pi-coding-agent@0.74.0(@modelcontextprotocol/sdk@1.29.0(zod@4.4.3))(ws@8.20.0)(zod@4.4.3)':
+  '@earendil-works/pi-coding-agent@0.74.0(@modelcontextprotocol/sdk@1.29.0(zod@4.4.3))(ws@8.20.1)(zod@4.4.3)':
     dependencies:
-      '@earendil-works/pi-agent-core': 0.74.0(@modelcontextprotocol/sdk@1.29.0(zod@4.4.3))(ws@8.20.0)(zod@4.4.3)
-      '@earendil-works/pi-ai': 0.74.0(@modelcontextprotocol/sdk@1.29.0(zod@4.4.3))(ws@8.20.0)(zod@4.4.3)
+      '@earendil-works/pi-agent-core': 0.74.0(@modelcontextprotocol/sdk@1.29.0(zod@4.4.3))(ws@8.20.1)(zod@4.4.3)
+      '@earendil-works/pi-ai': 0.74.0(@modelcontextprotocol/sdk@1.29.0(zod@4.4.3))(ws@8.20.1)(zod@4.4.3)
       '@earendil-works/pi-tui': 0.74.0
       '@silvia-odwyer/photon-node': 0.3.4
       chalk: 5.6.2
@@ -12625,14 +12614,14 @@ snapshots:
     dependencies:
       mimic-function: 5.0.1
 
-  openai@6.26.0(ws@8.20.0)(zod@4.4.3):
+  openai@6.26.0(ws@8.20.1)(zod@4.4.3):
     optionalDependencies:
-      ws: 8.20.0
+      ws: 8.20.1
       zod: 4.4.3
 
-  openai@6.37.0(ws@8.20.0)(zod@4.4.3):
+  openai@6.37.0(ws@8.20.1)(zod@4.4.3):
     optionalDependencies:
-      ws: 8.20.0
+      ws: 8.20.1
       zod: 4.4.3
 
   openclaw-node@0.10.0:
@@ -12647,9 +12636,9 @@ snapshots:
       '@agentclientprotocol/sdk': 0.21.0(zod@4.4.3)
       '@clack/core': 1.3.0
       '@clack/prompts': 1.3.0
-      '@earendil-works/pi-agent-core': 0.74.0(@modelcontextprotocol/sdk@1.29.0(zod@4.4.3))(ws@8.20.0)(zod@4.4.3)
-      '@earendil-works/pi-ai': 0.74.0(@modelcontextprotocol/sdk@1.29.0(zod@4.4.3))(ws@8.20.0)(zod@4.4.3)
-      '@earendil-works/pi-coding-agent': 0.74.0(@modelcontextprotocol/sdk@1.29.0(zod@4.4.3))(ws@8.20.0)(zod@4.4.3)
+      '@earendil-works/pi-agent-core': 0.74.0(@modelcontextprotocol/sdk@1.29.0(zod@4.4.3))(ws@8.20.1)(zod@4.4.3)
+      '@earendil-works/pi-ai': 0.74.0(@modelcontextprotocol/sdk@1.29.0(zod@4.4.3))(ws@8.20.1)(zod@4.4.3)
+      '@earendil-works/pi-coding-agent': 0.74.0(@modelcontextprotocol/sdk@1.29.0(zod@4.4.3))(ws@8.20.1)(zod@4.4.3)
       '@earendil-works/pi-tui': 0.74.0
       '@google/genai': 2.0.1(@modelcontextprotocol/sdk@1.29.0(zod@4.4.3))
       '@grammyjs/runner': 2.0.3(grammy@1.42.0)
@@ -12679,7 +12668,7 @@ snapshots:
       markdown-it: 14.1.1
       minimatch: 10.2.5
       node-edge-tts: 1.2.10
-      openai: 6.37.0(ws@8.20.0)(zod@4.4.3)
+      openai: 6.37.0(ws@8.20.1)(zod@4.4.3)
       pdfjs-dist: 5.7.284
       playwright-core: 1.60.0
       proxy-agent: 8.0.1
@@ -12692,7 +12681,7 @@ snapshots:
       undici: 8.2.0
       web-push: 3.6.7
       web-tree-sitter: 0.26.8
-      ws: 8.20.0
+      ws: 8.20.1
       yaml: 2.9.0
       zod: 4.4.3
     optionalDependencies:
@@ -14219,8 +14208,6 @@ snapshots:
       strip-ansi: 7.1.2
 
   wrappy@1.0.2: {}
-
-  ws@8.20.0: {}
 
   ws@8.20.1: {}
 
