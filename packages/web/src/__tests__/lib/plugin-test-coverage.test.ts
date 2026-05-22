@@ -31,6 +31,15 @@ function walkTestFiles(dir: string): string[] {
 }
 
 /**
+ * Escape every regex metacharacter in a literal string so it matches itself
+ * when interpolated into a RegExp. Used for the alternates inside `{a,b}`
+ * and `?(a|b)` groups, which are otherwise treated as literal path text.
+ */
+function escapeRegex(s: string): string {
+  return s.replace(/[\\.*+?^${}()|[\]]/g, "\\$&");
+}
+
+/**
  * Match a path against a vitest-style glob. We support exactly the subset
  * of globs the config actually uses:
  *
@@ -66,7 +75,7 @@ function globToRegex(glob: string): RegExp {
         const close = glob.indexOf(")", i + 2);
         if (close === -1) throw new Error(`Unclosed ?( in glob: ${glob}`);
         const inside = glob.slice(i + 2, close);
-        const alternates = inside.split("|").map((s) => s.replace(/\./g, "\\."));
+        const alternates = inside.split("|").map(escapeRegex);
         re += `(?:${alternates.join("|")})?`;
         i = close + 1;
       } else {
@@ -77,7 +86,7 @@ function globToRegex(glob: string): RegExp {
       const close = glob.indexOf("}", i + 1);
       if (close === -1) throw new Error(`Unclosed { in glob: ${glob}`);
       const inside = glob.slice(i + 1, close);
-      const alternates = inside.split(",").map((s) => s.replace(/\./g, "\\."));
+      const alternates = inside.split(",").map(escapeRegex);
       re += `(?:${alternates.join("|")})`;
       i = close + 1;
     } else if (ch === ".") {
