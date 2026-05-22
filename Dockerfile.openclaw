@@ -28,18 +28,7 @@ RUN apt-get update && apt-get install -y \
       build-essential \
     && rm -rf /var/lib/apt/lists/*
 
-RUN npm install -g openclaw@2026.5.12
-
-# Patch ws to >=8.20.1 inside OpenClaw's globally-installed node_modules.
-# OC 2026.5.12 ships ws@8.20.0 through its pi-ai/openai dependency chain, which
-# is affected by GHSA-58qx-3vcg-4xpx (uninitialized memory disclosure). OC bumped
-# its own ws pin to 8.20.1 in 2026.5.14-beta.2 and later stables, but stable
-# 2026.5.18 introduced an unrelated agent-context auto-compaction regression
-# that hangs Pinchy's integration suite, so we stay on 2026.5.12 here and
-# upgrade ws in place. The replacement keeps the same major (8.x) so OC's
-# semver-compatible callsites continue to work.
-RUN cd /usr/local/lib/node_modules/openclaw && npm install ws@^8.20.1 --no-save && \
-    node -e "process.exit(require('/usr/local/lib/node_modules/openclaw/node_modules/ws/package.json').version === '8.20.1' ? 0 : (console.error('ws not bumped to 8.20.1'),1))"
+RUN npm install -g openclaw@2026.5.20
 
 # Install pinchy-files plugin dependencies (native modules must be built in the container)
 COPY packages/plugins/pinchy-files/package.json /tmp/pinchy-files/package.json
