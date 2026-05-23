@@ -25,7 +25,14 @@ runs:
       uses: actions/setup-node@v4
       with:
         node-version: ${{ inputs.node-version }}
-        cache: "pnpm"
+        # Only enable pnpm cache when we're going to actually run
+        # `pnpm install` below — otherwise setup-node@v4's Post-step
+        # tries to save a never-populated pnpm store and fails with
+        # "Path Validation Error: Path(s) specified in the action for
+        # caching do(es) not exist", failing the entire job. The CodeQL
+        # workflow hit this every run since setup-node@v4 tightened the
+        # path check around 2026-05-23.
+        cache: ${{ inputs.install == 'true' && 'pnpm' || '' }}
 
     - name: Install dependencies
       if: inputs.install == 'true'
