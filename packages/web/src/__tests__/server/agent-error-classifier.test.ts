@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { classifyAgentError } from "@/server/agent-error-classifier";
+import { classifyAgentError, classifySynthesisedError } from "@/server/agent-error-classifier";
 
 describe("classifyAgentError", () => {
   it("classifies the production FailoverError with incomplete terminal response (issue #355)", () => {
@@ -100,5 +100,28 @@ describe("classifyAgentError", () => {
     expect(classifyAgentError("You exceeded your current quota for the month")).toBe(
       "provider_config"
     );
+  });
+});
+
+describe("classifySynthesisedError", () => {
+  // For error frames Pinchy synthesises itself (no upstream provider text to
+  // pattern-match against), call sites pass the synthesised reason and get
+  // back the corresponding stable audit label. The TypeScript signature is
+  // an exhaustive `SynthesisedErrorReason` union so adding a new synthesised-
+  // error site in the future is a compile error here, not a silent gap in
+  // the audit umbrella.
+
+  it("maps the silent-stream reason to the silent_stream_timeout audit class", () => {
+    expect(classifySynthesisedError("silent_stream")).toBe("silent_stream_timeout");
+  });
+
+  it("returns a value typed as AgentErrorClass (compile-time contract)", () => {
+    // Compile-time guard: the return value must be assignable to AgentErrorClass.
+    // If someone changes the helper to return a wider string type, this stops
+    // compiling, which prevents the audit detail from drifting away from the
+    // declared union.
+    const cls: import("@/server/agent-error-classifier").AgentErrorClass =
+      classifySynthesisedError("silent_stream");
+    expect(cls).toBe("silent_stream_timeout");
   });
 });

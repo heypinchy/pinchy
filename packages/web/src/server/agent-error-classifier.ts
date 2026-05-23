@@ -11,9 +11,12 @@
  * error chunk regardless, including the silent-stream timeout path where
  * Pinchy synthesises the error itself.
  *
- * The `silent_stream_timeout` label is not pattern-matched — it is passed
- * explicitly at the call site that knows it synthesised the error. See
- * `client-router.ts` silent-stream branch.
+ * The `silent_stream_timeout` label is not pattern-matched — it is mapped
+ * from a `SynthesisedErrorReason` via `classifySynthesisedError()`. Call
+ * sites that synthesise their own error frame must use that helper rather
+ * than passing a string literal, so adding a future synthesised-error site
+ * is a compile error here (forces a new `SynthesisedErrorReason` arm and a
+ * matching `AgentErrorClass` label) instead of a silent audit-coverage gap.
  */
 
 // Shared regexes live in error-patterns.ts — see that file for the canonical
@@ -28,6 +31,16 @@ import {
   HTTP_5XX_PATTERN,
 } from "@/server/error-patterns";
 
+/**
+ * Stable, write-once label set persisted into `audit_log.detail.errorClass`
+ * by the `chat.agent_error` event. Once a label has landed in production
+ * rows it must NEVER be renamed — operators run dashboards and SQL queries
+ * grouped by `detail->>'errorClass'`, and the audit table is append-only +
+ * HMAC-signed so historical rows cannot be migrated to a new spelling
+ * without breaking the HMAC chain. Add new labels here; never rename
+ * existing ones. Removing a label is also a breaking change for any
+ * persisted dashboard.
+ */
 export type AgentErrorClass =
   | "failover_incomplete_stream"
   | "schema_rejection"
@@ -45,6 +58,34 @@ const FAILOVER_INCOMPLETE_STREAM_PATTERN = /FailoverError[\s\S]*incomplete termi
 // unrelated text cannot hijack this branch.
 const THOUGHT_SIGNATURE_SNAKE = /thought_signature/i;
 const THOUGHT_SIGNATURE_CAMEL = /thoughtSignature/;
+
+/**
+ * Reasons Pinchy itself synthesises an error frame (no upstream provider
+ * text exists to pattern-match). Today: only the silent-stream watchdog at
+ * the bottom of `pipeStream` in `client-router.ts`. Add a new arm here if
+ * another synthesised-error site appears — the exhaustive switch in
+ * `classifySynthesisedError` will refuse to compile until the new reason
+ * has a corresponding `AgentErrorClass` label, which is the point.
+ */
+export type SynthesisedErrorReason = "silent_stream";
+
+/**
+ * Map a synthesised-error reason to its stable audit class label. Exhaustive
+ * over `SynthesisedErrorReason`: the `_never` fallthrough is a compile-time
+ * assertion that every reason has an explicit case, so adding a new reason
+ * to the union forces the maintainer to decide on its audit label rather
+ * than defaulting to `unknown` and silently muddying the umbrella query.
+ */
+export function classifySynthesisedError(reason: SynthesisedErrorReason): AgentErrorClass {
+  switch (reason) {
+    case "silent_stream":
+      return "silent_stream_timeout";
+    default: {
+      const _never: never = reason;
+      return _never;
+    }
+  }
+}
 
 export function classifyAgentError(errorText: string): AgentErrorClass {
   if (FAILOVER_INCOMPLETE_STREAM_PATTERN.test(errorText)) {

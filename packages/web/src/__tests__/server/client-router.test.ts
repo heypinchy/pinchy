@@ -81,19 +81,25 @@ vi.mock("drizzle-orm", () => ({
   eq: vi.fn((col, val) => ({ col, val })),
 }));
 
-vi.mock("@/lib/audit", () => ({
-  appendAuditLog: mockAppendAuditLog,
-  // Pass-through: every providerError audit write inside client-router
-  // routes through this helper (scrub emails, then truncate to 1024).
-  // Unit-level behaviour of safeProviderError + scrubEmails is covered
-  // by audit.test.ts; here we just need the same observable behaviour
-  // so client-router integration tests can assert against scrubbed +
-  // truncated detail without spinning up the real audit module.
-  safeProviderError: (text: string) =>
-    text
-      .replace(/[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/g, "<email-redacted>")
-      .slice(0, 1024),
-}));
+vi.mock("@/lib/audit", async (importOriginal) => {
+  // Pull `safeProviderError` (and any sibling pure helpers like
+  // `scrubEmails`, `truncateDetail`, `redactEmail`) from the real module
+  // so client-router integration tests assert against the SAME scrub +
+  // truncate logic that production uses. The previous version reimplemented
+  // the email regex inline here, which meant a future tweak to
+  // `EMAIL_LIKE_PATTERN` in `@/lib/audit` would silently leave this mock
+  // testing the old behaviour.
+  //
+  // Safe to importOriginal here because `@/db` is mocked above (no real
+  // postgres connection) and `@/lib/encryption` is side-effect-free at
+  // module load (its `getOrCreateSecret` is lazy). Only `appendAuditLog`
+  // is replaced with the spy because we assert on its call arguments.
+  const actual = await importOriginal<typeof import("@/lib/audit")>();
+  return {
+    ...actual,
+    appendAuditLog: mockAppendAuditLog,
+  };
+});
 
 vi.mock("@/lib/groups", () => ({
   getUserGroupIds: (...args: unknown[]) => mockGetUserGroupIds(...args),

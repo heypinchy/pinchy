@@ -13,7 +13,11 @@ import {
 import { SessionCache } from "@/server/session-cache";
 import { getErrorHint } from "@/server/error-hints";
 import { classifyModelError, classifyUpstreamFormatError } from "@/server/model-error-classifier";
-import { classifyAgentError, type AgentErrorClass } from "@/server/agent-error-classifier";
+import {
+  classifyAgentError,
+  classifySynthesisedError,
+  type AgentErrorClass,
+} from "@/server/agent-error-classifier";
 import {
   SILENT_REPLY_TOKEN,
   safeEmitLength,
@@ -585,6 +589,14 @@ export class ClientRouter {
           // PII note: same reasoning as the existing model_unavailable
           // branch — provider error envelopes don't echo user prompt text on
           // these failures. Truncated to 1024 bytes as a belt-and-braces.
+          //
+          // Ordering: the audit `await` runs BEFORE the consumer-forwarding
+          // block below. Intentional — the audit row must land before any
+          // browser-facing side effect so that a forwarding-related throw
+          // (closed WS, send error) can't lose the audit trail. This is
+          // safe because exactly one error chunk arrives per failed stream
+          // (the stream terminates after it), so the await runs at most
+          // once per failed request — not on a hot per-chunk path.
           await this.writeAgentErrorAudit({
             agent,
             errorClass: classifyAgentError(chunk.text),
@@ -729,10 +741,12 @@ export class ClientRouter {
         // Issue #355: umbrella `chat.agent_error` for the silent-stream
         // synthesised error too, so the universal measurement signal
         // captures this class alongside the throttled `chat.silent_stream`
-        // operational signal below.
+        // operational signal below. Routed through `classifySynthesisedError`
+        // so adding a future synthesised-error site is a compile error in
+        // the classifier rather than a silent gap in audit coverage.
         await this.writeAgentErrorAudit({
           agent,
-          errorClass: "silent_stream_timeout",
+          errorClass: classifySynthesisedError("silent_stream"),
           providerError,
         });
 
