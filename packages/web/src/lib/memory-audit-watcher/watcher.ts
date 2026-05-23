@@ -143,23 +143,52 @@ export async function startMemoryAuditWatcher(
     );
   };
 
+  // Track promises from initial-scan handlers so we can await them before
+  // flipping readyState to "ready". Without this, chokidar's "ready" event
+  // fires as soon as the directory walk completes, but the async file-read +
+  // snapshot-write inside `onFileEvent` for each discovered file may still be
+  // in flight. If `startMemoryAuditWatcher` then resolves and the caller does
+  // a quick write to one of those files, the still-pending initial-scan
+  // handler reads the post-write content, stores that as the snapshot, and
+  // the subsequent "change" handler diffs equal-vs-equal and emits
+  // `addedLines: 0` — the exact failure mode of the
+  // "accepts usePolling: false and still emits events" test on slow runners.
+  // The race is small but real on production too: any file mutation during
+  // the watcher startup window can lose its initial diff.
+  const inflightInitialScan: Promise<void>[] = [];
+
   watcher.on("add", (p) => {
-    onFileEvent("add", p, readyState).catch((err) => logWatcherError(err, p));
+    const captured = readyState;
+    const work = onFileEvent("add", p, captured).catch((err) => logWatcherError(err, p));
+    if (captured === "scanning") inflightInitialScan.push(work);
   });
   watcher.on("change", (p) => {
-    onFileEvent("change", p, readyState).catch((err) => logWatcherError(err, p));
+    const captured = readyState;
+    const work = onFileEvent("change", p, captured).catch((err) => logWatcherError(err, p));
+    if (captured === "scanning") inflightInitialScan.push(work);
   });
   watcher.on("unlink", (p) => {
-    handleMemoryFileEvent(
+    const captured = readyState;
+    const work = handleMemoryFileEvent(
       { kind: "unlink", absolutePath: p },
-      { ...handlerDepsBase, readyState }
+      { ...handlerDepsBase, readyState: captured }
     ).catch((err) => logWatcherError(err, p));
+    if (captured === "scanning") inflightInitialScan.push(work);
   });
 
-  await new Promise<void>((resolve) => {
+  await new Promise<void>((resolve, reject) => {
     watcher.on("ready", () => {
-      readyState = "ready";
-      resolve();
+      // Drain pending initial-scan handlers before flipping to "ready" so
+      // their snapshot writes definitely complete before any caller-side
+      // file mutation that follows the resolve of startMemoryAuditWatcher.
+      // Promise.all is safe here because every entry already has `.catch`
+      // attached above — none of them will reject.
+      Promise.all(inflightInitialScan)
+        .then(() => {
+          readyState = "ready";
+          resolve();
+        })
+        .catch(reject);
     });
   });
 
