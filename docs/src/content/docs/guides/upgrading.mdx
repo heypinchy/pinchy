@@ -157,7 +157,7 @@ None for stock templates. If you maintain a **custom `AGENTS.md`** that tells th
 
 ### Upgrade notes
 
-%%PINCHY_VERSION%% gives every agent a dedicated `workbench/` subdirectory in its workspace for files it produces, separate from the user's `uploads/`. This unblocks `pinchy_write` on fresh agents that had never received a user upload, and clarifies which directory the agent should target when saving notes, exports, or drafts. It also fixes a confusing failure mode for the built-in `image` tool on Ollama Cloud stacks and adds an explicit image-model default to remove a class of provider-selection drift.
+%%PINCHY_VERSION%% gives every agent a dedicated `workbench/` subdirectory in its workspace for files it produces, separate from the user's `uploads/`. This unblocks `pinchy_write` on fresh agents that had never received a user upload, and clarifies which directory the agent should target when saving notes, exports, or drafts. It also fixes a confusing failure mode for the built-in `image` tool on Ollama Cloud stacks, adds an explicit image-model default to remove a class of provider-selection drift, and patches a reliability edge where chat history could disappear overnight due to OpenClaw's default daily session-reset behavior.
 
 Upgrade with the standard flow:
 
@@ -221,6 +221,12 @@ A new `Fiscal Positions` row also appears in the Permissions UI for **every** Od
 3. Save.
 
 If you skip this step, the existing agent keeps its previous (narrower) permission set — there is no automatic migration. Newly-created agents from this template pick up the new models automatically.
+
+#### Chat history persists across daily restarts
+
+OpenClaw ships with a default `session.reset: { mode: "daily", atHour: 4 }` that rotates the session pointer at 04:00 gateway-local time. Each morning the pointer moved to a new, empty transcript — old history stayed on disk but became unreachable from the Pinchy UI. Pinchy now unconditionally overrides this setting to an idle-based reset with a one-year idle window (`mode: "idle", idleMinutes: 525600`), which never fires under normal use. Conversations persist until the user explicitly resets with `/new` or a new chat is started manually.
+
+**No action required.** The override is written on every Pinchy startup via `regenerateOpenClawConfig()`. If your instance was affected, existing message files are still on disk under `~/.openclaw/agents/<agentId>/sessions/`. Reach out to your administrator if you need to restore a specific session.
 
 ## Upgrading from v0.5.3 to v0.5.4
 
