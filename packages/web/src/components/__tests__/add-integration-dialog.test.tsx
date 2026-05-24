@@ -211,11 +211,17 @@ describe("AddIntegrationDialog — additional named presets", () => {
     // Basic auth which Phase 1 doesn't support).
     expect(screen.getByText(/Enable API-token authentication/i)).toBeInTheDocument();
     expect(screen.getByText(/service-account user/i)).toBeInTheDocument();
-    expect(
-      screen.getByRole("link", {
-        name: /id\.atlassian\.com\/manage-profile\/security\/api-tokens/i,
-      })
-    ).toBeInTheDocument();
+    // Look up the link by its exact visible label (markdown renders the URL
+    // as the link text) and assert the href is exactly the canonical
+    // Atlassian token URL. Avoiding a regex sidesteps CodeQL's unanchored-
+    // host smell and gives a stricter check than a substring match.
+    const tokenLink = screen.getByRole("link", {
+      name: "id.atlassian.com/manage-profile/security/api-tokens",
+    });
+    expect(tokenLink).toHaveAttribute(
+      "href",
+      "https://id.atlassian.com/manage-profile/security/api-tokens"
+    );
   });
 
   it("Stripe card submits with preset=stripe and the Stripe MCP URL", async () => {

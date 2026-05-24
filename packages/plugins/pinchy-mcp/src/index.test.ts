@@ -8,7 +8,7 @@
  * No dependency on packages/web or external packages beyond vitest.
  */
 
-import { describe, it, expect, vi, beforeAll, afterAll, beforeEach } from "vitest";
+import { describe, it, expect, beforeAll, afterAll, beforeEach } from "vitest";
 import { createServer, type Server } from "http";
 import type { AddressInfo } from "net";
 import plugin from "./index.js";
@@ -28,7 +28,6 @@ let servers: MockServers;
 let credentialFetchCount = 0;
 let currentToken = "token-abc";
 let mcpCallCount = 0;
-let mcpResponseOverride: object | null = null;
 
 function startServer(handler: (req: any, res: any) => void): Promise<{ port: number; stop: () => Promise<void> }> {
   return new Promise((resolve) => {
@@ -75,12 +74,6 @@ beforeAll(async () => {
       return;
     }
 
-    if (mcpResponseOverride) {
-      res.writeHead(200, { "Content-Type": "application/json" });
-      res.end(JSON.stringify(mcpResponseOverride));
-      return;
-    }
-
     const rpc = JSON.parse(body);
     res.writeHead(200, { "Content-Type": "application/json" });
     res.end(JSON.stringify({
@@ -108,7 +101,6 @@ afterAll(async () => {
 beforeEach(() => {
   credentialFetchCount = 0;
   mcpCallCount = 0;
-  mcpResponseOverride = null;
   currentToken = "token-abc";
 });
 
@@ -198,8 +190,6 @@ describe("pinchy-mcp plugin runtime", () => {
 
   describe("401 triggers credential refresh and one retry", () => {
     it("invalidates cache and retries once on 401 from MCP server", async () => {
-      let callNumber = 0;
-      // Override MCP server behavior to return 401 on first call with old token
       // We'll simulate: first call is 401 (stale token), then we update the token
       // and the retry with the new token succeeds
       currentToken = "old-token";
@@ -208,9 +198,6 @@ describe("pinchy-mcp plugin runtime", () => {
       const config = makeConfig();
       const tools = buildApi(config);
       const tool = findTool(tools, "github_create_issue", "agent-1");
-
-      // Set up MCP to return 401 on first request, then succeed after token rotation
-      mcpResponseOverride = null; // use default auth check behavior
 
       // First call will succeed with old-token (just verifying setup)
       const firstResult = await tool.execute("call-1", { title: "Bug" });
