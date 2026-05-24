@@ -82,15 +82,7 @@ PINCHY_ENTERPRISE_KEY=
 
 **`BETTER_AUTH_SECRET`** — Used by Better Auth for session security. Auto-generated and persisted in the `pinchy-secrets` volume if omitted. For production, set explicitly with `openssl rand -hex 32`.
 
-**`BETTER_AUTH_URL`** — Public HTTPS origin used by Better Auth to build callback and redirect URLs, for example password reset, OAuth, and Telegram pairing flows. Set this to the same origin users visit, such as `https://pinchy.example.com`. Domain Lock is configured separately in **Settings → Security**; when you lock a domain, use the same hostname here.
-
-<Aside type="caution">
-  The v0.4.4 `docker-compose.yml` shown above does not pass `BETTER_AUTH_URL`
-  through. If your compose file does not include
-  `BETTER_AUTH_URL=${BETTER_AUTH_URL:-}` under the `pinchy` service
-  `environment:` block, upgrade to a newer compose file or add it via
-  `docker-compose.override.yml`.
-</Aside>
+**`BETTER_AUTH_URL`** — Public HTTPS origin used by Better Auth to build callback and redirect URLs, for example password reset, OAuth, and Telegram pairing flows. Set this to the same origin users visit, such as `https://pinchy.example.com`. Domain Lock is configured separately in **Settings → Security**; when you lock a domain, use the same hostname here. The bundled `docker-compose.yml` passes this variable through to the Pinchy container automatically.
 
 **`ENCRYPTION_KEY`** — Used to encrypt provider API keys at rest (AES-256-GCM). Auto-generated and persisted in the `pinchy-secrets` volume if omitted. For production, set explicitly with `openssl rand -hex 32`.
 
@@ -102,14 +94,16 @@ PINCHY_ENTERPRISE_KEY=
 
 Docker volumes ensure data survives container restarts:
 
-| Volume                | Mounted at                                                                      | Purpose                                              |
-| --------------------- | ------------------------------------------------------------------------------- | ---------------------------------------------------- |
-| `pgdata`              | `/var/lib/postgresql/data`                                                      | PostgreSQL data                                      |
-| `openclaw-config`     | `/root/.openclaw` (OpenClaw), `/openclaw-config` (Pinchy)                       | Shared OpenClaw configuration                        |
-| `pinchy-data`         | `/data` (OpenClaw)                                                              | Agent-accessible files (Knowledge Base documents)    |
-| `pinchy-workspaces`   | `/root/.openclaw/workspaces` (OpenClaw), `/openclaw-config/workspaces` (Pinchy) | Agent workspaces (SOUL.md, AGENTS.md, context files) |
-| `pinchy-secrets`      | `/app/secrets` (Pinchy)                                                         | Auto-generated encryption and HMAC keys              |
-| `openclaw-extensions` | `/openclaw-extensions` (Pinchy), `/root/.openclaw/extensions` (OpenClaw)        | Pinchy plugins for OpenClaw                          |
+| Volume                | Mounted at                                                                      | Purpose                                                                                          |
+| --------------------- | ------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------ |
+| `pgdata`              | `/var/lib/postgresql/data`                                                      | PostgreSQL data                                                                                  |
+| `openclaw-config`     | `/root/.openclaw` (OpenClaw), `/openclaw-config` (Pinchy)                       | Shared OpenClaw configuration                                                                    |
+| `pinchy-data`         | `/data` (OpenClaw)                                                              | Agent-accessible files (Knowledge Base documents)                                                |
+| `pinchy-workspaces`   | `/root/.openclaw/workspaces` (OpenClaw), `/openclaw-config/workspaces` (Pinchy) | Agent workspaces (SOUL.md, AGENTS.md, `uploads/`, `workbench/`)                                  |
+| `pinchy-secrets`      | `/app/secrets` (Pinchy)                                                         | Auto-generated encryption and HMAC keys                                                          |
+| `openclaw-secrets`    | `/openclaw-secrets` (both)                                                      | **tmpfs** — runtime-only SecretRef bundle. Cleared on container restart and rebuilt from the DB. |
+| `pinchy-pdf-cache`    | `/var/cache/pinchy-files` (Pinchy)                                              | Cached PDF-text extractions so repeated reads of the same upload skip re-parsing                 |
+| `openclaw-extensions` | `/openclaw-extensions` (Pinchy), `/root/.openclaw/extensions` (OpenClaw)        | Pinchy plugins for OpenClaw                                                                      |
 
 ### Port configuration
 
