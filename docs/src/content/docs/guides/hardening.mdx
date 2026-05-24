@@ -366,6 +366,16 @@ AUDIT_HMAC_SECRET=your-generated-hex-string
 If the HMAC secret changes, previously signed audit entries will fail integrity verification. Back up your HMAC secret securely and never rotate it unless you understand the consequences. See [Audit Trail](/concepts/audit-trail/) for details on integrity verification.
 :::
 
+## Gateway-auth bootstrap
+
+OpenClaw 2026.5.12+ refuses to bind on a non-loopback interface without a `gateway.auth.token` in `openclaw.json`. The gateway logs `Refusing to bind gateway to lan without auth` and exits, which surfaces in `docker compose logs pinchy-openclaw` as a restart loop until the wrapper's grace period kicks in.
+
+**Pinchy handles this automatically.** Pinchy's boot-init step seeds `gateway.auth.{mode: "token", token}` into `openclaw.json` _before_ the OpenClaw container starts, even on a fresh install before the setup wizard runs. The seeded token lives in the `openclaw-config` volume; OpenClaw and Pinchy share the same path.
+
+**This is a Pattern C bootstrap credential** (see [Secret Handling](/security/secrets/)): the token is plaintext in `openclaw.json` by design. It is the trust root for the OpenClaw container and cannot itself be fetched through Pinchy's API. Rotate it by regenerating the config (any change in **Settings → Providers** that triggers a save) and restarting the OpenClaw container.
+
+**Failure mode to watch for.** If `boot-inits.ts` cannot reach the database at startup (DB outage, mis-configured `DATABASE_URL`), the seed step logs a FATAL line and Pinchy refuses to start — better to fail fast than to leave OpenClaw stuck. If you see `pinchy-openclaw` restart-looping with `Refusing to bind gateway to lan without auth` _and_ Pinchy itself is healthy, the seed wrote successfully but OpenClaw is reading from a different config path — verify the `openclaw-config` volume mount.
+
 ## Backup & recovery
 
 ### PostgreSQL backups
@@ -475,8 +485,12 @@ docker compose logs pinchy 2>&1 | grep -i error
 For production, forward logs to a centralized logging system (e.g., Loki, Elasticsearch) and set up alerts for:
 
 - Authentication failures (`auth.failed` audit events)
+- CSRF-blocked write attempts (`auth.csrf_blocked` audit events)
+- Password resets (`auth.password_reset_completed` — a successful reset revokes the target user's existing sessions)
 - Denied tool executions (`tool.denied` audit events)
-- Container restarts
+- Chat-runtime errors (`chat.agent_error` — umbrella event for every failure shape, group by `detail->>'errorClass'` to see what's degrading)
+- Invite blocks (`user.invite_blocked` — seat-cap or license guard refused an invite)
+- Container restarts (especially `pinchy-openclaw` — see [Gateway-auth bootstrap](#gateway-auth-bootstrap) below for a common cause)
 - High error rates
 
 ### Audit log monitoring

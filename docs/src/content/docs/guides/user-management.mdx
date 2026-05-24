@@ -213,13 +213,14 @@ docker compose exec pinchy pnpm reset-admin --email admin@example.com
 
 All user management actions performed by admins are logged in the audit trail:
 
-| Action                    | Audit event           |
-| ------------------------- | --------------------- |
-| User invited              | `user.invited`        |
-| Invite blocked (seat cap) | `user.invite_blocked` |
-| Role changed              | `user.role_updated`   |
-| Group memberships changed | `user.groups_updated` |
-| User reactivated          | `user.updated`        |
-| User deactivated          | `user.deleted`        |
+| Action                    | Audit event                     |
+| ------------------------- | ------------------------------- |
+| User invited              | `user.invited`                  |
+| Invite blocked (seat cap) | `user.invite_blocked`           |
+| Role changed              | `user.role_updated`             |
+| Group memberships changed | `user.groups_updated`           |
+| User reactivated          | `user.updated`                  |
+| User deactivated          | `user.deleted`                  |
+| Password reset completed  | `auth.password_reset_completed` |
 
-Each entry records which admin took the action, the affected user's name and email, and before/after values for role or group changes. See [Audit Trail](/concepts/audit-trail/) for more information on viewing and exporting audit logs.
+Each entry records which admin took the action, the affected user's name and email, and before/after values for role or group changes. Password resets also revoke the target user's active sessions in the same database transaction; the audit row is written transactionally with the reset, so a partial failure rolls back everything and the reset link stays usable. See [Audit Trail](/concepts/audit-trail/) for more information on viewing and exporting audit logs.

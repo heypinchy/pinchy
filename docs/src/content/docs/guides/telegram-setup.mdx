@@ -83,3 +83,7 @@ When group memberships or agent visibility change, Telegram access is updated au
 :::caution
 Smithers' bot cannot be disconnected individually. Use "Remove Telegram for everyone" to remove all Telegram integration at once.
 :::
+
+:::note[Channel-config preservation]
+From v0.5.5 onward, pairing or disconnecting a Telegram bot only touches that bot's entry in the OpenClaw channels block. Sibling channel sub-blocks owned by OpenClaw (or future channel types) are preserved unchanged. Earlier versions occasionally rewrote sibling entries when telegram config changed, which could disturb other channels — fixed in [#314](https://github.com/heypinchy/pinchy/issues/314).
+:::
