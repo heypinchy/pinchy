@@ -93,26 +93,24 @@ Not sure whether a piece of knowledge belongs here or in Memory? See [Instructio
 
 The Permissions tab controls which tools an agent can use. Pinchy uses an **allow-list** model: agents start with zero tools enabled, and admins grant specific capabilities.
 
-Tools are organized into two categories:
+Tools are organised into two categories, plus integration-tool families that appear when the agent is connected to Odoo or email.
 
-**Safe Tools** — sandboxed access to admin-approved directories:
+**Safe Tools** — sandboxed access to the agent's own workspace and admin-curated directories. **Workspace read access is always on** — agents can always list and read files under `uploads/` and `workbench/`. The toggleable safe tools are:
 
-| Tool                      | Description                                       |
-| ------------------------- | ------------------------------------------------- |
-| List approved directories | List files in directories the admin has selected  |
-| Read approved files       | Read file contents from approved directories only |
+| Tool            | Tool ID             | Description                                  |
+| --------------- | ------------------- | -------------------------------------------- |
+| Search the web  | `pinchy_web_search` | Query Brave Search and return ranked results |
+| Fetch web pages | `pinchy_web_fetch`  | Download and read content from a URL         |
 
-When a safe tool is enabled, the **Allowed Directories** picker appears so you can select which directories under `/data/` the agent can access.
+The **Allowed Directories** picker (Knowledge Base section) lets you grant the agent read-access to additional directories under `/data/` — separate from the agent's own workspace.
 
-**Powerful Tools** — direct server access:
+**Powerful Tools** — actions that change state outside the conversation:
 
-| Tool           | Description                                       |
-| -------------- | ------------------------------------------------- |
-| Run commands   | Execute shell commands on the server              |
-| Read any file  | Read any file on the system, without restrictions |
-| Write files    | Create and modify files on the system             |
-| Browse the web | Fetch web pages                                   |
-| Search the web | Perform web searches                              |
+| Tool        | Tool ID        | Description                                                                                       |
+| ----------- | -------------- | ------------------------------------------------------------------------------------------------- |
+| Write files | `pinchy_write` | Save files into the agent's own `workbench/` directory (and `uploads/`, kept writable for compat) |
+
+Integration tool families (Odoo, email) appear in the same tab when the agent is granted access to a connection — see [Agent Permissions](/concepts/agent-permissions/#integration-tools).
 
 For a deeper explanation of the permission model, defense in depth, and how permissions are translated to OpenClaw configuration, see [Agent Permissions](/concepts/agent-permissions/).
 

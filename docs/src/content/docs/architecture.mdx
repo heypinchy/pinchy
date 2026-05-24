@@ -143,12 +143,12 @@ Pinchy uses an **allow-list** model for agent permissions: agents have **no tool
 
 Tools are organized into two categories:
 
-- **Safe tools** — sandboxed directory access (`pinchy_ls`, `pinchy_read`). Only work within directories the admin has approved.
-- **Powerful tools** — direct server access (shell commands, unrestricted file access, web access). Only for trusted use cases.
+- **Safe tools** — workspace and approved-directory read access (`pinchy_ls`, `pinchy_read`), plus opt-in web search/fetch (`pinchy_web_search`, `pinchy_web_fetch`). All paths are validated against the agent's allow-list at runtime.
+- **Powerful tools** — actions that change state outside the conversation: `pinchy_write` for workspace writes, and the Odoo / email write tools (`odoo_create`, `odoo_write`, `odoo_attach_file`, `odoo_delete`, `email_draft`, `email_send`). Pinchy does not expose a shell-execution tool or an unrestricted "read any file" tool; OpenClaw's native filesystem and shell groups are explicitly denied at config-generation time.
 
 When an agent has safe tools enabled, the `pinchy-files` plugin validates every file access request against the agent's allowed directories, with symlink resolution to prevent escapes.
 
-In addition to the allow-list, every agent has built-in PDF and image readers that are **scoped to its own [workspace](/concepts/workspaces/)** — they cannot reach files outside the workspace, regardless of permissions. This is what lets chat-attached files (uploaded into `uploads/<filename>`) reach the agent without granting it broader file access.
+In addition to the allow-list, every agent has built-in PDF and image readers that are **scoped to its own [workspace](/concepts/workspaces/)** — they cannot reach files outside the workspace, regardless of permissions. Each workspace has two subdirectories: `uploads/` (files the user attached in chat) and `workbench/` (the agent's writable area for `pinchy_write` deliverables). Both are created eagerly on workspace spawn, so a fresh agent can save files immediately without needing a prior user upload.
 
 Smithers agents also use the `pinchy-context` plugin, which provides `save_user_context` and `save_org_context` tools. These tools call Pinchy's internal API (authenticated via a shared gateway token) to save context from the onboarding interview directly to the database and sync it to agent workspaces.
 
@@ -197,7 +197,7 @@ Pinchy includes a cryptographic audit trail for compliance and security. Every s
 
 ### What gets logged
 
-Pinchy logs events across seven categories: authentication, agent management, user management, group management, channel management, configuration changes, and tool execution. Chat message content is **not** logged — only tool calls and permission-relevant actions. See [Audit Trail](/concepts/audit-trail/) for the complete list of event types.
+Pinchy logs events across eight families: authentication (including `auth.password_reset_completed` and `auth.csrf_blocked`), agent management, chat runtime (every tool call plus error events like `chat.agent_error` — an umbrella that fires for every failure shape so a single query covers the long tail), user management, group management, channel management, configuration changes, and attachments (`attachment.uploaded`). Chat message content is **not** logged — only tool calls, permission-relevant actions, and structured error metadata. See [Audit Trail](/concepts/audit-trail/) for the complete list of event types.
 
 ### Integrity verification
 
@@ -213,13 +213,21 @@ For the full details, see [Audit Trail](/concepts/audit-trail/).
 
 OpenClaw runs as a separate Docker container. Pinchy communicates with it via `openclaw-node` (the official Node.js client) over WebSocket on port 18789. The browser never connects to OpenClaw directly.
 
+The current pin pair is **`openclaw@2026.5.20`** in `Dockerfile.openclaw` and **`openclaw-node@0.10.0`** as a Pinchy dependency, which together advertise protocol v4 on the gateway handshake. Earlier OpenClaw versions ran protocol v3; the v4 cut-over is permanent from OpenClaw 2026.5.12 onward.
+
 ### Config generation
 
 Pinchy owns the OpenClaw configuration file (`openclaw.json`). A single function, `regenerateOpenClawConfig()`, handles every write — from the first config during setup to every subsequent change when agents, permissions, or providers are modified. It rebuilds the config from current database state, preserving only the `gateway` block (auth token and OpenClaw-generated fields).
 
+Pinchy also unconditionally overrides OpenClaw's default `session.reset = { mode: "daily", atHour: 4 }` with an idle-based reset (`mode: "idle", idleMinutes: 525600`), so chat history doesn't disappear at 4 AM when the gateway rotates the session pointer. The override is reapplied on every regeneration.
+
 Because the database is the source of truth, regeneration is **idempotent** and self-healing: deleted providers and agents are cleaned up automatically, and calling it twice produces the same file. To avoid unnecessary restarts, Pinchy short-circuits the write when the new content is identical to what's already on disk.
 
 An inotify-based wrapper script inside the OpenClaw container detects config file changes and restarts the gateway automatically, with a 30-second grace period between restarts to prevent restart loops.
+
+### Gateway-auth bootstrap
+
+OpenClaw 2026.5.12+ refuses to bind on a non-loopback interface without a `gateway.auth.token` in `openclaw.json`. Earlier versions self-bootstrapped a random token on first start; the new behaviour leaves a fresh install stuck if no upstream writer ever lands a token. Pinchy seeds `gateway.auth.{mode: "token", token}` into `openclaw.json` _before_ the OpenClaw container starts (via `boot-inits.ts` running ahead of the setup wizard), so the first boot always has a valid auth bootstrap and the wizard's later `regenerateOpenClawConfig()` doesn't change the auth-mode shape — which would otherwise trigger an OpenClaw restart that drops lazy plugins from the runtime.
 
 ### Authentication
 

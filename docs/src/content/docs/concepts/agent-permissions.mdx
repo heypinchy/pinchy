@@ -25,10 +25,11 @@ Safe tools provide **sandboxed access** to approved directories and the agent's 
 
 Every agent can always list and read files from its own workspace — any text-based file you upload in a chat is immediately accessible. This includes Markdown, CSV, JSON, source code, and more, in addition to PDF text extraction and image analysis.
 
-| Tool               | Always on? | What it does                                                                                              |
-| ------------------ | ---------- | --------------------------------------------------------------------------------------------------------- |
-| **Read workspace** | ✓ always   | List and read any file the agent's workspace (`uploads/` directory), including PDFs and images            |
-| **Write files**    | optional   | Save files back to the agent's own workspace. Agents must explicitly request overwrite on existing files. |
+| Tool               | Always on? | What it does                                                                                                  |
+| ------------------ | ---------- | ------------------------------------------------------------------------------------------------------------- |
+| **Read workspace** | ✓ always   | List and read any file in the agent's workspace (both `uploads/` and `workbench/`), including PDFs and images |
+
+The workspace has two subdirectories: `uploads/` holds files the user attached in chat, and `workbench/` is the agent's own writable area for notes, exports, and drafts. See [Agent Workspaces](/concepts/workspaces/) for the full three-zone model.
 
 The **Knowledge Base** section below the tools lets you select which directories under `/data/` this agent can also read. These are admin-curated directories mounted into the container — separate from the agent's own workspace. Every access request is validated at runtime against the configured paths.
 
@@ -49,14 +50,15 @@ If an agent has **Fetch web pages** enabled alongside access to sensitive data (
 
 ### Powerful Tools
 
-Powerful tools give the agent **direct access to the server**. Only enable them if you understand the risks.
+Powerful tools let the agent **change state outside the conversation** — write files to disk, mutate records in connected systems, send email. Only enable them if you understand the consequences.
 
-| Tool              | What it does                                      |
-| ----------------- | ------------------------------------------------- |
-| **Run commands**  | Execute shell commands on the server              |
-| **Read any file** | Read any file on the system, without restrictions |
+| Tool            | Tool ID        | What it does                                                                                                                                                                          |
+| --------------- | -------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Write files** | `pinchy_write` | Save files into the agent's own `workbench/` directory (and the user-facing `uploads/`, kept writable for compatibility). Agents must explicitly request overwrite on existing files. |
 
-An agent with powerful tools enabled has significantly broader capabilities. Use these only for trusted, internal use cases.
+Powerful integration tools (Odoo write/delete, email draft/send) are covered in their own sections below.
+
+Pinchy does **not** expose a shell-execution tool or an unrestricted "read any file" tool. OpenClaw's native filesystem and shell groups are denied by default at config-generation time — see [How permissions reach OpenClaw](#how-permissions-reach-openclaw) below. If you need shell-style automation, do it through a custom OpenClaw plugin so the actions are bounded by the plugin's contract.
 
 ## The Permissions tab
 
@@ -96,17 +98,25 @@ This conversion runs automatically whenever the OpenClaw config is regenerated �
 
 When you connect Odoo and grant an agent access to it, Pinchy automatically enables the appropriate tools based on the access level you choose. You don't need to enable these tools manually — they're managed through the Permissions tab.
 
-| Tool          | What it does                               | Access level required |
-| ------------- | ------------------------------------------ | --------------------- |
-| **schema**    | Discover available models and their fields | Read-only             |
-| **read**      | Read records from a model                  | Read-only             |
-| **count**     | Count records matching a filter            | Read-only             |
-| **aggregate** | Run aggregations (sum, average, group by)  | Read-only             |
-| **create**    | Create new records                         | Read & Write          |
-| **write**     | Update existing records                    | Read & Write          |
-| **delete**    | Delete records                             | Full                  |
+| Tool               | Tool ID               | What it does                                                     | Access level required |
+| ------------------ | --------------------- | ---------------------------------------------------------------- | --------------------- |
+| **List models**    | `odoo_list_models`    | List all available Odoo models on the connection                 | Read-only             |
+| **Describe model** | `odoo_describe_model` | Discover fields and types for a specific model                   | Read-only             |
+| **Read data**      | `odoo_read`           | Query records with filters and field selection                   | Read-only             |
+| **Count records**  | `odoo_count`          | Count matching records without transferring data                 | Read-only             |
+| **Aggregate data** | `odoo_aggregate`      | Server-side sums, averages, and grouping                         | Read-only             |
+| **Create records** | `odoo_create`         | Create new records                                               | Read & Write          |
+| **Update records** | `odoo_write`          | Modify existing records                                          | Read & Write          |
+| **Attach file**    | `odoo_attach_file`    | Attach an uploaded file to an existing record as `ir.attachment` | Read & Write          |
+| **Delete records** | `odoo_delete`         | Delete records                                                   | Full                  |
 
-For example, setting an agent to "Read-only" for an Odoo connection enables schema, read, count, and aggregate. Upgrading to "Read & Write" adds create and write. "Full" adds delete.
+For example, setting an agent to "Read-only" enables the five read-shaped tools. "Read & Write" adds create, write, and attach-file. "Full" adds delete.
+
+:::note[Cross-company write protection]
+For multi-company Odoo databases, the `pinchy-odoo` plugin refuses to write a record whose embedded `_pinchy_ref` company tag disagrees with the company implied by the relation chain (top-level field only). This prevents a class of silent cross-company mistakes — for example, applying a Company A fiscal position to a partner that lives under Company B. See [Connect Odoo → Multi-company databases](/guides/connect-odoo/#multi-company-databases) for the full story.
+:::
+
+Pinchy keeps the deprecated alias `odoo_schema` (collapsed into `odoo_list_models` + `odoo_describe_model` during the v0.5.4 split) recognised in stored `allowed_tools` arrays so older agents keep working, but the permissions UI hides it.
 
 ### Web Search tools
 

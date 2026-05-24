@@ -104,14 +104,14 @@ This means the connection reflects what's actually accessible — not what exist
 
 When granting an agent access to an Odoo connection, you choose an access level:
 
-| Level            | Tools enabled                                         | Use case                     |
-| ---------------- | ----------------------------------------------------- | ---------------------------- |
-| **Read-only**    | schema, read, count, aggregate                        | Reporting, dashboards, Q&A   |
-| **Read & Write** | schema, read, count, aggregate, create, write         | Data entry, updating records |
-| **Full**         | schema, read, count, aggregate, create, write, delete | Full CRUD — use with caution |
-| **Custom**       | You pick individual tools                             | Fine-grained control         |
+| Level            | Tools enabled                                       | Use case                     |
+| ---------------- | --------------------------------------------------- | ---------------------------- |
+| **Read-only**    | list-models, describe-model, read, count, aggregate | Reporting, dashboards, Q&A   |
+| **Read & Write** | read-only set + create, write, attach-file          | Data entry, updating records |
+| **Full**         | read & write set + delete                           | Full CRUD — use with caution |
+| **Custom**       | You pick individual tools                           | Fine-grained control         |
 
-Each level maps directly to the Odoo tools that get enabled for the agent. See [Agent Permissions](/concepts/agent-permissions/) for the full tool list.
+Each level maps directly to the Odoo tools that get enabled for the agent. See [Agent Permissions](/concepts/agent-permissions/#odoo-tools) for the full tool list, including the per-tool IDs and the cross-company write protection that applies to all Odoo agents regardless of level.
 
 ### What happens when Odoo permissions change
 
