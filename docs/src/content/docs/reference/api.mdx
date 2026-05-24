@@ -103,10 +103,10 @@ Create a new agent. The agent inherits default tool permissions from its templat
 
 **Request body:**
 
-| Field        | Type   | Required | Description                                    |
-| ------------ | ------ | -------- | ---------------------------------------------- |
-| `name`       | string | Yes      | Display name for the agent                     |
-| `templateId` | string | Yes      | Template to use (`knowledge-base` or `custom`) |
+| Field        | Type   | Required | Description                                                                                                                              |
+| ------------ | ------ | -------- | ---------------------------------------------------------------------------------------------------------------------------------------- |
+| `name`       | string | Yes      | Display name for the agent                                                                                                               |
+| `templateId` | string | Yes      | Template to use. Call `GET /api/templates` for the full live list (Knowledge Base, custom, document-analysis, Odoo, and email families). |
 
 **Example — Knowledge Base agent:**
 
@@ -211,10 +211,17 @@ List available agent templates.
       "id": "custom",
       "name": "Custom Agent",
       "description": "Start from scratch"
+    },
+    {
+      "id": "odoo-crm-sales-assistant",
+      "name": "CRM & Sales Assistant",
+      "description": "Pipeline management, quotation building with fiscal positions"
     }
   ]
 }
 ```
+
+The full registry includes one Knowledge Base template, one Custom template, five document-analysis templates, three email templates, and 20+ Odoo templates. The response above is truncated — call the endpoint for the live list. Template IDs are stable across releases for templates that ship in stock builds.
 
 ## Data Directories
 
@@ -1020,6 +1027,8 @@ Retrieve a paginated, filterable audit log. **Admin only.**
       "resource": "user:user-uuid",
       "resourceName": "Alice",
       "resourceDeleted": false,
+      "outcome": "success",
+      "error": null,
       "detail": {},
       "rowHmac": "sha256-hex-string"
     }
@@ -1029,6 +1038,8 @@ Retrieve a paginated, filterable audit log. **Admin only.**
   "limit": 50
 }
 ```
+
+`outcome` is one of `"success"` or `"failure"`. `error` is `null` for successes and a short error message for failures (e.g. `"seat_cap"` on a blocked invite). Both fields are part of the HMAC-signed v2 row shape.
 
 **Errors:**
 
@@ -1074,13 +1085,25 @@ List the distinct event types present in the current audit log. Useful for popul
   "eventTypes": [
     "auth.login",
     "auth.failed",
+    "auth.csrf_blocked",
+    "auth.password_reset_completed",
     "agent.created",
+    "agent.memory_changed",
+    "agent.model_unavailable",
+    "agent.upstream_format_error",
     "channel.created",
+    "chat.agent_error",
+    "chat.retry_triggered",
+    "chat.silent_stream",
+    "chat.background_run_completed",
+    "attachment.uploaded",
     "tool.shell",
     "tool.denied"
   ]
 }
 ```
+
+The response only contains event types that actually appear in the audit log — it's distinct values from the table, not the full enumerated set. See [Audit Trail](/concepts/audit-trail/) for the complete schema and detail shapes.
 
 ### `GET /api/audit/export`
 

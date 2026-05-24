@@ -7,7 +7,9 @@ Pinchy handles your LLM provider API keys — Anthropic, OpenAI, Ollama Cloud, a
 
 ## Source of truth: PostgreSQL
 
-API keys are stored in PostgreSQL, encrypted with AES-256-GCM. The encryption key comes from the `ENCRYPTION_KEY` environment variable in your `.env` file.
+API keys are stored in PostgreSQL, encrypted with AES-256-GCM. The encryption key normally comes from the `ENCRYPTION_KEY` environment variable. If you leave it unset, Pinchy auto-generates one at first start and persists it in the `pinchy-secrets` Docker volume so it survives restarts — production deployments should still set `ENCRYPTION_KEY` explicitly so the key is part of your backup/restore story rather than tied to a single volume.
+
+Each row is encrypted with its own nonce and authenticated separately. A single decryption failure (e.g., a corrupted row) does not hide every other integration's credentials — the others stay readable.
 
 When Pinchy reads a key from the database, it decrypts it in memory to reconstruct the OpenClaw config. The plaintext key is never written back to disk by Pinchy itself.
 
@@ -74,6 +76,18 @@ tmpfs is RAM. If someone has access to the running process or the host, they can
 - **`docker exec` access** — anyone who can `docker exec` into the container can read the file
 
 These are infrastructure-level threats. Protect against them at the host level: locked-down SSH, minimal `docker exec` permissions, and host-level disk encryption for swap (RAM can spill to swap). See the [Hardening Guide](/guides/hardening/) for recommendations.
+
+## How credentials reach plugins: three patterns
+
+Different consumers reach their secrets through different paths. Knowing which pattern applies is useful when something looks wrong in `openclaw.json`.
+
+**Pattern A — OpenClaw resolves SecretRef pointers.** Used for `models.providers.<name>.apiKey` and any `env.<VAR>` template. The flow above describes this pattern in full: ciphertext lives in PostgreSQL, plaintext lands in the tmpfs `secrets.json`, OpenClaw walks the pointer at call time. Provider API keys (Anthropic, OpenAI, Google, etc.) all use this path.
+
+**Pattern B — Pinchy plugins fetch credentials at call time.** Used by every Pinchy-built plugin that talks to a third-party SaaS: `pinchy-odoo`, `pinchy-email`, `pinchy-web`. `openclaw.json` only carries the plugin's `apiBaseUrl`, the gateway auth token, and an opaque `connectionId`. The plugin calls `GET /api/internal/integrations/:connectionId/credentials` with the gateway token as Bearer auth when it actually needs the credential, caches it in-process with a 5-minute TTL, and invalidates the cache on a 401 so credential rotation works without restarts. The credential itself never appears in `openclaw.json`.
+
+**Pattern C — Bootstrap credentials in `openclaw.json`.** Used only for `gateway.auth.token` and the matching `plugins.entries.pinchy-*.config.gatewayToken`. These are the trust root for the OpenClaw container and cannot be fetched through Pinchy's API by definition — they are written in plaintext into `openclaw.json` on purpose. The `openclaw-plaintext-scanner` validates that no other provider key prefixes have leaked into the config file. Rotate by regenerating the config (any change in **Settings → Providers**) and restarting the OpenClaw container.
+
+The defense-in-depth scan that runs at config-write time recognises known provider-key prefixes (`sk-ant-`, `sk-`, etc.) and refuses to write the config if any appear outside the legitimate Pattern A SecretRef slots.
 
 ## Key rotation
 
