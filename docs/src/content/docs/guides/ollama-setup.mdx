@@ -267,15 +267,20 @@ agents) with cloud providers (interactive agents).
   [option B](#b-ollama-as-a-docker-service) — add an `ollama.docker.local`
   network alias to your ollama service and update the URL.
 
+**Agents reply with "Blocked hostname or private/internal/special-use IP address"**
+
+- OpenClaw 2026.5.x ships an SSRF guard that blocks outbound HTTP to private-network destinations by default. Pinchy %%PINCHY_VERSION%% works around this by setting `request.allowPrivateNetwork: true` only on the `ollama-local` provider in the generated `openclaw.json`, so calls to local Ollama go through but the guard stays active for every other provider.
+- If you see this error after upgrading, regenerate the config — restart Pinchy or change any provider setting in **Settings → Providers** and save, which triggers a fresh write. Verify the resulting `openclaw.json` has `request.allowPrivateNetwork: true` under your `ollama-local` provider entry.
+
 **No models appear after connecting**
 
-- Pull at least one model first: `ollama pull qwen2.5:7b`
-- If Ollama runs in Docker, pull from inside the container: `docker compose exec ollama ollama pull qwen2.5:7b`
+- Pull at least one model first: `ollama pull qwen3.5:9b`
+- If Ollama runs in Docker, pull from inside the container: `docker compose exec ollama ollama pull qwen3.5:9b`
 
 **"No compatible models found"**
 
 - Pinchy agents require models with tool calling support. Not all Ollama models support this.
-- Pull a compatible model: `ollama pull qwen2.5:7b`
+- Pull a compatible model: `ollama pull qwen3.5:9b`
 - You can check a model's capabilities with `ollama show <model>` — look for "tools" in the capabilities list.
 
 **Slow responses**

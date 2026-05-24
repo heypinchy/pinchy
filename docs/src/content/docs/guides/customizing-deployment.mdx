@@ -71,6 +71,7 @@ The override file is for _additions_, not _replacements_. The following are outs
 - Renaming volumes, services, or networks
 - Rewiring inter-service dependencies or health checks
 - Changing the Postgres image to a non-17 version
+- Pre-seeding or hand-editing `openclaw.json` outside Pinchy — OpenClaw 2026.5.12+ requires `gateway.auth.token` to be present at startup, and Pinchy's boot-init step seeds it from the database before OpenClaw boots. An out-of-band write collides with that seed and risks restart loops on the OpenClaw container.
 
 If you find yourself needing any of these, [open an issue](https://github.com/heypinchy/pinchy/issues/new) — your use case might belong in core Pinchy rather than in an override.
 

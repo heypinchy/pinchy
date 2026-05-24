@@ -89,7 +89,7 @@ When the chat surfaces a **transient upstream issue bubble** mentioning `thought
 What to do:
 
 1. Click **Retry** on the failed message. The vast majority of these clear on the first retry.
-2. If retries fail repeatedly for the same agent on the same model, the upstream issue is currently more severe than usual. Open the audit page filtered by `eventType=agent.upstream_format_error` to confirm the frequency, then either pause that agent or switch it to a different model family (e.g. `anthropic/claude-sonnet-4.5` or `ollama-cloud/deepseek-v4-pro`) until upstream stabilises.
+2. If retries fail repeatedly for the same agent on the same model, the upstream issue is currently more severe than usual. Open the audit page filtered by `eventType=agent.upstream_format_error` to confirm the frequency, then either pause that agent or switch it to a different model family (e.g. `anthropic/claude-sonnet-4.5` or `ollama-cloud/deepseek-v4-pro`) until upstream stabilises. For a fleet-wide picture across **every** error shape (not just `upstream_format_error`), filter by `eventType=chat.agent_error` and group the results by `detail->>'errorClass'` — that umbrella event fires unconditionally for every error chunk plus the silent-stream timeout.
 
 Pinchy will continue to ship a fix for this once OpenClaw closes the matching OpenAI-compat path bug (upstream `openclaw/openclaw#34008`); the native Google provider path is already fixed in OpenClaw 2026.5.18.
 

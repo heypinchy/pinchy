@@ -87,14 +87,14 @@ Agents that attach files to Odoo records, such as saving a receipt on an invoice
 
 ## Agent Templates
 
-Pinchy ships with 16 pre-configured agent templates for common Odoo use cases. Instead of building an agent from scratch and manually assigning permissions, you can pick a template and have everything set up in seconds.
+Pinchy ships with 20+ pre-configured agent templates for common Odoo use cases. Instead of building an agent from scratch and manually assigning permissions, you can pick a template and have everything set up in seconds.
 
 Each template auto-configures the agent's permissions, tools, and system instructions. All you need to do is select which Odoo connection the agent should use. During creation, Pinchy validates the API user's access rights against the models the agent needs. If some models are missing (e.g. the required Odoo module is not installed), Pinchy warns you so you can adjust the Odoo configuration or pick a different template.
 
 ### Sales & Customer Operations
 
 - **Sales Analyst** _(read-only)_ — Revenue analysis, customer rankings, order trends, and product margin analysis using standard cost.
-- **CRM & Sales Assistant** _(read-write)_ — Pipeline management, lead follow-up, opportunity updates, customer data maintenance, and end-to-end quotation building (including setting the right fiscal position so VAT applies correctly). Reads invoice payment status but never drafts or posts invoices — that's the Bookkeeper agent's job.
+- **CRM & Sales Assistant** _(read-write)_ — Pipeline management, lead follow-up, opportunity updates, customer data maintenance, and end-to-end quotation building. Includes `account.fiscal.position` (read+write) for setting the right VAT regime, `sale.order.line` (read+create+write) for revising quotation line items directly, and `account.move` (read-only) for invoice payment lookup. Never drafts or posts invoices — that's the Bookkeeper agent's job.
 - **Customer Service** _(read-write)_ — Answers order inquiries and drafts responses entirely through Odoo's mail alias and discussion thread, so agents never need external email access.
 - **Subscription Manager** _(read-only)_ — Tracks MRR, churn, renewal dates and recurring revenue across your subscription base.
 
@@ -129,6 +129,18 @@ Read-only templates are safe to deploy immediately — they can't modify your da
 :::note
 Templates depend on specific Odoo modules being installed. For example, **Fleet Manager** requires the Fleet module, **Manufacturing Planner** requires MRP, and **Subscription Manager** works best with the Subscriptions module. If a template can't be activated, check the missing models list shown during agent creation and install the corresponding module in Odoo.
 :::
+
+## Multi-company databases
+
+If your Odoo database hosts more than one `res.company`, Pinchy adds two layers of protection on top of Odoo's own multi-company access rules.
+
+**Top-level cross-company write rejection.** When an agent calls `odoo_create` or `odoo_write`, the `pinchy-odoo` plugin walks the embedded `_pinchy_ref` tags in the payload and refuses the write if the top-level company tag disagrees with the company implied by the relation chain — for example, applying a Company A fiscal position to a partner that lives under Company B. The agent receives an explicit error and the write never reaches Odoo. The guard is intentionally scoped to the top-level field only: nested values keep being validated by Odoo itself, where the existing access rules already apply.
+
+**Company-aware disambiguation in reads.** `odoo_read` transparently augments the requested field list with `company_id` for company-scoped models (`res.partner`, `account.fiscal.position`, and similar), so the agent always has the company context it needs for the next decision without bloating the prompt with extra field lists. Encoded `_pinchy_ref` references carry an optional `companyId` and `companyLabel`, and the human-readable label is suffixed with the company name (`"ACME Bookkeeping [Company A]"`) when ambiguity exists.
+
+**Clearer many2one collisions.** When an `odoo_create` or `odoo_write` lookup matches more than one record across companies, the error explains the multi-company collision instead of returning a generic "multiple matches" string — so the agent can retry with a `company_id` constraint rather than guessing.
+
+The stock **Penny** (Accountant Assistant) and **Bookkeeper** templates also include guidance that teaches the agent to disambiguate multi-company records up front. Newly-created agents pick this up automatically; existing agents keep their stored `AGENTS.md` until you recreate them, but the runtime cross-company guard applies regardless.
 
 ## Re-syncing when Odoo permissions change
 
