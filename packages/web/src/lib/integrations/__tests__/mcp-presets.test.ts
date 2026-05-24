@@ -51,20 +51,21 @@ describe("MCP_PRESETS", () => {
     // Quick smoke check that the markdown copy points at the current
     // 2026 URLs — guards against the kind of stale-link regression we saw
     // with GitHub's old ?type=beta URL.
-    // Anchor each pattern on the `https://` scheme so we don't accidentally
-    // match an attacker-controlled prefix like `evil.com/github.com/...` —
-    // CodeQL flags unanchored host substrings as a regex-misuse smell.
-    const links: Record<string, RegExp> = {
-      github: /https:\/\/github\.com\/settings\/personal-access-tokens/,
-      linear: /https:\/\/linear\.app\/settings\/api/,
-      atlassian: /https:\/\/id\.atlassian\.com\/manage-profile\/security\/api-tokens/,
-      stripe: /https:\/\/dashboard\.stripe\.com\/apikeys/,
-      cloudflare: /https:\/\/dash\.cloudflare\.com\/profile\/api-tokens/,
+    //
+    // Exact-string `includes()` rather than a regex: stricter than a
+    // pattern match and avoids CodeQL's js/regex/missing-regexp-anchor
+    // smell that fires on URL-shaped patterns without `^` / `\b`.
+    const links: Record<string, string> = {
+      github: "https://github.com/settings/personal-access-tokens",
+      linear: "https://linear.app/settings/api",
+      atlassian: "https://id.atlassian.com/manage-profile/security/api-tokens",
+      stripe: "https://dashboard.stripe.com/apikeys",
+      cloudflare: "https://dash.cloudflare.com/profile/api-tokens",
     };
-    for (const [id, pattern] of Object.entries(links)) {
+    for (const [id, expectedUrl] of Object.entries(links)) {
       const preset = MCP_PRESETS.find((p) => p.id === id);
       expect(preset, `preset ${id} should exist`).toBeDefined();
-      expect(preset!.tokenInstructions).toMatch(pattern);
+      expect(preset!.tokenInstructions).toContain(expectedUrl);
     }
   });
 });
