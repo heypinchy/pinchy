@@ -31,7 +31,7 @@ class FakeChokidarWatcher {
 }
 
 // Records the last FakeChokidarWatcher returned by `chokidar.watch(...)`
-// so tests can drive events directly. Reset per test via `beforeEach`.
+// so tests can drive events directly. Reset per test via `setupMockState`.
 let lastFakeWatcher: FakeChokidarWatcher | null = null;
 // When true (default), the mock walks the watched path on startup and emits
 // "add" for every existing file before "ready" — matching chokidar's real
@@ -39,11 +39,20 @@ let lastFakeWatcher: FakeChokidarWatcher | null = null;
 // Individual tests can set this false to drive the scan→ready transition
 // manually (see the "scanning" branch test).
 //
-// NOTE: this is module-level mutable state. Every `beforeEach` block in
-// this file MUST reset it (alongside `lastFakeWatcher`) before calling
-// `startMemoryAuditWatcher`, otherwise a previous test's override leaks
-// into the next test's setup and produces deceptive failures.
+// NOTE: module-level mutable state. Every `beforeEach` MUST call
+// `setupMockState()` so a previous test's override doesn't leak into the
+// next test's setup and produce deceptive failures.
 let mockInitialScan = true;
+
+/**
+ * Reset every piece of module-level mock state. Call this at the top of
+ * EVERY `beforeEach` in this file so the reset is structural, not a
+ * per-block convention that's easy to forget when adding a new describe.
+ */
+function setupMockState(): void {
+  lastFakeWatcher = null;
+  mockInitialScan = true;
+}
 
 function walkAndEmitAdds(w: FakeChokidarWatcher, dir: string): void {
   let entries: string[];
@@ -92,12 +101,11 @@ describe("startMemoryAuditWatcher (chokidar wiring)", () => {
     // Real tmpdir + real files: the watcher's handler reads file content
     // via `readFile(absolutePath, "utf8")`, so the file must exist on disk
     // for that read to succeed. We only mock chokidar's event source.
+    setupMockState();
     root = mkdtempSync(join(tmpdir(), "pinchy-memwatch-"));
     mkdirSync(join(root, "agents", "agent-1", "memory"), { recursive: true });
     writeFileSync(join(root, "agents", "agent-1", "MEMORY.md"), "initial\n", "utf8");
     appended = [];
-    lastFakeWatcher = null;
-    mockInitialScan = true;
 
     stop = await startMemoryAuditWatcher({
       root,
@@ -241,14 +249,13 @@ describe("startMemoryAuditWatcher (handler error resilience)", () => {
   let lookupShouldThrow: boolean;
 
   beforeEach(async () => {
+    setupMockState();
     root = mkdtempSync(join(tmpdir(), "pinchy-memwatch-err-"));
     mkdirSync(join(root, "agents", "agent-1", "memory"), { recursive: true });
     writeFileSync(join(root, "agents", "agent-1", "MEMORY.md"), "first write\n", "utf8");
     appended = [];
     unhandled = [];
     lookupShouldThrow = true;
-    lastFakeWatcher = null;
-    mockInitialScan = true;
 
     unhandledHandler = (reason) => {
       unhandled.push(reason);

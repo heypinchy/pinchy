@@ -33,6 +33,14 @@ vi.mock("@/lib/openclaw-config", () => ({
 // transaction rollback without faking out the DB layer itself. Default
 // behavior delegates to the real implementation; tests use
 // `vi.mocked(claimInvite).mockImplementationOnce(...)` to override.
+//
+// Side effect: `vi.fn(actual.claimInvite)` wraps the real function with a
+// spy, so every test in this suite — not just the rollback one — gets
+// call-tracking on `claimInvite` for free (call counts, args, etc.).
+// No assertion currently relies on those counts, but if you add such an
+// assertion later, remember it's the spy you're asserting against, not
+// the real `lib/invites` export. `vi.clearAllMocks()` in `beforeEach`
+// keeps the counts isolated per test.
 vi.mock("@/lib/invites", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@/lib/invites")>();
   return {

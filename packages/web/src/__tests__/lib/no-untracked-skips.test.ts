@@ -29,6 +29,30 @@ const SCAN_ROOTS = ["packages"];
 
 const TEST_FILE_RE = /\.(test|spec)\.(?:c|m)?[jt]sx?$/;
 
+/**
+ * Paths the drift-guard MUST NOT scan, otherwise it catches its own
+ * scaffolding and self-detonates:
+ *   - this file itself contains the example regex (`.skip` in regex source)
+ *   - the parity test's `FIXTURES` array contains literal untracked-skip
+ *     strings as test inputs
+ *   - everything under `eslint-rules/` (the ESLint rule's own AST patterns
+ *     mention `.skip` etc. in source-code form)
+ *   - everything under `__tests__/eslint/` (RuleTester invalid-fixtures
+ *     deliberately ship raw `.skip` calls as failure cases)
+ *
+ * All four entries are relative to REPO_ROOT. If you ever move one of the
+ * checker files, update this list — the drift-guard will start flagging
+ * its own fixtures otherwise.
+ */
+const SELF_EXCLUSIONS = {
+  files: new Set([
+    "packages/web/src/__tests__/lib/no-untracked-skips.test.ts",
+    "packages/web/src/__tests__/lib/no-untracked-skips-parity.test.ts",
+  ]),
+  prefixes: ["packages/web/eslint-rules/"],
+  substrings: ["/__tests__/eslint/"],
+};
+
 // Permanent-skip patterns we forbid without an issue link. We do NOT match
 // `.skipIf(` here — that's an explicit conditional gate, not a "we'll fix
 // this later" suppression.
@@ -128,15 +152,14 @@ describe("no-untracked-skips", () => {
       testFiles.push(...walkTestFiles(resolve(REPO_ROOT, root)));
     }
     // Don't let this guard catch itself, the parity test's fixture
-    // literals, or the eslint rule's own fixture file.
+    // literals, or the eslint rule's own fixture file. See SELF_EXCLUSIONS
+    // at the top of this file for the rationale.
     const filtered = testFiles.filter((f) => {
       const rel = relative(REPO_ROOT, f);
-      return (
-        rel !== "packages/web/src/__tests__/lib/no-untracked-skips.test.ts" &&
-        rel !== "packages/web/src/__tests__/lib/no-untracked-skips-parity.test.ts" &&
-        !rel.startsWith("packages/web/eslint-rules/") &&
-        !rel.includes("/__tests__/eslint/")
-      );
+      if (SELF_EXCLUSIONS.files.has(rel)) return false;
+      if (SELF_EXCLUSIONS.prefixes.some((p) => rel.startsWith(p))) return false;
+      if (SELF_EXCLUSIONS.substrings.some((s) => rel.includes(s))) return false;
+      return true;
     });
 
     const findings: Finding[] = [];

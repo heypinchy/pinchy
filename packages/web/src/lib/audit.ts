@@ -31,6 +31,7 @@ export type AuditEventType =
   | "auth.failed"
   | "auth.logout"
   | "auth.csrf_blocked"
+  | "auth.password_reset_completed"
   | "agent.created"
   | "agent.updated"
   | "agent.deleted"

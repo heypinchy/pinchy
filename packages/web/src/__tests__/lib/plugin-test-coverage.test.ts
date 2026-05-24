@@ -1,12 +1,25 @@
-// Enforcement guard: every *.test.ts under packages/plugins/pinchy-* must
-// be matched by the `include` patterns in packages/web/vitest.config.ts.
-// Without this, new plugin tests silently fall outside CI (the root
-// `pnpm test` script is `pnpm --filter @pinchy/web test`, so plugin
-// packages' own `vitest run` scripts are never invoked in CI on their
-// own — they only run by virtue of being picked up here).
+// This file contains TWO describes despite the singular file name:
 //
-// See AGENTS.md § "Plugin Integration Contract" for the broader
-// plugin-coverage contract.
+//   1. `globToRegex (escape safety)` — unit tests for the small glob→regex
+//      helper defined below. Co-located here because the helper is the
+//      ONLY consumer of `escapeRegex` and is not exported beyond this
+//      file. Extracting it to a separate module would be over-engineering
+//      for a single internal use; the tests would just import it back.
+//   2. `plugin-test-coverage` — the actual enforcement guard: every
+//      *.test.ts under packages/plugins/pinchy-* must be matched by the
+//      `include` patterns in packages/web/vitest.config.ts. The helper
+//      from (1) is what powers the matching.
+//
+// If `globToRegex` ever grows a second caller, extract it (and these
+// tests) to `glob-to-regex.ts` + `glob-to-regex.test.ts` and update the
+// import in (2).
+//
+// Why the enforcement guard matters: without it, new plugin tests
+// silently fall outside CI. The root `pnpm test` script is
+// `pnpm --filter @pinchy/web test`, so plugin packages' own `vitest run`
+// scripts are never invoked in CI on their own — they only run by virtue
+// of being picked up by the include glob. See AGENTS.md § "Plugin
+// Integration Contract" for the broader plugin-coverage contract.
 import { describe, it, expect } from "vitest";
 import { readdirSync, statSync } from "node:fs";
 import { join, relative, resolve } from "node:path";
