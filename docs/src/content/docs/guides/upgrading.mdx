@@ -157,7 +157,7 @@ None for stock templates. If you maintain a **custom `AGENTS.md`** that tells th
 
 ### Upgrade notes
 
-%%PINCHY_VERSION%% gives every agent a dedicated `workbench/` subdirectory in its workspace for files it produces, separate from the user's `uploads/`. This unblocks `pinchy_write` on fresh agents that had never received a user upload, and clarifies which directory the agent should target when saving notes, exports, or drafts. It also fixes a confusing failure mode for the built-in `image` tool on Ollama Cloud stacks, adds an explicit image-model default to remove a class of provider-selection drift, and patches a reliability edge where chat history could disappear overnight due to OpenClaw's default daily session-reset behavior.
+%%PINCHY_VERSION%% picks up **OpenClaw 2026.5.20** with the v4 client protocol (was 2026.5.7 / v3), gives every agent a dedicated `workbench/` subdirectory in its workspace for files it produces, separate from the user's `uploads/`, and hardens the Odoo plugin against silent cross-company writes for multi-company databases. It also fixes a confusing failure mode for the built-in `image` tool on Ollama Cloud stacks, adds an explicit image-model default, patches a reliability edge where chat history could disappear overnight due to OpenClaw's default daily session-reset behavior, and tightens the password-reset path so leaked recovery links cannot leave a logged-in session behind.
 
 Upgrade with the standard flow:
 
@@ -227,6 +227,51 @@ If you skip this step, the existing agent keeps its previous (narrower) permissi
 OpenClaw ships with a default `session.reset: { mode: "daily", atHour: 4 }` that rotates the session pointer at 04:00 gateway-local time. Each morning the pointer moved to a new, empty transcript — old history stayed on disk but became unreachable from the Pinchy UI. Pinchy now unconditionally overrides this setting to an idle-based reset with a one-year idle window (`mode: "idle", idleMinutes: 525600`), which never fires under normal use. Conversations persist until the user explicitly resets with `/new` or a new chat is started manually.
 
 **No action required.** The override is written on every Pinchy startup via `regenerateOpenClawConfig()`. If your instance was affected, existing message files are still on disk under `~/.openclaw/agents/<agentId>/sessions/`. Reach out to your administrator if you need to restore a specific session.
+
+#### OpenClaw 2026.5.20 (protocol v4)
+
+%%PINCHY_VERSION%% bumps the bundled OpenClaw runtime from `2026.5.7` to `2026.5.20` and `openclaw-node` from `0.9.0` to `0.10.0`. OpenClaw 2026.5.12 raised `MIN_CLIENT_PROTOCOL_VERSION` from 3 to 4 — earlier Pinchy releases paired with a self-hosted OpenClaw on a newer tag would fall into an infinite "Waiting for OpenClaw Gateway…" loop with `protocol mismatch … expected=4` in the gateway log ([#411](https://github.com/heypinchy/pinchy/issues/411)). The v0.5.5 client advertises protocol v4 and clears the handshake.
+
+OpenClaw 2026.5.12 also stopped self-bootstrapping a random `gateway.auth.token` on first start and now refuses to bind on a non-loopback interface without one. Pinchy now seeds `gateway.auth.{mode,token}` before OpenClaw starts so fresh installs (no setup wizard run yet) come up cleanly.
+
+**No action required for the standard Docker Compose stack** — `docker compose pull && up -d` swaps both images together. If you run a custom OpenClaw on the side and pair it with `openclaw-node` directly, bump to `0.10.0` to advertise protocol v4.
+
+#### Cross-company write protection in Odoo agents
+
+For multi-company Odoo databases, the `pinchy-odoo` plugin now refuses to write a record whose embedded `_pinchy_ref` company tag disagrees with the company implied by the relation chain (top-level field only). This stops a class of silent cross-company mistakes — for example, an agent applying a fiscal position from Company A to a partner that lives under Company B, where the write would previously be accepted by Odoo but produce wrong downstream taxes.
+
+Companion changes ship together:
+
+- **Auto-include `company_id`.** `odoo_read` now transparently augments the requested field list with `company_id` for company-scoped models (`res.partner`, `account.fiscal.position`, etc.) so the agent always has the company context it needs for the next decision, without bloating the agent's prompt with extra field lists.
+- **`_pinchy_ref` carries the company name.** Encoded references now include an optional `companyId` / `companyLabel`, and labels are suffixed with the company name (`"ACME Bookkeeping [Company A]"`) when ambiguity exists. The base ordering invariant for `_pinchy_ref` is unchanged.
+- **Better many2one collision errors.** When an `odoo_create` or `odoo_write` lookup matches more than one record across companies, the error message now explains the multi-company collision instead of returning a generic "multiple matches" string, so the agent can retry with a `company_id` constraint.
+- **Penny and Bookkeeper templates updated.** Both stock templates now instruct the agent to disambiguate multi-company records up front instead of guessing.
+
+**Action for existing read-write Odoo agents (Penny / Bookkeeper):** newly-created agents get the updated instructions automatically. Existing agents keep their current `AGENTS.md` unless you re-create them; the runtime guard (cross-company write rejection) applies to **all** Odoo agents regardless of `AGENTS.md` content.
+
+#### Password reset now revokes sessions and writes an audit entry
+
+`POST /api/invite/claim` on the reset branch is now wrapped in a database transaction with three guarantees ([PR #431](https://github.com/heypinchy/pinchy/pull/431)):
+
+1. **Existing sessions for the target user are revoked.** A leaked or stale session token cannot survive a password reset, so recovery semantics are now sound.
+2. **The four writes (account password, optional user name, invite-token claim, session revocation) are atomic.** If any step fails, everything rolls back and the reset link stays usable for a retry.
+3. **An `auth.password_reset_completed` audit entry is written.** Password changes are security-sensitive regardless of who triggers them, and CISOs expect to see them in the audit trail.
+
+See the new row in [Audit trail → Authentication](/concepts/audit-trail/#authentication) for the detail-shape.
+
+**No action required.** Behavior change only on the reset path; ordinary login sessions are untouched.
+
+#### Universal `chat.agent_error` audit event
+
+Before %%PINCHY_VERSION%%, only three error classes wrote audit entries (`agent.model_unavailable`, `agent.upstream_format_error`, `chat.silent_stream`) and each was throttled. The long tail — incomplete-terminal-response failovers, unclassified provider errors, transient blips — had no audit signal at all, which made "how often does this happen?" unanswerable without screenshotting.
+
+A new `chat.agent_error` event now fires **unconditionally for every error chunk** plus the synthesised silent-stream timeout. It captures `agent`, `model`, an `errorClass` discriminator (one of `failover_incomplete_stream` / `schema_rejection` / `model_unavailable` / `transient` / `provider_config` / `silent_stream_timeout` / `unknown`), and an email-scrubbed `providerError` truncated to 1024 bytes. The specialised events stay in their role as throttled per-class signals; the umbrella runs alongside them, not instead.
+
+A single SQL query grouped by `detail->>'errorClass'` now aggregates every failure shape for a fleet-wide failure-rate dashboard. See [Audit trail → Chat runtime](/concepts/audit-trail/#chat-runtime) for the full row.
+
+#### Known issues
+
+- **`uuid` < 11.1.1 (`GHSA-w5hq-g745-h8pq`, moderate).** Reachable only via `googleapis → google-auth-library → gaxios → uuid` from the `pinchy-email` plugin's Gmail integration. The advisory is missing-buffer-bounds checks in `v3`/`v5`/`v6` UUID generation when callers supply their own buffer; Pinchy and its downstream deps only call the no-argument `v4` form, so the gadget is unreachable in our code paths. The dep cannot be upgraded without bumping `googleapis` past a major it has not yet released. Tracked; `pnpm audit --audit-level=high --prod` (the level our release gate runs at) stays clean.
 
 ## Upgrading from v0.5.3 to v0.5.4
 
