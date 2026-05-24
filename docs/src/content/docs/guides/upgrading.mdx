@@ -149,7 +149,27 @@ If you need to roll back after an upgrade:
   backup step matters.
 </Aside>
 
-## Upgrading from v0.5.4 to %%PINCHY_VERSION%%
+## Upgrading from v0.5.5 to %%PINCHY_VERSION%%
+
+### Breaking changes
+
+None.
+
+### Upgrade notes
+
+%%PINCHY_VERSION%% is a cosmetic patch on top of v0.5.5. The v0.5.5 release-cut was performed via `gh release create` instead of `pnpm release`, which skipped the version bump in `package.json` and `packages/web/package.json`. As a result, v0.5.5 images report `"pinchyVersion": "0.5.4"` from `/api/version` even though the image tag, OCI `image.version` label, and OpenClaw runtime are all on the intended v0.5.5 wire. %%PINCHY_VERSION%% restores agreement between the tag and the reported version. There are no functional changes versus v0.5.5.
+
+If you already deployed v0.5.5, upgrade straight to %%PINCHY_VERSION%%:
+
+```bash
+cd /opt/pinchy
+sed -i 's/PINCHY_VERSION=v0.5.5/PINCHY_VERSION=%%PINCHY_VERSION%%/' .env
+docker compose pull && docker compose up -d && docker image prune -f
+```
+
+If you are upgrading directly from v0.5.4, skip v0.5.5 and follow the v0.5.4 → v0.5.5 upgrade notes below (substituting `%%PINCHY_VERSION%%` for `v0.5.5` in the `sed` command). All v0.5.5 behaviour ships in %%PINCHY_VERSION%% unchanged.
+
+## Upgrading from v0.5.4 to v0.5.5
 
 ### Breaking changes
 
@@ -157,13 +177,13 @@ None for stock templates. If you maintain a **custom `AGENTS.md`** that tells th
 
 ### Upgrade notes
 
-%%PINCHY_VERSION%% picks up **OpenClaw 2026.5.20** with the v4 client protocol (was 2026.5.7 / v3), gives every agent a dedicated `workbench/` subdirectory in its workspace for files it produces, separate from the user's `uploads/`, and hardens the Odoo plugin against silent cross-company writes for multi-company databases. It also fixes a confusing failure mode for the built-in `image` tool on Ollama Cloud stacks, adds an explicit image-model default, patches a reliability edge where chat history could disappear overnight due to OpenClaw's default daily session-reset behavior, and tightens the password-reset path so leaked recovery links cannot leave a logged-in session behind.
+v0.5.5 picks up **OpenClaw 2026.5.20** with the v4 client protocol (was 2026.5.7 / v3), gives every agent a dedicated `workbench/` subdirectory in its workspace for files it produces, separate from the user's `uploads/`, and hardens the Odoo plugin against silent cross-company writes for multi-company databases. It also fixes a confusing failure mode for the built-in `image` tool on Ollama Cloud stacks, adds an explicit image-model default, patches a reliability edge where chat history could disappear overnight due to OpenClaw's default daily session-reset behavior, and tightens the password-reset path so leaked recovery links cannot leave a logged-in session behind.
 
 Upgrade with the standard flow:
 
 ```bash
 cd /opt/pinchy
-sed -i 's/PINCHY_VERSION=v0.5.4/PINCHY_VERSION=%%PINCHY_VERSION%%/' .env
+sed -i 's/PINCHY_VERSION=v0.5.4/PINCHY_VERSION=v0.5.5/' .env
 docker compose pull && docker compose up -d && docker image prune -f
 ```
 
@@ -177,7 +197,7 @@ Each agent workspace now has three zones (see [Agent Workspaces](/concepts/works
 - **`uploads/`** — files the user attached in chat. Created on workspace spawn; previously created lazily by the first upload.
 - **`workbench/`** _(new)_ — the agent's own writable area. Created on workspace spawn. `pinchy_write` accepts paths under here without prior user upload.
 
-On v0.5.4 and earlier, a fresh agent could not call `pinchy_write` until the user had attached at least one file via the chat upload button — `pinchy_write` to `<workspace>/uploads/foo.txt` failed with `ENOENT` because the `uploads/` directory didn't exist yet, and writing anywhere else (e.g. the workspace root) was rejected. %%PINCHY_VERSION%% provisions both `uploads/` and `workbench/` on workspace creation, and adds `workbench/` to the `pinchy_write` allow-list as the canonical agent write target.
+On v0.5.4 and earlier, a fresh agent could not call `pinchy_write` until the user had attached at least one file via the chat upload button — `pinchy_write` to `<workspace>/uploads/foo.txt` failed with `ENOENT` because the `uploads/` directory didn't exist yet, and writing anywhere else (e.g. the workspace root) was rejected. v0.5.5 provisions both `uploads/` and `workbench/` on workspace creation, and adds `workbench/` to the `pinchy_write` allow-list as the canonical agent write target.
 
 **Existing custom `AGENTS.md` files keep working.** `uploads/` remains writable for backward compatibility, so any custom instruction telling the agent to save into `uploads/` continues to function. If you maintain such an `AGENTS.md`, consider updating it to use `workbench/` instead — the separation makes "user-uploaded" vs. "agent-produced" easier to reason about. There is no automatic migration; this is a documentation-level switch.
 
@@ -230,7 +250,7 @@ OpenClaw ships with a default `session.reset: { mode: "daily", atHour: 4 }` that
 
 #### OpenClaw 2026.5.20 (protocol v4)
 
-%%PINCHY_VERSION%% bumps the bundled OpenClaw runtime from `2026.5.7` to `2026.5.20` and `openclaw-node` from `0.9.0` to `0.10.0`. OpenClaw 2026.5.12 raised `MIN_CLIENT_PROTOCOL_VERSION` from 3 to 4 — earlier Pinchy releases paired with a self-hosted OpenClaw on a newer tag would fall into an infinite "Waiting for OpenClaw Gateway…" loop with `protocol mismatch … expected=4` in the gateway log ([#411](https://github.com/heypinchy/pinchy/issues/411)). The v0.5.5 client advertises protocol v4 and clears the handshake.
+v0.5.5 bumps the bundled OpenClaw runtime from `2026.5.7` to `2026.5.20` and `openclaw-node` from `0.9.0` to `0.10.0`. OpenClaw 2026.5.12 raised `MIN_CLIENT_PROTOCOL_VERSION` from 3 to 4 — earlier Pinchy releases paired with a self-hosted OpenClaw on a newer tag would fall into an infinite "Waiting for OpenClaw Gateway…" loop with `protocol mismatch … expected=4` in the gateway log ([#411](https://github.com/heypinchy/pinchy/issues/411)). The v0.5.5 client advertises protocol v4 and clears the handshake.
 
 OpenClaw 2026.5.12 also stopped self-bootstrapping a random `gateway.auth.token` on first start and now refuses to bind on a non-loopback interface without one. Pinchy now seeds `gateway.auth.{mode,token}` before OpenClaw starts so fresh installs (no setup wizard run yet) come up cleanly.
 
@@ -263,7 +283,7 @@ See the new row in [Audit trail → Authentication](/concepts/audit-trail/#authe
 
 #### Universal `chat.agent_error` audit event
 
-Before %%PINCHY_VERSION%%, only three error classes wrote audit entries (`agent.model_unavailable`, `agent.upstream_format_error`, `chat.silent_stream`) and each was throttled. The long tail — incomplete-terminal-response failovers, unclassified provider errors, transient blips — had no audit signal at all, which made "how often does this happen?" unanswerable without screenshotting.
+Before v0.5.5, only three error classes wrote audit entries (`agent.model_unavailable`, `agent.upstream_format_error`, `chat.silent_stream`) and each was throttled. The long tail — incomplete-terminal-response failovers, unclassified provider errors, transient blips — had no audit signal at all, which made "how often does this happen?" unanswerable without screenshotting.
 
 A new `chat.agent_error` event now fires **unconditionally for every error chunk** plus the synthesised silent-stream timeout. It captures `agent`, `model`, an `errorClass` discriminator (one of `failover_incomplete_stream` / `schema_rejection` / `model_unavailable` / `transient` / `provider_config` / `silent_stream_timeout` / `unknown`), and an email-scrubbed `providerError` truncated to 1024 bytes. The specialised events stay in their role as throttled per-class signals; the umbrella runs alongside them, not instead.
 
