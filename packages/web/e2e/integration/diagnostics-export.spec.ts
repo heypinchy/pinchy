@@ -19,7 +19,10 @@ async function sendChatTurnAndAwaitReply(page: Page, message: string) {
   await expect(input).toBeVisible({ timeout: 10000 });
   await input.fill(message);
   await input.press("Enter");
-  await expect(page.getByText(FAKE_OLLAMA_RESPONSE)).toBeVisible({ timeout: 30000 });
+  // Chat history from earlier specs (e.g. agent-chat.spec.ts) accumulates on
+  // the shared Smithers agent, so FAKE_OLLAMA_RESPONSE can be present multiple
+  // times. Anchor on the newest match.
+  await expect(page.getByText(FAKE_OLLAMA_RESPONSE).last()).toBeVisible({ timeout: 30000 });
 }
 
 test.describe("Self-service diagnostics export", () => {
