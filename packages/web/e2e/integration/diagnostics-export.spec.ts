@@ -25,6 +25,28 @@ async function sendChatTurnAndAwaitReply(page: Page, message: string) {
   await expect(page.getByText(FAKE_OLLAMA_RESPONSE).last()).toBeVisible({ timeout: 30000 });
 }
 
+/**
+ * Clicks the dialog's Generate button and asserts that the diagnostics-export
+ * API responds 200 before waiting for the download. If the API fails the test
+ * surfaces the actual status + body — much more useful than a generic 120s
+ * "waiting for download" timeout.
+ */
+async function clickDialogGenerateAndAwaitDownload(page: Page) {
+  const apiResponsePromise = page.waitForResponse(
+    (r) => r.url().includes("/api/diagnostics/export") && r.request().method() === "POST",
+    { timeout: 60000 }
+  );
+  const downloadPromise = page.waitForEvent("download", { timeout: 60000 });
+  await page.getByRole("button", { name: /^generate$/i }).click();
+
+  const apiResponse = await apiResponsePromise;
+  if (apiResponse.status() !== 200) {
+    const body = await apiResponse.text().catch(() => "(could not read body)");
+    throw new Error(`POST /api/diagnostics/export failed with ${apiResponse.status()}: ${body}`);
+  }
+  return downloadPromise;
+}
+
 test.describe("Self-service diagnostics export", () => {
   test("Settings → Support → Generate produces a downloadable JSON file", async ({ page }) => {
     await login(page);
@@ -42,9 +64,7 @@ test.describe("Self-service diagnostics export", () => {
     await openDialogButton.click();
 
     // The dialog has a "Generate" button — click it and wait for the download.
-    const downloadPromise = page.waitForEvent("download");
-    await page.getByRole("button", { name: /^generate$/i }).click();
-    const download = await downloadPromise;
+    const download = await clickDialogGenerateAndAwaitDownload(page);
     expect(download.suggestedFilename()).toMatch(/^pinchy-bugreport-.+\.json$/);
 
     // Save and inspect the bundle.
@@ -87,9 +107,7 @@ test.describe("Self-service diagnostics export", () => {
     await page.getByTestId("assistant-action-bar-more-trigger").last().click();
     await page.getByTestId("report-issue-menu-item").click();
 
-    const downloadPromise = page.waitForEvent("download");
-    await page.getByRole("button", { name: /^generate$/i }).click();
-    const download = await downloadPromise;
+    const download = await clickDialogGenerateAndAwaitDownload(page);
     expect(download.suggestedFilename()).toMatch(/^pinchy-bugreport-.+\.json$/);
 
     const downloadPath = await download.path();
