@@ -1379,6 +1379,128 @@ jobs:
         if: always()
         run: docker compose -f docker-compose.yml -f docker-compose.e2e.yml -f docker-compose.email-test.yml down -v
 
+  setup-wizard-e2e:
+    name: Setup Wizard E2E Tests
+    runs-on: ubuntu-latest
+    needs: build-image
+    if: >-
+      always() &&
+      (needs.build-image.result == 'success' ||
+       needs.build-image.result == 'skipped')
+    permissions:
+      contents: read
+      packages: read
+
+    env:
+      PINCHY_VERSION: latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: ./.github/actions/docker-mirror
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Log in to GHCR (skip on fork PRs)
+        if: needs.build-image.result == 'success'
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: ./.github/actions/setup-pnpm
+
+      - name: Pull pre-built CI images (skip on fork PRs)
+        if: needs.build-image.result == 'success'
+        run: |
+          docker pull ${{ needs.build-image.outputs.pinchy-image }}
+          docker pull ${{ needs.build-image.outputs.openclaw-image }}
+
+      - name: Start test stack with mock LLM providers (CI — pre-built images)
+        if: needs.build-image.result == 'success'
+        run: docker compose -f docker-compose.yml -f docker-compose.e2e.yml -f docker-compose.setup-wizard-test.yml up -d
+        env:
+          PINCHY_IMAGE: ${{ needs.build-image.outputs.pinchy-image }}
+          OPENCLAW_IMAGE: ${{ needs.build-image.outputs.openclaw-image }}
+          BETTER_AUTH_SECRET: ci-test-secret-not-for-production
+          ENCRYPTION_KEY: 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+
+      - name: Start test stack with mock LLM providers (fork PR fallback — local build)
+        if: needs.build-image.result == 'skipped'
+        run: docker compose -f docker-compose.yml -f docker-compose.e2e.yml -f docker-compose.setup-wizard-test.yml up --build -d
+        env:
+          BETTER_AUTH_SECRET: ci-test-secret-not-for-production
+          ENCRYPTION_KEY: 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+
+      - name: Wait for services
+        run: |
+          echo "Waiting for Pinchy..."
+          for i in $(seq 1 60); do
+            if curl -sf http://localhost:7777/api/health >/dev/null 2>&1; then
+              echo "Pinchy healthy (attempt $i)"
+              break
+            fi
+            if [ "$i" -eq 60 ]; then
+              echo "::error::Pinchy not healthy after 120s"
+              docker compose -f docker-compose.yml -f docker-compose.e2e.yml -f docker-compose.setup-wizard-test.yml logs pinchy
+              exit 1
+            fi
+            sleep 2
+          done
+          echo "Waiting for mock LLM providers..."
+          for i in $(seq 1 15); do
+            if docker compose -f docker-compose.yml -f docker-compose.e2e.yml -f docker-compose.setup-wizard-test.yml exec -T llm-providers-mock node -e "fetch('http://localhost:9100/control/health').then(r=>r.ok?process.exit(0):process.exit(1)).catch(()=>process.exit(1))" >/dev/null 2>&1; then
+              echo "Mock LLM providers healthy (attempt $i)"
+              break
+            fi
+            if [ "$i" -eq 15 ]; then
+              echo "::error::Mock LLM providers not healthy after 30s"
+              docker compose -f docker-compose.yml -f docker-compose.e2e.yml -f docker-compose.setup-wizard-test.yml logs llm-providers-mock
+              exit 1
+            fi
+            sleep 2
+          done
+          echo "Waiting for OpenClaw connection..."
+          for i in $(seq 1 60); do
+            if docker compose -f docker-compose.yml -f docker-compose.e2e.yml -f docker-compose.setup-wizard-test.yml logs pinchy 2>&1 | grep -q "Connected to OpenClaw Gateway"; then
+              echo "OpenClaw connected (attempt $i)"
+              break
+            fi
+            if [ "$i" -eq 60 ]; then
+              echo "::error::Pinchy never connected to OpenClaw"
+              docker compose -f docker-compose.yml -f docker-compose.e2e.yml -f docker-compose.setup-wizard-test.yml logs pinchy openclaw
+              exit 1
+            fi
+            sleep 2
+          done
+
+      - uses: ./.github/actions/setup-playwright
+
+      - name: Run Setup Wizard E2E tests
+        run: pnpm -C packages/web test:e2e:setup-wizard
+        env:
+          CI: true
+          ENCRYPTION_KEY: 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+
+      - name: Show logs on failure
+        if: failure()
+        run: |
+          echo "=== Pinchy logs ==="
+          docker compose -f docker-compose.yml -f docker-compose.e2e.yml -f docker-compose.setup-wizard-test.yml logs pinchy 2>&1 | tail -100
+          echo "=== OpenClaw logs ==="
+          docker compose -f docker-compose.yml -f docker-compose.e2e.yml -f docker-compose.setup-wizard-test.yml logs openclaw 2>&1 | tail -100
+          echo "=== Mock LLM providers logs ==="
+          docker compose -f docker-compose.yml -f docker-compose.e2e.yml -f docker-compose.setup-wizard-test.yml logs llm-providers-mock 2>&1 | tail -50
+
+      - name: Tear down
+        if: always()
+        run: docker compose -f docker-compose.yml -f docker-compose.e2e.yml -f docker-compose.setup-wizard-test.yml down -v
+
   telegram-e2e:
     name: Telegram E2E Tests
     runs-on: ubuntu-latest
