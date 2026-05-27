@@ -49,7 +49,9 @@ import {
   waitForTelegramPolling,
   seedSetup,
   pinchyPost,
+  pinchyGet,
 } from "./helpers";
+import { waitForAgentDispatchable } from "../shared/dispatch-probe";
 
 // Same bot token as telegram-flow.spec.ts. The Telegram E2E suites share Smithers
 // across spec files, and this one runs first (alphabetical). If we connected with
@@ -290,46 +292,31 @@ test.describe.serial("Agent create — no gateway restart cascade (#193)", () =>
       templateId: "custom",
     });
     expect(createRes.status, await createRes.text()).toBeLessThan(300);
+    const createdAgent = (await createRes.json()) as { id: string };
 
-    // Poll instead of fixed-sleep. config.apply latency on CI varies
-    // widely: typical 1–3 s on a fresh runner, 20–40 s after an earlier
-    // restart-startup-failed bundle has slowed the gateway. The
-    // previous fixed 10 s sleep false-failed runs where Pinchy's
-    // POST returned before OpenClaw had logged the reload-detected
-    // line. Polling exits on the first match — happy path stays fast,
-    // slow path no longer flakes. After the match, a 3 s grace window
-    // ensures any follow-up `requires gateway restart` cascade lands
-    // in the captured logs (the negative assertions below need it).
-    const pollDeadline = Date.now() + 60000;
-    let logs = "";
-    let observedReloadDetected = false;
-    while (Date.now() < pollDeadline) {
-      logs = openClawLogsSince(beforeMark);
-      if (/\[reload\] config change detected.*agents/.test(logs)) {
-        observedReloadDetected = true;
-        break;
-      }
-      await new Promise((r) => setTimeout(r, 1000));
-    }
+    // Wait for OC's runtime to ACTUALLY reflect the new agent. POST returns
+    // after a 5 s best-effort wait (`waitForAgentInRuntime` inside POST
+    // /api/agents); if OC was rate-limited or just slow, POST returns 201
+    // but the apply hasn't landed yet. The original test then polled OC
+    // logs for the reload event and threw at 60 s if it never appeared
+    // (CI run 26507951006 hit this — 27 s of OC log silence after POST,
+    // then the test timed out). Polling agent-dispatchability via
+    // `/api/health/openclaw?agentId=X` is a stronger signal: by the time
+    // OC's `agents.list` contains the id, config.apply MUST have landed,
+    // so the reload-detected log line is guaranteed to be in the captured
+    // logs. 90 s deadline matches the CI worst case documented in
+    // `dispatch-probe.ts`: typical fresh-runner ≤3 s, post-restart cold
+    // gateway ≤40 s.
+    await waitForAgentDispatchable(
+      (agentId) => pinchyGet(`/api/health/openclaw?agentId=${agentId}`),
+      createdAgent.id,
+      { deadlineMs: 90_000 }
+    );
+    // 3 s grace window after dispatchability so any follow-up
+    // `requires gateway restart` cascade lands in the captured logs (the
+    // negative assertions below need it).
     await new Promise((r) => setTimeout(r, 3000));
-    logs = openClawLogsSince(beforeMark);
-
-    // Clear failure path: if 60 s elapsed without ever seeing the
-    // reload-detected line, the bug isn't "config change triggered a
-    // restart" (which the negative assertions below cover) — it's
-    // "config.apply never reached OpenClaw at all". That distinction
-    // matters for triage. Without this guard, the test would fall through
-    // to the positive assertion below and report "expected '<empty>' to
-    // match /\\[reload\\] config change detected.*agents/", which gives no
-    // hint that the timeout was the cause. Surface it explicitly so the
-    // CI log says exactly what happened.
-    if (!observedReloadDetected) {
-      throw new Error(
-        `config.apply was not observed within 60 s after POST /api/agents returned ` +
-          `${createRes.status}. OpenClaw either dropped the apply RPC or is in a degraded ` +
-          `state. Logs captured since ${beforeMark}:\n${logs || "(empty)"}`
-      );
-    }
+    const logs = openClawLogsSince(beforeMark);
 
     // (a) Positive: the config change reached OpenClaw and was evaluated
     //     for reload. Without this, we'd be testing nothing — the config
