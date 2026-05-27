@@ -87,6 +87,7 @@ describe("runWatchdogTick", () => {
     expect(auditCall.outcome).toBe("failure");
     expect(auditCall.resource).toBe(`agent:${baseRun.agentId}`);
     expect(auditCall.detail.agent).toEqual({ id: baseRun.agentId, name: baseRun.agentName });
+    expect(auditCall.detail.user).toEqual({ id: baseRun.userId });
     expect(auditCall.detail.sessionKey).toBe(baseRun.sessionKey);
     expect(auditCall.detail.runId).toBe(baseRun.runId);
     expect(auditCall.detail.elapsedMs).toBe(FIFTEEN_MIN + 1);
@@ -130,6 +131,41 @@ describe("runWatchdogTick", () => {
     // whole point of writing audit BEFORE the side effects. Operators need
     // to see "we tried to kill a stuck run and even the abort failed".
     expect(writeAudit).toHaveBeenCalledTimes(2);
+    expect(runs.size()).toBe(0);
+  });
+
+  it("continues processing other stuck runs even if writeAudit throws for one", async () => {
+    writeAudit.mockImplementation(async (entry: { detail: { sessionKey: string } }) => {
+      if (entry.detail.sessionKey === "s1") throw new Error("audit DB down");
+    });
+
+    runs.register({ ...baseRun, sessionKey: "s1", ws: fakeWs() });
+    runs.register({ ...baseRun, sessionKey: "s2", runId: "run-2", ws: fakeWs() });
+
+    await runWatchdogTick(deps);
+
+    // chatAbort and broadcastTimeout still fire for s1 (best-effort) AND
+    // both still fire for s2 — a failing writeAudit for s1 must not
+    // poison the loop.
+    expect(chatAbort).toHaveBeenCalledTimes(2);
+    expect(broadcastTimeout).toHaveBeenCalledTimes(2);
+    expect(runs.size()).toBe(0);
+  });
+
+  it("continues processing other stuck runs even if broadcastTimeout throws for one", async () => {
+    broadcastTimeout.mockImplementation((run: ActiveRun) => {
+      if (run.sessionKey === "s1") throw new Error("send to dead socket");
+    });
+
+    runs.register({ ...baseRun, sessionKey: "s1", ws: fakeWs() });
+    runs.register({ ...baseRun, sessionKey: "s2", runId: "run-2", ws: fakeWs() });
+
+    await runWatchdogTick(deps);
+
+    // Audit and abort still ran for both. s1's failed broadcast didn't
+    // stop the registry-delete or s2's processing.
+    expect(writeAudit).toHaveBeenCalledTimes(2);
+    expect(chatAbort).toHaveBeenCalledTimes(2);
     expect(runs.size()).toBe(0);
   });
 });

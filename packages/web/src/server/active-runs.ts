@@ -24,8 +24,24 @@ export interface ActiveRun {
   runId: string;
   sessionKey: string;
   agentId: string;
+  /**
+   * Owner of the run. Snapshotted at registration so the watchdog can
+   * include `user.id` in the `chat.run_timed_out` audit row even though
+   * the watchdog itself acts as `system / watchdog`. PII rules forbid
+   * email/name here — operators join against the users table when they
+   * need a human-readable name.
+   */
   userId: string;
   agentName: string;
+  /**
+   * Wall-clock time of the FIRST chunk Pinchy observed for this run —
+   * not the user-submit time. The 60s client-side stuck timer
+   * (`STUCK_TIMEOUT_MS` in `client-router.ts`) covers the "stream
+   * never started" case; the watchdog uses `startedAt` to cap runs
+   * that DO start but never finish. Effective hard-timeout is therefore
+   * "time-to-first-chunk + maxRunDurationMs" — usually a few seconds of
+   * overhead on top of the 15-minute default.
+   */
   startedAt: number;
   lastChunkAt: number;
   listeners: Set<WebSocket>;

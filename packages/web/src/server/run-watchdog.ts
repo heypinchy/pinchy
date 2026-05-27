@@ -26,6 +26,10 @@ export interface AuditPayload {
   outcome: "failure";
   detail: {
     agent: { id: string; name: string };
+    // The user whose run was forcibly terminated. We snapshot just the id
+    // (no email/name) because the audit trail forbids PII in detail and
+    // the user record may still be queryable for richer joining later.
+    user: { id: string };
     sessionKey: string;
     runId: string;
     elapsedMs: number;
@@ -87,6 +91,7 @@ export async function runWatchdogTick(deps: WatchdogDeps): Promise<void> {
       outcome: "failure",
       detail: {
         agent: { id: run.agentId, name: run.agentName },
+        user: { id: run.userId },
         sessionKey: run.sessionKey,
         runId: run.runId,
         elapsedMs,

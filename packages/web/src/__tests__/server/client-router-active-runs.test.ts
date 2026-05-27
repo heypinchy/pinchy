@@ -264,6 +264,7 @@ describe("ClientRouter ↔ ActiveRuns wiring (#310 Tier 2a)", () => {
     expect(detail.sessionKey).toBe(sessionKey);
     expect(detail.runId).toBe("run-disc");
     expect(detail.agent).toEqual({ id: "agent-1", name: "Smithers" });
+    expect(detail.user).toEqual({ id: "user-1" });
   });
 
   it("does NOT emit chat.run_completed_after_disconnect when listeners remain at `done`", async () => {

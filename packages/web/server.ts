@@ -1,7 +1,7 @@
 import { createServer } from "http";
 import { parse } from "url";
 import next from "next";
-import { WebSocketServer, type WebSocket } from "ws";
+import { WebSocketServer, WebSocket } from "ws";
 import { OpenClawClient } from "openclaw-node";
 import { ClientRouter } from "./src/server/client-router";
 import { SessionCache } from "./src/server/session-cache";
@@ -369,17 +369,22 @@ ${domain ? `<p><a href="https://${domain}">Go to ${domain} →</a></p>` : ""}
         }
       },
       broadcastTimeout: (run) => {
+        // No `messageId` field: omit (don't set to null) so the client's
+        // error-frame handler — which keys on `data.messageId !== undefined`
+        // for message-level attribution — cleanly falls back to the
+        // "no specific message" rendering path. Tier 2b's `currentMessageId`
+        // on ActiveRun will allow attaching to a specific bubble; until
+        // then the timeout-error is unattributed by design.
         const payload = JSON.stringify({
           type: "error",
           agentName: run.agentName,
           providerError: `This run timed out after ${Math.floor(
             DEFAULT_MAX_RUN_DURATION_MS / 60_000
           )}m. Please retry.`,
-          messageId: null,
           runTimedOut: true,
         });
         for (const ws of run.listeners) {
-          if (ws.readyState === 1) ws.send(payload);
+          if (ws.readyState === WebSocket.OPEN) ws.send(payload);
         }
       },
     });

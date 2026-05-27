@@ -851,6 +851,7 @@ export class ClientRouter {
             resource: `agent:${agent.id}`,
             detail: {
               agent: { id: agent.id, name: agent.name },
+              user: { id: this.userId },
               sessionKey,
               runId: activeRunId!,
             },
