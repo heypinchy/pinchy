@@ -1663,11 +1663,26 @@ jobs:
           docker compose -f docker-compose.yml -f docker-compose.e2e.yml \
                          -f docker-compose.integration.yml ps --all 2>&1 || true
           echo "=== Pinchy logs ==="
+          # 1500 lines: a per-tool dispatch generates ~5 lines (request +
+          # broadcasts + complete), 16 tests in this suite x ~3 chats avg ≈
+          # 240 chat-related lines, plus a healthy buffer for startup +
+          # restart + memory-audit-watcher chatter. 500 was eating Test 7's
+          # window before Test 12's failure could be triaged (PR #442 CI runs
+          # 26506915089 + 26510486357 — both Domain Lock failures with
+          # truncated logs).
           docker compose -f docker-compose.yml -f docker-compose.e2e.yml \
-                         -f docker-compose.integration.yml logs pinchy 2>&1 | tail -500
+                         -f docker-compose.integration.yml logs pinchy 2>&1 | tail -1500
           echo "=== OpenClaw logs (live) ==="
+          # 5000 lines: every chat dispatch generates a multi-line
+          # `[agent/embedded] [trace:embedded-run] core-plugin-tool stages: ...`
+          # entry (~1KB single-line trace) plus the `[ws] ⇄ res ✓ agent` line
+          # plus stream chunks. 1500 lines covered ~4-5 chats; the integration
+          # suite runs 16 tests with multiple chats each. Bumped after the
+          # PR #442 Domain Lock investigation — only the FIRST test's agent
+          # RPC was visible in the prior tail window, hiding evidence of
+          # what test 12 actually dispatched to OC.
           docker compose -f docker-compose.yml -f docker-compose.e2e.yml \
-                         -f docker-compose.integration.yml logs openclaw 2>&1 | tail -1500
+                         -f docker-compose.integration.yml logs openclaw 2>&1 | tail -5000
           echo "=== DB logs ==="
           docker compose -f docker-compose.yml -f docker-compose.e2e.yml \
                          -f docker-compose.integration.yml logs db 2>&1 | tail -50

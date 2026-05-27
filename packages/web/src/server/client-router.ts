@@ -312,6 +312,16 @@ export class ClientRouter {
         }
       }
 
+      // Diagnostic for #310 / PR #442 Domain Lock investigation. Gated
+      // behind PINCHY_E2E_CHAT_TRACE so it doesn't ship to production logs.
+      // The integration test stack sets this env in docker-compose.integration.yml.
+      if (process.env.PINCHY_E2E_CHAT_TRACE === "1") {
+        console.log(
+          `[trace:chat] dispatch agent=${agent.id} session=${sessionKey} ` +
+            `text-len=${text.length} attachments=${chatAttachments.length}`
+        );
+      }
+
       const stream = this.openclawClient.chat(text, chatOptions);
 
       // Tell the client immediately that the request is in flight so the UI
@@ -634,6 +644,12 @@ export class ClientRouter {
           });
           activeRunRegistered = true;
           activeRunId = chunk.runId;
+          if (process.env.PINCHY_E2E_CHAT_TRACE === "1") {
+            console.log(
+              `[trace:chat] first-chunk session=${sessionKey} runId=${chunk.runId} ` +
+                `ws-state=${clientWs.readyState} chunk-type=${chunk.type}`
+            );
+          }
         } else if (activeRunRegistered) {
           this.activeRuns.touch(sessionKey, Date.now());
         }

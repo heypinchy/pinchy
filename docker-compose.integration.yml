@@ -41,6 +41,10 @@ services:
       # Pinchy with ECONNREFUSED. Same env contract the pre-#196 host-Pinchy
       # config used; the var name encodes that it's an E2E-only behavior.
       - PINCHY_E2E_DISABLE_DOMAIN_RESTART=1
+      # Diagnostic logging for chat dispatch + first-chunk events. Used to
+      # triage the Domain Lock integration test failures on PR #442 (runs
+      # 26506915089 + 26510486357). Gated so production logs stay clean.
+      - PINCHY_E2E_CHAT_TRACE=1
     extra_hosts:
       # Pinchy probes ollama_local_url from regenerateOpenClawConfig(); when the
       # URL points at the host-side fake Ollama via host.docker.internal it must
