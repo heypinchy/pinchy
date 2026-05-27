@@ -7,6 +7,14 @@ echo "OpenClaw Gateway starting..."
 # Lives on tmpfs (volume mode 0770, file mode 0600).
 SECRETS_FILE="${OPENCLAW_SECRETS_PATH:-/openclaw-secrets/secrets.json}"
 
+# Bootstrap marker — when present, signals that the gateway has already booted
+# with secrets.json present at least once during this container's lifetime, so
+# subsequent secrets writes don't need to trigger a restart-to-reinitialize.
+# Lives on tmpfs alongside secrets.json, which is the correct lifetime:
+# container restart wipes both, and the post-boot writer (mark_bootstrap_when_ready)
+# re-creates it as soon as the new gateway is healthy with the file present.
+SECRETS_BOOTSTRAP_MARKER="$(dirname "$SECRETS_FILE")/.bootstrap-applied"
+
 # Pinchy writes secrets.json as a non-root user (uid 999 in production where
 # the pinchy container drops privileges, or the test runner's uid in CI
 # integration tests). OpenClaw's secrets-file resolver checks that the file's
@@ -183,6 +191,34 @@ auto_approve_devices() {
     echo "auto_approve_devices: safety timeout (5min), stopping"
 }
 
+# Mark the secrets bootstrap as applied once the gateway is up AND secrets.json
+# exists at that point. Semantics: "the secrets-provider was initialized with
+# a present file, so subsequent file writes don't need a restart."
+#
+# On fresh installs, secrets.json doesn't exist at first boot — the inotify
+# handler will pkill, the gateway will respawn with the file present, and a
+# later call to this function (after the respawn) will mark it. The marker
+# lives on tmpfs so it's wiped on container restart, and gets re-created
+# correctly during the next post-boot wait.
+#
+# Runs in the background so it doesn't block the main script. Up to 60 s
+# polling for the gateway port to come up; gives up silently if the port
+# never opens (the health-check loop will handle restart, and a later call
+# of this helper will mark on the next successful boot).
+mark_bootstrap_when_ready() {
+    (
+        for _ in $(seq 1 60); do
+            if (echo > /dev/tcp/127.0.0.1/18789) 2>/dev/null; then
+                if [ -f "$SECRETS_FILE" ]; then
+                    touch "$SECRETS_BOOTSTRAP_MARKER" 2>/dev/null || true
+                fi
+                return
+            fi
+            sleep 1
+        done
+    ) &
+}
+
 install_plugin_deps
 scan_data_directories
 
@@ -235,10 +271,18 @@ scan_data_directories
                 # The health-check loop below will respawn it within ~10s
                 # (port-probe wait) + ~5s (gateway startup).
                 # See docs/plans/2026-05-27-setup-wizard-smoke-tests.md for context.
-                BOOTSTRAP_MARKER="$(dirname "$SECRETS_FILE")/.bootstrap-applied"
-                if [ ! -f "$BOOTSTRAP_MARKER" ]; then
-                    touch "$BOOTSTRAP_MARKER" 2>/dev/null || true
+                #
+                # The bootstrap marker is set by mark_bootstrap_when_ready
+                # after each successful gateway boot with secrets.json present,
+                # NOT here. That way a container restart on an existing customer
+                # stack (where secrets.json already exists at boot) marks the
+                # bootstrap immediately, and the next user-triggered secrets
+                # write correctly skips this restart — no 15–40 s downtime.
+                if [ ! -f "$SECRETS_BOOTSTRAP_MARKER" ]; then
                     echo "[secrets-watcher] first-time secrets.json detected, restarting gateway to reinitialize secrets-provider"
+                    # pkill -f matches the full command line. "openclaw gateway"
+                    # is unique to the gateway subcommand (other subcommands
+                    # like "openclaw devices" wouldn't match).
                     pkill -TERM -f "openclaw gateway" 2>/dev/null || true
                 fi
             fi
@@ -258,6 +302,7 @@ auto_approve_devices &
 ensure_secrets_root_owned
 echo "Starting OpenClaw Gateway..."
 openclaw gateway --port 18789 &
+mark_bootstrap_when_ready
 
 # Keep the container alive. Health-check restarts gateway if it crashes.
 # Provider API keys are resolved live from secrets.json via SecretRef —
@@ -275,6 +320,7 @@ while true; do
             scan_data_directories
             ensure_secrets_root_owned
             openclaw gateway --port 18789 &
+            mark_bootstrap_when_ready
         fi
     fi
 done
