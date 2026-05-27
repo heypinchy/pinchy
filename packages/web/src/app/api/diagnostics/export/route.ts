@@ -28,6 +28,7 @@ import { parseRequestBody } from "@/lib/api-validation";
 import { buildBundle } from "@/lib/diagnostics/bundle-builder";
 import { fetchAuditEntriesForSession } from "@/lib/diagnostics/audit-collector";
 import {
+  inspectSessionIndex,
   readTrajectoryJsonl,
   resolveSessionId,
   TrajectoryFileNotFoundError,
@@ -55,6 +56,14 @@ export const POST = withAuth(async (request, _ctx, session) => {
   const sessionKey = `agent:${agentId}:direct:${session.user.id}`;
   const sessionId = await resolveSessionId(agentId, sessionKey);
   if (!sessionId) {
+    // Diagnostic logging: a 404 here means OpenClaw never wrote a
+    // sessions.json entry for this user-agent pair, OR it wrote one with a
+    // different key shape than we compute. Log a sanitized snapshot so the
+    // operator can tell which case it is from container logs.
+    const inspection = await inspectSessionIndex(agentId).catch(() => null);
+    console.warn(
+      `[diagnostics] no_session for agentId=${agentId} userIdPrefix=${session.user.id.slice(0, 4)}... index=${JSON.stringify(inspection)}`
+    );
     return NextResponse.json(
       { error: "No chat session recorded for this user and agent yet" },
       { status: 404 }
