@@ -2,7 +2,7 @@ import { test } from "@playwright/test";
 import { resetStack, runProviderSmokeTest } from "./helpers";
 
 test.describe("Setup wizard → first chat with Ollama Cloud", () => {
-  test.beforeAll(() => resetStack());
+  test.beforeAll(resetStack);
 
   test("fresh install: wizard → Ollama Cloud → first Smithers message succeeds", async ({
     page,

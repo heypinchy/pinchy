@@ -2,7 +2,7 @@ import { test } from "@playwright/test";
 import { resetStack, runProviderSmokeTest } from "./helpers";
 
 test.describe("Setup wizard → first chat with Google", () => {
-  test.beforeAll(() => resetStack());
+  test.beforeAll(resetStack);
 
   test("fresh install: wizard → Google → first Smithers message succeeds", async ({ page }) => {
     await runProviderSmokeTest(page, {

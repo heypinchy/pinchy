@@ -1,4 +1,5 @@
 import { execSync } from "node:child_process";
+import { setTimeout as sleep } from "node:timers/promises";
 import { expect, type Page } from "@playwright/test";
 
 // Re-using the same docker-compose stack invocation across overlays. Encoded
@@ -20,17 +21,25 @@ const COMPOSE_ARGS = [
  * the safety habit is more valuable than the marginal cleanup.
  *
  * Table names verified against packages/web/src/db/schema.ts:
- *   users      → pgTable("user")
- *   accounts   → pgTable("account")
- *   agents     → pgTable("agents")
- *   settings   → pgTable("settings")
- *   auditLog   → pgTable("audit_log")   (NOT "audit_events")
+ *   users                  → pgTable("user")
+ *   sessions               → pgTable("session")
+ *   accounts               → pgTable("account")
+ *   verification           → pgTable("verification")
+ *   agents                 → pgTable("agents")
+ *   groups                 → pgTable("groups")
+ *   invites                → pgTable("invites")
+ *   settings               → pgTable("settings")
+ *   auditLog               → pgTable("audit_log")   (NOT "audit_events")
+ *   integrationConnections → pgTable("integration_connections")
+ *
+ * CASCADE handles the dependent join tables (account, user_groups, agent_groups,
+ * invite_groups, channel_links, agent_connection_permissions, usage_records).
  */
-export function resetStack(): void {
+export async function resetStack(): Promise<void> {
   execSync(
     `docker compose ${COMPOSE_ARGS} exec -T db ` +
       `psql -U pinchy -d pinchy -c ` +
-      `'TRUNCATE TABLE "user", account, agents, settings, audit_log RESTART IDENTITY CASCADE'`,
+      `'TRUNCATE TABLE "user", account, agents, settings, audit_log, session, verification, groups, invites, integration_connections RESTART IDENTITY CASCADE'`,
     { stdio: "pipe" }
   );
   execSync(`docker compose ${COMPOSE_ARGS} restart pinchy openclaw`, { stdio: "pipe" });
@@ -46,7 +55,7 @@ export function resetStack(): void {
     } catch {
       // server still warming up
     }
-    execSync("sleep 1", { stdio: "pipe" });
+    await sleep(1000);
   }
   throw new Error("Pinchy did not become ready within 60s after reset");
 }
