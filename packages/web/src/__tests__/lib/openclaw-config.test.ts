@@ -863,19 +863,68 @@ describe("regenerateOpenClawConfig", () => {
       expect(config?.models?.providers?.openai?.baseUrl).toBe("http://llm-mock:9100/openai/v1");
     });
 
-    it("PINCHY override takes priority over SDK OPENAI_BASE_URL", async () => {
-      process.env.OPENAI_BASE_URL = "https://sdk-proxy.example.com/v1";
-      process.env.PINCHY_PROVIDER_BASEURL_OPENAI = "http://llm-mock:9100/openai";
-      mockedGetSetting.mockImplementation(async (key: string) => {
-        if (key === "openai_api_key") return "sk-openai-test";
-        return null;
-      });
+    // Locks the "PINCHY > SDK > built-in default" priority chain for every
+    // built-in provider that supports both env vars. Suffix correctness
+    // mirrors BUILTIN_PROVIDER_PATH_SUFFIX in build.ts:
+    //   openai    → "/v1"
+    //   anthropic → ""        (Anthropic SDK URL has no path suffix)
+    //   google    → "/v1beta"
+    it.each([
+      [
+        "openai",
+        "OPENAI_BASE_URL",
+        "PINCHY_PROVIDER_BASEURL_OPENAI",
+        "https://sdk-proxy.example.com/v1",
+        "http://llm-mock:9100/openai",
+        "openai_api_key",
+        "sk-openai-test",
+        "http://llm-mock:9100/openai/v1",
+      ],
+      [
+        "anthropic",
+        "ANTHROPIC_BASE_URL",
+        "PINCHY_PROVIDER_BASEURL_ANTHROPIC",
+        "https://sdk-anthropic.example.com",
+        "http://llm-mock:9100/anthropic",
+        "anthropic_api_key",
+        "sk-ant-test",
+        "http://llm-mock:9100/anthropic",
+      ],
+      [
+        "google",
+        "GOOGLE_BASE_URL",
+        "PINCHY_PROVIDER_BASEURL_GOOGLE",
+        "https://sdk-google.example.com/v1beta",
+        "http://llm-mock:9100/google",
+        "google_api_key",
+        "AIza-test-key",
+        "http://llm-mock:9100/google/v1beta",
+      ],
+    ])(
+      "PINCHY override takes priority over SDK env var for %s",
+      async (
+        provider,
+        sdkEnv,
+        pinchyEnv,
+        sdkValue,
+        pinchyValue,
+        settingKey,
+        keyValue,
+        expectedBaseUrl
+      ) => {
+        process.env[sdkEnv] = sdkValue;
+        process.env[pinchyEnv] = pinchyValue;
+        mockedGetSetting.mockImplementation(async (key: string) => {
+          if (key === settingKey) return keyValue;
+          return null;
+        });
 
-      await regenerateOpenClawConfig();
-      const written = mockedWriteFileSync.mock.calls[0][1] as string;
-      const config = JSON.parse(written);
-      expect(config?.models?.providers?.openai?.baseUrl).toBe("http://llm-mock:9100/openai/v1");
-    });
+        await regenerateOpenClawConfig();
+        const written = mockedWriteFileSync.mock.calls[0][1] as string;
+        const config = JSON.parse(written);
+        expect(config?.models?.providers?.[provider]?.baseUrl).toBe(expectedBaseUrl);
+      }
+    );
 
     it("SDK env var still works when PINCHY env var is unset (backward compat)", async () => {
       process.env.OPENAI_BASE_URL = "https://sdk-proxy.example.com/v1";
