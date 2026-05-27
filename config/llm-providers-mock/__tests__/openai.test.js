@@ -7,10 +7,20 @@ let server;
 
 test.before(async () => {
   server = spawn("node", ["server.js"], { cwd: import.meta.dirname + "/..", env: { ...process.env, PORT } });
-  await new Promise((r) => setTimeout(r, 500));
+  const deadline = Date.now() + 5000;
+  while (Date.now() < deadline) {
+    try {
+      const r = await fetch(`http://localhost:${PORT}/control/health`);
+      if (r.ok) return;
+    } catch {
+      // server still booting
+    }
+    await new Promise((r) => setTimeout(r, 25));
+  }
+  throw new Error("mock server failed to become healthy within 5s");
 });
 
-test.after(() => server.kill());
+test.after(() => server?.kill());
 
 test("GET /openai/v1/models returns OpenAI-shaped models payload", async () => {
   const res = await fetch(`http://localhost:${PORT}/openai/v1/models`, {
