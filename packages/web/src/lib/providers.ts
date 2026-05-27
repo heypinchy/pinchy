@@ -62,36 +62,60 @@ export type ValidationResult =
   | { valid: false; error: "no_compatible_models" }
   | { valid: false; error: "unsupported_local_host"; host: string };
 
+// Per-provider baseUrl override. Used by the LLM-providers mock server in
+// E2E/smoke tests so the wizard's key-validation probe can hit a local
+// stand-in instead of the real provider. Production deployments leave these
+// unset and we fall back to the canonical hostnames.
+function resolveProviderBaseUrl(provider: ProviderName, fallback: string): string {
+  const envMap: Partial<Record<ProviderName, string>> = {
+    anthropic: "PINCHY_PROVIDER_BASEURL_ANTHROPIC",
+    openai: "PINCHY_PROVIDER_BASEURL_OPENAI",
+    google: "PINCHY_PROVIDER_BASEURL_GOOGLE",
+    "ollama-cloud": "PINCHY_PROVIDER_BASEURL_OLLAMA_CLOUD",
+  };
+  const envVar = envMap[provider];
+  return (envVar && process.env[envVar]) || fallback;
+}
+
 function makeValidationRequest(provider: ProviderName, apiKey: string): Promise<Response> {
   switch (provider) {
     case "anthropic":
-      return fetch("https://api.anthropic.com/v1/models", {
-        headers: {
-          "x-api-key": apiKey,
-          "anthropic-version": "2023-06-01",
-        },
-      });
+      return fetch(
+        `${resolveProviderBaseUrl("anthropic", "https://api.anthropic.com")}/v1/models`,
+        {
+          headers: {
+            "x-api-key": apiKey,
+            "anthropic-version": "2023-06-01",
+          },
+        }
+      );
     case "openai":
-      return fetch("https://api.openai.com/v1/models", {
+      return fetch(`${resolveProviderBaseUrl("openai", "https://api.openai.com")}/v1/models`, {
         headers: {
           Authorization: `Bearer ${apiKey}`,
         },
       });
     case "google":
-      return fetch(`https://generativelanguage.googleapis.com/v1/models?key=${apiKey}`, {});
+      return fetch(
+        `${resolveProviderBaseUrl("google", "https://generativelanguage.googleapis.com")}/v1beta/models?key=${apiKey}`,
+        {}
+      );
     case "ollama-cloud":
       // /v1/models is a public catalog and returns 200 for any token, so it
       // can't distinguish a real key from a typo. /v1/chat/completions checks
       // auth before body validation: with an empty body a valid key gets 400,
       // an invalid key gets 401. No tokens consumed either way.
-      return fetch("https://ollama.com/v1/chat/completions", {
-        method: "POST",
-        headers: {
-          Authorization: `Bearer ${apiKey}`,
-          "Content-Type": "application/json",
-        },
-        body: "{}",
-      });
+      return fetch(
+        `${resolveProviderBaseUrl("ollama-cloud", "https://ollama.com")}/v1/chat/completions`,
+        {
+          method: "POST",
+          headers: {
+            Authorization: `Bearer ${apiKey}`,
+            "Content-Type": "application/json",
+          },
+          body: "{}",
+        }
+      );
     case "ollama-local":
       throw new Error("Use validateProviderUrl for URL-based providers");
   }
