@@ -1,4 +1,4 @@
-import { PROVIDERS, type ProviderName } from "@/lib/providers";
+import { PROVIDERS, resolveProviderBaseUrl, type ProviderName } from "@/lib/providers";
 import { getSetting } from "@/lib/settings";
 import { TOOL_CAPABLE_OLLAMA_CLOUD_MODEL_IDS } from "@/lib/ollama-cloud-models";
 
@@ -89,7 +89,7 @@ interface ProviderFetchConfig {
 
 const PROVIDER_FETCH_CONFIG: Record<ProviderName, ProviderFetchConfig> = {
   anthropic: {
-    url: () => "https://api.anthropic.com/v1/models",
+    url: () => `${resolveProviderBaseUrl("anthropic", "https://api.anthropic.com")}/v1/models`,
     headers: (apiKey) => ({
       "x-api-key": apiKey,
       "anthropic-version": "2023-06-01",
@@ -101,7 +101,7 @@ const PROVIDER_FETCH_CONFIG: Record<ProviderName, ProviderFetchConfig> = {
       })),
   },
   openai: {
-    url: () => "https://api.openai.com/v1/models",
+    url: () => `${resolveProviderBaseUrl("openai", "https://api.openai.com")}/v1/models`,
     headers: (apiKey) => ({ Authorization: `Bearer ${apiKey}` }),
     transform: (data) =>
       (data.data as { id: string }[])
@@ -114,7 +114,8 @@ const PROVIDER_FETCH_CONFIG: Record<ProviderName, ProviderFetchConfig> = {
         })),
   },
   google: {
-    url: (apiKey) => `https://generativelanguage.googleapis.com/v1/models?key=${apiKey}`,
+    url: (apiKey) =>
+      `${resolveProviderBaseUrl("google", "https://generativelanguage.googleapis.com")}/v1beta/models?key=${apiKey}`,
     headers: () => ({}),
     transform: (data) =>
       (data.models as { name: string; displayName: string; supportedGenerationMethods: string[] }[])
@@ -125,7 +126,7 @@ const PROVIDER_FETCH_CONFIG: Record<ProviderName, ProviderFetchConfig> = {
         })),
   },
   "ollama-cloud": {
-    url: () => "https://ollama.com/v1/models",
+    url: () => `${resolveProviderBaseUrl("ollama-cloud", "https://ollama.com")}/v1/models`,
     headers: (apiKey) => ({ Authorization: `Bearer ${apiKey}` }),
     transform: (data) => {
       // Filter by the curated tool-capable set — see

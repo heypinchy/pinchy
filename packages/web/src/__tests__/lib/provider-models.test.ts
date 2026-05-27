@@ -39,6 +39,20 @@ vi.mock("@/lib/providers", () => ({
       placeholder: "http://host.docker.internal:11434",
     },
   },
+  // Mirror the real helper: fall back to the canonical host unless the
+  // matching PINCHY_PROVIDER_BASEURL_* env var is set. The tests in this
+  // file don't set those vars, so the assertions still match the original
+  // hardcoded URLs.
+  resolveProviderBaseUrl: (provider: string, fallback: string) => {
+    const envMap: Record<string, string> = {
+      anthropic: "PINCHY_PROVIDER_BASEURL_ANTHROPIC",
+      openai: "PINCHY_PROVIDER_BASEURL_OPENAI",
+      google: "PINCHY_PROVIDER_BASEURL_GOOGLE",
+      "ollama-cloud": "PINCHY_PROVIDER_BASEURL_OLLAMA_CLOUD",
+    };
+    const envVar = envMap[provider];
+    return (envVar && process.env[envVar]) || fallback;
+  },
 }));
 
 vi.mock("@/lib/settings", () => ({
