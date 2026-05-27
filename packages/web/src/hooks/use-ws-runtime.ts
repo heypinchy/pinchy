@@ -341,6 +341,23 @@ function capMessages<T>(messages: T[]): T[] {
 }
 
 /**
+ * Sanitize a server-provided identifier before embedding it in a log
+ * message. Defends against log injection (CodeQL js/log-injection): if a
+ * malicious Pinchy server (or a buggy one round-tripping unsanitized user
+ * input) put control characters or newlines into a `runId`, the raw
+ * value flowing into `console.warn` could fake new log lines or break
+ * structured-log parsers.
+ *
+ * Allowed alphabet matches what OpenClaw actually emits for runIds
+ * (UUID-like alphanumeric + dashes + underscores). Anything else
+ * collapses to `<invalid>` so the warning still tells operators "something
+ * unexpected" without leaking the unsafe value verbatim.
+ */
+export function safeLogId(value: unknown): string {
+  return typeof value === "string" && /^[A-Za-z0-9_-]+$/.test(value) ? value : "<invalid>";
+}
+
+/**
  * Decide whether the local message list should be wholly replaced with the
  * server's history frame after a disconnect+reconnect cycle.
  *
@@ -1179,7 +1196,7 @@ export function useWsRuntime(agentId: string): {
             data.runId !== inflightRunIdRef.current
           ) {
             console.warn(
-              `[use-ws-runtime] ignoring run_timed_out for ${data.runId} — current in-flight run is ${inflightRunIdRef.current}`
+              `[use-ws-runtime] ignoring run_timed_out for ${safeLogId(data.runId)} — current in-flight run is ${safeLogId(inflightRunIdRef.current)}`
             );
             return;
           }
