@@ -66,7 +66,7 @@ export type ValidationResult =
 // E2E/smoke tests so the wizard's key-validation probe can hit a local
 // stand-in instead of the real provider. Production deployments leave these
 // unset and we fall back to the canonical hostnames.
-function resolveProviderBaseUrl(provider: ProviderName, fallback: string): string {
+export function resolveProviderBaseUrl(provider: ProviderName, fallback: string): string {
   const envMap: Partial<Record<ProviderName, string>> = {
     anthropic: "PINCHY_PROVIDER_BASEURL_ANTHROPIC",
     openai: "PINCHY_PROVIDER_BASEURL_OPENAI",
