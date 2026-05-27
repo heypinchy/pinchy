@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect } from "react";
 import { useRouter } from "next/navigation";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -24,24 +24,28 @@ export function SettingsSecurity() {
   const [showRestarting, setShowRestarting] = useState(false);
   const [error, setError] = useState(false);
 
-  const fetchStatus = useCallback(async () => {
-    try {
-      const res = await fetch("/api/settings/domain");
-      if (res.ok) {
-        setStatus(await res.json());
-      } else {
-        setError(true);
-      }
-    } catch {
-      setError(true);
-    } finally {
-      setLoading(false);
-    }
-  }, []);
-
   useEffect(() => {
-    fetchStatus();
-  }, [fetchStatus]);
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await fetch("/api/settings/domain");
+        if (cancelled) return;
+        if (res.ok) {
+          const data = await res.json();
+          if (!cancelled) setStatus(data);
+        } else {
+          if (!cancelled) setError(true);
+        }
+      } catch {
+        if (!cancelled) setError(true);
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   const waitForRestart = async () => {
     // Wait for the server to actually go down

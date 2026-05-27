@@ -8,16 +8,16 @@
     "test:watch": "vitest"
   },
   "dependencies": {
-    "@napi-rs/canvas": "^0.1.97",
-    "better-sqlite3": "^12.9.0",
+    "@napi-rs/canvas": "^1.0.0",
+    "better-sqlite3": "^12.10.0",
     "mammoth": "^1.12.0",
-    "pdfjs-dist": "^5.6.205"
+    "pdfjs-dist": "^5.7.284"
   },
   "devDependencies": {
     "@types/better-sqlite3": "^7.6.13",
-    "docx": "^9.6.1",
+    "docx": "^9.7.0",
     "pdf-lib": "^1.17.1",
-    "typescript": "^6.0.2",
-    "vitest": "^4.1.4"
+    "typescript": "^6.0.3",
+    "vitest": "^4.1.7"
   }
 }

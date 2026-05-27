@@ -433,6 +433,9 @@ export function useWsRuntime(agentId: string): {
   // Reset state when switching agents — prevents stale messages from
   // one agent blocking history load for a different agent.
   // Uses "adjust state during render" pattern (React-recommended over useEffect).
+  // Timer cleanup is intentionally NOT done here (refs cannot be read during
+  // render — react-hooks/purity) — the main useEffect's [agentId] cleanup clears
+  // all timers when agentId changes, before the new effect runs.
   const [prevAgentId, setPrevAgentId] = useState(agentId);
   if (prevAgentId !== agentId) {
     setPrevAgentId(agentId);
@@ -443,18 +446,6 @@ export function useWsRuntime(agentId: string): {
     setIsReconcilingMessages(false);
     setKnownEmptyHistory(false);
     setPayloadRejected(false);
-    if (reconcileApplyTimerRef.current) {
-      clearTimeout(reconcileApplyTimerRef.current);
-      reconcileApplyTimerRef.current = null;
-    }
-    if (reconcileFinishTimerRef.current) {
-      clearTimeout(reconcileFinishTimerRef.current);
-      reconcileFinishTimerRef.current = null;
-    }
-    if (pendingDisconnectErrorRef.current) {
-      clearTimeout(pendingDisconnectErrorRef.current.timer);
-      pendingDisconnectErrorRef.current = null;
-    }
   }
 
   useEffect(() => {

@@ -8,10 +8,10 @@
     "test:watch": "vitest"
   },
   "dependencies": {
-    "googleapis": "^148.0.0"
+    "googleapis": "^172.0.0"
   },
   "devDependencies": {
-    "typescript": "^5.7.0",
-    "vitest": "^4.1.4"
+    "typescript": "^6.0.3",
+    "vitest": "^4.1.7"
   }
 }

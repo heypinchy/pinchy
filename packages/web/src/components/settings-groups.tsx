@@ -102,11 +102,19 @@ export function SettingsGroups({ refreshKey }: SettingsGroupsProps) {
   }, []);
 
   useEffect(() => {
+    let cancelled = false;
     if (isEnterprise) {
-      fetchData();
+      void Promise.resolve().then(() => {
+        if (!cancelled) void fetchData();
+      });
     } else if (isEnterprise === false) {
-      setLoading(false);
+      void Promise.resolve().then(() => {
+        if (!cancelled) setLoading(false);
+      });
     }
+    return () => {
+      cancelled = true;
+    };
   }, [isEnterprise, fetchData]);
 
   function openCreateDialog() {

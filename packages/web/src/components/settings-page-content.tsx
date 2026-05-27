@@ -89,11 +89,18 @@ export function SettingsPageContent({
   }, []);
 
   useEffect(() => {
-    if (isAdmin) {
-      fetchStatus();
-      fetchOrgContext();
-    }
-    fetchContext();
+    let cancelled = false;
+    void Promise.resolve().then(() => {
+      if (cancelled) return;
+      if (isAdmin) {
+        void fetchStatus();
+        void fetchOrgContext();
+      }
+      void fetchContext();
+    });
+    return () => {
+      cancelled = true;
+    };
   }, [isAdmin, fetchStatus, fetchContext, fetchOrgContext]);
 
   const handleProviderDirtyChange = useCallback((isDirty: boolean) => {

@@ -70,7 +70,13 @@ export function AgentTelegramSettings({
   }, [agentId]);
 
   useEffect(() => {
-    fetchConfig();
+    let cancelled = false;
+    void Promise.resolve().then(() => {
+      if (!cancelled) void fetchConfig();
+    });
+    return () => {
+      cancelled = true;
+    };
   }, [fetchConfig]);
 
   async function handleConnect() {

@@ -98,7 +98,13 @@ export function TelegramLinkSettings({ isAdmin }: TelegramLinkSettingsProps) {
   }, [isAdmin]);
 
   useEffect(() => {
-    fetchData();
+    let cancelled = false;
+    void Promise.resolve().then(() => {
+      if (!cancelled) void fetchData();
+    });
+    return () => {
+      cancelled = true;
+    };
   }, [fetchData]);
 
   async function handleLink() {

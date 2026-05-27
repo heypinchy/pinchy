@@ -33,10 +33,14 @@ function ContextSection({
     message: string;
   } | null>(null);
 
-  useEffect(() => {
+  // Sync local state when prop changes — uses React-recommended
+  // "adjust state during render" pattern instead of useEffect.
+  const [prevInitialContent, setPrevInitialContent] = useState(initialContent);
+  if (prevInitialContent !== initialContent) {
+    setPrevInitialContent(initialContent);
     setContent(initialContent);
     setSavedContent(initialContent);
-  }, [initialContent]);
+  }
 
   useEffect(() => {
     onDirtyChange?.(content !== savedContent);

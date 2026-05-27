@@ -28,16 +28,25 @@ export function EditOAuthDialog({ open, onOpenChange }: EditOAuthDialogProps) {
 
   useEffect(() => {
     if (!open) return;
-    setLoading(true);
-    setClientSecret("");
-    setError("");
+    let cancelled = false;
+    void Promise.resolve().then(() => {
+      if (cancelled) return;
+      setLoading(true);
+      setClientSecret("");
+      setError("");
+    });
     fetch("/api/settings/oauth?provider=google")
       .then((res) => res.json())
       .then((data) => {
-        setClientId(data.clientId || "");
+        if (!cancelled) setClientId(data.clientId || "");
       })
       .catch(() => {})
-      .finally(() => setLoading(false));
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
   }, [open]);
 
   async function handleSave() {

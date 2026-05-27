@@ -66,8 +66,8 @@ export function EmailPermissionSection({
   const [loading, setLoading] = useState(true);
 
   // Track initial state for dirty detection
-  const initialConnectionId = useRef("");
-  const initialPermissions = useRef<Set<string>>(new Set());
+  const [initialConnectionId, setInitialConnectionId] = useState("");
+  const [initialPermissions, setInitialPermissions] = useState<Set<string>>(new Set());
 
   // Stable ref for onChange to avoid infinite re-render loops
   const onChangeRef = useRef(onChange);
@@ -87,7 +87,7 @@ export function EmailPermissionSection({
             const matchingConn = connections.find((c) => c.id === entry.connectionId);
             if (matchingConn) {
               setConnectionId(entry.connectionId);
-              initialConnectionId.current = entry.connectionId;
+              setInitialConnectionId(entry.connectionId);
 
               const ops: Record<EmailOperation, boolean> = {
                 read: false,
@@ -106,7 +106,7 @@ export function EmailPermissionSection({
                 }
               }
 
-              initialPermissions.current = permSet;
+              setInitialPermissions(permSet);
               setOperations(ops);
               break;
             }
@@ -135,9 +135,9 @@ export function EmailPermissionSection({
     if (loading) return false;
 
     const hasAny = EMAIL_OPERATIONS.some((op) => operations[op]);
-    if (!hasAny && initialPermissions.current.size === 0) return false;
+    if (!hasAny && initialPermissions.size === 0) return false;
 
-    if (connectionId !== initialConnectionId.current) return true;
+    if (connectionId !== initialConnectionId) return true;
 
     const currentSet = new Set<string>();
     for (const op of EMAIL_OPERATIONS) {
@@ -146,12 +146,12 @@ export function EmailPermissionSection({
       }
     }
 
-    if (currentSet.size !== initialPermissions.current.size) return true;
+    if (currentSet.size !== initialPermissions.size) return true;
     for (const key of currentSet) {
-      if (!initialPermissions.current.has(key)) return true;
+      if (!initialPermissions.has(key)) return true;
     }
     return false;
-  }, [loading, connectionId, operations]);
+  }, [loading, connectionId, operations, initialConnectionId, initialPermissions]);
 
   // Notify parent of changes
   useEffect(() => {

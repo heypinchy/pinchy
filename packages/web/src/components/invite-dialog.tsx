@@ -61,14 +61,18 @@ export function InviteDialog({ open, onOpenChange }: InviteDialogProps) {
     },
   });
 
-  useEffect(() => {
+  // Reset form when dialog closes — uses React-recommended
+  // "adjust state during render" pattern instead of useEffect.
+  const [prevOpen, setPrevOpen] = useState(open);
+  if (prevOpen !== open) {
+    setPrevOpen(open);
     if (!open) {
       form.reset();
       setInviteLink(null);
       setError(null);
       setSelectedGroupIds([]);
     }
-  }, [open, form]);
+  }
 
   useEffect(() => {
     if (!open) return;

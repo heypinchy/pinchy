@@ -107,8 +107,14 @@ export function NewAgentForm() {
 
   // Sync local state with URL (handles browser Back/Forward)
   useEffect(() => {
+    let cancelled = false;
     const urlTemplate = searchParams.get("template");
-    setSelectedTemplateState(urlTemplate);
+    void Promise.resolve().then(() => {
+      if (!cancelled) setSelectedTemplateState(urlTemplate);
+    });
+    return () => {
+      cancelled = true;
+    };
   }, [searchParams]);
 
   const setSelectedTemplate = useCallback(
@@ -152,7 +158,13 @@ export function NewAgentForm() {
   }, []);
 
   useEffect(() => {
-    fetchData();
+    let cancelled = false;
+    void Promise.resolve().then(() => {
+      if (!cancelled) void fetchData();
+    });
+    return () => {
+      cancelled = true;
+    };
   }, [fetchData]);
 
   const selectedTemplateObj = templates.find((t) => t.id === selectedTemplate);
@@ -177,17 +189,21 @@ export function NewAgentForm() {
 
   // Fetch Odoo connections when an Odoo template is selected
   useEffect(() => {
-    if (!requiresOdooConnection) {
-      setOdooConnections([]);
-      setSelectedConnectionId(null);
-      setValidationResult(null);
-      return;
-    }
+    let cancelled = false;
+    (async () => {
+      if (!requiresOdooConnection) {
+        if (!cancelled) {
+          setOdooConnections([]);
+          setSelectedConnectionId(null);
+          setValidationResult(null);
+        }
+        return;
+      }
 
-    async function fetchConnections() {
       setLoadingConnections(true);
       try {
         const res = await fetch("/api/integrations");
+        if (cancelled) return;
         if (res.ok) {
           const data = await res.json();
           // Hide unreadable rows from the agent-creation flow — they can't be used
@@ -195,20 +211,22 @@ export function NewAgentForm() {
           const odoo = (data as OdooConnection[]).filter(
             (c: OdooConnection) => c.type === "odoo" && !c.cannotDecrypt
           );
-          setOdooConnections(odoo);
-
-          // Auto-select if only one connection
-          const autoSelected = autoSelectConnection(odoo);
-          if (autoSelected) {
-            setSelectedConnectionId(autoSelected);
+          if (!cancelled) {
+            setOdooConnections(odoo);
+            // Auto-select if only one connection
+            const autoSelected = autoSelectConnection(odoo);
+            if (autoSelected) {
+              setSelectedConnectionId(autoSelected);
+            }
           }
         }
       } finally {
-        setLoadingConnections(false);
+        if (!cancelled) setLoadingConnections(false);
       }
-    }
-
-    fetchConnections();
+    })();
+    return () => {
+      cancelled = true;
+    };
   }, [requiresOdooConnection]);
 
   // Fetch email connections when an email template is selected
@@ -238,52 +256,54 @@ export function NewAgentForm() {
 
   // Validate template against selected connection
   useEffect(() => {
-    if (!selectedConnectionId || !selectedTemplate) {
-      setValidationResult(null);
-      return;
+    let cancelled = false;
+    let nextResult: ValidationResult | null = null;
+    if (selectedConnectionId && selectedTemplate) {
+      const connection = odooConnections.find((c) => c.id === selectedConnectionId);
+      const templateDef = getTemplate(selectedTemplate);
+      if (connection?.data?.models && templateDef?.odooConfig) {
+        nextResult = validateOdooTemplate(
+          templateDef.odooConfig as OdooTemplateConfig,
+          connection.data.models
+        );
+      }
     }
-
-    const connection = odooConnections.find((c) => c.id === selectedConnectionId);
-    if (!connection?.data?.models) {
-      setValidationResult(null);
-      return;
-    }
-
-    const templateDef = getTemplate(selectedTemplate);
-    if (!templateDef?.odooConfig) {
-      setValidationResult(null);
-      return;
-    }
-
-    const result = validateOdooTemplate(
-      templateDef.odooConfig as OdooTemplateConfig,
-      connection.data.models
-    );
-    setValidationResult(result);
+    void Promise.resolve().then(() => {
+      if (!cancelled) setValidationResult(nextResult);
+    });
+    return () => {
+      cancelled = true;
+    };
   }, [selectedConnectionId, selectedTemplate, odooConnections]);
 
   // Reset directory selection and pre-fill tagline/name when switching templates
   useEffect(() => {
-    setSelectedPaths([]);
-    setDirectories([]);
-    setOdooConnections([]);
-    setSelectedConnectionId(null);
-    setValidationResult(null);
-    if (selectedTemplate) {
-      const templateDef = getTemplate(selectedTemplate);
-      form.setValue("tagline", templateDef?.defaultTagline || "");
-    }
+    let cancelled = false;
+    void Promise.resolve().then(() => {
+      if (cancelled) return;
+      setSelectedPaths([]);
+      setDirectories([]);
+      setOdooConnections([]);
+      setSelectedConnectionId(null);
+      setValidationResult(null);
+      if (selectedTemplate) {
+        const templateDef = getTemplate(selectedTemplate);
+        form.setValue("tagline", templateDef?.defaultTagline || "");
+      }
+    });
 
     // Pre-fill name with a suggested name (except for custom template)
     if (selectedTemplate && selectedTemplate !== "custom") {
       (async () => {
         try {
           const res = await fetch("/api/agents");
+          if (cancelled) return;
           const existingNames: string[] = res.ok
             ? ((await res.json()) as Array<{ name: string }>).map((a) => a.name)
             : [];
+          if (cancelled) return;
           const suggested = pickSuggestedName(selectedTemplate, existingNames);
-          if (suggested) {
+          if (suggested && !cancelled) {
             form.setValue("name", suggested);
             // Select all text so users can overtype immediately.
             // Defer past React's commit so the DOM reflects the new value.
@@ -294,8 +314,13 @@ export function NewAgentForm() {
         }
       })();
     } else if (selectedTemplate === "custom") {
-      form.setValue("name", "");
+      void Promise.resolve().then(() => {
+        if (!cancelled) form.setValue("name", "");
+      });
     }
+    return () => {
+      cancelled = true;
+    };
   }, [selectedTemplate]); // eslint-disable-line react-hooks/exhaustive-deps
 
   async function onSubmit(values: AgentFormValues) {

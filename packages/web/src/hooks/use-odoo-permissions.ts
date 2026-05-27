@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo, useCallback, useRef } from "react";
+import { useState, useEffect, useMemo, useCallback } from "react";
 import type { OdooAccessLevel } from "@/lib/tool-registry";
 
 const OPERATIONS = ["read", "create", "write", "delete"] as const;
@@ -99,8 +99,8 @@ export function useOdooPermissions(
   const [loading, setLoading] = useState(true);
 
   // Track initial state for dirty detection
-  const initialConnectionId = useRef("");
-  const initialPermissions = useRef<Set<string>>(new Set());
+  const [initialConnectionId, setInitialConnectionId] = useState("");
+  const [initialPermissions, setInitialPermissions] = useState<Set<string>>(new Set());
 
   // Load existing per-agent permissions
   useEffect(() => {
@@ -120,7 +120,7 @@ export function useOdooPermissions(
           if (odooEntry) {
             const connId = odooEntry.connectionId;
             setConnectionIdState(connId);
-            initialConnectionId.current = connId;
+            setInitialConnectionId(connId);
 
             // Build models map from existing permissions
             const models = new Map<string, OperationFlags>();
@@ -142,7 +142,7 @@ export function useOdooPermissions(
               }
             }
 
-            initialPermissions.current = permSet;
+            setInitialPermissions(permSet);
             setAddedModels(models);
             setAccessLevelState(detectAccessLevelFromModels(models));
           }
@@ -301,9 +301,9 @@ export function useOdooPermissions(
     if (loading) return false;
 
     // No models added and none initially → not configured, not dirty
-    if (addedModels.size === 0 && initialPermissions.current.size === 0) return false;
+    if (addedModels.size === 0 && initialPermissions.size === 0) return false;
 
-    if (connectionId !== initialConnectionId.current) return true;
+    if (connectionId !== initialConnectionId) return true;
 
     const currentSet = new Set<string>();
     for (const [model, ops] of addedModels) {
@@ -314,12 +314,12 @@ export function useOdooPermissions(
       }
     }
 
-    if (currentSet.size !== initialPermissions.current.size) return true;
+    if (currentSet.size !== initialPermissions.size) return true;
     for (const key of currentSet) {
-      if (!initialPermissions.current.has(key)) return true;
+      if (!initialPermissions.has(key)) return true;
     }
     return false;
-  }, [loading, connectionId, addedModels]);
+  }, [loading, connectionId, addedModels, initialConnectionId, initialPermissions]);
 
   return {
     connections,

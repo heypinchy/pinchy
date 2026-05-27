@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect } from "react";
 import Prism from "prismjs";
 import "prismjs/components/prism-json";
 import "./json-highlight.css";
@@ -187,39 +187,44 @@ export function AuditLogTable() {
 
   const totalPages = Math.max(1, Math.ceil(total / limit));
 
-  const fetchEntries = useCallback(async () => {
-    try {
-      const params = new URLSearchParams();
-      params.set("page", String(page));
-      params.set("limit", String(limit));
-      if (eventTypeFilter) {
-        params.set("eventType", eventTypeFilter);
-      }
-      if (statusFilter) {
-        params.set("status", statusFilter);
-      }
-      if (dateFrom) {
-        params.set("from", localDateStart(dateFrom));
-      }
-      if (dateTo) {
-        params.set("to", localDateEnd(dateTo));
-      }
-
-      const res = await fetch(`/api/audit?${params.toString()}`);
-      if (res.ok) {
-        const data: AuditResponse = await res.json();
-        setEntries(data.entries);
-        setTotal(data.total);
-      }
-    } finally {
-      setLoading(false);
-    }
-  }, [page, limit, eventTypeFilter, statusFilter, dateFrom, dateTo]);
-
   useEffect(() => {
-    setLoading(true);
-    fetchEntries();
-  }, [fetchEntries]);
+    let cancelled = false;
+    (async () => {
+      setLoading(true);
+      try {
+        const params = new URLSearchParams();
+        params.set("page", String(page));
+        params.set("limit", String(limit));
+        if (eventTypeFilter) {
+          params.set("eventType", eventTypeFilter);
+        }
+        if (statusFilter) {
+          params.set("status", statusFilter);
+        }
+        if (dateFrom) {
+          params.set("from", localDateStart(dateFrom));
+        }
+        if (dateTo) {
+          params.set("to", localDateEnd(dateTo));
+        }
+
+        const res = await fetch(`/api/audit?${params.toString()}`);
+        if (cancelled) return;
+        if (res.ok) {
+          const data: AuditResponse = await res.json();
+          if (!cancelled) {
+            setEntries(data.entries);
+            setTotal(data.total);
+          }
+        }
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [page, limit, eventTypeFilter, statusFilter, dateFrom, dateTo]);
 
   async function handleExport(format: "csv" | "pdf") {
     const params = new URLSearchParams();
