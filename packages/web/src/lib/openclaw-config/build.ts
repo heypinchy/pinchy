@@ -1292,6 +1292,13 @@ export async function regenerateOpenClawConfig() {
     );
   }
 
+  // Diagnostic for setup-wizard-e2e CI investigation (PR #445): log which
+  // provider keys are in the bundle just before disk write, so failing E2E
+  // logs show whether Pinchy thinks it wrote anthropic/openai/etc.
+  // TODO: remove once setup-wizard-e2e is stable.
+  console.log(
+    `[openclaw-config] writeSecretsFile providers=${JSON.stringify(Object.keys(secretsBundle.providers ?? {}))}`
+  );
   writeSecretsFile(secretsBundle);
 
   // Only write if content actually changed — prevents unnecessary OpenClaw restarts.

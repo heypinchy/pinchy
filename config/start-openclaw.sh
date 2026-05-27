@@ -263,6 +263,14 @@ scan_data_directories
             if [ "$filename" = "$(basename "$SECRETS_FILE")" ]; then
                 chown root:root "$SECRETS_FILE" 2>/dev/null || true
                 chmod 0600 "$SECRETS_FILE" 2>/dev/null || true
+                # Diagnostic for setup-wizard-e2e CI investigation (PR #445):
+                # dump the first ~120 bytes (provider keys + start of payload)
+                # so we can compare what Pinchy wrote against what OC reads.
+                # `head -c` is safe for binary because secrets.json is JSON; tr
+                # strips newlines to keep the log on one line.
+                # TODO: remove once setup-wizard-e2e is stable.
+                _diag_preview=$(head -c 120 "$SECRETS_FILE" 2>/dev/null | tr -d '\n')
+                echo "[secrets-watcher] secrets.json head=${_diag_preview}"
                 # First-time appearance: OpenClaw's secrets-provider was
                 # initialized at boot with "file missing" and will NOT
                 # reinitialize on inotify of openclaw.json (the secrets
