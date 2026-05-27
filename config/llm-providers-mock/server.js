@@ -23,6 +23,11 @@ function requireXApiKey(req, res) {
 // rely on this — never replace with Date.now().
 const MOCK_CREATED_AT = 1700000000;
 
+// Frozen assistant reply for response determinism. Shared across all
+// provider handlers so E2E specs can assert one canonical message in
+// Pinchy's chat surface. Never replace with a dynamic string.
+const MOCK_ASSISTANT_REPLY = "Sure, happy to help! What would you like to work on?";
+
 const PORT = process.env.PORT || 9100;
 
 // ---- Control ----
@@ -44,14 +49,13 @@ app.get("/openai/v1/models", (req, res) => {
 
 app.post("/openai/v1/chat/completions", (req, res) => {
   if (!requireBearer(req, res)) return;
-  const reply = "Sure, happy to help! What would you like to work on?";
   res.json({
     id: "chatcmpl-mock-1",
     object: "chat.completion",
     created: MOCK_CREATED_AT,
     model: req.body?.model ?? "gpt-5.5",
     choices: [
-      { index: 0, message: { role: "assistant", content: reply }, finish_reason: "stop" },
+      { index: 0, message: { role: "assistant", content: MOCK_ASSISTANT_REPLY }, finish_reason: "stop" },
     ],
     usage: { prompt_tokens: 10, completion_tokens: 12, total_tokens: 22 },
   });
@@ -75,7 +79,7 @@ app.post("/anthropic/v1/messages", (req, res) => {
     type: "message",
     role: "assistant",
     model: req.body?.model ?? "claude-sonnet-4-6",
-    content: [{ type: "text", text: "Sure, happy to help! What would you like to work on?" }],
+    content: [{ type: "text", text: MOCK_ASSISTANT_REPLY }],
     stop_reason: "end_turn",
     usage: { input_tokens: 10, output_tokens: 12 },
   });
