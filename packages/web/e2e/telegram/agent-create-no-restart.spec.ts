@@ -291,8 +291,13 @@ test.describe.serial("Agent create — no gateway restart cascade (#193)", () =>
       name: `NoRestartTest-${Date.now()}`,
       templateId: "custom",
     });
-    expect(createRes.status, await createRes.text()).toBeLessThan(300);
-    const createdAgent = (await createRes.json()) as { id: string };
+    // Read the body ONCE. The previous version called `await createRes.text()`
+    // (for the assert's failure message) AND then `await createRes.json()`,
+    // which threw `Body is unusable: Body has already been read` on the
+    // happy path. Read into a string, then parse the JSON for the agent id.
+    const responseBody = await createRes.text();
+    expect(createRes.status, responseBody).toBeLessThan(300);
+    const createdAgent = JSON.parse(responseBody) as { id: string };
 
     // Wait for OC's runtime to ACTUALLY reflect the new agent. POST returns
     // after a 5 s best-effort wait (`waitForAgentInRuntime` inside POST
