@@ -121,6 +121,17 @@ fix_config_permissions() {
     # agent subdirectories can be created. Only secure the files themselves.
     chown 999:999 /root/.openclaw/agents 2>/dev/null || true
     find /root/.openclaw/agents -name "auth-profiles.json" -type f -exec chmod 0600 {} \; 2>/dev/null || true
+    # Cross-uid read access for Pinchy's self-service diagnostics export.
+    # OpenClaw writes per-agent sessions.json and *.trajectory.jsonl as root
+    # under agents/<agentId>/sessions/ — with default umask these emerge
+    # 0644/0755, but OpenClaw 2026.5.x ships with a tighter umask that
+    # produces 0600/0700, so Pinchy (uid 999) gets EACCES on the dir traversal.
+    # Diagnostics is read-only against these files; 0755/0644 is sufficient.
+    # The 50 ms fix_config_permissions tick catches runtime-created sessions
+    # (same pattern as the openclaw.json mode race).
+    find /root/.openclaw/agents -mindepth 1 -maxdepth 1 -type d -exec chmod 0755 {} \; 2>/dev/null || true
+    find /root/.openclaw/agents -type d -name sessions -exec chmod 0755 {} \; 2>/dev/null || true
+    find /root/.openclaw/agents \( -name "sessions.json" -o -name "*.trajectory.jsonl" \) -type f -exec chmod 0644 {} \; 2>/dev/null || true
 }
 fix_config_permissions
 
