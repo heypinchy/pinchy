@@ -121,8 +121,20 @@ export async function resolveSessionId(
     return null;
   }
   if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return null;
-  const entry = (parsed as Record<string, SessionIndexEntry>)[sessionKey];
-  if (!entry || typeof entry !== "object") return null;
+  const index = parsed as Record<string, SessionIndexEntry>;
+  // Lookup is exact-first then case-insensitive: OpenClaw normalizes the
+  // `<userId>` segment of the sessionKey when writing the index (observed
+  // `1BCj... -> 1bcj...` in CI). Matching strictly on Pinchy's
+  // `session.user.id` therefore misses every entry. The case-insensitive
+  // fallback recovers OpenClaw's normalization without hardcoding the rule.
+  let entry = index[sessionKey];
+  if (!entry || typeof entry !== "object") {
+    const wanted = sessionKey.toLowerCase();
+    const fallbackKey = Object.keys(index).find((k) => k.toLowerCase() === wanted);
+    if (!fallbackKey) return null;
+    entry = index[fallbackKey];
+    if (!entry || typeof entry !== "object") return null;
+  }
   const sessionId = entry.sessionId;
   return typeof sessionId === "string" && sessionId.length > 0 ? sessionId : null;
 }

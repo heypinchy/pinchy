@@ -64,6 +64,20 @@ describe("resolveSessionId", () => {
     await writeIndex(agentId, { [sessionKey]: { updatedAt: "2026-01-01" } });
     expect(await resolveSessionId(agentId, sessionKey)).toBeNull();
   });
+
+  it("falls back to case-insensitive match when OpenClaw lowercased the userId", async () => {
+    // OpenClaw was observed in CI to lowercase the `<userId>` segment of the
+    // sessionKey when writing sessions.json, so a mixed-case `session.user.id`
+    // from Better Auth would never match strictly. The reader must still
+    // resolve in that case.
+    const agentId = "agt_case";
+    await writeIndex(agentId, {
+      "agent:agt_case:direct:1bcj_lowercased": { sessionId: "ses_999" },
+    });
+    expect(await resolveSessionId(agentId, "agent:agt_case:direct:1BCj_lowercased")).toBe(
+      "ses_999"
+    );
+  });
 });
 
 describe("readTrajectoryJsonl", () => {
