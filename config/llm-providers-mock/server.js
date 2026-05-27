@@ -6,8 +6,14 @@ app.use(express.json({ limit: "10mb" }));
 // One-line request log so E2E CI failures show whether OpenClaw / Pinchy
 // reached the mock at all. The setup-wizard-e2e job tails this container's
 // logs on failure (see .github/workflows/ci.yml setup-wizard-e2e job).
+// Strip control characters from req.method/req.url before logging so a
+// crafted request can't forge fake log entries (CodeQL js/log-injection).
+const stripCtl = (s) =>
+  String(s)
+    .replace(/[\r\n\x00-\x1f]/g, "?")
+    .slice(0, 200);
 app.use((req, _res, next) => {
-  console.log(`[mock] ${req.method} ${req.url}`);
+  console.log(`[mock] ${stripCtl(req.method)} ${stripCtl(req.url)}`);
   next();
 });
 
