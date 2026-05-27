@@ -26,15 +26,21 @@ export function EditOAuthDialog({ open, onOpenChange }: EditOAuthDialogProps) {
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(true);
 
-  useEffect(() => {
-    if (!open) return;
-    let cancelled = false;
-    void Promise.resolve().then(() => {
-      if (cancelled) return;
+  // Reset state when the dialog opens — uses React-recommended
+  // "adjust state during render" pattern instead of useEffect.
+  const [prevOpen, setPrevOpen] = useState(open);
+  if (prevOpen !== open) {
+    setPrevOpen(open);
+    if (open) {
       setLoading(true);
       setClientSecret("");
       setError("");
-    });
+    }
+  }
+
+  useEffect(() => {
+    if (!open) return;
+    let cancelled = false;
     fetch("/api/settings/oauth?provider=google")
       .then((res) => res.json())
       .then((data) => {

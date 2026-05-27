@@ -433,9 +433,15 @@ export function useWsRuntime(agentId: string): {
   // Reset state when switching agents — prevents stale messages from
   // one agent blocking history load for a different agent.
   // Uses "adjust state during render" pattern (React-recommended over useEffect).
-  // Timer cleanup is intentionally NOT done here (refs cannot be read during
-  // render — react-hooks/purity) — the main useEffect's [agentId] cleanup clears
-  // all timers when agentId changes, before the new effect runs.
+  //
+  // Timers MUST be cleared synchronously here, not in the [agentId] useEffect
+  // cleanup: that cleanup runs after commit, leaving a race window where
+  // a pending timer can fire between render and cleanup and write OLD-agent
+  // data into NEW-agent state. The timer callbacks below (reconcileApply,
+  // reconcileFinish, pendingDisconnectError) don't guard on agentIdRef.current,
+  // so a single stale tick can corrupt the new agent's message list.
+  // The react-hooks/purity rule warns against reading refs during render, but
+  // here it's the only way to close the race — the timing requirement wins.
   const [prevAgentId, setPrevAgentId] = useState(agentId);
   if (prevAgentId !== agentId) {
     setPrevAgentId(agentId);
@@ -446,6 +452,30 @@ export function useWsRuntime(agentId: string): {
     setIsReconcilingMessages(false);
     setKnownEmptyHistory(false);
     setPayloadRejected(false);
+    // Synchronous timer cleanup is the entire point of doing this in render
+    // (see comment above). Deferring it to useEffect would defeat the
+    // race-prevention this block exists for.
+    // eslint-disable-next-line react-hooks/refs
+    if (reconcileApplyTimerRef.current) {
+      // eslint-disable-next-line react-hooks/refs
+      clearTimeout(reconcileApplyTimerRef.current);
+      // eslint-disable-next-line react-hooks/refs
+      reconcileApplyTimerRef.current = null;
+    }
+    // eslint-disable-next-line react-hooks/refs
+    if (reconcileFinishTimerRef.current) {
+      // eslint-disable-next-line react-hooks/refs
+      clearTimeout(reconcileFinishTimerRef.current);
+      // eslint-disable-next-line react-hooks/refs
+      reconcileFinishTimerRef.current = null;
+    }
+    // eslint-disable-next-line react-hooks/refs
+    if (pendingDisconnectErrorRef.current) {
+      // eslint-disable-next-line react-hooks/refs
+      clearTimeout(pendingDisconnectErrorRef.current.timer);
+      // eslint-disable-next-line react-hooks/refs
+      pendingDisconnectErrorRef.current = null;
+    }
   }
 
   useEffect(() => {
