@@ -52,6 +52,29 @@ export async function resetStack(): Promise<void> {
       `'TRUNCATE TABLE "user", account, agents, settings, audit_log, session, verification, groups, invites, integration_connections RESTART IDENTITY CASCADE'`,
     { stdio: "pipe", cwd: REPO_ROOT }
   );
+
+  // Delete openclaw.json and secrets.json from their named volumes BEFORE the
+  // container restart. Without this, the next Pinchy regenerate (fired by
+  // server.ts:371 when Pinchy reconnects to OpenClaw) builds an "all state
+  // truncated" config (~1.2 KB) that's <50% of the previous test's
+  // ~4.8 KB config — tripping build.ts's #311 size-drop guard. The guard
+  // correctly refuses the write (in production it protects against partial
+  // DB-loading races), but here the drop is legitimate (resetStack just
+  // wiped everything intentionally). secrets.json is already written by the
+  // time the guard fires, so openclaw.json keeps its stale anthropic
+  // SecretRef while secrets.json no longer has the key — OpenClaw fails
+  // with "JSON pointer segment anthropic does not exist" and crash-loops
+  // for the remainder of the test suite. Deleting both files (plus the
+  // bootstrap marker) means the next Pinchy regenerate sees no existing
+  // file, skips the size-drop comparison, and writes a clean baseline.
+  execSync(
+    `docker compose ${COMPOSE_ARGS} exec -T openclaw rm -f ` +
+      `/root/.openclaw/openclaw.json ` +
+      `/openclaw-secrets/secrets.json ` +
+      `/openclaw-secrets/.bootstrap-applied`,
+    { stdio: "pipe", cwd: REPO_ROOT }
+  );
+
   execSync(`docker compose ${COMPOSE_ARGS} restart pinchy openclaw`, {
     stdio: "pipe",
     cwd: REPO_ROOT,
