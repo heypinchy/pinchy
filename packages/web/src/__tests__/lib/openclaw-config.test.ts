@@ -833,6 +833,109 @@ describe("regenerateOpenClawConfig", () => {
     );
   });
 
+  describe("PINCHY_PROVIDER_BASEURL_* takes priority over SDK env vars", () => {
+    // These env vars exist for E2E mock injection (Phase 1 of the setup-wizard
+    // smoke tests). They override the *_BASE_URL SDK convention so the
+    // emitted openclaw.json points OpenClaw at the LLM mock at chat time.
+    // Priority: PINCHY_PROVIDER_BASEURL_* > *_BASE_URL > built-in default.
+    afterEach(() => {
+      delete process.env.PINCHY_PROVIDER_BASEURL_OPENAI;
+      delete process.env.PINCHY_PROVIDER_BASEURL_ANTHROPIC;
+      delete process.env.PINCHY_PROVIDER_BASEURL_GOOGLE;
+      delete process.env.PINCHY_PROVIDER_BASEURL_OLLAMA_CLOUD;
+      delete process.env.OPENAI_BASE_URL;
+      delete process.env.ANTHROPIC_BASE_URL;
+      delete process.env.GOOGLE_BASE_URL;
+    });
+
+    it("emits PINCHY_PROVIDER_BASEURL_OPENAI override into models.providers.openai.baseUrl", async () => {
+      process.env.PINCHY_PROVIDER_BASEURL_OPENAI = "http://llm-mock:9100/openai";
+      mockedGetSetting.mockImplementation(async (key: string) => {
+        if (key === "openai_api_key") return "sk-openai-test";
+        return null;
+      });
+
+      await regenerateOpenClawConfig();
+      const written = mockedWriteFileSync.mock.calls[0][1] as string;
+      const config = JSON.parse(written);
+      // OpenAI's baseUrl emitted into OC config includes the /v1 suffix
+      // (pi-ai appends /chat/completions to it).
+      expect(config?.models?.providers?.openai?.baseUrl).toBe("http://llm-mock:9100/openai/v1");
+    });
+
+    it("PINCHY override takes priority over SDK OPENAI_BASE_URL", async () => {
+      process.env.OPENAI_BASE_URL = "https://sdk-proxy.example.com/v1";
+      process.env.PINCHY_PROVIDER_BASEURL_OPENAI = "http://llm-mock:9100/openai";
+      mockedGetSetting.mockImplementation(async (key: string) => {
+        if (key === "openai_api_key") return "sk-openai-test";
+        return null;
+      });
+
+      await regenerateOpenClawConfig();
+      const written = mockedWriteFileSync.mock.calls[0][1] as string;
+      const config = JSON.parse(written);
+      expect(config?.models?.providers?.openai?.baseUrl).toBe("http://llm-mock:9100/openai/v1");
+    });
+
+    it("SDK env var still works when PINCHY env var is unset (backward compat)", async () => {
+      process.env.OPENAI_BASE_URL = "https://sdk-proxy.example.com/v1";
+      delete process.env.PINCHY_PROVIDER_BASEURL_OPENAI;
+      mockedGetSetting.mockImplementation(async (key: string) => {
+        if (key === "openai_api_key") return "sk-openai-test";
+        return null;
+      });
+
+      await regenerateOpenClawConfig();
+      const written = mockedWriteFileSync.mock.calls[0][1] as string;
+      const config = JSON.parse(written);
+      // SDK env-var value comes through verbatim (no double-suffix).
+      expect(config?.models?.providers?.openai?.baseUrl).toBe("https://sdk-proxy.example.com/v1");
+    });
+
+    it("emits PINCHY_PROVIDER_BASEURL_ANTHROPIC override with no suffix (Anthropic default has none)", async () => {
+      process.env.PINCHY_PROVIDER_BASEURL_ANTHROPIC = "http://llm-mock:9100/anthropic";
+      mockedGetSetting.mockImplementation(async (key: string) => {
+        if (key === "anthropic_api_key") return "sk-ant-test";
+        return null;
+      });
+
+      await regenerateOpenClawConfig();
+      const written = mockedWriteFileSync.mock.calls[0][1] as string;
+      const config = JSON.parse(written);
+      // Anthropic default is "https://api.anthropic.com" (no /v1); the
+      // override stays bare too.
+      expect(config?.models?.providers?.anthropic?.baseUrl).toBe("http://llm-mock:9100/anthropic");
+    });
+
+    it("emits PINCHY_PROVIDER_BASEURL_GOOGLE override with /v1beta suffix (Google default has it)", async () => {
+      process.env.PINCHY_PROVIDER_BASEURL_GOOGLE = "http://llm-mock:9100/google";
+      mockedGetSetting.mockImplementation(async (key: string) => {
+        if (key === "google_api_key") return "AIza-test-key";
+        return null;
+      });
+
+      await regenerateOpenClawConfig();
+      const written = mockedWriteFileSync.mock.calls[0][1] as string;
+      const config = JSON.parse(written);
+      expect(config?.models?.providers?.google?.baseUrl).toBe("http://llm-mock:9100/google/v1beta");
+    });
+
+    it("Ollama-Cloud PINCHY override emits into models.providers.ollama-cloud.baseUrl", async () => {
+      process.env.PINCHY_PROVIDER_BASEURL_OLLAMA_CLOUD = "http://llm-mock:9100/ollama-cloud";
+      mockedGetSetting.mockImplementation(async (key: string) => {
+        if (key === "ollama_cloud_api_key") return "sk-ollama-test";
+        return null;
+      });
+
+      await regenerateOpenClawConfig();
+      const written = mockedWriteFileSync.mock.calls[0][1] as string;
+      const config = JSON.parse(written);
+      expect(config?.models?.providers?.["ollama-cloud"]?.baseUrl).toBe(
+        "http://llm-mock:9100/ollama-cloud/v1"
+      );
+    });
+  });
+
   it("should set defaults.model from default provider", async () => {
     mockedGetSetting.mockImplementation(async (key: string) => {
       if (key === "default_provider") return "openai";

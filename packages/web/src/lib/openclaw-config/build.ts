@@ -2,7 +2,7 @@ import { readFileSync, writeFileSync } from "fs";
 import { dirname } from "path";
 import { isDeepStrictEqual } from "util";
 import { writeSecretsFile, secretRef, type SecretsBundle } from "@/lib/openclaw-secrets";
-import { PROVIDERS, type ProviderName } from "@/lib/providers";
+import { PROVIDERS, type ProviderName, resolveProviderBaseUrl } from "@/lib/providers";
 import { getDefaultModel, fetchOllamaLocalModelsFromUrl } from "@/lib/provider-models";
 import { isModelVisionCapable } from "@/lib/model-vision";
 import { eq, ne } from "drizzle-orm";
@@ -42,10 +42,27 @@ import { validateBuiltConfig } from "./validate-built-config";
 // built-in provider — startup config validation rejects the file otherwise. We write
 // SDK-canonical defaults; proxy/test deployments override via env-vars.
 // Verified against openclaw@2026.4.27 dist on 2026-05-06.
+//
+// These are BARE HOSTS (no path suffix). The path suffix is appended at
+// emission time via `BUILTIN_PROVIDER_PATH_SUFFIX` so PINCHY_PROVIDER_BASEURL_*
+// overrides (which carry only the host) get the same suffix treatment. The
+// SDK env-var path (*_BASE_URL) takes precedence with its value verbatim — see
+// the emission loop below for the layering rules.
 const BUILTIN_PROVIDER_DEFAULT_BASE_URLS: Record<"anthropic" | "openai" | "google", string> = {
   anthropic: "https://api.anthropic.com",
-  openai: "https://api.openai.com/v1",
-  google: "https://generativelanguage.googleapis.com/v1beta",
+  openai: "https://api.openai.com",
+  google: "https://generativelanguage.googleapis.com",
+};
+
+// OC's per-provider path conventions. Appended to the bare host above to
+// produce the `baseUrl` that lands in openclaw.json. Anthropic exposes its API
+// at the root; OpenAI lives under /v1; Google's Generative Language API lives
+// under /v1beta. Locked against the existing SDK-env-var tests at
+// openclaw-config.test.ts:734-822, which assert the final emitted URLs.
+const BUILTIN_PROVIDER_PATH_SUFFIX: Record<"anthropic" | "openai" | "google", string> = {
+  anthropic: "",
+  openai: "/v1",
+  google: "/v1beta",
 };
 
 const BUILTIN_PROVIDER_BASE_URL_ENV_VARS: Record<"anthropic" | "openai" | "google", string> = {
@@ -966,24 +983,40 @@ export async function regenerateOpenClawConfig() {
   // providers (breaking change from 4.x where it was optional). Without
   // baseUrl, the gateway fails to start on health-check restarts:
   //   "models.providers.anthropic.baseUrl: Invalid input: expected string, received undefined"
-  // Priority: env var override > existing file value > OC's known default.
-  // The env var path supports custom API proxies; the existing-file path
-  // preserves anything OC has enriched; the default is OC's hardcoded fallback.
-  const PROVIDER_DEFAULT_BASE_URLS: Record<string, string> = {
-    anthropic: "https://api.anthropic.com",
-    openai: "https://api.openai.com/v1",
-    google: "https://generativelanguage.googleapis.com/v1beta",
-  };
-  const existingModelProviders =
-    ((existing.models as Record<string, unknown>)?.providers as Record<string, unknown>) ?? {};
-
+  //
+  // Priority for the emitted baseUrl:
+  //   1. PINCHY_PROVIDER_BASEURL_*  — Pinchy's own host override, used by
+  //      the LLM mock in E2E/smoke tests so OpenClaw's chat traffic hits the
+  //      local stand-in instead of api.openai.com etc. The path suffix
+  //      (BUILTIN_PROVIDER_PATH_SUFFIX) is appended to keep OC's URL shape.
+  //   2. *_BASE_URL (SDK convention) — used by proxy customers in production.
+  //      The value comes through verbatim because SDK env vars already carry
+  //      the full path (e.g. https://my-proxy.example.com/v1). No double-
+  //      suffix. Covered by the regression tests immediately above.
+  //   3. Bare built-in host + path suffix — OC's canonical default.
   for (const providerName of ["anthropic", "openai", "google"] as const) {
     const apiKey = await getSetting(PROVIDERS[providerName].settingsKey);
     if (apiKey) {
-      const envOverride = process.env[BUILTIN_PROVIDER_BASE_URL_ENV_VARS[providerName]];
+      // PINCHY_PROVIDER_BASEURL_* carries only the host, so we append the
+      // path suffix to keep the OC URL shape. The SDK *_BASE_URL fallback
+      // only kicks in when the PINCHY var is unset; its value comes through
+      // verbatim because SDK convention is to include the full path
+      // (e.g. https://my-proxy.example.com/v1).
+      const pinchyOverride = process.env[`PINCHY_PROVIDER_BASEURL_${providerName.toUpperCase()}`];
+      const sdkOverride = process.env[BUILTIN_PROVIDER_BASE_URL_ENV_VARS[providerName]];
+      let baseUrl: string;
+      if (pinchyOverride) {
+        baseUrl = pinchyOverride + BUILTIN_PROVIDER_PATH_SUFFIX[providerName];
+      } else if (sdkOverride) {
+        baseUrl = sdkOverride;
+      } else {
+        baseUrl =
+          BUILTIN_PROVIDER_DEFAULT_BASE_URLS[providerName] +
+          BUILTIN_PROVIDER_PATH_SUFFIX[providerName];
+      }
       modelProviders[providerName] = {
         apiKey: secretRef(`/providers/${providerName}/apiKey`),
-        baseUrl: envOverride ?? BUILTIN_PROVIDER_DEFAULT_BASE_URLS[providerName],
+        baseUrl,
         models: getModelCatalogForProvider(providerName),
       };
     }
@@ -992,7 +1025,11 @@ export async function regenerateOpenClawConfig() {
   if (ollamaCloudKey) {
     providerSecrets["ollama-cloud"] = { apiKey: ollamaCloudKey };
     modelProviders["ollama-cloud"] = {
-      baseUrl: "https://ollama.com/v1",
+      // PINCHY_PROVIDER_BASEURL_OLLAMA_CLOUD redirects OpenClaw's Ollama-Cloud
+      // chat traffic to the smoke-test LLM mock. Ollama-Cloud has no SDK env-
+      // var convention, so the override goes straight through resolveProvider-
+      // BaseUrl() with the canonical https://ollama.com fallback.
+      baseUrl: resolveProviderBaseUrl("ollama-cloud", "https://ollama.com") + "/v1",
       apiKey: secretRef("/providers/ollama-cloud/apiKey"),
       api: "openai-completions",
       // Derived from TOOL_CAPABLE_OLLAMA_CLOUD_MODELS — see that file for
