@@ -1,0 +1,33 @@
+# docker-compose.setup-wizard-test.yml
+# Overlay: adds mock LLM provider server for setup-wizard E2E tests.
+# Usage:
+#   docker compose -f docker-compose.yml -f docker-compose.e2e.yml -f docker-compose.setup-wizard-test.yml up --build -d
+
+services:
+  llm-providers-mock:
+    build:
+      context: config/llm-providers-mock
+    expose:
+      - "9100"
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://localhost:9100/control/health').then(r=>r.ok?process.exit(0):process.exit(1)).catch(()=>process.exit(1))"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  pinchy:
+    environment:
+      - PINCHY_PROVIDER_BASEURL_OPENAI=http://llm-providers-mock:9100/openai
+      - PINCHY_PROVIDER_BASEURL_ANTHROPIC=http://llm-providers-mock:9100/anthropic
+      - PINCHY_PROVIDER_BASEURL_GOOGLE=http://llm-providers-mock:9100/google
+      - PINCHY_PROVIDER_BASEURL_OLLAMA_CLOUD=http://llm-providers-mock:9100/ollama-cloud
+    depends_on:
+      llm-providers-mock:
+        condition: service_healthy
+
+  openclaw:
+    # OpenClaw resolves models.providers.<name>.baseUrl from openclaw.json,
+    # which Pinchy now emits with the override above — no extra env needed here.
+    depends_on:
+      llm-providers-mock:
+        condition: service_healthy
