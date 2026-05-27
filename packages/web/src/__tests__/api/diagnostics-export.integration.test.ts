@@ -68,6 +68,7 @@ vi.mock("@/lib/auth", async (importOriginal) => {
 vi.mock("@/lib/diagnostics/jsonl-reader", () => ({
   resolveSessionId: vi.fn(),
   readTrajectoryJsonl: vi.fn(),
+  inspectSessionIndex: vi.fn(async () => ({ fileExists: false, keyCount: 0, keyShapes: [] })),
 }));
 
 import { db } from "@/db";
