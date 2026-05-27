@@ -5,6 +5,7 @@ import { getUserGroupIds, getAgentGroupIds } from "@/lib/groups";
 import { isEnterprise } from "@/lib/enterprise";
 import { appendAuditLog, safeProviderError } from "@/lib/audit";
 import { recordAuditFailure } from "@/lib/audit-deferred";
+import { ActiveRuns } from "@/server/active-runs";
 import {
   shouldEmitModelUnavailableAudit,
   shouldEmitSilentStreamAudit,
@@ -80,7 +81,15 @@ export class ClientRouter {
     private openclawClient: OpenClawClient,
     private userId: string,
     private userRole: string,
-    private sessionCache: SessionCache
+    private sessionCache: SessionCache,
+    /**
+     * Server-wide registry of in-flight chat runs (#310 Tier 2). Optional
+     * for backward compatibility with tests that pre-date Tier 2a — those
+     * get a per-router instance, which is fine because they don't run the
+     * watchdog and don't share state across ClientRouter instances anyway.
+     * Production wires the singleton from `active-runs-singleton.ts`.
+     */
+    private activeRuns: ActiveRuns = new ActiveRuns()
   ) {}
 
   private computeSessionKey(agentId: string): string {
@@ -542,6 +551,18 @@ export class ClientRouter {
     // are safe to send between turns.
     let heartbeatInterval: ReturnType<typeof setInterval> | null = null;
 
+    // #310 Tier 2a: track this run in `activeRuns` so the watchdog can
+    // see it and so chunks arriving after the browser disconnect still
+    // attribute to a known server-side record. Registration is lazy —
+    // we don't have the runId until the first event arrives — and
+    // strictly idempotent (only the first registering chunk creates an
+    // entry). `sawTerminalError` distinguishes "stream ended with no
+    // listeners" (= audit chat.run_completed_after_disconnect) from
+    // "stream errored and no one was watching" (= just clean up).
+    let activeRunRegistered = false;
+    let activeRunId: string | undefined;
+    let sawTerminalError = false;
+
     try {
       for await (const chunk of stream) {
         // Lazily start the keep-alive heartbeat on the first chunk. The
@@ -554,6 +575,29 @@ export class ClientRouter {
               this.sendToClient(clientWs, { type: "thinking", messageId });
             }
           }, THINKING_HEARTBEAT_MS);
+        }
+
+        // Tier 2a: lazy registration on the first chunk that carries a
+        // runId, then a touch on every subsequent chunk. Both run BEFORE
+        // existing chunk handling so a thrown error in the existing block
+        // still leaves the registry up-to-date for the finally cleanup.
+        if (!activeRunRegistered && chunk.runId) {
+          this.activeRuns.register({
+            runId: chunk.runId,
+            sessionKey,
+            agentId: agent.id,
+            userId: this.userId,
+            agentName: agent.name,
+            startedAt: Date.now(),
+            ws: clientWs,
+          });
+          activeRunRegistered = true;
+          activeRunId = chunk.runId;
+        } else if (activeRunRegistered) {
+          this.activeRuns.touch(sessionKey, Date.now());
+        }
+        if (chunk.type === "error") {
+          sawTerminalError = true;
         }
 
         // Pinchy-side accounting — runs regardless of consumer state. The
@@ -791,6 +835,35 @@ export class ClientRouter {
         this.sendToClient(clientWs, { type: "complete" });
       }
     } finally {
+      // #310 Tier 2a: clean up the registry entry and, if the run finished
+      // normally but with zero listeners, write a chat.run_completed_after_disconnect
+      // audit row so operators can see "this run completed for a browser
+      // session that had already gone away". A terminated error path
+      // (sawTerminalError === true) doesn't get this audit — that's
+      // covered by the existing chat.agent_error / classified events.
+      if (activeRunRegistered) {
+        const run = this.activeRuns.get(sessionKey);
+        if (run && run.listeners.size === 0 && !sawTerminalError) {
+          const auditEntry = {
+            actorType: "user" as const,
+            actorId: this.userId,
+            eventType: "chat.run_completed_after_disconnect" as const,
+            resource: `agent:${agent.id}`,
+            detail: {
+              agent: { id: agent.id, name: agent.name },
+              sessionKey,
+              runId: activeRunId!,
+            },
+            outcome: "success" as const,
+          };
+          try {
+            await appendAuditLog(auditEntry);
+          } catch (err) {
+            recordAuditFailure(err, auditEntry);
+          }
+        }
+        this.activeRuns.delete(sessionKey);
+      }
       if (heartbeatInterval !== null) {
         clearInterval(heartbeatInterval);
       }

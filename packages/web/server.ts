@@ -9,6 +9,10 @@ import { validateWsSession } from "./src/server/ws-auth";
 import { restartState } from "./src/server/restart-state";
 import { openClawConnectionState } from "./src/server/openclaw-connection-state";
 import { setOpenClawClient } from "./src/server/openclaw-client";
+import { getActiveRunsSingleton } from "./src/server/active-runs-singleton";
+import { startRunWatchdog, DEFAULT_MAX_RUN_DURATION_MS } from "./src/server/run-watchdog";
+import { appendAuditLog } from "./src/lib/audit";
+import { recordAuditFailure } from "./src/lib/audit-deferred";
 import { WsRateLimiter } from "./src/server/ws-rate-limit";
 import { setupOpenClawDisconnectHandler } from "./src/server/openclaw-disconnect-handler";
 import {
@@ -112,6 +116,9 @@ ${domain ? `<p><a href="https://${domain}">Go to ${domain} →</a></p>` : ""}
     createColdStartStatusBroadcaster();
 
   const sessionCache = new SessionCache();
+  // #310 Tier 2a: server-wide registry of in-flight chat runs. Shared
+  // across all ClientRouter instances (one per ws) and the watchdog.
+  const activeRuns = getActiveRunsSingleton();
 
   const wss = new WebSocketServer({
     noServer: true,
@@ -188,7 +195,13 @@ ${domain ? `<p><a href="https://${domain}">Go to ${domain} →</a></p>` : ""}
     statusBroadcaster.sendInitialStatus(clientWs);
 
     const router = openclawClient
-      ? new ClientRouter(openclawClient, sessionInfo.userId, sessionInfo.userRole, sessionCache)
+      ? new ClientRouter(
+          openclawClient,
+          sessionInfo.userId,
+          sessionInfo.userRole,
+          sessionCache,
+          activeRuns
+        )
       : null;
 
     clientWs.on("message", (data) => {
@@ -209,12 +222,18 @@ ${domain ? `<p><a href="https://${domain}">Go to ${domain} →</a></p>` : ""}
     clientWs.on("close", () => {
       if (sessionInfo) wsRateLimiter.releaseConnection(sessionInfo.userId);
       sessionMap.delete(clientWs);
+      // #310 Tier 2a: detach this ws from any active-run listener sets so
+      // chunks for a still-streaming OC run no longer try to send through
+      // a dead socket. The run itself stays alive until OC's stream
+      // terminates or the watchdog tears it down on absolute timeout.
+      activeRuns.removeListenerFromAll(clientWs);
     });
 
     clientWs.on("error", (err) => {
       console.error("Client WebSocket error:", err.message);
       if (sessionInfo) wsRateLimiter.releaseConnection(sessionInfo.userId);
       sessionMap.delete(clientWs);
+      activeRuns.removeListenerFromAll(clientWs);
     });
   });
 
@@ -327,6 +346,49 @@ ${domain ? `<p><a href="https://${domain}">Go to ${domain} →</a></p>` : ""}
     });
 
     setOpenClawClient(openclawClient);
+
+    // #310 Tier 2a: start the run watchdog now that the OpenClaw client
+    // exists. The watchdog scans `activeRuns` every 30s for absolute
+    // timeouts, calls chatAbort on stuck runs, writes the
+    // `chat.run_timed_out` audit row, and broadcasts a terminal frame to
+    // any still-connected listener. The stop fn is registered with the
+    // shutdown handlers so SIGTERM clears the interval cleanly.
+    const ocForWatchdog = openclawClient;
+    const stopRunWatchdog = startRunWatchdog({
+      activeRuns,
+      now: () => Date.now(),
+      maxRunDurationMs: DEFAULT_MAX_RUN_DURATION_MS,
+      chatAbort: async (sessionKey, runId) => {
+        await ocForWatchdog.chatAbort(sessionKey, runId);
+      },
+      writeAudit: async (entry) => {
+        try {
+          await appendAuditLog(entry);
+        } catch (err) {
+          recordAuditFailure(err, entry);
+        }
+      },
+      broadcastTimeout: (run) => {
+        const payload = JSON.stringify({
+          type: "error",
+          agentName: run.agentName,
+          providerError: `This run timed out after ${Math.floor(
+            DEFAULT_MAX_RUN_DURATION_MS / 60_000
+          )}m. Please retry.`,
+          messageId: null,
+          runTimedOut: true,
+        });
+        for (const ws of run.listeners) {
+          if (ws.readyState === 1) ws.send(payload);
+        }
+      },
+    });
+    registerShutdownHandlers([
+      () => {
+        stopRunWatchdog();
+        return Promise.resolve();
+      },
+    ]);
 
     let hasConnected = false;
     let errorLogged = false;

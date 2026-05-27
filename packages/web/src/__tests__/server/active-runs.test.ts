@@ -1,0 +1,228 @@
+/**
+ * Unit tests for the `ActiveRuns` server-side run registry.
+ *
+ * Why this exists: when the Browser ↔ Pinchy WebSocket dies mid-stream, the
+ * Pinchy ↔ OpenClaw connection keeps draining the stream — but Pinchy has no
+ * way to attribute those chunks to anything (issue #310). `ActiveRuns` is the
+ * in-memory map keyed by `sessionKey` that holds run state (runId, timing,
+ * listener WebSockets) so a watchdog can scan for stuck runs, terminal audit
+ * events can describe what happened, and a reconnecting browser can join the
+ * existing listener set (Tier 2b).
+ */
+import { describe, it, expect, beforeEach } from "vitest";
+import type { WebSocket } from "ws";
+import { ActiveRuns } from "@/server/active-runs";
+
+// We don't need real ws objects — the registry only cares about identity.
+function fakeWs(): WebSocket {
+  return {} as unknown as WebSocket;
+}
+
+const baseRun = {
+  runId: "run-1",
+  sessionKey: "agent:a1:direct:u1",
+  agentId: "a1",
+  userId: "u1",
+  agentName: "Smithers",
+  startedAt: 1_000_000,
+};
+
+describe("ActiveRuns", () => {
+  let runs: ActiveRuns;
+
+  beforeEach(() => {
+    runs = new ActiveRuns();
+  });
+
+  describe("register", () => {
+    it("stores a run keyed by sessionKey with the registering ws as the first listener", () => {
+      const ws = fakeWs();
+      const created = runs.register({ ...baseRun, ws });
+
+      expect(created.runId).toBe("run-1");
+      expect(created.sessionKey).toBe("agent:a1:direct:u1");
+      expect(created.agentName).toBe("Smithers");
+      expect(created.startedAt).toBe(1_000_000);
+      expect(created.lastChunkAt).toBe(1_000_000);
+      expect(created.listeners.has(ws)).toBe(true);
+      expect(created.listeners.size).toBe(1);
+
+      expect(runs.size()).toBe(1);
+      expect(runs.get(baseRun.sessionKey)).toBe(created);
+    });
+
+    it("replaces a prior run for the same sessionKey (new user turn supersedes the old)", () => {
+      const wsOld = fakeWs();
+      const wsNew = fakeWs();
+      runs.register({ ...baseRun, runId: "run-old", ws: wsOld });
+
+      const newRun = runs.register({
+        ...baseRun,
+        runId: "run-new",
+        startedAt: 2_000_000,
+        ws: wsNew,
+      });
+
+      expect(runs.size()).toBe(1);
+      expect(runs.get(baseRun.sessionKey)?.runId).toBe("run-new");
+      expect(newRun.listeners.has(wsNew)).toBe(true);
+      expect(newRun.listeners.has(wsOld)).toBe(false);
+    });
+  });
+
+  describe("touch", () => {
+    it("updates lastChunkAt on every chunk so the watchdog measures inactivity, not absolute age", () => {
+      const ws = fakeWs();
+      runs.register({ ...baseRun, ws });
+
+      runs.touch(baseRun.sessionKey, 1_001_234);
+      expect(runs.get(baseRun.sessionKey)?.lastChunkAt).toBe(1_001_234);
+
+      runs.touch(baseRun.sessionKey, 1_005_678);
+      expect(runs.get(baseRun.sessionKey)?.lastChunkAt).toBe(1_005_678);
+    });
+
+    it("is a no-op for a sessionKey with no registered run", () => {
+      expect(() => runs.touch("agent:never:direct:u1", 9_000_000)).not.toThrow();
+    });
+  });
+
+  describe("delete", () => {
+    it("removes the run for a sessionKey", () => {
+      const ws = fakeWs();
+      runs.register({ ...baseRun, ws });
+      expect(runs.size()).toBe(1);
+
+      runs.delete(baseRun.sessionKey);
+
+      expect(runs.size()).toBe(0);
+      expect(runs.get(baseRun.sessionKey)).toBeUndefined();
+    });
+
+    it("is a no-op for an unknown sessionKey", () => {
+      expect(() => runs.delete("agent:never:direct:u1")).not.toThrow();
+      expect(runs.size()).toBe(0);
+    });
+  });
+
+  describe("addListener", () => {
+    it("adds an additional ws as a listener and returns true when the run exists (Tier 2b multi-tab)", () => {
+      const wsA = fakeWs();
+      const wsB = fakeWs();
+      runs.register({ ...baseRun, ws: wsA });
+
+      const added = runs.addListener(baseRun.sessionKey, wsB);
+
+      expect(added).toBe(true);
+      const run = runs.get(baseRun.sessionKey);
+      expect(run?.listeners.has(wsA)).toBe(true);
+      expect(run?.listeners.has(wsB)).toBe(true);
+      expect(run?.listeners.size).toBe(2);
+    });
+
+    it("returns false when no run exists for the sessionKey (caller should reply with 'no active run')", () => {
+      const ws = fakeWs();
+      const added = runs.addListener("agent:gone:direct:u1", ws);
+      expect(added).toBe(false);
+      expect(runs.size()).toBe(0);
+    });
+
+    it("is idempotent for a ws that is already a listener (Set semantics)", () => {
+      const ws = fakeWs();
+      runs.register({ ...baseRun, ws });
+
+      expect(runs.addListener(baseRun.sessionKey, ws)).toBe(true);
+      expect(runs.get(baseRun.sessionKey)?.listeners.size).toBe(1);
+    });
+  });
+
+  describe("removeListener", () => {
+    it("removes one ws from the listener set without deleting the run", () => {
+      const wsA = fakeWs();
+      const wsB = fakeWs();
+      runs.register({ ...baseRun, ws: wsA });
+      runs.addListener(baseRun.sessionKey, wsB);
+
+      runs.removeListener(baseRun.sessionKey, wsA);
+
+      const run = runs.get(baseRun.sessionKey);
+      // The run survives even with zero listeners — the OC stream is still
+      // being drained server-side. The watchdog tears it down on timeout.
+      expect(run).toBeDefined();
+      expect(run?.listeners.has(wsA)).toBe(false);
+      expect(run?.listeners.has(wsB)).toBe(true);
+      expect(run?.listeners.size).toBe(1);
+    });
+
+    it("handles removal of a ws that is not currently a listener", () => {
+      const wsA = fakeWs();
+      const wsOther = fakeWs();
+      runs.register({ ...baseRun, ws: wsA });
+
+      expect(() => runs.removeListener(baseRun.sessionKey, wsOther)).not.toThrow();
+      expect(runs.get(baseRun.sessionKey)?.listeners.size).toBe(1);
+    });
+  });
+
+  describe("removeListenerFromAll", () => {
+    it("removes a ws from every active run's listener set (used on WS close)", () => {
+      const wsClosing = fakeWs();
+      const wsOther = fakeWs();
+
+      runs.register({ ...baseRun, sessionKey: "s1", ws: wsClosing });
+      runs.addListener("s1", wsOther);
+
+      runs.register({ ...baseRun, runId: "run-2", sessionKey: "s2", ws: wsClosing });
+
+      runs.removeListenerFromAll(wsClosing);
+
+      expect(runs.get("s1")?.listeners.has(wsClosing)).toBe(false);
+      expect(runs.get("s1")?.listeners.has(wsOther)).toBe(true);
+      expect(runs.get("s2")?.listeners.has(wsClosing)).toBe(false);
+    });
+  });
+
+  describe("scanForStuckRuns", () => {
+    const FIFTEEN_MIN = 15 * 60 * 1000;
+
+    it("returns runs whose startedAt is older than maxRunDurationMs (absolute age cap)", () => {
+      const ws = fakeWs();
+      const start = 1_000_000;
+      runs.register({ ...baseRun, sessionKey: "s-old", startedAt: start, ws });
+      runs.register({
+        ...baseRun,
+        runId: "run-2",
+        sessionKey: "s-fresh",
+        startedAt: start + FIFTEEN_MIN - 5_000,
+        ws,
+      });
+
+      const now = start + FIFTEEN_MIN + 1; // exactly 1ms past the cap for s-old
+      const stuck = runs.scanForStuckRuns(now, FIFTEEN_MIN);
+
+      expect(stuck).toHaveLength(1);
+      expect(stuck[0].sessionKey).toBe("s-old");
+    });
+
+    it("returns an empty array when no runs exceed the cap", () => {
+      const ws = fakeWs();
+      runs.register({ ...baseRun, ws });
+      expect(runs.scanForStuckRuns(baseRun.startedAt + 60_000, FIFTEEN_MIN)).toEqual([]);
+    });
+
+    it("returns an empty array when there are no runs at all", () => {
+      expect(runs.scanForStuckRuns(Date.now(), FIFTEEN_MIN)).toEqual([]);
+    });
+  });
+
+  describe("values", () => {
+    it("iterates over all active runs (used by the watchdog and shutdown hooks)", () => {
+      const ws = fakeWs();
+      runs.register({ ...baseRun, sessionKey: "s1", ws });
+      runs.register({ ...baseRun, runId: "run-2", sessionKey: "s2", ws });
+
+      const sessionKeys = Array.from(runs.values()).map((r) => r.sessionKey);
+      expect(sessionKeys.sort()).toEqual(["s1", "s2"]);
+    });
+  });
+});
