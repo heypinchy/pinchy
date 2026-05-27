@@ -227,6 +227,21 @@ scan_data_directories
             if [ "$filename" = "$(basename "$SECRETS_FILE")" ]; then
                 chown root:root "$SECRETS_FILE" 2>/dev/null || true
                 chmod 0600 "$SECRETS_FILE" 2>/dev/null || true
+                # First-time appearance: OpenClaw's secrets-provider was
+                # initialized at boot with "file missing" and will NOT
+                # reinitialize on inotify of openclaw.json (the secrets
+                # section diff is empty). Restart the gateway exactly once
+                # so the provider picks up the new file on the next boot.
+                # The health-check loop below will respawn it within ~10s
+                # (port-probe wait) + ~5s (gateway startup).
+                # See docs/plans/2026-05-27-setup-wizard-smoke-tests.md and
+                # https://github.com/heypinchy/pinchy/issues/<TBD> for context.
+                BOOTSTRAP_MARKER="$(dirname "$SECRETS_FILE")/.bootstrap-applied"
+                if [ ! -f "$BOOTSTRAP_MARKER" ]; then
+                    touch "$BOOTSTRAP_MARKER" 2>/dev/null || true
+                    echo "[secrets-watcher] first-time secrets.json detected, restarting gateway to reinitialize secrets-provider"
+                    pkill -TERM -f "openclaw gateway" 2>/dev/null || true
+                fi
             fi
         done
     echo "[secrets-watcher] inotifywait exited; respawning in 1s"
