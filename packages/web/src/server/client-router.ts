@@ -643,10 +643,20 @@ export class ClientRouter {
 
     try {
       for await (const chunk of stream) {
-        // Lazily start the keep-alive heartbeat on the first chunk. The
-        // interval callback already self-guards with readyState === WS_OPEN,
-        // so a heartbeat to a closed WS is a no-op until the finally block
-        // clears it.
+        // Lazily start the keep-alive heartbeat on the first chunk.
+        //
+        // For client-originated messages (always have a `clientMessageId`)
+        // the first chunk IS `userMessagePersisted` — OC's `accepted`
+        // response that confirms the run is queued. That's the earliest
+        // possible signal it's safe to fire heartbeats: starting before
+        // accepted would mask a Gateway that hangs at request-receive
+        // time, but starting on accepted catches the slow-first-token
+        // case where OC is busy and the model takes >60s to emit any
+        // text. See #310 Tier 2c.
+        //
+        // For server-originated messages without a clientMessageId
+        // (cron jobs, webhooks) the first chunk falls back to
+        // `agent_start` or text — same heartbeat-safe property holds.
         if (heartbeatInterval === null) {
           heartbeatInterval = setInterval(() => {
             // Tier 2b: heartbeats broadcast to every listener so a tab that
