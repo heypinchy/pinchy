@@ -1,5 +1,6 @@
 import { execSync } from "node:child_process";
 import { setTimeout as sleep } from "node:timers/promises";
+import path from "path";
 import { expect, type Page } from "@playwright/test";
 
 // Re-using the same docker-compose stack invocation across overlays. Encoded
@@ -9,6 +10,15 @@ const COMPOSE_ARGS = [
   "-f docker-compose.e2e.yml",
   "-f docker-compose.setup-wizard-test.yml",
 ].join(" ");
+
+// Playwright runs from `packages/web/` (where playwright.setup-wizard.config.ts
+// lives), but the compose files in COMPOSE_ARGS are relative to the repo root.
+// Resolve once via process.cwd() and pass as `cwd:` to every execSync call so
+// `docker compose -f docker-compose.yml ...` finds the files. (Using
+// `import.meta.dirname` here breaks Playwright's CJS-transpile loader on the
+// current pin — other e2e helpers like global-setup.ts follow the same
+// process.cwd()-based pattern.)
+const REPO_ROOT = path.resolve(process.cwd(), "../..");
 
 /**
  * Reset the test stack between specs so each test starts with a fresh
@@ -40,9 +50,12 @@ export async function resetStack(): Promise<void> {
     `docker compose ${COMPOSE_ARGS} exec -T db ` +
       `psql -U pinchy -d pinchy -c ` +
       `'TRUNCATE TABLE "user", account, agents, settings, audit_log, session, verification, groups, invites, integration_connections RESTART IDENTITY CASCADE'`,
-    { stdio: "pipe" }
+    { stdio: "pipe", cwd: REPO_ROOT }
   );
-  execSync(`docker compose ${COMPOSE_ARGS} restart pinchy openclaw`, { stdio: "pipe" });
+  execSync(`docker compose ${COMPOSE_ARGS} restart pinchy openclaw`, {
+    stdio: "pipe",
+    cwd: REPO_ROOT,
+  });
 
   // Poll /api/setup/status until Pinchy answers — this proves the regenerated
   // openclaw.json has been picked up and the wizard route is reachable.
