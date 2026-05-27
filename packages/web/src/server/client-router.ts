@@ -1,4 +1,5 @@
-import type { OpenClawClient, ChatAttachment, ChatChunk } from "openclaw-node";
+import type { OpenClawClient, ChatAttachment, ChatChunk, ChatOptions } from "openclaw-node";
+import { chatWithDispatchRaceRetry } from "@/server/chat-dispatch-retry";
 import type { WebSocket } from "ws";
 import { assertAgentAccess, effectiveVisibility } from "@/lib/agent-access";
 import { getUserGroupIds, getAgentGroupIds } from "@/lib/groups";
@@ -322,7 +323,35 @@ export class ClientRouter {
         );
       }
 
-      const stream = this.openclawClient.chat(text, chatOptions);
+      // Wrap the raw `openclawClient.chat()` stream in a single-shot retry
+      // for OpenClaw 2026.5.x's `config.get` vs agent-RPC dispatch race:
+      // immediately after a `config.apply` that adds an agent, OC's
+      // dispatch handler can still reject the same id with
+      // `unknown agent id` while `config.get` already reports it as
+      // present. The wrapper swallows the transient first-chunk error,
+      // waits 500 ms, and restarts the chat once — transparently to the
+      // rest of `pipeStream`. See `chat-dispatch-retry.ts` for the full
+      // rationale (and PR #442 CI runs 26505503327 / 26511658136 for the
+      // observed failure mode that motivated this).
+      const stream = chatWithDispatchRaceRetry(text, chatOptions as ChatOptions, {
+        chat: (m, o) => this.openclawClient.chat(m, o),
+        onDispatchRaceObserved: async ({ providerError }) => {
+          // Audit the transient observation so we can measure how often
+          // the dispatch race fires in production without relying on
+          // anecdotal log-grep. Using `chat.agent_error` with the
+          // existing `provider_config` class would muddy the per-class
+          // dashboards built off issue #355; instead we route through
+          // the umbrella event with a `retried: true` flag so a follow-up
+          // dedicated event type (e.g. `chat.agent_dispatch_race`) can be
+          // added later without rewriting historical rows.
+          await this.writeAgentErrorAudit({
+            agent,
+            errorClass: classifyAgentError(providerError),
+            providerError,
+            retried: true,
+          });
+        },
+      });
 
       // Tell the client immediately that the request is in flight so the UI
       // can render a thinking indicator. Without this, slow backends (e.g.
@@ -1057,6 +1086,13 @@ export class ClientRouter {
     agent: { id: string; name: string; model?: string | null };
     errorClass: AgentErrorClass;
     providerError: string;
+    /**
+     * Set to true when the error was caught and Pinchy automatically
+     * retried — currently only the OC dispatch-race wrapper sets this.
+     * Surfaces in `detail.retried` so operator dashboards can filter
+     * recoverable from terminal failures without parsing `providerError`.
+     */
+    retried?: boolean;
   }): Promise<void> {
     const auditEntry = {
       actorType: "user" as const,
@@ -1068,6 +1104,7 @@ export class ClientRouter {
         model: args.agent.model ?? null,
         errorClass: args.errorClass,
         providerError: safeProviderError(args.providerError),
+        ...(args.retried ? { retried: true } : {}),
       },
       outcome: "failure" as const,
     };
