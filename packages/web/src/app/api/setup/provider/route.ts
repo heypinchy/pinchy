@@ -9,6 +9,8 @@ import {
 } from "@/lib/providers";
 import { getSetting, setSetting } from "@/lib/settings";
 import { regenerateOpenClawConfig } from "@/lib/openclaw-config";
+import { waitForAgentInRuntime } from "@/lib/wait-for-agent-in-runtime";
+import { getOpenClawClient } from "@/server/openclaw-client";
 import { resetCache, fetchOllamaLocalModelsFromUrl } from "@/lib/provider-models";
 import { resolveModelForTemplate } from "@/lib/model-resolver";
 import { TemplateCapabilityUnavailableError } from "@/lib/model-resolver/types";
@@ -175,6 +177,27 @@ export async function POST(request: NextRequest) {
   // Regenerate full OpenClaw config (includes agent list, provider env, model defaults)
   await regenerateOpenClawConfig();
   resetCache();
+
+  // Wait until OC's runtime has Smithers visible in `agents.list`. Same race
+  // as POST /api/agents (see wait-for-agent-in-runtime.ts): Pinchy's
+  // regenerate is fire-and-forget via pushConfigInBackground, and OC applies
+  // the hot reload asynchronously. Without this gate the wizard's
+  // "Continue to Pinchy" navigates to /chat/:smithersId and the first
+  // chat dispatch races OC's reload, hitting "invalid agent params:
+  // unknown agent id" — the message never reaches the LLM and the user
+  // sees the chat hang on a fresh install. Best-effort with a 5 s cap so
+  // we don't block forever if OC is still restarting (Layer 1 bootstrap
+  // mark/pkill cycle in start-openclaw.sh).
+  const smithersForWait = await db.query.agents.findFirst();
+  if (smithersForWait) {
+    let client = null;
+    try {
+      client = getOpenClawClient();
+    } catch {
+      // OC client not initialised (rare in tests / pre-setup). Skip the wait.
+    }
+    await waitForAgentInRuntime(client, smithersForWait.id);
+  }
 
   // Build a CLAUDE.md-compliant audit detail: snapshot the human-readable
   // provider name alongside its id, and never log secrets. For URL-based
