@@ -25,6 +25,7 @@ const baseRun = {
   userId: "u1",
   agentName: "Smithers",
   startedAt: 1_000_000,
+  currentMessageId: "msg-initial",
 };
 
 describe("ActiveRuns", () => {
@@ -67,6 +68,27 @@ describe("ActiveRuns", () => {
       expect(runs.get(baseRun.sessionKey)?.runId).toBe("run-new");
       expect(newRun.listeners.has(wsNew)).toBe(true);
       expect(newRun.listeners.has(wsOld)).toBe(false);
+    });
+  });
+
+  describe("currentMessageId (Tier 2b: per-turn messageId stability across reconnect)", () => {
+    it("stores the initial messageId on register and exposes it on get()", () => {
+      const ws = fakeWs();
+      runs.register({ ...baseRun, currentMessageId: "msg-turn-1", ws });
+      expect(runs.get(baseRun.sessionKey)?.currentMessageId).toBe("msg-turn-1");
+    });
+
+    it("updateMessageId rotates the stored id on per-turn `done` (so reconnect picks up the in-flight turn)", () => {
+      const ws = fakeWs();
+      runs.register({ ...baseRun, currentMessageId: "msg-turn-1", ws });
+
+      runs.updateMessageId(baseRun.sessionKey, "msg-turn-2");
+
+      expect(runs.get(baseRun.sessionKey)?.currentMessageId).toBe("msg-turn-2");
+    });
+
+    it("updateMessageId is a no-op for unknown sessionKey", () => {
+      expect(() => runs.updateMessageId("agent:gone:direct:u1", "msg-x")).not.toThrow();
     });
   });
 

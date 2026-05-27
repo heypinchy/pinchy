@@ -53,6 +53,14 @@ export interface WsMessage {
 
 const DELAY_HINT_MS = 15_000;
 const STUCK_TIMEOUT_MS = 60_000;
+/**
+ * Cap on the Tier 2b pre-history frame buffer. The buffer holds chunks
+ * that arrive on a fresh ws between `addListener` (server-side) and the
+ * history response. Typical drain time is ~100ms; entries beyond the cap
+ * indicate a broken server response and we log + drop the oldest rather
+ * than risk OOM-ing the tab.
+ */
+const FRAME_BUFFER_MAX = 1000;
 
 /**
  * Append the canonical "payload too large" error bubble to the message list.
@@ -466,6 +474,26 @@ export function useWsRuntime(agentId: string): {
   const pendingMessageRef = useRef<string | null>(null);
   const isRunningRef = useRef(false);
   /**
+   * Tier 2b (#310): between sending a history request and receiving the
+   * matching history frame, any non-history frame (chunk, done, error,
+   * thinking, ack) is buffered into `frameBufferRef` and drained AFTER
+   * the history reconcile. This closes the race where the server's
+   * `addListener` makes the new ws receive in-flight chunks before the
+   * history snapshot arrives — without the buffer, those chunks would
+   * land on whatever stale local state existed pre-reconcile and then
+   * be wiped by the reconcile itself.
+   */
+  const pendingHistoryRef = useRef(false);
+  const frameBufferRef = useRef<unknown[]>([]);
+  /**
+   * Server-correlated runId for the in-flight chat turn (Tier 2b). Set
+   * when a history frame includes the `activeRun` signal and used by
+   * downstream UX (e.g. matching `chat.run_timed_out` error frames) so
+   * the client knows which run timed out vs. which retry produced the
+   * error.
+   */
+  const inflightRunIdRef = useRef<string | null>(null);
+  /**
    * True iff at least one assistant chunk was received during the current turn.
    * Reset when a new turn starts (user sends or retry). Used to classify
    * incoming error frames: with chunks → partial_stream_failure, without
@@ -624,6 +652,11 @@ export function useWsRuntime(agentId: string): {
       lifecycleSuspendedRef.current = false;
       shouldRecoverFromHistoryRef.current = true;
       if (wsRef.current?.readyState === WebSocket.OPEN) {
+        // Tier 2b: same buffer-then-drain protocol as ws.onopen — the
+        // server may broadcast in-flight chunks between the addListener
+        // (which runs in handleHistory) and the history-response send.
+        pendingHistoryRef.current = true;
+        frameBufferRef.current = [];
         wsRef.current.send(JSON.stringify({ type: "history", agentId }));
       } else {
         connect();
@@ -692,6 +725,19 @@ export function useWsRuntime(agentId: string): {
         setReconnectExhausted(false);
         setPayloadRejected(false);
         reconnectAttemptRef.current = 0;
+        // Tier 2b: arm the pre-history buffer ONLY when we're in a
+        // recovery context (set by `onclose` on the previous connection
+        // or by a page-lifecycle resume). On an initial load there's no
+        // active run on the server yet — buffering would just stall the
+        // first chunk for no benefit and break tests that exercise the
+        // chunk path without preceding history. The race we're guarding
+        // against (chunks arriving via `addListener` before the history
+        // response) can only happen on reconnect, because the server
+        // can't have a listener for a ws it hasn't seen yet.
+        if (shouldRecoverFromHistoryRef.current) {
+          pendingHistoryRef.current = true;
+          frameBufferRef.current = [];
+        }
         ws.send(JSON.stringify({ type: "history", agentId }));
 
         // Flush any message that was queued while disconnected/connecting
@@ -707,6 +753,11 @@ export function useWsRuntime(agentId: string): {
         setIsConnected(false);
         setIsDelayed(false);
         clearStuckTimer();
+        // Tier 2b: drop any pre-history buffer from the dying connection
+        // so it can't bleed into the next ws's drain. The next onopen
+        // re-arms pendingHistoryRef before sending its own history req.
+        pendingHistoryRef.current = false;
+        frameBufferRef.current = [];
         if (delayTimerRef.current) {
           clearTimeout(delayTimerRef.current);
           delayTimerRef.current = null;
@@ -816,263 +867,379 @@ export function useWsRuntime(agentId: string): {
         clearStuckTimer();
       };
 
+      // Tier 2b: extracted so the buffered-frame drain after history
+      // reconcile can reuse the same dispatch logic that live frames
+      // travel through. Keeping the dispatch surface single-sourced
+      // means a future chunk-type addition can't accidentally diverge
+      // between the live and replay paths. `any` matches the implicit
+      // return type of `JSON.parse` — the same permissiveness the prior
+      // inline handler relied on for `data.messageId`, `data.content`,
+      // etc. Tightening this would cascade dozens of `as string` casts
+      // for marginal type safety on a shape the server fully controls.
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const processFrame = (data: any) => {
+        if (data.type === "openclaw:restarting") {
+          triggerRestart();
+          return;
+        }
+
+        if (data.type === "openclaw_status") {
+          setIsOpenClawConnected(!!data.connected);
+          return;
+        }
+
+        // Tier 2b: between the moment we requested history and the moment
+        // the history frame arrives, the server may broadcast in-flight
+        // chunks to us via the listener set. Buffer those so they apply
+        // ON TOP of the reconciled history rather than to whatever stale
+        // local state existed pre-reconcile (which would be wiped by the
+        // reconcile itself). Control frames above are processed
+        // immediately; everything else is held.
+        //
+        // Defensive cap: in practice the buffer drains within ~100ms
+        // (history fetch latency). A buffer that exceeds the cap means
+        // either a server bug (history frame never arrives) or an
+        // adversarial server flooding chunks. Log + drop oldest so we
+        // don't OOM the tab.
+        if (pendingHistoryRef.current && data.type !== "history") {
+          if (frameBufferRef.current.length >= FRAME_BUFFER_MAX) {
+            console.warn(
+              `[use-ws-runtime] pre-history frame buffer hit ${FRAME_BUFFER_MAX} entries — dropping oldest. ` +
+                "This indicates the server's history response is delayed; investigate handleHistory latency."
+            );
+            frameBufferRef.current.shift();
+          }
+          frameBufferRef.current.push(data);
+          return;
+        }
+
+        if (data.type === "history") {
+          const serverMessages: Array<{
+            role: string;
+            content: string;
+            timestamp?: string;
+            files?: WsFileMeta[];
+          }> = data.messages ?? [];
+          // Successful history reconcile within the grace window — cancel
+          // the deferred disconnect bubble so the user just sees the
+          // canonical reply land without a transient error bubble. See
+          // DISCONNECT_ERROR_GRACE_MS (issue #199).
+          if (
+            shouldRecoverFromHistoryRef.current &&
+            serverMessages.length > 0 &&
+            pendingDisconnectErrorRef.current
+          ) {
+            clearTimeout(pendingDisconnectErrorRef.current.timer);
+            pendingDisconnectErrorRef.current = null;
+          }
+          const sessionKnown: boolean = data.sessionKnown === true;
+          // Server tells us the session exists but its history is currently
+          // unavailable (e.g. OpenClaw restart race). Without this flag the
+          // chat would sit in "starting" forever waiting for messages that
+          // aren't coming — see issue #197.
+          setKnownEmptyHistory(sessionKnown && serverMessages.length === 0);
+          const historyMessages: WsMessage[] = serverMessages.map((msg) => ({
+            id: uuid(),
+            role: (msg.role === "system" ? "assistant" : msg.role) as "user" | "assistant",
+            content: msg.content ?? "",
+            timestamp: msg.timestamp,
+            // Round-tripped from the server's parseAttachmentBlock — server
+            // strips the in-message markup and surfaces the file metadata
+            // here so the file chip renders on reload.
+            ...(msg.files && msg.files.length > 0 ? { files: msg.files } : {}),
+          }));
+
+          // Tier 2b: if the server reports an in-flight run for this
+          // session, anchor the last assistant message in the reconciled
+          // history to the server-side `currentMessageId`. Subsequent
+          // chunks (already buffered or arriving live on the new ws)
+          // merge into THIS message by id-equality, so the user sees a
+          // single continuous bubble instead of an orphan + a fresh
+          // duplicate. Also preserve isRunning across the reconnect so
+          // the spinner doesn't flicker.
+          const activeRun = (
+            data as {
+              activeRun?: { runId: string; messageId: string; startedAt: number };
+            }
+          ).activeRun;
+          if (activeRun) {
+            for (let i = historyMessages.length - 1; i >= 0; i--) {
+              if (historyMessages[i].role === "assistant") {
+                historyMessages[i].id = activeRun.messageId;
+                break;
+              }
+            }
+            isRunningRef.current = true;
+            setIsRunning(true);
+            inflightRunIdRef.current = activeRun.runId;
+            if (pendingDisconnectErrorRef.current) {
+              clearTimeout(pendingDisconnectErrorRef.current.timer);
+              pendingDisconnectErrorRef.current = null;
+            }
+          }
+          const shouldRecoverFromHistory = shouldRecoverFromHistoryRef.current;
+          const prevMessages = messagesRef.current;
+          const shouldReplaceWithHistory = shouldReplaceLocalWithServerHistory(
+            prevMessages,
+            historyMessages,
+            shouldRecoverFromHistory
+          );
+          // Tier 2b: skip the destructive staged remount when an activeRun
+          // signal is in play. The staged path uses a setTimeout(0) to
+          // remount, but drainBuffer fires synchronously — so buffered
+          // chunks would land on stale state and then be wiped by the
+          // deferred stage. activeRun semantically means "the in-flight
+          // turn IS the truth, don't tear down state in a way that loses
+          // the resume buffer", so we take the synchronous setMessages
+          // path which keeps drain consistent with reconcile.
+          const shouldStageReplace =
+            shouldReplaceWithHistory &&
+            prevMessages.length > 0 &&
+            !activeRun &&
+            (historyMessages.length < prevMessages.length || prevMessages.some((m) => m.error));
+
+          // Tier 2b: drain helper — runs once history has been applied
+          // (either branch below) so buffered chunks merge into the
+          // freshly-reconciled message list, including the activeRun-
+          // anchored assistant turn.
+          const drainBuffer = () => {
+            pendingHistoryRef.current = false;
+            const buffered = frameBufferRef.current;
+            frameBufferRef.current = [];
+            for (const frame of buffered) {
+              processFrame(frame);
+            }
+          };
+
+          if (shouldStageReplace) {
+            stageDestructiveHistoryReconcile(historyMessages);
+            shouldRecoverFromHistoryRef.current = false;
+            setIsHistoryLoaded(true);
+            drainBuffer();
+            return;
+          }
+
+          setMessages((prev) => {
+            if (prev.length === 0) {
+              return capMessages(historyMessages);
+            }
+            // After reconnects, replace local messages with canonical history
+            // from the server. The conditions are gathered in
+            // shouldReplaceLocalWithServerHistory above — see that helper's
+            // doc for the full rationale (esp. the issue #310 fix for an
+            // acked-user-but-no-chunk window). We intentionally replace even
+            // if the last local message is a synthetic disconnect-error
+            // bubble, because the server's history is the ground truth.
+            //
+            // The helper is re-evaluated here against React's `prev` (not
+            // `messagesRef.current` from the outer scope) because under
+            // concurrent rendering the two snapshots can diverge — a stale
+            // outer evaluation must never override what React holds as the
+            // current authoritative state inside the setter.
+            if (
+              shouldReplaceLocalWithServerHistory(prev, historyMessages, shouldRecoverFromHistory)
+            ) {
+              return capMessages(historyMessages);
+            }
+            return prev;
+          });
+          shouldRecoverFromHistoryRef.current = false;
+          // Reconcile any in-flight "sending" messages against server history.
+          // Route through the reducer so matching logic is centralised.
+          dispatchMessages({
+            type: "history-reconcile",
+            history: serverMessages.map((m) => ({ role: m.role, content: m.content })),
+          });
+          setIsHistoryLoaded(true);
+          drainBuffer();
+          return;
+        }
+
+        if (data.type === "ack") {
+          // Cancel the pending timeout timer before dispatching the ack
+          const clientMessageId = data.clientMessageId as string;
+          const ackTimer = pendingAckTimers.current.get(clientMessageId);
+          if (ackTimer !== undefined) {
+            clearTimeout(ackTimer);
+            pendingAckTimers.current.delete(clientMessageId);
+          }
+          // Transition user message sending → sent
+          dispatchMessages({ type: "ack", clientMessageId });
+          return;
+        }
+
+        if (data.type === "thinking") {
+          // Server keep-alive: defeats browser/proxy WebSocket idle
+          // timeouts during long pauses (e.g. local Ollama tool-use loops).
+          // Reset stuck timer so a slow-but-alive agent doesn't get killed.
+          // Also cancel any pending ack timers — OpenClaw is clearly processing
+          // this session so the message was received.
+          for (const timer of pendingAckTimers.current.values()) {
+            clearTimeout(timer);
+          }
+          pendingAckTimers.current.clear();
+          isRunningRef.current = true;
+          setIsRunning(true);
+          resetStuckTimer();
+          return;
+        }
+
+        if (data.type === "chunk") {
+          // Cancel pending ack timers — receiving a chunk proves OpenClaw got the
+          // message, so the ack timeout would be a false positive if it fired now.
+          for (const timer of pendingAckTimers.current.values()) {
+            clearTimeout(timer);
+          }
+          pendingAckTimers.current.clear();
+          isRunningRef.current = true;
+          hasReceivedChunkRef.current = true;
+          setIsRunning(true);
+          resetStuckTimer();
+
+          if (delayTimerRef.current) {
+            clearTimeout(delayTimerRef.current);
+            delayTimerRef.current = null;
+          }
+          setIsDelayed(false);
+
+          setMessages((prev) => {
+            // A successful chunk auto-dismisses any prior error bubble — the
+            // retry succeeded, so the previous failure no longer reflects state.
+            let filtered = prev.filter((m) => !m.error);
+            // Right after a retry, drop any trailing partial assistant from the
+            // interrupted previous turn so the UI matches what OpenClaw actually
+            // persisted. Only fires on the first chunk of the new turn.
+            if (trimTrailingOnNextChunkRef.current) {
+              trimTrailingOnNextChunkRef.current = false;
+              const lastUserIdx = filtered.map((m) => m.role).lastIndexOf("user");
+              if (lastUserIdx >= 0) {
+                filtered = filtered.slice(0, lastUserIdx + 1);
+              }
+            }
+            const last = filtered[filtered.length - 1];
+            if (last?.role === "assistant" && last.id === data.messageId) {
+              return capMessages([
+                ...filtered.slice(0, -1),
+                { ...last, content: last.content + data.content },
+              ]);
+            }
+            return capMessages([
+              ...filtered,
+              {
+                id: data.messageId,
+                role: "assistant",
+                content: data.content,
+                timestamp: new Date().toISOString(),
+              },
+            ]);
+          });
+        }
+
+        if (data.type === "done") {
+          // Per-turn done: only marks the end of one assistant turn.
+          // The spinner is NOT cleared here — only "complete" terminates
+          // the entire stream. Tool-use loops produce one "done" per turn.
+          // Intentionally a no-op for isRunning.
+        }
+
+        if (data.type === "complete") {
+          if (delayTimerRef.current) {
+            clearTimeout(delayTimerRef.current);
+            delayTimerRef.current = null;
+          }
+          clearStuckTimer();
+          setIsDelayed(false);
+          isRunningRef.current = false;
+          hasReceivedChunkRef.current = false;
+          setIsRunning(false);
+          // Tier 2b: the run finished cleanly. Drop the in-flight runId
+          // so the next turn's activeRun signal (if any) replaces it.
+          inflightRunIdRef.current = null;
+        }
+
+        if (data.type === "error") {
+          if (delayTimerRef.current) {
+            clearTimeout(delayTimerRef.current);
+            delayTimerRef.current = null;
+          }
+          clearStuckTimer();
+          setIsDelayed(false);
+
+          // Tier 2b: cross-check runId on watchdog-timeout error frames
+          // against the in-flight runId we recorded from the activeRun
+          // signal. A mismatch means the server forcibly aborted some
+          // OTHER run for this session (e.g. a stale background turn) —
+          // ignore it so we don't surface a misleading timeout for the
+          // run the user is actually watching. Frames without runId
+          // (every non-watchdog error path) pass through unchanged.
+          if (
+            data.runTimedOut === true &&
+            typeof data.runId === "string" &&
+            inflightRunIdRef.current !== null &&
+            data.runId !== inflightRunIdRef.current
+          ) {
+            console.warn(
+              `[use-ws-runtime] ignoring run_timed_out for ${data.runId} — current in-flight run is ${inflightRunIdRef.current}`
+            );
+            return;
+          }
+
+          // Defense-in-depth: parse the structured upstream-format-error
+          // payload with the zod schema instead of trusting the inbound
+          // shape. A stale server or malformed frame must NOT be able to
+          // render the "Retry usually clears it" bubble for an unrelated
+          // error — that would lie to the user about the cause and the
+          // recovery path. On parse failure the bare providerError still
+          // surfaces via the generic bubble. Issue #338.
+          const upstreamFormatErrorParsed = data.upstreamFormatError
+            ? upstreamFormatErrorSchema.safeParse(data.upstreamFormatError)
+            : null;
+          const upstreamFormatError = upstreamFormatErrorParsed?.success
+            ? upstreamFormatErrorParsed.data
+            : undefined;
+
+          const error: ChatError = data.providerError
+            ? {
+                agentName: data.agentName,
+                providerError: data.providerError,
+                hint: data.hint,
+                modelUnavailable: data.modelUnavailable,
+                upstreamFormatError,
+              }
+            : data.code === "attachment_invalid"
+              ? { attachmentInvalid: true, message: data.message }
+              : { message: data.message || "An unknown error occurred." };
+
+          setMessages((prev) =>
+            capMessages([
+              // Remove any existing error bubble — only one error is ever shown
+              // at a time to avoid stacking after repeated retries.
+              ...prev.filter((m) => !m.error),
+              {
+                id: uuid(),
+                role: "assistant",
+                content: "",
+                error,
+                retryable: true,
+                retryReason: hasReceivedChunkRef.current
+                  ? ("partial_stream_failure" as const)
+                  : ("send_failure" as const),
+              },
+            ])
+          );
+          isRunningRef.current = false;
+          setIsRunning(false);
+          // Clear the in-flight runId so a follow-up retry's activeRun
+          // signal can replace it cleanly.
+          inflightRunIdRef.current = null;
+        }
+      };
+
       ws.onmessage = (event) => {
         if (connectionAgentId !== agentIdRef.current || wsRef.current !== ws) return;
         try {
           const data = JSON.parse(event.data);
-
-          if (data.type === "openclaw:restarting") {
-            triggerRestart();
-            return;
-          }
-
-          if (data.type === "openclaw_status") {
-            setIsOpenClawConnected(!!data.connected);
-            return;
-          }
-
-          if (data.type === "history") {
-            const serverMessages: Array<{
-              role: string;
-              content: string;
-              timestamp?: string;
-              files?: WsFileMeta[];
-            }> = data.messages ?? [];
-            // Successful history reconcile within the grace window — cancel
-            // the deferred disconnect bubble so the user just sees the
-            // canonical reply land without a transient error bubble. See
-            // DISCONNECT_ERROR_GRACE_MS (issue #199).
-            if (
-              shouldRecoverFromHistoryRef.current &&
-              serverMessages.length > 0 &&
-              pendingDisconnectErrorRef.current
-            ) {
-              clearTimeout(pendingDisconnectErrorRef.current.timer);
-              pendingDisconnectErrorRef.current = null;
-            }
-            const sessionKnown: boolean = data.sessionKnown === true;
-            // Server tells us the session exists but its history is currently
-            // unavailable (e.g. OpenClaw restart race). Without this flag the
-            // chat would sit in "starting" forever waiting for messages that
-            // aren't coming — see issue #197.
-            setKnownEmptyHistory(sessionKnown && serverMessages.length === 0);
-            const historyMessages: WsMessage[] = serverMessages.map((msg) => ({
-              id: uuid(),
-              role: (msg.role === "system" ? "assistant" : msg.role) as "user" | "assistant",
-              content: msg.content ?? "",
-              timestamp: msg.timestamp,
-              // Round-tripped from the server's parseAttachmentBlock — server
-              // strips the in-message markup and surfaces the file metadata
-              // here so the file chip renders on reload.
-              ...(msg.files && msg.files.length > 0 ? { files: msg.files } : {}),
-            }));
-            const shouldRecoverFromHistory = shouldRecoverFromHistoryRef.current;
-            const prevMessages = messagesRef.current;
-            const shouldReplaceWithHistory = shouldReplaceLocalWithServerHistory(
-              prevMessages,
-              historyMessages,
-              shouldRecoverFromHistory
-            );
-            const shouldStageReplace =
-              shouldReplaceWithHistory &&
-              prevMessages.length > 0 &&
-              (historyMessages.length < prevMessages.length || prevMessages.some((m) => m.error));
-
-            if (shouldStageReplace) {
-              stageDestructiveHistoryReconcile(historyMessages);
-              shouldRecoverFromHistoryRef.current = false;
-              setIsHistoryLoaded(true);
-              return;
-            }
-
-            setMessages((prev) => {
-              if (prev.length === 0) {
-                return capMessages(historyMessages);
-              }
-              // After reconnects, replace local messages with canonical history
-              // from the server. The conditions are gathered in
-              // shouldReplaceLocalWithServerHistory above — see that helper's
-              // doc for the full rationale (esp. the issue #310 fix for an
-              // acked-user-but-no-chunk window). We intentionally replace even
-              // if the last local message is a synthetic disconnect-error
-              // bubble, because the server's history is the ground truth.
-              //
-              // The helper is re-evaluated here against React's `prev` (not
-              // `messagesRef.current` from the outer scope) because under
-              // concurrent rendering the two snapshots can diverge — a stale
-              // outer evaluation must never override what React holds as the
-              // current authoritative state inside the setter.
-              if (
-                shouldReplaceLocalWithServerHistory(prev, historyMessages, shouldRecoverFromHistory)
-              ) {
-                return capMessages(historyMessages);
-              }
-              return prev;
-            });
-            shouldRecoverFromHistoryRef.current = false;
-            // Reconcile any in-flight "sending" messages against server history.
-            // Route through the reducer so matching logic is centralised.
-            dispatchMessages({
-              type: "history-reconcile",
-              history: serverMessages.map((m) => ({ role: m.role, content: m.content })),
-            });
-            setIsHistoryLoaded(true);
-            return;
-          }
-
-          if (data.type === "ack") {
-            // Cancel the pending timeout timer before dispatching the ack
-            const clientMessageId = data.clientMessageId as string;
-            const ackTimer = pendingAckTimers.current.get(clientMessageId);
-            if (ackTimer !== undefined) {
-              clearTimeout(ackTimer);
-              pendingAckTimers.current.delete(clientMessageId);
-            }
-            // Transition user message sending → sent
-            dispatchMessages({ type: "ack", clientMessageId });
-            return;
-          }
-
-          if (data.type === "thinking") {
-            // Server keep-alive: defeats browser/proxy WebSocket idle
-            // timeouts during long pauses (e.g. local Ollama tool-use loops).
-            // Reset stuck timer so a slow-but-alive agent doesn't get killed.
-            // Also cancel any pending ack timers — OpenClaw is clearly processing
-            // this session so the message was received.
-            for (const timer of pendingAckTimers.current.values()) {
-              clearTimeout(timer);
-            }
-            pendingAckTimers.current.clear();
-            isRunningRef.current = true;
-            setIsRunning(true);
-            resetStuckTimer();
-            return;
-          }
-
-          if (data.type === "chunk") {
-            // Cancel pending ack timers — receiving a chunk proves OpenClaw got the
-            // message, so the ack timeout would be a false positive if it fired now.
-            for (const timer of pendingAckTimers.current.values()) {
-              clearTimeout(timer);
-            }
-            pendingAckTimers.current.clear();
-            isRunningRef.current = true;
-            hasReceivedChunkRef.current = true;
-            setIsRunning(true);
-            resetStuckTimer();
-
-            if (delayTimerRef.current) {
-              clearTimeout(delayTimerRef.current);
-              delayTimerRef.current = null;
-            }
-            setIsDelayed(false);
-
-            setMessages((prev) => {
-              // A successful chunk auto-dismisses any prior error bubble — the
-              // retry succeeded, so the previous failure no longer reflects state.
-              let filtered = prev.filter((m) => !m.error);
-              // Right after a retry, drop any trailing partial assistant from the
-              // interrupted previous turn so the UI matches what OpenClaw actually
-              // persisted. Only fires on the first chunk of the new turn.
-              if (trimTrailingOnNextChunkRef.current) {
-                trimTrailingOnNextChunkRef.current = false;
-                const lastUserIdx = filtered.map((m) => m.role).lastIndexOf("user");
-                if (lastUserIdx >= 0) {
-                  filtered = filtered.slice(0, lastUserIdx + 1);
-                }
-              }
-              const last = filtered[filtered.length - 1];
-              if (last?.role === "assistant" && last.id === data.messageId) {
-                return capMessages([
-                  ...filtered.slice(0, -1),
-                  { ...last, content: last.content + data.content },
-                ]);
-              }
-              return capMessages([
-                ...filtered,
-                {
-                  id: data.messageId,
-                  role: "assistant",
-                  content: data.content,
-                  timestamp: new Date().toISOString(),
-                },
-              ]);
-            });
-          }
-
-          if (data.type === "done") {
-            // Per-turn done: only marks the end of one assistant turn.
-            // The spinner is NOT cleared here — only "complete" terminates
-            // the entire stream. Tool-use loops produce one "done" per turn.
-            // Intentionally a no-op for isRunning.
-          }
-
-          if (data.type === "complete") {
-            if (delayTimerRef.current) {
-              clearTimeout(delayTimerRef.current);
-              delayTimerRef.current = null;
-            }
-            clearStuckTimer();
-            setIsDelayed(false);
-            isRunningRef.current = false;
-            hasReceivedChunkRef.current = false;
-            setIsRunning(false);
-          }
-
-          if (data.type === "error") {
-            if (delayTimerRef.current) {
-              clearTimeout(delayTimerRef.current);
-              delayTimerRef.current = null;
-            }
-            clearStuckTimer();
-            setIsDelayed(false);
-
-            // Defense-in-depth: parse the structured upstream-format-error
-            // payload with the zod schema instead of trusting the inbound
-            // shape. A stale server or malformed frame must NOT be able to
-            // render the "Retry usually clears it" bubble for an unrelated
-            // error — that would lie to the user about the cause and the
-            // recovery path. On parse failure the bare providerError still
-            // surfaces via the generic bubble. Issue #338.
-            const upstreamFormatErrorParsed = data.upstreamFormatError
-              ? upstreamFormatErrorSchema.safeParse(data.upstreamFormatError)
-              : null;
-            const upstreamFormatError = upstreamFormatErrorParsed?.success
-              ? upstreamFormatErrorParsed.data
-              : undefined;
-
-            const error: ChatError = data.providerError
-              ? {
-                  agentName: data.agentName,
-                  providerError: data.providerError,
-                  hint: data.hint,
-                  modelUnavailable: data.modelUnavailable,
-                  upstreamFormatError,
-                }
-              : data.code === "attachment_invalid"
-                ? { attachmentInvalid: true, message: data.message }
-                : { message: data.message || "An unknown error occurred." };
-
-            setMessages((prev) =>
-              capMessages([
-                // Remove any existing error bubble — only one error is ever shown
-                // at a time to avoid stacking after repeated retries.
-                ...prev.filter((m) => !m.error),
-                {
-                  id: uuid(),
-                  role: "assistant",
-                  content: "",
-                  error,
-                  retryable: true,
-                  retryReason: hasReceivedChunkRef.current
-                    ? ("partial_stream_failure" as const)
-                    : ("send_failure" as const),
-                },
-              ])
-            );
-            isRunningRef.current = false;
-            setIsRunning(false);
-          }
+          processFrame(data);
         } catch {
           // Ignore unparseable messages
         }

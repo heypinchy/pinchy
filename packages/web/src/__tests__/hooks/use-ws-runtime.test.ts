@@ -4663,4 +4663,190 @@ describe("useWsRuntime", () => {
       });
     });
   });
+
+  // ── #310 Tier 2b: server-correlated resume across reconnect ──────────────
+  describe("#310 Tier 2b activeRun resume + pre-history buffer", () => {
+    it("buffers a chunk that arrives BEFORE the history frame and drains it after reconcile (race window)", async () => {
+      const { result } = renderHook(() => useWsRuntime("agent-1"));
+
+      // Initial connect + history land normally.
+      await act(async () => {
+        latestWs().simulateOpen();
+        latestWs().simulateMessage({ type: "history", messages: [] });
+      });
+
+      // User sends a message → reaches "sending" status.
+      await act(async () => {
+        result.current.runtime.onNew(makeUserMessage("what's the policy?"));
+      });
+
+      // Drop the connection mid-stream — server-side OC continues but
+      // the new ws will arm the pre-history buffer.
+      await act(async () => {
+        latestWs().simulateClose(1006);
+        // Backoff timer is fake — fast-forward past it so reconnect fires.
+        vi.advanceTimersByTime(1200);
+      });
+
+      const ws2 = latestWs();
+      await act(async () => {
+        ws2.simulateOpen();
+        // The server's `addListener` runs synchronously in handleHistory
+        // and a chunk arrives BEFORE the history response — simulate
+        // exactly that ordering.
+        ws2.simulateMessage({
+          type: "chunk",
+          content: "25 days vacation.",
+          messageId: "msg-server-1",
+        });
+      });
+
+      // At this point the chunk MUST NOT have been applied — there's no
+      // assistant message with content "25 days vacation." yet.
+      const midwayMessages = result.current.runtime.messages;
+      const assistantBefore = (midwayMessages as Array<{ role: string; content: unknown }>).find(
+        (m) => m.role === "assistant"
+      );
+      expect(assistantBefore).toBeUndefined();
+
+      // Now the history frame arrives with an activeRun signal pinning
+      // the in-flight assistant turn to the same messageId the chunk
+      // used. Drain should apply the buffered chunk to that anchored
+      // message.
+      await act(async () => {
+        ws2.simulateMessage({
+          type: "history",
+          messages: [
+            { role: "user", content: "what's the policy?", timestamp: 1000 },
+            { role: "assistant", content: "", timestamp: 2000 },
+          ],
+          activeRun: { runId: "run-1", messageId: "msg-server-1", startedAt: 1500 },
+        });
+      });
+
+      // After drain, the assistant message anchored to msg-server-1 has
+      // received the chunk's content.
+      const afterMessages = result.current.runtime.messages as Array<{
+        role: string;
+        content: unknown;
+      }>;
+      const assistantAfter = afterMessages.find((m) => m.role === "assistant");
+      expect(assistantAfter).toBeDefined();
+      // assistant-ui content shape: array of parts. We expect the chunk
+      // text inside.
+      const flat = JSON.stringify(assistantAfter!.content);
+      expect(flat).toContain("25 days vacation.");
+      // isRunning preserved across reconnect via the activeRun signal.
+      expect(result.current.runtime.isRunning).toBe(true);
+    });
+
+    it("does NOT buffer chunks on the very first connect (no recovery context, no race window)", async () => {
+      const { result } = renderHook(() => useWsRuntime("agent-1"));
+
+      // First connect — buffer should NOT be armed.
+      await act(async () => {
+        latestWs().simulateOpen();
+        // A chunk that arrives before history (atypical but possible if
+        // tests/mocks send it) is processed immediately — no buffer.
+        latestWs().simulateMessage({
+          type: "chunk",
+          content: "Immediate hello",
+          messageId: "msg-init-1",
+        });
+        latestWs().simulateMessage({ type: "history", messages: [] });
+      });
+
+      // The chunk was applied (not buffered then drained — that's still
+      // visible to the user the same way, but observably isRunning
+      // transitions immediately rather than only after history).
+      expect(result.current.runtime.isRunning).toBe(true);
+    });
+
+    // PR #442 review fix: when shouldStageReplace would normally fire (local
+    // has an error bubble that history doesn't contain), the staged path
+    // uses setTimeout(0) to remount the message subtree. drainBuffer fires
+    // synchronously, so without the `!activeRun` guard the buffered chunks
+    // would apply to stale state and then be wiped by the deferred stage.
+    // The fix: when activeRun is present, take the synchronous setMessages
+    // path so the drain sees the reconciled state.
+    it("preserves buffered chunks across error-then-retry-then-disconnect (skips destructive stage when activeRun is present)", async () => {
+      const { result } = renderHook(() => useWsRuntime("agent-1"));
+
+      // Initial connect + history with a completed first turn.
+      await act(async () => {
+        latestWs().simulateOpen();
+        latestWs().simulateMessage({
+          type: "history",
+          messages: [
+            { role: "user", content: "first question", timestamp: 1000 },
+            { role: "assistant", content: "first answer", timestamp: 2000 },
+          ],
+        });
+      });
+
+      // Synthetic disconnect error from a prior turn.
+      await act(async () => {
+        latestWs().simulateMessage({
+          type: "error",
+          providerError: "Connection interrupted",
+          agentName: "Smithers",
+          messageId: "msg-errored-turn",
+        });
+      });
+
+      // User retries.
+      await act(async () => {
+        result.current.runtime.onNew(makeUserMessage("retry"));
+      });
+
+      // WS drops mid-stream — server-side OC continues.
+      await act(async () => {
+        latestWs().simulateClose(1006);
+        vi.advanceTimersByTime(1200);
+      });
+
+      // Reconnect. A chunk for the in-flight turn arrives BEFORE history.
+      const ws2 = latestWs();
+      await act(async () => {
+        ws2.simulateOpen();
+        ws2.simulateMessage({
+          type: "chunk",
+          content: "retry-answer",
+          messageId: "msg-retry-turn",
+        });
+      });
+
+      // History arrives. The local list still has the error bubble +
+      // possibly mismatches length, which would normally trigger the
+      // destructive staged remount. With activeRun present, we take the
+      // synchronous path so the drained chunk lands on reconciled state.
+      await act(async () => {
+        ws2.simulateMessage({
+          type: "history",
+          messages: [
+            { role: "user", content: "first question", timestamp: 1000 },
+            { role: "assistant", content: "first answer", timestamp: 2000 },
+            { role: "user", content: "retry", timestamp: 3000 },
+            { role: "assistant", content: "", timestamp: 4000 },
+          ],
+          activeRun: { runId: "run-retry", messageId: "msg-retry-turn", startedAt: 4000 },
+        });
+      });
+
+      // The buffered chunk's text must be present in the in-flight assistant
+      // message — proving drain landed on the post-reconcile state, not the
+      // pre-stage state that the staged path would have wiped.
+      const messages = result.current.runtime.messages as Array<{
+        role: string;
+        content: unknown;
+      }>;
+      const flat = JSON.stringify(messages);
+      expect(flat).toContain("retry-answer");
+      // No lingering error bubble — reconcile wiped it.
+      const errorBubbles = messages.filter(
+        (m) => (m as { metadata?: { custom?: { error?: unknown } } }).metadata?.custom?.error
+      );
+      expect(errorBubbles).toHaveLength(0);
+    });
+  });
 });

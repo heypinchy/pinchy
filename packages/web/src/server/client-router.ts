@@ -339,6 +339,27 @@ export class ClientRouter {
   ): Promise<void> {
     const sessionKey = this.computeSessionKey(agent.id);
 
+    // #310 Tier 2b: re-attach this ws to the appropriate listener set
+    // BEFORE the history send so any chunks arriving during the await
+    // below still reach the reconnecting browser. Detach from every
+    // prior chat first — a single tab that switches agents must NOT
+    // keep receiving the old chat's stream.
+    this.activeRuns.removeListenerFromAll(clientWs);
+    const activeRun = this.activeRuns.get(sessionKey);
+    if (activeRun) {
+      this.activeRuns.addListener(sessionKey, clientWs);
+    }
+    // Signal embedded in every history response variant so the client
+    // can preserve `isRunning=true` and anchor incoming chunks to the
+    // right message id after reconcile.
+    const activeRunSignal = activeRun
+      ? {
+          runId: activeRun.runId,
+          messageId: activeRun.currentMessageId,
+          startedAt: activeRun.startedAt,
+        }
+      : undefined;
+
     const fetchAndParseHistory = async () => {
       const result = (await this.openclawClient.sessions.history(sessionKey)) as {
         messages?: HistoryMessage[];
@@ -471,12 +492,21 @@ export class ClientRouter {
 
       if (messages.length > 0) {
         this.sessionCache.add(sessionKey);
-        this.sendToClient(clientWs, { type: "history", messages });
+        this.sendToClient(clientWs, {
+          type: "history",
+          messages,
+          ...(activeRunSignal ? { activeRun: activeRunSignal } : {}),
+        });
       } else if (sessionKnown) {
         // Session exists but history is temporarily unavailable (e.g. during an
         // OpenClaw restart). Signal the client so it can retry rather than
         // showing a blank chat or replacing existing messages with a greeting.
-        this.sendToClient(clientWs, { type: "history", messages: [], sessionKnown: true });
+        this.sendToClient(clientWs, {
+          type: "history",
+          messages: [],
+          sessionKnown: true,
+          ...(activeRunSignal ? { activeRun: activeRunSignal } : {}),
+        });
       } else {
         // No session known — show greeting for new conversations
         await sendGreeting();
@@ -494,11 +524,20 @@ export class ClientRouter {
           // Retry also failed — session known but history unavailable
         }
         if (retryMessages.length > 0) {
-          this.sendToClient(clientWs, { type: "history", messages: retryMessages });
+          this.sendToClient(clientWs, {
+            type: "history",
+            messages: retryMessages,
+            ...(activeRunSignal ? { activeRun: activeRunSignal } : {}),
+          });
         } else {
           // History unavailable for known session — don't send greeting.
           // Signal the client so it can retry rather than showing a blank chat.
-          this.sendToClient(clientWs, { type: "history", messages: [], sessionKnown: true });
+          this.sendToClient(clientWs, {
+            type: "history",
+            messages: [],
+            sessionKnown: true,
+            ...(activeRunSignal ? { activeRun: activeRunSignal } : {}),
+          });
         }
         return;
       }
@@ -571,9 +610,10 @@ export class ClientRouter {
         // clears it.
         if (heartbeatInterval === null) {
           heartbeatInterval = setInterval(() => {
-            if (clientWs.readyState === WS_OPEN) {
-              this.sendToClient(clientWs, { type: "thinking", messageId });
-            }
+            // Tier 2b: heartbeats broadcast to every listener so a tab that
+            // joined via reconnect-resume keeps its "thinking" indicator
+            // alive across the silent windows of slow tool-use loops.
+            this.broadcastForRun(sessionKey, clientWs, { type: "thinking", messageId });
           }, THINKING_HEARTBEAT_MS);
         }
 
@@ -589,6 +629,7 @@ export class ClientRouter {
             userId: this.userId,
             agentName: agent.name,
             startedAt: Date.now(),
+            currentMessageId: messageId,
             ws: clientWs,
           });
           activeRunRegistered = true;
@@ -648,10 +689,15 @@ export class ClientRouter {
           });
         }
 
-        // Consumer forwarding — only meaningful while the browser WS is open.
-        if (clientWs.readyState === WS_OPEN) {
+        // Consumer forwarding — always runs the state-tracking (sawText,
+        // sawError, textBuffer) so the silent-stream safety net stays
+        // correct, then broadcasts to every ws in the listener set
+        // (Tier 2b). `broadcastForRun` falls back to the originating ws
+        // when no run is registered (e.g. pre-first-chunk frames) and
+        // per-listener readyState-gates internally.
+        {
           if (chunk.type === "userMessagePersisted") {
-            this.sendToClient(clientWs, {
+            this.broadcastForRun(sessionKey, clientWs, {
               type: "ack",
               clientMessageId: chunk.clientMessageId,
             });
@@ -662,7 +708,11 @@ export class ClientRouter {
             if (safeLen > 0) {
               const emit = textBuffer.slice(0, safeLen);
               textBuffer = textBuffer.slice(safeLen);
-              this.sendToClient(clientWs, { type: "chunk", content: emit, messageId });
+              this.broadcastForRun(sessionKey, clientWs, {
+                type: "chunk",
+                content: emit,
+                messageId,
+              });
             }
           } else if (chunk.type === "error") {
             sawError = true;
@@ -674,7 +724,7 @@ export class ClientRouter {
             // modelUnavailable: that one fires on 5xx, this one on 400 schema
             // rejection, and the same chunk should never match both.
             const upstreamFormatError = classifyUpstreamFormatError(chunk.text, agent.model ?? "");
-            this.sendToClient(clientWs, {
+            this.broadcastForRun(sessionKey, clientWs, {
               type: "error",
               agentName: agent.name,
               providerError: chunk.text,
@@ -746,13 +796,13 @@ export class ClientRouter {
             // resolved to the silent-reply sentinel, suppress it; otherwise
             // emit whatever text was held back.
             if (textBuffer && textBuffer !== SILENT_REPLY_TOKEN) {
-              this.sendToClient(clientWs, {
+              this.broadcastForRun(sessionKey, clientWs, {
                 type: "chunk",
                 content: textBuffer,
                 messageId,
               });
             }
-            this.sendToClient(clientWs, { type: "done", messageId });
+            this.broadcastForRun(sessionKey, clientWs, { type: "done", messageId });
           }
         }
 
@@ -763,6 +813,13 @@ export class ClientRouter {
         if (chunk.type === "done") {
           textBuffer = "";
           messageId = crypto.randomUUID();
+          // Tier 2b: keep the registry's view of the current messageId in
+          // sync with the per-turn rotation so a reconnecting client gets
+          // an `activeRun.messageId` that anchors incoming chunks to the
+          // right message after history reconcile.
+          if (activeRunRegistered) {
+            this.activeRuns.updateMessageId(sessionKey, messageId);
+          }
         }
       }
 
@@ -772,9 +829,14 @@ export class ClientRouter {
       // swallowed a `surface_error reason=timeout` into `continue_normal`).
       // Must precede the `complete` frame so the client's error handler
       // runs before the spinner is cleared.
-      if (!sawText && !sawError && clientWs.readyState === WS_OPEN) {
+      if (!sawText && !sawError) {
         const providerError = "The model did not produce a response. It may have timed out.";
-        this.sendToClient(clientWs, {
+        // Tier 2b: broadcast so a tab joined via reconnect-resume also
+        // sees the synthesised error (the original ws might already be
+        // gone). The listener-set fallback inside broadcastForRun reaches
+        // the originating ws when no run is registered, e.g. if the OC
+        // stream produced zero chunks at all.
+        this.broadcastForRun(sessionKey, clientWs, {
           type: "error",
           agentName: agent.name,
           providerError,
@@ -829,11 +891,10 @@ export class ClientRouter {
       // iterator is exhausted, so the UI can confidently turn off the
       // thinking indicator only when no more chunks will arrive.
       // No messageId — this terminator is not tied to any specific turn.
-      // Skip if the consumer is gone — they'll get the natural state via
-      // history on reconnect.
-      if (clientWs.readyState === WS_OPEN) {
-        this.sendToClient(clientWs, { type: "complete" });
-      }
+      // Tier 2b broadcasts so any tab that joined via reconnect-resume gets
+      // the terminator too; broadcastForRun reaches the originating ws if
+      // no listener set exists.
+      this.broadcastForRun(sessionKey, clientWs, { type: "complete" });
     } finally {
       // #310 Tier 2a: clean up the registry entry and, if the run finished
       // normally but with zero listeners, write a chat.run_completed_after_disconnect
@@ -919,6 +980,33 @@ export class ClientRouter {
   private sendToClient(ws: WebSocket, data: Record<string, unknown>): void {
     if (ws.readyState === WS_OPEN) {
       ws.send(JSON.stringify(data));
+    }
+  }
+
+  /**
+   * Tier 2b broadcast: send a frame to every ws currently listening on the
+   * given run. If no run is registered for `sessionKey` (e.g. pre-first-
+   * chunk frames like the initial "thinking" or a complete frame after the
+   * run was already cleaned up in the finally block), fall back to the
+   * originating ws — that preserves backward compatibility with the
+   * pre-Tier-2b single-ws flow without leaving any path silently dropped.
+   *
+   * Each listener is independently readyState-gated so a half-closed
+   * socket can't poison the broadcast for the others.
+   */
+  private broadcastForRun(
+    sessionKey: string,
+    fallbackWs: WebSocket,
+    data: Record<string, unknown>
+  ): void {
+    const run = this.activeRuns.get(sessionKey);
+    if (!run || run.listeners.size === 0) {
+      this.sendToClient(fallbackWs, data);
+      return;
+    }
+    const payload = JSON.stringify(data);
+    for (const ws of run.listeners) {
+      if (ws.readyState === WS_OPEN) ws.send(payload);
     }
   }
 

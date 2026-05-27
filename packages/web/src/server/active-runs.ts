@@ -44,6 +44,15 @@ export interface ActiveRun {
    */
   startedAt: number;
   lastChunkAt: number;
+  /**
+   * Pinchy-side per-turn message id (rotated on each `done`). Stored here so
+   * Tier 2b's reconnect-resume path can tell the client which message in
+   * the history snapshot the in-flight chunks should be merged into. Chunks
+   * arriving on the broadcast carry this same id; the client uses
+   * `activeRun.messageId` from the history frame to anchor them to the
+   * matching message after reconcile.
+   */
+  currentMessageId: string;
   listeners: Set<WebSocket>;
 }
 
@@ -88,6 +97,19 @@ export class ActiveRuns {
     const run = this.runs.get(sessionKey);
     if (!run) return;
     run.lastChunkAt = when;
+  }
+
+  /**
+   * Rotate `currentMessageId` for Tier 2b. Called from `pipeStream` right
+   * after the per-turn messageId rotation on every `done` chunk, so the
+   * registry always reflects the in-flight turn's id. A reconnecting
+   * client reading `activeRun.messageId` from the history frame uses this
+   * value to anchor incoming chunks to the right assistant message.
+   */
+  updateMessageId(sessionKey: string, messageId: string): void {
+    const run = this.runs.get(sessionKey);
+    if (!run) return;
+    run.currentMessageId = messageId;
   }
 
   get(sessionKey: string): ActiveRun | undefined {
