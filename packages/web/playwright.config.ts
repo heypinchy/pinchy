@@ -11,6 +11,7 @@ export default defineConfig({
     "**/integration/**",
     "**/e2e/web/**",
     "**/e2e/email/**",
+    "**/e2e/setup-wizard/**",
   ],
   fullyParallel: false,
   retries: 0,
