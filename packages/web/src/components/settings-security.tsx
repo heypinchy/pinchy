@@ -34,7 +34,7 @@ export function SettingsSecurity() {
           const data = await res.json();
           if (!cancelled) setStatus(data);
         } else {
-          if (!cancelled) setError(true);
+          setError(true);
         }
       } catch {
         if (!cancelled) setError(true);
