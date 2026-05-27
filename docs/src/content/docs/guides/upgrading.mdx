@@ -153,11 +153,19 @@ If you need to roll back after an upgrade:
 
 ### Breaking changes
 
-None.
+None at the Pinchy ↔ user surface. `openclaw-node` (Pinchy's internal client to OpenClaw Gateway) moves to 0.11.0 — see the dependency note below.
 
 ### Upgrade notes
 
-%%PINCHY_VERSION%% fixes the v0.5.6 setup-wizard regression where Smithers replied with `No API key found for provider '<name>'` on the very first chat message after a fresh install. The bug was provider-agnostic: OpenClaw's secrets-provider initialised at gateway boot with a "file missing" state because `secrets.json` was only written after the user completed the wizard. The provider never reinitialised when Pinchy hot-reloaded `openclaw.json` (the secrets-section diff was empty), so the gateway ran the rest of the session with no provider keys until a manual container restart.
+%%PINCHY_VERSION%% lands two changes: a resumable streaming pipeline for the chat connection ([#310](https://github.com/heypinchy/pinchy/issues/310)) and the v0.5.6 setup-wizard regression fix.
+
+**Streaming resume across reconnect.** When your browser drops mid-stream and reconnects (closed tab, network blip, Wi-Fi handoff), Pinchy now joins the new connection to the in-flight run and keeps streaming chunks into the same assistant bubble — no more "The agent didn't respond" flash bubble for runs that were actually still running server-side. Under the hood:
+
+- A new in-memory **`ActiveRuns` registry** on Pinchy tracks every in-flight chat run by `sessionKey`, with each entry holding the OpenClaw-correlated `runId`, the per-turn `messageId`, and the set of currently-connected listener WebSockets. Multi-tab sessions on the same chat now naturally see the same stream — both tabs end up in the listener set.
+- A server-side **run watchdog** scans `ActiveRuns` every 30 seconds and tears down runs whose absolute age exceeds the per-deployment cap (default 15 minutes). This is the server-side belt to the existing client-side stuck-timer suspenders — it catches runs that hang while the tab is backgrounded or after the laptop sleeps. Stuck runs are aborted via OpenClaw, audited as `chat.run_timed_out`, and a terminal error frame is broadcast to any still-connected listener.
+- The audit trail gains three new event types: `chat.run_timed_out`, `chat.run_completed_after_disconnect`, and `chat.run_aborted` (the last is declared in the audit union for a future user-triggered abort UI; emission lands when that UI ships). Existing audit queries are unaffected — the new events are additive.
+
+**Setup-wizard secrets fix.** %%PINCHY_VERSION%% also fixes the v0.5.6 setup-wizard regression where Smithers replied with `No API key found for provider '<name>'` on the very first chat message after a fresh install. The bug was provider-agnostic: OpenClaw's secrets-provider initialised at gateway boot with a "file missing" state because `secrets.json` was only written after the user completed the wizard. The provider never reinitialised when Pinchy hot-reloaded `openclaw.json` (the secrets-section diff was empty), so the gateway ran the rest of the session with no provider keys until a manual container restart.
 
 The fix is Pinchy-side: an `inotifywait` handler in `start-openclaw.sh` writes a `/openclaw-secrets/.bootstrap-applied` marker on the first appearance of `secrets.json` and SIGTERMs the gateway exactly once so the next boot picks up the file. The health-check loop respawns the gateway within ~10–40 s, and a build-time drift guard in `validateBuiltConfig` rejects emitted configs whose `SecretRef` pointers don't resolve in `secrets.json` — closing the related class of "config references a key that isn't there" bugs that would have produced the same symptom from the Pinchy side.
 
@@ -170,6 +178,19 @@ docker compose pull && docker compose up -d && docker image prune -f
 ```
 
 If you saw the "No API key found" error on v0.5.6 and restarted the OpenClaw container manually to recover, no follow-up action is needed — the secrets-provider re-reads cleanly from disk on every boot.
+
+Dependencies:
+
+- **openclaw-node 0.11.0** — Pinchy bundles this internally; nothing for operators to install. The change of note is that every `ChatChunk` returned by `client.chat()` now carries the Gateway-correlated `runId`. Compatible with the same Gateway versions as 0.10.0 (OpenClaw ≥ 2026.5.12, which Pinchy v0.5.5+ already pins). See the [openclaw-node 0.11.0 release notes](https://github.com/heypinchy/openclaw-node/releases/tag/v0.11.0).
+
+The `ActiveRuns` registry is in-memory only — a Pinchy restart drops every entry, which is acceptable because the OpenClaw side is restarted (or unreachable) in that case. No database migration is required.
+
+Operationally:
+
+- New audit-trail queries you might want bookmarked:
+  - `chat.run_timed_out` — how many runs hit the 15-min hard cap last week?
+  - `chat.run_completed_after_disconnect` — how often do users abandon a long-running chat? Correlates with background-tab behavior.
+- The 15-minute default is per-deployment and lives in `packages/web/src/server/run-watchdog.ts#DEFAULT_MAX_RUN_DURATION_MS`. There is intentionally no per-agent override; surface one as a deployment env var if you ever see a legitimate need (YAGNI today).
 
 ## Upgrading from v0.5.5 to v0.5.6
 
