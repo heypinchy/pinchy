@@ -72,7 +72,7 @@ describe("validateProviderKey", () => {
 
     expect(result).toEqual({ valid: true });
     expect(fetch).toHaveBeenCalledWith(
-      "https://generativelanguage.googleapis.com/v1/models?key=AIza-valid",
+      "https://generativelanguage.googleapis.com/v1beta/models?key=AIza-valid",
       expect.any(Object)
     );
   });
