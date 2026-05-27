@@ -3,7 +3,6 @@ import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 import { createAdmin } from "@/lib/setup";
 import { validatePassword } from "@/lib/validate-password";
-import { regenerateOpenClawConfig } from "@/lib/openclaw-config";
 import { markOpenClawConfigReady } from "@/lib/openclaw-config-ready";
 import { parseRequestBody } from "@/lib/api-validation";
 
@@ -29,19 +28,16 @@ export async function POST(request: NextRequest) {
     }
 
     const user = await createAdmin(name, email, password);
-    // Write OpenClaw config with the newly created Smithers agent so OpenClaw
-    // knows about it when the container restarts or the file watcher picks it up.
-    // If this fails, surface the error: the admin record was created, but the
-    // user would otherwise see a confusing "agent unavailable" screen next.
-    try {
-      await regenerateOpenClawConfig();
-    } catch (err) {
-      console.error("[setup] Failed to regenerate OpenClaw config:", err);
-      return NextResponse.json(
-        { error: "OpenClaw config write failed; check server logs and retry setup." },
-        { status: 500 }
-      );
-    }
+    // Don't regenerate openclaw.json yet — Smithers' default model
+    // ("anthropic/claude-sonnet-4-6", chosen by seedDefaultAgent as a
+    // pre-provider fallback) would trigger OpenClaw's auto-enable for
+    // anthropic, then fail to resolve its SecretRef against the still-empty
+    // secrets.json and crash-loop the gateway. /api/setup/provider runs
+    // next in the wizard flow, resolves Smithers' model against the picked
+    // provider via resolveModelForTemplate, and regenerates openclaw.json
+    // with both the agent and the matching provider in one atomic write.
+    // The provider-picker UI between these two routes doesn't talk to
+    // OpenClaw, so Smithers being absent from openclaw.json here is fine.
     markOpenClawConfigReady();
     return NextResponse.json(user, { status: 201 });
   } catch (error) {
