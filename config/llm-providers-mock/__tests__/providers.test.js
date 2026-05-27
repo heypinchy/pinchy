@@ -69,3 +69,21 @@ test("POST /anthropic/v1/messages returns Anthropic message shape", async () => 
   assert.equal(body.type, "message");
   assert.equal(body.content[0].type, "text");
 });
+
+test("GET /google/v1beta/models with key query param returns Gemini shape", async () => {
+  const res = await fetch(`http://localhost:${PORT}/google/v1beta/models?key=AIza-mock`);
+  assert.equal(res.status, 200);
+  const body = await res.json();
+  assert.ok(body.models.find((m) => m.name === "models/gemini-2.5-pro"));
+});
+
+test("POST /google/v1beta/models/gemini-2.5-pro:generateContent returns Gemini shape", async () => {
+  const res = await fetch(`http://localhost:${PORT}/google/v1beta/models/gemini-2.5-pro:generateContent?key=AIza-mock`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ contents: [{ parts: [{ text: "hi" }] }] }),
+  });
+  assert.equal(res.status, 200);
+  const body = await res.json();
+  assert.equal(body.candidates[0].content.parts[0].text.length > 0, true);
+});

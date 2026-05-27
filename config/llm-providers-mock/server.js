@@ -18,6 +18,12 @@ function requireXApiKey(req, res) {
   return false;
 }
 
+function requireQueryKey(req, res) {
+  if (req.query.key) return true;
+  res.status(403).json({ error: { code: 403, message: "missing key" } });
+  return false;
+}
+
 // Frozen "created" timestamp for response determinism. Mock servers
 // asserting on full response shapes (E2E snapshots, audit-log fixtures)
 // rely on this — never replace with Date.now().
@@ -82,6 +88,27 @@ app.post("/anthropic/v1/messages", (req, res) => {
     content: [{ type: "text", text: MOCK_ASSISTANT_REPLY }],
     stop_reason: "end_turn",
     usage: { input_tokens: 10, output_tokens: 12 },
+  });
+});
+
+// ---- Google ----
+app.get("/google/v1beta/models", (req, res) => {
+  if (!requireQueryKey(req, res)) return;
+  res.json({
+    models: [
+      { name: "models/gemini-2.5-pro", displayName: "Gemini 2.5 Pro" },
+      { name: "models/gemini-2.5-flash", displayName: "Gemini 2.5 Flash" },
+    ],
+  });
+});
+
+app.post("/google/v1beta/models/:model\\:generateContent", (req, res) => {
+  if (!requireQueryKey(req, res)) return;
+  res.json({
+    candidates: [
+      { content: { role: "model", parts: [{ text: MOCK_ASSISTANT_REPLY }] }, finishReason: "STOP" },
+    ],
+    usageMetadata: { promptTokenCount: 5, candidatesTokenCount: 8, totalTokenCount: 13 },
   });
 });
 
