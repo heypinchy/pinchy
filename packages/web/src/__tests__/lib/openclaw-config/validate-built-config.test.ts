@@ -152,3 +152,111 @@ describe("validateBuiltConfig", () => {
     }
   });
 });
+
+describe("SecretRef drift guard", () => {
+  it("rejects a config whose openai.apiKey SecretRef has no matching secret", () => {
+    const config = {
+      secrets: {
+        providers: {
+          pinchy: { source: "file", path: "/openclaw-secrets/secrets.json", mode: "json" },
+        },
+      },
+      models: {
+        providers: {
+          openai: {
+            apiKey: { source: "file", provider: "pinchy", id: "/providers/openai/apiKey" },
+            baseUrl: "https://api.openai.com/v1",
+            models: [],
+          },
+        },
+      },
+    };
+    const secretsBundle = {};
+    const result = validateBuiltConfig(config, secretsBundle);
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(
+        result.errors.some(
+          (e) => /secretref/i.test(e) && /models\.providers\.openai\.apiKey/.test(e)
+        )
+      ).toBe(true);
+    }
+  });
+
+  it("accepts a matching pair", () => {
+    const config = {
+      secrets: {
+        providers: {
+          pinchy: { source: "file", path: "/openclaw-secrets/secrets.json", mode: "json" },
+        },
+      },
+      models: {
+        providers: {
+          openai: {
+            apiKey: { source: "file", provider: "pinchy", id: "/providers/openai/apiKey" },
+            baseUrl: "https://api.openai.com/v1",
+            models: [],
+          },
+        },
+      },
+    };
+    const secretsBundle = {
+      providers: { openai: { apiKey: "sk-real-key" } },
+    };
+    const result = validateBuiltConfig(config, secretsBundle);
+    expect(result.ok).toBe(true);
+  });
+
+  it("rejects an empty-string secret value (treated as missing)", () => {
+    const config = {
+      models: {
+        providers: {
+          openai: {
+            apiKey: { source: "file", provider: "pinchy", id: "/providers/openai/apiKey" },
+            baseUrl: "x",
+            models: [],
+          },
+        },
+      },
+    };
+    const secretsBundle = { providers: { openai: { apiKey: "" } } };
+    const result = validateBuiltConfig(config, secretsBundle);
+    expect(result.ok).toBe(false);
+  });
+
+  it("walks nested SecretRefs inside plugin entries", () => {
+    // Defense in depth: a SecretRef hiding in a deep plugin config block should
+    // still be caught. Pinchy plugins use the API-fetch pattern (not in-config
+    // SecretRefs), so this is forward-looking — guards against future regressions.
+    const config = {
+      plugins: {
+        entries: {
+          "some-plugin": {
+            config: {
+              nested: {
+                token: { source: "file", provider: "pinchy", id: "/plugins/some-plugin/token" },
+              },
+            },
+          },
+        },
+      },
+    };
+    const secretsBundle = {};
+    const result = validateBuiltConfig(config, secretsBundle);
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      // Full dot-path includes the deep location so reviewers can locate the dangling ref.
+      expect(
+        result.errors.some((e) => /plugins\.entries\.some-plugin\.config\.nested\.token/.test(e))
+      ).toBe(true);
+    }
+  });
+
+  it("backward compat: existing single-arg call still works", () => {
+    // The secretsBundle parameter is optional. Production tests and callers
+    // that don't yet pass it should continue to function (only SecretRef checks
+    // are skipped, plugin-manifest checks still run).
+    const config = { plugins: { allow: [], entries: {} } };
+    expect(validateBuiltConfig(config).ok).toBe(true);
+  });
+});
