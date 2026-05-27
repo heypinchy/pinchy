@@ -232,14 +232,7 @@ describe("POST /api/setup", () => {
     expect(data.error).toBe("Password must be at least 12 characters");
   });
 
-  it("should NOT regenerate openclaw.json yet (deferred to /api/setup/provider)", async () => {
-    // Smithers' default model is "anthropic/claude-sonnet-4-6" (seedDefaultAgent
-    // fallback for cold start). Writing that into openclaw.json before any
-    // provider is configured causes OpenClaw to auto-enable anthropic and
-    // crash-loop trying to resolve its SecretRef against an empty
-    // secrets.json. /api/setup/provider runs next in the wizard flow,
-    // resolves the model against the chosen provider, and regenerates with
-    // both halves consistent.
+  it("should call regenerateOpenClawConfig after creating admin and agent", async () => {
     vi.mocked(db.query.users.findFirst).mockResolvedValue(undefined);
     vi.mocked(db.query.agents.findFirst).mockResolvedValue(undefined);
 
@@ -250,7 +243,7 @@ describe("POST /api/setup", () => {
     });
     await POST(request as any);
 
-    expect(regenerateOpenClawConfig).not.toHaveBeenCalled();
+    expect(regenerateOpenClawConfig).toHaveBeenCalledOnce();
   });
 
   it("should call markOpenClawConfigReady after setup completes", async () => {
@@ -267,10 +260,25 @@ describe("POST /api/setup", () => {
     expect(markOpenClawConfigReady).toHaveBeenCalledOnce();
   });
 
-  // Removed: "should return 500 and not mark ready when regenerateOpenClawConfig fails".
-  // /api/setup no longer calls regenerateOpenClawConfig — the failure path
-  // it asserted against no longer exists. /api/setup/provider owns the first
-  // regenerate now and has its own error handling.
+  it("should return 500 and not mark ready when regenerateOpenClawConfig fails", async () => {
+    vi.mocked(db.query.users.findFirst).mockResolvedValue(undefined);
+    vi.mocked(db.query.agents.findFirst).mockResolvedValue(undefined);
+    vi.mocked(regenerateOpenClawConfig).mockRejectedValueOnce(
+      new Error("disk full: cannot write openclaw.json")
+    );
+
+    const request = makeRequest({
+      name: "Admin User",
+      email: "admin@test.com",
+      password: "Br1ghtNova!2",
+    });
+    const response = await POST(request as any);
+    const data = await response.json();
+
+    expect(response.status).toBe(500);
+    expect(data.error).toMatch(/openclaw config/i);
+    expect(markOpenClawConfigReady).not.toHaveBeenCalled();
+  });
 
   it("should return 403 when setup is already complete", async () => {
     vi.mocked(db.query.users.findFirst).mockResolvedValue({
