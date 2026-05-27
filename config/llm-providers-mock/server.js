@@ -3,6 +3,14 @@ import express from "express";
 const app = express();
 app.use(express.json({ limit: "10mb" }));
 
+// One-line request log so E2E CI failures show whether OpenClaw / Pinchy
+// reached the mock at all. The setup-wizard-e2e job tails this container's
+// logs on failure (see .github/workflows/ci.yml setup-wizard-e2e job).
+app.use((req, _res, next) => {
+  console.log(`[mock] ${req.method} ${req.url}`);
+  next();
+});
+
 // Tiny auth helpers. Each provider has a different scheme — keep these
 // as one-liners and add new ones as new providers are added (Anthropic
 // uses x-api-key, Google uses ?key=, etc).

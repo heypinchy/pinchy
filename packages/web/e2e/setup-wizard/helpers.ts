@@ -154,7 +154,15 @@ export async function runProviderSmokeTest(page: Page, spec: ProviderSmokeTestSp
   // toast/inline error. We assert the mock's deterministic content
   // ("Sure, happy to help! What would you like to work on?") and that
   // NO error UI is shown.
-  await expect(page.getByText(/sure, happy to help/i)).toBeVisible({ timeout: 30000 });
+  //
+  // 90 s budget: the wizard's "Continue" click triggers regenerateOpenClawConfig
+  // which writes openclaw.json + secrets.json. OpenClaw's secrets-watcher then
+  // pkills the gateway on first-time secrets.json appearance (config/start-openclaw.sh
+  // bootstrap-marker logic), and the health-loop respawn cycle is ~40 s.
+  // 30 s was too tight on a cold E2E stack — the test would assert before OC
+  // finished its first-real-config restart. 90 s covers the worst case
+  // (one full restart cycle + chat round-trip).
+  await expect(page.getByText(/sure, happy to help/i)).toBeVisible({ timeout: 90000 });
   await expect(page.getByText(/smithers couldn't respond/i)).not.toBeVisible();
   await expect(page.getByText(/no api key found/i)).not.toBeVisible();
 }
