@@ -187,10 +187,19 @@ export function AuditLogTable() {
 
   const totalPages = Math.max(1, Math.ceil(total / limit));
 
+  // Show loading state immediately when filters change — uses
+  // "adjust state during render" so loading flips to true in the same commit
+  // as the filter change, avoiding a flash of stale entries with no spinner.
+  const filterKey = `${page}|${limit}|${eventTypeFilter}|${statusFilter}|${dateFrom}|${dateTo}`;
+  const [prevFilterKey, setPrevFilterKey] = useState(filterKey);
+  if (prevFilterKey !== filterKey) {
+    setPrevFilterKey(filterKey);
+    setLoading(true);
+  }
+
   useEffect(() => {
     let cancelled = false;
     (async () => {
-      setLoading(true);
       try {
         const params = new URLSearchParams();
         params.set("page", String(page));

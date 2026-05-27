@@ -187,19 +187,24 @@ export function NewAgentForm() {
     fetchDirectories();
   }, [requiresDirectories]);
 
+  // Reset Odoo state immediately when leaving an Odoo template — uses
+  // "adjust state during render" so the UI hides the Odoo block in the same
+  // commit as the template change.
+  const [prevRequiresOdoo, setPrevRequiresOdoo] = useState(requiresOdooConnection);
+  if (prevRequiresOdoo !== requiresOdooConnection) {
+    setPrevRequiresOdoo(requiresOdooConnection);
+    if (!requiresOdooConnection) {
+      setOdooConnections([]);
+      setSelectedConnectionId(null);
+      setValidationResult(null);
+    }
+  }
+
   // Fetch Odoo connections when an Odoo template is selected
   useEffect(() => {
+    if (!requiresOdooConnection) return;
     let cancelled = false;
     (async () => {
-      if (!requiresOdooConnection) {
-        if (!cancelled) {
-          setOdooConnections([]);
-          setSelectedConnectionId(null);
-          setValidationResult(null);
-        }
-        return;
-      }
-
       setLoadingConnections(true);
       try {
         const res = await fetch("/api/integrations");
