@@ -207,11 +207,19 @@ auto_approve_devices() {
 # of this helper will mark on the next successful boot).
 mark_bootstrap_when_ready() {
     (
+        # Wait for BOTH conditions: gateway port up AND secrets.json present.
+        # Returning early on port-up alone (without checking the file)
+        # breaks the Telegram E2E `agent-create-no-restart.spec.ts` test:
+        # if Pinchy writes secrets.json AFTER the port came up but BEFORE
+        # this loop ticked again, the inotify handler fires `pkill` because
+        # the marker was never set — turning a hot-reload into a full
+        # gateway restart and tripping the `no restart cascade` (#193)
+        # assertion. Requiring both means we keep polling until the next
+        # secrets-write lands, then mark, so subsequent writes correctly
+        # skip the pkill.
         for _ in $(seq 1 60); do
-            if (echo > /dev/tcp/127.0.0.1/18789) 2>/dev/null; then
-                if [ -f "$SECRETS_FILE" ]; then
-                    touch "$SECRETS_BOOTSTRAP_MARKER" 2>/dev/null || true
-                fi
+            if (echo > /dev/tcp/127.0.0.1/18789) 2>/dev/null && [ -f "$SECRETS_FILE" ]; then
+                touch "$SECRETS_BOOTSTRAP_MARKER" 2>/dev/null || true
                 return
             fi
             sleep 1
