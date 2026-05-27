@@ -112,4 +112,39 @@ app.post("/google/v1beta/models/:model\\:generateContent", (req, res) => {
   });
 });
 
+// ---- Ollama Cloud ----
+// Ollama Cloud is OpenAI-compatible. We mount its routes under
+// /ollama-cloud/v1/* and reuse the OpenAI response shape.
+app.get("/ollama-cloud/v1/models", (req, res) => {
+  if (!requireBearer(req, res)) return;
+  res.json({
+    object: "list",
+    data: [
+      { id: "qwen3-next:80b", object: "model", created: MOCK_CREATED_AT, owned_by: "ollama" },
+      { id: "qwen3-coder:480b", object: "model", created: MOCK_CREATED_AT, owned_by: "ollama" },
+    ],
+  });
+});
+
+app.post("/ollama-cloud/v1/chat/completions", (req, res) => {
+  if (!requireBearer(req, res)) return;
+  // Validation-probe contract: Pinchy's wizard sends body: "{}" to check
+  // whether the Bearer is valid. The real ollama.com returns 400 in that
+  // case (auth passed, body rejected) and providers.ts:141 treats 400 as
+  // "key is valid". We replicate that: missing `messages` → 400.
+  if (!Array.isArray(req.body?.messages) || req.body.messages.length === 0) {
+    return res.status(400).json({ error: { message: "messages: array required" } });
+  }
+  res.json({
+    id: "chatcmpl-mock-ollama-1",
+    object: "chat.completion",
+    created: MOCK_CREATED_AT,
+    model: req.body?.model ?? "qwen3-next:80b",
+    choices: [
+      { index: 0, message: { role: "assistant", content: MOCK_ASSISTANT_REPLY }, finish_reason: "stop" },
+    ],
+    usage: { prompt_tokens: 10, completion_tokens: 12, total_tokens: 22 },
+  });
+});
+
 app.listen(PORT, () => console.log(`llm-providers-mock listening on ${PORT}`));
