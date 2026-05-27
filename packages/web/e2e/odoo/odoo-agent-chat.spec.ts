@@ -25,6 +25,7 @@ import {
   pollAuditForTool,
   seedDefaultProviderToOllama,
   waitForOpenClawStable,
+  waitForAgentDispatchable,
 } from "../shared/dispatch-probe";
 
 const MOCK_ODOO_URL = process.env.MOCK_ODOO_URL || "http://localhost:9002";
@@ -337,6 +338,20 @@ test.describe("Odoo dispatch probe (pinchy-odoo plugin coverage)", () => {
 
     // 8. Wait for OpenClaw to stabilise with the new Ollama config.
     await waitForOpenClawStable(() => pinchyGet("/api/health/openclaw", dispatchCookie));
+
+    // 9. Wait until OC's runtime actually has THIS agent in `agents.list`.
+    // Stability alone doesn't prove dispatchability: the regens from steps
+    // 6 + 7 are fire-and-forget, and if Pinchy's earlier tests in the
+    // suite exhausted OC's config.apply rate-limit window the probe's
+    // regens fall through to the inotify file-watcher fallback whose
+    // debounce can stretch past the stability check. Polling OC's actual
+    // agents.list view via the health endpoint closes that race window
+    // — see CI run 26505503327 for the prior "unknown agent id" failure
+    // mode this guards against.
+    await waitForAgentDispatchable(
+      (agentId) => pinchyGet(`/api/health/openclaw?agentId=${agentId}`, dispatchCookie),
+      dispatchAgentId
+    );
   });
 
   test.afterAll(async () => {

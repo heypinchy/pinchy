@@ -118,6 +118,49 @@ export async function waitForOpenClawStable(
 }
 
 /**
+ * Poll `GET /api/health/openclaw?agentId=<id>` until the response's
+ * `agentDispatchable` flag is true — i.e. OC's runtime `agents.list`
+ * currently contains the requested id.
+ *
+ * Why this is needed alongside `waitForOpenClawStable`: stability only
+ * checks `connected=true` for a contiguous window. It does NOT verify the
+ * agent the test is about to dispatch to is actually in OC's hot-loaded
+ * config. After a `PATCH /api/agents/:id` or `PUT /api/agents/:id/integrations`
+ * (both fire-and-forget regenerates), OC's hot-reload can still be in
+ * flight when the API returns 200. Worse: if Pinchy's prior tests
+ * exhausted OC's `config.apply` rate-limit window (~3 calls / 45 s),
+ * the probe's regens fall through to the inotify file-watcher fallback
+ * whose debounce can stretch past the stability check. The result is
+ * "unknown agent id" errors when the test fires its chat.
+ *
+ * Tests that immediately dispatch to an agent created earlier in their
+ * `beforeAll` should call this AFTER `waitForOpenClawStable` and before
+ * issuing the chat.
+ */
+export async function waitForAgentDispatchable(
+  fetchHealth: (
+    agentId: string
+  ) => Promise<{ ok: boolean; json: () => Promise<{ agentDispatchable?: boolean }> }>,
+  agentId: string,
+  opts: { deadlineMs?: number; intervalMs?: number } = {}
+): Promise<void> {
+  const deadline = Date.now() + (opts.deadlineMs ?? 60_000);
+  const interval = opts.intervalMs ?? 500;
+
+  while (Date.now() < deadline) {
+    const res = await fetchHealth(agentId);
+    if (res.ok) {
+      const body = await res.json();
+      if (body.agentDispatchable === true) return;
+    }
+    await new Promise((r) => setTimeout(r, interval));
+  }
+  throw new Error(
+    `OpenClaw runtime did not see agent ${agentId} as dispatchable within deadline — config.apply likely stuck in file-watcher debounce`
+  );
+}
+
+/**
  * Drive the UI login form so the Playwright `page` has a session cookie.
  * Asserts the post-login redirect to `/chat/...` so the next navigation does
  * not race the auth roundtrip.
