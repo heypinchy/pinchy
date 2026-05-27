@@ -362,6 +362,15 @@ function capMessages<T>(messages: T[]): T[] {
  * queued during the disconnect (see `pendingMessagesRef` handling). The
  * server hasn't acknowledged it yet, so a longer history must be from a
  * previous turn — replacing would silently drop the queued message.
+ *
+ * Known limit (in scope for #310 Tier 2, not this gate): the `status ===
+ * "sent"` guard also excludes user messages whose `status` is `undefined`,
+ * which happens when the last user message in `prevMessages` came from a
+ * prior history reconcile (history-derived messages don't carry a delivery
+ * status). This blocks reconcile in a rare multi-tab scenario where Tab A
+ * opens a chat with an in-flight assistant turn from Tab B, then Tab A's
+ * WS drops before the chunks arrive. Tier 2 closes this via the server-
+ * side `activeRun` signal — see #310 follow-ups.
  */
 export function shouldReplaceLocalWithServerHistory(
   prevMessages: WsMessage[],
@@ -866,6 +875,12 @@ export function useWsRuntime(agentId: string): {
               // acked-user-but-no-chunk window). We intentionally replace even
               // if the last local message is a synthetic disconnect-error
               // bubble, because the server's history is the ground truth.
+              //
+              // The helper is re-evaluated here against React's `prev` (not
+              // `messagesRef.current` from the outer scope) because under
+              // concurrent rendering the two snapshots can diverge — a stale
+              // outer evaluation must never override what React holds as the
+              // current authoritative state inside the setter.
               if (
                 shouldReplaceLocalWithServerHistory(prev, historyMessages, shouldRecoverFromHistory)
               ) {
