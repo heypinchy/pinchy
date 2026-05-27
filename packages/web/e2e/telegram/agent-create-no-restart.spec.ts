@@ -242,42 +242,76 @@ test.describe.serial("Agent create — no gateway restart cascade (#193)", () =>
     // To establish a baseline that matches Pinchy's full regenerated config,
     // do an explicit warm-up agent create here. Cascade resolves, baseline
     // updates, then the actual test action below has a true small diff.
-    const warmupMark = new Date(Date.now() - 1000).toISOString();
-    const warmupRes = await pinchyPost("/api/agents", {
-      name: `Warmup-${Date.now()}`,
-      templateId: "custom",
-    });
-    expect(warmupRes.status, await warmupRes.text()).toBeLessThan(300);
+    //
+    // Earlier versions of this beforeAll did ONE warmup and logged a warning
+    // if it triggered a restart, on the theory that one cascade is enough
+    // to update the baseline. Practice disagreed: CI runs 26511658136
+    // (passed) and 26513340371 (failed) both logged the same
+    // "[warmup] gateway restarted" warning, but only the second hit a
+    // SECOND restart cascade on the test action. The first warmup updated
+    // some restart-required fields in OC's baseline, but not all — the
+    // residual diff against Pinchy's regenerated config still contained
+    // restart-required fields (channels in run 26513340371). Doing a
+    // SECOND warmup absorbs that residual diff; by warmup-3 the baseline
+    // is consistently quiet.
+    //
+    // Bounded retry: max 4 attempts. If the warmup never converges (every
+    // attempt triggers another restart), that's a config-emission bug, not
+    // a baseline race, and the test should fail loudly rather than continue
+    // to a misleading test assertion.
+    const MAX_WARMUP_ATTEMPTS = 4;
+    let warmupTriggeredRestart = true;
+    for (let attempt = 1; attempt <= MAX_WARMUP_ATTEMPTS && warmupTriggeredRestart; attempt++) {
+      const warmupMark = new Date(Date.now() - 1000).toISOString();
+      const warmupRes = await pinchyPost("/api/agents", {
+        name: `Warmup-${attempt}-${Date.now()}`,
+        templateId: "custom",
+      });
+      expect(warmupRes.status, await warmupRes.text()).toBeLessThan(300);
 
-    // The warmup's config.apply propagates async (fire-and-forget). Wait
-    // until OpenClaw has actually OBSERVED the warmup before doing anything
-    // else. A bare 5s sleep + waitForOpenClawQuiet can return false-quiet
-    // when OpenClaw's event loop is blocked (no logs at all in the lookback
-    // window even though config.apply work is queued). Polling for the
-    // warmup's reload-detected line guarantees the cascade — if any —
-    // happens here, not during the test assertion below.
-    const warmupDeadline = Date.now() + 90000;
-    while (Date.now() < warmupDeadline) {
-      const logs = openClawLogsSince(warmupMark);
-      if (/\[reload\] config change detected.*agents/.test(logs)) break;
-      await new Promise((r) => setTimeout(r, 1000));
+      // The warmup's config.apply propagates async (fire-and-forget). Wait
+      // until OpenClaw has actually OBSERVED the warmup before doing anything
+      // else. A bare 5 s sleep + waitForOpenClawQuiet can return false-quiet
+      // when OpenClaw's event loop is blocked (no logs at all in the lookback
+      // window even though config.apply work is queued). Polling for the
+      // warmup's reload-detected line guarantees the cascade — if any —
+      // happens here, not during the test assertion below.
+      const warmupDeadline = Date.now() + 90000;
+      while (Date.now() < warmupDeadline) {
+        const logs = openClawLogsSince(warmupMark);
+        if (/\[reload\] config change detected.*agents/.test(logs)) break;
+        await new Promise((r) => setTimeout(r, 1000));
+      }
+      // Then absorb any restart cascade triggered by the warmup before continuing.
+      await waitForOpenClawQuiet();
+
+      const warmupLogs = openClawLogsSince(warmupMark);
+      warmupTriggeredRestart = /requires gateway restart/.test(warmupLogs);
+      if (warmupTriggeredRestart) {
+        // Note: a restart in this iteration is expected on the first attempt
+        // when the baseline is sparse. We log progress so a future operator
+        // reviewing CI logs can tell convergence apart from cascade-loop.
+        console.warn(
+          `[warmup] attempt ${attempt}/${MAX_WARMUP_ATTEMPTS} triggered gateway restart; retrying to absorb residual baseline drift.`
+        );
+      } else if (attempt > 1) {
+        console.log(
+          `[warmup] baseline stabilised after ${attempt} attempts (no restart on the last warmup).`
+        );
+      }
     }
-    // Then absorb any restart cascade triggered by the warmup before continuing.
-    await waitForOpenClawQuiet();
-
-    // Localize failures: if the warmup itself triggered a restart, the
-    // cascade is from a setup-stage problem (sparse-baseline, env
-    // propagation, etc.) — not from the test action. Failing here points
-    // a finger at the right cause; failing in the assertion below would
-    // misleadingly look like the production fix doesn't work. Note: a
-    // restart in the warmup window is acceptable in some staging-cold
-    // scenarios, so we tolerate it but log a warning instead of failing
-    // hard. The test assertion remains the source of truth.
-    const warmupLogs = openClawLogsSince(warmupMark);
-    if (/requires gateway restart/.test(warmupLogs)) {
-      console.warn(
-        "[warmup] gateway restarted during warmup — beforeAll is recovering, but this means the cold-start baseline was sparse. " +
-          "If the actual assertion below fails with the same restart fingerprint, the warmup didn't actually establish a stable baseline."
+    // If we exhausted attempts and the baseline still hasn't stabilised,
+    // every Pinchy regenerate is still producing a restart-required diff.
+    // That's not a flake to absorb — surface it loudly so the underlying
+    // config-emission bug can be tracked. The original "warn-and-continue"
+    // behaviour masked exactly this signal: the test would then fail at the
+    // assertion below with the same restart fingerprint, and triage couldn't
+    // tell warmup-instability from a real regression in POST /api/agents.
+    if (warmupTriggeredRestart) {
+      throw new Error(
+        `[warmup] every one of ${MAX_WARMUP_ATTEMPTS} warmup POSTs triggered a gateway restart cascade. ` +
+          `This is not the sparse-baseline race the warmup retry exists to absorb — Pinchy's regenerated config ` +
+          `keeps producing restart-required diffs. Inspect openclaw-config emission for non-determinism or channel drift.`
       );
     }
   });
