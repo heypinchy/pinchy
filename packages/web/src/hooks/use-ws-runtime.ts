@@ -332,6 +332,54 @@ function capMessages<T>(messages: T[]): T[] {
   return messages.slice(messages.length - MAX_BUNDLED_MESSAGES);
 }
 
+/**
+ * Decide whether the local message list should be wholly replaced with the
+ * server's history frame after a disconnect+reconnect cycle.
+ *
+ * The flag `shouldRecoverFromHistory` is set when the WS closed or a page-
+ * lifecycle event suspended us — i.e. we may have missed frames while the
+ * client wasn't listening. Server history is the canonical record in that
+ * case, so we adopt it.
+ *
+ * Conditions:
+ *   - Recovery flag is set (otherwise this is an ordinary initial load —
+ *     the status reducer handles in-flight reconciliation).
+ *   - History is non-empty (an empty frame can mean "upstream OpenClaw is
+ *     unreachable", which is never canonical when we already have content).
+ *   - The last non-error local message either is an assistant turn
+ *     (mid-stream disconnect — server is canonical), OR is an acked user
+ *     turn AND server history is strictly longer than what we have locally.
+ *
+ * The second clause is the fix for issue #310: when the WS drops between
+ * `ack` and the first chunk, the local list ends with an acked user
+ * message. OpenClaw still completes the turn and persists the reply, so
+ * server history has [..., user, assistant] while local has [..., user].
+ * Without this clause the reconcile gate fires `false`, the synthetic
+ * "The agent didn't respond." orphan bubble surfaces, and retries pile up
+ * duplicate user turns.
+ *
+ * Why the `status === "sent"` guard: a "sending" user message is one we
+ * queued during the disconnect (see `pendingMessagesRef` handling). The
+ * server hasn't acknowledged it yet, so a longer history must be from a
+ * previous turn — replacing would silently drop the queued message.
+ */
+export function shouldReplaceLocalWithServerHistory(
+  prevMessages: WsMessage[],
+  historyMessages: WsMessage[],
+  shouldRecoverFromHistory: boolean
+): boolean {
+  if (!shouldRecoverFromHistory) return false;
+  if (historyMessages.length === 0) return false;
+
+  const lastNonError = [...prevMessages].reverse().find((m) => !m.error);
+  if (!lastNonError) return true;
+
+  if (lastNonError.role === "assistant") return true;
+
+  // lastNonError.role === "user"
+  return lastNonError.status === "sent" && historyMessages.length > prevMessages.length;
+}
+
 export function useWsRuntime(agentId: string): {
   runtime: AssistantRuntime;
   isRunning: boolean;
@@ -790,10 +838,11 @@ export function useWsRuntime(agentId: string): {
             }));
             const shouldRecoverFromHistory = shouldRecoverFromHistoryRef.current;
             const prevMessages = messagesRef.current;
-            const shouldReplaceWithHistory =
-              shouldRecoverFromHistory &&
-              historyMessages.length > 0 &&
-              [...prevMessages].reverse().find((m) => !m.error)?.role === "assistant";
+            const shouldReplaceWithHistory = shouldReplaceLocalWithServerHistory(
+              prevMessages,
+              historyMessages,
+              shouldRecoverFromHistory
+            );
             const shouldStageReplace =
               shouldReplaceWithHistory &&
               prevMessages.length > 0 &&
@@ -811,20 +860,16 @@ export function useWsRuntime(agentId: string): {
                 return capMessages(historyMessages);
               }
               // After reconnects, replace local messages with canonical history
-              // from the server. Skip the wipe when server history is empty
-              // (typically because upstream OpenClaw is unreachable and Pinchy
-              // returned an empty history) — empty can't be canonical when we
-              // already have local messages.
-              // Note: we intentionally replace even if the last local message is
-              // a synthetic disconnect-error bubble, because the server's history
-              // is the ground truth after reconnect.
-              if (shouldRecoverFromHistory && historyMessages.length > 0) {
-                // Only replace if the last non-error message is an assistant turn
-                // (i.e. we were in the middle of a response when disconnected).
-                const lastNonError = [...prev].reverse().find((m) => !m.error);
-                if (lastNonError?.role === "assistant") {
-                  return capMessages(historyMessages);
-                }
+              // from the server. The conditions are gathered in
+              // shouldReplaceLocalWithServerHistory above — see that helper's
+              // doc for the full rationale (esp. the issue #310 fix for an
+              // acked-user-but-no-chunk window). We intentionally replace even
+              // if the last local message is a synthetic disconnect-error
+              // bubble, because the server's history is the ground truth.
+              if (
+                shouldReplaceLocalWithServerHistory(prev, historyMessages, shouldRecoverFromHistory)
+              ) {
+                return capMessages(historyMessages);
               }
               return prev;
             });

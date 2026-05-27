@@ -4386,6 +4386,85 @@ describe("useWsRuntime", () => {
       expect(result.current.isOrphaned).toBe(false);
     });
 
+    // Issue #310: production users saw "The agent didn't respond" even though
+    // the assistant reply had landed safely on OpenClaw. Root cause: the WS
+    // dropped between ack and the first chunk, so the last non-error local
+    // message was the user's send. The reconcile gate at use-ws-runtime.ts
+    // required `lastNonError.role === "assistant"`, which fails in this
+    // window — server history was ignored and the orphan stuck around.
+    it("reconciles from history when WS dropped before any assistant chunk arrived (#310)", async () => {
+      const { result } = renderHook(() => useWsRuntime("agent-1"));
+
+      // Connect, load empty history
+      await act(async () => {
+        latestWs().simulateOpen();
+        latestWs().simulateMessage({ type: "history", messages: [] });
+      });
+
+      // User sends; receive ack but NO chunk yet
+      await act(async () => {
+        result.current.runtime.onNew(makeUserMessage("what's the vacation policy?"));
+      });
+      const ws = latestWs();
+      const sentPayload = JSON.parse(ws.send.mock.calls.at(-1)![0] as string) as {
+        clientMessageId: string;
+      };
+      await act(async () => {
+        ws.simulateMessage({ type: "ack", clientMessageId: sentPayload.clientMessageId });
+      });
+
+      // WS drops BEFORE any assistant chunk arrives
+      await act(async () => {
+        ws.simulateClose();
+      });
+
+      // Reconnect after backoff — OpenClaw completed the turn while we were
+      // gone, so server history contains the full user + assistant pair.
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(1000);
+      });
+      await act(async () => {
+        latestWs().simulateOpen();
+        latestWs().simulateMessage({
+          type: "history",
+          messages: [
+            { role: "user", content: "what's the vacation policy?", timestamp: 1000 },
+            { role: "assistant", content: "25 days of paid leave per year.", timestamp: 2000 },
+          ],
+        });
+      });
+
+      // Advance past the disconnect-bubble grace window — bubble must stay
+      // cancelled because reconcile landed within the window.
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(2000);
+      });
+      // Flush the staged-replace timer (stageDestructiveHistoryReconcile uses
+      // a 0ms setTimeout to remount the message subtree before swapping).
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(50);
+      });
+
+      const messages = result.current.runtime.messages as Array<{
+        role: string;
+        content: Array<{ text: string }>;
+        metadata?: { custom?: { error?: unknown } };
+      }>;
+
+      // No synthetic disconnect bubble — reconcile happened in time
+      const errorBubbles = messages.filter(
+        (m) => m.role === "assistant" && m.metadata?.custom?.error
+      );
+      expect(errorBubbles).toHaveLength(0);
+
+      // Canonical assistant reply must be the last message
+      expect(messages.at(-1)?.role).toBe("assistant");
+      expect(messages.at(-1)?.content[0].text).toBe("25 days of paid leave per year.");
+
+      // isOrphaned must be false — the orphan was healed via reconcile
+      expect(result.current.isOrphaned).toBe(false);
+    });
+
     describe("binary file attachments (PDF)", () => {
       it("includes PDF attachment as image_url content part with filename in WS payload", async () => {
         const { result } = renderHook(() => useWsRuntime("agent-1"));
