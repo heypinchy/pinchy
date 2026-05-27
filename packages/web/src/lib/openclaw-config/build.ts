@@ -1273,11 +1273,16 @@ export async function regenerateOpenClawConfig() {
     integrations: integrationSecrets,
     plugins: pluginSecrets,
   });
-  writeSecretsFile(secretsBundle);
 
   // Defense in depth: validate every emitted Pinchy plugin entry against its
   // manifest before writing. Catches manifest/build.ts drift at startup rather
   // than letting OpenClaw silently reject the config at hot-reload time.
+  //
+  // Run validation BEFORE writing secrets.json to disk: both inputs (config and
+  // secretsBundle) are in-memory at this point, so neither needs the other to
+  // exist on disk first. If validation throws, we want neither file to have been
+  // updated — writing secrets.json first leaves a half-updated state when
+  // validation later rejects the change.
   const validation = validateBuiltConfig(config, secretsBundle);
   if (!validation.ok) {
     throw new Error(
@@ -1286,6 +1291,8 @@ export async function regenerateOpenClawConfig() {
         "\nFix the plugin manifest or what build.ts emits."
     );
   }
+
+  writeSecretsFile(secretsBundle);
 
   // Only write if content actually changed — prevents unnecessary OpenClaw restarts.
   // Format must match what OpenClaw's writeConfigFile produces (trimEnd + "\n")
