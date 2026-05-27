@@ -53,7 +53,48 @@ function validatePinchyFilesConfig(pluginConfig: unknown, errors: string[]): voi
 
 export type BuiltConfigValidationResult = { ok: true } | { ok: false; errors: string[] };
 
-export function validateBuiltConfig(config: unknown): BuiltConfigValidationResult {
+type SecretRef = { source: "file"; provider: string; id: string };
+
+function isSecretRef(x: unknown): x is SecretRef {
+  if (!x || typeof x !== "object") return false;
+  const o = x as Record<string, unknown>;
+  return o.source === "file" && typeof o.provider === "string" && typeof o.id === "string";
+}
+
+function collectSecretRefs(
+  node: unknown,
+  path: string[],
+  out: Array<{ pathDot: string; ref: SecretRef }>
+): void {
+  if (isSecretRef(node)) {
+    out.push({ pathDot: path.join("."), ref: node });
+    return;
+  }
+  if (!node || typeof node !== "object") return;
+  if (Array.isArray(node)) {
+    node.forEach((item, i) => collectSecretRefs(item, [...path, String(i)], out));
+    return;
+  }
+  for (const [k, v] of Object.entries(node as Record<string, unknown>)) {
+    collectSecretRefs(v, [...path, k], out);
+  }
+}
+
+function resolveSecretValue(bundle: Record<string, unknown>, slashPath: string): unknown {
+  // slashPath like "/providers/openai/apiKey" → ["providers", "openai", "apiKey"]
+  const parts = slashPath.split("/").filter(Boolean);
+  let cur: unknown = bundle;
+  for (const p of parts) {
+    if (!cur || typeof cur !== "object") return undefined;
+    cur = (cur as Record<string, unknown>)[p];
+  }
+  return cur;
+}
+
+export function validateBuiltConfig(
+  config: unknown,
+  secretsBundle?: Record<string, unknown>
+): BuiltConfigValidationResult {
   if (!config || typeof config !== "object") return { ok: true };
   const plugins = (config as Record<string, unknown>).plugins as
     | { entries?: Record<string, unknown> }
@@ -81,5 +122,28 @@ export function validateBuiltConfig(config: unknown): BuiltConfigValidationResul
       validatePinchyFilesConfig(entry.config, errors);
     }
   }
+
+  // SecretRef drift guard: when the caller passes the secretsBundle that will be
+  // written to secrets.json, verify every SecretRef in the config tree resolves
+  // to a non-empty value. Catches the class of bug where build.ts emits a
+  // pointer (e.g. providers.openai.apiKey) but the bundle for that flow forgot
+  // to populate the matching secret. Symptom in production: OpenClaw silently
+  // fails at chat time with "No API key found for provider 'openai'".
+  if (secretsBundle) {
+    const refs: Array<{ pathDot: string; ref: SecretRef }> = [];
+    collectSecretRefs(config, [], refs);
+    for (const { pathDot, ref } of refs) {
+      // Only validate Pinchy's secrets-provider; other providers (e.g. env-based)
+      // resolve outside the bundle.
+      if (ref.provider !== "pinchy") continue;
+      const value = resolveSecretValue(secretsBundle, ref.id);
+      if (value === undefined || value === null || value === "") {
+        errors.push(
+          `secretref at ${pathDot} points to "${ref.id}" but no matching entry exists in secretsBundle (or value is empty)`
+        );
+      }
+    }
+  }
+
   return errors.length ? { ok: false, errors } : { ok: true };
 }

@@ -1278,7 +1278,7 @@ export async function regenerateOpenClawConfig() {
   // Defense in depth: validate every emitted Pinchy plugin entry against its
   // manifest before writing. Catches manifest/build.ts drift at startup rather
   // than letting OpenClaw silently reject the config at hot-reload time.
-  const validation = validateBuiltConfig(config);
+  const validation = validateBuiltConfig(config, secretsBundle);
   if (!validation.ok) {
     throw new Error(
       "[openclaw-config] Refusing to write invalid plugin config:\n  - " +
