@@ -1,0 +1,3 @@
+# llm-providers-mock
+
+A tiny Express server that mocks the HTTP surface of the LLM providers Pinchy supports (currently OpenAI; Anthropic, Google, and Ollama endpoints land in follow-up tasks). It returns deterministic responses without needing real API keys, so the E2E smoke-test harness can verify that a fresh setup wizard for each provider produces an agent that actually responds. A `/control/health` endpoint is exposed for readiness checks. To run it locally: `cd config/llm-providers-mock && npm install && node --test __tests__/*.test.js` (or `node server.js` to start the server on port 9100).
