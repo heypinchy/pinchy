@@ -48,3 +48,24 @@ test("GET /control/health returns 200", async () => {
   const res = await fetch(`http://localhost:${PORT}/control/health`);
   assert.equal(res.status, 200);
 });
+
+test("GET /anthropic/v1/models with x-api-key returns Anthropic shape", async () => {
+  const res = await fetch(`http://localhost:${PORT}/anthropic/v1/models`, {
+    headers: { "x-api-key": "sk-ant-mock", "anthropic-version": "2023-06-01" },
+  });
+  assert.equal(res.status, 200);
+  const body = await res.json();
+  assert.ok(body.data.find((m) => m.id === "claude-sonnet-4-6"));
+});
+
+test("POST /anthropic/v1/messages returns Anthropic message shape", async () => {
+  const res = await fetch(`http://localhost:${PORT}/anthropic/v1/messages`, {
+    method: "POST",
+    headers: { "x-api-key": "sk-ant-mock", "anthropic-version": "2023-06-01", "Content-Type": "application/json" },
+    body: JSON.stringify({ model: "claude-sonnet-4-6", max_tokens: 1024, messages: [{ role: "user", content: "hi" }] }),
+  });
+  assert.equal(res.status, 200);
+  const body = await res.json();
+  assert.equal(body.type, "message");
+  assert.equal(body.content[0].type, "text");
+});

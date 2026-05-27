@@ -12,6 +12,12 @@ function requireBearer(req, res) {
   return false;
 }
 
+function requireXApiKey(req, res) {
+  if (req.headers["x-api-key"]) return true;
+  res.status(401).json({ type: "error", error: { type: "authentication_error", message: "missing api key" } });
+  return false;
+}
+
 // Frozen "created" timestamp for response determinism. Mock servers
 // asserting on full response shapes (E2E snapshots, audit-log fixtures)
 // rely on this — never replace with Date.now().
@@ -48,6 +54,30 @@ app.post("/openai/v1/chat/completions", (req, res) => {
       { index: 0, message: { role: "assistant", content: reply }, finish_reason: "stop" },
     ],
     usage: { prompt_tokens: 10, completion_tokens: 12, total_tokens: 22 },
+  });
+});
+
+// ---- Anthropic ----
+app.get("/anthropic/v1/models", (req, res) => {
+  if (!requireXApiKey(req, res)) return;
+  res.json({
+    data: [
+      { id: "claude-sonnet-4-6", type: "model", display_name: "Claude Sonnet 4.6" },
+      { id: "claude-haiku-4-5-20251001", type: "model", display_name: "Claude Haiku 4.5" },
+    ],
+  });
+});
+
+app.post("/anthropic/v1/messages", (req, res) => {
+  if (!requireXApiKey(req, res)) return;
+  res.json({
+    id: "msg_mock_1",
+    type: "message",
+    role: "assistant",
+    model: req.body?.model ?? "claude-sonnet-4-6",
+    content: [{ type: "text", text: "Sure, happy to help! What would you like to work on?" }],
+    stop_reason: "end_turn",
+    usage: { input_tokens: 10, output_tokens: 12 },
   });
 });
 
