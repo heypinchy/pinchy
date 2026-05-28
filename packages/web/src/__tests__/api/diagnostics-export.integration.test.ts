@@ -81,7 +81,6 @@ vi.mock("@/lib/diagnostics/jsonl-reader", async () => {
 
 import { db } from "@/db";
 import { agents, auditLog, users } from "@/db/schema";
-import { appendAuditLog } from "@/lib/audit";
 import { auth } from "@/lib/auth";
 import { getSession } from "@/lib/auth";
 import { resolveSessionId, readTrajectoryJsonl } from "@/lib/diagnostics/jsonl-reader";
