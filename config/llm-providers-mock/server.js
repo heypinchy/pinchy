@@ -94,11 +94,68 @@ app.get("/anthropic/v1/models", (req, res) => {
 
 app.post("/anthropic/v1/messages", (req, res) => {
   if (!requireXApiKey(req, res)) return;
+  const model = req.body?.model ?? "claude-sonnet-4-6";
+
+  // pi-ai (used by OpenClaw) always sends `stream: true` on this endpoint.
+  // Return SSE with the event sequence iterateAnthropicEvents expects in
+  // node_modules/.../@earendil-works/pi-ai/dist/providers/anthropic.js —
+  // message_start, content_block_start/delta/stop, message_delta,
+  // message_stop. Missing message_stop throws "Anthropic stream ended
+  // before message_stop".
+  if (req.body?.stream) {
+    res.setHeader("Content-Type", "text/event-stream");
+    res.setHeader("Cache-Control", "no-cache");
+    res.setHeader("Connection", "keep-alive");
+    const sse = (event, data) => `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`;
+    res.write(
+      sse("message_start", {
+        type: "message_start",
+        message: {
+          id: "msg_mock_1",
+          type: "message",
+          role: "assistant",
+          content: [],
+          model,
+          stop_reason: null,
+          stop_sequence: null,
+          usage: { input_tokens: 10, output_tokens: 0 },
+        },
+      })
+    );
+    res.write(
+      sse("content_block_start", {
+        type: "content_block_start",
+        index: 0,
+        content_block: { type: "text", text: "" },
+      })
+    );
+    res.write(
+      sse("content_block_delta", {
+        type: "content_block_delta",
+        index: 0,
+        delta: { type: "text_delta", text: MOCK_ASSISTANT_REPLY },
+      })
+    );
+    res.write(sse("content_block_stop", { type: "content_block_stop", index: 0 }));
+    res.write(
+      sse("message_delta", {
+        type: "message_delta",
+        delta: { stop_reason: "end_turn", stop_sequence: null },
+        usage: { output_tokens: 12 },
+      })
+    );
+    res.write(sse("message_stop", { type: "message_stop" }));
+    res.end();
+    return;
+  }
+
+  // Non-streaming fallback — kept for the validateProviderKey probe path
+  // (which sends body: "{}" and only cares about the HTTP status).
   res.json({
     id: "msg_mock_1",
     type: "message",
     role: "assistant",
-    model: req.body?.model ?? "claude-sonnet-4-6",
+    model,
     content: [{ type: "text", text: MOCK_ASSISTANT_REPLY }],
     stop_reason: "end_turn",
     usage: { input_tokens: 10, output_tokens: 12 },

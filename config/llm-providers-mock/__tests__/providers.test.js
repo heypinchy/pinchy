@@ -98,6 +98,41 @@ test("GET /ollama-cloud/v1/models with Bearer returns models list", async () => 
   assert.ok(body.data.find((m) => m.id === "qwen3-next:80b"));
 });
 
+test("POST /anthropic/v1/messages with stream:true returns SSE event sequence pi-ai parses", async () => {
+  // pi-ai's iterateAnthropicEvents (node_modules/.../@earendil-works/pi-ai/dist/providers/anthropic.js)
+  // requires these events in order: message_start, content_block_start,
+  // content_block_delta, content_block_stop, message_delta, message_stop.
+  // Missing message_stop throws "Anthropic stream ended before message_stop".
+  const res = await fetch(`http://localhost:${PORT}/anthropic/v1/messages`, {
+    method: "POST",
+    headers: {
+      "x-api-key": "sk-ant-mock",
+      "anthropic-version": "2023-06-01",
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      model: "claude-sonnet-4-6",
+      max_tokens: 1024,
+      stream: true,
+      messages: [{ role: "user", content: "hi" }],
+    }),
+  });
+  assert.equal(res.status, 200);
+  assert.match(res.headers.get("content-type") || "", /event-stream/);
+  const body = await res.text();
+  for (const ev of [
+    "message_start",
+    "content_block_start",
+    "content_block_delta",
+    "content_block_stop",
+    "message_delta",
+    "message_stop",
+  ]) {
+    assert.match(body, new RegExp(`event: ${ev}`), `missing SSE event "${ev}"`);
+  }
+  assert.match(body, /Sure, happy to help/);
+});
+
 test("POST /ollama-cloud/v1/chat/completions with empty body returns 400 (auth passed, body rejected) — validation probe contract", async () => {
   // Pinchy's wizard sends body: "{}" to probe whether the Bearer is valid.
   // 400 means auth passed; 401 means invalid key. This shape MUST hold or
