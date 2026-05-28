@@ -98,6 +98,47 @@ test("GET /ollama-cloud/v1/models with Bearer returns models list", async () => 
   assert.ok(body.data.find((m) => m.id === "qwen3-next:80b"));
 });
 
+test("POST /google/v1beta/models/X:streamGenerateContent?alt=sse returns SSE candidates", async () => {
+  // pi-ai's @google/genai SDK calls :streamGenerateContent with alt=sse
+  // (visible in mock log of prior CI runs). Response is SSE: each chunk is
+  // `data: <JSON>\n\n` with a candidates array. The final chunk carries
+  // finishReason + usageMetadata. We emit a single complete chunk; pi-ai's
+  // parser accepts a single-event stream.
+  const res = await fetch(
+    `http://localhost:${PORT}/google/v1beta/models/gemini-2.5-pro:streamGenerateContent?key=AIza-mock&alt=sse`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ contents: [{ parts: [{ text: "hi" }] }] }),
+    }
+  );
+  assert.equal(res.status, 200);
+  assert.match(res.headers.get("content-type") || "", /event-stream/);
+  const body = await res.text();
+  assert.match(body, /^data: /m);
+  assert.match(body, /Sure, happy to help/);
+  assert.match(body, /"finishReason":\s*"STOP"/);
+});
+
+test("POST /openai/v1/responses returns SSE response.output_text.delta + response.completed", async () => {
+  // OpenAI's new Responses API. pi-ai's openai-responses provider parses
+  // events with type prefixes 'response.*' — minimum to satisfy the parser:
+  // response.created, response.output_text.delta (carries the text),
+  // response.completed (signals end). Event format: `event: <name>\ndata: <JSON>\n\n`.
+  const res = await fetch(`http://localhost:${PORT}/openai/v1/responses`, {
+    method: "POST",
+    headers: { Authorization: "Bearer sk-mock", "Content-Type": "application/json" },
+    body: JSON.stringify({ model: "gpt-5.5", input: "hi", stream: true }),
+  });
+  assert.equal(res.status, 200);
+  assert.match(res.headers.get("content-type") || "", /event-stream/);
+  const body = await res.text();
+  for (const ev of ["response.created", "response.output_text.delta", "response.completed"]) {
+    assert.match(body, new RegExp(`event: ${ev}`), `missing SSE event "${ev}"`);
+  }
+  assert.match(body, /Sure, happy to help/);
+});
+
 test("POST /anthropic/v1/messages with stream:true returns SSE event sequence pi-ai parses", async () => {
   // pi-ai's iterateAnthropicEvents (node_modules/.../@earendil-works/pi-ai/dist/providers/anthropic.js)
   // requires these events in order: message_start, content_block_start,

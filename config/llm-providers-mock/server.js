@@ -67,6 +67,58 @@ app.get("/openai/v1/models", (req, res) => {
   });
 });
 
+// OpenAI's new Responses API (replaces /chat/completions for newer models).
+// pi-ai's openai-responses provider parses SSE events with type prefix
+// `response.*`. Minimum required: response.created → response.output_text.delta
+// (carries the text) → response.completed (signals end of stream).
+app.post("/openai/v1/responses", (req, res) => {
+  if (!requireBearer(req, res)) return;
+  const model = req.body?.model ?? "gpt-5.5";
+  res.setHeader("Content-Type", "text/event-stream");
+  res.setHeader("Cache-Control", "no-cache");
+  res.setHeader("Connection", "keep-alive");
+  const sse = (event, data) => `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`;
+  const responseId = "resp_mock_1";
+  const baseResponse = {
+    id: responseId,
+    object: "response",
+    created_at: MOCK_CREATED_AT,
+    model,
+    status: "in_progress",
+    output: [],
+    usage: null,
+  };
+  res.write(sse("response.created", { type: "response.created", response: baseResponse }));
+  res.write(
+    sse("response.output_text.delta", {
+      type: "response.output_text.delta",
+      item_id: "item_mock_1",
+      output_index: 0,
+      content_index: 0,
+      delta: MOCK_ASSISTANT_REPLY,
+    })
+  );
+  res.write(
+    sse("response.completed", {
+      type: "response.completed",
+      response: {
+        ...baseResponse,
+        status: "completed",
+        output: [
+          {
+            id: "item_mock_1",
+            type: "message",
+            role: "assistant",
+            content: [{ type: "output_text", text: MOCK_ASSISTANT_REPLY }],
+          },
+        ],
+        usage: { input_tokens: 10, output_tokens: 12, total_tokens: 22 },
+      },
+    })
+  );
+  res.end();
+});
+
 app.post("/openai/v1/chat/completions", (req, res) => {
   if (!requireBearer(req, res)) return;
   res.json({
@@ -181,6 +233,29 @@ app.post("/google/v1beta/models/:model\\:generateContent", (req, res) => {
     ],
     usageMetadata: { promptTokenCount: 5, candidatesTokenCount: 8, totalTokenCount: 13 },
   });
+});
+
+// pi-ai's @google/genai SDK uses :streamGenerateContent for chat (not the
+// non-streaming :generateContent). Response is SSE: `data: <JSON>\n\n` chunks
+// with candidates[].content.parts[].text deltas. Single-chunk emission with
+// finishReason on it is the simplest valid stream the parser accepts.
+app.post("/google/v1beta/models/:model\\:streamGenerateContent", (req, res) => {
+  if (!requireQueryKey(req, res)) return;
+  res.setHeader("Content-Type", "text/event-stream");
+  res.setHeader("Cache-Control", "no-cache");
+  res.setHeader("Connection", "keep-alive");
+  res.write(
+    `data: ${JSON.stringify({
+      candidates: [
+        {
+          content: { role: "model", parts: [{ text: MOCK_ASSISTANT_REPLY }] },
+          finishReason: "STOP",
+        },
+      ],
+      usageMetadata: { promptTokenCount: 5, candidatesTokenCount: 8, totalTokenCount: 13 },
+    })}\n\n`
+  );
+  res.end();
 });
 
 // ---- Ollama Cloud ----
