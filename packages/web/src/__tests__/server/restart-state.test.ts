@@ -98,65 +98,101 @@ describe("restartState", () => {
       vi.useRealTimers();
     });
 
-    it("auto-clears isRestarting after 60s if notifyReady never arrives", () => {
-      // notifyRestart assumes a corresponding OC restart will fire notifyReady
-      // via server.ts's reconnect handler. But OC may treat the file change as
-      // a no-op (e.g., byte diff but no functional diff) and never restart —
-      // in which case isRestarting would stay true forever, blocking the UI
-      // overlay and any test polling /api/health/openclaw for status="ok".
-      restartState.notifyRestart();
-      expect(restartState.isRestarting).toBe(true);
-      expect(restartState.triggeredAt).not.toBeNull();
-
-      vi.advanceTimersByTime(59_999);
-      expect(restartState.isRestarting).toBe(true);
-
-      vi.advanceTimersByTime(2);
-      expect(restartState.isRestarting).toBe(false);
-      // Auto-clear must take the full notifyReady() path — both flags reset —
-      // so any future caller relying on `triggeredAt == null` as the
-      // "not restarting" tell sees consistent state.
-      expect(restartState.triggeredAt).toBeNull();
-    });
-
-    it("emits 'ready' when auto-clear fires", () => {
+    it("auto-clear does NOT fire ready while no OC disconnect has happened since notifyRestart", () => {
+      // Production incident 2026-05-28: OC deferred its restart ~3.5 min because
+      // active background tasks blocked the channels-block reload. WS stayed
+      // connected the entire time. The old 60 s auto-clear used to lie here
+      // — it called notifyReady() while OC had not yet even started restarting.
       const listener = vi.fn();
       restartState.on("ready", listener);
 
       restartState.notifyRestart();
       vi.advanceTimersByTime(60_001);
 
+      expect(restartState.isRestarting).toBe(true);
+      expect(listener).not.toHaveBeenCalled();
+    });
+
+    it("auto-clears when OC disconnect+reconnect cycle completes", () => {
+      // The real signal that OC's restart finished: the WS dropped and then
+      // reconnected. server.ts wires notifyDisconnect/notifyConnect into the
+      // openclaw-node client events.
+      restartState.notifyRestart();
+      restartState.notifyDisconnect();
+      expect(restartState.isRestarting).toBe(true);
+
+      restartState.notifyConnect();
+      expect(restartState.isRestarting).toBe(false);
+      expect(restartState.triggeredAt).toBeNull();
+    });
+
+    it("notifyConnect without a prior disconnect keeps restarting state (deferred restart)", () => {
+      // If OC defers — WS stays up — a stray reconnect signal (e.g. from
+      // openclaw-node reconnect-attempt churn) must NOT clear the state. Only
+      // a real disconnect-then-reconnect cycle counts.
+      restartState.notifyRestart();
+      restartState.notifyConnect();
+
+      expect(restartState.isRestarting).toBe(true);
+      expect(restartState.triggeredAt).not.toBeNull();
+    });
+
+    it("emits 'ready' on disconnect+reconnect cycle", () => {
+      const listener = vi.fn();
+      restartState.on("ready", listener);
+
+      restartState.notifyRestart();
+      restartState.notifyDisconnect();
+      restartState.notifyConnect();
+
       expect(listener).toHaveBeenCalledOnce();
     });
 
-    it("cancels auto-clear when notifyReady fires first", () => {
+    it("hard-caps at 10 min so a hot-reload-only write cannot strand the overlay", () => {
+      // Edge case: OC decides the config change is hot-reloadable and never
+      // disconnects. We'd otherwise wait for a disconnect that never comes.
+      // After MAX_RESTART_AGE_MS we give up and clear so the overlay closes.
+      const listener = vi.fn();
+      restartState.on("ready", listener);
+
+      restartState.notifyRestart();
+      vi.advanceTimersByTime(60_001);
+      expect(listener).not.toHaveBeenCalled();
+
+      // 10 min total since notifyRestart — hard cap fires.
+      vi.advanceTimersByTime(10 * 60_000 - 60_001 + 1);
+      expect(restartState.isRestarting).toBe(false);
+      expect(listener).toHaveBeenCalledOnce();
+    });
+
+    it("cancels safety net when notifyReady fires explicitly", () => {
       restartState.notifyRestart();
       vi.advanceTimersByTime(10_000);
 
       restartState.notifyReady();
       expect(restartState.isRestarting).toBe(false);
 
-      // Advance past the original 60s — auto-clear must not fire a redundant
-      // ready event (which would confuse the WS broadcaster).
+      // Advance past the original 10 min hard cap — must not fire a redundant
+      // ready event (which would confuse downstream listeners).
       const readyListener = vi.fn();
       restartState.on("ready", readyListener);
-      vi.advanceTimersByTime(60_000);
+      vi.advanceTimersByTime(10 * 60_000);
 
       expect(readyListener).not.toHaveBeenCalled();
     });
 
-    it("resets the 60s window when notifyRestart is called again", () => {
+    it("resets the safety window when notifyRestart is called again", () => {
       restartState.notifyRestart();
-      vi.advanceTimersByTime(50_000);
+      vi.advanceTimersByTime(5 * 60_000);
 
-      // A second notifyRestart (e.g., another channel mutation) restarts the
-      // safety-net countdown — don't auto-clear 10s after the second call.
+      // A second notifyRestart restarts the hard-cap countdown.
       restartState.notifyRestart();
-      vi.advanceTimersByTime(20_000);
+      vi.advanceTimersByTime(8 * 60_000);
 
       expect(restartState.isRestarting).toBe(true);
 
-      vi.advanceTimersByTime(40_001);
+      // 10 min after the SECOND notifyRestart → hard cap.
+      vi.advanceTimersByTime(2 * 60_000 + 1);
       expect(restartState.isRestarting).toBe(false);
     });
   });
