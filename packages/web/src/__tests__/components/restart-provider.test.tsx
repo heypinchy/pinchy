@@ -198,10 +198,15 @@ describe("RestartProvider", () => {
       await vi.advanceTimersByTimeAsync(31_000);
     });
 
-    // Should show error state instead of spinner
+    // Should show secondary tier instead of spinner — copy is the honest
+    // "OC is finishing up active conversations" message rather than the
+    // generic "this took longer than expected" that we used to ship.
     await waitFor(() => {
-      expect(screen.queryByText(/applying changes/i)).not.toBeInTheDocument();
-      expect(screen.getByText(/taking longer than expected/i)).toBeInTheDocument();
+      expect(screen.queryByText(/hang tight/i)).not.toBeInTheDocument();
+      expect(screen.getByText(/still working on it/i)).toBeInTheDocument();
+      expect(
+        screen.getByText(/finishing up active conversations before applying changes/i)
+      ).toBeInTheDocument();
       expect(screen.getByText(/report this issue/i)).toBeInTheDocument();
     });
   });
@@ -338,11 +343,11 @@ describe("RestartProvider", () => {
       screen.getByText("trigger").click();
     });
 
-    // Cross the 30 s timeout — overlay flips to "taking longer".
+    // Cross the 30 s timeout — overlay flips to the secondary tier.
     await act(async () => {
       await vi.advanceTimersByTimeAsync(31_000);
     });
-    expect(screen.getByText(/taking longer than expected/i)).toBeInTheDocument();
+    expect(screen.getByText(/still working on it/i)).toBeInTheDocument();
 
     // After timed-out polling cadence (5 s in the new impl), the next ok response
     // must un-stick the overlay without a browser reload.
@@ -351,8 +356,8 @@ describe("RestartProvider", () => {
     });
 
     await waitFor(() => {
-      expect(screen.queryByText(/taking longer than expected/i)).not.toBeInTheDocument();
-      expect(screen.queryByText(/applying changes/i)).not.toBeInTheDocument();
+      expect(screen.queryByText(/still working on it/i)).not.toBeInTheDocument();
+      expect(screen.queryByText(/hang tight/i)).not.toBeInTheDocument();
     });
   });
 });

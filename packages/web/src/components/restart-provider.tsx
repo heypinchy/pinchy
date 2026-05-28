@@ -131,9 +131,10 @@ export function RestartProvider({ children }: { children: React.ReactNode }) {
           <div className="flex flex-col items-center gap-4 text-center max-w-sm px-4">
             {timedOut ? (
               <>
-                <p className="text-lg font-medium">This is taking longer than expected</p>
+                <p className="text-lg font-medium">Still working on it</p>
                 <p className="text-sm text-muted-foreground">
-                  The agent runtime did not come back up.
+                  OpenClaw is finishing up active conversations before applying changes. This can
+                  take a few minutes — you can keep using Pinchy in another tab.
                 </p>
                 {diagnostics && (
                   <div className="w-full rounded-lg border bg-muted/50 p-3 space-y-2">
