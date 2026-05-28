@@ -20,6 +20,11 @@ export function useRestart() {
 }
 
 const POLL_INTERVAL_MS = 2000;
+// After 30 s we flip into the "timed out" tier. Polling keeps running, just at
+// a slower cadence — OC's restart can be legitimately deferred for minutes when
+// active agent runs block the gateway restart, and we want the overlay to clear
+// itself once OC genuinely comes back (rather than stranding the user).
+const SLOW_POLL_INTERVAL_MS = 5000;
 const TIMEOUT_MS = 30_000;
 
 export function RestartProvider({ children }: { children: React.ReactNode }) {
@@ -35,6 +40,10 @@ export function RestartProvider({ children }: { children: React.ReactNode }) {
       const data = await res.json();
       if (data.status === "ok") {
         setIsRestarting(false);
+        // Also reset the timed-out tier and stale diagnostics so a recovery
+        // after the 30 s timeout fully un-sticks the overlay.
+        setTimedOut(false);
+        setDiagnostics(null);
       } else if (data.status === "restarting") {
         setIsRestarting(true);
       }
@@ -63,14 +72,18 @@ export function RestartProvider({ children }: { children: React.ReactNode }) {
     };
   }, []);
 
-  // Poll while restarting
+  // Poll while restarting. Even past the 30 s timeout we keep polling — just at
+  // SLOW_POLL_INTERVAL_MS — so a recovered server state un-sticks the overlay.
   useEffect(() => {
-    if (isRestarting && !timedOut) {
-      pollingRef.current = setInterval(checkHealth, POLL_INTERVAL_MS);
-    } else if (pollingRef.current) {
-      clearInterval(pollingRef.current);
-      pollingRef.current = null;
+    if (!isRestarting) {
+      if (pollingRef.current) {
+        clearInterval(pollingRef.current);
+        pollingRef.current = null;
+      }
+      return;
     }
+    const interval = timedOut ? SLOW_POLL_INTERVAL_MS : POLL_INTERVAL_MS;
+    pollingRef.current = setInterval(checkHealth, interval);
     return () => {
       if (pollingRef.current) {
         clearInterval(pollingRef.current);
