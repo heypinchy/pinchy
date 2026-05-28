@@ -301,4 +301,58 @@ describe("RestartProvider", () => {
       expect(screen.queryByText(/applying changes/i)).not.toBeInTheDocument();
     });
   });
+
+  it("recovers from timed-out state when a later poll returns ok", async () => {
+    // Production incident 2026-05-28: OC's restart was deferred ~3.5 min because
+    // active background tasks blocked the gateway restart. The overlay flipped
+    // into the "timed out" tier after 30 s, polling stopped, and the user was
+    // stranded even though OC came back fine. Polling must keep running (at a
+    // slower cadence) so the recovered server state un-sticks the overlay.
+    const { RestartProvider, useRestart } = await import("@/components/restart-provider");
+
+    function Consumer() {
+      const { triggerRestart } = useRestart();
+      return <button onClick={triggerRestart}>trigger</button>;
+    }
+
+    render(
+      <RestartProvider>
+        <Consumer />
+      </RestartProvider>
+    );
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(100);
+    });
+
+    // First 16 polls report "restarting" (covers ~30 s at 2 s + a couple slow
+    // polls after the 30 s timeout flips to SLOW_POLL_INTERVAL_MS=5 s),
+    // then poll 17+ reports "ok" (OC reconnected).
+    fetchResponses = [
+      ...Array.from({ length: 16 }, () => ({ status: "restarting" as const, since: Date.now() })),
+      { status: "ok" as const },
+    ];
+    fetchCallCount = 0;
+
+    await act(async () => {
+      screen.getByText("trigger").click();
+    });
+
+    // Cross the 30 s timeout — overlay flips to "taking longer".
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(31_000);
+    });
+    expect(screen.getByText(/taking longer than expected/i)).toBeInTheDocument();
+
+    // After timed-out polling cadence (5 s in the new impl), the next ok response
+    // must un-stick the overlay without a browser reload.
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(10_000);
+    });
+
+    await waitFor(() => {
+      expect(screen.queryByText(/taking longer than expected/i)).not.toBeInTheDocument();
+      expect(screen.queryByText(/applying changes/i)).not.toBeInTheDocument();
+    });
+  });
 });
