@@ -10,7 +10,30 @@
 
 import { describe, it, expect } from "vitest";
 import { appendAuditLog } from "@/lib/audit";
+import { db } from "@/db";
+import { auditLog } from "@/db/schema";
 import { fetchAuditEntriesForSession } from "@/lib/diagnostics/audit-collector";
+
+// Direct-write helper so we can pin specific timestamps without relying on
+// appendAuditLog's internal `new Date()`. The HMAC column is `notNull` so we
+// fill it with a placeholder — audit-collector doesn't read or validate it.
+async function insertAuditAt(opts: {
+  agentId: string;
+  userId: string;
+  eventType: string;
+  timestamp: Date;
+}) {
+  await db.insert(auditLog).values({
+    actorType: "user",
+    actorId: opts.userId,
+    eventType: opts.eventType,
+    resource: `agent:${opts.agentId}`,
+    detail: { agentId: opts.agentId },
+    outcome: "success",
+    rowHmac: "test-placeholder-hmac",
+    timestamp: opts.timestamp,
+  });
+}
 
 describe("fetchAuditEntriesForSession (integration)", () => {
   it("returns entries matching agent:<agentId> resource and the given actorId", async () => {
@@ -106,5 +129,42 @@ describe("fetchAuditEntriesForSession (integration)", () => {
   it("returns an empty array when no rows match", async () => {
     const rows = await fetchAuditEntriesForSession("agt_nope", "user_nobody");
     expect(rows).toEqual([]);
+  });
+
+  it("filters by an optional [from, to] time range when provided", async () => {
+    const agentId = "agt_range";
+    const userId = "user_range";
+    const t0 = new Date("2026-01-01T10:00:00Z");
+    const t1 = new Date("2026-01-01T11:00:00Z");
+    const t2 = new Date("2026-01-01T12:00:00Z");
+    const t3 = new Date("2026-01-01T13:00:00Z");
+
+    await insertAuditAt({ agentId, userId, eventType: "tool.before", timestamp: t0 });
+    await insertAuditAt({ agentId, userId, eventType: "tool.from_edge", timestamp: t1 });
+    await insertAuditAt({ agentId, userId, eventType: "tool.middle", timestamp: t2 });
+    await insertAuditAt({ agentId, userId, eventType: "tool.after", timestamp: t3 });
+
+    // Inclusive range [t1, t2] should pick exactly the two middle rows.
+    const rows = await fetchAuditEntriesForSession(agentId, userId, { from: t1, to: t2 });
+    expect(rows.map((r) => r.eventType)).toEqual(["tool.from_edge", "tool.middle"]);
+  });
+
+  it("returns all matching rows when no range is provided (back-compat)", async () => {
+    const agentId = "agt_norange";
+    const userId = "user_norange";
+    await insertAuditAt({
+      agentId,
+      userId,
+      eventType: "tool.early",
+      timestamp: new Date("2020-01-01T00:00:00Z"),
+    });
+    await insertAuditAt({
+      agentId,
+      userId,
+      eventType: "tool.late",
+      timestamp: new Date("2030-01-01T00:00:00Z"),
+    });
+    const rows = await fetchAuditEntriesForSession(agentId, userId);
+    expect(rows).toHaveLength(2);
   });
 });

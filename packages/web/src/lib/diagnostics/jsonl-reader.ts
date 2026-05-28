@@ -53,50 +53,6 @@ interface SessionIndexEntry {
 }
 
 /**
- * Diagnostic helper: returns a sanitized snapshot of the on-disk session
- * index for an agent. Used by the diagnostics-export route's 404 path so
- * operators can see whether the index is missing, empty, or carries keys
- * with a different shape than the requested sessionKey. Never returns raw
- * user-id suffixes — only the agentId portion and a count.
- */
-export async function inspectSessionIndex(agentId: string): Promise<{
-  fileExists: boolean;
-  keyCount: number;
-  keyShapes: string[];
-}> {
-  assertSafeSegment(agentId, "agentId");
-  const path = join(sessionsDir(agentId), "sessions.json");
-  let raw: string;
-  try {
-    raw = await readFile(path, "utf8");
-  } catch (err) {
-    if ((err as NodeJS.ErrnoException).code === "ENOENT") {
-      return { fileExists: false, keyCount: 0, keyShapes: [] };
-    }
-    throw err;
-  }
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(raw);
-  } catch {
-    return { fileExists: true, keyCount: 0, keyShapes: [] };
-  }
-  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
-    return { fileExists: true, keyCount: 0, keyShapes: [] };
-  }
-  const keys = Object.keys(parsed as Record<string, unknown>);
-  // Strip user-id suffix from each key — keep the structural prefix so we
-  // can tell at a glance whether the right agentId / scope is present.
-  const keyShapes = keys.map((k) => {
-    const parts = k.split(":");
-    if (parts.length < 4) return k.replace(/[a-zA-Z0-9]{6,}/g, "<id>");
-    // agent:<agentId>:direct:<userId> -> agent:<agentId>:direct:<userId-prefix>
-    return `${parts.slice(0, 3).join(":")}:${parts[3].slice(0, 4)}...`;
-  });
-  return { fileExists: true, keyCount: keys.length, keyShapes };
-}
-
-/**
  * Resolve a sessionKey to the sessionId stored in the per-agent sessions.json
  * index. Returns null when the index file or the matching entry are missing,
  * or when the entry has no sessionId field.

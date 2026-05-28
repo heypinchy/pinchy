@@ -28,7 +28,6 @@ import { parseRequestBody } from "@/lib/api-validation";
 import { buildBundle } from "@/lib/diagnostics/bundle-builder";
 import { fetchAuditEntriesForSession } from "@/lib/diagnostics/audit-collector";
 import {
-  inspectSessionIndex,
   readTrajectoryJsonl,
   resolveSessionId,
   TrajectoryFileNotFoundError,
@@ -43,6 +42,30 @@ import { getDiagnosticsVersions } from "@/lib/diagnostics/versions";
 import { diagnosticsExportRequestSchema } from "@/lib/schemas/diagnostics";
 
 const DEFAULT_TURN_WINDOW = 10;
+const AUDIT_RANGE_PADDING_MS = 5_000;
+
+/**
+ * Build the [from, to] window for audit-row scoping from the turns the bundle
+ * selected. Returns `undefined` (= no range filter, fetch everything) when the
+ * turns don't carry usable timestamps — over-collecting beats under-collecting
+ * in diagnostics, and the size-cap will still trim.
+ */
+function computeAuditRange(
+  turns: import("@/lib/diagnostics/turn-extractor").Turn[]
+): { from: Date; to: Date } | undefined {
+  const stamps: number[] = [];
+  for (const t of turns) {
+    if (t.userMessage?.timestamp !== undefined) stamps.push(t.userMessage.timestamp);
+    if (t.assistantResponse?.timestamp !== undefined) stamps.push(t.assistantResponse.timestamp);
+  }
+  if (stamps.length === 0) return undefined;
+  const min = Math.min(...stamps);
+  const max = Math.max(...stamps);
+  return {
+    from: new Date(min - AUDIT_RANGE_PADDING_MS),
+    to: new Date(max + AUDIT_RANGE_PADDING_MS),
+  };
+}
 
 export const POST = withAuth(async (request, _ctx, session) => {
   const parsed = await parseRequestBody(diagnosticsExportRequestSchema, request);
@@ -56,14 +79,6 @@ export const POST = withAuth(async (request, _ctx, session) => {
   const sessionKey = `agent:${agentId}:direct:${session.user.id}`;
   const sessionId = await resolveSessionId(agentId, sessionKey);
   if (!sessionId) {
-    // Diagnostic logging: a 404 here means OpenClaw never wrote a
-    // sessions.json entry for this user-agent pair, OR it wrote one with a
-    // different key shape than we compute. Log a sanitized snapshot so the
-    // operator can tell which case it is from container logs.
-    const inspection = await inspectSessionIndex(agentId).catch(() => null);
-    console.warn(
-      `[diagnostics] no_session for agentId=${agentId} userIdPrefix=${session.user.id.slice(0, 4)}... index=${JSON.stringify(inspection)}`
-    );
     return NextResponse.json(
       { error: "No chat session recorded for this user and agent yet" },
       { status: 404 }
@@ -88,7 +103,12 @@ export const POST = withAuth(async (request, _ctx, session) => {
   const scope = computeScope(turns, anchorMessageId, DEFAULT_TURN_WINDOW);
   const selectedTurns = turns.slice(scope.includedTurnRange[0], scope.includedTurnRange[1] + 1);
   const spans = buildOtelSpans(selectedTurns);
-  const auditEntries = await fetchAuditEntriesForSession(agentId, session.user.id);
+  // Scope audit rows to the same time window as the selected turns so a busy
+  // agent doesn't drown the bundle in unrelated history. Pad by 5s on each
+  // side to catch tool audit rows written just before/after the model.completed
+  // event (chat.* and tool.* are written from independent code paths).
+  const auditRange = computeAuditRange(selectedTurns);
+  const auditEntries = await fetchAuditEntriesForSession(agentId, session.user.id, auditRange);
 
   const bundle = buildBundle({
     spans,
@@ -103,6 +123,12 @@ export const POST = withAuth(async (request, _ctx, session) => {
     auditEntries,
     userDescription,
   });
+  // Pipeline-order invariant: sanitize BEFORE enforceSizeCap.
+  // `sanitizeDetail` only substitutes (`[REDACTED]` is shorter than every
+  // secret-shaped string it matches), so it never grows the bundle. Running
+  // it first means enforceSizeCap's byte measurement reflects exactly what
+  // ships to the user. Swapping the order would mean we could overshoot the
+  // cap by however much sanitization shrinks the payload.
   const sanitized = sanitizeBundle(bundle);
   const { bundle: capped, dropped, truncated } = enforceSizeCap(sanitized);
 

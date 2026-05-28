@@ -88,6 +88,29 @@ describe("DiagnosticsExportDialog", () => {
     );
   });
 
+  it("shows a v1-limitation notice when anchorMessageId is set (per-message export)", () => {
+    render(
+      <DiagnosticsExportDialog
+        open
+        agentId="agt_1"
+        agentName="Smithers"
+        anchorMessageId="msg_x"
+        onClose={() => {}}
+      />
+    );
+    // Per-message export currently includes the last 10 turns, not a slice
+    // anchored on the clicked message — surface this to the user so they're
+    // not surprised.
+    expect(screen.getByText(/last 10 turns/i)).toBeInTheDocument();
+  });
+
+  it("does not show the v1-limitation notice when no anchorMessageId is set (Settings export)", () => {
+    render(
+      <DiagnosticsExportDialog open agentId="agt_1" agentName="Smithers" onClose={() => {}} />
+    );
+    expect(screen.queryByText(/last 10 turns/i)).not.toBeInTheDocument();
+  });
+
   it("shows inline validation error and does not call the API when userDescription exceeds 500 chars", async () => {
     const { apiPost } = await import("@/lib/api-client");
     render(

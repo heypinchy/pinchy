@@ -109,6 +109,15 @@ export function DiagnosticsExportDialog({
         </DialogHeader>
 
         <div className="space-y-4">
+          {anchorMessageId && (
+            <div
+              role="note"
+              className="rounded-md border border-amber-500/40 bg-amber-50/60 px-3 py-2 text-sm text-amber-900 dark:bg-amber-950/30 dark:text-amber-200"
+            >
+              Per-message reporting is in beta — this export includes your last 10 turns rather than
+              a slice anchored on the specific message you clicked.
+            </div>
+          )}
           <div className="space-y-2">
             <Label htmlFor="diagnostics-user-description">What went wrong? (optional)</Label>
             <Textarea

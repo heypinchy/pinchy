@@ -21,9 +21,16 @@ function readOpenclawNodeVersion(): string {
   try {
     const require = createRequire(import.meta.url);
     const mainPath = require.resolve("openclaw-node");
-    // Walk up from `dist/index.js` (or `.mjs`) to the package root. Two
-    // levels is the standard layout; loop just in case the package nests
-    // its main file deeper.
+    // Expected resolutions across our layouts:
+    //   pnpm hoisted (root install): node_modules/openclaw-node/dist/index.js
+    //     → ../package.json (1 level up)
+    //   pnpm non-hoisted (default):  node_modules/.pnpm/openclaw-node@<v>/
+    //                                 node_modules/openclaw-node/dist/index.js
+    //     → ../package.json (1 level up — `.pnpm/<pkg>@<v>/node_modules/<pkg>/`
+    //       still ends at the package root one level above main)
+    // We tolerate up to 5 levels in case the package ever nests its main
+    // file deeper (e.g. dist/cjs/index.js or dist/esm/node/index.js). On
+    // any failure we degrade to "unknown" rather than crashing the route.
     let dir = dirname(mainPath);
     for (let i = 0; i < 5; i++) {
       try {

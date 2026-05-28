@@ -65,11 +65,19 @@ vi.mock("@/lib/auth", async (importOriginal) => {
   return { ...actual, getSession: vi.fn() };
 });
 
-vi.mock("@/lib/diagnostics/jsonl-reader", () => ({
-  resolveSessionId: vi.fn(),
-  readTrajectoryJsonl: vi.fn(),
-  inspectSessionIndex: vi.fn(async () => ({ fileExists: false, keyCount: 0, keyShapes: [] })),
-}));
+// Mock the FS-touching exports only; importActual preserves anything else the
+// route imports (e.g. error classes) and keeps this resilient to new exports
+// being added to the module without silently breaking tests.
+vi.mock("@/lib/diagnostics/jsonl-reader", async () => {
+  const actual = await vi.importActual<typeof import("@/lib/diagnostics/jsonl-reader")>(
+    "@/lib/diagnostics/jsonl-reader"
+  );
+  return {
+    ...actual,
+    resolveSessionId: vi.fn(),
+    readTrajectoryJsonl: vi.fn(),
+  };
+});
 
 import { db } from "@/db";
 import { agents, auditLog, users } from "@/db/schema";
@@ -222,24 +230,36 @@ describe("POST /api/diagnostics/export (integration)", () => {
     mockSession(owner);
     const agent = await seedPersonalAgent(owner.id);
 
-    // Seed audit rows with the REAL production shape: resource = agent:<id>,
-    // actorId = the user. The collector should surface these in the bundle.
-    await appendAuditLog({
-      actorType: "user",
-      actorId: owner.id,
-      eventType: "tool.pinchy_ls",
-      resource: `agent:${agent.id}`,
-      detail: { agentId: agent.id },
-      outcome: "success",
-    });
-    await appendAuditLog({
-      actorType: "user",
-      actorId: owner.id,
-      eventType: "tool.pinchy_read",
-      resource: `agent:${agent.id}`,
-      detail: { agentId: agent.id, path: "/x" },
-      outcome: "success",
-    });
+    // Seed audit rows with the REAL production shape (resource = agent:<id>,
+    // actorId = the user) AND with a timestamp inside the fixture's turn
+    // window so the audit-collector's time-range filter (added in the
+    // diagnostics route to scope rows to the selected turn window) lets them
+    // through. The fixture's first model.completed event is at
+    // 2026-05-19T12:01:20Z, so anchoring at 2026-05-19T12:15:00Z lands the
+    // rows comfortably inside the trajectory's time range.
+    const auditTs = new Date("2026-05-19T12:15:00Z");
+    await db.insert(auditLog).values([
+      {
+        actorType: "user",
+        actorId: owner.id,
+        eventType: "tool.pinchy_ls",
+        resource: `agent:${agent.id}`,
+        detail: { agentId: agent.id },
+        outcome: "success",
+        rowHmac: "test-placeholder-hmac",
+        timestamp: auditTs,
+      },
+      {
+        actorType: "user",
+        actorId: owner.id,
+        eventType: "tool.pinchy_read",
+        resource: `agent:${agent.id}`,
+        detail: { agentId: agent.id, path: "/x" },
+        outcome: "success",
+        rowHmac: "test-placeholder-hmac",
+        timestamp: auditTs,
+      },
+    ]);
 
     const response = await POST(makeRequest({ agentId: agent.id }));
     expect(response.status).toBe(200);
