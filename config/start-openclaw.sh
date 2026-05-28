@@ -129,9 +129,16 @@ fix_config_permissions() {
     # Diagnostics is read-only against these files; 0755/0644 is sufficient.
     # The 50 ms fix_config_permissions tick catches runtime-created sessions
     # (same pattern as the openclaw.json mode race).
-    find /root/.openclaw/agents -mindepth 1 -maxdepth 1 -type d -exec chmod 0755 {} \; 2>/dev/null || true
-    find /root/.openclaw/agents -type d -name sessions -exec chmod 0755 {} \; 2>/dev/null || true
-    find /root/.openclaw/agents \( -name "sessions.json" -o -name "*.trajectory.jsonl" \) -type f -exec chmod 0644 {} \; 2>/dev/null || true
+    #
+    # `-not -perm` gates: skip files that already have the right mode. chmod
+    # would otherwise rewrite the inode's ctime on every tick, and OpenClaw's
+    # embedded-prompt session-takeover detector treats any ctime change as
+    # "session file modified externally" and aborts the in-flight turn with
+    # EmbeddedAttemptSessionTakeoverError. Without the gate, every chat turn
+    # races our 50 ms loop against the assistant's response.
+    find /root/.openclaw/agents -mindepth 1 -maxdepth 1 -type d -not -perm 0755 -exec chmod 0755 {} \; 2>/dev/null || true
+    find /root/.openclaw/agents -type d -name sessions -not -perm 0755 -exec chmod 0755 {} \; 2>/dev/null || true
+    find /root/.openclaw/agents \( -name "sessions.json" -o -name "*.trajectory.jsonl" \) -type f -not -perm 0644 -exec chmod 0644 {} \; 2>/dev/null || true
 }
 fix_config_permissions
 
