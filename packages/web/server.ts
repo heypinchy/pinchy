@@ -408,11 +408,9 @@ ${domain ? `<p><a href="https://${domain}">Go to ${domain} →</a></p>` : ""}
       hasConnected = true;
       errorLogged = false;
       openClawConnectionState.connected = true;
-      // notifyConnect only flips ready if a disconnect was seen since the
-      // last notifyRestart — protects against false-ready during OC's
-      // deferred-restart window where the WS stays up while OC waits for
-      // active agent runs to finish.
-      restartState.notifyConnect();
+      if (restartState.isRestarting) {
+        restartState.notifyReady();
+      }
 
       if (firstConnect) {
         // Signal to OpenClaw container that device approval succeeded.
@@ -459,9 +457,6 @@ ${domain ? `<p><a href="https://${domain}">Go to ${domain} →</a></p>` : ""}
 
     openclawClient.on("disconnected", () => {
       openClawConnectionState.connected = false;
-      // Record the disconnect so the next reconnect can legitimately flip
-      // restartState back to ready (gates the false-ready bug fixed in #-this-PR).
-      restartState.notifyDisconnect();
       if (hasConnected) {
         console.log("Disconnected from OpenClaw Gateway, reconnecting...");
       }
