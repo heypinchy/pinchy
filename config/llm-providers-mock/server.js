@@ -33,7 +33,10 @@ function requireXApiKey(req, res) {
 }
 
 function requireQueryKey(req, res) {
-  if (req.query.key) return true;
+  // pi-ai's @google/genai SDK passes the key via header at chat time
+  // (x-goog-api-key); validateProviderKey uses ?key= query param. Accept
+  // both so the same handler covers the wizard probe and chat dispatch.
+  if (req.query.key || req.headers["x-goog-api-key"]) return true;
   res.status(403).json({ error: { code: 403, message: "missing key" } });
   return false;
 }
@@ -67,10 +70,13 @@ app.get("/openai/v1/models", (req, res) => {
   });
 });
 
-// OpenAI's new Responses API (replaces /chat/completions for newer models).
-// pi-ai's openai-responses provider parses SSE events with type prefix
-// `response.*`. Minimum required: response.created → response.output_text.delta
-// (carries the text) → response.completed (signals end of stream).
+// OpenAI's new Responses API (replaces /chat/completions for gpt-5.x).
+// pi-ai's openai-responses-shared.js parser is state-machine driven —
+// output_text.delta is dropped unless currentItem (set by output_item.added)
+// is type=message AND currentItem.content[last] (pushed by content_part.added)
+// is type=output_text. Live CI failure on PR #445 ("empty response retries
+// exhausted, payloads=0") was caused by skipping those two events; the
+// deltas arrived but the parser had no item/part to attach them to.
 app.post("/openai/v1/responses", (req, res) => {
   if (!requireBearer(req, res)) return;
   const model = req.body?.model ?? "gpt-5.5";
@@ -79,6 +85,15 @@ app.post("/openai/v1/responses", (req, res) => {
   res.setHeader("Connection", "keep-alive");
   const sse = (event, data) => `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`;
   const responseId = "resp_mock_1";
+  const itemId = "item_mock_1";
+  const messageItem = {
+    id: itemId,
+    type: "message",
+    role: "assistant",
+    status: "in_progress",
+    content: [],
+  };
+  const outputTextPart = { type: "output_text", text: "", annotations: [] };
   const baseResponse = {
     id: responseId,
     object: "response",
@@ -90,9 +105,25 @@ app.post("/openai/v1/responses", (req, res) => {
   };
   res.write(sse("response.created", { type: "response.created", response: baseResponse }));
   res.write(
+    sse("response.output_item.added", {
+      type: "response.output_item.added",
+      output_index: 0,
+      item: messageItem,
+    })
+  );
+  res.write(
+    sse("response.content_part.added", {
+      type: "response.content_part.added",
+      item_id: itemId,
+      output_index: 0,
+      content_index: 0,
+      part: outputTextPart,
+    })
+  );
+  res.write(
     sse("response.output_text.delta", {
       type: "response.output_text.delta",
-      item_id: "item_mock_1",
+      item_id: itemId,
       output_index: 0,
       content_index: 0,
       delta: MOCK_ASSISTANT_REPLY,
@@ -106,10 +137,9 @@ app.post("/openai/v1/responses", (req, res) => {
         status: "completed",
         output: [
           {
-            id: "item_mock_1",
-            type: "message",
-            role: "assistant",
-            content: [{ type: "output_text", text: MOCK_ASSISTANT_REPLY }],
+            ...messageItem,
+            status: "completed",
+            content: [{ type: "output_text", text: MOCK_ASSISTANT_REPLY, annotations: [] }],
           },
         ],
         usage: { input_tokens: 10, output_tokens: 12, total_tokens: 22 },

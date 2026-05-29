@@ -98,6 +98,21 @@ test("GET /ollama-cloud/v1/models with Bearer returns models list", async () => 
   assert.ok(body.data.find((m) => m.id === "qwen3-next:80b"));
 });
 
+test("POST /google/v1beta/models/X:streamGenerateContent with x-goog-api-key header is accepted", async () => {
+  // pi-ai's @google/genai SDK passes the key via header at chat time, not
+  // ?key= query (which only validateProviderKey uses). Live CI showed OC
+  // hitting the endpoint with x-goog-api-key and getting 403 missing-key.
+  const res = await fetch(
+    `http://localhost:${PORT}/google/v1beta/models/gemini-2.5-pro:streamGenerateContent?alt=sse`,
+    {
+      method: "POST",
+      headers: { "x-goog-api-key": "AIza-mock-header", "Content-Type": "application/json" },
+      body: JSON.stringify({ contents: [{ parts: [{ text: "hi" }] }] }),
+    }
+  );
+  assert.equal(res.status, 200);
+});
+
 test("POST /google/v1beta/models/X:streamGenerateContent?alt=sse returns SSE candidates", async () => {
   // pi-ai's @google/genai SDK calls :streamGenerateContent with alt=sse
   // (visible in mock log of prior CI runs). Response is SSE: each chunk is
@@ -120,11 +135,15 @@ test("POST /google/v1beta/models/X:streamGenerateContent?alt=sse returns SSE can
   assert.match(body, /"finishReason":\s*"STOP"/);
 });
 
-test("POST /openai/v1/responses returns SSE response.output_text.delta + response.completed", async () => {
-  // OpenAI's new Responses API. pi-ai's openai-responses provider parses
-  // events with type prefixes 'response.*' — minimum to satisfy the parser:
-  // response.created, response.output_text.delta (carries the text),
-  // response.completed (signals end). Event format: `event: <name>\ndata: <JSON>\n\n`.
+test("POST /openai/v1/responses emits state-building events pi-ai parser requires", async () => {
+  // pi-ai's openai-responses-shared.js parser is state-machine driven:
+  //   response.output_item.added  → sets currentItem (must be type=message)
+  //   response.content_part.added → pushes part into currentItem.content
+  //   response.output_text.delta  → checks currentItem.content[last].type === "output_text",
+  //                                 only then extends currentBlock.text
+  // Skipping output_item.added or content_part.added means delta events
+  // are dropped — exactly the "empty response retries exhausted, payloads=0"
+  // failure live CI showed.
   const res = await fetch(`http://localhost:${PORT}/openai/v1/responses`, {
     method: "POST",
     headers: { Authorization: "Bearer sk-mock", "Content-Type": "application/json" },
@@ -133,9 +152,19 @@ test("POST /openai/v1/responses returns SSE response.output_text.delta + respons
   assert.equal(res.status, 200);
   assert.match(res.headers.get("content-type") || "", /event-stream/);
   const body = await res.text();
-  for (const ev of ["response.created", "response.output_text.delta", "response.completed"]) {
+  for (const ev of [
+    "response.created",
+    "response.output_item.added",
+    "response.content_part.added",
+    "response.output_text.delta",
+    "response.completed",
+  ]) {
     assert.match(body, new RegExp(`event: ${ev}`), `missing SSE event "${ev}"`);
   }
+  // output_item.added must carry item.type=message with a content array
+  assert.match(body, /"type":\s*"message"/);
+  // content_part.added must carry part.type=output_text
+  assert.match(body, /"type":\s*"output_text"/);
   assert.match(body, /Sure, happy to help/);
 });
 

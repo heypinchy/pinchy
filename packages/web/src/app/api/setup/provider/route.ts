@@ -185,9 +185,18 @@ export async function POST(request: NextRequest) {
   // "Continue to Pinchy" navigates to /chat/:smithersId and the first
   // chat dispatch races OC's reload, hitting "invalid agent params:
   // unknown agent id" — the message never reaches the LLM and the user
-  // sees the chat hang on a fresh install. Best-effort with a 5 s cap so
-  // we don't block forever if OC is still restarting (Layer 1 bootstrap
-  // mark/pkill cycle in start-openclaw.sh).
+  // sees the chat hang on a fresh install.
+  //
+  // 30 s cap (vs the 5 s default used by POST /api/agents): on a fresh
+  // wizard the Layer 1 bootstrap pkill in start-openclaw.sh can fire
+  // mid-regenerate, taking the gateway down for ~10–40 s before respawn.
+  // Within that window the config.get poll waitForAgentInRuntime uses
+  // gets WS errors and the 5 s budget elapses while OC is still
+  // restarting — wizard returns 200, browser navigates to /chat, dispatch
+  // races, "unknown agent id". 30 s comfortably covers one restart cycle
+  // while still failing fast if OC is genuinely broken. PR #445 CI showed
+  // 23 s pass / 1.7 m fail on the same commit on the 5 s default —
+  // textbook timing flake.
   const smithersForWait = await db.query.agents.findFirst();
   if (smithersForWait) {
     let client = null;
@@ -196,7 +205,7 @@ export async function POST(request: NextRequest) {
     } catch {
       // OC client not initialised (rare in tests / pre-setup). Skip the wait.
     }
-    await waitForAgentInRuntime(client, smithersForWait.id);
+    await waitForAgentInRuntime(client, smithersForWait.id, 30000);
   }
 
   // Build a CLAUDE.md-compliant audit detail: snapshot the human-readable
