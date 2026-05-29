@@ -1491,18 +1491,12 @@ jobs:
       - name: Show logs on failure
         if: failure()
         run: |
-          # Large tail values: the wizard E2E runs 4 tests × ~2 min each
-          # with multiple pinchy/openclaw container restarts between specs.
-          # Smaller tails scrolled out the diagnostic lines we added to
-          # trace the secrets.json race (see commit 80b3311a0). The
-          # llm-providers-mock log filters /control/health, so its lines
-          # are sparse — 1000 is plenty.
           echo "=== Pinchy logs ==="
-          docker compose $COMPOSE_FILES logs pinchy 2>&1 | tail -2000
+          docker compose $COMPOSE_FILES logs pinchy 2>&1 | tail -200
           echo "=== OpenClaw logs ==="
-          docker compose $COMPOSE_FILES logs openclaw 2>&1 | tail -2000
+          docker compose $COMPOSE_FILES logs openclaw 2>&1 | tail -200
           echo "=== Mock LLM providers logs ==="
-          docker compose $COMPOSE_FILES logs llm-providers-mock 2>&1 | tail -1000
+          docker compose $COMPOSE_FILES logs llm-providers-mock 2>&1 | tail -100
 
       - name: Tear down
         if: always()
