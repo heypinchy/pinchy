@@ -98,7 +98,7 @@ export async function resetStack(): Promise<void> {
 
 export interface ProviderSmokeTestSpec {
   /** Internal provider id used only for log/test diagnostics. */
-  provider: "openai" | "anthropic" | "google" | "ollama-cloud";
+  provider: "openai" | "anthropic" | "google" | "ollama-cloud" | "ollama-local";
   /**
    * Regex matching the provider's button label in the wizard. Source of truth
    * is `PROVIDERS[provider].name` in `packages/web/src/components/provider-key-form.tsx`.

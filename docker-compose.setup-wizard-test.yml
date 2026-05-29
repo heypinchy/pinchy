@@ -15,6 +15,32 @@ services:
       timeout: 3s
       retries: 10
 
+  # Ollama-Local provider mock. Single source of truth — same source file
+  # the integration tests run as a subprocess (packages/web/e2e/shared/
+  # fake-ollama/fake-ollama-server.ts). Containerised here so the
+  # setup-wizard E2E can reach it from inside the docker network, and
+  # aliased to a *.local hostname so Pinchy's SSRF allowlist (which
+  # mirrors OpenClaw's isLocalBaseUrl: localhost / *.local / RFC1918 /
+  # docker-host-aliases) accepts the URL the wizard test types in.
+  # FAKE_OLLAMA_RESPONSE overrides the in-source FAKE_RESPONSE default
+  # so the spec asserts the same canonical reply as the API-key mocks.
+  fake-ollama:
+    build:
+      context: packages/web/e2e/shared/fake-ollama
+    environment:
+      - FAKE_OLLAMA_RESPONSE=Sure, happy to help! What would you like to work on?
+    expose:
+      - "11435"
+    networks:
+      default:
+        aliases:
+          - fake-ollama.local
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://localhost:11435/api/tags').then(r=>r.ok?process.exit(0):process.exit(1)).catch(()=>process.exit(1))"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
   pinchy:
     environment:
       - PINCHY_PROVIDER_BASEURL_OPENAI=http://llm-providers-mock:9100/openai
@@ -24,10 +50,14 @@ services:
     depends_on:
       llm-providers-mock:
         condition: service_healthy
+      fake-ollama:
+        condition: service_healthy
 
   openclaw:
     # OpenClaw resolves models.providers.<name>.baseUrl from openclaw.json,
     # which Pinchy now emits with the override above — no extra env needed here.
     depends_on:
       llm-providers-mock:
+        condition: service_healthy
+      fake-ollama:
         condition: service_healthy

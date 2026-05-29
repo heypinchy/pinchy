@@ -9,8 +9,12 @@
 import * as http from "http";
 
 const MODEL_NAME = "llama3.2";
-// This string must appear in the test's expect() assertion
-const FAKE_RESPONSE = "Integration test response.";
+// Default response asserted by the integration test suite. The setup-wizard
+// E2E container overrides this via FAKE_OLLAMA_RESPONSE so its spec can
+// assert the same canonical "Sure, happy to help..." reply as the other
+// provider mocks. Default value is preserved so existing subprocess usage
+// (integration tests, telegram tests) is unchanged.
+const FAKE_RESPONSE = process.env.FAKE_OLLAMA_RESPONSE ?? "Integration test response.";
 const DOMAIN_LOCK_TOOL_TRIGGER = "E2E_DOMAIN_LOCK_DOCS_TOOL";
 const DOMAIN_LOCK_TOOL_RESPONSE = "Domain lock docs tool call completed.";
 const SLOW_STREAM_TRIGGER = "E2E_SLOW_STREAM";
