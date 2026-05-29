@@ -61,4 +61,9 @@ docker-compose.local.yml
 # but we don't need to commit their lockfiles — CI rebuilds from package.json)
 packages/plugins/*/pnpm-lock.yaml
 packages/plugins/*/package-lock.json
+# Mock-server lockfiles (config/*-mock/): same rationale — the mock Dockerfiles
+# run `npm install` from package.json at build time and never consume a lockfile.
+# A local `npm install` (e.g. running the mock's node --test suite) generates one;
+# keep it out of the tree so it doesn't get committed by accident.
+config/*-mock/package-lock.json
 .pnpm-store/
