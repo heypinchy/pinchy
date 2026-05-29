@@ -11,7 +11,11 @@ import { getSetting, setSetting } from "@/lib/settings";
 import { regenerateOpenClawConfig } from "@/lib/openclaw-config";
 import { waitForAgentInRuntime } from "@/lib/wait-for-agent-in-runtime";
 import { getOpenClawClient } from "@/server/openclaw-client";
-import { resetCache, fetchOllamaLocalModelsFromUrl } from "@/lib/provider-models";
+import {
+  resetCache,
+  fetchOllamaLocalModelsFromUrl,
+  setOllamaLocalModels,
+} from "@/lib/provider-models";
 import { resolveModelForTemplate } from "@/lib/model-resolver";
 import { TemplateCapabilityUnavailableError } from "@/lib/model-resolver/types";
 import { SMITHERS_MODEL_HINT } from "@/lib/personal-agent";
@@ -99,6 +103,14 @@ export async function POST(request: NextRequest) {
           : "No compatible models found. Pinchy agents require tool support. Pull a compatible model: ollama pull qwen2.5:7b";
       return NextResponse.json({ error: message }, { status: 422 });
     }
+
+    // Prime the ollama-local model cache that resolveModelForTemplate reads
+    // below. The wizard fetches the model list directly (above) rather than
+    // through fetchProviderModels(), which is the only other path that
+    // populates this cache — without this, resolveModelForTemplate sees zero
+    // installed models and Smithers falls back to anthropic (see
+    // setOllamaLocalModels docstring).
+    setOllamaLocalModels(ollamaModels);
 
     // Store URL unencrypted (not a secret)
     await setSetting(config.settingsKey, url, false);

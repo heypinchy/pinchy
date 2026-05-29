@@ -71,6 +71,7 @@ vi.mock("@/lib/audit", () => ({
 vi.mock("@/lib/provider-models", () => ({
   resetCache: vi.fn(),
   getDefaultModel: vi.fn().mockResolvedValue("ollama/llama3:latest"),
+  setOllamaLocalModels: vi.fn(),
   fetchOllamaLocalModelsFromUrl: vi.fn().mockResolvedValue([
     {
       id: "ollama/qwen2.5:7b",
@@ -119,7 +120,12 @@ import { regenerateOpenClawConfig } from "@/lib/openclaw-config";
 import { appendAuditLog } from "@/lib/audit";
 import { db } from "@/db";
 import { requireAdmin } from "@/lib/api-auth";
-import { resetCache, getDefaultModel, fetchOllamaLocalModelsFromUrl } from "@/lib/provider-models";
+import {
+  resetCache,
+  getDefaultModel,
+  fetchOllamaLocalModelsFromUrl,
+  setOllamaLocalModels,
+} from "@/lib/provider-models";
 import { resolveModelForTemplate } from "@/lib/model-resolver";
 import { TemplateCapabilityUnavailableError } from "@/lib/model-resolver/types";
 import { SMITHERS_MODEL_HINT } from "@/lib/personal-agent";
@@ -351,6 +357,33 @@ describe("POST /api/setup/provider", () => {
   it("should return 400 when ollama-local is missing URL", async () => {
     const response = await POST(makeRequest({ provider: "ollama-local" }) as any);
     expect(response.status).toBe(400);
+  });
+
+  it("primes the ollama-local model cache so Smithers resolves to an ollama model", async () => {
+    // Regression for the ollama-local wizard bug: resolveModelForTemplate
+    // reads getOllamaLocalModels() (the lastOllamaLocalModels cache), which is
+    // only populated by fetchProviderModels() — NOT by the wizard's direct
+    // fetchOllamaLocalModelsFromUrl() call. Without priming the cache here,
+    // resolveOllamaLocal() sees an empty model list, throws
+    // TemplateCapabilityUnavailableError, and Smithers stays on the
+    // anthropic/claude-sonnet-4-6 cold-start fallback — so a fresh ollama-local
+    // install hits "No API key found for provider 'anthropic'" on first chat.
+    await POST(
+      makeRequest({
+        provider: "ollama-local",
+        url: "http://host.docker.internal:11434",
+      }) as any
+    );
+
+    expect(setOllamaLocalModels).toHaveBeenCalledWith([
+      {
+        id: "ollama/qwen2.5:7b",
+        name: "qwen2.5:7b",
+        parameterSize: "7B",
+        compatible: true,
+        capabilities: { tools: true, vision: false, completion: true, thinking: false },
+      },
+    ]);
   });
 
   // #296 — Save-time rejection of hosts that won't pass OpenClaw's

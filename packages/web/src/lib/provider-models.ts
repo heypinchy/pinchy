@@ -225,6 +225,26 @@ export function getOllamaLocalModels(): OllamaLocalModelInfo[] {
   return lastOllamaLocalModels;
 }
 
+/**
+ * Prime the ollama-local model cache that `getOllamaLocalModels()` (and
+ * therefore `resolveModelForTemplate` for the ollama-local provider) reads.
+ *
+ * Normally the cache is populated as a side effect of `fetchProviderModels()`,
+ * which runs on the dashboard's model-list fetch. The setup wizard's
+ * `POST /api/setup/provider` URL branch fetches the model list directly via
+ * `fetchOllamaLocalModelsFromUrl()` for its tool-capability check and never
+ * calls `fetchProviderModels()` — so without this primer the cache is still
+ * empty when the wizard then calls `resolveModelForTemplate` to pick Smithers'
+ * model. The resolver would see zero installed models, throw
+ * `TemplateCapabilityUnavailableError`, and leave Smithers on the
+ * anthropic/claude-sonnet-4-6 cold-start fallback — producing
+ * "No API key found for provider 'anthropic'" on the first chat of a fresh
+ * ollama-local install.
+ */
+export function setOllamaLocalModels(models: OllamaLocalModelInfo[]): void {
+  lastOllamaLocalModels = models;
+}
+
 // Per-call timeout for Ollama discovery requests. Each `/api/show` call
 // runs sequentially today, so a hanging Ollama instance with many installed
 // models could otherwise wedge the setup wizard for minutes. Five seconds
