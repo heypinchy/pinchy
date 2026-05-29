@@ -149,7 +149,7 @@ If you need to roll back after an upgrade:
   backup step matters.
 </Aside>
 
-## Upgrading from v0.5.5 to %%PINCHY_VERSION%%
+## Upgrading from v0.5.6 to %%PINCHY_VERSION%%
 
 ### Breaking changes
 
@@ -157,17 +157,39 @@ None.
 
 ### Upgrade notes
 
-%%PINCHY_VERSION%% is a cosmetic patch on top of v0.5.5. The v0.5.5 release-cut was performed via `gh release create` instead of `pnpm release`, which skipped the version bump in `package.json` and `packages/web/package.json`. As a result, v0.5.5 images report `"pinchyVersion": "0.5.4"` from `/api/version` even though the image tag, OCI `image.version` label, and OpenClaw runtime are all on the intended v0.5.5 wire. %%PINCHY_VERSION%% restores agreement between the tag and the reported version. There are no functional changes versus v0.5.5.
+%%PINCHY_VERSION%% fixes the v0.5.6 setup-wizard regression where Smithers replied with `No API key found for provider '<name>'` on the very first chat message after a fresh install. The bug was provider-agnostic: OpenClaw's secrets-provider initialised at gateway boot with a "file missing" state because `secrets.json` was only written after the user completed the wizard. The provider never reinitialised when Pinchy hot-reloaded `openclaw.json` (the secrets-section diff was empty), so the gateway ran the rest of the session with no provider keys until a manual container restart.
 
-If you already deployed v0.5.5, upgrade straight to %%PINCHY_VERSION%%:
+The fix is Pinchy-side: an `inotifywait` handler in `start-openclaw.sh` writes a `/openclaw-secrets/.bootstrap-applied` marker on the first appearance of `secrets.json` and SIGTERMs the gateway exactly once so the next boot picks up the file. The health-check loop respawns the gateway within ~10–40 s, and a build-time drift guard in `validateBuiltConfig` rejects emitted configs whose `SecretRef` pointers don't resolve in `secrets.json` — closing the related class of "config references a key that isn't there" bugs that would have produced the same symptom from the Pinchy side.
+
+No manual steps beyond the standard upgrade flow:
 
 ```bash
 cd /opt/pinchy
-sed -i 's/PINCHY_VERSION=v0.5.5/PINCHY_VERSION=%%PINCHY_VERSION%%/' .env
+sed -i 's/PINCHY_VERSION=v0.5.6/PINCHY_VERSION=%%PINCHY_VERSION%%/' .env
 docker compose pull && docker compose up -d && docker image prune -f
 ```
 
-If you are upgrading directly from v0.5.4, skip v0.5.5 and follow the v0.5.4 → v0.5.5 upgrade notes below (substituting `%%PINCHY_VERSION%%` for `v0.5.5` in the `sed` command). All v0.5.5 behaviour ships in %%PINCHY_VERSION%% unchanged.
+If you saw the "No API key found" error on v0.5.6 and restarted the OpenClaw container manually to recover, no follow-up action is needed — the secrets-provider re-reads cleanly from disk on every boot.
+
+## Upgrading from v0.5.5 to v0.5.6
+
+### Breaking changes
+
+None.
+
+### Upgrade notes
+
+v0.5.6 is a cosmetic patch on top of v0.5.5. The v0.5.5 release-cut was performed via `gh release create` instead of `pnpm release`, which skipped the version bump in `package.json` and `packages/web/package.json`. As a result, v0.5.5 images report `"pinchyVersion": "0.5.4"` from `/api/version` even though the image tag, OCI `image.version` label, and OpenClaw runtime are all on the intended v0.5.5 wire. v0.5.6 restores agreement between the tag and the reported version. There are no functional changes versus v0.5.5.
+
+If you already deployed v0.5.5, upgrade straight to v0.5.6:
+
+```bash
+cd /opt/pinchy
+sed -i 's/PINCHY_VERSION=v0.5.5/PINCHY_VERSION=v0.5.6/' .env
+docker compose pull && docker compose up -d && docker image prune -f
+```
+
+If you are upgrading directly from v0.5.4, skip v0.5.5 and follow the v0.5.4 → v0.5.5 upgrade notes below (substituting `v0.5.6` for `v0.5.5` in the `sed` command). All v0.5.5 behaviour ships in v0.5.6 unchanged.
 
 ## Upgrading from v0.5.4 to v0.5.5
 
