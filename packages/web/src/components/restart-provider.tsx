@@ -54,6 +54,13 @@ export function RestartProvider({ children }: { children: React.ReactNode }) {
 
   const triggerRestart = useCallback(() => {
     setIsRestarting(true);
+    // Defense-in-depth: clear any leftover state from a previous restart
+    // cycle so the new overlay starts in the spinner tier, not the
+    // timed-out tier. checkHealth already resets these on "ok", but
+    // triggerRestart is the only public path that can flip isRestarting
+    // back to true without going through checkHealth first.
+    setTimedOut(false);
+    setDiagnostics(null);
   }, []);
 
   // Mount-time health check — subscribes to external health endpoint

@@ -360,4 +360,51 @@ describe("RestartProvider", () => {
       expect(screen.queryByText(/hang tight/i)).not.toBeInTheDocument();
     });
   });
+
+  it("triggerRestart resets timedOut and diagnostics from a prior cycle", async () => {
+    // Defense-in-depth: checkHealth already resets these when status flips
+    // to "ok", so most flows clean up correctly. But if a non-recovery path
+    // ever flips isRestarting back to true (the only public way is
+    // triggerRestart from useRestart), we must not show the timeout tier
+    // immediately — that would look like the previous restart instantly
+    // timed out again.
+    const { RestartProvider, useRestart } = await import("@/components/restart-provider");
+
+    function Consumer() {
+      const { triggerRestart } = useRestart();
+      return <button onClick={triggerRestart}>trigger</button>;
+    }
+
+    render(
+      <RestartProvider>
+        <Consumer />
+      </RestartProvider>
+    );
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(100);
+    });
+
+    // First cycle: trigger, hit the 30 s timeout (timedOut=true), then NEVER
+    // recover via checkHealth — instead trigger again manually.
+    fetchResponses = [{ status: "restarting" as const, since: Date.now() }];
+    fetchCallCount = 0;
+
+    await act(async () => {
+      screen.getByText("trigger").click();
+    });
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(31_000);
+    });
+    expect(screen.getByText(/still working on it/i)).toBeInTheDocument();
+
+    // Second trigger — should reset to the spinner tier, not stay timed-out.
+    await act(async () => {
+      screen.getByText("trigger").click();
+    });
+
+    expect(screen.getByText(/hang tight/i)).toBeInTheDocument();
+    expect(screen.queryByText(/still working on it/i)).not.toBeInTheDocument();
+  });
 });

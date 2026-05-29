@@ -460,6 +460,11 @@ ${domain ? `<p><a href="https://${domain}">Go to ${domain} →</a></p>` : ""}
       if (hasConnected) {
         console.log("Disconnected from OpenClaw Gateway, reconnecting...");
       }
+      // Re-show the restart overlay if OC disconnects within the deferred-
+      // restart window (OC defers gateway restart until active runs drain;
+      // this can be minutes after the initial notifyRestart + notifyReady
+      // handshake, leaving users with no overlay during the actual outage).
+      restartState.notifyDisconnect();
     });
 
     openclawClient.on("error", (err) => {
