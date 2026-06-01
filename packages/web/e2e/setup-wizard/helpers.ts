@@ -84,16 +84,56 @@ export async function resetStack(): Promise<void> {
   // openclaw.json has been picked up and the wizard route is reachable.
   // 60 s budget: container restart + Next.js cold compile can run ~30 s.
   const deadline = Date.now() + 60000;
+  let pinchyReady = false;
   while (Date.now() < deadline) {
     try {
       execSync(`curl -fsS http://localhost:7777/api/setup/status`, { stdio: "pipe" });
-      return;
+      pinchyReady = true;
+      break;
     } catch {
       // server still warming up
     }
     await sleep(1000);
   }
-  throw new Error("Pinchy did not become ready within 60s after reset");
+  if (!pinchyReady) throw new Error("Pinchy did not become ready within 60s after reset");
+
+  // Then wait for OpenClaw to fully SETTLE before handing off to the wizard.
+  //
+  // The container restart triggers a cold-start config cascade: Pinchy's
+  // on-connect `regenerateOpenClawConfig()` rewrites openclaw.json, which OC
+  // hot-reloads (and may gateway-restart on). If we start the wizard while this
+  // cascade is still in flight, the wizard's OWN config writes (provider save +
+  // first-time secrets.json bootstrap pkill) stack on top of it — and OC 5.3's
+  // `config.apply` rate-limit (~3/45 s) then defers the agent-list apply by up
+  // to ~2 min. That's exactly the 114 s "unknown agent id" gap seen on the
+  // ollama-local flake (PR #448, OC log 13:22:04 dispatch → 13:23:58 ready):
+  // the first chat raced a storm the resilient dispatch retry then had to
+  // absorb. Letting the cold-start cascade drain first keeps the wizard's
+  // window small enough that dispatch resilience comfortably covers it.
+  //
+  // "Settled" = health reports connected & not-restarting continuously for 5 s
+  // (a transient reload/restart resets the streak). 90 s budget covers a
+  // worst-case cold-start restart cycle.
+  const settleDeadline = Date.now() + 90000;
+  let connectedSince: number | null = null;
+  while (Date.now() < settleDeadline) {
+    try {
+      const out = execSync(`curl -fsS http://localhost:7777/api/health/openclaw`, {
+        stdio: "pipe",
+      }).toString();
+      const health = JSON.parse(out) as { connected?: boolean; status?: string };
+      if (health.connected && health.status === "ok") {
+        connectedSince ??= Date.now();
+        if (Date.now() - connectedSince >= 5000) return;
+      } else {
+        connectedSince = null;
+      }
+    } catch {
+      connectedSince = null;
+    }
+    await sleep(1000);
+  }
+  throw new Error("OpenClaw did not settle within 90s after reset");
 }
 
 export interface ProviderSmokeTestSpec {
