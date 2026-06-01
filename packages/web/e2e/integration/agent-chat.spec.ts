@@ -3,7 +3,6 @@ import { test, expect } from "@playwright/test";
 import type { Page } from "@playwright/test";
 import {
   FAKE_OLLAMA_CONTEXT_SAVE_USER_TOOL_TRIGGER,
-  FAKE_OLLAMA_DOMAIN_LOCK_TOOL_RESPONSE,
   FAKE_OLLAMA_DOMAIN_LOCK_TOOL_TRIGGER,
   FAKE_OLLAMA_FILES_LS_TOOL_TRIGGER,
   FAKE_OLLAMA_FILES_READ_DOCX_TOOL_TRIGGER,
@@ -180,10 +179,19 @@ test.describe("Agent chat — full integration", () => {
       await input.fill(`${FAKE_OLLAMA_DOMAIN_LOCK_TOOL_TRIGGER}: What Pinchy docs exist?`);
       await input.press("Enter");
 
-      await expect(page.getByText(FAKE_OLLAMA_DOMAIN_LOCK_TOOL_RESPONSE)).toBeVisible({
-        timeout: 30000,
-      });
-
+      // Assert on the audit entry, NOT the streamed reply text. This test's
+      // contract is its name — "tool calls write audit entries" — and the
+      // `tool.docs_list` entry can only exist if OpenClaw fully dispatched the
+      // tool, so it's a strictly stronger signal than "the reply rendered".
+      //
+      // The previous `getByText(...).toBeVisible()` gate on the streamed reply
+      // was a CI-only flake (failed on main too — run 26644436880 — on a no-op
+      // commit): under CI load the browser intermittently didn't paint the
+      // second-round stream within 30 s, even though the server-side dispatch +
+      // audit had already succeeded. The sibling pinchy-context probe below
+      // asserts purely on the audit API and is reliable; we match that. UI
+      // rendering of replies is covered separately by "Pinchy agent responds to
+      // messages via OpenClaw". (#448)
       const deadline = Date.now() + 30000;
       let foundAuditEntry = false;
       while (Date.now() < deadline) {
