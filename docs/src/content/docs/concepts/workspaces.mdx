@@ -16,20 +16,21 @@ A workspace typically contains:
 - **The agent's identity** — its name, role, and personality.
 - **Context files** — your personal context (for personal agents) or your organization's context (for shared agents). See [Context Management](/concepts/context/).
 - **Uploaded files** — files you drop into the chat. These land in an `uploads/` folder where the agent can read them on demand. See [Upload Files in Chat](/guides/file-uploads/).
-- **Agent deliverables** — files the agent itself produces (notes, exports, drafts) live in a `workbench/` folder. The agent can read and write here; it cannot write elsewhere.
-- **Working notes** — anything the agent or its plugins write down to remember between conversations.
+- **Agent deliverables** — files the agent itself produces (notes, exports, drafts) live in a `workbench/` folder. The agent can read and write here.
+- **The agent's memory** — what the agent has learned across conversations, kept in `MEMORY.md` (curated long-term knowledge) and dated logs under `memory/`. The agent writes these itself when it decides something is worth keeping or when you tell it to "remember this." See [Instructions vs. Memory](/explanation/instructions-vs-memory/).
 
-### The three zones
+### Who can write what
 
-Each workspace has three zones with distinct ownership. Knowing which zone owns what keeps the agent, the user, and Pinchy itself from stepping on each other:
+Each workspace separates content by who owns it. Knowing which zone owns what keeps the agent, the user, and Pinchy itself from stepping on each other:
 
-| Zone           | Who writes                           | What lives here                                                                                |
-| -------------- | ------------------------------------ | ---------------------------------------------------------------------------------------------- |
-| Workspace root | Pinchy (system)                      | Identity, personality, context, memory: SOUL.md, AGENTS.md, IDENTITY.md, USER.md, MEMORY.md, … |
-| `uploads/`     | The user, via the chat upload button | Receipts, PDFs, images, documents the user attaches                                            |
-| `workbench/`   | The agent, via `pinchy_write`        | Notes, drafts, exports, reports — anything the agent produces                                  |
+| Zone                    | Who writes                           | What lives here                                                            |
+| ----------------------- | ------------------------------------ | -------------------------------------------------------------------------- |
+| Identity files (root)   | Pinchy (system)                      | Who the agent is: SOUL.md, AGENTS.md, IDENTITY.md, USER.md                 |
+| `MEMORY.md` + `memory/` | The agent, via `pinchy_write`        | What the agent has learned: curated long-term memory and dated daily notes |
+| `uploads/`              | The user, via the chat upload button | Receipts, PDFs, images, documents the user attaches                        |
+| `workbench/`            | The agent, via `pinchy_write`        | Notes, drafts, exports, reports — anything the agent produces              |
 
-The agent can **read** all three zones. It can only **write** to `workbench/` and (for backward compatibility) `uploads/`. Attempts to write into the workspace root are rejected by the file plugin, so the agent cannot overwrite the files Pinchy uses to know who it is.
+The agent can **read** everything in its workspace. It can **write** to its memory (`MEMORY.md` and `memory/`), to `workbench/`, and — for backward compatibility — to `uploads/`. It cannot write the identity files at the workspace root: `SOUL.md`, `AGENTS.md`, `IDENTITY.md`, and `USER.md` are system-managed. The file plugin enforces this file by file, so the agent can update what it _remembers_ but never rewrite _who it is_. Writing memory requires the agent to have the `pinchy_write` capability (most agents, including the default Smithers, do).
 
 ## Personal vs. shared agent workspaces
 
