@@ -1,13 +1,58 @@
 import { writeFileSync, readFileSync, existsSync, mkdirSync, rmSync } from "fs";
 import { join } from "path";
 
+// =============================================================================
+// Agent on-disk layout — READ THIS before touching any code that resolves an
+// agent's filesystem path (watchers, plugins, backup tooling, memory code).
+// =============================================================================
+//
+// A Pinchy agent's files live under `workspaces/<agentId>/`, NOT under the
+// OpenClaw-native `agents/<name>/` tree. This is deliberate and has bitten us
+// before (see issue #345: the memory-audit watcher hardcoded `agents/<id>/`
+// and silently watched the wrong subtree, so it never fired for real agents).
+//
+// Why `workspaces/<agentId>/`:
+//
+//   1. Separate Docker volume, separate lifecycle. The `pinchy-workspaces`
+//      volume is mounted INTO the OpenClaw config tree at the `workspaces/`
+//      subpath. Agent-owned content (SOUL.md, AGENTS.md, uploads/, workbench/,
+//      MEMORY.md, memory/) can be backed up, migrated, or sized independently
+//      of OpenClaw's core config (openclaw.json, secrets.json, sessions/, the
+//      memory SQLite index). You can reset workspaces without touching the
+//      OpenClaw trust root.
+//
+//   2. The SAME volume has two mount points, so paths differ per container:
+//        - Pinchy container:   /openclaw-config/workspaces/<agentId>   (WORKSPACE_BASE_PATH)
+//        - OpenClaw container:  /root/.openclaw/workspaces/<agentId>   (OPENCLAW_WORKSPACE_PREFIX)
+//      `getWorkspacePath()` returns the Pinchy-side path (for code that reads/
+//      writes files directly). `getOpenClawWorkspacePath()` returns the path we
+//      write into openclaw.json's `agents[].workspace` field (what OpenClaw
+//      itself sees). They point at the same bytes via the shared volume.
+//
+//   3. Namespacing away from OpenClaw-native agents. OpenClaw's own CLI
+//      onboarding creates agents under `agents/<name>/`. Pinchy agents are
+//      UUID-keyed and live under `workspaces/<uuid>/` so they never collide
+//      with or get confused for OpenClaw-native agents.
+//
+// OpenClaw resolves an agent's MEMORY.md and memory/ files RELATIVE TO the
+// `workspace` field — i.e. `workspaces/<agentId>/MEMORY.md`, NOT
+// `agents/<agentId>/MEMORY.md`. Any code that needs an agent's on-disk
+// location MUST derive it from `getWorkspacePath()` / `getOpenClawWorkspacePath()`.
+// Never hardcode `agents/` or `workspaces/` elsewhere — that is exactly the
+// drift that produced the dead-code watcher in #345.
+// =============================================================================
+
 export const ALLOWED_FILES = ["SOUL.md", "AGENTS.md"] as const;
 export type WorkspaceFile = (typeof ALLOWED_FILES)[number];
 
 const DEFAULT_WORKSPACE_BASE_PATH = "/openclaw-config/workspaces";
 const DEFAULT_OPENCLAW_WORKSPACE_PREFIX = "/root/.openclaw/workspaces";
 
-function getWorkspaceBasePath(): string {
+// Exported so the memory-audit watcher derives its watch root from the SAME
+// source build.ts / ensureWorkspace use for agent file paths — see the layout
+// note above and the #345 drift guard in
+// __tests__/lib/memory-audit-watcher/watcher-path-drift.test.ts.
+export function getWorkspaceBasePath(): string {
   return process.env.WORKSPACE_BASE_PATH || DEFAULT_WORKSPACE_BASE_PATH;
 }
 
@@ -33,6 +78,11 @@ export function getWorkspacePath(agentId: string): string {
   return join(getWorkspaceBasePath(), agentId);
 }
 
+// Canonical OpenClaw-side path resolver — the path OpenClaw itself sees and
+// the value written into openclaw.json's `agents[].workspace`. OpenClaw
+// resolves MEMORY.md / memory/ relative to this. See the top-of-file layout
+// note: anything that watches or derives agent memory paths MUST use this,
+// never a hardcoded `agents/` prefix.
 export function getOpenClawWorkspacePath(agentId: string): string {
   assertValidAgentId(agentId);
   const prefix = process.env.OPENCLAW_WORKSPACE_PREFIX || DEFAULT_OPENCLAW_WORKSPACE_PREFIX;

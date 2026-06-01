@@ -3,6 +3,7 @@ import { db } from "@/db";
 import { agents } from "@/db/schema";
 import { appendAuditLog } from "@/lib/audit";
 import { recordAuditFailure } from "@/lib/audit-deferred";
+import { getWorkspaceBasePath } from "@/lib/workspace";
 import { startMemoryAuditWatcher } from "./watcher";
 
 /**
@@ -15,7 +16,12 @@ import { startMemoryAuditWatcher } from "./watcher";
 export async function bootstrapMemoryAuditWatcher(opts: {
   root?: string;
 }): Promise<() => Promise<void>> {
-  const root = opts.root ?? process.env.OPENCLAW_DATA_PATH ?? "/openclaw-config";
+  // Watch the workspace base (`<base>/<agentId>/MEMORY.md`), NOT the OpenClaw
+  // config root. Derived from workspace.ts so the watch root stays in lockstep
+  // with where agent files are actually written — see #345 (the old
+  // `OPENCLAW_DATA_PATH` + hardcoded `agents/` join watched a tree that never
+  // existed, so the watcher was dead code).
+  const root = opts.root ?? getWorkspaceBasePath();
 
   const lookupAgent = async (agentId: string) => {
     const rows = await db

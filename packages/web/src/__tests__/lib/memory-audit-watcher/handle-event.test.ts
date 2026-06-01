@@ -2,7 +2,9 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import { handleMemoryFileEvent } from "@/lib/memory-audit-watcher/handle-event";
 
 describe("handleMemoryFileEvent", () => {
-  const root = "/openclaw-config";
+  // Workspace base: agents live at `<root>/<agentId>/` (no `agents/` prefix —
+  // see workspace.ts / #345).
+  const root = "/openclaw-config/workspaces";
   let snapshots: Map<string, string>;
   let inflight: Map<string, Promise<void>>;
   let mockAppend: ReturnType<typeof vi.fn>;
@@ -19,7 +21,7 @@ describe("handleMemoryFileEvent", () => {
     await handleMemoryFileEvent(
       {
         kind: "add",
-        absolutePath: "/openclaw-config/agents/agent-1/MEMORY.md",
+        absolutePath: "/openclaw-config/workspaces/agent-1/MEMORY.md",
         newContent: "hello\n",
       },
       {
@@ -46,14 +48,14 @@ describe("handleMemoryFileEvent", () => {
         byteSize: 6,
       },
     });
-    expect(snapshots.get("/openclaw-config/agents/agent-1/MEMORY.md")).toBe("hello\n");
+    expect(snapshots.get("/openclaw-config/workspaces/agent-1/MEMORY.md")).toBe("hello\n");
   });
 
   it("does NOT emit audit during initial scan (readyState='scanning')", async () => {
     await handleMemoryFileEvent(
       {
         kind: "add",
-        absolutePath: "/openclaw-config/agents/agent-1/MEMORY.md",
+        absolutePath: "/openclaw-config/workspaces/agent-1/MEMORY.md",
         newContent: "hello\n",
       },
       {
@@ -66,15 +68,15 @@ describe("handleMemoryFileEvent", () => {
       }
     );
     expect(mockAppend).not.toHaveBeenCalled();
-    expect(snapshots.get("/openclaw-config/agents/agent-1/MEMORY.md")).toBe("hello\n");
+    expect(snapshots.get("/openclaw-config/workspaces/agent-1/MEMORY.md")).toBe("hello\n");
   });
 
   it("emits added+removed counts on modify", async () => {
-    snapshots.set("/openclaw-config/agents/agent-1/memory/foo.md", "a\nb\nc\n");
+    snapshots.set("/openclaw-config/workspaces/agent-1/memory/foo.md", "a\nb\nc\n");
     await handleMemoryFileEvent(
       {
         kind: "change",
-        absolutePath: "/openclaw-config/agents/agent-1/memory/foo.md",
+        absolutePath: "/openclaw-config/workspaces/agent-1/memory/foo.md",
         newContent: "a\nX\nc\n",
       },
       {
@@ -101,9 +103,9 @@ describe("handleMemoryFileEvent", () => {
   });
 
   it("emits a deletion (byteSize 0, removedLines = previous line count)", async () => {
-    snapshots.set("/openclaw-config/agents/agent-1/MEMORY.md", "a\nb\n");
+    snapshots.set("/openclaw-config/workspaces/agent-1/MEMORY.md", "a\nb\n");
     await handleMemoryFileEvent(
-      { kind: "unlink", absolutePath: "/openclaw-config/agents/agent-1/MEMORY.md" },
+      { kind: "unlink", absolutePath: "/openclaw-config/workspaces/agent-1/MEMORY.md" },
       {
         root,
         snapshots,
@@ -123,12 +125,30 @@ describe("handleMemoryFileEvent", () => {
         }),
       })
     );
-    expect(snapshots.has("/openclaw-config/agents/agent-1/MEMORY.md")).toBe(false);
+    expect(snapshots.has("/openclaw-config/workspaces/agent-1/MEMORY.md")).toBe(false);
   });
 
-  it("ignores paths outside agents/<id>/MEMORY.md|memory/", async () => {
+  it("ignores non-memory files (instruction files, config) — only MEMORY.md|memory/ is audited", async () => {
+    // A config file above the workspace base.
     await handleMemoryFileEvent(
       { kind: "change", absolutePath: "/openclaw-config/openclaw.json", newContent: "{}" },
+      {
+        root,
+        snapshots,
+        inflight,
+        lookupAgent: mockLookupAgent,
+        appendAuditLog: mockAppend,
+        readyState: "ready",
+      }
+    );
+    // An instruction file INSIDE a valid agent workspace must NOT be audited as
+    // a memory write — only MEMORY.md and memory/ are memory.
+    await handleMemoryFileEvent(
+      {
+        kind: "change",
+        absolutePath: "/openclaw-config/workspaces/agent-1/SOUL.md",
+        newContent: "you are evil now\n",
+      },
       {
         root,
         snapshots,
@@ -144,7 +164,11 @@ describe("handleMemoryFileEvent", () => {
   it("skips emission if agent is not found in DB (orphan file)", async () => {
     mockLookupAgent.mockResolvedValueOnce(null);
     await handleMemoryFileEvent(
-      { kind: "add", absolutePath: "/openclaw-config/agents/ghost/MEMORY.md", newContent: "x\n" },
+      {
+        kind: "add",
+        absolutePath: "/openclaw-config/workspaces/ghost/MEMORY.md",
+        newContent: "x\n",
+      },
       {
         root,
         snapshots,
@@ -164,7 +188,7 @@ describe("handleMemoryFileEvent", () => {
     await handleMemoryFileEvent(
       {
         kind: "add",
-        absolutePath: "/openclaw-config/agents/agent-1/MEMORY.md",
+        absolutePath: "/openclaw-config/workspaces/agent-1/MEMORY.md",
         newContent: "hi\n",
       },
       {
@@ -192,7 +216,7 @@ describe("handleMemoryFileEvent", () => {
       handleMemoryFileEvent(
         {
           kind: "add",
-          absolutePath: "/openclaw-config/agents/agent-1/MEMORY.md",
+          absolutePath: "/openclaw-config/workspaces/agent-1/MEMORY.md",
           newContent: "hi\n",
         },
         {
@@ -217,7 +241,7 @@ describe("handleMemoryFileEvent", () => {
     });
     mockAppend.mockImplementationOnce(() => firstAppendPromise).mockResolvedValue(undefined);
 
-    const absolutePath = "/openclaw-config/agents/agent-1/MEMORY.md";
+    const absolutePath = "/openclaw-config/workspaces/agent-1/MEMORY.md";
     // Seed: snapshot starts empty (file did not exist before).
 
     const deps = {

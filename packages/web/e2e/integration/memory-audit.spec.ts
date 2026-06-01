@@ -1,15 +1,23 @@
 // packages/web/e2e/integration/memory-audit.spec.ts
 //
-// Proves Task 7's memory-audit watcher: writing to
-// `/openclaw-config/agents/<agentId>/MEMORY.md` inside the Pinchy container
+// Proves the memory-audit watcher: writing to an agent's real workspace path
+// `/openclaw-config/workspaces/<agentId>/MEMORY.md` inside the Pinchy container
 // emits an `agent.memory_changed` audit entry with the expected detail shape.
+//
+// This path is the SAME place a real agent's pinchy_write lands: the
+// `pinchy-workspaces` volume is mounted at `/openclaw-config/workspaces` in the
+// Pinchy container and `/root/.openclaw/workspaces` in the OpenClaw container,
+// so a write from either side is the same bytes. Writing to the OLD
+// `/openclaw-config/agents/<id>/` path is exactly the #345 trap — that subtree
+// is not where agents live, so the test would pass while production stayed
+// broken. We deliberately exercise the production layout.
 //
 // Why `docker compose exec` instead of host-side file writes:
 // Issue #196 moved the integration suite to run Pinchy in its production
-// container. The container mounts `openclaw-config` as a named Docker volume
-// (no host-visible path), so to feed the watcher we have to write the file
-// from inside the running container. We use the same `composeExec` pattern
-// the global-setup hook uses for OpenClaw config reads.
+// container. The container mounts the volumes as named Docker volumes (no
+// host-visible path), so to feed the watcher we have to write the file from
+// inside the running container. We use the same `composeExec` pattern the
+// global-setup hook uses for OpenClaw config reads.
 
 import { test, expect } from "@playwright/test";
 import { execSync } from "child_process";
@@ -21,10 +29,11 @@ const COMPOSE_FILES =
 const PROJECT_ROOT = path.resolve(__dirname, "../../../..");
 const COMPOSE_ENV = { ...process.env, PINCHY_VERSION: process.env.PINCHY_VERSION || "local" };
 
-// Inside the Pinchy container the watcher walks /openclaw-config/agents/<id>/.
-// In production this is the `openclaw-config` Docker volume mounted at the
-// same path; the integration stack mounts the same named volume.
-const CONTAINER_DATA_PATH = "/openclaw-config";
+// Inside the Pinchy container the watcher walks the workspace base
+// `/openclaw-config/workspaces/<id>/` (WORKSPACE_BASE_PATH default — see
+// workspace.ts). In production and in the integration stack this is the
+// `pinchy-workspaces` named volume mounted at that path.
+const CONTAINER_WORKSPACE_BASE = "/openclaw-config/workspaces";
 
 function pinchyExec(cmd: string): string {
   return execSync(`docker compose ${COMPOSE_FILES} exec -T pinchy ${cmd}`, {
@@ -64,8 +73,9 @@ test.describe("memory-audit watcher emits agent.memory_changed on MEMORY.md writ
     const smithersName = smithers!.name;
 
     // 3. Compute the watched path inside the container. The watcher recognizes
-    //    `<root>/agents/<agentId>/MEMORY.md` exactly (see parse-path.ts).
-    containerMemoryPath = `${CONTAINER_DATA_PATH}/agents/${smithersId}/MEMORY.md`;
+    //    `<workspaceBase>/<agentId>/MEMORY.md` exactly (see parse-path.ts) —
+    //    the real on-disk home of an agent's memory.
+    containerMemoryPath = `${CONTAINER_WORKSPACE_BASE}/${smithersId}/MEMORY.md`;
 
     // 4. Write a unique, timestamped 3-line file via `docker exec`. The
     //    uniqueness defends against the case where a prior run left identical

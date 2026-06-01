@@ -47,12 +47,16 @@ describe.skipIf(process.platform !== "linux")(
       // the NEW content — making the subsequent diff degenerate to
       // addedLines=0. Run 26291361464 hit exactly that on Linux.
       //
-      // Instead: empty agents/ at startup, then create MEMORY.md after
-      // the watcher is ready. The "add" event now fires in "ready"
+      // Instead: empty workspace base at startup, then create MEMORY.md
+      // after the watcher is ready. The "add" event now fires in "ready"
       // state and emits an audit directly with no scan-phase snapshot
       // to race against.
+      //
+      // `root` is the workspace base; agents live at `<root>/<agentId>/`
+      // (no `agents/` prefix — see workspace.ts / #345). The base dir is
+      // created empty by mkdtempSync; the agent subdir is created in the
+      // test body after the watcher is ready.
       root = mkdtempSync(join(tmpdir(), "pinchy-memwatch-realfs-"));
-      mkdirSync(join(root, "agents"), { recursive: true });
       appended = [];
 
       // `usePolling: false` → inotify on Linux. We deliberately do NOT use
@@ -81,8 +85,8 @@ describe.skipIf(process.platform !== "linux")(
       // The "add" event for the new file fires in "ready" state, so it
       // becomes a real audit emission with a clean diff: empty snapshot
       // → 2 added lines.
-      mkdirSync(join(root, "agents", "agent-1"), { recursive: true });
-      writeFileSync(join(root, "agents", "agent-1", "MEMORY.md"), "initial\nadded line\n", "utf8");
+      mkdirSync(join(root, "agent-1"), { recursive: true });
+      writeFileSync(join(root, "agent-1", "MEMORY.md"), "initial\nadded line\n", "utf8");
 
       // Poll for the event rather than sleeping a fixed amount — inotify is
       // usually sub-100 ms but the stability-threshold window has to elapse

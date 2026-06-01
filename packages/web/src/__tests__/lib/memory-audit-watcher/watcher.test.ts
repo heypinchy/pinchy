@@ -103,8 +103,8 @@ describe("startMemoryAuditWatcher (chokidar wiring)", () => {
     // for that read to succeed. We only mock chokidar's event source.
     setupMockState();
     root = mkdtempSync(join(tmpdir(), "pinchy-memwatch-"));
-    mkdirSync(join(root, "agents", "agent-1", "memory"), { recursive: true });
-    writeFileSync(join(root, "agents", "agent-1", "MEMORY.md"), "initial\n", "utf8");
+    mkdirSync(join(root, "agent-1", "memory"), { recursive: true });
+    writeFileSync(join(root, "agent-1", "MEMORY.md"), "initial\n", "utf8");
     appended = [];
 
     stop = await startMemoryAuditWatcher({
@@ -140,8 +140,8 @@ describe("startMemoryAuditWatcher (chokidar wiring)", () => {
   });
 
   it("routes a 'change' event into an audit-log append", async () => {
-    writeFileSync(join(root, "agents", "agent-1", "MEMORY.md"), "initial\nadded line\n", "utf8");
-    lastFakeWatcher!.emit("change", join(root, "agents", "agent-1", "MEMORY.md"));
+    writeFileSync(join(root, "agent-1", "MEMORY.md"), "initial\nadded line\n", "utf8");
+    lastFakeWatcher!.emit("change", join(root, "agent-1", "MEMORY.md"));
     await vi.waitFor(() => expect(appended.length).toBe(1), { timeout: 2000 });
     expect(appended[0]).toMatchObject({
       eventType: "agent.memory_changed",
@@ -151,12 +151,8 @@ describe("startMemoryAuditWatcher (chokidar wiring)", () => {
   });
 
   it("routes an 'add' event (post-ready) into an audit-log append", async () => {
-    writeFileSync(
-      join(root, "agents", "agent-1", "memory", "facts.md"),
-      "fact 1\nfact 2\n",
-      "utf8"
-    );
-    lastFakeWatcher!.emit("add", join(root, "agents", "agent-1", "memory", "facts.md"));
+    writeFileSync(join(root, "agent-1", "memory", "facts.md"), "fact 1\nfact 2\n", "utf8");
+    lastFakeWatcher!.emit("add", join(root, "agent-1", "memory", "facts.md"));
     await vi.waitFor(() => expect(appended.length).toBe(1), { timeout: 2000 });
     expect(appended[0]).toMatchObject({
       detail: { file: "memory/facts.md", addedLines: 2, removedLines: 0 },
@@ -165,7 +161,7 @@ describe("startMemoryAuditWatcher (chokidar wiring)", () => {
 
   it("routes an 'unlink' event into a deletion audit-log append", async () => {
     // Seed a known-good snapshot first by firing an "add" with content on disk.
-    const target = join(root, "agents", "agent-1", "memory", "fact.md");
+    const target = join(root, "agent-1", "memory", "fact.md");
     writeFileSync(target, "x\ny\n", "utf8");
     lastFakeWatcher!.emit("add", target);
     await vi.waitFor(() => expect(appended.length).toBe(1), { timeout: 2000 });
@@ -194,7 +190,6 @@ describe("startMemoryAuditWatcher (usePolling option)", () => {
     (chokidar.watch as ReturnType<typeof vi.fn>).mockClear();
 
     const root = mkdtempSync(join(tmpdir(), "pinchy-memwatch-poll-"));
-    mkdirSync(join(root, "agents"), { recursive: true });
     try {
       const stop = await startMemoryAuditWatcher({
         root,
@@ -218,7 +213,6 @@ describe("startMemoryAuditWatcher (usePolling option)", () => {
     (chokidar.watch as ReturnType<typeof vi.fn>).mockClear();
 
     const root = mkdtempSync(join(tmpdir(), "pinchy-memwatch-poll-default-"));
-    mkdirSync(join(root, "agents"), { recursive: true });
     try {
       const stop = await startMemoryAuditWatcher({
         root,
@@ -251,8 +245,8 @@ describe("startMemoryAuditWatcher (handler error resilience)", () => {
   beforeEach(async () => {
     setupMockState();
     root = mkdtempSync(join(tmpdir(), "pinchy-memwatch-err-"));
-    mkdirSync(join(root, "agents", "agent-1", "memory"), { recursive: true });
-    writeFileSync(join(root, "agents", "agent-1", "MEMORY.md"), "first write\n", "utf8");
+    mkdirSync(join(root, "agent-1", "memory"), { recursive: true });
+    writeFileSync(join(root, "agent-1", "MEMORY.md"), "first write\n", "utf8");
     appended = [];
     unhandled = [];
     lookupShouldThrow = true;
@@ -286,7 +280,7 @@ describe("startMemoryAuditWatcher (handler error resilience)", () => {
     // Fire a change event while lookup throws — the void-detached handler
     // would surface an unhandledRejection without the watcher's catch
     // wrapper.
-    lastFakeWatcher!.emit("change", join(root, "agents", "agent-1", "MEMORY.md"));
+    lastFakeWatcher!.emit("change", join(root, "agent-1", "MEMORY.md"));
     // Yield enough microtasks for the async chain (readFile, lookupAgent,
     // .catch) to settle.
     await wait(50);
@@ -296,12 +290,8 @@ describe("startMemoryAuditWatcher (handler error resilience)", () => {
     // Watcher must still be alive: fix lookup, fire another event, expect
     // the audit to come through this time.
     lookupShouldThrow = false;
-    writeFileSync(
-      join(root, "agents", "agent-1", "MEMORY.md"),
-      "first write\nsecond write\n",
-      "utf8"
-    );
-    lastFakeWatcher!.emit("change", join(root, "agents", "agent-1", "MEMORY.md"));
+    writeFileSync(join(root, "agent-1", "MEMORY.md"), "first write\nsecond write\n", "utf8");
+    lastFakeWatcher!.emit("change", join(root, "agent-1", "MEMORY.md"));
     await vi.waitFor(() => expect(appended.length).toBe(1), { timeout: 2000 });
     expect(unhandled).toEqual([]);
   });

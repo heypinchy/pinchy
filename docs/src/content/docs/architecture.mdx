@@ -237,6 +237,17 @@ OpenClaw 2026.5.12+ refuses to bind on a non-loopback interface without a `gatew
 
 Pinchy authenticates to OpenClaw Gateway using a bearer token. The token is auto-generated on first setup via `crypto.randomBytes(24)` and stored in the `gateway.auth` block of `openclaw.json`. It never appears in source control.
 
+### Volume layout and the `workspaces/` subtree
+
+Two Docker volumes back the OpenClaw integration, and the boundary between them matters:
+
+- **`openclaw-config`** holds OpenClaw's core state: `openclaw.json`, `secrets.json`, the session transcripts, and the memory SQLite index. It is mounted at `/openclaw-config` in the Pinchy container and `/root/.openclaw` in the OpenClaw container.
+- **`pinchy-workspaces`** holds per-agent workspace content (identity, instructions, `uploads/`, `workbench/`, and agent memory). It is mounted _into_ the OpenClaw config tree at the `workspaces/` subpath — `/openclaw-config/workspaces` for Pinchy and `/root/.openclaw/workspaces` for OpenClaw.
+
+A Pinchy agent's files therefore live at `workspaces/<agentId>/`, **not** under OpenClaw's native `agents/<name>/` tree. This is deliberate: it gives agent-owned content its own backup/lifecycle boundary, and it namespaces UUID-keyed Pinchy agents away from any OpenClaw-native agents created through the CLI. OpenClaw resolves each agent's `MEMORY.md` and `memory/` files _relative to_ its configured `workspace` — i.e. `workspaces/<agentId>/MEMORY.md`.
+
+Because the same volume is mounted at two different paths, two helpers in `lib/workspace.ts` are the single source of truth: `getWorkspacePath()` (Pinchy-side, for direct file I/O) and `getOpenClawWorkspacePath()` (the OpenClaw-side path written into `agents[].workspace`). Any code that watches or derives an agent's on-disk location must use these helpers; hardcoding `agents/` or `workspaces/` elsewhere is the drift that left the memory-audit watcher silently inert (issue #345).
+
 ## Channels
 
 Users don't have to reach their agents through the web UI. Pinchy supports external **channels** that connect agents to messaging platforms. Telegram is the first implemented channel; additional channels (email, Slack) are planned.

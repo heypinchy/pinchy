@@ -1,6 +1,5 @@
 import chokidar from "chokidar";
 import { readFile } from "node:fs/promises";
-import path from "node:path";
 import type { Stats } from "node:fs";
 import type { AuditLogEntry } from "@/lib/audit";
 import { handleMemoryFileEvent } from "./handle-event";
@@ -29,10 +28,14 @@ export type MemoryAuditWatcherDeps = {
 };
 
 /**
- * Watches `<root>/agents/*\/MEMORY.md` and `<root>/agents/*\/memory/**\/*.md`
- * and routes filesystem events into `handleMemoryFileEvent`.
+ * Watches `<root>/*\/MEMORY.md` and `<root>/*\/memory/**\/*.md` and routes
+ * filesystem events into `handleMemoryFileEvent`. `root` is the workspace base
+ * (`getWorkspaceBasePath()`), so each immediate child directory is an agent
+ * workspace — there is no `agents/` prefix (that mismatch was the #345
+ * dead-code bug). The bootstrap derives `root` from workspace.ts so this stays
+ * in lockstep with where agent files actually live.
  *
- * Chokidar 5 dropped glob support, so we watch the parent `agents/` directory
+ * Chokidar 5 dropped glob support, so we watch the workspace base directory
  * recursively and use an `ignored` matcher backed by `parseAgentMemoryPath`
  * to filter to memory files only. This keeps the path-shape rules in a single
  * tested module.
@@ -48,9 +51,7 @@ export async function startMemoryAuditWatcher(
   // crawl and steady-state events.
   let readyState: "scanning" | "ready" = "scanning";
 
-  const agentsRoot = path.join(deps.root, "agents");
-
-  const watcher = chokidar.watch(agentsRoot, {
+  const watcher = chokidar.watch(deps.root, {
     ignoreInitial: false,
     persistent: true,
     // Polling rather than fs.watch / fsevents. The watch root is typically a
