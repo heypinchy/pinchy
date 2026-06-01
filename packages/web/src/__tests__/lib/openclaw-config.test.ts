@@ -1228,10 +1228,14 @@ describe("regenerateOpenClawConfig", () => {
 
     // workbench/ is the agent's primary write zone. uploads/ stays writable
     // for backward-compat with custom AGENTS.md files that historically told
-    // the agent to write there (#418).
+    // the agent to write there (#418). MEMORY.md (file) + memory/ (dir) are
+    // the agent's persistent memory — a write-capable agent gets them too so
+    // it can actually persist what it's told to remember.
     expect(agentConfig.write_paths).toEqual([
       "/root/.openclaw/workspaces/writer/uploads",
       "/root/.openclaw/workspaces/writer/workbench",
+      "/root/.openclaw/workspaces/writer/MEMORY.md",
+      "/root/.openclaw/workspaces/writer/memory",
     ]);
   });
 
@@ -1282,13 +1286,62 @@ describe("regenerateOpenClawConfig", () => {
 
     expect(agentConfig).toBeDefined();
     expect(agentConfig.write_paths).toBeUndefined();
+    // A read-only agent gets no memory paths at all — memory is only writable,
+    // so without a write path there's nothing to grant.
+    expect(agentConfig.allowed_paths).not.toContain("/root/.openclaw/workspaces/reader/MEMORY.md");
+    expect(agentConfig.allowed_paths).not.toContain("/root/.openclaw/workspaces/reader/memory");
+  });
+
+  it("grants MEMORY.md + memory/ as writable memory when pinchy_write is present", async () => {
+    // The reason agents could never persist memory: group:fs is denied and
+    // pinchy_write only covered uploads/ + workbench/. A write-capable agent
+    // now gets MEMORY.md (curated long-term) and memory/ (daily logs) so it
+    // can actually write what the user tells it to remember.
+    mockedDb.select.mockReturnValue({
+      from: mockFrom([
+        {
+          id: "writer",
+          name: "Writer Agent",
+          model: "anthropic/claude-opus-4-7",
+          createdAt: new Date(),
+          allowedTools: ["pinchy_write"],
+          pluginConfig: null,
+        },
+      ]),
+    } as never);
+
+    await regenerateOpenClawConfig();
+
+    const written = mockedWriteFileSync.mock.calls[0][1] as string;
+    const config = JSON.parse(written);
+    const agentConfig = config.plugins.entries["pinchy-files"]?.config?.agents?.["writer"];
+
+    const memoryFile = "/root/.openclaw/workspaces/writer/MEMORY.md";
+    const memoryDir = "/root/.openclaw/workspaces/writer/memory";
+
+    // Writable.
+    expect(agentConfig.write_paths).toContain(memoryFile);
+    expect(agentConfig.write_paths).toContain(memoryDir);
+    // And in allowed_paths to satisfy the subset invariant (write ⊆ allowed).
+    expect(agentConfig.allowed_paths).toContain(memoryFile);
+    expect(agentConfig.allowed_paths).toContain(memoryDir);
+
+    // Crucial security property: MEMORY.md is granted as a FILE, so the sibling
+    // instruction files are NOT writable — the agent can rewrite its memory but
+    // never its identity/instructions (validate.ts trailing-slash boundary).
+    expect(agentConfig.write_paths).not.toContain("/root/.openclaw/workspaces/writer/SOUL.md");
+    expect(agentConfig.write_paths).not.toContain("/root/.openclaw/workspaces/writer/AGENTS.md");
+    expect(agentConfig.write_paths).not.toContain("/root/.openclaw/workspaces/writer/IDENTITY.md");
+    expect(agentConfig.write_paths).not.toContain("/root/.openclaw/workspaces/writer/USER.md");
   });
 
   it("never lists the workspace root in allowed_paths or write_paths (hard-deny invariant)", async () => {
     // Regression guard: the workspace root holds Pinchy-managed system files
-    // (SOUL.md, AGENTS.md, IDENTITY.md, USER.md, MEMORY.md). Including it in
-    // either list would let the agent overwrite its own identity. Only the
-    // uploads/ and workbench/ subdirs may appear. See #418 acceptance criteria.
+    // (SOUL.md, AGENTS.md, IDENTITY.md, USER.md). Granting the bare root would
+    // let the agent overwrite its own identity. Memory is granted file-granular
+    // (MEMORY.md) and dir-granular (memory/) — never the root — so the agent can
+    // write its memory but not its instructions. Only uploads/, workbench/,
+    // MEMORY.md and memory/ may appear. See #418 acceptance criteria.
     mockedDb.select.mockReturnValue({
       from: mockFrom([
         {

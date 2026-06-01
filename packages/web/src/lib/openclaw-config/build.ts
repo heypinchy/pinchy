@@ -459,10 +459,33 @@ export async function regenerateOpenClawConfig() {
 
     const agentFilesConfig: Record<string, unknown> = { allowed_paths: allowedPaths };
     if (allowedTools.includes("pinchy_write")) {
+      // Persistent agent memory (OpenClaw-managed): MEMORY.md holds curated
+      // long-term knowledge, memory/ holds daily logs. A write-capable agent
+      // gets them so it can actually persist what the user tells it to
+      // remember — without a write path it sees memory_search but can never
+      // write, which led agents to hallucinate saved memories (#368).
+      //
+      // MEMORY.md is granted as a FILE, not the workspace root: the
+      // trailing-slash boundary in pinchy-files validate.ts makes the entry
+      // match exactly that file and NOT its siblings (SOUL.md, AGENTS.md,
+      // IDENTITY.md, USER.md), so the agent can rewrite its memory but never
+      // its identity or instructions. memory/ is a directory entry (subtree).
+      const workspaceMemoryFile = `${getOpenClawWorkspacePath(agent.id)}/MEMORY.md`;
+      const workspaceMemoryDir = `${getOpenClawWorkspacePath(agent.id)}/memory`;
+
+      // Both lists: write_paths ⊆ allowed_paths is enforced build-time
+      // (validate-built-config.ts) and runtime (pinchy-files validate.ts).
+      agentFilesConfig.allowed_paths = [...allowedPaths, workspaceMemoryFile, workspaceMemoryDir];
+
       // uploads/ stays writable for backward-compat with existing custom
       // AGENTS.md that told the agent to write there. New guidance points
       // agents at workbench/.
-      agentFilesConfig.write_paths = [workspaceUploads, workspaceWorkbench];
+      agentFilesConfig.write_paths = [
+        workspaceUploads,
+        workspaceWorkbench,
+        workspaceMemoryFile,
+        workspaceMemoryDir,
+      ];
     }
     pluginConfigs["pinchy-files"][agent.id] = agentFilesConfig;
 

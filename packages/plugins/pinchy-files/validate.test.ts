@@ -185,6 +185,55 @@ describe("write-mode rejection lists allowed write paths (LLM hint)", () => {
   });
 });
 
+describe("agent memory write paths (file-granular MEMORY.md, instructions protected)", () => {
+  // Mirrors the config build.ts emits for a pinchy_write agent: MEMORY.md is a
+  // FILE entry, memory/ is a DIRECTORY entry, alongside uploads/ + workbench/.
+  // This is the runtime half of the layered guard — the build emits these
+  // paths, the plugin enforces the boundary. The security property: the agent
+  // can write its memory but NEVER its sibling instruction files.
+  const ws = "/root/.openclaw/workspaces/a";
+  const memoryConfig = {
+    allowed_paths: [`${ws}/uploads`, `${ws}/workbench`, `${ws}/MEMORY.md`, `${ws}/memory`],
+    write_paths: [`${ws}/uploads`, `${ws}/workbench`, `${ws}/MEMORY.md`, `${ws}/memory`],
+  };
+
+  it("allows writing MEMORY.md (curated long-term memory)", () => {
+    expect(() => validateAccess(memoryConfig, `${ws}/MEMORY.md`, "write")).not.toThrow();
+  });
+
+  it("allows writing a daily note under memory/", () => {
+    expect(() =>
+      validateAccess(memoryConfig, `${ws}/memory/2026-06-01.md`, "write")
+    ).not.toThrow();
+  });
+
+  it("allows reading MEMORY.md back", () => {
+    expect(() => validateAccess(memoryConfig, `${ws}/MEMORY.md`, "read")).not.toThrow();
+  });
+
+  it("DENIES writing AGENTS.md — the file-granular MEMORY.md entry must not leak to siblings", () => {
+    // The whole point of granting MEMORY.md as a file (not the workspace root):
+    // a sibling instruction file with a shared parent dir must stay read-only.
+    expect(() => validateAccess(memoryConfig, `${ws}/AGENTS.md`, "write")).toThrow(/not in write/i);
+  });
+
+  it("DENIES writing SOUL.md, IDENTITY.md, USER.md (identity stays immutable)", () => {
+    expect(() => validateAccess(memoryConfig, `${ws}/SOUL.md`, "write")).toThrow(/not in write/i);
+    expect(() => validateAccess(memoryConfig, `${ws}/IDENTITY.md`, "write")).toThrow(
+      /not in write/i
+    );
+    expect(() => validateAccess(memoryConfig, `${ws}/USER.md`, "write")).toThrow(/not in write/i);
+  });
+
+  it("DENIES writing a MEMORY.md-prefixed sibling (no prefix-escape)", () => {
+    // `MEMORY.md.bak` shares the `MEMORY.md` prefix but is a different file;
+    // the trailing-slash boundary must not let it through.
+    expect(() => validateAccess(memoryConfig, `${ws}/MEMORY.md.bak`, "write")).toThrow(
+      /not in write/i
+    );
+  });
+});
+
 describe("path-boundary matching (sibling-directory escape)", () => {
   // Allow-list entries without trailing slashes (`/foo/uploads`) used to
   // match any sibling whose name shared the prefix (`/foo/uploadsevil`)
