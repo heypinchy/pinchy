@@ -10,6 +10,7 @@ import { getAgentAvatarSvg } from "@/lib/avatar";
 import Link from "next/link";
 import { Settings } from "lucide-react";
 import { MobileChatHeader } from "@/components/mobile-chat-header";
+import { SessionActionsMenu } from "@/components/session-actions-menu";
 import { Badge } from "@/components/ui/badge";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { type ChatStatus, useChatStatus } from "@/hooks/use-chat-status";
@@ -222,6 +223,7 @@ export function Chat({
                       </TooltipProvider>
                     </div>
                     <div className="flex items-center gap-3">
+                      <SessionActionsMenu agentId={agentId} />
                       {canEdit && (
                         <Link
                           href={`/chat/${agentId}/settings`}
