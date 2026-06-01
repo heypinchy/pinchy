@@ -4,6 +4,7 @@ import type { WebSocket } from "ws";
 import { assertAgentAccess, effectiveVisibility } from "@/lib/agent-access";
 import { getUserGroupIds, getAgentGroupIds } from "@/lib/groups";
 import { isEnterprise } from "@/lib/enterprise";
+import { buildMemoryPromptBlock } from "@/lib/memory-prompt";
 import { appendAuditLog, safeProviderError } from "@/lib/audit";
 import { recordAuditFailure } from "@/lib/audit-deferred";
 import { ActiveRuns } from "@/server/active-runs";
@@ -218,8 +219,17 @@ export class ClientRouter {
         chatOptions.clientMessageId = message.clientMessageId;
       }
 
-      // Build extraSystemPrompt from user name + context + greeting
+      // Build extraSystemPrompt from memory capability + user name + context +
+      // greeting. The memory block goes first: it's a stable platform
+      // capability, not per-turn context. We inject it here (not AGENTS.md)
+      // because it's a capability every write-capable agent has and must not
+      // be user-editable — see memory-prompt.ts.
       const extraPromptParts: string[] = [];
+      const allowedTools = (agent.allowedTools as string[] | null) ?? [];
+      const memoryBlock = buildMemoryPromptBlock(allowedTools);
+      if (memoryBlock) {
+        extraPromptParts.push(memoryBlock);
+      }
       const user = await db.query.users.findFirst({
         where: eq(users.id, this.userId),
       });

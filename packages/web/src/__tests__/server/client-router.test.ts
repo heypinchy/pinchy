@@ -2547,6 +2547,45 @@ describe("ClientRouter", () => {
       );
     });
 
+    it("injects the ## Memory capability block when the agent has pinchy_write", async () => {
+      mockUserFindFirst.mockResolvedValue({ id: "user-1", name: "Alice", context: null });
+      mockFindFirst.mockResolvedValue({ ...defaultAgent, allowedTools: ["pinchy_write"] });
+      async function* fakeStream() {
+        yield { type: "text" as const, text: "Hello!" };
+        yield { type: "done" as const, text: "" };
+      }
+      mockChat.mockReturnValue(fakeStream());
+
+      await router.handleMessage(createMockClientWs() as any, {
+        type: "message",
+        content: "Hi",
+        agentId: "agent-1",
+      });
+
+      const callArgs = mockChat.mock.calls[0][1];
+      expect(callArgs.extraSystemPrompt).toContain("## Memory");
+      expect(callArgs.extraSystemPrompt).toContain("pinchy_write");
+    });
+
+    it("does NOT inject the memory block when the agent cannot write (no pinchy_write)", async () => {
+      mockUserFindFirst.mockResolvedValue({ id: "user-1", name: "Alice", context: null });
+      mockFindFirst.mockResolvedValue({ ...defaultAgent, allowedTools: [] });
+      async function* fakeStream() {
+        yield { type: "text" as const, text: "Hello!" };
+        yield { type: "done" as const, text: "" };
+      }
+      mockChat.mockReturnValue(fakeStream());
+
+      await router.handleMessage(createMockClientWs() as any, {
+        type: "message",
+        content: "Hi",
+        agentId: "agent-1",
+      });
+
+      const callArgs = mockChat.mock.calls[0][1];
+      expect(callArgs.extraSystemPrompt ?? "").not.toContain("## Memory");
+    });
+
     it("should NOT inject name when user has no name set", async () => {
       mockUserFindFirst.mockResolvedValue({ id: "user-1", name: null, context: null });
       async function* fakeStream() {
