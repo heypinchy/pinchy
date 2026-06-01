@@ -720,6 +720,63 @@ describe("ClientRouter", () => {
     }
   });
 
+  it("DOES keep the client alive while a KNOWN dispatch-race retry is in flight (not a hang)", async () => {
+    // Distinct from the hang case above: here OpenClaw actively rejects with
+    // "unknown agent id" (a transient apply-lag during a config reload), so the
+    // resilient retry kicks in and can stay silent for up to ~90 s. The client
+    // stuck-timer is 60 s — without a keep-alive the retry would land after the
+    // browser already gave up. We re-emit `thinking` ONLY because a race was
+    // observed; a generic hang (test above) never triggers this, so the
+    // stuck-timer still surfaces real hangs.
+    vi.useFakeTimers();
+    try {
+      const clientWs = createMockClientWs();
+      let resolveHang: () => void = () => {};
+
+      async function* raceError() {
+        yield {
+          type: "error" as const,
+          text: 'invalid agent params: unknown agent id "agent-1"',
+          runId: "r0",
+        };
+      }
+      async function* hang() {
+        await new Promise<void>((r) => (resolveHang = r));
+      }
+      // Attempt 0 hits the race; the retry then hangs (OC still applying).
+      mockChat.mockReturnValueOnce(raceError()).mockReturnValue(hang());
+
+      const handlePromise = router.handleMessage(clientWs as any, {
+        type: "message",
+        content: "Hi",
+        agentId: "agent-1",
+      });
+
+      // Initial thinking + consume the race error (starts the keep-alive) +
+      // drain the 500 ms backoff into the hanging retry attempt.
+      await vi.advanceTimersByTimeAsync(0);
+      await vi.advanceTimersByTimeAsync(600);
+
+      const before = clientWs.sent
+        .map((s) => JSON.parse(s))
+        .filter((m: any) => m.type === "thinking").length;
+
+      // Past one keep-alive interval — a fresh `thinking` must have fired.
+      await vi.advanceTimersByTimeAsync(20_000);
+
+      const after = clientWs.sent
+        .map((s) => JSON.parse(s))
+        .filter((m: any) => m.type === "thinking").length;
+
+      expect(after).toBeGreaterThan(before);
+
+      resolveHang();
+      await handlePromise;
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("should send a thinking message before consuming the stream so the UI can show a spinner", async () => {
     const clientWs = createMockClientWs();
     let firstSent: unknown = null;

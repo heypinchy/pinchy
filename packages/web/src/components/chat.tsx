@@ -223,7 +223,7 @@ export function Chat({
                       </TooltipProvider>
                     </div>
                     <div className="flex items-center gap-3">
-                      <SessionActionsMenu agentId={agentId} />
+                      {hasInitialContent && <SessionActionsMenu agentId={agentId} />}
                       {canEdit && (
                         <Link
                           href={`/chat/${agentId}/settings`}

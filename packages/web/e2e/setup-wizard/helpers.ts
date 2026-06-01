@@ -112,9 +112,10 @@ export async function resetStack(): Promise<void> {
   // window small enough that dispatch resilience comfortably covers it.
   //
   // "Settled" = health reports connected & not-restarting continuously for 5 s
-  // (a transient reload/restart resets the streak). 90 s budget covers a
-  // worst-case cold-start restart cycle.
-  const settleDeadline = Date.now() + 90000;
+  // (a transient reload/restart resets the streak). 60 s budget covers a
+  // worst-case cold-start reload cycle while leaving headroom under the 120 s
+  // beforeAll timeout (this runs after the ~30 s container restart above).
+  const settleDeadline = Date.now() + 60000;
   let connectedSince: number | null = null;
   while (Date.now() < settleDeadline) {
     try {
@@ -133,7 +134,7 @@ export async function resetStack(): Promise<void> {
     }
     await sleep(1000);
   }
-  throw new Error("OpenClaw did not settle within 90s after reset");
+  throw new Error("OpenClaw did not settle within 60s after reset");
 }
 
 export interface ProviderSmokeTestSpec {

@@ -11,6 +11,7 @@ import { getAgentWithAccess } from "@/lib/agent-access";
 import { parseRequestBody } from "@/lib/api-validation";
 import { getOpenClawClient } from "@/server/openclaw-client";
 import { compactSessionSchema } from "@/lib/schemas/sessions";
+import { allowCompaction } from "@/lib/compact-throttle";
 
 type RouteContext = { params: Promise<{ agentId: string }> };
 
@@ -34,6 +35,18 @@ export const POST = withAuth<RouteContext>(async (request, { params }, session) 
   // agent:<agentId>:direct:<userId>. OpenClaw validates that the agentId in the
   // key matches the agentId argument — see MEMORY.md "OpenClaw Sessions API".
   const sessionKey = `agent:${agentId}:direct:${session.user.id!}`;
+
+  // Throttle repeated compactions of the same session. The UI debounces via a
+  // disabled button; this guards direct API spamming from fanning out
+  // sessions.compact RPCs (compacting again seconds later is a no-op anyway).
+  if (!allowCompaction(sessionKey)) {
+    return NextResponse.json(
+      {
+        error: "You just compacted this conversation — please wait a moment before doing it again.",
+      },
+      { status: 429 }
+    );
+  }
 
   try {
     const client = getOpenClawClient();

@@ -41,6 +41,10 @@ describe("POST /api/agents/[agentId]/sessions/compact", () => {
 
   beforeEach(async () => {
     vi.clearAllMocks();
+    // Reset modules so the per-session compaction throttle (module-level state
+    // in @/lib/compact-throttle) starts fresh each test and doesn't leak a
+    // recorded timestamp from one test into the next.
+    vi.resetModules();
     mockGetSession.mockResolvedValue({
       user: { id: "user-1", email: "user@test.com", role: "member" },
     });
@@ -91,5 +95,18 @@ describe("POST /api/agents/[agentId]/sessions/compact", () => {
     mockCompact.mockRejectedValueOnce(new Error("OpenClaw WS disconnected"));
     const res = await POST(makeRequest(), ctx as never);
     expect(res.status).toBe(502);
+  });
+
+  it("throttles a rapid second compaction of the same session (429, no second OC call)", async () => {
+    const first = await POST(makeRequest(), ctx as never);
+    expect(first.status).toBe(200);
+    expect(mockCompact).toHaveBeenCalledTimes(1);
+
+    // A second compaction of the same per-user session within the throttle
+    // window is rejected BEFORE reaching OpenClaw — the UI debounces the button,
+    // this guards direct API spamming from fanning out sessions.compact RPCs.
+    const second = await POST(makeRequest(), ctx as never);
+    expect(second.status).toBe(429);
+    expect(mockCompact).toHaveBeenCalledTimes(1);
   });
 });

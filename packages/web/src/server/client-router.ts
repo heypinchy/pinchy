@@ -343,9 +343,29 @@ export class ClientRouter {
       // rest of `pipeStream`. See `chat-dispatch-retry.ts` for the full
       // rationale (and PR #442 CI runs 26505503327 / 26511658136 for the
       // observed failure mode that motivated this).
+      // Keep-alive for the resilient dispatch-race retry. Started ONLY when a
+      // dispatch-race is actually observed (see onDispatchRaceObserved below) —
+      // a known transient apply-lag, NOT a generic hang — so the deliberate
+      // "no heartbeats before first chunk" contract (let the client stuck-timer
+      // surface real OC hangs) is preserved for the hang case.
+      let dispatchRaceKeepAlive: ReturnType<typeof setInterval> | null = null;
+
       const stream = chatWithDispatchRaceRetry(text, chatOptions as ChatOptions, {
         chat: (m, o) => this.openclawClient.chat(m, o),
         onDispatchRaceObserved: async ({ providerError }) => {
+          // The resilient retry (chat-dispatch-retry.ts) can stay silent for up
+          // to ~90 s while OpenClaw applies the agent into its runtime. The
+          // browser's stuck-timer (STUCK_TIMEOUT_MS, use-ws-runtime.ts) fires
+          // after 60 s of silence and falsely times the run out — so once we
+          // KNOW we're in a dispatch-race, re-emit `thinking` every 20 s to keep
+          // the UI waiting through the OC restart. The first real chunk also
+          // resets that timer, making this redundant-but-harmless once the
+          // reply streams. Cleared in the finally below.
+          if (!dispatchRaceKeepAlive) {
+            dispatchRaceKeepAlive = setInterval(() => {
+              this.sendToClient(clientWs, { type: "thinking", messageId });
+            }, 20000);
+          }
           // Audit the transient observation so we can measure how often
           // the dispatch race fires in production without relying on
           // anecdotal log-grep. Using `chat.agent_error` with the
@@ -372,7 +392,11 @@ export class ClientRouter {
         messageId,
       });
 
-      await this.pipeStream(clientWs, stream, agent, sessionKey, messageId);
+      try {
+        await this.pipeStream(clientWs, stream, agent, sessionKey, messageId);
+      } finally {
+        if (dispatchRaceKeepAlive) clearInterval(dispatchRaceKeepAlive);
+      }
     } catch (err) {
       this.sendToClient(clientWs, {
         type: "error",

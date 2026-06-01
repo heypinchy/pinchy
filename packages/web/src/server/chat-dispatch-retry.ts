@@ -33,6 +33,11 @@
 // rather than loop forever. Errors after the first chunk, and any other error
 // shape, pass straight through to the caller's existing error path. So the
 // loop cannot mask provider failures, schema rejections, or stream truncation.
+//
+// No orphaned OC runs: a retried attempt failed because OC REJECTED the
+// dispatch ("unknown agent id", ~25 ms, before any run is created), so there is
+// no server-side run to leak. Breaking the `for await` on the rejection also
+// returns the underlying chat generator, releasing its request.
 
 import type { ChatChunk, ChatOptions } from "openclaw-node";
 
