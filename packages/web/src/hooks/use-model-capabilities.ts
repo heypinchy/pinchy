@@ -9,6 +9,11 @@ let moduleCache: ModelCapabilityMap | undefined;
 let inflight: Promise<ModelCapabilityMap> | null = null;
 const listeners = new Set<() => void>();
 
+/**
+ * @internal — test helper only. Clears the module-level cache and in-flight
+ * promise so each test starts from a clean slate. Never call from production
+ * code; use `invalidateModelCapabilityCache()` on the server side instead.
+ */
 export function _resetModuleCacheForTest(): void {
   moduleCache = undefined;
   inflight = null;

@@ -79,3 +79,25 @@ export function modelHasCapability(qualifiedModelId: string, cap: ModelCapabilit
       return caps.tools;
   }
 }
+
+/**
+ * Returns the `ModelCapabilities` field that corresponds to the given
+ * `ModelCapability` string. The mapping is explicit — no string-cast —
+ * so adding new capabilities forces a compile-time update here.
+ */
+export function capabilityField(caps: ModelCapabilities, cap: ModelCapability): boolean {
+  switch (cap) {
+    case "vision":
+      return caps.vision;
+    case "documents":
+      return caps.documents;
+    case "audio":
+      return caps.audio;
+    case "video":
+      return caps.video;
+    case "long-context":
+      return caps.longContext;
+    case "tools":
+      return caps.tools;
+  }
+}

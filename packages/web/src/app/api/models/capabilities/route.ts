@@ -27,5 +27,10 @@ export const GET = withAuth(async () => {
       tools: r.tools ?? false,
     };
   }
-  return NextResponse.json(out);
+  // The capability map changes only at boot (catalog seed) or when the admin
+  // adds/removes a provider. A 60-second private cache avoids a DB round-trip
+  // on every cold tab while staying fresh enough for operational changes.
+  return NextResponse.json(out, {
+    headers: { "Cache-Control": "private, max-age=60" },
+  });
 });

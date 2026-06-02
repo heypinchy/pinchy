@@ -6,7 +6,7 @@ import { AlertTriangle, X } from "lucide-react";
 import { ModelPicker } from "@/components/model-picker";
 import { Button } from "@/components/ui/button";
 import type { ModelCapability } from "@/lib/model-resolver/types";
-import type { ModelCapabilities } from "@/lib/model-capabilities/cache";
+import { capabilityField, type ModelCapabilities } from "@/lib/model-capabilities/cache";
 
 type AgentRef = { id: string; name: string };
 type ProviderModel = { id: string; name: string; capabilities: ModelCapabilities };
@@ -56,9 +56,7 @@ export function RecoveryPanel({
 
   const noProviderSupportsCapability =
     providers.length === 0 ||
-    providers.every((p) =>
-      p.models.every((m) => !m.capabilities[capability as keyof ModelCapabilities])
-    );
+    providers.every((p) => p.models.every((m) => !capabilityField(m.capabilities, capability)));
 
   return (
     <div
