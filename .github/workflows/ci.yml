@@ -116,6 +116,21 @@ jobs:
           # shellcheck disable=SC2086 -- word-split intentional: passes each migration path as a separate squawk arg
           npx --yes squawk-cli@2.48.0 $CHANGED
 
+      - name: Test removal guard (no untracked test deletions)
+        if: github.event_name == 'pull_request'
+        env:
+          # The `allow-test-deletion` PR label is the deliberate, visible override.
+          ALLOW_TEST_DELETION: ${{ contains(github.event.pull_request.labels.*.name, 'allow-test-deletion') }}
+          # Passed via env (not interpolated into the script) to avoid shell injection.
+          PR_BODY: ${{ github.event.pull_request.body }}
+        run: |
+          # Fail if the PR removes test cases on net — deleted test files or
+          # removed it()/test() blocks — without an explicit, tracked override.
+          # Closes the gap left by no-untracked-skips (which only catches
+          # .skip/.todo). See AGENTS.md § "No Untracked Test Removal".
+          git fetch --no-tags --depth=50 origin "${{ github.base_ref }}"
+          node scripts/check-test-deletions.mjs --base "origin/${{ github.base_ref }}"
+
       - name: Test
         run: pnpm test
 
