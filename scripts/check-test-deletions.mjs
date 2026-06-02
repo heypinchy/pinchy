@@ -99,6 +99,17 @@ function main() {
   // Best-effort merge-base for correct PR-diff semantics; tip-to-tip fallback
   // keeps the guard working in a shallow clone with no common ancestor.
   const mergeBase = gitSafe(["merge-base", base, "HEAD"]);
+  if (!mergeBase) {
+    // Without a merge-base we compare tip-to-tip, which can attribute tests
+    // that advanced on the base branch to this PR (false positives) if the
+    // branch is far behind. Surface it so a confusing failure is diagnosable;
+    // rebasing on the base or the override resolves it.
+    console.error(
+      `::warning::[test-removal-guard] no merge-base with "${base}" (shallow clone) — ` +
+        `using a tip-to-tip diff. A branch far behind "${base}" may report false ` +
+        `removals; rebase on "${base}" or use the override if that happens.`,
+    );
+  }
   const changedRaw = gitSafe(diffArgs(mergeBase, base));
   if (changedRaw === null) {
     // Could not compute a diff at all (unexpected). Fail open with a loud
@@ -134,12 +145,10 @@ function main() {
     process.exit(0);
   }
 
-  const messages = (
-    gitSafe(["log", "--format=%B", `${base}..HEAD`]) || ""
-  ).split(/\n(?=commit |$)/);
+  const commitLog = gitSafe(["log", "--format=%B", `${base}..HEAD`]) || "";
   const override = parseOverride({
     envValue: process.env.ALLOW_TEST_DELETION,
-    messages: [messages.join("\n"), process.env.PR_BODY || ""],
+    messages: [commitLog],
   });
 
   const detail = removals

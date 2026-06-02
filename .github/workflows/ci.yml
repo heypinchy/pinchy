@@ -121,8 +121,6 @@ jobs:
         env:
           # The `allow-test-deletion` PR label is the deliberate, visible override.
           ALLOW_TEST_DELETION: ${{ contains(github.event.pull_request.labels.*.name, 'allow-test-deletion') }}
-          # Passed via env (not interpolated into the script) to avoid shell injection.
-          PR_BODY: ${{ github.event.pull_request.body }}
         run: |
           # Fail if the PR removes test cases on net — deleted test files or
           # removed it()/test() blocks — without an explicit, tracked override.
