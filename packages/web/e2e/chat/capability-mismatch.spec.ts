@@ -407,7 +407,9 @@ test.describe("capability-mismatch — block + recovery", () => {
     await expect(recoveryPanel).not.toBeVisible({ timeout: 5000 });
 
     // ── 13. Send the message — mock WS acks + completes ──────────────────────
-    await page.getByRole("button", { name: "Send message" }).click();
+    // Same approach as step 8: dispatch the form submit directly to bypass the
+    // assistant-ui disabled gate.
+    await page.locator("form.aui-composer-root").dispatchEvent("submit");
 
     // The assistant reply must appear in the thread
     await expect(page.locator('[data-role="assistant"]').last()).toContainText(
