@@ -59,24 +59,25 @@ export async function POST(request: NextRequest) {
     const hashedPassword = await hashPassword(password);
 
     try {
-      // All four writes participate in a single transaction:
+      // All three writes participate in a single transaction:
       //   1. update credential password
-      //   2. update display name (if provided)
-      //   3. revoke every active session for this user — without this, a
+      //   2. revoke every active session for this user — without this, a
       //      stale or leaked session token survives the reset and the
       //      reset's recovery semantics are broken
-      //   4. mark the invite claimed
+      //   3. mark the invite claimed
       // If any step fails the whole reset rolls back; the user keeps
       // their old password and the invite token stays usable.
+      //
+      // A reset must NEVER touch users.name (#436): the recovery flow has no
+      // legitimate reason to rename the account, and silently overwriting the
+      // display name with whatever the form carried was data loss. The page
+      // hides the name field; the route ignores `name` on reset as defense in
+      // depth.
       await db.transaction(async (tx) => {
         await tx
           .update(accounts)
           .set({ password: hashedPassword })
           .where(and(eq(accounts.userId, existingUser.id), eq(accounts.providerId, "credential")));
-
-        if (name) {
-          await tx.update(users).set({ name }).where(eq(users.id, existingUser.id));
-        }
 
         await tx.delete(sessions).where(eq(sessions.userId, existingUser.id));
 
