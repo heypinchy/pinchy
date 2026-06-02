@@ -27,6 +27,7 @@ import {
   pollAuditForTool,
   seedDefaultProviderToOllama,
   waitForOpenClawStable,
+  waitForAgentDispatchable,
 } from "../shared/dispatch-probe";
 
 test.describe("pinchy-web — Brave Search E2E", () => {
@@ -182,6 +183,23 @@ test.describe("Web dispatch probe (pinchy-web plugin coverage)", () => {
 
     // 7. Wait for OpenClaw to stabilise with the new Ollama config.
     await waitForOpenClawStable(() => pinchyGet("/api/health/openclaw", dispatchCookie));
+
+    // 8. Gate on the dispatch agent actually being in OC's hot-loaded
+    //    `agents.list` before any test dispatches to it. `waitForOpenClawStable`
+    //    above only proves the gateway is connected — NOT that the
+    //    fire-and-forget regenerate from the allowedTools PATCH (step 6) has
+    //    landed. On a cold-start run the regeneration storm can push the
+    //    agents.list apply past POST /api/agents' best-effort 5 s
+    //    `waitForAgentInRuntime`, so the first dispatch raced the apply and hit
+    //    `invalid agent params: unknown agent id` for longer than the chat
+    //    dispatch-race retry budget (CI flake on the 2026.5.28 bump). Polling
+    //    OC's live agents.list here closes that window deterministically — the
+    //    same gate the Odoo dispatch probe uses.
+    await waitForAgentDispatchable(
+      (agentId) => pinchyGet(`/api/health/openclaw?agentId=${agentId}`, dispatchCookie),
+      dispatchAgentId,
+      { deadlineMs: 120_000 }
+    );
   });
 
   test.afterAll(async () => {
