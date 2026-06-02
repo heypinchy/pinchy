@@ -115,9 +115,21 @@ export async function resetStack(): Promise<void> {
   // (a transient reload/restart resets the streak). 60 s budget covers a
   // worst-case cold-start reload cycle while leaving headroom under the 120 s
   // beforeAll timeout (this runs after the ~30 s container restart above).
-  const settleDeadline = Date.now() + 60000;
+  await waitForOpenClawSettled(60000, "after reset");
+}
+
+/**
+ * Poll Pinchy's `/api/health/openclaw` until OpenClaw reports connected & ok
+ * continuously for 5 s (a transient reload/restart resets the streak), or throw
+ * after `budgetMs`. Fences a chat round-trip off from an in-flight gateway
+ * restart so the test never races a respawn cycle. Shared by resetStack (drains
+ * the cold-start cascade before the wizard) and runProviderSmokeTest (drains the
+ * first-secrets.json bootstrap pkill before the first message).
+ */
+export async function waitForOpenClawSettled(budgetMs: number, context: string): Promise<void> {
+  const deadline = Date.now() + budgetMs;
   let connectedSince: number | null = null;
-  while (Date.now() < settleDeadline) {
+  while (Date.now() < deadline) {
     try {
       const out = execSync(`curl -fsS http://localhost:7777/api/health/openclaw`, {
         stdio: "pipe",
@@ -134,7 +146,7 @@ export async function resetStack(): Promise<void> {
     }
     await sleep(1000);
   }
-  throw new Error("OpenClaw did not settle within 60s after reset");
+  throw new Error(`OpenClaw did not settle within ${Math.round(budgetMs / 1000)}s (${context})`);
 }
 
 export interface ProviderSmokeTestSpec {
@@ -209,6 +221,19 @@ export async function runProviderSmokeTest(page: Page, spec: ProviderSmokeTestSp
   await expect(page).toHaveURL(/\/chat\//, { timeout: 15000 });
   await expect(page.getByText(/i'm smithers/i)).toBeVisible({ timeout: 30000 });
 
+  // The Phase 3 provider save wrote secrets.json for the first time, which makes
+  // config/start-openclaw.sh pkill + respawn the gateway (~40 s). Sending the
+  // first message INTO that in-flight restart and trusting dispatch-retry to
+  // absorb it within a single flat timeout was the documented flake source: under
+  // CI load the respawn + round-trip occasionally overran the window, and because
+  // the slow provider varies per run, a different one of the five specs failed
+  // each time. Fence the message off behind the SAME health-settle gate that
+  // resetStack uses, so the gateway is reconnected BEFORE we send — turning the
+  // race into a deterministic poll. This redistributes (does not enlarge) the
+  // former 90 s reply budget: ≤60 s draining the restart here, then a short reply
+  // window below against an already-healthy gateway.
+  await waitForOpenClawSettled(60000, `${spec.provider} first-chat post-secrets restart`);
+
   const composer = page.getByPlaceholder(/send a message/i);
   await composer.fill("Hello, are you working?");
   await composer.press("Enter");
@@ -219,14 +244,13 @@ export async function runProviderSmokeTest(page: Page, spec: ProviderSmokeTestSp
   // ("Sure, happy to help! What would you like to work on?") and that
   // NO error UI is shown.
   //
-  // 90 s budget: the wizard's "Continue" click triggers regenerateOpenClawConfig
-  // which writes openclaw.json + secrets.json. OpenClaw's secrets-watcher then
-  // pkills the gateway on first-time secrets.json appearance (config/start-openclaw.sh
-  // bootstrap-marker logic), and the health-loop respawn cycle is ~40 s.
-  // 30 s was too tight on a cold E2E stack — the test would assert before OC
-  // finished its first-real-config restart. 90 s covers the worst case
-  // (one full restart cycle + chat round-trip).
-  await expect(page.getByText(/sure, happy to help/i)).toBeVisible({ timeout: 90000 });
+  // 30 s budget: waitForOpenClawSettled above already drained the first-secrets
+  // bootstrap pkill/respawn (~40 s) and confirmed the gateway is reconnected, so
+  // the message now goes to a healthy gateway and the mock's deterministic reply
+  // is a single fast round-trip. The earlier flat 90 s wait existed only because
+  // the message raced the in-flight restart; with the restart fenced off, 30 s is
+  // ample headroom for a healthy round-trip without a per-test-timeout blowout.
+  await expect(page.getByText(/sure, happy to help/i)).toBeVisible({ timeout: 30000 });
   await expect(page.getByText(/smithers couldn't respond/i)).not.toBeVisible();
   await expect(page.getByText(/no api key found/i)).not.toBeVisible();
 }
