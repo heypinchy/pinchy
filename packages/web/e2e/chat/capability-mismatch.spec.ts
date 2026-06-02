@@ -371,7 +371,11 @@ test.describe("capability-mismatch — block + recovery", () => {
     await expect(page.getByText(PNG_FILENAME)).toBeVisible({ timeout: 5000 });
 
     // ── 8. Try to send — handleSubmit blocks because vision: false ────────────
-    await page.getByRole("button", { name: "Send message" }).click();
+    // Wait for Send button to be enabled (chatStatus must be "ready"). Give it
+    // more time than the default since the chat bootstraps after login.
+    const sendButton = page.getByRole("button", { name: "Send message" });
+    await expect(sendButton).toBeEnabled({ timeout: 15000 });
+    await sendButton.click();
 
     // ── 9. RecoveryPanel must appear ─────────────────────────────────────────
     const recoveryPanel = page.getByRole("region", { name: "Can't be sent" });
