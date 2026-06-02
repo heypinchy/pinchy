@@ -53,6 +53,13 @@ jobs:
           echo "tag=${RELEASE_TAG}" >> "$GITHUB_OUTPUT"
           echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
 
+      # Build-time guard for the v0.5.5 drift: `gh release create` skipped the
+      # `pnpm release` version bump, so the images reported a stale
+      # `pinchyVersion` despite the tag. This fails the workflow before any
+      # GHCR push, so a botched release leaves no artifact to clean up.
+      - name: Assert package.json versions match the release tag
+        run: node scripts/assert-package-version.mjs "${{ steps.release-tag.outputs.tag }}"
+
       - name: Extract metadata (tags, labels)
         id: meta-pinchy
         uses: docker/metadata-action@v5
@@ -170,6 +177,25 @@ jobs:
           docker compose ps
           docker compose logs
           exit 1
+
+      # Runtime side of the v0.5.5 guard: /api/version reports
+      # packages/web/package.json#version (baked into NEXT_PUBLIC_PINCHY_VERSION
+      # at build time). Asserting it here catches any path that produces a
+      # runtime/tag mismatch — including future changes to where pinchyVersion
+      # is sourced — not just the package.json drift Layer 2 covers.
+      - name: Assert /api/version reports the released version
+        env:
+          RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+        working-directory: ${{ steps.install-dir.outputs.path }}
+        run: |
+          EXPECTED="${RELEASE_TAG#v}"
+          REPORTED=$(curl -sf http://localhost:7777/api/version | jq -r '.pinchyVersion')
+          echo "Reported pinchyVersion: '$REPORTED' (expected '$EXPECTED')"
+          if [ "$REPORTED" != "$EXPECTED" ]; then
+            echo "::error::/api/version reports '$REPORTED' but release is ${RELEASE_TAG}. The release was likely cut without 'pnpm release', leaving package.json#version stale."
+            docker compose logs --tail=20 pinchy
+            exit 1
+          fi
 
       - name: Assert all services running
         working-directory: ${{ steps.install-dir.outputs.path }}

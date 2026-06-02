@@ -74,6 +74,41 @@ export function buildCommitMessage(version) {
 }
 
 /**
+ * Asserts that both package.json versions match the release tag.
+ *
+ * Regression guard for the v0.5.5 release: it was cut with `gh release create`
+ * instead of `pnpm release`, so the `chore: release` version bump never ran and
+ * the published images reported `pinchyVersion: 0.5.4` (from packages/web's
+ * pkg.version, baked into NEXT_PUBLIC_PINCHY_VERSION at build) despite the
+ * v0.5.5 tag. release.yml runs this before pushing any image so the drift fails
+ * the workflow cheaply, before any GHCR artifact exists.
+ *
+ * @param {{ tag: string, pkgVersion: string, webVersion: string }} args
+ *   tag — release tag, with or without leading 'v' (e.g. "v0.5.5" or "0.5.5").
+ *   pkgVersion — version field of root package.json.
+ *   webVersion — version field of packages/web/package.json.
+ * @throws {Error} if the tag is not valid semver, or if either package version
+ *   does not match the tag.
+ */
+export function assertVersionMatchesTag({ tag, pkgVersion, webVersion }) {
+  const expected = parseAndValidateVersion(tag);
+  const mismatches = [];
+  if (pkgVersion !== expected) {
+    mismatches.push(`  package.json:              ${pkgVersion}`);
+  }
+  if (webVersion !== expected) {
+    mismatches.push(`  packages/web/package.json: ${webVersion}`);
+  }
+  if (mismatches.length > 0) {
+    throw new Error(
+      `Tag v${expected} does not match package versions:\n` +
+        `${mismatches.join("\n")}\n` +
+        `Run 'pnpm release ${expected}' to bump both before tagging.`,
+    );
+  }
+}
+
+/**
  * Escapes a string for safe inclusion in a RegExp pattern.
  * @param {string} s
  * @returns {string}

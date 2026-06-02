@@ -8,6 +8,7 @@ import {
   assertUpgradingSectionExists,
   extractUpgradeNotes,
   bumpEnvExample,
+  assertVersionMatchesTag,
 } from "./release-logic.mjs";
 
 // parseAndValidateVersion
@@ -41,11 +42,7 @@ test("bumpPackageJson updates version field", () => {
 });
 
 test("bumpPackageJson preserves other fields", () => {
-  const input = JSON.stringify(
-    { name: "pinchy", version: "0.2.0", private: true },
-    null,
-    2,
-  );
+  const input = JSON.stringify({ name: "pinchy", version: "0.2.0", private: true }, null, 2);
   const output = bumpPackageJson(input, "0.3.0");
   const parsed = JSON.parse(output);
   assert.equal(parsed.name, "pinchy");
@@ -62,6 +59,83 @@ test("bumpPackageJson preserves trailing newline", () => {
 
 test("buildTagName prefixes version with v", () => {
   assert.equal(buildTagName("0.3.0"), "v0.3.0");
+});
+
+// assertVersionMatchesTag — the v0.5.5 regression guard. `gh release create`
+// skipped the `pnpm release` version bump, so the published images reported a
+// stale `pinchyVersion` (0.5.4) despite the v0.5.5 tag. This function is the
+// build-time gate that release.yml runs before pushing any image.
+
+test("assertVersionMatchesTag passes when both package versions match the tag", () => {
+  assert.doesNotThrow(() =>
+    assertVersionMatchesTag({
+      tag: "v0.5.5",
+      pkgVersion: "0.5.5",
+      webVersion: "0.5.5",
+    }),
+  );
+});
+
+test("assertVersionMatchesTag accepts a tag without the leading v", () => {
+  assert.doesNotThrow(() =>
+    assertVersionMatchesTag({
+      tag: "0.5.5",
+      pkgVersion: "0.5.5",
+      webVersion: "0.5.5",
+    }),
+  );
+});
+
+test("assertVersionMatchesTag throws when the root package.json version is stale", () => {
+  assert.throws(
+    () =>
+      assertVersionMatchesTag({
+        tag: "v0.5.5",
+        pkgVersion: "0.5.4",
+        webVersion: "0.5.5",
+      }),
+    /package\.json/,
+  );
+});
+
+test("assertVersionMatchesTag throws when the web package.json version is stale", () => {
+  assert.throws(
+    () =>
+      assertVersionMatchesTag({
+        tag: "v0.5.5",
+        pkgVersion: "0.5.5",
+        webVersion: "0.5.4",
+      }),
+    /packages\/web\/package\.json/,
+  );
+});
+
+test("assertVersionMatchesTag error names the offending version and suggests pnpm release", () => {
+  assert.throws(
+    () =>
+      assertVersionMatchesTag({
+        tag: "v0.5.5",
+        pkgVersion: "0.5.4",
+        webVersion: "0.5.4",
+      }),
+    (err) => {
+      assert.match(err.message, /0\.5\.4/);
+      assert.match(err.message, /pnpm release 0\.5\.5/);
+      return true;
+    },
+  );
+});
+
+test("assertVersionMatchesTag rejects a malformed tag", () => {
+  assert.throws(
+    () =>
+      assertVersionMatchesTag({
+        tag: "not-a-version",
+        pkgVersion: "0.5.5",
+        webVersion: "0.5.5",
+      }),
+    /invalid version/i,
+  );
 });
 
 // buildCommitMessage
@@ -84,9 +158,7 @@ test("assertUpgradingSectionExists accepts %%PINCHY_VERSION%% placeholder", () =
     "",
     "Notes go here.",
   ].join("\n");
-  assert.doesNotThrow(() =>
-    assertUpgradingSectionExists(mdx, "0.4.4", "0.5.0"),
-  );
+  assert.doesNotThrow(() => assertUpgradingSectionExists(mdx, "0.4.4", "0.5.0"));
 });
 
 test("assertUpgradingSectionExists accepts concrete target version", () => {
@@ -101,9 +173,7 @@ test("assertUpgradingSectionExists accepts concrete target version", () => {
     "",
     "Notes.",
   ].join("\n");
-  assert.doesNotThrow(() =>
-    assertUpgradingSectionExists(mdx, "0.4.4", "0.5.0"),
-  );
+  assert.doesNotThrow(() => assertUpgradingSectionExists(mdx, "0.4.4", "0.5.0"));
 });
 
 test("assertUpgradingSectionExists rejects missing section", () => {
@@ -125,9 +195,7 @@ test("assertUpgradingSectionExists rejects stale section (wrong 'from' version)"
 test("assertUpgradingSectionExists is whitespace-tolerant in the heading", () => {
   const mdx =
     "##   Upgrading  from  v0.4.4  to  %%PINCHY_VERSION%%  \n\n### Breaking changes\n\nNone.\n\n### Upgrade notes\n\nNotes.\n";
-  assert.doesNotThrow(() =>
-    assertUpgradingSectionExists(mdx, "0.4.4", "0.5.0"),
-  );
+  assert.doesNotThrow(() => assertUpgradingSectionExists(mdx, "0.4.4", "0.5.0"));
 });
 
 test("assertUpgradingSectionExists error message suggests the heading to add", () => {
@@ -308,10 +376,7 @@ test("bumpEnvExample throws when PINCHY_VERSION line is missing", () => {
   const input = `# Only optional vars, no PINCHY_VERSION
 # DB_PASSWORD=
 `;
-  assert.throws(
-    () => bumpEnvExample(input, "0.5.0"),
-    /No PINCHY_VERSION= line in \.env\.example/,
-  );
+  assert.throws(() => bumpEnvExample(input, "0.5.0"), /No PINCHY_VERSION= line in \.env\.example/);
 });
 
 test("bumpEnvExample preserves order and other variables when many exist", () => {
