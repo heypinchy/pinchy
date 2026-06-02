@@ -916,7 +916,9 @@ describe("regenerateOpenClawConfig", () => {
     const written = mockedWriteFileSync.mock.calls[0][1] as string;
     const config = JSON.parse(written);
     expect(config?.models?.providers?.anthropic?.api).toBe("anthropic-messages");
-    expect(config?.models?.providers?.openai?.api).toBe("openai-responses");
+    // Chat Completions, not the Responses API — maximally compatible with
+    // OpenAI-compatible proxies behind OPENAI_BASE_URL (see BUILTIN_PROVIDER_API).
+    expect(config?.models?.providers?.openai?.api).toBe("openai-completions");
     expect(config?.models?.providers?.google?.api).toBe("google-generative-ai");
   });
 
