@@ -229,23 +229,6 @@ Save the file (Ctrl+O, Enter, Ctrl+X) and reload Caddy:
 systemctl reload caddy
 ```
 
-Tell Pinchy its public HTTPS URL so auth callbacks and redirects are generated with your real domain. Use the same domain you put in the Caddyfile, including `https://` and no trailing slash:
-
-<Aside type="caution">
-  This only works when your `docker-compose.yml` passes `BETTER_AUTH_URL`
-  through to the `pinchy` service. If your server was installed with an older
-  compose file that does not include it, fetch a newer compose file or add the
-  environment variable via `docker-compose.override.yml` before restarting.
-</Aside>
-
-```bash
-cd /opt/pinchy
-grep -q '^BETTER_AUTH_URL=' .env \
-  && sed -i 's|^BETTER_AUTH_URL=.*|BETTER_AUTH_URL=https://pinchy.example.com|' .env \
-  || echo 'BETTER_AUTH_URL=https://pinchy.example.com' >> .env
-docker compose up -d pinchy
-```
-
 After a few seconds, visit `https://pinchy.example.com` — Caddy automatically provisions a Let's Encrypt certificate. The loading-page fallback on `:9999` stays unchanged so users still see a friendly page if Pinchy ever becomes unreachable during an upgrade or restart.
 
 <Aside type="tip">
@@ -253,21 +236,11 @@ After a few seconds, visit `https://pinchy.example.com` — Caddy automatically 
   point from the internet. No `PINCHY_PORT` changes needed.
 </Aside>
 
-Set the public Better Auth callback origin to the same HTTPS domain:
-
-```bash
-cd /opt/pinchy
-printf '\nBETTER_AUTH_URL=https://pinchy.example.com\n' >> .env
-docker compose up -d
-```
-
-`BETTER_AUTH_URL` is separate from Domain Lock. It is used for absolute callback and redirect URLs such as password reset, OAuth, and Telegram pairing.
-
 ### Lock your domain
 
 Once HTTPS is working, open **Settings → Security** in the Pinchy web UI and enter your domain (e.g. `pinchy.example.com`).
 
-After saving, Pinchy will reject requests from any other origin with a 403 error — including access via the raw server IP address. The domain lock should match the hostname in `BETTER_AUTH_URL`; together they keep security checks and generated callback URLs on the same public origin.
+After saving, Pinchy will reject requests from any other origin with a 403 error — including access via the raw server IP address. Domain Lock is the single source of truth for your public origin: it pins which host Pinchy accepts and keeps the security checks aligned with the domain users actually visit.
 
 <Aside type="note">
   Secrets (database password, session secret, encryption key) were automatically

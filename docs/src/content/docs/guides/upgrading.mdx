@@ -192,6 +192,16 @@ Operationally:
   - `chat.run_completed_after_disconnect` — how often do users abandon a long-running chat? Correlates with background-tab behavior.
 - The 15-minute default is per-deployment and lives in `packages/web/src/server/run-watchdog.ts#DEFAULT_MAX_RUN_DURATION_MS`. There is intentionally no per-agent override; surface one as a deployment env var if you ever see a legitimate need (YAGNI today).
 
+#### `BETTER_AUTH_URL` removed — no action needed
+
+Pinchy no longer reads `BETTER_AUTH_URL`. An investigation ([#352](https://github.com/heypinchy/pinchy/issues/352)) confirmed the variable had no functional consumer:
+
+- Pinchy doesn't use Better Auth's email-verification or password-reset email flows. Password resets run through Pinchy's own invite-token system, and the reset link is built from the browser's current origin — not from a configured base URL.
+- Origin / CSRF checks read the Domain Lock value (and the request host), not `BETTER_AUTH_URL`.
+- We don't use OAuth, the one remaining Better Auth feature that needs an absolute callback URL.
+
+The variable is gone from `docker-compose.yml`, `.env.example`, and the startup warning that previously told Domain-Locked deployments to set it (added in v0.5.4 — see below). **If you set `BETTER_AUTH_URL` in your `.env` or a `docker-compose.override.yml`, you can drop it.** Leaving it in place is harmless — it is simply ignored — but the line is now dead config. Domain Lock remains the single source of truth for your public origin; HTTPS, secure cookies, and origin enforcement are unchanged.
+
 ## Upgrading from v0.5.5 to v0.5.6
 
 ### Breaking changes

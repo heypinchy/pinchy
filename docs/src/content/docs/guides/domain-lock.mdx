@@ -54,35 +54,14 @@ Caddy automatically provisions Let's Encrypt certificates for your domain. After
   default `127.0.0.1:7777` binding so only Caddy can reach Pinchy.
 </Aside>
 
-### Set the public auth URL
-
-For production domains, set `BETTER_AUTH_URL` to the same HTTPS origin users visit. Better Auth uses it when it needs to build absolute links, including password resets, OAuth callbacks, and Telegram pairing redirects.
-
-Edit your Pinchy `.env` file:
-
-```bash
-nano /opt/pinchy/.env
-```
-
-Add your public URL, including `https://` and no trailing slash:
-
-```bash
-BETTER_AUTH_URL=https://pinchy.example.com
-```
-
-<Aside type="caution">
-  This setting only takes effect if your `docker-compose.yml` passes
-  `BETTER_AUTH_URL` through to the `pinchy` service. Older compose files may
-  need to be updated, or you can add the variable via
-  `docker-compose.override.yml`.
+<Aside type="note">
+  You don't need to set a public auth URL. Pinchy derives the origin for every
+  request from the host your reverse proxy forwards (`X-Forwarded-Host`), and
+  Domain Lock pins which host is accepted. The `BETTER_AUTH_URL` env var that
+  older guides mentioned was removed — it had no effect on Pinchy's auth flows
+  (password-reset links are built from the browser's current origin, and origin
+  checks read the Domain Lock value).
 </Aside>
-
-Restart the Pinchy container so Docker Compose passes the updated value through:
-
-```bash
-cd /opt/pinchy
-docker compose up -d pinchy
-```
 
 <details>
 <summary>What's a reverse proxy and why do I need one?</summary>
@@ -123,22 +102,7 @@ You don't have to configure any of these individually — locking the domain fli
 
 </Steps>
 
-From this point on, only the locked domain can reach the app. Use the same hostname for the lock and for `BETTER_AUTH_URL`; the lock controls which host Pinchy accepts, while `BETTER_AUTH_URL` controls the absolute URLs Better Auth generates.
-
-<Aside type="note">
-  Domain Lock and `BETTER_AUTH_URL` are related but separate. Domain Lock
-  rejects requests for the wrong host. `BETTER_AUTH_URL` tells Better Auth which
-  public HTTPS origin to use when it builds callback and redirect URLs. In
-  production, set `BETTER_AUTH_URL=https://pinchy.example.com` in your `.env`
-  and restart Pinchy.
-</Aside>
-
-<Aside type="caution">
-  If Domain Lock is configured but `BETTER_AUTH_URL` is unset, Pinchy logs a
-  warning on every startup — Better Auth cannot derive the base URL from the
-  Domain Lock value, so password reset and email verification links would point
-  to the wrong host. Set `BETTER_AUTH_URL` to your locked domain and restart.
-</Aside>
+From this point on, only the locked domain can reach the app. Domain Lock is the single source of truth for your public origin — there is no separate URL env var to keep in sync.
 
 ## Remove the lock
 

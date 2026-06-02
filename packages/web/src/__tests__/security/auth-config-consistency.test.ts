@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { readFileSync } from "fs";
+import { existsSync, readFileSync } from "fs";
 import { resolve } from "path";
 
 /**
@@ -59,60 +59,33 @@ describe("auth config consistency", () => {
     expect(content).toContain("BETTER_AUTH_SECRET");
   });
 
-  it("docker-compose.yml should pass BETTER_AUTH_URL through when configured", () => {
+  // BETTER_AUTH_URL was removed in #352. Investigation confirmed it had no
+  // functional consumer in Pinchy: Better Auth's baseURL only feeds OAuth
+  // callbacks (unused), email verification / password-reset links (Pinchy
+  // sends no Better Auth emails — reset links are built client-side from
+  // window.location.origin), and trustedOrigins (which we drive from Domain
+  // Lock + request host). The guards below are negative on purpose, so the
+  // misleading env plumbing can't be reintroduced as cargo-cult config.
+  it("docker-compose.yml should NOT reference BETTER_AUTH_URL (#352 — no functional consumer)", () => {
     const content = readFileSync(resolve(PROJECT_ROOT, "docker-compose.yml"), "utf-8");
-    expect(content).toContain("BETTER_AUTH_URL=${BETTER_AUTH_URL:-}");
+    expect(content).not.toContain("BETTER_AUTH_URL");
   });
 
-  it(".env.example should document BETTER_AUTH_URL", () => {
+  it(".env.example should NOT document BETTER_AUTH_URL (#352)", () => {
     const content = readFileSync(resolve(PROJECT_ROOT, ".env.example"), "utf-8");
-    expect(content).toContain("BETTER_AUTH_URL=");
+    expect(content).not.toContain("BETTER_AUTH_URL");
   });
 
-  it("installation docs should scope BETTER_AUTH_URL when the guide is pinned to older compose files", () => {
-    const content = readFileSync(
-      resolve(PROJECT_ROOT, "docs/src/content/docs/installation.mdx"),
-      "utf-8"
-    );
-    if (!content.includes("v0.4.4") || !content.includes("BETTER_AUTH_URL")) return;
-
-    expect(content).toMatch(
-      /The v0\.4\.4 `docker-compose\.yml` shown above does not pass `BETTER_AUTH_URL`\s+through/
-    );
-  });
-
-  it("startup warning should name what BETTER_AUTH_URL still controls (not the vague 'callback URLs')", () => {
-    const content = readFileSync(
-      resolve(PROJECT_ROOT, "packages/web/src/lib/auth-env-warning.ts"),
-      "utf-8"
-    );
-    // Must call out the concrete user-visible thing — email/password-reset
-    // links — so admins can decide if the var is still needed for their setup.
-    expect(content).toMatch(/email verification|password reset/i);
-    expect(content).not.toContain("BETTER_AUTH_URL is set but no longer used");
-  });
-
-  it("getBetterAuthUrlStartupWarning should require the domain argument (no default)", () => {
-    // A default value on `domain` silently disables the Domain-Lock arm if a
-    // future caller forgets the second argument. Force every call site to
-    // pass a value (getCachedDomain() returns null when unconfigured).
-    const content = readFileSync(
-      resolve(PROJECT_ROOT, "packages/web/src/lib/auth-env-warning.ts"),
-      "utf-8"
-    );
-    expect(content).not.toMatch(/domain:\s*string\s*\|\s*null\s*=\s*null/);
-  });
-
-  it("server.ts should emit the BETTER_AUTH_URL warning after bootInits populates the domain cache", () => {
-    // The Domain-Lock arm of the warning needs getCachedDomain() to return a
-    // real value, which requires bootInits() → loadDomainCache() to have run
-    // first. A module-load call would always see `null` and never warn.
+  it("server.ts should NOT emit a BETTER_AUTH_URL startup warning (#352)", () => {
     const content = readFileSync(resolve(PROJECT_ROOT, "packages/web/server.ts"), "utf-8");
-    const bootInitsIdx = content.indexOf("await bootInits()");
-    const warningCallIdx = content.indexOf("getBetterAuthUrlStartupWarning(");
-    expect(bootInitsIdx).toBeGreaterThan(-1);
-    expect(warningCallIdx).toBeGreaterThan(-1);
-    expect(warningCallIdx).toBeGreaterThan(bootInitsIdx);
+    expect(content).not.toContain("BETTER_AUTH_URL");
+    expect(content).not.toContain("getBetterAuthUrlStartupWarning");
+  });
+
+  it("the auth-env-warning module is removed (#352)", () => {
+    expect(existsSync(resolve(PROJECT_ROOT, "packages/web/src/lib/auth-env-warning.ts"))).toBe(
+      false
+    );
   });
 
   it("auth.ts should configure trustedOrigins for dynamic origin detection", () => {
