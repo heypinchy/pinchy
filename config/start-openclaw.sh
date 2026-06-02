@@ -326,63 +326,6 @@ auto_approve_devices &
 # daemonize), so without `&` the script would block here and the loop below
 # would never run — a crashed gateway would never get restarted.
 ensure_secrets_root_owned
-# Diagnostic patch: when OpenClaw's session-file fence detects an "external"
-# change between releaseForPrompt() and the next assertion, the shipped error
-# message says only "session file changed" — without naming WHICH stat field
-# (size/mtime/ctime/ino/dev) differs. This patch wraps sameSessionFileFingerprint
-# to log the diff to stderr so we can pick a targeted fix instead of guessing.
-# Idempotent (signature check) and behavior-preserving (logging-only).
-# Pinned to openclaw 2026.5.20; bumps will warn and skip cleanly.
-node - <<'FENCE_DEBUG_PATCH' 2>&1 | sed -e 's/^/[fence-debug-patch] /' || true
-const fs = require("node:fs");
-const path = require("node:path");
-const distDir = "/usr/local/lib/node_modules/openclaw/dist";
-try {
-  const candidates = fs.readdirSync(distDir).filter((f) => f.startsWith("selection-") && f.endsWith(".js"));
-  if (candidates.length === 0) { console.error("no selection-*.js in", distDir); process.exit(0); }
-  const target = path.join(distDir, candidates[0]);
-  const src = fs.readFileSync(target, "utf8");
-  const SIG = "[fence-debug-patched-v2-2026-06-02]";
-  if (src.includes(SIG)) { console.error("already patched, skipping"); process.exit(0); }
-  // Match the v1 (already-applied) signature too, so a re-deployed container
-  // re-patches with the richer logging. Otherwise the previous patch sticks
-  // and we miss the early-return diagnostics.
-  const V1_SIG = "[fence-debug-patched-2026-06-02]";
-  let ORIGINAL;
-  if (src.includes(V1_SIG)) {
-    console.error("found v1 patch, upgrading to v2");
-    ORIGINAL = src.slice(src.indexOf("function sameSessionFileFingerprint"), src.indexOf("function sameSessionFileIdentity"));
-  } else {
-    ORIGINAL = `function sameSessionFileFingerprint(left, right) {
-\tif (!left || left.exists !== right.exists) return false;
-\tif (!left.exists || !right.exists) return true;
-\treturn left.dev === right.dev && left.ino === right.ino && left.size === right.size && left.mtimeNs === right.mtimeNs && left.ctimeNs === right.ctimeNs;
-}`;
-    if (!src.includes(ORIGINAL)) { console.error("expected function shape not found, aborting"); process.exit(0); }
-  }
-  const PATCHED = `function sameSessionFileFingerprint(left, right) { // ${SIG}
-\tconst logDiff = (reason, extra) => { try { console.error("[fence-debug]", JSON.stringify(Object.assign({ reason }, extra))); } catch (e) {} };
-\tif (!left) { logDiff("no-prev-fingerprint", {}); return false; }
-\tif (left.exists !== right.exists) { logDiff("exists-flag-changed", { prevExists: left.exists, curExists: right.exists }); return false; }
-\tif (!left.exists || !right.exists) return true;
-\tconst sameDev = left.dev === right.dev;
-\tconst sameIno = left.ino === right.ino;
-\tconst sameSize = left.size === right.size;
-\tconst sameMtime = left.mtimeNs === right.mtimeNs;
-\tconst sameCtime = left.ctimeNs === right.ctimeNs;
-\tconst same = sameDev && sameIno && sameSize && sameMtime && sameCtime;
-\tif (!same) {
-\t\tlogDiff("stat-fields-diff", { sameDev, sameIno, sameSize, sameMtime, sameCtime, prevSize: String(left.size), curSize: String(right.size), prevMtimeNs: String(left.mtimeNs), curMtimeNs: String(right.mtimeNs), prevCtimeNs: String(left.ctimeNs), curCtimeNs: String(right.ctimeNs), sizeGrew: right.size > left.size, sizeDeltaBytes: String(right.size - left.size) });
-\t}
-\treturn same;
-}
-`;
-  fs.writeFileSync(target, src.replace(ORIGINAL, PATCHED), "utf8");
-  console.error("patched", target);
-} catch (e) {
-  console.error("error:", e.message);
-}
-FENCE_DEBUG_PATCH
 echo "Starting OpenClaw Gateway..."
 openclaw gateway --port 18789 &
 mark_bootstrap_when_ready
