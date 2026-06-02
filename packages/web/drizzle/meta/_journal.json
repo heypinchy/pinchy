@@ -187,13 +187,6 @@
     {
       "idx": 26,
       "version": "7",
-      "when": 1775564953393,
-      "tag": "0024_dark_captain_marvel",
-      "breakpoints": true
-    },
-    {
-      "idx": 26,
-      "version": "7",
       "when": 1775565123681,
       "tag": "0025_eminent_randall_flagg",
       "breakpoints": true
@@ -257,7 +250,7 @@
     {
       "idx": 35,
       "version": "7",
-      "when": 1780426949494,
+      "when": 1779219073816,
       "tag": "0035_smart_misty_knight",
       "breakpoints": true
     }
