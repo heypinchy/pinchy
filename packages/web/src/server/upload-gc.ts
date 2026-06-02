@@ -46,7 +46,12 @@ export async function sweepExpiredUploads(): Promise<SweepResult> {
 
   for (const row of expiredRows) {
     const uploadId = row.id;
-    const agedSeconds = Math.floor((now.getTime() - row.createdAt.getTime()) / 1000);
+    // Clamp at 0 — Postgres `now()` (the createdAt default) and JS `Date.now()`
+    // are different clocks, so a sub-second skew can make the floored diff
+    // land at -1 even though the row is logically older than the sweep start.
+    // An "age" can't be negative; surface 0 instead of leaking the skew into
+    // the audit row.
+    const agedSeconds = Math.max(0, Math.floor((now.getTime() - row.createdAt.getTime()) / 1000));
 
     // Derive the staging directory path:
     // stagingPath format: `.staging/<uploadId>/<filename>`
@@ -61,6 +66,15 @@ export async function sweepExpiredUploads(): Promise<SweepResult> {
     // Attempt to remove the staging directory. Uses async `rm` so a backlog
     // of expired uploads doesn't block the event loop for the entire sweep —
     // each iteration yields between FS calls.
+    //
+    // Successful staging-dir removal is the GC's atomic "claim" on this row.
+    // The placeholder rm and DB delete only run inside the success branch.
+    // If the staging dir is gone, either (a) a concurrent `materializeAttachments`
+    // promoted the file between our SELECT and this rm — in which case
+    // `uploads/<filename>` now holds the user's attached file and we MUST
+    // NOT touch it — or (b) someone deleted the dir out-of-band; that
+    // orphan is fixed by an operator, not by us blindly racing on the
+    // uploads/ slot.
     let rmFailed = false;
     let rmError: unknown;
     try {
@@ -70,23 +84,6 @@ export async function sweepExpiredUploads(): Promise<SweepResult> {
     } catch (err) {
       rmFailed = true;
       rmError = err;
-    }
-
-    // Also remove the uploads/<filename> placeholder that persistStagedUpload
-    // reserved at upload time. If the file was never promoted (the normal
-    // expiry case), the placeholder is still empty and needs to go. If by
-    // some race the file was promoted between the SELECT and now, status
-    // would have flipped to "attached" and the row wouldn't be in this loop
-    // — so deleting `uploads/<filename>` here is always the right call for
-    // staged rows. `force: true` swallows ENOENT in case it was already
-    // removed externally; we don't want a missing placeholder to abort the
-    // sweep of the rest of the disk.
-    try {
-      await rm(join(getWorkspacePath(row.agentId), "uploads", row.filename), { force: true });
-    } catch {
-      // The staging-dir failure is the one that matters — if the placeholder
-      // delete fails, the next sweep will retry once the DB row is back in
-      // the expired set (which only happens if we didn't delete it below).
     }
 
     if (rmFailed) {
@@ -109,6 +106,18 @@ export async function sweepExpiredUploads(): Promise<SweepResult> {
       }
       // Do NOT delete the DB row — the GC will retry on the next cycle
       continue;
+    }
+
+    // Staging rm succeeded — we now own this row. Also remove the
+    // `uploads/<filename>` slot that `persistStagedUpload` reserved at upload
+    // time so the staged filename frees up for reuse. `force: true` swallows
+    // ENOENT (someone removed it out-of-band) — non-ENOENT errors leave the
+    // slot orphaned, but the DB row gets deleted regardless so the orphan
+    // surfaces only as a manual cleanup, not as a permanent failure loop.
+    try {
+      await rm(join(workspaceRoot, "uploads", row.filename), { force: true });
+    } catch {
+      // Best-effort: see comment above.
     }
 
     // FS rm succeeded — delete the DB row.

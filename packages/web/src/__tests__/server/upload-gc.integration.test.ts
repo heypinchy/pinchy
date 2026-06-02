@@ -307,4 +307,47 @@ describe("sweepExpiredUploads", () => {
     const remaining = await db.select().from(uploadedFiles).where(eq(uploadedFiles.id, okRow.id));
     expect(remaining).toHaveLength(0);
   });
+
+  it("does NOT delete uploads/<filename> when the staging dir is gone (concurrent-promote race)", async () => {
+    // Race scenario: between the GC's SELECT and the FS cleanup, a concurrent
+    // `materializeAttachments` call promoted the staged file. After promote:
+    //   - `.staging/<uploadId>/` is gone (promoteStagedToAttached rm'd it)
+    //   - `uploads/<filename>` now holds the durable attached file
+    //   - row.status flipped to 'attached' (but the GC snapshot still says
+    //     'staged' because the SELECT ran first)
+    //
+    // The GC MUST detect this by failing the staging-dir rm (ENOENT), and
+    // MUST NOT proceed to delete `uploads/<filename>` — that would erase the
+    // user's just-attached file.
+    const { sweepExpiredUploads } = await import("@/server/upload-gc");
+
+    const user = await seedUser();
+    const agent = await seedAgent(user.id);
+
+    const pastDate = new Date(Date.now() - 10_000);
+    const stagedRow = await seedStagedUpload(user.id, agent.id, {
+      filename: "racy.pdf",
+      expiresAt: pastDate,
+    });
+
+    // Simulate the concurrent promote that ran between the GC's SELECT and
+    // its cleanup phase:
+    //   1. staging dir is gone
+    //   2. uploads/<filename> holds the durable file with attached content
+    //   3. row.status would be 'attached' in production — but here we leave
+    //      it 'staged' so the row stays in the GC's snapshot, exactly as it
+    //      would have been at the moment the SELECT ran. (Updating it to
+    //      'attached' would just filter it out of the SELECT and make the
+    //      test trivially pass for the wrong reason.)
+    rmSync(join(tmpRoot, agent.id, ".staging", stagedRow.id), { recursive: true, force: true });
+    mkdirSync(join(tmpRoot, agent.id, "uploads"), { recursive: true });
+    const durableFile = join(tmpRoot, agent.id, "uploads", "racy.pdf");
+    writeFileSync(durableFile, Buffer.from("DURABLE ATTACHED CONTENT"));
+
+    await sweepExpiredUploads();
+
+    // The durable attached file must still exist — GC must have backed off
+    // when it saw the staging dir was gone.
+    expect(existsSync(durableFile)).toBe(true);
+  });
 });
