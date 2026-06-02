@@ -89,6 +89,8 @@ pnpm test:db
 
 All new features require tests. We practice TDD — write the failing test first, then the implementation.
 
+**Don't silently remove tests.** Two CI guards enforce this: `no-untracked-skips` blocks `.skip`/`.todo` without a tracking issue, and a test-removal guard fails any PR that deletes test cases on net (deleted files or removed `it()`/`test()` blocks). If a removal is genuinely intentional (dead code, a deduplicated test, a removed feature), authorize it explicitly — add a commit trailer `Allow-test-deletion: #<issue>` or apply the `allow-test-deletion` label. Never weaken or delete a test just to make changed code pass; a test that fails after a refactor signals lost coverage. See AGENTS.md § "No Untracked Test Removal".
+
 `pnpm test:db` provisions a `pinchy_test_vitest` database against the dev-stack Postgres on `localhost:5434`. Start it once with:
 
 ```bash
