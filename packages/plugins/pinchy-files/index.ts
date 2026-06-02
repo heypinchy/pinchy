@@ -1,7 +1,7 @@
 import { readFileSync, readdirSync, statSync, realpathSync } from "fs";
 import { readFile, open, writeFile } from "fs/promises";
 import { createHash } from "crypto";
-import { join } from "path";
+import { join, extname } from "path";
 import { validateAccess, MAX_FILE_SIZE, MAX_PDF_FILE_SIZE, MAX_DOCX_FILE_SIZE, type AgentFileConfig } from "./validate";
 import { extractDocxText } from "./docx-extract";
 import { extractPdfText } from "./pdf-extract";
@@ -32,10 +32,24 @@ function relativizeWritePath(absolutePath: string, writePaths: readonly string[]
   return absolutePath;
 }
 
-interface ContentBlock {
-  type: string;
-  text: string;
-}
+// Tool results carry either text or an image. The image shape matches
+// OpenClaw's `ImageContent` ({ type: "image", data: <base64>, mimeType }) so a
+// re-read image is fed back to the model as native multimodal input — the same
+// way a freshly uploaded attachment reaches the model on the first turn.
+type ContentBlock =
+  | { type: "text"; text: string }
+  | { type: "image"; data: string; mimeType: string };
+
+// Image extensions pinchy_read returns as image content blocks rather than
+// utf-8 text. Reading the bytes as utf-8 would hand the model binary garbage
+// (issue #420). Keys are lowercase; lookup lowercases the file extension.
+const IMAGE_MIME_TYPES: Record<string, string> = {
+  ".png": "image/png",
+  ".jpg": "image/jpeg",
+  ".jpeg": "image/jpeg",
+  ".gif": "image/gif",
+  ".webp": "image/webp",
+};
 
 interface PluginApi {
   pluginConfig?: {
@@ -278,6 +292,21 @@ const plugin = {
                       type: "text",
                       text: `File too large (${stats.size} bytes). Maximum: ${sizeLimit} bytes.`,
                     },
+                  ],
+                };
+              }
+
+              // Image files: hand the model the raw bytes as an image content
+              // block so it re-sees the picture natively (issue #420), the same
+              // way a freshly uploaded attachment reaches the model on the first
+              // turn. The utf-8 fallthrough below would otherwise return binary
+              // garbage for an image.
+              const imageMimeType = IMAGE_MIME_TYPES[extname(realPath).toLowerCase()];
+              if (imageMimeType) {
+                const buffer = await readFile(realPath);
+                return {
+                  content: [
+                    { type: "image", data: buffer.toString("base64"), mimeType: imageMimeType },
                   ],
                 };
               }

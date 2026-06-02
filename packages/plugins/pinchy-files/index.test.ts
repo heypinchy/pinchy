@@ -615,6 +615,92 @@ describe("pinchy_read DOCX integration", () => {
   });
 });
 
+describe("pinchy_read image integration", () => {
+  // A user can drop an image on any agent via the chat composer; the first-pass
+  // analysis works because the gateway feeds the upload to the model as native
+  // multimodal input. But re-reading it later ("look at that picture again")
+  // goes through pinchy_read, which used to utf-8-read the binary and hand the
+  // model garbage. pinchy_read must instead return an image content block so
+  // the model re-sees the picture natively, matching the first-turn behavior.
+  // See issue #420.
+
+  // 1x1 transparent PNG.
+  const PNG_BASE64 =
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAAC0lEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==";
+
+  let tmpDir: string;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    tmpDir = mkdtempSync(join(tmpdir(), "pinchy-image-test-"));
+  });
+
+  afterEach(() => {
+    rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  async function getReadTool(api: ReturnType<typeof createMockApi>) {
+    const { default: plugin } = await import("./index");
+    plugin.register(api as any);
+    const readFactory = mockRegisterTool.mock.calls.find(
+      (call: any[]) => call[1]?.name === "pinchy_read"
+    )?.[0];
+    return readFactory({ agentId: "agent-1" });
+  }
+
+  it("returns an image content block (not utf-8 text) for PNG files", async () => {
+    const imgPath = join(tmpDir, "photo.png");
+    writeFileSync(imgPath, Buffer.from(PNG_BASE64, "base64"));
+    const api = createMockApi({ "agent-1": { allowed_paths: [tmpDir + "/"] } });
+    const tool = await getReadTool(api);
+
+    const result = await tool.execute("call-1", { path: imgPath });
+
+    expect(result.isError).toBeFalsy();
+    expect(result.content[0].type).toBe("image");
+    // OpenClaw's ImageContent shape: { type: "image", data: <base64>, mimeType }.
+    expect(result.content[0].mimeType).toBe("image/png");
+    expect(result.content[0].data).toBe(PNG_BASE64);
+    // Regression guard: must NOT fall through to the utf-8 text branch.
+    expect(result.content[0].text).toBeUndefined();
+  });
+
+  it("maps .JPG/.jpeg to image/jpeg case-insensitively and round-trips the bytes", async () => {
+    const bytes = Buffer.from([0xff, 0xd8, 0xff, 0xe0, 0x01, 0x02, 0x03]);
+    const imgPath = join(tmpDir, "scan.JPG");
+    writeFileSync(imgPath, bytes);
+    const api = createMockApi({ "agent-1": { allowed_paths: [tmpDir + "/"] } });
+    const tool = await getReadTool(api);
+
+    const result = await tool.execute("call-1", { path: imgPath });
+
+    expect(result.content[0].type).toBe("image");
+    expect(result.content[0].mimeType).toBe("image/jpeg");
+    expect(result.content[0].data).toBe(bytes.toString("base64"));
+  });
+
+  it("supports gif and webp image types", async () => {
+    const cases = [
+      { name: "anim.gif", mime: "image/gif" },
+      { name: "pic.webp", mime: "image/webp" },
+    ];
+    const api = createMockApi({ "agent-1": { allowed_paths: [tmpDir + "/"] } });
+    const tool = await getReadTool(api);
+
+    for (const c of cases) {
+      const bytes = Buffer.from([1, 2, 3, 4, 5]);
+      const p = join(tmpDir, c.name);
+      writeFileSync(p, bytes);
+
+      const result = await tool.execute("call-1", { path: p });
+
+      expect(result.content[0].type).toBe("image");
+      expect(result.content[0].mimeType).toBe(c.mime);
+      expect(result.content[0].data).toBe(bytes.toString("base64"));
+    }
+  });
+});
+
 describe("pinchy_write tool", () => {
   let tmpDir: string;
 
