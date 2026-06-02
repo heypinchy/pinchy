@@ -3,7 +3,8 @@
     "mode": "local",
     "bind": "lan",
     "controlUi": {
-      "enabled": false
+      "enabled": false,
+      "allowedOrigins": ["http://localhost:18789", "http://127.0.0.1:18789"]
     }
   },
   "discovery": {

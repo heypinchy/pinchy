@@ -357,16 +357,21 @@ test.describe.serial("Agent create — no gateway restart cascade (#193)", () =>
     await new Promise((r) => setTimeout(r, 3000));
     const logs = openClawLogsSince(beforeMark);
 
-    // (a) Positive: the config change reached OpenClaw and was evaluated
-    //     for reload. Without this, we'd be testing nothing — the config
-    //     push silently failing would also satisfy (b) but means our fix
-    //     is being bypassed.
-    // Note: OpenClaw ≥ 4.27 changed the log format from
-    //   "config change detected.*agents.list"
-    // to
-    //   "config change detected; evaluating reload (env, agents, ...)"
-    // so we match the common prefix + "agents" to cover both formats.
-    expect(logs, logs).toMatch(/\[reload\] config change detected.*agents/);
+    // (a) Positive: the config change reached OpenClaw's runtime. This is
+    //     ALREADY proven above by `waitForAgentDispatchable`, which polls OC's
+    //     live `agents.list` via `config.get` and THROWS if the agent never
+    //     appears — so reaching this line means the apply landed and we are
+    //     not vacuously satisfying (b).
+    //
+    //     We deliberately do NOT scrape a "[reload] config change detected"
+    //     log line here. That line is emitted only on OpenClaw's file-watcher
+    //     reload path, but Pinchy applies agent changes through the WS
+    //     `config.apply` RPC (which hot-reloads WITHOUT emitting it — see
+    //     write.ts `pushConfigInBackground`). On 2026.5.x that made the scrape
+    //     a flaky proxy: whenever the WS path was taken, `openClawLogsSince`
+    //     came back empty and the assertion failed even though the agent was
+    //     dispatchable and no restart occurred (#193 CI flake). The runtime
+    //     `agents.list` check is the stronger, path-independent signal.
 
     // (b) The bug fingerprint. With the bug present, OpenClaw logs:
     //     "[reload] config change requires gateway restart (...)"

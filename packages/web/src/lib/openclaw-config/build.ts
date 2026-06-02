@@ -23,7 +23,7 @@ import {
 } from "@/lib/ollama-cloud-models";
 import { getModelCatalogForProvider } from "@/lib/openclaw-builtin-models";
 import { getOpenClawWorkspacePath } from "@/lib/workspace";
-import { CONFIG_PATH } from "./paths";
+import { CONFIG_PATH, OPENCLAW_CONTROL_UI_ALLOWED_ORIGINS } from "./paths";
 import { configsAreEquivalentUpToOpenClawMetadata } from "./normalize";
 import { readExistingConfig, pushConfigInBackground } from "./write";
 import {
@@ -391,6 +391,14 @@ export async function regenerateOpenClawConfig() {
     controlUi: {
       ...existingControlUi,
       enabled: false,
+      // Always emit allowedOrigins so OC's reload diff never sees this
+      // restart-class field appear/disappear. Preserve OC's enriched value if
+      // the config already carries one (a prior config.apply persisted it);
+      // otherwise seed the same origins OC would. See
+      // OPENCLAW_CONTROL_UI_ALLOWED_ORIGINS for the full rationale.
+      allowedOrigins:
+        (existingControlUi.allowedOrigins as string[] | undefined) ??
+        OPENCLAW_CONTROL_UI_ALLOWED_ORIGINS,
     },
   };
 

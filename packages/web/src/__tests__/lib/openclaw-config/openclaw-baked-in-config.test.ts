@@ -47,6 +47,20 @@ describe("config/openclaw.json (baked-in config)", () => {
     expect(controlUi!.enabled).toBe(false);
   });
 
+  it("has gateway.controlUi.allowedOrigins — prevents OC's in-memory seed from diffing on reload", () => {
+    // OpenClaw 2026.2.26+ seeds gateway.controlUi.allowedOrigins in memory for a
+    // bind:"lan" gateway but never persists it. Baking it in keeps OC's reload
+    // diff empty for controlUi so an agents-only regenerate stays a hot reload
+    // instead of cascading into a SIGUSR1 restart (the setup-wizard "unknown
+    // agent id" / #193 flake on 2026.5.28).
+    const gateway = config.gateway as Record<string, unknown>;
+    const controlUi = gateway.controlUi as Record<string, unknown> | undefined;
+    expect(controlUi!.allowedOrigins, "controlUi.allowedOrigins must be baked in").toEqual([
+      "http://localhost:18789",
+      "http://127.0.0.1:18789",
+    ]);
+  });
+
   it("has discovery.mdns.mode: 'off' — prevents restart-triggering diff on first config.apply", () => {
     const discovery = config.discovery as Record<string, unknown> | undefined;
     expect(discovery, "config.discovery must exist").toBeDefined();

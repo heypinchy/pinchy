@@ -306,6 +306,59 @@ describe("regenerateOpenClawConfig", () => {
     expect(config.canvasHost?.enabled).toBe(false);
   });
 
+  it("emits gateway.controlUi.allowedOrigins so OpenClaw's in-memory seed never diffs", async () => {
+    // OpenClaw 2026.2.26+ seeds gateway.controlUi.allowedOrigins in memory for a
+    // bind:"lan" gateway but never writes it to openclaw.json. If Pinchy's
+    // regenerate omits it, OC's reload diff sees gateway.controlUi.allowedOrigins
+    // removed → restart-class change → SIGUSR1 cascade that delays agents.list
+    // hot-reload (the setup-wizard "unknown agent id" / #193 flake on 2026.5.28).
+    // Pinchy must always emit the same origins OC seeds.
+    mockedReadFileSync.mockReturnValue("" as unknown as Buffer); // cold start: no existing config
+    mockedGetSetting.mockImplementation(async (key: string) => {
+      if (key === "anthropic_api_key") return "sk-ant-key";
+      if (key === "default_provider") return "anthropic";
+      return null;
+    });
+
+    await regenerateOpenClawConfig();
+    const written = mockedWriteFileSync.mock.calls[0][1] as string;
+    const config = JSON.parse(written) as {
+      gateway?: { controlUi?: { enabled?: boolean; allowedOrigins?: string[] } };
+    };
+    expect(config.gateway?.controlUi?.enabled).toBe(false);
+    expect(config.gateway?.controlUi?.allowedOrigins).toEqual([
+      "http://localhost:18789",
+      "http://127.0.0.1:18789",
+    ]);
+  });
+
+  it("preserves an existing controlUi.allowedOrigins value emitted by OpenClaw", async () => {
+    // If OpenClaw enriched controlUi.allowedOrigins with a different value (e.g.
+    // a prior config.apply persisted it), Pinchy must round-trip that exact
+    // value rather than clobber it with the default — otherwise the round-trip
+    // itself becomes the restart-class diff.
+    const ocEnriched = JSON.stringify({
+      gateway: {
+        mode: "local",
+        bind: "lan",
+        controlUi: { enabled: false, allowedOrigins: ["http://oc-enriched.example:18789"] },
+      },
+    });
+    mockedReadFileSync.mockReturnValue(ocEnriched as unknown as Buffer);
+    mockedGetSetting.mockImplementation(async (key: string) => {
+      if (key === "anthropic_api_key") return "sk-ant-key";
+      if (key === "default_provider") return "anthropic";
+      return null;
+    });
+
+    await regenerateOpenClawConfig();
+    const written = mockedWriteFileSync.mock.calls[0][1] as string;
+    const config = JSON.parse(written) as {
+      gateway?: { controlUi?: { allowedOrigins?: string[] } };
+    };
+    expect(config.gateway?.controlUi?.allowedOrigins).toEqual(["http://oc-enriched.example:18789"]);
+  });
+
   it("disables OpenClaw's default daily session reset so chat history persists across days", async () => {
     // OpenClaw's default session reset (`session.reset.mode: "daily"`,
     // `atHour: 4` — confirmed in openclaw@2026.5.7
@@ -3651,19 +3704,29 @@ describe("seedRestartClassOverridesIfMissing", () => {
     expect(writtenAtomic).toBeDefined();
     const written = JSON.parse(String(writtenAtomic![1]));
     expect(written.gateway?.controlUi?.enabled).toBe(false);
+    // allowedOrigins must be seeded too: OpenClaw enriches it in memory only,
+    // so leaving it absent makes every later regenerate drop it and trigger a
+    // restart-class diff.
+    expect(written.gateway?.controlUi?.allowedOrigins).toEqual([
+      "http://localhost:18789",
+      "http://127.0.0.1:18789",
+    ]);
     expect(written.discovery?.mdns?.mode).toBe("off");
     expect(written.update?.checkOnStart).toBe(false);
     expect(written.canvasHost?.enabled).toBe(false);
   });
 
-  it("returns false (no write) when file already has all four overrides — production case", () => {
+  it("returns false (no write) when file already has all overrides — production case", () => {
     // Production case: Docker-managed named volume populated from the image's
     // baked-in `config/openclaw.json` already carries these. No write needed.
     const existing = {
       gateway: {
         mode: "local",
         bind: "lan",
-        controlUi: { enabled: false },
+        controlUi: {
+          enabled: false,
+          allowedOrigins: ["http://localhost:18789", "http://127.0.0.1:18789"],
+        },
       },
       discovery: { mdns: { mode: "off" } },
       update: { checkOnStart: false },
@@ -3678,6 +3741,33 @@ describe("seedRestartClassOverridesIfMissing", () => {
       (c) => typeof c[0] === "string" && (c[0] as string).includes("openclaw.json.tmp")
     );
     expect(writtenAtomic).toBeUndefined();
+  });
+
+  it("seeds controlUi.allowedOrigins when the file disables controlUi but omits it (upgrade case)", () => {
+    // Pre-2026.5.28 Pinchy wrote controlUi.enabled=false WITHOUT allowedOrigins.
+    // On upgrade, OpenClaw seeds allowedOrigins in memory only; if Pinchy never
+    // persists it, the next regenerate drops the field and OC restarts. The seed
+    // must add it even when the other four overrides are already correct.
+    const existing = {
+      gateway: { mode: "local", bind: "lan", controlUi: { enabled: false } },
+      discovery: { mdns: { mode: "off" } },
+      update: { checkOnStart: false },
+      canvasHost: { enabled: false },
+    };
+    mockedReadFileSync.mockReturnValue(JSON.stringify(existing) as unknown as Buffer);
+
+    const changed = seedRestartClassOverridesIfMissing();
+
+    expect(changed).toBe(true);
+    const writtenAtomic = mockedWriteFileSync.mock.calls.find(
+      (c) => typeof c[0] === "string" && (c[0] as string).includes("openclaw.json.tmp")
+    );
+    const written = JSON.parse(String(writtenAtomic![1]));
+    expect(written.gateway.controlUi.enabled).toBe(false);
+    expect(written.gateway.controlUi.allowedOrigins).toEqual([
+      "http://localhost:18789",
+      "http://127.0.0.1:18789",
+    ]);
   });
 
   it("preserves existing fields outside the four restart-class paths", () => {

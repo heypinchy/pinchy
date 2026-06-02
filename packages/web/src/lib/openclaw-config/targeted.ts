@@ -1,5 +1,5 @@
 import { readFileSync, existsSync } from "fs";
-import { CONFIG_PATH } from "./paths";
+import { CONFIG_PATH, OPENCLAW_CONTROL_UI_ALLOWED_ORIGINS } from "./paths";
 import { writeConfigAtomic, readExistingConfig } from "./write";
 import { restartState } from "@/server/restart-state";
 import { getOrCreateGatewayToken } from "@/lib/gateway-token-source";
@@ -329,11 +329,22 @@ export function seedRestartClassOverridesIfMissing(): boolean {
   const canvasHost = (existing.canvasHost as Record<string, unknown>) || {};
 
   const needsControlUi = controlUi.enabled !== false;
+  // OpenClaw seeds controlUi.allowedOrigins in memory only (never persisted),
+  // so an on-disk config that lacks it makes every later regenerate drop the
+  // field and trigger a restart-class diff. Seed it up front. See
+  // OPENCLAW_CONTROL_UI_ALLOWED_ORIGINS in build.ts for the full rationale.
+  const needsAllowedOrigins = !Array.isArray(controlUi.allowedOrigins);
   const needsMdnsOff = mdns.mode !== "off";
   const needsUpdateCheck = update.checkOnStart !== false;
   const needsCanvasHostOff = canvasHost.enabled !== false;
 
-  if (!needsControlUi && !needsMdnsOff && !needsUpdateCheck && !needsCanvasHostOff) {
+  if (
+    !needsControlUi &&
+    !needsAllowedOrigins &&
+    !needsMdnsOff &&
+    !needsUpdateCheck &&
+    !needsCanvasHostOff
+  ) {
     return false;
   }
 
@@ -341,7 +352,13 @@ export function seedRestartClassOverridesIfMissing(): boolean {
     ...existing,
     gateway: {
       ...gateway,
-      controlUi: { ...controlUi, enabled: false },
+      controlUi: {
+        ...controlUi,
+        enabled: false,
+        allowedOrigins: Array.isArray(controlUi.allowedOrigins)
+          ? controlUi.allowedOrigins
+          : OPENCLAW_CONTROL_UI_ALLOWED_ORIGINS,
+      },
     },
     discovery: { ...discovery, mdns: { ...mdns, mode: "off" } },
     update: { ...update, checkOnStart: false },
