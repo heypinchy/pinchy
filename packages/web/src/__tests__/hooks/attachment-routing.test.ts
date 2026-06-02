@@ -30,6 +30,12 @@ const WORKSPACE_CASES = [
   { name: "config.json", type: "application/json" },
   { name: "config.yaml", type: "text/yaml" },
   { name: "config.yml", type: "text/yaml" },
+  // Browsers commonly leave File.type empty for these, so the extension is the
+  // only routing signal — every accepted extension must be in the binary
+  // adapter's `accept`, including the longer `.markdown` form.
+  { name: "notes.markdown", type: "" },
+  { name: "untyped.csv", type: "" },
+  { name: "untyped.yaml", type: "" },
 ];
 
 const INLINE_CODE_CASES = [
