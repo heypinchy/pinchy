@@ -252,15 +252,17 @@ async function resolveDefaultPdfModel(): Promise<string | null> {
  * images for that model with HTTP 400 (#416). Pinning the choice removes
  * that fragility.
  *
- * For `ollama-cloud`, the empirical smoke test in #416 showed several
- * vision-flagged models (`mistral-large-3:675b`, `qwen3.5:397b`,
- * `kimi-k2.5`/`k2.6`) accept image input but mislabel colors. We pin the
- * choice to the canonical vision line (`qwen3-vl` >
- * `gemini-3-flash-preview` > `gemma4`) via the typed
- * `OLLAMA_CLOUD_IMAGE_PREFERENCE` list. The TypeScript constraint on that
- * list (must be `OllamaCloudModelId`) means an unknown ID fails to
- * compile, so a runtime fallback to `getDefaultModel("ollama-cloud")`
- * would only fire if every preference entry were removed from the curated
+ * For `ollama-cloud`, empirical API probing showed the vision-flagged line
+ * is uneven: some models (`mistral-large-3:675b`, `kimi-k2.5`/`k2.6`) accept
+ * image input but occasionally misread digits, and `qwen3.5:397b` only
+ * claims vision — it hallucinates image contents and is now flagged
+ * vision:false (see ollama-cloud-models.ts). We pin the choice to the
+ * canonical vision line (`qwen3-vl` > `gemini-3-flash-preview` > `gemma4`)
+ * via the typed `OLLAMA_CLOUD_IMAGE_PREFERENCE` list. The TypeScript
+ * constraint on that list (must be `OllamaCloudModelId`) means an unknown
+ * ID fails to compile, so a runtime fallback to
+ * `getDefaultModel("ollama-cloud")` would only fire if every preference
+ * entry were removed from the curated
  * list — at which point the right action is to update the preference list,
  * not silently route to the provider's balanced text-only default. So we
  * skip the provider in that case and continue down the preference order.

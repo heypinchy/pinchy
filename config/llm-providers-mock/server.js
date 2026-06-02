@@ -282,6 +282,12 @@ app.get("/ollama-cloud/v1/models", (req, res) => {
   res.json({
     object: "list",
     data: [
+      // glm-4.7 is the balanced-tier default; minimax-m3 is the vision/
+      // reasoning addition. qwen3-next:80b is still returned by the real API
+      // but Pinchy filters it out (no working tool calls), so it stays here to
+      // exercise the allowlist filter.
+      { id: "glm-4.7", object: "model", created: MOCK_CREATED_AT, owned_by: "ollama" },
+      { id: "minimax-m3", object: "model", created: MOCK_CREATED_AT, owned_by: "ollama" },
       { id: "qwen3-next:80b", object: "model", created: MOCK_CREATED_AT, owned_by: "ollama" },
       { id: "qwen3-coder:480b", object: "model", created: MOCK_CREATED_AT, owned_by: "ollama" },
     ],
@@ -301,7 +307,7 @@ app.post("/ollama-cloud/v1/chat/completions", (req, res) => {
     id: "chatcmpl-mock-ollama-1",
     object: "chat.completion",
     created: MOCK_CREATED_AT,
-    model: req.body?.model ?? "qwen3-next:80b",
+    model: req.body?.model ?? "glm-4.7",
     choices: [
       { index: 0, message: { role: "assistant", content: MOCK_ASSISTANT_REPLY }, finish_reason: "stop" },
     ],

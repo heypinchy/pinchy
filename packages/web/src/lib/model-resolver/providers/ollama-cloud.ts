@@ -34,13 +34,14 @@ const BY_TIER_FAMILY: Record<
   },
   reasoning: {
     general: "ollama-cloud/deepseek-v4-pro",
-    // Largest non-preview reasoning+vision+tools model (262K context).
-    // gemini-3-flash-preview was the previous pick (1M context) but is blocked
-    // by the tools-blocklist as of pinchy#344 (silent hang + schema rejection on
-    // the tools+vision path). Kimi family also avoided: v0.5.3 silent-500 incident.
-    // Restore gemini-3-flash-preview here once upstream openclaw#72879 ships and
-    // the silent-hang variant is fixed (track in pinchy#344).
-    vision: "ollama-cloud/qwen3.5:397b",
+    // reasoning+vision+tools, 512K context. qwen3.5:397b was the previous pick
+    // but only claims vision — the live endpoint hallucinates image contents
+    // (see ollama-cloud-models.ts), so it is now flagged vision:false and can
+    // no longer fill a vision slot. minimax-m3's vision was confirmed against
+    // the live API (reads a random number + circle color correctly across
+    // distinct images). gemini-3-flash-preview is still blocked by the
+    // tools-blocklist (pinchy#344); kimi family avoided (v0.5.3 silent-500).
+    vision: "ollama-cloud/minimax-m3",
   },
 };
 

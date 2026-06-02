@@ -258,6 +258,23 @@ export const TOOL_CAPABLE_OLLAMA_CLOUD_MODELS = [
     video: false,
   },
   {
+    // ollama.com/library/minimax-m3 tags: "vision tools thinking cloud",
+    // input "Text, Image", context "up to 1M with a guaranteed minimum of
+    // 512K". Vision and tools were both confirmed against the live
+    // /v1/chat/completions endpoint (reads a random 4-digit number and the
+    // circle color correctly across distinct images; emits structured
+    // tool_calls). We use the guaranteed 512K floor as the pruning hint so
+    // context trimming kicks in before the smallest promised limit.
+    id: "minimax-m3",
+    contextWindow: 524288,
+    maxTokens: 8192,
+    reasoning: true,
+    vision: true,
+    documents: false,
+    audio: false,
+    video: false,
+  },
+  {
     id: "ministral-3:3b",
     contextWindow: 262144,
     maxTokens: 8192,
@@ -338,16 +355,6 @@ export const TOOL_CAPABLE_OLLAMA_CLOUD_MODELS = [
     video: false,
   },
   {
-    id: "qwen3-next:80b",
-    contextWindow: 262144,
-    maxTokens: 8192,
-    reasoning: true,
-    vision: false,
-    documents: false,
-    audio: false,
-    video: false,
-  },
-  {
     id: "qwen3-vl:235b",
     contextWindow: 262144,
     maxTokens: 8192,
@@ -368,11 +375,17 @@ export const TOOL_CAPABLE_OLLAMA_CLOUD_MODELS = [
     video: false,
   },
   {
+    // The ollama.com/library/qwen3.5 page lists image input, but the live
+    // /v1/chat/completions endpoint hallucinates image contents (wrong number
+    // AND wrong color across distinct test images) rather than rejecting them
+    // — it does not actually see images. qwen3.5 is a text/reasoning model,
+    // not a VL model (contrast qwen3-vl). Flagged vision:false so it is never
+    // picked as an image model or offered as a vision-capable choice.
     id: "qwen3.5:397b",
     contextWindow: 262144,
     maxTokens: 8192,
     reasoning: true,
-    vision: true,
+    vision: false,
     documents: false,
     audio: false,
     video: false,

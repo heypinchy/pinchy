@@ -202,6 +202,16 @@ Pinchy no longer reads `BETTER_AUTH_URL`. An investigation ([#352](https://githu
 
 The variable is gone from `docker-compose.yml`, `.env.example`, and the startup warning that previously told Domain-Locked deployments to set it (added in v0.5.4 — see below). **If you set `BETTER_AUTH_URL` in your `.env` or a `docker-compose.override.yml`, you can drop it.** Leaving it in place is harmless — it is simply ignored — but the line is now dead config. Domain Lock remains the single source of truth for your public origin; HTTPS, secure cookies, and origin enforcement are unchanged.
 
+#### Ollama Cloud model catalog refreshed against the live API
+
+The Ollama Cloud library pages over-promise: some models advertise capabilities the live API doesn't actually honor. We re-probed every cloud model against the real `/v1/chat/completions` endpoint — sending image payloads with non-guessable content for vision and a function schema for tools — and corrected the catalog to match what the API does, not what the library page claims.
+
+- **MiniMax M3 added.** `minimax-m3` joins the picker as a vision + reasoning + tools model (512K context). Vision and tool calling were both confirmed against the live API. It is now the reasoning-tier vision default.
+- **`qwen3.5:397b` is now text-only.** Its library page lists image input, but the live endpoint accepts image payloads and then hallucinates their contents rather than rejecting them — it does not actually see images. It stays available as a text/reasoning model and is no longer offered as a vision choice. Image work that previously could route here now uses the canonical vision line (`qwen3-vl` > `gemini-3-flash-preview` > `gemma4`).
+- **`qwen3-next:80b` removed.** On Ollama Cloud's OpenAI-completions endpoint it never emits a structured tool call — it returns empty content or a malformed tool-call blob, even when tools are required. Every Pinchy agent uses tools, so a tool-broken model has no place in the picker. The Ollama Cloud balanced default moves to `glm-4.7`.
+
+No action is required for agents created the normal way: their model comes from the capability resolver (which never selected `qwen3-next:80b`), and the global default is recomputed on the upgrade's config regeneration. The only agents affected are ones where someone **manually** pinned `ollama-cloud/qwen3-next:80b` — those couldn't call tools before this release either, so switch them to `ollama-cloud/glm-4.7` (or another model) in the agent's settings.
+
 ## Upgrading from v0.5.5 to v0.5.6
 
 ### Breaking changes

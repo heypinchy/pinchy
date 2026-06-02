@@ -17,6 +17,6 @@ export const BALANCED_ANCHORS: Record<ProviderName, string> = {
   anthropic: "anthropic/claude-sonnet-4-6",
   openai: "openai/gpt-5.5",
   google: "google/gemini-2.5-pro",
-  "ollama-cloud": "ollama-cloud/qwen3-next:80b",
+  "ollama-cloud": "ollama-cloud/glm-4.7",
   "ollama-local": "",
 };

@@ -32,7 +32,7 @@ vi.mock("@/lib/providers", () => ({
       name: "Ollama Cloud",
       settingsKey: "ollama_cloud_api_key",
       envVar: "OLLAMA_CLOUD_API_KEY",
-      defaultModel: "ollama-cloud/qwen3-next:80b",
+      defaultModel: "ollama-cloud/glm-4.7",
       placeholder: "sk-...",
     },
     "ollama-local": {
@@ -300,6 +300,7 @@ describe("fetchProviderModels", () => {
             { id: "minimax-m2.1" },
             { id: "minimax-m2.5" },
             { id: "minimax-m2.7" },
+            { id: "minimax-m3" },
             { id: "ministral-3:3b" },
             { id: "ministral-3:8b" },
             { id: "ministral-3:14b" },
@@ -353,6 +354,7 @@ describe("fetchProviderModels", () => {
         "ollama-cloud/minimax-m2.1",
         "ollama-cloud/minimax-m2.5",
         "ollama-cloud/minimax-m2.7",
+        "ollama-cloud/minimax-m3",
         "ollama-cloud/ministral-3:3b",
         "ollama-cloud/ministral-3:8b",
         "ollama-cloud/ministral-3:14b",
@@ -361,7 +363,6 @@ describe("fetchProviderModels", () => {
         "ollama-cloud/nemotron-3-super",
         "ollama-cloud/qwen3-coder-next",
         "ollama-cloud/qwen3-coder:480b",
-        "ollama-cloud/qwen3-next:80b",
         "ollama-cloud/qwen3-vl:235b",
         "ollama-cloud/qwen3-vl:235b-instruct",
         "ollama-cloud/qwen3.5:397b",
@@ -370,6 +371,11 @@ describe("fetchProviderModels", () => {
     );
     // kimi-k2-thinking removed from allowlist (#305 — Ollama Cloud returns HTTP 500 for this model)
     expect(ids).not.toContain("ollama-cloud/kimi-k2-thinking");
+    // qwen3-next:80b is still returned by /v1/models but no longer allow-listed:
+    // it emits no working tool calls on the OpenAI-completions endpoint.
+    expect(ids).not.toContain("ollama-cloud/qwen3-next:80b");
+    // minimax-m3 was added to the allowlist (vision + tools confirmed live).
+    expect(ids).toContain("ollama-cloud/minimax-m3");
     expect(ids).toHaveLength(33);
 
     // Non-tool-capable models are filtered out
@@ -441,6 +447,7 @@ describe("fetchProviderModels", () => {
         "ollama-cloud/minimax-m2.1",
         "ollama-cloud/minimax-m2.5",
         "ollama-cloud/minimax-m2.7",
+        "ollama-cloud/minimax-m3",
         "ollama-cloud/ministral-3:3b",
         "ollama-cloud/ministral-3:8b",
         "ollama-cloud/ministral-3:14b",
@@ -449,7 +456,6 @@ describe("fetchProviderModels", () => {
         "ollama-cloud/nemotron-3-super",
         "ollama-cloud/qwen3-coder-next",
         "ollama-cloud/qwen3-coder:480b",
-        "ollama-cloud/qwen3-next:80b",
         "ollama-cloud/qwen3-vl:235b",
         "ollama-cloud/qwen3-vl:235b-instruct",
         "ollama-cloud/qwen3.5:397b",
@@ -772,7 +778,7 @@ describe("selectDefaultModel", () => {
       { id: "ollama-cloud/gemini-3-flash-preview", name: "Gemini 3 Flash Preview" },
       { id: "ollama-cloud/qwen3.5:397b", name: "Qwen 3.5 397B" },
     ];
-    expect(selectDefaultModel("ollama-cloud", models)).toBe("ollama-cloud/qwen3-next:80b");
+    expect(selectDefaultModel("ollama-cloud", models)).toBe("ollama-cloud/glm-4.7");
   });
 
   it("prefers stable versions over preview versions", async () => {

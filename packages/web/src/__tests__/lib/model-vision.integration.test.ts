@@ -52,8 +52,16 @@ describe("Ollama cloud vision models (from DB seed)", () => {
     expect(isModelVisionCapable("ollama-cloud/mistral-large-3:675b")).toBe(true);
   });
 
-  it("returns true for qwen3.5:397b", () => {
-    expect(isModelVisionCapable("ollama-cloud/qwen3.5:397b")).toBe(true);
+  it("returns true for minimax-m3", () => {
+    expect(isModelVisionCapable("ollama-cloud/minimax-m3")).toBe(true);
+  });
+
+  it("returns FALSE for qwen3.5:397b (claims vision, hallucinates)", () => {
+    // The library page lists image input, but the live `/v1/chat/completions`
+    // endpoint hallucinates image contents rather than rejecting them — it
+    // does not actually see images. qwen3.5 is a text/reasoning model, not a
+    // VL model (contrast qwen3-vl). Flagged vision:false in the catalog.
+    expect(isModelVisionCapable("ollama-cloud/qwen3.5:397b")).toBe(false);
   });
 
   it("returns true for every ministral-3 variant", () => {

@@ -1744,6 +1744,7 @@ describe("regenerateOpenClawConfig", () => {
         "minimax-m2.1",
         "minimax-m2.5",
         "minimax-m2.7",
+        "minimax-m3",
         "ministral-3:14b",
         "ministral-3:3b",
         "ministral-3:8b",
@@ -1752,7 +1753,6 @@ describe("regenerateOpenClawConfig", () => {
         "nemotron-3-super",
         "qwen3-coder-next",
         "qwen3-coder:480b",
-        "qwen3-next:80b",
         "qwen3-vl:235b",
         "qwen3-vl:235b-instruct",
         "qwen3.5:397b",
@@ -1811,12 +1811,13 @@ describe("regenerateOpenClawConfig", () => {
     expect(ctx["nemotron-3-super"]).toBe(262144);
     expect(ctx["qwen3-coder-next"]).toBe(262144);
     expect(ctx["qwen3-coder:480b"]).toBe(262144);
-    expect(ctx["qwen3-next:80b"]).toBe(262144);
     expect(ctx["qwen3-vl:235b"]).toBe(262144);
     expect(ctx["qwen3-vl:235b-instruct"]).toBe(262144);
     expect(ctx["qwen3.5:397b"]).toBe(262144);
     // 384K
     expect(ctx["devstral-small-2:24b"]).toBe(393216);
+    // 512K — minimax-m3's guaranteed minimum (library page: "up to 1M")
+    expect(ctx["minimax-m3"]).toBe(524288);
     // 1M
     expect(ctx["deepseek-v4-flash"]).toBe(1048576);
     expect(ctx["deepseek-v4-pro"]).toBe(1048576);
@@ -1857,13 +1858,13 @@ describe("regenerateOpenClawConfig", () => {
       "gemma4:31b",
       "kimi-k2.5",
       "kimi-k2.6",
+      "minimax-m3",
       "ministral-3:3b",
       "ministral-3:8b",
       "ministral-3:14b",
       "mistral-large-3:675b",
       "qwen3-vl:235b",
       "qwen3-vl:235b-instruct",
-      "qwen3.5:397b",
     ];
     for (const id of visionModels) {
       expect(byId[id].input).toEqual(["text", "image"]);
@@ -1871,10 +1872,13 @@ describe("regenerateOpenClawConfig", () => {
     // Spot-check that text-only models stay text-only (gemma4 was the
     // specific counter-example the user flagged during review). devstral-
     // small-2:24b joined this list after the #416 smoke test demoted it.
+    // qwen3.5:397b joined it too: its library page claims image input but the
+    // live endpoint hallucinates image contents, so it is flagged text-only.
     expect(byId["rnj-1:8b"].input).toEqual(["text"]);
     expect(byId["qwen3-coder:480b"].input).toEqual(["text"]);
     expect(byId["deepseek-v3.2"].input).toEqual(["text"]);
     expect(byId["devstral-small-2:24b"].input).toEqual(["text"]);
+    expect(byId["qwen3.5:397b"].input).toEqual(["text"]);
 
     // Reasoning-capable cloud models per ollama.com/search?c=thinking&c=cloud
     const reasoningModels = [
@@ -1895,9 +1899,9 @@ describe("regenerateOpenClawConfig", () => {
       "minimax-m2",
       "minimax-m2.5",
       "minimax-m2.7",
+      "minimax-m3",
       "nemotron-3-nano:30b",
       "nemotron-3-super",
-      "qwen3-next:80b",
       "qwen3-vl:235b",
       "qwen3-vl:235b-instruct",
       "qwen3.5:397b",
@@ -6731,10 +6735,11 @@ describe("regenerateOpenClawConfig imageModel.primary (#416)", () => {
   });
 
   it("picks the canonical-vision ollama-cloud model when only ollama-cloud is configured", async () => {
-    // The provider's general balanced default is `qwen3-next:80b` (text-only)
-    // and several other ollama-cloud models accept image input but mislabel
-    // colors (mistral-large-3, qwen3.5:397b, kimi-k2.5/k2.6 — see the #416
-    // empirical smoke test). The image-default picker explicitly prefers the
+    // The provider's general balanced default is `glm-4.7` (text-only) and
+    // several other ollama-cloud models are weaker on images: mistral-large-3
+    // and kimi-k2.5/k2.6 accept image input but occasionally misread digits,
+    // and qwen3.5:397b only claims vision (it hallucinates image contents and
+    // is flagged text-only). The image-default picker explicitly prefers the
     // "canonical vision line" — qwen3-vl > gemini-3-flash > gemma4 — over
     // those weaker models.
     mockedGetSetting.mockImplementation(async (key: string) =>

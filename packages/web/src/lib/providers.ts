@@ -41,7 +41,11 @@ export const PROVIDERS: Record<ProviderName, ProviderConfig> = {
     authType: "api-key",
     settingsKey: "ollama_cloud_api_key",
     envVar: "OLLAMA_CLOUD_API_KEY",
-    defaultModel: "ollama-cloud/qwen3-next:80b",
+    // glm-4.7 is the balanced-tier general pick in the resolver and emits
+    // working tool calls on Ollama Cloud. qwen3-next:80b (the previous
+    // default) was dropped from the catalog — it cannot tool-call on the
+    // OpenAI-completions endpoint (see ollama-cloud-models.ts).
+    defaultModel: "ollama-cloud/glm-4.7",
     placeholder: "sk-...",
   },
   "ollama-local": {

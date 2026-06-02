@@ -170,7 +170,7 @@ export const BALANCED_PATTERNS: Record<ProviderName, RegExp> = {
   anthropic: /^anthropic\/claude-sonnet-\d+-\d+(?:-\d{8})?$/,
   openai: /^openai\/gpt-([5-9]|\d{2,})(\.\d+)?(?:-\d{4}-\d{2}-\d{2})?$/,
   google: /^google\/gemini-[2-9](?:\.\d+)?-pro(?:-\d{3})?$/,
-  "ollama-cloud": /^ollama-cloud\/qwen3-next:\d+b$/,
+  "ollama-cloud": /^ollama-cloud\/glm-4\.7$/,
   "ollama-local": /.*/,
 };
 

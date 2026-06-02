@@ -72,7 +72,7 @@ describe("balanced default — drift resistance", () => {
       ["anthropic", "anthropic/claude-sonnet-4-6"],
       ["openai", "openai/gpt-5.5"],
       ["google", "google/gemini-2.5-pro"],
-      ["ollama-cloud", "ollama-cloud/qwen3-next:80b"],
+      ["ollama-cloud", "ollama-cloud/glm-4.7"],
     ] as const)("%s: empty candidate list → anchor %s", (provider, anchor) => {
       const noMatch = [{ id: `${provider}/something-totally-unexpected`, name: "x" }];
       expect(selectDefaultModel(provider, noMatch)).toBe(anchor);
