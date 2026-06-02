@@ -68,10 +68,12 @@ describe("setIntegrationAuthFailed", () => {
         where: () => Promise.resolve([{ id: "c1", name: "Odoo", status: "auth_failed" }]),
       }),
     } as never);
+    // The conditional UPDATE excludes rows already in auth_failed state, so
+    // RETURNING comes back empty — the idempotent path.
     const fakeUpdate = {
       set: vi.fn().mockReturnThis(),
       where: vi.fn().mockReturnThis(),
-      returning: vi.fn().mockResolvedValue([{ id: "c1", name: "Odoo" }]),
+      returning: vi.fn().mockResolvedValue([]),
     };
     mockedDb.update.mockReturnValue(fakeUpdate as never);
 
@@ -97,6 +99,37 @@ describe("setIntegrationAuthFailed", () => {
     });
 
     expect(mockedDb.update).not.toHaveBeenCalled();
+    expect(mockedAppendAudit).not.toHaveBeenCalled();
+  });
+
+  it("does NOT emit a duplicate audit when a concurrent caller already transitioned (conditional UPDATE returns 0 rows)", async () => {
+    // Race scenario: two callers both see status='active' on their SELECT
+    // (e.g. sync route + plugin report-auth-failure firing simultaneously).
+    // Without an atomic conditional UPDATE, both would write the same audit
+    // transition. We guard against this by guarding the UPDATE on the prior
+    // status and emitting audit only when RETURNING confirms WE flipped it.
+    mockedDb.select.mockReturnValue({
+      from: () => ({
+        where: () => Promise.resolve([{ id: "c1", name: "Odoo", status: "active" }]),
+      }),
+    } as never);
+    // The UPDATE … WHERE status != 'auth_failed' affects zero rows because
+    // the other caller already flipped it between our SELECT and UPDATE.
+    const fakeUpdate = {
+      set: vi.fn().mockReturnThis(),
+      where: vi.fn().mockReturnThis(),
+      returning: vi.fn().mockResolvedValue([]),
+    };
+    mockedDb.update.mockReturnValue(fakeUpdate as never);
+
+    await setIntegrationAuthFailed({
+      connectionId: "c1",
+      reason: "401 from Odoo",
+      actor: { type: "system", id: "plugin:pinchy-odoo" },
+    });
+
+    expect(fakeUpdate.set).toHaveBeenCalled();
+    // Critical: no audit row for a transition we did not perform.
     expect(mockedAppendAudit).not.toHaveBeenCalled();
   });
 });
@@ -161,6 +194,32 @@ describe("clearIntegrationAuthError", () => {
     expect(mockedDb.update).not.toHaveBeenCalled();
     expect(mockedAppendAudit).not.toHaveBeenCalled();
   });
+
+  it("does NOT emit a duplicate audit when a concurrent caller already recovered (conditional UPDATE returns 0 rows)", async () => {
+    // Same race shape as setIntegrationAuthFailed: two callers see
+    // status='auth_failed' simultaneously (e.g. successful Test + successful
+    // Sync within milliseconds), both want to flip back to 'active'. Audit
+    // must fire exactly once — the caller that wins the conditional UPDATE.
+    mockedDb.select.mockReturnValue({
+      from: () => ({
+        where: () => Promise.resolve([{ id: "c1", name: "Odoo", status: "auth_failed" }]),
+      }),
+    } as never);
+    const fakeUpdate = {
+      set: vi.fn().mockReturnThis(),
+      where: vi.fn().mockReturnThis(),
+      returning: vi.fn().mockResolvedValue([]),
+    };
+    mockedDb.update.mockReturnValue(fakeUpdate as never);
+
+    await clearIntegrationAuthError({
+      connectionId: "c1",
+      actor: { type: "user", id: "u1" },
+    });
+
+    expect(fakeUpdate.set).toHaveBeenCalled();
+    expect(mockedAppendAudit).not.toHaveBeenCalled();
+  });
 });
 
 describe("audit failure handling", () => {
@@ -172,7 +231,8 @@ describe("audit failure handling", () => {
     } as never);
     const fakeUpdate = {
       set: vi.fn().mockReturnThis(),
-      where: vi.fn().mockResolvedValue(undefined),
+      where: vi.fn().mockReturnThis(),
+      returning: vi.fn().mockResolvedValue([{ id: "c1" }]),
     };
     mockedDb.update.mockReturnValue(fakeUpdate as never);
     mockedAppendAudit.mockRejectedValueOnce(new Error("DB write failed"));
@@ -197,7 +257,8 @@ describe("audit failure handling", () => {
     } as never);
     const fakeUpdate = {
       set: vi.fn().mockReturnThis(),
-      where: vi.fn().mockResolvedValue(undefined),
+      where: vi.fn().mockReturnThis(),
+      returning: vi.fn().mockResolvedValue([{ id: "c1" }]),
     };
     mockedDb.update.mockReturnValue(fakeUpdate as never);
     mockedAppendAudit.mockRejectedValueOnce(new Error("DB write failed"));

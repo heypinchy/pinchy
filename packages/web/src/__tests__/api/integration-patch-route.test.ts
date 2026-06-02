@@ -192,6 +192,51 @@ describe("PATCH /api/integrations/[connectionId] — credential probe", () => {
         outcome: "success",
       })
     );
+    // ONLY the credentials_updated audit fires for a credentials-only PATCH.
+    // We deliberately do NOT emit an additional integration.updated event for
+    // the credentials field — that would produce two audit rows per mutation
+    // and force CISO filters to deduplicate.
+    expect(mockAppendAuditLog).not.toHaveBeenCalledWith(
+      expect.objectContaining({ eventType: "integration.updated" })
+    );
+  });
+
+  it("PATCH with both name AND credentials emits BOTH integration.updated and integration.credentials_updated", async () => {
+    const { PATCH } = await import("@/app/api/integrations/[connectionId]/route");
+
+    await PATCH(
+      makeRequest("/api/integrations/conn-1", {
+        method: "PATCH",
+        body: JSON.stringify({
+          name: "Renamed Odoo",
+          credentials: { ...validOdooCredentials, apiKey: "rotated-key" },
+        }),
+      }),
+      { params: Promise.resolve({ connectionId: "conn-1" }) }
+    );
+
+    // integration.updated for the name change
+    expect(mockAppendAuditLog).toHaveBeenCalledWith(
+      expect.objectContaining({
+        eventType: "integration.updated",
+        detail: expect.objectContaining({
+          changes: expect.objectContaining({ name: { from: "Test Odoo", to: "Renamed Odoo" } }),
+        }),
+      })
+    );
+    // The integration.updated diff must NOT include credentials — that gets
+    // its own dedicated event so the change types stay separable in the log.
+    const updatedCall = mockAppendAuditLog.mock.calls.find(
+      (c) => (c[0] as { eventType?: string }).eventType === "integration.updated"
+    );
+    const updatedDetail = (updatedCall?.[0] as { detail: { changes: Record<string, unknown> } })
+      .detail;
+    expect(updatedDetail.changes).not.toHaveProperty("credentials");
+
+    // Separate integration.credentials_updated event still fires
+    expect(mockAppendAuditLog).toHaveBeenCalledWith(
+      expect.objectContaining({ eventType: "integration.credentials_updated" })
+    );
   });
 
   it("PATCH with bad new credentials returns 400 with reason and writes nothing", async () => {

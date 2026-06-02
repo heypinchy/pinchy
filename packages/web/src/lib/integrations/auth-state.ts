@@ -1,4 +1,4 @@
-import { eq } from "drizzle-orm";
+import { and, eq, ne } from "drizzle-orm";
 import { db } from "@/db";
 import { integrationConnections } from "@/db/schema";
 import { appendAuditLog } from "@/lib/audit";
@@ -19,26 +19,37 @@ export async function setIntegrationAuthFailed(args: {
   if (!existing) return;
 
   const now = new Date();
-  await db
+
+  // Atomic transition: the UPDATE only fires when the row is NOT already in
+  // auth_failed state. If a concurrent caller (e.g. sync + plugin-report
+  // racing on the same connection) already flipped the status between our
+  // SELECT and UPDATE, the WHERE excludes our row and `returning()` is empty
+  // — we exit without writing a duplicate transition audit.
+  const transitioned = await db
     .update(integrationConnections)
     .set({ status: "auth_failed", lastError: reason, lastErrorAt: now, updatedAt: now })
-    .where(eq(integrationConnections.id, connectionId));
+    .where(
+      and(
+        eq(integrationConnections.id, connectionId),
+        ne(integrationConnections.status, "auth_failed")
+      )
+    )
+    .returning({ id: integrationConnections.id });
 
-  // Only audit the *transition* — not every duplicate failure.
-  if (existing.status !== "auth_failed") {
-    const entry = {
-      actorType: actor.type,
-      actorId: actor.id,
-      eventType: "integration.auth_failed" as const,
-      resource: `integration:${connectionId}`,
-      detail: { id: connectionId, name: existing.name, reason },
-      outcome: "success" as const,
-    };
-    try {
-      await appendAuditLog(entry);
-    } catch (err) {
-      recordAuditFailure(err, entry);
-    }
+  if (transitioned.length === 0) return;
+
+  const entry = {
+    actorType: actor.type,
+    actorId: actor.id,
+    eventType: "integration.auth_failed" as const,
+    resource: `integration:${connectionId}`,
+    detail: { id: connectionId, name: existing.name, reason },
+    outcome: "success" as const,
+  };
+  try {
+    await appendAuditLog(entry);
+  } catch (err) {
+    recordAuditFailure(err, entry);
   }
 }
 
@@ -54,10 +65,20 @@ export async function clearIntegrationAuthError(args: {
   if (!existing) return;
   if (existing.status !== "auth_failed") return;
 
-  await db
+  // Same atomic-transition guard as setIntegrationAuthFailed: only flip back
+  // and emit the recovery audit when we win the race.
+  const transitioned = await db
     .update(integrationConnections)
     .set({ status: "active", lastError: null, lastErrorAt: null, updatedAt: new Date() })
-    .where(eq(integrationConnections.id, connectionId));
+    .where(
+      and(
+        eq(integrationConnections.id, connectionId),
+        eq(integrationConnections.status, "auth_failed")
+      )
+    )
+    .returning({ id: integrationConnections.id });
+
+  if (transitioned.length === 0) return;
 
   const entry = {
     actorType: actor.type,
