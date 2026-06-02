@@ -114,6 +114,30 @@ vi.mock("@/components/assistant-ui/chat-error-message", () => ({
   ChatErrorMessage: () => null,
 }));
 
+// AssistantErrorOrContent (rendered inside AssistantMessage) reads from
+// useAgentsContext to look up the current agent's model when an
+// UnsupportedAttachmentError comes back from the server. The test doesn't
+// drive that error path, but the hook still runs on every render and throws
+// without an AgentsProvider wrapper. Mocking the module keeps the test free
+// of provider boilerplate.
+vi.mock("@/components/agents-provider", () => ({
+  useAgentsContext: vi.fn(() => ({
+    agents: [],
+    sortedAgents: [],
+    getAgent: vi.fn(() => undefined),
+    refresh: vi.fn(),
+  })),
+}));
+
+vi.mock("@/hooks/use-model-capabilities", () => ({
+  useModelCapabilities: vi.fn(() => ({
+    data: undefined,
+    isLoading: false,
+    error: undefined,
+    refetch: vi.fn(),
+  })),
+}));
+
 vi.mock("@/components/chat", async () => {
   const React = await import("react");
   return {
