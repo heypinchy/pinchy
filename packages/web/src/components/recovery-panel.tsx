@@ -6,7 +6,8 @@ import { AlertTriangle, X } from "lucide-react";
 import { ModelPicker } from "@/components/model-picker";
 import { Button } from "@/components/ui/button";
 import type { ModelCapability } from "@/lib/model-resolver/types";
-import { capabilityField, type ModelCapabilities } from "@/lib/model-capabilities/cache";
+import type { ModelCapabilities } from "@/lib/model-capabilities/types";
+import { capabilityField } from "@/lib/model-capabilities/capability-field";
 
 type AgentRef = { id: string; name: string };
 type ProviderModel = { id: string; name: string; capabilities: ModelCapabilities };
