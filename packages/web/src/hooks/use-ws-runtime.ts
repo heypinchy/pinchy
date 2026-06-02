@@ -193,7 +193,7 @@ class CodeTextAttachmentAdapter extends SimpleTextAttachmentAdapter {
  */
 export class SimpleBinaryFileAttachmentAdapter {
   public accept =
-    "application/pdf,.pdf,text/csv,.csv,text/plain,.txt,text/markdown,.md,application/json,.json,text/yaml,.yaml,.yml";
+    "application/pdf,.pdf,text/csv,.csv,text/plain,.txt,text/markdown,.md,.markdown,application/json,.json,text/yaml,.yaml,.yml";
 
   async add(state: { file: File }) {
     const { file } = state;
