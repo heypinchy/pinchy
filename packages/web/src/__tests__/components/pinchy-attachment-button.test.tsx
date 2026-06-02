@@ -67,10 +67,21 @@ describe("PinchyAttachmentButton", () => {
     expect(input.value).toBe("");
   });
 
-  it("accepts only image and pdf MIME types in the file picker", () => {
+  it("accepts the upload MIMEs the server allowlist permits", () => {
+    // Mirrors ALLOWED_ATTACHMENT_MIMES ∪ ALLOWED_TEXT_MIMES in
+    // upload-validation.ts: images, PDFs, and the workspace-data formats
+    // (CSV / plain text / Markdown / JSON / YAML). Both MIME types and file
+    // extensions are listed because browsers leave `File.type` empty for
+    // some of these (notably .yaml / .md), and the extension is then the
+    // only signal the OS file picker can match on.
     renderWithContext(vi.fn());
     const input = screen.getByTestId("pinchy-attachment-input") as HTMLInputElement;
     expect(input.accept).toContain("image/");
     expect(input.accept).toContain("application/pdf");
+    expect(input.accept).toContain("text/csv");
+    expect(input.accept).toContain("text/plain");
+    expect(input.accept).toContain("text/markdown");
+    expect(input.accept).toContain("application/json");
+    expect(input.accept).toContain("text/yaml");
   });
 });

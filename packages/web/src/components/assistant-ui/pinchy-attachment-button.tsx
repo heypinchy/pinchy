@@ -33,7 +33,7 @@ export const PinchyAttachmentButton: FC = () => {
         ref={inputRef}
         type="file"
         data-testid="pinchy-attachment-input"
-        accept="image/*,application/pdf"
+        accept="image/*,application/pdf,text/csv,.csv,text/plain,.txt,text/markdown,.md,.markdown,application/json,.json,text/yaml,.yaml,.yml"
         multiple
         hidden
         onChange={(e) => {
