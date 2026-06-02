@@ -342,16 +342,28 @@ try {
   if (candidates.length === 0) { console.error("no selection-*.js in", distDir); process.exit(0); }
   const target = path.join(distDir, candidates[0]);
   const src = fs.readFileSync(target, "utf8");
-  const SIG = "[fence-debug-patched-2026-06-02]";
+  const SIG = "[fence-debug-patched-v2-2026-06-02]";
   if (src.includes(SIG)) { console.error("already patched, skipping"); process.exit(0); }
-  const ORIGINAL = `function sameSessionFileFingerprint(left, right) {
+  // Match the v1 (already-applied) signature too, so a re-deployed container
+  // re-patches with the richer logging. Otherwise the previous patch sticks
+  // and we miss the early-return diagnostics.
+  const V1_SIG = "[fence-debug-patched-2026-06-02]";
+  let ORIGINAL;
+  if (src.includes(V1_SIG)) {
+    console.error("found v1 patch, upgrading to v2");
+    ORIGINAL = src.slice(src.indexOf("function sameSessionFileFingerprint"), src.indexOf("function sameSessionFileIdentity"));
+  } else {
+    ORIGINAL = `function sameSessionFileFingerprint(left, right) {
 \tif (!left || left.exists !== right.exists) return false;
 \tif (!left.exists || !right.exists) return true;
 \treturn left.dev === right.dev && left.ino === right.ino && left.size === right.size && left.mtimeNs === right.mtimeNs && left.ctimeNs === right.ctimeNs;
 }`;
-  if (!src.includes(ORIGINAL)) { console.error("expected function shape not found, aborting"); process.exit(0); }
+    if (!src.includes(ORIGINAL)) { console.error("expected function shape not found, aborting"); process.exit(0); }
+  }
   const PATCHED = `function sameSessionFileFingerprint(left, right) { // ${SIG}
-\tif (!left || left.exists !== right.exists) return false;
+\tconst logDiff = (reason, extra) => { try { console.error("[fence-debug]", JSON.stringify(Object.assign({ reason }, extra))); } catch (e) {} };
+\tif (!left) { logDiff("no-prev-fingerprint", {}); return false; }
+\tif (left.exists !== right.exists) { logDiff("exists-flag-changed", { prevExists: left.exists, curExists: right.exists }); return false; }
 \tif (!left.exists || !right.exists) return true;
 \tconst sameDev = left.dev === right.dev;
 \tconst sameIno = left.ino === right.ino;
@@ -359,9 +371,12 @@ try {
 \tconst sameMtime = left.mtimeNs === right.mtimeNs;
 \tconst sameCtime = left.ctimeNs === right.ctimeNs;
 \tconst same = sameDev && sameIno && sameSize && sameMtime && sameCtime;
-\tif (!same) { try { console.error("[fence-debug]", JSON.stringify({ sameDev, sameIno, sameSize, sameMtime, sameCtime, prevSize: String(left.size), curSize: String(right.size), prevMtimeNs: String(left.mtimeNs), curMtimeNs: String(right.mtimeNs), prevCtimeNs: String(left.ctimeNs), curCtimeNs: String(right.ctimeNs), sizeGrew: right.size > left.size, sizeDeltaBytes: String(right.size - left.size) })); } catch (e) {} }
+\tif (!same) {
+\t\tlogDiff("stat-fields-diff", { sameDev, sameIno, sameSize, sameMtime, sameCtime, prevSize: String(left.size), curSize: String(right.size), prevMtimeNs: String(left.mtimeNs), curMtimeNs: String(right.mtimeNs), prevCtimeNs: String(left.ctimeNs), curCtimeNs: String(right.ctimeNs), sizeGrew: right.size > left.size, sizeDeltaBytes: String(right.size - left.size) });
+\t}
 \treturn same;
-}`;
+}
+`;
   fs.writeFileSync(target, src.replace(ORIGINAL, PATCHED), "utf8");
   console.error("patched", target);
 } catch (e) {
