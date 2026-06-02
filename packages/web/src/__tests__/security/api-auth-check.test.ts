@@ -31,6 +31,10 @@ const PUBLIC_ROUTES = [
   "api/setup/route.ts",
   "api/setup/status/route.ts",
   "api/invite/claim/route.ts",
+  // Loader for the /invite/[token] page (#436): returns only the invite flow
+  // type so the unauthenticated invite/reset page can render the right UI.
+  // Token possession is the auth factor, same as the claim route above.
+  "api/invite/[token]/route.ts",
   "api/health/route.ts",
   "api/health/openclaw/route.ts",
   "api/diagnostics/route.ts",
