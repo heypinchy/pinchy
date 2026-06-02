@@ -33,6 +33,15 @@ export const OPENCLAW_DEFAULT_BOOTSTRAP_TOTAL_MAX_CHARS = 60_000;
 export const BOOTSTRAP_PER_FILE_CEILING_CHARS = 64_000;
 /** Upper bound for the combined bootstrap budget (~32k tokens). */
 export const BOOTSTRAP_TOTAL_CEILING_CHARS = 128_000;
+/**
+ * Margin added above the measured size when raising a cap. Absorbs small drift
+ * between Pinchy's measurement and OpenClaw's (line-ending normalisation, any
+ * per-file framing OpenClaw counts against the cap) and a modest later edit to
+ * the instructions, so a file sitting right at its size doesn't get re-truncated
+ * by a few characters. Clamped to the ceilings, so it never inflates context
+ * beyond the protective bounds.
+ */
+export const BOOTSTRAP_HEADROOM_CHARS = 2_000;
 
 export interface BootstrapCaps {
   /** Per-agent `bootstrapMaxChars` to emit, or undefined to keep OpenClaw's default. */
@@ -71,7 +80,10 @@ export function resolveBootstrapCaps(fileSizes: number[]): BootstrapCaps {
   };
 
   if (needsPerFile) {
-    caps.bootstrapMaxChars = Math.min(largest, BOOTSTRAP_PER_FILE_CEILING_CHARS);
+    caps.bootstrapMaxChars = Math.min(
+      largest + BOOTSTRAP_HEADROOM_CHARS,
+      BOOTSTRAP_PER_FILE_CEILING_CHARS
+    );
   }
 
   // The total budget caps the sum of all bootstrap files AND must never sit below
@@ -83,7 +95,7 @@ export function resolveBootstrapCaps(fileSizes: number[]): BootstrapCaps {
     perFileEffective > OPENCLAW_DEFAULT_BOOTSTRAP_TOTAL_MAX_CHARS
   ) {
     caps.bootstrapTotalMaxChars = Math.min(
-      Math.max(total, perFileEffective),
+      Math.max(total + BOOTSTRAP_HEADROOM_CHARS, perFileEffective),
       BOOTSTRAP_TOTAL_CEILING_CHARS
     );
   }

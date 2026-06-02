@@ -5,6 +5,7 @@ import {
   OPENCLAW_DEFAULT_BOOTSTRAP_TOTAL_MAX_CHARS,
   BOOTSTRAP_PER_FILE_CEILING_CHARS,
   BOOTSTRAP_TOTAL_CEILING_CHARS,
+  BOOTSTRAP_HEADROOM_CHARS,
 } from "@/lib/openclaw-config/bootstrap-caps";
 
 // Issue #373: OpenClaw's prompt-bootstrap embedding caps each embedded file
@@ -29,24 +30,33 @@ describe("resolveBootstrapCaps", () => {
     expect(caps).toEqual({ oversized: false });
   });
 
-  it("raises the per-file cap to fit an AGENTS.md larger than the default", () => {
+  it("raises the per-file cap to fit an AGENTS.md larger than the default, with headroom", () => {
     const caps = resolveBootstrapCaps([20_000, 3_000]);
 
-    // Must fit the largest single bootstrap file so OpenClaw never truncates it.
-    expect(caps.bootstrapMaxChars).toBe(20_000);
-    expect(caps.bootstrapMaxChars).toBeGreaterThan(OPENCLAW_DEFAULT_BOOTSTRAP_MAX_CHARS);
+    // Must fit the largest single bootstrap file with a margin, so a small later
+    // edit or OpenClaw-side framing doesn't push it back over the cap.
+    expect(caps.bootstrapMaxChars).toBe(20_000 + BOOTSTRAP_HEADROOM_CHARS);
+    expect(caps.bootstrapMaxChars).toBeGreaterThan(20_000);
     // 20k + 3k = 23k still fits the 60k default total budget, so no total override.
     expect(caps.bootstrapTotalMaxChars).toBeUndefined();
     expect(caps.oversized).toBe(false);
   });
 
-  it("raises the total cap when many files sum above the default total", () => {
+  it("leaves headroom above the file size even just over the default cap", () => {
+    const caps = resolveBootstrapCaps([13_000]);
+
+    expect(caps.bootstrapMaxChars).toBe(13_000 + BOOTSTRAP_HEADROOM_CHARS);
+    expect(caps.bootstrapMaxChars).toBeGreaterThan(13_000);
+    expect(caps.oversized).toBe(false);
+  });
+
+  it("raises the total cap when many files sum above the default total, with headroom", () => {
     const caps = resolveBootstrapCaps([11_000, 11_000, 11_000, 11_000, 11_000, 11_000]);
 
     // Each file is under the per-file default, so only the total needs raising.
     expect(caps.bootstrapMaxChars).toBeUndefined();
-    expect(caps.bootstrapTotalMaxChars).toBe(66_000);
-    expect(caps.bootstrapTotalMaxChars).toBeGreaterThan(OPENCLAW_DEFAULT_BOOTSTRAP_TOTAL_MAX_CHARS);
+    expect(caps.bootstrapTotalMaxChars).toBe(66_000 + BOOTSTRAP_HEADROOM_CHARS);
+    expect(caps.bootstrapTotalMaxChars).toBeGreaterThan(66_000);
     expect(caps.oversized).toBe(false);
   });
 

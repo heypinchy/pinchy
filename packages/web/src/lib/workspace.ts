@@ -1,5 +1,6 @@
-import { writeFileSync, readFileSync, existsSync, mkdirSync, rmSync } from "fs";
+import { writeFileSync, readFileSync, existsSync, mkdirSync, rmSync, statSync } from "fs";
 import { join } from "path";
+import { OPENCLAW_DEFAULT_BOOTSTRAP_MAX_CHARS } from "@/lib/openclaw-config/bootstrap-caps";
 
 // =============================================================================
 // Agent on-disk layout — READ THIS before touching any code that resolves an
@@ -191,14 +192,34 @@ export function getAgentBootstrapSizes(agentId: string): number[] {
   for (const name of BOOTSTRAP_FILENAMES) {
     const filePath = join(workspacePath, name);
     if (!existsSync(filePath)) continue;
+
+    // Fast path: a file's UTF-8 byte size is an upper bound on its char length
+    // (every char is ≥ 1 byte), so any file at or under OpenClaw's default
+    // per-file cap provably fits and never needs its content read. The byte size
+    // is a safe (conservative) contribution to the combined-budget sum. Only
+    // files above the default get read for an exact trimmed char length — which
+    // is what drives the ceiling/oversized decision accurately, including for
+    // multibyte instructions where byte size would wildly over-count.
+    let byteSize: number;
+    try {
+      byteSize = statSync(filePath).size;
+    } catch {
+      continue;
+    }
+    if (byteSize <= 0) continue;
+    if (byteSize <= OPENCLAW_DEFAULT_BOOTSTRAP_MAX_CHARS) {
+      sizes.push(byteSize);
+      continue;
+    }
+
     let content: unknown;
     try {
       content = readFileSync(filePath, "utf-8");
     } catch {
+      sizes.push(byteSize); // conservative fallback if the large file can't be read
       continue;
     }
-    if (typeof content !== "string") continue;
-    const length = content.trimEnd().length;
+    const length = typeof content === "string" ? content.trimEnd().length : byteSize;
     if (length > 0) sizes.push(length);
   }
 

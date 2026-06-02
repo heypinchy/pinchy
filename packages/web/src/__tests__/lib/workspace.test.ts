@@ -6,6 +6,7 @@ vi.mock("fs", async (importOriginal) => {
   const readFileSyncMock = vi.fn();
   const existsSyncMock = vi.fn().mockReturnValue(false);
   const mkdirSyncMock = vi.fn();
+  const statSyncMock = vi.fn();
   return {
     ...actual,
     default: {
@@ -14,15 +15,17 @@ vi.mock("fs", async (importOriginal) => {
       readFileSync: readFileSyncMock,
       existsSync: existsSyncMock,
       mkdirSync: mkdirSyncMock,
+      statSync: statSyncMock,
     },
     writeFileSync: writeFileSyncMock,
     readFileSync: readFileSyncMock,
     existsSync: existsSyncMock,
     mkdirSync: mkdirSyncMock,
+    statSync: statSyncMock,
   };
 });
 
-import { writeFileSync, readFileSync, existsSync, mkdirSync } from "fs";
+import { writeFileSync, readFileSync, existsSync, mkdirSync, statSync } from "fs";
 import type { WorkspaceFile } from "@/lib/workspace";
 import {
   ALLOWED_FILES,
@@ -41,6 +44,7 @@ const mockedWriteFileSync = vi.mocked(writeFileSync);
 const mockedReadFileSync = vi.mocked(readFileSync);
 const mockedExistsSync = vi.mocked(existsSync);
 const mockedMkdirSync = vi.mocked(mkdirSync);
+const mockedStatSync = vi.mocked(statSync);
 
 describe("ALLOWED_FILES", () => {
   it("should contain SOUL.md and AGENTS.md (not USER.md)", () => {
@@ -514,47 +518,78 @@ describe("getAgentBootstrapSizes", () => {
     vi.clearAllMocks();
   });
 
+  // Wire existsSync/statSync/readFileSync from a {filename: content} map.
+  // statSync reports the UTF-8 byte length; readFileSync returns the content.
   function mockFiles(files: Record<string, string>) {
-    mockedExistsSync.mockImplementation((p) =>
-      Object.keys(files).some((name) => String(p).endsWith(`/${name}`))
-    );
+    const lookup = (p: unknown) =>
+      Object.entries(files).find(([name]) => String(p).endsWith(`/${name}`));
+    mockedExistsSync.mockImplementation((p) => lookup(p) !== undefined);
+    mockedStatSync.mockImplementation((p) => {
+      const match = lookup(p);
+      if (!match) throw new Error("ENOENT");
+      return { size: Buffer.byteLength(match[1], "utf-8") } as ReturnType<typeof statSync>;
+    });
     mockedReadFileSync.mockImplementation((p) => {
-      const match = Object.entries(files).find(([name]) => String(p).endsWith(`/${name}`));
+      const match = lookup(p);
       return match ? match[1] : "";
     });
   }
 
-  it("returns the trimmed char length of each present bootstrap file", () => {
-    mockFiles({ "AGENTS.md": "a".repeat(20_000), "SOUL.md": "soul body\n\n  " });
+  it("contributes the byte size of small bootstrap files without reading their content", () => {
+    mockFiles({ "AGENTS.md": "a".repeat(5_000), "SOUL.md": "soul body" });
 
     const sizes = getAgentBootstrapSizes("agent-1");
 
-    expect(sizes).toContain(20_000);
-    expect(sizes).toContain("soul body".length); // trailing whitespace trimmed
+    // Small files (<= the default cap) provably fit, so we use the cheap byte
+    // size and never read the file content.
+    expect(sizes).toContain(5_000);
+    expect(sizes).toContain(Buffer.byteLength("soul body", "utf-8"));
     expect(sizes).toHaveLength(2);
+    expect(mockedReadFileSync).not.toHaveBeenCalled();
+  });
+
+  it("reads content for a file over the default cap and returns its trimmed char length", () => {
+    mockFiles({ "AGENTS.md": "a".repeat(20_000) + "\n\n  " });
+
+    const sizes = getAgentBootstrapSizes("agent-2");
+
+    // Over the default cap → exact trimmed char length (drives the ceiling /
+    // oversized decision accurately, even for multibyte instructions).
+    expect(sizes).toEqual([20_000]);
+    expect(mockedReadFileSync).toHaveBeenCalled();
   });
 
   it("skips bootstrap files that do not exist", () => {
     mockFiles({ "AGENTS.md": "instructions" });
 
-    const sizes = getAgentBootstrapSizes("agent-2");
+    const sizes = getAgentBootstrapSizes("agent-3");
 
-    expect(sizes).toEqual(["instructions".length]);
+    expect(sizes).toEqual([Buffer.byteLength("instructions", "utf-8")]);
   });
 
   it("returns an empty array when no bootstrap files exist", () => {
     mockedExistsSync.mockReturnValue(false);
 
-    expect(getAgentBootstrapSizes("agent-3")).toEqual([]);
+    expect(getAgentBootstrapSizes("agent-4")).toEqual([]);
   });
 
-  it("ignores empty files and non-string reads", () => {
+  it("skips zero-byte and un-stattable files", () => {
     mockedExistsSync.mockReturnValue(true);
-    mockedReadFileSync.mockImplementation((p) =>
-      String(p).endsWith("/AGENTS.md") ? "real" : ("" as unknown as string)
-    );
+    mockedStatSync.mockImplementation((p) => {
+      if (String(p).endsWith("/AGENTS.md")) return { size: 0 } as ReturnType<typeof statSync>;
+      throw new Error("EACCES");
+    });
 
-    expect(getAgentBootstrapSizes("agent-4")).toEqual(["real".length]);
+    expect(getAgentBootstrapSizes("agent-5")).toEqual([]);
+    expect(mockedReadFileSync).not.toHaveBeenCalled();
+  });
+
+  it("falls back to the byte size when a large file cannot be read as a string", () => {
+    mockedExistsSync.mockImplementation((p) => String(p).endsWith("/AGENTS.md"));
+    mockedStatSync.mockImplementation(() => ({ size: 20_000 }) as ReturnType<typeof statSync>);
+    mockedReadFileSync.mockReturnValue(undefined as unknown as string);
+
+    expect(getAgentBootstrapSizes("agent-6")).toEqual([20_000]);
   });
 
   it("rejects invalid agentId with path traversal", () => {

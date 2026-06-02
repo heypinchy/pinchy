@@ -12,6 +12,7 @@ vi.mock("fs", async (importOriginal) => {
   const mkdirSyncMock = vi.fn();
   const renameSyncMock = vi.fn();
   const chmodSyncMock = vi.fn();
+  const statSyncMock = vi.fn();
   return {
     ...actual,
     default: {
@@ -22,6 +23,7 @@ vi.mock("fs", async (importOriginal) => {
       mkdirSync: mkdirSyncMock,
       renameSync: renameSyncMock,
       chmodSync: chmodSyncMock,
+      statSync: statSyncMock,
     },
     writeFileSync: writeFileSyncMock,
     readFileSync: readFileSyncMock,
@@ -29,6 +31,7 @@ vi.mock("fs", async (importOriginal) => {
     mkdirSync: mkdirSyncMock,
     renameSync: renameSyncMock,
     chmodSync: chmodSyncMock,
+    statSync: statSyncMock,
   };
 });
 
@@ -85,17 +88,19 @@ vi.mock("@/lib/provider-models", () => ({
   getDefaultModel: vi.fn(async () => "anthropic/claude-haiku-4-5-20251001"),
 }));
 
-import { writeFileSync, readFileSync, existsSync } from "fs";
+import { writeFileSync, readFileSync, existsSync, statSync } from "fs";
 import { regenerateOpenClawConfig } from "@/lib/openclaw-config";
 import { db } from "@/db";
 import {
   OPENCLAW_DEFAULT_BOOTSTRAP_MAX_CHARS,
   BOOTSTRAP_PER_FILE_CEILING_CHARS,
+  BOOTSTRAP_HEADROOM_CHARS,
 } from "@/lib/openclaw-config/bootstrap-caps";
 
 const mockedWriteFileSync = vi.mocked(writeFileSync);
 const mockedReadFileSync = vi.mocked(readFileSync);
 const mockedExistsSync = vi.mocked(existsSync);
+const mockedStatSync = vi.mocked(statSync);
 const mockedDb = vi.mocked(db);
 
 const gatewayConfig = {
@@ -130,15 +135,21 @@ function mockSingleAgent(agentId: string) {
 
 /** Route reads: openclaw.json → existing config; <id>/AGENTS.md → agentsMd; else "". */
 function mockFsReads(agentsMdByAgent: Record<string, string>) {
+  const agentsMdFor = (path: string) =>
+    path.endsWith("/AGENTS.md")
+      ? (Object.entries(agentsMdByAgent).find(([id]) => path.includes(id))?.[1] ?? "")
+      : "";
   mockedExistsSync.mockReturnValue(true);
   mockedReadFileSync.mockImplementation((p) => {
     const path = String(p);
     if (path.endsWith(".json")) return JSON.stringify(gatewayConfig);
-    if (path.endsWith("/AGENTS.md")) {
-      const entry = Object.entries(agentsMdByAgent).find(([id]) => path.includes(id));
-      return entry ? entry[1] : "";
-    }
-    return "";
+    return agentsMdFor(path);
+  });
+  // getAgentBootstrapSizes stats each bootstrap file; only AGENTS.md has content.
+  mockedStatSync.mockImplementation((p) => {
+    return { size: Buffer.byteLength(agentsMdFor(String(p)), "utf-8") } as ReturnType<
+      typeof statSync
+    >;
   });
 }
 
@@ -155,14 +166,18 @@ describe("regenerateOpenClawConfig bootstrap caps (Issue #373)", () => {
   });
 
   it("emits bootstrapMaxChars fitting an AGENTS.md larger than OpenClaw's default cap", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
     mockSingleAgent("big-agent");
     mockFsReads({ "big-agent": "x".repeat(30_000) });
 
     await regenerateOpenClawConfig();
 
     const entry = getAgentEntry("big-agent");
-    expect(entry.bootstrapMaxChars).toBe(30_000);
+    expect(entry.bootstrapMaxChars).toBe(30_000 + BOOTSTRAP_HEADROOM_CHARS);
     expect(entry.bootstrapMaxChars).toBeGreaterThan(OPENCLAW_DEFAULT_BOOTSTRAP_MAX_CHARS);
+    // Comfortably within the ceiling, so no oversized warning.
+    expect(warn).not.toHaveBeenCalled();
+    warn.mockRestore();
   });
 
   it("does not emit bootstrap caps for an AGENTS.md within the default budget", async () => {
@@ -176,7 +191,8 @@ describe("regenerateOpenClawConfig bootstrap caps (Issue #373)", () => {
     expect(entry.bootstrapTotalMaxChars).toBeUndefined();
   });
 
-  it("clamps an extreme AGENTS.md to the per-file ceiling", async () => {
+  it("clamps an extreme AGENTS.md to the per-file ceiling and warns", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
     mockSingleAgent("huge-agent");
     mockFsReads({ "huge-agent": "y".repeat(500_000) });
 
@@ -184,5 +200,9 @@ describe("regenerateOpenClawConfig bootstrap caps (Issue #373)", () => {
 
     const entry = getAgentEntry("huge-agent");
     expect(entry.bootstrapMaxChars).toBe(BOOTSTRAP_PER_FILE_CEILING_CHARS);
+    // Beyond the ceiling → OpenClaw will still truncate → build-time warning.
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(warn.mock.calls[0][0]).toContain("huge-agent");
+    warn.mockRestore();
   });
 });
