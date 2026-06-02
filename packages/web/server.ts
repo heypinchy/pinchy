@@ -24,7 +24,6 @@ import { startUsagePoller, stopUsagePoller } from "./src/lib/usage-poller";
 import { registerShutdownHandlers } from "./src/lib/shutdown";
 import { seedSessionCache } from "./src/server/session-cache-seeder";
 import { readGatewayToken } from "./src/lib/gateway-token-reader";
-import { getBetterAuthUrlStartupWarning } from "./src/lib/auth-env-warning";
 import { regenerateOpenClawConfig } from "./src/lib/openclaw-config";
 import { SERVER_WS_MAX_PAYLOAD_BYTES } from "./src/lib/limits";
 
@@ -251,13 +250,6 @@ ${domain ? `<p><a href="https://${domain}">Go to ${domain} →</a></p>` : ""}
   // bootInits(), at which point Docker Compose marks the container healthy.
   const { bootInits } = await import("./src/lib/boot-inits");
   const setupWasComplete = await bootInits();
-
-  // Emit BETTER_AUTH_URL diagnostics now that bootInits has populated the
-  // domain cache. Both arms of the warning (URL-set explanation and
-  // URL-unset-but-Domain-Locked misconfiguration) need an accurate Domain
-  // Lock value to be useful.
-  const betterAuthUrlWarning = getBetterAuthUrlStartupWarning(process.env, getCachedDomain());
-  if (betterAuthUrlWarning) console.warn(betterAuthUrlWarning);
 
   // Start the memory-audit watcher after bootInits resolves. We start it
   // unconditionally — chokidar copes with a missing watch root by emitting
