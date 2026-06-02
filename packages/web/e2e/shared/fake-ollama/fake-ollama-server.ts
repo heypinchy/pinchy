@@ -397,6 +397,17 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
       JSON.stringify({
         capabilities: ["completion", "tools"], // "tools" = compatible with agent tool-use
         details: { parameter_size: "1B" },
+        // Advertise llama3.2's real context window. Pinchy reads this via
+        // provider-models.ts extractOllamaContextLength and emits it as the
+        // model's `contextWindow` into openclaw.json. Without it, build.ts
+        // falls back to OLLAMA_LOCAL_DEFAULT_CONTEXT_WINDOW (32_768); the
+        // Smithers integration session accumulates ~32k tokens across the
+        // dispatch-probe suite, and once it crosses a 32k window OpenClaw
+        // 2026.5.28's cli_budget / overflow compaction fires — which the fake
+        // LLM cannot satisfy (it can't summarize), so the agent run fails with
+        // UNAVAILABLE and the tool never dispatches. Real llama3.2 is 131072,
+        // so advertising it keeps the context window from being the bottleneck.
+        model_info: { "llama.context_length": 131072 },
       })
     );
     return;
