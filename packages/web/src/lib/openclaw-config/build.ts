@@ -71,6 +71,25 @@ const BUILTIN_PROVIDER_BASE_URL_ENV_VARS: Record<"anthropic" | "openai" | "googl
   google: "GOOGLE_BASE_URL",
 };
 
+// OC's canonical transport `api` per built-in provider. We emit this
+// explicitly so the generated openclaw.json is self-describing and never
+// depends on OpenClaw's implicit api inference.
+//
+// OpenClaw 2026.5.28 changed `resolveConfiguredProviderDefaultApi`: a provider
+// with a `baseUrl` and no explicit `api` now falls back to "openai-completions"
+// instead of being inferred from the provider name. That silently broke the
+// built-in google provider — OC POSTed `<baseUrl>/chat/completions` instead of
+// the native Gemini `:generateContent`, so chat failed with a FailoverError
+// ("provider returned an HTML error page"). anthropic/openai only kept working
+// because their model ids still matched OC's catalog discovery, which is the
+// same latent fragility. Values mirror OpenClaw's static provider catalog
+// (extensions/{google,...}/provider-catalog.ts).
+const BUILTIN_PROVIDER_API: Record<"anthropic" | "openai" | "google", string> = {
+  anthropic: "anthropic-messages",
+  openai: "openai-responses",
+  google: "google-generative-ai",
+};
+
 /**
  * Public docs URL configuration for the bundled `pinchy-docs` plugin.
  *
@@ -1039,6 +1058,7 @@ export async function regenerateOpenClawConfig() {
       }
       modelProviders[providerName] = {
         apiKey: secretRef(`/providers/${providerName}/apiKey`),
+        api: BUILTIN_PROVIDER_API[providerName],
         baseUrl,
         models: getModelCatalogForProvider(providerName),
       };

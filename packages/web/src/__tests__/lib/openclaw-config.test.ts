@@ -833,6 +833,40 @@ describe("regenerateOpenClawConfig", () => {
     );
   });
 
+  it("emits an explicit transport api for every built-in provider", async () => {
+    // OpenClaw 2026.5.28 changed default-api resolution: a provider with a
+    // baseUrl and no explicit `api` falls back to "openai-completions"
+    // (resolveConfiguredProviderDefaultApi in provider-policy). Earlier OC
+    // inferred the transport from the provider name. That silently broke the
+    // built-in google provider — OC POSTed `<baseUrl>/chat/completions`
+    // instead of native `:generateContent`, so Smithers replies failed with
+    // "provider returned an HTML error page" (FailoverError). anthropic/openai
+    // only survived because their model ids still matched OC's catalog
+    // discovery — the same latent landmine.
+    //
+    // Pinchy must emit each built-in provider's canonical transport `api`
+    // explicitly so the emitted openclaw.json is self-describing and never
+    // depends on OC's inference heuristics. Values mirror OpenClaw's own
+    // static provider catalog.
+    delete process.env.ANTHROPIC_BASE_URL;
+    delete process.env.OPENAI_BASE_URL;
+    delete process.env.GOOGLE_BASE_URL;
+    mockedGetSetting.mockImplementation(async (key: string) => {
+      if (key === "anthropic_api_key") return "sk-ant-key";
+      if (key === "openai_api_key") return "sk-openai-key";
+      if (key === "google_api_key") return "AIza-test-key";
+      if (key === "default_provider") return "anthropic";
+      return null;
+    });
+
+    await regenerateOpenClawConfig();
+    const written = mockedWriteFileSync.mock.calls[0][1] as string;
+    const config = JSON.parse(written);
+    expect(config?.models?.providers?.anthropic?.api).toBe("anthropic-messages");
+    expect(config?.models?.providers?.openai?.api).toBe("openai-responses");
+    expect(config?.models?.providers?.google?.api).toBe("google-generative-ai");
+  });
+
   describe("PINCHY_PROVIDER_BASEURL_* takes priority over SDK env vars", () => {
     // These env vars exist for E2E mock injection (Phase 1 of the setup-wizard
     // smoke tests). They override the *_BASE_URL SDK convention so the
