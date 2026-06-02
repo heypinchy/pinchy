@@ -4,7 +4,27 @@ import { recordUsage } from "@/lib/usage";
 import { db } from "@/db";
 import { agents, users } from "@/db/schema";
 
-const POLL_INTERVAL_MS = 60_000;
+const DEFAULT_POLL_INTERVAL_MS = 60_000;
+// Never poll faster than once per second, regardless of the override —
+// a misconfigured interval shouldn't let the poller hammer OpenClaw's
+// sessions.list() (which is CPU-bound during OC's startup scan).
+const MIN_POLL_INTERVAL_MS = 1_000;
+
+/**
+ * Resolves the poll interval in milliseconds. Reads
+ * `PINCHY_USAGE_POLL_INTERVAL_MS` at call time so test stacks (and ops) can
+ * tune polling cadence — the integration E2E stack sets it low so usage rows
+ * appear within the test window instead of after the 60s default. Invalid or
+ * non-positive values fall back to the default; valid values below the floor
+ * are clamped up to it.
+ */
+export function getPollIntervalMs(): number {
+  const raw = process.env.PINCHY_USAGE_POLL_INTERVAL_MS;
+  if (raw === undefined) return DEFAULT_POLL_INTERVAL_MS;
+  const parsed = Number(raw);
+  if (!Number.isFinite(parsed) || parsed <= 0) return DEFAULT_POLL_INTERVAL_MS;
+  return Math.max(MIN_POLL_INTERVAL_MS, parsed);
+}
 
 export interface ParsedSessionKey {
   agentId: string;
@@ -126,7 +146,7 @@ export function startUsagePoller(openclawClient: OpenClawClient): void {
     pollAllSessions(openclawClient).catch((err) => {
       console.error("[usage-poller] Unexpected error:", err);
     });
-  }, POLL_INTERVAL_MS);
+  }, getPollIntervalMs());
 }
 
 export function stopUsagePoller(): void {

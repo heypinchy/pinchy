@@ -49,6 +49,7 @@ import {
   pollAllSessions,
   startUsagePoller,
   stopUsagePoller,
+  getPollIntervalMs,
   _isPollerRunning,
 } from "@/lib/usage-poller";
 
@@ -300,6 +301,83 @@ describe("pollAllSessions", () => {
 
     await expect(pollAllSessions(client)).resolves.toBeUndefined();
     expect(mockRecordUsage).toHaveBeenCalled();
+  });
+});
+
+describe("getPollIntervalMs", () => {
+  const original = process.env.PINCHY_USAGE_POLL_INTERVAL_MS;
+
+  afterEach(() => {
+    if (original === undefined) delete process.env.PINCHY_USAGE_POLL_INTERVAL_MS;
+    else process.env.PINCHY_USAGE_POLL_INTERVAL_MS = original;
+  });
+
+  it("defaults to 60_000ms when the env var is unset", () => {
+    delete process.env.PINCHY_USAGE_POLL_INTERVAL_MS;
+    expect(getPollIntervalMs()).toBe(60_000);
+  });
+
+  it("honors a valid override from PINCHY_USAGE_POLL_INTERVAL_MS", () => {
+    process.env.PINCHY_USAGE_POLL_INTERVAL_MS = "2000";
+    expect(getPollIntervalMs()).toBe(2000);
+  });
+
+  it("clamps sub-second overrides up to the 1_000ms floor", () => {
+    // A test stack might try to set this very low; never let the poller
+    // hammer OpenClaw faster than once per second.
+    process.env.PINCHY_USAGE_POLL_INTERVAL_MS = "10";
+    expect(getPollIntervalMs()).toBe(1_000);
+  });
+
+  it("falls back to the default for non-numeric or non-positive values", () => {
+    // Nonsensical input (garbage, zero, negative) should land on the safe
+    // 60s default — NOT get clamped to the 1s floor, which would turn a
+    // typo into aggressive once-per-second polling.
+    process.env.PINCHY_USAGE_POLL_INTERVAL_MS = "not-a-number";
+    expect(getPollIntervalMs()).toBe(60_000);
+    process.env.PINCHY_USAGE_POLL_INTERVAL_MS = "0";
+    expect(getPollIntervalMs()).toBe(60_000);
+    process.env.PINCHY_USAGE_POLL_INTERVAL_MS = "-5000";
+    expect(getPollIntervalMs()).toBe(60_000);
+  });
+});
+
+describe("startUsagePoller honors the configured interval", () => {
+  const original = process.env.PINCHY_USAGE_POLL_INTERVAL_MS;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockRecordUsage.mockResolvedValue(undefined);
+    mockFrom._agentResult = [{ id: "agent-1", name: "Smithers" }];
+    mockFrom._userResult = [{ id: "user-1" }];
+    stopUsagePoller();
+    vi.useFakeTimers();
+  });
+
+  afterEach(() => {
+    stopUsagePoller();
+    vi.useRealTimers();
+    if (original === undefined) delete process.env.PINCHY_USAGE_POLL_INTERVAL_MS;
+    else process.env.PINCHY_USAGE_POLL_INTERVAL_MS = original;
+  });
+
+  it("ticks at the overridden interval rather than the 60s default", async () => {
+    process.env.PINCHY_USAGE_POLL_INTERVAL_MS = "2000";
+    const client = makeOpenClawClient([
+      { key: "agent:agent-1:direct:user-1", inputTokens: 10, outputTokens: 5 },
+    ]);
+    startUsagePoller(client);
+
+    // No poll before the (short) interval elapses.
+    await vi.advanceTimersByTimeAsync(1_999);
+    expect(mockRecordUsage).not.toHaveBeenCalled();
+
+    // First tick at 2s, not 60s.
+    await vi.advanceTimersByTimeAsync(1);
+    expect(mockRecordUsage).toHaveBeenCalledTimes(1);
+
+    await vi.advanceTimersByTimeAsync(2_000);
+    expect(mockRecordUsage).toHaveBeenCalledTimes(2);
   });
 });
 
