@@ -365,10 +365,10 @@ test.describe("capability-mismatch — block + recovery", () => {
       buffer: pngBuffer,
     });
 
-    // Confirm the attachment chip is visible in the composer
-    await expect(page.getByRole("button", { name: /image attachment/i })).toBeVisible({
-      timeout: 5000,
-    });
+    // Confirm the attachment chip is visible in the composer. Pinchy's two-phase
+    // upload renders an UploadChip (identified by the filename label) rather
+    // than the assistant-ui "Image attachment" button.
+    await expect(page.getByText(PNG_FILENAME)).toBeVisible({ timeout: 5000 });
 
     // ── 8. Try to send — handleSubmit blocks because vision: false ────────────
     await page.getByRole("button", { name: "Send message" }).click();

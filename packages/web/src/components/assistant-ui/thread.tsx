@@ -405,6 +405,9 @@ export const Composer: FC = () => {
   const { getAgent, sortedAgents, refresh: refreshAgents } = useAgentsContext();
   const composerRuntime = useComposerRuntime({ optional: true });
   const { data: capabilities } = useModelCapabilities();
+  // Pinchy routes attachments through PendingUploadsContext (two-phase upload)
+  // rather than composerRuntime.attachments. Both paths must be checked.
+  const pendingUploads = useContext(PendingUploadsContext);
 
   const agent = agentId ? getAgent(agentId) : undefined;
   const agentModel = agent?.model ?? "";
@@ -428,24 +431,33 @@ export const Composer: FC = () => {
           .map((a) => ({ id: a.id, name: a.name }))
       : [];
 
-  // Inspects the current attachments and returns any files whose required
-  // capability the current model doesn't support. Used by both the Send
-  // button onClick path (assistant-ui's Send is type=submit but invokes
-  // `send()` directly via its onClick handler, BEFORE the form submit fires;
-  // intercepting onClick is the only way to stop the runtime from firing the
-  // request) and the form-level onSubmit path (Enter-key).
+  // Inspects the current attachments (both assistant-ui composer attachments
+  // and Pinchy's PendingUploads) and returns any files whose required capability
+  // the current model doesn't support.
   function getBlockedFiles(): File[] {
+    const modelCaps = agentModel ? capabilities?.[agentModel] : undefined;
+    if (!modelCaps) return [];
+
+    // Pinchy's two-phase upload path: files are in PendingUploadsContext.
+    const blockedPending = pendingUploads
+      .map((u) => u.file)
+      .filter((file) => {
+        const cap = requiredCapabilityForFile(file.type);
+        return cap !== null && !modelCaps[cap];
+      });
+
+    // Legacy assistant-ui composer attachments (kept for compatibility).
     const state = composerRuntime?.getState();
     const attachments = state?.attachments ?? [];
-    return attachments
+    const blockedComposer = attachments
       .filter((a): a is typeof a & { file: File } => "file" in a && a.file instanceof File)
       .map((a) => a.file)
       .filter((file) => {
         const cap = requiredCapabilityForFile(file.type);
-        if (!cap) return false;
-        const modelCaps = agentModel ? capabilities?.[agentModel] : undefined;
-        return modelCaps !== undefined && !modelCaps[cap];
+        return cap !== null && !modelCaps[cap];
       });
+
+    return [...blockedPending, ...blockedComposer];
   }
 
   function maybeBlock(e: { preventDefault: () => void }): boolean {
