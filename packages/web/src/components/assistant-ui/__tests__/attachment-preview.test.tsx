@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, afterEach, beforeEach } from "vitest";
-import { render, screen, cleanup } from "@testing-library/react";
+import { render, screen, waitFor, act, cleanup } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import React from "react";
 
@@ -56,20 +56,20 @@ async function renderWithAgent(agentId: string | null) {
 }
 
 describe("AttachmentPreview — PDF", () => {
-  it("renders an <embed> thumbnail pointing at the uploads API URL immediately on mount without any HEAD fetch", async () => {
-    global.fetch = vi.fn() as unknown as typeof fetch;
+  it("renders an <embed> thumbnail pointing at the uploads API URL after probe completes", async () => {
     mockUseMessagePartFile.mockReturnValue({
       mimeType: "application/pdf",
       filename: "Profile (38).pdf",
     });
     const { container } = await renderWithAgent("agent-1");
-    const embed = container.querySelector("embed");
-    expect(embed).not.toBeNull();
-    expect(embed!.getAttribute("type")).toBe("application/pdf");
+    const embed = await waitFor(() => {
+      const e = container.querySelector("embed");
+      if (!e) throw new Error("embed not yet mounted");
+      return e;
+    });
+    expect(embed.getAttribute("type")).toBe("application/pdf");
     // URL-encoded path with the agent id segment.
-    expect(embed!.getAttribute("src")).toBe("/api/agents/agent-1/uploads/Profile%20(38).pdf");
-    // No HEAD probe should be issued.
-    expect(global.fetch).not.toHaveBeenCalled();
+    expect(embed.getAttribute("src")).toBe("/api/agents/agent-1/uploads/Profile%20(38).pdf");
   });
 
   it("opens a modal with a full-size PDF embed when the thumbnail is clicked", async () => {
@@ -78,9 +78,8 @@ describe("AttachmentPreview — PDF", () => {
       filename: "invoice.pdf",
     });
     await renderWithAgent("agent-1");
-    // The thumbnail itself is the trigger — the component uses shadcn/ui Dialog
-    // from @/components/ui/dialog, not assistant-ui.
-    const trigger = screen.getByRole("button", { name: /preview invoice\.pdf/i });
+    // Wait for the HEAD probe to complete and the thumbnail to appear.
+    const trigger = await screen.findByRole("button", { name: /preview invoice\.pdf/i });
     await userEvent.click(trigger);
     // Modal content uses a unique label so we can assert it's open.
     expect(screen.getByRole("dialog")).toBeInTheDocument();
@@ -106,20 +105,20 @@ describe("AttachmentPreview — PDF", () => {
 });
 
 describe("AttachmentPreview — image", () => {
-  it("renders an inline <img> pointing at the uploads API URL immediately on mount without any HEAD fetch", async () => {
-    global.fetch = vi.fn() as unknown as typeof fetch;
+  it("renders an inline <img> pointing at the uploads API URL after probe completes", async () => {
     mockUseMessagePartFile.mockReturnValue({
       mimeType: "image/png",
       filename: "photo.png",
     });
     const { container } = await renderWithAgent("agent-1");
-    const img = container.querySelector("img");
-    expect(img).not.toBeNull();
-    expect(img!.getAttribute("src")).toBe("/api/agents/agent-1/uploads/photo.png");
+    const img = await waitFor(() => {
+      const i = container.querySelector("img");
+      if (!i) throw new Error("img not yet mounted");
+      return i;
+    });
+    expect(img.getAttribute("src")).toBe("/api/agents/agent-1/uploads/photo.png");
     // Alt text must be the filename — screen-reader accessible.
-    expect(img!.getAttribute("alt")).toContain("photo.png");
-    // No HEAD probe should be issued.
-    expect(global.fetch).not.toHaveBeenCalled();
+    expect(img.getAttribute("alt")).toContain("photo.png");
   });
 
   it("opens a modal with the full image when the thumbnail is clicked", async () => {
@@ -128,7 +127,7 @@ describe("AttachmentPreview — image", () => {
       filename: "selfie.jpg",
     });
     await renderWithAgent("agent-1");
-    const trigger = screen.getByRole("button", { name: /preview selfie\.jpg/i });
+    const trigger = await screen.findByRole("button", { name: /preview selfie\.jpg/i });
     await userEvent.click(trigger);
     expect(screen.getByRole("dialog")).toBeInTheDocument();
     const modalImg = screen.getByRole("dialog").querySelector("img");

@@ -211,18 +211,12 @@ vi.mock("@/components/chat", async () => {
     RetryResendContext: React.createContext<(messageId: string) => void>(() => {}),
     RetryContinueContext: React.createContext<() => void>(() => {}),
     ChatStatusContext: React.createContext<{ kind: string; reason?: string }>({ kind: "ready" }),
-<<<<<<< HEAD
     PendingUploadsContext: React.createContext([]),
     RemovePendingUploadContext: React.createContext<(localId: string) => void>(() => {}),
     RetryPendingUploadContext: React.createContext<(localId: string) => void>(() => {}),
     AddPendingUploadContext: React.createContext<(file: File) => void>(() => {}),
-=======
     CanEditContext: React.createContext<boolean>(false),
-<<<<<<< HEAD
->>>>>>> d8060f054 (feat(chat): wire blocked send to RecoveryPanel + agent.model update path)
-=======
     IsAdminContext: React.createContext<boolean>(false),
->>>>>>> f27428644 (fix(chat): remove dead agentId prop and wire isAdmin in RecoveryPanel)
   };
 });
 

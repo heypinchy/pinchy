@@ -1,4 +1,4 @@
-import { UserMessageAttachments } from "@/components/assistant-ui/attachment";
+import { UserMessageAttachments, ComposerAttachments } from "@/components/assistant-ui/attachment";
 import { PinchyAttachmentButton } from "@/components/assistant-ui/pinchy-attachment-button";
 import { PinchyDropZone } from "@/components/assistant-ui/pinchy-drop-zone";
 import { ChatErrorMessage, type ChatError } from "@/components/assistant-ui/chat-error-message";
