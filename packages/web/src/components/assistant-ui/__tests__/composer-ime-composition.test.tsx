@@ -146,4 +146,25 @@ describe("ComposerPrimitive.Input IME composition (dead-key freeze guard)", () =
 
     expect(composerApi!.getState().text).toBe("é");
   });
+
+  it("recovers when the browser drops compositionend (stale-ref path)", () => {
+    // The original upstream bug (#3923): some browsers/dead-key layouts fire
+    // compositionstart but never compositionend, then deliver the resolved
+    // input with isComposing=false. The patch keeps 0.14's stale-compositionRef
+    // recovery, so that trailing non-composing input still syncs the text — the
+    // input must NOT stay stuck after a dropped compositionend. This test pins
+    // that recovery path so a future change can't reintroduce #3923 while
+    // closing the freeze.
+    composerApi = null;
+    render(<Harness />);
+    const textarea = screen.getByRole("textbox") as HTMLTextAreaElement;
+
+    fireEvent.compositionStart(textarea);
+    // No compositionend — the resolved value arrives as a plain (non-composing)
+    // change while compositionRef is still set. fireEvent.change leaves
+    // nativeEvent.isComposing falsy, modelling exactly that dropped-end input.
+    fireEvent.change(textarea, { target: { value: "é" } });
+
+    expect(composerApi!.getState().text).toBe("é");
+  });
 });
