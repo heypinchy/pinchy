@@ -1,47 +1,120 @@
 /**
- * End-to-end usage tracking verification (Tier 2 from the design doc).
+ * Tier-2 usage tracking — internal usage endpoint (the plugin/vision path).
  *
- * This suite is intended to pipe real traffic through a fake LLM → OpenClaw
- * → Pinchy and verify the numbers that land in `usage_records` match the
- * fake server's declared `usage` block. It would be the only layer of the
- * test pyramid that can prove the entire pipeline (chat event path + poller
- * delta path) stays in sync with OpenClaw's cumulative counters.
+ * The usage-tracking test pyramid has two write paths into `usage_records`:
  *
- * The implementation is tracked in #426. Until then the suite only holds
- * the fake-LLM scaffolding so anyone picking up the work has a starting
- * point; no test cases live here yet — `it.todo` placeholders previously
- * sat here unowned and silently green, which is the kind of soft skip we
- * don't want lying around.
+ *   1. The poller delta path — reads OpenClaw's per-session cumulative token
+ *      counters and records deltas. Proving that path stays in sync with
+ *      OpenClaw requires a REAL gateway: `openclaw-node@0.11.0` types
+ *      `sessions.list()` as `Promise<Record<string, unknown>>`, so a faked
+ *      client would only validate Pinchy's own assumption about the wire
+ *      format against itself (a false-green if OpenClaw's shape drifts). That
+ *      path is therefore covered at the E2E layer, against real Docker
+ *      OpenClaw + fake-ollama, in `e2e/integration/usage-tracking.spec.ts`
+ *      (issue #426 cases 1 & 2).
  *
- * Runs only when `INTEGRATION_TEST=1` is set, because it would need:
- *   - a running OpenClaw gateway (container or native)
- *   - a reachable PostgreSQL with Pinchy's migrations applied
- *   - port 9999 free on the host
+ *   2. The internal usage endpoint — `POST /api/internal/usage/record`, the
+ *      sink Pinchy plugins use to report LLM tokens spent outside an agent
+ *      session (e.g. pinchy-files' vision API transcoding scanned PDFs). This
+ *      path is pure Pinchy HTTP + DB with NO OpenClaw dependency, so it is
+ *      verified here honestly against a real PostgreSQL — and runs in the
+ *      ordinary `pnpm test:db` CI job (issue #426 case 3).
+ *
+ * This file deliberately hits the real `db` (no `@/db` mock) so the assertion
+ * is "a row with the declared token counts actually lands in usage_records",
+ * not "insert() was called".
  */
 
-import { describe, beforeAll, afterAll } from "vitest";
-import type { Server } from "http";
-import { startFakeLlmServer } from "./fake-llm-server";
+import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { NextRequest } from "next/server";
+import { eq } from "drizzle-orm";
+import { db } from "@/db";
+import { usageRecords } from "@/db/schema";
+import { classifyUsageSource } from "@/lib/usage-source";
+import { POST } from "@/app/api/internal/usage/record/route";
 
-const FAKE_LLM_PORT = 9999;
-const PROMPT_TOKENS = 42;
-const COMPLETION_TOKENS = 17;
+const GATEWAY_TOKEN = "integration-gateway-token";
 
-describe.skipIf(!process.env.INTEGRATION_TEST)("usage tracking integration", () => {
-  let fakeLlm: Server;
+function recordRequest(body: Record<string, unknown>, token = GATEWAY_TOKEN) {
+  return new NextRequest("http://localhost/api/internal/usage/record", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${token}`,
+    },
+    body: JSON.stringify(body),
+  });
+}
 
-  beforeAll(async () => {
-    fakeLlm = await startFakeLlmServer({
-      port: FAKE_LLM_PORT,
-      responseText: "Hello from fake LLM",
-      promptTokens: PROMPT_TOKENS,
-      completionTokens: COMPLETION_TOKENS,
+describe("usage tracking — internal usage endpoint (plugin/vision path)", () => {
+  const originalToken = process.env.PINCHY_E2E_GATEWAY_TOKEN;
+
+  beforeEach(() => {
+    // readGatewayToken() honors PINCHY_E2E_GATEWAY_TOKEN ahead of the on-disk
+    // config, so the real validateGatewayToken passes without a mock.
+    process.env.PINCHY_E2E_GATEWAY_TOKEN = GATEWAY_TOKEN;
+  });
+
+  afterEach(() => {
+    if (originalToken === undefined) delete process.env.PINCHY_E2E_GATEWAY_TOKEN;
+    else process.env.PINCHY_E2E_GATEWAY_TOKEN = originalToken;
+  });
+
+  it("captures tokens added by vision/plugin calls in usage_records", async () => {
+    // A plugin reporting vision tokens uses a `plugin:<pluginId>` session key.
+    const sessionKey = "plugin:pinchy-files";
+    const res = await POST(
+      recordRequest({
+        agentId: "agent-vision-1",
+        agentName: "Vision Agent",
+        userId: "user-1",
+        sessionKey,
+        model: "qwen2.5-vision",
+        inputTokens: 1234,
+        outputTokens: 56,
+      })
+    );
+    expect(res.status).toBe(200);
+
+    const rows = await db
+      .select()
+      .from(usageRecords)
+      .where(eq(usageRecords.sessionKey, sessionKey));
+
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({
+      agentId: "agent-vision-1",
+      agentName: "Vision Agent",
+      userId: "user-1",
+      sessionKey,
+      model: "qwen2.5-vision",
+      inputTokens: 1234,
+      outputTokens: 56,
     });
+
+    // The dashboard's source breakdown must bucket this row under "plugin"
+    // (not "chat" or "system"). The summary route mirrors this classifier as
+    // a SQL CASE expression; keep them in sync.
+    expect(classifyUsageSource(rows[0].sessionKey)).toBe("plugin");
   });
 
-  afterAll(() => {
-    fakeLlm?.close();
-  });
+  it("rejects an unauthenticated report and writes no row", async () => {
+    const res = await POST(
+      recordRequest(
+        {
+          agentId: "agent-x",
+          agentName: "X",
+          userId: "user-1",
+          sessionKey: "plugin:pinchy-files",
+          inputTokens: 10,
+          outputTokens: 5,
+        },
+        "wrong-token"
+      )
+    );
+    expect(res.status).toBe(401);
 
-  // No test cases yet — see #426 for the implementation plan.
+    const rows = await db.select().from(usageRecords);
+    expect(rows).toHaveLength(0);
+  });
 });
