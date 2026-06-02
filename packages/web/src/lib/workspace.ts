@@ -1,6 +1,5 @@
-import { writeFileSync, readFileSync, existsSync, mkdirSync, rmSync, statSync } from "fs";
+import { writeFileSync, readFileSync, existsSync, mkdirSync, rmSync } from "fs";
 import { join } from "path";
-import { OPENCLAW_DEFAULT_BOOTSTRAP_MAX_CHARS } from "@/lib/openclaw-config/bootstrap-caps";
 
 // =============================================================================
 // Agent on-disk layout — READ THIS before touching any code that resolves an
@@ -189,37 +188,19 @@ export function getAgentBootstrapSizes(agentId: string): number[] {
   const workspacePath = getWorkspacePath(agentId);
   const sizes: number[] = [];
 
+  // One read per file, with no existsSync/statSync pre-check, so there is no
+  // check-then-use file-system race (CodeQL js/file-system-race): a missing or
+  // unreadable bootstrap file simply throws and is skipped. The trimmed char
+  // length matches OpenClaw's own `content.trimEnd().length` measurement, which
+  // stays accurate for multibyte instructions where a byte size would over-count.
   for (const name of BOOTSTRAP_FILENAMES) {
-    const filePath = join(workspacePath, name);
-    if (!existsSync(filePath)) continue;
-
-    // Fast path: a file's UTF-8 byte size is an upper bound on its char length
-    // (every char is ≥ 1 byte), so any file at or under OpenClaw's default
-    // per-file cap provably fits and never needs its content read. The byte size
-    // is a safe (conservative) contribution to the combined-budget sum. Only
-    // files above the default get read for an exact trimmed char length — which
-    // is what drives the ceiling/oversized decision accurately, including for
-    // multibyte instructions where byte size would wildly over-count.
-    let byteSize: number;
+    let content: string;
     try {
-      byteSize = statSync(filePath).size;
+      content = readFileSync(join(workspacePath, name), "utf-8");
     } catch {
       continue;
     }
-    if (byteSize <= 0) continue;
-    if (byteSize <= OPENCLAW_DEFAULT_BOOTSTRAP_MAX_CHARS) {
-      sizes.push(byteSize);
-      continue;
-    }
-
-    let content: unknown;
-    try {
-      content = readFileSync(filePath, "utf-8");
-    } catch {
-      sizes.push(byteSize); // conservative fallback if the large file can't be read
-      continue;
-    }
-    const length = typeof content === "string" ? content.trimEnd().length : byteSize;
+    const length = content.trimEnd().length;
     if (length > 0) sizes.push(length);
   }
 
