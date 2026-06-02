@@ -82,3 +82,25 @@ export function parseOverride({ envValue, messages = [] } = {}) {
   }
   return { allowed: false, reason: "" };
 }
+
+/**
+ * Build the `git diff` argument list for the PR's changed test files.
+ *
+ * Prefers a two-dot range from the merge-base (`<merge-base>..HEAD`), which is
+ * the correct "changes introduced by this branch" semantics. Falls back to a
+ * tip-to-tip two-dot range (`<base> HEAD`) when no merge-base is known — e.g. a
+ * shallow CI checkout with no common ancestor. We deliberately never use the
+ * three-dot form (`<base>...HEAD`): it requires a merge-base and throws in a
+ * shallow clone, which is exactly what crashed the guard.
+ *
+ * @param {string|null|undefined} mergeBase
+ * @param {string} base
+ * @returns {string[]}
+ */
+export function diffArgs(mergeBase, base) {
+  const head = ["diff", "--name-status", "-M"];
+  if (mergeBase && mergeBase.trim()) {
+    return [...head, `${mergeBase.trim()}..HEAD`];
+  }
+  return [...head, base, "HEAD"];
+}

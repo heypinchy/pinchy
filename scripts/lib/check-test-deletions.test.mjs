@@ -4,7 +4,40 @@ import {
   countTestCases,
   analyzeChanges,
   parseOverride,
+  diffArgs,
 } from "./check-test-deletions.mjs";
+
+test("diffArgs uses merge-base two-dot range when a merge-base is known", () => {
+  // Correct PR semantics: only changes introduced by the branch.
+  assert.deepEqual(diffArgs("abc123", "origin/main"), [
+    "diff",
+    "--name-status",
+    "-M",
+    "abc123..HEAD",
+  ]);
+});
+
+test("diffArgs falls back to tip-to-tip two-dot when no merge-base (shallow CI)", () => {
+  // Never uses three-dot (origin/main...HEAD), which throws in a shallow clone
+  // with no common ancestor. Tip-to-tip always resolves once base is fetched.
+  assert.deepEqual(diffArgs(null, "origin/main"), [
+    "diff",
+    "--name-status",
+    "-M",
+    "origin/main",
+    "HEAD",
+  ]);
+});
+
+test("diffArgs treats an empty merge-base string as no merge-base", () => {
+  assert.deepEqual(diffArgs("", "origin/main"), [
+    "diff",
+    "--name-status",
+    "-M",
+    "origin/main",
+    "HEAD",
+  ]);
+});
 
 test("countTestCases counts it/test/xit/fit invocations", () => {
   const src = `

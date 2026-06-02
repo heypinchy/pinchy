@@ -27,6 +27,7 @@ import {
   TEST_FILE_RE,
   analyzeChanges,
   parseOverride,
+  diffArgs,
 } from "./lib/check-test-deletions.mjs";
 
 function git(args) {
@@ -87,19 +88,27 @@ function parseNameStatus(raw) {
 function main() {
   const { base } = parseArgs(process.argv.slice(2));
 
-  let mergeBaseRange;
-  try {
-    git(["rev-parse", "--verify", base]);
-    mergeBaseRange = `${base}...HEAD`;
-  } catch {
+  if (!gitSafe(["rev-parse", "--verify", base])) {
     console.error(
       `[test-removal-guard] base ref "${base}" not found. In CI, fetch it first ` +
-        `(git fetch --no-tags --depth=50 origin <base>). Skipping guard.`,
+        `(git fetch --no-tags --depth=200 origin <base>). Skipping guard.`,
     );
     process.exit(0);
   }
 
-  const changedRaw = git(["diff", "--name-status", "-M", mergeBaseRange]);
+  // Best-effort merge-base for correct PR-diff semantics; tip-to-tip fallback
+  // keeps the guard working in a shallow clone with no common ancestor.
+  const mergeBase = gitSafe(["merge-base", base, "HEAD"]);
+  const changedRaw = gitSafe(diffArgs(mergeBase, base));
+  if (changedRaw === null) {
+    // Could not compute a diff at all (unexpected). Fail open with a loud
+    // warning rather than blocking every PR on a guard-infrastructure error.
+    console.error(
+      `[test-removal-guard] could not compute a diff against "${base}" — skipping guard. ` +
+        `Check the CI checkout/fetch depth.`,
+    );
+    process.exit(0);
+  }
   const changed = parseNameStatus(changedRaw);
 
   if (changed.length === 0) {

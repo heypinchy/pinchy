@@ -128,7 +128,12 @@ jobs:
           # removed it()/test() blocks — without an explicit, tracked override.
           # Closes the gap left by no-untracked-skips (which only catches
           # .skip/.todo). See AGENTS.md § "No Untracked Test Removal".
-          git fetch --no-tags --depth=50 origin "${{ github.base_ref }}"
+          #
+          # Fetch base + deepen HEAD so a merge-base resolves (correct PR-diff
+          # semantics). The guard falls back to a tip-to-tip diff if it can't,
+          # so a shallow clone never crashes it.
+          git fetch --no-tags --depth=200 origin "${{ github.base_ref }}"
+          git fetch --no-tags --deepen=200 origin || true
           node scripts/check-test-deletions.mjs --base "origin/${{ github.base_ref }}"
 
       - name: Test
