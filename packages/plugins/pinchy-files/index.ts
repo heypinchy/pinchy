@@ -314,29 +314,25 @@ const plugin = {
               const realPath = realpathSync(requestedPath);
               validateAccess({ allowed_paths: paths }, realPath);
 
-              const stats = statSync(realPath);
               const lowerPath = realPath.toLowerCase();
               const isPdf = lowerPath.endsWith(".pdf");
               const isDocx = lowerPath.endsWith(".docx");
-              const sizeLimit = isPdf
-                ? MAX_PDF_FILE_SIZE
-                : isDocx
-                  ? MAX_DOCX_FILE_SIZE
-                  : MAX_FILE_SIZE;
-              if (stats.size > sizeLimit) {
-                return {
-                  isError: true,
-                  content: [
-                    {
-                      type: "text",
-                      text: `File too large (${stats.size} bytes). Maximum: ${sizeLimit} bytes.`,
-                    },
-                  ],
-                };
-              }
 
               // PDF detection
               if (isPdf) {
+                const stats = statSync(realPath);
+                if (stats.size > MAX_PDF_FILE_SIZE) {
+                  return {
+                    isError: true,
+                    content: [
+                      {
+                        type: "text",
+                        text: `File too large (${stats.size} bytes). Maximum: ${MAX_PDF_FILE_SIZE} bytes.`,
+                      },
+                    ],
+                  };
+                }
+
                 // Resolve agent name + model from OpenClaw config in one walk.
                 // The model drives vision API calls; the name makes rows on
                 // the Usage Dashboard readable (agentId alone is opaque).
@@ -377,22 +373,46 @@ const plugin = {
                 return { content: pdfResult.content };
               }
 
+              // Non-PDF (.docx, images, text): open the file once and read it
+              // through the descriptor — stat for the size gate and read on the
+              // SAME open handle. Binding the size check and the read to one fd
+              // closes the time-of-check/time-of-use window (CodeQL
+              // js/file-system-race): a file swapped after the check can no
+              // longer be read in its place.
+              const fh = await open(realPath, "r");
+              let buffer: Buffer;
+              try {
+                const { size } = await fh.stat();
+                const sizeLimit = isDocx ? MAX_DOCX_FILE_SIZE : MAX_FILE_SIZE;
+                if (size > sizeLimit) {
+                  return {
+                    isError: true,
+                    content: [
+                      {
+                        type: "text",
+                        text: `File too large (${size} bytes). Maximum: ${sizeLimit} bytes.`,
+                      },
+                    ],
+                  };
+                }
+                buffer = await fh.readFile();
+              } finally {
+                await fh.close();
+              }
+
               // .docx — extract text via mammoth. Reading a .docx as utf-8
               // returns the ZIP archive's binary bytes (starting with "PK"),
               // which is unintelligible to the model.
               if (isDocx) {
-                const buffer = await readFile(realPath);
                 const { text } = await extractDocxText(buffer);
                 return { content: [{ type: "text", text }] };
               }
 
-              // Non-PDF, non-.docx: read the bytes once and decide. Images
-              // (detected by content first, then extension as a fallback) are
-              // returned as an image content block so the model re-sees the
-              // picture natively (issue #420) — the same way a freshly uploaded
-              // attachment reaches the model on the first turn. Everything else
-              // is returned as utf-8 text, the original behavior.
-              const buffer = await readFile(realPath);
+              // Images (detected by content first, then extension as a
+              // fallback) are returned as an image content block so the model
+              // re-sees the picture natively (issue #420) — the same way a
+              // freshly uploaded attachment reaches the model on the first turn.
+              // Everything else is returned as utf-8 text, the original behavior.
               const imageMimeType =
                 sniffImageMime(buffer) ?? IMAGE_MIME_TYPES[extname(realPath).toLowerCase()];
               if (imageMimeType) {
