@@ -18,6 +18,7 @@ import {
   FormMessage,
 } from "@/components/ui/form";
 import { CheckCircle2, Loader2 } from "lucide-react";
+import { toast } from "sonner";
 import { PasswordInput } from "@/components/password-input";
 import { passwordSchema } from "@/lib/validate-password";
 
@@ -123,8 +124,8 @@ export default function InviteClaimPage() {
               <CardDescription className="text-destructive">{loadError}</CardDescription>
             </CardHeader>
           ) : type === null ? (
-            <CardContent className="flex justify-center py-10">
-              <Loader2 className="size-6 animate-spin text-muted-foreground" />
+            <CardContent className="flex justify-center py-10" role="status" aria-label="Loading">
+              <Loader2 className="size-6 animate-spin text-muted-foreground" aria-hidden="true" />
             </CardContent>
           ) : (
             <ClaimForm token={String(token)} type={type} />
@@ -138,7 +139,6 @@ export default function InviteClaimPage() {
 function ClaimForm({ token, type }: { token: string; type: InviteType }) {
   const router = useRouter();
   const isReset = type === "reset";
-  const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
   const [success, setSuccess] = useState(false);
 
@@ -151,7 +151,6 @@ function ClaimForm({ token, type }: { token: string; type: InviteType }) {
 
   async function onSubmit(values: FormValues) {
     setLoading(true);
-    setError("");
 
     const body = isReset
       ? { token, password: values.password }
@@ -166,13 +165,18 @@ function ClaimForm({ token, type }: { token: string; type: InviteType }) {
 
       if (!res.ok) {
         const data = await res.json();
-        setError(data.error || (isReset ? "Failed to reset password" : "Failed to create account"));
+        // Submit failures (expired link, server error) are system-level, not
+        // field-correctable, so they surface as a toast per the error-display
+        // policy. Field validation stays inline via <FormMessage>.
+        toast.error(
+          data.error || (isReset ? "Failed to reset password" : "Failed to create account")
+        );
         return;
       }
 
       setSuccess(true);
     } catch {
-      setError("Something went wrong. Please try again.");
+      toast.error("Something went wrong. Please try again.");
     } finally {
       setLoading(false);
     }
@@ -208,8 +212,6 @@ function ClaimForm({ token, type }: { token: string; type: InviteType }) {
       <CardContent>
         <Form {...form}>
           <form onSubmit={form.handleSubmit(onSubmit)} className="space-y-6">
-            {error && <p className="text-destructive">{error}</p>}
-
             {!isReset && (
               <FormField
                 control={form.control}

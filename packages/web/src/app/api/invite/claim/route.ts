@@ -10,7 +10,7 @@ import { auth } from "@/lib/auth";
 import { db } from "@/db";
 import { users, userGroups, accounts, sessions } from "@/db/schema";
 import { eq, and } from "drizzle-orm";
-import { validateInviteToken, claimInvite, getInviteGroupIds } from "@/lib/invites";
+import { resolveInviteFlow, claimInvite, getInviteGroupIds } from "@/lib/invites";
 import { seedPersonalAgent } from "@/lib/personal-agent";
 import { regenerateOpenClawConfig } from "@/lib/openclaw-config";
 import { waitForAgentInRuntime } from "@/lib/wait-for-agent-in-runtime";
@@ -35,19 +35,17 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: passwordError }, { status: 400 });
   }
 
-  const invite = await validateInviteToken(token);
-  if (!invite) {
-    return NextResponse.json({ error: "Invalid or expired invite link" }, { status: 410 });
+  // Shared with the GET /api/invite/[token] loader so the two endpoints can
+  // never disagree on what a token means (410 unknown/expired, 404 reset whose
+  // user is gone).
+  const flow = await resolveInviteFlow(token);
+  if (!flow.ok) {
+    return NextResponse.json({ error: flow.error }, { status: flow.status });
   }
+  const { invite } = flow;
 
-  if (invite.type === "reset") {
-    const existingUser = invite.email
-      ? await db.query.users.findFirst({ where: eq(users.email, invite.email) })
-      : null;
-
-    if (!existingUser) {
-      return NextResponse.json({ error: "User not found" }, { status: 404 });
-    }
+  if (flow.type === "reset") {
+    const existingUser = flow.user;
 
     // Hash the new password and write it directly to the Better Auth
     // accounts table. We can't use Better Auth's admin-plugin endpoint

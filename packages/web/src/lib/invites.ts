@@ -1,7 +1,44 @@
 import { randomBytes, createHash } from "crypto";
 import { db } from "@/db";
-import { invites, inviteGroups } from "@/db/schema";
+import { invites, inviteGroups, users } from "@/db/schema";
 import { eq, and, isNull, gt } from "drizzle-orm";
+
+type InviteRow = typeof invites.$inferSelect;
+type UserRow = typeof users.$inferSelect;
+
+/**
+ * Resolves a raw invite token into the flow it drives, shared by the
+ * `GET /api/invite/[token]` loader and the `POST /api/invite/claim` handler so
+ * the two can never disagree on what a token means.
+ *
+ * - Unknown / expired / claimed token → `{ ok: false, status: 410 }`.
+ * - Reset token whose target user no longer exists → `{ ok: false, status: 404 }`.
+ * - Otherwise the discriminated `type` carries the data each caller needs: a
+ *   reset resolution guarantees a non-null `user`.
+ */
+export type InviteFlowResolution =
+  | { ok: false; status: number; error: string }
+  | { ok: true; type: "invite"; invite: InviteRow }
+  | { ok: true; type: "reset"; invite: InviteRow; user: UserRow };
+
+export async function resolveInviteFlow(token: string): Promise<InviteFlowResolution> {
+  const invite = await validateInviteToken(token);
+  if (!invite) {
+    return { ok: false, status: 410, error: "Invalid or expired invite link" };
+  }
+
+  if (invite.type === "reset") {
+    const user = invite.email
+      ? await db.query.users.findFirst({ where: eq(users.email, invite.email) })
+      : null;
+    if (!user) {
+      return { ok: false, status: 404, error: "User not found" };
+    }
+    return { ok: true, type: "reset", invite, user };
+  }
+
+  return { ok: true, type: "invite", invite };
+}
 
 const TOKEN_BYTES = 32;
 const EXPIRY_DAYS = 7;

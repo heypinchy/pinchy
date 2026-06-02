@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import "@testing-library/jest-dom";
+import { toast } from "sonner";
 import InviteClaimPage from "@/app/invite/[token]/page";
 
 const pushMock = vi.fn();
@@ -25,28 +26,59 @@ vi.mock("next/image", () => ({
   },
 }));
 
+vi.mock("sonner", () => ({ toast: { success: vi.fn(), error: vi.fn() } }));
+
+// The page makes two distinct fetches: a GET to /api/invite/[token] on mount to
+// learn the flow type, and a POST to /api/invite/claim on submit. We route the
+// mock by URL+method rather than by call order so the tests don't break if the
+// page ever changes how many requests it makes.
+type MockResponse = { ok: boolean; body: unknown };
+let getResponse: MockResponse | "pending";
+let postResponse: MockResponse;
+
 global.fetch = vi.fn();
 
-// The page fetches GET /api/invite/[token] on mount to learn whether the token
-// is a new-user invite or a password reset (#436). Queue that response first;
-// the submit POST (if any) is queued after.
 function mockTokenType(type: "invite" | "reset") {
-  (global.fetch as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
-    ok: true,
-    json: async () => ({ type }),
-  });
+  getResponse = { ok: true, body: { type } };
 }
-
-function mockSubmit(response: { ok: boolean; body: unknown }) {
-  (global.fetch as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
-    ok: response.ok,
-    json: async () => response.body,
-  });
+function mockTokenError(error: string) {
+  getResponse = { ok: false, body: { error } };
+}
+function mockTokenPending() {
+  getResponse = "pending";
+}
+function mockSubmit(response: MockResponse) {
+  postResponse = response;
 }
 
 describe("Invite Claim Page", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    getResponse = { ok: true, body: { type: "invite" } };
+    postResponse = { ok: true, body: { success: true } };
+    (global.fetch as ReturnType<typeof vi.fn>).mockImplementation(
+      (url: string, init?: RequestInit) => {
+        const method = init?.method ?? "GET";
+        if (method === "GET" && url.startsWith("/api/invite/")) {
+          if (getResponse === "pending") return new Promise(() => {});
+          return Promise.resolve({ ok: getResponse.ok, json: async () => getResponse.body });
+        }
+        if (method === "POST" && url === "/api/invite/claim") {
+          return Promise.resolve({ ok: postResponse.ok, json: async () => postResponse.body });
+        }
+        throw new Error(`Unexpected fetch: ${method} ${url}`);
+      }
+    );
+  });
+
+  describe("loading", () => {
+    it("shows a loading indicator until the invite type resolves", () => {
+      mockTokenPending();
+      render(<InviteClaimPage />);
+
+      expect(screen.getByRole("status", { name: /loading/i })).toBeInTheDocument();
+      expect(screen.queryByText("You've been invited to Pinchy")).not.toBeInTheDocument();
+    });
   });
 
   describe("new-user invite flow", () => {
@@ -114,7 +146,11 @@ describe("Invite Claim Page", () => {
         expect(screen.getByText("Name is required")).toBeInTheDocument();
       });
 
-      expect(global.fetch).toHaveBeenCalledTimes(1); // only the GET type fetch
+      // No POST to claim — validation blocked it (only the mount GET happened).
+      expect(global.fetch).not.toHaveBeenCalledWith(
+        "/api/invite/claim",
+        expect.objectContaining({ method: "POST" })
+      );
     });
 
     it("should show validation error when password is too short", async () => {
@@ -131,7 +167,10 @@ describe("Invite Claim Page", () => {
         expect(screen.getByText("Password must be at least 12 characters")).toBeInTheDocument();
       });
 
-      expect(global.fetch).toHaveBeenCalledTimes(1);
+      expect(global.fetch).not.toHaveBeenCalledWith(
+        "/api/invite/claim",
+        expect.objectContaining({ method: "POST" })
+      );
     });
 
     it("should show validation error inline when password is in the breach-list (no API roundtrip)", async () => {
@@ -150,7 +189,10 @@ describe("Invite Claim Page", () => {
         ).toBeInTheDocument();
       });
 
-      expect(global.fetch).toHaveBeenCalledTimes(1);
+      expect(global.fetch).not.toHaveBeenCalledWith(
+        "/api/invite/claim",
+        expect.objectContaining({ method: "POST" })
+      );
     });
 
     it("should show validation error when passwords do not match", async () => {
@@ -167,10 +209,13 @@ describe("Invite Claim Page", () => {
         expect(screen.getByText("Passwords do not match")).toBeInTheDocument();
       });
 
-      expect(global.fetch).toHaveBeenCalledTimes(1);
+      expect(global.fetch).not.toHaveBeenCalledWith(
+        "/api/invite/claim",
+        expect.objectContaining({ method: "POST" })
+      );
     });
 
-    it("should show error when API returns error", async () => {
+    it("should show a toast when the claim API returns an error", async () => {
       const user = userEvent.setup();
       mockTokenType("invite");
       mockSubmit({ ok: false, body: { error: "Invalid or expired invite link" } });
@@ -183,7 +228,7 @@ describe("Invite Claim Page", () => {
       await user.click(screen.getByRole("button", { name: /create account/i }));
 
       await waitFor(() => {
-        expect(screen.getByText("Invalid or expired invite link")).toBeInTheDocument();
+        expect(toast.error).toHaveBeenCalledWith("Invalid or expired invite link");
       });
     });
 
@@ -306,13 +351,11 @@ describe("Invite Claim Page", () => {
 
   describe("invalid token", () => {
     it("shows an error when the token is invalid or expired", async () => {
-      (global.fetch as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
-        ok: false,
-        json: async () => ({ error: "Invalid or expired invite link" }),
-      });
+      mockTokenError("Invalid or expired invite link");
       render(<InviteClaimPage />);
 
       expect(await screen.findByText("Invalid or expired invite link")).toBeInTheDocument();
+      expect(screen.getByText("This link can't be used")).toBeInTheDocument();
     });
   });
 });

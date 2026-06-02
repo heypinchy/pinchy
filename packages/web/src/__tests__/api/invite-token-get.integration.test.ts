@@ -49,6 +49,19 @@ describe("GET /api/invite/[token] (integration)", () => {
     expect(await response.json()).toEqual({ type: "invite" });
   });
 
+  it("returns { type: 'invite' } for an open invite that has no email", async () => {
+    const adminId = await seedAdmin();
+    const { token } = await createInvite({
+      role: "member",
+      type: "invite",
+      createdBy: adminId,
+    });
+
+    const response = await GET(makeRequest(token), makeContext(token));
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ type: "invite" });
+  });
+
   it("returns { type: 'reset' } for a password-reset token of an existing user", async () => {
     const adminId = await seedAdmin();
     await auth.api.signUpEmail({

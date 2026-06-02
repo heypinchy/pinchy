@@ -6,10 +6,7 @@
 //
 // audit-exempt: read-only token lookup, no state change.
 import { NextRequest, NextResponse } from "next/server";
-import { db } from "@/db";
-import { users } from "@/db/schema";
-import { eq } from "drizzle-orm";
-import { validateInviteToken } from "@/lib/invites";
+import { resolveInviteFlow } from "@/lib/invites";
 
 export async function GET(
   _request: NextRequest,
@@ -17,22 +14,10 @@ export async function GET(
 ) {
   const { token } = await params;
 
-  const invite = await validateInviteToken(token);
-  if (!invite) {
-    return NextResponse.json({ error: "Invalid or expired invite link" }, { status: 410 });
+  const flow = await resolveInviteFlow(token);
+  if (!flow.ok) {
+    return NextResponse.json({ error: flow.error }, { status: flow.status });
   }
 
-  if (invite.type === "reset") {
-    const existingUser = invite.email
-      ? await db.query.users.findFirst({ where: eq(users.email, invite.email) })
-      : null;
-
-    if (!existingUser) {
-      return NextResponse.json({ error: "User not found" }, { status: 404 });
-    }
-
-    return NextResponse.json({ type: "reset" }, { status: 200 });
-  }
-
-  return NextResponse.json({ type: "invite" }, { status: 200 });
+  return NextResponse.json({ type: flow.type }, { status: 200 });
 }
