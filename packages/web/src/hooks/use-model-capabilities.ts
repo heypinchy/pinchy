@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useEffect, useCallback } from "react";
-import type { ModelCapabilities } from "@/lib/model-capabilities/cache";
+import type { ModelCapabilities } from "@/lib/model-capabilities/types";
 
 export type ModelCapabilityMap = Record<string, ModelCapabilities>;
 
