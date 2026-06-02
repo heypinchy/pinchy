@@ -62,6 +62,18 @@ describe("computeScope", () => {
       expect(scope.includedTurnRange).toEqual([5, 14]);
     });
 
+    it("falls back to no-anchor for an opaque id that merely starts with digits", () => {
+      // assistant-ui message ids are opaque (nanoid-style) strings that begin
+      // with a digit ~16% of the time. parseInt would leniently read the
+      // leading digit as a turn index ("1-aBcD" -> 1), wrongly anchoring the
+      // bundle and flaking diagnostics-export.spec.ts. Only a *pure* integer
+      // string is a valid stringified turn index in v1.
+      const turns = makeTurns(15);
+      const scope = computeScope(turns, "1-aBcD3fG", 10);
+      expect(scope.anchorTurnIndex).toBeNull();
+      expect(scope.includedTurnRange).toEqual([5, 14]);
+    });
+
     it("falls back to no-anchor when anchorMessageId is out of range", () => {
       const turns = makeTurns(15);
       const scope = computeScope(turns, "99", 10);

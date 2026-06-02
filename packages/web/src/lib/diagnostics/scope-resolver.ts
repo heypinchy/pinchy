@@ -39,7 +39,12 @@ export function computeScope(
   }
 
   if (anchorMessageId !== undefined) {
-    const parsed = parseInt(anchorMessageId, 10);
+    // Only a *pure* non-negative integer string is a valid stringified turn
+    // index. parseInt alone is too lenient: assistant-ui message ids are opaque
+    // nanoid-style strings that begin with a digit ~16% of the time, and
+    // parseInt("1-aBcD") === 1 would wrongly anchor the bundle (and flake
+    // diagnostics-export.spec.ts). Require the whole string to be digits.
+    const parsed = /^\d+$/.test(anchorMessageId) ? parseInt(anchorMessageId, 10) : NaN;
     if (Number.isInteger(parsed) && parsed >= 0 && parsed < turns.length) {
       const end = parsed;
       const start = Math.max(0, end - (windowSize - 1));
