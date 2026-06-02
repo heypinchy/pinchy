@@ -11,6 +11,7 @@ interface MockXHRInstance {
   open: ReturnType<typeof vi.fn>;
   setRequestHeader: ReturnType<typeof vi.fn>;
   send: ReturnType<typeof vi.fn>;
+  abort: ReturnType<typeof vi.fn>;
   // Writable event handlers assigned by the implementation
   onload: XHREventHandler;
   onerror: XHREventHandler;
@@ -46,6 +47,10 @@ function createMockXHRClass(overrides?: Partial<Pick<MockXHRInstance, "status" |
     open: vi.fn(),
     setRequestHeader: vi.fn(),
     send: vi.fn(),
+    abort: vi.fn(() => {
+      // Production XHR.abort() fires onabort synchronously; mirror that here.
+      instance.onabort?.();
+    }),
     onload: null,
     onerror: null,
     ontimeout: null,
@@ -274,6 +279,57 @@ describe("uploadAttachment", () => {
     await expect(promise).rejects.toMatchObject({
       status: 0,
       message: "Upload timed out. Please try again.",
+    });
+  });
+
+  it("calls xhr.abort() when the AbortSignal fires after send", async () => {
+    const { MockXHRClass, instance: xhr } = createMockXHRClass();
+    vi.stubGlobal("XMLHttpRequest", MockXHRClass);
+
+    const { uploadAttachment } = await import("@/lib/upload-attachment");
+
+    const controller = new AbortController();
+    const file = new File(["x"], "x.txt", { type: "text/plain" });
+    const promise = uploadAttachment(
+      "agent-abort-1",
+      "3fa85f64-5717-4562-b3fc-2c963f66afa6",
+      file,
+      undefined,
+      controller.signal
+    );
+
+    // Caller decides mid-upload that they want to cancel — the upstream
+    // bandwidth and the staging row are both wasted otherwise.
+    controller.abort();
+
+    expect(xhr.abort).toHaveBeenCalledOnce();
+    await expect(promise).rejects.toMatchObject({
+      status: 0,
+      message: "Upload cancelled.",
+    });
+  });
+
+  it("rejects synchronously when the AbortSignal is already aborted at call time", async () => {
+    const { MockXHRClass } = createMockXHRClass();
+    vi.stubGlobal("XMLHttpRequest", MockXHRClass);
+
+    const { uploadAttachment } = await import("@/lib/upload-attachment");
+
+    const controller = new AbortController();
+    controller.abort();
+
+    const file = new File(["x"], "x.txt", { type: "text/plain" });
+    await expect(
+      uploadAttachment(
+        "agent-abort-2",
+        "3fa85f64-5717-4562-b3fc-2c963f66afa6",
+        file,
+        undefined,
+        controller.signal
+      )
+    ).rejects.toMatchObject({
+      status: 0,
+      message: "Upload cancelled.",
     });
   });
 

@@ -9,17 +9,25 @@ import { draftIdSchema, uploadResponseSchema, type UploadResponse } from "@/lib/
  * @param draftId  - Draft ID sent as the `x-pinchy-draft-id` request header.
  * @param file     - The File to upload.
  * @param onProgress - Optional callback receiving upload progress as a 0–100 percent value.
+ * @param signal   - Optional AbortSignal — when it fires, `xhr.abort()` is called and the
+ *                   promise rejects with `ApiError(0, "Upload cancelled.")`. An already-aborted
+ *                   signal causes the promise to reject without ever sending the request.
  * @returns Parsed `UploadResponse` from the server on a 201 response.
- * @throws {ApiError} on non-2xx responses or network errors.
+ * @throws {ApiError} on non-2xx responses, network errors, or cancellation.
  */
 export async function uploadAttachment(
   agentId: string,
   draftId: string,
   file: File,
-  onProgress?: (percent: number) => void
+  onProgress?: (percent: number) => void,
+  signal?: AbortSignal
 ): Promise<UploadResponse> {
   if (!draftIdSchema.safeParse(draftId).success) {
     throw new ApiError(0, "Invalid draft ID");
+  }
+
+  if (signal?.aborted) {
+    throw new ApiError(0, "Upload cancelled.");
   }
 
   return new Promise<UploadResponse>((resolve, reject) => {
@@ -33,6 +41,14 @@ export async function uploadAttachment(
     xhr.onabort = () => {
       reject(new ApiError(0, "Upload cancelled."));
     };
+
+    if (signal) {
+      // External cancel: caller removed the pending upload before XHR settled
+      // (PinchyAttachmentChip × button → removePendingUpload). Bail out of the
+      // in-flight upload so the server's staged row is the only artifact, and
+      // the GC reclaims it at expiry.
+      signal.addEventListener("abort", () => xhr.abort(), { once: true });
+    }
 
     xhr.open("POST", `/api/agents/${agentId}/uploads`);
     xhr.setRequestHeader("x-pinchy-draft-id", draftId);

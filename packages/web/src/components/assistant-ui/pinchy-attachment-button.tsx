@@ -4,6 +4,7 @@ import { type FC, useContext, useRef } from "react";
 import { PlusIcon } from "lucide-react";
 import { TooltipIconButton } from "@/components/assistant-ui/tooltip-icon-button";
 import { AddPendingUploadContext } from "@/components/chat";
+import { INPUT_ACCEPT_ATTRIBUTE } from "@/lib/attachment-mime";
 
 /**
  * Composer button that routes picked files into the two-phase upload pipeline
@@ -33,7 +34,7 @@ export const PinchyAttachmentButton: FC = () => {
         ref={inputRef}
         type="file"
         data-testid="pinchy-attachment-input"
-        accept="image/*,application/pdf,text/csv,.csv,text/plain,.txt,text/markdown,.md,.markdown,application/json,.json,text/yaml,.yaml,.yml"
+        accept={INPUT_ACCEPT_ATTRIBUTE}
         multiple
         hidden
         onChange={(e) => {

@@ -23,6 +23,7 @@ import {
   CLIENT_IMAGE_COMPRESSION_TARGET_BYTES,
   CLIENT_MAX_ATTACHMENT_SIZE_BYTES,
 } from "@/lib/limits";
+import { MAX_ATTACHMENTS_PER_MESSAGE } from "@/lib/schemas/uploads";
 import { compressImageForChat } from "@/lib/image-compression";
 
 /** Lightweight metadata for binary file attachments shown next to user messages. */
@@ -261,7 +262,10 @@ function escapeXmlAttribute(value: string): string {
 // the assistant-ui adapter chain. Code-text + .docx still go through adapters
 // because they inline extracted text into the message content (no `image_url`
 // base64 frame, no PROTOCOL_OUTDATED rejection).
-const attachmentAdapter = new CompositeAttachmentAdapter([
+// Exported for the routing tests in `__tests__/hooks/attachment-routing.test.ts`
+// which assert which adapter accepts a given (filename, MIME) pair — see
+// issue #392.
+export const attachmentAdapter = new CompositeAttachmentAdapter([
   new CodeTextAttachmentAdapter(),
   new OfficeDocumentAttachmentAdapter(),
 ]);
@@ -548,6 +552,21 @@ export function useWsRuntime(agentId: string): {
   useEffect(() => {
     messagesRef.current = messages;
   }, [messages]);
+
+  // Mirror `pendingUploads` into a ref so `addPendingUpload` can read the
+  // latest count synchronously (closure-stale `pendingUploads` would miss
+  // very-fast double-picks). Matches the messagesRef pattern above.
+  const pendingUploadsRef = useRef<PendingUpload[]>([]);
+  useEffect(() => {
+    pendingUploadsRef.current = pendingUploads;
+  }, [pendingUploads]);
+
+  // One AbortController per in-flight upload. `removePendingUpload` looks the
+  // controller up by localId and calls `.abort()` so the in-flight XHR is
+  // cancelled instead of consuming the user's upload bandwidth for a file
+  // they no longer want. Map entries are deleted as soon as the XHR settles
+  // (success, failure, or abort) so the map only ever holds live controllers.
+  const uploadControllersRef = useRef<Map<string, AbortController>>(new Map());
 
   const dispatchMessages = useCallback((action: Action) => {
     setMessages((prev) => capMessages(reduceMessages(prev, action)));
@@ -1531,6 +1550,18 @@ export function useWsRuntime(agentId: string): {
   // All async work lives inside the IIFE below.
   const addPendingUpload = useCallback(
     (file: File): void => {
+      // Refuse the 11th-and-beyond attachment client-side. Server-side
+      // `attachmentIdsSchema` already enforces this on the WS frame, but
+      // checking here saves the upload bandwidth and gives an inline toast
+      // BEFORE the user spends seconds staging a file the server will reject.
+      // Counts everything except `failed` rows — those are visible chips the
+      // user can remove or retry, but they don't end up in the WS frame.
+      const activeCount = pendingUploadsRef.current.filter((u) => u.state !== "failed").length;
+      if (activeCount >= MAX_ATTACHMENTS_PER_MESSAGE) {
+        toast.error(`Too many attachments (max ${MAX_ATTACHMENTS_PER_MESSAGE})`);
+        return;
+      }
+
       const localId = crypto.randomUUID();
       const objectUrl = URL.createObjectURL(file);
 
@@ -1573,12 +1604,21 @@ export function useWsRuntime(agentId: string): {
           fileToUpload = result.file;
         }
 
+        const controller = new AbortController();
+        uploadControllersRef.current.set(localId, controller);
+
         try {
-          const response = await uploadAttachment(agentId, draftId, fileToUpload, (progress) => {
-            setPendingUploads((prev) =>
-              prev.map((u) => (u.localId === localId ? { ...u, progress } : u))
-            );
-          });
+          const response = await uploadAttachment(
+            agentId,
+            draftId,
+            fileToUpload,
+            (progress) => {
+              setPendingUploads((prev) =>
+                prev.map((u) => (u.localId === localId ? { ...u, progress } : u))
+              );
+            },
+            controller.signal
+          );
           // Keep `objectUrl` alive: the file is only promoted from .staging/
           // to uploads/ on WS send, so a /api/agents/.../uploads/<name> URL
           // would 404 until then. The chip continues to render the blob URL
@@ -1596,6 +1636,9 @@ export function useWsRuntime(agentId: string): {
             )
           );
         } catch (err: unknown) {
+          // If the rejection is a cancellation triggered by `removePendingUpload`,
+          // the row has already been spliced out of `pendingUploads` — the `map`
+          // below becomes a no-op and we don't leak a stale "failed" chip.
           setPendingUploads((prev) =>
             prev.map((u) =>
               u.localId === localId
@@ -1607,6 +1650,8 @@ export function useWsRuntime(agentId: string): {
                 : u
             )
           );
+        } finally {
+          uploadControllersRef.current.delete(localId);
         }
       })();
     },
@@ -1614,6 +1659,16 @@ export function useWsRuntime(agentId: string): {
   );
 
   const removePendingUpload = useCallback((localId: string) => {
+    // Abort the in-flight upload (if any) so the user's upstream bandwidth
+    // isn't consumed for a chip they just dismissed. The server's staged row
+    // is left behind — the upload-GC sweeps it at expiry. .abort() is a no-op
+    // if the XHR has already settled, so this is safe for ready/failed rows
+    // too.
+    const controller = uploadControllersRef.current.get(localId);
+    if (controller) {
+      controller.abort();
+      uploadControllersRef.current.delete(localId);
+    }
     setPendingUploads((prev) => {
       const upload = prev.find((u) => u.localId === localId);
       // The image-compression-failure path clears `objectUrl` to "" to mark
@@ -1658,11 +1713,20 @@ export function useWsRuntime(agentId: string): {
         fileToUpload = result.file;
       }
 
-      uploadAttachment(agentId, draftId, fileToUpload, (progress) => {
-        setPendingUploads((prev) =>
-          prev.map((u) => (u.localId === localId ? { ...u, progress } : u))
-        );
-      })
+      const controller = new AbortController();
+      uploadControllersRef.current.set(localId, controller);
+
+      uploadAttachment(
+        agentId,
+        draftId,
+        fileToUpload,
+        (progress) => {
+          setPendingUploads((prev) =>
+            prev.map((u) => (u.localId === localId ? { ...u, progress } : u))
+          );
+        },
+        controller.signal
+      )
         .then((response) => {
           // See addPendingUpload — objectUrl stays alive so the chip preview
           // keeps working while the file is still staged on the server.
@@ -1691,6 +1755,9 @@ export function useWsRuntime(agentId: string): {
                 : u
             )
           );
+        })
+        .finally(() => {
+          uploadControllersRef.current.delete(localId);
         });
     },
     [agentId, draftId, pendingUploads] // uploadAttachment is a stable import, not in deps

@@ -75,9 +75,15 @@ export interface MaterializeParams {
  * earlier files are durably placed in `uploads/` and their rows are `attached`
  * in the DB. This partial state cannot be automatically rolled back (FS rename
  * and DB write are not transactional). If this function throws, callers should
- * treat the entire send as failed and inform the user to retry — any
- * partially-materialized files will remain attached to the (unsent) messageId
- * and become reachable by the agent in a future correct send.
+ * treat the entire send as failed and inform the user to retry — but the
+ * already-promoted rows are pinned to THIS frame's freshly-minted `messageId`
+ * UUID. A retry generates a different `messageId`, so the orphaned rows
+ * never re-enter the chat stream. They sit in `uploads/` as durable but
+ * unreachable artefacts; only an operator (or a future workspace-GC pass)
+ * can reclaim them. The trade-off here is intentional: partial-failure is
+ * very rare (it requires an FS or DB error mid-loop), and the recovery cost
+ * is bounded — the user still sees the failure surface and retries with a
+ * clean set of staged rows.
  */
 export async function materializeAttachments(
   params: MaterializeParams
@@ -176,8 +182,15 @@ export async function materializeAttachments(
   const chatAttachments: ChatAttachment[] = [];
   const workspaceRefs: ProcessedWorkspaceRef[] = [];
 
-  // Process sequentially to keep audit order deterministic and avoid
-  // racing two renames into the same collision-suffix slot.
+  // Process sequentially. Filename collisions are already resolved at stage
+  // time (`persistStagedUpload` reserves `uploads/<filename>` via
+  // O_CREAT|O_EXCL with a numeric suffix), so the historical reason — racing
+  // two renames into the same suffix slot — no longer applies. We keep the
+  // sequential loop for two narrower reasons: per-message audit ordering
+  // stays deterministic (file-0 audit precedes file-1 audit), and the
+  // partial-failure surface is easier to reason about (Promise.all would
+  // leave in-flight renames running after the first rejection, broadening
+  // the orphan set documented in the jsdoc above).
   for (const row of rows) {
     if (!row.stagingPath) {
       throw new Error(
