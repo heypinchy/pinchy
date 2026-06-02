@@ -58,7 +58,12 @@ jobs:
       # `pinchyVersion` despite the tag. This fails the workflow before any
       # GHCR push, so a botched release leaves no artifact to clean up.
       - name: Assert package.json versions match the release tag
-        run: node scripts/assert-package-version.mjs "${{ steps.release-tag.outputs.tag }}"
+        # Pass the tag via env (not inline ${{ }}) so the value never reaches
+        # the shell as interpolated text — same expression-injection-safe
+        # pattern as the Layer 3 smoke check below.
+        env:
+          RELEASE_TAG: ${{ steps.release-tag.outputs.tag }}
+        run: node scripts/assert-package-version.mjs "$RELEASE_TAG"
 
       - name: Extract metadata (tags, labels)
         id: meta-pinchy
