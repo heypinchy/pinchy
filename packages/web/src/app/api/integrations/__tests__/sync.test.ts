@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { NextRequest } from "next/server";
 
 // ── Hoisted mocks ────────────────────────────────────────────────────────────
@@ -177,11 +177,14 @@ describe("POST /api/integrations/[connectionId]/sync (MCP)", () => {
     expect(body).toMatchObject({ success: true });
     expect(body.diff).toEqual({ added: [], removed: [], total: 2 });
 
-    // Audit with empty diff
+    // Audit with empty diff — note: post-rebase the route now uses
+    // `eventType: "integration.synced"` (main introduced this for Odoo,
+    // shared with MCP) instead of an `action: "integration_mcp_synced"`
+    // discriminator inside detail.
     expect(mockDeferAuditLog).toHaveBeenCalledWith(
       expect.objectContaining({
+        eventType: "integration.synced",
         detail: expect.objectContaining({
-          action: "integration_mcp_synced",
           id: "conn-mcp-1",
           name: "My GitHub MCP",
           tools: {
@@ -219,8 +222,8 @@ describe("POST /api/integrations/[connectionId]/sync (MCP)", () => {
 
     expect(mockDeferAuditLog).toHaveBeenCalledWith(
       expect.objectContaining({
+        eventType: "integration.synced",
         detail: expect.objectContaining({
-          action: "integration_mcp_synced",
           tools: {
             added: [{ name: "delete_repo" }],
             removed: [],
@@ -255,8 +258,8 @@ describe("POST /api/integrations/[connectionId]/sync (MCP)", () => {
     // Audit diff reflects the removal
     expect(mockDeferAuditLog).toHaveBeenCalledWith(
       expect.objectContaining({
+        eventType: "integration.synced",
         detail: expect.objectContaining({
-          action: "integration_mcp_synced",
           tools: expect.objectContaining({
             removed: [{ name: "create_issue" }],
           }),
@@ -269,24 +272,21 @@ describe("POST /api/integrations/[connectionId]/sync (MCP)", () => {
     expect(mockRegenerateOpenClawConfig).toHaveBeenCalled();
   });
 
-  // ── Test 3b: discovery failure writes failure audit and returns 502 ────
+  // ── Test 3b: discovery failure returns success:false with no DB write ──
+  // Post-rebase, the route matches main's Odoo behaviour: generic discovery
+  // failures return 200 with `success: false, error`, no audit row, no
+  // DB mutation. Auth failures (401/403) take a separate branch that flips
+  // the connection into `auth_failed` — covered by the integration suite.
 
-  it("returns 502 with failure audit when MCP discovery throws", async () => {
+  it("returns success:false without DB write when MCP discovery throws", async () => {
     mockListMcpTools.mockRejectedValue(new Error("connection refused"));
 
     const res = await POST(makeRequest("conn-mcp-1"), makeParams("conn-mcp-1"));
     const body = await res.json();
 
-    expect(res.status).toBe(502);
+    expect(res.status).toBe(200);
     expect(body.success).toBe(false);
     expect(body.error).toMatch(/connection refused/);
-
-    expect(mockDeferAuditLog).toHaveBeenCalledWith(
-      expect.objectContaining({
-        detail: expect.objectContaining({ action: "integration_mcp_synced" }),
-        outcome: "failure",
-      })
-    );
 
     // No DB write on failure
     expect(mockUpdateSet).not.toHaveBeenCalled();

@@ -114,6 +114,13 @@ export const POST = withAdmin<RouteContext>(async (_req, { params }, session) =>
 
   // ── Odoo sync ─────────────────────────────────────────────────────────────
 
+  if (connection.type !== "odoo") {
+    return NextResponse.json(
+      { error: `Sync not supported for connection type: ${connection.type}` },
+      { status: 400 }
+    );
+  }
+
   try {
     const decrypted = JSON.parse(decrypt(connection.credentials));
     const parsed = odooCredentialsSchema.safeParse(decrypted);

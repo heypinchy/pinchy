@@ -47,6 +47,10 @@ vi.mock("@/db", () => ({
 
 vi.mock("@/lib/settings", () => ({
   getSetting: vi.fn().mockResolvedValue(null),
+  // regenerateOpenClawConfig walks getOrCreateEncryptionKey() +
+  // getOrCreatePluginSecret() that both call setSetting from
+  // @/lib/settings when no prior value exists.
+  setSetting: vi.fn().mockResolvedValue(undefined),
 }));
 
 vi.mock("@/lib/encryption", () => ({

@@ -68,7 +68,10 @@ vi.mock("@/lib/api-validation", () => ({
 }));
 
 vi.mock("@/lib/integrations/odoo-schema", () => ({
-  odooCredentialsSchema: {},
+  // Route module evaluates `odooCredentialsSchema.partial()` at import time
+  // for the PATCH handler — keep a `.partial` stub even though the DELETE
+  // tests here don't exercise it.
+  odooCredentialsSchema: { partial: () => ({}) },
 }));
 
 vi.mock("drizzle-orm", () => ({
@@ -147,10 +150,10 @@ describe("DELETE /api/integrations/[connectionId] (type=mcp)", () => {
       expect.objectContaining({
         actorType: "user",
         actorId: "admin-1",
-        eventType: "config.changed",
+        eventType: "integration.deleted",
         outcome: "success",
         detail: expect.objectContaining({
-          action: "integration_deleted",
+          id: "conn-mcp-del-1",
           name: "My GitHub MCP",
           type: "mcp",
           mcp: expect.objectContaining({
