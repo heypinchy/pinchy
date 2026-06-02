@@ -23,6 +23,7 @@ import {
 } from "@/lib/limits";
 import { compressImageForChat } from "@/lib/image-compression";
 import { dataUrlToFile, fileToDataUrl } from "@/lib/data-url";
+import { mimeFromFilename } from "@/lib/attachment-mime";
 
 /** Lightweight metadata for binary file attachments shown next to user messages. */
 export interface WsFileMeta {
@@ -146,17 +147,34 @@ function buildWsContent(text: string, images: string[] | undefined): WsContent {
   return parts;
 }
 
+/**
+ * Adapter for source-code files whose content the model reads inline as text.
+ *
+ * The plain-text / CSV / Markdown / JSON / YAML types are deliberately NOT
+ * listed here: those are workspace data files (issue #392) handled by
+ * SimpleBinaryFileAttachmentAdapter, which uploads them so the agent can read
+ * them with `pinchy_read`. Because CompositeAttachmentAdapter dispatches to the
+ * FIRST adapter whose `accept` matches and this adapter precedes the binary
+ * one, leaving those types here would inline them and bypass the workspace.
+ */
 class CodeTextAttachmentAdapter extends SimpleTextAttachmentAdapter {
   public override accept =
-    "text/plain,text/html,text/markdown,text/csv,text/xml,text/json,text/css,application/javascript,application/typescript,.js,.ts,.tsx,.jsx,.py,.rs,.go,.sh,.sql,.yaml,.yml,.toml,.json";
+    "text/html,text/xml,text/css,application/javascript,application/typescript,.js,.ts,.tsx,.jsx,.py,.rs,.go,.sh,.sql,.toml";
 }
 
 /**
- * Adapter for binary files the model can read.
+ * Adapter for files uploaded to the agent workspace, read there via
+ * `pinchy_read`.
  *
- * Currently: PDF only. Audio is tracked in #321 — it requires a transcription
- * pipeline that does not yet exist; accepting audio here without it would
- * persist files the agent has no way to read.
+ * Handles PDFs plus the text data formats the server accepts as workspace
+ * uploads (issue #392): CSV, plain text, Markdown, JSON, YAML. These mirror
+ * `ALLOWED_TEXT_MIMES` in upload-validation.ts. Both MIME types and extensions
+ * are listed because browsers assign an empty `File.type` to some of them
+ * (notably .yaml/.md) — the extension is then the only signal.
+ *
+ * Audio is tracked in #321 — it requires a transcription pipeline that does
+ * not yet exist; accepting audio here without it would persist files the agent
+ * has no way to read.
  *
  * Lifecycle:
  *   add()  — validates size up front, then returns a PendingAttachment.
@@ -174,7 +192,8 @@ class CodeTextAttachmentAdapter extends SimpleTextAttachmentAdapter {
  * Exported only so the size-rejection contract can be unit-tested in isolation.
  */
 export class SimpleBinaryFileAttachmentAdapter {
-  public accept = "application/pdf,.pdf";
+  public accept =
+    "application/pdf,.pdf,text/csv,.csv,text/plain,.txt,text/markdown,.md,application/json,.json,text/yaml,.yaml,.yml";
 
   async add(state: { file: File }) {
     const { file } = state;
@@ -201,18 +220,32 @@ export class SimpleBinaryFileAttachmentAdapter {
     // Validated parse — fail closed on anything that isn't a base64 data: URL.
     // Earlier raw `indexOf(",")` / `indexOf(";")` parsing silently produced a
     // garbage mimeType for malformed URLs (no `data:` prefix, `;` before `:`,
-    // empty mime, non-base64 encoding) which would then ship to the server.
-    // Mirrors the server-side DATA_URL_RE in attachment-pipeline.ts.
-    const match = /^data:([^;,]+);base64,(.+)$/.exec(dataUrl);
+    // non-base64 encoding) which would then ship to the server.
+    // The mime group is `*` (not the server DATA_URL_RE's `+`) because browsers
+    // leave `File.type` empty for some text formats — that case is recovered
+    // from the extension below, and a non-empty mime is always sent onward.
+    const match = /^data:([^;,]*);base64,(.+)$/.exec(dataUrl);
     if (!match) {
       throw new Error(
         `SimpleBinaryFileAttachmentAdapter: invalid data URL from fileToDataUrl — ` +
           `expected "data:<mime>;base64,<data>", got "${dataUrl.slice(0, 32)}…"`
       );
     }
-    const mimeType = match[1];
     const data = match[2];
     const name = attachment.name ?? "";
+    // Prefer the canonical text MIME derived from the extension: browsers leave
+    // File.type empty for .yaml/.md and sometimes mislabel text files as
+    // application/octet-stream. Both forms fail the server's text allowlist, so
+    // the extension is the more reliable signal. PDFs/images have no extension
+    // entry, so they keep the data-URL MIME. Fail closed if neither yields a
+    // MIME — a workspace upload with an empty content-type is rejected anyway.
+    const mimeType = mimeFromFilename(name) ?? match[1];
+    if (!mimeType) {
+      throw new Error(
+        `SimpleBinaryFileAttachmentAdapter: could not determine a MIME type for ` +
+          `"${name}" — File.type was empty and the extension is not a known text format.`
+      );
+    }
     return {
       id: attachment.id ?? uuid(),
       type: "file" as const,
@@ -307,7 +340,7 @@ function escapeXmlAttribute(value: string): string {
     .replace(/"/g, "&quot;");
 }
 
-const attachmentAdapter = new CompositeAttachmentAdapter([
+export const attachmentAdapter = new CompositeAttachmentAdapter([
   new SimpleImageAttachmentAdapter(),
   new CodeTextAttachmentAdapter(),
   new OfficeDocumentAttachmentAdapter(),

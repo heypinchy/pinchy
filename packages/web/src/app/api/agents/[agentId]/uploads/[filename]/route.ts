@@ -12,16 +12,7 @@ import {
   ALLOWED_ATTACHMENT_MIMES,
   ALLOWED_TEXT_MIMES,
 } from "@/lib/upload-validation";
-
-const EXTENSION_TO_MIME: Record<string, string> = {
-  ".csv": "text/csv",
-  ".txt": "text/plain",
-  ".md": "text/markdown",
-  ".markdown": "text/markdown",
-  ".json": "application/json",
-  ".yaml": "text/yaml",
-  ".yml": "text/yaml",
-};
+import { EXTENSION_TO_MIME } from "@/lib/attachment-mime";
 
 type Params = { params: Promise<{ agentId: string; filename: string }> };
 

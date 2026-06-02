@@ -100,13 +100,47 @@ describe("SimpleBinaryFileAttachmentAdapter.send", () => {
     );
   });
 
-  it("rejects when the mime type is empty", async () => {
+  it("rejects when the mime type is empty and the extension is not a known text type", async () => {
     const dataUrlModule = await import("@/lib/data-url");
     vi.mocked(dataUrlModule.fileToDataUrl).mockResolvedValueOnce("data:;base64,YWJj");
     const adapter = new SimpleBinaryFileAttachmentAdapter();
     await expect(adapter.send({ name: "doc.pdf", file: fakeFile({ size: 1 }) })).rejects.toThrow(
       /data url|invalid|mime/i
     );
+  });
+
+  // Browsers leave File.type empty for some text formats (notably .yaml and
+  // .md), so fileToDataUrl produces `data:;base64,…` with no MIME. Issue #392:
+  // the adapter must recover the canonical text MIME from the extension so the
+  // server accepts the workspace upload, rather than rejecting it outright.
+  it("infers text/yaml from a .yaml extension when File.type is empty", async () => {
+    const dataUrlModule = await import("@/lib/data-url");
+    vi.mocked(dataUrlModule.fileToDataUrl).mockResolvedValueOnce("data:;base64,YWJj");
+    const adapter = new SimpleBinaryFileAttachmentAdapter();
+    const sent = await adapter.send({ name: "config.yaml", file: fakeFile({ size: 1 }) });
+    expect(sent.content).toEqual([
+      { type: "file", data: "YWJj", mimeType: "text/yaml", filename: "config.yaml" },
+    ]);
+  });
+
+  it("infers text/markdown from a .md extension when File.type is empty", async () => {
+    const dataUrlModule = await import("@/lib/data-url");
+    vi.mocked(dataUrlModule.fileToDataUrl).mockResolvedValueOnce("data:;base64,YWJj");
+    const adapter = new SimpleBinaryFileAttachmentAdapter();
+    const sent = await adapter.send({ name: "README.md", file: fakeFile({ size: 1 }) });
+    expect(sent.content[0].mimeType).toBe("text/markdown");
+  });
+
+  // A browser that mislabels a .csv as the generic octet-stream must not defeat
+  // the text allowlist — the known extension wins over the unreliable type.
+  it("prefers the extension MIME over a generic octet-stream type", async () => {
+    const dataUrlModule = await import("@/lib/data-url");
+    vi.mocked(dataUrlModule.fileToDataUrl).mockResolvedValueOnce(
+      "data:application/octet-stream;base64,YWJj"
+    );
+    const adapter = new SimpleBinaryFileAttachmentAdapter();
+    const sent = await adapter.send({ name: "data.csv", file: fakeFile({ size: 1 }) });
+    expect(sent.content[0].mimeType).toBe("text/csv");
   });
 });
 

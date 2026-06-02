@@ -7,20 +7,20 @@ Drop a file into a Pinchy chat and the agent receives its content directly — n
 
 ## Supported file types
 
-**Text and documents**
-
-Any text-based file — Markdown, CSV, JSON, YAML, plain text, source code, and similar formats — is fully readable by the agent. You can drop a `.csv` or a `.md` just like a PDF and the agent will read the whole thing.
+**Saved to the workspace** — the agent reads them on demand
 
 - PDF (with text extraction and vision analysis)
-- Microsoft Word (`.docx`)
+- Text data: `.txt`, `.md`, `.csv`, `.json`, `.yaml`/`.yml`
+- Images: JPEG, PNG, WebP, GIF, HEIC/HEIF (also sent inline to vision models)
 
-**Code and text**
+Drop a `.csv` or a `.md` just like a PDF: the file lands in the agent's workspace and the agent reads the whole thing on demand. This is the path for data-analysis work, where the agent needs the file as a file it can re-read, slice, and reference.
 
-- `.txt`, `.md`, `.csv`, `.json`, `.xml`, `.html`, `.css`, plus common source-file extensions
+**Sent inline as text** — content pasted into the conversation, not stored
 
-**Images**
+- Microsoft Word (`.docx`) — text extracted at upload time
+- Source code: `.ts`, `.js`, `.tsx`, `.jsx`, `.py`, `.go`, `.rs`, `.sh`, `.sql`, `.html`, `.css`, `.xml`, `.toml`, and similar
 
-- JPEG, PNG, WebP, GIF, HEIC/HEIF
+These are pasted into the conversation as text rather than stored, so the agent sees the content immediately without a read step.
 
 :::note
 Audio attachments are not yet supported. Transcription wiring is tracked in [issue #321](https://github.com/heypinchy/pinchy/issues/321).
@@ -32,10 +32,12 @@ Audio attachments are not yet supported. Transcription wiring is tracked in [iss
 
 ## How files are used
 
-Two things happen when you attach a file:
+For a workspace file (PDF, image, or text data), two things happen:
 
 1. **The file is saved to the agent's [workspace](/concepts/workspaces/)** at `uploads/<filename>`. The agent reads it on demand from there.
 2. **Images are also sent inline** to the LLM when the model supports vision, so the agent can "see" an image without a separate read step.
+
+Word documents and source code are the exception: their content is sent inline as text and not stored in the workspace.
 
 For PDFs, Pinchy automatically picks the best vision-capable model available in your provider configuration. Anthropic Claude and Google Gemini handle PDFs natively; other vision-capable models fall back to a text-and-image extraction step.
 
