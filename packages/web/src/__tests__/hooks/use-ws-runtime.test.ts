@@ -573,7 +573,7 @@ describe("useWsRuntime", () => {
     expect(sentMessage.sessionKey).toBeUndefined();
   });
 
-  it("registers a text/code-only attachment adapter (images/PDFs go via two-phase upload)", () => {
+  it("registers a code/docx-only attachment adapter (everything else goes via two-phase upload)", () => {
     const { result } = renderHook(() => useWsRuntime("agent-1"));
     const runtime = result.current.runtime;
 
@@ -581,15 +581,25 @@ describe("useWsRuntime", () => {
     expect(runtime.adapters.attachments).toBeDefined();
 
     const acceptedTypes = runtime.adapters.attachments.accept;
-    expect(acceptedTypes).toContain("text/plain");
+    // Source-code extensions are inlined as text content parts.
     expect(acceptedTypes).toContain(".ts");
     expect(acceptedTypes).toContain(".js");
     expect(acceptedTypes).toContain(".py");
-    // Image and PDF MIMEs must NOT be in the assistant-ui adapter — they
-    // would be turned into legacy `image_url` content parts that the server
-    // now rejects with PROTOCOL_OUTDATED.
+    // .docx is extracted to text via mammoth in OfficeDocumentAttachmentAdapter.
+    expect(acceptedTypes).toContain(".docx");
+    // The following MIMEs must NOT be in the assistant-ui adapter chain — they
+    // all go through the two-phase upload pipeline (PinchyAttachmentButton →
+    // addPendingUpload → POST /uploads):
+    //   - Images / PDFs would otherwise become legacy `image_url` parts the
+    //     server rejects with PROTOCOL_OUTDATED.
+    //   - Plain text / CSV / Markdown / JSON / YAML (issue #392) are workspace
+    //     data files read by `pinchy_read` — they belong in the upload pipeline,
+    //     not inlined as text.
     expect(acceptedTypes).not.toContain("image/*");
     expect(acceptedTypes).not.toContain("application/pdf");
+    expect(acceptedTypes).not.toContain("text/plain");
+    expect(acceptedTypes).not.toContain("text/csv");
+    expect(acceptedTypes).not.toContain("text/markdown");
   });
 
   it("should send plain string when message has no image attachment", () => {
