@@ -32,7 +32,8 @@ function runCli(args) {
 test("CLI exits 0 when the tag matches the repo's package versions", () => {
   const result = runCli([`v${REPO_VERSION}`]);
   assert.equal(result.status, 0, result.stdout + result.stderr);
-  assert.match(result.stdout, new RegExp(`match v${REPO_VERSION.replace(/\./g, "\\.")}`));
+  // Plain substring check — no regex, so no escaping of the version is needed.
+  assert.ok(result.stdout.includes(`match v${REPO_VERSION}`), result.stdout);
 });
 
 test("CLI exits 1 with a ::error:: annotation on version drift", () => {
