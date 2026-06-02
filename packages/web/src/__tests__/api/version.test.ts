@@ -54,10 +54,10 @@ describe("GET /api/version", () => {
   });
 
   it("returns openclawVersion from NEXT_PUBLIC_OPENCLAW_VERSION", async () => {
-    process.env.NEXT_PUBLIC_OPENCLAW_VERSION = "2026.5.20";
+    process.env.NEXT_PUBLIC_OPENCLAW_VERSION = "2026.5.28";
     const response = await GET();
     const data = await response.json();
-    expect(data.openclawVersion).toBe("2026.5.20");
+    expect(data.openclawVersion).toBe("2026.5.28");
   });
 
   it("falls back to 'unknown' when NEXT_PUBLIC_OPENCLAW_VERSION is unset", async () => {
