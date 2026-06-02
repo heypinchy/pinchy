@@ -772,6 +772,57 @@ describe("pinchy_read image integration", () => {
     expect(result.content[0].type).toBe("text");
     expect(result.content[0].text).toBe("hello from a plain text file");
   });
+
+  // HEIC / HEIF — iPhone default format, listed in ALLOWED_ATTACHMENT_MIMES
+  // (upload-validation.ts). Extension-only detection is enough here because the
+  // HEIC container format has no simple 4-byte magic (it is an ISOBMFF box that
+  // varies by encoder). Users can upload these files, so pinchy_read must not
+  // return binary garbage for them.
+  it("detects .heic by extension and returns an image block", async () => {
+    const heicPath = join(tmpDir, "photo.HEIC");
+    writeFileSync(heicPath, Buffer.from([0x00, 0x00, 0x00, 0x18, 0x66, 0x74, 0x79, 0x70])); // ftyp box prefix
+    const api = createMockApi({ "agent-1": { allowed_paths: [tmpDir + "/"] } });
+    const tool = await getReadTool(api);
+
+    const result = await tool.execute("call-1", { path: heicPath });
+
+    const img = imageBlock(result);
+    expect(img).toBeDefined();
+    expect(img.mimeType).toBe("image/heic");
+  });
+
+  it("detects .heif by extension and returns an image block", async () => {
+    const heifPath = join(tmpDir, "photo.heif");
+    writeFileSync(heifPath, Buffer.from([0x00, 0x00, 0x00, 0x18, 0x66, 0x74, 0x79, 0x70]));
+    const api = createMockApi({ "agent-1": { allowed_paths: [tmpDir + "/"] } });
+    const tool = await getReadTool(api);
+
+    const result = await tool.execute("call-1", { path: heifPath });
+
+    const img = imageBlock(result);
+    expect(img).toBeDefined();
+    expect(img.mimeType).toBe("image/heif");
+  });
+
+  it("returns isError for a non-PDF image that exceeds MAX_FILE_SIZE", async () => {
+    // The fd-based size check in pinchy_read covers the non-PDF path (including
+    // images). This test proves the size gate fires before the buffer is read,
+    // so oversized images are rejected cleanly rather than consuming memory.
+    const bigPath = join(tmpDir, "big.png");
+    // Write a file larger than MAX_FILE_SIZE (10 MB) without allocating the
+    // full buffer: open + truncate creates a sparse file of the desired size.
+    const { open: fsOpen } = await import("fs/promises");
+    const fh = await fsOpen(bigPath, "w");
+    await fh.truncate(11 * 1024 * 1024 + 1); // 11 MB + 1 byte > 10 MB limit
+    await fh.close();
+    const api = createMockApi({ "agent-1": { allowed_paths: [tmpDir + "/"] } });
+    const tool = await getReadTool(api);
+
+    const result = await tool.execute("call-1", { path: bigPath });
+
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toMatch(/too large/i);
+  });
 });
 
 describe("pinchy_write tool", () => {

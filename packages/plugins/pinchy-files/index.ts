@@ -52,6 +52,12 @@ const IMAGE_MIME_TYPES: Record<string, string> = {
   ".jpeg": "image/jpeg",
   ".gif": "image/gif",
   ".webp": "image/webp",
+  // HEIC/HEIF: iPhone default format, listed in ALLOWED_ATTACHMENT_MIMES. The
+  // ISOBMFF container has no single simple magic signature (varies by encoder),
+  // so we rely on extension detection only. These are upload-allowed formats and
+  // without this entry pinchy_read would return binary garbage.
+  ".heic": "image/heic",
+  ".heif": "image/heif",
 };
 
 // Detect an image from its leading bytes (magic numbers). Pasted/dropped images
