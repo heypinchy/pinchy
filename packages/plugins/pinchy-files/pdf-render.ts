@@ -16,10 +16,11 @@ export async function renderPageToImage(page: PDFPageProxy): Promise<Buffer> {
   const ctx = canvas.getContext("2d");
 
   await page.render({
-    // @napi-rs/canvas produces a Node canvas, not a DOM HTMLCanvasElement;
-    // pdfjs only needs the 2D context here, so hand it the same canvas it
-    // would otherwise auto-derive from canvasContext.
-    canvas: canvas as unknown as HTMLCanvasElement,
+    // We render via @napi-rs/canvas's 2D context, not a DOM canvas. pdfjs
+    // requires `canvas` in RenderParameters but documents that it must be
+    // null when the page should be rendered through `canvasContext` instead
+    // — which is exactly our case, so we avoid lying about the canvas type.
+    canvas: null,
     canvasContext: ctx as unknown as CanvasRenderingContext2D,
     viewport: scaledViewport,
   }).promise;
