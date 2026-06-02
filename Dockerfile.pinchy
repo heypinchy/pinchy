@@ -26,6 +26,10 @@ WORKDIR /app
 
 COPY pnpm-workspace.yaml package.json pnpm-lock.yaml ./
 COPY packages/web/package.json packages/web/
+# pnpm applies pnpm.patchedDependencies during install — the patch files must be
+# present in the build context before `pnpm install`, otherwise frozen install
+# fails with ENOENT on the .patch file.
+COPY patches/ ./patches/
 
 RUN pnpm install --frozen-lockfile
 
