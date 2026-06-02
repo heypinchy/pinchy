@@ -228,7 +228,7 @@ export const DELETE = withAdmin<RouteContext>(async (_req, { params }, session) 
     }
   }
 
-  const deletedDetail: Record<string, unknown> = {
+  const deletedDetail: { id: string; name: string; type: string; mcp?: unknown } = {
     id: connectionId,
     name: existing.name,
     type: existing.type,
