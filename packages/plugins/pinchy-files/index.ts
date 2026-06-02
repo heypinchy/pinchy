@@ -1,7 +1,7 @@
-import { readFileSync, readdirSync, statSync, realpathSync } from "fs";
+import { readdirSync, statSync, realpathSync } from "fs";
 import { readFile, open, writeFile } from "fs/promises";
 import { createHash } from "crypto";
-import { join, extname } from "path";
+import { join, extname, basename } from "path";
 import { validateAccess, MAX_FILE_SIZE, MAX_PDF_FILE_SIZE, MAX_DOCX_FILE_SIZE, type AgentFileConfig } from "./validate";
 import { extractDocxText } from "./docx-extract";
 import { extractPdfText } from "./pdf-extract";
@@ -43,6 +43,9 @@ type ContentBlock =
 // Image extensions pinchy_read returns as image content blocks rather than
 // utf-8 text. Reading the bytes as utf-8 would hand the model binary garbage
 // (issue #420). Keys are lowercase; lookup lowercases the file extension.
+// Used only as a fallback — content sniffing (sniffImageMime) takes priority so
+// that extensionless uploads (the reported `upload (3)` case) and mislabeled
+// files are still detected.
 const IMAGE_MIME_TYPES: Record<string, string> = {
   ".png": "image/png",
   ".jpg": "image/jpeg",
@@ -50,6 +53,42 @@ const IMAGE_MIME_TYPES: Record<string, string> = {
   ".gif": "image/gif",
   ".webp": "image/webp",
 };
+
+// Detect an image from its leading bytes (magic numbers). Pasted/dropped images
+// are persisted without a meaningful filename (attachment-pipeline falls back to
+// "upload", so on disk they are `upload`, `upload (1)`, …) — extension-based
+// detection misses exactly those, which is how #420 manifested. Returns the
+// MIME type, or null if the buffer is not a recognized image.
+function sniffImageMime(buf: Buffer): string | null {
+  if (
+    buf.length >= 8 &&
+    buf[0] === 0x89 &&
+    buf[1] === 0x50 &&
+    buf[2] === 0x4e &&
+    buf[3] === 0x47 &&
+    buf[4] === 0x0d &&
+    buf[5] === 0x0a &&
+    buf[6] === 0x1a &&
+    buf[7] === 0x0a
+  ) {
+    return "image/png";
+  }
+  if (buf.length >= 3 && buf[0] === 0xff && buf[1] === 0xd8 && buf[2] === 0xff) {
+    return "image/jpeg";
+  }
+  if (buf.length >= 6) {
+    const gif = buf.toString("ascii", 0, 6);
+    if (gif === "GIF87a" || gif === "GIF89a") return "image/gif";
+  }
+  if (
+    buf.length >= 12 &&
+    buf.toString("ascii", 0, 4) === "RIFF" &&
+    buf.toString("ascii", 8, 12) === "WEBP"
+  ) {
+    return "image/webp";
+  }
+  return null;
+}
 
 interface PluginApi {
   pluginConfig?: {
@@ -296,21 +335,6 @@ const plugin = {
                 };
               }
 
-              // Image files: hand the model the raw bytes as an image content
-              // block so it re-sees the picture natively (issue #420), the same
-              // way a freshly uploaded attachment reaches the model on the first
-              // turn. The utf-8 fallthrough below would otherwise return binary
-              // garbage for an image.
-              const imageMimeType = IMAGE_MIME_TYPES[extname(realPath).toLowerCase()];
-              if (imageMimeType) {
-                const buffer = await readFile(realPath);
-                return {
-                  content: [
-                    { type: "image", data: buffer.toString("base64"), mimeType: imageMimeType },
-                  ],
-                };
-              }
-
               // PDF detection
               if (isPdf) {
                 // Resolve agent name + model from OpenClaw config in one walk.
@@ -362,9 +386,26 @@ const plugin = {
                 return { content: [{ type: "text", text }] };
               }
 
-              // Non-PDF, non-.docx: existing behavior
-              const content = readFileSync(realPath, "utf-8");
-              return { content: [{ type: "text", text: content }] };
+              // Non-PDF, non-.docx: read the bytes once and decide. Images
+              // (detected by content first, then extension as a fallback) are
+              // returned as an image content block so the model re-sees the
+              // picture natively (issue #420) — the same way a freshly uploaded
+              // attachment reaches the model on the first turn. Everything else
+              // is returned as utf-8 text, the original behavior.
+              const buffer = await readFile(realPath);
+              const imageMimeType =
+                sniffImageMime(buffer) ?? IMAGE_MIME_TYPES[extname(realPath).toLowerCase()];
+              if (imageMimeType) {
+                return {
+                  content: [
+                    // A short label gives the model context ("this is the file
+                    // you asked about") next to the raw image bytes.
+                    { type: "text", text: `Image file: ${basename(realPath)}` },
+                    { type: "image", data: buffer.toString("base64"), mimeType: imageMimeType },
+                  ],
+                };
+              }
+              return { content: [{ type: "text", text: buffer.toString("utf-8") }] };
             } catch (error) {
               const message =
                 error instanceof Error ? error.message : "Unknown error";

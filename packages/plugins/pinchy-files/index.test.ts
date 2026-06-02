@@ -648,7 +648,24 @@ describe("pinchy_read image integration", () => {
     return readFactory({ agentId: "agent-1" });
   }
 
-  it("returns an image content block (not utf-8 text) for PNG files", async () => {
+  function imageBlock(result: any) {
+    return result.content.find((c: any) => c.type === "image");
+  }
+  function textBlock(result: any) {
+    return result.content.find((c: any) => c.type === "text");
+  }
+
+  // Minimal byte sequences carrying each format's magic signature.
+  const JPEG_BYTES = Buffer.from([0xff, 0xd8, 0xff, 0xe0, 0x00, 0x10, 0x4a, 0x46]);
+  const GIF_BYTES = Buffer.concat([Buffer.from("GIF89a"), Buffer.from([0x01, 0x00])]);
+  const WEBP_BYTES = Buffer.concat([
+    Buffer.from("RIFF"),
+    Buffer.from([0x1a, 0x00, 0x00, 0x00]),
+    Buffer.from("WEBP"),
+    Buffer.from([0x00, 0x00]),
+  ]);
+
+  it("returns an image block for image files with a known extension", async () => {
     const imgPath = join(tmpDir, "photo.png");
     writeFileSync(imgPath, Buffer.from(PNG_BASE64, "base64"));
     const api = createMockApi({ "agent-1": { allowed_paths: [tmpDir + "/"] } });
@@ -657,47 +674,103 @@ describe("pinchy_read image integration", () => {
     const result = await tool.execute("call-1", { path: imgPath });
 
     expect(result.isError).toBeFalsy();
-    expect(result.content[0].type).toBe("image");
+    const img = imageBlock(result);
     // OpenClaw's ImageContent shape: { type: "image", data: <base64>, mimeType }.
-    expect(result.content[0].mimeType).toBe("image/png");
-    expect(result.content[0].data).toBe(PNG_BASE64);
-    // Regression guard: must NOT fall through to the utf-8 text branch.
-    expect(result.content[0].text).toBeUndefined();
+    expect(img).toBeDefined();
+    expect(img.mimeType).toBe("image/png");
+    expect(img.data).toBe(PNG_BASE64);
   });
 
-  it("maps .JPG/.jpeg to image/jpeg case-insensitively and round-trips the bytes", async () => {
-    const bytes = Buffer.from([0xff, 0xd8, 0xff, 0xe0, 0x01, 0x02, 0x03]);
-    const imgPath = join(tmpDir, "scan.JPG");
-    writeFileSync(imgPath, bytes);
+  it("detects an image by content when the file has NO extension (the reported upload(3) case)", async () => {
+    // Pasted/dropped images are persisted as `upload`, `upload (1)`, … with no
+    // extension (attachment-pipeline falls back to "upload"). Extension-based
+    // detection misses exactly the file from the bug report; content sniffing
+    // must catch it.
+    const imgPath = join(tmpDir, "upload (3)");
+    writeFileSync(imgPath, Buffer.from(PNG_BASE64, "base64"));
     const api = createMockApi({ "agent-1": { allowed_paths: [tmpDir + "/"] } });
     const tool = await getReadTool(api);
 
     const result = await tool.execute("call-1", { path: imgPath });
 
-    expect(result.content[0].type).toBe("image");
-    expect(result.content[0].mimeType).toBe("image/jpeg");
-    expect(result.content[0].data).toBe(bytes.toString("base64"));
+    const img = imageBlock(result);
+    expect(img).toBeDefined();
+    expect(img.mimeType).toBe("image/png");
+    expect(img.data).toBe(PNG_BASE64);
   });
 
-  it("supports gif and webp image types", async () => {
+  it("maps .JPG case-insensitively and round-trips the bytes", async () => {
+    const imgPath = join(tmpDir, "scan.JPG");
+    writeFileSync(imgPath, JPEG_BYTES);
+    const api = createMockApi({ "agent-1": { allowed_paths: [tmpDir + "/"] } });
+    const tool = await getReadTool(api);
+
+    const result = await tool.execute("call-1", { path: imgPath });
+
+    const img = imageBlock(result);
+    expect(img.mimeType).toBe("image/jpeg");
+    expect(img.data).toBe(JPEG_BYTES.toString("base64"));
+  });
+
+  it("detects gif and webp by content even without an extension", async () => {
     const cases = [
-      { name: "anim.gif", mime: "image/gif" },
-      { name: "pic.webp", mime: "image/webp" },
+      { name: "upload (4)", bytes: GIF_BYTES, mime: "image/gif" },
+      { name: "upload (5)", bytes: WEBP_BYTES, mime: "image/webp" },
     ];
     const api = createMockApi({ "agent-1": { allowed_paths: [tmpDir + "/"] } });
     const tool = await getReadTool(api);
 
     for (const c of cases) {
-      const bytes = Buffer.from([1, 2, 3, 4, 5]);
       const p = join(tmpDir, c.name);
-      writeFileSync(p, bytes);
+      writeFileSync(p, c.bytes);
 
       const result = await tool.execute("call-1", { path: p });
 
-      expect(result.content[0].type).toBe("image");
-      expect(result.content[0].mimeType).toBe(c.mime);
-      expect(result.content[0].data).toBe(bytes.toString("base64"));
+      const img = imageBlock(result);
+      expect(img).toBeDefined();
+      expect(img.mimeType).toBe(c.mime);
+      expect(img.data).toBe(c.bytes.toString("base64"));
     }
+  });
+
+  it("prefers detected content type over a misleading extension", async () => {
+    // A PNG saved as `.txt` is still a PNG — return it as an image, not garbage.
+    const imgPath = join(tmpDir, "note.txt");
+    writeFileSync(imgPath, Buffer.from(PNG_BASE64, "base64"));
+    const api = createMockApi({ "agent-1": { allowed_paths: [tmpDir + "/"] } });
+    const tool = await getReadTool(api);
+
+    const result = await tool.execute("call-1", { path: imgPath });
+
+    const img = imageBlock(result);
+    expect(img).toBeDefined();
+    expect(img.mimeType).toBe("image/png");
+  });
+
+  it("includes a text label naming the file alongside the image", async () => {
+    const imgPath = join(tmpDir, "upload (3)");
+    writeFileSync(imgPath, Buffer.from(PNG_BASE64, "base64"));
+    const api = createMockApi({ "agent-1": { allowed_paths: [tmpDir + "/"] } });
+    const tool = await getReadTool(api);
+
+    const result = await tool.execute("call-1", { path: imgPath });
+
+    const txt = textBlock(result);
+    expect(txt).toBeDefined();
+    expect(txt.text).toContain("upload (3)");
+  });
+
+  it("still returns utf-8 text for a non-image file without an extension", async () => {
+    const txtPath = join(tmpDir, "notes");
+    writeFileSync(txtPath, "hello from a plain text file");
+    const api = createMockApi({ "agent-1": { allowed_paths: [tmpDir + "/"] } });
+    const tool = await getReadTool(api);
+
+    const result = await tool.execute("call-1", { path: txtPath });
+
+    expect(imageBlock(result)).toBeUndefined();
+    expect(result.content[0].type).toBe("text");
+    expect(result.content[0].text).toBe("hello from a plain text file");
   });
 });
 
