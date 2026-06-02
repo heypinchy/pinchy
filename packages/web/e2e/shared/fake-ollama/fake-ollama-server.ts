@@ -15,6 +15,46 @@ const MODEL_NAME = "llama3.2";
 // provider mocks. Default value is preserved so existing subprocess usage
 // (integration tests, telegram tests) is unchanged.
 const FAKE_RESPONSE = process.env.FAKE_OLLAMA_RESPONSE ?? "Integration test response.";
+
+// Token-usage emission. Real Ollama/OpenAI providers report a usage block and
+// OpenClaw reads it into its per-session cumulative counters — which Pinchy's
+// usage poller then turns into usage_records rows. The fake server mirrors
+// that so the usage-tracking Tier-2 E2E spec can assert exact token totals.
+// Read at request time (not module load) so tests and the integration
+// global-setup can tune the numbers via env without a reimport.
+const DEFAULT_PROMPT_TOKENS = 42;
+const DEFAULT_COMPLETION_TOKENS = 17;
+
+// `userMessageCount` scales BOTH token counts so that successive turns in the
+// same session report strictly GROWING cumulative counters. This matters for
+// the usage-tracking Tier-2 spec, which asserts against a session that is
+// shared across tests (Smithers + the admin user): OpenClaw stores the latest
+// call's counters per session and Pinchy's poller records the growth as
+// deltas, so a flat count on a non-fresh session could yield a zero delta and
+// make the assertion racy. Scaling by the (monotonically increasing) turn
+// count guarantees a positive, predictable delta on every turn while keeping
+// the declared 42:17 input:output ratio intact — which is the invariant the
+// spec checks. (Real output tokens don't grow with history; this is a
+// deliberate determinism concession in the fake, not a fidelity claim.)
+function getUsageTokens(userMessageCount = 1): {
+  promptTokens: number;
+  completionTokens: number;
+} {
+  const turn = Math.max(1, userMessageCount);
+  const prompt = Number(process.env.FAKE_OLLAMA_PROMPT_TOKENS);
+  const completion = Number(process.env.FAKE_OLLAMA_COMPLETION_TOKENS);
+  const basePrompt = Number.isFinite(prompt) && prompt >= 0 ? prompt : DEFAULT_PROMPT_TOKENS;
+  const baseCompletion =
+    Number.isFinite(completion) && completion >= 0 ? completion : DEFAULT_COMPLETION_TOKENS;
+  return {
+    promptTokens: basePrompt * turn,
+    completionTokens: baseCompletion * turn,
+  };
+}
+
+function countUserMessages(messages: unknown[]): number {
+  return messages.filter((m) => (m as { role?: unknown })?.role === "user").length;
+}
 const DOMAIN_LOCK_TOOL_TRIGGER = "E2E_DOMAIN_LOCK_DOCS_TOOL";
 const DOMAIN_LOCK_TOOL_RESPONSE = "Domain lock docs tool call completed.";
 const SLOW_STREAM_TRIGGER = "E2E_SLOW_STREAM";
@@ -134,13 +174,19 @@ function writeNdjson(res: http.ServerResponse, chunks: unknown[]) {
   res.end();
 }
 
-function streamTextResponse(res: http.ServerResponse, text: string) {
+function streamTextResponse(res: http.ServerResponse, text: string, userMessageCount = 1) {
+  const { promptTokens, completionTokens } = getUsageTokens(userMessageCount);
   const chunks = text.split(" ").map((word, i, arr) => ({
     model: MODEL_NAME,
     created_at: new Date().toISOString(),
     message: { role: "assistant", content: i === 0 ? word : " " + word },
     done: i === arr.length - 1,
-    ...(i === arr.length - 1 && { done_reason: "stop", total_duration: 1000000 }),
+    ...(i === arr.length - 1 && {
+      done_reason: "stop",
+      total_duration: 1000000,
+      prompt_eval_count: promptTokens,
+      eval_count: completionTokens,
+    }),
   }));
   writeNdjson(res, chunks);
 }
@@ -305,7 +351,26 @@ function chatCompletionChunk(fields: {
   };
 }
 
-function streamOpenAiText(res: http.ServerResponse, text: string) {
+// Trailing usage-only chunk, mirroring OpenAI's `stream_options.include_usage`
+// behaviour: a final chunk with empty `choices` and a `usage` block. OpenClaw's
+// pi-ai reads this to populate the session's cumulative token counters.
+function usageChunk(userMessageCount = 1) {
+  const { promptTokens, completionTokens } = getUsageTokens(userMessageCount);
+  return {
+    id: `chatcmpl-${Date.now()}`,
+    object: "chat.completion.chunk",
+    created: Math.floor(Date.now() / 1000),
+    model: MODEL_NAME,
+    choices: [],
+    usage: {
+      prompt_tokens: promptTokens,
+      completion_tokens: completionTokens,
+      total_tokens: promptTokens + completionTokens,
+    },
+  };
+}
+
+function streamOpenAiText(res: http.ServerResponse, text: string, userMessageCount = 1) {
   sseHeaders(res);
   const words = text.split(" ");
   for (let i = 0; i < words.length; i++) {
@@ -313,6 +378,7 @@ function streamOpenAiText(res: http.ServerResponse, text: string) {
     sseWrite(res, chatCompletionChunk({ content: piece }));
   }
   sseWrite(res, chatCompletionChunk({ finishReason: "stop" }));
+  sseWrite(res, usageChunk(userMessageCount));
   sseDone(res);
 }
 
@@ -366,7 +432,7 @@ function streamOpenAiToolCalls(
   sseDone(res);
 }
 
-async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse) {
+export async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse) {
   const url = req.url ?? "";
   const method = req.method ?? "";
 
@@ -455,7 +521,11 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
       return;
     }
 
-    streamTextResponse(res, activeTrigger ? activeTrigger.response : FAKE_RESPONSE);
+    streamTextResponse(
+      res,
+      activeTrigger ? activeTrigger.response : FAKE_RESPONSE,
+      countUserMessages(messages)
+    );
     return;
   }
 
@@ -505,7 +575,11 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
       return;
     }
 
-    streamOpenAiText(res, activeTrigger ? activeTrigger.response : FAKE_RESPONSE);
+    streamOpenAiText(
+      res,
+      activeTrigger ? activeTrigger.response : FAKE_RESPONSE,
+      countUserMessages(messages)
+    );
     return;
   }
 
@@ -516,6 +590,11 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
 
 export const FAKE_OLLAMA_PORT = 11435;
 export const FAKE_OLLAMA_MODEL = `ollama/${MODEL_NAME}`;
+// Token counts emitted on every completion when FAKE_OLLAMA_PROMPT_TOKENS /
+// FAKE_OLLAMA_COMPLETION_TOKENS are unset (the integration default). The
+// usage-tracking Tier-2 spec asserts against these exact numbers.
+export const FAKE_OLLAMA_DEFAULT_PROMPT_TOKENS = DEFAULT_PROMPT_TOKENS;
+export const FAKE_OLLAMA_DEFAULT_COMPLETION_TOKENS = DEFAULT_COMPLETION_TOKENS;
 export const FAKE_OLLAMA_RESPONSE = FAKE_RESPONSE;
 export const FAKE_OLLAMA_DOMAIN_LOCK_TOOL_TRIGGER = DOMAIN_LOCK_TOOL_TRIGGER;
 export const FAKE_OLLAMA_DOMAIN_LOCK_TOOL_RESPONSE = DOMAIN_LOCK_TOOL_RESPONSE;
