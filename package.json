@@ -58,7 +58,10 @@
     },
     "onlyBuiltDependencies": [
       "better-sqlite3"
-    ]
+    ],
+    "patchedDependencies": {
+      "@assistant-ui/react@0.14.11": "patches/@assistant-ui__react@0.14.11.patch"
+    }
   },
   "lint-staged": {
     "packages/web/src/**/*.{ts,tsx}": [

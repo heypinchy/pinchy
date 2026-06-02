@@ -1,0 +1,28 @@
+diff --git a/dist/primitives/composer/ComposerInput.js b/dist/primitives/composer/ComposerInput.js
+index fbd17d750fcb580328131c4daccc451e5e70fb23..1efca2824357df82346027d5473f2ead5f3146ca 100644
+--- a/dist/primitives/composer/ComposerInput.js
++++ b/dist/primitives/composer/ComposerInput.js
+@@ -156,10 +156,22 @@ const ComposerPrimitiveInput = forwardRef(({ autoFocus = false, asChild, render,
+ 			const nativeIsComposing = e.nativeEvent.isComposing === true;
+ 			if (compositionRef.current && !nativeIsComposing) compositionRef.current = false;
+ 			const isComposing = nativeIsComposing || compositionRef.current;
++			// Pinchy patch: the isComposing guard MUST precede setText. The
++			// composer textarea is controlled (value = composer.text); calling
++			// setText during an active IME composition writes the controlled
++			// value back into the DOM mid-composition, which aborts the
++			// browser's composition session and freezes the input on dead-key
++			// entry (´+e -> é, etc.). Upstream 0.14.x calls setText first; this
++			// restores the safe 0.12.x ordering while keeping 0.14's stale-ref
++			// recovery (the line above) so dead keys that never emit
++			// compositionend still sync. Remove once fixed upstream; the
++			// regression is guarded by composer-ime-composition.test.tsx, which
++			// renders this real primitive and asserts text is not mutated mid
++			// composition.
++			if (isComposing) return;
+ 			flushResourcesSync(() => {
+ 				aui.composer().setText(e.target.value);
+ 			});
+-			if (isComposing) return;
+ 			const pos = e.target.selectionStart ?? e.target.value.length;
+ 			if (pluginRegistry) for (const plugin of pluginRegistry.getPlugins()) plugin.setCursorPosition(pos);
+ 		}),
