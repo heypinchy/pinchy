@@ -337,6 +337,33 @@ describe("POST /api/invite/claim (integration)", () => {
     expect(invite?.claimedByUserId).toBe(targetId);
   });
 
+  it("never overwrites the existing display name on reset, even if a name is sent", async () => {
+    // Guardrail for #436: the reset flow must never touch users.name. The UI
+    // hides the name field, but a crafted POST that still carries `name` must
+    // not silently overwrite the user's display name (data loss on a
+    // security-sensitive flow).
+    const adminId = await seedAdmin();
+    await auth.api.signUpEmail({
+      body: { name: "Original Name", email: "keepname@test.local", password: "originalpassword1" },
+    });
+    const { token } = await createInvite({
+      email: "keepname@test.local",
+      role: "member",
+      type: "reset",
+      createdBy: adminId,
+    });
+
+    const response = await POST(
+      makeRequest({ token, name: "Hijacked Name", password: "newpassword123" })
+    );
+    expect(response.status).toBe(200);
+
+    const user = await db.query.users.findFirst({
+      where: eq(users.email, "keepname@test.local"),
+    });
+    expect(user?.name).toBe("Original Name");
+  });
+
   it("does NOT seed a personal agent or regenerate config on reset", async () => {
     const adminId = await seedAdmin();
     await auth.api.signUpEmail({

@@ -113,6 +113,8 @@ If a user forgets their password, an admin can generate a reset link:
 3. A reset link appears. Copy it and share it with the user.
 4. The user opens the link, enters a new password, and regains access.
 
+The reset page is dedicated to recovery: it reads **"Reset your Pinchy password"** and asks only for a new password and confirmation. Unlike the invite page, it does **not** ask for a display name, so a reset can never change the user's existing name.
+
 Reset links follow the same rules as invite tokens: valid for 7 days, single-use.
 
 When a reset completes:
