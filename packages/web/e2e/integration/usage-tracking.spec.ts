@@ -113,7 +113,10 @@ test.describe("Usage tracking — chat → OpenClaw → poller → usage_records
     const before = await chatUsageTotals(agentId);
 
     await sendChat(page, "Hello, are you there?");
-    await expect(page.getByText(FAKE_OLLAMA_RESPONSE)).toBeVisible({ timeout: 30000 });
+    // The Smithers session is shared across the integration run, so prior
+    // specs' identical replies are already rendered — match the newest one to
+    // avoid a strict-mode multiple-match.
+    await expect(page.getByText(FAKE_OLLAMA_RESPONSE).last()).toBeVisible({ timeout: 30000 });
 
     // The poller (every 2s) records the delta from this turn. A turn always
     // produces a strictly positive delta on both axes (the fake scales both

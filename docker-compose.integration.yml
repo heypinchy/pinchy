@@ -45,10 +45,14 @@ services:
       # triage the Domain Lock integration test failures on PR #442 (runs
       # 26506915089 + 26510486357). Gated so production logs stay clean.
       - PINCHY_E2E_CHAT_TRACE=1
-      # Poll usage every 2s instead of the 60s default so the usage-tracking
+      # Poll usage every 10s instead of the 60s default so the usage-tracking
       # Tier-2 spec (e2e/integration/usage-tracking.spec.ts) sees usage_records
-      # rows land within the test window instead of waiting a full minute.
-      - PINCHY_USAGE_POLL_INTERVAL_MS=2000
+      # rows land within its 40s delta-wait windows. Kept as high as the spec
+      # tolerates (not 2s) to minimise extra sessions.list() load on the shared
+      # OpenClaw across the whole integration run — other specs here are
+      # sensitive to OpenClaw session timing (the #448 Domain Lock + diagnostics
+      # resume-race flakes), and a hot poll loop is an unnecessary perturbation.
+      - PINCHY_USAGE_POLL_INTERVAL_MS=10000
     extra_hosts:
       # Pinchy probes ollama_local_url from regenerateOpenClawConfig(); when the
       # URL points at the host-side fake Ollama via host.docker.internal it must
