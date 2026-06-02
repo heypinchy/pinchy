@@ -34,6 +34,7 @@ import {
   writeWorkspaceFileInternal,
   generateIdentityContent,
   writeIdentityFile,
+  getAgentBootstrapSizes,
 } from "@/lib/workspace";
 
 const mockedWriteFileSync = vi.mocked(writeFileSync);
@@ -503,5 +504,60 @@ describe("writeWorkspaceFileInternal", () => {
 
   it("should reject empty agentId", () => {
     expect(() => writeWorkspaceFileInternal("", "USER.md", "content")).toThrow("Invalid agentId: ");
+  });
+});
+
+// Issue #373: sizing the agent's on-disk bootstrap files so build.ts can emit
+// per-agent bootstrapMaxChars and avoid OpenClaw truncating injected instructions.
+describe("getAgentBootstrapSizes", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  function mockFiles(files: Record<string, string>) {
+    mockedExistsSync.mockImplementation((p) =>
+      Object.keys(files).some((name) => String(p).endsWith(`/${name}`))
+    );
+    mockedReadFileSync.mockImplementation((p) => {
+      const match = Object.entries(files).find(([name]) => String(p).endsWith(`/${name}`));
+      return match ? match[1] : "";
+    });
+  }
+
+  it("returns the trimmed char length of each present bootstrap file", () => {
+    mockFiles({ "AGENTS.md": "a".repeat(20_000), "SOUL.md": "soul body\n\n  " });
+
+    const sizes = getAgentBootstrapSizes("agent-1");
+
+    expect(sizes).toContain(20_000);
+    expect(sizes).toContain("soul body".length); // trailing whitespace trimmed
+    expect(sizes).toHaveLength(2);
+  });
+
+  it("skips bootstrap files that do not exist", () => {
+    mockFiles({ "AGENTS.md": "instructions" });
+
+    const sizes = getAgentBootstrapSizes("agent-2");
+
+    expect(sizes).toEqual(["instructions".length]);
+  });
+
+  it("returns an empty array when no bootstrap files exist", () => {
+    mockedExistsSync.mockReturnValue(false);
+
+    expect(getAgentBootstrapSizes("agent-3")).toEqual([]);
+  });
+
+  it("ignores empty files and non-string reads", () => {
+    mockedExistsSync.mockReturnValue(true);
+    mockedReadFileSync.mockImplementation((p) =>
+      String(p).endsWith("/AGENTS.md") ? "real" : ("" as unknown as string)
+    );
+
+    expect(getAgentBootstrapSizes("agent-4")).toEqual(["real".length]);
+  });
+
+  it("rejects invalid agentId with path traversal", () => {
+    expect(() => getAgentBootstrapSizes("../evil")).toThrow("Invalid agentId: ../evil");
   });
 });

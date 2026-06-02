@@ -161,6 +161,50 @@ export function writeWorkspaceFileInternal(
   writeFileSync(join(workspacePath, filename), content, "utf-8");
 }
 
+// The files OpenClaw loads as prompt-bootstrap context for an agent
+// (loadWorkspaceBootstrapFiles in openclaw@2026.5.x). Each is subject to the
+// per-file `bootstrapMaxChars` cap and the shared `bootstrapTotalMaxChars`
+// budget. Pinchy writes AGENTS.md/SOUL.md/IDENTITY.md/USER.md; the rest are
+// included so the sizing stays correct if a fork or future feature adds them.
+const BOOTSTRAP_FILENAMES = [
+  "AGENTS.md",
+  "SOUL.md",
+  "TOOLS.md",
+  "IDENTITY.md",
+  "USER.md",
+  "HEARTBEAT.md",
+  "BOOTSTRAP.md",
+] as const;
+
+/**
+ * Character sizes of the agent's on-disk bootstrap files (Issue #373). Used by
+ * build.ts to emit a per-agent `bootstrapMaxChars` large enough that OpenClaw
+ * injects the agent's instructions in full instead of truncating them. Sizes are
+ * trimmed char lengths to match OpenClaw's own `content.trimEnd().length`
+ * measurement. Missing or empty files are skipped.
+ */
+export function getAgentBootstrapSizes(agentId: string): number[] {
+  assertValidAgentId(agentId);
+  const workspacePath = getWorkspacePath(agentId);
+  const sizes: number[] = [];
+
+  for (const name of BOOTSTRAP_FILENAMES) {
+    const filePath = join(workspacePath, name);
+    if (!existsSync(filePath)) continue;
+    let content: unknown;
+    try {
+      content = readFileSync(filePath, "utf-8");
+    } catch {
+      continue;
+    }
+    if (typeof content !== "string") continue;
+    const length = content.trimEnd().length;
+    if (length > 0) sizes.push(length);
+  }
+
+  return sizes;
+}
+
 export function generateIdentityContent(agent: { name: string; tagline: string | null }): string {
   const lines = [`# ${agent.name}`];
   if (agent.tagline) lines.push(`> ${agent.tagline}`);

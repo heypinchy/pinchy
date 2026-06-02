@@ -22,7 +22,8 @@ import {
   type OllamaCloudModelId,
 } from "@/lib/ollama-cloud-models";
 import { getModelCatalogForProvider } from "@/lib/openclaw-builtin-models";
-import { getOpenClawWorkspacePath } from "@/lib/workspace";
+import { getOpenClawWorkspacePath, getAgentBootstrapSizes } from "@/lib/workspace";
+import { resolveBootstrapCaps } from "./bootstrap-caps";
 import { CONFIG_PATH, OPENCLAW_CONTROL_UI_ALLOWED_ORIGINS } from "./paths";
 import { configsAreEquivalentUpToOpenClawMetadata } from "./normalize";
 import { readExistingConfig, pushConfigInBackground } from "./write";
@@ -462,6 +463,27 @@ export async function regenerateOpenClawConfig() {
       // agents.defaults) to avoid hot-reload races with Telegram (openclaw#47458).
       heartbeat: { every: "0m" },
     };
+
+    // Issue #373: size the per-agent bootstrap caps to the agent's on-disk
+    // instruction files. OpenClaw's prompt bootstrap caps each embedded file at
+    // 12k chars (60k total) and replaces the overflow with a "…truncated…"
+    // marker — which both starves the model of the tail of its own AGENTS.md and
+    // leaks the marker into output when the agent reproduces its instructions.
+    // The per-agent override is checked before agents.defaults, so it avoids the
+    // agents.defaults hot-reload race (openclaw#47458). Only emitted when the
+    // files actually exceed OpenClaw's defaults.
+    const bootstrapCaps = resolveBootstrapCaps(getAgentBootstrapSizes(agent.id));
+    if (bootstrapCaps.bootstrapMaxChars !== undefined) {
+      agentEntry.bootstrapMaxChars = bootstrapCaps.bootstrapMaxChars;
+    }
+    if (bootstrapCaps.bootstrapTotalMaxChars !== undefined) {
+      agentEntry.bootstrapTotalMaxChars = bootstrapCaps.bootstrapTotalMaxChars;
+    }
+    if (bootstrapCaps.oversized) {
+      console.warn(
+        `[openclaw-config] Agent ${agent.name} (${agent.id}) has bootstrap instruction files larger than the protective ceiling; OpenClaw will still truncate them and the agent may not see all of its AGENTS.md. Consider splitting the instructions or moving reference material into a knowledge base.`
+      );
+    }
 
     // Compute denied tool groups from allowed tools
     const allowedTools = (agent.allowedTools as string[]) || [];
