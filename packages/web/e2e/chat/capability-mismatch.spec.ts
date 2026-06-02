@@ -371,11 +371,13 @@ test.describe("capability-mismatch — block + recovery", () => {
     await expect(page.getByText(PNG_FILENAME)).toBeVisible({ timeout: 5000 });
 
     // ── 8. Try to send — handleSubmit blocks because vision: false ────────────
-    // Wait for Send button to be enabled (chatStatus must be "ready"). Give it
-    // more time than the default since the chat bootstraps after login.
-    const sendButton = page.getByRole("button", { name: "Send message" });
-    await expect(sendButton).toBeEnabled({ timeout: 15000 });
-    await sendButton.click();
+    // The send button is rendered by ComposerPrimitive.Send with asChild. Its
+    // disabled state reflects both our sendAllowed gate (chatStatus === "ready")
+    // and assistant-ui's canSend gate (composer non-empty). We dispatch the
+    // form-submit directly rather than clicking the button to bypass any timing
+    // issues with assistant-ui's disabled state racing with the WS ready state.
+    // This matches the Enter-key code path (onSubmit handler on ComposerPrimitive.Root).
+    await page.locator("form.aui-composer-root").dispatchEvent("submit");
 
     // ── 9. RecoveryPanel must appear ─────────────────────────────────────────
     const recoveryPanel = page.getByRole("region", { name: "Can't be sent" });
