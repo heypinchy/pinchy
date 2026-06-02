@@ -25,8 +25,19 @@ export type AppleDevice = {
 };
 
 export const DEVICES: readonly AppleDevice[] = [
-  // iPhones — keep current top-3 form factors; old iPhones (X/11/12/13/14/15/16)
-  // share the iPhone 17's 393×852 logical size, so a single asset covers them all.
+  // iPhones — coverage by logical size. iOS picks the splash whose media query
+  // matches the device's logical dimensions exactly; mismatches fall back to a
+  // blank white splash, so we list every common logical size in active use.
+  //
+  // Coverage map (logical CSS pixels → covered models):
+  //   - 440×956 → iPhone 16/17 Pro Max
+  //   - 430×932 → iPhone 14/15/16/17 Plus and iPhone 15 Pro Max
+  //   - 402×874 → iPhone 16/17 Pro
+  //   - 393×852 → iPhone 16/17 standard
+  //   - 390×844 → iPhone 12/13/14/15 and their Pro variants
+  //
+  // Not covered (niche or end-of-life): iPhone X/XS/11 Pro / 12-13 mini (375×812),
+  // iPhone XR/11 (414×896 @2x). Add entries if user demand surfaces.
   {
     slug: "iphone-17-pro-max",
     family: "iphone",
@@ -34,6 +45,15 @@ export const DEVICES: readonly AppleDevice[] = [
     logicalHeight: 956,
     physicalWidth: 1320,
     physicalHeight: 2868,
+    pixelRatio: 3,
+  },
+  {
+    slug: "iphone-17-plus",
+    family: "iphone",
+    logicalWidth: 430,
+    logicalHeight: 932,
+    physicalWidth: 1290,
+    physicalHeight: 2796,
     pixelRatio: 3,
   },
   {
@@ -52,6 +72,15 @@ export const DEVICES: readonly AppleDevice[] = [
     logicalHeight: 852,
     physicalWidth: 1179,
     physicalHeight: 2556,
+    pixelRatio: 3,
+  },
+  {
+    slug: "iphone-12-to-15",
+    family: "iphone",
+    logicalWidth: 390,
+    logicalHeight: 844,
+    physicalWidth: 1170,
+    physicalHeight: 2532,
     pixelRatio: 3,
   },
   // iPads — Pro 11" covers the common iPad Air 11" too.

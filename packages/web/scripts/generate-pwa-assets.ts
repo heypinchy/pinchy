@@ -59,6 +59,12 @@ async function generateMaskableIcon() {
 }
 
 async function main() {
+  if (!existsSync(SOURCE_LOGO)) {
+    throw new Error(
+      `Source logo not found: ${SOURCE_LOGO}\n` +
+        `The PWA asset generator reads this file as the input for splash screens and the maskable icon.`
+    );
+  }
   await ensureDirs();
   console.log(`Generating splash screens (${DEVICES.length} devices × 2 orientations):`);
   for (const device of DEVICES) {
