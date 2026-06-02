@@ -19,6 +19,7 @@ import { StatusBadge } from "@/components/status-badge";
 import { toast } from "sonner";
 import { mergeUserList, type UserListItem, type UserGroup } from "@/lib/user-list";
 import { useCopyToClipboard } from "@/hooks/use-copy-to-clipboard";
+import { buildInviteUrl } from "@/lib/invite-url";
 import { cn } from "@/lib/utils";
 
 interface SettingsUsersProps {
@@ -149,7 +150,7 @@ export function SettingsUsers({ currentUserId, refreshKey }: SettingsUsersProps)
     });
     if (res.ok) {
       const data = await res.json();
-      setResetLink(`${window.location.origin}/invite/${data.token}`);
+      setResetLink(buildInviteUrl(window.location.origin, data.token));
     }
     fetchUsers();
   }

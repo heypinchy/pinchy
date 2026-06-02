@@ -33,6 +33,7 @@ import { StatusBadge } from "@/components/status-badge";
 import { toast } from "sonner";
 import type { UserListItem, UserGroup } from "@/lib/user-list";
 import { useCopyToClipboard } from "@/hooks/use-copy-to-clipboard";
+import { buildInviteUrl } from "@/lib/invite-url";
 
 interface UserDetailSheetProps {
   user: UserListItem & { kind: "user" };
@@ -139,7 +140,7 @@ export function UserDetailSheet({
     const res = await fetch(`/api/users/${user.id}/reset`, { method: "POST" });
     if (res.ok) {
       const data = await res.json();
-      setResetLink(`${window.location.origin}/invite/${data.token}`);
+      setResetLink(buildInviteUrl(window.location.origin, data.token));
     } else {
       toast.error("Failed to reset password");
     }

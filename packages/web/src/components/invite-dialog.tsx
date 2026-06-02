@@ -2,6 +2,7 @@
 
 import { useState, useEffect } from "react";
 import { useCopyToClipboard } from "@/hooks/use-copy-to-clipboard";
+import { buildInviteUrl } from "@/lib/invite-url";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
@@ -104,7 +105,7 @@ export function InviteDialog({ open, onOpenChange }: InviteDialogProps) {
       });
       if (res.ok) {
         const data = await res.json();
-        setInviteLink(`${window.location.origin}/invite/${data.token}`);
+        setInviteLink(buildInviteUrl(window.location.origin, data.token));
       } else {
         const data = await res.json();
         setError(data.error || "Failed to create invite");
