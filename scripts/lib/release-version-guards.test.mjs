@@ -1,8 +1,8 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import { join, dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { splitWorkflowIntoJobs } from "./workflow-jobs.mjs";
 
 // Wiring guard for issue #438: a unit-tested version-match function and an
 // /api/version smoke check only protect a release if release.yml actually
@@ -12,39 +12,6 @@ import { fileURLToPath } from "node:url";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..");
 const RELEASE_YML = join(ROOT, ".github", "workflows", "release.yml");
-
-// Splits release.yml into per-job text blocks: { jobName, body }. Jobs are
-// 2-space-indented top-level keys under the `jobs:` line; a job's body runs
-// from its header up to (but not including) the next sibling job header.
-function splitWorkflowIntoJobs(workflowPath) {
-  const lines = readFileSync(workflowPath, "utf8").split("\n");
-  let inJobs = false;
-  let jobName = null;
-  let jobStart = -1;
-  const jobs = [];
-
-  for (let i = 0; i < lines.length; i++) {
-    const line = lines[i];
-    if (/^jobs:\s*$/.test(line)) {
-      inJobs = true;
-      continue;
-    }
-    if (!inJobs) continue;
-
-    const jobMatch = /^ {2}([A-Za-z0-9_-]+):\s*$/.exec(line);
-    if (jobMatch) {
-      if (jobName !== null) {
-        jobs.push({ jobName, body: lines.slice(jobStart, i).join("\n") });
-      }
-      jobName = jobMatch[1];
-      jobStart = i;
-    }
-  }
-  if (jobName !== null) {
-    jobs.push({ jobName, body: lines.slice(jobStart).join("\n") });
-  }
-  return jobs;
-}
 
 function jobBody(name) {
   const job = splitWorkflowIntoJobs(RELEASE_YML).find((j) => j.jobName === name);

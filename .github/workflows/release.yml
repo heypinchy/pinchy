@@ -189,7 +189,14 @@ jobs:
         working-directory: ${{ steps.install-dir.outputs.path }}
         run: |
           EXPECTED="${RELEASE_TAG#v}"
-          REPORTED=$(curl -sf http://localhost:7777/api/version | jq -r '.pinchyVersion')
+          # Capture curl separately so a non-responding endpoint produces a
+          # clear message instead of an opaque pipefail abort mid-step.
+          if ! RESPONSE=$(curl -sf http://localhost:7777/api/version); then
+            echo "::error::/api/version did not respond on the published stack."
+            docker compose logs --tail=20 pinchy
+            exit 1
+          fi
+          REPORTED=$(echo "$RESPONSE" | jq -r '.pinchyVersion')
           echo "Reported pinchyVersion: '$REPORTED' (expected '$EXPECTED')"
           if [ "$REPORTED" != "$EXPECTED" ]; then
             echo "::error::/api/version reports '$REPORTED' but release is ${RELEASE_TAG}. The release was likely cut without 'pnpm release', leaving package.json#version stale."

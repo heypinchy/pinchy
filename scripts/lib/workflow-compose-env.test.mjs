@@ -1,8 +1,9 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { readdirSync, readFileSync } from "node:fs";
+import { readdirSync } from "node:fs";
 import { join, dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { splitWorkflowIntoJobs } from "./workflow-jobs.mjs";
 
 // Regression guard for the failed v0.5.0 release: the screenshots.yml
 // workflow ran `docker compose up -d` without setting PINCHY_VERSION,
@@ -34,50 +35,6 @@ function listWorkflows() {
   return readdirSync(WORKFLOW_DIR)
     .filter((f) => f.endsWith(".yml") || f.endsWith(".yaml"))
     .map((f) => join(WORKFLOW_DIR, f));
-}
-
-// Splits a workflow file into per-job text blocks. Returns
-// { jobName, body } pairs. Jobs are detected as 2-space-indented top-level
-// keys under the `jobs:` line. Body is the raw text from the job header
-// up to (but not including) the next sibling job header.
-function splitWorkflowIntoJobs(workflowPath) {
-  const text = readFileSync(workflowPath, "utf8");
-  const lines = text.split("\n");
-
-  let inJobs = false;
-  let jobName = null;
-  let jobStart = -1;
-  const jobs = [];
-
-  for (let i = 0; i < lines.length; i++) {
-    const line = lines[i];
-    if (/^jobs:\s*$/.test(line)) {
-      inJobs = true;
-      continue;
-    }
-    if (!inJobs) continue;
-
-    const jobMatch = /^ {2}([A-Za-z0-9_-]+):\s*$/.exec(line);
-    if (jobMatch) {
-      if (jobName !== null) {
-        jobs.push({
-          jobName,
-          body: lines.slice(jobStart, i).join("\n"),
-          path: workflowPath,
-        });
-      }
-      jobName = jobMatch[1];
-      jobStart = i;
-    }
-  }
-  if (jobName !== null) {
-    jobs.push({
-      jobName,
-      body: lines.slice(jobStart).join("\n"),
-      path: workflowPath,
-    });
-  }
-  return jobs;
 }
 
 function jobInvokesCompose(job) {
