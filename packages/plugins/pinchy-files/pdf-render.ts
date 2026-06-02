@@ -1,14 +1,9 @@
 import { createCanvas } from "@napi-rs/canvas";
+import type { PDFPageProxy } from "pdfjs-dist/legacy/build/pdf.mjs";
 
 const MAX_PIXELS = 4_000_000; // 4M pixel budget
 
-export async function renderPageToImage(page: {
-  getViewport: (opts: { scale: number }) => { width: number; height: number };
-  render: (opts: {
-    canvasContext: unknown;
-    viewport: { width: number; height: number };
-  }) => { promise: Promise<void> };
-}): Promise<Buffer> {
+export async function renderPageToImage(page: PDFPageProxy): Promise<Buffer> {
   const viewport = page.getViewport({ scale: 1.0 });
 
   const pixels = viewport.width * viewport.height;
@@ -21,7 +16,11 @@ export async function renderPageToImage(page: {
   const ctx = canvas.getContext("2d");
 
   await page.render({
-    canvasContext: ctx as unknown,
+    // @napi-rs/canvas produces a Node canvas, not a DOM HTMLCanvasElement;
+    // pdfjs only needs the 2D context here, so hand it the same canvas it
+    // would otherwise auto-derive from canvasContext.
+    canvas: canvas as unknown as HTMLCanvasElement,
+    canvasContext: ctx as unknown as CanvasRenderingContext2D,
     viewport: scaledViewport,
   }).promise;
 

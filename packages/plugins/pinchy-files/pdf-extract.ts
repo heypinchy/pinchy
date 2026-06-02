@@ -117,8 +117,8 @@ export async function extractPdfText(
     // Extract text
     const textContent = await page.getTextContent();
     const text = textContent.items
-      .filter((item: { str?: string }) => "str" in item)
-      .map((item: { str?: string }) => item.str)
+      .filter((item): item is typeof item & { str: string } => "str" in item)
+      .map((item) => item.str)
       .join(" ")
       .replace(/\s+/g, " ")
       .trim();
