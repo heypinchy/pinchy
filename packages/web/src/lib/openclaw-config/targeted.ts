@@ -332,7 +332,7 @@ export function seedRestartClassOverridesIfMissing(): boolean {
   // OpenClaw seeds controlUi.allowedOrigins in memory only (never persisted),
   // so an on-disk config that lacks it makes every later regenerate drop the
   // field and trigger a restart-class diff. Seed it up front. See
-  // OPENCLAW_CONTROL_UI_ALLOWED_ORIGINS in build.ts for the full rationale.
+  // OPENCLAW_CONTROL_UI_ALLOWED_ORIGINS in paths.ts for the full rationale.
   const needsAllowedOrigins = !Array.isArray(controlUi.allowedOrigins);
   const needsMdnsOff = mdns.mode !== "off";
   const needsUpdateCheck = update.checkOnStart !== false;

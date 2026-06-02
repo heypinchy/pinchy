@@ -71,9 +71,9 @@ const BUILTIN_PROVIDER_BASE_URL_ENV_VARS: Record<"anthropic" | "openai" | "googl
   google: "GOOGLE_BASE_URL",
 };
 
-// OC's canonical transport `api` per built-in provider. We emit this
-// explicitly so the generated openclaw.json is self-describing and never
-// depends on OpenClaw's implicit api inference.
+// OC's transport `api` per built-in provider. We emit this explicitly so the
+// generated openclaw.json is self-describing and never depends on OpenClaw's
+// implicit api inference.
 //
 // OpenClaw 2026.5.28 changed `resolveConfiguredProviderDefaultApi`: a provider
 // with a `baseUrl` and no explicit `api` now falls back to "openai-completions"
@@ -82,11 +82,18 @@ const BUILTIN_PROVIDER_BASE_URL_ENV_VARS: Record<"anthropic" | "openai" | "googl
 // the native Gemini `:generateContent`, so chat failed with a FailoverError
 // ("provider returned an HTML error page"). anthropic/openai only kept working
 // because their model ids still matched OC's catalog discovery, which is the
-// same latent fragility. Values mirror OpenClaw's static provider catalog
-// (extensions/{google,...}/provider-catalog.ts).
+// same latent fragility.
+//
+// `openai` uses the Chat Completions API (`openai-completions`), NOT the newer
+// Responses API (`openai-responses`) that OC's own catalog defaults to. Reason:
+// the built-in `openai` provider accepts an `OPENAI_BASE_URL` override for
+// OpenAI-compatible proxy customers (vLLM, LiteLLM, gateways), and those
+// proxies broadly implement `/v1/chat/completions` but frequently NOT
+// `/v1/responses`. Chat Completions is the maximally-compatible surface and
+// fully covers Pinchy's chat + tools + vision needs against real OpenAI too.
 const BUILTIN_PROVIDER_API: Record<"anthropic" | "openai" | "google", string> = {
   anthropic: "anthropic-messages",
-  openai: "openai-responses",
+  openai: "openai-completions",
   google: "google-generative-ai",
 };
 
@@ -393,12 +400,12 @@ export async function regenerateOpenClawConfig() {
       enabled: false,
       // Always emit allowedOrigins so OC's reload diff never sees this
       // restart-class field appear/disappear. Preserve OC's enriched value if
-      // the config already carries one (a prior config.apply persisted it);
-      // otherwise seed the same origins OC would. See
-      // OPENCLAW_CONTROL_UI_ALLOWED_ORIGINS for the full rationale.
-      allowedOrigins:
-        (existingControlUi.allowedOrigins as string[] | undefined) ??
-        OPENCLAW_CONTROL_UI_ALLOWED_ORIGINS,
+      // the config already carries a valid array (a prior config.apply
+      // persisted it); otherwise seed the same origins OC would. See
+      // OPENCLAW_CONTROL_UI_ALLOWED_ORIGINS in paths.ts for the full rationale.
+      allowedOrigins: Array.isArray(existingControlUi.allowedOrigins)
+        ? existingControlUi.allowedOrigins
+        : OPENCLAW_CONTROL_UI_ALLOWED_ORIGINS,
     },
   };
 
