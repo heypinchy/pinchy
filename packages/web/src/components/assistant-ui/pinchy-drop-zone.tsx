@@ -41,6 +41,16 @@ export const PinchyDropZone: FC<PropsWithChildren<{ className?: string }>> = ({
       onDragLeave={() => {
         setIsDragging(false);
       }}
+      // Belt-and-suspenders: dragleave can be missed when the user drags out
+      // of the window, switches tabs mid-drag, or releases over a child that
+      // stopPropagation()s its own dragend. dragend fires on the *source*
+      // element after every drag (success or cancel), so listening for it on
+      // the drop zone catches any source-side drag that ended while we still
+      // had the dashed-border state set. Without this fallback the styling
+      // can linger until the next dragenter.
+      onDragEnd={() => {
+        setIsDragging(false);
+      }}
       onDrop={(e) => {
         e.preventDefault();
         setIsDragging(false);

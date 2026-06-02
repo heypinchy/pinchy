@@ -31,3 +31,35 @@ export function mimeFromFilename(filename: string): string | undefined {
   if (dot < 0) return undefined;
   return EXTENSION_TO_MIME[lower.slice(dot)];
 }
+
+/**
+ * `<input accept>` value for the chat composer's file picker. Lists both MIME
+ * types and file extensions so browsers that don't infer extension→MIME
+ * (Safari historically lags) still match. `image/*` covers the image
+ * allowlist as a glob — narrower would block heic/heif on browsers that
+ * report odd MIMEs. The drift guard in
+ * `__tests__/lib/attachment-accept-attribute.test.ts` asserts every MIME in
+ * `ALLOWED_ATTACHMENT_MIMES` ∪ `ALLOWED_TEXT_MIMES` is reachable through
+ * this string, so server allowlist changes can't silently desync from the
+ * picker.
+ */
+export const INPUT_ACCEPT_ATTRIBUTE = [
+  // Images — covered by the glob so heic/heif don't need explicit entries.
+  "image/*",
+  // PDFs.
+  "application/pdf",
+  // Text formats — list both MIME and extension because some browsers report
+  // empty File.type for these.
+  "text/csv",
+  ".csv",
+  "text/plain",
+  ".txt",
+  "text/markdown",
+  ".md",
+  ".markdown",
+  "application/json",
+  ".json",
+  "text/yaml",
+  ".yaml",
+  ".yml",
+].join(",");
