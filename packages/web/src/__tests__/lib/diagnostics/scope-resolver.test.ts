@@ -80,5 +80,25 @@ describe("computeScope", () => {
       expect(scope.anchorTurnIndex).toBeNull();
       expect(scope.includedTurnRange).toEqual([5, 14]);
     });
+
+    it("falls back to no-anchor for an opaque message id that merely starts with digits", () => {
+      // assistant-ui message ids are opaque strings; some happen to start with
+      // a digit (e.g. "7f3a2b9c"). parseInt would read the leading 7 and wrongly
+      // anchor turn 7. A turn index is an ALL-digits string; anything else must
+      // fall back. Without the guard this is non-deterministic — it only
+      // misfires when the random id starts with an in-range digit — which is the
+      // root cause of the flaky diagnostics-export E2E (#461 CI).
+      const turns = makeTurns(15);
+      const scope = computeScope(turns, "7f3a2b9c", 10);
+      expect(scope.anchorTurnIndex).toBeNull();
+      expect(scope.includedTurnRange).toEqual([5, 14]);
+    });
+
+    it("falls back to no-anchor for an opaque id starting with an in-range zero", () => {
+      const turns = makeTurns(15);
+      const scope = computeScope(turns, "0abc-def", 10);
+      expect(scope.anchorTurnIndex).toBeNull();
+      expect(scope.includedTurnRange).toEqual([5, 14]);
+    });
   });
 });
