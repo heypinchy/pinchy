@@ -54,7 +54,7 @@ export const RetryContinueContext = createContext<
   (reason: "orphan" | "partial_stream_failure" | "send_failure") => void
 >(() => {});
 export const PendingUploadsContext = createContext<PendingUpload[]>([]);
-export const AddPendingUploadContext = createContext<(file: File) => Promise<void>>(async () => {});
+export const AddPendingUploadContext = createContext<(file: File) => void>(() => {});
 export const RemovePendingUploadContext = createContext<(localId: string) => void>(() => {});
 export const RetryPendingUploadContext = createContext<(localId: string) => void>(() => {});
 
@@ -153,7 +153,7 @@ export function Chat({
         onRetryResend: () => {},
         lastError: null,
         pendingUploads: [],
-        addPendingUpload: async () => {},
+        addPendingUpload: () => {},
         removePendingUpload: () => {},
         retryPendingUpload: () => {},
       });
@@ -179,7 +179,7 @@ export function Chat({
   const onRetryContinue = chatBundle?.onRetryContinue ?? (() => {});
   const onRetryResend = chatBundle?.onRetryResend ?? (() => {});
   const pendingUploads = chatBundle?.pendingUploads ?? [];
-  const addPendingUpload = chatBundle?.addPendingUpload ?? (async () => {});
+  const addPendingUpload = chatBundle?.addPendingUpload ?? (() => {});
   const removePendingUpload = chatBundle?.removePendingUpload ?? (() => {});
   const retryPendingUpload = chatBundle?.retryPendingUpload ?? (() => {});
 

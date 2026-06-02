@@ -395,7 +395,7 @@ export function useWsRuntime(agentId: string): {
   onRetryContinue: (reason: "orphan" | "partial_stream_failure" | "send_failure") => void;
   onRetryResend: (messageId: string) => void;
   pendingUploads: PendingUpload[];
-  addPendingUpload: (file: File) => Promise<void>;
+  addPendingUpload: (file: File) => void;
   removePendingUpload: (localId: string) => void;
   retryPendingUpload: (localId: string) => void;
 } {
@@ -1524,8 +1524,13 @@ export function useWsRuntime(agentId: string): {
     [agentId, messages, dispatchMessages, sendOrQueue]
   );
 
+  // Fire-and-forget: the upload's outcome is driven entirely through the
+  // `pendingUploads` state machine (uploading → ready / failed). Callers
+  // (PinchyAttachmentButton, PinchyDropZone) iterate over picked files and
+  // never await — so the public signature is `void`, not `Promise<void>`.
+  // All async work lives inside the IIFE below.
   const addPendingUpload = useCallback(
-    async (file: File) => {
+    (file: File): void => {
       const localId = crypto.randomUUID();
       const objectUrl = URL.createObjectURL(file);
 
@@ -1539,40 +1544,41 @@ export function useWsRuntime(agentId: string): {
 
       setPendingUploads((prev) => [...prev, upload]);
 
-      // Images need to be shrunk client-side because OpenClaw silently
-      // converts anything over its 2 MB inline threshold into a text-only
-      // marker that the model can't actually read. PDFs (and any other
-      // non-image MIME) go through untouched — they're served from disk to
-      // the agent's built-in `pdf` tool, not inlined.
-      let fileToUpload = file;
-      if (file.type.startsWith("image/")) {
-        const result = await compressImageForChat(file);
-        if (!result.ok && result.file.size > CLIENT_IMAGE_COMPRESSION_TARGET_BYTES) {
-          URL.revokeObjectURL(objectUrl);
-          setPendingUploads((prev) =>
-            prev.map((u) =>
-              u.localId === localId
-                ? {
-                    ...u,
-                    state: "failed" as const,
-                    objectUrl: "",
-                    error:
-                      "Couldn't process this image format. Please convert it to JPEG, PNG, or WebP and try again.",
-                  }
-                : u
-            )
-          );
-          return;
+      void (async () => {
+        // Images need to be shrunk client-side because OpenClaw silently
+        // converts anything over its 2 MB inline threshold into a text-only
+        // marker that the model can't actually read. PDFs (and any other
+        // non-image MIME) go through untouched — they're served from disk to
+        // the agent's built-in `pdf` tool, not inlined.
+        let fileToUpload = file;
+        if (file.type.startsWith("image/")) {
+          const result = await compressImageForChat(file);
+          if (!result.ok && result.file.size > CLIENT_IMAGE_COMPRESSION_TARGET_BYTES) {
+            URL.revokeObjectURL(objectUrl);
+            setPendingUploads((prev) =>
+              prev.map((u) =>
+                u.localId === localId
+                  ? {
+                      ...u,
+                      state: "failed" as const,
+                      objectUrl: "",
+                      error:
+                        "Couldn't process this image format. Please convert it to JPEG, PNG, or WebP and try again.",
+                    }
+                  : u
+              )
+            );
+            return;
+          }
+          fileToUpload = result.file;
         }
-        fileToUpload = result.file;
-      }
 
-      uploadAttachment(agentId, draftId, fileToUpload, (progress) => {
-        setPendingUploads((prev) =>
-          prev.map((u) => (u.localId === localId ? { ...u, progress } : u))
-        );
-      })
-        .then((response) => {
+        try {
+          const response = await uploadAttachment(agentId, draftId, fileToUpload, (progress) => {
+            setPendingUploads((prev) =>
+              prev.map((u) => (u.localId === localId ? { ...u, progress } : u))
+            );
+          });
           // Keep `objectUrl` alive: the file is only promoted from .staging/
           // to uploads/ on WS send, so a /api/agents/.../uploads/<name> URL
           // would 404 until then. The chip continues to render the blob URL
@@ -1589,8 +1595,7 @@ export function useWsRuntime(agentId: string): {
                 : u
             )
           );
-        })
-        .catch((err: unknown) => {
+        } catch (err: unknown) {
           setPendingUploads((prev) =>
             prev.map((u) =>
               u.localId === localId
@@ -1602,7 +1607,8 @@ export function useWsRuntime(agentId: string): {
                 : u
             )
           );
-        });
+        }
+      })();
     },
     [agentId, draftId] // uploadAttachment is a stable import, not in deps
   );
@@ -1610,7 +1616,8 @@ export function useWsRuntime(agentId: string): {
   const removePendingUpload = useCallback((localId: string) => {
     setPendingUploads((prev) => {
       const upload = prev.find((u) => u.localId === localId);
-      // objectUrl is cleared to "" when upload succeeds — skip revoke for those
+      // The image-compression-failure path clears `objectUrl` to "" to mark
+      // it already-revoked; the truthy check skips re-revoking in that case.
       if (upload?.objectUrl) URL.revokeObjectURL(upload.objectUrl);
       return prev.filter((u) => u.localId !== localId);
     });
