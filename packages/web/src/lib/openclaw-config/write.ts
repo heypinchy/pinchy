@@ -266,6 +266,9 @@ export function pushConfigInBackground(newContent: string): void {
         if (current.config) {
           const parsed = JSON.parse(supplemented) as Record<string, unknown>;
           if (!("meta" in parsed)) {
+            console.log(
+              `[openclaw-config] push gen=${String(generation)}: OC config and file both lack meta → file write (cascade guard; inotify reload)`
+            );
             writeConfigAtomic(newContent);
             return;
           }
