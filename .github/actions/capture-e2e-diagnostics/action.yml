@@ -1,0 +1,87 @@
+name: "Capture E2E diagnostics on failure"
+description: >-
+  Collects full container logs, container state, and OC's live config
+  snapshot into ./e2e-artifacts/, prints a tail to the CI log for quick
+  triage, and uploads the directory plus Playwright's test-results/ as a
+  single named artifact. Designed for the `if: failure()` slot.
+
+  Without this, E2E flakes give zero new information (the previous
+  `tail -50` per service was truncated for tests that fail near the end of
+  the run). With this, every flake produces a downloadable bundle
+  containing Playwright traces, screenshots, and full container logs.
+
+inputs:
+  compose-files:
+    description: >-
+      Space-separated `-f <file>` arguments to apply to `docker compose`,
+      e.g. "-f docker-compose.yml -f docker-compose.e2e.yml -f docker-compose.odoo-test.yml".
+    required: true
+  mock-service:
+    description: >-
+      Mock service name (e.g. "odoo-mock", "brave-mock", "gmail-mock",
+      "telegram-mock", "llm-providers-mock"). Logs are captured per-service
+      so each suite's mock is isolated. Leave empty for suites with no
+      in-stack mock (e.g. integration tests that run fake-Ollama on the host).
+    required: false
+    default: ""
+  artifact-name:
+    description: >-
+      Name for the uploaded artifact. Should include the job slug and the
+      run attempt so re-runs don't collide (e.g. "odoo-e2e").
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - name: Capture container state, logs, and OC config
+      shell: bash
+      env:
+        COMPOSE_FILES_INPUT: ${{ inputs.compose-files }}
+        MOCK_SERVICE: ${{ inputs.mock-service }}
+      run: |
+        set +e
+        mkdir -p e2e-artifacts
+        # shellcheck disable=SC2086
+        # Splitting COMPOSE_FILES_INPUT on whitespace is intentional — each
+        # element is a `-f <file>` pair that docker compose parses as separate
+        # arguments.
+        docker compose $COMPOSE_FILES_INPUT ps --all > e2e-artifacts/container-state.txt 2>&1
+        docker compose $COMPOSE_FILES_INPUT logs --no-color --timestamps pinchy > e2e-artifacts/pinchy.log 2>&1
+        docker compose $COMPOSE_FILES_INPUT logs --no-color --timestamps openclaw > e2e-artifacts/openclaw.log 2>&1
+        docker compose $COMPOSE_FILES_INPUT logs --no-color --timestamps db > e2e-artifacts/postgres.log 2>&1
+        if [ -n "$MOCK_SERVICE" ]; then
+          docker compose $COMPOSE_FILES_INPUT logs --no-color --timestamps "$MOCK_SERVICE" > "e2e-artifacts/${MOCK_SERVICE}.log" 2>&1
+        fi
+        # The OC config Pinchy wrote and OC reloaded against — definitive
+        # answer to "did the agent/tool propagate". `exec -T` falls back to
+        # an empty file if the container is gone, which is fine.
+        docker compose $COMPOSE_FILES_INPUT exec -T pinchy cat /openclaw-config/openclaw.json \
+          > e2e-artifacts/openclaw-config.json 2>/dev/null
+
+        # Quick-glance tails in CI log so a maintainer doesn't always need to
+        # download the artifact for the obvious cases.
+        echo "=== Container state ==="
+        cat e2e-artifacts/container-state.txt
+        echo
+        echo "=== Pinchy logs (last 80 lines) ==="
+        tail -80 e2e-artifacts/pinchy.log
+        echo
+        echo "=== OpenClaw logs (last 120 lines) ==="
+        tail -120 e2e-artifacts/openclaw.log
+        if [ -n "$MOCK_SERVICE" ]; then
+          echo
+          echo "=== ${MOCK_SERVICE} logs (last 60 lines) ==="
+          tail -60 "e2e-artifacts/${MOCK_SERVICE}.log"
+        fi
+
+    - name: Upload diagnostics artifact
+      uses: actions/upload-artifact@v4
+      with:
+        # Include run_attempt so a re-run uploads a fresh artifact instead of
+        # colliding with the previous attempt's bundle.
+        name: ${{ inputs.artifact-name }}-failure-${{ github.run_id }}-${{ github.run_attempt }}
+        path: |
+          packages/web/test-results/
+          e2e-artifacts/
+        if-no-files-found: ignore
+        retention-days: 14

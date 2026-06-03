@@ -15,5 +15,10 @@ export default defineConfig({
   timeout: 120000,
   use: {
     baseURL: process.env.PINCHY_URL || "http://localhost:7777",
+    // Capture diagnostics on failure so flakes surface ground truth rather
+    // than another guessing round. `retain-on-failure` writes the artifact
+    // only when a test fails — zero cost on green runs.
+    trace: "retain-on-failure",
+    screenshot: "only-on-failure",
   },
 });

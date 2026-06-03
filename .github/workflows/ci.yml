@@ -1148,15 +1148,13 @@ jobs:
         env:
           CI: true
 
-      - name: Show logs on failure
+      - name: Capture diagnostics on failure
         if: failure()
-        run: |
-          echo "=== Pinchy logs ==="
-          docker compose -f docker-compose.yml -f docker-compose.e2e.yml -f docker-compose.odoo-test.yml logs pinchy 2>&1 | tail -50
-          echo "=== OpenClaw logs ==="
-          docker compose -f docker-compose.yml -f docker-compose.e2e.yml -f docker-compose.odoo-test.yml logs openclaw 2>&1 | tail -50
-          echo "=== Mock Odoo logs ==="
-          docker compose -f docker-compose.yml -f docker-compose.e2e.yml -f docker-compose.odoo-test.yml logs odoo-mock 2>&1 | tail -30
+        uses: ./.github/actions/capture-e2e-diagnostics
+        with:
+          compose-files: "-f docker-compose.yml -f docker-compose.e2e.yml -f docker-compose.odoo-test.yml"
+          mock-service: "odoo-mock"
+          artifact-name: "odoo-e2e"
 
       - name: Tear down
         if: always()
@@ -1269,15 +1267,13 @@ jobs:
         env:
           CI: true
 
-      - name: Show logs on failure
+      - name: Capture diagnostics on failure
         if: failure()
-        run: |
-          echo "=== Pinchy logs ==="
-          docker compose -f docker-compose.yml -f docker-compose.e2e.yml -f docker-compose.web-test.yml logs pinchy 2>&1 | tail -50
-          echo "=== OpenClaw logs ==="
-          docker compose -f docker-compose.yml -f docker-compose.e2e.yml -f docker-compose.web-test.yml logs openclaw 2>&1 | tail -50
-          echo "=== Mock Brave logs ==="
-          docker compose -f docker-compose.yml -f docker-compose.e2e.yml -f docker-compose.web-test.yml logs brave-mock 2>&1 | tail -30
+        uses: ./.github/actions/capture-e2e-diagnostics
+        with:
+          compose-files: "-f docker-compose.yml -f docker-compose.e2e.yml -f docker-compose.web-test.yml"
+          mock-service: "brave-mock"
+          artifact-name: "web-e2e"
 
       - name: Tear down
         if: always()
@@ -1391,15 +1387,13 @@ jobs:
           CI: true
           ENCRYPTION_KEY: 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
 
-      - name: Show logs on failure
+      - name: Capture diagnostics on failure
         if: failure()
-        run: |
-          echo "=== Pinchy logs ==="
-          docker compose -f docker-compose.yml -f docker-compose.e2e.yml -f docker-compose.email-test.yml logs pinchy 2>&1 | tail -50
-          echo "=== OpenClaw logs ==="
-          docker compose -f docker-compose.yml -f docker-compose.e2e.yml -f docker-compose.email-test.yml logs openclaw 2>&1 | tail -50
-          echo "=== Mock Gmail logs ==="
-          docker compose -f docker-compose.yml -f docker-compose.e2e.yml -f docker-compose.email-test.yml logs gmail-mock 2>&1 | tail -30
+        uses: ./.github/actions/capture-e2e-diagnostics
+        with:
+          compose-files: "-f docker-compose.yml -f docker-compose.e2e.yml -f docker-compose.email-test.yml"
+          mock-service: "gmail-mock"
+          artifact-name: "email-e2e"
 
       - name: Tear down
         if: always()
@@ -1514,15 +1508,13 @@ jobs:
           CI: true
           ENCRYPTION_KEY: 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
 
-      - name: Show logs on failure
+      - name: Capture diagnostics on failure
         if: failure()
-        run: |
-          echo "=== Pinchy logs ==="
-          docker compose $COMPOSE_FILES logs pinchy 2>&1 | tail -200
-          echo "=== OpenClaw logs ==="
-          docker compose $COMPOSE_FILES logs openclaw 2>&1 | tail -200
-          echo "=== Mock LLM providers logs ==="
-          docker compose $COMPOSE_FILES logs llm-providers-mock 2>&1 | tail -100
+        uses: ./.github/actions/capture-e2e-diagnostics
+        with:
+          compose-files: ${{ env.COMPOSE_FILES }}
+          mock-service: "llm-providers-mock"
+          artifact-name: "setup-wizard-e2e"
 
       - name: Tear down
         if: always()
@@ -1689,6 +1681,14 @@ jobs:
           echo "=== Pinchy logs ==="
           docker compose -f docker-compose.yml -f docker-compose.e2e.yml -f docker-compose.test.yml logs pinchy 2>&1 | tail -500
 
+      - name: Capture full diagnostics on failure
+        if: failure()
+        uses: ./.github/actions/capture-e2e-diagnostics
+        with:
+          compose-files: "-f docker-compose.yml -f docker-compose.e2e.yml -f docker-compose.test.yml"
+          mock-service: "telegram-mock"
+          artifact-name: "telegram-e2e"
+
       - name: Tear down
         if: always()
         run: docker compose -f docker-compose.yml -f docker-compose.e2e.yml -f docker-compose.test.yml down -v
@@ -1835,6 +1835,16 @@ jobs:
           echo "=== DB logs ==="
           docker compose -f docker-compose.yml -f docker-compose.e2e.yml \
                          -f docker-compose.integration.yml logs db 2>&1 | tail -50
+
+      - name: Capture full diagnostics on failure
+        if: failure()
+        uses: ./.github/actions/capture-e2e-diagnostics
+        with:
+          compose-files: "-f docker-compose.yml -f docker-compose.e2e.yml -f docker-compose.integration.yml"
+          # Integration suite runs fake-Ollama on the host, not as a compose
+          # service — no mock to capture, the globalTeardown-captured
+          # /tmp/openclaw-integration.log is already shown above.
+          artifact-name: "integration"
 
       - name: Tear down
         if: always()

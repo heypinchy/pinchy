@@ -23,6 +23,11 @@ export default defineConfig({
   grepInvert: process.env.CI ? /@llm|@channel-restart/ : undefined,
   use: {
     baseURL: "http://localhost:7777",
+    // Capture diagnostics on failure so flakes surface ground truth rather
+    // than another guessing round. `retain-on-failure` writes the artifact
+    // only when a test fails — zero cost on green runs.
+    trace: "retain-on-failure",
+    screenshot: "only-on-failure",
   },
   // No webServer — tests run against the Docker Compose stack
   // No globalSetup/teardown — Docker Compose handles lifecycle
