@@ -20,11 +20,23 @@
 // a 114 s gap that a single 500 ms retry could never bridge, surfacing
 // "Smithers couldn't respond" on a brand-new user's first message.
 //
-// `config.get`-based readiness gates (waitForAgentInRuntime, the
-// `agentDispatchable` health probe) CANNOT close this race: they poll the same
-// file-vs-runtime-divergent path. The only reliable readiness signal is a
-// dispatch that actually succeeds — so we retry the real dispatch with
-// exponential backoff until it lands or a wall-clock budget elapses.
+// `config.get`-based readiness gates CANNOT close this race: `config.get` reads
+// the FILE, which leads the applied runtime, so a file-based gate reports
+// "ready" while the dispatch handler still rejects. The reliable signal is OC's
+// `agents.list` RPC (openclaw-node >= 0.12.0): verified against OC 2026.5.28,
+// it reads the SAME `getRuntimeConfig()` view the dispatch handler checks, so
+// once an id appears there a dispatch will not be rejected. We therefore prefer
+// a DETERMINISTIC GATE — poll `agents.list` until the agent is present (the
+// injected `awaitAgentReady` dep, backed by `agent-readiness.ts`) — and only
+// fall back to blind exponential backoff when the gate is absent or
+// unobservable (older Gateway). Either way the loop stays bounded by the
+// wall-clock budget and re-dispatches the real chat once readiness lands.
+//
+// Historical note: before the gate existed this loop relied purely on blind
+// backoff-retry of the real dispatch (the "only a successful dispatch is a
+// reliable signal" era — true while `config.get` was the only introspection
+// openclaw-node wrapped). The gate makes the common case deterministic instead
+// of probabilistic; the backoff retry remains the backstop.
 //
 // Safety: this ONLY retries the literal `unknown agent id` shape, and ONLY
 // when it is the FIRST chunk. For an agent Pinchy just created and confirmed,
@@ -88,6 +100,24 @@ export interface DispatchRetryDeps {
    * loop would be invisible.
    */
   onDispatchRaceObserved?: (info: { providerError: string; attempt: number }) => void;
+  /**
+   * Optional runtime-readiness gate. When provided, on a dispatch-race error the
+   * wrapper awaits this — bounded by the REMAINING budget — INSTEAD of a blind
+   * backoff sleep, then re-dispatches. It should resolve:
+   *   - `true`  → the target agent is now present in OpenClaw's RUNTIME
+   *               `agents.list` (the same view the dispatch handler checks), so
+   *               the next dispatch will land; retry immediately, no sleep.
+   *   - `false` → readiness could not be confirmed within the window (timeout,
+   *               or unobservable on an older Gateway without `agents.list`); the
+   *               wrapper falls back to its capped blind backoff so the bounded
+   *               retry is preserved.
+   *
+   * This turns the blind "sleep and hope" retry into a deterministic gate.
+   * Absent → pure exponential backoff (the original behaviour), which remains
+   * the backstop. See `agent-readiness.ts` for why `agents.list` is reliable
+   * where `config.get` is not.
+   */
+  awaitAgentReady?: (budgetMs: number) => Promise<boolean>;
 }
 
 /**
@@ -154,9 +184,27 @@ export async function* chatWithDispatchRaceRetry(
       return;
     }
 
+    // Deterministic readiness gate (preferred): poll OC's runtime agents.list —
+    // the same view the dispatch handler checks — until the agent is present,
+    // bounded by the remaining budget. On success, re-dispatch immediately into
+    // a ready runtime instead of sleeping a backoff window and hoping.
+    if (deps.awaitAgentReady) {
+      const ready = await deps.awaitAgentReady(remaining);
+      if (ready) continue;
+      // Not confirmed within the window (timeout, or unobservable on an older
+      // Gateway). Fall through to the capped backoff so we keep making bounded
+      // progress rather than hot-looping on a still-unready runtime.
+    }
+
     // Exponential backoff capped at maxDelayMs, and never sleeping past the
-    // remaining budget.
+    // remaining budget. Recompute the budget: a readiness gate above may have
+    // consumed part of it.
+    const remainingAfterGate = maxTotalMs - (now() - start);
+    if (remainingAfterGate <= 0) {
+      yield raceError;
+      return;
+    }
     const backoff = Math.min(baseDelayMs * 2 ** attempt, maxDelayMs);
-    await delay(Math.min(backoff, remaining));
+    await delay(Math.min(backoff, remainingAfterGate));
   }
 }

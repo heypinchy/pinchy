@@ -5,6 +5,7 @@ const {
   mockChat,
   mockSessionsHistory,
   mockSessionsList,
+  mockAgentsList,
   mockFindFirst,
   mockUserFindFirst,
   mockAppendAuditLog,
@@ -18,6 +19,7 @@ const {
   mockChat: vi.fn(),
   mockSessionsHistory: vi.fn(),
   mockSessionsList: vi.fn(),
+  mockAgentsList: vi.fn(),
   mockFindFirst: vi.fn(),
   mockUserFindFirst: vi.fn(),
   mockAppendAuditLog: vi.fn().mockResolvedValue(undefined),
@@ -164,6 +166,11 @@ function createMockOpenClawClient(connected = true) {
   const client = Object.assign(emitter, {
     chat: mockChat,
     sessions: { history: mockSessionsHistory, list: mockSessionsList },
+    // Mirrors openclaw-node >= 0.12.0: the dispatch-race readiness gate calls
+    // hasMethod("agents.list") then agents.list() to confirm the agent is in
+    // OC's runtime before re-dispatching.
+    hasMethod: (method: string) => method === "agents.list",
+    agents: { list: mockAgentsList },
     isConnected: connected,
   });
   return client;
@@ -188,6 +195,9 @@ describe("ClientRouter", () => {
     mockUserFindFirst.mockResolvedValue({ id: "user-1", context: null });
     // Default: empty history for history-mode requests
     mockSessionsHistory.mockResolvedValue({ messages: [] });
+    // Default: the agent is present in OC's runtime agents.list, so the
+    // dispatch-race readiness gate confirms readiness on the first poll.
+    mockAgentsList.mockResolvedValue({ defaultId: "agent-1", agents: [{ id: "agent-1" }] });
   });
 
   it("should return error when agent not found", async () => {
@@ -749,8 +759,9 @@ describe("ClientRouter", () => {
         agentId: "agent-1",
       });
 
-      // Initial thinking + consume the race error (starts the keep-alive) +
-      // drain the 500 ms backoff into the hanging retry attempt.
+      // Initial thinking + consume the race error (starts the keep-alive). The
+      // readiness gate then confirms the agent is present (default mock
+      // agents.list) and re-dispatches into the hanging retry attempt.
       await vi.advanceTimersByTimeAsync(0);
       await vi.advanceTimersByTimeAsync(600);
 

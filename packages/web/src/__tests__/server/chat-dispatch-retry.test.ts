@@ -220,6 +220,113 @@ describe("chatWithDispatchRaceRetry", () => {
     expect(chat).toHaveBeenNthCalledWith(2, "hello", opts);
   });
 
+  describe("runtime-readiness gate (awaitAgentReady)", () => {
+    it("polls runtime readiness instead of blind backoff, re-dispatching as soon as the agent is ready", async () => {
+      const successful: ChatChunk[] = [{ type: "done", text: "", runId: "r1" }];
+      const chat = vi
+        .fn()
+        .mockImplementationOnce(makeStream(raceError()))
+        .mockImplementationOnce(makeStream(raceError()))
+        .mockImplementationOnce(makeStream(successful));
+
+      const clock = fakeClock();
+      // The gate confirms readiness each time (the agent is present in the
+      // runtime agents.list). It models the deterministic poll: no need for the
+      // wrapper's blind backoff.
+      const awaitAgentReady = vi.fn(async () => true);
+
+      const got = await collect(
+        chatWithDispatchRaceRetry(
+          "hello",
+          { agentId: "a" } as ChatOptions,
+          { chat: chat as never, delay: clock.delay, now: clock.now, awaitAgentReady },
+          { baseDelayMs: 500, maxDelayMs: 5000, maxTotalMs: 90000 }
+        )
+      );
+
+      expect(got).toEqual(successful);
+      expect(chat).toHaveBeenCalledTimes(3);
+      // Gate consulted once per race; blind backoff NOT used.
+      expect(awaitAgentReady).toHaveBeenCalledTimes(2);
+      expect(clock.delay).not.toHaveBeenCalled();
+    });
+
+    it("passes the REMAINING wall-clock budget to the readiness gate", async () => {
+      const chat = vi
+        .fn()
+        .mockImplementationOnce(makeStream(raceError()))
+        .mockImplementationOnce(makeStream([{ type: "done", text: "", runId: "r1" }]));
+
+      const clock = fakeClock();
+      const awaitAgentReady = vi.fn(async () => true);
+
+      await collect(
+        chatWithDispatchRaceRetry(
+          "hello",
+          { agentId: "a" } as ChatOptions,
+          { chat: chat as never, delay: clock.delay, now: clock.now, awaitAgentReady },
+          { maxTotalMs: 90000 }
+        )
+      );
+
+      // First (and only) race fires at t=0, so the full budget is available.
+      expect(awaitAgentReady).toHaveBeenCalledWith(90000);
+    });
+
+    it("falls back to capped blind backoff when the gate reports not-ready (unobservable / timeout)", async () => {
+      const chat = vi
+        .fn()
+        .mockImplementationOnce(makeStream(raceError()))
+        .mockImplementationOnce(makeStream([{ type: "done", text: "", runId: "r1" }]));
+
+      const clock = fakeClock();
+      // Gate cannot confirm readiness (e.g. older Gateway without agents.list →
+      // helper returns false immediately). Wrapper must still make progress via
+      // its blind backoff so the bounded retry is preserved.
+      const awaitAgentReady = vi.fn(async () => false);
+
+      await collect(
+        chatWithDispatchRaceRetry(
+          "hello",
+          { agentId: "a" } as ChatOptions,
+          { chat: chat as never, delay: clock.delay, now: clock.now, awaitAgentReady },
+          { baseDelayMs: 500, maxDelayMs: 5000, maxTotalMs: 90000 }
+        )
+      );
+
+      expect(awaitAgentReady).toHaveBeenCalledTimes(1);
+      // Blind backoff applied exactly once (the first attempt's 500 ms) before
+      // the successful re-dispatch.
+      expect(clock.delay.mock.calls.map((c) => c[0])).toEqual([500]);
+    });
+
+    it("stays bounded by the budget even when the gate keeps consuming time without readiness", async () => {
+      const chat = vi.fn(makeStream(raceError("a")));
+      const clock = fakeClock();
+      // Gate burns the whole window it is given and never confirms readiness,
+      // mirroring an agent that genuinely never applies (a Pinchy-side bad id).
+      const awaitAgentReady = vi.fn(async (budgetMs: number) => {
+        clock.delay(budgetMs); // advance the clock as a real poll would
+        return false;
+      });
+
+      const got = await collect(
+        chatWithDispatchRaceRetry(
+          "hello",
+          { agentId: "a" } as ChatOptions,
+          { chat: chat as never, delay: clock.delay, now: clock.now, awaitAgentReady },
+          { baseDelayMs: 500, maxDelayMs: 5000, maxTotalMs: 3000 }
+        )
+      );
+
+      // Terminates and surfaces the race error rather than looping forever.
+      expect(got).toHaveLength(1);
+      expect(got[0].type).toBe("error");
+      expect(DISPATCH_RACE_PATTERN.test(got[0].text)).toBe(true);
+      expect(clock.now()).toBeLessThanOrEqual(3000);
+    });
+  });
+
   it("DISPATCH_RACE_PATTERN matches the exact OC 2026.5.x error message shape", () => {
     expect(DISPATCH_RACE_PATTERN.test('invalid agent params: unknown agent id "abc-123"')).toBe(
       true

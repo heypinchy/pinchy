@@ -1,5 +1,6 @@
 import type { OpenClawClient, ChatAttachment, ChatChunk, ChatOptions } from "openclaw-node";
 import { chatWithDispatchRaceRetry } from "@/server/chat-dispatch-retry";
+import { waitForAgentInRuntime } from "@/server/agent-readiness";
 import type { WebSocket } from "ws";
 import { assertAgentAccess, effectiveVisibility } from "@/lib/agent-access";
 import { getUserGroupIds, getAgentGroupIds } from "@/lib/groups";
@@ -366,6 +367,32 @@ export class ClientRouter {
 
       const stream = chatWithDispatchRaceRetry(text, chatOptions as ChatOptions, {
         chat: (m, o) => this.openclawClient.chat(m, o),
+        // Deterministic readiness gate: on a dispatch-race, poll OC's RUNTIME
+        // `agents.list` (the same `getRuntimeConfig()` view the dispatch handler
+        // checks) until this agent is present, instead of blind-sleeping a
+        // backoff window. Reading the runtime list — not `config.get` (the FILE,
+        // which leads the runtime) — is what makes this reliable. Bounded by the
+        // remaining retry budget; never throws, so a probe miss only costs a
+        // little latency (the backoff retry remains the backstop). Requires
+        // openclaw-node >= 0.12.0; `hasMethod` guards older Gateways.
+        awaitAgentReady: (budgetMs) =>
+          waitForAgentInRuntime(
+            message.agentId,
+            {
+              hasAgentsListRpc: () => this.openclawClient.hasMethod("agents.list"),
+              listRuntimeAgentIds: async () =>
+                (await this.openclawClient.agents.list()).agents.map((a) => a.id),
+              onWaitObserved: ({ waitedMs, ready, polls }) => {
+                if (process.env.PINCHY_E2E_CHAT_TRACE === "1") {
+                  console.log(
+                    `[trace:chat] readiness-gate agent=${message.agentId} ` +
+                      `ready=${ready} waitedMs=${waitedMs} polls=${polls}`
+                  );
+                }
+              },
+            },
+            { deadlineMs: budgetMs }
+          ),
         onDispatchRaceObserved: async ({ providerError }) => {
           // The resilient retry (chat-dispatch-retry.ts) can stay silent for up
           // to ~150 s while OpenClaw applies the agent into its runtime. The
