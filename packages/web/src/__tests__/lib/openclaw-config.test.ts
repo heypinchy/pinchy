@@ -3549,48 +3549,140 @@ describe("regenerateOpenClawConfig", () => {
       }
     });
 
-    it("skips the file write immediately when OC rate-limits config.apply", async () => {
-      // Scenario: OC 5.3 rejects the apply call with "rate limit exceeded for
-      // config.apply; retry after 45s". Consuming backoff slots would delay
-      // the eventual inotify fallback by up to 3.85 s with no benefit.
-      // More importantly, OC already has the correct config in memory from
-      // the last successful config.apply — writing to disk would trigger an
-      // inotify hot-reload that causes OC to add built-in plugins (e.g.
-      // memory-core) and reorder meta, producing spurious config drift.
-      // The fix: skip the write entirely. The next config.apply (after the
-      // 45 s window resets) will deliver any pending changes.
+    it("retries config.apply via WS after the rate-limit window instead of dropping the change", async () => {
+      // Scenario: OC 5.3 rejects the apply with "rate limit exceeded for
+      // config.apply; retry after Ns" (e.g. several back-to-back regens piled
+      // into one window). The OLD behaviour returned immediately on rate-limit
+      // ("OC already has the correct config in memory"), but that assumption is
+      // false for a GENUINE pending change: the no-op guard above already
+      // returns for semantically-equivalent configs, so a rate-limited apply
+      // ALWAYS carries a real diff. Dropping it silently lost newly-created
+      // agents — OC's runtime never learned about them and rejected chat
+      // dispatch with `unknown agent id` indefinitely (the Odoo/email/web
+      // dispatch-probe flake; CI run 26837712634).
+      //
+      // The fix: wait out the advertised window, then RETRY the same clean WS
+      // config.apply path. No file write on this path → no inotify drift (the
+      // original reason for skipping the write is preserved).
       vi.useFakeTimers();
       try {
-        const existingOcConfig = {
-          meta: { version: "5.3.0", lastTouchedAt: "2026-01-01T00:00:00Z" },
-          gateway: { mode: "local", bind: "lan", auth: { token: "tok" } },
-        };
         mockConfigGet.mockResolvedValue({ hash: "h1" });
+        mockConfigApply
+          .mockRejectedValueOnce(new Error("rate limit exceeded for config.apply; retry after 2s"))
+          .mockResolvedValueOnce(undefined);
+        mockGetClient.mockReturnValue({
+          config: { get: mockConfigGet, apply: mockConfigApply },
+        });
+
+        pushConfigInBackground(JSON.stringify({ env: { X: "1" } }));
+
+        // First apply fires and is rate-limited.
+        await vi.advanceTimersByTimeAsync(0);
+        expect(mockConfigApply).toHaveBeenCalledTimes(1);
+
+        // No file write yet — we wait out the window on the clean WS path,
+        // we do NOT fall back to disk (which would cause inotify drift).
+        let openclawWrite = mockedWriteFileSync.mock.calls.find(
+          (c) => typeof c[0] === "string" && (c[0] as string).includes("openclaw.json")
+        );
+        expect(
+          openclawWrite,
+          "must NOT file-write before the WS retry budget is exhausted"
+        ).toBeUndefined();
+
+        // Advance past the advertised 2 s window (plus the buffer). The retry
+        // fires a fresh config.get + config.apply, which now succeeds.
+        await vi.advanceTimersByTimeAsync(4_000);
+
+        expect(mockConfigApply).toHaveBeenCalledTimes(2);
+        // Still no file write — the change was delivered cleanly over WS.
+        openclawWrite = mockedWriteFileSync.mock.calls.find(
+          (c) => typeof c[0] === "string" && (c[0] as string).includes("openclaw.json")
+        );
+        expect(
+          openclawWrite,
+          "writeFileSync must NOT be called when the WS retry succeeds"
+        ).toBeUndefined();
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("falls back to a file write only after the rate-limit retry budget is exhausted", async () => {
+      // If OC keeps rate-limiting us across multiple windows, the pending
+      // change must STILL reach OC's runtime — a late, slightly-drifted config
+      // (inotify reload adds built-in plugin entries / reorders keys) is
+      // strictly better than a permanently-lost agent. After the bounded WS
+      // retry budget, fall back to writeConfigAtomic so OC's file-watcher picks
+      // the change up. This is the safety net the old "drop and hope the next
+      // apply delivers it" code lacked — there is no guaranteed next apply.
+      vi.useFakeTimers();
+      try {
+        mockConfigGet.mockResolvedValue({ hash: "h1" });
+        // Always rate-limited — exhaust the retry budget.
         mockConfigApply.mockRejectedValue(
-          new Error("rate limit exceeded for config.apply; retry after 45s")
+          new Error("rate limit exceeded for config.apply; retry after 1s")
         );
         mockGetClient.mockReturnValue({
           config: { get: mockConfigGet, apply: mockConfigApply },
         });
-        mockedReadFileSync.mockReturnValue(JSON.stringify(existingOcConfig) as unknown as Buffer);
 
         pushConfigInBackground(JSON.stringify({ env: { X: "1" } }));
 
-        // Drain microtasks — the rate-limit path must NOT hit any setTimeout.
+        // Drive through the initial apply + all bounded rate-limit retries.
+        // Generous advance covers every window-wait plus buffer.
         for (let i = 0; i < 10; i++) {
-          await vi.advanceTimersByTimeAsync(0);
+          await vi.advanceTimersByTimeAsync(5_000);
         }
 
-        // config.apply was called once (first attempt), then we gave up immediately.
-        expect(mockConfigApply).toHaveBeenCalledTimes(1);
-        // No file write — OC already has the correct config in memory.
+        // The change was NOT lost — it landed on disk for the file-watcher.
         const openclawWrite = mockedWriteFileSync.mock.calls.find(
           (c) => typeof c[0] === "string" && (c[0] as string).includes("openclaw.json")
         );
         expect(
           openclawWrite,
-          "writeFileSync must NOT be called for openclaw.json on rate-limit"
-        ).toBeUndefined();
+          "writeConfigAtomic must run as the last-resort fallback so the change is not lost"
+        ).toBeDefined();
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("cancels a pending rate-limit retry when a newer push starts", async () => {
+      // The retry sleeps out the rate-limit window. If a newer
+      // pushConfigInBackground call starts during that sleep, the stale retry
+      // must abort at the generation check rather than firing config.apply
+      // with an outdated payload on top of the newer one.
+      vi.useFakeTimers();
+      try {
+        mockConfigGet.mockResolvedValue({ hash: "h1" });
+        mockConfigApply.mockRejectedValue(
+          new Error("rate limit exceeded for config.apply; retry after 2s")
+        );
+        mockGetClient.mockReturnValue({
+          config: { get: mockConfigGet, apply: mockConfigApply },
+        });
+
+        pushConfigInBackground(JSON.stringify({ env: { OLD: "1" } }));
+        // First apply fires and is rate-limited; the coroutine now sleeps.
+        await vi.advanceTimersByTimeAsync(0);
+        expect(mockConfigApply).toHaveBeenCalledTimes(1);
+
+        // A newer push bumps the generation while the first is mid-sleep.
+        mockConfigApply.mockReset();
+        mockConfigApply.mockResolvedValue(undefined);
+        pushConfigInBackground(JSON.stringify({ env: { NEW: "2" } }));
+
+        // Advance past the first push's retry window. Its retry must NOT fire
+        // — it returns at the generation check. Only the NEW push's apply runs.
+        await vi.advanceTimersByTimeAsync(4_000);
+
+        const oldPayloadApplied = mockConfigApply.mock.calls.some((c) =>
+          String(c[0]).includes('"OLD"')
+        );
+        expect(oldPayloadApplied, "stale OLD payload must not be applied after a newer push").toBe(
+          false
+        );
       } finally {
         vi.useRealTimers();
       }

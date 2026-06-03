@@ -111,11 +111,37 @@ export function _resetPushGeneration() {
 const STALE_HASH_ERROR_FRAGMENT = "config changed since last load";
 const MAX_STALE_HASH_RETRIES = 3;
 
-// OC 5.3 rate-limits config.apply (~3 calls per 45 s window). Consuming
-// backoff slots on each rejection just delays the eventual file-write
-// fallback by up to 3.85 s for no benefit — fall through to inotify
-// immediately instead.
+// OC 5.3 rate-limits config.apply (~3 calls per 45 s window). The error
+// carries an explicit "retry after Ns" hint. A rate-limited apply ALWAYS
+// carries a genuine diff (the no-op guard above already returns for
+// semantically-equivalent configs), so dropping it silently loses real
+// changes — most visibly a freshly-created agent that then never enters OC's
+// runtime, so chat dispatch fails with `unknown agent id` indefinitely (the
+// Odoo/email/web dispatch-probe flake; CI run 26837712634). Instead we wait
+// out the advertised window and RETRY the same clean WS config.apply path —
+// no file write, so no inotify drift. Only after a bounded retry budget do we
+// fall back to a file write (accepting the drift) so the change is never lost.
 const RATE_LIMIT_ERROR_FRAGMENT = "rate limit exceeded";
+// Buffer added past OC's advertised reset so the window is actually clear when
+// we retry (clock skew + the apply's own processing time).
+const RATE_LIMIT_BUFFER_MS = 1_000;
+// Used when the error has no parseable "retry after Ns" (defensive — every
+// observed OC 5.3 rate-limit message includes it).
+const RATE_LIMIT_FALLBACK_WAIT_MS = 10_000;
+// Cap a single wait so a malformed/huge "retry after" can't park the coroutine
+// for minutes. OC's window is ~45 s; 50 s covers it with headroom.
+const RATE_LIMIT_MAX_WAIT_MS = 50_000;
+// At most this many window-waits before the file-write fallback. Two covers
+// the realistic worst case (our apply lands in a maxed window, waits it out,
+// and a second batch of regens maxed the next one too) without parking the
+// coroutine across more than ~100 s.
+const MAX_RATE_LIMIT_RETRIES = 2;
+
+/** Parse OC's "retry after Ns" hint into milliseconds, or null if absent. */
+function parseRetryAfterMs(message: string): number | null {
+  const match = /retry after (\d+)\s*s/i.exec(message);
+  return match ? Number(match[1]) * 1000 : null;
+}
 
 // Pinchy's WS client throws this when config.get()/apply() runs while OC is
 // mid-restart (a successful config.apply triggered SIGUSR1, OC is relaunching
@@ -176,6 +202,7 @@ export function pushConfigInBackground(newContent: string): void {
     const backoffsMs = [100, 250, 500, 1000, 2000];
     let staleHashAttempts = 0;
     let notConnectedWaitMs = 0;
+    let rateLimitAttempts = 0;
     // Holds the OC-supplemented payload from the most recent successful
     // config.get(). Used when inotify file-write is the fallback so we
     // write content WITH meta and OC-managed fields — raw `newContent`
@@ -261,14 +288,38 @@ export function pushConfigInBackground(newContent: string): void {
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
 
-        // Rate-limit bypass: OC 5.3 rejects apply calls over the budget.
-        // OC already has the correct config in memory from the last successful
-        // config.apply — no file write needed. Writing to disk (even with meta)
-        // triggers an inotify hot-reload that causes OC to add built-in plugin
-        // entries (e.g. memory-core) and reorder keys, producing spurious drift
-        // in the config file. The next config.apply (after the 45 s window
-        // resets) will deliver any pending changes.
+        // Rate-limit handling: OC 5.3 rejects apply calls over the budget with
+        // an explicit "retry after Ns" hint. Because the no-op guard above
+        // already returned for equivalent configs, a rate-limited apply always
+        // carries a genuine pending change. Wait out the advertised window and
+        // retry the SAME clean WS path — no file write, so no inotify drift
+        // (the original reason for skipping the disk write). Only after the
+        // bounded retry budget do we fall back to a file write so the change is
+        // never permanently lost (a late, slightly-drifted config beats a
+        // dropped agent that dispatch then rejects with `unknown agent id`).
         if (message.includes(RATE_LIMIT_ERROR_FRAGMENT)) {
+          if (rateLimitAttempts < MAX_RATE_LIMIT_RETRIES) {
+            rateLimitAttempts++;
+            const waitMs = Math.min(
+              (parseRetryAfterMs(message) ?? RATE_LIMIT_FALLBACK_WAIT_MS) + RATE_LIMIT_BUFFER_MS,
+              RATE_LIMIT_MAX_WAIT_MS
+            );
+            console.warn(
+              `[openclaw-config] config.apply rate-limited; retrying via WS in ${String(waitMs)}ms (attempt ${String(rateLimitAttempts)}/${String(MAX_RATE_LIMIT_RETRIES)}):`,
+              message
+            );
+            i--; // OC's reset hint, not a transient failure — don't burn a backoff slot
+            await new Promise((resolve) => setTimeout(resolve, waitMs));
+            continue;
+          }
+          // Budget exhausted across multiple windows — disk-write fallback so
+          // OC's file-watcher reloads the change. Accept the inotify drift;
+          // losing the change entirely is worse.
+          console.warn(
+            "[openclaw-config] config.apply rate-limited past retry budget; writing file for inotify fallback:",
+            message
+          );
+          writeConfigAtomic(lastSupplemented ?? supplementPayloadWithFileFields(newContent));
           return;
         }
 
