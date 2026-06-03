@@ -325,6 +325,10 @@ test.describe("Plugin behavior — pinchy-context", () => {
 // is the running `pinchy_generate_file` probe further down this file and the
 // `pinchy_read` probe in upload-and-send.spec.ts.
 
+// Tracking issue: #427 — see the full rationale at the top of the
+// pinchy-files block ~80 lines above (the personal-agent permission rule).
+// Restated here so the no-untracked-skips guard sees the #NNN within its
+// 40-line scan window.
 test.describe("Plugin behavior — pinchy-files", () => {
   test.skip("pinchy_ls dispatches via fake-LLM and writes audit entry", async ({ page }) => {
     await login(page);
