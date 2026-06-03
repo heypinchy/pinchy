@@ -153,13 +153,20 @@ function parseRetryAfterMs(message: string): number | null {
 // load` (Telegram E2E `agent-create-no-restart.spec.ts` cascade — the spec's
 // own header explicitly names this failure mode). Extending the retry budget
 // here lets the WS reconnect so the next iteration's config.apply lands
-// cleanly — both the in-process SIGUSR1 case (~5–15 s) and the integration-
-// test `docker compose restart openclaw` case (~10 s) finish well inside the
-// 30 s budget. After the budget exhausts the file-write fallback runs as
-// before; by that point any normal restart has completed and the write is
-// safe (OC is genuinely down, not racing its own startup).
+// cleanly — the in-process SIGUSR1 case (~5–15 s) and the integration-test
+// `docker compose restart openclaw` case (~10 s) finish quickly, but the
+// FIRST-INSTALL secrets-bootstrap restart (config/start-openclaw.sh pkills and
+// respawns the gateway, ~40 s) does NOT fit the old 30 s budget — that's the
+// window the dispatch-probe agent-create config storm lands in
+// (heypinchy/pinchy#464). With openclaw-node >= 0.12.1 rejecting in-flight
+// requests immediately on close (instead of stalling to the 30 s request
+// timeout), this wait is ACTIVE: it re-attempts config.get every ~2 s and lands
+// the apply the instant OC is back, so a 60 s budget covers the ~40 s secrets
+// restart with margin while staying bounded. After the budget exhausts the
+// file-write fallback runs as before; by then any normal restart has completed
+// and the write is safe (OC is genuinely down, not racing its own startup).
 const WS_DISCONNECTED_ERROR_FRAGMENT = "Not connected to OpenClaw Gateway";
-const NOT_CONNECTED_MAX_WAIT_MS = 30_000;
+const NOT_CONNECTED_MAX_WAIT_MS = 60_000;
 const NOT_CONNECTED_RETRY_DELAY_MS = 2_000;
 
 export function pushConfigInBackground(newContent: string): void {
