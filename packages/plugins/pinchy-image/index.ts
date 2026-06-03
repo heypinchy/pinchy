@@ -1,4 +1,5 @@
-import { readFile, writeFile, mkdir, stat, lstat } from "fs/promises";
+import { writeFile, mkdir, stat, open } from "fs/promises";
+import { constants as fsConstants } from "fs";
 import { basename, extname, join } from "path";
 import { randomBytes } from "crypto";
 import {
@@ -121,12 +122,16 @@ async function readSourceImage(
   }
 
   const sourcePath = join(agentUploadsDir(agentId), filename);
-  // lstat (does NOT follow symlinks) — we reject anything that isn't a regular
-  // file. This prevents an attacker who has write access to the uploads dir
-  // from making the tool read a file outside the workspace via a symlink.
-  let lstatRes: { size: number; isFile(): boolean; isSymbolicLink(): boolean };
+  // Atomic open with O_NOFOLLOW closes the TOCTOU window: a separate `lstat`
+  // followed by `readFile` would race against an attacker swapping the
+  // upload entry between the check and the read. O_NOFOLLOW also rejects
+  // symlinks in the final path component (ELOOP), serving as the workspace
+  // boundary guard. All subsequent size/type checks run against the held file
+  // descriptor via fstat, so the file we measure is the file we read.
+  const O_NOFOLLOW = fsConstants.O_NOFOLLOW ?? 0;
+  let handle;
   try {
-    lstatRes = await lstat(sourcePath);
+    handle = await open(sourcePath, fsConstants.O_RDONLY | O_NOFOLLOW);
   } catch (err) {
     const code =
       err && typeof err === "object" && "code" in err
@@ -139,33 +144,35 @@ async function readSourceImage(
         ),
       };
     }
+    if (code === "ELOOP") {
+      return {
+        error: errorContent(
+          `Refusing to read "${filename}": file is a symlink, only regular files are allowed.`
+        ),
+      };
+    }
     throw err;
   }
-  if (lstatRes.isSymbolicLink()) {
-    return {
-      error: errorContent(
-        `Refusing to read "${filename}": file is a symlink, only regular files are allowed.`
-      ),
-    };
+  try {
+    const statRes = await handle.stat();
+    if (!statRes.isFile()) {
+      return {
+        error: errorContent(`Refusing to read "${filename}": not a regular file.`),
+      };
+    }
+    const maxBytes = maxImageBytes();
+    if (statRes.size > maxBytes) {
+      return {
+        error: errorContent(
+          `Image too large: "${filename}" is ${statRes.size} bytes; max allowed is ${maxBytes}.`
+        ),
+      };
+    }
+    const buffer = await handle.readFile();
+    return { buffer, sourceName: filename };
+  } finally {
+    await handle.close();
   }
-  if (!lstatRes.isFile()) {
-    return {
-      error: errorContent(
-        `Refusing to read "${filename}": not a regular file.`
-      ),
-    };
-  }
-  const maxBytes = maxImageBytes();
-  if (lstatRes.size > maxBytes) {
-    return {
-      error: errorContent(
-        `Image too large: "${filename}" is ${lstatRes.size} bytes; max allowed is ${maxBytes}.`
-      ),
-    };
-  }
-
-  const buffer = await readFile(sourcePath);
-  return { buffer, sourceName: filename };
 }
 
 async function writeOutputImage(
