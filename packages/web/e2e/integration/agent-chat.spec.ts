@@ -312,13 +312,14 @@ test.describe("Plugin behavior — pinchy-context", () => {
 // ── Plugin behavior: pinchy-image ────────────────────────────────────────────
 // Proves pinchy-image loaded correctly and registerTool() worked end-to-end.
 //
-// SKIPPED for the same personal-agent permission rule as pinchy-files above:
-// granting the new image_* tools to Smithers via PATCH returns 400 ("Cannot
-// change permissions for personal agents"). The skipped block keeps the literal
-// `eventType=tool.image_crop` token in the file so plugin-tool-coverage.test.ts
-// recognises image_crop as covered, matching the pattern used for pinchy_ls
-// above. Re-enable once Pinchy supports creating a shared agent via API or
-// overriding the permissions guard for the integration admin.
+// SKIPPED (tracked in #427): same personal-agent permission rule as
+// pinchy-files above — granting the new image_* tools to Smithers via PATCH
+// returns 400 ("Cannot change permissions for personal agents"). The skipped
+// block keeps the literal `eventType=tool.image_crop` token in the file so
+// plugin-tool-coverage.test.ts recognises image_crop as covered, matching the
+// pattern used for pinchy_ls above. Re-enable once Pinchy supports creating a
+// shared agent via API or overriding the permissions guard for the
+// integration admin.
 test.describe("Plugin behavior — pinchy-image", () => {
   test.skip("image_crop dispatches via fake-LLM and writes audit entry", async ({ page }) => {
     await login(page);
@@ -371,6 +372,10 @@ test.describe("Plugin behavior — pinchy-image", () => {
   });
 });
 
+// Tracking issue: #427 — see the full rationale at the top of the
+// pinchy-files block ~80 lines above (the personal-agent permission rule).
+// Restated here so the no-untracked-skips guard sees the #NNN within its
+// 40-line scan window.
 test.describe("Plugin behavior — pinchy-files", () => {
   test.skip("pinchy_ls dispatches via fake-LLM and writes audit entry", async ({ page }) => {
     await login(page);
