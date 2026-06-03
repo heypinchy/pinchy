@@ -176,6 +176,9 @@ export function pushConfigInBackground(newContent: string): void {
       // No WS client — write directly to file so inotify picks up the change.
       // This path runs synchronously (no await before writeConfigAtomic), so the
       // file is on disk before regenerateOpenClawConfig() returns to its caller.
+      console.log(
+        `[openclaw-config] push gen=${String(generation)}: no WS client → file write (inotify; reload may lag)`
+      );
       writeConfigAtomic(newContent);
       return;
     }
@@ -212,7 +215,12 @@ export function pushConfigInBackground(newContent: string): void {
     for (let i = 0; i < backoffsMs.length; i++) {
       // Check before each attempt — a newer pushConfigInBackground call
       // may have started while we were sleeping.
-      if (generation !== _pushGeneration) return;
+      if (generation !== _pushGeneration) {
+        console.log(
+          `[openclaw-config] push gen=${String(generation)}: superseded by newer push (gen=${String(_pushGeneration)}) before attempt ${String(i)}`
+        );
+        return;
+      }
       try {
         const current = (await client.config.get()) as {
           hash: string;
@@ -220,7 +228,12 @@ export function pushConfigInBackground(newContent: string): void {
         };
 
         // Newer call started while we were awaiting config.get()
-        if (generation !== _pushGeneration) return;
+        if (generation !== _pushGeneration) {
+          console.log(
+            `[openclaw-config] push gen=${String(generation)}: superseded by newer push (gen=${String(_pushGeneration)}) during config.get`
+          );
+          return;
+        }
 
         // Supplement OC-managed fields (meta, non-pinchy plugins, controlUi,
         // channels.telegram OC-specific fields, models.providers baseUrl).
@@ -273,6 +286,9 @@ export function pushConfigInBackground(newContent: string): void {
               JSON.stringify(supplementedConfig, null, 2)
             )
           ) {
+            console.log(
+              `[openclaw-config] push gen=${String(generation)}: no-op skip (supplemented payload ≡ OC runtime)`
+            );
             return;
           }
         }
@@ -284,6 +300,9 @@ export function pushConfigInBackground(newContent: string): void {
         // config.apply's inner writeConfigFile persists the config to disk.
         // A newer call's payload will overwrite via its own config.apply or
         // writeConfigAtomic fallback.
+        console.log(
+          `[openclaw-config] push gen=${String(generation)}: applied via WS config.apply (in-process, synchronous runtime refresh)${rateLimitAttempts > 0 ? ` after ${String(rateLimitAttempts)} rate-limit wait(s)` : ""}`
+        );
         return;
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
@@ -316,7 +335,7 @@ export function pushConfigInBackground(newContent: string): void {
           // OC's file-watcher reloads the change. Accept the inotify drift;
           // losing the change entirely is worse.
           console.warn(
-            "[openclaw-config] config.apply rate-limited past retry budget; writing file for inotify fallback:",
+            `[openclaw-config] push gen=${String(generation)}: config.apply rate-limited past retry budget; writing file for inotify fallback (reload may lag):`,
             message
           );
           writeConfigAtomic(lastSupplemented ?? supplementPayloadWithFileFields(newContent));
@@ -352,7 +371,7 @@ export function pushConfigInBackground(newContent: string): void {
 
         if (i === backoffsMs.length - 1) {
           console.warn(
-            "[openclaw-config] background config.apply failed; writing to file for inotify:",
+            `[openclaw-config] push gen=${String(generation)}: background config.apply failed; writing to file for inotify (reload may lag):`,
             message
           );
           // All retries exhausted — fall back to file write so inotify picks up
