@@ -67,6 +67,19 @@ export async function resetStack(): Promise<void> {
   // for the remainder of the test suite. Deleting both files (plus the
   // bootstrap marker) means the next Pinchy regenerate sees no existing
   // file, skips the size-drop comparison, and writes a clean baseline.
+  //
+  // This rm runs while OpenClaw is still up (exec needs a running container).
+  // OpenClaw's file-watcher sees the deletion as "config file not found" and
+  // skips the reload — harmless. The DANGEROUS event is the next one: Pinchy's
+  // entrypoint.sh re-seeds a 42-byte `{"gateway":{"mode":"local","bind":"lan"}}`
+  // when it finds openclaw.json missing on restart. If OpenClaw's OLD process
+  // is still running when that 42-byte seed lands, its file-watcher sees a
+  // size-drop (4.9 KB → 42 B) whose diff is missing every restart-class field
+  // (gateway.controlUi/auth, discovery, update, canvasHost) → OpenClaw fires a
+  // SIGUSR1 gateway restart, and the cascade (compounded by the first-time
+  // secrets.json bootstrap pkill) keeps the freshly-created Smithers agent out
+  // of OC's runtime `agents.list` for >90 s → the wizard's first chat times out
+  // with `unknown agent id` (the google.spec.ts flake; CI run 26840320245).
   execSync(
     `docker compose ${COMPOSE_ARGS} exec -T openclaw rm -f ` +
       `/root/.openclaw/openclaw.json ` +
@@ -75,13 +88,28 @@ export async function resetStack(): Promise<void> {
     { stdio: "pipe", cwd: REPO_ROOT }
   );
 
-  execSync(`docker compose ${COMPOSE_ARGS} restart pinchy openclaw`, {
+  // Stop OpenClaw BEFORE restarting Pinchy so OC's file-watcher is dead while
+  // the config transitions through the 42-byte entrypoint seed and Pinchy's
+  // bootInits re-seed. OC only comes back up (further below) once Pinchy has
+  // regenerated a complete, restart-class-consistent config — so OC never
+  // observes the intermediate size-drop and never enters the SIGUSR1 cascade.
+  // `restart: unless-stopped` honours a manual `stop`, so OC stays down until
+  // the explicit `start`.
+  execSync(`docker compose ${COMPOSE_ARGS} stop openclaw`, {
+    stdio: "pipe",
+    cwd: REPO_ROOT,
+  });
+
+  execSync(`docker compose ${COMPOSE_ARGS} restart pinchy`, {
     stdio: "pipe",
     cwd: REPO_ROOT,
   });
 
   // Poll /api/setup/status until Pinchy answers — this proves the regenerated
   // openclaw.json has been picked up and the wizard route is reachable.
+  // (Pinchy boots with OC down: its WS connect fails and it falls back to
+  // writing openclaw.json directly via writeConfigAtomic — exactly the
+  // complete baseline we want on disk before OC starts.)
   // 60 s budget: container restart + Next.js cold compile can run ~30 s.
   const deadline = Date.now() + 60000;
   let pinchyReady = false;
@@ -96,6 +124,15 @@ export async function resetStack(): Promise<void> {
     await sleep(1000);
   }
   if (!pinchyReady) throw new Error("Pinchy did not become ready within 60s after reset");
+
+  // Now bring OpenClaw back up. It reads the complete config Pinchy just wrote
+  // (restart-class fields present, no agents/providers yet — those arrive via
+  // hot-reload when the wizard runs), so its first load is clean and no
+  // restart-class diff fires.
+  execSync(`docker compose ${COMPOSE_ARGS} start openclaw`, {
+    stdio: "pipe",
+    cwd: REPO_ROOT,
+  });
 
   // Then wait for OpenClaw to fully SETTLE before handing off to the wizard.
   //
@@ -135,6 +172,47 @@ export async function resetStack(): Promise<void> {
     await sleep(1000);
   }
   throw new Error("OpenClaw did not settle within 60s after reset");
+}
+
+/**
+ * Poll `/api/health/openclaw` via the Playwright page's request context until
+ * OpenClaw reports `connected` continuously for `stableForMs` (a transient
+ * reload/restart resets the streak), or `deadlineMs` elapses. Used to wait out
+ * the secrets-bootstrap gateway restart before dispatching the first chat.
+ *
+ * Mirrors the settle loop in `resetStack` but runs in a page context (uses
+ * `page.request` instead of `execSync`) and takes a configurable, longer
+ * stability window — the post-provider-save restart can start a few seconds
+ * after the save, so a short streak could otherwise pass on the pre-restart
+ * connected state.
+ */
+async function waitForOpenClawSettledViaPage(
+  page: Page,
+  opts: { stableForMs: number; deadlineMs: number }
+): Promise<void> {
+  const deadline = Date.now() + opts.deadlineMs;
+  let connectedSince: number | null = null;
+  while (Date.now() < deadline) {
+    try {
+      const res = await page.request.get("/api/health/openclaw");
+      if (res.ok()) {
+        const health = (await res.json()) as { connected?: boolean; status?: string };
+        if (health.connected && health.status === "ok") {
+          connectedSince ??= Date.now();
+          if (Date.now() - connectedSince >= opts.stableForMs) return;
+        } else {
+          connectedSince = null;
+        }
+      } else {
+        connectedSince = null;
+      }
+    } catch {
+      connectedSince = null;
+    }
+    await sleep(1000);
+  }
+  // Don't throw — fall through and let the chat assertion's own retry budget
+  // run. A failure here would mask the real assertion's diagnostic.
 }
 
 export interface ProviderSmokeTestSpec {
@@ -208,6 +286,22 @@ export async function runProviderSmokeTest(page: Page, spec: ProviderSmokeTestSp
   // "No API key found for provider '<provider>'" and Pinchy renders an error.
   await expect(page).toHaveURL(/\/chat\//, { timeout: 15000 });
   await expect(page.getByText(/i'm smithers/i)).toBeVisible({ timeout: 30000 });
+
+  // Wait for OpenClaw to SETTLE past the provider-save's secrets-bootstrap
+  // restart BEFORE sending the first chat. Saving the provider key writes the
+  // first-ever secrets.json, which trips start-openclaw.sh's secrets-watcher
+  // → a one-shot gateway pkill+respawn (~40 s). If we dispatch into that
+  // window, OC rejects with `unknown agent id` until the restart applies the
+  // agent — and the chat path's own bounded retry (chatWithDispatchRaceRetry,
+  // ~90 s) sometimes can't outlast a slow-CI restart, so the assert below
+  // times out (the google/anthropic ~33 % flake, CI run 26843343975 + reruns).
+  // Settling here means the dispatch lands on a ready runtime and the response
+  // is fast — without masking the actual regression (the "No API key" /
+  // "couldn't respond" content assertions below still fire if secrets didn't
+  // flush). "Settled" = connected continuously for 12 s; the restart breaks
+  // the streak, so a 12 s streak proves we're past it. 90 s deadline covers a
+  // worst-case respawn; happy path exits in ~12 s.
+  await waitForOpenClawSettledViaPage(page, { stableForMs: 12000, deadlineMs: 90000 });
 
   const composer = page.getByPlaceholder(/send a message/i);
   await composer.fill("Hello, are you working?");
