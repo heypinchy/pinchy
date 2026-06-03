@@ -269,7 +269,7 @@ Follow the Plugin Integration Contract above, then apply the tool dispatch cover
 
 ### Plugin package manager
 
-Plugin packages under `packages/plugins/*` use **npm**, not pnpm. The runtime installs their dependencies in the OpenClaw container via `npm install --omit=dev` (see `Dockerfile.openclaw`), and several plugins depend on native modules (e.g. `sharp`'s prebuilt libvips binaries) that need the npm install layout. The repo's root `.gitignore` ignores `packages/plugins/*/package-lock.json` because each plugin's lockfile is regenerated at image-build time from its `package.json`. Do not add plugin packages to the root pnpm workspace.
+Plugin packages under `packages/plugins/*` are part of the root pnpm workspace (so the root `pnpm install` resolves their deps for tests and dev tooling), but the OpenClaw container builds them with **npm**, not pnpm — see `Dockerfile.openclaw`, which runs `npm install --omit=dev` per plugin. Several plugins depend on native modules (e.g. `sharp`'s prebuilt libvips binaries) that need the npm install layout at runtime. The repo's root `.gitignore` ignores `packages/plugins/*/pnpm-lock.yaml` and `*/package-lock.json` — each plugin's lockfile is regenerated at image-build time from its own `package.json`. When adding a new plugin, also bump `pnpm-lock.yaml` at the repo root (`pnpm install --no-frozen-lockfile`) so the workspace entry is recorded.
 
 ## Documentation
 
