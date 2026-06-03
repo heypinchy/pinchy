@@ -3258,105 +3258,38 @@ describe("regenerateOpenClawConfig", () => {
       expect(mockConfigApply).not.toHaveBeenCalled();
     });
 
-    it("never sends a meta-less config.apply; when meta stays missing it waits then falls back to a file write (cascade guard preserved)", async () => {
-      // Scenario: OC restarted (in-memory config has no meta) AND the file is a
-      // meta-less seed. Neither source can supply meta. A meta-less config.apply
-      // would trip OC's "missing-meta-before-write" cascade, so the guard must
-      // NEVER send one. With the meta-retry fix it waits for OC to stamp meta
-      // (re-running config.get); only after the bounded budget does it fall back
-      // to a file write so the change is never lost.
-      vi.useFakeTimers();
-      try {
-        const ocConfigWithoutMeta = {
+    it("skips config.apply when OC in-memory config and file both lack meta (missing-meta-before-write cascade guard)", async () => {
+      // Scenario: OC just restarted (in-memory config has no meta) AND the
+      // previous config.apply already wrote a meta-less file. Neither source
+      // can supply meta, so supplementation leaves the payload without it.
+      // Sending that payload via config.apply triggers OC's
+      // "missing-meta-before-write" anomaly → SIGUSR1 restart cascade.
+      //
+      // The guard must detect this and return early, relying on inotify
+      // (from the writeConfigAtomic call above) instead of config.apply.
+      // The guard only fires when current.config IS defined (OC is running
+      // and has a config) — cold-start (current.config absent) still proceeds.
+      const ocConfigWithoutMeta = {
+        gateway: { mode: "local" },
+        plugins: { allow: ["anthropic"], entries: { anthropic: { enabled: true } } },
+      };
+      mockConfigGet.mockResolvedValue({ hash: "h1", config: ocConfigWithoutMeta });
+      mockConfigApply.mockResolvedValue(undefined);
+      mockGetClient.mockReturnValue({
+        config: { get: mockConfigGet, apply: mockConfigApply },
+      });
+      // File also has no meta (written by a previous meta-less config.apply)
+      mockedReadFileSync.mockReturnValue(
+        JSON.stringify({
           gateway: { mode: "local" },
-          plugins: { allow: ["anthropic"], entries: { anthropic: { enabled: true } } },
-        };
-        // Meta never appears (OC stays meta-less for the whole window).
-        mockConfigGet.mockResolvedValue({ hash: "h1", config: ocConfigWithoutMeta });
-        mockConfigApply.mockResolvedValue(undefined);
-        mockGetClient.mockReturnValue({
-          config: { get: mockConfigGet, apply: mockConfigApply },
-        });
-        // File also has no meta (fresh-install seed / previous meta-less write).
-        mockedReadFileSync.mockReturnValue(
-          JSON.stringify({ gateway: { mode: "local" } }) as unknown as Buffer
-        );
+        }) as unknown as Buffer
+      );
 
-        pushConfigInBackground(JSON.stringify({ agents: { list: [{ id: "agent-new" }] } }));
+      await regenerateOpenClawConfig();
+      await drainBackgroundCoroutine();
 
-        // Mid-wait: config.apply has not been called (cascade guard holds).
-        await vi.advanceTimersByTimeAsync(2500);
-        expect(mockConfigApply).not.toHaveBeenCalled();
-
-        // Advance past the meta-missing budget → file-write fallback fires.
-        await vi.advanceTimersByTimeAsync(65_000);
-        for (let i = 0; i < 20; i++) await Promise.resolve();
-
-        // Cascade guard preserved: a meta-less payload was NEVER applied.
-        expect(mockConfigApply).not.toHaveBeenCalled();
-        // Safety net: the change was persisted to disk after the budget.
-        expect(mockedWriteFileSync).toHaveBeenCalled();
-      } finally {
-        vi.useRealTimers();
-      }
-    });
-
-    it("retries config.get when OC config transiently lacks meta (post-restart), then applies WITH meta once OC stamps it — no silent meta-less file write", async () => {
-      // Root fix for the #464 secrets-restart-window flake: during OC's
-      // first-install secrets-bootstrap restart, OC's in-memory config briefly
-      // has no `meta` AND the fresh-install file seed has none either. The old
-      // meta-guard silently `writeConfigAtomic`'d the meta-less payload, which
-      // OC's reload mishandled — the freshly-created agent never reached OC's
-      // runtime and dispatch stuck on `unknown agent id`. The fix waits for OC
-      // to stamp meta (retrying config.get) so the eventual config.apply carries
-      // meta and applies IN-PROCESS (no file-watcher dependency), keeping the
-      // agent on the reliable path while still never sending a meta-less apply.
-      vi.useFakeTimers();
-      try {
-        const ocNoMeta = {
-          gateway: { mode: "local" },
-          plugins: { allow: ["anthropic"], entries: { anthropic: { enabled: true } } },
-        };
-        const ocWithMeta = {
-          meta: { schemaVersion: 1 },
-          gateway: { mode: "local" },
-          plugins: { allow: ["anthropic"], entries: { anthropic: { enabled: true } } },
-        };
-        // First get: post-restart, no meta. Subsequent gets: OC has stamped meta.
-        mockConfigGet
-          .mockResolvedValueOnce({ hash: "h1", config: ocNoMeta })
-          .mockResolvedValue({ hash: "h2", config: ocWithMeta });
-        mockConfigApply.mockResolvedValue(undefined);
-        mockGetClient.mockReturnValue({
-          config: { get: mockConfigGet, apply: mockConfigApply },
-        });
-        // File seed also lacks meta (fresh install), so the file-fallback can't
-        // supply it on the first attempt.
-        mockedReadFileSync.mockReturnValue(
-          JSON.stringify({ gateway: { mode: "local" } }) as unknown as Buffer
-        );
-
-        pushConfigInBackground(JSON.stringify({ agents: { list: [{ id: "agent-new" }] } }));
-
-        // First config.get returns no-meta → meta-wait scheduled, no apply yet.
-        await vi.advanceTimersByTimeAsync(0);
-        expect(mockConfigApply).not.toHaveBeenCalled();
-
-        // Advance one meta-retry delay → second config.get returns meta → apply.
-        await vi.advanceTimersByTimeAsync(2500);
-        for (let i = 0; i < 20; i++) await Promise.resolve();
-
-        // The agent config applied via WS config.apply WITH meta — not a silent
-        // meta-less file write.
-        expect(mockConfigApply).toHaveBeenCalledTimes(1);
-        const appliedPayload = JSON.parse(mockConfigApply.mock.calls[0][0] as string) as Record<
-          string,
-          unknown
-        >;
-        expect(appliedPayload).toHaveProperty("meta");
-      } finally {
-        vi.useRealTimers();
-      }
+      // config.apply must NOT be called — guard returns early when payload lacks meta
+      expect(mockConfigApply).not.toHaveBeenCalled();
     });
 
     it("retries config.apply IMMEDIATELY (no backoff) when OC reports stale hash", async () => {

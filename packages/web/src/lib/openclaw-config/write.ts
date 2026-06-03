@@ -169,19 +169,6 @@ const WS_DISCONNECTED_ERROR_FRAGMENT = "Not connected to OpenClaw Gateway";
 const NOT_CONNECTED_MAX_WAIT_MS = 60_000;
 const NOT_CONNECTED_RETRY_DELAY_MS = 2_000;
 
-// OC's in-memory config briefly lacks `meta` right after a restart (before OC
-// re-stamps it) — most visibly during the FIRST-INSTALL secrets-bootstrap
-// restart, when the file is still a minimal seed with no meta either. A
-// meta-less config.apply trips OC's "missing-meta-before-write" cascade, and a
-// meta-less FILE WRITE is silently mishandled by OC's reload (the freshly
-// created agent never reaches runtime → `unknown agent id`, the #464
-// dispatch-probe flake). So instead of either, we WAIT for OC to stamp meta
-// (re-running config.get) so the eventual config.apply carries meta and applies
-// in-process. ~40 s covers the secrets-bootstrap respawn; 60 s gives margin.
-// After the budget we fall back to a file write so the change is never lost.
-const META_MISSING_MAX_WAIT_MS = 60_000;
-const META_MISSING_RETRY_DELAY_MS = 2_000;
-
 export function pushConfigInBackground(newContent: string): void {
   const generation = ++_pushGeneration;
 
@@ -225,7 +212,6 @@ export function pushConfigInBackground(newContent: string): void {
     const backoffsMs = [100, 250, 500, 1000, 2000];
     let staleHashAttempts = 0;
     let notConnectedWaitMs = 0;
-    let metaMissingWaitMs = 0;
     let rateLimitAttempts = 0;
     // Holds the OC-supplemented payload from the most recent successful
     // config.get(). Used when inotify file-write is the fallback so we
@@ -274,31 +260,12 @@ export function pushConfigInBackground(newContent: string): void {
         }
 
         // Meta-guard: if OC is running (current.config defined) but neither the
-        // in-memory config nor the file could supply meta, do NOT proceed —
-        // a meta-less config.apply trips OC's "missing-meta-before-write"
-        // cascade, and a meta-less FILE WRITE is silently mishandled by OC's
-        // reload so the change (e.g. a freshly-created agent) never reaches
-        // runtime (#464 secrets-restart-window flake). This is a TRANSIENT
-        // post-restart state: OC re-stamps meta once it settles. So wait and
-        // re-run config.get (i--, no backoff slot) until meta reappears, after
-        // which the normal config.apply path carries meta and applies
-        // in-process. Only after a bounded budget do we fall back to a file
-        // write so the change is never permanently lost.
+        // in-memory config nor the file could supply meta, skip config.apply.
+        // A meta-less payload triggers OC's "missing-meta-before-write" anomaly
+        // → SIGUSR1 restart cascade. Fall back to inotify via file write.
         if (current.config) {
           const parsed = JSON.parse(supplemented) as Record<string, unknown>;
           if (!("meta" in parsed)) {
-            if (metaMissingWaitMs < META_MISSING_MAX_WAIT_MS) {
-              metaMissingWaitMs += META_MISSING_RETRY_DELAY_MS;
-              console.log(
-                `[openclaw-config] push gen=${String(generation)}: OC config lacks meta (transient post-restart); waiting ${String(META_MISSING_RETRY_DELAY_MS)}ms for OC to stamp it, then retrying config.get (${String(metaMissingWaitMs)}/${String(META_MISSING_MAX_WAIT_MS)}ms)`
-              );
-              i--; // OC-settle wait, not a transient failure — don't burn a backoff slot
-              await new Promise((resolve) => setTimeout(resolve, META_MISSING_RETRY_DELAY_MS));
-              continue;
-            }
-            console.warn(
-              `[openclaw-config] push gen=${String(generation)}: meta still missing after ${String(metaMissingWaitMs)}ms; writing file fallback (reload may lag):`
-            );
             writeConfigAtomic(newContent);
             return;
           }
