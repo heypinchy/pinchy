@@ -313,14 +313,17 @@ export async function runProviderSmokeTest(page: Page, spec: ProviderSmokeTestSp
   // ("Sure, happy to help! What would you like to work on?") and that
   // NO error UI is shown.
   //
-  // 90 s budget: the wizard's "Continue" click triggers regenerateOpenClawConfig
-  // which writes openclaw.json + secrets.json. OpenClaw's secrets-watcher then
-  // pkills the gateway on first-time secrets.json appearance (config/start-openclaw.sh
-  // bootstrap-marker logic), and the health-loop respawn cycle is ~40 s.
-  // 30 s was too tight on a cold E2E stack — the test would assert before OC
-  // finished its first-real-config restart. 90 s covers the worst case
-  // (one full restart cycle + chat round-trip).
-  await expect(page.getByText(/sure, happy to help/i)).toBeVisible({ timeout: 90000 });
+  // 160 s budget: must outlast the chat path's server-side
+  // chatWithDispatchRaceRetry (150 s — see chat-dispatch-retry.ts). The
+  // wizard's "Continue" triggers regenerateOpenClawConfig + the first-ever
+  // secrets.json, so OC pkills+respawns the gateway (~40 s) and the new
+  // Smithers agent's apply can lag; on the FIRST provider spec (cold initial
+  // stack) the apply was measured ~108 s after the chat. A 90 s client-side
+  // assertion gave up before the 150 s server-side retry could land the
+  // dispatch — the residual setup-wizard flake (CI run 26868364630, the
+  // anthropic spec; the warmer later specs settle in ~20 s). 160 s sits just
+  // past the server budget. The settle above keeps the common case fast.
+  await expect(page.getByText(/sure, happy to help/i)).toBeVisible({ timeout: 160000 });
   await expect(page.getByText(/smithers couldn't respond/i)).not.toBeVisible();
   await expect(page.getByText(/no api key found/i)).not.toBeVisible();
 }

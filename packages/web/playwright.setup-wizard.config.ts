@@ -11,7 +11,13 @@ export default defineConfig({
   retries: 0,
   workers: 1,
   reporter: "list",
-  timeout: 120000,
+  // 240 s per test: the first provider spec runs against a cold initial stack
+  // where the new Smithers agent's apply after the secrets-bootstrap restart
+  // can lag ~108 s, so the chat assertion now waits 160 s (matching the
+  // server-side dispatch budget). Add the ~30 s wizard flow + 12 s OC settle on
+  // top and the default 120 s would cut the test off mid-wait. The warm later
+  // specs still finish in ~20 s; this is only a ceiling.
+  timeout: 240000,
   use: {
     baseURL: process.env.PINCHY_URL || "http://localhost:7777",
     // Capture diagnostics on failure so flakes surface ground truth rather
