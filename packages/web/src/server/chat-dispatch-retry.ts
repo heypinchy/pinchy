@@ -58,9 +58,14 @@ export interface DispatchRetryPolicy {
   maxDelayMs?: number;
   /**
    * Total wall-clock budget for retrying. Once exceeded, the last race error is
-   * yielded so the caller surfaces it. Default 90 s — comfortably covers one
-   * gateway restart + a `config.apply` rate-limit window; bounded so a
-   * genuinely-unknown agent can't hang the chat forever.
+   * yielded so the caller surfaces it. Default 150 s — the original 90 s was
+   * actually SHORTER than this file's own documented worst case (the #448
+   * fresh-install gap was 114 s; the Odoo/email/web dispatch-probe E2E measured
+   * an OpenClaw agents-reload landing ~104 s after the first dispatch when
+   * rapid config writes coalesce in OC's file-watcher debounce, so the agent
+   * applied 14 s AFTER the 90 s budget gave up — the residual dispatch-probe
+   * flake). 150 s covers both with margin while staying bounded so a
+   * genuinely-unknown agent (a Pinchy-side bug) can't hang the chat forever.
    */
   maxTotalMs?: number;
 }
@@ -68,7 +73,7 @@ export interface DispatchRetryPolicy {
 const DEFAULT_POLICY: Required<DispatchRetryPolicy> = {
   baseDelayMs: 500,
   maxDelayMs: 5000,
-  maxTotalMs: 90000,
+  maxTotalMs: 150000,
 };
 
 export interface DispatchRetryDeps {

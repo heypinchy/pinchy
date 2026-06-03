@@ -365,7 +365,17 @@ test.describe("Odoo dispatch probe (pinchy-odoo plugin coverage)", () => {
     await stopFakeOllama();
   });
 
-  test("odoo_list_models dispatches via fake-LLM and writes audit entry", async ({ page }) => {
+  test("odoo_list_models dispatches via fake-LLM and writes audit entry", async ({
+    page,
+  }, testInfo) => {
+    // The chat path's chatWithDispatchRaceRetry retries `unknown agent id` for
+    // up to 150 s while OC's runtime catches up to a freshly-created agent
+    // (measured: a coalesced file-watcher reload landed ~104 s after dispatch).
+    // The audit lands shortly after the dispatch succeeds, so the poll must
+    // outlast the retry budget, and the per-test timeout must outlast the poll
+    // + login + nav. Default Playwright 120 s would cut this off mid-poll.
+    testInfo.setTimeout(180_000);
+
     await loginViaUI(page, getAdminEmail(), getAdminPassword());
 
     await page.goto(`/chat/${dispatchAgentId}`);
@@ -376,9 +386,15 @@ test.describe("Odoo dispatch probe (pinchy-odoo plugin coverage)", () => {
     await input.fill(`${FAKE_OLLAMA_ODOO_LIST_MODELS_TOOL_TRIGGER}: list Odoo models`);
     await input.press("Enter");
 
+    // 160 s deadline: just past chatWithDispatchRaceRetry's 150 s budget so the
+    // poll is still running when a late dispatch finally writes its audit. No
+    // chat re-send (the earlier probe's aggressive re-send measurably worsened
+    // this flake — re-sending chat doesn't trigger an agents reload and floods
+    // OC with agent RPCs; CI run 26843343975).
     const found = await pollAuditForTool(page, {
       toolName: "odoo_list_models",
       agentId: dispatchAgentId,
+      deadlineMs: 160_000,
     });
     expect(found).toBe(true);
   });

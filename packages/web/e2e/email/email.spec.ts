@@ -228,7 +228,12 @@ test.describe("Email dispatch probe (pinchy-email plugin coverage)", () => {
     await stopFakeOllama();
   });
 
-  test("email_list dispatches via fake-LLM and writes audit entry", async ({ page }) => {
+  test("email_list dispatches via fake-LLM and writes audit entry", async ({ page }, testInfo) => {
+    // 160 s poll past the 150 s chatWithDispatchRaceRetry budget; 180 s per-test
+    // timeout to outlast it. See odoo-agent-chat.spec.ts for the measured
+    // ~104 s agent-apply delay this covers.
+    testInfo.setTimeout(180_000);
+
     await loginViaUI(page, getAdminEmail(), getAdminPassword());
 
     await page.goto(`/chat/${dispatchAgentId}`);
@@ -242,6 +247,7 @@ test.describe("Email dispatch probe (pinchy-email plugin coverage)", () => {
     const found = await pollAuditForTool(page, {
       toolName: "email_list",
       agentId: dispatchAgentId,
+      deadlineMs: 160_000,
     });
     expect(found).toBe(true);
   });

@@ -368,7 +368,7 @@ export class ClientRouter {
         chat: (m, o) => this.openclawClient.chat(m, o),
         onDispatchRaceObserved: async ({ providerError }) => {
           // The resilient retry (chat-dispatch-retry.ts) can stay silent for up
-          // to ~90 s while OpenClaw applies the agent into its runtime. The
+          // to ~150 s while OpenClaw applies the agent into its runtime. The
           // browser's stuck-timer (STUCK_TIMEOUT_MS, use-ws-runtime.ts) fires
           // after 60 s of silence and falsely times the run out — so once we
           // KNOW we're in a dispatch-race, re-emit `thinking` every 20 s to keep
