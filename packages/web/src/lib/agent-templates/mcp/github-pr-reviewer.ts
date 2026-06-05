@@ -17,7 +17,7 @@ export const githubPrReviewer: AgentTemplate = {
   suggestedNames: ["Merlin", "Rigby", "Linus", "Vera", "Patch", "Scout", "Reed"],
   defaultGreetingMessage:
     "Hi there! Share a pull request URL or a PR number and I'll review it for you.",
-  modelHint: { tier: "balanced", capabilities: ["tools"] },
+  modelHint: { tier: "balanced", capabilities: ["tools", "vision", "documents"] },
   recommendedTools: [
     { preset: "github", tool: "get_pull_request" },
     { preset: "github", tool: "list_pull_request_files" },

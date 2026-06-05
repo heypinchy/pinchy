@@ -17,7 +17,7 @@ export const linearTriage: AgentTemplate = {
   suggestedNames: ["Triage", "Relay", "Orin", "Vector", "Niko", "Delta", "Rook"],
   defaultGreetingMessage:
     "Hi! I can list your unprocessed Linear issues, suggest priorities, and help you route them to the right team. Where would you like to start?",
-  modelHint: { tier: "balanced", capabilities: ["tools"] },
+  modelHint: { tier: "balanced", capabilities: ["tools", "vision", "documents"] },
   recommendedTools: [
     { preset: "linear", tool: "create_issue" },
     { preset: "linear", tool: "update_issue" },

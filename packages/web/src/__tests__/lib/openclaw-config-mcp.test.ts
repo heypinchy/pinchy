@@ -53,6 +53,19 @@ vi.mock("@/lib/settings", () => ({
   setSetting: vi.fn().mockResolvedValue(undefined),
 }));
 
+// Main introduced an ensureModelCapabilityCacheLoaded() call inside
+// regenerateOpenClawConfig (for PDF/image model selection). Its db.select()
+// for the `models` table would otherwise consume the first slot in our
+// hand-counted db-select mock chain below and shift every fixture by one.
+// Stub it to a no-op so our setupDbMock counter still starts at `agents`.
+vi.mock("@/lib/model-capabilities/cache", () => ({
+  ensureModelCapabilityCacheLoaded: vi.fn().mockResolvedValue(undefined),
+  loadModelCapabilityCache: vi.fn().mockResolvedValue(undefined),
+  invalidateModelCapabilityCache: vi.fn(),
+  getModelCapabilities: vi.fn().mockReturnValue(null),
+  modelHasCapability: vi.fn().mockReturnValue(false),
+}));
+
 vi.mock("@/lib/encryption", () => ({
   decrypt: (val: string) => val,
   encrypt: (val: string) => val,
