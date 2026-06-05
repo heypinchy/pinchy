@@ -16,9 +16,11 @@
 // dependency) lives in src/__tests__/integration/usage-tracking.integration.test.ts
 // where it runs in the lighter `pnpm test:db` CI job.
 //
-// The poll interval is forced to 2s for this stack via
+// The poll interval is forced to 10s for this stack via
 // PINCHY_USAGE_POLL_INTERVAL_MS in docker-compose.integration.yml, so deltas
-// land within the test window instead of after the 60s production default.
+// land within the test's 40s delta-wait window instead of after the 60s
+// production default. (It's kept at 10s rather than lower to minimise extra
+// sessions.list() load on the shared OpenClaw — see the compose comment.)
 //
 // Why a ratio invariant instead of exact token counts: the Smithers chat
 // session (`agent:<id>:direct:<adminUserId>`) is shared across the whole
@@ -118,7 +120,7 @@ test.describe("Usage tracking — chat → OpenClaw → poller → usage_records
     // avoid a strict-mode multiple-match.
     await expect(page.getByText(FAKE_OLLAMA_RESPONSE).last()).toBeVisible({ timeout: 30000 });
 
-    // The poller (every 2s) records the delta from this turn. A turn always
+    // The poller (every 10s) records the delta from this turn. A turn always
     // produces a strictly positive delta on both axes (the fake scales both
     // counts by the turn's user-message count).
     const delta = await waitForUsageDelta(agentId, before, (d) => d.input > 0 && d.output > 0);
