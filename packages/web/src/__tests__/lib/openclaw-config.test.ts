@@ -3258,17 +3258,20 @@ describe("regenerateOpenClawConfig", () => {
       expect(mockConfigApply).not.toHaveBeenCalled();
     });
 
-    it("skips config.apply when OC in-memory config and file both lack meta (missing-meta-before-write cascade guard)", async () => {
-      // Scenario: OC just restarted (in-memory config has no meta) AND the
-      // previous config.apply already wrote a meta-less file. Neither source
-      // can supply meta, so supplementation leaves the payload without it.
-      // Sending that payload via config.apply triggers OC's
-      // "missing-meta-before-write" anomaly → SIGUSR1 restart cascade.
+    it("applies config via config.apply even when OC in-memory config and file both lack meta (no obsolete meta-guard)", async () => {
+      // Scenario: first-install secrets-bootstrap window — OC's in-memory config
+      // has no meta AND the fresh-install file seed has none either, so the
+      // supplemented payload lacks meta.
       //
-      // The guard must detect this and return early, relying on inotify
-      // (from the writeConfigAtomic call above) instead of config.apply.
-      // The guard only fires when current.config IS defined (OC is running
-      // and has a config) — cold-start (current.config absent) still proceeds.
+      // The OLD meta-guard returned early to a `writeConfigAtomic` file write
+      // here, to dodge OpenClaw 4.27's "missing-meta-before-write" restart
+      // cascade. That anomaly is GONE in the pinned OC 2026.5.28 — verified
+      // empirically (a meta-less config.apply adding an agent is accepted and
+      // hot-reloaded, no restart, agent lands in runtime). The guard was also
+      // actively harmful: it shunted every agent-create push onto the file-write
+      // path, whose atomic-rename OC's post-restart watcher does not reliably
+      // reload, so the agent never reached runtime (#464). So config.apply MUST
+      // be used even without meta.
       const ocConfigWithoutMeta = {
         gateway: { mode: "local" },
         plugins: { allow: ["anthropic"], entries: { anthropic: { enabled: true } } },
@@ -3278,7 +3281,7 @@ describe("regenerateOpenClawConfig", () => {
       mockGetClient.mockReturnValue({
         config: { get: mockConfigGet, apply: mockConfigApply },
       });
-      // File also has no meta (written by a previous meta-less config.apply)
+      // File also has no meta (fresh-install seed / previous meta-less write).
       mockedReadFileSync.mockReturnValue(
         JSON.stringify({
           gateway: { mode: "local" },
@@ -3288,8 +3291,9 @@ describe("regenerateOpenClawConfig", () => {
       await regenerateOpenClawConfig();
       await drainBackgroundCoroutine();
 
-      // config.apply must NOT be called — guard returns early when payload lacks meta
-      expect(mockConfigApply).not.toHaveBeenCalled();
+      // config.apply IS called — the meta-less payload applies in-process
+      // (reliable) instead of falling back to the watcher-lagged file write.
+      expect(mockConfigApply).toHaveBeenCalledTimes(1);
     });
 
     it("retries config.apply IMMEDIATELY (no backoff) when OC reports stale hash", async () => {

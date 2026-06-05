@@ -250,8 +250,8 @@ export function pushConfigInBackground(newContent: string): void {
           : supplementPayloadWithFileFields(newContent);
 
         // Meta-fallback: OC's in-memory config may lack meta immediately after a
-        // SIGUSR1 restart (before OC stamps it). The previous file still has meta;
-        // read it as a fallback so config.apply doesn't trigger a cascade restart.
+        // SIGUSR1 restart (before OC stamps it). The previous file may still have
+        // meta; fold it in so the applied config keeps OC's metadata intact.
         if (current.config) {
           const parsed = JSON.parse(supplemented) as Record<string, unknown>;
           if (!("meta" in parsed)) {
@@ -259,20 +259,21 @@ export function pushConfigInBackground(newContent: string): void {
           }
         }
 
-        // Meta-guard: if OC is running (current.config defined) but neither the
-        // in-memory config nor the file could supply meta, skip config.apply.
-        // A meta-less payload triggers OC's "missing-meta-before-write" anomaly
-        // → SIGUSR1 restart cascade. Fall back to inotify via file write.
-        if (current.config) {
-          const parsed = JSON.parse(supplemented) as Record<string, unknown>;
-          if (!("meta" in parsed)) {
-            console.log(
-              `[openclaw-config] push gen=${String(generation)}: OC config and file both lack meta → file write (cascade guard; inotify reload)`
-            );
-            writeConfigAtomic(newContent);
-            return;
-          }
-        }
+        // NOTE: there is deliberately NO meta-guard here any more. The old guard
+        // returned early to a `writeConfigAtomic` file write whenever the payload
+        // lacked `meta`, to dodge OpenClaw 4.27's "missing-meta-before-write"
+        // restart-cascade anomaly. That anomaly is GONE in the pinned OC
+        // 2026.5.28 — verified empirically: a meta-less `config.apply` that adds
+        // an agent is accepted and HOT-RELOADED (`reload applied (agents.list)`,
+        // no restart), and the agent lands in OC's runtime. Worse, the guard was
+        // actively harmful: during the first-install secrets-bootstrap restart
+        // window OC's config (and the fresh-install file seed) both lack meta, so
+        // the guard fired on every agent-create push and shunted it onto the
+        // file-write path — whose atomic-rename OC's post-restart watcher does
+        // NOT reliably reload, leaving the freshly-created agent absent from
+        // runtime and dispatch stuck on `unknown agent id` (#464). Letting the
+        // meta-less payload go through `config.apply` applies it in-process,
+        // reliably, with no file-watcher dependency.
 
         // No-op guard: skip config.apply entirely if the supplemented payload
         // is semantically equivalent to OC's current in-memory config. OC 5.3
