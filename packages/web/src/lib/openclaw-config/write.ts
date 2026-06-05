@@ -368,8 +368,9 @@ export function pushConfigInBackground(newContent: string): void {
 
         // WS-disconnected extended wait: see WS_DISCONNECTED_ERROR_FRAGMENT
         // commentary above. Sleep 2 s without consuming a backoff slot, up to
-        // 30 s total, so the WS reconnect during OC's restart lands the next
-        // config.apply via WS instead of via writeConfigAtomic-into-restart.
+        // NOT_CONNECTED_MAX_WAIT_MS (60 s) total, so the WS reconnect during
+        // OC's restart lands the next config.apply via WS instead of via
+        // writeConfigAtomic-into-restart.
         if (
           message.includes(WS_DISCONNECTED_ERROR_FRAGMENT) &&
           notConnectedWaitMs < NOT_CONNECTED_MAX_WAIT_MS
