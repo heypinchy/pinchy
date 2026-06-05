@@ -53,10 +53,29 @@ runs:
           docker compose $COMPOSE_FILES_INPUT logs --no-color --timestamps "$MOCK_SERVICE" > "e2e-artifacts/${MOCK_SERVICE}.log" 2>&1
         fi
         # The OC config Pinchy wrote and OC reloaded against — definitive
-        # answer to "did the agent/tool propagate". `exec -T` falls back to
-        # an empty file if the container is gone, which is fine.
-        docker compose $COMPOSE_FILES_INPUT exec -T pinchy cat /openclaw-config/openclaw.json \
-          > e2e-artifacts/openclaw-config.json 2>/dev/null
+        # answer to "did the agent/tool propagate".
+        #
+        # SECURITY: this repo is public, so the uploaded artifact is downloadable
+        # by anyone for `retention-days`. openclaw.json carries plaintext
+        # bootstrap/provider secrets — `gateway.auth.token`,
+        # `models.providers.*.apiKey`, and `plugins.entries.*.config.gatewayToken`.
+        # In E2E these are ephemeral/mock today, but redact UNCONDITIONALLY as
+        # defense-in-depth so a future suite wired to a real CI-secret key can
+        # never leak it into a public artifact. We scrub on the host with jq
+        # (preinstalled on GitHub ubuntu runners). `exec -T` returns empty if the
+        # container is gone; if the snapshot is empty or not valid JSON we emit a
+        # note instead of risking an unscrubbed partial write.
+        raw_config="$(docker compose $COMPOSE_FILES_INPUT exec -T pinchy cat /openclaw-config/openclaw.json 2>/dev/null)"
+        if [ -n "$raw_config" ] && printf '%s' "$raw_config" | jq empty >/dev/null 2>&1; then
+          printf '%s' "$raw_config" | jq '
+            (if .gateway?.auth?.token then .gateway.auth.token = "***REDACTED***" else . end)
+            | (if .models?.providers then .models.providers |= map_values(if has("apiKey") then .apiKey = "***REDACTED***" else . end) else . end)
+            | (if .plugins?.entries then .plugins.entries |= map_values(if (.config|type) == "object" and (.config|has("gatewayToken")) then .config.gatewayToken = "***REDACTED***" else . end) else . end)
+          ' > e2e-artifacts/openclaw-config.json
+        else
+          echo "openclaw.json absent or non-JSON at capture time (container gone or mid-write)" \
+            > e2e-artifacts/openclaw-config.json
+        fi
 
         # Quick-glance tails in CI log so a maintainer doesn't always need to
         # download the artifact for the obvious cases.
