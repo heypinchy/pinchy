@@ -18,6 +18,13 @@
 // deterministic readiness signal — the gate `config.get` could never be, because
 // `config.get` reads the config FILE, which leads the applied runtime.
 //
+// Polling cost is safe under contention: `agents.list` is a READ. Verified
+// against OC 2026.5.28's method descriptors — `config.apply` carries
+// `controlPlaneWrite: true` (the ~3-per-45s write rate-limit bucket that
+// motivated this whole gate), but `agents.list` does NOT, so polling it cannot
+// consume a write slot or contend with the very apply we're waiting on. The
+// default 500 ms interval is therefore a cheap read even across the full budget.
+//
 // Contract: this helper NEVER throws and NEVER blocks chat outright.
 //   - Gateway without agents.list (older OC)  → returns false immediately.
 //   - agents.list RPC errors transiently      → treated as "not yet present".
