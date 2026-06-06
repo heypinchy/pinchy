@@ -25,7 +25,7 @@ import { resolve } from "node:path";
 const REPO_ROOT = resolve(__dirname, "../../../../..");
 const DOCKERFILE_OPENCLAW = readFileSync(resolve(REPO_ROOT, "Dockerfile.openclaw"), "utf8");
 const WEB_PACKAGE_JSON = JSON.parse(
-  readFileSync(resolve(__dirname, "../../../package.json"), "utf8")
+  readFileSync(resolve(REPO_ROOT, "packages/web/package.json"), "utf8")
 ) as {
   dependencies?: Record<string, string>;
   devDependencies?: Record<string, string>;

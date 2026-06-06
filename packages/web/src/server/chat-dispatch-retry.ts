@@ -77,14 +77,25 @@ export const DISPATCH_RACE_PATTERN = /unknown agent id/i;
  * Case-insensitive against an upstream message-casing tweak.
  *
  * Safety / why a bounded retry is correct here, mirroring the agent-id case:
- * Pinchy OWNS the agent's model selection — the setup wizard picks a known
- * provider default and `/settings` validates against the provider catalog — so
- * "Unknown model" for a Pinchy-managed agent is the transient apply-lag, not a
- * real misconfiguration. The `maxTotalMs` budget still bounds the loop, so even
- * a genuinely-unknown model surfaces (never hangs forever). Unlike the agent
- * race there is NO deterministic gate: `agents.list` only reports agent
- * presence (already true here), and openclaw-node 0.12.1 exposes no runtime
- * `models` view, so the model race relies on the bounded-backoff backstop.
+ * Pinchy OWNS the agent's model selection and keeps it consistent with the
+ * configured providers — the setup wizard picks a known provider default,
+ * `/settings` validates the model against the provider catalog on save, and
+ * deleting a provider MIGRATES its agents to a remaining provider's default
+ * (`settings/providers/route.ts`). So in steady state no agent references a
+ * model OC can't resolve, and "Unknown model" at dispatch is the transient
+ * apply-lag — exactly the case worth retrying.
+ *
+ * The trade-off: a model that IS genuinely unresolvable (only reachable via an
+ * inconsistent out-of-band state, e.g. a direct DB edit) now costs up to the
+ * full `maxTotalMs` budget before the error surfaces, instead of failing fast.
+ * That's an accepted cost — the loop is still BOUNDED (never hangs forever), and
+ * the alternative (every wizard user's first message failing on the race) is
+ * far worse and far more common. Unlike the agent race there is NO deterministic
+ * gate: `agents.list` only reports agent presence (already true here), and
+ * openclaw-node 0.12.1 exposes no runtime `models` view, so the model race
+ * relies on the bounded-backoff backstop. (If openclaw-node later wraps a
+ * runtime-`models` read, gate the model race on it to fail genuine misconfigs
+ * fast — same upgrade the agent race got from `agents.list`.)
  */
 export const MODEL_DISPATCH_RACE_PATTERN = /unknown model/i;
 
@@ -95,6 +106,12 @@ export const MODEL_DISPATCH_RACE_PATTERN = /unknown model/i;
  * cold-start dispatch race — and must NOT be retried. Everything else that can
  * precede the model error (the `userMessagePersisted` accepted-dispatch ack,
  * lifecycle frames) is replay-safe / idempotent on the client.
+ *
+ * KEEP IN SYNC with openclaw-node's output-bearing `ChatChunk` types (currently
+ * `text` / `tool_use` / `tool_result` in 0.12.1). If a future openclaw-node adds
+ * an output chunk type (e.g. an image/audio delta) and it's missing here, a race
+ * error arriving AFTER that output could be retried and duplicate the output.
+ * This list is the safe default precisely because it errs toward NOT retrying.
  */
 const OUTPUT_CHUNK_TYPES: ReadonlySet<string> = new Set(["text", "tool_use", "tool_result"]);
 
