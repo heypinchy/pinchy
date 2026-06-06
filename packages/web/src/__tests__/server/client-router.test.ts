@@ -339,6 +339,54 @@ describe("ClientRouter", () => {
     expect(textChunks[1].content).toBe("there!");
   });
 
+  it("recovers from the cold-start 'Unknown model' dispatch race without surfacing an error", async () => {
+    // End-to-end guard for the OC 2026.6.1 setup-wizard flake: the cold-start
+    // config-apply storm lands the agent before its model's provider, so the
+    // first dispatch is ACCEPTED (emits the `userMessagePersisted` ack) and
+    // only THEN fails resolving the model. The chat path must retry and stream
+    // the recovered reply — never surface "Unknown model" to the browser.
+    const clientWs = createMockClientWs();
+    const clientMessageId = "client-msg-race";
+
+    async function* acceptedThenModelRace() {
+      yield { type: "userMessagePersisted" as const, clientMessageId, runId: "run-failed" };
+      yield {
+        type: "error" as const,
+        text: "Unknown model: google/gemini-2.5-pro",
+        runId: "run-failed",
+      };
+    }
+    async function* succeedsAfterProviderApplies() {
+      yield { type: "userMessagePersisted" as const, clientMessageId, runId: "run-ok" };
+      yield { type: "text" as const, text: "Sure, happy to help!" };
+      yield { type: "done" as const, text: "" };
+    }
+    mockChat
+      .mockReturnValueOnce(acceptedThenModelRace())
+      .mockReturnValueOnce(succeedsAfterProviderApplies());
+
+    await router.handleMessage(clientWs as any, {
+      type: "message",
+      content: "Hello, are you working?",
+      agentId: "agent-1",
+      clientMessageId,
+    });
+
+    // The race was retried (a second dispatch), not surfaced.
+    expect(mockChat).toHaveBeenCalledTimes(2);
+    const frames = clientWs.sent.map((s) => JSON.parse(s));
+    // The recovered reply reached the browser...
+    const chunks = frames.filter((m: { type: string }) => m.type === "chunk");
+    expect(chunks.map((c: { content: string }) => c.content).join("")).toContain(
+      "Sure, happy to help!"
+    );
+    // ...and the "Unknown model" error never did (no false "Smithers couldn't respond").
+    expect(frames.some((m: { type: string }) => m.type === "error")).toBe(false);
+    // The user's message was still acked immediately (ack-timeout safety), so the
+    // optimistic bubble isn't marked failed during the retry window.
+    expect(frames.some((m: { type: string }) => m.type === "ack")).toBe(true);
+  });
+
   it("should strip <final> tags from streamed chunks", async () => {
     const clientWs = createMockClientWs();
     async function* fakeStream() {
