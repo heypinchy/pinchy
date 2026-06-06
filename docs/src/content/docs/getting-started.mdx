@@ -53,6 +53,8 @@ After creating your account, Pinchy redirects you to the provider setup page. Ch
 
 Your API key is encrypted at rest using AES-256-GCM before being stored in the database.
 
+If the provider you configure has no vision-capable model, the wizard shows an amber warning: **No vision-capable model configured.** Adding Anthropic, OpenAI, or Google as a provider enables image uploads and scanned-PDF support.
+
 ## 5. Chat with Smithers
 
 Once your provider is configured, Pinchy redirects you to the chat interface. Your default agent — **Smithers** — greets you automatically and starts a short onboarding interview to learn about you (and your organization, if you're an admin). This builds context that every agent on the platform can use.

@@ -59,8 +59,7 @@ When Smithers calls these tools, the context is stored in the database and writt
 <Aside>
   The onboarding prompt is written to `USER.md` in the agent's workspace.
   OpenClaw reads this file as part of the system prompt. Once onboarding
-  completes, the file is replaced with the saved context and the `ONBOARDING.md`
-  file is deleted.
+  completes, `USER.md` is overwritten with the saved context.
 </Aside>
 
 ## Editing context later

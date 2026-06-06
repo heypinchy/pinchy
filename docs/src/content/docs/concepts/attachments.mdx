@@ -30,9 +30,9 @@ If you upload a file but never send the message, Pinchy's hourly cleanup sweep w
 
 ## Supported file types
 
-Pinchy currently accepts **PDFs** and **images** (JPEG, PNG, GIF, WebP). Files outside these types are rejected at upload with a clear error.
+Pinchy accepts **PDFs**, **images** (JPEG, PNG, GIF, WebP, HEIC, HEIF), and **text-data files** (CSV, plain text, Markdown, JSON, YAML). Files outside the accepted types are rejected at upload with a clear error.
 
-PDFs are passed to the agent as readable documents. Images are passed as visual input — useful for agents configured with a vision-capable model.
+PDFs are passed to the agent as readable documents. Images are passed as visual input — useful for agents configured with a vision-capable model. Text-data files (CSV, TXT, MD, JSON, YAML) are saved to the agent's workspace as re-readable files, so the agent can open them on demand rather than receiving the contents inline. DOCX and source-code files take a different path: their extracted text is inlined directly into the message. See [File uploads](/guides/file-uploads/) for the full lifecycle.
 
 <Aside type="tip">
   Agents must be configured with a model that supports vision to interpret image

@@ -7,10 +7,11 @@ When you send a message, Pinchy tracks whether it reached the agent. A message b
 
 ## When Retry appears
 
-There are three situations where Retry shows up, and in each case the button label is simply "Retry" — Pinchy handles the difference automatically:
+There are four situations where Retry shows up, and in each case the button label is simply "Retry" — Pinchy handles the difference automatically:
 
 - **Failed delivery** — The message never reached the agent. Clicking Retry re-sends the exact same message; no editing required.
-- **No response** — Your message was delivered but the agent didn't respond, usually after a brief disconnect. A "The agent didn't respond." bubble appears with a Retry button. Clicking it re-triggers the agent without resending your message.
+- **No response** — Your message was delivered but the agent didn't respond within 60 seconds, usually after a brief disconnect. A "No response" bubble appears with a Retry button. Clicking it re-triggers the agent without resending your message.
+- **Timed out** — The agent kept working but hit Pinchy's 15-minute per-run limit, so the server stopped it. This is the server-side watchdog, distinct from the 60-second "No response" case above. You'll see a separate "timed out after 15m" bubble with a Retry button.
 - **Partial response** — The agent started responding but the connection dropped mid-stream. The partial text is preserved, and a Retry button on the error bubble triggers a continuation. The new response appends below.
 
 ## What you don't need to do

@@ -5,14 +5,17 @@ description: How Pinchy tracks the health of the agent connection and what each 
 
 Pinchy tracks the health of the agent connection in real time so you always know what's happening — and what to do if something goes wrong.
 
-## The four states
+## The five states
 
-| State       | Indicator     | What it means                                        |
-| ----------- | ------------- | ---------------------------------------------------- |
-| Starting    | Yellow        | Pinchy is loading your conversation history.         |
-| Ready       | Green         | The agent is available and waiting for your message. |
-| Responding  | Green         | The agent is generating a reply. You can still type. |
-| Unavailable | Red or Yellow | The agent can't be reached right now.                |
+| State           | Indicator     | What it means                                         |
+| --------------- | ------------- | ----------------------------------------------------- |
+| Starting        | Yellow        | Pinchy is loading your conversation history.          |
+| Ready           | Green         | The agent is available and waiting for your message.  |
+| Responding      | Green         | The agent is generating a reply. You can still type.  |
+| Unavailable     | Red or Yellow | The agent can't be reached right now.                 |
+| Image too large | Red           | An attachment you tried to send exceeds the size cap. |
+
+When an attachment is rejected, the indicator reads **Image too large** and a banner asks you to send a smaller file before you can keep chatting.
 
 ## Unavailable reasons
 
@@ -56,7 +59,15 @@ Each occurrence writes a throttled `agent.upstream_format_error` audit entry (on
 
 ## Navigating away mid-conversation
 
-When you send a message and move to a different page in Pinchy, the chat keeps running in the background. Come back any time during the same browser session and the in-flight reply is right there — no reload, no lost output. A pulse dot next to the agent name in the sidebar shows when an agent is actively responding; a red dot indicates an error on the last turn. Closing the tab or doing a full page reload ends the session.
+When you send a message and move to a different page in Pinchy, the chat keeps running in the background. Come back any time during the same browser session and the in-flight reply is right there — no reload, no lost output. A pulse dot next to the agent name in the sidebar shows when an agent is actively responding; a red dot indicates an error on the last turn.
+
+A full page reload does not lose the reply either. Pinchy re-attaches the reloaded chat to the in-flight run through its stable session key, so any output that arrived while the page was reloading still lands in the same bubble and streaming continues. Only a restart of the Pinchy server drops in-flight runs.
+
+## Long-running responses time out
+
+A single response can't run forever. A server-side watchdog caps each run at about 15 minutes of wall-clock time. If a reply hasn't finished by then, Pinchy aborts it and shows a **"timed out after 15m — please retry"** error bubble with a **Retry** button so you can send the same message again.
+
+This cap is independent of the connection-state indicator above: the connection can be perfectly healthy and the agent still hit the limit on a genuinely long task. The timeout is per response, not per conversation — retrying starts a fresh run with the full 15-minute budget.
 
 ---
 

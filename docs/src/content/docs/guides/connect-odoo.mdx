@@ -35,7 +35,7 @@ The API key inherits the Odoo permissions of the user who created it. If you wan
    - **Database** — auto-detected after you enter the URL, or enter it manually
    - **Email** — the email of the Odoo user whose API key you created
    - **API Key** — the key you copied in step 1
-4. Click **Test & Connect**
+4. Click **Connect**
 
 ![Add Integration → Odoo wizard with URL, database, email, and API key fields](/screenshots/integrations-odoo-wizard.png)
 
@@ -62,12 +62,12 @@ A connection alone doesn't give any agent access. You need to explicitly grant i
 
 ### Access levels
 
-| Level            | Tools enabled                                         | Use case                     |
-| ---------------- | ----------------------------------------------------- | ---------------------------- |
-| **Read-only**    | schema, read, count, aggregate                        | Reporting, dashboards, Q&A   |
-| **Read & Write** | schema, read, count, aggregate, create, write         | Data entry, updating records |
-| **Full**         | schema, read, count, aggregate, create, write, delete | Full CRUD — use with caution |
-| **Custom**       | You pick individual tools                             | Fine-grained control         |
+| Level            | Tools enabled                                       | Use case                     |
+| ---------------- | --------------------------------------------------- | ---------------------------- |
+| **Read-only**    | list-models, describe-model, read, count, aggregate | Reporting, dashboards, Q&A   |
+| **Read & Write** | read-only set + create, write, attach-file          | Data entry, updating records |
+| **Full**         | read & write set + delete                           | Full CRUD — use with caution |
+| **Custom**       | You pick individual tools                           | Fine-grained control         |
 
 Each level maps directly to the Odoo tools that get enabled for the agent. See [Agent Permissions](/concepts/agent-permissions/) for the full tool list.
 
@@ -101,20 +101,26 @@ Each template auto-configures the agent's permissions, tools, and system instruc
 ### Inventory & Supply Chain
 
 - **Inventory Scout** _(read-only)_ — Stock monitoring, slow-mover detection, warehouse utilization and fulfillment speed.
+- **Warehouse Operator** _(read-write)_ — Goods receipts, picking confirmation, internal transfers and inventory adjustments, with a per-line confirmation step before validating moves.
 - **Procurement Agent** _(read-write)_ — Supplier comparison, price tracking, purchase order management and reorder suggestions.
 - **Manufacturing Planner** _(read-only)_ — Production order progress, BOM analysis, work center load and component shortages.
+- **Production Operator** _(read-write)_ — Runs manufacturing orders, advances work orders and reports finished and scrapped quantities, confirming before closing an order.
 - **Fleet Manager** _(read-only)_ — Vehicle tracking, service schedules, fuel consumption and total cost of ownership per vehicle.
 
 ### Finance
 
 - **Finance Controller** _(read-only)_ — Invoice tracking, payment status, aging analysis and margin reporting.
+- **Bookkeeper** _(read-write)_ — Books bills and invoices, reconciles payments and manages suppliers, drafting every entry first and posting only after explicit confirmation.
 - **Expense Auditor** _(read-only)_ — Reviews expense claims, flags policy violations, detects duplicates and unusual spending patterns.
+- **Approval Manager** _(read-write)_ — Reviews and approves expenses, leave and purchase orders against your policies, escalating anything above its authority.
 
 ### Human Resources
 
 - **HR Analyst** _(read-only)_ — Headcount reporting, leave balances, attendance tracking and contract overviews.
+- **HR Operator** _(read-write)_ — Records leave, logs attendance and updates non-sensitive employee details, confirming every write and leaving payroll and contracts to HR admins.
 - **Recruitment Coordinator** _(read-write)_ — Applicant tracking, job pipeline management, time-to-hire metrics and interview scheduling.
 - **Project Tracker** _(read-only)_ — Monitors project progress, deadlines, task load per employee and timesheet entries.
+- **Project Manager** _(read-write)_ — Creates and assigns tasks, plans milestones and logs timesheets, confirming before bulk changes or archiving.
 
 ### Marketing & E-Commerce
 
@@ -123,7 +129,7 @@ Each template auto-configures the agent's permissions, tools, and system instruc
 - **Website Analyst** _(read-only)_ — Tracks online sales, visitor behavior, top products and conversion funnels.
 
 :::tip
-Read-only templates are safe to deploy immediately — they can't modify your data. Read-write templates (**CRM & Sales Assistant**, **Procurement Agent**, **Customer Service**, **Recruitment Coordinator**) can create or modify records, so review their permissions and test them in a sandbox before rolling them out to your team.
+Read-only templates are safe to deploy immediately — they can't modify your data. Read-write templates (**CRM & Sales Assistant**, **Customer Service**, **Procurement Agent**, **Recruitment Coordinator**, **Warehouse Operator**, **Production Operator**, **Bookkeeper**, **Approval Manager**, **HR Operator**, **Project Manager**) can create or modify records, so review their permissions and test them in a sandbox before rolling them out to your team.
 :::
 
 :::note
@@ -140,16 +146,16 @@ If your Odoo database hosts more than one `res.company`, Pinchy adds two layers 
 
 **Clearer many2one collisions.** When an `odoo_create` or `odoo_write` lookup matches more than one record across companies, the error explains the multi-company collision instead of returning a generic "multiple matches" string — so the agent can retry with a `company_id` constraint rather than guessing.
 
-The stock **Penny** (Accountant Assistant) and **Bookkeeper** templates also include guidance that teaches the agent to disambiguate multi-company records up front. Newly-created agents pick this up automatically; existing agents keep their stored `AGENTS.md` until you recreate them, but the runtime cross-company guard applies regardless.
+The stock **Finance Controller** and **Bookkeeper** templates also include guidance that teaches the agent to disambiguate multi-company records up front. (Finance Controller suggests **Penny** as one of its agent names, so you may see this agent under that name.) Newly-created agents pick this up automatically; existing agents keep their stored `AGENTS.md` until you recreate them, but the runtime cross-company guard applies regardless.
 
 ## Re-syncing when Odoo permissions change
 
 If the Odoo admin changes the API user's permissions after you've set up the connection, agents may lose access to certain models. When this happens, the agent gets a clear error message explaining that access was denied.
 
-To re-sync: go to **Settings → Integrations**, select the connection, and click **Re-sync**. Pinchy probes the available models again and updates the connection accordingly.
+To re-sync: go to **Settings → Integrations**, open the connection's `…` menu, and click **Sync Schema**. Pinchy probes the available models again and updates the connection accordingly.
 
 :::warning
-Re-syncing may remove models that are no longer accessible. Agents that were configured to use those models will lose access to them.
+Syncing the schema may remove models that are no longer accessible. Agents that were configured to use those models will lose access to them.
 :::
 
 ## What's next

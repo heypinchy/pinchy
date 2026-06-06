@@ -11,6 +11,9 @@ export default defineConfig({
     // Brief-lived alternate URL added by the openclaw-tmpfs PR before
     // v0.5.0 shipped. Content was consolidated into /guides/upgrading/.
     '/upgrade-notes/v0.5.0': '/guides/upgrading',
+    // The standalone v0.5.5 upgrade-notes page was removed; its content is
+    // covered by /guides/upgrading/.
+    '/upgrading/v0-5-5': '/guides/upgrading',
   },
   integrations: [
     starlight({
@@ -138,6 +141,7 @@ export default defineConfig({
             { label: 'Connect Email (Gmail)', slug: 'guides/connect-email' },
             { label: 'Connect Odoo', slug: 'guides/connect-odoo' },
             { label: 'Upload Files in Chat', slug: 'guides/file-uploads' },
+            { label: 'Install as an App', slug: 'guides/install-as-app' },
             { label: 'Set Up Web Search', slug: 'guides/web-search-setup' },
             { label: 'Message Delivery & Retry', slug: 'guides/retry-messages' },
             { label: 'Image Attachments', slug: 'guides/image-attachments' },
@@ -161,12 +165,6 @@ export default defineConfig({
             { label: 'Audit Trail', slug: 'concepts/audit-trail' },
             { label: 'Attachments', slug: 'concepts/attachments' },
             { label: 'Integrations', slug: 'concepts/integrations' },
-          ],
-        },
-        {
-          label: 'Upgrade Notes',
-          items: [
-            { label: 'v0.5.5', slug: 'upgrading/v0-5-5' },
           ],
         },
         {
