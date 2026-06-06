@@ -62,6 +62,42 @@ import type { ChatChunk, ChatOptions } from "openclaw-node";
  */
 export const DISPATCH_RACE_PATTERN = /unknown agent id/i;
 
+/**
+ * Second cold-start race shape: the config-apply storm can land an agent
+ * (`agents.list`) into OC's runtime BEFORE its model's provider (`models`).
+ * OC then ACCEPTS the dispatch (the agent id is known) but the run immediately
+ * errors `FailoverError: Unknown model: <provider>/<model>` because the
+ * provider block hasn't applied yet. Observed on the OC 2026.6.1 setup-wizard
+ * Google spec: agent applied at 07:18:04, `models` at 07:19:06, first chat
+ * dispatched at 07:18:26 → "Unknown model" (the provider landed ~40 s later).
+ *
+ * Anchored on `unknown model` (OC's internal phrase) so an unrelated provider
+ * error that merely contains the word "model" (e.g. "provider/model ended with
+ * an incomplete terminal response") cannot hijack the retry branch.
+ * Case-insensitive against an upstream message-casing tweak.
+ *
+ * Safety / why a bounded retry is correct here, mirroring the agent-id case:
+ * Pinchy OWNS the agent's model selection — the setup wizard picks a known
+ * provider default and `/settings` validates against the provider catalog — so
+ * "Unknown model" for a Pinchy-managed agent is the transient apply-lag, not a
+ * real misconfiguration. The `maxTotalMs` budget still bounds the loop, so even
+ * a genuinely-unknown model surfaces (never hangs forever). Unlike the agent
+ * race there is NO deterministic gate: `agents.list` only reports agent
+ * presence (already true here), and openclaw-node 0.12.1 exposes no runtime
+ * `models` view, so the model race relies on the bounded-backoff backstop.
+ */
+export const MODEL_DISPATCH_RACE_PATTERN = /unknown model/i;
+
+/**
+ * Chunk types that represent real model output the user would see (or that a
+ * retry would duplicate). Once one of these is yielded, the run is genuinely
+ * producing a response, so a later error is a downstream failure — never a
+ * cold-start dispatch race — and must NOT be retried. Everything else that can
+ * precede the model error (the `userMessagePersisted` accepted-dispatch ack,
+ * lifecycle frames) is replay-safe / idempotent on the client.
+ */
+const OUTPUT_CHUNK_TYPES: ReadonlySet<string> = new Set(["text", "tool_use", "tool_result"]);
+
 /** Backoff/budget policy for the dispatch-race retry loop. */
 export interface DispatchRetryPolicy {
   /** Delay before the first retry; doubles each attempt. Default 500 ms. */
@@ -125,16 +161,26 @@ export interface DispatchRetryDeps {
  * `unknown agent id` dispatch-race error.
  *
  * Contract:
- *   - Yields ALL chunks from the first attempt whose first chunk is NOT an
- *     unknown-agent-id error.
- *   - While the first chunk IS an unknown-agent-id error, swallows it, waits a
- *     backoff delay (exponential, capped at `maxDelayMs`), and restarts the
- *     chat — repeating until success or the `maxTotalMs` budget is exhausted.
+ *   - Yields ALL chunks from an attempt that produces real model output (or any
+ *     non-race error).
+ *   - While a race error arrives BEFORE any model-output chunk (text / tool
+ *     use / tool result), swallows it, waits/gates, and restarts the chat —
+ *     repeating until success or the `maxTotalMs` budget is exhausted.
  *   - On budget exhaustion, yields the final race error so the caller surfaces
  *     it (never loops forever).
- *   - Never retries on errors arriving AFTER the first chunk, or on any error
- *     not matching the dispatch-race pattern — those are real downstream
+ *   - Never retries on errors arriving AFTER model output has started, or on any
+ *     error not matching a dispatch-race pattern — those are real downstream
  *     failures the caller's error path must handle.
+ *
+ * Why "before model output" and not "first chunk": a client-originated message
+ * carries a `clientMessageId`, so OpenClaw ACKs an accepted dispatch with a
+ * leading `userMessagePersisted` chunk. In the provider/models apply-lag race
+ * the dispatch is ACCEPTED (ack emitted) and only THEN fails resolving the model
+ * → the race error is the SECOND chunk, after the ack. Gating on model output
+ * (not chunk position) catches that while still refusing to retry once real
+ * tokens have streamed. The leading ack is yielded immediately (not buffered) so
+ * the browser's ack-timeout clears and the user's message isn't marked failed;
+ * a retry re-emits it, which is idempotent on the client (ack dedupes by id).
  */
 export async function* chatWithDispatchRaceRetry(
   message: string,
@@ -149,17 +195,32 @@ export async function* chatWithDispatchRaceRetry(
   const start = now();
   for (let attempt = 0; ; attempt++) {
     const stream = deps.chat(message, options);
-    let isFirstChunk = true;
+    // Real model output yielded yet this attempt? Leading ack/lifecycle chunks
+    // (e.g. `userMessagePersisted`) are NOT output: the model race fails AFTER
+    // the accepted-dispatch ack, so we must still treat that error as a race.
+    // Once real output streams, a later error is a genuine downstream failure.
+    let sawOutput = false;
     let raceError: ChatChunk | null = null;
+    // Which cold-start race fired: "agent" has a deterministic agents.list gate;
+    // "model" (provider/models not applied yet) does not, so it backoff-only.
+    let raceKind: "agent" | "model" | null = null;
 
     for await (const chunk of stream) {
-      if (isFirstChunk && chunk.type === "error" && DISPATCH_RACE_PATTERN.test(chunk.text)) {
-        // Dispatch-race detected on the first chunk. Don't yield it; record the
+      if (!sawOutput && chunk.type === "error") {
+        // Race detected before any model output. Don't yield it; record the
         // observation and let the loop decide whether to retry or give up.
-        raceError = chunk;
-        break;
+        if (DISPATCH_RACE_PATTERN.test(chunk.text)) {
+          raceError = chunk;
+          raceKind = "agent";
+          break;
+        }
+        if (MODEL_DISPATCH_RACE_PATTERN.test(chunk.text)) {
+          raceError = chunk;
+          raceKind = "model";
+          break;
+        }
       }
-      isFirstChunk = false;
+      if (OUTPUT_CHUNK_TYPES.has(chunk.type)) sawOutput = true;
       yield chunk;
     }
 
@@ -184,11 +245,17 @@ export async function* chatWithDispatchRaceRetry(
       return;
     }
 
-    // Deterministic readiness gate (preferred): poll OC's runtime agents.list —
-    // the same view the dispatch handler checks — until the agent is present,
-    // bounded by the remaining budget. On success, re-dispatch immediately into
-    // a ready runtime instead of sleeping a backoff window and hoping.
-    if (deps.awaitAgentReady) {
+    // Deterministic readiness gate (preferred) — AGENT race only: poll OC's
+    // runtime agents.list (the same view the dispatch handler checks) until the
+    // agent is present, bounded by the remaining budget. On success, re-dispatch
+    // immediately into a ready runtime instead of sleeping a backoff window.
+    //
+    // The MODEL race deliberately skips this gate: the agent is ALREADY present
+    // (OC accepted the dispatch before failing on the model), so the gate would
+    // return true and immediate-continue into a hot loop while the provider is
+    // still unapplied. With no runtime-`models` introspection to gate on, the
+    // model race relies on the capped backoff below.
+    if (raceKind === "agent" && deps.awaitAgentReady) {
       const ready = await deps.awaitAgentReady(remaining);
       if (ready) continue;
       // Not confirmed within the window (timeout, or unobservable on an older
