@@ -171,6 +171,17 @@ describe("GraphAdapter.search", () => {
     expect(decoded).toContain("isRead eq false");
   });
 
+  it("escapes single quotes in $filter values (OData injection guard)", async () => {
+    const adapter = new GraphAdapter({ accessToken: "tok" });
+    (fetch as Mock).mockResolvedValueOnce({ ok: true, json: async () => ({ value: [] }) });
+    // unread forces the $filter path; the apostrophe must be doubled so it
+    // can't terminate the OData string literal early.
+    await adapter.search({ from: "o'brien@example.com", unread: true });
+    const url = (fetch as Mock).mock.calls[0][0] as string;
+    const decoded = decodeURIComponent(url).replace(/\+/g, " ");
+    expect(decoded).toContain("from/emailAddress/address eq 'o''brien@example.com'");
+  });
+
   it("folder scopes via mailFolders path", async () => {
     const adapter = new GraphAdapter({ accessToken: "tok" });
     (fetch as Mock).mockResolvedValueOnce({ ok: true, json: async () => ({ value: [] }) });

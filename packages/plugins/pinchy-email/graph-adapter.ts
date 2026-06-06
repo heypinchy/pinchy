@@ -25,6 +25,14 @@ function mapFolder(f: Folder): string {
   return g;
 }
 
+// Escape a value for use inside an OData single-quoted string literal. OData
+// escapes a single quote by doubling it; without this an apostrophe in a search
+// term (e.g. "O'Brien") would terminate the literal early and break — or inject
+// into — the $filter expression.
+function odataString(v: string): string {
+  return v.replace(/'/g, "''");
+}
+
 interface GraphMessage {
   id: string;
   subject: string | null;
@@ -130,9 +138,10 @@ export class GraphAdapter implements EmailAdapter {
     if (searchTerms.length > 0 && filters.length > 0) {
       // Microsoft Graph v1.0 does not allow $search and $filter together.
       // Convert text terms to OData $filter predicates instead.
-      if (opts.from) filters.push(`from/emailAddress/address eq '${opts.from}'`);
-      if (opts.to) filters.push(`toRecipients/any(r: r/emailAddress/address eq '${opts.to}')`);
-      if (opts.subject) filters.push(`contains(subject, '${opts.subject}')`);
+      if (opts.from) filters.push(`from/emailAddress/address eq '${odataString(opts.from)}'`);
+      if (opts.to)
+        filters.push(`toRecipients/any(r: r/emailAddress/address eq '${odataString(opts.to)}')`);
+      if (opts.subject) filters.push(`contains(subject, '${odataString(opts.subject)}')`);
       params.set("$filter", filters.join(" and "));
       params.set("$orderby", "receivedDateTime desc");
     } else if (searchTerms.length > 0) {
