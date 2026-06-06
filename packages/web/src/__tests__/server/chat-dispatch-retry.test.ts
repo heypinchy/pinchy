@@ -11,7 +11,11 @@
 
 import { describe, it, expect, vi } from "vitest";
 import type { ChatChunk, ChatOptions } from "openclaw-node";
-import { chatWithDispatchRaceRetry, DISPATCH_RACE_PATTERN } from "@/server/chat-dispatch-retry";
+import {
+  chatWithDispatchRaceRetry,
+  DISPATCH_RACE_PATTERN,
+  MODEL_DISPATCH_RACE_PATTERN,
+} from "@/server/chat-dispatch-retry";
 
 function makeStream(chunks: ChatChunk[]) {
   return async function* () {
@@ -325,6 +329,162 @@ describe("chatWithDispatchRaceRetry", () => {
       expect(DISPATCH_RACE_PATTERN.test(got[0].text)).toBe(true);
       expect(clock.now()).toBeLessThanOrEqual(3000);
     });
+  });
+
+  // The cold-start config-apply storm can land the AGENT (`agents.list`) before
+  // its model's PROVIDER (`models`): OpenClaw accepts the dispatch (agent id is
+  // known) but the run immediately errors `FailoverError: Unknown model:
+  // <provider>/<model>` because the provider block isn't applied yet. Observed
+  // directly on the 2026.6.1 setup-wizard Google spec: agent applied 07:18:04,
+  // `models` applied 07:19:06, first chat dispatched 07:18:26 → "Unknown model".
+  // This is the SAME transient race as "unknown agent id", one config layer up,
+  // so the wrapper must retry it too — but via bounded backoff, NOT the
+  // agents.list gate (the agent is already present, so the gate would return
+  // true and hot-loop).
+  describe("model dispatch race (cold-start provider/models apply lag)", () => {
+    function modelRaceError(ref = "google/gemini-2.5-pro"): ChatChunk[] {
+      return [{ type: "error", text: `Unknown model: ${ref}`, runId: "r0" }];
+    }
+
+    it("retries the transient first-chunk 'Unknown model' race until the provider applies, swallowing it", async () => {
+      const successful: ChatChunk[] = [
+        { type: "text", text: "Sure, happy to help!", runId: "r1" },
+        { type: "done", text: "", runId: "r1" },
+      ];
+      const chat = vi
+        .fn()
+        .mockImplementationOnce(makeStream(modelRaceError()))
+        .mockImplementationOnce(makeStream(modelRaceError()))
+        .mockImplementationOnce(makeStream(modelRaceError()))
+        .mockImplementationOnce(makeStream(successful));
+
+      const clock = fakeClock();
+      const onDispatchRaceObserved = vi.fn();
+
+      const got = await collect(
+        chatWithDispatchRaceRetry(
+          "hello",
+          { agentId: "596489fc-45c7-4113-8a82-b5f8d28861d7" } as ChatOptions,
+          { chat: chat as never, delay: clock.delay, now: clock.now, onDispatchRaceObserved },
+          { baseDelayMs: 500, maxDelayMs: 5000, maxTotalMs: 150000 }
+        )
+      );
+
+      expect(got).toEqual(successful);
+      expect(chat).toHaveBeenCalledTimes(4);
+      // Bounded backoff governs the model race (no agents.list gate available
+      // for provider/models readiness): 500, 1000, 2000.
+      expect(clock.delay.mock.calls.map((c) => c[0])).toEqual([500, 1000, 2000]);
+      // Audited ONCE per raced dispatch, with the model-error text.
+      expect(onDispatchRaceObserved).toHaveBeenCalledTimes(1);
+      expect(onDispatchRaceObserved.mock.calls[0][0].providerError).toMatch(/unknown model/i);
+    });
+
+    it("retries when the model error follows the userMessagePersisted ack (the real OC chunk order)", async () => {
+      // Client-originated messages carry a clientMessageId, so OpenClaw ACKs the
+      // accepted dispatch with a leading `userMessagePersisted` chunk and only
+      // THEN fails resolving the model → the race error is the SECOND chunk. The
+      // ack must pass through (so the browser's ack-timeout clears) AND the
+      // error must still trigger a retry.
+      const ack: ChatChunk = {
+        type: "userMessagePersisted",
+        text: "",
+        runId: "r0",
+      } as unknown as ChatChunk;
+      const failedAttempt: ChatChunk[] = [ack, ...modelRaceError()];
+      const successfulAttempt: ChatChunk[] = [
+        ack,
+        { type: "text", text: "Sure, happy to help!", runId: "r1" },
+        { type: "done", text: "", runId: "r1" },
+      ];
+      const chat = vi
+        .fn()
+        .mockImplementationOnce(makeStream(failedAttempt))
+        .mockImplementationOnce(makeStream(successfulAttempt));
+
+      const clock = fakeClock();
+
+      const got = await collect(
+        chatWithDispatchRaceRetry(
+          "hello",
+          { agentId: "a", clientMessageId: "c-1" } as ChatOptions,
+          { chat: chat as never, delay: clock.delay, now: clock.now },
+          { baseDelayMs: 500, maxDelayMs: 5000, maxTotalMs: 150000 }
+        )
+      );
+
+      // The failed attempt's ack passed through (ack-timeout safety); the model
+      // error was swallowed and retried; the successful attempt streamed.
+      expect(chat).toHaveBeenCalledTimes(2);
+      expect(got.map((c) => c.type)).toEqual([
+        "userMessagePersisted",
+        "userMessagePersisted",
+        "text",
+        "done",
+      ]);
+      // The "Unknown model" error never reached the caller.
+      expect(got.some((c) => c.type === "error")).toBe(false);
+    });
+
+    it("uses bounded backoff for the model race and does NOT consult the agents.list gate", async () => {
+      // The agent IS already present in the runtime (that's why OC accepted the
+      // dispatch before failing on the model), so gating on agents.list would
+      // return true and immediate-continue into a hot loop. The model race must
+      // therefore bypass the gate and rely on backoff.
+      const chat = vi
+        .fn()
+        .mockImplementationOnce(makeStream(modelRaceError()))
+        .mockImplementationOnce(makeStream([{ type: "done", text: "", runId: "r1" }]));
+
+      const clock = fakeClock();
+      const awaitAgentReady = vi.fn(async () => true);
+
+      await collect(
+        chatWithDispatchRaceRetry(
+          "hello",
+          { agentId: "a" } as ChatOptions,
+          { chat: chat as never, delay: clock.delay, now: clock.now, awaitAgentReady },
+          { baseDelayMs: 500, maxDelayMs: 5000, maxTotalMs: 150000 }
+        )
+      );
+
+      // Gate NOT consulted for the model race; backoff used instead.
+      expect(awaitAgentReady).not.toHaveBeenCalled();
+      expect(clock.delay.mock.calls.map((c) => c[0])).toEqual([500]);
+    });
+
+    it("surfaces the 'Unknown model' error once the wall-clock budget is exhausted (bounded)", async () => {
+      const chat = vi.fn(makeStream(modelRaceError()));
+      const clock = fakeClock();
+
+      const got = await collect(
+        chatWithDispatchRaceRetry(
+          "hello",
+          { agentId: "a" } as ChatOptions,
+          { chat: chat as never, delay: clock.delay, now: clock.now },
+          { baseDelayMs: 500, maxDelayMs: 5000, maxTotalMs: 3000 }
+        )
+      );
+
+      expect(got).toHaveLength(1);
+      expect(got[0].type).toBe("error");
+      expect(MODEL_DISPATCH_RACE_PATTERN.test(got[0].text)).toBe(true);
+      expect(clock.now()).toBeLessThanOrEqual(3000);
+    });
+  });
+
+  it("MODEL_DISPATCH_RACE_PATTERN matches the OC FailoverError shape, not unrelated model errors", () => {
+    expect(MODEL_DISPATCH_RACE_PATTERN.test("Unknown model: google/gemini-2.5-pro")).toBe(true);
+    expect(MODEL_DISPATCH_RACE_PATTERN.test("FailoverError: Unknown model: openai/gpt-5.5")).toBe(
+      true
+    );
+    // A streaming/terminal failure that merely mentions "model" must NOT match.
+    expect(
+      MODEL_DISPATCH_RACE_PATTERN.test(
+        "FailoverError: provider/model ended with an incomplete terminal response"
+      )
+    ).toBe(false);
+    expect(MODEL_DISPATCH_RACE_PATTERN.test('unknown agent id "abc"')).toBe(false);
   });
 
   it("DISPATCH_RACE_PATTERN matches the exact OC 2026.5.x error message shape", () => {
