@@ -27,7 +27,10 @@ function mapFolder(f: Folder): string {
 
 function buildGmailQuery(opts: SearchOptions): string {
   const parts: string[] = [];
-  const quote = (v: string) => (/[\s"]/.test(v) ? `"${v.replace(/"/g, '\\"')}"` : v);
+  // Escape backslashes BEFORE quotes so a trailing "\" can't escape the closing
+  // quote (e.g. `foo\` → `"foo\\"`, not the broken `"foo\"`).
+  const quote = (v: string) =>
+    /[\s"\\]/.test(v) ? `"${v.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"` : v;
   if (opts.from) parts.push(`from:${quote(opts.from)}`);
   if (opts.to) parts.push(`to:${quote(opts.to)}`);
   if (opts.subject) parts.push(`subject:${quote(opts.subject)}`);
