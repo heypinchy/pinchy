@@ -155,7 +155,7 @@ docker compose -f docker-compose.yml -f docker-compose.dev.yml up db openclaw -d
 export DATABASE_URL=postgresql://pinchy:pinchy_dev@localhost:5434/pinchy
 
 # Run database migrations
-pnpm db:migrate
+pnpm -C packages/web db:migrate
 
 # Start the dev server
 pnpm dev
@@ -166,14 +166,17 @@ The app starts at [http://localhost:7777](http://localhost:7777) with hot reload
 ### Available commands
 
 ```bash
+# Run from the repository root
 pnpm dev          # Start dev server with hot reload
 pnpm build        # Production build
 pnpm test         # Run test suite
-pnpm lint         # Run ESLint
-pnpm format       # Format code with Prettier
-pnpm db:generate  # Generate new migration from schema changes
-pnpm db:migrate   # Apply pending migrations
-pnpm db:studio    # Open Drizzle Studio (database browser)
+
+# Run from packages/web (no root script forwards these)
+pnpm -C packages/web lint         # Run ESLint
+pnpm -C packages/web format       # Format code with Prettier
+pnpm -C packages/web db:generate  # Generate new migration from schema changes
+pnpm -C packages/web db:migrate   # Apply pending migrations
+pnpm -C packages/web db:studio    # Open Drizzle Studio (database browser)
 ```
 
-All commands run from the repository root and are forwarded to `packages/web/` via pnpm workspace.
+Only `dev`, `build`, and `test` are exposed at the repository root and forwarded to `packages/web/`. The linting, formatting, and database commands live in `packages/web/` only, so run them with `pnpm -C packages/web <command>`.

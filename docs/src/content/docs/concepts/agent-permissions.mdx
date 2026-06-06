@@ -149,12 +149,12 @@ For the full setup walkthrough, see [Connect Email](/guides/connect-email/). For
 
 ## Agent templates and default permissions
 
-When you create an agent, you pick a template. Each template comes with different default tool permissions:
+When you create an agent, you pick a template. Each template comes with different default tool permissions. Every new agent also starts with **Write files** (`pinchy_write`) enabled by default — reading the workspace is always on, and the create flow adds write so the agent can save notes and exports out of the box. You can toggle it off later in the Permissions tab.
 
-| Template           | Default tools                           | Use case                                           |
-| ------------------ | --------------------------------------- | -------------------------------------------------- |
-| **Knowledge Base** | `pinchy_ls`, `pinchy_read` (safe tools) | Answer questions from selected documents           |
-| **Custom Agent**   | None                                    | Start from scratch, configure permissions manually |
+| Template           | Default tools   | Use case                                           |
+| ------------------ | --------------- | -------------------------------------------------- |
+| **Knowledge Base** | **Write files** | Answer questions from selected documents           |
+| **Custom Agent**   | **Write files** | Start from scratch, configure permissions manually |
 
 After creating an agent, you can change its permissions at any time via the Permissions tab.
 

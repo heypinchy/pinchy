@@ -11,15 +11,15 @@ This page covers image-specific behavior. For the broader picture — PDFs, audi
 
 ## What you can send
 
-| Format     | Status                                                              |
-| ---------- | ------------------------------------------------------------------- |
-| **JPEG**   | Sent as-is when small, re-encoded to WebP when large                |
-| **PNG**    | Always re-encoded to WebP (PNG → WebP usually shrinks 50–90%)       |
-| **WebP**   | Sent as-is when small, re-encoded to fit when large                 |
-| **HEIC**   | Convert to JPEG or PNG first — your phone's share sheet can do this |
-| **Others** | Convert to JPEG, PNG, or WebP first                                 |
+| Format     | Status                                                          |
+| ---------- | --------------------------------------------------------------- |
+| **JPEG**   | Sent as-is when small, re-encoded to WebP when large            |
+| **PNG**    | Always re-encoded to WebP (PNG → WebP usually shrinks 50–90%)   |
+| **WebP**   | Sent as-is when small, re-encoded to fit when large             |
+| **HEIC**   | Accepted directly — Pinchy re-encodes it to WebP before sending |
+| **Others** | Convert to JPEG, PNG, or WebP first                             |
 
-Up to **15 MB per image**. If a file exceeds that, you'll see "Image exceeds the 15 MB size limit" in the composer — no message is sent.
+Up to **15 MB per image**. If a file exceeds that, the server rejects the upload with "File exceeds maximum size of 15 MB", and the rejection appears on the failed upload chip once the server responds.
 
 ## What happens automatically
 
@@ -47,6 +47,8 @@ Most of the time you don't need to think about this — the agent picks the righ
 ## Model capability matrix
 
 Pinchy tracks four input-modality capabilities per model. Each capability is either present or absent — there's no partial support.
+
+Pinchy also tracks two model-trait capabilities — `long-context` and `tools` — alongside the four input modalities. Templates can require these too (see [How templates declare required capabilities](#how-templates-declare-required-capabilities) below, where a document-analyzer template requires `long-context`).
 
 | Capability    | What it unlocks                                                                |
 | ------------- | ------------------------------------------------------------------------------ |

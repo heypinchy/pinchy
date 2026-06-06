@@ -67,7 +67,7 @@ Mount read-only (`:ro`) when possible — OpenClaw reads extensions at startup; 
 
 The override file is for _additions_, not _replacements_. The following are outside the supported surface and may break on any release:
 
-- Replacing the `image:` on either `pinchy` or `pinchy-openclaw` with a different image
+- Replacing the `image:` on the `pinchy` or `openclaw` service with a different image
 - Renaming volumes, services, or networks
 - Rewiring inter-service dependencies or health checks
 - Changing the Postgres image to a non-17 version

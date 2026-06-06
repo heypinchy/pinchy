@@ -99,14 +99,18 @@ List agents visible to the current user. Admins see all agents. Non-admin users 
 
 ### `POST /api/agents`
 
-Create a new agent. The agent inherits default tool permissions from its template. Use `PATCH /api/agents/:id` to configure permissions after creation.
+Create a new agent. **Admin only.** The agent inherits default tool permissions from its template. Use `PATCH /api/agents/:id` to configure permissions after creation.
 
 **Request body:**
 
-| Field        | Type   | Required | Description                                                                                                                              |
-| ------------ | ------ | -------- | ---------------------------------------------------------------------------------------------------------------------------------------- |
-| `name`       | string | Yes      | Display name for the agent                                                                                                               |
-| `templateId` | string | Yes      | Template to use. Call `GET /api/templates` for the full live list (Knowledge Base, custom, document-analysis, Odoo, and email families). |
+| Field                 | Type     | Required | Description                                                                                                                              |
+| --------------------- | -------- | -------- | ---------------------------------------------------------------------------------------------------------------------------------------- |
+| `name`                | string   | Yes      | Display name for the agent                                                                                                               |
+| `templateId`          | string   | Yes      | Template to use. Call `GET /api/templates` for the full live list (Knowledge Base, custom, document-analysis, Odoo, and email families). |
+| `tagline`             | string   | No       | Short subtitle shown under the agent name. Falls back to the template's default tagline.                                                 |
+| `pluginConfig`        | object   | No       | Plugin configuration, e.g. `{ "pinchy-files": { "allowed_paths": ["/data/hr"] } }`. Required for file-access templates.                  |
+| `connectionId`        | string   | No       | Integration connection to attach. Required for Odoo and email templates.                                                                 |
+| `defaultAllowedTools` | string[] | No       | Extra tool IDs to allow on creation, merged with the template's defaults.                                                                |
 
 **Example — Knowledge Base agent:**
 
@@ -130,8 +134,19 @@ Create a new agent. The agent inherits default tool permissions from its templat
 
 **Errors:**
 
-- `400` — missing or invalid `name` or `templateId`
+- `400` — missing or invalid `name` or `templateId`, or a template requirement is unmet (for example, a file template without a selected directory, or an Odoo/email template without a `connectionId`)
 - `401` — not authenticated
+- `403` — not an admin
+- `422` — `template_capability_unavailable`: the default provider has no model with the capabilities the template requires. The body lists what's missing:
+
+```json
+{
+  "error": "template_capability_unavailable",
+  "message": "Template requires vision but provider ollama-local has no matching model.",
+  "missingCapabilities": ["vision"],
+  "docsUrl": "https://docs.heypinchy.com/guides/ollama-setup#models-for-agent-templates"
+}
+```
 
 ### `GET /api/agents/:id`
 
@@ -190,6 +205,41 @@ Delete an agent. **Admin only.** Personal agents (auto-created Smithers) cannot 
 - `401` — not authenticated
 - `403` — not an admin
 - `404` — agent not found
+
+### `POST /api/agents/:agentId/uploads`
+
+Stage a file for an upcoming chat message. The file is held in the agent's staging area; the chat sends the returned `id` as one of its `attachmentIds` rather than inlining the file. Anyone with access to the agent can upload.
+
+**Headers:**
+
+| Header              | Required | Description                                          |
+| ------------------- | -------- | ---------------------------------------------------- |
+| `x-pinchy-draft-id` | Yes      | UUID grouping uploads for the message being composed |
+
+**Request body:** `multipart/form-data` with a single `file` field.
+
+**Accepted types:** images (`image/jpeg`, `image/png`, `image/webp`, `image/gif`, `image/heic`, `image/heif`), `application/pdf`, and text formats (`text/plain`, `text/csv`, `text/markdown`, `application/json`, `text/yaml`). The detected content type must match the declared one. Maximum file size is **15 MB**.
+
+**Response:** `201 Created`
+
+```json
+{
+  "id": "upload-uuid",
+  "filename": "report.pdf",
+  "mimeType": "application/pdf",
+  "sizeBytes": 51234
+}
+```
+
+Send `id` in the chat message's `attachmentIds` (up to **10** attachments per message). Staged files expire after **24 hours** and are removed by an hourly garbage-collection sweep if never attached.
+
+**Errors:**
+
+- `400` — missing or invalid `x-pinchy-draft-id`, malformed form data, missing `file` field, or invalid filename
+- `401` — not authenticated
+- `403` / `404` — no access to the agent
+- `413` — file exceeds the 15 MB limit
+- `415` — unsupported or mismatched file type
 
 ## Templates
 
@@ -310,22 +360,44 @@ Remove a provider. Any agent still using a model from this provider will fail to
 
 List available models across all configured providers. Populates the model dropdown in agent settings.
 
-**Response:**
+**Response:** an array of providers, each with its available models.
 
 ```json
 {
-  "models": [
+  "providers": [
     {
-      "id": "claude-sonnet-4-6",
-      "provider": "anthropic",
-      "displayName": "Claude Sonnet 4.6",
-      "toolUse": true
+      "id": "anthropic",
+      "name": "Anthropic",
+      "models": [
+        { "id": "anthropic/claude-sonnet-4-6", "name": "Claude Sonnet 4.6" }
+      ]
     }
   ]
 }
 ```
 
-The response is cached for one hour for cloud providers. Local Ollama is always fetched live.
+Each model carries an optional `compatible` boolean and an `incompatibleReason` string when the model cannot be used (for example, a missing capability). The response is cached for one hour for cloud providers. Local Ollama is always fetched live.
+
+### `GET /api/models/capabilities`
+
+Capability flags for every model in the catalog. Used to gate model selection against the capabilities a template needs.
+
+**Response:** a map keyed by `<provider>/<modelId>`. Each value lists the model's capabilities as booleans.
+
+```json
+{
+  "anthropic/claude-sonnet-4-6": {
+    "vision": true,
+    "documents": true,
+    "audio": false,
+    "video": false,
+    "longContext": true,
+    "tools": true
+  }
+}
+```
+
+Backed by the models table, so it reflects the catalog seed and any provider the admin has added or removed. The response is sent with `Cache-Control: private, max-age=60`.
 
 ## Domain Lock (admin only)
 
@@ -1096,7 +1168,12 @@ List the distinct event types present in the current audit log. Useful for popul
     "chat.retry_triggered",
     "chat.silent_stream",
     "chat.background_run_completed",
-    "attachment.uploaded",
+    "chat.run_timed_out",
+    "chat.run_completed_after_disconnect",
+    "chat.run_aborted",
+    "file.upload.staged",
+    "file.upload.attached",
+    "file.upload.expired",
     "tool.shell",
     "tool.denied"
   ]

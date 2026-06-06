@@ -52,6 +52,10 @@ Pinchy writes a usage record whenever an LLM call completes — both for chat tu
 
 Pinchy multiplies those by the per-million-token prices configured for the model and stores the result in USD with six decimals. Cache tokens use Anthropic-style pricing ratios: cache reads at 10% of the input price, cache writes at 125%.
 
+:::note[Tuning the poll interval]
+The chat-turn poller reads OpenClaw session snapshots every 60 seconds by default. Set `PINCHY_USAGE_POLL_INTERVAL_MS` to override the cadence (the value is in milliseconds, clamped to a 1000 ms floor so a misconfigured value can't hammer OpenClaw). Most deployments never need to set it.
+:::
+
 A few honest caveats:
 
 - **It's an estimate.** Provider invoices are the source of truth. Pinchy uses the prices baked into the OpenClaw model config, which can drift from a provider's current published rates.
