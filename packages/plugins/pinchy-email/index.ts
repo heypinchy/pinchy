@@ -277,6 +277,10 @@ const plugin = {
           return await fn(fresh);
         } catch (retryErr) {
           const retryMsg = retryErr instanceof Error ? retryErr.message : String(retryErr);
+          // Read apiBaseUrl/gatewayToken dynamically (same as getOrCreateClient):
+          // they live on api.pluginConfig, not in this function's scope.
+          const apiBaseUrl = api.pluginConfig?.apiBaseUrl ?? "";
+          const gatewayToken = api.pluginConfig?.gatewayToken ?? "";
           await reportAuthFailure(apiBaseUrl, config.connectionId, gatewayToken, retryMsg);
           throw retryErr;
         }
