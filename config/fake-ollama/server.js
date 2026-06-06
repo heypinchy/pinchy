@@ -222,9 +222,17 @@ function responseText(isEmailList, isEmailSend) {
 
 // --- Request handler ---
 
+// Strip control characters (incl. CR/LF) from request-derived values before
+// logging, so a crafted method/URL can't forge or split log lines
+// (CodeQL js/log-injection). Also caps length to keep the log readable.
+function sanitizeForLog(value) {
+  // eslint-disable-next-line no-control-regex
+  return String(value).replace(/[\x00-\x1f\x7f]/g, "").slice(0, 256);
+}
+
 async function handleRequest(req, res) {
   const { url, method } = req;
-  console.log(`[fake-ollama] ${method} ${url}`);
+  console.log(`[fake-ollama] ${sanitizeForLog(method)} ${sanitizeForLog(url)}`);
 
   if (method === "GET" && url === "/api/tags") {
     res.writeHead(200, { "Content-Type": "application/json" });
@@ -300,7 +308,7 @@ async function handleRequest(req, res) {
     return;
   }
 
-  console.log(`[fake-ollama] 404 — unhandled: ${method} ${url}`);
+  console.log(`[fake-ollama] 404 — unhandled: ${sanitizeForLog(method)} ${sanitizeForLog(url)}`);
   res.writeHead(404);
   res.end();
 }

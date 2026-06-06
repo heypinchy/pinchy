@@ -408,6 +408,16 @@ describe("GmailAdapter", () => {
       );
     });
 
+    it("escapes backslashes in quoted values (CodeQL: incomplete string escaping)", async () => {
+      mockList.mockResolvedValue({ data: { messages: [] } });
+      // A backslash must be doubled so a trailing "\" can't escape the closing
+      // quote. Input `re: a\b` → `subject:"re: a\\b"`.
+      await adapter.search({ subject: "re: a\\b" });
+      expect(mockList).toHaveBeenCalledWith(
+        expect.objectContaining({ q: 'subject:"re: a\\\\b"' }),
+      );
+    });
+
     it("requires at least one field", async () => {
       await expect(adapter.search({})).rejects.toThrow(/at least one/i);
     });
