@@ -222,12 +222,19 @@ function responseText(isEmailList, isEmailSend) {
 
 // --- Request handler ---
 
-// Strip control characters (incl. CR/LF) from request-derived values before
-// logging, so a crafted method/URL can't forge or split log lines
-// (CodeQL js/log-injection). Also caps length to keep the log readable.
+// Sanitize request-derived values before logging so a crafted method/URL can't
+// forge or split log lines (CodeQL js/log-injection). Replace CR/LF explicitly
+// first — that is the log-forging vector and the form CodeQL recognizes as a
+// sanitizer — then strip any other control chars (defense-in-depth) and cap
+// length to keep the log readable.
 function sanitizeForLog(value) {
-  // eslint-disable-next-line no-control-regex
-  return String(value).replace(/[\x00-\x1f\x7f]/g, "").slice(0, 256);
+  return (
+    String(value)
+      .replace(/[\r\n]/g, " ")
+      // eslint-disable-next-line no-control-regex
+      .replace(/[\x00-\x1f\x7f]/g, "")
+      .slice(0, 256)
+  );
 }
 
 async function handleRequest(req, res) {
