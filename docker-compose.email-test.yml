@@ -8,8 +8,13 @@ services:
   fake-ollama:
     build:
       context: config/fake-ollama
-    ports:
-      - "11435:11435"
+    # No host port mapping on purpose: OpenClaw and Pinchy reach this service
+    # over the Docker network as `fake-ollama:11435`, so it never needs to bind
+    # the host's 11435. The Gmail dispatch-probe spec starts its OWN fake-Ollama
+    # on the host (startFakeOllama → host:11435); mapping this container to the
+    # same host port would collide with that and fail the probe's beforeAll.
+    expose:
+      - "11435"
     healthcheck:
       test: ["CMD", "node", "-e", "fetch('http://localhost:11435/api/tags').then(r=>r.ok?process.exit(0):process.exit(1)).catch(()=>process.exit(1))"]
       interval: 5s
