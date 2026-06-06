@@ -1,4 +1,4 @@
-import { test, expect, type Page } from "@playwright/test";
+import { test, expect } from "@playwright/test";
 import {
   seedSetup,
   waitForPinchy,
@@ -11,22 +11,26 @@ import {
   getAdminPassword,
   login,
   pinchyGet,
+  pinchyPost,
+  pinchyPut,
+  pinchyPatch,
+  pinchyDelete,
   waitForOpenClawConnected,
 } from "./helpers";
 import {
-  FAKE_OLLAMA_EMAIL_LIST_TOOL_TRIGGER as FAKE_OLLAMA_EMAIL_LIST_TRIGGER,
-  FAKE_OLLAMA_EMAIL_LIST_TOOL_RESPONSE as FAKE_OLLAMA_EMAIL_LIST_RESPONSE,
-  FAKE_OLLAMA_EMAIL_SEND_TOOL_TRIGGER as FAKE_OLLAMA_EMAIL_SEND_TRIGGER,
-  FAKE_OLLAMA_EMAIL_SEND_TOOL_RESPONSE as FAKE_OLLAMA_EMAIL_SEND_RESPONSE,
+  FAKE_OLLAMA_EMAIL_LIST_TOOL_TRIGGER,
+  FAKE_OLLAMA_EMAIL_SEND_TOOL_TRIGGER,
+  FAKE_OLLAMA_PORT,
+  startFakeOllama,
+  stopFakeOllama,
 } from "../shared/fake-ollama/fake-ollama-server";
-
-async function loginWithPage(page: Page): Promise<void> {
-  await page.goto("/login");
-  await page.getByLabel(/email/i).fill(getAdminEmail());
-  await page.getByLabel("Password", { exact: true }).fill(getAdminPassword());
-  await page.getByRole("button", { name: /sign in/i }).click();
-  await expect(page).toHaveURL(/\/chat\//, { timeout: 15000 });
-}
+import {
+  loginViaUI,
+  pollAuditForTool,
+  seedDefaultProviderToOllama,
+  waitForOpenClawStable,
+} from "../shared/dispatch-probe";
+import { stackDbUrl } from "../shared/stack-db";
 
 test.describe("pinchy-email — Microsoft E2E", () => {
   let cookie: string;
@@ -55,8 +59,7 @@ test.describe("pinchy-email — Microsoft E2E", () => {
     // rate-limit sleep — so the resulting regenerateOpenClawConfig call is
     // covered by the 35s wait below. If this DELETE were inside test 1, the
     // subsequent permission grant would fire a config.apply within the 25s
-    // rate-limit window and hot-reload would fall back to 60s inotify, causing
-    // test 3 (email_list) to run before pinchy-email is registered in OpenClaw.
+    // rate-limit window and hot-reload would fall back to 60s inotify.
     await fetch(
       (process.env.PINCHY_URL || "http://localhost:7777") + `/api/agents/${agentId}/integrations`,
       {
@@ -74,10 +77,10 @@ test.describe("pinchy-email — Microsoft E2E", () => {
     const settled = await waitForOpenClawConnected(cookie, 120000);
     if (!settled) throw new Error("OpenClaw did not reconnect after setup wizard");
 
-    // Allow the config.apply rate-limit window to clear (~25s).
-    // This covers seedSetup's 3 rapid calls AND the DELETE above. The next
-    // config.apply from test 1's permission grant must fire cleanly — a
-    // rate-limited grant falls back to 60s inotify, too slow for the chat tests.
+    // Allow the config.apply rate-limit window to clear (~25s). This covers
+    // seedSetup's calls AND the DELETE above. The next config.apply from test 1's
+    // permission grant must fire cleanly — a rate-limited grant falls back to 60s
+    // inotify, too slow for the chat tests.
     await new Promise((r) => setTimeout(r, 35000));
   });
 
@@ -90,16 +93,6 @@ test.describe("pinchy-email — Microsoft E2E", () => {
     // enabled and stays connected. We verify this by granting email permissions
     // and confirming OpenClaw remains connected (i.e. the regenerated config was
     // accepted, not rejected with INVALID_CONFIG).
-
-    // Seed some messages so the graph-mock has data if tools are invoked
-    await seedGraphMockMessages([
-      {
-        subject: "Test email from graph-mock",
-        from: "sender@example.com",
-        body: "Hello from Microsoft E2E test",
-        isRead: false,
-      },
-    ]);
 
     // Insert Microsoft connection directly into DB (OAuth flow is not testable in E2E)
     const conn = await createMicrosoftConnectionInDb("Test Microsoft");
@@ -132,15 +125,6 @@ test.describe("pinchy-email — Microsoft E2E", () => {
     // restart. Give 120s to cover the restart + reconnect window.
     const connected = await waitForOpenClawConnected(cookie, 120000);
     expect(connected).toBe(true);
-
-    // Hot-reload buffer: two purposes.
-    // 1. config.apply takes ~2s and hot-reload ~0.5s; without this wait test 3
-    //    sends its message before pinchy-email is registered in OpenClaw.
-    // 2. Rate-limit: config.apply is rate-limited to one call per ~25s. If
-    //    test 4 fires its grant within 25s of this grant, OC falls back to a
-    //    60s inotify debounce — far too slow. 30s here guarantees test 3 pushes
-    //    the test-4 grant past the 25s window even if test 3 runs in < 5s.
-    await new Promise((r) => setTimeout(r, 30000));
 
     // The Microsoft connection is visible in the integrations list
     const integrations = await pinchyGet("/api/integrations", cookie);
@@ -179,11 +163,114 @@ test.describe("pinchy-email — Microsoft E2E", () => {
     expect(ops).not.toContain("send");
     expect(ops).not.toContain("draft");
   });
+});
 
-  test("Graph mock receives email_list request when tool is invoked via chat", async ({ page }) => {
-    if (!connectionId) throw new Error("connectionId not set — did test 1 run?");
+// ── Dispatch probe (pinchy-email plugin coverage, Microsoft) ─────────────────
+// Mirrors the Gmail dispatch probe: switches the default provider to host
+// fake-Ollama for this describe block only (via the allowed `ollama.local`
+// alias), creates a disposable agent with a Microsoft connection and the email
+// tools allowed, and asserts the fake-LLM trigger drives a real Graph API call.
+test.describe("Microsoft email dispatch probe (pinchy-email plugin coverage)", () => {
+  let dispatchCookie: string;
+  let dispatchConnectionId: string;
+  let dispatchAgentId: string;
+  let restoreSettings: (() => Promise<void>) | null = null;
 
-    // Reset so we start with a clean request log, then re-seed messages
+  test.beforeAll(async ({}, testInfo) => {
+    testInfo.setTimeout(180_000);
+
+    // 1. Start fake-Ollama on the host (port 11435).
+    await startFakeOllama();
+
+    // 2. Swap default_provider to ollama-local and seed ollama_local_url
+    //    (points at host fake-Ollama via the allowed `ollama.local` alias).
+    const dbUrl = process.env.DATABASE_URL || stackDbUrl(5434);
+    restoreSettings = await seedDefaultProviderToOllama(dbUrl, FAKE_OLLAMA_PORT);
+
+    // 3. Login (API cookie).
+    dispatchCookie = await login();
+
+    // 4. Create Microsoft connection so the agent config includes the plugin block.
+    const conn = await createMicrosoftConnectionInDb("E2E Microsoft Dispatch");
+    dispatchConnectionId = conn.id;
+
+    // 5. Create the dispatch agent.
+    const createRes = await pinchyPost(
+      "/api/agents",
+      { name: "E2E Microsoft Dispatch Probe", templateId: "custom" },
+      dispatchCookie
+    );
+    if (createRes.status !== 201)
+      throw new Error(`Agent creation failed: ${String(createRes.status)}`);
+    dispatchAgentId = ((await createRes.json()) as { id: string }).id;
+
+    // 6. Grant email read + send permissions → triggers regenerateOpenClawConfig().
+    //    Grant `send` here too so the send round-trip test below doesn't have to
+    //    do a second permissions edit (each edit costs a config-apply rate-limit).
+    const permRes = await pinchyPut(
+      `/api/agents/${dispatchAgentId}/integrations`,
+      {
+        connectionId: dispatchConnectionId,
+        permissions: [
+          { model: "email", operation: "read" },
+          { model: "email", operation: "send" },
+        ],
+      },
+      dispatchCookie
+    );
+    if (permRes.status !== 200)
+      throw new Error(`Permissions grant failed: ${String(permRes.status)}`);
+
+    // 7. Allow email_list + email_send — second config regen with the tools in
+    //    the allow-list.
+    const patchRes = await pinchyPatch(
+      `/api/agents/${dispatchAgentId}`,
+      { allowedTools: ["email_list", "email_send"] },
+      dispatchCookie
+    );
+    if (patchRes.status !== 200) throw new Error(`Agent patch failed: ${String(patchRes.status)}`);
+
+    // 8. Wait for OpenClaw to stabilise with the new Ollama config.
+    await waitForOpenClawStable(() => pinchyGet("/api/health/openclaw", dispatchCookie));
+  });
+
+  test.afterAll(async () => {
+    if (dispatchAgentId) {
+      await pinchyDelete(`/api/agents/${dispatchAgentId}`, dispatchCookie);
+    }
+    if (dispatchConnectionId) {
+      await pinchyDelete(`/api/integrations/${dispatchConnectionId}`, dispatchCookie);
+    }
+    if (restoreSettings) await restoreSettings();
+    await stopFakeOllama();
+  });
+
+  test("email_list dispatches via fake-LLM and writes audit entry", async ({ page }, testInfo) => {
+    // 160 s poll past the 150 s chatWithDispatchRaceRetry budget; 180 s per-test
+    // timeout to outlast it.
+    testInfo.setTimeout(180_000);
+
+    await loginViaUI(page, getAdminEmail(), getAdminPassword());
+
+    await page.goto(`/chat/${dispatchAgentId}`);
+    await expect(page).toHaveURL(`/chat/${dispatchAgentId}`, { timeout: 10_000 });
+
+    const input = page.getByPlaceholder(/send a message/i);
+    await expect(input).toBeVisible({ timeout: 10_000 });
+    await input.fill(`${FAKE_OLLAMA_EMAIL_LIST_TOOL_TRIGGER}: list my emails`);
+    await input.press("Enter");
+
+    const found = await pollAuditForTool(page, {
+      toolName: "email_list",
+      agentId: dispatchAgentId,
+      deadlineMs: 160_000,
+    });
+    expect(found).toBe(true);
+  });
+
+  // Round-trip test: prove the plugin actually called the Microsoft Graph API
+  // using credentials it fetched through Pinchy's internal endpoint.
+  test("graph-mock receives email_list request when tool is invoked via chat", async ({ page }) => {
     await resetGraphMock();
     await seedGraphMockMessages([
       {
@@ -194,103 +281,61 @@ test.describe("pinchy-email — Microsoft E2E", () => {
       },
     ]);
 
-    await loginWithPage(page);
-    await page.goto(`/chat/${agentId}`);
+    await loginViaUI(page, getAdminEmail(), getAdminPassword());
+    await page.goto(`/chat/${dispatchAgentId}`);
+    await expect(page).toHaveURL(`/chat/${dispatchAgentId}`, { timeout: 10_000 });
 
     const input = page.getByPlaceholder(/send a message/i);
-    await expect(input).toBeVisible({ timeout: 10000 });
-
-    // Wait for chat history to settle before capturing the baseline count.
-    // Without this, priorCount may be 0 while history is still rendering.
-    await page
-      .getByText(FAKE_OLLAMA_EMAIL_LIST_RESPONSE)
-      .first()
-      .waitFor({ state: "visible", timeout: 3000 })
-      .catch(() => {}); // OK if no prior history exists yet
-    const priorListCount = await page.getByText(FAKE_OLLAMA_EMAIL_LIST_RESPONSE).count();
-
-    await input.fill(FAKE_OLLAMA_EMAIL_LIST_TRIGGER);
+    await expect(input).toBeVisible({ timeout: 10_000 });
+    // Capture `since` BEFORE the dispatch — the previous test already wrote a
+    // tool.email_list audit entry on the same agent; without the filter
+    // pollAuditForTool matches that stale entry and the request assertion races.
+    const since = new Date().toISOString();
+    await input.fill(`${FAKE_OLLAMA_EMAIL_LIST_TOOL_TRIGGER}: round-trip list`);
     await input.press("Enter");
 
-    // Wait for a NEW occurrence of the response text (not a pre-existing one)
-    await expect(page.getByText(FAKE_OLLAMA_EMAIL_LIST_RESPONSE)).toHaveCount(priorListCount + 1, {
-      timeout: 60000,
+    const dispatched = await pollAuditForTool(page, {
+      toolName: "email_list",
+      agentId: dispatchAgentId,
+      since,
     });
+    expect(dispatched).toBe(true);
 
-    // The plugin must have called the Graph messages endpoint
-    const requests = await getGraphMockRequests();
-    const listReq = (requests as Array<{ endpoint: string }>).find(
-      (r) => r.endpoint === "/v1.0/me/messages" || r.endpoint?.startsWith("/v1.0/me/mailFolders/")
-    );
-    expect(listReq).toBeDefined();
+    // The plugin must have called the Graph messages endpoint.
+    const reqs = (await getGraphMockRequests()) as Array<{ endpoint: string }>;
+    expect(
+      reqs.some(
+        (r) => r.endpoint === "/v1.0/me/messages" || r.endpoint?.startsWith("/v1.0/me/mailFolders/")
+      ),
+      `graph-mock received no messages request; saw: ${JSON.stringify(reqs)}`
+    ).toBe(true);
   });
 
-  test("Graph mock receives email_send request when tool is invoked via chat", async ({ page }) => {
-    if (!connectionId) throw new Error("connectionId not set — did test 1 run?");
-
-    // Grant send permission (replaces existing read+search with read+search+send)
-    const permRes = await fetch(
-      (process.env.PINCHY_URL || "http://localhost:7777") + `/api/agents/${agentId}/integrations`,
-      {
-        method: "PUT",
-        headers: {
-          "Content-Type": "application/json",
-          Cookie: cookie,
-          Origin: process.env.PINCHY_URL || "http://localhost:7777",
-        },
-        body: JSON.stringify({
-          connectionId,
-          permissions: [
-            { model: "email", operation: "read" },
-            { model: "email", operation: "search" },
-            { model: "email", operation: "send" },
-          ],
-        }),
-      }
-    );
-    expect(permRes.status).toBe(200);
-
-    // Wait for OpenClaw to reconnect after the config change
-    const reconnected = await waitForOpenClawConnected(cookie, 120000);
-    expect(reconnected).toBe(true);
-
-    // Hot-reload buffer: the permission grant triggers a config hot-reload in
-    // OpenClaw. waitForOpenClawConnected returns immediately (WS stays connected
-    // during a hot-reload), but the factories are only re-registered after the
-    // reload applies (~0.5–1s). Without this wait, the chat session is set up
-    // with stale factories that lack the send permission → permission denied.
-    await new Promise((r) => setTimeout(r, 5000));
-
-    // Reset mock so the request log is clean for this assertion
+  test("graph-mock receives email_send request when tool is invoked via chat", async ({ page }) => {
     await resetGraphMock();
 
-    await loginWithPage(page);
-    await page.goto(`/chat/${agentId}`);
+    await loginViaUI(page, getAdminEmail(), getAdminPassword());
+    await page.goto(`/chat/${dispatchAgentId}`);
+    await expect(page).toHaveURL(`/chat/${dispatchAgentId}`, { timeout: 10_000 });
 
     const input = page.getByPlaceholder(/send a message/i);
-    await expect(input).toBeVisible({ timeout: 10000 });
-
-    // Wait for chat history to settle before capturing the baseline count.
-    await page
-      .getByText(FAKE_OLLAMA_EMAIL_SEND_RESPONSE)
-      .first()
-      .waitFor({ state: "visible", timeout: 3000 })
-      .catch(() => {});
-    const priorSendCount = await page.getByText(FAKE_OLLAMA_EMAIL_SEND_RESPONSE).count();
-
-    await input.fill(FAKE_OLLAMA_EMAIL_SEND_TRIGGER);
+    await expect(input).toBeVisible({ timeout: 10_000 });
+    const since = new Date().toISOString();
+    await input.fill(`${FAKE_OLLAMA_EMAIL_SEND_TOOL_TRIGGER}: round-trip send`);
     await input.press("Enter");
 
-    // Wait for a NEW occurrence of the response text (not a pre-existing one)
-    await expect(page.getByText(FAKE_OLLAMA_EMAIL_SEND_RESPONSE)).toHaveCount(priorSendCount + 1, {
-      timeout: 60000,
+    const dispatched = await pollAuditForTool(page, {
+      toolName: "email_send",
+      agentId: dispatchAgentId,
+      since,
     });
+    expect(dispatched).toBe(true);
 
-    // The plugin must have posted to the sendMail endpoint
-    const requests = await getGraphMockRequests();
-    const sendReq = (requests as Array<{ endpoint: string; method?: string }>).find(
-      (r) => r.endpoint === "/v1.0/me/sendMail"
-    );
-    expect(sendReq).toBeDefined();
+    // The plugin must have posted to the Graph sendMail endpoint.
+    const reqs = (await getGraphMockRequests()) as Array<{ endpoint: string }>;
+    expect(
+      reqs.some((r) => r.endpoint === "/v1.0/me/sendMail"),
+      `graph-mock received no sendMail request; saw: ${JSON.stringify(reqs)}`
+    ).toBe(true);
   });
 });

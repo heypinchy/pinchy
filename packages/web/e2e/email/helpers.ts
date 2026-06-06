@@ -53,9 +53,7 @@ export async function seedSetup(): Promise<void> {
     return;
   }
 
-  await sql.end();
-
-  // Create admin via Pinchy's setup API.
+  // Create admin via Pinchy's setup API
   const setupRes = await fetch(`${PINCHY_URL}/api/setup`, {
     method: "POST",
     headers: { "Content-Type": "application/json", Origin: PINCHY_URL },
@@ -68,26 +66,29 @@ export async function seedSetup(): Promise<void> {
 
   if (!setupRes.ok) {
     const text = await setupRes.text();
+    await sql.end();
     throw new Error(`Setup failed: ${setupRes.status} ${text}`);
   }
 
-  // Configure ollama-local provider via the setup/provider API.
-  // Using Pinchy's own write path (setSetting + regenerateOpenClawConfig) ensures the
-  // settings cache is populated correctly before config generation — direct DB inserts
-  // would be invisible to the in-memory cache and produce a config with no models section.
-  const cookie = await login();
-  const ollamaUrl = process.env.OLLAMA_LOCAL_URL || "http://fake-ollama:11435";
-  const providerRes = await fetch(`${PINCHY_URL}/api/setup/provider`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json", Cookie: cookie, Origin: PINCHY_URL },
-    body: JSON.stringify({ provider: "ollama-local", url: ollamaUrl }),
-  });
+  await new Promise((r) => setTimeout(r, 2000));
 
-  if (!providerRes.ok) {
-    const text = await providerRes.text();
-    throw new Error(`Provider setup failed: ${providerRes.status} ${text}`);
-  }
+  // Seed provider config (needed for agent creation). Use anthropic with a fake
+  // key: the first describe block only checks plugin-load + permissions (no chat),
+  // and the dispatch-probe block swaps to host fake-Ollama via the `ollama.local`
+  // alias (an allowed local host) for the actual tool round-trips.
+  const testApiKey = process.env.TEST_ANTHROPIC_API_KEY || "sk-ant-fake-key-for-e2e-testing";
+  await sql`
+    INSERT INTO settings (key, value, encrypted)
+    VALUES ('default_provider', 'anthropic', false)
+    ON CONFLICT (key) DO UPDATE SET value = 'anthropic'
+  `;
+  await sql`
+    INSERT INTO settings (key, value, encrypted)
+    VALUES ('anthropic_api_key', ${testApiKey}, false)
+    ON CONFLICT (key) DO UPDATE SET value = ${testApiKey}
+  `;
 
+  await sql.end();
   await new Promise((r) => setTimeout(r, 3000));
   console.log(`[email-setup] Admin created: ${_adminEmail}`);
 }
@@ -331,7 +332,7 @@ export async function getGraphMockRequests(): Promise<unknown[]> {
 export async function createMicrosoftConnectionInDb(
   name = "Test Microsoft"
 ): Promise<{ id: string; type: string; name: string }> {
-  const dbUrl = process.env.DATABASE_URL || "postgresql://pinchy:pinchy_dev@localhost:5434/pinchy";
+  const dbUrl = process.env.DATABASE_URL || stackDbUrl(5434);
   const { default: postgres } = await import("postgres");
   const sql = postgres(dbUrl);
 
