@@ -8,6 +8,7 @@ import { SessionCache } from "./src/server/session-cache";
 import { validateWsSession } from "./src/server/ws-auth";
 import { restartState } from "./src/server/restart-state";
 import { openClawConnectionState } from "./src/server/openclaw-connection-state";
+import { applyKeepAliveTuning } from "./src/server/http-keepalive";
 import { setOpenClawClient } from "./src/server/openclaw-client";
 import { getActiveRunsSingleton } from "./src/server/active-runs-singleton";
 import {
@@ -251,6 +252,12 @@ ${domain ? `<p><a href="https://${domain}">Go to ${domain} →</a></p>` : ""}
   });
 
   const port = parseInt(process.env.PORT || "7777", 10);
+
+  // Hold idle keep-alive connections far longer than Node's 5s default so a
+  // connection-reusing client (browser, Playwright APIRequestContext, or a
+  // production reverse proxy) never reuses a socket the server is closing at
+  // that instant → no intermittent `socket hang up`. See http-keepalive.ts.
+  applyKeepAliveTuning(server);
 
   // Start listening BEFORE bootInits so the Docker Compose healthcheck can
   // reach /api/internal/openclaw-config-ready immediately. The endpoint returns
