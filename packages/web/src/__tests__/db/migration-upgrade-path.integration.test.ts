@@ -31,11 +31,15 @@ import { join } from "node:path";
 // vitest runs with cwd = packages/web; the real migrations live in ./drizzle.
 const REAL_MIGRATIONS = join(process.cwd(), "drizzle");
 
-// v0.5.6 shipped migrations through idx 33 (0033_remove_implicit_filesystem_tools).
-// 0034/0035/0036 are the v0.5.7 additions whose application this test proves.
+// The v0.5.6 baseline — the oldest upgrade origin this test witnesses (not
+// "latest minus N"). v0.5.6 shipped migrations through idx 33
+// (0033_remove_implicit_filesystem_tools); 0034/0035/0036 are the v0.5.7
+// additions whose application this test proves.
 const V056_LAST_IDX = 33;
 
-const DB_NAME = "pinchy_upgrade_path_test";
+// Per-process DB name so two concurrent runs of this suite (e.g. on a shared
+// Postgres) can't collide on the throwaway database.
+const DB_NAME = `pinchy_upgrade_path_test_${process.pid}`;
 
 function withDbName(url: string, name: string): string {
   const u = new URL(url);
@@ -120,6 +124,13 @@ describe("migration upgrade path (v0.5.6 → HEAD)", () => {
       try {
         expect(await relExists(client, "public.uploaded_files")).toBe(true); // 0035
         expect(await relExists(client, "public.models")).toBe(true); // 0036
+        // 0024_cuddly_vapor (agent_connection_permissions) was the OTHER
+        // out-of-order journal entry fixed in #468. It sits in the idx<=33
+        // prefix, so phase 1 (a fresh/empty DB) already applied it regardless of
+        // timestamp — this asserts it survived the upgrade rather than guarding
+        // its skip behaviorally. The static journal-order guard covers the 0024
+        // dip for upgrades that originate before idx 24.
+        expect(await relExists(client, "public.agent_connection_permissions")).toBe(true);
       } finally {
         await client.end();
       }
