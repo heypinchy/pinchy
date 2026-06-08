@@ -260,6 +260,13 @@
       "when": 1779412920000,
       "tag": "0036_models_table",
       "breakpoints": true
+    },
+    {
+      "idx": 37,
+      "version": "7",
+      "when": 1780926550100,
+      "tag": "0037_repair_uploaded_files",
+      "breakpoints": true
     }
   ]
 }
