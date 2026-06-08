@@ -1862,7 +1862,17 @@ jobs:
       - uses: ./.github/actions/setup-pnpm
 
       - name: Install Ollama
-        run: curl -fsSL https://ollama.com/install.sh | sh
+        # Retry the whole install: ollama's installer downloads a binary from a
+        # CDN that intermittently returns a transient 504, which then feeds a
+        # partial body into zstd/tar and fails the step — not a real error.
+        run: |
+          for attempt in 1 2 3; do
+            if curl -fsSL https://ollama.com/install.sh | sh; then exit 0; fi
+            echo "Ollama install attempt ${attempt} failed; retrying in 10s..."
+            sleep 10
+          done
+          echo "::error::Ollama install failed after 3 attempts"
+          exit 1
 
       - name: Start Ollama
         run: |
@@ -1898,7 +1908,10 @@ jobs:
       - name: Check links
         uses: lycheeverse/lychee-action@v2
         with:
-          args: "--no-progress --max-retries 3 --retry-wait-time 5 '**/*.md' '**/*.mdx' --exclude-path node_modules --exclude-path .git --exclude-path docs --exclude 'localhost' --exclude 'linkedin\\.com' --exclude 'sonner\\.emilkowal\\.dev' --exclude 'squawkhq\\.com' --exclude 'contributor-covenant\\.org'"
+          # --accept treats transient server responses (rate-limit + 5xx, e.g.
+          # GitHub returning a 504 during a brief outage) as OK so they don't
+          # red-light unrelated PRs. Genuinely broken links (404/410) still fail.
+          args: "--no-progress --max-retries 3 --retry-wait-time 5 --accept '200..=299,429,500..=599' '**/*.md' '**/*.mdx' --exclude-path node_modules --exclude-path .git --exclude-path docs --exclude 'localhost' --exclude 'linkedin\\.com' --exclude 'sonner\\.emilkowal\\.dev' --exclude 'squawkhq\\.com' --exclude 'contributor-covenant\\.org'"
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
