@@ -5,6 +5,7 @@ import { toast } from "sonner";
 import { useRestart } from "@/components/restart-provider";
 import { uuid } from "@/lib/uuid";
 import { dedupeById } from "@/lib/dedupe-by-id";
+import { mergeOrAppendChunk } from "@/hooks/merge-chunk";
 import { uploadAttachment } from "@/lib/upload-attachment";
 import { useDraftId } from "@/hooks/use-draft-id";
 import {
@@ -1118,22 +1119,20 @@ export function useWsRuntime(agentId: string): {
                 filtered = filtered.slice(0, lastUserIdx + 1);
               }
             }
-            const last = filtered[filtered.length - 1];
-            if (last?.role === "assistant" && last.id === data.messageId) {
-              return capMessages([
-                ...filtered.slice(0, -1),
-                { ...last, content: last.content + data.content },
-              ]);
-            }
-            return capMessages([
-              ...filtered,
-              {
+            // Merge the chunk into the assistant message with this id wherever
+            // it sits (not just the trailing one) — see merge-chunk.ts. On
+            // streaming-resume the relabeled in-flight message can be non-last,
+            // and appending a second message with the same id crashes
+            // assistant-ui. This is the root-cause complement to the dedupeById
+            // guard applied before the runtime.
+            return capMessages(
+              mergeOrAppendChunk(filtered, {
                 id: data.messageId,
                 role: "assistant",
                 content: data.content,
                 timestamp: new Date().toISOString(),
-              },
-            ]);
+              })
+            );
           });
         }
 
