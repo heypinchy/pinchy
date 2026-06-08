@@ -4,6 +4,7 @@ import { useState, useEffect, useRef, useCallback, useMemo } from "react";
 import { toast } from "sonner";
 import { useRestart } from "@/components/restart-provider";
 import { uuid } from "@/lib/uuid";
+import { dedupeById } from "@/lib/dedupe-by-id";
 import { uploadAttachment } from "@/lib/upload-attachment";
 import { useDraftId } from "@/hooks/use-draft-id";
 import {
@@ -1767,7 +1768,12 @@ export function useWsRuntime(agentId: string): {
   const hasInitialContent = messages.length > 0 || knownEmptyHistory;
 
   const convertedMessages = useMemo(() => {
-    const base = messages.map(convertMessage);
+    // Defense-in-depth: a duplicate message id crashes assistant-ui's
+    // MessageRepository (and the whole chat view via the error boundary). The
+    // streaming-resume reconcile can transiently produce one — never let it
+    // reach assistant-ui. See dedupe-by-id.ts and the root-cause fix in the
+    // history `activeRun` reconcile below.
+    const base = dedupeById(messages.map(convertMessage));
     if (isOrphaned) {
       return [
         ...base,
