@@ -16,6 +16,7 @@ import { useWsRuntime, type PendingUpload } from "@/hooks/use-ws-runtime";
 import * as uploadModule from "@/lib/upload-attachment";
 import * as imageCompression from "@/lib/image-compression";
 import { CLIENT_IMAGE_COMPRESSION_TARGET_BYTES } from "@/lib/limits";
+import { toast } from "sonner";
 
 // ── Module mocks ──────────────────────────────────────────────────────────────
 
@@ -49,6 +50,10 @@ vi.mock("@assistant-ui/react", () => ({
       this.accept = adapters.map((a) => a.accept).join(",");
     }
   },
+}));
+
+vi.mock("sonner", () => ({
+  toast: { error: vi.fn(), success: vi.fn(), warning: vi.fn() },
 }));
 
 // ── WebSocket stub ────────────────────────────────────────────────────────────
@@ -129,6 +134,42 @@ describe("PendingUpload state machine", () => {
       /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
     );
     expect(mockCreateObjectURL).toHaveBeenCalledWith(file);
+  });
+
+  it("client-side pre-check: an oversize non-image file is rejected with a toast and never uploaded", async () => {
+    const { result } = renderHook(() => useWsRuntime("agent-1"));
+
+    const big = makeFile("huge.pdf", 1024);
+    // Spoof a 31 MB size without allocating 31 MB in the test.
+    Object.defineProperty(big, "size", { value: 31 * 1024 * 1024 });
+
+    await act(async () => {
+      result.current.addPendingUpload(big);
+    });
+
+    // No bytes leave the browser, no chip is created — just a clear toast that
+    // names the file and both sizes.
+    expect(uploadModule.uploadAttachment).not.toHaveBeenCalled();
+    expect(result.current.pendingUploads).toHaveLength(0);
+    expect(vi.mocked(toast.error)).toHaveBeenCalledWith(expect.stringContaining("huge.pdf"));
+    expect(vi.mocked(toast.error)).toHaveBeenCalledWith(expect.stringContaining("31 MB"));
+    expect(vi.mocked(toast.error)).toHaveBeenCalledWith(expect.stringContaining("15 MB"));
+  });
+
+  it("client-side pre-check does NOT reject images (they are compressed before upload)", async () => {
+    // Upload hangs so the chip stays in 'uploading' — proves the image path ran.
+    vi.mocked(uploadModule.uploadAttachment).mockReturnValue(new Promise(() => {}));
+
+    const { result } = renderHook(() => useWsRuntime("agent-1"));
+    const bigImage = new File([new Uint8Array(1024)], "photo.png", { type: "image/png" });
+    Object.defineProperty(bigImage, "size", { value: 40 * 1024 * 1024 });
+
+    await act(async () => {
+      result.current.addPendingUpload(bigImage);
+    });
+
+    expect(result.current.pendingUploads).toHaveLength(1);
+    expect(vi.mocked(toast.error)).not.toHaveBeenCalled();
   });
 
   it("progress callback updates the progress field", async () => {

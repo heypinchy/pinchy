@@ -8,6 +8,7 @@ import { dedupeById } from "@/lib/dedupe-by-id";
 import { mergeOrAppendChunk } from "@/hooks/merge-chunk";
 import { ensureTrailingAssistant } from "@/hooks/ensure-trailing-assistant";
 import { uploadAttachment } from "@/lib/upload-attachment";
+import { oversizeAttachmentError } from "@/lib/attachment-size-check";
 import { useDraftId } from "@/hooks/use-draft-id";
 import {
   useExternalStoreRuntime,
@@ -1579,6 +1580,16 @@ export function useWsRuntime(agentId: string): {
       const activeCount = pendingUploadsRef.current.filter((u) => u.state !== "failed").length;
       if (activeCount >= MAX_ATTACHMENTS_PER_MESSAGE) {
         toast.error(`Too many attachments (max ${MAX_ATTACHMENTS_PER_MESSAGE})`);
+        return;
+      }
+
+      // Reject an oversize NON-image file up front — same rationale as the count
+      // check above: a clear toast immediately, instead of uploading the whole
+      // file just to surface a truncated 413 on a failed chip. Images are exempt
+      // (compressed below the cap before upload), so they fall through.
+      const sizeError = oversizeAttachmentError(file);
+      if (sizeError) {
+        toast.error(sizeError);
         return;
       }
 
