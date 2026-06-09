@@ -104,6 +104,8 @@ The browser-to-Pinchy WebSocket connection includes several layers of protection
 
 **Run watchdog** _(v0.6.0)_ — A server-side 30-second interval scans `ActiveRuns` for runs whose absolute age exceeds a per-deployment cap (default 15 minutes, sized for Pinchy's slower-than-cloud workload mix: local Ollama, knowledge-base agents with PDF vision, air-gapped deployments). Stuck runs are aborted via `openclaw-node.chatAbort(sessionKey, runId)`, recorded as a `chat.run_timed_out` audit row, and a terminal error frame is broadcast to any still-connected listener. The watchdog catches runs that the client-side stuck timer can't — closed tabs, backgrounded laptops, and tabs that joined a run via reconnect after the original tab was already closed.
 
+**Channel-health watchdog** _(v0.6.0)_ — OpenClaw owns the channel pollers (Telegram, …), so a channel worker that crash-loops _below_ the gateway WebSocket is invisible at the connection level — `connected` stays true and nothing is audited. The classic trigger is a Telegram bot token polled by two deployments: Telegram returns a `getUpdates` 409 conflict and OpenClaw enters a CPU-burning auto-restart loop. A 30-second probe calls `channels.status()`, classifies each account (connected / running / `lastError` / `reconnectAttempts`), and audits the transitions — `channel.degraded` on the first failure, `channel.polling_failed` if it stays down, `channel.recovered` when it comes back. The same status feeds a "Degraded" badge in the agent's Telegram settings.
+
 **Reconnect exhausted** — After 10 failed reconnect attempts, a persistent banner prompts the user to reload the page.
 
 ### Session lifecycle and compaction

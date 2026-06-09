@@ -61,7 +61,9 @@ Pinchy's main Telegram bot must already be set up in **Settings → Telegram** (
 ![Agent Settings → Telegram tab with bot connection](/screenshots/agent-settings-telegram.png)
 
 :::note
-Each bot token can only be used by one agent. If you try to use the same token for two agents, Pinchy will reject it.
+Each bot token can only be used by one agent. If you try to use the same token for two agents on this deployment, Pinchy will reject it.
+
+This check is per-deployment, though — Pinchy can't see a _different_ Pinchy (a staging stack, a local dev stack) polling the same token. Telegram allows only one poller per bot, so if two deployments share a token they fight over it: one wins each round, the other gets a `getUpdates` 409 "Conflict: terminated by other getUpdates request", and the bot drops messages while OpenClaw crash-restarts the channel. **Give each environment its own bot token.** If it does happen anyway, Pinchy's channel-health watchdog catches it — a **Degraded** badge appears on the agent's Telegram settings and `channel.degraded` / `channel.polling_failed` rows land in the [audit trail](/concepts/audit-trail/).
 :::
 
 ## How Permissions Work
