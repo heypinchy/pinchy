@@ -56,6 +56,9 @@ export type AuditEventType =
   | "user.role_updated"
   | "channel.created"
   | "channel.deleted"
+  | "channel.degraded"
+  | "channel.polling_failed"
+  | "channel.recovered"
   | "chat.retry_triggered"
   | "chat.agent_error"
   | "chat.silent_stream"
@@ -289,6 +292,20 @@ export type AuditLogEntry =
   | (AuditLogBase & {
       eventType: `chat.${string}`;
       detail?: Record<string, unknown>;
+    })
+  | (AuditLogBase & {
+      // Channel-health watchdog (A-1/A-2/A-4): a channel poller (Telegram, …)
+      // that crash-loops below the gateway WS — e.g. a cross-environment
+      // getUpdates-409 conflict. `account.id` is the Pinchy agent id; the
+      // conflict text in `lastError` is generic (no PII).
+      eventType: "channel.degraded" | "channel.polling_failed" | "channel.recovered";
+      detail: {
+        channel: string;
+        account: { id: string; name: string | null };
+        lastError: string | null;
+        reconnectAttempts: number;
+        consecutiveDegradedChecks: number;
+      };
     })
   | (AuditLogBase & {
       eventType: "agent.model_unavailable";
