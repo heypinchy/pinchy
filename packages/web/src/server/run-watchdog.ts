@@ -19,14 +19,22 @@ export const DEFAULT_MAX_RUN_DURATION_MS = 15 * 60 * 1000;
 export const WATCHDOG_INTERVAL_MS = 30_000;
 
 /**
- * Default first-chunk timeout (B-1). A run the backend accepted but that has
- * not streamed anything within this window is torn down as
- * `chat.run_no_first_chunk` with a RETRYABLE error. 90s sits just above the
- * 60s client-side stuck timer so the client shows the fast retry path first
- * and this server-side backstop is the durable, reload-surviving net. The 30s
- * scan cadence means effective granularity is ~90–120s.
+ * Default first-chunk timeout (B-1). A run that never produces a first chunk
+ * (OpenClaw's `userMessagePersisted` acknowledgement) within this window is
+ * torn down as `chat.run_no_first_chunk` with a RETRYABLE error.
+ *
+ * MUST exceed the dispatch-race retry budget (`chat-dispatch-retry.ts`
+ * `maxTotalMs`, currently 150s): while OpenClaw is mid-restart, that wrapper
+ * legitimately retries a failing dispatch ("unknown agent id") for up to 150s
+ * before the run is ever accepted — the run is `registerPending`-ed but
+ * produces no first chunk for that whole window. A timeout below 150s would
+ * falsely abort a run that is simply waiting out an OC restart. 180s clears
+ * the 150s budget with a margin; the client-side 60s stuck timer still gives
+ * the open-tab fast-retry path, so this longer value only affects the durable,
+ * reload-surviving backstop. The 30s scan cadence means effective granularity
+ * is ~180–210s.
  */
-export const DEFAULT_FIRST_CHUNK_TIMEOUT_MS = 90_000;
+export const DEFAULT_FIRST_CHUNK_TIMEOUT_MS = 180_000;
 
 export interface AuditPayload {
   actorType: "system";
@@ -104,8 +112,10 @@ export interface WatchdogDeps {
   maxRunDurationMs: number;
   /**
    * How long a dispatched run may wait for its first chunk before the
-   * watchdog tears it down as `chat.run_no_first_chunk`. Far shorter than
-   * `maxRunDurationMs` (default 90s) so a wedged lane surfaces quickly.
+   * watchdog tears it down as `chat.run_no_first_chunk`. Far shorter than the
+   * `maxRunDurationMs` absolute cap, but above the dispatch-race retry budget
+   * (default 180s) so a never-acknowledged run surfaces without false-aborting
+   * a run that's just waiting out an OpenClaw restart.
    */
   firstChunkTimeoutMs: number;
 }
@@ -219,7 +229,7 @@ export async function runWatchdogTick(deps: WatchdogDeps): Promise<void> {
       );
     }
     // Re-check after the (networked) abort await: a resend may have replaced
-    // this run (the 90s timeout is exactly when a blank-thread user resends).
+    // this run (the first-chunk timeout is exactly when a blank-thread user resends).
     // Don't broadcast A's "didn't start" error to B's tab or delete B's entry.
     if (deps.activeRuns.get(run.sessionKey) !== run || run.firstChunkAt !== null) continue;
     try {
