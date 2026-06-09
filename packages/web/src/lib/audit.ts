@@ -63,6 +63,7 @@ export type AuditEventType =
   | "chat.agent_error"
   | "chat.silent_stream"
   | "chat.run_timed_out"
+  | "chat.run_no_first_chunk"
   | "chat.run_aborted"
   | "chat.run_completed_after_disconnect"
   | "agent.model_unavailable"

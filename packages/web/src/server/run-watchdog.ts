@@ -18,6 +18,16 @@ export const DEFAULT_MAX_RUN_DURATION_MS = 15 * 60 * 1000;
 /** Watchdog scan cadence — every 30 seconds. */
 export const WATCHDOG_INTERVAL_MS = 30_000;
 
+/**
+ * Default first-chunk timeout (B-1). A run the backend accepted but that has
+ * not streamed anything within this window is torn down as
+ * `chat.run_no_first_chunk` with a RETRYABLE error. 90s sits just above the
+ * 60s client-side stuck timer so the client shows the fast retry path first
+ * and this server-side backstop is the durable, reload-surviving net. The 30s
+ * scan cadence means effective granularity is ~90–120s.
+ */
+export const DEFAULT_FIRST_CHUNK_TIMEOUT_MS = 90_000;
+
 export interface AuditPayload {
   actorType: "system";
   actorId: "watchdog";
@@ -37,6 +47,32 @@ export interface AuditPayload {
   };
 }
 
+/**
+ * Audit row for a run that was accepted but never produced a first chunk
+ * within the first-chunk timeout (B-1) — a wedged/rate-limited lane. Distinct
+ * from `chat.run_timed_out` (a run that started but never finished) so an
+ * analyst can tell "the backend never started responding" apart from "the
+ * backend started but ran long". Same PII rules: only `user.id` in detail.
+ */
+export interface NoFirstChunkAuditPayload {
+  actorType: "system";
+  actorId: "watchdog";
+  eventType: "chat.run_no_first_chunk";
+  resource: string;
+  outcome: "failure";
+  detail: {
+    agent: { id: string; name: string };
+    user: { id: string };
+    sessionKey: string;
+    runId: string;
+    /** Wall-clock the run waited for its first chunk before being torn down. */
+    waitedMs: number;
+    firstChunkTimeoutMs: number;
+  };
+}
+
+export type WatchdogAuditPayload = AuditPayload | NoFirstChunkAuditPayload;
+
 export interface WatchdogDeps {
   activeRuns: ActiveRuns;
   /**
@@ -49,16 +85,29 @@ export interface WatchdogDeps {
    * broadcast and registry-delete so a forwarding error can't lose the
    * audit trail.
    */
-  writeAudit: (entry: AuditPayload) => Promise<void>;
+  writeAudit: (entry: WatchdogAuditPayload) => Promise<void>;
   /**
    * Broadcast a terminal error frame to every connected listener so the
    * user sees a "Timed out after 15m 0s" bubble instead of an indefinite
    * spinner. Sync — listeners take whatever side effect they want.
    */
   broadcastTimeout: (run: ActiveRun) => void;
+  /**
+   * Broadcast a RETRYABLE error frame for a run that never produced a first
+   * chunk (B-1) — "the agent didn't start responding, retry". Separate from
+   * `broadcastTimeout` because this case is recoverable (the user can resend)
+   * whereas the 15-min absolute timeout is terminal. Sync.
+   */
+  broadcastNoFirstChunk: (run: ActiveRun) => void;
   /** Injected so tests can use a fixed clock. */
   now: () => number;
   maxRunDurationMs: number;
+  /**
+   * How long a dispatched run may wait for its first chunk before the
+   * watchdog tears it down as `chat.run_no_first_chunk`. Far shorter than
+   * `maxRunDurationMs` (default 90s) so a wedged lane surfaces quickly.
+   */
+  firstChunkTimeoutMs: number;
 }
 
 /**
@@ -114,12 +163,71 @@ export async function runWatchdogTick(deps: WatchdogDeps): Promise<void> {
         err
       );
     }
+    // Re-check after the (networked) abort await: a resend may have replaced
+    // this run on the same session. Don't broadcast A's timeout to B's tab or
+    // delete B's entry.
+    if (deps.activeRuns.get(run.sessionKey) !== run) continue;
     try {
       deps.broadcastTimeout(run);
     } catch (err) {
       console.error("[run-watchdog] broadcastTimeout failed:", err);
     }
-    deps.activeRuns.delete(run.sessionKey);
+    deps.activeRuns.deleteIfRunId(run.sessionKey, run.runId);
+  }
+
+  // B-1: tear down runs that were accepted but never produced a first chunk
+  // within the first-chunk timeout (a wedged/rate-limited lane). Same ordering
+  // and per-run resilience as the absolute-timeout loop above, but a RETRYABLE
+  // broadcast and a distinct audit event — the user can resend, and operators
+  // get a forensic row for "the backend never started responding".
+  const unstarted = deps.activeRuns.scanForUnstartedRuns(deps.now(), deps.firstChunkTimeoutMs);
+  for (const run of unstarted) {
+    // Re-check before doing anything: a first chunk may have reconciled this
+    // run (or a newer turn replaced it) during a PRIOR iteration's awaits.
+    if (deps.activeRuns.get(run.sessionKey) !== run || run.firstChunkAt !== null) continue;
+    const waitedMs = deps.now() - run.submittedAt;
+    const audit: NoFirstChunkAuditPayload = {
+      actorType: "system",
+      actorId: "watchdog",
+      eventType: "chat.run_no_first_chunk",
+      resource: `agent:${run.agentId}`,
+      outcome: "failure",
+      detail: {
+        agent: { id: run.agentId, name: run.agentName },
+        user: { id: run.userId },
+        sessionKey: run.sessionKey,
+        runId: run.runId,
+        waitedMs,
+        firstChunkTimeoutMs: deps.firstChunkTimeoutMs,
+      },
+    };
+    try {
+      await deps.writeAudit(audit);
+    } catch (err) {
+      console.error("[run-watchdog] writeAudit (no_first_chunk) failed:", err);
+    }
+    // Re-check after the audit await: a real first chunk may have started the
+    // run while the audit was in flight — don't abort/notify a run that just
+    // began streaming (leave it to the absolute 15-min cap instead).
+    if (deps.activeRuns.get(run.sessionKey) !== run || run.firstChunkAt !== null) continue;
+    try {
+      await deps.chatAbort(run.sessionKey, run.runId);
+    } catch (err) {
+      console.warn(
+        `[run-watchdog] chatAbort (no_first_chunk) failed for ${run.sessionKey} (run ${run.runId}):`,
+        err
+      );
+    }
+    // Re-check after the (networked) abort await: a resend may have replaced
+    // this run (the 90s timeout is exactly when a blank-thread user resends).
+    // Don't broadcast A's "didn't start" error to B's tab or delete B's entry.
+    if (deps.activeRuns.get(run.sessionKey) !== run || run.firstChunkAt !== null) continue;
+    try {
+      deps.broadcastNoFirstChunk(run);
+    } catch (err) {
+      console.error("[run-watchdog] broadcastNoFirstChunk failed:", err);
+    }
+    deps.activeRuns.deleteIfRunId(run.sessionKey, run.runId);
   }
 }
 

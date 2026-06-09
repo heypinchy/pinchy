@@ -21,6 +21,7 @@ function fakeWs(): WebSocket {
 }
 
 const FIFTEEN_MIN = 15 * 60 * 1000;
+const NINETY_S = 90 * 1000;
 const baseRun = {
   runId: "run-1",
   sessionKey: "agent:a1:direct:u1",
@@ -30,11 +31,22 @@ const baseRun = {
   startedAt: 1_000_000,
 };
 
+// Shared shape for a dispatch-time (pending) registration in these tests.
+const basePending = {
+  runId: "provisional-1",
+  sessionKey: "agent:a1:direct:u1",
+  agentId: "a1",
+  userId: "u1",
+  agentName: "Smithers",
+  currentMessageId: "m1",
+};
+
 describe("runWatchdogTick", () => {
   let runs: ActiveRuns;
   let chatAbort: ReturnType<typeof vi.fn>;
   let writeAudit: ReturnType<typeof vi.fn>;
   let broadcastTimeout: ReturnType<typeof vi.fn>;
+  let broadcastNoFirstChunk: ReturnType<typeof vi.fn>;
   let deps: WatchdogDeps;
 
   beforeEach(() => {
@@ -42,13 +54,16 @@ describe("runWatchdogTick", () => {
     chatAbort = vi.fn().mockResolvedValue(undefined);
     writeAudit = vi.fn().mockResolvedValue(undefined);
     broadcastTimeout = vi.fn();
+    broadcastNoFirstChunk = vi.fn();
     deps = {
       activeRuns: runs,
       chatAbort,
       writeAudit,
       broadcastTimeout,
+      broadcastNoFirstChunk,
       now: () => 1_000_000 + FIFTEEN_MIN + 1,
       maxRunDurationMs: FIFTEEN_MIN,
+      firstChunkTimeoutMs: NINETY_S,
     };
   });
 
@@ -167,5 +182,171 @@ describe("runWatchdogTick", () => {
     expect(writeAudit).toHaveBeenCalledTimes(2);
     expect(chatAbort).toHaveBeenCalledTimes(2);
     expect(runs.size()).toBe(0);
+  });
+
+  // ---------------------------------------------------------------------------
+  // B-1: first-chunk backstop. A run the backend ACCEPTED but never streamed
+  // (a wedged/rate-limited lane) is registered as "pending" at dispatch time.
+  // If no first chunk arrives within firstChunkTimeoutMs, the watchdog tears it
+  // down with a *retryable* error so the user isn't stuck on a blank thread —
+  // distinct from the terminal 15-min absolute timeout.
+  // ---------------------------------------------------------------------------
+  describe("first-chunk backstop (pending runs that never stream)", () => {
+    it("audits chat.run_no_first_chunk, aborts, broadcasts retryable, and drops the entry", async () => {
+      const ws = fakeWs();
+      // submittedAt 90s+ before now() → past the first-chunk timeout.
+      runs.registerPending({ ...basePending, submittedAt: 1_000_000, ws });
+
+      await runWatchdogTick(deps);
+
+      expect(writeAudit).toHaveBeenCalledTimes(1);
+      const audit = writeAudit.mock.calls[0]![0];
+      expect(audit.eventType).toBe("chat.run_no_first_chunk");
+      expect(audit.actorType).toBe("system");
+      expect(audit.actorId).toBe("watchdog");
+      expect(audit.outcome).toBe("failure");
+      expect(audit.resource).toBe("agent:a1");
+      expect(audit.detail.agent).toEqual({ id: "a1", name: "Smithers" });
+      expect(audit.detail.user).toEqual({ id: "u1" });
+      expect(audit.detail.sessionKey).toBe(basePending.sessionKey);
+      expect(audit.detail.runId).toBe("provisional-1");
+      expect(audit.detail.waitedMs).toBe(deps.now() - 1_000_000);
+      expect(audit.detail.firstChunkTimeoutMs).toBe(NINETY_S);
+      // No PII in detail.
+      expect(JSON.stringify(audit.detail)).not.toContain("@");
+
+      expect(chatAbort).toHaveBeenCalledTimes(1);
+      expect(chatAbort).toHaveBeenCalledWith(basePending.sessionKey, "provisional-1");
+
+      // Retryable broadcast, NOT the terminal timeout broadcast.
+      expect(broadcastNoFirstChunk).toHaveBeenCalledTimes(1);
+      expect(broadcastNoFirstChunk.mock.calls[0]![0].sessionKey).toBe(basePending.sessionKey);
+      expect(broadcastTimeout).not.toHaveBeenCalled();
+
+      expect(runs.size()).toBe(0);
+    });
+
+    it("leaves a pending run that is still within the first-chunk timeout untouched", async () => {
+      const ws = fakeWs();
+      runs.registerPending({ ...basePending, submittedAt: deps.now() - 1_000, ws });
+
+      await runWatchdogTick(deps);
+
+      expect(writeAudit).not.toHaveBeenCalled();
+      expect(chatAbort).not.toHaveBeenCalled();
+      expect(broadcastNoFirstChunk).not.toHaveBeenCalled();
+      expect(runs.size()).toBe(1);
+    });
+
+    it("a run that DID start is governed by the absolute cap, not the first-chunk backstop", async () => {
+      const ws = fakeWs();
+      // Pending, then a first chunk arrives 15min+ ago → it's a started, stuck run.
+      runs.registerPending({ ...basePending, submittedAt: 1_000_000, ws });
+      runs.markFirstChunk(basePending.sessionKey, 1_000_000, "real-run-7");
+
+      await runWatchdogTick(deps);
+
+      // Terminal timeout path fired, not the retryable no-first-chunk path.
+      expect(broadcastTimeout).toHaveBeenCalledTimes(1);
+      expect(broadcastNoFirstChunk).not.toHaveBeenCalled();
+      expect(writeAudit.mock.calls[0]![0].eventType).toBe("chat.run_timed_out");
+      expect(writeAudit.mock.calls[0]![0].detail.runId).toBe("real-run-7");
+      expect(runs.size()).toBe(0);
+    });
+
+    it("processes both a stuck (started) run and an unstarted run in one tick", async () => {
+      runs.register({ ...baseRun, sessionKey: "s-stuck", ws: fakeWs() });
+      runs.registerPending({
+        ...basePending,
+        sessionKey: "s-unstarted",
+        submittedAt: 1_000_000,
+        ws: fakeWs(),
+      });
+
+      await runWatchdogTick(deps);
+
+      expect(broadcastTimeout).toHaveBeenCalledTimes(1);
+      expect(broadcastNoFirstChunk).toHaveBeenCalledTimes(1);
+      expect(writeAudit).toHaveBeenCalledTimes(2);
+      const events = writeAudit.mock.calls.map((c) => c[0].eventType).sort();
+      expect(events).toEqual(["chat.run_no_first_chunk", "chat.run_timed_out"]);
+      expect(runs.size()).toBe(0);
+    });
+
+    it("continues processing other unstarted runs even if broadcastNoFirstChunk throws for one", async () => {
+      broadcastNoFirstChunk.mockImplementation((run: ActiveRun) => {
+        if (run.sessionKey === "p1") throw new Error("send to dead socket");
+      });
+      runs.registerPending({
+        ...basePending,
+        sessionKey: "p1",
+        submittedAt: 1_000_000,
+        ws: fakeWs(),
+      });
+      runs.registerPending({
+        ...basePending,
+        sessionKey: "p2",
+        submittedAt: 1_000_000,
+        ws: fakeWs(),
+      });
+
+      await runWatchdogTick(deps);
+
+      // Audit + abort still ran for both; p1's failed broadcast didn't poison the loop.
+      expect(writeAudit).toHaveBeenCalledTimes(2);
+      expect(chatAbort).toHaveBeenCalledTimes(2);
+      expect(runs.size()).toBe(0);
+    });
+
+    it("does NOT abort a pending run that produced its first chunk during the audit write (S-2 race)", async () => {
+      const ws = fakeWs();
+      runs.registerPending({ ...basePending, submittedAt: 1_000_000, ws });
+      // Simulate a real first chunk arriving (reconciling the run) while the
+      // no_first_chunk audit row is in flight — the watchdog must not then go
+      // on to abort a run that just started streaming.
+      writeAudit.mockImplementation(async () => {
+        runs.markFirstChunk(basePending.sessionKey, deps.now(), "real-late");
+      });
+
+      await runWatchdogTick(deps);
+
+      expect(chatAbort).not.toHaveBeenCalled();
+      expect(broadcastNoFirstChunk).not.toHaveBeenCalled();
+      // The run started mid-teardown — leave it in the registry under the
+      // absolute 15-min cap instead of killing it.
+      expect(runs.size()).toBe(1);
+    });
+
+    it("does not delete or notify a NEWER run that replaced the pending run during the chatAbort await (resend race)", async () => {
+      runs.registerPending({
+        ...basePending,
+        sessionKey: "s-race",
+        submittedAt: 1_000_000,
+        ws: fakeWs(),
+      });
+      // During the (networked) chatAbort the user — who has stared at a blank
+      // thread for 90s — resends. Run B replaces the entry on the same session.
+      chatAbort.mockImplementation(async () => {
+        runs.registerPending({
+          ...basePending,
+          runId: "msg-B",
+          sessionKey: "s-race",
+          currentMessageId: "msg-B",
+          submittedAt: 2_000_000,
+          ws: fakeWs(),
+        });
+      });
+
+      await runWatchdogTick(deps);
+
+      // A was aborted + audited, but B (the resend) must survive untouched and
+      // must NOT receive A's "didn't start responding" frame on the shared ws.
+      expect(chatAbort).toHaveBeenCalledTimes(1);
+      const survivor = runs.get("s-race");
+      expect(survivor).toBeDefined();
+      expect(survivor!.runId).toBe("msg-B");
+      expect(survivor!.firstChunkAt).toBeNull();
+      expect(broadcastNoFirstChunk).not.toHaveBeenCalled();
+    });
   });
 });
