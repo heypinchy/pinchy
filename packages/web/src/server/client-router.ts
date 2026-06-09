@@ -433,6 +433,24 @@ export class ClientRouter {
         messageId,
       });
 
+      // B-1: register the run at DISPATCH time, before any chunk streams, so a
+      // backend that accepts the request but never responds (a wedged or
+      // rate-limited lane) is visible to the watchdog. The watchdog tears such
+      // a run down after the first-chunk timeout with a RETRYABLE error instead
+      // of leaving the user on an indefinitely blank thread. The provisional
+      // runId (the per-turn messageId) is reconciled to the real runId by
+      // `markFirstChunk` on the first chunk in pipeStream.
+      this.activeRuns.registerPending({
+        runId: messageId,
+        sessionKey,
+        agentId: agent.id,
+        userId: this.userId,
+        agentName: agent.name,
+        currentMessageId: messageId,
+        submittedAt: Date.now(),
+        ws: clientWs,
+      });
+
       try {
         await this.pipeStream(clientWs, stream, agent, sessionKey, messageId);
       } finally {
@@ -466,19 +484,28 @@ export class ClientRouter {
     // Signal embedded in every history response variant so the client
     // can preserve `isRunning=true` and anchor incoming chunks to the
     // right message id after reconcile.
-    const activeRunSignal = activeRun
-      ? {
-          runId: activeRun.runId,
-          messageId: activeRun.currentMessageId,
-          startedAt: activeRun.startedAt,
-          // Tier 2b resume completeness: the text emitted for the in-flight
-          // message so far. Snapshotted here in the SAME synchronous block as
-          // `addListener` above (no await between) so it can't double-count a
-          // chunk that also arrives as a live delta. The client seeds the
-          // anchored assistant bubble with this, then appends future deltas.
-          partialContent: activeRun.currentContent,
-        }
-      : undefined;
+    //
+    // B-1: only signal a run that has actually STARTED streaming
+    // (firstChunkAt !== null). A dispatch-time pending run must NOT flip a
+    // reconnecting UI into "responding" — there is nothing to anchor yet, and
+    // the watchdog will either reconcile it (first chunk) or tear it down with
+    // a retryable error. Either way the frame reaches this ws via the listener
+    // set joined above; we just withhold the false "running" signal.
+    const activeRunSignal =
+      activeRun && activeRun.firstChunkAt !== null
+        ? {
+            runId: activeRun.runId,
+            messageId: activeRun.currentMessageId,
+            startedAt: activeRun.startedAt,
+            // Tier 2b resume completeness (#470): the text emitted for the
+            // in-flight message so far. Snapshotted here in the SAME
+            // synchronous block as `addListener` above (no await between) so it
+            // can't double-count a chunk that also arrives as a live delta. The
+            // client seeds the anchored assistant bubble with this, then
+            // appends future deltas.
+            partialContent: activeRun.currentContent,
+          }
+        : undefined;
 
     const fetchAndParseHistory = async () => {
       const result = (await this.openclawClient.sessions.history(sessionKey)) as {
@@ -728,6 +755,11 @@ export class ClientRouter {
     // OpenClaw may not have persisted the partial yet). Reset on each per-turn
     // `done` rotation.
     let emittedContent = "";
+    // C-1: set when the first chunk we observe is the synthetic post-abort
+    // `done` for a pending run the watchdog already tore down. Lets us skip the
+    // silent-stream synthesis + `complete` frame so the user isn't
+    // double-signalled for an event the watchdog already handled.
+    let tornDownByWatchdog = false;
 
     try {
       for await (const chunk of stream) {
@@ -759,19 +791,23 @@ export class ClientRouter {
         // existing chunk handling so a thrown error in the existing block
         // still leaves the registry up-to-date for the finally cleanup.
         if (!activeRunRegistered && chunk.runId) {
-          this.activeRuns.register({
-            runId: chunk.runId,
-            sessionKey,
-            agentId: agent.id,
-            userId: this.userId,
-            agentName: agent.name,
-            startedAt: Date.now(),
-            currentMessageId: messageId,
-            // Seed with any text already emitted before this registering chunk
-            // so the resume buffer never starts behind what clients have seen.
-            currentContent: emittedContent,
-            ws: clientWs,
-          });
+          const firstChunkAt = Date.now();
+          // B-1: reconcile the dispatch-time pending registration (created by
+          // `registerPending`) to the real runId and flip it to "started". The
+          // #470 resume buffer needs no seeding here — it's kept current by the
+          // per-emit `setContent` calls below against the same accumulator.
+          const reconciled = this.activeRuns.markFirstChunk(sessionKey, firstChunkAt, chunk.runId);
+          if (!reconciled) {
+            // C-1: the pending run is gone — the watchdog tore it down on the
+            // first-chunk timeout and aborted the stream, which is precisely
+            // why this synthetic terminal `done` arrived (openclaw-node emits
+            // one post-abort). Do NOT resurrect the registry entry and do NOT
+            // fall through to the silent-stream net below: the watchdog already
+            // notified the user (a retryable error) and audited the event
+            // (`chat.run_no_first_chunk`). Bail; the finally still cleans up.
+            tornDownByWatchdog = true;
+            break;
+          }
           activeRunRegistered = true;
           activeRunId = chunk.runId;
           if (process.env.PINCHY_E2E_CHAT_TRACE === "1") {
@@ -981,6 +1017,12 @@ export class ClientRouter {
         }
       }
 
+      // C-1: the watchdog already tore this run down (the loop broke on the
+      // synthetic post-abort `done`) and already notified the user with a
+      // retryable error — skip the silent-stream synthesis and the `complete`
+      // frame entirely. The finally still runs to clean up registry/heartbeat.
+      if (tornDownByWatchdog) return;
+
       // Issue #320 safety net: stream ended without any consumer-visible
       // output. Surface a retry-able error so the user isn't stranded with
       // an empty assistant turn (most likely cause: OC's embedded runner
@@ -1082,8 +1124,17 @@ export class ClientRouter {
             recordAuditFailure(err, auditEntry);
           }
         }
-        this.activeRuns.delete(sessionKey);
       }
+      // B-1/S-1: drop the registry entry for THIS run only. Covers a
+      // dispatch-time pending run that errored before its first chunk
+      // (`activeRunRegistered` stays false → owned id is the provisional
+      // `initialMessageId`) and a normal started run (owned id is the
+      // reconciled `activeRunId`). The identity check is critical: a rapid
+      // resend replaces the entry with a NEWER run on the same sessionKey, and
+      // an unconditional delete here would clobber it — `deleteIfRunId` only
+      // removes the entry if it is still ours. Idempotent if the watchdog
+      // already tore the run down.
+      this.activeRuns.deleteIfRunId(sessionKey, activeRunId ?? initialMessageId);
       if (heartbeatInterval !== null) {
         clearInterval(heartbeatInterval);
       }

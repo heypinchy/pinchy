@@ -10,7 +10,11 @@ import { restartState } from "./src/server/restart-state";
 import { openClawConnectionState } from "./src/server/openclaw-connection-state";
 import { setOpenClawClient } from "./src/server/openclaw-client";
 import { getActiveRunsSingleton } from "./src/server/active-runs-singleton";
-import { startRunWatchdog, DEFAULT_MAX_RUN_DURATION_MS } from "./src/server/run-watchdog";
+import {
+  startRunWatchdog,
+  DEFAULT_MAX_RUN_DURATION_MS,
+  DEFAULT_FIRST_CHUNK_TIMEOUT_MS,
+} from "./src/server/run-watchdog";
 import {
   ChannelHealthMonitor,
   startChannelHealthWatchdog,
@@ -366,6 +370,7 @@ ${domain ? `<p><a href="https://${domain}">Go to ${domain} →</a></p>` : ""}
       activeRuns,
       now: () => Date.now(),
       maxRunDurationMs: DEFAULT_MAX_RUN_DURATION_MS,
+      firstChunkTimeoutMs: DEFAULT_FIRST_CHUNK_TIMEOUT_MS,
       chatAbort: async (sessionKey, runId) => {
         await ocForWatchdog.chatAbort(sessionKey, runId);
       },
@@ -390,6 +395,21 @@ ${domain ? `<p><a href="https://${domain}">Go to ${domain} →</a></p>` : ""}
             DEFAULT_MAX_RUN_DURATION_MS / 60_000
           )}m. Please retry.`,
           runTimedOut: true,
+        });
+        for (const ws of run.listeners) {
+          if (ws.readyState === WebSocket.OPEN) ws.send(payload);
+        }
+      },
+      broadcastNoFirstChunk: (run) => {
+        // B-1: a run the backend accepted but never streamed within the
+        // first-chunk timeout. Send a RETRYABLE error frame (no `runTimedOut`
+        // flag — that's the terminal 15-min path). The client auto-classifies
+        // a `providerError` frame with no prior chunk as `send_failure`, so the
+        // user gets an inline "retry" affordance instead of an endless spinner.
+        const payload = JSON.stringify({
+          type: "error",
+          agentName: run.agentName,
+          providerError: "The agent didn't start responding. Please retry.",
         });
         for (const ws of run.listeners) {
           if (ws.readyState === WebSocket.OPEN) ws.send(payload);

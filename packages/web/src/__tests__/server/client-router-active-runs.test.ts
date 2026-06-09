@@ -262,6 +262,160 @@ describe("ClientRouter ↔ ActiveRuns wiring (#310 Tier 2a)", () => {
     expect(lastChunkAtSamples.length).toBeGreaterThan(0);
   });
 
+  it("registers a PENDING run at dispatch time (firstChunkAt=null) and reconciles it to the real runId on the first chunk (B-1)", async () => {
+    const tick = () => new Promise<void>((r) => setImmediate(r));
+    let releaseChunk!: () => void;
+    let releaseDone!: () => void;
+    const chunkGate = new Promise<void>((r) => (releaseChunk = r));
+    const doneGate = new Promise<void>((r) => (releaseDone = r));
+    async function* gated(): AsyncGenerator<ChatChunk> {
+      await chunkGate; // a backend that accepted the run but hasn't streamed yet
+      yield { type: "text", text: "hi", runId: "real-run-99" };
+      await doneGate;
+      yield { type: "done", text: "", runId: "real-run-99" };
+    }
+    mockChat.mockReturnValue(gated());
+    const router = new ClientRouter(
+      buildClient() as never,
+      "user-1",
+      "member",
+      sessionCache,
+      activeRuns
+    );
+    const ws = createMockWs();
+    const sessionKey = "agent:agent-1:direct:user-1";
+
+    const done = router.handleMessage(ws, {
+      type: "message",
+      content: "hi",
+      agentId: "agent-1",
+    });
+
+    // Before any chunk: a PENDING run is already registered, so the watchdog
+    // can see a backend that accepted the request but never started streaming.
+    await tick();
+    await tick();
+    const pending = activeRuns.get(sessionKey);
+    expect(pending).toBeDefined();
+    expect(pending!.firstChunkAt).toBeNull();
+    expect(pending!.userId).toBe("user-1");
+    expect(pending!.agentName).toBe("Smithers");
+
+    // First chunk arrives → reconciled to the real runId, no longer pending.
+    releaseChunk();
+    await tick();
+    await tick();
+    const started = activeRuns.get(sessionKey);
+    expect(started!.firstChunkAt).not.toBeNull();
+    expect(started!.runId).toBe("real-run-99");
+
+    releaseDone();
+    await done;
+    expect(activeRuns.size()).toBe(0);
+  });
+
+  it("does NOT resurrect or double-signal when the watchdog tore down a pending run before its first chunk (C-1)", async () => {
+    const tick = () => new Promise<void>((r) => setImmediate(r));
+    let releaseDone!: () => void;
+    const doneGate = new Promise<void>((r) => (releaseDone = r));
+    // Mirror openclaw-node's post-abort behavior: after chatAbort the generator
+    // drains and yields a synthetic terminal `done` (dist/index.js:511).
+    async function* abortedThenDone(): AsyncGenerator<ChatChunk> {
+      await doneGate;
+      yield { type: "done", text: "", runId: "real-late" };
+    }
+    mockChat.mockReturnValue(abortedThenDone());
+    const router = new ClientRouter(
+      buildClient() as never,
+      "user-1",
+      "member",
+      sessionCache,
+      activeRuns
+    );
+    const ws = createMockWs();
+    const sessionKey = "agent:agent-1:direct:user-1";
+
+    const done = router.handleMessage(ws, {
+      type: "message",
+      content: "hi",
+      agentId: "agent-1",
+    });
+    await tick();
+    await tick();
+    expect(activeRuns.get(sessionKey)?.firstChunkAt).toBeNull(); // pending
+
+    // Simulate the watchdog tearing the pending run down (it deletes the entry
+    // and aborts the stream, which is what produces the synthetic `done`).
+    activeRuns.delete(sessionKey);
+
+    releaseDone();
+    await done;
+
+    // No resurrection.
+    expect(activeRuns.size()).toBe(0);
+    // No duplicate audit — the watchdog already wrote chat.run_no_first_chunk;
+    // pipeStream must NOT also fire the silent-stream synthesised error path.
+    const errorAudits = mockAppendAuditLog.mock.calls.filter((c) =>
+      ["chat.agent_error", "chat.silent_stream"].includes((c[0] as { eventType: string }).eventType)
+    );
+    expect(errorAudits).toEqual([]);
+    // No contradictory second error frame to the client.
+    expect(ws.sent.some((s) => s.includes("did not produce a response"))).toBe(false);
+  });
+
+  it("a finishing run does not delete a newer pending run that replaced it on the same session (S-1)", async () => {
+    const tick = () => new Promise<void>((r) => setImmediate(r));
+    let releaseDoneA!: () => void;
+    const doneGateA = new Promise<void>((r) => (releaseDoneA = r));
+    async function* genA(): AsyncGenerator<ChatChunk> {
+      yield { type: "text", text: "A", runId: "real-A" };
+      await doneGateA;
+      yield { type: "done", text: "", runId: "real-A" };
+    }
+    mockChat.mockReturnValue(genA());
+    const router = new ClientRouter(
+      buildClient() as never,
+      "user-1",
+      "member",
+      sessionCache,
+      activeRuns
+    );
+    const wsA = createMockWs();
+    const sessionKey = "agent:agent-1:direct:user-1";
+
+    const doneA = router.handleMessage(wsA, {
+      type: "message",
+      content: "a",
+      agentId: "agent-1",
+    });
+    await tick();
+    await tick();
+    expect(activeRuns.get(sessionKey)?.runId).toBe("real-A"); // A started
+
+    // A rapid resend (run B) replaces the entry with a fresh pending run while
+    // A is still finishing.
+    const wsB = createMockWs();
+    activeRuns.registerPending({
+      runId: "msg-B",
+      sessionKey,
+      agentId: "agent-1",
+      userId: "user-1",
+      agentName: "Smithers",
+      currentMessageId: "msg-B",
+      submittedAt: 2_000_000,
+      ws: wsB,
+    });
+    expect(activeRuns.get(sessionKey)?.runId).toBe("msg-B");
+
+    // A finishes — its finally must NOT delete B's entry (identity mismatch).
+    releaseDoneA();
+    await doneA;
+
+    const survivor = activeRuns.get(sessionKey);
+    expect(survivor).toBeDefined();
+    expect(survivor!.runId).toBe("msg-B"); // B survived A's teardown
+  });
+
   it("emits chat.run_completed_after_disconnect when `done` arrives with zero listeners", async () => {
     const chunks: ChatChunk[] = [
       { type: "text", text: "Hi", runId: "run-disc" },
