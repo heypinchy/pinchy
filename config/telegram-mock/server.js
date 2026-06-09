@@ -378,8 +378,11 @@ function startControlServer() {
         res.end(
           JSON.stringify({ ok: true, conflict409All, conflict409Tokens: [...conflict409Tokens] })
         );
+        // Strip CR/LF from the user-provided token before logging (CodeQL
+        // js/log-injection — it only recognises an explicit newline replace).
+        const safeToken = token ? String(token).slice(0, 10).replace(/[\r\n]/g, "") : "";
         console.log(
-          `[telegram-mock] getUpdates409 ${enabled ? "ENABLED" : "disabled"}${token ? ` for ${token.substring(0, 10)}...` : " (all)"}`
+          `[telegram-mock] getUpdates409 ${enabled ? "ENABLED" : "disabled"}${token ? ` for ${safeToken}...` : " (all)"}`
         );
         return;
       }

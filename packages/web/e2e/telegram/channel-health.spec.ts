@@ -52,42 +52,52 @@ test.describe("channel-health watchdog", () => {
     }
   });
 
-  test("audits a telegram bot's getUpdates-409 conflict: degraded → polling_failed → recovered", async () => {
-    // Smithers (personal) is the main bot — a prerequisite for connecting a
-    // bot to any non-personal agent.
-    const smithers = await getAgentId();
-    await connectBot(smithers, MAIN_BOT_TOKEN);
-    await waitForBotPolling(MAIN_BOT_TOKEN);
+  // Tagged @channel-restart (skipped in CI, like the existing multi-bot tests
+  // in telegram-flow.spec.ts) because it connects a main + second bot, waits on
+  // their polling, and drives an OpenClaw channel restart loop — all of which
+  // are timing-sensitive against the shared serial CI OpenClaw. The detection
+  // logic is fully covered by the unit tests (channel-health{,-watchdog}.test.ts,
+  // which run in CI); this E2E is the integration check for local/nightly runs.
+  test(
+    "audits a telegram bot's getUpdates-409 conflict: degraded → polling_failed → recovered",
+    { tag: "@channel-restart" },
+    async () => {
+      // Smithers (personal) is the main bot — a prerequisite for connecting a
+      // bot to any non-personal agent.
+      const smithers = await getAgentId();
+      await connectBot(smithers, MAIN_BOT_TOKEN);
+      await waitForBotPolling(MAIN_BOT_TOKEN);
 
-    // A dedicated non-personal agent with its own bot — mirrors the incident,
-    // where a SHARED agent's bot (not the personal one) was duplicated across
-    // environments.
-    const existing = await getAgentByName("ChannelHealthBot");
-    const agent = existing ?? (await createAgent("ChannelHealthBot"));
-    await connectBot(agent.id, CONFLICT_BOT_TOKEN);
-    await waitForBotPolling(CONFLICT_BOT_TOKEN);
+      // A dedicated non-personal agent with its own bot — mirrors the incident,
+      // where a SHARED agent's bot (not the personal one) was duplicated across
+      // environments.
+      const existing = await getAgentByName("ChannelHealthBot");
+      const agent = existing ?? (await createAgent("ChannelHealthBot"));
+      await connectBot(agent.id, CONFLICT_BOT_TOKEN);
+      await waitForBotPolling(CONFLICT_BOT_TOKEN);
 
-    // Second deployment polls the same token → Telegram 409 for THIS bot only.
-    await setMockConflict409(CONFLICT_BOT_TOKEN, true);
+      // Second deployment polls the same token → Telegram 409 for THIS bot only.
+      await setMockConflict409(CONFLICT_BOT_TOKEN, true);
 
-    const degraded = await pollAuditForChannelEvent("channel.degraded", agent.id);
-    expect(degraded.outcome).toBe("failure");
-    expect(degraded.resource).toBe(`agent:${agent.id}`);
-    expect(degraded.detail.channel).toBe("telegram");
-    expect(String(degraded.detail.lastError)).toContain("terminated by other getUpdates request");
-    // The agent name is snapshotted; no PII (email) in the detail.
-    expect(JSON.stringify(degraded.detail)).not.toContain("@");
+      const degraded = await pollAuditForChannelEvent("channel.degraded", agent.id);
+      expect(degraded.outcome).toBe("failure");
+      expect(degraded.resource).toBe(`agent:${agent.id}`);
+      expect(degraded.detail.channel).toBe("telegram");
+      expect(String(degraded.detail.lastError)).toContain("terminated by other getUpdates request");
+      // The agent name is snapshotted; no PII (email) in the detail.
+      expect(JSON.stringify(degraded.detail)).not.toContain("@");
 
-    // Sustained failure escalates to a terminal audit.
-    const failed = await pollAuditForChannelEvent("channel.polling_failed", agent.id);
-    expect(failed.outcome).toBe("failure");
+      // Sustained failure escalates to a terminal audit.
+      const failed = await pollAuditForChannelEvent("channel.polling_failed", agent.id);
+      expect(failed.outcome).toBe("failure");
 
-    // Stop the conflict → OpenClaw's worker reconnects → channel.recovered.
-    await setMockConflict409(CONFLICT_BOT_TOKEN, false);
-    const recovered = await pollAuditForChannelEvent("channel.recovered", agent.id);
-    expect(recovered.outcome).toBe("success");
+      // Stop the conflict → OpenClaw's worker reconnects → channel.recovered.
+      await setMockConflict409(CONFLICT_BOT_TOKEN, false);
+      const recovered = await pollAuditForChannelEvent("channel.recovered", agent.id);
+      expect(recovered.outcome).toBe("success");
 
-    await disconnectBot(agent.id);
-    await disconnectBot(smithers);
-  });
+      await disconnectBot(agent.id);
+      await disconnectBot(smithers);
+    }
+  );
 });
