@@ -14,10 +14,14 @@
  *   degraded → healthy                 one `channel.recovered`  (outcome:success)
  *
  * State is in-memory per Pinchy process (like the run-watchdog) — a restart
- * re-derives it from the next probe. All deps are injected so the transition
+ * re-derives it from the next probe. (So a Pinchy restart while a channel is
+ * still degraded emits one fresh `channel.degraded` for the new process —
+ * acceptable: it's one extra row per restart, not a loop.) All deps are
+ * injected so the transition
  * logic is unit-tested against real captured `channels.status()` payloads.
  */
 import { classifyChannelStatus, type ChannelAccountHealth } from "./channel-health";
+import { safeProviderError } from "@/lib/audit";
 
 /** Default scan cadence — every 30s, matching the run-watchdog. */
 export const CHANNEL_HEALTH_INTERVAL_MS = 30_000;
@@ -173,7 +177,12 @@ export class ChannelHealthMonitor {
       detail: {
         channel: h.channel,
         account: { id: h.accountId, name },
-        lastError: h.lastError,
+        // Scrub email PII + cap at 1024 bytes before this lands in an
+        // append-only HMAC-signed row. The classifier is channel-agnostic, so a
+        // future email/Slack channel's lastError could carry an address — and
+        // GDPR erasure on a signed audit row is impossible by design. The live
+        // snapshot/UI keeps the full text (ephemeral, admin-only).
+        lastError: h.lastError ? safeProviderError(h.lastError) : null,
         reconnectAttempts: h.reconnectAttempts,
         consecutiveDegradedChecks,
       },

@@ -69,6 +69,24 @@ describe("ChannelHealthMonitor", () => {
     expect(JSON.stringify(e.detail)).not.toContain("@"); // no email/PII
   });
 
+  it("scrubs email PII and truncates lastError in the audit detail", async () => {
+    // The classifier is channel-agnostic; a future email/Slack channel could
+    // put an address in lastError, which must NOT land raw in the HMAC-signed
+    // audit row. (Telegram's 409 text has no PII — this guards the general case.)
+    const status = degradedTelegramStatus(1) as Record<string, unknown>;
+    (
+      status.channelAccounts as Record<string, Array<Record<string, unknown>>>
+    ).telegram[0].lastError = "auth failed for admin@example.com: " + "x".repeat(2000);
+    getChannelStatus.mockResolvedValue(status);
+
+    await monitor.tick(deps);
+
+    const e = auditsOfType("channel.degraded")[0];
+    expect(e.detail.lastError).not.toContain("admin@example.com");
+    expect(e.detail.lastError).toContain("<email-redacted>");
+    expect((e.detail.lastError as string).length).toBeLessThanOrEqual(1024);
+  });
+
   it("escalates to channel.polling_failed after N consecutive degraded ticks, once", async () => {
     getChannelStatus.mockResolvedValue(degradedTelegramStatus(2));
     // terminalAfterConsecutiveDegraded = 3
