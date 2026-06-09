@@ -40,6 +40,9 @@ services:
       # the OpenClaw container. Pinchy must know it too so regenerateOpenClawConfig
       # can include baseUrl in both the file write and config.apply payload.
       - ANTHROPIC_BASE_URL=https://172.28.0.10
+      # Fast channel-health probe so the channel-health E2E observes the
+      # degraded → failed → recovered transitions quickly (default is 30s).
+      - CHANNEL_HEALTH_INTERVAL_MS=3000
 
 networks:
   default:

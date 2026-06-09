@@ -197,6 +197,54 @@ export async function resetMockTelegram(): Promise<void> {
   await fetch(`${MOCK_TELEGRAM_URL}/control/reset`, { method: "POST" });
 }
 
+/**
+ * Toggle the mock's duplicate-poller 409 conflict for a specific bot token.
+ * When enabled, getUpdates returns Telegram's "Conflict: terminated by other
+ * getUpdates request" — the exact failure a second deployment polling the same
+ * token triggers — driving OpenClaw's channel worker into its restart loop.
+ */
+export async function setMockConflict409(token: string, enabled: boolean): Promise<void> {
+  const res = await fetch(`${MOCK_TELEGRAM_URL}/control/getUpdates409`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ enabled, token }),
+  });
+  if (!res.ok) {
+    throw new Error(`setMockConflict409 failed: ${res.status} ${await res.text()}`);
+  }
+}
+
+interface AuditEntry {
+  eventType: string;
+  resource: string | null;
+  outcome: string;
+  detail: Record<string, unknown> & { account?: { id?: string } };
+}
+
+/**
+ * Poll `/api/audit?eventType=<eventType>` until an entry for the given account
+ * (Pinchy agent id) appears. Used by the channel-health E2E to assert the
+ * watchdog audited a degraded/failed/recovered telegram channel.
+ */
+export async function pollAuditForChannelEvent(
+  eventType: string,
+  accountId: string,
+  opts: { timeout?: number } = {}
+): Promise<AuditEntry> {
+  const { timeout = 90000 } = opts;
+  const start = Date.now();
+  while (Date.now() - start < timeout) {
+    const res = await pinchyGet(`/api/audit?eventType=${encodeURIComponent(eventType)}&limit=25`);
+    if (res.ok) {
+      const data = (await res.json()) as { entries?: AuditEntry[] };
+      const match = (data.entries ?? []).find((e) => e.detail?.account?.id === accountId);
+      if (match) return match;
+    }
+    await new Promise((r) => setTimeout(r, 1500));
+  }
+  throw new Error(`No ${eventType} audit for account ${accountId} within ${timeout}ms`);
+}
+
 // ── Pairing code helpers ───────────────────────────────────────────────
 
 export function readPairingFile(): Record<string, unknown> | null {

@@ -45,6 +45,16 @@ const pendingUpdates = new Map(); // token -> update[]
 // bot to be live, instead of "any bot is registered".
 const pollingTokens = new Set();
 
+// When true, getUpdates returns HTTP-style 409 "Conflict: terminated by
+// other getUpdates request" — the exact response Telegram sends when a
+// SECOND deployment polls the same bot token. This drives OpenClaw's
+// telegram channel into its crash/auto-restart loop so the channel-health
+// detection can be exercised against a protocol-real failure. Toggled at
+// runtime via POST /control/getUpdates409 so a test can capture the
+// healthy → degraded transition. Per-token so other bots stay healthy.
+const conflict409Tokens = new Set();
+let conflict409All = false;
+
 // ── Anthropic API mock (for model prewarm) ─────────────────────────────
 
 function handleAnthropicRequest(url, body) {
@@ -93,6 +103,19 @@ async function handleGetUpdates(token, body) {
   // specific bot's channel has come up, which is more reliable than the
   // generic getMe-based registration count.
   pollingTokens.add(token);
+
+  // Simulated duplicate-poller conflict: Telegram returns 409 when a second
+  // instance polls the same token. Return it immediately (no long-poll) so
+  // OpenClaw's channel worker exits and the health-monitor restart loop kicks
+  // in — the exact production failure mode for cross-environment bot sharing.
+  if (conflict409All || conflict409Tokens.has(token)) {
+    return {
+      ok: false,
+      error_code: 409,
+      description:
+        "Conflict: terminated by other getUpdates request; make sure that only one bot instance is running",
+    };
+  }
 
   const timeout = Math.min(parseInt(body?.timeout || "30", 10), 30);
   const offset = parseInt(body?.offset || "0", 10);
@@ -330,11 +353,34 @@ function startControlServer() {
         pendingUpdates.clear();
         bots.clear();
         pollingTokens.clear();
+        conflict409Tokens.clear();
+        conflict409All = false;
         messageIdCounter = 1000;
         updateIdCounter = 100;
         res.writeHead(200);
         res.end(JSON.stringify({ ok: true }));
         console.log("[telegram-mock] State reset");
+        return;
+      }
+
+      // POST /control/getUpdates409 — toggle the duplicate-poller 409 conflict.
+      // Body: { enabled: bool, token?: string }. With a token it targets just
+      // that bot; without, it applies to all tokens.
+      if (req.method === "POST" && url.pathname === "/control/getUpdates409") {
+        const { enabled, token } = JSON.parse(body || "{}");
+        if (token) {
+          if (enabled) conflict409Tokens.add(token);
+          else conflict409Tokens.delete(token);
+        } else {
+          conflict409All = !!enabled;
+        }
+        res.writeHead(200);
+        res.end(
+          JSON.stringify({ ok: true, conflict409All, conflict409Tokens: [...conflict409Tokens] })
+        );
+        console.log(
+          `[telegram-mock] getUpdates409 ${enabled ? "ENABLED" : "disabled"}${token ? ` for ${token.substring(0, 10)}...` : " (all)"}`
+        );
         return;
       }
 
@@ -348,6 +394,8 @@ function startControlServer() {
             pollingTokens: [...pollingTokens],
             pendingUpdates: [...pendingUpdates.values()].flat().length,
             responses: botResponses.length,
+            conflict409All,
+            conflict409Tokens: [...conflict409Tokens],
           })
         );
         return;
