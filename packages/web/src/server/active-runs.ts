@@ -25,24 +25,42 @@ export interface ActiveRun {
   sessionKey: string;
   agentId: string;
   /**
-   * Owner of the run. Snapshotted at registration so the watchdog can
-   * include `user.id` in the `chat.run_timed_out` audit row even though
-   * the watchdog itself acts as `system / watchdog`. PII rules forbid
-   * email/name here — operators join against the users table when they
+   * Owner of the run. Snapshotted at registration so the watchdog can include
+   * `user.id` in the `chat.run_timed_out` / `chat.run_no_first_chunk` audit
+   * rows even though the watchdog itself acts as `system / watchdog`. PII rules
+   * forbid email/name here — operators join against the users table when they
    * need a human-readable name.
    */
   userId: string;
   agentName: string;
   /**
-   * Wall-clock time of the FIRST chunk Pinchy observed for this run —
-   * not the user-submit time. The 60s client-side stuck timer
-   * (`STUCK_TIMEOUT_MS` in `client-router.ts`) covers the "stream
-   * never started" case; the watchdog uses `startedAt` to cap runs
-   * that DO start but never finish. Effective hard-timeout is therefore
-   * "time-to-first-chunk + maxRunDurationMs" — usually a few seconds of
-   * overhead on top of the 15-minute default.
+   * Wall-clock time the run started streaming (its first chunk). For a
+   * dispatch-time pending run this is seeded to the submit time and re-anchored
+   * to the real first-chunk time by `markFirstChunk`. The watchdog's absolute
+   * cap (`scanForStuckRuns`, default 15 min) measures from here for runs that
+   * DO start but never finish. The complementary "stream never started" case is
+   * no longer left to the client's 60s timer alone — `firstChunkAt === null` +
+   * `scanForUnstartedRuns` is the server-side backstop (B-1).
    */
   startedAt: number;
+  /**
+   * When this run was registered with Pinchy. For dispatch-time registration
+   * (`registerPending`) this is the user-submit time; for the legacy
+   * first-chunk `register()` it equals `startedAt`. The first-chunk backstop
+   * (`scanForUnstartedRuns`) measures the wait-for-first-chunk from here, so
+   * it stays anchored to submit time even after `startedAt` is re-anchored to
+   * the real first-chunk time.
+   */
+  submittedAt: number;
+  /**
+   * Wall-clock time of the first chunk Pinchy observed, or `null` while the
+   * run is still pending — dispatched/accepted but the backend has not
+   * streamed anything yet (e.g. a wedged or rate-limited lane). The watchdog
+   * uses `firstChunkAt === null` past the first-chunk timeout to tear down a
+   * run that never started responding (B-1), so the user gets a retryable
+   * error instead of an indefinitely blank thread.
+   */
+  firstChunkAt: number | null;
   lastChunkAt: number;
   /**
    * Pinchy-side per-turn message id (rotated on each `done`). Stored here so
@@ -84,13 +102,21 @@ export class ActiveRuns {
   private runs = new Map<string, ActiveRun>();
 
   /**
-   * Begin tracking a new run. If a run already exists for this sessionKey
-   * (e.g. user sent a new message before the previous one finished),
-   * the old entry is discarded — its listeners are no longer reached, which
-   * matches the user expectation that the new turn replaces the old one.
+   * Register an already-STARTED run directly (`firstChunkAt` set immediately).
+   * The live chat path no longer calls this — it registers at dispatch via
+   * `registerPending` and flips to "started" via `markFirstChunk` (B-1).
+   * `register` remains the atomic "a started run exists" primitive, used by
+   * tests and available for any synchronous already-started registration.
+   *
+   * If a run already exists for this sessionKey (a new turn supersedes an
+   * unfinished one), the old entry is discarded — its listeners are no longer
+   * reached, matching the expectation that the new turn replaces the old one.
    */
   register(
-    input: Omit<ActiveRun, "lastChunkAt" | "listeners" | "currentContent"> & {
+    input: Omit<
+      ActiveRun,
+      "lastChunkAt" | "listeners" | "currentContent" | "submittedAt" | "firstChunkAt"
+    > & {
       ws: WebSocket;
       currentContent?: string;
     }
@@ -99,11 +125,70 @@ export class ActiveRuns {
     const run: ActiveRun = {
       ...rest,
       currentContent: currentContent ?? "",
+      // The legacy path registers ON the first chunk, so the run is already
+      // "started": submittedAt == startedAt and firstChunkAt is set, which
+      // keeps it out of `scanForUnstartedRuns` (it is not pending).
+      submittedAt: rest.startedAt,
+      firstChunkAt: rest.startedAt,
       lastChunkAt: rest.startedAt,
       listeners: new Set<WebSocket>([ws]),
     };
     this.runs.set(rest.sessionKey, run);
     return run;
+  }
+
+  /**
+   * Begin tracking a run at DISPATCH time, before any chunk has streamed
+   * (B-1). The run is "pending": `firstChunkAt` is null and the absolute
+   * `startedAt` cap is seeded to the submit time as a backstop. When the
+   * backend finally streams its first chunk, `markFirstChunk` reconciles the
+   * provisional runId to the real one and flips the run to "started". If the
+   * first chunk never arrives, `scanForUnstartedRuns` lets the watchdog tear
+   * the run down with a retryable error instead of leaving a blank thread.
+   *
+   * Like `register`, this replaces any prior run for the same sessionKey.
+   */
+  registerPending(
+    input: Omit<
+      ActiveRun,
+      "lastChunkAt" | "listeners" | "firstChunkAt" | "startedAt" | "currentContent"
+    > & {
+      ws: WebSocket;
+    }
+  ): ActiveRun {
+    const { ws, ...rest } = input;
+    const run: ActiveRun = {
+      ...rest,
+      // A pending run has streamed nothing yet; the resume buffer (#470) starts
+      // empty and fills via `setContent` once the first chunk lands (B-1 merge).
+      currentContent: "",
+      startedAt: rest.submittedAt,
+      firstChunkAt: null,
+      lastChunkAt: rest.submittedAt,
+      listeners: new Set<WebSocket>([ws]),
+    };
+    this.runs.set(rest.sessionKey, run);
+    return run;
+  }
+
+  /**
+   * Reconcile a pending run on the first chunk that carries the real runId:
+   * record `firstChunkAt`, re-anchor `startedAt`/`lastChunkAt` to the
+   * first-chunk time (so the 15-min absolute cap matches the legacy
+   * semantics), and swap the provisional runId for the real one. Returns
+   * false when no run exists for the sessionKey. For the live chat path — the
+   * only caller, always preceded by `registerPending` — false means the
+   * watchdog already tore the pending run down on the first-chunk timeout, so
+   * the caller bails instead of resurrecting the entry (C-1).
+   */
+  markFirstChunk(sessionKey: string, when: number, runId: string): boolean {
+    const run = this.runs.get(sessionKey);
+    if (!run) return false;
+    run.firstChunkAt = when;
+    run.startedAt = when;
+    run.lastChunkAt = when;
+    run.runId = runId;
+    return true;
   }
 
   /**
@@ -157,6 +242,18 @@ export class ActiveRuns {
   }
 
   /**
+   * Delete the run for `sessionKey` only if it is still the run identified by
+   * `runId`. Used by pipeStream's cleanup so a finishing run never clobbers a
+   * NEWER run that already replaced it on the same session (rapid resend). The
+   * `runId` is the real runId once reconciled, or the provisional dispatch-time
+   * id while the run is still pending. Idempotent.
+   */
+  deleteIfRunId(sessionKey: string, runId: string): void {
+    const run = this.runs.get(sessionKey);
+    if (run && run.runId === runId) this.runs.delete(sessionKey);
+  }
+
+  /**
    * Attach a second WebSocket as a listener for an existing run. Used by
    * Tier 2b: when a reconnecting browser asks the server "are you still
    * running my last turn?", the server adds the new ws to the set so
@@ -199,11 +296,32 @@ export class ActiveRuns {
   scanForStuckRuns(now: number, maxRunDurationMs: number): ActiveRun[] {
     const stuck: ActiveRun[] = [];
     for (const run of this.runs.values()) {
-      if (now - run.startedAt > maxRunDurationMs) {
+      // Pending runs (no first chunk yet) are owned by `scanForUnstartedRuns`,
+      // not the absolute cap — guarding here prevents the same run being torn
+      // down twice in one tick.
+      if (run.firstChunkAt !== null && now - run.startedAt > maxRunDurationMs) {
         stuck.push(run);
       }
     }
     return stuck;
+  }
+
+  /**
+   * Find PENDING runs (registered at dispatch, no first chunk yet) whose wait
+   * since `submittedAt` exceeds the first-chunk timeout. Used by the watchdog
+   * (B-1) to tear down a run the backend accepted but never streamed — e.g. a
+   * wedged or rate-limited lane. Distinct from `scanForStuckRuns`, which caps
+   * runs that DID start but never finish. A run that has produced any chunk
+   * (`firstChunkAt !== null`) is never returned here.
+   */
+  scanForUnstartedRuns(now: number, firstChunkTimeoutMs: number): ActiveRun[] {
+    const unstarted: ActiveRun[] = [];
+    for (const run of this.runs.values()) {
+      if (run.firstChunkAt === null && now - run.submittedAt > firstChunkTimeoutMs) {
+        unstarted.push(run);
+      }
+    }
+    return unstarted;
   }
 
   size(): number {

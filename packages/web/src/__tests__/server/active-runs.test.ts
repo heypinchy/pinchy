@@ -162,6 +162,40 @@ describe("ActiveRuns", () => {
     });
   });
 
+  describe("deleteIfRunId (identity-checked delete — don't clobber a newer run on resend)", () => {
+    it("deletes the run when the runId matches", () => {
+      runs.register({ ...baseRun, ws: fakeWs() });
+      runs.deleteIfRunId(baseRun.sessionKey, baseRun.runId);
+      expect(runs.get(baseRun.sessionKey)).toBeUndefined();
+    });
+
+    it("does NOT delete when the runId differs (a newer run replaced this one)", () => {
+      runs.register({ ...baseRun, runId: "run-new", ws: fakeWs() });
+      runs.deleteIfRunId(baseRun.sessionKey, "run-old");
+      expect(runs.get(baseRun.sessionKey)?.runId).toBe("run-new");
+    });
+
+    it("matches the provisional id of a still-pending run", () => {
+      runs.registerPending({
+        runId: "provisional-1",
+        sessionKey: baseRun.sessionKey,
+        agentId: "a1",
+        userId: "u1",
+        agentName: "Smithers",
+        currentMessageId: "m1",
+        submittedAt: 1_000_000,
+        ws: fakeWs(),
+      });
+      runs.deleteIfRunId(baseRun.sessionKey, "provisional-1");
+      expect(runs.get(baseRun.sessionKey)).toBeUndefined();
+    });
+
+    it("is a no-op for an unknown sessionKey", () => {
+      expect(() => runs.deleteIfRunId("agent:never:direct:u1", "r")).not.toThrow();
+      expect(runs.size()).toBe(0);
+    });
+  });
+
   describe("addListener", () => {
     it("adds an additional ws as a listener and returns true when the run exists (Tier 2b multi-tab)", () => {
       const wsA = fakeWs();
@@ -270,6 +304,26 @@ describe("ActiveRuns", () => {
     it("returns an empty array when there are no runs at all", () => {
       expect(runs.scanForStuckRuns(Date.now(), FIFTEEN_MIN)).toEqual([]);
     });
+
+    it("excludes pending runs — they belong to the first-chunk backstop, not the absolute cap", () => {
+      const ws = fakeWs();
+      const submit = 1_000_000;
+      runs.registerPending({
+        runId: "p1",
+        sessionKey: "s-pending",
+        agentId: "a1",
+        userId: "u1",
+        agentName: "Smithers",
+        currentMessageId: "m1",
+        submittedAt: submit,
+        ws,
+      });
+
+      // Even well past the 15-min cap, a never-started run must NOT be reported
+      // here — otherwise the watchdog would tear it down twice (once as
+      // chat.run_no_first_chunk, once as chat.run_timed_out).
+      expect(runs.scanForStuckRuns(submit + FIFTEEN_MIN + 60_000, FIFTEEN_MIN)).toEqual([]);
+    });
   });
 
   describe("values", () => {
@@ -280,6 +334,139 @@ describe("ActiveRuns", () => {
 
       const sessionKeys = Array.from(runs.values()).map((r) => r.sessionKey);
       expect(sessionKeys.sort()).toEqual(["s1", "s2"]);
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // B-1: dispatch-time registration + first-chunk backstop.
+  //
+  // The legacy `register()` runs ONLY on the first chunk that carries a runId,
+  // so a run that the backend accepts but never streams (a wedged lane, e.g.
+  // rate-limited) is invisible to the watchdog. `registerPending` records the
+  // run at DISPATCH time (firstChunkAt=null); `markFirstChunk` reconciles the
+  // provisional run to the real runId when streaming actually begins;
+  // `scanForUnstartedRuns` is what the watchdog uses to tear down a run that
+  // never produced a first chunk within the timeout.
+  // ---------------------------------------------------------------------------
+
+  describe("registerPending (dispatch-time registration, before the first chunk)", () => {
+    it("stores a pending run with firstChunkAt=null and the dispatching ws as listener", () => {
+      const ws = fakeWs();
+      const created = runs.registerPending({
+        runId: "provisional-1",
+        sessionKey: baseRun.sessionKey,
+        agentId: "a1",
+        userId: "u1",
+        agentName: "Smithers",
+        currentMessageId: "msg-1",
+        submittedAt: 1_000_000,
+        ws,
+      });
+
+      expect(created.firstChunkAt).toBeNull();
+      expect(created.submittedAt).toBe(1_000_000);
+      // startedAt seeds to submit time so the absolute 15-min cap is also a
+      // backstop; it is re-anchored to the real first-chunk time on reconcile.
+      expect(created.startedAt).toBe(1_000_000);
+      expect(created.lastChunkAt).toBe(1_000_000);
+      expect(created.listeners.has(ws)).toBe(true);
+      expect(runs.get(baseRun.sessionKey)).toBe(created);
+    });
+  });
+
+  describe("markFirstChunk (reconcile provisional run on the first chunk)", () => {
+    it("sets firstChunkAt, re-anchors startedAt, reconciles the real runId, keeps the listener", () => {
+      const ws = fakeWs();
+      runs.registerPending({
+        runId: "provisional-1",
+        sessionKey: baseRun.sessionKey,
+        agentId: "a1",
+        userId: "u1",
+        agentName: "Smithers",
+        currentMessageId: "msg-1",
+        submittedAt: 1_000_000,
+        ws,
+      });
+
+      const ok = runs.markFirstChunk(baseRun.sessionKey, 1_002_000, "real-run-42");
+
+      expect(ok).toBe(true);
+      const run = runs.get(baseRun.sessionKey);
+      expect(run?.firstChunkAt).toBe(1_002_000);
+      expect(run?.startedAt).toBe(1_002_000);
+      expect(run?.lastChunkAt).toBe(1_002_000);
+      expect(run?.runId).toBe("real-run-42");
+      expect(run?.listeners.has(ws)).toBe(true);
+    });
+
+    it("returns false for an unknown sessionKey (caller falls back to register)", () => {
+      expect(runs.markFirstChunk("agent:gone:direct:u1", 1, "r")).toBe(false);
+    });
+  });
+
+  describe("scanForUnstartedRuns (the first-chunk backstop the watchdog uses)", () => {
+    const NINETY_S = 90_000;
+
+    it("returns pending runs whose submittedAt is older than the first-chunk timeout", () => {
+      const ws = fakeWs();
+      const submit = 1_000_000;
+      runs.registerPending({
+        runId: "p1",
+        sessionKey: "s-wedged",
+        agentId: "a1",
+        userId: "u1",
+        agentName: "Smithers",
+        currentMessageId: "m1",
+        submittedAt: submit,
+        ws,
+      });
+
+      const unstarted = runs.scanForUnstartedRuns(submit + NINETY_S + 1, NINETY_S);
+
+      expect(unstarted).toHaveLength(1);
+      expect(unstarted[0].sessionKey).toBe("s-wedged");
+    });
+
+    it("excludes pending runs still within the timeout", () => {
+      const ws = fakeWs();
+      const submit = 1_000_000;
+      runs.registerPending({
+        runId: "p1",
+        sessionKey: "s-young",
+        agentId: "a1",
+        userId: "u1",
+        agentName: "Smithers",
+        currentMessageId: "m1",
+        submittedAt: submit,
+        ws,
+      });
+
+      expect(runs.scanForUnstartedRuns(submit + NINETY_S - 1, NINETY_S)).toEqual([]);
+    });
+
+    it("excludes runs that have already produced a first chunk", () => {
+      const ws = fakeWs();
+      const submit = 1_000_000;
+      runs.registerPending({
+        runId: "p1",
+        sessionKey: "s-started",
+        agentId: "a1",
+        userId: "u1",
+        agentName: "Smithers",
+        currentMessageId: "m1",
+        submittedAt: submit,
+        ws,
+      });
+      runs.markFirstChunk("s-started", submit + 1_000, "real-1");
+
+      // Even long past the first-chunk timeout, a started run is not "unstarted".
+      expect(runs.scanForUnstartedRuns(submit + NINETY_S + 10_000, NINETY_S)).toEqual([]);
+    });
+
+    it("ignores runs created via the legacy first-chunk register() (already started)", () => {
+      const ws = fakeWs();
+      runs.register({ ...baseRun, sessionKey: "s-legacy", startedAt: 1_000_000, ws });
+      expect(runs.scanForUnstartedRuns(1_000_000 + NINETY_S + 1, NINETY_S)).toEqual([]);
     });
   });
 });
