@@ -148,8 +148,12 @@ describe("ClientRouter handleHistory ↔ ActiveRuns resume (#310 Tier 2b)", () =
       currentMessageId: "msg-inflight",
       ws: wsOriginal,
     });
+    // The server has emitted more of the reply than OpenClaw has persisted —
+    // this is the resume buffer the reconnecting client must be re-seeded with.
+    activeRuns.setContent(sessionKey, "We're checking the vacation policy for you");
 
-    // OC history returns a partial assistant turn (typical for in-flight).
+    // OC history returns a shorter (or no) partial assistant turn (typical for
+    // in-flight — persistence lags the live stream).
     mockSessionsHistory.mockResolvedValue({
       messages: [
         { role: "user", content: "What's the vacation policy?" },
@@ -174,6 +178,10 @@ describe("ClientRouter handleHistory ↔ ActiveRuns resume (#310 Tier 2b)", () =
       runId: "run-active",
       messageId: "msg-inflight",
       startedAt: 1000,
+      // Resume completeness: the server replays its accumulated emitted text so
+      // the client recovers words streamed before the reload, even though OC
+      // history only has the shorter persisted "We're checking...".
+      partialContent: "We're checking the vacation policy for you",
     });
     // The reconnecting ws joined the listener set so future chunks
     // broadcast to it.

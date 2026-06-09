@@ -963,23 +963,31 @@ export function useWsRuntime(agentId: string): {
           // the spinner doesn't flicker.
           const activeRun = (
             data as {
-              activeRun?: { runId: string; messageId: string; startedAt: number };
+              activeRun?: {
+                runId: string;
+                messageId: string;
+                startedAt: number;
+                partialContent?: string;
+              };
             }
           ).activeRun;
           if (activeRun) {
-            // Anchor the in-flight reply as the TRAILING assistant message. If
-            // the reply isn't persisted in history yet (history ends in the user
-            // turn), this appends an empty assistant bubble for it. Keeping the
-            // list ending in an assistant while isRunning stops assistant-ui from
+            // Anchor the in-flight reply as the TRAILING assistant message, seeded
+            // with the server's resume buffer (`partialContent`) — the text
+            // already streamed before this reload, which the server won't replay
+            // as deltas and OpenClaw may not have persisted into history yet. If
+            // the reply isn't in history, this appends a bubble for it; if it is,
+            // it adopts whichever content is more complete. Keeping the list
+            // ending in an assistant while isRunning also stops assistant-ui from
             // injecting its own optimistic message, which would lead its message
             // count past its per-message resource list and crash
             // ThreadPrimitive.Messages (tapClientLookup index out of bounds).
-            // Chunks merge into this id via mergeOrAppendChunk. See
+            // Future chunks merge into this id via mergeOrAppendChunk. See
             // ensure-trailing-assistant.ts (#470).
             const anchored = ensureTrailingAssistant(historyMessages, {
               id: activeRun.messageId,
               role: "assistant",
-              content: "",
+              content: activeRun.partialContent ?? "",
               timestamp: new Date().toISOString(),
             });
             historyMessages.length = 0;

@@ -92,6 +92,41 @@ describe("ActiveRuns", () => {
     });
   });
 
+  describe("currentContent (Tier 2b: resume buffer for the in-flight reply)", () => {
+    it("defaults to an empty string when register omits it", () => {
+      const ws = fakeWs();
+      runs.register({ ...baseRun, ws });
+      expect(runs.get(baseRun.sessionKey)?.currentContent).toBe("");
+    });
+
+    it("seeds from register input (text emitted before the registering chunk)", () => {
+      const ws = fakeWs();
+      runs.register({ ...baseRun, currentContent: "one ", ws });
+      expect(runs.get(baseRun.sessionKey)?.currentContent).toBe("one ");
+    });
+
+    it("setContent mirrors the pipe's accumulated emitted text", () => {
+      const ws = fakeWs();
+      runs.register({ ...baseRun, ws });
+      runs.setContent(baseRun.sessionKey, "one two");
+      expect(runs.get(baseRun.sessionKey)?.currentContent).toBe("one two");
+      runs.setContent(baseRun.sessionKey, "one two three");
+      expect(runs.get(baseRun.sessionKey)?.currentContent).toBe("one two three");
+    });
+
+    it("setContent is a no-op for an unknown sessionKey", () => {
+      expect(() => runs.setContent("agent:gone:direct:u1", "x")).not.toThrow();
+    });
+
+    it("updateMessageId resets currentContent — the finished turn is now in history", () => {
+      const ws = fakeWs();
+      runs.register({ ...baseRun, ws });
+      runs.setContent(baseRun.sessionKey, "first turn reply");
+      runs.updateMessageId(baseRun.sessionKey, "msg-turn-2");
+      expect(runs.get(baseRun.sessionKey)?.currentContent).toBe("");
+    });
+  });
+
   describe("touch", () => {
     it("updates lastChunkAt on every chunk so the watchdog measures inactivity, not absolute age", () => {
       const ws = fakeWs();

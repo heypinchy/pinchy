@@ -53,6 +53,20 @@ export interface ActiveRun {
    * matching message after reconcile.
    */
   currentMessageId: string;
+  /**
+   * The assistant text Pinchy has emitted to clients for `currentMessageId` so
+   * far (Tier 2b resume completeness). Streaming chunks are DELTAS: after a
+   * reload the server resumes broadcasting from the current position and never
+   * replays earlier deltas, and OpenClaw may not have persisted the in-flight
+   * partial into history yet — so without this buffer the words streamed before
+   * the reload are lost. On reconnect the server hands this back as
+   * `activeRun.partialContent`; the client seeds the anchored assistant bubble
+   * with it, then appends future deltas. Reset to "" on each per-turn messageId
+   * rotation (the completed turn is now in OpenClaw history). Kept in sync via
+   * `setContent` against the pipe's local accumulator, so it stays correct even
+   * if early text streamed before the run was registered.
+   */
+  currentContent: string;
   listeners: Set<WebSocket>;
 }
 
@@ -75,10 +89,16 @@ export class ActiveRuns {
    * the old entry is discarded — its listeners are no longer reached, which
    * matches the user expectation that the new turn replaces the old one.
    */
-  register(input: Omit<ActiveRun, "lastChunkAt" | "listeners"> & { ws: WebSocket }): ActiveRun {
-    const { ws, ...rest } = input;
+  register(
+    input: Omit<ActiveRun, "lastChunkAt" | "listeners" | "currentContent"> & {
+      ws: WebSocket;
+      currentContent?: string;
+    }
+  ): ActiveRun {
+    const { ws, currentContent, ...rest } = input;
     const run: ActiveRun = {
       ...rest,
+      currentContent: currentContent ?? "",
       lastChunkAt: rest.startedAt,
       listeners: new Set<WebSocket>([ws]),
     };
@@ -110,6 +130,22 @@ export class ActiveRuns {
     const run = this.runs.get(sessionKey);
     if (!run) return;
     run.currentMessageId = messageId;
+    // A new per-turn message starts with no emitted text. The just-finished
+    // turn is now persisted in OpenClaw history, so a reconnecting client gets
+    // it from history rather than from the resume buffer.
+    run.currentContent = "";
+  }
+
+  /**
+   * Sync the accumulated emitted text for the current message. Called from the
+   * stream pipe against its local accumulator on every emitted chunk, so the
+   * registry mirrors exactly what clients have received — the source of truth
+   * for `activeRun.partialContent` on reconnect.
+   */
+  setContent(sessionKey: string, content: string): void {
+    const run = this.runs.get(sessionKey);
+    if (!run) return;
+    run.currentContent = content;
   }
 
   get(sessionKey: string): ActiveRun | undefined {

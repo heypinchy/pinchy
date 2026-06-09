@@ -14,14 +14,27 @@ describe("ensureTrailingAssistant", () => {
     ]);
   });
 
-  it("re-anchors the trailing assistant's id in place, preserving its content", () => {
+  it("re-anchors the trailing assistant's id, keeping the longer persisted content when the resume buffer is empty", () => {
     const messages: Msg[] = [
       { id: "u1", role: "user", content: "hi" },
       { id: "tmp", role: "assistant", content: "partial reply" },
     ];
+    // anchor.content is "" (empty resume buffer) — must NOT shrink the reply.
     expect(ensureTrailingAssistant(messages, anchor)).toEqual([
       { id: "u1", role: "user", content: "hi" },
       { id: "run-1", role: "assistant", content: "partial reply" },
+    ]);
+  });
+
+  it("adopts the resume buffer when it is more complete than the persisted partial", () => {
+    const messages: Msg[] = [
+      { id: "u1", role: "user", content: "list one..ten" },
+      { id: "tmp", role: "assistant", content: "one two" },
+    ];
+    const fullerAnchor: Msg = { id: "run-1", role: "assistant", content: "one two three four" };
+    expect(ensureTrailingAssistant(messages, fullerAnchor)).toEqual([
+      { id: "u1", role: "user", content: "list one..ten" },
+      { id: "run-1", role: "assistant", content: "one two three four" },
     ]);
   });
 

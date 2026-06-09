@@ -184,6 +184,48 @@ describe("ClientRouter ↔ ActiveRuns wiring (#310 Tier 2a)", () => {
     expect(activeRuns.size()).toBe(0);
   });
 
+  it("accumulates emitted text into the ActiveRun resume buffer for reconnect replay (Tier 2b)", async () => {
+    const chunks: ChatChunk[] = [
+      { type: "text", text: "one ", runId: "run-acc" },
+      { type: "text", text: "two ", runId: "run-acc" },
+      { type: "text", text: "three", runId: "run-acc" },
+      { type: "done", text: "", runId: "run-acc" },
+    ];
+    mockChat.mockReturnValue(makeChunkStream(chunks));
+    const router = new ClientRouter(
+      buildClient() as never,
+      "user-1",
+      "member",
+      sessionCache,
+      activeRuns
+    );
+    const ws = createMockWs();
+    const sessionKey = "agent:agent-1:direct:user-1";
+
+    // Sample the resume buffer on every broadcast so we can prove it grows as
+    // the stream progresses and reaches the full emitted reply — this is what a
+    // reconnecting client is re-seeded with via activeRun.partialContent.
+    const contentSamples: string[] = [];
+    (ws.send as unknown as ReturnType<typeof vi.fn>).mockImplementation(() => {
+      const run = activeRuns.get(sessionKey);
+      if (run) contentSamples.push(run.currentContent);
+    });
+
+    await router.handleMessage(ws, {
+      type: "message",
+      content: "hi",
+      agentId: "agent-1",
+    });
+
+    // The buffer reached the full reply mid-stream.
+    expect(contentSamples).toContain("one two three");
+    // And it only ever grew (prefix chain) while in-flight — never shrank.
+    const nonEmpty = contentSamples.filter((s) => s.length > 0);
+    for (let i = 1; i < nonEmpty.length; i++) {
+      expect(nonEmpty[i]!.startsWith(nonEmpty[i - 1]!)).toBe(true);
+    }
+  });
+
   it("touches lastChunkAt as new chunks arrive (watchdog distinguishes 'progressing' from 'silent')", async () => {
     const chunks: ChatChunk[] = [
       { type: "text", text: "Hi ", runId: "run-touch" },

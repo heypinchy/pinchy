@@ -92,6 +92,36 @@ describe("useWsRuntime — activeRun reconcile anchors a trailing assistant", ()
     expect(last?.id).toBe("srv-1");
   });
 
+  it("seeds the in-flight bubble with the server's resume buffer (partialContent)", () => {
+    const { result } = renderHook(() => useWsRuntime("agent-1"));
+    const ws = wsInstances[0]!;
+    act(() => ws.simulateOpen());
+    // Reload mid-stream: the words "one two three" already streamed before the
+    // reload. History has only the user turn; the server replays the accumulated
+    // text via activeRun.partialContent so it isn't lost.
+    act(() =>
+      ws.simulateMessage({
+        type: "history",
+        messages: [{ role: "user", content: "list one..ten" }],
+        activeRun: {
+          runId: "run-1",
+          messageId: "srv-1",
+          startedAt: 1000,
+          partialContent: "one two three",
+        },
+      })
+    );
+
+    const msgs = (
+      result.current.runtime as { messages?: { id: string; role: string; content?: unknown }[] }
+    ).messages!;
+    const last = msgs[msgs.length - 1]!;
+    expect(last.role).toBe("assistant");
+    expect(last.id).toBe("srv-1");
+    // The pre-reload content is recovered, not lost.
+    expect(JSON.stringify(last.content)).toContain("one two three");
+  });
+
   it("anchors the trailing assistant in place when the reply IS in history", () => {
     const { result } = renderHook(() => useWsRuntime("agent-1"));
     const ws = wsInstances[0]!;

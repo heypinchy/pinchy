@@ -471,6 +471,12 @@ export class ClientRouter {
           runId: activeRun.runId,
           messageId: activeRun.currentMessageId,
           startedAt: activeRun.startedAt,
+          // Tier 2b resume completeness: the text emitted for the in-flight
+          // message so far. Snapshotted here in the SAME synchronous block as
+          // `addListener` above (no await between) so it can't double-count a
+          // chunk that also arrives as a live delta. The client seeds the
+          // anchored assistant bubble with this, then appends future deltas.
+          partialContent: activeRun.currentContent,
         }
       : undefined;
 
@@ -715,6 +721,13 @@ export class ClientRouter {
     let activeRunRegistered = false;
     let activeRunId: string | undefined;
     let sawTerminalError = false;
+    // Tier 2b resume buffer: the assistant text emitted to clients for the
+    // current `messageId` so far. Mirrored into the ActiveRun registry on every
+    // emit so a reconnecting client can be re-seeded with the words it streamed
+    // before the reload (chunks are deltas; the server never replays them and
+    // OpenClaw may not have persisted the partial yet). Reset on each per-turn
+    // `done` rotation.
+    let emittedContent = "";
 
     try {
       for await (const chunk of stream) {
@@ -754,6 +767,9 @@ export class ClientRouter {
             agentName: agent.name,
             startedAt: Date.now(),
             currentMessageId: messageId,
+            // Seed with any text already emitted before this registering chunk
+            // so the resume buffer never starts behind what clients have seen.
+            currentContent: emittedContent,
             ws: clientWs,
           });
           activeRunRegistered = true;
@@ -838,6 +854,13 @@ export class ClientRouter {
             if (safeLen > 0) {
               const emit = textBuffer.slice(0, safeLen);
               textBuffer = textBuffer.slice(safeLen);
+              // Accumulate then mirror into the registry in the SAME synchronous
+              // block as the broadcast: a reconnect's atomic snapshot+addListener
+              // means any chunk is either fully before the snapshot (counted in
+              // partialContent, not re-broadcast to the new ws) or fully after
+              // (not in the snapshot, delivered as a live delta) — never both.
+              emittedContent += emit;
+              this.activeRuns.setContent(sessionKey, emittedContent);
               this.broadcastForRun(sessionKey, clientWs, {
                 type: "chunk",
                 content: emit,
@@ -926,6 +949,8 @@ export class ClientRouter {
             // resolved to the silent-reply sentinel, suppress it; otherwise
             // emit whatever text was held back.
             if (textBuffer && textBuffer !== SILENT_REPLY_TOKEN) {
+              emittedContent += textBuffer;
+              this.activeRuns.setContent(sessionKey, emittedContent);
               this.broadcastForRun(sessionKey, clientWs, {
                 type: "chunk",
                 content: textBuffer,
@@ -942,6 +967,9 @@ export class ClientRouter {
         // stores them in history).
         if (chunk.type === "done") {
           textBuffer = "";
+          // The completed turn is now in OpenClaw history; the next turn starts
+          // with an empty resume buffer (updateMessageId clears the registry's).
+          emittedContent = "";
           messageId = crypto.randomUUID();
           // Tier 2b: keep the registry's view of the current messageId in
           // sync with the per-turn rotation so a reconnecting client gets
