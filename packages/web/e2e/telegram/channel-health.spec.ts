@@ -25,6 +25,7 @@ import {
   waitForOpenClawConnected,
   setMockConflict409,
   pollAuditForChannelEvent,
+  resetMockTelegram,
 } from "./helpers";
 
 // Distinct bot ids (8101… vs 8102…) so the within-deployment duplicate-token
@@ -38,6 +39,17 @@ test.describe("channel-health watchdog", () => {
     await seedSetup();
     await waitForOpenClawConnected();
     await login();
+  });
+
+  // Self-contained: clear the conflict toggle + mock state even if an assertion
+  // fails mid-test, so a future spec-ordering change can't inherit leaked state.
+  test.afterAll(async () => {
+    try {
+      await setMockConflict409(CONFLICT_BOT_TOKEN, false);
+      await resetMockTelegram();
+    } catch {
+      // best-effort cleanup
+    }
   });
 
   test("audits a telegram bot's getUpdates-409 conflict: degraded → polling_failed → recovered", async () => {

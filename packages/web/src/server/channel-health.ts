@@ -63,6 +63,11 @@ export function classifyChannelStatus(status: unknown): ChannelAccountHealth[] {
       if (!accountId) continue;
 
       // Default-on: only an explicit `false` means intentionally disabled.
+      // Load-bearing assumption (verified against captured OpenClaw 2026.6.1):
+      // OC keeps a crash-looping account `enabled:true` + `restartPending:true`
+      // through the 409 restart loop — it does NOT flip `enabled:false`. If a
+      // future OC version did, a degradation episode would be silently skipped
+      // here (and the watchdog would drop the tracker without a recovery audit).
       const enabled = a.enabled !== false;
       const configured = a.configured !== false;
       if (!enabled || !configured) continue;

@@ -2,7 +2,7 @@ import { NextResponse, type NextRequest } from "next/server";
 import { restartState } from "@/server/restart-state";
 import { openClawConnectionState } from "@/server/openclaw-connection-state";
 import { getOpenClawClient } from "@/server/openclaw-client";
-import { classifyChannelStatus, type ChannelAccountHealth } from "@/server/channel-health";
+import { getChannelHealthMonitor } from "@/server/channel-health-singleton";
 
 /**
  * GET `/api/health/openclaw[?agentId=<uuid>]`
@@ -38,19 +38,13 @@ export async function GET(request: NextRequest) {
 
   const base = { status: "ok" as const, connected: openClawConnectionState.connected };
 
-  // With `?channelHealth=1`: a LIVE per-account channel-health snapshot from
-  // `channels.status()`, used by the admin Telegram settings UI to show a
-  // "degraded" badge. The watchdog (server.ts) owns the auditing; this is the
-  // current display state. All failure modes collapse to `[]` so the poll
-  // never breaks with a 5xx.
+  // With `?channelHealth=1`: the channel-health watchdog's per-account snapshot,
+  // used by the admin Telegram settings UI to show a "degraded" badge. Reading
+  // the watchdog's debounced episode state (rather than a fresh classify)
+  // avoids the badge flickering on a single-tick blip between OpenClaw's
+  // auto-restart attempts. Empty (`[]`) until the watchdog has run a probe.
   if (request.nextUrl.searchParams.get("channelHealth")) {
-    let channelHealth: ChannelAccountHealth[] = [];
-    try {
-      const client = getOpenClawClient();
-      channelHealth = classifyChannelStatus(await client.channels.status());
-    } catch {
-      channelHealth = [];
-    }
+    const channelHealth = getChannelHealthMonitor()?.snapshot() ?? [];
     return NextResponse.json({ ...base, channelHealth });
   }
 

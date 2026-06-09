@@ -17,6 +17,7 @@ import {
   CHANNEL_HEALTH_INTERVAL_MS,
   DEFAULT_TERMINAL_AFTER_CONSECUTIVE_DEGRADED,
 } from "./src/server/channel-health-watchdog";
+import { setChannelHealthMonitor } from "./src/server/channel-health-singleton";
 import { appendAuditLog } from "./src/lib/audit";
 import { recordAuditFailure } from "./src/lib/audit-deferred";
 import { db } from "./src/db";
@@ -408,10 +409,17 @@ ${domain ? `<p><a href="https://${domain}">Go to ${domain} →</a></p>` : ""}
     // true and nothing is audited. This polls channels.status() and audits the
     // healthy→degraded→failed→recovered transitions so operators finally see it.
     const channelHealthMonitor = new ChannelHealthMonitor();
+    setChannelHealthMonitor(channelHealthMonitor);
     const stopChannelHealth = startChannelHealthWatchdog(
       channelHealthMonitor,
       {
-        getChannelStatus: () => ocForWatchdog.channels.status(),
+        // Skip the probe while a Pinchy-initiated OpenClaw restart is in flight:
+        // channel workers briefly drop during a config-apply cascade, and a
+        // reject here makes the tick a no-op (vs. auditing a transient blip).
+        getChannelStatus: () =>
+          restartState.isRestarting
+            ? Promise.reject(new Error("openclaw restarting"))
+            : ocForWatchdog.channels.status(),
         resolveAccountName: async (_channel, accountId) => {
           try {
             const a = await db.query.agents.findFirst({
