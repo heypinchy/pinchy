@@ -6,6 +6,7 @@ import { useRestart } from "@/components/restart-provider";
 import { uuid } from "@/lib/uuid";
 import { dedupeById } from "@/lib/dedupe-by-id";
 import { mergeOrAppendChunk } from "@/hooks/merge-chunk";
+import { ensureTrailingAssistant } from "@/hooks/ensure-trailing-assistant";
 import { uploadAttachment } from "@/lib/upload-attachment";
 import { useDraftId } from "@/hooks/use-draft-id";
 import {
@@ -966,12 +967,23 @@ export function useWsRuntime(agentId: string): {
             }
           ).activeRun;
           if (activeRun) {
-            for (let i = historyMessages.length - 1; i >= 0; i--) {
-              if (historyMessages[i].role === "assistant") {
-                historyMessages[i].id = activeRun.messageId;
-                break;
-              }
-            }
+            // Anchor the in-flight reply as the TRAILING assistant message. If
+            // the reply isn't persisted in history yet (history ends in the user
+            // turn), this appends an empty assistant bubble for it. Keeping the
+            // list ending in an assistant while isRunning stops assistant-ui from
+            // injecting its own optimistic message, which would lead its message
+            // count past its per-message resource list and crash
+            // ThreadPrimitive.Messages (tapClientLookup index out of bounds).
+            // Chunks merge into this id via mergeOrAppendChunk. See
+            // ensure-trailing-assistant.ts (#470).
+            const anchored = ensureTrailingAssistant(historyMessages, {
+              id: activeRun.messageId,
+              role: "assistant",
+              content: "",
+              timestamp: new Date().toISOString(),
+            });
+            historyMessages.length = 0;
+            historyMessages.push(...anchored);
             isRunningRef.current = true;
             setIsRunning(true);
             inflightRunIdRef.current = activeRun.runId;

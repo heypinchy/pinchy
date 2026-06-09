@@ -1,0 +1,117 @@
+/**
+ * Regression guard (#470): on the streaming-resume path, the reconciled message
+ * list handed to assistant-ui must ALWAYS end with an assistant message while
+ * the run is in flight. Otherwise assistant-ui appends its own optimistic
+ * assistant (isRunning && last !== assistant), whose count leads its per-message
+ * resource list by one and crashes ThreadPrimitive.Messages with a
+ * tapClientLookup out-of-bounds index ("Something went wrong").
+ *
+ * This file mocks @assistant-ui/react to the identity function so
+ * `runtime.messages` exposes the exact convertedMessages array that would be fed
+ * to the real runtime — we assert its trailing message directly.
+ */
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { renderHook, act } from "@testing-library/react";
+import { useWsRuntime } from "@/hooks/use-ws-runtime";
+
+vi.mock("@/lib/image-compression", () => ({
+  compressImageForChat: vi.fn(async (file: File) => ({ ok: true, file, skipped: true })),
+}));
+vi.mock("@/lib/upload-attachment", () => ({ uploadAttachment: vi.fn() }));
+vi.mock("sonner", () => ({ toast: vi.fn() }));
+vi.mock("@/components/restart-provider", () => ({
+  useRestart: () => ({ isRestarting: false, triggerRestart: vi.fn() }),
+}));
+vi.mock("@assistant-ui/react", () => ({
+  useExternalStoreRuntime: (config: any) => config,
+  SimpleImageAttachmentAdapter: class {
+    accept = "image/*";
+  },
+  SimpleTextAttachmentAdapter: class {
+    accept = "text/plain";
+  },
+  CompositeAttachmentAdapter: class {
+    accept = "";
+    constructor() {}
+  },
+}));
+
+let wsInstances: MockWebSocket[] = [];
+class MockWebSocket {
+  static CONNECTING = 0;
+  static OPEN = 1;
+  static CLOSING = 2;
+  static CLOSED = 3;
+  onopen: ((e: Event) => void) | null = null;
+  onmessage: ((e: MessageEvent) => void) | null = null;
+  onclose: ((e: CloseEvent) => void) | null = null;
+  onerror: ((e: Event) => void) | null = null;
+  readyState = 1;
+  send = vi.fn();
+  close = vi.fn();
+  constructor() {
+    wsInstances.push(this);
+  }
+  simulateOpen() {
+    this.onopen?.(new Event("open"));
+  }
+  simulateMessage(data: unknown) {
+    this.onmessage?.(new MessageEvent("message", { data: JSON.stringify(data) }));
+  }
+}
+vi.stubGlobal("WebSocket", MockWebSocket);
+
+type Converted = { id: string; role: string };
+function messagesOf(runtime: unknown): Converted[] {
+  return ((runtime as { messages?: Converted[] }).messages ?? []) as Converted[];
+}
+
+describe("useWsRuntime — activeRun reconcile anchors a trailing assistant", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.useFakeTimers();
+    wsInstances = [];
+  });
+  afterEach(() => vi.useRealTimers());
+
+  it("appends a trailing assistant when history ends in the user turn (unpersisted reply)", () => {
+    const { result } = renderHook(() => useWsRuntime("agent-1"));
+    const ws = wsInstances[0]!;
+    act(() => ws.simulateOpen());
+    act(() =>
+      ws.simulateMessage({
+        type: "history",
+        messages: [{ role: "user", content: "list one..ten" }],
+        activeRun: { runId: "run-1", messageId: "srv-1", startedAt: 1000 },
+      })
+    );
+
+    const msgs = messagesOf(result.current.runtime);
+    const last = msgs[msgs.length - 1];
+    expect(last?.role).toBe("assistant");
+    expect(last?.id).toBe("srv-1");
+  });
+
+  it("anchors the trailing assistant in place when the reply IS in history", () => {
+    const { result } = renderHook(() => useWsRuntime("agent-1"));
+    const ws = wsInstances[0]!;
+    act(() => ws.simulateOpen());
+    act(() =>
+      ws.simulateMessage({
+        type: "history",
+        messages: [
+          { role: "user", content: "list one..ten" },
+          { role: "assistant", content: "one two" },
+        ],
+        activeRun: { runId: "run-1", messageId: "srv-1", startedAt: 1000 },
+      })
+    );
+
+    const msgs = messagesOf(result.current.runtime);
+    const last = msgs[msgs.length - 1];
+    expect(last?.role).toBe("assistant");
+    expect(last?.id).toBe("srv-1");
+    // Exactly one message carries the run id — no duplicate bubble.
+    expect(msgs.filter((m) => m.id === "srv-1")).toHaveLength(1);
+  });
+});
