@@ -11,8 +11,17 @@ import { openClawConnectionState } from "./src/server/openclaw-connection-state"
 import { setOpenClawClient } from "./src/server/openclaw-client";
 import { getActiveRunsSingleton } from "./src/server/active-runs-singleton";
 import { startRunWatchdog, DEFAULT_MAX_RUN_DURATION_MS } from "./src/server/run-watchdog";
+import {
+  ChannelHealthMonitor,
+  startChannelHealthWatchdog,
+  CHANNEL_HEALTH_INTERVAL_MS,
+  DEFAULT_TERMINAL_AFTER_CONSECUTIVE_DEGRADED,
+} from "./src/server/channel-health-watchdog";
 import { appendAuditLog } from "./src/lib/audit";
 import { recordAuditFailure } from "./src/lib/audit-deferred";
+import { db } from "./src/db";
+import { agents } from "./src/db/schema";
+import { eq } from "drizzle-orm";
 import { WsRateLimiter } from "./src/server/ws-rate-limit";
 import { setupOpenClawDisconnectHandler } from "./src/server/openclaw-disconnect-handler";
 import {
@@ -389,6 +398,46 @@ ${domain ? `<p><a href="https://${domain}">Go to ${domain} →</a></p>` : ""}
     registerShutdownHandlers([
       () => {
         stopRunWatchdog();
+        return Promise.resolve();
+      },
+    ]);
+
+    // Channel-health watchdog (A-1/A-2/A-4): OpenClaw owns the channel pollers,
+    // so a Telegram worker that crash-loops on a cross-environment getUpdates
+    // 409 conflict is invisible at the gateway-WS level — `connected` stays
+    // true and nothing is audited. This polls channels.status() and audits the
+    // healthy→degraded→failed→recovered transitions so operators finally see it.
+    const channelHealthMonitor = new ChannelHealthMonitor();
+    const stopChannelHealth = startChannelHealthWatchdog(
+      channelHealthMonitor,
+      {
+        getChannelStatus: () => ocForWatchdog.channels.status(),
+        resolveAccountName: async (_channel, accountId) => {
+          try {
+            const a = await db.query.agents.findFirst({
+              where: eq(agents.id, accountId),
+              columns: { name: true },
+            });
+            return a?.name ?? null;
+          } catch {
+            return null;
+          }
+        },
+        writeAudit: async (entry) => {
+          try {
+            await appendAuditLog(entry);
+          } catch (err) {
+            recordAuditFailure(err, entry);
+          }
+        },
+        now: () => Date.now(),
+        terminalAfterConsecutiveDegraded: DEFAULT_TERMINAL_AFTER_CONSECUTIVE_DEGRADED,
+      },
+      Number(process.env.CHANNEL_HEALTH_INTERVAL_MS) || CHANNEL_HEALTH_INTERVAL_MS
+    );
+    registerShutdownHandlers([
+      () => {
+        stopChannelHealth();
         return Promise.resolve();
       },
     ]);
