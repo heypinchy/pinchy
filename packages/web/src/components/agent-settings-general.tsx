@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect } from "react";
+import { useEffect, useMemo } from "react";
 import { useForm, useWatch } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
@@ -15,6 +15,8 @@ import {
 } from "@/components/ui/form";
 import { DeleteAgentDialog } from "@/components/delete-agent-dialog";
 import { ModelPicker } from "@/components/model-picker";
+import { useModelCapabilities } from "@/hooks/use-model-capabilities";
+import { attachCapabilities } from "@/lib/model-capabilities/attach-capabilities";
 
 import { AGENT_NAME_MAX_LENGTH } from "@/lib/agent-constants";
 
@@ -61,6 +63,15 @@ export function AgentSettingsGeneral({
   });
 
   const values = useWatch({ control: form.control });
+
+  // Join the configured model list (from /api/providers/models, which carries no
+  // capability flags) with the capability map so the picker can render each
+  // model's capability icons. Undefined while the map loads → icon-free, no crash.
+  const { data: capabilities } = useModelCapabilities();
+  const providersWithCapabilities = useMemo(
+    () => attachCapabilities(providers, capabilities),
+    [providers, capabilities]
+  );
 
   useEffect(() => {
     onChange(
@@ -122,7 +133,7 @@ export function AgentSettingsGeneral({
                   <ModelPicker
                     value={field.value}
                     onChange={field.onChange}
-                    providers={providers}
+                    providers={providersWithCapabilities}
                     deprecatedModelId={agent.model}
                   />
                 </FormControl>

@@ -3,11 +3,21 @@ import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import "@testing-library/jest-dom";
 import { AgentSettingsGeneral } from "@/components/agent-settings-general";
+import { useModelCapabilities } from "@/hooks/use-model-capabilities";
 
 vi.mock("next/navigation", () => ({
   useRouter: () => ({
     push: vi.fn(),
   }),
+}));
+
+vi.mock("@/hooks/use-model-capabilities", () => ({
+  useModelCapabilities: vi.fn(() => ({
+    data: undefined,
+    isLoading: false,
+    error: undefined,
+    refetch: vi.fn(),
+  })),
 }));
 
 describe("AgentSettingsGeneral", () => {
@@ -338,6 +348,47 @@ describe("AgentSettingsGeneral", () => {
           true
         );
       });
+    });
+  });
+
+  describe("capability icons in the model dropdown", () => {
+    const allCaps = {
+      vision: true,
+      documents: true,
+      audio: false,
+      video: false,
+      longContext: true,
+      tools: true,
+    };
+
+    it("merges the capability map into the picker so models show capability icons", async () => {
+      vi.mocked(useModelCapabilities).mockReturnValue({
+        data: {
+          "anthropic/claude-sonnet-4-6": allCaps,
+          "anthropic/claude-opus-4-20250514": allCaps,
+          "openai/gpt-5.4": { ...allCaps, vision: false, documents: false },
+        },
+        isLoading: false,
+        error: undefined,
+        refetch: vi.fn(),
+      });
+
+      // providers come in WITHOUT capabilities (as from /api/providers/models);
+      // the component must join them with the capability map.
+      render(
+        <AgentSettingsGeneral
+          agent={defaultAgent}
+          providers={defaultProviders}
+          onChange={vi.fn()}
+        />
+      );
+
+      await userEvent.click(screen.getByRole("combobox"));
+
+      // The two vision+document Anthropic models render the vision and document
+      // icons; the text-only GPT model does not add a vision icon.
+      expect(screen.getAllByLabelText("Supports image input").length).toBeGreaterThan(0);
+      expect(screen.getAllByLabelText("Supports document input").length).toBeGreaterThan(0);
     });
   });
 
