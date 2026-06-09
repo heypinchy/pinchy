@@ -19,7 +19,7 @@ import {
   AlertDialogTitle,
   AlertDialogTrigger,
 } from "@/components/ui/alert-dialog";
-import { CircleCheck, ChevronDown, Lock, ArrowRight } from "lucide-react";
+import { CircleCheck, ChevronDown, Lock, ArrowRight, TriangleAlert } from "lucide-react";
 import Link from "next/link";
 import { useRestart } from "@/components/restart-provider";
 
@@ -54,6 +54,10 @@ export function AgentTelegramSettings({
   const [error, setError] = useState("");
   const [guideOpen, setGuideOpen] = useState(false);
   const [connectedUsername, setConnectedUsername] = useState<string | null>(null);
+  const [channelHealth, setChannelHealth] = useState<{
+    degraded: boolean;
+    lastError: string | null;
+  }>({ degraded: false, lastError: null });
 
   const fetchConfig = useCallback(async () => {
     try {
@@ -78,6 +82,45 @@ export function AgentTelegramSettings({
       cancelled = true;
     };
   }, [fetchConfig]);
+
+  // Poll live channel health so a degraded Telegram poller (e.g. a
+  // cross-environment getUpdates-409 conflict) surfaces here, not only in the
+  // audit log. Only while a bot is configured for this agent.
+  useEffect(() => {
+    if (!config?.configured) return;
+    let cancelled = false;
+    const poll = async () => {
+      try {
+        const res = await fetch(`/api/health/openclaw?channelHealth=1`);
+        if (!res.ok) return;
+        const data = (await res.json()) as {
+          channelHealth?: Array<{
+            channel: string;
+            accountId: string;
+            state: string;
+            lastError: string | null;
+          }>;
+        };
+        const mine = (data.channelHealth ?? []).find(
+          (h) => h.channel === "telegram" && h.accountId === agentId
+        );
+        if (!cancelled) {
+          setChannelHealth({
+            degraded: mine?.state === "degraded",
+            lastError: mine?.lastError ?? null,
+          });
+        }
+      } catch {
+        // transient — keep the last known state
+      }
+    };
+    void poll();
+    const id = setInterval(poll, 10000);
+    return () => {
+      cancelled = true;
+      clearInterval(id);
+    };
+  }, [config?.configured, agentId]);
 
   async function handleConnect() {
     if (!botToken.trim()) return;
@@ -175,10 +218,26 @@ export function AgentTelegramSettings({
       ) : isConfigured ? (
         <>
           <div className="flex items-center gap-2">
-            <CircleCheck className="size-5 text-green-600 shrink-0" />
+            {channelHealth.degraded ? (
+              <TriangleAlert className="size-5 text-destructive shrink-0" />
+            ) : (
+              <CircleCheck className="size-5 text-green-600 shrink-0" />
+            )}
             <span className="text-sm font-medium">Connected</span>
             {connectedUsername && <Badge variant="secondary">@{connectedUsername}</Badge>}
+            {channelHealth.degraded && (
+              <Badge variant="destructive" title={channelHealth.lastError ?? undefined}>
+                Degraded
+              </Badge>
+            )}
           </div>
+          {channelHealth.degraded && (
+            <p className="text-xs text-destructive">
+              This bot&apos;s Telegram connection is failing to poll. The most likely cause is the
+              same bot token running on another deployment (staging, a local stack) — Telegram
+              allows only one poller per token. Make sure only one environment uses this token.
+            </p>
+          )}
           {config?.hint && (
             <p className="text-xs text-muted-foreground flex items-center gap-1">
               <Lock className="size-3" />
