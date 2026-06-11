@@ -393,10 +393,20 @@ describe("AddIntegrationDialog — Test connection", () => {
       );
     });
 
+    // Success is a single compact line. The full tool list is collapsed by
+    // default — it's permission-UI material, not connect-flow material; large
+    // servers (GitHub: ~50 tools) used to blow the dialog up into a wall of
+    // text. It stays available behind "Show tools" for debugging.
     await waitFor(() => {
-      expect(screen.getByText("list_repos")).toBeInTheDocument();
-      expect(screen.getByText("create_issue")).toBeInTheDocument();
+      expect(screen.getByText(/Connected — 2 tools available\./i)).toBeInTheDocument();
     });
+    expect(screen.queryByText("list_repos")).not.toBeInTheDocument();
+    expect(screen.queryByText("create_issue")).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: /Show tools/i }));
+
+    expect(screen.getByText("list_repos")).toBeInTheDocument();
+    expect(screen.getByText("create_issue")).toBeInTheDocument();
   });
 
   it("calls POST /api/integrations/test with the preset's fixed URL (named flow)", async () => {

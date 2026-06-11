@@ -35,6 +35,7 @@ import { PasswordInput } from "@/components/password-input";
 import { parseOdooSubdomainHint, generateConnectionName } from "@/lib/integrations/odoo-url";
 import { normalizeUrl } from "@/lib/url";
 import { Loader2, CheckCircle2, AlertTriangle, Copy, Check } from "lucide-react";
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { useCopyToClipboard } from "@/hooks/use-copy-to-clipboard";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
@@ -587,26 +588,46 @@ function McpConnectStep({
 
             {testTools !== null && (
               <div className="rounded-md border p-3 space-y-1">
-                <p className="text-xs font-medium text-muted-foreground">
+                {/* Success is one compact line. The full tool list is collapsed
+                    by default: picking tools happens later in the agent's
+                    permission UI — here it would just be a wall of text (GitHub
+                    exposes ~50 tools). It stays one click away for debugging,
+                    which matters most for the Custom MCP preset. */}
+                <p className="flex items-center gap-2 text-sm">
+                  <CheckCircle2 className="h-4 w-4 shrink-0 text-green-600 dark:text-green-400" />
                   {testTools.length === 0
-                    ? "Connected — no tools exposed"
-                    : `${testTools.length} tool${testTools.length === 1 ? "" : "s"} discovered:`}
+                    ? "Connected — no tools exposed."
+                    : `Connected — ${testTools.length} tool${testTools.length === 1 ? "" : "s"} available.`}
                 </p>
                 {testTools.length > 0 && (
-                  // Cap the list height — large MCP servers (e.g. GitHub has
-                  // ~50 tools) would otherwise blow out the dialog vertically.
-                  <ul className="space-y-0.5 max-h-48 overflow-y-auto">
-                    {testTools.map((tool) => (
-                      <li key={tool.name} className="text-sm font-mono">
-                        {tool.name}
-                        {tool.description && (
-                          <span className="font-sans text-xs text-muted-foreground ml-2">
-                            — {tool.description}
-                          </span>
-                        )}
-                      </li>
-                    ))}
-                  </ul>
+                  <Collapsible>
+                    <CollapsibleTrigger asChild>
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="sm"
+                        className="h-7 px-2 text-xs text-muted-foreground"
+                      >
+                        Show tools
+                      </Button>
+                    </CollapsibleTrigger>
+                    <CollapsibleContent>
+                      {/* Cap the list height — large MCP servers would otherwise
+                          blow out the dialog vertically even when expanded. */}
+                      <ul className="mt-1 space-y-0.5 max-h-48 overflow-y-auto">
+                        {testTools.map((tool) => (
+                          <li key={tool.name} className="text-sm font-mono">
+                            {tool.name}
+                            {tool.description && (
+                              <span className="font-sans text-xs text-muted-foreground ml-2">
+                                — {tool.description}
+                              </span>
+                            )}
+                          </li>
+                        ))}
+                      </ul>
+                    </CollapsibleContent>
+                  </Collapsible>
                 )}
               </div>
             )}
