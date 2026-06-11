@@ -319,9 +319,14 @@ jobs:
 
       - name: Pull pre-built CI images (skip on fork PRs)
         if: needs.build-image.result == 'success'
+        uses: ./.github/actions/pull-ci-images
+        with:
+          pinchy-image: ${{ needs.build-image.outputs.pinchy-image }}
+          openclaw-image: ${{ needs.build-image.outputs.openclaw-image }}
+
+      - name: Tag pulled images as :latest for compose
+        if: needs.build-image.result == 'success'
         run: |
-          docker pull ${{ needs.build-image.outputs.pinchy-image }}
-          docker pull ${{ needs.build-image.outputs.openclaw-image }}
           docker tag ${{ needs.build-image.outputs.pinchy-image }} ghcr.io/heypinchy/pinchy:latest
           docker tag ${{ needs.build-image.outputs.openclaw-image }} ghcr.io/heypinchy/pinchy-openclaw:latest
 
@@ -680,9 +685,10 @@ jobs:
 
       - name: Pull pre-built CI images (skip on fork PRs)
         if: needs.build-image.result == 'success'
-        run: |
-          docker pull ${{ needs.build-image.outputs.pinchy-image }}
-          docker pull ${{ needs.build-image.outputs.openclaw-image }}
+        uses: ./.github/actions/pull-ci-images
+        with:
+          pinchy-image: ${{ needs.build-image.outputs.pinchy-image }}
+          openclaw-image: ${{ needs.build-image.outputs.openclaw-image }}
 
       - name: Build production images locally (fork PR fallback)
         if: needs.build-image.result == 'skipped'
@@ -842,9 +848,10 @@ jobs:
 
       - name: Pull pre-built CI images (skip on fork PRs)
         if: steps.prev.outputs.skip == 'false' && needs.build-image.result == 'success'
-        run: |
-          docker pull ${{ needs.build-image.outputs.pinchy-image }}
-          docker pull ${{ needs.build-image.outputs.openclaw-image }}
+        uses: ./.github/actions/pull-ci-images
+        with:
+          pinchy-image: ${{ needs.build-image.outputs.pinchy-image }}
+          openclaw-image: ${{ needs.build-image.outputs.openclaw-image }}
 
       - name: Build this PR's images locally (fork PR fallback)
         if: steps.prev.outputs.skip == 'false' && needs.build-image.result == 'skipped'
@@ -1079,9 +1086,10 @@ jobs:
 
       - name: Pull pre-built CI images (skip on fork PRs)
         if: needs.build-image.result == 'success'
-        run: |
-          docker pull ${{ needs.build-image.outputs.pinchy-image }}
-          docker pull ${{ needs.build-image.outputs.openclaw-image }}
+        uses: ./.github/actions/pull-ci-images
+        with:
+          pinchy-image: ${{ needs.build-image.outputs.pinchy-image }}
+          openclaw-image: ${{ needs.build-image.outputs.openclaw-image }}
 
       - name: Start test stack with mock Odoo (CI — pre-built images)
         if: needs.build-image.result == 'success'
@@ -1198,9 +1206,10 @@ jobs:
 
       - name: Pull pre-built CI images (skip on fork PRs)
         if: needs.build-image.result == 'success'
-        run: |
-          docker pull ${{ needs.build-image.outputs.pinchy-image }}
-          docker pull ${{ needs.build-image.outputs.openclaw-image }}
+        uses: ./.github/actions/pull-ci-images
+        with:
+          pinchy-image: ${{ needs.build-image.outputs.pinchy-image }}
+          openclaw-image: ${{ needs.build-image.outputs.openclaw-image }}
 
       - name: Start test stack with mock Brave (CI — pre-built images)
         if: needs.build-image.result == 'success'
@@ -1317,9 +1326,10 @@ jobs:
 
       - name: Pull pre-built CI images (skip on fork PRs)
         if: needs.build-image.result == 'success'
-        run: |
-          docker pull ${{ needs.build-image.outputs.pinchy-image }}
-          docker pull ${{ needs.build-image.outputs.openclaw-image }}
+        uses: ./.github/actions/pull-ci-images
+        with:
+          pinchy-image: ${{ needs.build-image.outputs.pinchy-image }}
+          openclaw-image: ${{ needs.build-image.outputs.openclaw-image }}
 
       - name: Start test stack with mock Gmail (CI — pre-built images)
         if: needs.build-image.result == 'success'
@@ -1438,9 +1448,10 @@ jobs:
 
       - name: Pull pre-built CI images (skip on fork PRs)
         if: needs.build-image.result == 'success'
-        run: |
-          docker pull ${{ needs.build-image.outputs.pinchy-image }}
-          docker pull ${{ needs.build-image.outputs.openclaw-image }}
+        uses: ./.github/actions/pull-ci-images
+        with:
+          pinchy-image: ${{ needs.build-image.outputs.pinchy-image }}
+          openclaw-image: ${{ needs.build-image.outputs.openclaw-image }}
 
       - name: Start test stack with mock LLM providers (CI — pre-built images)
         if: needs.build-image.result == 'success'
@@ -1573,9 +1584,10 @@ jobs:
 
       - name: Pull pre-built CI images (skip on fork PRs)
         if: needs.build-image.result == 'success'
-        run: |
-          docker pull ${{ needs.build-image.outputs.pinchy-image }}
-          docker pull ${{ needs.build-image.outputs.openclaw-image }}
+        uses: ./.github/actions/pull-ci-images
+        with:
+          pinchy-image: ${{ needs.build-image.outputs.pinchy-image }}
+          openclaw-image: ${{ needs.build-image.outputs.openclaw-image }}
 
       - name: Start test stack with mock Telegram (CI — pre-built images)
         if: needs.build-image.result == 'success'
@@ -1737,9 +1749,10 @@ jobs:
 
       - name: Pull pre-built Pinchy and OpenClaw images (skip on fork PRs)
         if: needs.build-image.result == 'success'
-        run: |
-          docker pull ${{ needs.build-image.outputs.pinchy-image }}
-          docker pull ${{ needs.build-image.outputs.openclaw-image }}
+        uses: ./.github/actions/pull-ci-images
+        with:
+          pinchy-image: ${{ needs.build-image.outputs.pinchy-image }}
+          openclaw-image: ${{ needs.build-image.outputs.openclaw-image }}
 
       - name: Build Pinchy and OpenClaw images locally (fork PR fallback)
         if: needs.build-image.result == 'skipped'

@@ -1,0 +1,26 @@
+name: Pull pre-built CI images
+description: >
+  Pulls the pre-built Pinchy and OpenClaw CI images from GHCR, retrying each
+  pull up to 3 times with 20s backoff instead of failing the job on the first
+  network blip. CI run 27339671342 (2026-06-11) lost two jobs to a brief
+  ghcr.io outage ("context deadline exceeded" / "Client.Timeout exceeded
+  while awaiting headers") before any test ran — same transient-5xx hardening
+  family as the ollama-install and link-check retries from PR #471.
+
+inputs:
+  pinchy-image:
+    description: Fully qualified ref of the pre-built Pinchy image
+    required: true
+  openclaw-image:
+    description: Fully qualified ref of the pre-built OpenClaw image
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - name: Pull images with retry
+      shell: bash
+      env:
+        PINCHY_IMAGE: ${{ inputs.pinchy-image }}
+        OPENCLAW_IMAGE: ${{ inputs.openclaw-image }}
+      run: bash "$GITHUB_ACTION_PATH/pull-images-with-retry.sh" "$PINCHY_IMAGE" "$OPENCLAW_IMAGE"
