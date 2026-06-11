@@ -4,33 +4,71 @@
 //   - `openclaw`     — injected at build time via NEXT_PUBLIC_OPENCLAW_VERSION
 //                       (the OC gateway version Pinchy is paired with).
 //   - `openclawNode` — read from the openclaw-node npm package's own
-//                       package.json. The package's `exports` map doesn't
-//                       expose `./package.json`, so neither a static
-//                       `import "openclaw-node/package.json"` nor
-//                       `require("openclaw-node/package.json")` work. Instead
-//                       we resolve the package's main entry and walk up to
-//                       find the enclosing package.json — this never touches
-//                       the exports map. If anything goes wrong (e.g. the
-//                       package is unresolvable in a stripped image) we
-//                       degrade to "unknown" rather than crashing the route.
+//                       package.json, via two strategies (see below). If both
+//                       fail we degrade to "unknown" rather than crashing the
+//                       route.
 import { createRequire } from "node:module";
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 
-function readOpenclawNodeVersion(): string {
+/**
+ * Strategy 1 (bundler-proof): read
+ * `<baseDir>/node_modules/openclaw-node/package.json` directly off the
+ * filesystem. `readFileSync` follows the pnpm symlink to the real package and
+ * no bundler can interfere with a plain path read.
+ *
+ * This exists because strategy 2 silently broke in the production bundle:
+ * webpack statically rewrites `require.resolve("openclaw-node")` when the
+ * local is named `require`, returning a module id instead of a path —
+ * `dirname()` threw, the catch swallowed it, and every bundle shipped
+ * `openclawNodeVersion: "unknown"` (v0.5.7 staging finding). In all our
+ * runtime layouts (dev compose, production image) the server's cwd is
+ * `packages/web`, which has `node_modules/openclaw-node` — verified on
+ * staging.
+ *
+ * Exported for tests. Returns null when the package.json is missing,
+ * belongs to a different package, or has no usable version.
+ */
+export function readOpenclawNodeVersionFrom(baseDir: string): string | null {
   try {
-    const require = createRequire(import.meta.url);
-    const mainPath = require.resolve("openclaw-node");
+    const raw = readFileSync(
+      join(baseDir, "node_modules", "openclaw-node", "package.json"),
+      "utf8"
+    );
+    const pkg = JSON.parse(raw) as { name?: unknown; version?: unknown };
+    if (pkg.name === "openclaw-node" && typeof pkg.version === "string" && pkg.version) {
+      return pkg.version;
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Strategy 2 (fallback): resolve the package's main entry and walk up to the
+ * enclosing package.json. The package's `exports` map doesn't expose
+ * `./package.json`, so a direct `require("openclaw-node/package.json")` would
+ * not work — the walk-up never touches the exports map.
+ *
+ * The createRequire local is deliberately NOT named `require`: webpack
+ * special-cases the bare identifier `require` and statically rewrites
+ * `require.resolve(...)`, which is exactly what broke this path in the
+ * production bundle.
+ */
+function readOpenclawNodeVersionViaResolver(): string | null {
+  try {
+    const nodeRequire = createRequire(import.meta.url);
+    const mainPath = nodeRequire.resolve("openclaw-node");
+    if (typeof mainPath !== "string") return null;
     // Expected resolutions across our layouts:
     //   pnpm hoisted (root install): node_modules/openclaw-node/dist/index.js
     //     → ../package.json (1 level up)
     //   pnpm non-hoisted (default):  node_modules/.pnpm/openclaw-node@<v>/
     //                                 node_modules/openclaw-node/dist/index.js
-    //     → ../package.json (1 level up — `.pnpm/<pkg>@<v>/node_modules/<pkg>/`
-    //       still ends at the package root one level above main)
+    //     → ../package.json (1 level up)
     // We tolerate up to 5 levels in case the package ever nests its main
-    // file deeper (e.g. dist/cjs/index.js or dist/esm/node/index.js). On
-    // any failure we degrade to "unknown" rather than crashing the route.
+    // file deeper (e.g. dist/cjs/index.js).
     let dir = dirname(mainPath);
     for (let i = 0; i < 5; i++) {
       try {
@@ -46,10 +84,16 @@ function readOpenclawNodeVersion(): string {
       if (parent === dir) break;
       dir = parent;
     }
-    return "unknown";
+    return null;
   } catch {
-    return "unknown";
+    return null;
   }
+}
+
+function readOpenclawNodeVersion(): string {
+  return (
+    readOpenclawNodeVersionFrom(process.cwd()) ?? readOpenclawNodeVersionViaResolver() ?? "unknown"
+  );
 }
 
 export function getDiagnosticsVersions(): {
