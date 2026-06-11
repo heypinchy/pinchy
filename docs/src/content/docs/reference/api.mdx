@@ -25,6 +25,18 @@ OpenClaw gateway reachability check. **Public — no authentication required.**
 
 Useful for monitoring the WebSocket gateway separately from the web process.
 
+**Response:**
+
+```json
+{
+  "status": "ok",
+  "connected": true,
+  "configPushesPending": 0
+}
+```
+
+`configPushesPending` is the number of configuration updates Pinchy has accepted but not yet confirmed inside the OpenClaw runtime (for example while OpenClaw's config-apply rate limit defers an update). A value of `0` means the runtime reflects every change you've made — useful for automation that needs to act right after a settings or permission change. While the gateway restarts, the response is `{ "status": "restarting", "connected": false, "since": <timestamp> }` instead.
+
 ## Setup (public)
 
 Setup endpoints handle the initial installation and first-admin account. They are accessible **only before setup has completed** — once an admin exists, they return `409 Conflict`.
