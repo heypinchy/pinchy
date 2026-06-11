@@ -49,6 +49,8 @@ export interface IntegrationConnection {
     emailAddress?: string;
     provider?: string;
     connectedAt?: string;
+    /** MCP connections: provider preset discriminator (github, linear, …). */
+    preset?: string;
   } | null;
   status: "active" | "pending" | "auth_failed";
   lastError: string | null;

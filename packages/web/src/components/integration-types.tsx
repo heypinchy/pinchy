@@ -124,3 +124,41 @@ export function isMcpType(
 ): type is keyof typeof MCP_TYPE_TO_PRESET {
   return typeof type === "string" && type in MCP_TYPE_TO_PRESET;
 }
+
+const MCP_PRESET_ICONS: Record<string, ComponentType<{ className?: string }>> = {
+  github: GitHubIcon,
+  linear: LinearIcon,
+  atlassian: AtlassianIcon,
+  stripe: StripeIcon,
+  cloudflare: CloudflareIcon,
+  intercom: IntercomIcon,
+  highlevel: HighLevelIcon,
+  generic: McpIcon,
+};
+
+const CONNECTION_TYPE_ICONS: Record<string, ComponentType<{ className?: string }>> = {
+  odoo: OdooIcon,
+  google: GoogleIcon,
+  "web-search": BraveIcon,
+};
+
+/**
+ * Resolve the brand icon for a stored integration connection.
+ *
+ * MCP connections carry their provider in `data.preset` — the card must show
+ * the provider's logo (GitHub, Linear, …), never the transport. Unknown
+ * types/presets resolve to the neutral McpIcon rather than silently borrowing
+ * another vendor's logo (the old switch fell back to OdooIcon for everything
+ * it didn't know, putting the Odoo logo on GitHub connections).
+ */
+export function getConnectionIcon(
+  type: string,
+  preset?: string
+): ComponentType<{ className?: string }> {
+  if (type === "mcp") {
+    // eslint-disable-next-line security/detect-object-injection
+    return (preset && MCP_PRESET_ICONS[preset]) || McpIcon;
+  }
+  // eslint-disable-next-line security/detect-object-injection
+  return CONNECTION_TYPE_ICONS[type] ?? McpIcon;
+}

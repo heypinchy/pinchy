@@ -37,7 +37,7 @@ import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/comp
 import { AddIntegrationDialog } from "./add-integration-dialog";
 import { EditCredentialsDialog } from "./edit-credentials-dialog";
 import { EditOAuthDialog } from "./edit-oauth-dialog";
-import { BraveIcon, GoogleIcon, OdooIcon } from "./integration-icons";
+import { getConnectionIcon } from "./integration-types";
 import type { IntegrationConnection } from "@/lib/integrations/types";
 import { getAccessibleCategoryLabels } from "@/lib/integrations/odoo-sync";
 
@@ -164,17 +164,18 @@ export function SettingsIntegrations() {
                   isOdoo && conn.data && typeof conn.data.lastSyncAt === "string"
                     ? conn.data.lastSyncAt
                     : null;
+                const mcpPreset =
+                  conn.type === "mcp" && conn.data && typeof conn.data.preset === "string"
+                    ? conn.data.preset
+                    : undefined;
+                const ConnectionIcon = getConnectionIcon(conn.type, mcpPreset);
                 return (
                   <div key={conn.id} className="rounded-lg border p-4 space-y-2">
                     <div className="flex items-center justify-between">
                       <div className="flex items-center gap-3">
-                        {conn.type === "google" ? (
-                          <GoogleIcon className="h-6 w-6 shrink-0" />
-                        ) : conn.type === "web-search" ? (
-                          <BraveIcon className="h-6 w-6 shrink-0" />
-                        ) : (
-                          <OdooIcon className="h-6 w-12 shrink-0" />
-                        )}
+                        <span data-connection-icon={mcpPreset ?? conn.type} className="shrink-0">
+                          <ConnectionIcon className={isOdoo ? "h-6 w-12" : "h-6 w-6"} />
+                        </span>
                         <span className="text-sm font-medium">{conn.name}</span>
                       </div>
                       <DropdownMenu>
