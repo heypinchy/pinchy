@@ -149,6 +149,20 @@ describe("assertDocxDecompressedSizeWithinLimit", () => {
     );
   });
 
+  it("allows a declared size exactly at the limit and rejects one byte over", () => {
+    const zip = buildZip([
+      {
+        name: "word/document.xml",
+        data: Buffer.alloc(64),
+        declaredUncompressedSize: 1000,
+      },
+    ]);
+    expect(() => assertDocxDecompressedSizeWithinLimit(zip, 1000)).not.toThrow();
+    expect(() => assertDocxDecompressedSizeWithinLimit(zip, 999)).toThrow(
+      /decompressed size .* exceeds/i,
+    );
+  });
+
   it("honors a custom limit", () => {
     const zip = buildZip([
       { name: "word/document.xml", data: Buffer.alloc(2000) },

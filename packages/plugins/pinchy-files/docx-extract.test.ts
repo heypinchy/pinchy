@@ -49,12 +49,8 @@ describe("extractDocxText", () => {
     const buffer = readFileSync(join(FIXTURES, "simple.docx"));
     const result = await extractDocxText(buffer);
     // Header row + separator row + data row, all pipe-delimited.
-    expect(result.text).toMatch(
-      /\|\s*SKU\s*\|\s*Quantity\s*\|\s*Unit Price\s*\|/,
-    );
-    expect(result.text).toMatch(
-      /\|\s*WIDGET-BLUE-01\s*\|\s*20\s*\|\s*EUR 42\.50\s*\|/,
-    );
+    expect(result.text).toMatch(/\|\s*SKU\s*\|\s*Quantity\s*\|\s*Unit Price\s*\|/);
+    expect(result.text).toMatch(/\|\s*WIDGET-BLUE-01\s*\|\s*20\s*\|\s*EUR 42\.50\s*\|/);
   });
 
   it("replaces embedded images with a textual placeholder, not base64 data URLs", async () => {

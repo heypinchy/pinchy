@@ -5,11 +5,17 @@ import {
   assertDocxDecompressedSizeWithinLimit,
   MAX_DOCX_DECOMPRESSED_BYTES,
 } from "./docx-zip-guard";
+import { MAX_FILE_SIZE } from "./validate";
 
 export interface DocxExtractionResult {
   text: string;
 }
 
+/**
+ * Limits for extractDocxText. The defaults are the production values —
+ * the overrides exist so tests can exercise both guards without multi-GB
+ * fixtures, not as a runtime configuration surface.
+ */
 export interface DocxExtractOptions {
   /** Cap on the archive's declared decompressed size (issue #424). */
   maxDecompressedBytes?: number;
@@ -17,9 +23,9 @@ export interface DocxExtractOptions {
   maxTextBytes?: number;
 }
 
-// Aligned with MAX_FILE_SIZE in validate.ts: a .docx may not hand the model
-// more text than the largest plain-text file pinchy_read would serve.
-export const MAX_DOCX_EXTRACTED_TEXT_BYTES = 10 * 1024 * 1024;
+// A .docx may not hand the model more text than the largest plain-text file
+// pinchy_read would serve.
+export const MAX_DOCX_EXTRACTED_TEXT_BYTES = MAX_FILE_SIZE;
 
 const turndown = new TurndownService({
   headingStyle: "atx",
@@ -96,9 +102,9 @@ export async function extractDocxText(
       // Empty src skips mammoth's base64 encoding; the strip-image
       // turndown rule above replaces <img> with [image] downstream.
       convertImage: mammoth.images.imgElement(() =>
-        Promise.resolve({ src: "" }),
+        Promise.resolve({ src: "" })
       ),
-    },
+    }
   );
   const html = normalizeTableHtml(rawHtml);
   const text = turndown.turndown(html);

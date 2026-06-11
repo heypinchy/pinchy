@@ -8,7 +8,10 @@
 // total uncompressed size exceeds the limit. A real bomb must declare its
 // sizes truthfully for ordinary readers to inflate it; a payload that lies
 // about its size is caught downstream by the extracted-text cap in
-// docx-extract.ts (second defense layer).
+// docx-extract.ts (second defense layer). Note the residual gap: that cap
+// bounds what reaches the model, not mammoth's peak memory while it inflates
+// a lying archive — accepted because lying archives are treated as corrupt
+// by mainstream ZIP readers, so their attack value is doubtful.
 
 const EOCD_SIGNATURE = 0x06054b50; // end of central directory
 const CENTRAL_DIR_SIGNATURE = 0x02014b50;
