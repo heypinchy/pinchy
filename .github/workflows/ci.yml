@@ -1747,7 +1747,7 @@ jobs:
 
       - uses: ./.github/actions/setup-pnpm
 
-      - name: Pull pre-built Pinchy and OpenClaw images (skip on fork PRs)
+      - name: Pull pre-built CI images (skip on fork PRs)
         if: needs.build-image.result == 'success'
         uses: ./.github/actions/pull-ci-images
         with:

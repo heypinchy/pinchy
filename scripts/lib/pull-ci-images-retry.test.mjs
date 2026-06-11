@@ -5,6 +5,7 @@ import {
   chmodSync,
   existsSync,
   mkdtempSync,
+  readdirSync,
   readFileSync,
   writeFileSync,
 } from "node:fs";
@@ -22,14 +23,19 @@ const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..");
 const ACTION_DIR = join(ROOT, ".github", "actions", "pull-ci-images");
 const SCRIPT = join(ACTION_DIR, "pull-images-with-retry.sh");
 const ACTION_YML = join(ACTION_DIR, "action.yml");
-const CI_YML = join(ROOT, ".github", "workflows", "ci.yml");
+const WORKFLOWS_DIR = join(ROOT, ".github", "workflows");
+const CI_YML = join(WORKFLOWS_DIR, "ci.yml");
+
+const GHCR_OUTAGE_ERROR =
+  'Error response from daemon: Get "https://ghcr.io/v2/": context deadline exceeded (Client.Timeout exceeded while awaiting headers)';
 
 /**
  * Creates a stub `docker` on PATH that fails the first `failTimes` pulls of
- * each image with a GHCR-outage-shaped error, then succeeds. Pull counts are
- * recorded per image so tests can assert the retry cadence.
+ * each image (with a GHCR-outage-shaped error unless `errorMessage` overrides
+ * it), then succeeds. Pull counts are recorded per image so tests can assert
+ * the retry cadence.
  */
-function runScriptWithStub({ failTimes, images }) {
+function runScriptWithStub({ failTimes, images, errorMessage }) {
   const stubDir = mkdtempSync(join(tmpdir(), "pull-ci-images-stub-"));
   const stub = join(stubDir, "docker");
   writeFileSync(
@@ -41,7 +47,7 @@ count_file="$STUB_DIR/count-$image_key"
 count=$(( $(cat "$count_file" 2>/dev/null || echo 0) + 1 ))
 printf '%s' "$count" > "$count_file"
 if [ "$count" -le "$FAIL_TIMES" ]; then
-  echo 'Error response from daemon: Get "https://ghcr.io/v2/": context deadline exceeded (Client.Timeout exceeded while awaiting headers)' >&2
+  echo "$STUB_ERROR_MESSAGE" >&2
   exit 1
 fi
 exit 0
@@ -56,6 +62,7 @@ exit 0
       PATH: `${stubDir}:${process.env.PATH}`,
       STUB_DIR: stubDir,
       FAIL_TIMES: String(failTimes),
+      STUB_ERROR_MESSAGE: errorMessage ?? GHCR_OUTAGE_ERROR,
       // Tests must not sit through the real backoff.
       PULL_RETRY_DELAY_SECONDS: "0",
     },
@@ -128,6 +135,45 @@ test("rejects a call without image refs instead of silently succeeding", () => {
   assert.ok(result.stdout.includes("::error::"));
 });
 
+// Composite actions do NOT enforce `required: true` on inputs: a dropped
+// `with:` field or a renamed build-image output arrives as an empty string.
+// That must fail fast with a wiring hint, not burn 40s retrying `docker
+// pull ""`.
+test("fails fast on an empty image ref instead of retrying docker pull ''", () => {
+  const { result, pullCount } = runScriptWithStub({
+    failTimes: 0,
+    images: [PINCHY, ""],
+  });
+  assert.equal(result.status, 1);
+  assert.ok(result.stdout.includes("::error::"));
+  assert.ok(
+    result.stdout.includes("empty image ref"),
+    "the error must point at the with:/outputs wiring, not at GHCR",
+  );
+  assert.equal(
+    pullCount(PINCHY),
+    0,
+    "all refs must be validated before any pull starts",
+  );
+});
+
+test("does not retry deterministic failures like a missing manifest", () => {
+  const { result, pullCount } = runScriptWithStub({
+    failTimes: 99,
+    images: [PINCHY, OPENCLAW],
+    errorMessage: "Error response from daemon: manifest unknown",
+  });
+  assert.equal(result.status, 1);
+  assert.equal(
+    pullCount(PINCHY),
+    1,
+    "a manifest-unknown failure is deterministic — retrying wastes 40s",
+  );
+  assert.equal(pullCount(OPENCLAW), 0);
+  assert.ok(result.stdout.includes("::error::"));
+  assert.ok(result.stdout.includes("non-transient"));
+});
+
 // Wiring guards: the script only protects CI if the composite action invokes
 // it and ci.yml actually routes pulls through the action. Same textual-sweep
 // approach as release-version-guards.test.mjs.
@@ -140,19 +186,27 @@ test("the composite action invokes the retry script", () => {
   );
 });
 
-test("ci.yml has no bare docker pulls of the pre-built CI images", () => {
-  const ci = readFileSync(CI_YML, "utf8");
-  const bare = ci
-    .split("\n")
-    .filter((line) => line.includes("docker pull ${{ needs.build-image"));
-  assert.deepEqual(
-    bare,
-    [],
-    "pull pre-built images via ./.github/actions/pull-ci-images (retries transient GHCR outages); " +
-      "bare docker pull fails the job on the first network blip",
+test("no workflow has bare docker pulls of the pre-built CI images", () => {
+  const workflows = readdirSync(WORKFLOWS_DIR).filter(
+    (file) => file.endsWith(".yml") || file.endsWith(".yaml"),
   );
+  assert.ok(workflows.length > 0, "no workflow files found — wrong path?");
+  for (const file of workflows) {
+    const bare = readFileSync(join(WORKFLOWS_DIR, file), "utf8")
+      .split("\n")
+      .filter((line) => line.includes("docker pull ${{ needs.build-image"));
+    assert.deepEqual(
+      bare,
+      [],
+      `${file}: pull pre-built images via ./.github/actions/pull-ci-images ` +
+        "(retries transient GHCR outages); bare docker pull fails the job " +
+        "on the first network blip",
+    );
+  }
   assert.ok(
-    ci.includes("uses: ./.github/actions/pull-ci-images"),
+    readFileSync(CI_YML, "utf8").includes(
+      "uses: ./.github/actions/pull-ci-images",
+    ),
     "ci.yml must pull the pre-built images through the pull-ci-images composite action",
   );
 });
