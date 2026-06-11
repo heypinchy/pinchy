@@ -187,6 +187,7 @@ Pinchy now knows which capabilities (vision, documents, audio, video, long-conte
 When your browser drops mid-stream and reconnects (closed tab, network blip, Wi-Fi handoff), Pinchy now joins the new connection to the in-flight run and keeps streaming chunks into the same assistant bubble — no more "The agent didn't respond" flash bubble for runs that were actually still running server-side. Under the hood:
 
 - A new in-memory **`ActiveRuns` registry** on Pinchy tracks every in-flight chat run by `sessionKey`, with each entry holding the OpenClaw-correlated `runId`, the per-turn `messageId`, and the set of currently-connected listener WebSockets. Multi-tab sessions on the same chat now naturally see the same stream — both tabs end up in the listener set.
+- The in-flight reply text is **buffered server-side and replayed on reconnect**. Streaming chunks are deltas the server never re-sends, so a tab reloaded mid-stream used to lose the words that had already streamed. The registry now accumulates the emitted text and seeds the resumed bubble with it — the reply arrives complete, not just from the reconnect point onward.
 - A server-side **run watchdog** scans `ActiveRuns` every 30 seconds and tears down runs whose absolute age exceeds the per-deployment cap (default 15 minutes). This is the server-side belt to the existing client-side stuck-timer suspenders — it catches runs that hang while the tab is backgrounded or after the laptop sleeps. Stuck runs are aborted via OpenClaw, audited as `chat.run_timed_out`, and a terminal error frame is broadcast to any still-connected listener.
 - The same watchdog also catches the opposite failure: a run the backend accepts at dispatch but that never produces a first chunk within the **first-chunk timeout** (default 180 seconds) — a wedged or rate-limited provider/lane — is torn down, audited as `chat.run_no_first_chunk`, and surfaced to the user as a **retryable** error so they can resend instead of staring at a blank thread. This is the reload-surviving server-side backstop to the client's 60-second stuck timer.
 - The audit trail gains four new event types: `chat.run_timed_out`, `chat.run_no_first_chunk`, `chat.run_completed_after_disconnect`, and `chat.run_aborted` (the last is declared in the audit union for a future user-triggered abort UI; emission lands when that UI ships). Existing audit queries are unaffected — the new events are additive.
@@ -204,6 +205,19 @@ Operationally:
 #### More reliable first chat on freshly-created agents
 
 The first message to a just-created agent could previously fail with `unknown agent id` when the chat dispatch raced ahead of OpenClaw applying the new agent config. Pinchy now gates the first dispatch on OpenClaw's `agents.list` runtime-readiness signal, retries `config.apply` when the gateway rate-limits it instead of silently dropping the change, and applies new agents via hot-reload rather than an atomic file write the gateway's watcher could miss. No action required — it's a reliability fix.
+
+#### Channel-health watchdog for Telegram
+
+OpenClaw owns the Telegram poller, so a channel worker that crash-loops below the gateway WebSocket used to be invisible — the connection stayed "connected" while the bot silently dropped messages. A new watchdog probes the channel status every 30 seconds and makes those failures operator-visible:
+
+- A red **Degraded** badge appears on the agent's Telegram settings while the poller is failing, with the underlying error on hover.
+- The audit trail gains three event types: `channel.degraded` (first failure), `channel.polling_failed` (still down after several consecutive probes), and `channel.recovered` — together they bound the outage window. Error detail is PII-scrubbed.
+
+The classic trigger is one bot token polled by two deployments (staging and production, say): Telegram allows a single `getUpdates` consumer per bot, so the instances terminate each other in a loop. If you see a persistent degraded badge with a "terminated by other getUpdates request" error, give each environment its own bot. Nothing to configure — the watchdog is on after the upgrade.
+
+#### Diagnostics export from the Support tab
+
+Admins can now generate a downloadable bug-report bundle from **Settings → Support**: pick an agent, and Pinchy packages the version triplet (Pinchy, OpenClaw, openclaw-node), the scoped session trace as OTel-style spans with per-turn timing and token usage, and the related audit entries. Secrets are redacted with the audit-trail sanitizer and session keys are hashed before anything is written; the bundle does include conversation text, since that is usually what a bug report needs. Each export is audited as `diagnostics.exported`.
 
 #### Setup-wizard secrets fix
 
@@ -249,6 +263,7 @@ Pinchy now ships a web-app manifest and platform splash screens, so it can be in
 
 #### Operator notes
 
+- **Usage dashboard now records prompt-cache tokens.** Previously the poller read the wrong field names from OpenClaw and stored every cache counter as 0 — with providers that cache aggressively (Anthropic), the dashboard could show single-digit input for heavy days. After the upgrade, new usage records carry cache reads/writes, the daily chart gains a dashed **Cached Input** series, and cost estimates include cache pricing. Historic rows stay as recorded; expect day totals to jump. Totals remain approximate until per-turn accounting lands ([#483](https://github.com/heypinchy/pinchy/issues/483)).
 - **Configurable usage poll interval.** The usage-counter poller interval is now configurable via `PINCHY_USAGE_POLL_INTERVAL_MS` (default `60000`, minimum `1000`). Most deployments need not set it.
 - **Database migrations.** `0034` adds `last_error`/`last_error_at` to `integration_connections` (surfaces integration auth-failure detail), `0035` creates the `uploaded_files` staging table, and `0036` creates the `models` capability table. All three are additive and run automatically on startup.
 

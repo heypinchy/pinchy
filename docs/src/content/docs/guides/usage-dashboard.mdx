@@ -25,7 +25,7 @@ Open **Usage** from the sidebar (or visit `/usage`).
 - **Estimated Cost** — running USD estimate based on the per-token prices in your provider's model config. Shows "—" when pricing is unavailable (e.g. local Ollama models) so you can tell the difference between "free" and "no pricing data"
 - **Cache Tokens** — combined cache read and write tokens, shown when cache usage exists. Cache tokens reduce costs (reads are cheaper than fresh input tokens) and this card helps you see how much you're saving
 - **Source Breakdown** — how those tokens split across Chat, System, and Plugin use (see below)
-- **Daily Token Usage** chart — input vs output tokens over time. Days with no usage show as zero instead of being skipped, so you see actual gaps rather than misleading interpolation. The chart groups days by your browser's timezone, not UTC
+- **Daily Token Usage** chart — input, output, and cached input tokens over time (the dashed **Cached Input** line combines cache reads and writes; with providers that cache aggressively it usually dwarfs the uncached input). Days with no usage show as zero instead of being skipped, so you see actual gaps rather than misleading interpolation. The chart groups days by your browser's timezone, not UTC
 - **Per-Agent Breakdown** — which agents consume what, sorted by cost. Deleted agents are marked with "(deleted)" so you can still see their historical usage
 - **Per-User Breakdown** <Badge text="Enterprise" variant="note" /> — same numbers split by who chatted with the agent
 
@@ -59,7 +59,8 @@ The chat-turn poller reads OpenClaw session snapshots every 60 seconds by defaul
 A few honest caveats:
 
 - **It's an estimate.** Provider invoices are the source of truth. Pinchy uses the prices baked into the OpenClaw model config, which can drift from a provider's current published rates.
-- **Cache pricing is approximate.** The 10%/125% ratios match Anthropic's published pricing. If your provider uses different cache pricing, the estimate will be off. The token counts themselves are always accurate.
+- **Cache pricing is approximate.** The 10%/125% ratios match Anthropic's published pricing. If your provider uses different cache pricing, the estimate will be off.
+- **Token counts are close, not exact.** Chat usage is captured by sampling OpenClaw's per-session counters, which are overwritten each turn — turns that complete between two polls can be missed on busy sessions. Exact per-turn accounting is tracked in [#483](https://github.com/heypinchy/pinchy/issues/483).
 - **Local Ollama shows "—" for cost.** Local models record token counts but have no pricing config. The dashboard shows a dash instead of $0.00 to make this clear.
 - **Tool execution time isn't tracked here.** Only the LLM tokens count. The Audit Trail at `/audit` is where you go for tool-use details.
 
