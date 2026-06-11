@@ -254,6 +254,66 @@ describe("pinchy-audit plugin", () => {
   });
 
   describe("sensitive data sanitization", () => {
+    it("keeps numeric token counts readable while redacting real auth tokens (SYNC with web)", async () => {
+      const { default: plugin } = await import("./index");
+      plugin.register?.(
+        createMockApi({
+          apiBaseUrl: "http://pinchy:7777",
+          gatewayToken: "gw-token",
+        }) as any
+      );
+
+      const afterHook = mockOn.mock.calls.find((c) => c[0] === "after_tool_call")?.[1];
+
+      await afterHook(
+        {
+          toolName: "usage_probe",
+          params: { inputTokens: 240171, totalTokens: 35542, token: "tok-secret" },
+          result: "ok",
+          durationMs: 5,
+        },
+        {
+          agentId: "agent-1",
+          sessionKey: "agent:agent-1:user-user-1",
+          toolName: "usage_probe",
+        }
+      );
+
+      const body = JSON.parse((fetch as any).mock.calls[0][1].body);
+      expect(body.params.inputTokens).toBe(240171);
+      expect(body.params.totalTokens).toBe(35542);
+      expect(body.params.token).toBe("[REDACTED]");
+    });
+
+    it("serializes Date values to ISO strings instead of destroying them (SYNC with web)", async () => {
+      const { default: plugin } = await import("./index");
+      plugin.register?.(
+        createMockApi({
+          apiBaseUrl: "http://pinchy:7777",
+          gatewayToken: "gw-token",
+        }) as any
+      );
+
+      const afterHook = mockOn.mock.calls.find((c) => c[0] === "after_tool_call")?.[1];
+
+      await afterHook(
+        {
+          toolName: "calendar_read",
+          params: { at: new Date("2026-06-09T16:48:57.441Z") },
+          result: "ok",
+          durationMs: 5,
+        },
+        {
+          agentId: "agent-1",
+          sessionKey: "agent:agent-1:user-user-1",
+          toolName: "calendar_read",
+        }
+      );
+
+      const body = JSON.parse((fetch as any).mock.calls[0][1].body);
+      expect(body.params.at).toBe("2026-06-09T16:48:57.441Z");
+    });
+
     it("redacts sensitive key names in params before posting", async () => {
       const { default: plugin } = await import("./index");
       plugin.register?.(

@@ -25,6 +25,17 @@ function isSensitiveKey(key: string): boolean {
   return SENSITIVE_KEY_PATTERNS.some((pattern) => lower.includes(pattern));
 }
 
+/**
+ * Numeric values under keys ending in "tokens" are token COUNTS (usage
+ * counters like `gen_ai.usage.input_tokens`, `cacheReadTokens`), not
+ * credentials — the blanket "token" key match redacted them all, destroying
+ * the usage data in every diagnostics bundle. Conservative on purpose: only
+ * numbers are exempt; a string under `refreshTokens` stays redacted.
+ */
+function isExemptTokenCount(key: string, value: unknown): boolean {
+  return typeof value === "number" && /tokens$/i.test(key);
+}
+
 const SECRET_PATTERNS: RegExp[] = [
   /sk-ant-[a-zA-Z0-9\-]{20,}/g, // Anthropic (must be before generic sk-)
   /sk-[a-zA-Z0-9]{20,}/g, // OpenAI
@@ -76,7 +87,12 @@ function sanitizeValue(value: unknown, depth: number): unknown {
   if (typeof value === "object") {
     const result: Record<string, unknown> = {};
     for (const [key, val] of Object.entries(value as Record<string, unknown>)) {
-      if (isSensitiveKey(key) && val !== null && val !== undefined) {
+      if (
+        isSensitiveKey(key) &&
+        val !== null &&
+        val !== undefined &&
+        !isExemptTokenCount(key, val)
+      ) {
         result[key] = REDACTED;
       } else {
         result[key] = sanitizeValue(val, depth + 1);

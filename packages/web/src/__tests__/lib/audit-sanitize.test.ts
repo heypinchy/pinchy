@@ -26,6 +26,38 @@ describe("sanitizeDetail", () => {
     });
   });
 
+  describe("token-count exemption", () => {
+    it("does not redact numeric token COUNTS whose key ends in 'tokens'", () => {
+      // The diagnostics bundle carries OTel usage attributes like
+      // gen_ai.usage.input_tokens — numeric counters, not credentials. The
+      // blanket "token" key match redacted them all (v0.5.7 staging finding),
+      // destroying the usage data in every exported bug report.
+      const result = sanitizeDetail({
+        "gen_ai.usage.input_tokens": 240171,
+        "gen_ai.usage.output_tokens": 4300,
+        cacheReadTokens: 14404,
+        totalTokens: 35542,
+      });
+      expect(result).toEqual({
+        "gen_ai.usage.input_tokens": 240171,
+        "gen_ai.usage.output_tokens": 4300,
+        cacheReadTokens: 14404,
+        totalTokens: 35542,
+      });
+    });
+
+    it("still redacts string values under tokens-suffixed keys (conservative)", () => {
+      expect(sanitizeDetail({ refreshTokens: "abc" })).toEqual({ refreshTokens: "[REDACTED]" });
+    });
+
+    it("still redacts actual auth-token keys regardless of value type", () => {
+      expect(sanitizeDetail({ token: "tok-abc", botToken: "123:xyz" })).toEqual({
+        token: "[REDACTED]",
+        botToken: "[REDACTED]",
+      });
+    });
+  });
+
   describe("key-name redaction", () => {
     it("redacts values for known sensitive key names", () => {
       const input = {

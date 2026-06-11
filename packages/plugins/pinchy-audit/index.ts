@@ -97,6 +97,13 @@ function isSensitiveKey(key: string): boolean {
   return SENSITIVE_KEYS.some((pattern) => lower.includes(pattern));
 }
 
+// Numeric values under keys ending in "tokens" are token COUNTS (usage
+// counters like inputTokens/totalTokens), not credentials. Conservative on
+// purpose: only numbers are exempt — a string under such a key stays redacted.
+function isExemptTokenCount(key: string, value: unknown): boolean {
+  return typeof value === "number" && /tokens$/i.test(key);
+}
+
 function redactPatterns(value: string): string {
   if (value === REDACTED) return value;
   let result = value;
@@ -113,10 +120,13 @@ function sanitizeValue(value: unknown, depth: number): unknown {
   if (value === null || value === undefined) return value;
   if (depth >= MAX_DEPTH) return value;
   if (Array.isArray(value)) return value.map((item) => sanitizeValue(item, depth + 1));
+  // Dates have no own enumerable properties — the generic object branch below
+  // would strip them to {}. Serialize like JSON.stringify would.
+  if (value instanceof Date) return value.toISOString();
   if (typeof value === "object") {
     const result: Record<string, unknown> = {};
     for (const [key, val] of Object.entries(value as Record<string, unknown>)) {
-      if (isSensitiveKey(key) && val !== null && val !== undefined) {
+      if (isSensitiveKey(key) && val !== null && val !== undefined && !isExemptTokenCount(key, val)) {
         result[key] = REDACTED;
       } else {
         result[key] = sanitizeValue(val, depth + 1);
