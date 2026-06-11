@@ -1062,7 +1062,11 @@ export function AddIntegrationDialog({
     setConnecting(true);
 
     const preset = getMcpPreset(values.preset);
-    const autoName = values.name?.trim() || `${preset.displayName} MCP`;
+    // Default to the plain brand name ("GitHub"). MCP is the transport — an
+    // implementation detail that must not leak onto the integrations card.
+    // The generic preset's displayName is "Generic MCP", which is accurate
+    // there: whoever picks Custom MCP knows what MCP is.
+    const autoName = values.name?.trim() || preset.displayName;
 
     // Same per-preset → extraHeaders translation as the Test-Connection path
     // — both endpoints accept the same generic shape.

@@ -179,6 +179,31 @@ describe("AddIntegrationDialog — GitHub named-preset flow", () => {
       expect(body).toContain("https://api.githubcopilot.com/mcp/");
     });
   });
+
+  it("defaults the connection name to the brand name without an MCP suffix", async () => {
+    // Users picked "GitHub" in the integrations picker — MCP is the transport,
+    // an implementation detail that must not leak into the connection name
+    // shown on the integrations card.
+    const user = userEvent.setup();
+
+    fetchMock.mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({ id: "conn-1", type: "mcp" }),
+    } as unknown as Response);
+
+    renderDialog();
+
+    await user.click(screen.getByRole("button", { name: /GitHub/i }));
+    await user.type(screen.getByLabelText(/token/i), "github_pat_sometoken");
+    await user.click(screen.getByRole("button", { name: /^Connect$/i }));
+
+    await waitFor(() => {
+      const body = JSON.parse(fetchMock.mock.calls.at(-1)?.[1]?.body as string) as {
+        name: string;
+      };
+      expect(body.name).toBe("GitHub");
+    });
+  });
 });
 
 // ── Additional named presets ────────────────────────────────────────────────
