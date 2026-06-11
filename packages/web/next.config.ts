@@ -8,7 +8,11 @@ const openclawVersion: string =
 
 const nextConfig: NextConfig = {
   devIndicators: false,
-  allowedDevOrigins: ["local.heypinchy.com", "https://local.heypinchy.com:8443"],
+  // 127.0.0.1 is NOT covered by Next's implicit localhost allowance — without
+  // it, dev-mode HMR (and with it Next 16's hydration) silently breaks when
+  // the app is opened via http://127.0.0.1:7777 instead of localhost or the
+  // Caddy domain ("Blocked cross-origin request to /_next/webpack-hmr").
+  allowedDevOrigins: ["127.0.0.1", "local.heypinchy.com", "https://local.heypinchy.com:8443"],
   env: {
     NEXT_PUBLIC_PINCHY_VERSION: pkg.version,
     NEXT_PUBLIC_OPENCLAW_VERSION: openclawVersion,
