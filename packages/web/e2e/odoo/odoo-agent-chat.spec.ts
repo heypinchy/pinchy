@@ -276,7 +276,11 @@ test.describe("Odoo dispatch probe (pinchy-odoo plugin coverage)", () => {
   let restoreSettings: (() => Promise<void>) | null = null;
 
   test.beforeAll(async ({}, testInfo) => {
-    testInfo.setTimeout(180_000);
+    // 240 s (was 180 s): waitForOpenClawStable now also waits for
+    // configPushesPending=0, whose worst case (a config.apply parked across
+    // rate-limit windows before the file fallback settles it) adds up to
+    // ~100 s before the 30 s stable streak can begin.
+    testInfo.setTimeout(240_000);
 
     // 1. Start fake-Ollama on the host (port 11435).
     await startFakeOllama();

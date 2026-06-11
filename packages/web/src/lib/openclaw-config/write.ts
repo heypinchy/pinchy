@@ -8,6 +8,7 @@ import {
   configsAreEquivalentUpToOpenClawMetadata,
 } from "./normalize";
 import { CONFIG_PATH } from "./paths";
+import { trackConfigPushStarted, trackConfigPushSettled } from "./push-state";
 
 /** Atomic write: tmp file + rename to prevent OpenClaw reading a truncated config */
 export function writeConfigAtomic(content: string) {
@@ -171,6 +172,13 @@ const NOT_CONNECTED_RETRY_DELAY_MS = 2_000;
 
 export function pushConfigInBackground(newContent: string): void {
   const generation = ++_pushGeneration;
+
+  // Make the in-flight push observable (health endpoint `configPushesPending`,
+  // consumed by the E2E stability gates): a rate-limited apply can park this
+  // coroutine 33–53 s, during which the change is NOT in OC's runtime while
+  // everything else looks healthy. `.finally` below settles on EVERY terminal
+  // exit — applied, no-op skip, superseded, or file-write fallback.
+  trackConfigPushStarted();
 
   void (async () => {
     let client;
@@ -394,5 +402,5 @@ export function pushConfigInBackground(newContent: string): void {
         await new Promise((resolve) => setTimeout(resolve, backoffsMs[i]));
       }
     }
-  })();
+  })().finally(trackConfigPushSettled);
 }

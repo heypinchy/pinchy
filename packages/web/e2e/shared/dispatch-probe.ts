@@ -76,44 +76,57 @@ export async function seedDefaultProviderToOllama(
 }
 
 /**
- * Wait until `/api/health/openclaw` reports `connected=true` for `stableForMs`
- * consecutive milliseconds. A single transient `true` during a hot-reload
- * cycle is not enough — config-regen briefly tears down the bridge and a
- * naive poll catches the pre-reload state.
+ * Wait until `/api/health/openclaw` reports `connected=true` AND
+ * `configPushesPending=0` for `stableForMs` consecutive milliseconds. A single
+ * transient `true` during a hot-reload cycle is not enough — config-regen
+ * briefly tears down the bridge and a naive poll catches the pre-reload state.
  *
- * `stableForMs` defaults to 30 s because Pinchy's `pushConfigInBackground` is
- * fire-and-forget: `regenerateOpenClawConfig()` returns after the disk write
- * but the WebSocket `config.apply` can still be in-flight, and OC's
- * `config.apply` rate-limit (~3 calls / 45 s window) makes the second of two
- * rapid regens fall through to the inotify-debounced file-watcher reload.
- * 30 s of consecutive `connected=true` covers that worst case.
+ * Why `configPushesPending` is part of the predicate: Pinchy's
+ * `pushConfigInBackground` is fire-and-forget, and OC 5.3's `config.apply`
+ * rate-limit (~3 calls / 45 s window) can PARK a push coroutine for 33–53 s
+ * waiting out the window. OC stays connected the whole time, so a
+ * connection-only stability window passes while a config change this suite
+ * just made (e.g. the per-agent `pinchy-email` grant) is still NOT in OC's
+ * runtime. The next dispatch then snapshots a tool list without the grant and
+ * the agent answers "I can't use the tool … it isn't available" (the
+ * email/odoo/web/telegram dispatch-probe flake, sibling of #464). Requiring
+ * pending=0 makes the gate deterministic instead of probabilistic.
  */
 export async function waitForOpenClawStable(
-  fetchHealth: () => Promise<{ ok: boolean; json: () => Promise<{ connected?: boolean }> }>,
+  fetchHealth: () => Promise<{
+    ok: boolean;
+    json: () => Promise<{ connected?: boolean; configPushesPending?: number }>;
+  }>,
   opts: { deadlineMs?: number; stableForMs?: number; intervalMs?: number } = {}
 ): Promise<void> {
-  const deadline = Date.now() + (opts.deadlineMs ?? 90_000);
+  // 150 s default deadline (was 90 s): a parked config.apply can take one full
+  // rate-limit window (~53 s) — or two (~100 s) before the file-write fallback
+  // settles it — BEFORE the stableFor window can even begin. 90 s could expire
+  // mid-wait and turn the deterministic gate back into a flake.
+  const deadline = Date.now() + (opts.deadlineMs ?? 150_000);
   const stableFor = opts.stableForMs ?? 30_000;
   const interval = opts.intervalMs ?? 500;
-  let connectedSince: number | null = null;
+  let stableSince: number | null = null;
 
   while (Date.now() < deadline) {
     const res = await fetchHealth();
+    let stable = false;
     if (res.ok) {
       const body = await res.json();
-      if (body.connected) {
-        connectedSince ??= Date.now();
-        if (Date.now() - connectedSince >= stableFor) return;
-      } else {
-        connectedSince = null;
-      }
+      // Missing `configPushesPending` (older Pinchy build) counts as settled
+      // so the helper stays usable against both response shapes.
+      stable = Boolean(body.connected) && (body.configPushesPending ?? 0) === 0;
+    }
+    if (stable) {
+      stableSince ??= Date.now();
+      if (Date.now() - stableSince >= stableFor) return;
     } else {
-      connectedSince = null;
+      stableSince = null;
     }
     await new Promise((r) => setTimeout(r, interval));
   }
   throw new Error(
-    `OpenClaw did not stabilise (connected=true for ${String(stableFor)}ms) within deadline`
+    `OpenClaw did not stabilise (connected=true with configPushesPending=0 for ${String(stableFor)}ms) within deadline`
   );
 }
 

@@ -139,6 +139,7 @@ import {
   DOCS_PUBLIC_BASE_URL_SETTING_KEY,
 } from "@/lib/openclaw-config";
 import { pushConfigInBackground, _resetPushGeneration } from "@/lib/openclaw-config/write";
+import { getPendingConfigPushCount, _resetConfigPushState } from "@/lib/openclaw-config/push-state";
 import { db } from "@/db";
 import { getSetting } from "@/lib/settings";
 import { fetchOllamaLocalModelsFromUrl } from "@/lib/provider-models";
@@ -3149,6 +3150,49 @@ describe("regenerateOpenClawConfig", () => {
       const appliedPayload = String(mockConfigApply.mock.calls[0][0]);
       expect(appliedPayload).toContain('"NEW"');
       expect(appliedPayload).not.toContain('"OLD"');
+    });
+
+    it("tracks pending state across the push lifecycle (applied, superseded, no-client)", async () => {
+      // Under OC 5.3's config.apply rate-limit a push coroutine can be parked
+      // 33–53 s; nothing observable said "a config change is still in flight",
+      // so E2E stability gates passed and dispatched into the gap (the email
+      // dispatch-probe flake). Contract: every pushConfigInBackground call is
+      // pending until its coroutine reaches ANY terminal state — applied,
+      // superseded, or file-write fallback — and the counter returns to 0.
+      _resetConfigPushState();
+
+      // Case 1: applied via WS — pending while config.apply is in flight.
+      let resolveApply!: () => void;
+      mockConfigGet.mockResolvedValue({ hash: "h1" });
+      mockConfigApply.mockImplementation(
+        () => new Promise<void>((resolve) => (resolveApply = resolve))
+      );
+      mockGetClient.mockImplementation(() => ({
+        config: { get: mockConfigGet, apply: mockConfigApply },
+      }));
+
+      pushConfigInBackground(JSON.stringify({ env: { A: "1" } }));
+      expect(getPendingConfigPushCount()).toBe(1);
+      await vi.waitFor(() => expect(mockConfigApply).toHaveBeenCalledOnce());
+      // Still pending while the apply RPC is unresolved.
+      expect(getPendingConfigPushCount()).toBe(1);
+      resolveApply();
+      await vi.waitFor(() => expect(getPendingConfigPushCount()).toBe(0));
+
+      // Case 2: superseded — BOTH pushes settle (the older via the generation
+      // check, the newer via its apply), never leaving a stuck pending count.
+      mockConfigApply.mockResolvedValue(undefined);
+      pushConfigInBackground(JSON.stringify({ env: { OLD: "1" } }));
+      pushConfigInBackground(JSON.stringify({ env: { NEW: "2" } }));
+      expect(getPendingConfigPushCount()).toBe(2);
+      await vi.waitFor(() => expect(getPendingConfigPushCount()).toBe(0));
+
+      // Case 3: no WS client — synchronous file-write fallback still settles.
+      mockGetClient.mockImplementation(() => {
+        throw new Error("OpenClaw client not initialized");
+      });
+      pushConfigInBackground(JSON.stringify({ env: { B: "1" } }));
+      await vi.waitFor(() => expect(getPendingConfigPushCount()).toBe(0));
     });
 
     it("supplements channels.telegram fields absent from payload from OC in-memory config (OC 4.27+ channel diff prevention)", async () => {

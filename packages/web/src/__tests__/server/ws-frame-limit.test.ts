@@ -14,6 +14,38 @@ import { SERVER_WS_MAX_PAYLOAD_BYTES } from "@/lib/limits";
  * a 5 MB JSON frame, and asserts the server delivers the message instead of
  * closing with code 1009 ("Message too big").
  */
+/**
+ * Open a WebSocket to the local test server, retrying the CONNECT phase on
+ * transient handshake failures (bounded, fresh socket per attempt).
+ *
+ * Why: under full-suite load (many vitest forks + local Docker stacks) a
+ * single-shot localhost TCP/WS handshake can fail with `socket hang up`
+ * (ECONNRESET during the HTTP upgrade) — pure environmental noise that has
+ * nothing to do with this file's contract, which is the server's `maxPayload`
+ * behaviour AFTER a connection exists. Retrying only the connect phase removes
+ * that noise without weakening the contract: every assertion still runs
+ * against a real connection, and a maxPayload regression fails exactly as
+ * before.
+ */
+async function connectWithRetry(port: number, attempts = 3): Promise<WebSocket> {
+  let lastError: unknown;
+  for (let i = 0; i < attempts; i++) {
+    const client = new WebSocket(`ws://127.0.0.1:${port}`);
+    try {
+      await new Promise<void>((resolve, reject) => {
+        client.once("open", () => resolve());
+        client.once("error", reject);
+      });
+      return client;
+    } catch (err) {
+      lastError = err;
+      client.terminate();
+      await new Promise((r) => setTimeout(r, 100 * (i + 1)));
+    }
+  }
+  throw lastError;
+}
+
 describe("WebSocket server frame limit (regression guard)", () => {
   let httpServer: HttpServer;
   let wss: WebSocketServer;
@@ -48,11 +80,7 @@ describe("WebSocket server frame limit (regression guard)", () => {
       });
     });
 
-    const client = new WebSocket(`ws://127.0.0.1:${port}`);
-    await new Promise<void>((resolve, reject) => {
-      client.once("open", () => resolve());
-      client.once("error", reject);
-    });
+    const client = await connectWithRetry(port);
 
     // 5 MB of base64-ish content, wrapped in a JSON message so it mirrors what
     // the real router parses.
@@ -86,11 +114,7 @@ describe("WebSocket server frame limit (regression guard)", () => {
       ws.on("error", () => {});
     });
 
-    const client = new WebSocket(`ws://127.0.0.1:${port}`);
-    await new Promise<void>((resolve, reject) => {
-      client.once("open", () => resolve());
-      client.once("error", reject);
-    });
+    const client = await connectWithRetry(port);
 
     const closeEvent = new Promise<{ code: number }>((resolve) => {
       client.once("close", (code) => resolve({ code }));

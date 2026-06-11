@@ -25,6 +25,7 @@ function fakeRequest(url = "http://localhost/api/health/openclaw"): NextRequest 
 
 describe("GET /api/health/openclaw", () => {
   let GET: typeof import("@/app/api/health/openclaw/route").GET;
+  let pushState: typeof import("@/lib/openclaw-config/push-state");
 
   beforeEach(async () => {
     vi.resetModules();
@@ -33,6 +34,11 @@ describe("GET /api/health/openclaw", () => {
     mockRestartState.triggeredAt = null;
     mockConnectionState.connected = false;
     mockGetOpenClawClient.mockReturnValue({ config: { get: mockConfigGet } });
+    // The push-state tracker is globalThis-backed (NOT mocked here): the route
+    // must read the same counter `pushConfigInBackground` writes, across the
+    // Next-route vs custom-server module-graph split.
+    pushState = await import("@/lib/openclaw-config/push-state");
+    pushState._resetConfigPushState();
     const mod = await import("@/app/api/health/openclaw/route");
     GET = mod.GET;
   });
@@ -42,7 +48,7 @@ describe("GET /api/health/openclaw", () => {
     const body = await response.json();
 
     expect(response.status).toBe(200);
-    expect(body).toEqual({ status: "ok", connected: false });
+    expect(body).toEqual({ status: "ok", connected: false, configPushesPending: 0 });
   });
 
   it("returns ok with connected: true when OpenClaw is connected", async () => {
@@ -52,7 +58,27 @@ describe("GET /api/health/openclaw", () => {
     const body = await response.json();
 
     expect(response.status).toBe(200);
-    expect(body).toEqual({ status: "ok", connected: true });
+    expect(body).toEqual({ status: "ok", connected: true, configPushesPending: 0 });
+  });
+
+  it("reports configPushesPending while a background config push is in flight", async () => {
+    // The email dispatch-probe flake: a rate-limited config.apply can park a
+    // push coroutine 33–53 s; health reported connected=true the whole time,
+    // so E2E stability gates dispatched into the gap and the agent ran without
+    // its freshly-granted tools. The gate needs this counter to wait it out.
+    mockConnectionState.connected = true;
+    pushState.trackConfigPushStarted();
+    pushState.trackConfigPushStarted();
+
+    const response = await GET(fakeRequest());
+    const body = await response.json();
+
+    expect(body).toEqual({ status: "ok", connected: true, configPushesPending: 2 });
+
+    pushState.trackConfigPushSettled();
+    pushState.trackConfigPushSettled();
+    const after = await (await GET(fakeRequest())).json();
+    expect(after.configPushesPending).toBe(0);
   });
 
   it("returns restarting with connected: false when restarting", async () => {
@@ -79,7 +105,12 @@ describe("GET /api/health/openclaw", () => {
       const body = await response.json();
 
       expect(response.status).toBe(200);
-      expect(body).toEqual({ status: "ok", connected: true, agentDispatchable: true });
+      expect(body).toEqual({
+        status: "ok",
+        connected: true,
+        configPushesPending: 0,
+        agentDispatchable: true,
+      });
     });
 
     it("returns agentDispatchable: false when the requested id is NOT in OC's list", async () => {

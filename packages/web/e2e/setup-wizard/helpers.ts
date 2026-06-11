@@ -159,8 +159,15 @@ export async function resetStack(): Promise<void> {
       const out = execSync(`curl -fsS http://localhost:7777/api/health/openclaw`, {
         stdio: "pipe",
       }).toString();
-      const health = JSON.parse(out) as { connected?: boolean; status?: string };
-      if (health.connected && health.status === "ok") {
+      const health = JSON.parse(out) as {
+        connected?: boolean;
+        status?: string;
+        configPushesPending?: number;
+      };
+      // Also require no config push in flight: a parked (rate-limited)
+      // config.apply means a change is NOT yet in OC's runtime even though
+      // `connected` is true — handing off to the wizard then races the apply.
+      if (health.connected && health.status === "ok" && (health.configPushesPending ?? 0) === 0) {
         connectedSince ??= Date.now();
         if (Date.now() - connectedSince >= 5000) return;
       } else {
@@ -196,8 +203,19 @@ async function waitForOpenClawSettledViaPage(
     try {
       const res = await page.request.get("/api/health/openclaw");
       if (res.ok()) {
-        const health = (await res.json()) as { connected?: boolean; status?: string };
-        if (health.connected && health.status === "ok") {
+        const health = (await res.json()) as {
+          connected?: boolean;
+          status?: string;
+          configPushesPending?: number;
+        };
+        // Require no config push in flight before the first chat: the wizard's
+        // provider save triggers a regenerate whose `models` block may be
+        // parked in OC's config.apply rate-limit window. Dispatching into that
+        // gap makes the run resolve the agent's model against a runtime that
+        // doesn't have the provider yet ("Unknown model: google/…", the google
+        // setup-wizard flake). The chat path's own model-race retry remains the
+        // production backstop; this keeps the test's common case fast & clean.
+        if (health.connected && health.status === "ok" && (health.configPushesPending ?? 0) === 0) {
           connectedSince ??= Date.now();
           if (Date.now() - connectedSince >= opts.stableForMs) return;
         } else {

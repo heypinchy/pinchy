@@ -3,6 +3,7 @@ import { restartState } from "@/server/restart-state";
 import { openClawConnectionState } from "@/server/openclaw-connection-state";
 import { getOpenClawClient } from "@/server/openclaw-client";
 import { getChannelHealthMonitor } from "@/server/channel-health-singleton";
+import { getPendingConfigPushCount } from "@/lib/openclaw-config/push-state";
 
 /**
  * GET `/api/health/openclaw[?agentId=<uuid>]`
@@ -36,7 +37,16 @@ export async function GET(request: NextRequest) {
     });
   }
 
-  const base = { status: "ok" as const, connected: openClawConnectionState.connected };
+  // `configPushesPending`: number of `pushConfigInBackground` coroutines still
+  // in flight. A rate-limited config.apply can park a push 33–53 s during which
+  // the change (e.g. a freshly-granted per-agent plugin config) is NOT in OC's
+  // runtime while `connected` stays true. E2E stability gates require this to
+  // be 0 before dispatching, so chats never race a parked config change.
+  const base = {
+    status: "ok" as const,
+    connected: openClawConnectionState.connected,
+    configPushesPending: getPendingConfigPushCount(),
+  };
 
   // With `?channelHealth=1`: the channel-health watchdog's per-account snapshot,
   // used by the admin Telegram settings UI to show a "degraded" badge. Reading
