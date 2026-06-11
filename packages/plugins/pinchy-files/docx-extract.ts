@@ -53,10 +53,7 @@ turndown.addRule("strip-image", {
  * bundle isolation; a shared package would complicate that.
  */
 function normalizeTableHtml(html: string): string {
-  let out = html.replace(
-    /<(td|th)([^>]*)><p>([\s\S]*?)<\/p><\/(td|th)>/g,
-    "<$1$2>$3</$1>",
-  );
+  let out = html.replace(/<(td|th)([^>]*)><p>([\s\S]*?)<\/p><\/(td|th)>/g, "<$1$2>$3</$1>");
 
   // Mammoth emits no <tbody>, so rows sit directly under <table>.
   out = out.replace(/<table>([\s\S]*?)<\/table>/g, (_, inner: string) => {
@@ -64,9 +61,7 @@ function normalizeTableHtml(html: string): string {
     if (!firstRowMatch) return `<table>${inner}</table>`;
     const firstRow = firstRowMatch[1];
     const rest = inner.slice(firstRow.length);
-    const headingRow = firstRow
-      .replace(/<td([^>]*)>/g, "<th$1>")
-      .replace(/<\/td>/g, "</th>");
+    const headingRow = firstRow.replace(/<td([^>]*)>/g, "<th$1>").replace(/<\/td>/g, "</th>");
     return `<table><thead>${headingRow}</thead><tbody>${rest}</tbody></table>`;
   });
 
