@@ -19,7 +19,18 @@ mkdir -p pinchy && cd pinchy
 curl -fsSL https://raw.githubusercontent.com/heypinchy/pinchy/%%PINCHY_VERSION%%/docker-compose.yml -o docker-compose.yml
 ```
 
-## 2. Start the stack
+## 2. Pin the version and a database password
+
+```bash
+{
+  echo "PINCHY_VERSION=%%PINCHY_VERSION%%"
+  echo "DB_PASSWORD=$(openssl rand -hex 16)"
+} > .env
+```
+
+The Compose file refuses to start without a pinned `PINCHY_VERSION`, and Pinchy refuses to run on the built-in database password — both checks exist so the stack you start today is still the one you expect after the next upgrade. The generated password stays on your machine; PostgreSQL is initialized with it on first start.
+
+## 3. Start the stack
 
 ```bash
 docker compose pull
@@ -34,13 +45,13 @@ This starts three services:
 
 Wait until `docker compose logs pinchy` shows `Pinchy ready on http://localhost:7777`.
 
-## 3. Create your admin account
+## 4. Create your admin account
 
 Open [http://localhost:7777](http://localhost:7777) in your browser. The setup wizard appears automatically on first run.
 
 Enter your name, email, and password. This creates the first admin user.
 
-## 4. Configure your AI provider
+## 5. Configure your AI provider
 
 After creating your account, Pinchy redirects you to the provider setup page. Choose your LLM provider and enter your API key:
 
@@ -55,7 +66,7 @@ Your API key is encrypted at rest using AES-256-GCM before being stored in the d
 
 If the provider you configure has no vision-capable model, the wizard shows an amber warning: **No vision-capable model configured.** Adding Anthropic, OpenAI, or Google as a provider enables image uploads and scanned-PDF support.
 
-## 5. Chat with Smithers
+## 6. Chat with Smithers
 
 Once your provider is configured, Pinchy redirects you to the chat interface. Your default agent — **Smithers** — greets you automatically and starts a short onboarding interview to learn about you (and your organization, if you're an admin). This builds context that every agent on the platform can use.
 
@@ -63,13 +74,13 @@ Once your provider is configured, Pinchy redirects you to the chat interface. Yo
 
 Type a message and hit Enter. Smithers responds in real time via WebSocket. See [Smithers Onboarding](/guides/smithers-onboarding/) for what Smithers asks and how the context is saved.
 
-## 6. Invite your team
+## 7. Invite your team
 
 Go to **Settings → Users** to invite team members. Enter their email address and Pinchy generates a one-time invite link.
 
 Each invited user gets their own personal **Smithers** agent, created automatically when they claim the invite. Invite links are valid for 7 days.
 
-## 7. Create a Knowledge Base Agent (optional)
+## 8. Create a Knowledge Base Agent (optional)
 
 You can create agents from templates. Creating an agent is simple: pick a template, give it a name, add an optional tagline, and click Create. Each agent gets a unique auto-generated avatar.
 

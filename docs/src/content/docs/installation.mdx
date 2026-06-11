@@ -47,19 +47,14 @@ Only port **7777** is exposed to the host. OpenClaw and PostgreSQL are only reac
 
 ### Environment variables
 
-No configuration is needed to get started. All secrets (session key, encryption key, HMAC signing key) are auto-generated on first start and persisted in Docker volumes so they survive restarts.
-
-<Aside type="tip">
-  For a quick local trial, skip straight to the [Getting
-  Started](/getting-started/) guide — no `.env` file required.
-</Aside>
+Almost no configuration is needed to get started: session key, encryption key, and HMAC signing key are auto-generated on first start and persisted in Docker volumes so they survive restarts. The two values you do set yourself are `PINCHY_VERSION` (the Compose file refuses to start without a pinned version) and `DB_PASSWORD` (Pinchy refuses to run on the built-in default — it's public in this repository). The [Getting Started](/getting-started/) guide generates both in one step.
 
 #### Optional: production hardening
 
-For production deployments, create a `.env` file in the project root to pin your own secrets instead of relying on auto-generated ones:
+For production deployments, extend the `.env` file to pin the remaining secrets instead of relying on auto-generated ones:
 
 ```bash
-# Database password (default: pinchy_dev)
+# Database password (required — Pinchy won't start in production on the default)
 DB_PASSWORD=your-secure-password
 
 # Better Auth session secret (auto-generated if omitted)
@@ -75,7 +70,7 @@ AUDIT_HMAC_SECRET=
 PINCHY_ENTERPRISE_KEY=
 ```
 
-**`DB_PASSWORD`** — Password for the PostgreSQL `pinchy` user. Defaults to `pinchy_dev` in Docker Compose.
+**`DB_PASSWORD`** — Password for the PostgreSQL `pinchy` user. Required in production: the default `pinchy_dev` value is public in this repository, so Pinchy exits at startup instead of running with it. Set it before the database is created for the first time (PostgreSQL only applies it on first initialization).
 
 **`BETTER_AUTH_SECRET`** — Used by Better Auth for session security. Auto-generated and persisted in the `pinchy-secrets` volume if omitted. For production, set explicitly with `openssl rand -hex 32`.
 
