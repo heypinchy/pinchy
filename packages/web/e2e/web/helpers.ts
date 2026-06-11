@@ -1,4 +1,5 @@
 const PINCHY_URL = process.env.PINCHY_URL || "http://localhost:7777";
+import { stackDbUrl } from "../shared/stack-db";
 const BRAVE_MOCK_URL = process.env.BRAVE_MOCK_URL || "http://localhost:9003";
 
 // Admin credentials — set by seedSetup, used by login
@@ -18,7 +19,7 @@ export function getAdminPassword(): string {
  * Mirrors the Odoo E2E seedSetup pattern.
  */
 export async function seedSetup(): Promise<void> {
-  const dbUrl = process.env.DATABASE_URL || "postgresql://pinchy:pinchy_dev@localhost:5434/pinchy";
+  const dbUrl = process.env.DATABASE_URL || stackDbUrl(5434);
   const { default: postgres } = await import("postgres");
   const sql = postgres(dbUrl);
 

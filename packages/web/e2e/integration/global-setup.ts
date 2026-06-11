@@ -16,8 +16,9 @@ import { execSync, spawn } from "child_process";
 import path from "path";
 import { existsSync, readFileSync, unlinkSync, writeFileSync } from "fs";
 import { FAKE_OLLAMA_PORT } from "../shared/fake-ollama/fake-ollama-server";
+import { stackDbUrl } from "../shared/stack-db";
 
-const INTEGRATION_DB_URL = "postgresql://pinchy:pinchy_dev@localhost:5435/pinchy";
+const INTEGRATION_DB_URL = stackDbUrl(5435);
 const FAKE_OLLAMA_PID_PATH = "/tmp/pinchy-fake-ollama.pid";
 const PROJECT_ROOT = path.resolve(__dirname, "../../../..");
 const PACKAGE_ROOT = path.resolve(__dirname, "../..");

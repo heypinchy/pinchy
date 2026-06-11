@@ -1,4 +1,5 @@
 import { createCipheriv, randomBytes, randomUUID } from "crypto";
+import { stackDbUrl } from "../shared/stack-db";
 
 const PINCHY_URL = process.env.PINCHY_URL || "http://localhost:7777";
 const GMAIL_MOCK_URL = process.env.GMAIL_MOCK_URL || "http://localhost:9004";
@@ -38,7 +39,7 @@ function encryptCredentials(plaintext: string): string {
  * Mirrors the web E2E seedSetup pattern.
  */
 export async function seedSetup(): Promise<void> {
-  const dbUrl = process.env.DATABASE_URL || "postgresql://pinchy:pinchy_dev@localhost:5434/pinchy";
+  const dbUrl = process.env.DATABASE_URL || stackDbUrl(5434);
   const { default: postgres } = await import("postgres");
   const sql = postgres(dbUrl);
 
@@ -99,7 +100,7 @@ export async function seedSetup(): Promise<void> {
 export async function createGoogleConnectionInDb(
   name = "Test Gmail"
 ): Promise<{ id: string; type: string; name: string }> {
-  const dbUrl = process.env.DATABASE_URL || "postgresql://pinchy:pinchy_dev@localhost:5434/pinchy";
+  const dbUrl = process.env.DATABASE_URL || stackDbUrl(5434);
   const { default: postgres } = await import("postgres");
   const sql = postgres(dbUrl);
 

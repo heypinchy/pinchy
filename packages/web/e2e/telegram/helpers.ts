@@ -8,6 +8,7 @@
  */
 
 import { execSync } from "child_process";
+import { stackDbUrl } from "../shared/stack-db";
 
 const PINCHY_URL = process.env.PINCHY_URL || "http://localhost:7777";
 const MOCK_TELEGRAM_URL = process.env.MOCK_TELEGRAM_URL || "http://localhost:9001";
@@ -91,7 +92,7 @@ export async function createAgent(name: string): Promise<{ id: string; name: str
   // Create agent directly in DB — the POST /api/agents endpoint requires
   // template-specific fields (e.g. pluginConfig for knowledge-base) that
   // aren't needed for a basic agent used in multi-bot tests.
-  const dbUrl = process.env.DATABASE_URL || "postgresql://pinchy:pinchy_dev@localhost:5434/pinchy";
+  const dbUrl = process.env.DATABASE_URL || stackDbUrl(5434);
   const { default: postgres } = await import("postgres");
   const sql = postgres(dbUrl);
   const id = crypto.randomUUID();
@@ -279,7 +280,7 @@ export function extractPairingCode(botResponseText: string): string | null {
 export async function seedSetup(): Promise<void> {
   // Create admin account and provider config directly in DB.
   // Uses the same approach as existing E2E tests (03-provider.spec.ts).
-  const dbUrl = process.env.DATABASE_URL || "postgresql://pinchy:pinchy_dev@localhost:5434/pinchy";
+  const dbUrl = process.env.DATABASE_URL || stackDbUrl(5434);
   const { default: postgres } = await import("postgres");
   const sql = postgres(dbUrl);
 

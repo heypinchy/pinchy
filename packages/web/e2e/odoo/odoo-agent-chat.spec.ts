@@ -27,6 +27,7 @@ import {
   waitForOpenClawStable,
   waitForAgentDispatchable,
 } from "../shared/dispatch-probe";
+import { stackDbUrl } from "../shared/stack-db";
 
 const MOCK_ODOO_URL = process.env.MOCK_ODOO_URL || "http://localhost:9002";
 
@@ -301,8 +302,7 @@ test.describe("Odoo dispatch probe (pinchy-odoo plugin coverage)", () => {
     // 3. Swap default_provider to ollama-local and seed ollama_local_url.
     //    Pinchy can reach ollama.local via the extra_hosts mapping added to the
     //    docker-compose.odoo-test.yml overlay. OpenClaw already has this mapping.
-    const dbUrl =
-      process.env.DATABASE_URL || "postgresql://pinchy:pinchy_dev@localhost:5434/pinchy";
+    const dbUrl = process.env.DATABASE_URL || stackDbUrl(5434);
     restoreSettings = await seedDefaultProviderToOllama(dbUrl, FAKE_OLLAMA_PORT);
 
     // 4. Login (API cookie).

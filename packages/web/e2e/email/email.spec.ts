@@ -30,6 +30,7 @@ import {
   seedDefaultProviderToOllama,
   waitForOpenClawStable,
 } from "../shared/dispatch-probe";
+import { stackDbUrl } from "../shared/stack-db";
 
 test.describe("pinchy-email — Gmail E2E", () => {
   let cookie: string;
@@ -164,8 +165,7 @@ test.describe("Email dispatch probe (pinchy-email plugin coverage)", () => {
     await startFakeOllama();
 
     // 2. Swap default_provider to ollama-local and seed ollama_local_url.
-    const dbUrl =
-      process.env.DATABASE_URL || "postgresql://pinchy:pinchy_dev@localhost:5434/pinchy";
+    const dbUrl = process.env.DATABASE_URL || stackDbUrl(5434);
     restoreSettings = await seedDefaultProviderToOllama(dbUrl, FAKE_OLLAMA_PORT);
 
     // 3. Login (API cookie).

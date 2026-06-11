@@ -29,6 +29,7 @@ import {
   waitForOpenClawStable,
   waitForAgentDispatchable,
 } from "../shared/dispatch-probe";
+import { stackDbUrl } from "../shared/stack-db";
 
 test.describe("pinchy-web — Brave Search E2E", () => {
   let cookie: string;
@@ -136,8 +137,7 @@ test.describe("Web dispatch probe (pinchy-web plugin coverage)", () => {
     await new Promise((r) => setTimeout(r, 60_000));
 
     // 3. Swap default_provider to ollama-local and seed ollama_local_url.
-    const dbUrl =
-      process.env.DATABASE_URL || "postgresql://pinchy:pinchy_dev@localhost:5434/pinchy";
+    const dbUrl = process.env.DATABASE_URL || stackDbUrl(5434);
     restoreSettings = await seedDefaultProviderToOllama(dbUrl, FAKE_OLLAMA_PORT);
 
     // 4. Login (API cookie).

@@ -39,8 +39,9 @@ import {
   FAKE_OLLAMA_DEFAULT_COMPLETION_TOKENS,
 } from "../shared/fake-ollama/fake-ollama-server";
 import { login, getSmithersAgentId, waitForOpenClawConnected } from "./helpers";
+import { stackDbUrl } from "../shared/stack-db";
 
-const INTEGRATION_DB_URL = "postgresql://pinchy:pinchy_dev@localhost:5435/pinchy";
+const INTEGRATION_DB_URL = stackDbUrl(5435);
 const PROMPT = FAKE_OLLAMA_DEFAULT_PROMPT_TOKENS; // 42
 const COMPLETION = FAKE_OLLAMA_DEFAULT_COMPLETION_TOKENS; // 17
 
