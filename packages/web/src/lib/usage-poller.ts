@@ -63,6 +63,13 @@ interface SessionListEntry {
   key: string;
   inputTokens?: number;
   outputTokens?: number;
+  // OpenClaw's session store names the cache counters `cacheRead`/`cacheWrite`
+  // (verified live against OC 2026.5.28). The `*Tokens` spellings are kept as
+  // fallback for other OC versions. Reading only the long names left every
+  // usage_record with cache=0 while Anthropic served ~97% of input from the
+  // prompt cache — the dashboard showed "Input: 7" for a ~400k-token day.
+  cacheRead?: number;
+  cacheWrite?: number;
   cacheReadTokens?: number;
   cacheWriteTokens?: number;
   model?: string;
@@ -99,7 +106,13 @@ export async function pollAllSessions(openclawClient: OpenClawClient): Promise<v
     const userIdMap = new Map(allUsers.map((u) => [u.id.toLowerCase(), u.id]));
 
     for (const session of sessions) {
-      const hasTokens = (session.inputTokens ?? 0) > 0 || (session.outputTokens ?? 0) > 0;
+      const cacheReadTokens = session.cacheRead ?? session.cacheReadTokens;
+      const cacheWriteTokens = session.cacheWrite ?? session.cacheWriteTokens;
+      const hasTokens =
+        (session.inputTokens ?? 0) > 0 ||
+        (session.outputTokens ?? 0) > 0 ||
+        (cacheReadTokens ?? 0) > 0 ||
+        (cacheWriteTokens ?? 0) > 0;
       if (!hasTokens) continue;
 
       const parsed = parseSessionKey(session.key);
@@ -120,8 +133,8 @@ export async function pollAllSessions(openclawClient: OpenClawClient): Promise<v
         sessionSnapshot: {
           inputTokens: session.inputTokens,
           outputTokens: session.outputTokens,
-          cacheReadTokens: session.cacheReadTokens,
-          cacheWriteTokens: session.cacheWriteTokens,
+          cacheReadTokens,
+          cacheWriteTokens,
           model: session.model,
         },
       });

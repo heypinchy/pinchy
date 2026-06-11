@@ -19,6 +19,7 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { EnterpriseFeatureCard } from "@/components/enterprise-feature-card";
+import { buildChartData } from "@/lib/usage-chart-data";
 import {
   ResponsiveContainer,
   LineChart,
@@ -300,11 +301,7 @@ export function UsageDashboard({ isEnterprise: initialEnterprise = false }: Usag
   const systemBucket = bucketTotals(summary?.totals?.system);
   const pluginBucket = bucketTotals(summary?.totals?.plugin);
 
-  const chartData = (timeseries?.data ?? []).map((p) => ({
-    date: p.date,
-    inputTokens: Number(p.inputTokens ?? 0),
-    outputTokens: Number(p.outputTokens ?? 0),
-  }));
+  const chartData = buildChartData(timeseries?.data);
 
   const hasData = (summary?.agents?.length ?? 0) > 0;
 
@@ -498,6 +495,15 @@ export function UsageDashboard({ isEnterprise: initialEnterprise = false }: Usag
                     strokeWidth={2}
                     dot={shouldShowDots(chartData.length)}
                     name="Output Tokens"
+                  />
+                  <Line
+                    type="monotone"
+                    dataKey="cachedTokens"
+                    stroke="oklch(0.6 0.12 140)"
+                    strokeWidth={2}
+                    strokeDasharray="4 3"
+                    dot={shouldShowDots(chartData.length)}
+                    name="Cached Input"
                   />
                 </LineChart>
               </ResponsiveContainer>

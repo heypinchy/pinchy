@@ -135,6 +135,77 @@ describe("pollAllSessions", () => {
     expect(mockRecordUsage).not.toHaveBeenCalled();
   });
 
+  it("maps OpenClaw's cacheRead/cacheWrite session fields into the snapshot", async () => {
+    // OpenClaw's session store (verified live on staging, OC 2026.5.28) names
+    // the cache counters `cacheRead` / `cacheWrite` — NOT `cacheReadTokens` /
+    // `cacheWriteTokens`. Reading the wrong names left every usage_record with
+    // cache=0 while Anthropic served ~97% of input from the prompt cache, so
+    // the dashboard showed "Input: 7" for a ~400k-token day.
+    const client = makeOpenClawClient([
+      {
+        key: "agent:agent-1:direct:user-1",
+        inputTokens: 3,
+        outputTokens: 80,
+        cacheRead: 14404,
+        cacheWrite: 21135,
+        model: "claude-sonnet-4-6",
+      },
+    ]);
+
+    await pollAllSessions(client);
+
+    expect(mockRecordUsage).toHaveBeenCalledWith(
+      expect.objectContaining({
+        sessionSnapshot: expect.objectContaining({
+          cacheReadTokens: 14404,
+          cacheWriteTokens: 21135,
+        }),
+      })
+    );
+  });
+
+  it("still accepts the cacheReadTokens/cacheWriteTokens spelling as fallback", async () => {
+    const client = makeOpenClawClient([
+      {
+        key: "agent:agent-1:direct:user-1",
+        inputTokens: 10,
+        outputTokens: 5,
+        cacheReadTokens: 111,
+        cacheWriteTokens: 222,
+        model: "claude-sonnet-4-6",
+      },
+    ]);
+
+    await pollAllSessions(client);
+
+    expect(mockRecordUsage).toHaveBeenCalledWith(
+      expect.objectContaining({
+        sessionSnapshot: expect.objectContaining({
+          cacheReadTokens: 111,
+          cacheWriteTokens: 222,
+        }),
+      })
+    );
+  });
+
+  it("does not skip a session whose only activity is cache traffic", async () => {
+    // Last-turn gauges can show input=0/output=0 while cache counters moved.
+    const client = makeOpenClawClient([
+      {
+        key: "agent:agent-1:direct:user-1",
+        inputTokens: 0,
+        outputTokens: 0,
+        cacheRead: 5000,
+        cacheWrite: 100,
+        model: "claude-sonnet-4-6",
+      },
+    ]);
+
+    await pollAllSessions(client);
+
+    expect(mockRecordUsage).toHaveBeenCalledTimes(1);
+  });
+
   it("calls recordUsage for each session with tokens", async () => {
     mockFrom._agentResult = [
       { id: "agent-1", name: "Smithers" },
