@@ -66,6 +66,13 @@ function sanitizeValue(value: unknown, depth: number): unknown {
     return value.map((item) => sanitizeValue(item, depth + 1));
   }
 
+  // Dates have no own enumerable properties — the generic object branch below
+  // would strip them to {} (which shipped empty timestamps in diagnostics
+  // bundles). Serialize them like JSON.stringify would.
+  if (value instanceof Date) {
+    return value.toISOString();
+  }
+
   if (typeof value === "object") {
     const result: Record<string, unknown> = {};
     for (const [key, val] of Object.entries(value as Record<string, unknown>)) {
