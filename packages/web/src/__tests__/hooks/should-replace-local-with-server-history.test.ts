@@ -23,6 +23,39 @@ function assistant(content: string, opts: { error?: boolean } = {}): WsMessage {
 }
 
 describe("shouldReplaceLocalWithServerHistory", () => {
+  describe("in-flight placeholder transparency", () => {
+    // The send path appends an empty assistant placeholder (the tab-refocus
+    // crash fix). It is a client-only artifact the server never knows about —
+    // the gate must behave EXACTLY as if it weren't there, otherwise the
+    // trailing-assistant rule would fire `true` and bypass the #310
+    // strictly-longer guard.
+    it("ignores a trailing placeholder: acked user + history NOT longer → false", () => {
+      expect(
+        shouldReplaceLocalWithServerHistory([user("hi", "sent"), assistant("")], [user("hi")], true)
+      ).toBe(false);
+    });
+
+    it("ignores a trailing placeholder: acked user + history strictly longer → true (#310)", () => {
+      expect(
+        shouldReplaceLocalWithServerHistory(
+          [user("hi", "sent"), assistant("")],
+          [user("hi"), assistant("the completed reply")],
+          true
+        )
+      ).toBe(true);
+    });
+
+    it("still honors a REAL partial assistant (non-empty) as mid-stream → true", () => {
+      expect(
+        shouldReplaceLocalWithServerHistory(
+          [user("hi", "sent"), assistant("partial text")],
+          [user("hi")],
+          true
+        )
+      ).toBe(true);
+    });
+  });
+
   it("returns false when recovery flag is not set (initial load)", () => {
     expect(
       shouldReplaceLocalWithServerHistory(

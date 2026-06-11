@@ -5,6 +5,10 @@ import { toast } from "sonner";
 import { useRestart } from "@/components/restart-provider";
 import { uuid } from "@/lib/uuid";
 import { dedupeById } from "@/lib/dedupe-by-id";
+import {
+  replaceTrailingPlaceholder,
+  stripTrailingPlaceholder,
+} from "@/hooks/in-flight-placeholder";
 import { mergeOrAppendChunk } from "@/hooks/merge-chunk";
 import { ensureTrailingAssistant } from "@/hooks/ensure-trailing-assistant";
 import { uploadAttachment } from "@/lib/upload-attachment";
@@ -365,13 +369,20 @@ export function shouldReplaceLocalWithServerHistory(
   if (!shouldRecoverFromHistory) return false;
   if (historyMessages.length === 0) return false;
 
-  const lastNonError = [...prevMessages].reverse().find((m) => !m.error);
+  // The in-flight placeholder is a client-only artifact (appended at send time
+  // so the list always ends in an assistant while running — the tab-refocus
+  // crash fix). The server never knows it; the gate must behave exactly as if
+  // it weren't there, or the trailing-assistant rule below would bypass the
+  // #310 strictly-longer guard.
+  const prev = stripTrailingPlaceholder(prevMessages);
+
+  const lastNonError = [...prev].reverse().find((m) => !m.error);
   if (!lastNonError) return true;
 
   if (lastNonError.role === "assistant") return true;
 
   // lastNonError.role === "user"
-  return lastNonError.status === "sent" && historyMessages.length > prevMessages.length;
+  return lastNonError.status === "sent" && historyMessages.length > prev.length;
 }
 
 export function useWsRuntime(agentId: string): {
@@ -699,17 +710,16 @@ export function useWsRuntime(agentId: string): {
         setIsRunning(false);
         setIsDelayed(false);
         setMessages((prev) =>
-          capMessages([
-            ...prev,
-            {
+          capMessages(
+            replaceTrailingPlaceholder(prev, {
               id: uuid(),
               role: "assistant",
               content: "",
               error: { timedOut: true },
               retryable: true,
               retryReason: "partial_stream_failure" as const,
-            },
-          ])
+            })
+          )
         );
       }, STUCK_TIMEOUT_MS);
     }
@@ -794,9 +804,8 @@ export function useWsRuntime(agentId: string): {
           setKnownEmptyHistory(false);
           setPayloadRejected(true);
           setMessages((prev) =>
-            capMessages([
-              ...prev,
-              {
+            capMessages(
+              replaceTrailingPlaceholder(prev, {
                 id: uuid(),
                 role: "assistant",
                 content: "",
@@ -804,8 +813,8 @@ export function useWsRuntime(agentId: string): {
                   payloadTooLarge: true,
                   message: "Message too large to send. Try a shorter message or fewer attachments.",
                 },
-              },
-            ])
+              })
+            )
           );
           return;
         }
@@ -829,17 +838,16 @@ export function useWsRuntime(agentId: string): {
             pendingDisconnectErrorRef.current = null;
             if (!mountedRef.current) return;
             setMessages((prev) =>
-              capMessages([
-                ...prev,
-                {
+              capMessages(
+                replaceTrailingPlaceholder(prev, {
                   id: uuid(),
                   role: "assistant",
                   content: "",
                   error: { disconnected: true },
                   retryable: true,
                   retryReason,
-                },
-              ])
+                })
+              )
             );
           }, DISCONNECT_ERROR_GRACE_MS);
           pendingDisconnectErrorRef.current = { timer, retryReason };
@@ -1259,21 +1267,25 @@ export function useWsRuntime(agentId: string): {
               : { message: data.message || "An unknown error occurred." };
 
           setMessages((prev) =>
-            capMessages([
+            capMessages(
               // Remove any existing error bubble — only one error is ever shown
-              // at a time to avoid stacking after repeated retries.
-              ...prev.filter((m) => !m.error),
-              {
-                id: uuid(),
-                role: "assistant",
-                content: "",
-                error,
-                retryable: true,
-                retryReason: hasReceivedChunkRef.current
-                  ? ("partial_stream_failure" as const)
-                  : ("send_failure" as const),
-              },
-            ])
+              // at a time to avoid stacking after repeated retries. The new
+              // bubble takes a trailing in-flight placeholder's slot so the
+              // isRunning flip below stays count-neutral.
+              replaceTrailingPlaceholder(
+                prev.filter((m) => !m.error),
+                {
+                  id: uuid(),
+                  role: "assistant",
+                  content: "",
+                  error,
+                  retryable: true,
+                  retryReason: hasReceivedChunkRef.current
+                    ? ("partial_stream_failure" as const)
+                    : ("send_failure" as const),
+                }
+              )
+            )
           );
           isRunningRef.current = false;
           setIsRunning(false);
@@ -1432,6 +1444,20 @@ export function useWsRuntime(agentId: string): {
                 mimeType: u.file.type,
               })),
             }),
+          },
+          // In-flight assistant placeholder: keeps the list ending in an
+          // assistant for the whole run, so assistant-ui never injects its
+          // optimistic message — whose removal on ANY isRunning→false flip
+          // shrank the rendered count and crashed the view with
+          // tapClientLookup (v0.5.7 tab-refocus production incident). The
+          // first chunk adopts this message (id + content) via
+          // mergeOrAppendChunk; terminal bubbles replace it via
+          // replaceTrailingPlaceholder.
+          {
+            id: uuid(),
+            role: "assistant",
+            content: "",
+            timestamp: new Date().toISOString(),
           },
         ])
       );

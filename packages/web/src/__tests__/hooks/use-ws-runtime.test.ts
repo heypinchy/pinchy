@@ -1596,11 +1596,14 @@ describe("useWsRuntime", () => {
       );
       expect(messageSends).toHaveLength(0);
 
-      // User message should still appear optimistically in messages
+      // User message should still appear optimistically in messages, followed
+      // by the in-flight assistant placeholder the send path appends (the
+      // tab-refocus crash fix — list always ends in assistant while running).
       const messages = result.current.runtime.messages;
-      expect(messages).toHaveLength(1);
+      expect(messages).toHaveLength(2);
       expect(messages[0].role).toBe("user");
       expect(messages[0].content[0].text).toBe("Hello while connecting");
+      expect(messages[1].role).toBe("assistant");
 
       // Now the connection opens
       ws.readyState = 1;
@@ -4310,13 +4313,15 @@ describe("useWsRuntime", () => {
         });
       });
 
-      // At this point the chunk MUST NOT have been applied — there's no
-      // assistant message with content "25 days vacation." yet.
+      // At this point the chunk MUST NOT have been applied — no assistant
+      // message carries "25 days vacation." yet. (The empty in-flight
+      // placeholder from the send path is allowed to exist; only the chunk
+      // CONTENT must still be absent.)
       const midwayMessages = result.current.runtime.messages;
-      const assistantBefore = (midwayMessages as Array<{ role: string; content: unknown }>).find(
-        (m) => m.role === "assistant"
+      const appliedBefore = (midwayMessages as Array<{ role: string; content: unknown }>).find(
+        (m) => m.role === "assistant" && JSON.stringify(m.content).includes("25 days vacation.")
       );
-      expect(assistantBefore).toBeUndefined();
+      expect(appliedBefore).toBeUndefined();
 
       // Now the history frame arrives with an activeRun signal pinning
       // the in-flight assistant turn to the same messageId the chunk

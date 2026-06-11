@@ -52,4 +52,66 @@ describe("mergeOrAppendChunk", () => {
       { id: "x", role: "assistant", content: "a" },
     ]);
   });
+
+  describe("in-flight placeholder adoption", () => {
+    it("merges the first chunk into a trailing EMPTY assistant placeholder, adopting the chunk's id", () => {
+      // The send path appends an empty in-flight assistant placeholder so the
+      // list always ends in an assistant while isRunning (kills assistant-ui's
+      // optimistic-message count flank). The client can't know the server's
+      // messageId before the first chunk — so the placeholder carries a local
+      // id and the first chunk must MERGE into it (adopting the server id),
+      // not append a second bubble.
+      const messages: Msg[] = [
+        { id: "u1", role: "user", content: "hi" },
+        { id: "local-placeholder", role: "assistant", content: "" },
+      ];
+      const incoming: Msg = { id: "srv-1", role: "assistant", content: "Hel" };
+      expect(mergeOrAppendChunk(messages, incoming)).toEqual([
+        { id: "u1", role: "user", content: "hi" },
+        { id: "srv-1", role: "assistant", content: "Hel" },
+      ]);
+    });
+
+    it("does NOT adopt a trailing empty ERROR bubble (it has content '' too)", () => {
+      const messages: Array<Msg & { error?: unknown }> = [
+        { id: "u1", role: "user", content: "hi" },
+        { id: "err-1", role: "assistant", content: "", error: { disconnected: true } },
+      ];
+      const incoming: Msg = { id: "srv-1", role: "assistant", content: "late chunk" };
+      const out = mergeOrAppendChunk(messages, incoming);
+      expect(out).toHaveLength(3);
+      expect(out[1]).toEqual({
+        id: "err-1",
+        role: "assistant",
+        content: "",
+        error: { disconnected: true },
+      });
+      expect(out[2]).toEqual({ id: "srv-1", role: "assistant", content: "late chunk" });
+    });
+
+    it("does NOT adopt a trailing assistant that already has content (different turn)", () => {
+      const messages: Msg[] = [{ id: "old-reply", role: "assistant", content: "done earlier" }];
+      const incoming: Msg = { id: "srv-2", role: "assistant", content: "new" };
+      expect(mergeOrAppendChunk(messages, incoming)).toEqual([
+        { id: "old-reply", role: "assistant", content: "done earlier" },
+        { id: "srv-2", role: "assistant", content: "new" },
+      ]);
+    });
+
+    it("prefers an exact id match elsewhere over adopting the trailing placeholder", () => {
+      // Resume case: the relabeled in-flight message sits before a trailing
+      // placeholder-like message — id match must win.
+      const messages: Msg[] = [
+        { id: "srv-1", role: "assistant", content: "partial" },
+        { id: "u2", role: "user", content: "follow-up" },
+        { id: "local-placeholder", role: "assistant", content: "" },
+      ];
+      const incoming: Msg = { id: "srv-1", role: "assistant", content: " more" };
+      expect(mergeOrAppendChunk(messages, incoming)).toEqual([
+        { id: "srv-1", role: "assistant", content: "partial more" },
+        { id: "u2", role: "user", content: "follow-up" },
+        { id: "local-placeholder", role: "assistant", content: "" },
+      ]);
+    });
+  });
 });
