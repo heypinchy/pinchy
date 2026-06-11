@@ -149,7 +149,46 @@ If you need to roll back after an upgrade:
   backup step matters.
 </Aside>
 
-## Upgrading from v0.5.6 to %%PINCHY_VERSION%%
+## Upgrading from v0.5.7 to %%PINCHY_VERSION%%
+
+### Breaking changes
+
+**Production now refuses to start on the default database password.** Until now, running without a custom `DB_PASSWORD` only logged a warning. Starting with %%PINCHY_VERSION%%, Pinchy exits at startup instead — the default password is public in our repository, so silently allowing it in production is not protection we can stand behind.
+
+If your `/opt/pinchy/.env` already sets `DB_PASSWORD`, no action is needed. If it doesn't, set one **before** bumping the version pin:
+
+1. Change the password inside PostgreSQL first (the `POSTGRES_PASSWORD` variable only applies on first initialization, so the running database keeps whatever password it was created with):
+
+   ```bash
+   cd /opt/pinchy
+   docker compose exec db psql -U pinchy -c "ALTER USER pinchy WITH PASSWORD 'your-secure-password';"
+   ```
+
+2. Add the same password to `/opt/pinchy/.env`:
+
+   ```bash
+   DB_PASSWORD=your-secure-password
+   ```
+
+3. Continue with the standard upgrade (`docker compose pull && docker compose up -d`).
+
+If Pinchy exits with `FATAL: Refusing to start in production with the default database password`, this is the check doing its job — complete the two steps above and start it again.
+
+### Upgrade notes
+
+With `DB_PASSWORD` in place, the upgrade itself is the standard flow:
+
+```bash
+cd /opt/pinchy
+sed -i 's/PINCHY_VERSION=v0.5.7/PINCHY_VERSION=%%PINCHY_VERSION%%/' .env
+docker compose pull && docker compose up -d && docker image prune -f
+```
+
+#### See where your secrets come from
+
+Settings → Security gains a **Secrets** card showing where each secret comes from — environment variable, persisted file in the Docker volume, or not created yet. The same information is available from the shell via `GET /api/health` (a new `secrets` object with provenance values only — never the secrets themselves). This makes the auto-generated file fallback visible from outside the container, so you can tell "secret loaded from the volume" apart from "no secret at all" before rotating anything.
+
+## Upgrading from v0.5.6 to v0.5.7
 
 ### Breaking changes
 
@@ -157,7 +196,7 @@ If you need to roll back after an upgrade:
 
 ### Upgrade notes
 
-%%PINCHY_VERSION%% is a large release. The headline changes are a new staged file-upload pipeline, capability-aware attachment handling with inline recovery, resumable streaming across reconnects, and a more reliable first chat on freshly-created agents. Everything below is picked up by the standard `docker compose pull && docker compose up -d` flow; three additive database migrations (`0034`–`0036`) run automatically on startup and require no manual steps.
+v0.5.7 is a large release. The headline changes are a new staged file-upload pipeline, capability-aware attachment handling with inline recovery, resumable streaming across reconnects, and a more reliable first chat on freshly-created agents. Everything below is picked up by the standard `docker compose pull && docker compose up -d` flow; three additive database migrations (`0034`–`0036`) run automatically on startup and require no manual steps.
 
 #### Resumable, staged file uploads
 
@@ -180,7 +219,7 @@ Pinchy now knows which capabilities (vision, documents, audio, video, long-conte
 - **Onboarding warning.** The setup wizard warns when no available model satisfies the default agent's required capabilities.
 - **`models` table — zero configuration.** A new `models` table records each model's capabilities. It is seeded from Pinchy's built-in catalog on every boot; for local Ollama, capabilities are detected from the Ollama API when you save the URL. No manual entry is required.
 
-> Earlier docs described this capability handling under the v0.5.4 notes; it actually ships in %%PINCHY_VERSION%%, and the v0.5.4 section has been corrected accordingly.
+> Earlier docs described this capability handling under the v0.5.4 notes; it actually ships in v0.5.7, and the v0.5.4 section has been corrected accordingly.
 
 #### Streaming resume across reconnect
 
@@ -221,7 +260,7 @@ Admins can now generate a downloadable bug-report bundle from **Settings → Sup
 
 #### Setup-wizard secrets fix
 
-%%PINCHY_VERSION%% also fixes the v0.5.6 setup-wizard regression where Smithers replied with `No API key found for provider '<name>'` on the very first chat message after a fresh install. The bug was provider-agnostic: OpenClaw's secrets-provider initialised at gateway boot with a "file missing" state because `secrets.json` was only written after the user completed the wizard. The provider never reinitialised when Pinchy hot-reloaded `openclaw.json` (the secrets-section diff was empty), so the gateway ran the rest of the session with no provider keys until a manual container restart.
+v0.5.7 also fixes the v0.5.6 setup-wizard regression where Smithers replied with `No API key found for provider '<name>'` on the very first chat message after a fresh install. The bug was provider-agnostic: OpenClaw's secrets-provider initialised at gateway boot with a "file missing" state because `secrets.json` was only written after the user completed the wizard. The provider never reinitialised when Pinchy hot-reloaded `openclaw.json` (the secrets-section diff was empty), so the gateway ran the rest of the session with no provider keys until a manual container restart.
 
 The fix is Pinchy-side: an `inotifywait` handler in `start-openclaw.sh` writes a `/openclaw-secrets/.bootstrap-applied` marker on the first appearance of `secrets.json` and SIGTERMs the gateway exactly once so the next boot picks up the file. The health-check loop respawns the gateway within ~10–40 s, and a build-time drift guard in `validateBuiltConfig` rejects emitted configs whose `SecretRef` pointers don't resolve in `secrets.json` — closing the related class of "config references a key that isn't there" bugs that would have produced the same symptom from the Pinchy side.
 
@@ -233,7 +272,7 @@ No manual steps beyond the standard upgrade flow:
 
 ```bash
 cd /opt/pinchy
-sed -i 's/PINCHY_VERSION=v0.5.6/PINCHY_VERSION=%%PINCHY_VERSION%%/' .env
+sed -i 's/PINCHY_VERSION=v0.5.6/PINCHY_VERSION=v0.5.7/' .env
 docker compose pull && docker compose up -d && docker image prune -f
 ```
 

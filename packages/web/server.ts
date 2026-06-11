@@ -40,6 +40,7 @@ import { seedSessionCache } from "./src/server/session-cache-seeder";
 import { readGatewayToken } from "./src/lib/gateway-token-reader";
 import { regenerateOpenClawConfig } from "./src/lib/openclaw-config";
 import { SERVER_WS_MAX_PAYLOAD_BYTES } from "./src/lib/limits";
+import { evaluateDbPasswordPolicy } from "./src/lib/secret-source";
 
 logCapture.install();
 
@@ -71,13 +72,17 @@ async function waitForGatewayToken(maxWaitMs = 30000): Promise<string | null> {
   return null;
 }
 
-if (process.env.NODE_ENV === "production") {
-  const dbUrl = process.env.DATABASE_URL || "";
-  if (dbUrl.includes(":pinchy_dev@")) {
-    console.warn(
-      "WARNING: Using default DB_PASSWORD. Set a secure password via .env for production."
-    );
-  }
+// Issue #156: production must not run on the default database password —
+// fail closed at startup instead of logging a warning nobody reads.
+const dbPasswordPolicy = evaluateDbPasswordPolicy({
+  nodeEnv: process.env.NODE_ENV,
+  databaseUrl: process.env.DATABASE_URL,
+});
+if (dbPasswordPolicy.action === "exit") {
+  console.error(dbPasswordPolicy.message);
+  process.exit(1);
+} else if (dbPasswordPolicy.action === "warn") {
+  console.warn(dbPasswordPolicy.message);
 }
 
 app.prepare().then(async () => {

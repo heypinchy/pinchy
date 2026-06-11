@@ -15,6 +15,7 @@ import { SettingsIntegrations } from "@/components/settings-integrations";
 import { SettingsLicense } from "@/components/settings-license";
 import { TelegramLinkSettings } from "@/components/telegram-link-settings";
 import { SettingsSecurity } from "@/components/settings-security";
+import { SecretsProvenanceCard } from "@/components/secrets-provenance-card";
 import { SettingsSupport } from "@/components/settings-support";
 import type { LicenseInfo } from "@/lib/enterprise";
 
@@ -162,7 +163,10 @@ export function SettingsPageContent({
 
           {isAdmin && (
             <TabsContent value="security">
-              <SettingsSecurity />
+              <div className="space-y-6">
+                <SettingsSecurity />
+                <SecretsProvenanceCard />
+              </div>
             </TabsContent>
           )}
 
