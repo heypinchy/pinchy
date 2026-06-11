@@ -345,8 +345,8 @@ importers:
         specifier: ^29.1.1
         version: 29.1.1(@noble/hashes@2.0.1)
       openclaw:
-        specifier: 2026.6.1
-        version: 2026.6.1
+        specifier: 2026.6.5
+        version: 2026.6.5
       prettier:
         specifier: ^3.8.3
         version: 3.8.3
@@ -5651,8 +5651,8 @@ packages:
     resolution: {integrity: sha512-aOPhmN7OKyut7DVs3/LitA+QU5tAtrEMY3gSQ/uJXpCN3Dy4JYeEkIjyYX0hViCdxsOJ9LWfCjtiaB3kTPCupw==}
     engines: {node: '>=20.0.0'}
 
-  openclaw@2026.6.1:
-    resolution: {integrity: sha512-rGSwhIo8N37cQQ5puG8vmWZESE8q/ych5VFpzOQNcf49TF/rvCYyxiNAyot11qbUZF5wfLh8bsvofapnOEh0BQ==}
+  openclaw@2026.6.5:
+    resolution: {integrity: sha512-sRgF0TexfRcJX8Eg0lcL6Jj0YdZbSxUbbp8EbG+qo3v6TtVayE6tKPEs3oCKD7YfYe2C/8Qg26HUxTnycd44ZQ==}
     engines: {node: '>=22.19.0'}
     hasBin: true
 
@@ -12579,7 +12579,7 @@ snapshots:
       - bufferutil
       - utf-8-validate
 
-  openclaw@2026.6.1:
+  openclaw@2026.6.5:
     dependencies:
       '@agentclientprotocol/sdk': 0.22.1(zod@4.4.3)
       '@anthropic-ai/sdk': 0.100.1(zod@4.4.3)
