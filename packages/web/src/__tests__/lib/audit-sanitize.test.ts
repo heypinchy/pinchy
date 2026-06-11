@@ -2,6 +2,30 @@ import { describe, expect, it } from "vitest";
 import { sanitizeDetail } from "@/lib/audit-sanitize";
 
 describe("sanitizeDetail", () => {
+  describe("Date serialization", () => {
+    it("serializes Date values to ISO strings instead of destroying them", () => {
+      // A Date has no own enumerable properties, so the generic object
+      // recursion turned it into {} — which shipped empty `timestamp: {}`
+      // fields in diagnostics bundles (v0.5.7 staging finding).
+      const ts = new Date("2026-06-09T16:48:57.441Z");
+      const result = sanitizeDetail({ timestamp: ts, note: "ok" });
+      expect(result).toEqual({ timestamp: "2026-06-09T16:48:57.441Z", note: "ok" });
+    });
+
+    it("serializes Dates nested in arrays and objects", () => {
+      const result = sanitizeDetail({
+        entries: [{ at: new Date("2026-01-02T03:04:05.000Z") }],
+      });
+      expect(result).toEqual({ entries: [{ at: "2026-01-02T03:04:05.000Z" }] });
+    });
+
+    it("still redacts a Date stored under a sensitive key", () => {
+      const result = sanitizeDetail({ tokenExpiry: new Date("2026-01-01T00:00:00.000Z") });
+      // Key-based redaction wins over serialization, same as for strings.
+      expect(result).toEqual({ tokenExpiry: "[REDACTED]" });
+    });
+  });
+
   describe("key-name redaction", () => {
     it("redacts values for known sensitive key names", () => {
       const input = {
