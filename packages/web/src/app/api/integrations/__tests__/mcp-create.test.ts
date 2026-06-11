@@ -49,6 +49,15 @@ vi.mock("@/lib/integrations/mcp-client", () => ({
       this.name = "McpSchemaError";
     }
   },
+  // Mirrors the real implementation's name-based mapping so route tests can
+  // assert the wire `code` without importing the server-only SDK module.
+  mcpErrorCodeFromError: (err: unknown) => {
+    const name = err instanceof Error ? err.name : "";
+    if (name === "McpAuthError") return "unauthorized";
+    if (name === "McpServerError") return "server_error";
+    if (name === "McpSchemaError") return "schema";
+    return "network";
+  },
 }));
 
 const mockRegenerateOpenClawConfig = vi.fn().mockResolvedValue(undefined);
@@ -256,6 +265,9 @@ describe("POST /api/integrations (type=mcp)", () => {
     expect(response.status).toBe(502);
     expect(body.error).toBe("MCP discovery failed");
     expect(body.detail).toBeDefined();
+    // The dialog maps this stable code onto a human-friendly message
+    // (mcp-error-messages.ts) instead of showing the raw protocol error.
+    expect(body.code).toBe("unauthorized");
 
     // Must NOT write to DB
     expect(mockInsertValues).not.toHaveBeenCalled();

@@ -429,12 +429,35 @@ describe("AddIntegrationDialog — Test connection", () => {
     });
   });
 
-  it("shows an inline error when the test fails", async () => {
+  // PERSONALITY.md § Error Messages: users picked "GitHub" in the picker —
+  // the raw protocol error ("MCP server returned 401 Unauthorized") is an
+  // implementation detail they should never have to decode.
+  it("translates a rejected token into a human-friendly, provider-named error (named flow)", async () => {
     const user = userEvent.setup();
 
     fetchMock.mockResolvedValueOnce({
       ok: false,
-      json: async () => ({ error: "Cannot connect to MCP server" }),
+      json: async () => ({ error: "MCP server returned 401 Unauthorized", code: "unauthorized" }),
+    } as unknown as Response);
+
+    renderDialog();
+
+    await user.click(screen.getByRole("button", { name: /GitHub/i }));
+    await user.type(screen.getByLabelText(/token/i), "github_pat_expired");
+    await user.click(screen.getByRole("button", { name: /Test connection/i }));
+
+    await waitFor(() => {
+      expect(screen.getByText(/GitHub rejected this token/i)).toBeInTheDocument();
+    });
+    expect(screen.queryByText(/MCP server returned 401/i)).not.toBeInTheDocument();
+  });
+
+  it("keeps the raw error visible as a detail line in the custom flow", async () => {
+    const user = userEvent.setup();
+
+    fetchMock.mockResolvedValueOnce({
+      ok: false,
+      json: async () => ({ error: "MCP server returned 401 Unauthorized", code: "unauthorized" }),
     } as unknown as Response);
 
     renderDialog();
@@ -445,7 +468,34 @@ describe("AddIntegrationDialog — Test connection", () => {
     await user.click(screen.getByRole("button", { name: /Test connection/i }));
 
     await waitFor(() => {
-      expect(screen.getByText(/Cannot connect to MCP server/i)).toBeInTheDocument();
+      expect(screen.getByText(/The server rejected this token/i)).toBeInTheDocument();
     });
+    // Custom-server admins run the server themselves — the raw response is
+    // genuinely useful for debugging, so it stays visible as a detail line.
+    expect(screen.getByText(/MCP server returned 401 Unauthorized/i)).toBeInTheDocument();
+  });
+
+  it("translates connect-submit failures the same way as test failures", async () => {
+    const user = userEvent.setup();
+
+    fetchMock.mockResolvedValueOnce({
+      ok: false,
+      json: async () => ({
+        error: "MCP discovery failed",
+        detail: "MCP server returned 401 Unauthorized",
+        code: "unauthorized",
+      }),
+    } as unknown as Response);
+
+    renderDialog();
+
+    await user.click(screen.getByRole("button", { name: /GitHub/i }));
+    await user.type(screen.getByLabelText(/token/i), "github_pat_expired");
+    await user.click(screen.getByRole("button", { name: /^Connect$/i }));
+
+    await waitFor(() => {
+      expect(screen.getByText(/GitHub rejected this token/i)).toBeInTheDocument();
+    });
+    expect(screen.queryByText(/MCP discovery failed/i)).not.toBeInTheDocument();
   });
 });

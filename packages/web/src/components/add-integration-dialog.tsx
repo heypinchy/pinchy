@@ -42,6 +42,7 @@ import remarkGfm from "remark-gfm";
 import { cn } from "@/lib/utils";
 import { docsUrl } from "./docs-link";
 import { MCP_PRESETS, getMcpPreset } from "@/lib/integrations/mcp-presets";
+import { mcpErrorMessage, type McpErrorDisplay } from "@/lib/integrations/mcp-error-messages";
 import type { McpTool } from "@/lib/integrations/types";
 import { isMcpEnabledClient } from "@/lib/feature-flags";
 import {
@@ -392,7 +393,8 @@ interface McpConnectStepProps {
   connecting: boolean;
   testing: boolean;
   testTools: McpTool[] | null;
-  testError: string | null;
+  testError: McpErrorDisplay | null;
+  submitError: McpErrorDisplay | null;
   onBack: () => void;
   onCancel: () => void;
   onSubmit: (values: McpFormValues) => void;
@@ -406,6 +408,7 @@ function McpConnectStep({
   testing,
   testTools,
   testError,
+  submitError,
   onBack,
   onCancel,
   onSubmit,
@@ -560,8 +563,13 @@ function McpConnectStep({
             />
           )}
 
-          {form.formState.errors.root && (
-            <p className="text-sm text-destructive">{form.formState.errors.root.message}</p>
+          {submitError && (
+            <div className="space-y-0.5">
+              <p className="text-sm text-destructive">{submitError.message}</p>
+              {submitError.detail && (
+                <p className="text-xs text-muted-foreground font-mono">{submitError.detail}</p>
+              )}
+            </div>
           )}
 
           {/* Test connection — always available so the admin can verify the token
@@ -584,7 +592,14 @@ function McpConnectStep({
               )}
             </Button>
 
-            {testError && <p className="text-sm text-destructive">{testError}</p>}
+            {testError && (
+              <div className="space-y-0.5">
+                <p className="text-sm text-destructive">{testError.message}</p>
+                {testError.detail && (
+                  <p className="text-xs text-muted-foreground font-mono">{testError.detail}</p>
+                )}
+              </div>
+            )}
 
             {testTools !== null && (
               <div className="rounded-md border p-3 space-y-1">
@@ -762,7 +777,10 @@ export function AddIntegrationDialog({
   // MCP test connection state
   const [mcpTesting, setMcpTesting] = useState(false);
   const [mcpTestTools, setMcpTestTools] = useState<McpTool[] | null>(null);
-  const [mcpTestError, setMcpTestError] = useState<string | null>(null);
+  const [mcpTestError, setMcpTestError] = useState<McpErrorDisplay | null>(null);
+  // Submit (Connect) failures use the same human-friendly shape as test
+  // failures — one translation path for both (mcp-error-messages.ts).
+  const [mcpSubmitError, setMcpSubmitError] = useState<McpErrorDisplay | null>(null);
 
   function resetAll() {
     setStep(initialType ? "connect" : "type");
@@ -779,6 +797,7 @@ export function AddIntegrationDialog({
     setMcpTesting(false);
     setMcpTestTools(null);
     setMcpTestError(null);
+    setMcpSubmitError(null);
     form.reset();
     webSearchForm.reset();
     mcpForm.reset({
@@ -1065,12 +1084,28 @@ export function AddIntegrationDialog({
       const data = await res.json();
 
       if (!res.ok) {
-        setMcpTestError(data.error || "Connection test failed");
+        const preset = getMcpPreset(values.preset);
+        setMcpTestError(
+          mcpErrorMessage({
+            code: data.code,
+            providerName: preset.displayName,
+            isCustom: values.preset === "generic",
+            rawMessage: data.error,
+          })
+        );
       } else {
         setMcpTestTools(data.tools ?? []);
       }
     } catch {
-      setMcpTestError("Connection test failed");
+      const preset = getMcpPreset(values.preset);
+      // fetch itself failed — Pinchy was unreachable, not the MCP server.
+      setMcpTestError(
+        mcpErrorMessage({
+          code: "network",
+          providerName: preset.displayName,
+          isCustom: values.preset === "generic",
+        })
+      );
     } finally {
       setMcpTesting(false);
     }
@@ -1079,7 +1114,7 @@ export function AddIntegrationDialog({
   // --- MCP: Submit (create integration) ---
 
   async function onMcpConnect(values: McpFormValues) {
-    mcpForm.clearErrors("root");
+    setMcpSubmitError(null);
     setConnecting(true);
 
     const preset = getMcpPreset(values.preset);
@@ -1115,9 +1150,16 @@ export function AddIntegrationDialog({
       const data = await res.json();
 
       if (!res.ok) {
-        mcpForm.setError("root", {
-          message: data.error || data.detail || "Connection failed",
-        });
+        setMcpSubmitError(
+          mcpErrorMessage({
+            code: data.code,
+            providerName: preset.displayName,
+            isCustom: values.preset === "generic",
+            // The create route puts the raw client error in `detail` (its
+            // `error` field is the generic "MCP discovery failed").
+            rawMessage: data.detail || data.error,
+          })
+        );
         setConnecting(false);
         return;
       }
@@ -1126,7 +1168,14 @@ export function AddIntegrationDialog({
       handleClose(false);
       onSuccess();
     } catch {
-      mcpForm.setError("root", { message: "Connection failed" });
+      // fetch itself failed — Pinchy was unreachable, not the MCP server.
+      setMcpSubmitError(
+        mcpErrorMessage({
+          code: "network",
+          providerName: preset.displayName,
+          isCustom: values.preset === "generic",
+        })
+      );
       setConnecting(false);
     }
   }
@@ -1275,6 +1324,7 @@ export function AddIntegrationDialog({
             testing={mcpTesting}
             testTools={mcpTestTools}
             testError={mcpTestError}
+            submitError={mcpSubmitError}
             onBack={handleBack}
             onCancel={() => handleClose(false)}
             onSubmit={onMcpConnect}

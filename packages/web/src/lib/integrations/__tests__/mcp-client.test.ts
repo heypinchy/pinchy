@@ -1,7 +1,13 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import type { McpMockServer } from "@/test-utils/mcp-mock-server";
 import { createMcpMockServer } from "@/test-utils/mcp-mock-server";
-import { listMcpTools, McpAuthError, McpServerError, McpSchemaError } from "../mcp-client";
+import {
+  listMcpTools,
+  mcpErrorCodeFromError,
+  McpAuthError,
+  McpServerError,
+  McpSchemaError,
+} from "../mcp-client";
 
 describe("listMcpTools", () => {
   let mock: McpMockServer;
@@ -89,5 +95,21 @@ describe("listMcpTools", () => {
         )
       ).rejects.toThrow("abort");
     }, 3000); // vitest test timeout: 3s is plenty for a 100ms abort
+  });
+});
+
+describe("mcpErrorCodeFromError", () => {
+  // The API routes ship this code to the browser so the dialog can render a
+  // human-friendly message (mcp-error-messages.ts) instead of leaking the
+  // raw "MCP server returned 401 Unauthorized" protocol error at users.
+  it("maps the typed client errors onto stable wire codes", () => {
+    expect(mcpErrorCodeFromError(new McpAuthError())).toBe("unauthorized");
+    expect(mcpErrorCodeFromError(new McpServerError(503, "boom"))).toBe("server_error");
+    expect(mcpErrorCodeFromError(new McpSchemaError("tool missing name"))).toBe("schema");
+  });
+
+  it("treats everything else (timeouts, DNS, refused) as a network failure", () => {
+    expect(mcpErrorCodeFromError(new Error("This operation was aborted"))).toBe("network");
+    expect(mcpErrorCodeFromError("not even an Error")).toBe("network");
   });
 });

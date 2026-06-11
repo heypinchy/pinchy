@@ -10,7 +10,7 @@ import { odooCredentialsSchema, odooConnectionDataSchema } from "@/lib/integrati
 import { validateExternalUrl } from "@/lib/integrations/url-validation";
 import { maskConnectionCredentials } from "@/lib/integrations/mask-credentials";
 import { parseRequestBody } from "@/lib/api-validation";
-import { listMcpTools } from "@/lib/integrations/mcp-client";
+import { listMcpTools, mcpErrorCodeFromError } from "@/lib/integrations/mcp-client";
 import { regenerateOpenClawConfig } from "@/lib/openclaw-config";
 import { isMcpEnabled } from "@/lib/feature-flags";
 
@@ -134,7 +134,10 @@ export const POST = withAdmin(async (request, _ctx, session) => {
         outcome: "failure",
       });
       return NextResponse.json(
-        { error: "MCP discovery failed", detail: errorMessage },
+        // `code` lets the dialog render a human-friendly, preset-aware
+        // message (mcp-error-messages.ts); `detail` keeps the raw error for
+        // custom-server debugging and the audit trail.
+        { error: "MCP discovery failed", detail: errorMessage, code: mcpErrorCodeFromError(err) },
         { status: 502 }
       );
     }

@@ -3,7 +3,7 @@ import { NextResponse } from "next/server";
 import { z } from "zod";
 import { withAdmin } from "@/lib/api-auth";
 import { parseRequestBody } from "@/lib/api-validation";
-import { listMcpTools } from "@/lib/integrations/mcp-client";
+import { listMcpTools, mcpErrorCodeFromError } from "@/lib/integrations/mcp-client";
 import { isMcpEnabled } from "@/lib/feature-flags";
 
 const testMcpSchema = z.object({
@@ -28,6 +28,9 @@ export const POST = withAdmin(async (request) => {
     return NextResponse.json({ tools });
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
-    return NextResponse.json({ error: message }, { status: 502 });
+    // `code` lets the dialog render a human-friendly, preset-aware message
+    // (mcp-error-messages.ts); the raw `error` string stays available as a
+    // debugging detail for custom MCP servers.
+    return NextResponse.json({ error: message, code: mcpErrorCodeFromError(err) }, { status: 502 });
   }
 });

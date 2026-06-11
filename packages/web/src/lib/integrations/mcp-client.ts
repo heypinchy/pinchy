@@ -19,6 +19,7 @@
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { SSEClientTransport } from "@modelcontextprotocol/sdk/client/sse.js";
 import type { McpTool } from "./types";
+import type { McpErrorCode } from "./mcp-error-messages";
 import { validateExternalUrl } from "./url-validation";
 
 // ---------------------------------------------------------------------------
@@ -49,6 +50,20 @@ export class McpSchemaError extends Error {
     super(message);
     this.name = "McpSchemaError";
   }
+}
+
+/**
+ * Map a caught error onto the stable wire code the API routes ship to the
+ * browser. The dialog renders these via mcp-error-messages.ts — users never
+ * see the raw protocol error unless they run a custom server. Anything that
+ * is not one of our typed errors (DNS failure, refused connection, abort on
+ * timeout) is by definition a network-level failure.
+ */
+export function mcpErrorCodeFromError(err: unknown): McpErrorCode {
+  if (err instanceof McpAuthError) return "unauthorized";
+  if (err instanceof McpServerError) return "server_error";
+  if (err instanceof McpSchemaError) return "schema";
+  return "network";
 }
 
 // ---------------------------------------------------------------------------

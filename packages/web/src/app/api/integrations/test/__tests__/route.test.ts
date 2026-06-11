@@ -42,6 +42,15 @@ vi.mock("@/lib/integrations/mcp-client", () => ({
       this.name = "McpSchemaError";
     }
   },
+  // Mirrors the real implementation's name-based mapping so route tests can
+  // assert the wire `code` without importing the server-only SDK module.
+  mcpErrorCodeFromError: (err: unknown) => {
+    const name = err instanceof Error ? err.name : "";
+    if (name === "McpAuthError") return "unauthorized";
+    if (name === "McpServerError") return "server_error";
+    if (name === "McpSchemaError") return "schema";
+    return "network";
+  },
 }));
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
@@ -150,7 +159,7 @@ describe("POST /api/integrations/test", () => {
     expect(mockListMcpTools).not.toHaveBeenCalled();
   });
 
-  it("returns 502 when listMcpTools throws McpAuthError", async () => {
+  it("returns 502 with code=unauthorized when listMcpTools throws McpAuthError", async () => {
     const { McpAuthError } = await import("@/lib/integrations/mcp-client");
     mockListMcpTools.mockRejectedValueOnce(new McpAuthError());
 
@@ -161,9 +170,12 @@ describe("POST /api/integrations/test", () => {
 
     expect(response.status).toBe(502);
     expect(body.error).toBeDefined();
+    // The dialog maps this stable code onto a human-friendly message
+    // (mcp-error-messages.ts) instead of showing the raw protocol error.
+    expect(body.code).toBe("unauthorized");
   });
 
-  it("returns 502 when listMcpTools throws a generic error", async () => {
+  it("returns 502 with code=network when listMcpTools throws a generic error", async () => {
     mockListMcpTools.mockRejectedValueOnce(new Error("Connection refused"));
 
     const { POST } = await import("@/app/api/integrations/test/route");
@@ -173,5 +185,6 @@ describe("POST /api/integrations/test", () => {
 
     expect(response.status).toBe(502);
     expect(body.error).toBeDefined();
+    expect(body.code).toBe("network");
   });
 });
