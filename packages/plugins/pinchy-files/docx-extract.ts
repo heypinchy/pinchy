@@ -1,10 +1,25 @@
 import mammoth from "mammoth";
 import TurndownService from "turndown";
 import { gfm } from "turndown-plugin-gfm";
+import {
+  assertDocxDecompressedSizeWithinLimit,
+  MAX_DOCX_DECOMPRESSED_BYTES,
+} from "./docx-zip-guard";
 
 export interface DocxExtractionResult {
   text: string;
 }
+
+export interface DocxExtractOptions {
+  /** Cap on the archive's declared decompressed size (issue #424). */
+  maxDecompressedBytes?: number;
+  /** Cap on the extracted Markdown length — second defense layer. */
+  maxTextBytes?: number;
+}
+
+// Aligned with MAX_FILE_SIZE in validate.ts: a .docx may not hand the model
+// more text than the largest plain-text file pinchy_read would serve.
+export const MAX_DOCX_EXTRACTED_TEXT_BYTES = 10 * 1024 * 1024;
 
 const turndown = new TurndownService({
   headingStyle: "atx",
@@ -38,7 +53,10 @@ turndown.addRule("strip-image", {
  * bundle isolation; a shared package would complicate that.
  */
 function normalizeTableHtml(html: string): string {
-  let out = html.replace(/<(td|th)([^>]*)><p>([\s\S]*?)<\/p><\/(td|th)>/g, "<$1$2>$3</$1>");
+  let out = html.replace(
+    /<(td|th)([^>]*)><p>([\s\S]*?)<\/p><\/(td|th)>/g,
+    "<$1$2>$3</$1>",
+  );
 
   // Mammoth emits no <tbody>, so rows sit directly under <table>.
   out = out.replace(/<table>([\s\S]*?)<\/table>/g, (_, inner: string) => {
@@ -46,7 +64,9 @@ function normalizeTableHtml(html: string): string {
     if (!firstRowMatch) return `<table>${inner}</table>`;
     const firstRow = firstRowMatch[1];
     const rest = inner.slice(firstRow.length);
-    const headingRow = firstRow.replace(/<td([^>]*)>/g, "<th$1>").replace(/<\/td>/g, "</th>");
+    const headingRow = firstRow
+      .replace(/<td([^>]*)>/g, "<th$1>")
+      .replace(/<\/td>/g, "</th>");
     return `<table><thead>${headingRow}</thead><tbody>${rest}</tbody></table>`;
   });
 
@@ -66,18 +86,35 @@ function normalizeTableHtml(html: string): string {
  */
 export async function extractDocxText(
   buffer: Buffer,
+  options: DocxExtractOptions = {},
 ): Promise<DocxExtractionResult> {
+  // Issue #424: reject decompression bombs from the central directory's
+  // declared sizes before mammoth inflates anything.
+  assertDocxDecompressedSizeWithinLimit(
+    buffer,
+    options.maxDecompressedBytes ?? MAX_DOCX_DECOMPRESSED_BYTES,
+  );
+
   const { value: rawHtml } = await mammoth.convertToHtml(
     { buffer },
     {
       // Empty src skips mammoth's base64 encoding; the strip-image
       // turndown rule above replaces <img> with [image] downstream.
       convertImage: mammoth.images.imgElement(() =>
-        Promise.resolve({ src: "" })
+        Promise.resolve({ src: "" }),
       ),
-    }
+    },
   );
   const html = normalizeTableHtml(rawHtml);
   const text = turndown.turndown(html);
+
+  // Second defense layer: an archive that lied about its declared sizes
+  // still cannot hand the model an unbounded extraction result.
+  const maxTextBytes = options.maxTextBytes ?? MAX_DOCX_EXTRACTED_TEXT_BYTES;
+  if (Buffer.byteLength(text, "utf-8") > maxTextBytes) {
+    throw new Error(
+      `DOCX extracted text (${Buffer.byteLength(text, "utf-8")} bytes) exceeds the limit (${maxTextBytes} bytes).`,
+    );
+  }
   return { text };
 }

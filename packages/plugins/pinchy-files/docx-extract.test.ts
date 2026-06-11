@@ -49,8 +49,12 @@ describe("extractDocxText", () => {
     const buffer = readFileSync(join(FIXTURES, "simple.docx"));
     const result = await extractDocxText(buffer);
     // Header row + separator row + data row, all pipe-delimited.
-    expect(result.text).toMatch(/\|\s*SKU\s*\|\s*Quantity\s*\|\s*Unit Price\s*\|/);
-    expect(result.text).toMatch(/\|\s*WIDGET-BLUE-01\s*\|\s*20\s*\|\s*EUR 42\.50\s*\|/);
+    expect(result.text).toMatch(
+      /\|\s*SKU\s*\|\s*Quantity\s*\|\s*Unit Price\s*\|/,
+    );
+    expect(result.text).toMatch(
+      /\|\s*WIDGET-BLUE-01\s*\|\s*20\s*\|\s*EUR 42\.50\s*\|/,
+    );
   });
 
   it("replaces embedded images with a textual placeholder, not base64 data URLs", async () => {
@@ -66,5 +70,27 @@ describe("extractDocxText", () => {
     expect(result.text).toContain("[image]");
     expect(result.text).not.toMatch(/!\[[^\]]*\]\(data:image\//);
     expect(result.text).not.toMatch(/<img[^>]/i);
+  });
+
+  // Issue #424: a 50 MB compressed DOCX may decompress to multiple GB (zip
+  // bomb). The declared-size guard must reject it BEFORE mammoth inflates.
+  it("rejects a zip bomb before inflating it", async () => {
+    const buffer = readFileSync(join(FIXTURES, "simple.docx"));
+    await expect(
+      extractDocxText(buffer, { maxDecompressedBytes: 10 }),
+    ).rejects.toThrow(/decompressed size .* exceeds/i);
+  });
+
+  it("caps the extracted text length as a second defense layer", async () => {
+    const buffer = readFileSync(join(FIXTURES, "simple.docx"));
+    await expect(extractDocxText(buffer, { maxTextBytes: 10 })).rejects.toThrow(
+      /extracted text .* exceeds/i,
+    );
+  });
+
+  it("extracts normally with default limits (regression guard)", async () => {
+    const buffer = readFileSync(join(FIXTURES, "simple.docx"));
+    const result = await extractDocxText(buffer);
+    expect(result.text.length).toBeGreaterThan(50);
   });
 });
