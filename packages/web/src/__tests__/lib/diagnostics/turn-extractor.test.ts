@@ -15,6 +15,40 @@ describe("extractTurns", () => {
     expect(turns[0].assistantResponse).toBeDefined();
   });
 
+  it("takes each turn's userMessage timestamp from its paired prompt.submitted event", () => {
+    // Real staging finding (bundle 2026-06-11): every span carried the SAME
+    // startTime because the extractor read the FIRST snapshot message's
+    // timestamp — i.e. the session's first message — for every turn. The
+    // trajectory's prompt.submitted events carry the true per-turn submit
+    // time and pair with model.completed via runId.
+    const events = parseJsonlLines(FIXTURE);
+    const turns = extractTurns(events);
+
+    const expected = [
+      "2026-05-19T12:00:51.761Z",
+      "2026-05-19T12:31:37.955Z",
+      "2026-05-19T12:33:04.267Z",
+      "2026-05-19T12:42:20.201Z",
+      "2026-05-19T13:02:36.041Z",
+    ].map((iso) => Date.parse(iso));
+
+    expect(turns.map((t) => t.userMessage?.timestamp)).toEqual(expected);
+    // And crucially: the timestamps are per-turn distinct, not all identical.
+    expect(new Set(expected).size).toBe(expected.length);
+  });
+
+  it("falls back to the latest preceding prompt.submitted when runIds are absent", () => {
+    const events = [
+      { type: "prompt.submitted", ts: "2026-01-01T10:00:00.000Z" },
+      { type: "model.completed", ts: "2026-01-01T10:00:05.000Z", data: {} },
+      { type: "prompt.submitted", ts: "2026-01-01T11:00:00.000Z" },
+      { type: "model.completed", ts: "2026-01-01T11:00:09.000Z", data: {} },
+    ];
+    const turns = extractTurns(events);
+    expect(turns[0].userMessage?.timestamp).toBe(Date.parse("2026-01-01T10:00:00.000Z"));
+    expect(turns[1].userMessage?.timestamp).toBe(Date.parse("2026-01-01T11:00:00.000Z"));
+  });
+
   it("populates finish_reason, usage, and model on the assistantResponse", () => {
     const events = parseJsonlLines(FIXTURE);
     const turns = extractTurns(events);

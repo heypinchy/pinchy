@@ -117,7 +117,11 @@ function collectToolCalls(snapshot: SnapshotMessage[]): ToolCall[] {
   return calls;
 }
 
-function buildTurn(event: Record<string, unknown>, index: number): Turn {
+function buildTurn(
+  event: Record<string, unknown>,
+  index: number,
+  promptTimestamp: number | undefined
+): Turn {
   const data = asRecord(event.data) ?? {};
   const timestamp = parseTimestamp(event.ts);
   const finalPromptText = asString(data.finalPromptText) ?? "";
@@ -147,20 +151,47 @@ function buildTurn(event: Record<string, unknown>, index: number): Turn {
   if (usage) assistantResponse.usage = usage;
   if (toolCalls.length > 0) assistantResponse.toolCalls = toolCalls;
 
+  // Per-turn submit time comes from the paired prompt.submitted event (see
+  // extractTurns). Fallback: the first snapshot message — which in practice is
+  // the SESSION's first message, so it only approximates the first turn. It
+  // exists for old transcripts without prompt.submitted events.
   const firstSnapshotMessage = snapshot[0];
-  const userMessageTimestamp =
+  const snapshotFallbackTimestamp =
     firstSnapshotMessage?.role === "user" ? asNumber(firstSnapshotMessage.timestamp) : undefined;
 
   return {
     index,
     role: "user",
-    userMessage: { text: finalPromptText, timestamp: userMessageTimestamp },
+    userMessage: { text: finalPromptText, timestamp: promptTimestamp ?? snapshotFallbackTimestamp },
     assistantResponse,
   };
 }
 
 export function extractTurns(events: JsonlEvent[]): Turn[] {
-  return events
-    .filter((event) => event.type === "model.completed")
-    .map((event, index) => buildTurn(event, index));
+  // Pair each model.completed with its prompt.submitted: by runId when both
+  // carry one, otherwise by the latest prompt.submitted seen before it in
+  // event order. The prompt event's `ts` is the turn's true submit time —
+  // reading the first snapshot message instead gave every turn the SESSION
+  // start time (staging finding, 2026-06-11 bundle).
+  const promptTsByRunId = new Map<string, number>();
+  for (const event of events) {
+    if (event.type !== "prompt.submitted") continue;
+    const runId = asString(event.runId);
+    const ts = parseTimestamp(event.ts);
+    if (runId && ts !== undefined) promptTsByRunId.set(runId, ts);
+  }
+
+  const turns: Turn[] = [];
+  let lastPromptTs: number | undefined;
+  for (const event of events) {
+    if (event.type === "prompt.submitted") {
+      lastPromptTs = parseTimestamp(event.ts) ?? lastPromptTs;
+      continue;
+    }
+    if (event.type !== "model.completed") continue;
+    const runId = asString(event.runId);
+    const promptTs = (runId ? promptTsByRunId.get(runId) : undefined) ?? lastPromptTs;
+    turns.push(buildTurn(event, turns.length, promptTs));
+  }
+  return turns;
 }
