@@ -2,7 +2,19 @@ import type { Turn } from "./turn-extractor";
 
 export interface OtelSpan {
   name: string;
+  /**
+   * ISO timestamps from the turn's JSONL events (user message → start, model
+   * completion → end). Optional: older transcripts may lack `ts` fields.
+   * Without these an analyst cannot correlate spans with audit entries or
+   * wall-clock logs.
+   */
+  startTime?: string;
+  endTime?: string;
   attributes: Record<string, unknown>;
+}
+
+function toIso(epochMs: number | undefined): string | undefined {
+  return epochMs === undefined ? undefined : new Date(epochMs).toISOString();
 }
 
 export function buildOtelSpans(turns: Turn[]): OtelSpan[] {
@@ -32,9 +44,13 @@ export function buildOtelSpans(turns: Turn[]): OtelSpan[] {
         result: tc.result,
       }));
     }
+    const startTime = toIso(turn.userMessage?.timestamp);
+    const endTime = toIso(r.timestamp);
     return [
       {
         name: "agent.turn",
+        ...(startTime !== undefined ? { startTime } : {}),
+        ...(endTime !== undefined ? { endTime } : {}),
         attributes: Object.fromEntries(Object.entries(attrs).filter(([, v]) => v !== undefined)),
       },
     ];
