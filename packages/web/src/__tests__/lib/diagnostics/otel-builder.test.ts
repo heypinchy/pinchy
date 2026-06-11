@@ -56,6 +56,21 @@ describe("buildOtelSpans", () => {
     ]);
   });
 
+  it("carries turn timing into the span as ISO startTime/endTime", () => {
+    // Without timestamps an analyst cannot correlate spans with audit entries
+    // or wall-clock logs (v0.5.7 staging finding: spans had no timing at all).
+    const spans = buildOtelSpans([sampleTurn]);
+    expect(spans[0].startTime).toBe(new Date(1716000000000).toISOString()); // userMessage.timestamp
+    expect(spans[0].endTime).toBe(new Date(1716000001000).toISOString()); // assistantResponse.timestamp
+  });
+
+  it("omits startTime/endTime when no timestamps are known", () => {
+    const minimal: Turn = { index: 0, role: "user", assistantResponse: { text: "hi" } };
+    const spans = buildOtelSpans([minimal]);
+    expect(spans[0].startTime).toBeUndefined();
+    expect(spans[0].endTime).toBeUndefined();
+  });
+
   it("skips turns without an assistant response", () => {
     const userOnly: Turn = { index: 0, role: "user", userMessage: { text: "hi" } };
     expect(buildOtelSpans([userOnly])).toHaveLength(0);
