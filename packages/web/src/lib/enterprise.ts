@@ -1,17 +1,22 @@
 import { getSetting } from "@/lib/settings";
 import { validateLicense, type LicenseStatus } from "@/lib/license";
+import { deriveLicenseState, type LicenseState } from "@/lib/license-state";
 
 export type { LicenseStatus, LicenseType } from "@/lib/license";
+export type { LicenseState } from "@/lib/license-state";
 
 export interface LicenseInfo {
   enterprise: boolean;
+  state: LicenseState;
   type: string | null;
   org: string | null;
   expiresAt: string | null;
+  paidUntil: string | null;
   daysRemaining: number | null;
   managedByEnv: boolean;
   maxUsers: number;
   seatsUsed: number;
+  hasGatedConfig: boolean;
 }
 
 // Production public key (ES256 / P-256)
@@ -78,4 +83,15 @@ export function clearLicenseCache(): void {
 export async function isEnterprise(publicKeyPem: string = PRODUCTION_PUBLIC_KEY): Promise<boolean> {
   const status = await getLicenseStatus(publicKeyPem);
   return status.active;
+}
+
+/**
+ * The license state per pricing concept § 6, derived offline from the
+ * (cached) license status and the current clock.
+ */
+export async function getLicenseState(
+  publicKeyPem: string = PRODUCTION_PUBLIC_KEY
+): Promise<LicenseState> {
+  const status = await getLicenseStatus(publicKeyPem);
+  return deriveLicenseState(status, new Date());
 }
