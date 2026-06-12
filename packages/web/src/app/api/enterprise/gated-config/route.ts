@@ -30,8 +30,10 @@ export async function DELETE() {
   }
 
   const removed = await removeGatedConfig();
-  await recalculateTelegramAllowStores();
 
+  // Audit immediately after the mutation, BEFORE any follow-up plumbing —
+  // a telegram-recalc failure must not leave an access-widening action
+  // without a trail.
   const truncated = removed.groups.length > SNAPSHOT_CAP || removed.agents.length > SNAPSHOT_CAP;
   await appendAuditLog({
     actorType: "user",
@@ -46,6 +48,8 @@ export async function DELETE() {
     },
     outcome: "success",
   });
+
+  await recalculateTelegramAllowStores();
 
   return NextResponse.json({
     groupsRemoved: removed.groups.length,

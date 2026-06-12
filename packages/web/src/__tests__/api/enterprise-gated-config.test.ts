@@ -77,6 +77,18 @@ describe("DELETE /api/enterprise/gated-config", () => {
     );
   });
 
+  it("writes the audit entry BEFORE the telegram recalc — a recalc failure must not lose the trail", async () => {
+    vi.mocked(recalculateTelegramAllowStores).mockRejectedValueOnce(new Error("recalc boom"));
+
+    await expect(DELETE()).rejects.toThrow("recalc boom");
+
+    // The mutation happened, so the audit entry must exist even though the
+    // request failed afterwards.
+    expect(appendAuditLog).toHaveBeenCalledWith(
+      expect.objectContaining({ eventType: "config.gated_config_removed", outcome: "success" })
+    );
+  });
+
   it("caps audit list snapshots to keep detail under the size budget", async () => {
     const manyGroups = Array.from({ length: 50 }, (_, i) => ({ id: `g${i}`, name: `Group ${i}` }));
     vi.mocked(removeGatedConfig).mockResolvedValue({ groups: manyGroups, agents: [] });
