@@ -153,36 +153,26 @@ If you need to roll back after an upgrade:
 
 ### Breaking changes
 
-**Production now refuses to start on the default database password.** Until now, running without a custom `DB_PASSWORD` only logged a warning. Starting with %%PINCHY_VERSION%%, Pinchy exits at startup instead — the default password is public in our repository, so silently allowing it in production is not protection we can stand behind.
-
-If your `/opt/pinchy/.env` already sets `DB_PASSWORD`, no action is needed. If it doesn't, set one **before** bumping the version pin:
-
-1. Change the password inside PostgreSQL first (the `POSTGRES_PASSWORD` variable only applies on first initialization, so the running database keeps whatever password it was created with):
-
-   ```bash
-   cd /opt/pinchy
-   docker compose exec db psql -U pinchy -c "ALTER USER pinchy WITH PASSWORD 'your-secure-password';"
-   ```
-
-2. Add the same password to `/opt/pinchy/.env`:
-
-   ```bash
-   DB_PASSWORD=your-secure-password
-   ```
-
-3. Continue with the standard upgrade (`docker compose pull && docker compose up -d`).
-
-If Pinchy exits with `FATAL: Refusing to start in production with the default database password`, this is the check doing its job — complete the two steps above and start it again.
+None.
 
 ### Upgrade notes
 
-With `DB_PASSWORD` in place, the upgrade itself is the standard flow:
+The standard flow applies:
 
 ```bash
 cd /opt/pinchy
 sed -i 's/PINCHY_VERSION=v0.5.7/PINCHY_VERSION=%%PINCHY_VERSION%%/' .env
 docker compose pull && docker compose up -d && docker image prune -f
 ```
+
+#### Automatic migration off the default database password
+
+The default `pinchy_dev` database password is public in our repository, so running on it was never real protection. Starting with %%PINCHY_VERSION%%, installations that never set `DB_PASSWORD` are migrated automatically on their first boot after the upgrade: Pinchy generates a strong password, persists it in the `pinchy-secrets` Docker volume (the same place the encryption key already lives), and applies it to PostgreSQL — no action required, no downtime beyond the normal upgrade restart.
+
+- **If you set `DB_PASSWORD` in `.env`:** nothing changes. Your value always wins — and if you ever set it without updating PostgreSQL itself, Pinchy now applies it for you on the next boot instead of failing to connect.
+- **If you never set `DB_PASSWORD`:** the migration runs once, invisibly. Settings → Security shows the database password as _Auto-generated (Docker volume)_, and `GET /api/health` reports `"db_password": "generated"`.
+- **Backups keep working:** the documented `docker compose exec db pg_dump …` flow authenticates over the container's local socket and does not need the password.
+- **Heads-up for direct TCP access:** if you connect to the database from the host with the old default password (custom scripts, DB GUIs), switch them to the managed credential or pin your own `DB_PASSWORD` in `.env` — Pinchy will apply it on the next restart.
 
 #### See where your secrets come from
 

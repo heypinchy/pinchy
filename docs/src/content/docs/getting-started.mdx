@@ -19,16 +19,13 @@ mkdir -p pinchy && cd pinchy
 curl -fsSL https://raw.githubusercontent.com/heypinchy/pinchy/%%PINCHY_VERSION%%/docker-compose.yml -o docker-compose.yml
 ```
 
-## 2. Pin the version and a database password
+## 2. Pin the version
 
 ```bash
-{
-  echo "PINCHY_VERSION=%%PINCHY_VERSION%%"
-  echo "DB_PASSWORD=$(openssl rand -hex 16)"
-} > .env
+echo "PINCHY_VERSION=%%PINCHY_VERSION%%" > .env
 ```
 
-The Compose file refuses to start without a pinned `PINCHY_VERSION`, and Pinchy refuses to run on the built-in database password — both checks exist so the stack you start today is still the one you expect after the next upgrade. The generated password stays on your machine; PostgreSQL is initialized with it on first start.
+The Compose file refuses to start without a pinned version, so the stack you start today is still the one you expect after the next upgrade. Everything else is zero-config: all secrets — including the database password — are generated on first start and persisted in Docker volumes. Prefer managing the database password yourself? Add `DB_PASSWORD=…` to the same `.env`; your value always wins.
 
 ## 3. Start the stack
 

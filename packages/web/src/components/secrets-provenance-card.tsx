@@ -8,9 +8,9 @@ import { KeyRound, TriangleAlert } from "lucide-react";
 // here because the server lib must not be bundled into a client component.
 interface SecretsInfo {
   encryption_key: "envvar" | "file" | "unset";
-  auth_secret: "envvar" | "unset";
+  auth_secret: "envvar" | "file" | "unset";
   audit_hmac_secret: "envvar" | "file" | "unset";
-  db_password: "custom" | "default";
+  db_password: "custom" | "default" | "generated";
 }
 
 const SOURCE_LABELS: Record<string, string> = {
@@ -73,7 +73,7 @@ export function SecretsProvenanceCard() {
         <SecretRow name="Encryption key" label={SOURCE_LABELS[secrets.encryption_key]} />
         <SecretRow
           name="Auth secret"
-          label={secrets.auth_secret === "envvar" ? SOURCE_LABELS.envvar : "Not set"}
+          label={secrets.auth_secret === "unset" ? "Not set" : SOURCE_LABELS[secrets.auth_secret]}
         />
         <SecretRow name="Audit signing secret" label={SOURCE_LABELS[secrets.audit_hmac_secret]} />
         <div className="flex items-center justify-between gap-4 text-sm">
@@ -84,7 +84,11 @@ export function SecretsProvenanceCard() {
               Default password — set DB_PASSWORD in your .env
             </span>
           ) : (
-            <span className="text-muted-foreground">Custom password</span>
+            <span className="text-muted-foreground">
+              {secrets.db_password === "generated"
+                ? "Auto-generated (Docker volume)"
+                : "Custom password"}
+            </span>
           )}
         </div>
       </CardContent>

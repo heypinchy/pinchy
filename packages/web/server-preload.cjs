@@ -13,10 +13,14 @@ if (!process.env.BETTER_AUTH_SECRET) {
   try {
     if (existsSync(secretPath)) {
       process.env.BETTER_AUTH_SECRET = readFileSync(secretPath, "utf-8").trim();
+      // Provenance marker for /api/health & Settings -> Security (#156):
+      // the env var now holds a file-backed value, not an operator-set one.
+      process.env.PINCHY_AUTH_SECRET_SOURCE = "file";
     } else if (existsSync(secretsDir)) {
       const secret = randomBytes(32).toString("hex");
       writeFileSync(secretPath, secret, { mode: 0o600 });
       process.env.BETTER_AUTH_SECRET = secret;
+      process.env.PINCHY_AUTH_SECRET_SOURCE = "file";
       console.log("Generated BETTER_AUTH_SECRET (persisted to secrets volume)");
     }
   } catch {

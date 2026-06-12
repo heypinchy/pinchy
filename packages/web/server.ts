@@ -72,16 +72,15 @@ async function waitForGatewayToken(maxWaitMs = 30000): Promise<string | null> {
   return null;
 }
 
-// Issue #156: production must not run on the default database password —
-// fail closed at startup instead of logging a warning nobody reads.
+// Issue #156: the entrypoint auto-migrates installs off the default database
+// password before this process starts. Still seeing the default here means
+// that migration failed or was skipped — warn loudly (never exit; see
+// evaluateDbPasswordPolicy for the rationale).
 const dbPasswordPolicy = evaluateDbPasswordPolicy({
   nodeEnv: process.env.NODE_ENV,
   databaseUrl: process.env.DATABASE_URL,
 });
-if (dbPasswordPolicy.action === "exit") {
-  console.error(dbPasswordPolicy.message);
-  process.exit(1);
-} else if (dbPasswordPolicy.action === "warn") {
+if (dbPasswordPolicy.action === "warn") {
   console.warn(dbPasswordPolicy.message);
 }
 

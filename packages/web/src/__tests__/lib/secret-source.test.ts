@@ -19,7 +19,7 @@ vi.mock("fs", async (importOriginal) => {
   };
 });
 
-import { existsSync } from "fs";
+import { existsSync, readFileSync } from "fs";
 import { getSecretSource } from "@/lib/encryption";
 import {
   getAuthSecretSource,
@@ -29,6 +29,7 @@ import {
 } from "@/lib/secret-source";
 
 const mockedExistsSync = vi.mocked(existsSync);
+const mockedReadFileSync = vi.mocked(readFileSync);
 const VALID_KEY = "a".repeat(64);
 
 describe("getSecretSource", () => {
@@ -77,6 +78,14 @@ describe("getAuthSecretSource", () => {
     expect(getAuthSecretSource()).toBe("envvar");
   });
 
+  it("returns 'file' when the preload loaded the secret from the secrets volume", () => {
+    // server-preload.cjs copies the file-backed secret into the env and marks
+    // the provenance — without the marker we could not tell the sources apart.
+    vi.stubEnv("BETTER_AUTH_SECRET", "loaded-from-file");
+    vi.stubEnv("PINCHY_AUTH_SECRET_SOURCE", "file");
+    expect(getAuthSecretSource()).toBe("file");
+  });
+
   it("returns 'unset' when BETTER_AUTH_SECRET is empty or whitespace", () => {
     vi.stubEnv("BETTER_AUTH_SECRET", "");
     expect(getAuthSecretSource()).toBe("unset");
@@ -86,12 +95,31 @@ describe("getAuthSecretSource", () => {
 });
 
 describe("getDbPasswordSource", () => {
+  beforeEach(() => {
+    mockedExistsSync.mockReturnValue(false);
+  });
+
   it("returns 'default' when the URL carries the default dev password", () => {
     expect(getDbPasswordSource("postgresql://pinchy:pinchy_dev@db:5432/pinchy")).toBe("default");
   });
 
   it("returns 'custom' for any other password", () => {
     expect(getDbPasswordSource("postgresql://pinchy:s3cure-pw@db:5432/pinchy")).toBe("custom");
+  });
+
+  it("returns 'generated' when the URL password matches the persisted .db_password file", () => {
+    const generated = "c".repeat(64);
+    mockedExistsSync.mockImplementation((p) => String(p).endsWith(".db_password"));
+    mockedReadFileSync.mockReturnValue(`${generated}\n`);
+    expect(getDbPasswordSource(`postgresql://pinchy:${generated}@db:5432/pinchy`)).toBe(
+      "generated"
+    );
+  });
+
+  it("returns 'custom' when the URL password differs from the persisted file", () => {
+    mockedExistsSync.mockImplementation((p) => String(p).endsWith(".db_password"));
+    mockedReadFileSync.mockReturnValue(`${"c".repeat(64)}\n`);
+    expect(getDbPasswordSource("postgresql://pinchy:operator-pw@db:5432/pinchy")).toBe("custom");
   });
 });
 
@@ -121,16 +149,25 @@ describe("evaluateDbPasswordPolicy", () => {
   const DEFAULT_URL = "postgresql://pinchy:pinchy_dev@db:5432/pinchy";
   const CUSTOM_URL = "postgresql://pinchy:s3cure-pw@db:5432/pinchy";
 
-  it("demands exit in production with the default password", () => {
+  beforeEach(() => {
+    mockedExistsSync.mockReturnValue(false);
+  });
+
+  // Deliberately warn-only: the entrypoint's auto-migration (issue #156,
+  // scripts/resolve-db-password.mjs) moves installs off the default password
+  // automatically. Reaching the server with the default URL means that
+  // migration failed or was skipped — warn loudly, never refuse to start.
+  it("warns loudly in production when the default password survived boot resolution", () => {
     const result = evaluateDbPasswordPolicy({
       nodeEnv: "production",
       databaseUrl: DEFAULT_URL,
     });
-    expect(result.action).toBe("exit");
+    expect(result.action).toBe("warn");
     expect(result.message).toMatch(/DB_PASSWORD/);
+    expect(result.message).toMatch(/migration/i);
   });
 
-  it("only warns outside production with the default password", () => {
+  it("warns outside production with the default password", () => {
     const result = evaluateDbPasswordPolicy({
       nodeEnv: "development",
       databaseUrl: DEFAULT_URL,
@@ -145,6 +182,18 @@ describe("evaluateDbPasswordPolicy", () => {
     ).toBe("none");
     expect(
       evaluateDbPasswordPolicy({ nodeEnv: "development", databaseUrl: CUSTOM_URL }).action
+    ).toBe("none");
+  });
+
+  it("is silent with an auto-generated password", () => {
+    const generated = "c".repeat(64);
+    mockedExistsSync.mockImplementation((p) => String(p).endsWith(".db_password"));
+    mockedReadFileSync.mockReturnValue(generated);
+    expect(
+      evaluateDbPasswordPolicy({
+        nodeEnv: "production",
+        databaseUrl: `postgresql://pinchy:${generated}@db:5432/pinchy`,
+      }).action
     ).toBe("none");
   });
 });

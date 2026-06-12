@@ -30,6 +30,7 @@ The simplest way to run Pinchy. One command starts the full stack.
 ```bash
 mkdir -p pinchy && cd pinchy
 curl -fsSL https://raw.githubusercontent.com/heypinchy/pinchy/%%PINCHY_VERSION%%/docker-compose.yml -o docker-compose.yml
+echo "PINCHY_VERSION=%%PINCHY_VERSION%%" > .env
 docker compose pull && docker compose up -d
 ```
 
@@ -47,14 +48,14 @@ Only port **7777** is exposed to the host. OpenClaw and PostgreSQL are only reac
 
 ### Environment variables
 
-Almost no configuration is needed to get started: session key, encryption key, and HMAC signing key are auto-generated on first start and persisted in Docker volumes so they survive restarts. The two values you do set yourself are `PINCHY_VERSION` (the Compose file refuses to start without a pinned version) and `DB_PASSWORD` (Pinchy refuses to run on the built-in default — it's public in this repository). The [Getting Started](/getting-started/) guide generates both in one step.
+Almost no configuration is needed to get started: session key, encryption key, HMAC signing key, and the database password are auto-generated on first start and persisted in Docker volumes so they survive restarts. The one value you set yourself is `PINCHY_VERSION` — the Compose file refuses to start without a pinned version. See the [Getting Started](/getting-started/) guide.
 
 #### Optional: production hardening
 
-For production deployments, extend the `.env` file to pin the remaining secrets instead of relying on auto-generated ones:
+For production deployments, extend the `.env` file to pin your own secrets instead of relying on auto-generated ones:
 
 ```bash
-# Database password (required — Pinchy won't start in production on the default)
+# Database password (auto-generated and applied on first start if omitted)
 DB_PASSWORD=your-secure-password
 
 # Better Auth session secret (auto-generated if omitted)
@@ -70,7 +71,7 @@ AUDIT_HMAC_SECRET=
 PINCHY_ENTERPRISE_KEY=
 ```
 
-**`DB_PASSWORD`** — Password for the PostgreSQL `pinchy` user. Required in production: the default `pinchy_dev` value is public in this repository, so Pinchy exits at startup instead of running with it. Set it before the database is created for the first time (PostgreSQL only applies it on first initialization).
+**`DB_PASSWORD`** — Password for the PostgreSQL `pinchy` user. If omitted, Pinchy generates one on the first production start, persists it in the `pinchy-secrets` volume, and applies it to PostgreSQL automatically (the public `pinchy_dev` default never stays active). Set it explicitly if you want to manage the credential yourself — Pinchy applies your value on the next restart, even if the database still runs on an older one.
 
 **`BETTER_AUTH_SECRET`** — Used by Better Auth for session security. Auto-generated and persisted in the `pinchy-secrets` volume if omitted. For production, set explicitly with `openssl rand -hex 32`.
 

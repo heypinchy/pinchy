@@ -43,6 +43,25 @@ describe("SecretsProvenanceCard", () => {
     expect(screen.getByText(/custom password/i)).toBeInTheDocument();
   });
 
+  it("labels an auto-generated database password calmly", async () => {
+    fetchSpy.mockResolvedValue(
+      healthResponse({
+        encryption_key: "file",
+        auth_secret: "file",
+        audit_hmac_secret: "file",
+        db_password: "generated",
+      })
+    );
+
+    render(<SecretsProvenanceCard />);
+
+    await waitFor(() => {
+      expect(screen.getByText(/auto-generated/i)).toBeInTheDocument();
+    });
+    // An auto-generated password is a managed, healthy state — no warning.
+    expect(screen.queryByText(/default password/i)).not.toBeInTheDocument();
+  });
+
   it("flags the default database password", async () => {
     fetchSpy.mockResolvedValue(
       healthResponse({
