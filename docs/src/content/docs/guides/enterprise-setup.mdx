@@ -9,12 +9,10 @@ Pinchy Enterprise unlocks features like [Groups](/concepts/groups/), agent acces
 
 ## Getting a license key
 
-Contact us to get a license key:
+- **Trial key** — 30 days, all Pro features, no credit card. Start at [heypinchy.com/pricing](https://heypinchy.com/pricing#trial); the key arrives by email.
+- **Paid key (Pinchy Pro)** — Annual license, renewable. Buy at [heypinchy.com/pricing](https://heypinchy.com/pricing). Need more seats than the published plan? Email [sales@heypinchy.com](mailto:sales@heypinchy.com) for a quote you can accept online.
 
-- **Trial key** — 14 days, all enterprise features. [Book a call](https://calendly.com/clemenshelm/pinchy-demo) or email [hey@clemenshelm.com](mailto:hey@clemenshelm.com).
-- **Paid key** — Annual license, renewable. Same contact.
-
-No credit card required for trials. No per-agent or per-message fees.
+No per-agent or per-message fees. Activation works fully offline — your instance never contacts us.
 
 ## Activating your key
 
@@ -63,29 +61,29 @@ The enterprise features (Groups tab, agent access control) should now be availab
 
 ## Seat cap enforcement
 
-Enterprise license tokens include a `maxUsers` field that limits how many seats your organisation can use. A seat counts as either an **active user** or a **valid pending invitation** — both consume a seat.
+License tokens include a `maxUsers` field that limits how many seats your organisation can use. A seat counts as either an **active user** or a **valid pending invitation** — both consume a seat.
 
-### What "at cap" means
+### Soft cap with a grace window
 
-When `seatsUsed >= maxUsers`:
+The seat cap is a soft cap. Invites keep working up to **120 % of your licensed seats** (`floor(1.2 × maxUsers)` — 12 seats on a 10-seat license), so a new hire never waits on procurement:
 
-- The **Invite User** button in **Settings → Users** is disabled and a banner explains why.
-- The **Settings → License** page shows the current seat count next to the cap (`7 / 10 seats used`).
-- Attempting to create an invite via the API returns `403 Forbidden` with `{ "error": "Seat limit reached" }`.
-- **No existing users are locked out.** Pinchy never deactivates an account to enforce a cap. Only new invitations are blocked.
+- **Up to 100 %** — everything works normally. The user list shows a permanent counter (`7 of 10 seats used`).
+- **100–120 % (grace)** — invites still work. Admins see a factual notice in the invite flow and a dismissible banner pointing at the quote path. Nothing turns red, nothing is blocked.
+- **Beyond 120 %** — new invites are paused. The API returns `403 Forbidden` with `{ "error": "Seat limit reached", "graceCap": 12 }`, and the UI offers to email [sales@heypinchy.com](mailto:sales@heypinchy.com) for a quote.
+- **No existing users are locked out.** Pinchy never deactivates an account to enforce a cap. Only new invitations pause.
 
 ### Freeing up a seat
 
-To invite someone new when you are at cap, you can:
+To invite someone new when invites are paused, you can:
 
 1. **Revoke a pending invitation** — if an invite was sent but not yet claimed, revoking it frees the seat immediately.
 2. **Deactivate an existing user** — deactivated users no longer count toward the seat total.
 
-Both actions take effect immediately — the invite button re-enables without a page reload.
+Both actions take effect immediately.
 
 ### Trials and unlimited licenses
 
-A `maxUsers` value of **0** means unlimited seats. Trial keys issued by Pinchy carry `maxUsers: 0`, so seat enforcement does not apply during a trial. Paid keys include the seat count negotiated with your order.
+A `maxUsers` value of **0** means unlimited seats. Trial keys include up to 50 seats — enough to evaluate Groups and access control with a realistic team. Paid keys include the seat count of your order.
 
 <Aside type="note">
   The seat count shown in **Settings → License** includes both active users and
@@ -93,20 +91,26 @@ A `maxUsers` value of **0** means unlimited seats. Trial keys issued by Pinchy c
   unclaimed invites in **Settings → Users**.
 </Aside>
 
-## What happens when a key expires
+## What happens when a license expires
 
-Pinchy degrades gracefully. Nothing breaks:
+Pinchy fails closed: **an expired license never silently widens access.** Your access restrictions exist to protect you — they don't disappear because a renewal slipped.
 
-- Agents with **Restricted** visibility fall back to **All users** — everyone can access them.
-- Group assignments stay in the database but are not enforced.
-- The audit trail continues to work.
-- All data, agents, and configuration remain intact.
+Paid keys carry a paid-until date plus a **30-day grace window** (the key stays fully valid during grace). After the grace window:
 
-Renew your key and permissions are restored instantly.
+- **Existing restrictions stay enforced.** Agents with **Restricted** visibility stay restricted; group-based access keeps working exactly as configured.
+- **Management locks.** Creating or editing groups, adding users to groups, changing agent visibility, analytics, and CSV export pause until a new key is entered.
+- **Restriction-tightening operations always work**, even without a license: removing a user from a group and deactivating a user. An admin must be able to revoke a leaving contractor's access at any time — a license that blocked that would itself be the security risk.
+- **Nothing is lost.** All data, agents, groups, and configuration stay intact. Enter a new key and everything reactivates instantly.
+
+### Returning to community semantics
+
+If you decide not to renew, you don't have to keep the restrictions: **Settings → License** offers **Remove all license-gated configuration**. It deletes all groups and makes restricted agents visible to all users — an explicit, audited admin action, never something an expiry does on its own.
 
 <Aside type="note">
-  Admins see a warning banner when the key is close to expiring: 30 days before
-  for paid keys, 7 days for trial keys.
+  Admins see a factual banner during the lifecycle: trial keys show the
+  remaining days throughout the trial, paid keys show a renewal reminder from 14
+  days before the paid period ends, and expired keys state that restrictions
+  remain enforced. All banners are dismissible per session.
 </Aside>
 
 ## Enterprise features
