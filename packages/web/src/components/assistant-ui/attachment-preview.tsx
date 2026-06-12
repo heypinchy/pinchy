@@ -62,15 +62,6 @@ function useUploadReadiness(url: string | null): ProbeState {
   return state;
 }
 
-export type ModelCapabilities = {
-  vision: boolean;
-  documents: boolean;
-  audio: boolean;
-  video: boolean;
-  longContext: boolean;
-  tools: boolean;
-};
-
 /**
  * URL the browser fetches the uploaded file from. Filename is encoded so
  * spaces / parentheses / unicode all survive — the route handler decodes it

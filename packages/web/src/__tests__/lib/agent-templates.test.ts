@@ -958,8 +958,8 @@ describe("knowledge-base template capabilities", () => {
     expect(AGENT_TEMPLATES["knowledge-base"].modelHint?.capabilities).toContain("vision");
   });
 
-  it("knowledge-base template declares documents capability", () => {
-    expect(AGENT_TEMPLATES["knowledge-base"].modelHint?.capabilities).toContain("documents");
+  it("knowledge-base template does not require the removed documents capability", () => {
+    expect(AGENT_TEMPLATES["knowledge-base"].modelHint?.capabilities).not.toContain("documents");
   });
 });
 

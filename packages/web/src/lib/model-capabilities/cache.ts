@@ -14,9 +14,6 @@ export async function loadModelCapabilityCache(): Promise<void> {
   for (const r of rows) {
     next.set(`${r.provider}/${r.modelId}`, {
       vision: r.vision ?? false,
-      documents: r.documents ?? false,
-      audio: r.audio ?? false,
-      video: r.video ?? false,
       longContext: r.longContext ?? false,
       tools: r.tools ?? false,
     });
@@ -61,12 +58,6 @@ export function modelHasCapability(qualifiedModelId: string, cap: ModelCapabilit
   switch (cap) {
     case "vision":
       return caps.vision;
-    case "documents":
-      return caps.documents;
-    case "audio":
-      return caps.audio;
-    case "video":
-      return caps.video;
     case "long-context":
       return caps.longContext;
     case "tools":

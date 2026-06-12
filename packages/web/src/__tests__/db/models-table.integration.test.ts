@@ -9,18 +9,12 @@ it("inserts and retrieves a model row with all capability fields", async () => {
     modelId: "claude-test",
     displayName: "Claude Test",
     vision: true,
-    documents: true,
-    audio: false,
-    video: false,
     longContext: true,
     tools: true,
     source: "builtin",
   });
   const [row] = await db.select().from(models).where(eq(models.modelId, "claude-test"));
   expect(row.vision).toBe(true);
-  expect(row.documents).toBe(true);
-  expect(row.audio).toBe(false);
-  expect(row.video).toBe(false);
   expect(row.longContext).toBe(true);
   expect(row.tools).toBe(true);
   expect(row.source).toBe("builtin");

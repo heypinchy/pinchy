@@ -4,9 +4,6 @@ import type { ModelCapabilities } from "@/lib/model-capabilities/types";
 
 const caps = (over: Partial<ModelCapabilities> = {}): ModelCapabilities => ({
   vision: false,
-  documents: false,
-  audio: false,
-  video: false,
   longContext: false,
   tools: false,
   ...over,
@@ -22,7 +19,7 @@ describe("attachCapabilities", () => {
       },
     ];
     const map = {
-      "anthropic/claude-opus-4-7": caps({ vision: true, documents: true, tools: true }),
+      "anthropic/claude-opus-4-7": caps({ vision: true, tools: true }),
     };
 
     const out = attachCapabilities(providers, map);
@@ -31,7 +28,7 @@ describe("attachCapabilities", () => {
       id: "anthropic/claude-opus-4-7",
       name: "Claude Opus 4.7",
       compatible: true,
-      capabilities: caps({ vision: true, documents: true, tools: true }),
+      capabilities: caps({ vision: true, tools: true }),
     });
   });
 

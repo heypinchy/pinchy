@@ -20,9 +20,6 @@ it("returns capabilities for a known model after load", async () => {
   const caps = getModelCapabilities("anthropic/claude-opus-4-7");
   expect(caps).toEqual({
     vision: true,
-    documents: true,
-    audio: false,
-    video: false,
     longContext: true,
     tools: true,
   });

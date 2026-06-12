@@ -182,7 +182,7 @@ describe("AssistantMessage — UnsupportedAttachmentError routing", () => {
     expect(screen.queryByRole("alert")).toBeNull();
   });
 
-  it("calls setRecoveryState when providerError contains document inputs message", async () => {
+  it("renders a generic error bubble for document-input provider errors — Pinchy never sends native document inputs, so no recovery flow applies", async () => {
     mockGetAgent.mockReturnValue({ model: "openai/gpt-4o-mini", name: "Smithers" });
     mockUseMessage.mockReturnValue({
       providerError: "this model does not accept document inputs",
@@ -194,10 +194,8 @@ describe("AssistantMessage — UnsupportedAttachmentError routing", () => {
 
     await act(async () => {});
 
-    expect(setRecovery).toHaveBeenCalledWith({
-      files: [],
-      model: "openai/gpt-4o-mini",
-    });
+    expect(setRecovery).not.toHaveBeenCalled();
+    expect(screen.getByRole("alert")).toBeInTheDocument();
   });
 
   it("renders generic error bubble for unrelated provider errors", async () => {

@@ -267,6 +267,13 @@
       "when": 1780926550100,
       "tag": "0037_repair_uploaded_files",
       "breakpoints": true
+    },
+    {
+      "idx": 38,
+      "version": "7",
+      "when": 1781252434491,
+      "tag": "0038_drop_dead_capability_columns",
+      "breakpoints": true
     }
   ]
 }

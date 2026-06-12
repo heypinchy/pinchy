@@ -68,7 +68,7 @@ ${ODOO_RULES}`,
     modelHint: {
       tier: "reasoning",
       taskType: "reasoning",
-      capabilities: ["vision", "documents", "tools"],
+      capabilities: ["vision", "tools"],
     },
   }),
   "odoo-inventory-scout": createOdooTemplate({
@@ -124,7 +124,7 @@ ${ODOO_RULES}`,
       { model: "stock.warehouse", operations: ["read"] },
       { model: "stock.location", operations: ["read"] },
     ],
-    modelHint: { tier: "fast", capabilities: ["vision", "documents", "tools"] },
+    modelHint: { tier: "fast", capabilities: ["vision", "tools"] },
   }),
   "odoo-warehouse-operator": createOdooTemplate({
     iconName: "PackageOpen",
@@ -218,7 +218,7 @@ ${ODOO_ATTACHMENT_REF_FLOW}`,
       { model: "mail.activity", operations: ["read", "create", "write"] },
       { model: "ir.attachment", operations: ["read", "create"] },
     ],
-    modelHint: { tier: "balanced", capabilities: ["vision", "long-context", "documents", "tools"] },
+    modelHint: { tier: "balanced", capabilities: ["vision", "long-context", "tools"] },
   }),
   "odoo-finance-controller": createOdooTemplate({
     iconName: "Calculator",
@@ -273,7 +273,7 @@ ${ODOO_MULTI_COMPANY_GUIDANCE}`,
     modelHint: {
       tier: "reasoning",
       taskType: "reasoning",
-      capabilities: ["vision", "documents", "tools"],
+      capabilities: ["vision", "tools"],
     },
   }),
   "odoo-bookkeeper": createOdooTemplate({
@@ -413,7 +413,7 @@ ${ODOO_ATTACHMENT_REF_FLOW}`,
     ],
     modelHint: {
       tier: "reasoning",
-      capabilities: ["vision", "long-context", "documents", "tools"],
+      capabilities: ["vision", "long-context", "tools"],
     },
   }),
   "odoo-crm-assistant": createOdooTemplate({
@@ -487,7 +487,7 @@ ${ODOO_RULES}
       { model: "mail.message", operations: ["read", "create"] },
       { model: "mail.activity", operations: ["read", "create", "write"] },
     ],
-    modelHint: { tier: "balanced", capabilities: ["vision", "long-context", "documents", "tools"] },
+    modelHint: { tier: "balanced", capabilities: ["vision", "long-context", "tools"] },
   }),
   "odoo-procurement-agent": createOdooTemplate({
     iconName: "ShoppingCart",
@@ -544,7 +544,7 @@ ${ODOO_RULES}
       { model: "account.tax", operations: ["read"] },
       { model: "res.currency", operations: ["read"] },
     ],
-    modelHint: { tier: "balanced", capabilities: ["vision", "long-context", "documents", "tools"] },
+    modelHint: { tier: "balanced", capabilities: ["vision", "long-context", "tools"] },
   }),
   "odoo-customer-service": createOdooTemplate({
     iconName: "Headset",
@@ -615,7 +615,7 @@ ${ODOO_RULES}
       { model: "res.partner", operations: ["read"] },
       { model: "mail.message", operations: ["read", "create"] },
     ],
-    modelHint: { tier: "balanced", capabilities: ["vision", "long-context", "documents", "tools"] },
+    modelHint: { tier: "balanced", capabilities: ["vision", "long-context", "tools"] },
   }),
   "odoo-hr-analyst": createOdooTemplate({
     iconName: "UserCog",
@@ -675,7 +675,7 @@ ${ODOO_RULES}
     modelHint: {
       tier: "reasoning",
       taskType: "reasoning",
-      capabilities: ["vision", "documents", "tools"],
+      capabilities: ["vision", "tools"],
     },
   }),
   "odoo-hr-operator": createOdooTemplate({
@@ -771,7 +771,7 @@ ${ODOO_ATTACHMENT_REF_FLOW}`,
       { model: "mail.message", operations: ["read", "create"] },
       { model: "ir.attachment", operations: ["read", "create"] },
     ],
-    modelHint: { tier: "balanced", capabilities: ["vision", "long-context", "documents", "tools"] },
+    modelHint: { tier: "balanced", capabilities: ["vision", "long-context", "tools"] },
   }),
   "odoo-project-tracker": createOdooTemplate({
     iconName: "FolderKanban",
@@ -824,7 +824,7 @@ ${ODOO_RULES}
       { model: "account.analytic.line", operations: ["read"] },
       { model: "hr.employee", operations: ["read"] },
     ],
-    modelHint: { tier: "fast", capabilities: ["vision", "documents", "tools"] },
+    modelHint: { tier: "fast", capabilities: ["vision", "tools"] },
   }),
   "odoo-project-manager": createOdooTemplate({
     iconName: "ClipboardList",
@@ -919,7 +919,7 @@ ${ODOO_ATTACHMENT_REF_FLOW}`,
       { model: "mail.message", operations: ["read", "create"] },
       { model: "ir.attachment", operations: ["read", "create"] },
     ],
-    modelHint: { tier: "balanced", capabilities: ["vision", "long-context", "documents", "tools"] },
+    modelHint: { tier: "balanced", capabilities: ["vision", "long-context", "tools"] },
   }),
   "odoo-manufacturing-planner": createOdooTemplate({
     iconName: "Factory",
@@ -976,7 +976,7 @@ ${ODOO_RULES}
       { model: "stock.move", operations: ["read"] },
       { model: "stock.quant", operations: ["read"] },
     ],
-    modelHint: { tier: "balanced", capabilities: ["vision", "documents", "tools"] },
+    modelHint: { tier: "balanced", capabilities: ["vision", "tools"] },
   }),
   "odoo-production-operator": createOdooTemplate({
     iconName: "Wrench",
@@ -1081,7 +1081,7 @@ ${ODOO_ATTACHMENT_REF_FLOW}`,
       { model: "mail.activity", operations: ["read", "create", "write"] },
       { model: "ir.attachment", operations: ["read", "create"] },
     ],
-    modelHint: { tier: "balanced", capabilities: ["vision", "long-context", "documents", "tools"] },
+    modelHint: { tier: "balanced", capabilities: ["vision", "long-context", "tools"] },
   }),
   "odoo-recruitment-coordinator": createOdooTemplate({
     iconName: "UserSearch",
@@ -1140,7 +1140,7 @@ ${ODOO_RULES}
       { model: "mail.activity", operations: ["read", "create", "write"] },
       { model: "mail.message", operations: ["read", "create"] },
     ],
-    modelHint: { tier: "balanced", capabilities: ["vision", "long-context", "documents", "tools"] },
+    modelHint: { tier: "balanced", capabilities: ["vision", "long-context", "tools"] },
   }),
   "odoo-subscription-manager": createOdooTemplate({
     iconName: "Repeat",
@@ -1193,7 +1193,7 @@ ${ODOO_RULES}
       { model: "account.move", operations: ["read"] },
       { model: "res.partner", operations: ["read"] },
     ],
-    modelHint: { tier: "balanced", capabilities: ["vision", "documents", "tools"] },
+    modelHint: { tier: "balanced", capabilities: ["vision", "tools"] },
   }),
   "odoo-pos-analyst": createOdooTemplate({
     iconName: "Store",
@@ -1246,7 +1246,7 @@ ${ODOO_RULES}
       { model: "pos.payment", operations: ["read"] },
       { model: "pos.payment.method", operations: ["read"] },
     ],
-    modelHint: { tier: "fast", capabilities: ["vision", "documents", "tools"] },
+    modelHint: { tier: "fast", capabilities: ["vision", "tools"] },
   }),
   "odoo-marketing-analyst": createOdooTemplate({
     iconName: "Megaphone",
@@ -1304,7 +1304,7 @@ ${ODOO_RULES}
     modelHint: {
       tier: "reasoning",
       taskType: "reasoning",
-      capabilities: ["vision", "documents", "tools"],
+      capabilities: ["vision", "tools"],
     },
   }),
   "odoo-expense-auditor": createOdooTemplate({
@@ -1363,7 +1363,7 @@ ${ODOO_RULES}
     modelHint: {
       tier: "reasoning",
       taskType: "reasoning",
-      capabilities: ["vision", "documents", "tools"],
+      capabilities: ["vision", "tools"],
     },
   }),
   "odoo-approval-manager": createOdooTemplate({
@@ -1481,7 +1481,7 @@ ${ODOO_ATTACHMENT_REF_FLOW}`,
     modelHint: {
       tier: "reasoning",
       taskType: "reasoning",
-      capabilities: ["vision", "long-context", "documents", "tools"],
+      capabilities: ["vision", "long-context", "tools"],
     },
   }),
   "odoo-fleet-manager": createOdooTemplate({
@@ -1533,7 +1533,7 @@ ${ODOO_RULES}
       { model: "fleet.vehicle.log.contract", operations: ["read"] },
       { model: "fleet.service.type", operations: ["read"] },
     ],
-    modelHint: { tier: "fast", capabilities: ["vision", "documents", "tools"] },
+    modelHint: { tier: "fast", capabilities: ["vision", "tools"] },
   }),
   "odoo-website-analyst": createOdooTemplate({
     iconName: "Globe",
@@ -1591,6 +1591,6 @@ ${ODOO_RULES}
       { model: "product.template", operations: ["read"] },
       { model: "website", operations: ["read"] },
     ],
-    modelHint: { tier: "balanced", capabilities: ["vision", "documents", "tools"] },
+    modelHint: { tier: "balanced", capabilities: ["vision", "tools"] },
   }),
 };

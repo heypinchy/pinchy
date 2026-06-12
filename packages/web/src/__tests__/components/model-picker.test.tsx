@@ -32,7 +32,7 @@ describe("ModelPicker", () => {
           {
             id: "anthropic/claude-opus-4-7",
             name: "Claude Opus 4.7",
-            capabilities: { vision: true, documents: true, audio: false, video: false },
+            capabilities: { vision: true, longContext: false, tools: true },
           },
         ],
       },
@@ -42,7 +42,9 @@ describe("ModelPicker", () => {
     await userEvent.click(screen.getByRole("combobox"));
 
     expect(screen.getByLabelText("Supports image input")).toBeInTheDocument();
-    expect(screen.getByLabelText("Supports document input")).toBeInTheDocument();
+    // documents/audio/video badges were removed with the dead capabilities —
+    // they showed wrong information (PDFs work via the pdf tool regardless).
+    expect(screen.queryByLabelText("Supports document input")).not.toBeInTheDocument();
     expect(screen.queryByLabelText("Supports audio input")).not.toBeInTheDocument();
   });
 
@@ -55,7 +57,7 @@ describe("ModelPicker", () => {
           {
             id: "ollama-cloud/deepseek-v4-pro",
             name: "DeepSeek V4 Pro",
-            capabilities: { vision: false, documents: false, audio: false, video: false },
+            capabilities: { vision: false, longContext: false, tools: true },
           },
         ],
       },
@@ -102,12 +104,12 @@ describe("ModelPicker", () => {
           {
             id: "ollama-cloud/deepseek-v4-pro",
             name: "DeepSeek V4 Pro",
-            capabilities: { vision: false, documents: false, audio: false, video: false },
+            capabilities: { vision: false, longContext: false, tools: true },
           },
           {
             id: "anthropic/claude-opus-4-7",
             name: "Claude Opus 4.7",
-            capabilities: { vision: true, documents: true, audio: false, video: false },
+            capabilities: { vision: true, longContext: false, tools: true },
           },
         ],
       },

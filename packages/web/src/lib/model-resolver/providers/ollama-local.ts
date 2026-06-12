@@ -10,10 +10,7 @@ function hasCapability(model: OllamaLocalModelInfo, cap: ModelCapability): boole
   if (cap === "vision") return model.capabilities.vision;
   if (cap === "tools") return model.capabilities.tools;
   // long-context: heuristic by family (Ollama metadata doesn't expose this)
-  if (cap === "long-context") {
-    return /qwen|llama-?[3-9]|gemma-?[3-9]|mistral/i.test(model.name);
-  }
-  return false;
+  return /qwen|llama-?[3-9]|gemma-?[3-9]|mistral/i.test(model.name);
 }
 
 function tierOf(model: OllamaLocalModelInfo): "fast" | "balanced" | "reasoning" {

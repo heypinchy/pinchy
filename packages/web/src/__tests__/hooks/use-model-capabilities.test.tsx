@@ -5,9 +5,6 @@ import { useModelCapabilities, _resetModuleCacheForTest } from "@/hooks/use-mode
 const MOCK_CAPABILITIES = {
   "anthropic/claude-opus-4-7": {
     vision: true,
-    documents: true,
-    audio: false,
-    video: false,
     longContext: true,
     tools: true,
   },

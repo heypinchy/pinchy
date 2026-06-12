@@ -203,9 +203,6 @@ describe("AttachmentPreview — amber capability warning", () => {
       data: {
         [TEXT_ONLY_MODEL]: {
           vision: false,
-          documents: false,
-          audio: false,
-          video: false,
           longContext: false,
           tools: true,
         },
@@ -227,9 +224,6 @@ describe("AttachmentPreview — amber capability warning", () => {
       data: {
         [TEXT_ONLY_MODEL]: {
           vision: false,
-          documents: false,
-          audio: false,
-          video: false,
           longContext: false,
           tools: true,
         },
@@ -253,9 +247,6 @@ describe("AttachmentPreview — amber capability warning", () => {
       data: {
         [VISION_MODEL]: {
           vision: true,
-          documents: true,
-          audio: false,
-          video: false,
           longContext: false,
           tools: true,
         },
@@ -293,9 +284,6 @@ describe("AttachmentPreview — amber capability warning", () => {
       data: {
         [TEXT_ONLY_MODEL]: {
           vision: false,
-          documents: false,
-          audio: false,
-          video: false,
           longContext: false,
           tools: true,
         },

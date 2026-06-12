@@ -1,6 +1,6 @@
 "use client";
 
-import { Image, FileText, AudioLines, Video, AlertTriangle } from "lucide-react";
+import { Image, AlertTriangle } from "lucide-react";
 import {
   Select,
   SelectContent,
@@ -12,13 +12,7 @@ import {
 } from "@/components/ui/select";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import type { ModelCapability } from "@/lib/model-resolver/types";
-
-type ModelCapabilities = {
-  vision: boolean;
-  documents: boolean;
-  audio: boolean;
-  video: boolean;
-};
+import type { ModelCapabilities } from "@/lib/model-capabilities/types";
 
 type ModelEntry = {
   id: string;
@@ -43,15 +37,12 @@ type ModelPickerProps = {
   filterToCompatible?: boolean;
 };
 
-const CAPABILITY_ICONS = [
-  { key: "vision" as const, Icon: Image, label: "Supports image input" },
-  { key: "documents" as const, Icon: FileText, label: "Supports document input" },
-  { key: "audio" as const, Icon: AudioLines, label: "Supports audio input" },
-  { key: "video" as const, Icon: Video, label: "Supports video input" },
-];
+const CAPABILITY_ICONS = [{ key: "vision" as const, Icon: Image, label: "Supports image input" }];
 
-type CheckableCapability = keyof ModelCapabilities;
-const CHECKABLE_CAPABILITIES = new Set<string>(["vision", "documents", "audio", "video"]);
+// Only capabilities that map to a boolean on ModelCapabilities can be
+// checked per-model; long-context/tools are picker-irrelevant traits here.
+type CheckableCapability = "vision";
+const CHECKABLE_CAPABILITIES = new Set<string>(["vision"]);
 
 function CapabilityBadges({ caps }: { caps: ModelCapabilities }) {
   return (

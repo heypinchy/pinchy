@@ -1107,7 +1107,7 @@ export async function regenerateOpenClawConfig() {
         baseUrl,
         models: getModelCatalogForProvider(providerName).map(
           // eslint-disable-next-line @typescript-eslint/no-unused-vars
-          ({ vision: _v, documents: _d, audio: _a, video: _vi, ...ocFields }) => ocFields
+          ({ vision: _v, ...ocFields }) => ocFields
         ),
       };
     }

@@ -10,9 +10,6 @@ export const GET = withAuth(async () => {
     string,
     {
       vision: boolean;
-      documents: boolean;
-      audio: boolean;
-      video: boolean;
       longContext: boolean;
       tools: boolean;
     }
@@ -20,9 +17,6 @@ export const GET = withAuth(async () => {
   for (const r of rows) {
     out[`${r.provider}/${r.modelId}`] = {
       vision: r.vision ?? false,
-      documents: r.documents ?? false,
-      audio: r.audio ?? false,
-      video: r.video ?? false,
       longContext: r.longContext ?? false,
       tools: r.tools ?? false,
     };

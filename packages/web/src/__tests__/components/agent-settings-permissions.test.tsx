@@ -38,8 +38,6 @@ vi.mock("@/hooks/use-model-capabilities", () => ({
           return {
             vision: isVision,
             documents: isVision,
-            audio: false,
-            video: false,
             longContext: isVision,
             tools: true,
           };

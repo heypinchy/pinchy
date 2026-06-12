@@ -57,12 +57,15 @@ describe("Ollama Cloud model catalog — empirically verified capabilities", () 
     expect(TOOL_CAPABLE_OLLAMA_CLOUD_MODEL_IDS).not.toContain("qwen3-next:80b");
   });
 
-  it("every model declares all capability fields", () => {
+  it("every model declares vision and carries no dead capability fields", () => {
     for (const m of TOOL_CAPABLE_OLLAMA_CLOUD_MODELS) {
       expect(typeof m.vision).toBe("boolean");
-      expect(m.documents).toBe(false);
-      expect(m.audio).toBe(false);
-      expect(m.video).toBe(false);
+      // documents/audio/video were deleted — PDFs route via the pdf tool and
+      // audio/video are not uploadable. Pin the deletion so the dead fields
+      // don't creep back in.
+      expect("documents" in m).toBe(false);
+      expect("audio" in m).toBe(false);
+      expect("video" in m).toBe(false);
     }
   });
 });

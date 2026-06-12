@@ -21,9 +21,6 @@ vi.mock("@/db", () => ({
           provider: "anthropic",
           modelId: "claude-opus-4-7",
           vision: true,
-          documents: true,
-          audio: false,
-          video: false,
           longContext: true,
           tools: true,
         },
@@ -46,9 +43,6 @@ it("returns capability map keyed by qualified model id", async () => {
   const json = await res.json();
   expect(json["anthropic/claude-opus-4-7"]).toEqual({
     vision: true,
-    documents: true,
-    audio: false,
-    video: false,
     longContext: true,
     tools: true,
   });

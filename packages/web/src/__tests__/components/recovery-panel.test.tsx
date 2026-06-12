@@ -21,9 +21,6 @@ const baseProps = {
           name: "Claude Opus 4.7",
           capabilities: {
             vision: true,
-            documents: true,
-            audio: false,
-            video: false,
           } as ModelCapabilities,
         },
       ],

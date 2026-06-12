@@ -14,12 +14,6 @@ export function capabilityField(caps: ModelCapabilities, cap: ModelCapability): 
   switch (cap) {
     case "vision":
       return caps.vision;
-    case "documents":
-      return caps.documents;
-    case "audio":
-      return caps.audio;
-    case "video":
-      return caps.video;
     case "long-context":
       return caps.longContext;
     case "tools":

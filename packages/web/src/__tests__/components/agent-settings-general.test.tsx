@@ -354,9 +354,6 @@ describe("AgentSettingsGeneral", () => {
   describe("capability icons in the model dropdown", () => {
     const allCaps = {
       vision: true,
-      documents: true,
-      audio: false,
-      video: false,
       longContext: true,
       tools: true,
     };
@@ -366,7 +363,7 @@ describe("AgentSettingsGeneral", () => {
         data: {
           "anthropic/claude-sonnet-4-6": allCaps,
           "anthropic/claude-opus-4-20250514": allCaps,
-          "openai/gpt-5.4": { ...allCaps, vision: false, documents: false },
+          "openai/gpt-5.4": { ...allCaps, vision: false },
         },
         isLoading: false,
         error: undefined,
@@ -386,9 +383,10 @@ describe("AgentSettingsGeneral", () => {
       await userEvent.click(screen.getByRole("combobox"));
 
       // The two vision+document Anthropic models render the vision and document
-      // icons; the text-only GPT model does not add a vision icon.
+      // icons; the text-only GPT model does not add a vision icon. Document
+      // badges were removed with the dead documents capability.
       expect(screen.getAllByLabelText("Supports image input").length).toBeGreaterThan(0);
-      expect(screen.getAllByLabelText("Supports document input").length).toBeGreaterThan(0);
+      expect(screen.queryByLabelText("Supports document input")).not.toBeInTheDocument();
     });
   });
 

@@ -11,8 +11,13 @@ describe("agent template capability audit", () => {
     it(`${id} declares vision capability`, () => {
       expect(t.modelHint?.capabilities).toContain("vision");
     });
-    it(`${id} declares documents capability`, () => {
-      expect(t.modelHint?.capabilities).toContain("documents");
+    it(`${id} does not declare removed capabilities (documents/audio/video)`, () => {
+      // PDFs route via OpenClaw's pdf tool — requiring "documents" made
+      // templates uninstantiable on stacks whose models can't take native
+      // PDF input even though PDFs work fine there.
+      expect(t.modelHint?.capabilities ?? []).not.toContain("documents");
+      expect(t.modelHint?.capabilities ?? []).not.toContain("audio");
+      expect(t.modelHint?.capabilities ?? []).not.toContain("video");
     });
   }
 });

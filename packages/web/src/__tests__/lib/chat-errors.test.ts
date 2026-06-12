@@ -8,10 +8,8 @@ describe("parseUnsupportedAttachmentError", () => {
     });
   });
 
-  it("detects documents error", () => {
-    expect(parseUnsupportedAttachmentError("model does not accept document inputs")).toEqual({
-      capability: "documents",
-    });
+  it("returns null for document-input errors — Pinchy never sends native document inputs to a provider", () => {
+    expect(parseUnsupportedAttachmentError("model does not accept document inputs")).toBeNull();
   });
 
   it("returns null for unknown errors", () => {

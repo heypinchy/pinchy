@@ -36,12 +36,6 @@ export interface OllamaCloudModel {
   reasoning: boolean;
   /** True when the library page lists "Image" in the input types (vision). */
   vision: boolean;
-  /** True when the model accepts PDF/document input. No Ollama Cloud model currently does. */
-  documents: boolean;
-  /** True when the model accepts audio input. No Ollama Cloud model currently does. */
-  audio: boolean;
-  /** True when the model accepts video input. No Ollama Cloud model currently does. */
-  video: boolean;
 }
 
 const ZERO_COST = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } as const;
@@ -56,9 +50,6 @@ export const TOOL_CAPABLE_OLLAMA_CLOUD_MODELS = [
     maxTokens: 8192,
     reasoning: true,
     vision: false,
-    documents: false,
-    audio: false,
-    video: false,
   },
   {
     id: "deepseek-v3.2",
@@ -66,9 +57,6 @@ export const TOOL_CAPABLE_OLLAMA_CLOUD_MODELS = [
     maxTokens: 8192,
     reasoning: true,
     vision: false,
-    documents: false,
-    audio: false,
-    video: false,
   },
   {
     id: "deepseek-v4-flash",
@@ -76,9 +64,6 @@ export const TOOL_CAPABLE_OLLAMA_CLOUD_MODELS = [
     maxTokens: 8192,
     reasoning: true,
     vision: false,
-    documents: false,
-    audio: false,
-    video: false,
   },
   {
     id: "deepseek-v4-pro",
@@ -86,9 +71,6 @@ export const TOOL_CAPABLE_OLLAMA_CLOUD_MODELS = [
     maxTokens: 8192,
     reasoning: true,
     vision: false,
-    documents: false,
-    audio: false,
-    video: false,
   },
   {
     id: "devstral-2:123b",
@@ -96,9 +78,6 @@ export const TOOL_CAPABLE_OLLAMA_CLOUD_MODELS = [
     maxTokens: 8192,
     reasoning: false,
     vision: false,
-    documents: false,
-    audio: false,
-    video: false,
   },
   {
     // ollama.com/library/devstral-small-2 lists "Text, Image" in the input
@@ -113,9 +92,6 @@ export const TOOL_CAPABLE_OLLAMA_CLOUD_MODELS = [
     maxTokens: 8192,
     reasoning: false,
     vision: false,
-    documents: false,
-    audio: false,
-    video: false,
   },
   {
     id: "gemini-3-flash-preview",
@@ -123,9 +99,6 @@ export const TOOL_CAPABLE_OLLAMA_CLOUD_MODELS = [
     maxTokens: 65536,
     reasoning: true,
     vision: true,
-    documents: false,
-    audio: false,
-    video: false,
   },
   {
     id: "gemma4:31b",
@@ -133,9 +106,6 @@ export const TOOL_CAPABLE_OLLAMA_CLOUD_MODELS = [
     maxTokens: 8192,
     reasoning: true,
     vision: true,
-    documents: false,
-    audio: false,
-    video: false,
   },
   {
     id: "glm-4.6",
@@ -143,9 +113,6 @@ export const TOOL_CAPABLE_OLLAMA_CLOUD_MODELS = [
     maxTokens: 8192,
     reasoning: true,
     vision: false,
-    documents: false,
-    audio: false,
-    video: false,
   },
   {
     id: "glm-4.7",
@@ -153,9 +120,6 @@ export const TOOL_CAPABLE_OLLAMA_CLOUD_MODELS = [
     maxTokens: 8192,
     reasoning: true,
     vision: false,
-    documents: false,
-    audio: false,
-    video: false,
   },
   {
     id: "glm-5",
@@ -163,9 +127,6 @@ export const TOOL_CAPABLE_OLLAMA_CLOUD_MODELS = [
     maxTokens: 8192,
     reasoning: true,
     vision: false,
-    documents: false,
-    audio: false,
-    video: false,
   },
   {
     id: "glm-5.1",
@@ -173,9 +134,6 @@ export const TOOL_CAPABLE_OLLAMA_CLOUD_MODELS = [
     maxTokens: 8192,
     reasoning: true,
     vision: false,
-    documents: false,
-    audio: false,
-    video: false,
   },
   {
     id: "gpt-oss:20b",
@@ -183,9 +141,6 @@ export const TOOL_CAPABLE_OLLAMA_CLOUD_MODELS = [
     maxTokens: 8192,
     reasoning: true,
     vision: false,
-    documents: false,
-    audio: false,
-    video: false,
   },
   {
     id: "gpt-oss:120b",
@@ -193,9 +148,6 @@ export const TOOL_CAPABLE_OLLAMA_CLOUD_MODELS = [
     maxTokens: 8192,
     reasoning: true,
     vision: false,
-    documents: false,
-    audio: false,
-    video: false,
   },
   {
     id: "kimi-k2.5",
@@ -203,9 +155,6 @@ export const TOOL_CAPABLE_OLLAMA_CLOUD_MODELS = [
     maxTokens: 8192,
     reasoning: true,
     vision: true,
-    documents: false,
-    audio: false,
-    video: false,
   },
   {
     id: "kimi-k2.6",
@@ -213,9 +162,6 @@ export const TOOL_CAPABLE_OLLAMA_CLOUD_MODELS = [
     maxTokens: 8192,
     reasoning: true,
     vision: true,
-    documents: false,
-    audio: false,
-    video: false,
   },
   {
     id: "minimax-m2",
@@ -223,9 +169,6 @@ export const TOOL_CAPABLE_OLLAMA_CLOUD_MODELS = [
     maxTokens: 8192,
     reasoning: true,
     vision: false,
-    documents: false,
-    audio: false,
-    video: false,
   },
   {
     id: "minimax-m2.1",
@@ -233,9 +176,6 @@ export const TOOL_CAPABLE_OLLAMA_CLOUD_MODELS = [
     maxTokens: 8192,
     reasoning: false,
     vision: false,
-    documents: false,
-    audio: false,
-    video: false,
   },
   {
     id: "minimax-m2.5",
@@ -243,9 +183,6 @@ export const TOOL_CAPABLE_OLLAMA_CLOUD_MODELS = [
     maxTokens: 8192,
     reasoning: true,
     vision: false,
-    documents: false,
-    audio: false,
-    video: false,
   },
   {
     id: "minimax-m2.7",
@@ -253,9 +190,6 @@ export const TOOL_CAPABLE_OLLAMA_CLOUD_MODELS = [
     maxTokens: 8192,
     reasoning: true,
     vision: false,
-    documents: false,
-    audio: false,
-    video: false,
   },
   {
     // ollama.com/library/minimax-m3 tags: "vision tools thinking cloud",
@@ -270,9 +204,6 @@ export const TOOL_CAPABLE_OLLAMA_CLOUD_MODELS = [
     maxTokens: 8192,
     reasoning: true,
     vision: true,
-    documents: false,
-    audio: false,
-    video: false,
   },
   {
     id: "ministral-3:3b",
@@ -280,9 +211,6 @@ export const TOOL_CAPABLE_OLLAMA_CLOUD_MODELS = [
     maxTokens: 8192,
     reasoning: false,
     vision: true,
-    documents: false,
-    audio: false,
-    video: false,
   },
   {
     id: "ministral-3:8b",
@@ -290,9 +218,6 @@ export const TOOL_CAPABLE_OLLAMA_CLOUD_MODELS = [
     maxTokens: 8192,
     reasoning: false,
     vision: true,
-    documents: false,
-    audio: false,
-    video: false,
   },
   {
     id: "ministral-3:14b",
@@ -300,9 +225,6 @@ export const TOOL_CAPABLE_OLLAMA_CLOUD_MODELS = [
     maxTokens: 8192,
     reasoning: false,
     vision: true,
-    documents: false,
-    audio: false,
-    video: false,
   },
   {
     id: "mistral-large-3:675b",
@@ -310,9 +232,6 @@ export const TOOL_CAPABLE_OLLAMA_CLOUD_MODELS = [
     maxTokens: 8192,
     reasoning: false,
     vision: true,
-    documents: false,
-    audio: false,
-    video: false,
   },
   {
     id: "nemotron-3-nano:30b",
@@ -320,9 +239,6 @@ export const TOOL_CAPABLE_OLLAMA_CLOUD_MODELS = [
     maxTokens: 8192,
     reasoning: true,
     vision: false,
-    documents: false,
-    audio: false,
-    video: false,
   },
   {
     id: "nemotron-3-super",
@@ -330,9 +246,6 @@ export const TOOL_CAPABLE_OLLAMA_CLOUD_MODELS = [
     maxTokens: 8192,
     reasoning: true,
     vision: false,
-    documents: false,
-    audio: false,
-    video: false,
   },
   {
     id: "qwen3-coder-next",
@@ -340,9 +253,6 @@ export const TOOL_CAPABLE_OLLAMA_CLOUD_MODELS = [
     maxTokens: 8192,
     reasoning: false,
     vision: false,
-    documents: false,
-    audio: false,
-    video: false,
   },
   {
     id: "qwen3-coder:480b",
@@ -350,9 +260,6 @@ export const TOOL_CAPABLE_OLLAMA_CLOUD_MODELS = [
     maxTokens: 8192,
     reasoning: false,
     vision: false,
-    documents: false,
-    audio: false,
-    video: false,
   },
   {
     id: "qwen3-vl:235b",
@@ -360,9 +267,6 @@ export const TOOL_CAPABLE_OLLAMA_CLOUD_MODELS = [
     maxTokens: 8192,
     reasoning: true,
     vision: true,
-    documents: false,
-    audio: false,
-    video: false,
   },
   {
     id: "qwen3-vl:235b-instruct",
@@ -370,9 +274,6 @@ export const TOOL_CAPABLE_OLLAMA_CLOUD_MODELS = [
     maxTokens: 8192,
     reasoning: true,
     vision: true,
-    documents: false,
-    audio: false,
-    video: false,
   },
   {
     // The ollama.com/library/qwen3.5 page lists image input, but the live
@@ -386,9 +287,6 @@ export const TOOL_CAPABLE_OLLAMA_CLOUD_MODELS = [
     maxTokens: 8192,
     reasoning: true,
     vision: false,
-    documents: false,
-    audio: false,
-    video: false,
   },
   {
     id: "rnj-1:8b",
@@ -396,9 +294,6 @@ export const TOOL_CAPABLE_OLLAMA_CLOUD_MODELS = [
     maxTokens: 8192,
     reasoning: false,
     vision: false,
-    documents: false,
-    audio: false,
-    video: false,
   },
 ] as const satisfies readonly OllamaCloudModel[];
 

@@ -9,9 +9,6 @@ type BuiltinRow = {
   modelId: string;
   displayName: string;
   vision: boolean;
-  documents: boolean;
-  audio: boolean;
-  video: boolean;
   longContext: boolean;
   tools: boolean;
 };
@@ -25,9 +22,6 @@ function collectBuiltinRows(): BuiltinRow[] {
         modelId: m.id,
         displayName: m.name,
         vision: m.vision,
-        documents: m.documents,
-        audio: m.audio,
-        video: m.video,
         longContext: m.contextWindow >= 200_000,
         tools: true,
       });
@@ -39,9 +33,6 @@ function collectBuiltinRows(): BuiltinRow[] {
       modelId: m.id,
       displayName: m.id,
       vision: m.vision,
-      documents: m.documents,
-      audio: m.audio,
-      video: m.video,
       longContext: m.contextWindow >= 200_000,
       tools: true,
     });
@@ -67,9 +58,6 @@ export async function seedBuiltinModels(): Promise<void> {
       set: {
         displayName: sql`CASE WHEN ${models.source} = 'manual' THEN ${models.displayName} ELSE EXCLUDED.display_name END`,
         vision: sql`CASE WHEN ${models.source} = 'manual' THEN ${models.vision} ELSE EXCLUDED.vision END`,
-        documents: sql`CASE WHEN ${models.source} = 'manual' THEN ${models.documents} ELSE EXCLUDED.documents END`,
-        audio: sql`CASE WHEN ${models.source} = 'manual' THEN ${models.audio} ELSE EXCLUDED.audio END`,
-        video: sql`CASE WHEN ${models.source} = 'manual' THEN ${models.video} ELSE EXCLUDED.video END`,
         longContext: sql`CASE WHEN ${models.source} = 'manual' THEN ${models.longContext} ELSE EXCLUDED.long_context END`,
         tools: sql`CASE WHEN ${models.source} = 'manual' THEN ${models.tools} ELSE EXCLUDED.tools END`,
         updatedAt: sql`now()`,

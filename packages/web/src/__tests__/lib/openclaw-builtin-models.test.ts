@@ -63,31 +63,30 @@ describe("getModelCatalogForProvider", () => {
     }
   });
 
-  it("anthropic models declare vision=true and documents=true (native PDF)", () => {
+  it("anthropic models declare vision=true", () => {
     for (const m of getModelCatalogForProvider("anthropic")) {
       expect(m.vision).toBe(true);
-      expect(m.documents).toBe(true);
     }
   });
 
-  it("google models declare documents=true (native PDF)", () => {
+  it("google models declare vision=true", () => {
     for (const m of getModelCatalogForProvider("google")) {
-      expect(m.documents).toBe(true);
+      expect(m.vision).toBe(true);
     }
   });
 
-  it("openai models declare vision=true and documents=true (image-extract fallback)", () => {
+  it("openai models declare vision=true", () => {
     for (const m of getModelCatalogForProvider("openai")) {
       expect(m.vision).toBe(true);
-      expect(m.documents).toBe(true);
     }
   });
 
-  it("all built-in models declare audio=false and video=false", () => {
+  it("built-in models carry no dead capability fields (documents/audio/video)", () => {
     for (const provider of ["anthropic", "openai", "google"] as const) {
       for (const m of getModelCatalogForProvider(provider)) {
-        expect(m.audio).toBe(false);
-        expect(m.video).toBe(false);
+        expect("documents" in m).toBe(false);
+        expect("audio" in m).toBe(false);
+        expect("video" in m).toBe(false);
       }
     }
   });
