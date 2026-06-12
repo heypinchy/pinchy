@@ -795,6 +795,59 @@ describe("Composer attachment capability hard-block", () => {
     expect(screen.getByText("screenshot.png")).toBeInTheDocument();
   });
 
+  // Regression guard for the v0.5.7 production bug: PDFs are analyzed via
+  // OpenClaw's built-in `pdf` tool (model resolved by Pinchy independently of
+  // the agent model), so the agent model's capabilities must never block a
+  // PDF send — not even a model with no documents/vision capability at all.
+  it("allows PDF send regardless of agent model capabilities — PDFs route via the pdf tool", async () => {
+    const pdfFile = new File(["data"], "invoice.pdf", { type: "application/pdf" });
+
+    const { useComposerRuntime } = await import("@assistant-ui/react");
+    vi.mocked(useComposerRuntime).mockReturnValue({
+      getState: () => ({
+        text: "what does this invoice say?",
+        attachments: [{ file: pdfFile }],
+      }),
+      setText: vi.fn(),
+      addAttachment: vi.fn(),
+    } as never);
+
+    const { useModelCapabilities } = await import("@/hooks/use-model-capabilities");
+    vi.mocked(useModelCapabilities).mockReturnValue({
+      data: { "ollama-cloud/gemini-3-flash-preview": { vision: true, documents: false } },
+      isLoading: false,
+      error: undefined,
+      refetch: vi.fn(),
+    });
+
+    const { useAgentsContext } = await import("@/components/agents-provider");
+    vi.mocked(useAgentsContext).mockReturnValue({
+      agents: [],
+      sortedAgents: [],
+      getAgent: vi.fn(
+        () => ({ id: "agent-1", model: "ollama-cloud/gemini-3-flash-preview" }) as never
+      ),
+    });
+
+    const { ChatStatusContext, AgentIdContext } = await import("@/components/chat");
+    const { Composer } = await import("@/components/assistant-ui/thread");
+
+    render(
+      <AgentIdContext.Provider value="agent-1">
+        <ChatStatusContext.Provider value={{ kind: "ready" }}>
+          <Composer />
+        </ChatStatusContext.Provider>
+      </AgentIdContext.Provider>
+    );
+
+    const form = document.querySelector("form")!;
+    const submitEvent = new Event("submit", { bubbles: true, cancelable: true });
+    form.dispatchEvent(submitEvent);
+
+    expect(submitEvent.defaultPrevented).toBe(false);
+    expect(screen.queryByRole("region", { name: /can't be sent/i })).not.toBeInTheDocument();
+  });
+
   it("allows send when PNG is attached to a vision-capable model", async () => {
     const pngFile = new File(["data"], "photo.png", { type: "image/png" });
 
