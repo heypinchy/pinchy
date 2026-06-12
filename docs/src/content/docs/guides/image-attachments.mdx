@@ -46,16 +46,15 @@ Most of the time you don't need to think about this — the agent picks the righ
 
 ## Model capability matrix
 
-Pinchy tracks four input-modality capabilities per model. Each capability is either present or absent — there's no partial support.
+Pinchy tracks one input-modality capability per model — `vision` — plus two model-trait capabilities, `long-context` and `tools`. Each capability is either present or absent — there's no partial support. Templates can require any of these (see [How templates declare required capabilities](#how-templates-declare-required-capabilities) below).
 
-Pinchy also tracks two model-trait capabilities — `long-context` and `tools` — alongside the four input modalities. Templates can require these too (see [How templates declare required capabilities](#how-templates-declare-required-capabilities) below, where a document-analyzer template requires `long-context`).
+| Capability       | What it unlocks                                                 |
+| ---------------- | --------------------------------------------------------------- |
+| **vision**       | The model can "see" images sent inline with a message.          |
+| **long-context** | The model handles very large contexts (200K+ tokens).           |
+| **tools**        | The model emits structured tool calls — required by all agents. |
 
-| Capability    | What it unlocks                                                                |
-| ------------- | ------------------------------------------------------------------------------ |
-| **vision**    | The model can "see" images sent inline with a message.                         |
-| **documents** | The model processes PDFs natively (no image-extract fallback required).        |
-| **audio**     | The model can transcribe or reason over audio files. (Planned — not yet wired) |
-| **video**     | The model can process video frames or streams. (Planned — not yet wired)       |
+PDFs don't need a per-model capability: they are analyzed by a dedicated PDF tool whose model Pinchy resolves from your configured providers, independent of the agent's chat model. Audio and video files are not currently accepted as uploads.
 
 The `models` table is seeded automatically at boot from Pinchy's built-in model catalog. For Anthropic, OpenAI, Google, and Ollama Cloud, no manual entry is required. For local Ollama, Pinchy detects vision-capable models from the Ollama API when you configure the URL during setup.
 
@@ -72,7 +71,7 @@ If you attach an image to a text-only model, the model won't see it. Pinchy does
 
 ## How templates declare required capabilities
 
-When you create an agent from a template, Pinchy automatically picks a model that meets the template's capability requirements. Each template declares the capabilities it needs — for example, a document-analyzer template requires `vision`, `documents`, and `long-context`. Pinchy's model resolver searches your configured providers for a model that satisfies all three.
+When you create an agent from a template, Pinchy automatically picks a model that meets the template's capability requirements. Each template declares the capabilities it needs — for example, a document-analyzer template requires `vision` and `long-context`. Pinchy's model resolver searches your configured providers for a model that satisfies both.
 
 If no configured model meets the requirements, Pinchy shows a warning at agent-creation time and offers to proceed with the best available match. Adding a vision-capable provider (Anthropic, OpenAI, Google, or Ollama Cloud with a vision model) gives the resolver more options to work with.
 
