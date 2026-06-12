@@ -5,6 +5,7 @@ import { createInvite } from "@/lib/invites";
 import { appendAuditLog, redactEmail } from "@/lib/audit";
 import { getLicenseStatus } from "@/lib/enterprise";
 import { getSeatUsage } from "@/lib/seat-usage";
+import { evaluateSeatPressure } from "@/lib/seat-grace";
 import { db } from "@/db";
 import { groups } from "@/db/schema";
 import { inArray } from "drizzle-orm";
@@ -28,7 +29,11 @@ export async function POST(request: NextRequest) {
   const license = await getLicenseStatus();
   if (license.active && license.maxUsers > 0) {
     const usage = await getSeatUsage(license);
-    if (usage.used >= license.maxUsers) {
+    // Soft cap with a 20% grace window (pricing concept § 5): invites keep
+    // working up to floor(1.2 * maxUsers) seats so a new hire never waits on
+    // procurement. Existing users are never deactivated or degraded.
+    const pressure = evaluateSeatPressure(usage.used, license.maxUsers);
+    if (!pressure.inviteAllowed) {
       after(() =>
         appendAuditLog({
           actorType: "user",
@@ -40,6 +45,7 @@ export async function POST(request: NextRequest) {
             reason: "seat_cap",
             seatsUsed: usage.used,
             maxUsers: license.maxUsers,
+            graceCap: pressure.graceCap,
           },
           outcome: "failure",
           error: { message: "Seat cap reached" },
@@ -48,9 +54,10 @@ export async function POST(request: NextRequest) {
       return NextResponse.json(
         {
           error: "Seat limit reached",
-          message: `Your license allows ${license.maxUsers} seats, all are in use. Remove an existing user or pending invitation, or upgrade your subscription.`,
+          message: `Your license includes ${license.maxUsers} seats with grace up to ${pressure.graceCap}. Remove an existing user or pending invitation, or email sales@heypinchy.com for a quote you can accept online.`,
           seatsUsed: usage.used,
           maxUsers: license.maxUsers,
+          graceCap: pressure.graceCap,
         },
         { status: 403 }
       );

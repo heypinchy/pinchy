@@ -79,7 +79,7 @@ describe("POST /api/users/invite — seat cap", () => {
     POST = mod.POST;
   });
 
-  it("returns 403 when seat cap is reached", async () => {
+  it("still creates invites at 100% (first grace seat — § 5 soft cap)", async () => {
     vi.mocked(getLicenseStatus).mockResolvedValue({
       active: true,
       ver: 1,
@@ -95,11 +95,53 @@ describe("POST /api/users/invite — seat cap", () => {
       pendingInvites: 2,
     });
     const res = await POST(makeRequest({ email: "new@test.com", role: "member" }));
+    expect(res.status).toBe(201);
+    expect(createInvite).toHaveBeenCalled();
+  });
+
+  it("still creates invites inside the grace window (11 of 10 seats)", async () => {
+    vi.mocked(getLicenseStatus).mockResolvedValue({
+      active: true,
+      ver: 1,
+      maxUsers: 10,
+      features: ["enterprise"],
+    });
+    vi.mocked(getSeatUsage).mockResolvedValue({
+      used: 11,
+      max: 10,
+      available: 0,
+      unlimited: false,
+      activeUsers: 11,
+      pendingInvites: 0,
+    });
+    const res = await POST(makeRequest({ email: "new@test.com", role: "member" }));
+    expect(res.status).toBe(201);
+    expect(createInvite).toHaveBeenCalled();
+  });
+
+  it("returns a structured 403 beyond the grace cap (12 of 10 seats)", async () => {
+    vi.mocked(getLicenseStatus).mockResolvedValue({
+      active: true,
+      ver: 1,
+      maxUsers: 10,
+      features: ["enterprise"],
+    });
+    vi.mocked(getSeatUsage).mockResolvedValue({
+      used: 12,
+      max: 10,
+      available: 0,
+      unlimited: false,
+      activeUsers: 12,
+      pendingInvites: 0,
+    });
+    const res = await POST(makeRequest({ email: "new@test.com", role: "member" }));
     expect(res.status).toBe(403);
     const body = await res.json();
     expect(body.error).toBe("Seat limit reached");
-    expect(body.seatsUsed).toBe(10);
+    expect(body.seatsUsed).toBe(12);
     expect(body.maxUsers).toBe(10);
+    expect(body.graceCap).toBe(12);
+    expect(body.message).toContain("sales@heypinchy.com");
     expect(createInvite).not.toHaveBeenCalled();
   });
 
@@ -111,11 +153,11 @@ describe("POST /api/users/invite — seat cap", () => {
       features: ["enterprise"],
     });
     vi.mocked(getSeatUsage).mockResolvedValue({
-      used: 5,
+      used: 6,
       max: 5,
       available: 0,
       unlimited: false,
-      activeUsers: 5,
+      activeUsers: 6,
       pendingInvites: 0,
     });
     vi.stubEnv("AUDIT_HMAC_SECRET", "f".repeat(64));
@@ -133,8 +175,9 @@ describe("POST /api/users/invite — seat cap", () => {
           emailPreview: "new@test.com",
           role: "member",
           reason: "seat_cap",
-          seatsUsed: 5,
+          seatsUsed: 6,
           maxUsers: 5,
+          graceCap: 6,
         }),
       })
     );
