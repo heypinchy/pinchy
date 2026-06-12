@@ -17,7 +17,7 @@ export const notionKnowledgeKeeper: AgentTemplate = {
   suggestedNames: ["Sage", "Basil", "Wren", "Clio", "Archie", "Nova", "Felix"],
   defaultGreetingMessage:
     "Hi! I can search your Notion workspace, retrieve page content, and help you keep your knowledge base up to date. What are you looking for?",
-  modelHint: { tier: "balanced", capabilities: ["tools", "vision", "documents"] },
+  modelHint: { tier: "balanced", capabilities: ["tools", "vision"] },
   recommendedTools: [
     { preset: "notion", tool: "search" },
     { preset: "notion", tool: "get_page" },
