@@ -68,6 +68,7 @@ vi.mock("@/db/schema", async (importOriginal) => {
 
 import { auth } from "@/lib/auth";
 import { appendAuditLog } from "@/lib/audit";
+import { isEnterprise } from "@/lib/enterprise";
 
 // ── GET /api/groups ──────────────────────────────────────────────────────
 
@@ -750,5 +751,89 @@ describe("PUT /api/groups/[groupId]/members", () => {
         },
       })
     );
+  });
+
+  it("returns a structured 403 when adding members without an active license", async () => {
+    vi.mocked(isEnterprise).mockResolvedValue(false);
+    vi.mocked(auth.api.getSession).mockResolvedValueOnce({
+      user: { id: "admin-1", role: "admin" },
+      expires: "",
+    } as any);
+
+    mockSelectWhere.mockResolvedValueOnce([{ id: "group-1" }]); // group exists
+    mockSelectWhere.mockResolvedValueOnce([]); // existing members: none
+    // No names select queued — the route returns 403 before resolving names.
+
+    const request = new NextRequest("http://localhost:7777/api/groups/group-1/members", {
+      method: "PUT",
+      body: JSON.stringify({ userIds: ["user-1"] }),
+    });
+
+    const response = await PUT(request, { params: Promise.resolve({ groupId: "group-1" }) });
+    expect(response.status).toBe(403);
+    const body = await response.json();
+    expect(body.error).toBe("License required");
+    expect(body.message).toMatch(/Removing users from groups always works/);
+    expect(mockDelete).not.toHaveBeenCalled();
+  });
+
+  it("allows removal-only member updates without an active license (carve-out, § 5)", async () => {
+    vi.mocked(isEnterprise).mockResolvedValue(false);
+    vi.mocked(auth.api.getSession).mockResolvedValueOnce({
+      user: { id: "admin-1", role: "admin" },
+      expires: "",
+    } as any);
+
+    mockSelectWhere.mockResolvedValueOnce([{ id: "group-1" }]); // group exists
+    mockSelectWhere.mockResolvedValueOnce([
+      { userId: "user-1", groupId: "group-1" },
+      { userId: "user-2", groupId: "group-1" },
+    ]); // existing members
+    mockSelectWhere.mockResolvedValueOnce([{ id: "user-2", name: "User Two" }]); // names
+
+    const request = new NextRequest("http://localhost:7777/api/groups/group-1/members", {
+      method: "PUT",
+      body: JSON.stringify({ userIds: ["user-1"] }),
+    });
+
+    const response = await PUT(request, { params: Promise.resolve({ groupId: "group-1" }) });
+    expect(response.status).toBe(200);
+    expect(mockDelete).toHaveBeenCalled();
+    expect(mockValues).toHaveBeenCalledWith([{ userId: "user-1", groupId: "group-1" }]);
+  });
+});
+
+describe("group reads stay available without an active license (removal UI needs them)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(isEnterprise).mockResolvedValue(false);
+  });
+
+  it("GET /api/groups responds 200 without an active license", async () => {
+    vi.mocked(auth.api.getSession).mockResolvedValueOnce({
+      user: { id: "admin-1", role: "admin" },
+      expires: "",
+    } as any);
+    mockSelectGroupBy.mockResolvedValueOnce([]);
+
+    const { GET } = await import("@/app/api/groups/route");
+    const response = await GET();
+    expect(response.status).toBe(200);
+  });
+
+  it("GET /api/groups/[groupId]/members responds 200 without an active license", async () => {
+    vi.mocked(auth.api.getSession).mockResolvedValueOnce({
+      user: { id: "admin-1", role: "admin" },
+      expires: "",
+    } as any);
+    mockSelectWhere.mockResolvedValueOnce([{ id: "group-1" }]); // group exists
+    mockSelectWhere.mockResolvedValueOnce([]); // members
+
+    const { GET } = await import("@/app/api/groups/[groupId]/members/route");
+    const response = await GET(
+      new NextRequest("http://localhost:7777/api/groups/group-1/members"),
+      { params: Promise.resolve({ groupId: "group-1" }) }
+    );
+    expect(response.status).toBe(200);
   });
 });

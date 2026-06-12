@@ -21,10 +21,8 @@ export async function GET(
   const sessionOrError = await requireAdmin();
   if (sessionOrError instanceof NextResponse) return sessionOrError;
 
-  if (!(await isEnterprise())) {
-    return NextResponse.json({ error: "Enterprise feature" }, { status: 403 });
-  }
-
+  // No license gate: admins need to see memberships to REMOVE users from
+  // groups, which must always work (fail-closed carve-out, § 5).
   const { groupId } = await params;
 
   if (!(await groupExists(groupId))) {
@@ -47,10 +45,6 @@ export async function PUT(
   if (sessionOrError instanceof NextResponse) return sessionOrError;
   const session = sessionOrError;
 
-  if (!(await isEnterprise())) {
-    return NextResponse.json({ error: "Enterprise feature" }, { status: 403 });
-  }
-
   const { groupId } = await params;
   const parsed = await parseRequestBody(setMembersSchema, request);
   if ("error" in parsed) return parsed.error;
@@ -70,6 +64,21 @@ export async function PUT(
 
   const addedIds = [...newIds].filter((id) => !existingIds.has(id));
   const removedIds = [...existingIds].filter((id) => !newIds.has(id));
+
+  // Fail closed with a carve-out (pricing concept § 5): without an active
+  // license, group management is locked — but restriction-TIGHTENING
+  // operations must always work. Removing members tightens; adding members
+  // requires a license.
+  if (addedIds.length > 0 && !(await isEnterprise())) {
+    return NextResponse.json(
+      {
+        error: "License required",
+        message:
+          "Adding users to groups requires an active license. Removing users from groups always works.",
+      },
+      { status: 403 }
+    );
+  }
 
   // Resolve names for changed users
   const changedIds = [...addedIds, ...removedIds];
