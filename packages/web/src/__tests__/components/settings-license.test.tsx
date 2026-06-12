@@ -174,6 +174,92 @@ describe("SettingsLicense", () => {
     expect(screen.getByLabelText(/license key/i)).toBeInTheDocument();
   });
 
+  it("offers the audited escape hatch when the license is inactive and gated config exists", async () => {
+    const user = userEvent.setup();
+    render(
+      <SettingsLicense
+        initialLicense={{
+          enterprise: false,
+          state: "expired",
+          type: "paid",
+          org: "Acme Corp",
+          expiresAt: "2026-05-31T00:00:00Z",
+          paidUntil: "2026-05-01T00:00:00Z",
+          daysRemaining: 0,
+          managedByEnv: false,
+          maxUsers: 10,
+          seatsUsed: 3,
+          hasGatedConfig: true,
+        }}
+      />
+    );
+    const button = screen.getByRole("button", { name: /remove all license-gated configuration/i });
+    await user.click(button);
+
+    // Confirmation explains exactly what happens — this deliberately widens access.
+    expect(screen.getByText(/deletes all groups/i)).toBeInTheDocument();
+    expect(screen.getByText(/recorded in the audit log/i)).toBeInTheDocument();
+
+    fetchSpy.mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({ groupsRemoved: 2, agentsReset: 1 }),
+    } as Response);
+
+    await user.click(screen.getByRole("button", { name: /remove configuration/i }));
+    await waitFor(() => {
+      expect(fetchSpy).toHaveBeenCalledWith(
+        "/api/enterprise/gated-config",
+        expect.objectContaining({ method: "DELETE" })
+      );
+    });
+  });
+
+  it("hides the escape hatch when no gated config exists", () => {
+    render(
+      <SettingsLicense
+        initialLicense={{
+          enterprise: false,
+          state: "expired",
+          type: "paid",
+          org: "Acme Corp",
+          expiresAt: "2026-05-31T00:00:00Z",
+          paidUntil: "2026-05-01T00:00:00Z",
+          daysRemaining: 0,
+          managedByEnv: false,
+          maxUsers: 10,
+          seatsUsed: 3,
+          hasGatedConfig: false,
+        }}
+      />
+    );
+    expect(
+      screen.queryByRole("button", { name: /remove all license-gated configuration/i })
+    ).not.toBeInTheDocument();
+  });
+
+  it("hides the escape hatch while the license is active", () => {
+    render(
+      <SettingsLicense
+        initialLicense={{
+          enterprise: true,
+          state: "paid",
+          type: "paid",
+          org: "Acme Corp",
+          expiresAt: "2027-02-01T00:00:00Z",
+          paidUntil: "2027-01-01T00:00:00Z",
+          daysRemaining: 235,
+          managedByEnv: false,
+          maxUsers: 10,
+          seatsUsed: 3,
+          hasGatedConfig: true,
+        }}
+      />
+    );
+    expect(
+      screen.queryByRole("button", { name: /remove all license-gated configuration/i })
+    ).not.toBeInTheDocument();
+  });
+
   it("shows the trial-expired copy with a pricing link", () => {
     render(
       <SettingsLicense

@@ -3,6 +3,27 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 vi.mock("@/lib/api-auth");
 vi.mock("@/lib/enterprise");
 
+vi.mock("@/lib/audit", () => ({
+  appendAuditLog: vi.fn().mockResolvedValue(undefined),
+}));
+
+vi.mock("@/lib/telegram-allow-store", () => ({
+  recalculateTelegramAllowStores: vi.fn().mockResolvedValue(undefined),
+}));
+
+const mockSelectGroupBy = vi.fn().mockResolvedValue([]);
+const mockSelectLeftJoin = vi.fn().mockReturnValue({ groupBy: mockSelectGroupBy });
+const mockSelectWhere = vi.fn().mockResolvedValue([]);
+const mockSelectFrom = vi
+  .fn()
+  .mockReturnValue({ leftJoin: mockSelectLeftJoin, where: mockSelectWhere });
+
+vi.mock("@/db", () => ({
+  db: {
+    select: vi.fn().mockImplementation(() => ({ from: mockSelectFrom })),
+  },
+}));
+
 import { requireAdmin } from "@/lib/api-auth";
 import { isEnterprise } from "@/lib/enterprise";
 import { NextResponse } from "next/server";
@@ -78,12 +99,10 @@ describe("groups API enterprise gate", () => {
     (isEnterprise as any).mockResolvedValue(false);
   });
 
-  it("GET /api/groups returns 403 without enterprise", async () => {
+  it("GET /api/groups stays readable without enterprise (removal carve-out needs it, § 5)", async () => {
     const { GET } = await import("@/app/api/groups/route");
     const res = await GET();
-    expect(res.status).toBe(403);
-    const body = await res.json();
-    expect(body.error).toBe("Enterprise feature");
+    expect(res.status).toBe(200);
   });
 
   it("POST /api/groups returns 403 without enterprise", async () => {
@@ -121,25 +140,27 @@ describe("groups API enterprise gate", () => {
     expect(body.error).toBe("Enterprise feature");
   });
 
-  it("GET /api/groups/:id/members returns 403 without enterprise", async () => {
+  it("GET /api/groups/:id/members stays readable without enterprise (removal carve-out, § 5)", async () => {
+    mockSelectWhere.mockResolvedValueOnce([{ id: "g1" }]); // group exists
+    mockSelectWhere.mockResolvedValueOnce([]); // members
     const { GET } = await import("@/app/api/groups/[groupId]/members/route");
     const req = new Request("http://localhost", { method: "GET" });
     const res = await GET(req as any, { params: Promise.resolve({ groupId: "g1" }) });
-    expect(res.status).toBe(403);
-    const body = await res.json();
-    expect(body.error).toBe("Enterprise feature");
+    expect(res.status).toBe(200);
   });
 
-  it("PUT /api/groups/:id/members returns 403 without enterprise", async () => {
+  it("PUT /api/groups/:id/members returns 403 when ADDING members without enterprise", async () => {
+    mockSelectWhere.mockResolvedValueOnce([{ id: "g1" }]); // group exists
+    mockSelectWhere.mockResolvedValueOnce([]); // existing members: none
     const { PUT } = await import("@/app/api/groups/[groupId]/members/route");
     const req = new Request("http://localhost", {
       method: "PUT",
-      body: JSON.stringify({ userIds: [] }),
+      body: JSON.stringify({ userIds: ["u1"] }),
       headers: { "Content-Type": "application/json" },
     });
     const res = await PUT(req as any, { params: Promise.resolve({ groupId: "g1" }) });
     expect(res.status).toBe(403);
     const body = await res.json();
-    expect(body.error).toBe("Enterprise feature");
+    expect(body.error).toBe("License required");
   });
 });

@@ -48,6 +48,7 @@ export type AuditEventType =
   | "user.updated"
   | "user.deleted"
   | "config.changed"
+  | "config.gated_config_removed"
   | "group.created"
   | "group.updated"
   | "group.deleted"
@@ -275,7 +276,8 @@ export type AuditLogEntry =
         | `${AuditResource}.created`
         | "user.invited"
         | "user.invite_blocked"
-        | "config.changed";
+        | "config.changed"
+        | "config.gated_config_removed";
       detail: Record<string, unknown>;
     })
   | (AuditLogBase & {

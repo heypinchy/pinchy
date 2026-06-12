@@ -66,7 +66,13 @@ export function UserDetailSheet({
   const isOwnAccount = user.id === currentUserId;
   const isDeactivated = user.status === "deactivated";
 
-  const showGroups = isEnterprise && allGroups.length > 0;
+  // Without an active license, group management is locked EXCEPT removing
+  // existing memberships (restriction-tightening carve-out, § 5). Members
+  // originally in a group can be unchecked (and re-checked before saving);
+  // new memberships need a license.
+  const originalGroupIds = new Set(user.groups.map((g) => g.id));
+  const showGroups = allGroups.length > 0 && (isEnterprise || originalGroupIds.size > 0);
+  const canAddToGroup = (groupId: string) => isEnterprise || originalGroupIds.has(groupId);
 
   const isDirty = useMemo(() => {
     if (selectedRole !== user.role) return true;
@@ -209,12 +215,17 @@ export function UserDetailSheet({
                     <Checkbox
                       checked={selectedGroupIds.has(group.id)}
                       onCheckedChange={() => handleGroupToggle(group.id)}
-                      disabled={isDeactivated}
+                      disabled={isDeactivated || !canAddToGroup(group.id)}
                     />
                     {group.name}
                   </label>
                 ))}
               </div>
+              {!isEnterprise && (
+                <p className="text-xs text-muted-foreground">
+                  Adding to groups requires an active license. Removing always works.
+                </p>
+              )}
             </div>
           )}
         </div>

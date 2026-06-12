@@ -111,7 +111,22 @@ describe("UserDetailSheet", () => {
     expect(marketingCheckbox).not.toBeChecked();
   });
 
-  it("should hide groups section when not enterprise", () => {
+  it("should hide groups section without a license when the user has no groups", () => {
+    render(
+      <UserDetailSheet
+        user={{ ...mockUser, groups: [] }}
+        allGroups={allGroups}
+        isEnterprise={false}
+        currentUserId="admin-1"
+        open={true}
+        onOpenChange={vi.fn()}
+        onSaved={vi.fn()}
+      />
+    );
+    expect(screen.queryByRole("checkbox", { name: /engineering/i })).not.toBeInTheDocument();
+  });
+
+  it("allows removing existing memberships without a license, but not adding (carve-out, § 5)", () => {
     render(
       <UserDetailSheet
         user={mockUser}
@@ -123,7 +138,38 @@ describe("UserDetailSheet", () => {
         onSaved={vi.fn()}
       />
     );
-    expect(screen.queryByRole("checkbox", { name: /engineering/i })).not.toBeInTheDocument();
+    // Existing membership can be removed…
+    const engCheckbox = screen.getByRole("checkbox", { name: /engineering/i });
+    expect(engCheckbox).toBeChecked();
+    expect(engCheckbox).toBeEnabled();
+    // …but new memberships require an active license.
+    expect(screen.getByRole("checkbox", { name: /marketing/i })).toBeDisabled();
+    expect(screen.getByRole("checkbox", { name: /sales/i })).toBeDisabled();
+    expect(
+      screen.getByText(/Adding to groups requires an active license\. Removing always works\./)
+    ).toBeInTheDocument();
+  });
+
+  it("does not allow re-checking a membership that was unchecked without a license", async () => {
+    const user = userEvent.setup();
+    render(
+      <UserDetailSheet
+        user={mockUser}
+        allGroups={allGroups}
+        isEnterprise={false}
+        currentUserId="admin-1"
+        open={true}
+        onOpenChange={vi.fn()}
+        onSaved={vi.fn()}
+      />
+    );
+    const engCheckbox = screen.getByRole("checkbox", { name: /engineering/i });
+    await user.click(engCheckbox);
+    expect(engCheckbox).not.toBeChecked();
+    // Re-checking would ADD a membership server-side relative to nothing —
+    // but the original membership still exists in the DB until saved, so
+    // restoring it stays within the original set and remains allowed.
+    expect(engCheckbox).toBeEnabled();
   });
 
   it("should hide groups section when no groups exist", () => {

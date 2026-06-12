@@ -6,6 +6,18 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
+import { toast } from "sonner";
+import { apiDelete, ApiError } from "@/lib/api-client";
 import type { LicenseInfo } from "@/lib/enterprise";
 import { PRICING_URL, PORTAL_URL, conversionLink } from "@/lib/conversion-links";
 
@@ -29,6 +41,8 @@ export function SettingsLicense({ onEnterpriseActivated, initialLicense }: Setti
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [showInput, setShowInput] = useState(false);
+  const [confirmRemoveGated, setConfirmRemoveGated] = useState(false);
+  const [removingGated, setRemovingGated] = useState(false);
 
   const fetchStatus = useCallback(async () => {
     try {
@@ -46,6 +60,24 @@ export function SettingsLicense({ onEnterpriseActivated, initialLicense }: Setti
     if (initialLicense) return;
     fetchStatus();
   }, [fetchStatus, initialLicense]);
+
+  const handleRemoveGatedConfig = async () => {
+    setRemovingGated(true);
+    try {
+      const result = await apiDelete<{ groupsRemoved: number; agentsReset: number }>(
+        "/api/enterprise/gated-config"
+      );
+      setConfirmRemoveGated(false);
+      toast(
+        `Removed ${result.groupsRemoved} group${result.groupsRemoved !== 1 ? "s" : ""} and reset ${result.agentsReset} agent${result.agentsReset !== 1 ? "s" : ""} to community semantics.`
+      );
+      await fetchStatus();
+    } catch (e) {
+      toast.error(e instanceof ApiError ? e.message : "Failed to remove gated configuration");
+    } finally {
+      setRemovingGated(false);
+    }
+  };
 
   const handleSave = async () => {
     setSaving(true);
@@ -189,6 +221,45 @@ export function SettingsLicense({ onEnterpriseActivated, initialLicense }: Setti
             </p>
           </div>
         )}
+
+        {!license?.enterprise && license?.hasGatedConfig && (
+          <div className="space-y-2 rounded-lg border bg-muted/50 p-4">
+            <p className="text-sm font-medium">License-gated configuration</p>
+            <p className="text-sm text-muted-foreground">
+              Groups and agent visibility restrictions stay enforced without a license. To return
+              this instance to community semantics, you can remove them.
+            </p>
+            <Button variant="outline" size="sm" onClick={() => setConfirmRemoveGated(true)}>
+              Remove all license-gated configuration
+            </Button>
+          </div>
+        )}
+
+        <AlertDialog
+          open={confirmRemoveGated}
+          onOpenChange={(open) => !open && setConfirmRemoveGated(false)}
+        >
+          <AlertDialogContent>
+            <AlertDialogHeader>
+              <AlertDialogTitle>Remove all license-gated configuration?</AlertDialogTitle>
+              <AlertDialogDescription>
+                This deletes all groups and makes restricted agents visible to all users. Existing
+                users keep their accounts. This action is recorded in the audit log and cannot be
+                undone.
+              </AlertDialogDescription>
+            </AlertDialogHeader>
+            <AlertDialogFooter>
+              <AlertDialogCancel>Cancel</AlertDialogCancel>
+              <AlertDialogAction
+                variant="destructive"
+                disabled={removingGated}
+                onClick={handleRemoveGatedConfig}
+              >
+                {removingGated ? "Removing..." : "Remove configuration"}
+              </AlertDialogAction>
+            </AlertDialogFooter>
+          </AlertDialogContent>
+        </AlertDialog>
 
         {(showInput || !license?.enterprise) && !license?.managedByEnv && (
           <div className="space-y-2">
