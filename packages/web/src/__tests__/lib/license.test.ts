@@ -40,17 +40,82 @@ describe("validateLicense", () => {
     expect(status.daysRemaining).toBeGreaterThan(0);
   });
 
-  it("returns active=false for an expired token", async () => {
+  it("returns active=false but preserves claims for an expired token", async () => {
     const { validateLicense } = await import("@/lib/license");
     // jose checks exp against the current clock — advance the system clock
     // past the token's expiry instead of waiting in real time.
     vi.useFakeTimers();
     try {
-      const token = await createTestToken({}, "1s");
+      const token = await createTestToken({ type: "paid", maxUsers: 10 }, "1s");
       vi.setSystemTime(Date.now() + 1500);
       const status = await validateLicense(token, testPublicKeyPem);
       expect(status.active).toBe(false);
+      // The signature was valid — only exp has passed. The app needs the
+      // claims to tell "expired" apart from "community" (pricing concept § 6).
+      expect(status.expired).toBe(true);
+      expect(status.type).toBe("paid");
+      expect(status.org).toBe("test-org");
+      expect(status.maxUsers).toBe(10);
+      expect(status.expiresAt).toBeInstanceOf(Date);
+      expect(status.features).toEqual(["enterprise"]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("does not set expired for an expired token with an invalid signature", async () => {
+    const { validateLicense } = await import("@/lib/license");
+    const { privateKey: wrongKey } = await jose.generateKeyPair("ES256", {
+      extractable: true,
+    });
+    vi.useFakeTimers();
+    try {
+      const token = await new jose.SignJWT({ type: "paid", features: ["enterprise"] })
+        .setProtectedHeader({ alg: "ES256" })
+        .setIssuer("heypinchy.com")
+        .setSubject("test-org")
+        .setIssuedAt()
+        .setExpirationTime("1s")
+        .sign(wrongKey);
+      vi.setSystemTime(Date.now() + 1500);
+      const status = await validateLicense(token, testPublicKeyPem);
+      expect(status.active).toBe(false);
+      expect(status.expired).toBeUndefined();
       expect(status.features).toEqual([]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("treats an expired token with wrong issuer as inactive, not expired", async () => {
+    const { validateLicense } = await import("@/lib/license");
+    vi.useFakeTimers();
+    try {
+      const token = await new jose.SignJWT({ type: "paid", features: ["enterprise"] })
+        .setProtectedHeader({ alg: "ES256" })
+        .setIssuer("evil.example.com")
+        .setSubject("test-org")
+        .setIssuedAt()
+        .setExpirationTime("1s")
+        .sign(testPrivateKey);
+      vi.setSystemTime(Date.now() + 1500);
+      const status = await validateLicense(token, testPublicKeyPem);
+      expect(status.active).toBe(false);
+      expect(status.expired).toBeUndefined();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("treats an expired token without the enterprise feature as inactive, not expired", async () => {
+    const { validateLicense } = await import("@/lib/license");
+    vi.useFakeTimers();
+    try {
+      const token = await createTestToken({ features: ["something-else"] }, "1s");
+      vi.setSystemTime(Date.now() + 1500);
+      const status = await validateLicense(token, testPublicKeyPem);
+      expect(status.active).toBe(false);
+      expect(status.expired).toBeUndefined();
     } finally {
       vi.useRealTimers();
     }
@@ -156,5 +221,44 @@ describe("validateLicense", () => {
     expect(status.active).toBe(false);
     expect(status.ver).toBe(1);
     expect(status.maxUsers).toBe(0);
+  });
+
+  it("reads a numeric paidUntil claim as paidUntilAt", async () => {
+    const { validateLicense } = await import("@/lib/license");
+    const paidUntilSeconds = Math.floor(Date.now() / 1000) + 30 * 86400;
+    const token = await createTestToken({ type: "paid", paidUntil: paidUntilSeconds }, "60d");
+    const status = await validateLicense(token, testPublicKeyPem);
+    expect(status.paidUntilAt).toBeInstanceOf(Date);
+    expect(status.paidUntilAt!.getTime()).toBe(paidUntilSeconds * 1000);
+  });
+
+  it("leaves paidUntilAt undefined when the claim is missing", async () => {
+    const { validateLicense } = await import("@/lib/license");
+    const token = await createTestToken({ type: "paid" }, "60d");
+    const status = await validateLicense(token, testPublicKeyPem);
+    expect(status.paidUntilAt).toBeUndefined();
+  });
+
+  it("ignores a non-numeric paidUntil claim (additive tolerance)", async () => {
+    const { validateLicense } = await import("@/lib/license");
+    const token = await createTestToken({ type: "paid", paidUntil: "2027-01-01" }, "60d");
+    const status = await validateLicense(token, testPublicKeyPem);
+    expect(status.active).toBe(true);
+    expect(status.paidUntilAt).toBeUndefined();
+  });
+
+  it("preserves paidUntilAt on an expired token", async () => {
+    const { validateLicense } = await import("@/lib/license");
+    vi.useFakeTimers();
+    try {
+      const paidUntilSeconds = Math.floor(Date.now() / 1000) - 86400;
+      const token = await createTestToken({ type: "paid", paidUntil: paidUntilSeconds }, "1s");
+      vi.setSystemTime(Date.now() + 1500);
+      const status = await validateLicense(token, testPublicKeyPem);
+      expect(status.expired).toBe(true);
+      expect(status.paidUntilAt!.getTime()).toBe(paidUntilSeconds * 1000);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
