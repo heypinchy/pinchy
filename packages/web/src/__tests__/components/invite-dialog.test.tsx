@@ -16,16 +16,23 @@ function resolveUrl(url: string | URL | Request): string {
 
 function mockFetchForInvite(
   inviteResponse: { ok: boolean; json: () => Promise<unknown> },
-  options?: { enterprise?: boolean; groups?: { id: string; name: string }[] }
+  options?: {
+    enterprise?: boolean;
+    groups?: { id: string; name: string }[];
+    maxUsers?: number;
+    seatsUsed?: number;
+  }
 ) {
   const enterprise = options?.enterprise ?? false;
   const groups = options?.groups ?? [];
+  const maxUsers = options?.maxUsers ?? 0;
+  const seatsUsed = options?.seatsUsed ?? 0;
   return (url: string | URL | Request) => {
     const urlStr = resolveUrl(url);
     if (urlStr.includes("/api/enterprise/status")) {
       return Promise.resolve({
         ok: true,
-        json: async () => ({ enterprise }),
+        json: async () => ({ enterprise, maxUsers, seatsUsed }),
       } as Response);
     }
     if (urlStr.includes("/api/groups")) {
@@ -142,6 +149,60 @@ describe("InviteDialog", () => {
 
     await waitFor(() => {
       expect(screen.getByText("Invite limit reached")).toBeInTheDocument();
+    });
+  });
+
+  it("shows a factual notice inside the grace window (§ 5)", async () => {
+    fetchSpy.mockImplementation(
+      mockFetchForInvite(
+        { ok: true, json: async () => ({}) },
+        { enterprise: true, maxUsers: 10, seatsUsed: 11 }
+      )
+    );
+    render(<InviteDialog open={true} onOpenChange={vi.fn()} />);
+    await waitFor(() => {
+      expect(screen.getByText(/You're using 11 of 10 licensed seats\./)).toBeInTheDocument();
+    });
+    expect(
+      screen.getByText(/Grace seats keep a new hire from waiting on procurement\./)
+    ).toBeInTheDocument();
+    // The form still works inside the grace window.
+    expect(screen.getByRole("button", { name: "Create Invite" })).toBeEnabled();
+  });
+
+  it("shows no seat notice at or below 100%", async () => {
+    fetchSpy.mockImplementation(
+      mockFetchForInvite(
+        { ok: true, json: async () => ({}) },
+        { enterprise: true, maxUsers: 10, seatsUsed: 10 }
+      )
+    );
+    render(<InviteDialog open={true} onOpenChange={vi.fn()} />);
+    await waitFor(() => {
+      expect(screen.getByRole("button", { name: "Create Invite" })).toBeInTheDocument();
+    });
+    expect(screen.queryByText(/licensed seats/)).not.toBeInTheDocument();
+  });
+
+  it("prefers the structured message of a seat-cap 403", async () => {
+    const user = userEvent.setup();
+    fetchSpy.mockImplementation(
+      mockFetchForInvite({
+        ok: false,
+        json: async () => ({
+          error: "Seat limit reached",
+          message:
+            "Your license includes 10 seats with grace up to 12. Remove an existing user or pending invitation, or email sales@heypinchy.com for a quote you can accept online.",
+          seatsUsed: 12,
+          maxUsers: 10,
+          graceCap: 12,
+        }),
+      })
+    );
+    render(<InviteDialog open={true} onOpenChange={vi.fn()} />);
+    await user.click(screen.getByRole("button", { name: "Create Invite" }));
+    await waitFor(() => {
+      expect(screen.getByText(/grace up to 12/)).toBeInTheDocument();
     });
   });
 

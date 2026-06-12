@@ -51,6 +51,7 @@ export function InviteDialog({ open, onOpenChange }: InviteDialogProps) {
   const [creating, setCreating] = useState(false);
   const { isCopied: copied, copy: copyInviteLink } = useCopyToClipboard();
   const [isEnterprise, setIsEnterprise] = useState<boolean | null>(null);
+  const [seatInfo, setSeatInfo] = useState<{ maxUsers: number; seatsUsed: number } | null>(null);
   const [groups, setGroups] = useState<{ id: string; name: string }[]>([]);
   const [selectedGroupIds, setSelectedGroupIds] = useState<string[]>([]);
 
@@ -79,7 +80,12 @@ export function InviteDialog({ open, onOpenChange }: InviteDialogProps) {
     if (!open) return;
     fetch("/api/enterprise/status")
       .then((r) => r.json())
-      .then((d) => setIsEnterprise(d.enterprise))
+      .then((d) => {
+        setIsEnterprise(d.enterprise);
+        if (typeof d.maxUsers === "number" && typeof d.seatsUsed === "number") {
+          setSeatInfo({ maxUsers: d.maxUsers, seatsUsed: d.seatsUsed });
+        }
+      })
       .catch(() => setIsEnterprise(false));
   }, [open]);
 
@@ -108,7 +114,9 @@ export function InviteDialog({ open, onOpenChange }: InviteDialogProps) {
         setInviteLink(buildInviteUrl(window.location.origin, data.token));
       } else {
         const data = await res.json();
-        setError(data.error || "Failed to create invite");
+        // Seat-cap 403s carry an actionable message (quote path, § 5) —
+        // prefer it over the terse error code.
+        setError(data.message || data.error || "Failed to create invite");
       }
     } catch {
       setError("Failed to create invite");
@@ -147,6 +155,16 @@ export function InviteDialog({ open, onOpenChange }: InviteDialogProps) {
           <DialogTitle>Invite User</DialogTitle>
           <DialogDescription>Create an invite link to add a new user.</DialogDescription>
         </DialogHeader>
+
+        {!inviteLink &&
+          seatInfo &&
+          seatInfo.maxUsers > 0 &&
+          seatInfo.seatsUsed > seatInfo.maxUsers && (
+            <div className="rounded-md border bg-muted p-3 text-sm text-muted-foreground">
+              You&apos;re using {seatInfo.seatsUsed} of {seatInfo.maxUsers} licensed seats. Grace
+              seats keep a new hire from waiting on procurement.
+            </div>
+          )}
 
         {inviteLink ? (
           <div className="space-y-4">

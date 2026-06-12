@@ -745,11 +745,51 @@ describe("SettingsUsers", () => {
     expect(await screen.findByText(/7 of 10 seats used/i)).toBeInTheDocument();
   });
 
-  it("disables the invite button when at the cap", async () => {
+  it("keeps the invite button enabled at 100% (grace window, § 5)", async () => {
     mockFetchForUsers([], [], { enterprise: true, maxUsers: 10, seatsUsed: 10 });
     render(<SettingsUsers currentUserId="u1" />);
     const inviteBtn = await screen.findByRole("button", { name: /invite user/i });
-    expect(inviteBtn).toBeDisabled();
+    expect(inviteBtn).toBeEnabled();
+  });
+
+  it("shows a factual grace notice with quote CTAs when over the cap — never red", async () => {
+    mockFetchForUsers([], [], { enterprise: true, maxUsers: 10, seatsUsed: 11 });
+    render(<SettingsUsers currentUserId="u1" />);
+    const counter = await screen.findByText(/11 of 10 seats used/i);
+    expect(counter.closest("div")!.className).not.toContain("destructive");
+    expect(
+      screen.getByText(/Grace seats keep a new hire from waiting on procurement/i)
+    ).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: /email us for a quote/i })).toHaveAttribute(
+      "href",
+      "mailto:sales@heypinchy.com?subject=Pinchy%20seats%20quote%20request"
+    );
+    expect(await screen.findByRole("button", { name: /invite user/i })).toBeEnabled();
+  });
+
+  it("opens the quote dialog instead of the invite dialog beyond the grace cap", async () => {
+    const user = userEvent.setup();
+    mockFetchForUsers([], [], { enterprise: true, maxUsers: 10, seatsUsed: 12 });
+    render(<SettingsUsers currentUserId="u1" />);
+    const inviteBtn = await screen.findByRole("button", { name: /invite user/i });
+    expect(inviteBtn).toBeEnabled();
+    await user.click(inviteBtn);
+
+    expect(screen.getByText(/Need more than 10 seats\?/)).toBeInTheDocument();
+    expect(screen.getByText(/Email us for a quote you can accept online/i)).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: /email sales@heypinchy.com/i })).toHaveAttribute(
+      "href",
+      "mailto:sales@heypinchy.com?subject=Pinchy%20seats%20quote%20request"
+    );
+    expect(screen.getByRole("link", { name: /book a call/i })).toHaveAttribute(
+      "href",
+      "https://calendly.com/clemenshelm/pinchy-demo"
+    );
+    // The invite form did not open.
+    expect(screen.queryByLabelText(/email \(optional\)/i)).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Not now" }));
+    expect(screen.queryByText(/Need more than 10 seats\?/)).not.toBeInTheDocument();
   });
 
   it("hides banner when license is unlimited", async () => {

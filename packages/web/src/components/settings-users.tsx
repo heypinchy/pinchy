@@ -14,13 +14,15 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { InviteDialog } from "@/components/invite-dialog";
+import { SeatLimitDialog } from "@/components/seat-limit-dialog";
 import { UserDetailSheet } from "@/components/user-detail-sheet";
 import { StatusBadge } from "@/components/status-badge";
 import { toast } from "sonner";
 import { mergeUserList, type UserListItem, type UserGroup } from "@/lib/user-list";
 import { useCopyToClipboard } from "@/hooks/use-copy-to-clipboard";
 import { buildInviteUrl } from "@/lib/invite-url";
-import { cn } from "@/lib/utils";
+import { evaluateSeatPressure } from "@/lib/seat-grace";
+import { SALES_MAILTO, CALENDLY_URL } from "@/lib/conversion-links";
 
 interface SettingsUsersProps {
   currentUserId: string;
@@ -76,6 +78,7 @@ export function SettingsUsers({ currentUserId, refreshKey }: SettingsUsersProps)
   });
   const [loading, setLoading] = useState(true);
   const [inviteOpen, setInviteOpen] = useState(false);
+  const [seatLimitOpen, setSeatLimitOpen] = useState(false);
   const [resetLink, setResetLink] = useState<string | null>(null);
   const { isCopied: isResetLinkCopied, copy: copyResetLink } = useCopyToClipboard();
   const [selectedUser, setSelectedUser] = useState<(UserListItem & { kind: "user" }) | null>(null);
@@ -83,9 +86,8 @@ export function SettingsUsers({ currentUserId, refreshKey }: SettingsUsersProps)
   const [isEnterprise, setIsEnterprise] = useState(false);
   const [seatInfo, setSeatInfo] = useState<{ maxUsers: number; seatsUsed: number } | null>(null);
 
-  const atCap =
-    seatInfo !== null && seatInfo.maxUsers > 0 && seatInfo.seatsUsed >= seatInfo.maxUsers;
-  const showBanner = seatInfo !== null && seatInfo.maxUsers > 0;
+  const pressure = seatInfo ? evaluateSeatPressure(seatInfo.seatsUsed, seatInfo.maxUsers) : null;
+  const showCounter = seatInfo !== null && seatInfo.maxUsers > 0;
 
   const fetchUsers = useCallback(async () => {
     try {
@@ -165,13 +167,15 @@ export function SettingsUsers({ currentUserId, refreshKey }: SettingsUsersProps)
         <CardHeader className="flex flex-row items-center justify-between">
           <CardTitle>Users</CardTitle>
           <Button
-            onClick={() => setInviteOpen(true)}
-            disabled={atCap}
-            title={
-              atCap
-                ? "Seat limit reached — remove an existing user or pending invitation first."
-                : undefined
-            }
+            onClick={() => {
+              // Beyond the grace cap the endpoint would reject the invite —
+              // surface the quote path instead of a doomed form (§ 5).
+              if (pressure && !pressure.inviteAllowed) {
+                setSeatLimitOpen(true);
+              } else {
+                setInviteOpen(true);
+              }
+            }}
           >
             Invite User
           </Button>
@@ -192,18 +196,27 @@ export function SettingsUsers({ currentUserId, refreshKey }: SettingsUsersProps)
             </div>
           )}
 
-          {showBanner && (
-            <div
-              className={cn(
-                "mb-4 rounded-md border p-3 text-sm",
-                atCap
-                  ? "border-destructive/50 bg-destructive/5 text-destructive-foreground"
-                  : "bg-muted text-muted-foreground"
+          {showCounter && (
+            <div className="mb-4 rounded-md border p-3 text-sm bg-muted text-muted-foreground">
+              {`${seatInfo!.seatsUsed} of ${seatInfo!.maxUsers} seats used.`}
+              {pressure?.overCap && (
+                <>
+                  {" "}
+                  Grace seats keep a new hire from waiting on procurement.{" "}
+                  <a href={SALES_MAILTO} className="underline">
+                    Email us for a quote
+                  </a>{" "}
+                  <span className="opacity-60">·</span>{" "}
+                  <a
+                    href={CALENDLY_URL}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="underline"
+                  >
+                    Book a call
+                  </a>
+                </>
               )}
-            >
-              {atCap
-                ? `${seatInfo!.seatsUsed} of ${seatInfo!.maxUsers} seats used. Remove a user or pending invitation to invite someone new, or upgrade your subscription.`
-                : `${seatInfo!.seatsUsed} of ${seatInfo!.maxUsers} seats used.`}
             </div>
           )}
 
@@ -320,6 +333,15 @@ export function SettingsUsers({ currentUserId, refreshKey }: SettingsUsersProps)
           if (!open) fetchUsers();
         }}
       />
+
+      {seatInfo && pressure?.graceCap !== null && pressure !== null && (
+        <SeatLimitDialog
+          open={seatLimitOpen}
+          onOpenChange={setSeatLimitOpen}
+          maxUsers={seatInfo.maxUsers}
+          graceCap={pressure.graceCap}
+        />
+      )}
 
       {selectedUser && (
         <UserDetailSheet

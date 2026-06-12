@@ -71,6 +71,136 @@ describe("SettingsLicense", () => {
     expect(screen.getByLabelText(/license key/i)).toBeInTheDocument();
   });
 
+  it("links community instances to the pricing page with settings UTM", () => {
+    render(
+      <SettingsLicense
+        initialLicense={{
+          enterprise: false,
+          state: "community",
+          type: null,
+          org: null,
+          expiresAt: null,
+          paidUntil: null,
+          daysRemaining: null,
+          managedByEnv: false,
+          maxUsers: 0,
+          seatsUsed: 0,
+          hasGatedConfig: false,
+        }}
+      />
+    );
+    const link = screen.getByRole("link", { name: /see pricing/i });
+    expect(link).toHaveAttribute(
+      "href",
+      "https://heypinchy.com/pricing?utm_source=pinchy-app&utm_medium=settings-license&utm_campaign=pro-10"
+    );
+  });
+
+  it("shows the license period end for paid keys with paidUntil", () => {
+    render(
+      <SettingsLicense
+        initialLicense={{
+          enterprise: true,
+          state: "paid",
+          type: "paid",
+          org: "Acme Corp",
+          expiresAt: "2027-02-01T00:00:00Z",
+          paidUntil: "2027-01-01T00:00:00Z",
+          daysRemaining: 235,
+          managedByEnv: false,
+          maxUsers: 10,
+          seatsUsed: 3,
+          hasGatedConfig: false,
+        }}
+      />
+    );
+    expect(
+      screen.getByText(/License period ends Jan 1, 2027\. Grace until Feb 1, 2027\./)
+    ).toBeInTheDocument();
+  });
+
+  it("shows the grace copy and a renew link during grace", () => {
+    render(
+      <SettingsLicense
+        initialLicense={{
+          enterprise: true,
+          state: "grace",
+          type: "paid",
+          org: "Acme Corp",
+          expiresAt: "2026-07-01T00:00:00Z",
+          paidUntil: "2026-06-01T00:00:00Z",
+          daysRemaining: 19,
+          managedByEnv: false,
+          maxUsers: 10,
+          seatsUsed: 3,
+          hasGatedConfig: false,
+        }}
+      />
+    );
+    expect(
+      screen.getByText(/License period ended Jun 1, 2026\. Grace until Jul 1, 2026\./)
+    ).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: /renew/i })).toHaveAttribute(
+      "href",
+      "https://buy.heypinchy.com/my?utm_source=pinchy-app&utm_medium=settings-license&utm_campaign=pro-10"
+    );
+  });
+
+  it("shows the expired copy with a renew link for an expired paid key", () => {
+    render(
+      <SettingsLicense
+        initialLicense={{
+          enterprise: false,
+          state: "expired",
+          type: "paid",
+          org: "Acme Corp",
+          expiresAt: "2026-05-31T00:00:00Z",
+          paidUntil: "2026-05-01T00:00:00Z",
+          daysRemaining: 0,
+          managedByEnv: false,
+          maxUsers: 10,
+          seatsUsed: 3,
+          hasGatedConfig: true,
+        }}
+      />
+    );
+    expect(
+      screen.getByText(
+        /Your license period ended on May 1, 2026\. Existing access restrictions remain enforced; management features are locked\./
+      )
+    ).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: /renew/i })).toBeInTheDocument();
+    // A new key can be entered right here.
+    expect(screen.getByLabelText(/license key/i)).toBeInTheDocument();
+  });
+
+  it("shows the trial-expired copy with a pricing link", () => {
+    render(
+      <SettingsLicense
+        initialLicense={{
+          enterprise: false,
+          state: "trial-expired",
+          type: "trial",
+          org: "Acme Corp",
+          expiresAt: "2026-06-01T00:00:00Z",
+          paidUntil: null,
+          daysRemaining: 0,
+          managedByEnv: false,
+          maxUsers: 50,
+          seatsUsed: 3,
+          hasGatedConfig: false,
+        }}
+      />
+    );
+    expect(
+      screen.getByText(/Your trial ended on Jun 1, 2026\. Your configuration is preserved\./)
+    ).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: /see pricing/i })).toHaveAttribute(
+      "href",
+      "https://heypinchy.com/pricing?utm_source=pinchy-app&utm_medium=settings-license&utm_campaign=pro-10"
+    );
+  });
+
   it("shows license info when enterprise is true", async () => {
     render(
       <SettingsLicense

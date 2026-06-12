@@ -7,6 +7,15 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
 import type { LicenseInfo } from "@/lib/enterprise";
+import { PRICING_URL, PORTAL_URL, conversionLink } from "@/lib/conversion-links";
+
+function formatDate(iso: string): string {
+  return new Date(iso).toLocaleDateString("en-US", {
+    year: "numeric",
+    month: "short",
+    day: "numeric",
+  });
+}
 
 interface SettingsLicenseProps {
   onEnterpriseActivated?: () => void;
@@ -95,15 +104,30 @@ export function SettingsLicense({ onEnterpriseActivated, initialLicense }: Setti
               </Badge>
               {license.org && <span className="text-sm text-muted-foreground">{license.org}</span>}
             </div>
-            {license.expiresAt && (
+            {license.paidUntil && license.expiresAt ? (
+              // Paid keys carry paidUntil; all copy reckons from it (§ 1):
+              // exp is paidUntil plus the 30-day grace window.
               <p className="text-sm">
-                Expires:{" "}
-                {new Date(license.expiresAt).toLocaleDateString("en-US", {
-                  year: "numeric",
-                  month: "short",
-                  day: "numeric",
-                })}{" "}
-                ({license.daysRemaining} days remaining)
+                License period {license.state === "grace" ? "ended" : "ends"}{" "}
+                {formatDate(license.paidUntil)}. Grace until {formatDate(license.expiresAt)}.
+              </p>
+            ) : (
+              license.expiresAt && (
+                <p className="text-sm">
+                  Expires: {formatDate(license.expiresAt)} ({license.daysRemaining} days remaining)
+                </p>
+              )
+            )}
+            {license.state === "grace" && (
+              <p className="text-sm">
+                <a
+                  href={conversionLink(PORTAL_URL, "settings-license", "pro-10")}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="text-primary underline"
+                >
+                  Renew
+                </a>
               </p>
             )}
             {license.maxUsers > 0 && (
@@ -125,18 +149,43 @@ export function SettingsLicense({ onEnterpriseActivated, initialLicense }: Setti
           </>
         ) : (
           <div className="space-y-2">
+            {license?.state === "expired" && (
+              <p className="text-sm">
+                Your license period ended
+                {(license.paidUntil ?? license.expiresAt) &&
+                  ` on ${formatDate(license.paidUntil ?? license.expiresAt!)}`}
+                . Existing access restrictions remain enforced; management features are locked.
+              </p>
+            )}
+            {license?.state === "trial-expired" && (
+              <p className="text-sm">
+                Your trial ended{license.expiresAt && ` on ${formatDate(license.expiresAt)}`}. Your
+                configuration is preserved.
+              </p>
+            )}
             <p className="text-sm text-muted-foreground">
-              No active license key. Enter a key to enable Enterprise features.
+              No active license key. Enter a key to enable Pro features.
             </p>
             <p className="text-sm">
-              <a
-                href="https://heypinchy.com/enterprise?utm_source=app&utm_medium=settings"
-                target="_blank"
-                rel="noopener noreferrer"
-                className="text-primary underline"
-              >
-                Learn more about Enterprise
-              </a>
+              {license?.state === "expired" ? (
+                <a
+                  href={conversionLink(PORTAL_URL, "settings-license", "pro-10")}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="text-primary underline"
+                >
+                  Renew
+                </a>
+              ) : (
+                <a
+                  href={conversionLink(PRICING_URL, "settings-license", "pro-10")}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="text-primary underline"
+                >
+                  See pricing
+                </a>
+              )}
             </p>
           </div>
         )}
