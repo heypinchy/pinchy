@@ -10,7 +10,7 @@ import type { ModelCapabilities } from "@/lib/model-capabilities/types";
 import { capabilityField } from "@/lib/model-capabilities/capability-field";
 
 type AgentRef = { id: string; name: string };
-type ProviderModel = { id: string; name: string; capabilities: ModelCapabilities };
+type ProviderModel = { id: string; name: string; capabilities?: ModelCapabilities };
 type ProviderGroup = { id: string; name: string; models: ProviderModel[] };
 
 type RecoveryPanelProps = {
@@ -57,7 +57,9 @@ export function RecoveryPanel({
 
   const noProviderSupportsCapability =
     providers.length === 0 ||
-    providers.every((p) => p.models.every((m) => !capabilityField(m.capabilities, capability)));
+    providers.every((p) =>
+      p.models.every((m) => !m.capabilities || !capabilityField(m.capabilities, capability))
+    );
 
   return (
     <div

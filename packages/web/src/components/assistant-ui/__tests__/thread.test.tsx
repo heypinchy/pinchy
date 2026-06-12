@@ -187,12 +187,19 @@ vi.mock("@/components/recovery-panel", () => ({
     filename,
     onDismiss,
     onRemoveAttachment,
+    providers,
   }: {
     filename: string;
     onDismiss: () => void;
     onRemoveAttachment: () => void;
+    providers: { id: string }[];
   }) => (
-    <div role="region" aria-label="Can't be sent" data-testid="recovery-panel">
+    <div
+      role="region"
+      aria-label="Can't be sent"
+      data-testid="recovery-panel"
+      data-provider-ids={providers.map((p) => p.id).join(",")}
+    >
       <span>{filename}</span>
       <button aria-label="Dismiss" onClick={onDismiss}>
         Dismiss
@@ -793,6 +800,80 @@ describe("Composer attachment capability hard-block", () => {
 
     expect(await screen.findByRole("region", { name: /can't be sent/i })).toBeInTheDocument();
     expect(screen.getByText("screenshot.png")).toBeInTheDocument();
+  });
+
+  // Regression guard for the v0.5.7 production bug, part 2: the recovery
+  // dropdown must list models of CONFIGURED providers only. Building it from
+  // the raw capability map (the full seeded catalog) offered models of
+  // unconfigured providers — and updating an agent to one of those broke it.
+  it("feeds the RecoveryPanel from /api/providers/models, not the raw capability map", async () => {
+    const pngFile = new File(["data"], "photo.png", { type: "image/png" });
+
+    const { useComposerRuntime } = await import("@assistant-ui/react");
+    vi.mocked(useComposerRuntime).mockReturnValue({
+      getState: () => ({
+        text: "hello",
+        attachments: [{ file: pngFile }],
+      }),
+      setText: vi.fn(),
+      addAttachment: vi.fn(),
+    } as never);
+
+    // Capability map contains the full catalog — including anthropic, whose
+    // provider is NOT configured. Only ollama-cloud is configured.
+    const { useModelCapabilities } = await import("@/hooks/use-model-capabilities");
+    vi.mocked(useModelCapabilities).mockReturnValue({
+      data: {
+        "ollama-cloud/text-only": { vision: false, longContext: false, tools: true },
+        "ollama-cloud/qwen3-vl:235b": { vision: true, longContext: true, tools: true },
+        "anthropic/claude-sonnet-4-6": { vision: true, longContext: true, tools: true },
+      },
+      isLoading: false,
+      error: undefined,
+      refetch: vi.fn(),
+    });
+
+    const { apiGet } = await import("@/lib/api-client");
+    vi.mocked(apiGet).mockResolvedValue({
+      providers: [
+        {
+          id: "ollama-cloud",
+          name: "Ollama Cloud",
+          models: [
+            { id: "ollama-cloud/text-only", name: "text-only" },
+            { id: "ollama-cloud/qwen3-vl:235b", name: "qwen3-vl:235b" },
+          ],
+        },
+      ],
+    });
+
+    const { useAgentsContext } = await import("@/components/agents-provider");
+    vi.mocked(useAgentsContext).mockReturnValue({
+      agents: [],
+      sortedAgents: [],
+      getAgent: vi.fn(() => ({ id: "agent-1", model: "ollama-cloud/text-only" }) as never),
+    });
+
+    const { ChatStatusContext, AgentIdContext } = await import("@/components/chat");
+    const { Composer } = await import("@/components/assistant-ui/thread");
+
+    render(
+      <AgentIdContext.Provider value="agent-1">
+        <ChatStatusContext.Provider value={{ kind: "ready" }}>
+          <Composer />
+        </ChatStatusContext.Provider>
+      </AgentIdContext.Provider>
+    );
+
+    const form = document.querySelector("form")!;
+    form.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+
+    const panel = await screen.findByTestId("recovery-panel");
+    await waitFor(() => {
+      expect(vi.mocked(apiGet)).toHaveBeenCalledWith("/api/providers/models");
+      // anthropic (unconfigured) must NOT appear even though it's in the map.
+      expect(panel.getAttribute("data-provider-ids")).toBe("ollama-cloud");
+    });
   });
 
   // Regression guard for the v0.5.7 production bug: PDFs are analyzed via

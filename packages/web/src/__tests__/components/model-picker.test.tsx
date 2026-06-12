@@ -78,6 +78,40 @@ describe("ModelPicker", () => {
     ).toBeInTheDocument();
   });
 
+  it("filters out models with UNKNOWN capabilities when filterToCompatible is set — undefined must not pass as compatible", async () => {
+    // Covers the join-drift window: a model can appear in /api/providers/models
+    // before the 60s-cached capability map knows it. Letting it through could
+    // route an image to a text-only model — exactly what the filter prevents.
+    const providers = [
+      {
+        id: "ollama-cloud",
+        name: "Ollama Cloud",
+        models: [
+          { id: "ollama-cloud/brand-new", name: "brand-new" },
+          {
+            id: "ollama-cloud/qwen3-vl:235b",
+            name: "qwen3-vl:235b",
+            capabilities: { vision: true, longContext: true, tools: true },
+          },
+        ],
+      },
+    ];
+    render(
+      <ModelPicker
+        value=""
+        onChange={() => {}}
+        providers={providers}
+        requiredCapabilities={["vision"]}
+        filterToCompatible
+      />
+    );
+
+    await userEvent.click(screen.getByRole("combobox"));
+
+    expect(screen.getByText("qwen3-vl:235b")).toBeInTheDocument();
+    expect(screen.queryByText("brand-new")).not.toBeInTheDocument();
+  });
+
   it("shows a deprecated fallback entry when the current model is no longer in the allowlist", async () => {
     render(
       <ModelPicker

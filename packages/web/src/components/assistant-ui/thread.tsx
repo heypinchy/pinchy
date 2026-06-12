@@ -58,10 +58,20 @@ import { useModelCapabilities } from "@/hooks/use-model-capabilities";
 import { useAgentsContext } from "@/components/agents-provider";
 import { requiredCapabilityForFile } from "@/lib/attachment-capability";
 import { RecoveryPanel } from "@/components/recovery-panel";
-import { apiPatch } from "@/lib/api-client";
+import { apiGet, apiPatch } from "@/lib/api-client";
+import { attachCapabilities } from "@/lib/model-capabilities/attach-capabilities";
+import { toast } from "sonner";
 import { parseUnsupportedAttachmentError } from "@/lib/chat-errors";
 
 export type RecoveryStateSetter = (state: { files: File[]; model: string } | null) => void;
+
+// Shape of /api/providers/models — configured providers with their live model
+// lists. Capabilities are joined client-side via attachCapabilities().
+type RecoveryProviderGroup = {
+  id: string;
+  name: string;
+  models: { id: string; name: string; compatible?: boolean; incompatibleReason?: string }[];
+};
 
 type RecoveryContextValue = {
   recoveryState: { files: File[]; model: string } | null;
@@ -394,6 +404,7 @@ export const Composer: FC = () => {
   // When rendered inside ThreadInner, use the shared context state so that
   // AssistantErrorOrContent can also trigger the recovery panel. When rendered
   // standalone (e.g. in tests), fall back to local state.
+  const [recoveryProviders, setRecoveryProviders] = useState<RecoveryProviderGroup[]>([]);
   const recoveryState = recoveryCtx ? recoveryCtx.recoveryState : localRecoveryState;
   const setRecoveryState: RecoveryStateSetter = recoveryCtx
     ? recoveryCtx.setRecoveryState
@@ -479,29 +490,31 @@ export const Composer: FC = () => {
     maybeBlock(e);
   }
 
-  // Shape flat capability map into ProviderGroup[] for ModelPicker
-  const providers = (() => {
-    if (!capabilities) return [];
-    const groups = new Map<
-      string,
-      {
-        id: string;
-        name: string;
-        models: { id: string; name: string; capabilities: (typeof capabilities)[string] }[];
-      }
-    >();
-    for (const [qualifiedId, caps] of Object.entries(capabilities)) {
-      const slashIdx = qualifiedId.indexOf("/");
-      if (slashIdx === -1) continue;
-      const providerId = qualifiedId.slice(0, slashIdx);
-      const modelId = qualifiedId.slice(slashIdx + 1);
-      if (!groups.has(providerId)) {
-        groups.set(providerId, { id: providerId, name: providerId, models: [] });
-      }
-      groups.get(providerId)!.models.push({ id: qualifiedId, name: modelId, capabilities: caps });
-    }
-    return Array.from(groups.values());
-  })();
+  // The recovery dropdown must offer only models the agent can actually be
+  // switched to — i.e. models of CONFIGURED providers, the same source the
+  // agent settings use (/api/providers/models). The capability map alone is
+  // the full seeded catalog and would offer models of unconfigured providers
+  // (the v0.5.7 broken-agent trap). Fetched lazily when the panel opens; the
+  // capability join lights up the picker's filter and icons.
+  const panelOpen = recoveryState !== null;
+  useEffect(() => {
+    if (!panelOpen) return;
+    let cancelled = false;
+    apiGet<{ providers: RecoveryProviderGroup[] }>("/api/providers/models")
+      .then((res) => {
+        if (!cancelled) setRecoveryProviders(res.providers ?? []);
+      })
+      .catch((e: unknown) => {
+        if (cancelled) return;
+        setRecoveryProviders([]);
+        toast.error(e instanceof Error ? e.message : "Failed to load available models");
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [panelOpen]);
+
+  const providers = attachCapabilities(recoveryProviders, capabilities);
 
   // Typing is always allowed — only the send button reflects connection
   // state. A reconnect mid-sentence must not block the user from finishing
