@@ -164,6 +164,21 @@ export const TOOL_CAPABLE_OLLAMA_CLOUD_MODELS = [
     vision: true,
   },
   {
+    // Non-thinking kimi-k2 line (the thinking variant, kimi-k2-thinking, is
+    // NOT in this catalog: removed in #305 for HTTP 500s, and a 2026-06-11
+    // re-probe showed every request now fails HTTP 400 "prompt too long" even
+    // for ~1k-token prompts — its serving-side context accounting is broken).
+    // kimi-k2:1t itself probed clean against the live API on 2026-06-12:
+    // structured tool_calls in 4/4 single-turn rounds plus a clean multi-turn
+    // follow-up. Text-only input; library page: 256K context, "tools" tag
+    // without "thinking".
+    id: "kimi-k2:1t",
+    contextWindow: 262144,
+    maxTokens: 8192,
+    reasoning: false,
+    vision: false,
+  },
+  {
     id: "minimax-m2",
     contextWindow: 204800,
     maxTokens: 8192,
@@ -242,6 +257,16 @@ export const TOOL_CAPABLE_OLLAMA_CLOUD_MODELS = [
   },
   {
     id: "nemotron-3-super",
+    contextWindow: 262144,
+    maxTokens: 8192,
+    reasoning: true,
+    vision: false,
+  },
+  {
+    // Probed clean against the live API on 2026-06-11: structured tool_calls
+    // in 4/4 single-turn rounds plus a clean multi-turn follow-up. Text-only
+    // input; library page: 256K context, "thinking" + "tools" tags.
+    id: "nemotron-3-ultra",
     contextWindow: 262144,
     maxTokens: 8192,
     reasoning: true,

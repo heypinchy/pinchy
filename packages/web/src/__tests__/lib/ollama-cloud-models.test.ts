@@ -47,14 +47,75 @@ describe("Ollama Cloud model catalog — empirically verified capabilities", () 
     expect(VISION_OLLAMA_CLOUD_MODEL_IDS.has("qwen3.5:397b")).toBe(false);
   });
 
-  it("drops qwen3-next:80b — no working tool calls on Ollama Cloud", () => {
+  it("drops qwen3-next:80b — tool calls still flaky on Ollama Cloud", () => {
     // The model is still returned by /v1/models, but on the OpenAI-completions
-    // endpoint OpenClaw uses it never emits a structured tool_call: it returns
-    // empty content or leaks a malformed `<tools> {…} </tools>` text blob with
-    // a mangled tool name, even with tool_choice:"required". Every Pinchy agent
-    // uses tools (files/context/docs), so a tool-broken model must not be
+    // endpoint OpenClaw uses it originally never emitted a structured
+    // tool_call (empty content or a malformed `<tools> {…} </tools>` text
+    // blob, even with tool_choice:"required"). A 2026-06-12 re-probe after it
+    // reappeared in the live list showed the defect is now intermittent
+    // instead of permanent: 3/4 rounds emitted clean tool_calls, but one
+    // round returned empty content with no call — the original failure mode.
+    // Every Pinchy agent uses tools (files/context/docs), so a model that
+    // silently skips a requested tool call once in four requests must not be
     // surfaced as tool-capable.
     expect(TOOL_CAPABLE_OLLAMA_CLOUD_MODEL_IDS).not.toContain("qwen3-next:80b");
+  });
+
+  it("includes nemotron-3-ultra with reasoning, text-only", () => {
+    // Library tags: "thinking tools cloud", input text-only, 256K context.
+    // Tools confirmed empirically 2026-06-11 against /v1/chat/completions:
+    // structured tool_calls in 4/4 single-turn rounds plus a clean multi-turn
+    // follow-up call after a tool result.
+    const m = byId("nemotron-3-ultra");
+    expect(m).toBeDefined();
+    expect(m!.reasoning).toBe(true);
+    expect(m!.vision).toBe(false);
+    expect(m!.contextWindow).toBe(262144);
+  });
+
+  it("includes kimi-k2:1t as tool-capable, non-reasoning, text-only", () => {
+    // Library tags: "tools cloud" (no thinking tag — the thinking variant is
+    // the separate kimi-k2-thinking, which stays out, see below), input
+    // text-only, 256K context. Tools confirmed empirically 2026-06-12:
+    // structured tool_calls in 4/4 single-turn rounds plus a clean multi-turn
+    // follow-up call after a tool result.
+    const m = byId("kimi-k2:1t");
+    expect(m).toBeDefined();
+    expect(m!.reasoning).toBe(false);
+    expect(m!.vision).toBe(false);
+    expect(m!.contextWindow).toBe(262144);
+  });
+
+  it("keeps cogito-2.1:671b out — leaks raw tool-call template text", () => {
+    // Probed 2026-06-11: in 1 of 4 rounds the model emitted a raw
+    // DeepSeek-style tool-call template (`<|tool▁calls▁begin|>…`) as plain
+    // assistant text instead of a structured tool_call. An agent on this
+    // model would intermittently print template gibberish into the chat
+    // instead of acting.
+    expect(TOOL_CAPABLE_OLLAMA_CLOUD_MODEL_IDS).not.toContain("cogito-2.1:671b");
+  });
+
+  it("keeps kimi-k2-thinking out — serving is broken (#305)", () => {
+    // Removed in #305 for HTTP 500s. Re-probed 2026-06-11: now every request
+    // fails HTTP 400 "prompt too long; exceeded max context length by 691
+    // tokens" — even for a ~1k-token prompt. The serving-side context
+    // accounting is broken, so the model is unusable regardless of tags.
+    expect(TOOL_CAPABLE_OLLAMA_CLOUD_MODEL_IDS).not.toContain("kimi-k2-thinking");
+  });
+
+  it("keeps the gemma3 family out — no usable tool path on Ollama Cloud", () => {
+    // Probed 2026-06-12. gemma3:4b leaks pseudo tool calls as a ```python
+    // text block in 4/4 rounds (no structured tool_calls). gemma3:12b
+    // returns HTTP 500 for every tools request, persisting across retries.
+    // gemma3:27b mostly emits clean single-turn tool_calls (4/4, then 3/4
+    // with one text leak on the confirmation re-run) but returns HTTP 500 as
+    // soon as the conversation history contains a tool result — reproduced
+    // across two independent runs, the same multi-turn failure mode that got
+    // kimi-k2-thinking removed in #305. Every Pinchy agent runs multi-turn
+    // tool loops, so all three stay out despite the library page's vision tag.
+    for (const id of ["gemma3:4b", "gemma3:12b", "gemma3:27b"]) {
+      expect(TOOL_CAPABLE_OLLAMA_CLOUD_MODEL_IDS).not.toContain(id);
+    }
   });
 
   it("every model declares vision and carries no dead capability fields", () => {

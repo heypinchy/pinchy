@@ -296,6 +296,7 @@ describe("fetchProviderModels", () => {
             { id: "kimi-k2-thinking" },
             { id: "kimi-k2.5" },
             { id: "kimi-k2.6" },
+            { id: "kimi-k2:1t" },
             { id: "minimax-m2" },
             { id: "minimax-m2.1" },
             { id: "minimax-m2.5" },
@@ -307,6 +308,7 @@ describe("fetchProviderModels", () => {
             { id: "mistral-large-3:675b" },
             { id: "nemotron-3-nano:30b" },
             { id: "nemotron-3-super" },
+            { id: "nemotron-3-ultra" },
             { id: "qwen3-coder-next" },
             { id: "qwen3-coder:480b" },
             { id: "qwen3-next:80b" },
@@ -314,12 +316,11 @@ describe("fetchProviderModels", () => {
             { id: "qwen3-vl:235b-instruct" },
             { id: "qwen3.5:397b" },
             { id: "rnj-1:8b" },
-            // Not tool-capable per ollama.com library pages — must be filtered out
+            // Tool-broken on the live chat/completions endpoint — must be filtered out
             { id: "cogito-2.1:671b" },
             { id: "gemma3:27b" },
             { id: "gemma3:12b" },
             { id: "gemma3:4b" },
-            { id: "kimi-k2:1t" },
           ],
         }),
         { status: 200 }
@@ -350,6 +351,7 @@ describe("fetchProviderModels", () => {
         "ollama-cloud/gpt-oss:120b",
         "ollama-cloud/kimi-k2.5",
         "ollama-cloud/kimi-k2.6",
+        "ollama-cloud/kimi-k2:1t",
         "ollama-cloud/minimax-m2",
         "ollama-cloud/minimax-m2.1",
         "ollama-cloud/minimax-m2.5",
@@ -361,6 +363,7 @@ describe("fetchProviderModels", () => {
         "ollama-cloud/mistral-large-3:675b",
         "ollama-cloud/nemotron-3-nano:30b",
         "ollama-cloud/nemotron-3-super",
+        "ollama-cloud/nemotron-3-ultra",
         "ollama-cloud/qwen3-coder-next",
         "ollama-cloud/qwen3-coder:480b",
         "ollama-cloud/qwen3-vl:235b",
@@ -372,14 +375,16 @@ describe("fetchProviderModels", () => {
     // kimi-k2-thinking removed from allowlist (#305 — Ollama Cloud returns HTTP 500 for this model)
     expect(ids).not.toContain("ollama-cloud/kimi-k2-thinking");
     // qwen3-next:80b is still returned by /v1/models but no longer allow-listed:
-    // it emits no working tool calls on the OpenAI-completions endpoint.
+    // tool calls are still flaky on the OpenAI-completions endpoint (re-probed
+    // 2026-06-12: one of four rounds returned empty content with no call).
     expect(ids).not.toContain("ollama-cloud/qwen3-next:80b");
     // minimax-m3 was added to the allowlist (vision + tools confirmed live).
     expect(ids).toContain("ollama-cloud/minimax-m3");
-    expect(ids).toHaveLength(33);
+    expect(ids).toHaveLength(35);
 
-    // Non-tool-capable models are filtered out
-    expect(ids).not.toContain("ollama-cloud/kimi-k2:1t");
+    // Tool-broken models are filtered out (probed 2026-06-12: gemma3:4b leaks
+    // pseudo tool calls as text, gemma3:12b serves HTTP 500, gemma3:27b
+    // serves HTTP 500 on multi-turn tool loops, cogito leaks template text)
     expect(ids).not.toContain("ollama-cloud/gemma3:27b");
     expect(ids).not.toContain("ollama-cloud/gemma3:12b");
     expect(ids).not.toContain("ollama-cloud/gemma3:4b");
@@ -424,7 +429,7 @@ describe("fetchProviderModels", () => {
     const ids = ollama!.models.map((m) => m.id);
     // kimi-k2-thinking removed from allowlist (#305 — Ollama Cloud returns HTTP 500 for this model)
     expect(ids).not.toContain("ollama-cloud/kimi-k2-thinking");
-    expect(ids).toHaveLength(33);
+    expect(ids).toHaveLength(35);
     expect(ids).toEqual(
       expect.arrayContaining([
         "ollama-cloud/deepseek-v3.1:671b",
@@ -443,6 +448,7 @@ describe("fetchProviderModels", () => {
         "ollama-cloud/gpt-oss:120b",
         "ollama-cloud/kimi-k2.5",
         "ollama-cloud/kimi-k2.6",
+        "ollama-cloud/kimi-k2:1t",
         "ollama-cloud/minimax-m2",
         "ollama-cloud/minimax-m2.1",
         "ollama-cloud/minimax-m2.5",
@@ -454,6 +460,7 @@ describe("fetchProviderModels", () => {
         "ollama-cloud/mistral-large-3:675b",
         "ollama-cloud/nemotron-3-nano:30b",
         "ollama-cloud/nemotron-3-super",
+        "ollama-cloud/nemotron-3-ultra",
         "ollama-cloud/qwen3-coder-next",
         "ollama-cloud/qwen3-coder:480b",
         "ollama-cloud/qwen3-vl:235b",
