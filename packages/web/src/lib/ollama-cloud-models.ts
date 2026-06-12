@@ -94,6 +94,11 @@ export const TOOL_CAPABLE_OLLAMA_CLOUD_MODELS = [
     vision: false,
   },
   {
+    // Capable vision/long-context model for chat-only agents, but it leaks
+    // tool calls as plain text ("default_api" signature) in agentic sessions —
+    // observed in production 2026-06-11. The resolver blocklist (-preview +
+    // tools) keeps it out of every tool slot; do not hand-pick it for agents
+    // that use tools.
     id: "gemini-3-flash-preview",
     contextWindow: 1048576,
     maxTokens: 65536,

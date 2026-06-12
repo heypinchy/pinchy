@@ -12,8 +12,13 @@ const RULES: BlockRule[] = [
     forbiddenWhen: ["tools"],
     reason: "DeepSeek-R1 tool-calling unreliable without reasoning:false flag",
   },
-  // Remove once pinchy#344 / openclaw#72879 (thought_signature drop) and the
-  // silent-hang variant on the reasoning+vision+tools path are resolved upstream.
+  // Do NOT remove this rule when pinchy#344 / openclaw#72879 (thought_signature
+  // drop) are fixed upstream. The plain-text tool-call leak — "default_api"
+  // calls emitted as assistant text instead of structured tool_calls — is
+  // Gemini-family model behavior, reproduced even on Google's native API
+  // (livekit/agents#5662) and observed in production on 2026-06-11
+  // (ollama-cloud/gemini-3-flash-preview). Lifting this block requires a fresh
+  // multi-round tool probe against the live endpoint, not just closed issues.
   {
     modelPattern: /-preview\b/i,
     forbiddenWhen: ["tools"],
