@@ -26,6 +26,9 @@
  *     /api/models/capabilities — returns a map where the current agent model
  *     has vision: false and a second model (vision-model/gpt-4o) has
  *     vision: true.  The real route is not hit.
+ *   - /api/providers/models is intercepted too: since the recovery dropdown
+ *     reads configured providers (not the capability map), the vision model
+ *     must appear in a provider's model list to be offered.
  *   - /api/agents/:id PATCH is intercepted and returns 200 {} so the
  *     onUpdateAgent callback resolves and the recovery panel dismisses.
  *
@@ -121,23 +124,39 @@ test.describe("capability-mismatch — block + recovery", () => {
           const url =
             typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
 
+          // Intercept /api/providers/models — the recovery dropdown's source
+          // (configured providers only). The vision model must be listed here
+          // or the panel's ModelPicker won't offer it.
+          if (url.includes("/api/providers/models")) {
+            const providersBody = {
+              providers: [
+                {
+                  id: "vision-provider",
+                  name: "Vision Provider",
+                  models: [
+                    { id: textOnlyModel, name: textOnlyModel.split("/")[1] ?? textOnlyModel },
+                    { id: visionModel, name: visionModel.split("/")[1] ?? visionModel },
+                  ],
+                },
+              ],
+            };
+            return new Response(JSON.stringify(providersBody), {
+              status: 200,
+              headers: { "Content-Type": "application/json" },
+            });
+          }
+
           // Intercept /api/models/capabilities — return a map with one
           // text-only model and one vision-capable model.
           if (url.includes("/api/models/capabilities")) {
             const body: Record<string, unknown> = {
               [textOnlyModel]: {
                 vision: false,
-                documents: false,
-                audio: false,
-                video: false,
                 longContext: false,
                 tools: true,
               },
               [visionModel]: {
                 vision: true,
-                documents: false,
-                audio: false,
-                video: false,
                 longContext: false,
                 tools: true,
               },
