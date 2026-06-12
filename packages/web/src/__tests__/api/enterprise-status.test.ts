@@ -26,7 +26,7 @@ describe("GET /api/enterprise/status", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     (getSession as ReturnType<typeof vi.fn>).mockResolvedValue({
-      user: { id: "u1" },
+      user: { id: "u1", role: "admin" },
     });
     (isKeyFromEnv as ReturnType<typeof vi.fn>).mockReturnValue(false);
   });
@@ -184,6 +184,26 @@ describe("GET /api/enterprise/status", () => {
     expect(body.paidUntil).toBe(paidUntilAt.toISOString());
     expect(body.expiresAt).toBe(expiresAt.toISOString());
     expect(body.hasGatedConfig).toBe(true);
+  });
+
+  it("does not query gated config for non-admins (only the escape hatch needs it)", async () => {
+    (getSession as ReturnType<typeof vi.fn>).mockResolvedValue({
+      user: { id: "u2", role: "member" },
+    });
+    (getLicenseStatus as ReturnType<typeof vi.fn>).mockResolvedValue({
+      active: false,
+      expired: true,
+      ver: 1,
+      maxUsers: 10,
+      features: ["enterprise"],
+      type: "paid",
+      expiresAt: new Date(Date.now() - 86400000),
+    });
+    const { GET } = await import("@/app/api/enterprise/status/route");
+    const res = await GET();
+    const body = await res.json();
+    expect(body.hasGatedConfig).toBe(false);
+    expect(hasGatedConfig).not.toHaveBeenCalled();
   });
 
   it("reports state=trial-expired for an expired trial key", async () => {
