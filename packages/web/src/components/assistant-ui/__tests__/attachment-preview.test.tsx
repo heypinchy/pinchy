@@ -218,7 +218,7 @@ describe("AttachmentPreview — amber capability warning", () => {
     expect(await screen.findByText(/doesn't support image input/i)).toBeInTheDocument();
   });
 
-  it("shows amber warning when PDF attached and model has no document support", async () => {
+  it("shows no warning for PDFs regardless of model capabilities — PDFs route via the pdf tool, not the agent model", async () => {
     mockUseMessagePartFile.mockReturnValue({
       mimeType: "application/pdf",
       filename: "report.pdf",
@@ -239,7 +239,9 @@ describe("AttachmentPreview — amber capability warning", () => {
       refetch: vi.fn(),
     });
     await renderWithModel(TEXT_ONLY_MODEL);
-    expect(await screen.findByText(/doesn't support document input/i)).toBeInTheDocument();
+    await waitFor(() => {
+      expect(screen.queryByText(/doesn't support/i)).not.toBeInTheDocument();
+    });
   });
 
   it("shows no warning when model has matching capability for image", async () => {
