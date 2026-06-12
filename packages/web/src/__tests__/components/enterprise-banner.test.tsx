@@ -134,6 +134,22 @@ describe("EnterpriseBanner", () => {
     );
   });
 
+  it("anchors the renewal banner on exp for legacy keys without paidUntil", async () => {
+    // Keys issued before the paidUntil claim existed encode no grace —
+    // exp IS the period end. Losing the reminder for those keys would be a
+    // regression for every existing paid customer.
+    await renderWithStatus(
+      statusJson({
+        paidUntil: null,
+        expiresAt: new Date(Date.now() + 10 * DAY).toISOString(),
+        daysRemaining: 10,
+      })
+    );
+    const banner = screen.getByRole("alert");
+    expect(banner).toHaveTextContent(/Your license period ends on/);
+    expect(screen.getByRole("link", { name: /renew/i })).toBeInTheDocument();
+  });
+
   it("shows the grace banner with the canonical copy", async () => {
     const paidUntil = new Date("2026-06-01T00:00:00.000Z");
     const exp = new Date("2026-07-01T00:00:00.000Z");

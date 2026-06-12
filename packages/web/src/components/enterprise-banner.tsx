@@ -82,15 +82,16 @@ function licenseBanner(license: LicenseInfo, now: Date): Banner | null {
         ],
       };
     case "paid": {
-      // Renewal reminder from paidUntil − 14d (§ 4.7) — keys without a
-      // paidUntil claim have no renewal window we could anchor on.
-      if (!paidUntil) return null;
-      const ends = new Date(paidUntil).getTime();
+      // Renewal reminder from paidUntil − 14d (§ 4.7). Keys issued before
+      // the paidUntil claim existed encode no grace — there, exp IS the
+      // period end, so the window anchors on exp instead.
+      if (!periodEnd) return null;
+      const ends = new Date(periodEnd).getTime();
       if (now.getTime() < ends - RENEWAL_WINDOW_MS) return null;
       return {
         key: "license:renewal",
         tone: "info",
-        message: `Your license period ends on ${formatDate(paidUntil)}. Your renewal key arrives by email after payment.`,
+        message: `Your license period ends on ${formatDate(periodEnd)}. Your renewal key arrives by email after payment.`,
         links: [{ label: "Renew", href: conversionLink(PORTAL_URL, "expired-banner", "pro-10") }],
       };
     }
