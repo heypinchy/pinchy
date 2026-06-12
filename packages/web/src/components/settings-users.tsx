@@ -334,7 +334,7 @@ export function SettingsUsers({ currentUserId, refreshKey }: SettingsUsersProps)
         }}
       />
 
-      {seatInfo && pressure?.graceCap !== null && pressure !== null && (
+      {seatInfo !== null && pressure !== null && pressure.graceCap !== null && (
         <SeatLimitDialog
           open={seatLimitOpen}
           onOpenChange={setSeatLimitOpen}

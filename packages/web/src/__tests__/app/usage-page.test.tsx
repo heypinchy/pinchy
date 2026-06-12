@@ -21,6 +21,7 @@ vi.mock("@/components/usage-dashboard", () => ({
 
 vi.mock("@/lib/enterprise", () => ({
   isEnterprise: vi.fn().mockResolvedValue(false),
+  getLicenseStatus: vi.fn().mockResolvedValue({ active: false, features: [], ver: 1, maxUsers: 0 }),
 }));
 
 import UsagePage from "@/app/(app)/usage/page";

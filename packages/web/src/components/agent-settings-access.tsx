@@ -11,6 +11,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { EnterpriseFeatureCard } from "@/components/enterprise-feature-card";
+import type { LicenseState } from "@/lib/license-state";
 
 interface AccessValues {
   visibility: string;
@@ -43,6 +44,8 @@ export function AgentSettingsAccess({
   const [selectedGroupIds, setSelectedGroupIds] = useState<string[]>(currentGroupIds);
   const [groups, setGroups] = useState<Group[]>([]);
   const [isEnterprise, setIsEnterprise] = useState<boolean | null>(null);
+  const [licenseState, setLicenseState] = useState<LicenseState>("community");
+  const [licensePeriodEnd, setLicensePeriodEnd] = useState<string | null>(null);
 
   // Baseline tracks the last saved server state (updates when props change after save + refetch)
   const [baselineVisibility, setBaselineVisibility] = useState(agent.visibility || "restricted");
@@ -66,7 +69,11 @@ export function AgentSettingsAccess({
   useEffect(() => {
     fetch("/api/enterprise/status")
       .then((res) => (res.ok ? res.json() : { enterprise: false }))
-      .then((data) => setIsEnterprise(data.enterprise))
+      .then((data) => {
+        setIsEnterprise(data.enterprise);
+        if (data.state) setLicenseState(data.state);
+        setLicensePeriodEnd(data.paidUntil ?? data.expiresAt ?? null);
+      })
       .catch(() => setIsEnterprise(false));
   }, []);
 
@@ -109,6 +116,8 @@ export function AgentSettingsAccess({
         description="Control which users and groups can access this agent. Set visibility to specific groups or make agents available to everyone."
         campaign="visibility"
         isAdmin={isAdmin}
+        licenseState={licenseState}
+        periodEnd={licensePeriodEnd}
       />
     );
   }

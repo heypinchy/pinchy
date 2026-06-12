@@ -19,6 +19,7 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { EnterpriseFeatureCard } from "@/components/enterprise-feature-card";
+import type { LicenseState } from "@/lib/license-state";
 import { buildChartData } from "@/lib/usage-chart-data";
 import {
   ResponsiveContainer,
@@ -89,6 +90,8 @@ interface TimeseriesResponse {
 
 interface UsageDashboardProps {
   isEnterprise?: boolean;
+  licenseState?: LicenseState;
+  licensePeriodEnd?: string | null;
 }
 
 function formatTokens(n: number): string {
@@ -142,7 +145,11 @@ function StatCard({
   );
 }
 
-export function UsageDashboard({ isEnterprise: initialEnterprise = false }: UsageDashboardProps) {
+export function UsageDashboard({
+  isEnterprise: initialEnterprise = false,
+  licenseState = "community",
+  licensePeriodEnd = null,
+}: UsageDashboardProps) {
   const [enterprise, setEnterprise] = useState(initialEnterprise);
   const [days, setDays] = useState<DaysOption>(30);
   const [selectedAgent, setSelectedAgent] = useState("all");
@@ -653,6 +660,8 @@ export function UsageDashboard({ isEnterprise: initialEnterprise = false }: Usag
                   description="See which team members use the most tokens and which agents they prefer. Identify power users and optimize costs per person."
                   campaign="analytics"
                   isAdmin
+                  licenseState={licenseState}
+                  periodEnd={licensePeriodEnd}
                 />
               )}
             </TabsContent>

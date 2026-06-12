@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import "@testing-library/jest-dom";
 
@@ -8,26 +8,12 @@ global.fetch = mockFetch;
 
 import { EnterpriseFeatureCard } from "@/components/enterprise-feature-card";
 
-function mockStatus(overrides: Record<string, unknown> = {}) {
-  mockFetch.mockResolvedValue({
-    ok: true,
-    json: async () => ({
-      enterprise: false,
-      state: "community",
-      type: null,
-      expiresAt: null,
-      paidUntil: null,
-      ...overrides,
-    }),
-  } as Response);
-}
-
 describe("EnterpriseFeatureCard", () => {
   beforeEach(() => {
     vi.clearAllMocks();
   });
 
-  it("shows only a factual notice to non-admins (no sales copy, no fetch)", () => {
+  it("shows only a factual notice to non-admins (no sales copy)", () => {
     render(
       <EnterpriseFeatureCard
         feature="Groups"
@@ -41,53 +27,62 @@ describe("EnterpriseFeatureCard", () => {
     ).toBeInTheDocument();
     expect(screen.queryByRole("link")).not.toBeInTheDocument();
     expect(screen.queryByRole("button")).not.toBeInTheDocument();
+  });
+
+  it("never fetches — license info comes from the parent via props", () => {
+    render(
+      <EnterpriseFeatureCard
+        feature="Groups"
+        description="Description here."
+        campaign="groups"
+        isAdmin={true}
+        licenseState="community"
+      />
+    );
     expect(mockFetch).not.toHaveBeenCalled();
   });
 
-  it("renders feature name, description, and Pro badge for admins", async () => {
-    mockStatus();
+  it("renders feature name, description, and Pro badge for admins", () => {
     render(
       <EnterpriseFeatureCard
         feature="Groups"
         description="Manage team groups for access control."
         campaign="groups"
         isAdmin={true}
+        licenseState="community"
       />
     );
     expect(screen.getByText("Groups")).toBeInTheDocument();
     expect(screen.getByText("Manage team groups for access control.")).toBeInTheDocument();
     expect(screen.getByText("Pro")).toBeInTheDocument();
-    await waitFor(() => expect(mockFetch).toHaveBeenCalled());
   });
 
-  it("keeps the how-to-enable instructions for admins", async () => {
-    mockStatus();
+  it("keeps the how-to-enable instructions for admins", () => {
     render(
       <EnterpriseFeatureCard
         feature="Groups"
         description="Description here."
         campaign="groups"
         isAdmin={true}
+        licenseState="community"
       />
     );
     expect(screen.getByText(/Settings → License/)).toBeInTheDocument();
     expect(screen.getByText("PINCHY_ENTERPRISE_KEY")).toBeInTheDocument();
-    await waitFor(() => expect(mockFetch).toHaveBeenCalled());
   });
 
   it("opens the cliff dialog from the trial CTA on community instances", async () => {
     const user = userEvent.setup();
-    mockStatus();
     render(
       <EnterpriseFeatureCard
         feature="Groups"
         description="Description here."
         campaign="groups"
         isAdmin={true}
+        licenseState="community"
       />
     );
-    const cta = await screen.findByRole("button", { name: /start free 30-day trial/i });
-    await user.click(cta);
+    await user.click(screen.getByRole("button", { name: /start free 30-day trial/i }));
 
     expect(screen.getByText(/Groups is included in Pinchy Pro/i)).toBeInTheDocument();
     expect(screen.getByRole("link", { name: /start free 30-day trial/i })).toHaveAttribute(
@@ -99,27 +94,36 @@ describe("EnterpriseFeatureCard", () => {
     expect(screen.queryByText(/included in Pinchy Pro/i)).not.toBeInTheDocument();
   });
 
-  it("labels the CTA 'See pricing' after an expired trial", async () => {
-    mockStatus({ state: "trial-expired", type: "trial", expiresAt: "2026-06-01T00:00:00.000Z" });
+  it("labels the CTA 'See pricing' after an expired trial", () => {
     render(
       <EnterpriseFeatureCard
         feature="Groups"
         description="Description here."
         campaign="groups"
         isAdmin={true}
+        licenseState="trial-expired"
+        periodEnd="2026-06-01T00:00:00.000Z"
       />
     );
-    expect(await screen.findByRole("button", { name: /see pricing/i })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /see pricing/i })).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /start free/i })).not.toBeInTheDocument();
   });
 
-  it("labels the CTA 'Renew' for an expired paid license", async () => {
-    mockStatus({
-      state: "expired",
-      type: "paid",
-      paidUntil: "2026-05-01T00:00:00.000Z",
-      expiresAt: "2026-05-31T00:00:00.000Z",
-    });
+  it("labels the CTA 'Renew' for an expired paid license", () => {
+    render(
+      <EnterpriseFeatureCard
+        feature="Groups"
+        description="Description here."
+        campaign="groups"
+        isAdmin={true}
+        licenseState="expired"
+        periodEnd="2026-05-01T00:00:00.000Z"
+      />
+    );
+    expect(screen.getByRole("button", { name: /renew/i })).toBeInTheDocument();
+  });
+
+  it("defaults to the community CTA when the parent provides no state", () => {
     render(
       <EnterpriseFeatureCard
         feature="Groups"
@@ -128,6 +132,6 @@ describe("EnterpriseFeatureCard", () => {
         isAdmin={true}
       />
     );
-    expect(await screen.findByRole("button", { name: /renew/i })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /start free 30-day trial/i })).toBeInTheDocument();
   });
 });
