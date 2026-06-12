@@ -228,7 +228,7 @@ export function SettingsPageContent({
 
           {isAdmin && (
             <TabsContent value="groups" keepMounted>
-              <SettingsGroups refreshKey={enterpriseRefreshKey} />
+              <SettingsGroups refreshKey={enterpriseRefreshKey} isAdmin={isAdmin} />
             </TabsContent>
           )}
 

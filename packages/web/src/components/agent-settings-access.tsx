@@ -26,6 +26,7 @@ interface AgentSettingsAccessProps {
   agent: { visibility: string };
   currentGroupIds: string[];
   onChange: (values: AccessValues, isDirty: boolean) => void;
+  isAdmin?: boolean;
 }
 
 function sortedJson(arr: string[]) {
@@ -36,6 +37,7 @@ export function AgentSettingsAccess({
   agent,
   currentGroupIds,
   onChange,
+  isAdmin = true,
 }: AgentSettingsAccessProps) {
   const [visibility, setVisibility] = useState(agent.visibility || "restricted");
   const [selectedGroupIds, setSelectedGroupIds] = useState<string[]>(currentGroupIds);
@@ -105,6 +107,8 @@ export function AgentSettingsAccess({
       <EnterpriseFeatureCard
         feature="Access Control"
         description="Control which users and groups can access this agent. Set visibility to specific groups or make agents available to everyone."
+        campaign="visibility"
+        isAdmin={isAdmin}
       />
     );
   }

@@ -651,6 +651,8 @@ export function UsageDashboard({ isEnterprise: initialEnterprise = false }: Usag
                 <EnterpriseFeatureCard
                   feature="Per-User Breakdown"
                   description="See which team members use the most tokens and which agents they prefer. Identify power users and optimize costs per person."
+                  campaign="analytics"
+                  isAdmin
                 />
               )}
             </TabsContent>

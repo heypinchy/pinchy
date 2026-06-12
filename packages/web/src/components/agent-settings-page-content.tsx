@@ -473,6 +473,7 @@ export function AgentSettingsPageContent({ initialTab }: { initialTab?: string }
                 agent={{ visibility: agent.visibility }}
                 currentGroupIds={agent.groupIds || []}
                 onChange={handleAccessChange}
+                isAdmin={isAdmin}
               />
             </TabsContent>
           )}

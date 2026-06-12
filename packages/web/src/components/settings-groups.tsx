@@ -59,9 +59,10 @@ interface GroupMember {
 
 interface SettingsGroupsProps {
   refreshKey?: number;
+  isAdmin?: boolean;
 }
 
-export function SettingsGroups({ refreshKey }: SettingsGroupsProps) {
+export function SettingsGroups({ refreshKey, isAdmin = true }: SettingsGroupsProps) {
   const [groups, setGroups] = useState<Group[]>([]);
   const [users, setUsers] = useState<User[]>([]);
   const [loading, setLoading] = useState(true);
@@ -265,6 +266,8 @@ export function SettingsGroups({ refreshKey }: SettingsGroupsProps) {
       <EnterpriseFeatureCard
         feature="Groups"
         description="Create groups to control which users can access which agents. Organize your team into departments like Engineering, Marketing, or HR, and assign agent access per group."
+        campaign="groups"
+        isAdmin={isAdmin}
       />
     );
   }

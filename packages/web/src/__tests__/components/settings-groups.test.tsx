@@ -215,7 +215,7 @@ describe("SettingsGroups", () => {
       expect(screen.getByText("Groups")).toBeInTheDocument();
     });
 
-    expect(screen.getByText("Enterprise")).toBeInTheDocument();
+    expect(screen.getByText("Pro")).toBeInTheDocument();
     expect(
       screen.getByText(/Create groups to control which users can access which agents/)
     ).toBeInTheDocument();

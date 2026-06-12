@@ -692,7 +692,7 @@ describe("UsageDashboard", () => {
       await user.click(screen.getByRole("tab", { name: "By User" }));
 
       await waitFor(() => {
-        expect(screen.getByText("Enterprise")).toBeInTheDocument();
+        expect(screen.getByText("Pro")).toBeInTheDocument();
       });
     });
 

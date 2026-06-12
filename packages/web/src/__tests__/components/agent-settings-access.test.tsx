@@ -177,7 +177,7 @@ describe("AgentSettingsAccess", () => {
       expect(screen.getByText("Access Control")).toBeInTheDocument();
     });
 
-    expect(screen.getByText("Enterprise")).toBeInTheDocument();
+    expect(screen.getByText("Pro")).toBeInTheDocument();
     expect(
       screen.getByText(/Control which users and groups can access this agent/)
     ).toBeInTheDocument();
