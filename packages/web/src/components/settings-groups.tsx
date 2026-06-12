@@ -36,6 +36,7 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { toast } from "sonner";
 import { apiPost, apiPatch, apiPut, apiDelete, ApiError } from "@/lib/api-client";
 import type { CreateGroupInput } from "@/lib/schemas/groups";
+import type { LicenseState } from "@/lib/license-state";
 
 interface Group {
   id: string;
@@ -70,6 +71,8 @@ export function SettingsGroups({ refreshKey, isAdmin = true }: SettingsGroupsPro
   const [editGroup, setEditGroup] = useState<Group | null>(null);
   const [deleteGroupId, setDeleteGroupId] = useState<string | null>(null);
   const [isEnterprise, setIsEnterprise] = useState<boolean | null>(null);
+  const [licenseState, setLicenseState] = useState<LicenseState>("community");
+  const [licensePeriodEnd, setLicensePeriodEnd] = useState<string | null>(null);
 
   // Form state
   const [formName, setFormName] = useState("");
@@ -83,7 +86,11 @@ export function SettingsGroups({ refreshKey, isAdmin = true }: SettingsGroupsPro
   useEffect(() => {
     fetch("/api/enterprise/status")
       .then((res) => (res.ok ? res.json() : { enterprise: false }))
-      .then((data) => setIsEnterprise(data.enterprise))
+      .then((data) => {
+        setIsEnterprise(data.enterprise);
+        if (data.state) setLicenseState(data.state);
+        setLicensePeriodEnd(data.paidUntil ?? data.expiresAt ?? null);
+      })
       .catch(() => setIsEnterprise(false));
   }, [refreshKey]);
 
@@ -268,6 +275,8 @@ export function SettingsGroups({ refreshKey, isAdmin = true }: SettingsGroupsPro
         description="Create groups to control which users can access which agents. Organize your team into departments like Engineering, Marketing, or HR, and assign agent access per group."
         campaign="groups"
         isAdmin={isAdmin}
+        licenseState={licenseState}
+        periodEnd={licensePeriodEnd}
       />
     );
   }

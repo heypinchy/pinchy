@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState } from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { LicenseCliffDialog } from "@/components/license-cliff-dialog";
@@ -12,11 +12,14 @@ interface EnterpriseFeatureCardProps {
   description: string;
   campaign: UtmCampaign;
   isAdmin: boolean;
-}
-
-interface CliffStatus {
-  state: LicenseState;
-  periodEnd: string | null;
+  /**
+   * Provided by the parent (which already fetched /api/enterprise/status) —
+   * the card itself never fetches. Defaults to community, the only state in
+   * which a gated surface renders without any license info.
+   */
+  licenseState?: LicenseState;
+  /** ISO date the license period ended (paidUntil, or exp as fallback). */
+  periodEnd?: string | null;
 }
 
 function ctaLabel(state: LicenseState): string {
@@ -40,21 +43,10 @@ export function EnterpriseFeatureCard({
   description,
   campaign,
   isAdmin,
+  licenseState = "community",
+  periodEnd = null,
 }: EnterpriseFeatureCardProps) {
-  const [status, setStatus] = useState<CliffStatus | null>(null);
   const [cliffOpen, setCliffOpen] = useState(false);
-
-  useEffect(() => {
-    if (!isAdmin) return;
-    fetch("/api/enterprise/status")
-      .then((res) => (res.ok ? res.json() : null))
-      .then((data) => {
-        if (data) {
-          setStatus({ state: data.state, periodEnd: data.paidUntil ?? data.expiresAt ?? null });
-        }
-      })
-      .catch(() => {});
-  }, [isAdmin]);
 
   if (!isAdmin) {
     return (
@@ -80,7 +72,7 @@ export function EnterpriseFeatureCard({
       </CardHeader>
       <CardContent className="space-y-4">
         <p className="text-muted-foreground">{description}</p>
-        {status && <Button onClick={() => setCliffOpen(true)}>{ctaLabel(status.state)}</Button>}
+        <Button onClick={() => setCliffOpen(true)}>{ctaLabel(licenseState)}</Button>
         <div className="rounded-lg border bg-muted/50 p-4 space-y-2">
           <p className="text-sm font-medium">How to enable</p>
           <p className="text-sm text-muted-foreground">
@@ -94,17 +86,15 @@ export function EnterpriseFeatureCard({
           </p>
         </div>
       </CardContent>
-      {status && (
-        <LicenseCliffDialog
-          open={cliffOpen}
-          onOpenChange={setCliffOpen}
-          feature={feature}
-          description={description}
-          campaign={campaign}
-          licenseState={status.state}
-          periodEnd={status.periodEnd}
-        />
-      )}
+      <LicenseCliffDialog
+        open={cliffOpen}
+        onOpenChange={setCliffOpen}
+        feature={feature}
+        description={description}
+        campaign={campaign}
+        licenseState={licenseState}
+        periodEnd={periodEnd}
+      />
     </Card>
   );
 }
