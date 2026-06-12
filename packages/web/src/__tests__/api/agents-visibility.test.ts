@@ -100,6 +100,7 @@ vi.mock("@/lib/settings", () => ({
 
 vi.mock("@/lib/enterprise", () => ({
   isEnterprise: vi.fn().mockResolvedValue(true),
+  getLicenseState: vi.fn().mockResolvedValue("paid"),
 }));
 
 import { auth } from "@/lib/auth";

@@ -22,12 +22,12 @@ vi.mock("@/lib/groups", () => ({
 }));
 
 vi.mock("@/lib/enterprise", () => ({
-  isEnterprise: vi.fn().mockResolvedValue(true),
+  getLicenseState: vi.fn().mockResolvedValue("paid"),
 }));
 
 import { db } from "@/db";
 import { getUserGroupIds, getAgentGroupIds, getAllAgentGroupIds } from "@/lib/groups";
-import { isEnterprise } from "@/lib/enterprise";
+import { getLicenseState } from "@/lib/enterprise";
 
 function mockSelectChain(resolvedValue: unknown) {
   vi.mocked(db.select).mockReturnValueOnce({
@@ -157,8 +157,8 @@ describe("getVisibleAgents", () => {
     expect(getAgentGroupIds).not.toHaveBeenCalled();
   });
 
-  it("member sees restricted agents when enterprise is false (graceful degradation)", async () => {
-    vi.mocked(isEnterprise).mockResolvedValueOnce(false);
+  it("member sees restricted agents on community instances (never licensed)", async () => {
+    vi.mocked(getLicenseState).mockResolvedValueOnce("community");
     vi.mocked(getUserGroupIds).mockResolvedValue([]);
     vi.mocked(getAllAgentGroupIds).mockResolvedValue(new Map());
     mockSelectChain(allAgents);
@@ -168,8 +168,8 @@ describe("getVisibleAgents", () => {
     expect(result).toContainEqual(sharedAgentRestricted);
   });
 
-  it("skips group loading for member when enterprise is false", async () => {
-    vi.mocked(isEnterprise).mockResolvedValueOnce(false);
+  it("skips group loading for member on community instances", async () => {
+    vi.mocked(getLicenseState).mockResolvedValueOnce("community");
     vi.mocked(getUserGroupIds).mockResolvedValue([]);
     vi.mocked(getAllAgentGroupIds).mockResolvedValue(new Map());
     mockSelectChain(allAgents);
@@ -178,5 +178,27 @@ describe("getVisibleAgents", () => {
 
     expect(getUserGroupIds).not.toHaveBeenCalled();
     expect(getAllAgentGroupIds).not.toHaveBeenCalled();
+  });
+
+  it("keeps restricted agents hidden when the license is expired (fail closed, § 5)", async () => {
+    vi.mocked(getLicenseState).mockResolvedValueOnce("expired");
+    vi.mocked(getUserGroupIds).mockResolvedValue([]);
+    vi.mocked(getAllAgentGroupIds).mockResolvedValue(new Map());
+    mockSelectChain(allAgents);
+
+    const result = await getVisibleAgents("user-1", "member");
+
+    expect(result).not.toContainEqual(sharedAgentRestricted);
+  });
+
+  it("keeps group-based access working when the license is expired", async () => {
+    vi.mocked(getLicenseState).mockResolvedValueOnce("expired");
+    vi.mocked(getUserGroupIds).mockResolvedValue(["g1"]);
+    vi.mocked(getAllAgentGroupIds).mockResolvedValue(new Map([[sharedAgentRestricted.id, ["g1"]]]));
+    mockSelectChain(allAgents);
+
+    const result = await getVisibleAgents("user-1", "member");
+
+    expect(result).toContainEqual(sharedAgentRestricted);
   });
 });

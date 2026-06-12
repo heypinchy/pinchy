@@ -28,12 +28,12 @@ vi.mock("@/lib/groups", () => ({
 }));
 
 vi.mock("@/lib/enterprise", () => ({
-  isEnterprise: vi.fn().mockResolvedValue(true),
+  getLicenseState: vi.fn().mockResolvedValue("paid"),
 }));
 
 import { db } from "@/db";
 import { getUserGroupIds, getAgentGroupIds } from "@/lib/groups";
-import { isEnterprise } from "@/lib/enterprise";
+import { getLicenseState } from "@/lib/enterprise";
 
 function mockSelectChain(resolvedValue: unknown) {
   vi.mocked(db.select).mockReturnValueOnce({
@@ -264,8 +264,8 @@ describe("getAgentWithAccess", () => {
     expect(res.status).toBe(404);
   });
 
-  it("treats restricted as all when enterprise is false", async () => {
-    vi.mocked(isEnterprise).mockResolvedValueOnce(false);
+  it("treats restricted as all on community instances (never licensed)", async () => {
+    vi.mocked(getLicenseState).mockResolvedValueOnce("community");
     const agent = { id: "a1", ownerId: null, isPersonal: false, visibility: "restricted" };
     mockSelectChain([agent]);
 
@@ -275,8 +275,8 @@ describe("getAgentWithAccess", () => {
     expect(result).toEqual(agent);
   });
 
-  it("skips group loading when enterprise is false", async () => {
-    vi.mocked(isEnterprise).mockResolvedValueOnce(false);
+  it("skips group loading on community instances", async () => {
+    vi.mocked(getLicenseState).mockResolvedValueOnce("community");
     const agent = { id: "a1", ownerId: null, isPersonal: false, visibility: "restricted" };
     mockSelectChain([agent]);
 
@@ -285,42 +285,87 @@ describe("getAgentWithAccess", () => {
     expect(getUserGroupIds).not.toHaveBeenCalled();
     expect(getAgentGroupIds).not.toHaveBeenCalled();
   });
+
+  it("keeps restrictions enforced when the license is expired (fail closed, § 5)", async () => {
+    vi.mocked(getLicenseState).mockResolvedValueOnce("expired");
+    const agent = { id: "a1", ownerId: null, isPersonal: false, visibility: "restricted" };
+    mockSelectChain([agent]);
+
+    const result = await getAgentWithAccess("a1", "user-1", "member");
+
+    expect(result).toBeInstanceOf(NextResponse);
+    expect((result as NextResponse).status).toBe(403);
+    expect(getUserGroupIds).toHaveBeenCalled();
+  });
+
+  it("grants group members access while the license is expired", async () => {
+    vi.mocked(getLicenseState).mockResolvedValueOnce("expired");
+    vi.mocked(getUserGroupIds).mockResolvedValueOnce(["g1"]);
+    vi.mocked(getAgentGroupIds).mockResolvedValueOnce(["g1"]);
+    const agent = { id: "a1", ownerId: null, isPersonal: false, visibility: "restricted" };
+    mockSelectChain([agent]);
+
+    const result = await getAgentWithAccess("a1", "user-1", "member");
+
+    expect(result).toEqual(agent);
+  });
 });
 
 describe("effectiveVisibility", () => {
-  it("returns 'all' when not enterprise and visibility is 'restricted'", () => {
-    expect(effectiveVisibility("restricted", false)).toBe("all");
+  it("keeps 'restricted' for all licensed states", () => {
+    expect(effectiveVisibility("restricted", "paid")).toBe("restricted");
+    expect(effectiveVisibility("restricted", "trial")).toBe("restricted");
+    expect(effectiveVisibility("restricted", "grace")).toBe("restricted");
   });
 
-  it("returns 'restricted' when enterprise and visibility is 'restricted'", () => {
-    expect(effectiveVisibility("restricted", true)).toBe("restricted");
+  it("keeps 'restricted' after expiry — expiry never widens access (fail closed, § 5)", () => {
+    expect(effectiveVisibility("restricted", "expired")).toBe("restricted");
+    expect(effectiveVisibility("restricted", "trial-expired")).toBe("restricted");
   });
 
-  it("returns 'all' when visibility is 'all' regardless of enterprise", () => {
-    expect(effectiveVisibility("all", false)).toBe("all");
-    expect(effectiveVisibility("all", true)).toBe("all");
+  it("treats 'restricted' as 'all' only on community instances", () => {
+    // Shared agents default to visibility "restricted" in the DB. On an
+    // instance that never had a license, that default was never a deliberate
+    // restriction — mapping it to "all" keeps community instances usable.
+    expect(effectiveVisibility("restricted", "community")).toBe("all");
+  });
+
+  it("returns 'all' when visibility is 'all' regardless of state", () => {
+    expect(effectiveVisibility("all", "community")).toBe("all");
+    expect(effectiveVisibility("all", "paid")).toBe("all");
+    expect(effectiveVisibility("all", "expired")).toBe("all");
   });
 
   it("defaults to 'all' when visibility undefined", () => {
-    expect(effectiveVisibility(undefined, true)).toBe("all");
-    expect(effectiveVisibility(undefined, false)).toBe("all");
+    expect(effectiveVisibility(undefined, "paid")).toBe("all");
+    expect(effectiveVisibility(undefined, "community")).toBe("all");
   });
 });
 
-describe("assertAgentAccess with enterprise=false", () => {
-  it("treats restricted as all when enterprise is false", () => {
+describe("assertAgentAccess license states", () => {
+  it("treats restricted as all on community instances", () => {
     const agent = { id: "a1", ownerId: null, isPersonal: false, visibility: "restricted" };
-    expect(() => assertAgentAccess(agent, "user-1", "member", [], [], false)).not.toThrow();
+    expect(() => assertAgentAccess(agent, "user-1", "member", [], [], "community")).not.toThrow();
   });
 
-  it("still restricts when enterprise is true", () => {
+  it("restricts while licensed", () => {
     const agent = { id: "a1", ownerId: null, isPersonal: false, visibility: "restricted" };
-    expect(() => assertAgentAccess(agent, "user-1", "member", [], [], true)).toThrow(
+    expect(() => assertAgentAccess(agent, "user-1", "member", [], [], "paid")).toThrow(
       "Access denied"
     );
   });
 
-  it("defaults enterprise to true (backward compat)", () => {
+  it("keeps restricting after expiry (fail closed)", () => {
+    const agent = { id: "a1", ownerId: null, isPersonal: false, visibility: "restricted" };
+    expect(() => assertAgentAccess(agent, "user-1", "member", [], [], "expired")).toThrow(
+      "Access denied"
+    );
+    expect(() => assertAgentAccess(agent, "user-1", "member", [], [], "trial-expired")).toThrow(
+      "Access denied"
+    );
+  });
+
+  it("defaults to enforcing restrictions (backward compat)", () => {
     const agent = { id: "a1", ownerId: null, isPersonal: false, visibility: "restricted" };
     expect(() => assertAgentAccess(agent, "user-1", "member", [], [])).toThrow("Access denied");
   });

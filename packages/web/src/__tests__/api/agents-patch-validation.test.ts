@@ -30,7 +30,10 @@ vi.mock("@/lib/workspace", () => ({
 vi.mock("@/lib/telegram-allow-store", () => ({
   recalculateTelegramAllowStores: vi.fn().mockResolvedValue(undefined),
 }));
-vi.mock("@/lib/enterprise", () => ({ isEnterprise: vi.fn().mockResolvedValue(false) }));
+vi.mock("@/lib/enterprise", () => ({
+  isEnterprise: vi.fn().mockResolvedValue(false),
+  getLicenseState: vi.fn().mockResolvedValue("community"),
+}));
 vi.mock("@/lib/provider-models", () => ({
   fetchProviderModels: vi.fn().mockResolvedValue([
     {

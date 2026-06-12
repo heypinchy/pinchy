@@ -64,6 +64,7 @@ vi.mock("@/lib/agent-access", () => ({
 
 vi.mock("@/lib/enterprise", () => ({
   isEnterprise: vi.fn().mockResolvedValue(false),
+  getLicenseState: vi.fn().mockResolvedValue("community"),
 }));
 
 vi.mock("@/lib/groups", () => ({

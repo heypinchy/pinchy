@@ -61,6 +61,7 @@ vi.mock("@/lib/agent-access", async (importOriginal) => {
 
 vi.mock("@/lib/enterprise", () => ({
   isEnterprise: vi.fn().mockResolvedValue(true),
+  getLicenseState: vi.fn().mockResolvedValue("paid"),
 }));
 
 vi.mock("@/db", () => ({

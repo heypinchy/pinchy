@@ -18,6 +18,7 @@ vi.mock("@/lib/groups", () => ({
 
 vi.mock("@/lib/enterprise", () => ({
   isEnterprise: vi.fn().mockResolvedValue(true),
+  getLicenseState: vi.fn().mockResolvedValue("paid"),
 }));
 
 vi.mock("@/lib/auth", () => {

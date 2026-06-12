@@ -7,7 +7,7 @@ import { Chat } from "@/components/chat";
 import { requireAuth } from "@/lib/require-auth";
 import { assertAgentAccess, effectiveVisibility } from "@/lib/agent-access";
 import { getUserGroupIds, getAgentGroupIds } from "@/lib/groups";
-import { isEnterprise } from "@/lib/enterprise";
+import { getLicenseState } from "@/lib/enterprise";
 import { getAgentAvatarSvg } from "@/lib/avatar";
 
 export async function generateMetadata({
@@ -39,8 +39,8 @@ export default async function ChatPage({ params }: { params: Promise<{ agentId: 
 
   if (!agent) notFound();
 
-  const enterprise = await isEnterprise();
-  const effVis = effectiveVisibility(agent.visibility, enterprise);
+  const licenseState = await getLicenseState();
+  const effVis = effectiveVisibility(agent.visibility, licenseState);
   const needsGroups = userRole !== "admin" && effVis === "restricted";
 
   const [userGroupIds, agentGroupIds] = await Promise.all([
@@ -49,7 +49,7 @@ export default async function ChatPage({ params }: { params: Promise<{ agentId: 
   ]);
 
   try {
-    assertAgentAccess(agent, userId, userRole, userGroupIds, agentGroupIds, enterprise);
+    assertAgentAccess(agent, userId, userRole, userGroupIds, agentGroupIds, licenseState);
   } catch {
     notFound();
   }

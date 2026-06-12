@@ -1,13 +1,15 @@
 import { db } from "@/db";
 import { activeAgents } from "@/db/schema";
 import { getUserGroupIds, getAllAgentGroupIds } from "@/lib/groups";
-import { isEnterprise } from "@/lib/enterprise";
+import { getLicenseState } from "@/lib/enterprise";
 import { effectiveVisibility } from "@/lib/agent-access";
 
 export async function getVisibleAgents(userId: string, userRole: string) {
   const isAdmin = userRole === "admin";
-  const enterprise = await isEnterprise();
-  const needsGroups = !isAdmin && enterprise;
+  const licenseState = await getLicenseState();
+  // Restricted visibility stays enforced after expiry (fail closed, § 5) —
+  // only community instances skip group resolution entirely.
+  const needsGroups = !isAdmin && licenseState !== "community";
 
   const [userGroupIds, allAgents, agentGroupMap] = await Promise.all([
     needsGroups ? getUserGroupIds(userId) : Promise.resolve([]),
@@ -27,7 +29,7 @@ export async function getVisibleAgents(userId: string, userRole: string) {
       visible.push(agent);
       continue;
     }
-    switch (effectiveVisibility(agent.visibility, enterprise)) {
+    switch (effectiveVisibility(agent.visibility, licenseState)) {
       case "all":
         visible.push(agent);
         break;

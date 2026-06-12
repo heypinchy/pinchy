@@ -3,7 +3,8 @@ import { db } from "@/db";
 import { activeAgents } from "@/db/schema";
 import { eq } from "drizzle-orm";
 import { getUserGroupIds, getAgentGroupIds } from "@/lib/groups";
-import { isEnterprise } from "@/lib/enterprise";
+import { getLicenseState } from "@/lib/enterprise";
+import type { LicenseState } from "@/lib/license-state";
 
 interface AgentForAccess {
   id: string;
@@ -14,12 +15,19 @@ interface AgentForAccess {
 
 /**
  * Return the effective visibility for an agent.
- * When enterprise features are disabled, "restricted" falls back to "all"
- * so no users lose access after an enterprise key expires.
+ *
+ * Fail closed (pricing concept § 5): a license expiry NEVER widens access —
+ * "restricted" stays enforced in every licensed and expired state. The single
+ * exception is a community instance (never licensed): shared agents default
+ * to visibility "restricted" in the DB without anyone having restricted them,
+ * so community maps that default to "all" to stay usable.
  */
-export function effectiveVisibility(dbVisibility: string | undefined, enterprise: boolean): string {
+export function effectiveVisibility(
+  dbVisibility: string | undefined,
+  licenseState: LicenseState
+): string {
   const vis = dbVisibility ?? "all";
-  if (!enterprise && vis === "restricted") return "all";
+  if (licenseState === "community" && vis === "restricted") return "all";
   return vis;
 }
 
@@ -31,7 +39,8 @@ export function effectiveVisibility(dbVisibility: string | undefined, enterprise
  * - Personal agents are only accessible to their owner
  * - Shared agents check visibility: "all" (everyone), "restricted" (only users
  *   who share a group with the agent; if no groups assigned, admins only)
- * - When enterprise=false, "restricted" is treated as "all" (graceful degradation)
+ * - Restrictions stay enforced after license expiry (fail closed, § 5);
+ *   only community instances treat "restricted" as "all"
  */
 export function assertAgentAccess(
   agent: AgentForAccess,
@@ -39,7 +48,7 @@ export function assertAgentAccess(
   userRole: string,
   userGroupIds: string[] = [],
   agentGroupIds: string[] = [],
-  enterprise: boolean = true
+  licenseState: LicenseState = "paid"
 ): void {
   // Personal agents are private to their owner — this applies to everyone,
   // including admins. The admin fast-path must NOT bypass this check.
@@ -50,7 +59,7 @@ export function assertAgentAccess(
   if (userRole === "admin") return;
 
   // Shared agent — check visibility
-  const visibility = effectiveVisibility(agent.visibility, enterprise);
+  const visibility = effectiveVisibility(agent.visibility, licenseState);
   switch (visibility) {
     case "all":
       return;
@@ -114,10 +123,10 @@ export async function getAgentWithAccess(agentId: string, userId: string, userRo
     return NextResponse.json({ error: "Agent not found" }, { status: 404 });
   }
 
-  const enterprise = await isEnterprise();
-  const effVis = effectiveVisibility(agent.visibility, enterprise);
+  const licenseState = await getLicenseState();
+  const effVis = effectiveVisibility(agent.visibility, licenseState);
 
-  // Load group data only when needed (skip for admins, non-restricted, or non-enterprise)
+  // Load group data only when needed (skip for admins and non-restricted)
   const needsGroups = userRole !== "admin" && effVis === "restricted";
   const [userGroupIds, agentGroupIds] = await Promise.all([
     needsGroups ? getUserGroupIds(userId) : Promise.resolve([]),
@@ -125,7 +134,7 @@ export async function getAgentWithAccess(agentId: string, userId: string, userRo
   ]);
 
   try {
-    assertAgentAccess(agent, userId, userRole, userGroupIds, agentGroupIds, enterprise);
+    assertAgentAccess(agent, userId, userRole, userGroupIds, agentGroupIds, licenseState);
   } catch {
     return NextResponse.json({ error: "Forbidden" }, { status: 403 });
   }

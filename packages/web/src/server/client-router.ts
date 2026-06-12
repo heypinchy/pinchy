@@ -4,7 +4,7 @@ import { waitForAgentInRuntime } from "@/server/agent-readiness";
 import type { WebSocket } from "ws";
 import { assertAgentAccess, effectiveVisibility } from "@/lib/agent-access";
 import { getUserGroupIds, getAgentGroupIds } from "@/lib/groups";
-import { isEnterprise } from "@/lib/enterprise";
+import { getLicenseState } from "@/lib/enterprise";
 import { buildMemoryPromptBlock } from "@/lib/memory-prompt";
 import { appendAuditLog, safeProviderError } from "@/lib/audit";
 import { recordAuditFailure } from "@/lib/audit-deferred";
@@ -119,8 +119,8 @@ export class ClientRouter {
       return;
     }
 
-    const enterprise = await isEnterprise();
-    const effVis = effectiveVisibility(agent.visibility, enterprise);
+    const licenseState = await getLicenseState();
+    const effVis = effectiveVisibility(agent.visibility, licenseState);
     const needsGroups = this.userRole !== "admin" && effVis === "restricted";
 
     const [userGroupIds, agentGroupIds] = await Promise.all([
@@ -129,7 +129,14 @@ export class ClientRouter {
     ]);
 
     try {
-      assertAgentAccess(agent, this.userId, this.userRole, userGroupIds, agentGroupIds, enterprise);
+      assertAgentAccess(
+        agent,
+        this.userId,
+        this.userRole,
+        userGroupIds,
+        agentGroupIds,
+        licenseState
+      );
     } catch {
       this.sendToClient(clientWs, { type: "error", message: "Access denied" });
       const auditEntry = {

@@ -49,6 +49,7 @@ vi.mock("@/lib/groups", () => ({
 
 vi.mock("@/lib/enterprise", () => ({
   isEnterprise: vi.fn().mockResolvedValue(true),
+  getLicenseState: vi.fn().mockResolvedValue("paid"),
 }));
 
 vi.mock("@/lib/avatar", () => ({
@@ -119,7 +120,7 @@ describe("ChatPage", () => {
       "member",
       [],
       [],
-      true
+      "paid"
     );
     expect(mockNotFound).toHaveBeenCalled();
   });
@@ -151,7 +152,7 @@ describe("ChatPage", () => {
       "member",
       ["g1", "g2"],
       ["g2", "g3"],
-      true
+      "paid"
     );
   });
 
@@ -186,7 +187,7 @@ describe("ChatPage", () => {
       "member",
       [],
       [],
-      true
+      "paid"
     );
   });
 
@@ -221,7 +222,7 @@ describe("ChatPage", () => {
       "admin",
       [],
       [],
-      true
+      "paid"
     );
   });
 
