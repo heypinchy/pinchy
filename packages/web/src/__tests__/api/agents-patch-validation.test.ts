@@ -31,6 +31,23 @@ vi.mock("@/lib/telegram-allow-store", () => ({
   recalculateTelegramAllowStores: vi.fn().mockResolvedValue(undefined),
 }));
 vi.mock("@/lib/enterprise", () => ({ isEnterprise: vi.fn().mockResolvedValue(false) }));
+vi.mock("@/lib/provider-models", () => ({
+  fetchProviderModels: vi.fn().mockResolvedValue([
+    {
+      id: "ollama-cloud",
+      name: "Ollama Cloud",
+      models: [
+        { id: "ollama-cloud/qwen3-vl:235b", name: "qwen3-vl:235b" },
+        {
+          id: "ollama-cloud/no-tools-model",
+          name: "no-tools-model",
+          compatible: false,
+          incompatibleReason: "Not compatible — does not support agent tools",
+        },
+      ],
+    },
+  ]),
+}));
 vi.mock("@/db", () => ({
   db: {
     insert: vi.fn().mockReturnValue({
@@ -52,6 +69,7 @@ vi.mock("@/db/schema", async (importOriginal) => {
 });
 
 import { auth } from "@/lib/auth";
+import { fetchProviderModels } from "@/lib/provider-models";
 import { updateAgent } from "@/lib/agents";
 import { regenerateOpenClawConfig } from "@/lib/openclaw-config";
 import { db } from "@/db";
@@ -299,5 +317,132 @@ describe("PATCH /api/agents/[agentId] — pluginConfig validation", () => {
 
     const res = await PATCH(req, { params: Promise.resolve({ agentId: "agent-1" }) });
     expect(res.status).toBe(200);
+  });
+});
+
+describe("PATCH /api/agents/[agentId] — model validation against configured providers", () => {
+  let PATCH: typeof import("@/app/api/agents/[agentId]/route").PATCH;
+
+  beforeEach(async () => {
+    vi.clearAllMocks();
+    const mod = await import("@/app/api/agents/[agentId]/route");
+    PATCH = mod.PATCH;
+  });
+
+  function patchRequest(body: Record<string, unknown>) {
+    return new NextRequest("http://localhost/api/agents/agent-1", {
+      method: "PATCH",
+      body: JSON.stringify(body),
+      headers: { "Content-Type": "application/json" },
+    });
+  }
+
+  it("rejects a model whose provider is not configured with a structured 400", async () => {
+    adminSession();
+    mockAgent({
+      id: "agent-1",
+      name: "Test Agent",
+      model: "ollama-cloud/qwen3-vl:235b",
+      isPersonal: false,
+      ownerId: null,
+    });
+
+    const res = await PATCH(patchRequest({ model: "anthropic/claude-sonnet-4-6" }), {
+      params: Promise.resolve({ agentId: "agent-1" }),
+    });
+
+    expect(res.status).toBe(400);
+    const body = await res.json();
+    expect(body.error).toContain("anthropic/claude-sonnet-4-6");
+    expect(body.error).toContain("not available");
+    expect(vi.mocked(updateAgent)).not.toHaveBeenCalled();
+  });
+
+  it("rejects a model the provider lists as incompatible", async () => {
+    adminSession();
+    mockAgent({
+      id: "agent-1",
+      name: "Test Agent",
+      model: "ollama-cloud/qwen3-vl:235b",
+      isPersonal: false,
+      ownerId: null,
+    });
+
+    const res = await PATCH(patchRequest({ model: "ollama-cloud/no-tools-model" }), {
+      params: Promise.resolve({ agentId: "agent-1" }),
+    });
+
+    expect(res.status).toBe(400);
+    const body = await res.json();
+    expect(body.error).toContain("does not support agent tools");
+    expect(vi.mocked(updateAgent)).not.toHaveBeenCalled();
+  });
+
+  it("accepts a model of a configured provider", async () => {
+    adminSession();
+    mockAgent({
+      id: "agent-1",
+      name: "Test Agent",
+      model: "ollama-cloud/old-model",
+      isPersonal: false,
+      ownerId: null,
+    });
+    vi.mocked(updateAgent).mockResolvedValueOnce({
+      id: "agent-1",
+      name: "Test Agent",
+      model: "ollama-cloud/qwen3-vl:235b",
+    } as never);
+
+    const res = await PATCH(patchRequest({ model: "ollama-cloud/qwen3-vl:235b" }), {
+      params: Promise.resolve({ agentId: "agent-1" }),
+    });
+
+    expect(res.status).toBe(200);
+  });
+
+  it("does not validate when the PATCH leaves the model untouched — a name-only update on an agent with a legacy model of a disconnected provider must succeed", async () => {
+    adminSession();
+    mockAgent({
+      id: "agent-1",
+      name: "Old Name",
+      model: "google/gemini-2.5-flash",
+      isPersonal: false,
+      ownerId: null,
+    });
+    vi.mocked(updateAgent).mockResolvedValueOnce({
+      id: "agent-1",
+      name: "New Name",
+      model: "google/gemini-2.5-flash",
+    } as never);
+
+    const res = await PATCH(patchRequest({ name: "New Name" }), {
+      params: Promise.resolve({ agentId: "agent-1" }),
+    });
+
+    expect(res.status).toBe(200);
+    expect(vi.mocked(fetchProviderModels)).not.toHaveBeenCalled();
+  });
+
+  it("does not validate when the PATCH resends the agent's current model unchanged", async () => {
+    adminSession();
+    mockAgent({
+      id: "agent-1",
+      name: "Test Agent",
+      model: "google/gemini-2.5-flash",
+      isPersonal: false,
+      ownerId: null,
+    });
+    vi.mocked(updateAgent).mockResolvedValueOnce({
+      id: "agent-1",
+      name: "Test Agent",
+      model: "google/gemini-2.5-flash",
+    } as never);
+
+    const res = await PATCH(patchRequest({ model: "google/gemini-2.5-flash" }), {
+      params: Promise.resolve({ agentId: "agent-1" }),
+    });
+
+    expect(res.status).toBe(200);
+    expect(vi.mocked(fetchProviderModels)).not.toHaveBeenCalled();
   });
 });

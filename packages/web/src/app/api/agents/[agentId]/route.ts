@@ -15,6 +15,7 @@ import { getAgentGroupIds } from "@/lib/groups";
 import { recalculateTelegramAllowStores } from "@/lib/telegram-allow-store";
 import { validatePinchyWebConfig, pluginConfigSchema } from "@/lib/domain-validation";
 import { parseRequestBody } from "@/lib/api-validation";
+import { validateAgentModel } from "@/lib/agent-model-validation";
 import { regenerateOpenClawConfig } from "@/lib/openclaw-config";
 
 const updateAgentSchema = z.object({
@@ -99,6 +100,17 @@ export const PATCH = withAuth<RouteContext>(async (request, { params }, session)
         { error: "Cannot change visibility for personal agents" },
         { status: 400 }
       );
+    }
+  }
+
+  // A model change must point at a model of a CONFIGURED provider — anything
+  // else leaves the agent unable to chat (no API key for the provider). An
+  // unchanged model is not validated so updates to other fields keep working
+  // for agents carrying a legacy model of a since-disconnected provider.
+  if (body.model !== undefined && body.model !== existingAgent.model) {
+    const modelError = await validateAgentModel(body.model);
+    if (modelError) {
+      return NextResponse.json({ error: modelError }, { status: 400 });
     }
   }
 
