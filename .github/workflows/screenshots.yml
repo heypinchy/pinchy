@@ -27,7 +27,7 @@ jobs:
       PINCHY_VERSION: latest
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - uses: ./.github/actions/setup-pnpm
 
@@ -78,7 +78,7 @@ jobs:
           SCREENSHOT_DIR: ${{ github.workspace }}/screenshots/output
 
       - name: Upload screenshots as artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: pinchy-screenshots
           path: screenshots/output/
@@ -121,19 +121,19 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Download screenshots
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: pinchy-screenshots
           path: docs/public/screenshots/
 
       - name: Setup pnpm
-        uses: pnpm/action-setup@v4
+        uses: pnpm/action-setup@v6
 
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v6
         with:
           node-version: 22
           cache: pnpm
@@ -150,10 +150,10 @@ jobs:
           UMAMI_WEBSITE_ID: ${{ vars.UMAMI_DOCS_WEBSITE_ID }}
 
       - name: Upload artifact
-        uses: actions/upload-pages-artifact@v3
+        uses: actions/upload-pages-artifact@v5
         with:
           path: docs/dist
 
       - name: Deploy to GitHub Pages
         id: deployment
-        uses: actions/deploy-pages@v4
+        uses: actions/deploy-pages@v5
