@@ -3,6 +3,15 @@ import { NextRequest } from "next/server";
 
 // ── Mocks ────────────────────────────────────────────────────────────────
 
+// Pins the § 5 carve-out: deactivating a user is a restriction-tightening
+// operation and must work in EVERY license state. If the route ever grows a
+// license gate, this inactive-license mock makes the pin test below fail.
+vi.mock("@/lib/enterprise", () => ({
+  isEnterprise: vi.fn().mockResolvedValue(false),
+  getLicenseState: vi.fn().mockResolvedValue("expired"),
+  getLicenseStatus: vi.fn().mockResolvedValue({ active: false, features: [], ver: 1, maxUsers: 0 }),
+}));
+
 vi.mock("next/headers", () => ({
   headers: vi.fn().mockResolvedValue(new Headers()),
 }));
@@ -315,6 +324,38 @@ describe("DELETE /api/users/[userId]", () => {
         detail: { name: "Test User" },
       })
     );
+  });
+
+  it("deactivates users without an active license (restriction-tightening carve-out, § 5)", async () => {
+    // The enterprise mock at the top of this file reports an EXPIRED license.
+    // An admin must always be able to revoke access — a license that blocked
+    // this would itself be the security risk.
+    vi.mocked(auth.api.getSession).mockResolvedValueOnce({
+      user: { id: "admin-1", role: "admin" },
+      expires: "",
+    } as never);
+
+    vi.mocked(db.select).mockReturnValueOnce({
+      from: vi.fn().mockReturnValue({
+        where: vi.fn().mockResolvedValue([]),
+      }),
+    } as never);
+
+    const mockUpdate = {
+      set: vi.fn().mockReturnThis(),
+      where: vi.fn().mockReturnValue({
+        returning: vi
+          .fn()
+          .mockResolvedValue([{ id: "user-1", name: "Test User", email: "u@test.com" }]),
+      }),
+    };
+    vi.mocked(db.update).mockReturnValueOnce(mockUpdate as never);
+
+    const request = new NextRequest("http://localhost:7777/api/users/user-1", { method: "DELETE" });
+    const response = await DELETE(request, { params: Promise.resolve({ userId: "user-1" }) });
+
+    expect(response.status).toBe(200);
+    expect(mockUpdate.set).toHaveBeenCalledWith(expect.objectContaining({ banned: true }));
   });
 
   it("does not record the user's email in the user.deleted audit detail (GDPR Art. 17)", async () => {

@@ -12,10 +12,8 @@ export async function GET() {
   const sessionOrError = await requireAdmin();
   if (sessionOrError instanceof NextResponse) return sessionOrError;
 
-  if (!(await isEnterprise())) {
-    return NextResponse.json({ error: "Enterprise feature" }, { status: 403 });
-  }
-
+  // No license gate: admins need to list groups to REMOVE users from them,
+  // which must always work (fail-closed carve-out, § 5).
   const allGroups = await db
     .select({
       id: groups.id,

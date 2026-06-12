@@ -21,10 +21,6 @@ export async function PUT(
   if (sessionOrError instanceof NextResponse) return sessionOrError;
   const session = sessionOrError;
 
-  if (!(await isEnterprise())) {
-    return NextResponse.json({ error: "Enterprise feature" }, { status: 403 });
-  }
-
   const { userId } = await params;
   const parsed = await parseRequestBody(updateUserGroupsSchema, request);
   if ("error" in parsed) return parsed.error;
@@ -70,6 +66,21 @@ export async function PUT(
   const removed = [...previousGroupIds]
     .filter((id) => !newGroupIdSet.has(id))
     .map((id) => ({ id, name: nameMap.get(id) ?? id }));
+
+  // Fail closed with a carve-out (pricing concept § 5): without an active
+  // license, group management is locked — but restriction-TIGHTENING
+  // operations must always work. Removing a user from a group tightens;
+  // adding one requires a license.
+  if (added.length > 0 && !(await isEnterprise())) {
+    return NextResponse.json(
+      {
+        error: "License required",
+        message:
+          "Adding users to groups requires an active license. Removing users from groups always works.",
+      },
+      { status: 403 }
+    );
+  }
 
   // 5. Delete all existing userGroups for this userId
   await db.delete(userGroups).where(eq(userGroups.userId, userId));
