@@ -1,0 +1,28 @@
+{
+  "id": "pinchy-image",
+  "name": "Pinchy Image",
+  "description": "Image transformation tools (crop, resize, rotate, convert) for agent attachments.",
+  "contracts": {
+    "tools": ["image_crop", "image_resize", "image_rotate", "image_convert"]
+  },
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "agents": {
+        "type": "object",
+        "additionalProperties": {
+          "type": "object",
+          "properties": {
+            "tools": {
+              "type": "array",
+              "items": { "type": "string" }
+            }
+          },
+          "required": ["tools"]
+        }
+      }
+    },
+    "required": ["agents"]
+  }
+}

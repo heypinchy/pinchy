@@ -34,6 +34,7 @@ services:
       - ./packages/plugins/pinchy-web:/root/.openclaw/extensions/pinchy-web
       - ./packages/plugins/pinchy-email:/root/.openclaw/extensions/pinchy-email
       - ./packages/plugins/pinchy-docs:/root/.openclaw/extensions/pinchy-docs
+      - ./packages/plugins/pinchy-image:/root/.openclaw/extensions/pinchy-image
       - ./sample-data:/data/sample-docs
   db:
     environment:

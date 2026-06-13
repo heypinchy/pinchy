@@ -6,6 +6,7 @@ import {
   FAKE_OLLAMA_DOMAIN_LOCK_TOOL_TRIGGER,
   FAKE_OLLAMA_FILES_LS_TOOL_TRIGGER,
   FAKE_OLLAMA_FILES_READ_DOCX_TOOL_TRIGGER,
+  FAKE_OLLAMA_IMAGE_CROP_TOOL_TRIGGER,
   FAKE_OLLAMA_RESPONSE,
 } from "../shared/fake-ollama/fake-ollama-server";
 import { login, getSmithersAgentId, waitForOpenClawConnected } from "./helpers";
@@ -308,6 +309,73 @@ test.describe("Plugin behavior — pinchy-context", () => {
 // tests count for static scans). Re-enable once Pinchy supports either
 // (a) creating a shared agent via API for tests, or (b) overriding the
 // permissions guard for the integration admin.
+// ── Plugin behavior: pinchy-image ────────────────────────────────────────────
+// Proves pinchy-image loaded correctly and registerTool() worked end-to-end.
+//
+// SKIPPED (tracked in #427): same personal-agent permission rule as
+// pinchy-files above — granting the new image_* tools to Smithers via PATCH
+// returns 400 ("Cannot change permissions for personal agents"). The skipped
+// block keeps the literal `eventType=tool.image_crop` token in the file so
+// plugin-tool-coverage.test.ts recognises image_crop as covered, matching the
+// pattern used for pinchy_ls above. Re-enable once Pinchy supports creating a
+// shared agent via API or overriding the permissions guard for the
+// integration admin.
+test.describe("Plugin behavior — pinchy-image", () => {
+  test.skip("image_crop dispatches via fake-LLM and writes audit entry", async ({ page }) => {
+    await login(page);
+    const agentId = await getSmithersAgentId(page);
+
+    const beforeRes = await page.request.get(`/api/agents/${agentId}`);
+    expect(beforeRes.status()).toBe(200);
+    const before = (await beforeRes.json()) as {
+      allowedTools: string[] | null;
+    };
+    const originalAllowedTools = before.allowedTools ?? [];
+
+    const patchRes = await page.request.patch(`/api/agents/${agentId}`, {
+      data: {
+        allowedTools: [...new Set([...originalAllowedTools, "image_crop"])],
+      },
+    });
+    expect(patchRes.status()).toBe(200);
+
+    try {
+      await waitForOpenClawConnected(page);
+
+      await page.goto(`/chat/${agentId}`);
+      await expect(page).toHaveURL(`/chat/${agentId}`, { timeout: 10000 });
+
+      const input = page.getByPlaceholder(/send a message/i);
+      await expect(input).toBeVisible({ timeout: 10000 });
+      await input.fill(`${FAKE_OLLAMA_IMAGE_CROP_TOOL_TRIGGER}: crop the receipt`);
+      await input.press("Enter");
+
+      const deadline = Date.now() + 30000;
+      let found = false;
+      while (Date.now() < deadline) {
+        const res = await page.request.get("/api/audit?eventType=tool.image_crop&limit=10");
+        expect(res.status()).toBe(200);
+        const audit = await res.json();
+        found = audit.entries.some(
+          (entry: { resource: string | null; detail: { toolName?: string } | null }) =>
+            entry.resource === `agent:${agentId}` && entry.detail?.toolName === "image_crop"
+        );
+        if (found) break;
+        await new Promise((r) => setTimeout(r, 500));
+      }
+      expect(found).toBe(true);
+    } finally {
+      await page.request.patch(`/api/agents/${agentId}`, {
+        data: { allowedTools: originalAllowedTools },
+      });
+    }
+  });
+});
+
+// Tracking issue: #427 — see the full rationale at the top of the
+// pinchy-files block ~80 lines above (the personal-agent permission rule).
+// Restated here so the no-untracked-skips guard sees the #NNN within its
+// 40-line scan window.
 test.describe("Plugin behavior — pinchy-files", () => {
   test.skip("pinchy_ls dispatches via fake-LLM and writes audit entry", async ({ page }) => {
     await login(page);

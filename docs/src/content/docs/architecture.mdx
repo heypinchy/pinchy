@@ -160,6 +160,8 @@ In addition to the allow-list, every agent has built-in PDF and image readers th
 
 Smithers agents also use the `pinchy-context` plugin, which provides `save_user_context` and `save_org_context` tools. These tools call Pinchy's internal API (authenticated via a shared gateway token) to save context from the onboarding interview directly to the database and sync it to agent workspaces.
 
+The `pinchy-image` plugin provides in-pipeline image transformations (`image_crop`, `image_resize`, `image_rotate`, `image_convert`) for agents that handle photo uploads. The Bookkeeper template uses it to clean phone-photographed receipts (crop out background, normalise rotation) before attaching them to Odoo bills. Each tool reads from the agent's workspace `uploads/` directory and writes a new file alongside, so the transformed image is then available to any downstream tool (e.g. `odoo_attach_file`) by filename.
+
 All agent-accessible files live under `/data/` in the container, mounted via Docker volumes. This means even if all software layers failed, the agent can only see files that were explicitly mounted.
 
 ### Agent access control

@@ -76,6 +76,10 @@ install_plugin_deps() {
         rm -rf /root/.openclaw/extensions/pinchy-email/node_modules
         cp -r /opt/pinchy-email-deps/node_modules /root/.openclaw/extensions/pinchy-email/node_modules
     fi
+    if [ -d /opt/pinchy-image-deps/node_modules ] && [ -d /root/.openclaw/extensions/pinchy-image ]; then
+        rm -rf /root/.openclaw/extensions/pinchy-image/node_modules
+        cp -r /opt/pinchy-image-deps/node_modules /root/.openclaw/extensions/pinchy-image/node_modules
+    fi
 }
 
 # Fix plugin ownership — bind-mounted plugin files from the host may have

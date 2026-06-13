@@ -42,6 +42,7 @@ COPY packages/plugins/pinchy-context/openclaw.plugin.json packages/plugins/pinch
 COPY packages/plugins/pinchy-audit/openclaw.plugin.json packages/plugins/pinchy-audit/
 COPY packages/plugins/pinchy-docs/openclaw.plugin.json packages/plugins/pinchy-docs/
 COPY packages/plugins/pinchy-email/openclaw.plugin.json packages/plugins/pinchy-email/
+COPY packages/plugins/pinchy-image/openclaw.plugin.json packages/plugins/pinchy-image/
 COPY packages/plugins/pinchy-odoo/openclaw.plugin.json packages/plugins/pinchy-odoo/
 COPY packages/plugins/pinchy-web/openclaw.plugin.json packages/plugins/pinchy-web/
 
@@ -65,6 +66,7 @@ COPY packages/plugins/pinchy-docs /app/pinchy-plugins/pinchy-docs
 COPY packages/plugins/pinchy-odoo /app/pinchy-plugins/pinchy-odoo
 COPY packages/plugins/pinchy-web /app/pinchy-plugins/pinchy-web
 COPY packages/plugins/pinchy-email /app/pinchy-plugins/pinchy-email
+COPY packages/plugins/pinchy-image /app/pinchy-plugins/pinchy-image
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
   CMD node -e "fetch('http://localhost:7777/api/health').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"
