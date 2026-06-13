@@ -248,7 +248,7 @@ describe("PUT /api/agents/[agentId]/integrations", () => {
     expect(mockTxInsertValues).toHaveBeenCalled();
   });
 
-  it("does not call regenerateOpenClawConfig (delegated to agent PATCH)", async () => {
+  it("calls regenerateOpenClawConfig after updating permissions", async () => {
     mockSelectWhere.mockResolvedValueOnce([{ id: CONNECTION_ID }]);
     mockTxSelectWhere.mockResolvedValueOnce([]);
 
@@ -262,7 +262,7 @@ describe("PUT /api/agents/[agentId]/integrations", () => {
     const res = await PUT(req, makeParams(AGENT_ID));
 
     expect(res.status).toBe(200);
-    expect(regenerateOpenClawConfig).not.toHaveBeenCalled();
+    expect(regenerateOpenClawConfig).toHaveBeenCalled();
   });
 
   it("writes audit log with added/removed diff", async () => {
@@ -393,7 +393,7 @@ describe("DELETE /api/agents/[agentId]/integrations", () => {
     expect(mockDeleteWhere).toHaveBeenCalled();
   });
 
-  it("does not call regenerateOpenClawConfig (delegated to agent PATCH)", async () => {
+  it("calls regenerateOpenClawConfig after clearing permissions", async () => {
     mockSelectFrom.mockImplementationOnce(() => ({
       where: vi.fn().mockResolvedValue([]),
     }));
@@ -403,7 +403,7 @@ describe("DELETE /api/agents/[agentId]/integrations", () => {
     });
     await DELETE(req, makeParams(AGENT_ID));
 
-    expect(regenerateOpenClawConfig).not.toHaveBeenCalled();
+    expect(regenerateOpenClawConfig).toHaveBeenCalled();
   });
 
   it("writes audit log with removed permissions", async () => {

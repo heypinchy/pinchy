@@ -18,7 +18,7 @@ import { headers } from "next/headers";
 import { randomBytes } from "crypto";
 import { z } from "zod";
 import { getSession } from "@/lib/auth";
-import { getOAuthSettings } from "@/lib/integrations/oauth-settings";
+import { getOAuthSettings, type MicrosoftOAuthSettings } from "@/lib/integrations/oauth-settings";
 import { parseRequestBody } from "@/lib/api-validation";
 import { db } from "@/db";
 import { integrationConnections } from "@/db/schema";
@@ -30,6 +30,8 @@ const GOOGLE_OAUTH_SCOPES = [
   "https://www.googleapis.com/auth/gmail.compose",
   "https://www.googleapis.com/auth/userinfo.email",
 ].join(" ");
+
+const MICROSOFT_OAUTH_SCOPES = "offline_access User.Read Mail.ReadWrite Mail.Send";
 
 function errorRedirect(origin: string, error: string) {
   const url = new URL("/settings", origin);
@@ -44,6 +46,7 @@ export async function GET(request: Request) {
   const forwardedHost = request.headers.get("x-forwarded-host") || request.headers.get("host");
   const origin =
     forwardedProto && forwardedHost ? `${forwardedProto}://${forwardedHost}` : requestUrl.origin;
+  const isSecure = (forwardedProto ?? requestUrl.protocol.replace(":", "")) === "https";
 
   // Validate admin session — render failures as redirects, not JSON, because
   // this is reached via browser navigation.
@@ -52,7 +55,9 @@ export async function GET(request: Request) {
     return errorRedirect(origin, "unauthorized");
   }
 
-  const settings = await getOAuthSettings("google");
+  const provider = requestUrl.searchParams.get("provider") ?? "google";
+
+  const settings = await getOAuthSettings(provider as "google" | "microsoft");
   if (!settings) {
     return errorRedirect(origin, "not_configured");
   }
@@ -77,6 +82,54 @@ export async function GET(request: Request) {
       );
   }
 
+  const state = randomBytes(32).toString("hex");
+  const redirectUri = `${origin}/api/integrations/oauth/callback`;
+  let authUrl: URL;
+
+  if (provider === "microsoft") {
+    const msSettings = settings as MicrosoftOAuthSettings;
+    const tenantId = msSettings.tenantId?.trim() || "organizations";
+    const tokenHost = process.env.MICROSOFT_OAUTH_BASE_URL ?? "https://login.microsoftonline.com";
+    authUrl = new URL(`${tokenHost}/${tenantId}/oauth2/v2.0/authorize`);
+    authUrl.searchParams.set("client_id", settings.clientId);
+    authUrl.searchParams.set("redirect_uri", redirectUri);
+    authUrl.searchParams.set("response_type", "code");
+    authUrl.searchParams.set("response_mode", "query");
+    authUrl.searchParams.set("scope", MICROSOFT_OAUTH_SCOPES);
+    authUrl.searchParams.set("prompt", "consent");
+    authUrl.searchParams.set("state", state);
+
+    // Create a pending record so the connection is visible during the OAuth flow
+    const [pending] = await db
+      .insert(integrationConnections)
+      .values({
+        type: "microsoft",
+        name: "Microsoft (connecting…)",
+        status: "pending",
+        credentials: encrypt(JSON.stringify({})),
+      })
+      .returning({ id: integrationConnections.id });
+
+    const response = NextResponse.redirect(authUrl.toString(), 302);
+    response.cookies.set("oauth_state", state, {
+      httpOnly: true,
+      secure: isSecure,
+      sameSite: "lax",
+      maxAge: 600,
+      path: "/",
+    });
+    response.cookies.set("oauth_pending_id", pending.id, {
+      httpOnly: true,
+      secure: isSecure,
+      sameSite: "lax",
+      maxAge: 600,
+      path: "/",
+    });
+
+    return response;
+  }
+
+  // Default: Google flow
   // Create a pending record so the connection is visible during the OAuth flow
   const [pending] = await db
     .insert(integrationConnections)
@@ -88,11 +141,7 @@ export async function GET(request: Request) {
     })
     .returning({ id: integrationConnections.id });
 
-  const state = randomBytes(32).toString("hex");
-
-  const redirectUri = `${origin}/api/integrations/oauth/callback`;
-
-  const authUrl = new URL("https://accounts.google.com/o/oauth2/v2/auth");
+  authUrl = new URL("https://accounts.google.com/o/oauth2/v2/auth");
   authUrl.searchParams.set("client_id", settings.clientId);
   authUrl.searchParams.set("redirect_uri", redirectUri);
   authUrl.searchParams.set("response_type", "code");
@@ -102,7 +151,6 @@ export async function GET(request: Request) {
   authUrl.searchParams.set("state", state);
 
   const response = NextResponse.redirect(authUrl.toString(), 302);
-  const isSecure = requestUrl.protocol === "https:";
   response.cookies.set("oauth_state", state, {
     httpOnly: true,
     secure: isSecure,

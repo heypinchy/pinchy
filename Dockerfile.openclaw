@@ -28,7 +28,12 @@ RUN apt-get update && apt-get install -y \
       build-essential \
     && rm -rf /var/lib/apt/lists/*
 
-RUN npm install -g openclaw@2026.6.5
+# --ignore-scripts: @mistralai/mistralai (pulled transitively by openclaw)
+# shipped a broken setup.mjs that tries to run a non-existent tanstack_runner.js
+# via bun, which fails the global install. We skip lifecycle scripts here; the
+# prewarm step below boots OpenClaw, so any real install breakage would surface
+# there instead.
+RUN npm install -g openclaw@2026.6.5 --ignore-scripts
 
 # Install pinchy-files plugin dependencies (native modules must be built in the container)
 COPY packages/plugins/pinchy-files/package.json /tmp/pinchy-files/package.json

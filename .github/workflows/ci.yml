@@ -1429,13 +1429,16 @@ jobs:
         env:
           CI: true
           ENCRYPTION_KEY: 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+          GRAPH_MOCK_URL: http://localhost:9005
 
       - name: Capture diagnostics on failure
         if: failure()
         uses: ./.github/actions/capture-e2e-diagnostics
         with:
           compose-files: "-f docker-compose.yml -f docker-compose.e2e.yml -f docker-compose.email-test.yml"
-          mock-service: "gmail-mock"
+          # The email suite runs both the Gmail and Microsoft specs, so capture
+          # logs from both mock services (space-separated list).
+          mock-service: "gmail-mock graph-mock"
           artifact-name: "email-e2e"
 
       - name: Tear down

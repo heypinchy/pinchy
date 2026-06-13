@@ -538,6 +538,293 @@ describe("GET /api/integrations/oauth/callback", () => {
     });
   });
 
+  describe("Microsoft callback", () => {
+    const mockMsPendingConnection = {
+      id: "ms-pending-conn-id",
+      type: "microsoft",
+      name: "Microsoft (connecting…)",
+      description: "",
+      credentials: "encrypted-empty",
+      data: null,
+      status: "pending",
+      createdAt: new Date("2026-04-09"),
+      updatedAt: new Date("2026-04-09"),
+    };
+
+    const mockMsConnection = {
+      id: "ms-conn-123",
+      type: "microsoft",
+      name: "user@contoso.com",
+      description: "",
+      credentials: "encrypted-creds",
+      data: { emailAddress: "user@contoso.com", provider: "outlook" },
+      status: "active",
+      createdAt: new Date("2026-04-09"),
+      updatedAt: new Date("2026-04-09"),
+    };
+
+    function mockMsTokenExchange(overrides: Record<string, unknown> = {}) {
+      return {
+        ok: true,
+        json: vi.fn().mockResolvedValue({
+          access_token: "ms-access-token",
+          refresh_token: "ms-refresh-token",
+          expires_in: 3600,
+          scope: "offline_access User.Read Mail.ReadWrite Mail.Send",
+          ...overrides,
+        }),
+      };
+    }
+
+    function mockMsProfileFetch(profile: Record<string, unknown> = {}) {
+      return {
+        ok: true,
+        json: vi.fn().mockResolvedValue({
+          mail: "user@contoso.com",
+          userPrincipalName: "user@contoso.com",
+          ...profile,
+        }),
+      };
+    }
+
+    beforeEach(() => {
+      mockGetSession.mockResolvedValue(adminSession());
+      mockGetOAuthSettings.mockResolvedValue({
+        clientId: "ms-client-id",
+        clientSecret: "ms-client-secret",
+        tenantId: "my-tenant",
+      });
+      mockSelectLimit.mockResolvedValue([mockMsPendingConnection]);
+      mockUpdateReturning.mockResolvedValue([mockMsConnection]);
+    });
+
+    it("exchanges code at login.microsoftonline.com/<tenant>/oauth2/v2.0/token", async () => {
+      mockFetch
+        .mockResolvedValueOnce(mockMsTokenExchange())
+        .mockResolvedValueOnce(mockMsProfileFetch());
+
+      await GET(
+        makeRequest(
+          { code: "ms-auth-code", state: VALID_STATE },
+          `oauth_state=${VALID_STATE}; oauth_pending_id=ms-pending-conn-id`
+        )
+      );
+
+      expect(mockGetOAuthSettings).toHaveBeenCalledWith("microsoft");
+
+      const tokenCall = mockFetch.mock.calls[0];
+      expect(tokenCall[0]).toBe("https://login.microsoftonline.com/my-tenant/oauth2/v2.0/token");
+      expect(tokenCall[1]).toMatchObject({
+        method: "POST",
+        headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      });
+      const body = new URLSearchParams(tokenCall[1].body);
+      expect(body.get("grant_type")).toBe("authorization_code");
+      expect(body.get("code")).toBe("ms-auth-code");
+      expect(body.get("client_id")).toBe("ms-client-id");
+      expect(body.get("client_secret")).toBe("ms-client-secret");
+      expect(body.get("redirect_uri")).toBe(
+        "http://localhost:7777/api/integrations/oauth/callback"
+      );
+    });
+
+    it("uses MICROSOFT_OAUTH_BASE_URL env override for token endpoint", async () => {
+      vi.stubEnv("MICROSOFT_OAUTH_BASE_URL", "https://mock-ms-auth.local");
+      mockFetch
+        .mockResolvedValueOnce(mockMsTokenExchange())
+        .mockResolvedValueOnce(mockMsProfileFetch());
+
+      await GET(
+        makeRequest(
+          { code: "ms-auth-code", state: VALID_STATE },
+          `oauth_state=${VALID_STATE}; oauth_pending_id=ms-pending-conn-id`
+        )
+      );
+
+      const tokenCall = mockFetch.mock.calls[0];
+      expect(tokenCall[0]).toBe("https://mock-ms-auth.local/my-tenant/oauth2/v2.0/token");
+      vi.unstubAllEnvs();
+    });
+
+    it("defaults to tenantId='organizations' when tenantId is missing", async () => {
+      mockGetOAuthSettings.mockResolvedValue({
+        clientId: "ms-client-id",
+        clientSecret: "ms-client-secret",
+      });
+      mockFetch
+        .mockResolvedValueOnce(mockMsTokenExchange())
+        .mockResolvedValueOnce(mockMsProfileFetch());
+
+      await GET(
+        makeRequest(
+          { code: "ms-auth-code", state: VALID_STATE },
+          `oauth_state=${VALID_STATE}; oauth_pending_id=ms-pending-conn-id`
+        )
+      );
+
+      const tokenCall = mockFetch.mock.calls[0];
+      expect(tokenCall[0]).toBe(
+        "https://login.microsoftonline.com/organizations/oauth2/v2.0/token"
+      );
+    });
+
+    it("fetches /v1.0/me and uses mail as email address", async () => {
+      mockFetch
+        .mockResolvedValueOnce(mockMsTokenExchange())
+        .mockResolvedValueOnce(mockMsProfileFetch({ mail: "user@contoso.com" }));
+
+      await GET(
+        makeRequest(
+          { code: "ms-auth-code", state: VALID_STATE },
+          `oauth_state=${VALID_STATE}; oauth_pending_id=ms-pending-conn-id`
+        )
+      );
+
+      const profileCall = mockFetch.mock.calls[1];
+      expect(profileCall[0]).toContain("/v1.0/me");
+      expect(profileCall[1]).toMatchObject({
+        headers: { Authorization: "Bearer ms-access-token" },
+      });
+    });
+
+    it("falls back to userPrincipalName when mail is null", async () => {
+      mockFetch
+        .mockResolvedValueOnce(mockMsTokenExchange())
+        .mockResolvedValueOnce(
+          mockMsProfileFetch({ mail: null, userPrincipalName: "upn@contoso.com" })
+        );
+
+      await GET(
+        makeRequest(
+          { code: "ms-auth-code", state: VALID_STATE },
+          `oauth_state=${VALID_STATE}; oauth_pending_id=ms-pending-conn-id`
+        )
+      );
+
+      expect(mockUpdateSet).toHaveBeenCalledWith(
+        expect.objectContaining({ name: "upn@contoso.com" })
+      );
+    });
+
+    it("persists accessToken, refreshToken, expiresAt, scope", async () => {
+      mockFetch
+        .mockResolvedValueOnce(mockMsTokenExchange())
+        .mockResolvedValueOnce(mockMsProfileFetch());
+
+      await GET(
+        makeRequest(
+          { code: "ms-auth-code", state: VALID_STATE },
+          `oauth_state=${VALID_STATE}; oauth_pending_id=ms-pending-conn-id`
+        )
+      );
+
+      expect(mockEncrypt).toHaveBeenCalledWith(
+        JSON.stringify({
+          accessToken: "ms-access-token",
+          refreshToken: "ms-refresh-token",
+          expiresAt: "2026-04-09T13:00:00.000Z",
+          scope: "offline_access User.Read Mail.ReadWrite Mail.Send",
+        })
+      );
+    });
+
+    it("stores provider='outlook' in data blob", async () => {
+      mockFetch
+        .mockResolvedValueOnce(mockMsTokenExchange())
+        .mockResolvedValueOnce(mockMsProfileFetch());
+
+      await GET(
+        makeRequest(
+          { code: "ms-auth-code", state: VALID_STATE },
+          `oauth_state=${VALID_STATE}; oauth_pending_id=ms-pending-conn-id`
+        )
+      );
+
+      expect(mockUpdateSet).toHaveBeenCalledWith(
+        expect.objectContaining({
+          data: expect.objectContaining({
+            emailAddress: "user@contoso.com",
+            provider: "outlook",
+          }),
+        })
+      );
+    });
+
+    it("writes audit log with redacted email (no plaintext email in detail)", async () => {
+      vi.stubEnv("AUDIT_HMAC_SECRET", "f".repeat(64));
+      mockFetch
+        .mockResolvedValueOnce(mockMsTokenExchange())
+        .mockResolvedValueOnce(mockMsProfileFetch());
+
+      await GET(
+        makeRequest(
+          { code: "ms-auth-code", state: VALID_STATE },
+          `oauth_state=${VALID_STATE}; oauth_pending_id=ms-pending-conn-id`
+        )
+      );
+
+      expect(mockAppendAuditLog).toHaveBeenCalledWith(
+        expect.objectContaining({
+          actorId: "admin-1",
+          resource: `integration:${mockMsConnection.id}`,
+          outcome: "success",
+          detail: expect.objectContaining({
+            action: "integration_created",
+            type: "microsoft",
+          }),
+        })
+      );
+
+      const detail = mockAppendAuditLog.mock.calls[0][0].detail;
+      expect(detail).not.toHaveProperty("emailAddress");
+      expect(detail).toHaveProperty("emailHash");
+    });
+
+    it("failure: token_exchange_failed uses resource 'integration:microsoft'", async () => {
+      mockFetch.mockResolvedValueOnce({
+        ok: false,
+        json: vi.fn().mockResolvedValue({ error: "invalid_grant" }),
+      });
+
+      await GET(
+        makeRequest(
+          { code: "bad-code", state: VALID_STATE },
+          `oauth_state=${VALID_STATE}; oauth_pending_id=ms-pending-conn-id`
+        )
+      );
+
+      expect(mockAppendAuditLog).toHaveBeenCalledWith(
+        expect.objectContaining({
+          resource: "integration:microsoft",
+          outcome: "failure",
+          detail: expect.objectContaining({
+            action: "integration_oauth_failed",
+            type: "microsoft",
+          }),
+        })
+      );
+    });
+
+    it("redirects to settings with created connection id on success", async () => {
+      mockFetch
+        .mockResolvedValueOnce(mockMsTokenExchange())
+        .mockResolvedValueOnce(mockMsProfileFetch());
+
+      const response = await GET(
+        makeRequest(
+          { code: "ms-auth-code", state: VALID_STATE },
+          `oauth_state=${VALID_STATE}; oauth_pending_id=ms-pending-conn-id`
+        )
+      );
+
+      expect(response.status).toBe(302);
+      const location = new URL(response.headers.get("Location")!);
+      expect(location.pathname).toBe("/settings");
+      expect(location.searchParams.get("tab")).toBe("integrations");
+      expect(location.searchParams.get("created")).toBe(mockMsConnection.id);
+    });
+  });
+
   describe("successful flow — oauth_pending_id points to non-existent record (INSERT fallback)", () => {
     beforeEach(() => {
       mockGetSession.mockResolvedValue(adminSession());

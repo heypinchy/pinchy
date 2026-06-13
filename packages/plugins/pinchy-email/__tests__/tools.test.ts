@@ -19,7 +19,19 @@ vi.mock("../gmail-adapter", () => {
   return { GmailAdapter: MockGmailAdapter };
 });
 
+vi.mock("../graph-adapter", () => {
+  const MockGraphAdapter = vi.fn(function (this: Record<string, unknown>) {
+    this.list = mockList;
+    this.read = mockRead;
+    this.search = mockSearch;
+    this.draft = mockDraft;
+    this.send = mockSend;
+  });
+  return { GraphAdapter: MockGraphAdapter };
+});
+
 import { GmailAdapter } from "../gmail-adapter";
+import { GraphAdapter } from "../graph-adapter";
 import plugin from "../index";
 
 interface AgentTool {
@@ -126,10 +138,19 @@ describe("tool registration", () => {
     expect(names).toContain("email_send");
   });
 
-  it("returns null for all tools when no agentId", () => {
+  it("returns a non-null stub for all tools when no agentId (OC probe call)", async () => {
+    // When OpenClaw calls the factory without session context (e.g. at registerTool()
+    // time during hot-reload), returning null would permanently unregister the tool.
+    // We return a minimal stub so OC keeps the tool in its registry; the real
+    // session-time factory call (with agentId) supersedes it.
     const tools = createApi();
     for (const tool of tools) {
-      expect(tool.factory({})).toBeNull();
+      const stub = tool.factory({});
+      expect(stub).not.toBeNull();
+      expect(stub!.name).toBe(tool.name);
+      // Stub execute() must fail fast rather than call external services
+      const result = await stub!.execute("call-probe", {});
+      expect(result.isError).toBe(true);
     }
   });
 
@@ -256,6 +277,45 @@ describe("credential fetching", () => {
     });
   });
 
+  it("dispatches to GmailAdapter when credentials.type is 'google'", async () => {
+    mockFetch.mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        type: "google",
+        credentials: { accessToken: "google-token" },
+      }),
+    });
+    mockList.mockResolvedValue([]);
+
+    const tools = createApi();
+    const tool = findTool(tools, "email_list", agentId)!;
+
+    await tool.execute("call-1", {});
+
+    expect(GmailAdapter).toHaveBeenCalledWith({ accessToken: "google-token" });
+  });
+
+  it("dispatches to GraphAdapter when credentials.type is 'microsoft'", async () => {
+    mockFetch.mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        type: "microsoft",
+        credentials: { accessToken: "ms-tok" },
+      }),
+    });
+    mockList.mockResolvedValue([]);
+
+    const tools = createApi();
+    const tool = findTool(tools, "email_list", agentId)!;
+
+    const result = await tool.execute("call-1", {});
+
+    expect(result.isError).toBeFalsy();
+    expect(GraphAdapter).toHaveBeenCalledWith({ accessToken: "ms-tok" });
+    expect(GmailAdapter).not.toHaveBeenCalled();
+    expect(mockList).toHaveBeenCalledTimes(1);
+  });
+
   it("returns error when credential fetch fails", async () => {
     mockCredentialFailure(401, "Unauthorized");
 
@@ -279,6 +339,22 @@ describe("credential fetching", () => {
 
     expect(result.content[0].text).toContain("ECONNREFUSED");
     expect(result.isError).toBe(true);
+  });
+
+  it("throws a clear error when credentials API returns no type field", async () => {
+    mockFetch.mockResolvedValue({
+      ok: true,
+      json: async () => ({ credentials: { accessToken: "tok" } }),
+    });
+
+    const tools = createApi();
+    const tool = findTool(tools, "email_list", agentId)!;
+
+    const result = await tool.execute("call-1", {});
+
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain("credentials API returned no type field");
+    expect(mockList).not.toHaveBeenCalled();
   });
 
   it("REGRESSION (#209): rejects SecretRef-shaped credentials with a clear hint, never reaching Gmail", async () => {
@@ -493,7 +569,7 @@ describe("email_search", () => {
     mockCredentialResponse();
   });
 
-  it("searches emails with query", async () => {
+  it("searches emails with DSL fields", async () => {
     const emails = [
       {
         id: "msg-2",
@@ -507,11 +583,19 @@ describe("email_search", () => {
     const tools = createApi();
     const tool = findTool(tools, "email_search", agentId)!;
 
-    const result = await tool.execute("call-1", { query: "invoice", limit: 5 });
+    const result = await tool.execute("call-1", {
+      from: "b@test.com",
+      subject: "invoice",
+      limit: 5,
+    });
 
     const data = JSON.parse(result.content[0].text);
     expect(data).toHaveLength(1);
-    expect(mockSearch).toHaveBeenCalledWith({ query: "invoice", limit: 5 });
+    expect(mockSearch).toHaveBeenCalledWith({
+      from: "b@test.com",
+      subject: "invoice",
+      limit: 5,
+    });
   });
 });
 

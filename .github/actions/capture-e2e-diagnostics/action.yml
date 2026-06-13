@@ -18,10 +18,12 @@ inputs:
     required: true
   mock-service:
     description: >-
-      Mock service name (e.g. "odoo-mock", "brave-mock", "gmail-mock",
+      Mock service name(s) (e.g. "odoo-mock", "brave-mock", "gmail-mock",
       "telegram-mock", "llm-providers-mock"). Logs are captured per-service
-      so each suite's mock is isolated. Leave empty for suites with no
-      in-stack mock (e.g. integration tests that run fake-Ollama on the host).
+      so each suite's mock is isolated. Accepts a space-separated list for
+      suites with more than one mock (e.g. "gmail-mock graph-mock"). Leave
+      empty for suites with no in-stack mock (e.g. integration tests that run
+      fake-Ollama on the host).
     required: false
     default: ""
   artifact-name:
@@ -49,9 +51,11 @@ runs:
         docker compose $COMPOSE_FILES_INPUT logs --no-color --timestamps pinchy > e2e-artifacts/pinchy.log 2>&1
         docker compose $COMPOSE_FILES_INPUT logs --no-color --timestamps openclaw > e2e-artifacts/openclaw.log 2>&1
         docker compose $COMPOSE_FILES_INPUT logs --no-color --timestamps db > e2e-artifacts/postgres.log 2>&1
-        if [ -n "$MOCK_SERVICE" ]; then
-          docker compose $COMPOSE_FILES_INPUT logs --no-color --timestamps "$MOCK_SERVICE" > "e2e-artifacts/${MOCK_SERVICE}.log" 2>&1
-        fi
+        # MOCK_SERVICE may be a space-separated list (e.g. "gmail-mock graph-mock");
+        # word-splitting is intentional so each mock's logs land in its own file.
+        for svc in $MOCK_SERVICE; do
+          docker compose $COMPOSE_FILES_INPUT logs --no-color --timestamps "$svc" > "e2e-artifacts/${svc}.log" 2>&1
+        done
         # The OC config Pinchy wrote and OC reloaded against — definitive
         # answer to "did the agent/tool propagate".
         #
@@ -87,11 +91,11 @@ runs:
         echo
         echo "=== OpenClaw logs (last 120 lines) ==="
         tail -120 e2e-artifacts/openclaw.log
-        if [ -n "$MOCK_SERVICE" ]; then
+        for svc in $MOCK_SERVICE; do
           echo
-          echo "=== ${MOCK_SERVICE} logs (last 60 lines) ==="
-          tail -60 "e2e-artifacts/${MOCK_SERVICE}.log"
-        fi
+          echo "=== ${svc} logs (last 60 lines) ==="
+          tail -60 "e2e-artifacts/${svc}.log"
+        done
 
     - name: Upload diagnostics artifact
       uses: actions/upload-artifact@v4

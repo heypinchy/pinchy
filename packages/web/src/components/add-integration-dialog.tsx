@@ -36,7 +36,7 @@ import { parseOdooSubdomainHint, generateConnectionName } from "@/lib/integratio
 import { normalizeUrl } from "@/lib/url";
 import { Loader2, CheckCircle2, AlertTriangle, Copy, Check } from "lucide-react";
 import { useCopyToClipboard } from "@/hooks/use-copy-to-clipboard";
-import { OdooIcon, GoogleIcon, BraveIcon } from "./integration-icons";
+import { OdooIcon, GoogleIcon, BraveIcon, MicrosoftIcon } from "./integration-icons";
 import { docsUrl } from "./docs-link";
 
 interface IntegrationType {
@@ -58,6 +58,12 @@ const INTEGRATION_TYPES: IntegrationType[] = [
     name: "Google",
     description: "Connect your Google account to sync email via Gmail.",
     icon: GoogleIcon,
+  },
+  {
+    id: "microsoft",
+    name: "Microsoft",
+    description: "Connect your Microsoft 365 account to sync email via Outlook.",
+    icon: MicrosoftIcon,
   },
   {
     id: "web-search",
@@ -369,6 +375,244 @@ function GoogleConnectStep({
   );
 }
 
+// --- Microsoft Connect Step ---
+
+type MicrosoftOAuthStatus = "loading" | "not-configured" | "configured";
+
+function MicrosoftConnectStep({
+  onBack,
+  onConnect,
+}: {
+  onBack: () => void;
+  onConnect: () => void;
+}) {
+  const [oauthStatus, setOauthStatus] = useState<MicrosoftOAuthStatus>("loading");
+  const [justConfigured, setJustConfigured] = useState(false);
+  const [clientId, setClientId] = useState("");
+  const [clientSecret, setClientSecret] = useState("");
+  const [tenantId, setTenantId] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [saveError, setSaveError] = useState<string | null>(null);
+  const { isCopied, copy } = useCopyToClipboard();
+
+  useEffect(() => {
+    let cancelled = false;
+    async function check() {
+      try {
+        const res = await fetch("/api/settings/oauth?provider=microsoft");
+        const data = await res.json();
+        if (!cancelled) setOauthStatus(data.configured ? "configured" : "not-configured");
+      } catch {
+        if (!cancelled) setOauthStatus("not-configured");
+      }
+    }
+    check();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  async function handleSaveOAuth() {
+    setSaving(true);
+    setSaveError(null);
+    try {
+      const body: Record<string, string> = {
+        provider: "microsoft",
+        clientId: clientId.trim(),
+        clientSecret: clientSecret.trim(),
+      };
+      if (tenantId.trim()) {
+        body.tenantId = tenantId.trim();
+      }
+      const res = await fetch("/api/settings/oauth", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      const data = await res.json();
+      if (!res.ok || !data.success) {
+        setSaveError(data.error || "Failed to save OAuth credentials");
+        setSaving(false);
+        return;
+      }
+      setJustConfigured(true);
+      setOauthStatus("configured");
+      setSaving(false);
+    } catch {
+      setSaveError("Failed to save OAuth credentials");
+      setSaving(false);
+    }
+  }
+
+  const redirectUrl =
+    typeof window !== "undefined"
+      ? `${window.location.origin}/api/integrations/oauth/callback`
+      : "/api/integrations/oauth/callback";
+
+  // Loading
+  if (oauthStatus === "loading") {
+    return (
+      <div className="flex flex-col items-center gap-3 py-6">
+        <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
+        <p className="text-sm text-muted-foreground">Checking OAuth configuration...</p>
+      </div>
+    );
+  }
+
+  // Not configured — show inline setup form
+  if (oauthStatus === "not-configured") {
+    return (
+      <div className="space-y-5">
+        <StepIndicator current={1} total={2} label="Set up Microsoft OAuth" />
+
+        {/* Section 1: Copy redirect URI to Azure Portal */}
+        <div className="space-y-2">
+          <p className="text-sm font-medium">1. Copy this redirect URI to the Azure Portal</p>
+          <div className="flex items-center gap-2">
+            <code className="flex-1 rounded bg-muted px-3 py-2 text-xs break-all">
+              {redirectUrl}
+            </code>
+            <Button
+              type="button"
+              variant="outline"
+              size="icon"
+              className="shrink-0"
+              onClick={() => {
+                copy(redirectUrl);
+                toast.success("Copied to clipboard");
+              }}
+            >
+              {isCopied ? (
+                <Check className="h-4 w-4 text-green-600" />
+              ) : (
+                <Copy className="h-4 w-4" />
+              )}
+            </Button>
+          </div>
+          <p className="text-xs text-muted-foreground">
+            Open{" "}
+            <a
+              href="https://portal.azure.com/#view/Microsoft_AAD_RegisteredApps/ApplicationsListBlade"
+              target="_blank"
+              rel="noopener noreferrer"
+              className="underline"
+            >
+              Azure Portal → App registrations
+            </a>
+            , register a new application, and add this URI under{" "}
+            <span className="font-medium">Redirect URIs</span>.{" "}
+            <a
+              href={docsUrl("guides/connect-email")}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="underline"
+            >
+              Full guide
+            </a>
+          </p>
+          <p className="text-xs text-muted-foreground italic">
+            Keep this page open — you&apos;ll need to come back.
+          </p>
+        </div>
+
+        {/* Section 2: Paste credentials from Azure */}
+        <div className="space-y-3">
+          <p className="text-sm font-medium">2. Paste your credentials from Azure</p>
+          <div className="space-y-2">
+            <Label htmlFor="microsoft-client-id">Client ID</Label>
+            <Input
+              id="microsoft-client-id"
+              value={clientId}
+              onChange={(e) => setClientId(e.target.value)}
+              placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
+            />
+          </div>
+          <div className="space-y-2">
+            <Label htmlFor="microsoft-client-secret">Client Secret</Label>
+            <Input
+              id="microsoft-client-secret"
+              type="password"
+              value={clientSecret}
+              onChange={(e) => setClientSecret(e.target.value)}
+              placeholder="Your client secret value"
+            />
+          </div>
+          <div className="space-y-2">
+            <Label htmlFor="microsoft-tenant-id">Tenant ID</Label>
+            <Input
+              id="microsoft-tenant-id"
+              value={tenantId}
+              onChange={(e) => setTenantId(e.target.value)}
+              placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
+            />
+            <p className="text-xs text-muted-foreground">
+              Optional — leave blank to allow any work/school account
+            </p>
+          </div>
+        </div>
+
+        {saveError && <p className="text-sm text-destructive">{saveError}</p>}
+
+        <div className="flex justify-between pt-2">
+          <Button type="button" variant="ghost" onClick={onBack}>
+            Back
+          </Button>
+          <div className="flex gap-2">
+            <Button type="button" variant="outline" onClick={onConnect}>
+              Cancel
+            </Button>
+            <Button
+              type="button"
+              disabled={!clientId.trim() || !clientSecret.trim() || saving}
+              onClick={handleSaveOAuth}
+            >
+              {saving ? (
+                <>
+                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                  Saving...
+                </>
+              ) : (
+                "Save & Continue"
+              )}
+            </Button>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  // Configured — show connect button
+  return (
+    <div className="space-y-4">
+      <StepIndicator
+        current={justConfigured ? 2 : 1}
+        total={justConfigured ? 2 : 1}
+        label="Connect"
+      />
+
+      {/* eslint-disable @next/next/no-html-link-for-pages -- OAuth requires full page redirect */}
+      <div className="flex flex-col items-center gap-4 py-4">
+        <a
+          href="/api/integrations/oauth/start?provider=microsoft"
+          className="inline-flex h-10 items-center justify-center gap-2 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground ring-offset-background transition-colors hover:bg-primary/90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
+        >
+          Connect Microsoft Account
+        </a>
+      </div>
+      {/* eslint-enable @next/next/no-html-link-for-pages */}
+
+      <div className="flex justify-between pt-2">
+        <Button type="button" variant="ghost" onClick={onBack}>
+          Back
+        </Button>
+        <Button type="button" variant="outline" onClick={onConnect}>
+          Cancel
+        </Button>
+      </div>
+    </div>
+  );
+}
+
 // --- Dialog component ---
 
 interface AddIntegrationDialogProps {
@@ -376,7 +620,7 @@ interface AddIntegrationDialogProps {
   onOpenChange: (open: boolean) => void;
   onSuccess: () => void;
   existingTypes?: string[];
-  initialType?: "google";
+  initialType?: "google" | "microsoft";
 }
 
 export function AddIntegrationDialog({
@@ -976,6 +1220,20 @@ export function AddIntegrationDialog({
               onBack={handleBack}
               onCancel={() => handleClose(false)}
             />
+          </>
+        )}
+
+        {/* Step 1: Connect (Microsoft OAuth) */}
+        {step === "connect" && selectedType === "microsoft" && (
+          <>
+            <DialogHeader>
+              <DialogTitle>Connect Microsoft</DialogTitle>
+              <DialogDescription>
+                Sign in with your Microsoft account to connect Outlook.
+              </DialogDescription>
+            </DialogHeader>
+
+            <MicrosoftConnectStep onBack={handleBack} onConnect={() => handleClose(false)} />
           </>
         )}
 

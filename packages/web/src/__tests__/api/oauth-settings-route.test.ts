@@ -117,6 +117,46 @@ describe("GET /api/settings/oauth", () => {
   });
 });
 
+describe("GET /api/settings/oauth — microsoft provider", () => {
+  let GET: typeof import("@/app/api/settings/oauth/route").GET;
+
+  beforeEach(async () => {
+    vi.clearAllMocks();
+    const mod = await import("@/app/api/settings/oauth/route");
+    GET = mod.GET;
+  });
+
+  it("returns configured: true when microsoft settings exist", async () => {
+    vi.mocked(auth.api.getSession).mockResolvedValueOnce(adminSession);
+    vi.mocked(getOAuthSettings).mockResolvedValueOnce({
+      clientId: "ms-client",
+      clientSecret: "ms-secret",
+      tenantId: "my-tenant",
+    });
+
+    const req = new NextRequest("http://localhost/api/settings/oauth?provider=microsoft");
+    const response = await GET(req);
+    expect(response.status).toBe(200);
+
+    const body = await response.json();
+    expect(body.configured).toBe(true);
+    expect(body.clientId).toBe("ms-client");
+    expect(body.clientSecret).toBeUndefined();
+  });
+
+  it("returns configured: false when microsoft settings do not exist", async () => {
+    vi.mocked(auth.api.getSession).mockResolvedValueOnce(adminSession);
+    vi.mocked(getOAuthSettings).mockResolvedValueOnce(null);
+
+    const req = new NextRequest("http://localhost/api/settings/oauth?provider=microsoft");
+    const response = await GET(req);
+    expect(response.status).toBe(200);
+
+    const body = await response.json();
+    expect(body).toEqual({ configured: false, clientId: "" });
+  });
+});
+
 describe("POST /api/settings/oauth", () => {
   let POST: typeof import("@/app/api/settings/oauth/route").POST;
 
@@ -226,9 +266,108 @@ describe("POST /api/settings/oauth", () => {
     expect(appendAuditLog).toHaveBeenCalledWith({
       actorType: "user",
       actorId: "admin-1",
+      resource: "integration:google-oauth",
       eventType: "config.changed",
       detail: { key: "google_oauth_credentials", provider: "google" },
       outcome: "success",
+    });
+  });
+
+  it("POST with microsoft provider stores settings including tenantId", async () => {
+    vi.mocked(auth.api.getSession).mockResolvedValueOnce(adminSession);
+    vi.mocked(saveOAuthSettings).mockResolvedValueOnce(undefined);
+
+    const req = new NextRequest("http://localhost/api/settings/oauth", {
+      method: "POST",
+      body: JSON.stringify({
+        provider: "microsoft",
+        clientId: "ms-client",
+        clientSecret: "ms-secret",
+        tenantId: "my-tenant",
+      }),
+    });
+    const response = await POST(req);
+    expect(response.status).toBe(200);
+
+    const body = await response.json();
+    expect(body).toEqual({ success: true });
+
+    expect(saveOAuthSettings).toHaveBeenCalledWith("microsoft", {
+      clientId: "ms-client",
+      clientSecret: "ms-secret",
+      tenantId: "my-tenant",
+    });
+  });
+
+  it("POST with microsoft provider works without tenantId", async () => {
+    vi.mocked(auth.api.getSession).mockResolvedValueOnce(adminSession);
+    vi.mocked(saveOAuthSettings).mockResolvedValueOnce(undefined);
+
+    const req = new NextRequest("http://localhost/api/settings/oauth", {
+      method: "POST",
+      body: JSON.stringify({
+        provider: "microsoft",
+        clientId: "ms-client",
+        clientSecret: "ms-secret",
+      }),
+    });
+    const response = await POST(req);
+    expect(response.status).toBe(200);
+
+    expect(saveOAuthSettings).toHaveBeenCalledWith("microsoft", {
+      clientId: "ms-client",
+      clientSecret: "ms-secret",
+    });
+  });
+
+  it("POST with microsoft provider logs audit event", async () => {
+    vi.mocked(auth.api.getSession).mockResolvedValueOnce(adminSession);
+    vi.mocked(saveOAuthSettings).mockResolvedValueOnce(undefined);
+
+    const req = new NextRequest("http://localhost/api/settings/oauth", {
+      method: "POST",
+      body: JSON.stringify({
+        provider: "microsoft",
+        clientId: "ms-client",
+        clientSecret: "ms-secret",
+        tenantId: "my-tenant",
+      }),
+    });
+    await POST(req);
+
+    // Flush after() callbacks
+    const afterCb = vi.mocked(after).mock.calls[0]?.[0];
+    if (typeof afterCb === "function") await afterCb();
+
+    expect(appendAuditLog).toHaveBeenCalledWith({
+      actorType: "user",
+      actorId: "admin-1",
+      resource: "integration:microsoft-oauth",
+      eventType: "config.changed",
+      detail: { key: "microsoft_oauth_credentials", provider: "microsoft" },
+      outcome: "success",
+    });
+  });
+
+  it("GET google provider still works (no regression)", async () => {
+    // This is implicitly covered by the existing GET tests above,
+    // but we add an explicit regression check here for the POST suite's completeness.
+    vi.mocked(auth.api.getSession).mockResolvedValueOnce(adminSession);
+    vi.mocked(saveOAuthSettings).mockResolvedValueOnce(undefined);
+
+    const req = new NextRequest("http://localhost/api/settings/oauth", {
+      method: "POST",
+      body: JSON.stringify({
+        provider: "google",
+        clientId: "g-client",
+        clientSecret: "g-secret",
+      }),
+    });
+    const response = await POST(req);
+    expect(response.status).toBe(200);
+    expect(saveOAuthSettings).toHaveBeenCalledWith("google", {
+      clientId: "g-client",
+      clientSecret: "g-secret",
     });
   });
 });

@@ -5,22 +5,40 @@ import {
   getOAuthSettings,
   saveOAuthSettings,
   GOOGLE_OAUTH_SETTINGS_KEY,
+  MICROSOFT_OAUTH_SETTINGS_KEY,
 } from "@/lib/integrations/oauth-settings";
 import { appendAuditLog } from "@/lib/audit";
 import { parseRequestBody } from "@/lib/api-validation";
 
-const SUPPORTED_PROVIDERS = ["google"] as const;
+const SUPPORTED_PROVIDERS = ["google", "microsoft"] as const;
 type SupportedProvider = (typeof SUPPORTED_PROVIDERS)[number];
 
 function isSupportedProvider(value: unknown): value is SupportedProvider {
   return typeof value === "string" && SUPPORTED_PROVIDERS.includes(value as SupportedProvider);
 }
 
-const saveOAuthSchema = z.object({
-  provider: z.enum(SUPPORTED_PROVIDERS),
+const saveGoogleOAuthSchema = z.object({
+  provider: z.literal("google"),
   clientId: z.string().min(1),
   clientSecret: z.string().min(1),
 });
+
+const saveMicrosoftOAuthSchema = z.object({
+  provider: z.literal("microsoft"),
+  clientId: z.string().min(1),
+  clientSecret: z.string().min(1),
+  tenantId: z.string().min(1).optional(),
+});
+
+const saveOAuthSchema = z.discriminatedUnion("provider", [
+  saveGoogleOAuthSchema,
+  saveMicrosoftOAuthSchema,
+]);
+
+const SETTINGS_KEY_MAP: Record<SupportedProvider, string> = {
+  google: GOOGLE_OAUTH_SETTINGS_KEY,
+  microsoft: MICROSOFT_OAUTH_SETTINGS_KEY,
+};
 
 export async function GET(request: NextRequest) {
   const sessionOrError = await requireAdmin();
@@ -48,19 +66,40 @@ export async function POST(request: NextRequest) {
 
   const parsed = await parseRequestBody(saveOAuthSchema, request);
   if ("error" in parsed) return parsed.error;
-  const { provider, clientId, clientSecret } = parsed.data;
+  const data = parsed.data;
 
-  await saveOAuthSettings(provider, { clientId, clientSecret });
+  if (data.provider === "microsoft") {
+    const { clientId, clientSecret, tenantId } = data;
+    const settingsToSave = tenantId
+      ? { clientId, clientSecret, tenantId }
+      : { clientId, clientSecret };
+    await saveOAuthSettings("microsoft", settingsToSave);
 
-  after(() =>
-    appendAuditLog({
-      actorType: "user",
-      actorId: sessionOrError.user.id!,
-      eventType: "config.changed",
-      detail: { key: GOOGLE_OAUTH_SETTINGS_KEY, provider },
-      outcome: "success",
-    })
-  );
+    after(() =>
+      appendAuditLog({
+        actorType: "user",
+        actorId: sessionOrError.user.id!,
+        resource: "integration:microsoft-oauth",
+        eventType: "config.changed",
+        detail: { key: SETTINGS_KEY_MAP["microsoft"], provider: "microsoft" },
+        outcome: "success",
+      })
+    );
+  } else {
+    const { clientId, clientSecret } = data;
+    await saveOAuthSettings("google", { clientId, clientSecret });
+
+    after(() =>
+      appendAuditLog({
+        actorType: "user",
+        actorId: sessionOrError.user.id!,
+        resource: "integration:google-oauth",
+        eventType: "config.changed",
+        detail: { key: SETTINGS_KEY_MAP["google"], provider: "google" },
+        outcome: "success",
+      })
+    );
+  }
 
   return NextResponse.json({ success: true });
 }
