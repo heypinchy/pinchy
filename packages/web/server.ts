@@ -1,4 +1,4 @@
-import { createServer } from "http";
+import { createServer, type IncomingMessage, type ServerResponse } from "http";
 import { parse } from "url";
 import next from "next";
 import { WebSocketServer, WebSocket } from "ws";
@@ -58,7 +58,21 @@ if (process.env.PINCHY_E2E_DISABLE_AUTH_RATE_LIMIT === "1") {
 }
 
 const dev = process.env.NODE_ENV !== "production";
-const app = next({ dev });
+
+// The http server must exist BEFORE next() so it can be passed as the
+// `httpServer` option: that is the official hook through which Next.js
+// registers its own upgrade listener (router-server's upgradeHandler) on our
+// server. Without it, dev-mode HMR upgrades (/_next/webpack-hmr) are never
+// answered and Next 16's hydration waits on the HMR channel forever — every
+// page freezes at its server-rendered shell. Next's listener deliberately
+// leaves unknown upgrade paths (our /api/ws) alone.
+//
+// The real request listener is assigned inside app.prepare() below; no
+// traffic arrives before server.listen() runs at the end of that block.
+let requestListener: (req: IncomingMessage, res: ServerResponse) => void = () => {};
+const server = createServer((req, res) => requestListener(req, res));
+
+const app = next({ dev, httpServer: server });
 const handle = app.getRequestHandler();
 
 const OPENCLAW_WS_URL = process.env.OPENCLAW_WS_URL;
@@ -92,7 +106,7 @@ app.prepare().then(async () => {
   const { getCachedDomain } = await import("./src/lib/domain-cache");
   const { applyCsrfGate } = await import("./src/server/csrf-check");
 
-  const server = createServer(async (req, res) => {
+  requestListener = async (req, res) => {
     const { pathname } = parse(req.url!, true);
     const host = (req.headers["x-forwarded-host"] as string) || req.headers.host;
     if (!isHostAllowed(host, pathname)) {
@@ -122,7 +136,7 @@ ${domain ? `<p><a href="https://${domain}">Go to ${domain} →</a></p>` : ""}
     if (await applyCsrfGate(req, res)) return;
 
     handle(req, res, parse(req.url!, true));
-  });
+  };
 
   let openclawClient: OpenClawClient | null = null;
   // Pre-construct a cold-start stand-in so the WS server always has a
@@ -167,41 +181,43 @@ ${domain ? `<p><a href="https://${domain}">Go to ${domain} →</a></p>` : ""}
   restartState.on("restarting", () => broadcastToClients({ type: "openclaw:restarting" }));
   restartState.on("ready", () => broadcastToClients({ type: "openclaw:ready" }));
 
-  server.on("upgrade", async (request, socket, head) => {
-    const { pathname } = parse(request.url!, true);
-    if (pathname === "/api/ws") {
-      // Rate limit by IP before doing any auth work. The limiter's onReject
-      // hook (configured above) takes care of warn-level logging.
-      const ip = request.socket.remoteAddress ?? "unknown";
-      if (!wsRateLimiter.allowUpgrade(ip)) {
-        socket.write("HTTP/1.1 429 Too Many Requests\r\n\r\n");
-        socket.destroy();
-        return;
-      }
+  const { createUpgradeRouter } = await import("./src/server/upgrade-router");
+  server.on(
+    "upgrade",
+    createUpgradeRouter({
+      handlePinchyWs: async (request, socket, head) => {
+        // Rate limit by IP before doing any auth work. The limiter's onReject
+        // hook (configured above) takes care of warn-level logging.
+        const ip = request.socket.remoteAddress ?? "unknown";
+        if (!wsRateLimiter.allowUpgrade(ip)) {
+          socket.write("HTTP/1.1 429 Too Many Requests\r\n\r\n");
+          socket.destroy();
+          return;
+        }
 
-      const sessionInfo = await validateWsSession(request.headers.cookie);
-      if (!sessionInfo) {
-        socket.write("HTTP/1.1 401 Unauthorized\r\n\r\n");
-        socket.destroy();
-        return;
-      }
+        const sessionInfo = await validateWsSession(request.headers.cookie);
+        if (!sessionInfo) {
+          socket.write("HTTP/1.1 401 Unauthorized\r\n\r\n");
+          socket.destroy();
+          return;
+        }
 
-      // Limit concurrent connections per user
-      const { userId, userRole } = sessionInfo;
-      if (!wsRateLimiter.allowConnection(userId)) {
-        socket.write("HTTP/1.1 429 Too Many Requests\r\n\r\n");
-        socket.destroy();
-        return;
-      }
+        // Limit concurrent connections per user
+        const { userId, userRole } = sessionInfo;
+        if (!wsRateLimiter.allowConnection(userId)) {
+          socket.write("HTTP/1.1 429 Too Many Requests\r\n\r\n");
+          socket.destroy();
+          return;
+        }
 
-      wss.handleUpgrade(request, socket, head, (ws) => {
-        wsRateLimiter.trackConnection(userId);
-        sessionMap.set(ws, { userId, userRole });
-        wss.emit("connection", ws, request);
-      });
-    }
-    // Other upgrade requests (e.g. Next.js HMR) are left for Next.js to handle
-  });
+        wss.handleUpgrade(request, socket, head, (ws) => {
+          wsRateLimiter.trackConnection(userId);
+          sessionMap.set(ws, { userId, userRole });
+          wss.emit("connection", ws, request);
+        });
+      },
+    })
+  );
 
   wss.on("connection", (clientWs) => {
     const sessionInfo = sessionMap.get(clientWs);

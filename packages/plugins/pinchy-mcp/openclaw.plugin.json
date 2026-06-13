@@ -1,0 +1,75 @@
+{
+  "id": "pinchy-mcp",
+  "name": "Pinchy MCP",
+  "description": "MCP (Model Context Protocol) server integration. Connects agents to external MCP servers, exposing their tools as native agent capabilities. Credentials are fetched at runtime from Pinchy's internal credentials API — never stored in this config.",
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": ["apiBaseUrl", "gatewayToken", "connections"],
+    "properties": {
+      "apiBaseUrl": {
+        "type": "string",
+        "format": "uri"
+      },
+      "gatewayToken": {
+        "type": "string",
+        "minLength": 1
+      },
+      "connections": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["connectionId", "preset", "transport", "url", "toolPrefix", "agentTools"],
+          "properties": {
+            "connectionId": {
+              "type": "string",
+              "minLength": 1
+            },
+            "preset": {
+              "type": "string",
+              "enum": [
+                "github",
+                "linear",
+                "atlassian",
+                "stripe",
+                "cloudflare",
+                "intercom",
+                "highlevel",
+                "generic"
+              ]
+            },
+            "transport": {
+              "type": "string",
+              "enum": ["http", "sse"]
+            },
+            "url": {
+              "type": "string",
+              "format": "uri"
+            },
+            "toolPrefix": {
+              "type": "string",
+              "pattern": "^[a-z]+_$"
+            },
+            "agentTools": {
+              "type": "object",
+              "additionalProperties": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              }
+            },
+            "extraHeaders": {
+              "type": "object",
+              "description": "Non-secret HTTP headers to send alongside Authorization: Bearer. Today HighLevel uses this for locationId. Reserved headers (Authorization, Content-Type, Accept) are dropped at runtime.",
+              "additionalProperties": {
+                "type": "string"
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

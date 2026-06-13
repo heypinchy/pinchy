@@ -90,6 +90,10 @@ const NO_SCHEMA_REQUIRED: ReadonlyArray<KnownPinchyPlugin> = [
   // pinchy-web: web search is provider config (e.g. Brave API key), not a
   //   per-instance schema. No templates declare per-search-engine schemas.
   "pinchy-web",
+  // pinchy-mcp: tool allow-list is per-agent (agentMcpToolPermissions),
+  //   not a synced schema. Templates don't pin specific MCP tools, so
+  //   there is no schema to subset against the connection's tool list.
+  "pinchy-mcp",
 ];
 
 describe("template ↔ integration sync coverage", () => {

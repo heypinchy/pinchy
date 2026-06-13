@@ -51,13 +51,20 @@ test.describe.serial("Odoo Wizard Flow", () => {
     // Navigate to integrations tab
     await page.goto("/settings?tab=integrations");
 
-    // Click "Add Integration"
-    await page.getByRole("button", { name: /add integration/i }).click();
+    // "Add Integration" navigates to the dedicated picker page since
+    // PR #298 split the type picker out of the modal. Click the link,
+    // then pick Odoo on the picker — that opens the wizard dialog
+    // with `initialType=odoo` so the connect step renders straight away.
+    await page.getByRole("link", { name: /add integration/i }).click();
+    await expect(page).toHaveURL(/\/settings\/integrations\/new$/);
 
-    // Dialog opens — select Odoo type
+    // The card's accessible name concatenates its <h3> + <p> (name +
+    // description), so we match on the leading "Odoo" prefix rather than
+    // the full string. No other tile mentions Odoo, so this is unambiguous.
+    await page.getByRole("button", { name: /^Odoo\b/ }).click();
+
     const dialog = page.getByRole("dialog");
     await expect(dialog).toBeVisible();
-    await dialog.getByRole("button", { name: /Odoo/ }).click();
 
     // Step 1: Connect — fill credentials
     await expect(dialog.getByText(/step 1 of 3/i)).toBeVisible();
@@ -107,11 +114,17 @@ test.describe.serial("Odoo Wizard Flow", () => {
 
     await page.goto("/settings?tab=integrations");
 
-    await page.getByRole("button", { name: /add integration/i }).click();
+    // Same picker-then-dialog flow as the happy-path test above.
+    await page.getByRole("link", { name: /add integration/i }).click();
+    await expect(page).toHaveURL(/\/settings\/integrations\/new$/);
+
+    // The card's accessible name concatenates its <h3> + <p> (name +
+    // description), so we match on the leading "Odoo" prefix rather than
+    // the full string. No other tile mentions Odoo, so this is unambiguous.
+    await page.getByRole("button", { name: /^Odoo\b/ }).click();
 
     const dialog = page.getByRole("dialog");
     await expect(dialog).toBeVisible();
-    await dialog.getByRole("button", { name: /Odoo/ }).click();
 
     // Fill with wrong API key
     await dialog.getByLabel("URL").fill(ODOO_INTERNAL_URL);

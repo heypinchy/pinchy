@@ -227,5 +227,9 @@ export async function setAgentPermissions(
   connectionId: string,
   permissions: Array<{ model: string; operation: string }>
 ): Promise<Response> {
-  return pinchyPut(`/api/agents/${agentId}/integrations`, { connectionId, permissions }, cookie);
+  return pinchyPut(
+    `/api/agents/${agentId}/integrations`,
+    [{ kind: "odoo", connectionId, entries: permissions }],
+    cookie
+  );
 }

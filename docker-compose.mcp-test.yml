@@ -1,0 +1,25 @@
+# Test overlay: adds mock MCP server for pinchy-mcp E2E tests.
+# Usage:
+#   docker compose -f docker-compose.yml -f docker-compose.e2e.yml -f docker-compose.mcp-test.yml up --build -d
+
+services:
+  mcp-mock:
+    build:
+      context: config/mcp-mock
+    ports:
+      - "9005:9005"
+    environment:
+      PORT: "9005"
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://localhost:9005/control/health').then(r=>r.ok?process.exit(0):process.exit(1)).catch(()=>process.exit(1))"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  pinchy:
+    environment:
+      # Enable the MCP integration feature for E2E tests
+      - PINCHY_MCP_ENABLED=1
+      - NEXT_PUBLIC_PINCHY_MCP_ENABLED=1
+      # Allow private URLs so Pinchy can reach the mcp-mock container
+      - ALLOW_PRIVATE_URLS=1

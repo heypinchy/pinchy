@@ -82,7 +82,13 @@ export function EmailPermissionSection({
         const permsRes = await fetch(`/api/agents/${agentId}/integrations`);
 
         if (permsRes.ok) {
-          const data = await permsRes.json();
+          const raw = await permsRes.json();
+          // Handle both new { permissions, drift } shape and legacy array shape
+          type PermEntry = {
+            connectionId: string;
+            permissions: Array<{ model: string; operation: string }>;
+          };
+          const data: PermEntry[] = Array.isArray(raw) ? raw : (raw.permissions ?? []);
           for (const entry of data) {
             const matchingConn = connections.find((c) => c.id === entry.connectionId);
             if (matchingConn) {

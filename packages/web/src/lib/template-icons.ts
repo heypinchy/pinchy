@@ -28,6 +28,9 @@ import {
   PackageOpen,
   Wrench,
   BadgeCheck,
+  GitPullRequest,
+  BookOpen,
+  ListTodo,
   type LucideIcon,
 } from "lucide-react";
 
@@ -72,6 +75,9 @@ export const TEMPLATE_ICON_COMPONENTS = {
   PackageOpen,
   Wrench,
   BadgeCheck,
+  GitPullRequest,
+  BookOpen,
+  ListTodo,
 } as const satisfies Record<string, LucideIcon>;
 
 export type TemplateIconName = keyof typeof TEMPLATE_ICON_COMPONENTS;
