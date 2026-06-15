@@ -19,6 +19,11 @@ on:
       - "PERSONALITY.md"
       - "sample-data/**"
       - "screenshots/**"
+  # Manual trigger: lets a maintainer re-run the full CI (incl. osv-scan) on a
+  # ref on demand. Needed because docs-only / *.md changes are paths-ignored
+  # above, so a docs-lockfile security bump (osv-scan reads docs/pnpm-lock.yaml)
+  # cannot otherwise produce a fresh green run on main to clear a stale red one.
+  workflow_dispatch:
 
 # Cancel in-progress runs on the same PR/branch when a new commit is pushed.
 # For main, never cancel — release/post-merge runs must always complete.
