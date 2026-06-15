@@ -9,7 +9,11 @@
 import { test, expect } from "@playwright/test";
 import path from "path";
 import { login, getSmithersAgentId, waitForOpenClawConnected } from "./helpers";
-import { FAKE_OLLAMA_RESPONSE } from "../shared/fake-ollama/fake-ollama-server";
+import {
+  FAKE_OLLAMA_RESPONSE,
+  FAKE_OLLAMA_PDF_ATTACHMENT_READ_TOOL_TRIGGER,
+} from "../shared/fake-ollama/fake-ollama-server";
+import { pollAuditForTool } from "../shared/dispatch-probe";
 
 test.describe("upload and send — happy path", () => {
   test("PDF upload chip reaches ready state and message embed uses uploads URL with zero 404s", async ({
@@ -93,5 +97,46 @@ test.describe("upload and send — happy path", () => {
 
     // ── 10. Assert zero 404s from uploads fetches ─────────────────────────────
     expect(failedUploadFetches).toHaveLength(0);
+  });
+
+  // The tool-EXECUTING coverage that was missing and let the v0.5.8 PDF bug
+  // ship: an uploaded PDF must be analyzed via `pinchy_read` (pinchy-files' own
+  // PDF subsystem), NOT OpenClaw's built-in `pdf` tool — which resolves its
+  // model only against the per-agent catalog and fails "Unknown model" for the
+  // common (built-in-provider) case. This drives the read end-to-end against
+  // real OpenClaw + pinchy-files and asserts the pinchy_read dispatch lands.
+  test("uploaded PDF is analyzed via pinchy_read (not OpenClaw's built-in pdf tool)", async ({
+    page,
+  }) => {
+    await login(page);
+    const agentId = await getSmithersAgentId(page);
+    await page.goto(`/chat/${agentId}`);
+    await expect(page).toHaveURL(`/chat/${agentId}`, { timeout: 10000 });
+    await waitForOpenClawConnected(page);
+
+    const input = page.getByLabel("Message input");
+    await expect(input).toBeVisible({ timeout: 10000 });
+
+    const fixturesDir = path.join(__dirname, "../fixtures");
+    const [fileChooser] = await Promise.all([
+      page.waitForEvent("filechooser"),
+      page.locator(".aui-composer-add-attachment").click(),
+    ]);
+    await fileChooser.setFiles(path.join(fixturesDir, "test.pdf"));
+
+    const readyChip = page
+      .locator(".text-green-600")
+      .locator("xpath=ancestor::*[@class and contains(@class,'rounded-lg')]")
+      .first();
+    await expect(readyChip).toBeVisible({ timeout: 20000 });
+
+    await input.fill(`${FAKE_OLLAMA_PDF_ATTACHMENT_READ_TOOL_TRIGGER}: summarize the attached PDF`);
+    await page.keyboard.press("Enter");
+
+    // The decisive assertion: a tool.pinchy_read audit for this agent — proving
+    // the uploaded PDF was read via pinchy_read on the real stack. With the old
+    // routing the agent was told to use the `pdf` tool, which fails to resolve.
+    const found = await pollAuditForTool(page, { toolName: "pinchy_read", agentId });
+    expect(found).toBe(true);
   });
 });

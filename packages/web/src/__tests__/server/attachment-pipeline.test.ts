@@ -37,6 +37,29 @@ describe("buildAttachmentBlock", () => {
     expect(block).toContain("application/pdf");
   });
 
+  it("routes PDFs to `pinchy_read`, not OpenClaw's built-in `pdf` tool", async () => {
+    // The OpenClaw built-in `pdf` tool resolves its model only against the
+    // per-agent models.json catalog (which never contains built-in providers
+    // like anthropic/openai), so it fails "Unknown model" for the common case.
+    // pinchy-files' own pinchy_read has a full, tested PDF subsystem
+    // (pdf-extract for text, pdf-vision for scans) that resolves credentials
+    // via the runtime modelAuth API — it works on every provider/model. PDFs
+    // must be analyzed with pinchy_read.
+    const { buildAttachmentBlock } = await import("@/server/attachment-pipeline");
+    const block = buildAttachmentBlock([
+      {
+        relativePath: "uploads/statement.pdf",
+        absolutePath: "/root/.openclaw/workspaces/test/uploads/statement.pdf",
+        mimeType: "application/pdf",
+        sizeBytes: 120_000,
+        contentHash: "b".repeat(64),
+        reused: false,
+      },
+    ]);
+    expect(block).toContain("analyze with `pinchy_read`");
+    expect(block).not.toContain("analyze with `pdf`");
+  });
+
   it("returns empty string when no uploads", async () => {
     const { buildAttachmentBlock } = await import("@/server/attachment-pipeline");
     expect(buildAttachmentBlock([])).toBe("");

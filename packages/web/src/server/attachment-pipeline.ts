@@ -264,7 +264,15 @@ export async function materializeAttachments(
  * updated in the same change.
  */
 function toolNameForMime(mimeType: string): string {
-  if (mimeType === "application/pdf") return "`pdf`";
+  // PDFs are read via pinchy-files' own `pinchy_read`, which has a full,
+  // tested PDF subsystem (pdf-extract for the text layer; pdf-vision for
+  // scanned pages) and resolves credentials through the runtime modelAuth
+  // API. We deliberately do NOT use OpenClaw's built-in `pdf` tool: it
+  // resolves its model only against the per-agent models.json catalog, which
+  // never contains the built-in providers (anthropic/openai/google) a typical
+  // pdfModel points at — so it fails "Unknown model" for the common case
+  // (v0.5.8 staging finding; OpenClaw upstream issue filed separately).
+  if (mimeType === "application/pdf") return "`pinchy_read`";
   if (mimeType.startsWith("image/")) return "`image`";
   // Text formats (CSV, Markdown, JSON, YAML, plain text) are workspace files
   // read via the pinchy_read plugin tool rather than an OpenClaw built-in.
