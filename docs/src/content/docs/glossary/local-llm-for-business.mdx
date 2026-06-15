@@ -1,0 +1,66 @@
+---
+title: Can you run local LLMs for business?
+description: Running a local LLM means the model itself runs on your own hardware — no prompt or response ever goes to a model vendor's API. For businesses that means data control, predictable cost, and offline operation, traded against hardware and raw model capability.
+head:
+  - tag: script
+    attrs:
+      type: application/ld+json
+    content: |
+      {
+        "@context": "https://schema.org",
+        "@type": "FAQPage",
+        "mainEntity": [
+          {
+            "@type": "Question",
+            "name": "Can you run local LLMs for business?",
+            "acceptedAnswer": {
+              "@type": "Answer",
+              "text": "Yes. A local LLM runs on your own hardware through a runtime such as Ollama, so no prompt or response goes to a model vendor's API. Businesses run local models for data control, predictable cost, and offline operation. The trade-offs are the hardware you need and that the most capable frontier models are still cloud-only."
+            }
+          },
+          {
+            "@type": "Question",
+            "name": "Are local LLMs as good as cloud models?",
+            "acceptedAnswer": {
+              "@type": "Answer",
+              "text": "For many business tasks, yes — modern open-weight models handle summarization, extraction, drafting, and tool use well. For the hardest reasoning and the longest context, the frontier cloud models are still ahead. A practical approach is to use local models where data sensitivity or cost matters most, and cloud models where you need maximum capability."
+            }
+          },
+          {
+            "@type": "Question",
+            "name": "Which local model runtime works with AI agents?",
+            "acceptedAnswer": {
+              "@type": "Answer",
+              "text": "Ollama is the most common local model runtime and works well behind a self-hosted agent platform. The agent platform points at the local runtime instead of a cloud API, so inference stays on your hardware. A good platform is model-agnostic, letting you mix local and cloud models per agent."
+            }
+          }
+        ]
+      }
+---
+
+Running a **local LLM** means the model itself runs on your own hardware — no prompt or response ever goes to a model vendor's API. For a business, that turns the language model from an external dependency into part of your own infrastructure.
+
+## Why businesses run local models
+
+- **Data never leaves** — prompts and documents stay on your hardware, which is the foundation of [air-gapped](/glossary/air-gapped-ai-agents/) and high-compliance deployments.
+- **Predictable cost** — you pay for hardware once instead of per token, which matters at high volume.
+- **No vendor lock-in** — open-weight models can be swapped, pinned, and run for as long as you need them.
+- **Offline operation** — agents keep working with no internet connection at all.
+
+## The trade-offs
+
+Local models are not free of cost — they shift it. You need capable hardware (a GPU for anything beyond small models), and you take on the operations of running and updating the runtime. The most capable frontier models are still cloud-only, so for the hardest reasoning tasks a cloud API may still win. The pragmatic answer is rarely "all local" or "all cloud" but a mix.
+
+## How local models fit an agent platform
+
+A **model-agnostic** [agent platform](/glossary/ai-agent-platform/) points at a local runtime instead of a cloud API, so inference stays on your hardware. The strongest setups let you choose the model per agent: a local model for the agent that reads sensitive documents, a frontier cloud model for the agent that does open-ended research.
+
+## In Pinchy
+
+Pinchy supports local models through **Ollama** alongside the cloud providers (OpenAI, Anthropic, Google), and the model is configurable per agent. Point an agent at a local model and its data never leaves the network; point another at a cloud API when you need maximum capability. See [Set Up Local Ollama](/guides/ollama-setup/) and [Manage LLM Providers](/guides/llm-providers/).
+
+## Related terms
+
+- [Air-gapped AI agents](/glossary/air-gapped-ai-agents/)
+- [Self-hosted AI agents](/glossary/self-hosted-ai-agents/)
+- [What is an AI agent platform?](/glossary/ai-agent-platform/)

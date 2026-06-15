@@ -1,0 +1,71 @@
+---
+title: What is an AI agent platform?
+description: An AI agent platform is the layer that lets a team run, govern, and operate AI agents — not just a library to build one. It adds the user management, permissions, audit, and deployment that a framework or runtime leaves out.
+head:
+  - tag: script
+    attrs:
+      type: application/ld+json
+    content: |
+      {
+        "@context": "https://schema.org",
+        "@type": "FAQPage",
+        "mainEntity": [
+          {
+            "@type": "Question",
+            "name": "What is an AI agent platform?",
+            "acceptedAnswer": {
+              "@type": "Answer",
+              "text": "An AI agent platform is the operational layer that lets a team run and govern AI agents, rather than a library for building one. It provides multi-user access, per-agent permissions, an audit trail, a chat interface, and a deployment story. A framework or runtime gives you the engine; the platform is what makes that engine safe to put in front of a whole organization."
+            }
+          },
+          {
+            "@type": "Question",
+            "name": "What is the difference between an AI agent platform and a framework?",
+            "acceptedAnswer": {
+              "@type": "Answer",
+              "text": "A framework such as LangChain or CrewAI is a library: you write code to assemble an agent, and you are responsible for the UI, users, permissions, and deployment yourself. A platform ships those pieces — user management, access control, audit, and a way to run it in production — so a team can operate agents without building the surrounding infrastructure."
+            }
+          },
+          {
+            "@type": "Question",
+            "name": "Do I need an AI agent platform or just a framework?",
+            "acceptedAnswer": {
+              "@type": "Answer",
+              "text": "For a single developer prototyping one agent, a framework or runtime is enough. For a team or company, the questions that decide it are: who is allowed to use which agent, what can each agent do, can you prove what happened, and how is it deployed and updated. When those questions matter, you need a platform, because that is exactly the layer a platform provides."
+            }
+          }
+        ]
+      }
+---
+
+An **AI agent platform** is the layer that lets a team run, govern, and operate AI agents — not just a library to build one. It adds the user management, permissions, audit, and deployment story that a framework or runtime leaves out.
+
+## Framework vs. runtime vs. platform
+
+These three terms are often used interchangeably, but they sit at different levels:
+
+|           | What it is                                | Examples                   | What you still build yourself      |
+| --------- | ----------------------------------------- | -------------------------- | ---------------------------------- |
+| Framework | A code library for assembling agents      | LangChain, CrewAI, AutoGen | UI, users, permissions, deployment |
+| Runtime   | An engine that runs an agent with tools   | OpenClaw                   | Governance, multi-user, audit      |
+| Platform  | The operational layer on top of a runtime | Pinchy                     | Mostly configuration, not code     |
+
+A framework gives you building blocks. A runtime gives you a working engine. A platform gives you the thing you can hand to a whole team.
+
+## What a platform provides
+
+- **Multi-user access** — invite a team, with roles, not a single local user.
+- **Per-agent permissions** — [allow-listed tools](/glossary/ai-agent-permissions/) so each agent can do only what it should.
+- **Audit trail** — a [verifiable record](/glossary/ai-agent-audit-trail/) of every agent action.
+- **A chat interface and channels** — somewhere for end users to actually reach the agents.
+- **Deployment** — a defined way to run, update, and host the whole stack.
+
+## In Pinchy
+
+Pinchy is an AI agent platform built on the [OpenClaw](/glossary/what-is-openclaw/) runtime. OpenClaw provides the engine — model, tools, sessions, channels. Pinchy adds the enterprise layer on top: multi-user accounts, [role-based access control](/glossary/rbac-for-ai-agents/), per-agent tool permissions, a signed audit trail, web and Telegram access, and a single Docker Compose deployment. See the [Pinchy website](https://heypinchy.com) and the [Installation Guide](/installation/).
+
+## Related terms
+
+- [Self-hosted AI agents](/glossary/self-hosted-ai-agents/)
+- [AI agent governance](/glossary/ai-agent-governance/)
+- [What is OpenClaw?](/glossary/what-is-openclaw/)

@@ -1,0 +1,70 @@
+---
+title: What are air-gapped AI agents?
+description: Air-gapped AI agents run in an environment with no connection to the public internet — every part of the stack, including the language model, runs inside the isolated network so no prompt or document can ever leave.
+head:
+  - tag: script
+    attrs:
+      type: application/ld+json
+    content: |
+      {
+        "@context": "https://schema.org",
+        "@type": "FAQPage",
+        "mainEntity": [
+          {
+            "@type": "Question",
+            "name": "What are air-gapped AI agents?",
+            "acceptedAnswer": {
+              "@type": "Answer",
+              "text": "Air-gapped AI agents run inside a network that has no connection to the public internet. The agent runtime, the tools it uses, and the language model itself all run on local infrastructure, so no prompt, document, or output can leave the isolated environment. This is the strictest form of self-hosting and is used in defense, critical infrastructure, and highly regulated environments."
+            }
+          },
+          {
+            "@type": "Question",
+            "name": "What is the difference between air-gapped and self-hosted AI agents?",
+            "acceptedAnswer": {
+              "@type": "Answer",
+              "text": "Self-hosted means you own and operate the infrastructure, but it may still reach the internet, for example to call a cloud model API. Air-gapped goes further: the network is physically or logically isolated from the public internet, so even cloud model APIs are off the table. Every air-gapped deployment is self-hosted, but not every self-hosted deployment is air-gapped."
+            }
+          },
+          {
+            "@type": "Question",
+            "name": "Can AI agents run without any internet connection?",
+            "acceptedAnswer": {
+              "@type": "Answer",
+              "text": "Yes, if the language model runs locally and the platform has no mandatory phone-home. A local model runtime such as Ollama keeps inference inside the network, and a platform whose licensing is validated offline never needs to reach a license server. The trade-off is that model choice is limited to what you can run on local hardware."
+            }
+          }
+        ]
+      }
+---
+
+**Air-gapped AI agents** run in an environment with no connection to the public internet. The agent runtime, the tools it uses, and the language model itself all run inside the isolated network, so no prompt, document, or output can ever leave.
+
+This is the strictest form of [self-hosting](/glossary/self-hosted-ai-agents/), used in defense, critical infrastructure, finance, and any setting where "the data physically cannot leave" is a hard requirement.
+
+## Air-gapped vs. self-hosted
+
+The two terms are related but not the same:
+
+- **Self-hosted** is about ownership — you run the infrastructure, but it may still reach out to a cloud model API.
+- **Air-gapped** is about isolation — the network has no path to the public internet, so even cloud APIs are unavailable.
+
+Every air-gapped deployment is self-hosted; not every self-hosted deployment is air-gapped.
+
+## What an air-gapped deployment requires
+
+- A **local model runtime** so inference never leaves the network. Cloud model APIs cannot be used.
+- **No mandatory phone-home** anywhere in the stack — no telemetry, no license server, no update check that blocks startup.
+- **Offline installation** — images and dependencies brought in deliberately rather than pulled at runtime.
+
+The main trade-off is model choice: you are limited to what runs on your own hardware, rather than the frontier models behind cloud APIs.
+
+## In Pinchy
+
+Pinchy can run fully offline. Paired with [local models](/glossary/local-llm-for-business/) via **Ollama**, inference stays inside the network and no request ever reaches an external service. The license key is validated offline with no license server in the path, and the whole stack ships as a single Docker Compose deployment that can be installed without internet access. When isolation is not a requirement, the same instance can use cloud model APIs instead. See the [Installation Guide](/installation/) and [Set Up Local Ollama](/guides/ollama-setup/).
+
+## Related terms
+
+- [Self-hosted AI agents](/glossary/self-hosted-ai-agents/)
+- [Local LLMs for business](/glossary/local-llm-for-business/)
+- [GDPR-compliant AI agents](/glossary/gdpr-ai-agents/)

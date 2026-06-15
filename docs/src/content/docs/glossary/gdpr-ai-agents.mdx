@@ -1,0 +1,77 @@
+---
+title: Are AI agents GDPR-compliant?
+description: GDPR compliance for AI agents is mainly a data-flow question — where prompts, documents, and outputs are processed, and who can access them. Self-hosting removes the cross-border transfer problem, but tooling alone does not make an organization compliant.
+head:
+  - tag: script
+    attrs:
+      type: application/ld+json
+    content: |
+      {
+        "@context": "https://schema.org",
+        "@type": "FAQPage",
+        "mainEntity": [
+          {
+            "@type": "Question",
+            "name": "Are AI agents GDPR-compliant?",
+            "acceptedAnswer": {
+              "@type": "Answer",
+              "text": "AI agents are not compliant or non-compliant on their own. GDPR compliance depends on where prompts and documents are processed, who can access them, and whether you can demonstrate control. Cloud AI agents send data to a vendor, which raises processor and cross-border transfer obligations. Self-hosted AI agents keep the data inside your boundary, which removes the transfer problem, but the surrounding controls, contracts, and processes still have to be in place."
+            }
+          },
+          {
+            "@type": "Question",
+            "name": "Can I use cloud AI agents like ChatGPT under GDPR?",
+            "acceptedAnswer": {
+              "@type": "Answer",
+              "text": "It is possible but adds obligations. You become a controller sending personal data to a processor, often outside the EU, which means data processing agreements, a transfer mechanism, and a lawful basis. For many regulated teams this is a non-starter, which is why they prefer self-hosted agents where prompts and documents never leave their infrastructure."
+            }
+          },
+          {
+            "@type": "Question",
+            "name": "Does self-hosting make AI agents GDPR-compliant?",
+            "acceptedAnswer": {
+              "@type": "Answer",
+              "text": "Self-hosting removes the largest single problem, namely sending personal data to an external service, and it gives you data residency and full audit visibility. But compliance is organizational, not just technical. You still need a lawful basis, data minimization, retention rules, access control, and the ability to honor data-subject requests. Self-hosting makes those achievable on your terms instead of a vendor's."
+            }
+          }
+        ]
+      }
+---
+
+GDPR compliance for AI agents is mainly a **data-flow question**: where prompts, documents, and outputs are processed, who can access them, and whether you can demonstrate that control. The agent itself is neither compliant nor non-compliant — the deployment is.
+
+## Why cloud AI agents are hard under GDPR
+
+When an AI agent runs in a vendor's cloud, every prompt and every document it reads is personal data leaving your environment. That makes you a controller handing data to a processor, frequently outside the EU. The obligations stack up quickly:
+
+- A data processing agreement with the vendor.
+- A valid mechanism for any transfer outside the EU.
+- A lawful basis for the processing, and a way to honor access and erasure requests.
+- Assurance the data is not used to train shared models.
+
+For regulated industries, "where does the prompt go?" often has a mandatory answer that a multi-tenant cloud cannot give.
+
+## What makes an AI agent deployment GDPR-friendly
+
+| Control              | Why it matters under GDPR                                  |
+| -------------------- | ---------------------------------------------------------- |
+| Data residency       | Personal data stays in a jurisdiction you control          |
+| Access control       | Only the right people and agents can reach the right data  |
+| Audit trail          | You can show who did what, when — accountability in Art. 5 |
+| Data minimization    | Agents see only the data scoped to their task              |
+| No external training | Prompts and documents are never sent to a shared model     |
+
+## Tooling is necessary, not sufficient
+
+No platform makes you compliant by installation. Compliance is organizational: a lawful basis, retention rules, a data-protection process, and the ability to answer data-subject requests. The right architecture makes all of that achievable on your terms instead of being constrained by a vendor's defaults.
+
+## In Pinchy
+
+Pinchy is self-hosted first, so prompts and documents stay inside your boundary — there is no vendor cloud in the path. [Role-based access control](/glossary/rbac-for-ai-agents/) scopes who can reach which agent, an [HMAC-signed audit trail](/glossary/ai-agent-audit-trail/) records every action for accountability, and the license key is validated offline so the instance never phones home. Pinchy does not carry a compliance certification, and it cannot replace your own data-protection process — it gives you the architecture to run agents without sending personal data to a third party. See [Self-hosting](https://heypinchy.com/self-hosted-ai-agents/) and [GDPR & AI agents](https://heypinchy.com/gdpr-ai-agents/) on the main site.
+
+## Related terms
+
+- [Self-hosted AI agents](/glossary/self-hosted-ai-agents/)
+- [AI agent governance](/glossary/ai-agent-governance/)
+- [AI agent audit trail](/glossary/ai-agent-audit-trail/)
+- [Air-gapped AI agents](/glossary/air-gapped-ai-agents/)

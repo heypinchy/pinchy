@@ -170,11 +170,16 @@ export default defineConfig({
         {
           label: 'Glossary',
           items: [
+            { label: 'AI Agent Platform', slug: 'glossary/ai-agent-platform' },
+            { label: 'What Is OpenClaw?', slug: 'glossary/what-is-openclaw' },
             { label: 'AI Agent Governance', slug: 'glossary/ai-agent-governance' },
             { label: 'AI Agent Permissions', slug: 'glossary/ai-agent-permissions' },
             { label: 'RBAC for AI Agents', slug: 'glossary/rbac-for-ai-agents' },
             { label: 'AI Agent Audit Trail', slug: 'glossary/ai-agent-audit-trail' },
             { label: 'Self-Hosted AI Agents', slug: 'glossary/self-hosted-ai-agents' },
+            { label: 'Air-Gapped AI Agents', slug: 'glossary/air-gapped-ai-agents' },
+            { label: 'GDPR & AI Agents', slug: 'glossary/gdpr-ai-agents' },
+            { label: 'Local LLMs for Business', slug: 'glossary/local-llm-for-business' },
           ],
         },
         {

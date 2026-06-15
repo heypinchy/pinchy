@@ -1,0 +1,75 @@
+---
+title: What is OpenClaw?
+description: OpenClaw is an open-source AI agent runtime — the engine that connects a language model to tools, memory, and channels so an agent can actually do things. Pinchy builds the enterprise layer on top of it.
+head:
+  - tag: script
+    attrs:
+      type: application/ld+json
+    content: |
+      {
+        "@context": "https://schema.org",
+        "@type": "FAQPage",
+        "mainEntity": [
+          {
+            "@type": "Question",
+            "name": "What is OpenClaw?",
+            "acceptedAnswer": {
+              "@type": "Answer",
+              "text": "OpenClaw is an open-source AI agent runtime: the engine that connects a language model to tools, memory, sessions, and channels so an agent can take actions rather than only chat. It is extensible through plugins and runs locally, which makes it popular with individual power users who want a capable, self-hosted agent."
+            }
+          },
+          {
+            "@type": "Question",
+            "name": "Is OpenClaw free and open source?",
+            "acceptedAnswer": {
+              "@type": "Answer",
+              "text": "Yes. OpenClaw is open-source software you can run on your own infrastructure. That is one reason it is a strong foundation for a self-hosted, offline-capable agent stack, with no dependency on a vendor cloud for the runtime itself."
+            }
+          },
+          {
+            "@type": "Question",
+            "name": "What is the difference between OpenClaw and Pinchy?",
+            "acceptedAnswer": {
+              "@type": "Answer",
+              "text": "OpenClaw is the agent runtime, excellent for an individual power user. It does not, on its own, provide user management, role-based access control, or an audit trail, which teams and companies need. Pinchy is an enterprise platform built on top of OpenClaw that adds exactly those governance and multi-user features while keeping the deployment self-hosted and offline-capable."
+            }
+          }
+        ]
+      }
+---
+
+**OpenClaw** is an open-source AI agent runtime — the engine that connects a language model to tools, memory, sessions, and channels so an agent can actually _do_ things, not just chat. It is the foundation that [Pinchy](https://heypinchy.com) builds on.
+
+## What OpenClaw does
+
+A language model on its own only produces text. A runtime turns it into an agent by wiring in:
+
+- **Tools** the model can call to take real actions.
+- **Memory and sessions** so a conversation has continuity.
+- **Channels** so the agent can be reached where people already are.
+- **A plugin system** so new capabilities can be added without forking the core.
+
+OpenClaw is extensible and local-first, which makes it a favorite for individual power users who want a capable, self-hosted agent under their own control.
+
+## What OpenClaw does not provide on its own
+
+OpenClaw is built around the single powerful operator. For a team or company, critical pieces are missing:
+
+- No user management or per-user accounts.
+- No role-based access control over who can use which agent.
+- No audit trail of who did what, when.
+- No governance layer for permissions across many agents and people.
+
+These are not flaws in the runtime — they are simply a different layer, the enterprise layer.
+
+## How Pinchy relates to OpenClaw
+
+Pinchy is an [AI agent platform](/glossary/ai-agent-platform/) built on top of OpenClaw. OpenClaw stays the runtime; Pinchy wraps it with multi-user accounts, [role-based access control](/glossary/rbac-for-ai-agents/), [per-agent permissions](/glossary/ai-agent-permissions/), a [signed audit trail](/glossary/ai-agent-audit-trail/), and a single self-hosted deployment. You get OpenClaw's runtime power with the governance a team needs around it.
+
+Learn more at the [OpenClaw project](https://github.com/openclaw/openclaw) and the [OpenClaw documentation](https://docs.openclaw.ai).
+
+## Related terms
+
+- [What is an AI agent platform?](/glossary/ai-agent-platform/)
+- [Self-hosted AI agents](/glossary/self-hosted-ai-agents/)
+- [AI agent governance](/glossary/ai-agent-governance/)
