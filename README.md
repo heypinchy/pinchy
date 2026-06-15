@@ -17,6 +17,17 @@
   <a href="https://linkedin.com/in/clemenshelm">LinkedIn</a>
 </p>
 
+<p align="center">
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-AGPL--3.0-blue.svg" alt="License: AGPL-3.0" /></a>
+  <a href="https://github.com/heypinchy/pinchy/releases"><img src="https://img.shields.io/github/v/release/heypinchy/pinchy?color=ef4444" alt="Latest release" /></a>
+  <a href="https://github.com/heypinchy/pinchy/stargazers"><img src="https://img.shields.io/github/stars/heypinchy/pinchy?style=flat&color=f97316" alt="GitHub stars" /></a>
+  <a href="https://github.com/heypinchy/pinchy/discussions"><img src="https://img.shields.io/github/discussions/heypinchy/pinchy?color=8b5cf6" alt="GitHub Discussions" /></a>
+</p>
+
+<p align="center">
+  <img src="https://heypinchy.com/screenshots/chat-interface.png" alt="Pinchy chat interface — a team member talking to a scoped AI agent" width="820" />
+</p>
+
 ---
 
 ## What is Pinchy?
@@ -45,9 +56,30 @@ Pinchy wraps OpenClaw into something enterprises can trust:
 - **Self-Hosted & Offline** — Your server, your data, your models. Works without internet.
 - **Model Agnostic** — OpenAI, Anthropic, local models via Ollama. Your choice.
 
-## Get Started
+### How Pinchy compares
 
-See the **[Installation Guide](https://docs.heypinchy.com/installation/)** for setup instructions, configuration, and development setup.
+| | OpenClaw alone | Cloud platforms (Dust, Glean) | Workflow tools (n8n) | **Pinchy** |
+| --- | :---: | :---: | :---: | :---: |
+| Self-hosted, data stays in-house | ✅ | ❌ | ✅ | **✅** |
+| AI agents (not just flows) | ✅ | ✅ | ❌ | **✅** |
+| Per-agent tool permissions (allow-list) | ❌ | partial | flow-level | **✅** |
+| Roles & per-user access | ❌ | ✅ | paid | **✅** |
+| Tamper-evident audit trail (HMAC-signed) | ❌ | partial | execution log | **✅** |
+| Chat UI + Telegram for end users | partial | ✅ | ❌ | **✅** |
+| Odoo ERP integration | ❌ | ❌ | connectors | **✅** |
+| Open source | ✅ | ❌ | fair-code | **✅ (AGPL-3.0)** |
+
+Honest caveats: Pinchy is young, the integration list is short (Odoo, Gmail, Telegram, web search, documents), there is no compliance certification yet, and granular RBAC is on the roadmap.
+
+## Quick Start
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/heypinchy/pinchy/v0.5.7/docker-compose.yml -o docker-compose.yml
+docker compose up -d
+# Open http://localhost:7777 — the setup wizard creates your admin account
+```
+
+That is the whole thing: one command, no build step, pre-built images on GHCR. Pair it with a local model via [Ollama](https://docs.heypinchy.com/guides/ollama-setup/) and nothing ever leaves your network. Full setup, configuration, and development instructions: **[Installation Guide](https://docs.heypinchy.com/installation/)**.
 
 ## Status
 
@@ -114,6 +146,12 @@ Please read our [Contributing Guide](CONTRIBUTING.md) before submitting a PR. If
 - [Issues](https://github.com/heypinchy/pinchy/issues) — Bug reports and feature requests
 - [Blog](https://heypinchy.com/blog) — Build in public updates
 - [LinkedIn](https://linkedin.com/in/clemenshelm) — Daily updates from the founder
+
+If Pinchy is useful to you, a ⭐ helps other teams find it.
+
+<a href="https://star-history.com/#heypinchy/pinchy&Date">
+  <img src="https://api.star-history.com/svg?repos=heypinchy/pinchy&type=Date" alt="Pinchy star history" width="600" />
+</a>
 
 ## License
 
