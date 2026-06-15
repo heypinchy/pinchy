@@ -49,10 +49,10 @@ You want AI agents in your company. But:
 
 Pinchy wraps OpenClaw into something enterprises can trust:
 
-- **Plugin Architecture** — Agents get scoped tools, not raw shell access. A "Create Jira Ticket" plugin instead of `exec`.
+- **Plugin Architecture** — Agents get scoped tools, not raw shell access. A "read Odoo sales orders" tool, not `exec`. Each tool is granted explicitly, per agent.
 - **Role-Based Access Control** — Who can use which agent. What each agent can do. Per team, per role.
-- **Audit Trail** — Every agent action logged. Who, what, when. Compliance-ready.
-- **Cross-Channel Workflows** — Input on email, output on Slack. Properly routed, properly permissioned.
+- **Audit Trail** — Every agent action logged. Who, what, when. Cryptographically signed and verifiable.
+- **Web & Telegram** — Reach agents in a web UI or from Telegram on your phone. One bot per agent, with the same permissions and audit trail.
 - **Self-Hosted & Offline** — Your server, your data, your models. Works without internet.
 - **Model Agnostic** — OpenAI, Anthropic, local models via Ollama. Your choice.
 
@@ -61,7 +61,7 @@ Pinchy wraps OpenClaw into something enterprises can trust:
 | | OpenClaw alone | Cloud platforms (Dust, Glean) | Workflow tools (n8n) | **Pinchy** |
 | --- | :---: | :---: | :---: | :---: |
 | Self-hosted, data stays in-house | ✅ | ❌ | ✅ | **✅** |
-| AI agents (not just flows) | ✅ | ✅ | ❌ | **✅** |
+| Agent-first (not flow-first) | ✅ | ✅ | flow steps | **✅** |
 | Per-agent tool permissions (allow-list) | ❌ | partial | flow-level | **✅** |
 | Roles & per-user access | ❌ | ✅ | paid | **✅** |
 | Tamper-evident audit trail (HMAC-signed) | ❌ | partial | execution log | **✅** |
