@@ -1,0 +1,72 @@
+---
+title: What is AI agent governance?
+description: AI agent governance is the set of controls that make AI agents safe to run in an organization — identity, permissions, approval, and a tamper-evident audit trail, enforced in code rather than by prompt.
+head:
+  - tag: script
+    attrs:
+      type: application/ld+json
+    content: |
+      {
+        "@context": "https://schema.org",
+        "@type": "FAQPage",
+        "mainEntity": [
+          {
+            "@type": "Question",
+            "name": "What is AI agent governance?",
+            "acceptedAnswer": {
+              "@type": "Answer",
+              "text": "AI agent governance is the set of controls that make AI agents safe to run in an organization: per-user identity, role-based access to agents, per-agent tool permissions, human approval for sensitive actions, and a tamper-evident audit trail. The defining property is that these controls are enforced in code, outside the model, rather than relying on the agent's prompt to behave."
+            }
+          },
+          {
+            "@type": "Question",
+            "name": "Why is AI agent governance becoming important now?",
+            "acceptedAnswer": {
+              "@type": "Answer",
+              "text": "Because agents have moved from answering questions to taking actions in real systems. The moment an agent can write to an ERP, send email, or act on behalf of multiple users, an organization needs to control who can use which agent, what each agent may do, and how to prove what happened. That is governance."
+            }
+          },
+          {
+            "@type": "Question",
+            "name": "What are the core components of AI agent governance?",
+            "acceptedAnswer": {
+              "@type": "Answer",
+              "text": "Five components: identity (each user is a real account, not a shared login), role-based access control (who may use which agent), per-agent tool permissions on an allow-list (what each agent may do), human approval for sensitive or irreversible actions, and a tamper-evident audit trail (proof of what happened). Each is enforced in code, not requested in a prompt."
+            }
+          }
+        ]
+      }
+---
+
+**AI agent governance** is the set of controls that make AI agents safe to run in an organization: per-user identity, role-based access to agents, per-agent tool permissions, human approval for sensitive actions, and a tamper-evident audit trail.
+
+The defining property is that these controls are **enforced in code, outside the model**, not left to the agent's prompt to behave.
+
+## Why it matters now
+
+Agents have moved from answering questions to taking actions in real systems. A chatbot that drafts text needs little governance. An agent that can write to your ERP, send email, or act for multiple people needs all of it. The shift from _answer_ to _act_ is exactly the point where governance stops being optional.
+
+## The five components
+
+1. **Identity.** Each person is a real account, not a shared login or token. Without identity, nothing below can attribute or restrict by user.
+2. **[Role-based access control](/glossary/rbac-for-ai-agents/).** Who may use which agent.
+3. **[Tool permissions](/glossary/ai-agent-permissions/).** What each agent may do, on an allow-list: nothing until explicitly granted.
+4. **Human approval.** For sensitive or irreversible actions, the agent drafts and a human confirms before it acts.
+5. **[Tamper-evident audit trail](/glossary/ai-agent-audit-trail/).** Proof of who did what, signed so it cannot be quietly altered.
+
+Miss any one and the others leak. Perfect permissions with shared logins lose attribution. A perfect audit trail of an agent that can do anything is just a detailed record of an incident.
+
+## Enforced in code, not in a prompt
+
+A prompt is a request. Prompt injection and model drift mean an agent can be talked or nudged out of its instructions. Governance controls sit outside the model: if a user lacks the role, they cannot reach the agent; if a tool is not granted, the agent cannot call it; if an action is sensitive, it waits for approval. The model operates _within_ the boundary, never defines it.
+
+## In Pinchy
+
+Pinchy is built as a governance layer: identity and roles, [groups](/concepts/groups/) for agent access, allow-list [tool permissions](/concepts/agent-permissions/) per agent, and an HMAC-signed [audit trail](/concepts/audit-trail/), all self-hosted so the data never leaves your boundary.
+
+## Related terms
+
+- [RBAC for AI agents](/glossary/rbac-for-ai-agents/)
+- [AI agent permissions](/glossary/ai-agent-permissions/)
+- [AI agent audit trail](/glossary/ai-agent-audit-trail/)
+- [Self-hosted AI agents](/glossary/self-hosted-ai-agents/)

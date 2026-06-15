@@ -1,0 +1,73 @@
+---
+title: What are self-hosted AI agents?
+description: Self-hosted AI agents run on infrastructure you control instead of a vendor's cloud — your data, your models, and the agent runtime all stay inside your own boundary.
+head:
+  - tag: script
+    attrs:
+      type: application/ld+json
+    content: |
+      {
+        "@context": "https://schema.org",
+        "@type": "FAQPage",
+        "mainEntity": [
+          {
+            "@type": "Question",
+            "name": "What are self-hosted AI agents?",
+            "acceptedAnswer": {
+              "@type": "Answer",
+              "text": "Self-hosted AI agents run on infrastructure you control, such as your own servers or private cloud, instead of a vendor's multi-tenant cloud. The data, the agent runtime, and optionally the language model all stay inside your boundary. This matters most for regulated industries and any organization that cannot send prompts and documents to an external service."
+            }
+          },
+          {
+            "@type": "Question",
+            "name": "What is the difference between self-hosted and cloud AI agents?",
+            "acceptedAnswer": {
+              "@type": "Answer",
+              "text": "Cloud AI agents are operated by a vendor on shared infrastructure: easiest to start, but your prompts and data leave your environment. Self-hosted AI agents run on your own infrastructure: more setup, but data residency, network isolation, and the option to run fully offline with local models are under your control."
+            }
+          },
+          {
+            "@type": "Question",
+            "name": "Can self-hosted AI agents run fully offline?",
+            "acceptedAnswer": {
+              "@type": "Answer",
+              "text": "Yes, if paired with a local model. Running a self-hosted agent platform with a local model runtime such as Ollama means no request ever leaves the network, which is what air-gapped and high-compliance environments require. Cloud model APIs can still be used when offline operation is not a requirement."
+            }
+          }
+        ]
+      }
+---
+
+**Self-hosted AI agents** run on infrastructure you control, such as your own servers or private cloud, instead of a vendor's multi-tenant cloud. The data, the agent runtime, and optionally the language model all stay inside your boundary.
+
+This matters most for regulated industries, and for any organization that cannot send its prompts and documents to an external service.
+
+## Self-hosted vs. cloud
+
+|                            | Cloud AI agents                      | Self-hosted AI agents       |
+| -------------------------- | ------------------------------------ | --------------------------- |
+| Operated by                | The vendor, on shared infrastructure | You, on your infrastructure |
+| Where data goes            | To the vendor's servers              | Stays in your boundary      |
+| Time to first run          | Lowest                               | Higher (you deploy it)      |
+| Data residency / isolation | Vendor-controlled                    | You control it              |
+| Offline / air-gapped       | Not possible                         | Possible with local models  |
+
+Cloud is the easiest way to start. Self-hosting is what you choose when "where does the data go?" has a mandatory answer.
+
+## The data-residency argument
+
+For teams under GDPR, sector regulation, or the EU Cloud Act, sending prompts and documents to a US-operated cloud is often a non-starter. Self-hosting removes the question entirely: the data never leaves. That is an architecture decision, not a settings toggle, which is why it has to be designed in from the start rather than bolted on.
+
+## Running fully offline
+
+Paired with a local model runtime such as **Ollama**, a self-hosted agent platform can run with no external network calls at all, which is what air-gapped and high-compliance environments require. When offline operation is not a requirement, the same platform can use cloud model APIs.
+
+## In Pinchy
+
+Pinchy is self-hosted first: a single Docker Compose stack, pre-built images, and support for local models via Ollama for fully offline operation. The license key is validated offline, so the instance never phones home. See [Self-hosting](/self-hosted-ai-agents/) on the main site and the [Installation Guide](/installation/).
+
+## Related terms
+
+- [AI agent governance](/glossary/ai-agent-governance/)
+- [AI agent permissions](/glossary/ai-agent-permissions/)
+- [AI agent audit trail](/glossary/ai-agent-audit-trail/)

@@ -168,6 +168,16 @@ export default defineConfig({
           ],
         },
         {
+          label: 'Glossary',
+          items: [
+            { label: 'AI Agent Governance', slug: 'glossary/ai-agent-governance' },
+            { label: 'AI Agent Permissions', slug: 'glossary/ai-agent-permissions' },
+            { label: 'RBAC for AI Agents', slug: 'glossary/rbac-for-ai-agents' },
+            { label: 'AI Agent Audit Trail', slug: 'glossary/ai-agent-audit-trail' },
+            { label: 'Self-Hosted AI Agents', slug: 'glossary/self-hosted-ai-agents' },
+          ],
+        },
+        {
           label: 'Reference',
           items: [
             { label: 'API Reference', slug: 'reference/api' },

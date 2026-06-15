@@ -1,0 +1,79 @@
+---
+title: What is an AI agent audit trail?
+description: An AI agent audit trail is a tamper-evident record of every action an AI agent takes — which tool it called, when, on whose behalf, and with what outcome.
+head:
+  - tag: script
+    attrs:
+      type: application/ld+json
+    content: |
+      {
+        "@context": "https://schema.org",
+        "@type": "FAQPage",
+        "mainEntity": [
+          {
+            "@type": "Question",
+            "name": "What is an AI agent audit trail?",
+            "acceptedAnswer": {
+              "@type": "Answer",
+              "text": "An AI agent audit trail is a record of every action an AI agent takes: which tool it called, when, on whose behalf, with what inputs, and with what outcome. A strong audit trail is tamper-evident, meaning entries are cryptographically signed so after-the-fact edits can be detected. It answers the question a security or compliance reviewer always asks: who did what, and how would we prove it?"
+            }
+          },
+          {
+            "@type": "Question",
+            "name": "Why do AI agents need an audit trail?",
+            "acceptedAnswer": {
+              "@type": "Answer",
+              "text": "Because an AI agent takes actions on behalf of people, often with access to real business systems. Without an audit trail you cannot attribute an action to a user, reconstruct an incident, or prove compliance. The audit trail turns 'the agent did something' into 'this user asked the agent to do this, at this time, and here is the signed record.'"
+            }
+          },
+          {
+            "@type": "Question",
+            "name": "What makes an audit trail tamper-evident?",
+            "acceptedAnswer": {
+              "@type": "Answer",
+              "text": "Each entry is signed with a cryptographic message authentication code (such as HMAC) computed over the entry's contents. If anyone edits a stored entry afterward, its signature no longer matches and verification fails. Exporting the entries with their signatures lets an independent party re-verify integrity."
+            }
+          }
+        ]
+      }
+---
+
+An **AI agent audit trail** is a record of every action an AI agent takes: which tool it called, when, on whose behalf, with what inputs, and with what outcome. A strong audit trail is _tamper-evident_, meaning entries are cryptographically signed so that after-the-fact edits can be detected.
+
+It answers the question a security or compliance reviewer always asks about automation: **who did what, and how would we prove it?**
+
+## Why AI agents need one
+
+An AI agent is different from a chatbot: it takes _actions_. It can write a record in your ERP, send an email, post to a channel, or read a document. The moment an agent acts on behalf of a person with access to real systems, three questions become unavoidable:
+
+- **Attribution.** Which user asked the agent to do this?
+- **Reconstruction.** What exactly happened, in what order, during an incident?
+- **Proof.** Can you demonstrate to an auditor that the record was not altered?
+
+Without an audit trail, "the agent did something" stays vague. With one, it becomes "this user asked this agent to take this action at this time, and here is the signed record."
+
+## What a good audit trail records
+
+| Field                  | Why it matters                                |
+| ---------------------- | --------------------------------------------- |
+| Actor (user and agent) | Attribution: who initiated, which agent acted |
+| Action / tool call     | What the agent actually did                   |
+| Timestamp              | Ordering and incident timelines               |
+| Inputs and outcome     | Reconstruction and dispute resolution         |
+| Signature              | Tamper-evidence                               |
+
+## What makes it tamper-evident
+
+Each entry is signed with a cryptographic message authentication code, such as **HMAC**, computed over the entry's contents. Edit a stored entry afterward and its signature no longer matches, so verification fails. Exporting the entries together with their signatures lets an independent party re-verify integrity without trusting the system that produced them.
+
+This is the difference between a log file (useful for debugging, editable by anyone with disk access) and an audit trail (evidence).
+
+## In Pinchy
+
+Pinchy records every agent action in an audit trail where each entry is individually HMAC-signed, and CSV exports include the signatures for independent verification. See [Audit Trail](/concepts/audit-trail/) for the full model.
+
+## Related terms
+
+- [AI agent permissions](/glossary/ai-agent-permissions/)
+- [RBAC for AI agents](/glossary/rbac-for-ai-agents/)
+- [AI agent governance](/glossary/ai-agent-governance/)

@@ -1,0 +1,76 @@
+---
+title: What is RBAC for AI agents?
+description: RBAC for AI agents is role-based access control applied to an agent platform — it governs which people may use which agents, separately from which tools each agent may use.
+head:
+  - tag: script
+    attrs:
+      type: application/ld+json
+    content: |
+      {
+        "@context": "https://schema.org",
+        "@type": "FAQPage",
+        "mainEntity": [
+          {
+            "@type": "Question",
+            "name": "What is RBAC for AI agents?",
+            "acceptedAnswer": {
+              "@type": "Answer",
+              "text": "RBAC (role-based access control) for AI agents governs which people may use which agents, based on their role. It is distinct from per-agent tool permissions: RBAC controls who can talk to an agent, while tool permissions control what that agent may do. A finance agent might be usable only by the finance group, while separately being allowed only to read accounting data."
+            }
+          },
+          {
+            "@type": "Question",
+            "name": "How is RBAC different from agent tool permissions?",
+            "acceptedAnswer": {
+              "@type": "Answer",
+              "text": "They answer two different questions. RBAC answers 'who may use this agent' by mapping users and groups to roles. Tool permissions answer 'what may this agent do' by allow-listing the tools the agent can call. A complete governance model needs both: identity on one axis, capability on the other."
+            }
+          },
+          {
+            "@type": "Question",
+            "name": "Why does a single shared login break governance for AI agents?",
+            "acceptedAnswer": {
+              "@type": "Answer",
+              "text": "If everyone shares one login or token, the system cannot tell who is calling. There is no per-user access control and no attribution in the audit trail. RBAC requires that each person has their own identity, so access and accountability can both be tied to a real user."
+            }
+          }
+        ]
+      }
+---
+
+**RBAC for AI agents** is role-based access control applied to an agent platform. It governs which people may use which agents, based on their role. It is distinct from the agent's _tool_ permissions: RBAC controls **who can talk to an agent**, while [tool permissions](/glossary/ai-agent-permissions/) control **what that agent may do**.
+
+## Two axes, not one
+
+A complete governance model needs both:
+
+- **Identity axis (RBAC).** Map users and groups to roles. The finance group can use the finance agent; the support group cannot even see it.
+- **Capability axis (tool permissions).** Allow-list the tools each agent may call. The finance agent may read accounting data but not write it.
+
+Confusing the two is a common mistake. Letting the right people use an agent that can do too much is just as dangerous as locking down an agent that the wrong people can reach.
+
+## Why shared logins break it
+
+If everyone shares one login or one gateway token, the system cannot tell who is calling. That breaks RBAC at the root:
+
+- No per-user access control: access is all-or-nothing.
+- No attribution: the [audit trail](/glossary/ai-agent-audit-trail/) cannot name a user.
+
+RBAC requires that each person has their own identity, so both access and accountability tie back to a real user.
+
+## Basic vs. granular RBAC
+
+- **Basic RBAC** distinguishes a small set of roles, such as admin and member, plus groups for visibility.
+- **Granular RBAC** adds custom roles, per-resource permissions (who may view the audit log, who may manage providers), and enterprise identity via SSO/SAML.
+
+Most teams start with basic RBAC and grow into granular as the deployment matures.
+
+## In Pinchy
+
+Pinchy provides admin and member roles, plus [groups](/concepts/groups/) that scope which users can see and use which agents, separately from each agent's tool allow-list. Granular RBAC (custom roles, SSO/SAML) is on the roadmap.
+
+## Related terms
+
+- [AI agent permissions](/glossary/ai-agent-permissions/)
+- [AI agent governance](/glossary/ai-agent-governance/)
+- [AI agent audit trail](/glossary/ai-agent-audit-trail/)

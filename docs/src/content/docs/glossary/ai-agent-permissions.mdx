@@ -1,0 +1,75 @@
+---
+title: What are AI agent permissions?
+description: AI agent permissions define exactly which tools an agent may use and which data it may reach — ideally as an allow-list, where an agent can do nothing until each capability is explicitly granted.
+head:
+  - tag: script
+    attrs:
+      type: application/ld+json
+    content: |
+      {
+        "@context": "https://schema.org",
+        "@type": "FAQPage",
+        "mainEntity": [
+          {
+            "@type": "Question",
+            "name": "What are AI agent permissions?",
+            "acceptedAnswer": {
+              "@type": "Answer",
+              "text": "AI agent permissions define which tools an AI agent may use and which data it may reach. The safest model is an allow-list: a new agent can do nothing until an administrator explicitly grants each capability, tool by tool. This is the opposite of giving an agent broad access and hoping its prompt keeps it in bounds."
+            }
+          },
+          {
+            "@type": "Question",
+            "name": "What is the difference between an allow-list and a deny-list for AI agents?",
+            "acceptedAnswer": {
+              "@type": "Answer",
+              "text": "An allow-list starts with nothing permitted and adds capabilities explicitly, so anything not granted is forbidden by default. A deny-list starts with everything permitted and removes specific capabilities, so anything you forget to block stays allowed. For AI agents, allow-lists are safer because the failure mode of forgetting is 'the agent cannot do it' rather than 'the agent can do it.'"
+            }
+          },
+          {
+            "@type": "Question",
+            "name": "Why are prompt instructions not enough to control an AI agent?",
+            "acceptedAnswer": {
+              "@type": "Answer",
+              "text": "A prompt is a request, not a boundary. A model can be talked out of its instructions through prompt injection or simply ignore them. Real permissions are enforced in code, outside the model: if a tool is not granted, the agent cannot call it, no matter what the prompt or the user says."
+            }
+          }
+        ]
+      }
+---
+
+**AI agent permissions** define which tools an AI agent may use and which data it may reach. The safest model is an **allow-list**: a new agent can do nothing until an administrator explicitly grants each capability, tool by tool.
+
+This is the opposite of the common default, where an agent gets broad access and a prompt is supposed to keep it in bounds.
+
+## Allow-list vs. deny-list
+
+The distinction decides what happens when you forget something.
+
+- **Allow-list.** Start with nothing permitted; add capabilities explicitly. Anything not granted is forbidden by default. Forgetting means "the agent cannot do it."
+- **Deny-list.** Start with everything permitted; remove specific capabilities. Anything you forget to block stays allowed. Forgetting means "the agent can do it."
+
+For agents that touch real systems, the allow-list failure mode is the safe one.
+
+## Why prompts are not permissions
+
+A prompt is a request, not a boundary. Two ways it fails as a control:
+
+1. **Prompt injection.** A malicious document or message can talk the model out of its instructions.
+2. **Drift.** A model can simply not follow an instruction reliably.
+
+Real permissions live in code, outside the model. If a tool is not granted, the agent cannot call it, regardless of what the prompt or the user says. The model decides _whether_ to use a granted tool; it can never reach an ungranted one.
+
+## Granularity that matters
+
+Good permission systems are specific. "Can use Odoo" is coarse. "Can read sales orders but not write them, for this agent, for these users" is the kind of boundary a business actually needs. The finer the grant, the smaller the blast radius if an agent misbehaves.
+
+## In Pinchy
+
+In Pinchy a new agent starts with zero tools. Admins enable each tool explicitly, per agent. Combined with [roles and groups](/glossary/rbac-for-ai-agents/), this controls both what an agent can do and who can ask it to. See [Agent Permissions](/concepts/agent-permissions/).
+
+## Related terms
+
+- [RBAC for AI agents](/glossary/rbac-for-ai-agents/)
+- [AI agent audit trail](/glossary/ai-agent-audit-trail/)
+- [AI agent governance](/glossary/ai-agent-governance/)
