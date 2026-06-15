@@ -426,13 +426,37 @@ export async function regenerateOpenClawConfig() {
   // ollama-cloud is spliced into providerSecrets at the model-providers call site.
   const { providers: providerSecrets } = await collectProviderSecrets();
 
-  // Only set defaults.model — nothing else. OpenClaw enriches agents.defaults
-  // with heartbeat, models, contextPruning, compaction at runtime. If Pinchy
-  // writes those fields (even to preserve them), it causes a race condition:
-  // after a full restart, OpenClaw hasn't enriched yet → Pinchy writes without
-  // them → OpenClaw enriches → diff detected → hot-reload → polling dies
-  // (openclaw#47458). By only writing model, we avoid touching any other field.
-  const pinchyDefaults: Record<string, unknown> = {};
+  // Keep agents.defaults minimal. OpenClaw enriches agents.defaults with
+  // heartbeat, models, contextPruning, compaction at runtime; if Pinchy were to
+  // OVERWRITE those, a cold-start race (Pinchy writes before OpenClaw enriches →
+  // OpenClaw enriches → diff → hot-reload → polling dies, openclaw#47458) could
+  // recur. We avoid that by (a) only writing the few fields below and (b) the
+  // `deepMerge(existingAgents, …)` at the config-assembly step, which preserves
+  // every OpenClaw-enriched sibling on each regenerate.
+  const pinchyDefaults: Record<string, unknown> = {
+    // Disable OpenClaw's native pre-compaction memory flush. The flush hard-codes
+    // the built-in `read`/`write` tools (OpenClaw's MEMORY_FLUSH_ALLOWED_TOOL_NAMES),
+    // which Pinchy denies via `group:fs` for every agent (see tool-registry.ts).
+    // It therefore runs with zero tools, flails through "tool not found" attempts,
+    // returns NO_REPLY, and consumes the user's inbound turn — on production it
+    // silently dropped a Telegram receipt image. Pinchy already owns memory
+    // persistence through the audited, path-scoped `pinchy_write` (the agent
+    // journals to memory/ on its own; see memory-prompt.ts), so the native flush
+    // is a redundant, ungoverned duplicate.
+    //
+    // OpenClaw reads this flag ONLY from agents.defaults.compaction.memoryFlush —
+    // there is no per-agent override (buildMemoryFlushPlan in OpenClaw). Writing it
+    // here is reload-safe, verified against the production OpenClaw binary (2026.5.28)
+    // on two fronts: (1) the very first write turns compaction from absent→present,
+    // but OpenClaw's reload classifier (config-reload-plan) matches the changed path
+    // `agents.defaults.compaction.*` to the broad `agents` rule → kind "none" → noop,
+    // NOT a gateway restart, so there is no #47458-style polling-death cascade;
+    // (2) on every later regenerate, the `deepMerge(existingAgents, …)` below
+    // preserves whatever compaction siblings OpenClaw stamped, so the config stays
+    // byte-identical → zero changed paths → no reload at all. The field is also
+    // schema-valid (OpenClaw's zod schema declares memoryFlush.enabled as boolean).
+    compaction: { memoryFlush: { enabled: false } },
+  };
   const defaultProvider = (await getSetting("default_provider")) as ProviderName | null;
   if (defaultProvider && PROVIDERS[defaultProvider]) {
     pinchyDefaults.model = { primary: await getDefaultModel(defaultProvider) };

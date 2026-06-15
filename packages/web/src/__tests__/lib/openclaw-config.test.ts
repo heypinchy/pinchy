@@ -207,6 +207,54 @@ beforeEach(() => {
 // (#296), so this file no longer ships a private duplicate.
 const mirrorOpenClawIsLocalBaseUrl = isOpenClawLocalBaseUrl;
 
+/**
+ * Load OpenClaw's REAL pre-compaction memory-flush plan resolver from the
+ * installed `openclaw` package. We feed Pinchy's emitted config to OpenClaw's
+ * own gate logic instead of re-asserting our field name in isolation: if a
+ * future OpenClaw bump renames or moves the disable flag, this resolver stops
+ * honoring our config and the contract test goes red — a behavior guard that
+ * survives key renames (see test_real_dependency_not_mock memory).
+ *
+ * The flush plan resolver is registered by the memory-core plugin via
+ * `registerMemoryCapability({ flushPlanResolver })`. We invoke the plugin's
+ * `register()` with a capturing stub to extract it. The deep dist path is
+ * intentional: if OpenClaw restructures it, the import throws loudly, which is
+ * the signal to re-verify the contract against the new version.
+ */
+async function loadOpenClawFlushResolver(): Promise<(params: { cfg: unknown }) => unknown | null> {
+  const { createRequire } = await import("module");
+  const { pathToFileURL } = await import("url");
+  const pathMod = await import("path");
+  const require = createRequire(import.meta.url);
+  // `openclaw`'s exports map blocks `./package.json`, so resolve the main entry
+  // (`.` → dist/index.js) and walk to the sibling extensions dir.
+  const distIndex = require.resolve("openclaw");
+  const memCorePath = pathMod.join(pathMod.dirname(distIndex), "extensions/memory-core/index.js");
+  const mod = await import(pathToFileURL(memCorePath).href);
+  const plugin = mod.default;
+
+  let captured: { flushPlanResolver?: (params: { cfg: unknown }) => unknown } | undefined;
+  const noop = () => undefined;
+  const capturingApi = new Proxy(
+    {
+      registerMemoryCapability: (cap: typeof captured) => {
+        captured = cap;
+      },
+      logger: { warn: noop, info: noop, debug: noop, error: noop },
+    } as Record<string, unknown>,
+    { get: (target, prop) => (prop in target ? target[prop as string] : noop) }
+  );
+  plugin.register(capturingApi);
+
+  const resolver = captured?.flushPlanResolver;
+  if (typeof resolver !== "function") {
+    throw new Error(
+      "OpenClaw memory-core no longer exposes a flushPlanResolver — re-verify the memory-flush disable contract against the installed openclaw version."
+    );
+  }
+  return resolver;
+}
+
 describe("regenerateOpenClawConfig", () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -1098,6 +1146,47 @@ describe("regenerateOpenClawConfig", () => {
     expect(config.agents.defaults.model.primary).toBe("openai/gpt-5.4-mini");
   });
 
+  it("should disable OpenClaw's native pre-compaction memory flush", async () => {
+    // Pinchy owns memory persistence through the audited, path-scoped
+    // `pinchy_write` tool. OpenClaw's built-in pre-compaction memory flush is a
+    // second, ungoverned writer for the same capability: it hard-codes the
+    // built-in `read`/`write` tools (MEMORY_FLUSH_ALLOWED_TOOL_NAMES), which
+    // Pinchy denies via `group:fs` for every agent. The flush therefore runs
+    // with zero tools, flails through "tool not found" attempts, and on
+    // production silently dropped a user's inbound Telegram receipt. We disable
+    // it; the agent journals via `pinchy_write` instead. The flag lives ONLY in
+    // agents.defaults.compaction.memoryFlush (no per-agent override exists in
+    // OpenClaw), so this is the single lever available.
+    await regenerateOpenClawConfig();
+
+    const written = mockedWriteFileSync.mock.calls[0][1] as string;
+    const config = JSON.parse(written);
+
+    expect(config.agents.defaults.compaction.memoryFlush.enabled).toBe(false);
+  });
+
+  it("emits a flush-disable that OpenClaw's own resolver actually honors", async () => {
+    // Behavior guard against the REAL dependency: feed Pinchy's emitted config to
+    // OpenClaw's actual buildMemoryFlushPlan. A non-null plan is what spawned the
+    // tool-less flush run that dropped the production Telegram receipt; null means
+    // the flush never runs. Key-agnostic: if a future OpenClaw bump changes how the
+    // flag is read, this goes red even though our unit assertion above stays green.
+    const resolveFlushPlan = await loadOpenClawFlushResolver();
+
+    await regenerateOpenClawConfig();
+    const config = JSON.parse(mockedWriteFileSync.mock.calls[0][1] as string);
+
+    // Pinchy's emitted config disables the flush.
+    expect(resolveFlushPlan({ cfg: config })).toBeNull();
+
+    // Baseline that prevents a false green: the SAME config with our flag removed
+    // must still produce a plan, proving the null above is caused by our flag and
+    // not by some unrelated reason the resolver bailed out.
+    const withoutFlag = structuredClone(config);
+    delete withoutFlag.agents.defaults.compaction;
+    expect(resolveFlushPlan({ cfg: withoutFlag })).not.toBeNull();
+  });
+
   it("should handle empty agents list", async () => {
     mockedDb.select.mockReturnValue({
       from: mockFrom(),
@@ -1121,7 +1210,11 @@ describe("regenerateOpenClawConfig", () => {
 
     // No env block when no provider keys are configured
     expect(config.env).toBeUndefined();
-    expect(config.agents.defaults).toEqual({});
+    // No provider-derived defaults (no model). The memory-flush disable is
+    // provider-independent and always present (see dedicated test above).
+    expect(config.agents.defaults).toEqual({
+      compaction: { memoryFlush: { enabled: false } },
+    });
   });
 
   it("should deny all groups for agents with only safe tools", async () => {
