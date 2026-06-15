@@ -31,6 +31,15 @@ export default defineConfig({
           },
         ] : []),
         {
+          tag: 'link',
+          attrs: {
+            rel: 'alternate',
+            type: 'application/rss+xml',
+            title: 'Pinchy Releases',
+            href: 'https://github.com/heypinchy/pinchy/releases.atom',
+          },
+        },
+        {
           tag: 'meta',
           attrs: { property: 'og:image', content: 'https://docs.heypinchy.com/og-image.png' },
         },
@@ -117,6 +126,7 @@ export default defineConfig({
             { label: 'Introduction', slug: '' },
             { label: 'Quick Start', slug: 'getting-started' },
             { label: 'Installation', slug: 'installation' },
+            { label: 'Releases', slug: 'releases' },
           ],
         },
         {

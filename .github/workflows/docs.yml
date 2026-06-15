@@ -44,6 +44,10 @@ jobs:
         run: pnpm build
         env:
           UMAMI_WEBSITE_ID: ${{ vars.UMAMI_DOCS_WEBSITE_ID }}
+          # Authenticates the GitHub releases loader (Releases page) so it isn't
+          # rate-limited and returns the live release list. github.token has
+          # read access to this repo's releases — no PAT setup needed.
+          GITHUB_TOKEN: ${{ github.token }}
 
       - name: Upload artifact
         uses: actions/upload-pages-artifact@v3

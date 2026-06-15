@@ -259,7 +259,7 @@ The release script and CI enforce image builds, GHCR visibility, end-user instal
 
 **Documentation**
 
-- [ ] `docs/src/content/docs/guides/upgrading.mdx` — new section drafted for this version (heading format: `## Upgrading from v<prev> to %%PINCHY_VERSION%%`) containing `### Breaking changes` (write "None." if there are none) and `### Upgrade notes` subsections. The release script enforces both subsections. The release workflow extracts this section automatically and prepends it to the GitHub Release body.
+- [ ] `docs/src/content/docs/guides/upgrading.mdx` — new section drafted for this version (heading format: `## Upgrading from v<prev> to %%PINCHY_VERSION%%`) containing `### Breaking changes` (write "None." if there are none) and `### Upgrade notes` subsections. The release script enforces both subsections. The release workflow extracts this section automatically and prepends it to the GitHub Release body. This is the single source for the public Releases page (`docs.heypinchy.com/releases/`) and Atom feed, which are pulled live from GitHub Releases at the next docs build — no separate changelog file to update.
 
 **Staging**
 

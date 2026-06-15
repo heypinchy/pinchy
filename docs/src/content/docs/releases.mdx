@@ -1,0 +1,20 @@
+---
+title: Releases
+description: What's new in Pinchy — a reverse-chronological feed of releases, pulled live from GitHub at build time, with a subscribable Atom feed.
+tableOfContents: false
+head:
+  - tag: link
+    attrs:
+      rel: alternate
+      type: application/rss+xml
+      title: Pinchy Releases
+      href: https://github.com/heypinchy/pinchy/releases.atom
+---
+
+import ReleasesList from "../../components/ReleasesList.astro";
+
+What's new in Pinchy, newest first — pulled live from [GitHub Releases](https://github.com/heypinchy/pinchy/releases), the single source of truth. Each entry links to the full notes. For per-version breaking changes and upgrade steps, see the [Upgrading guide](/guides/upgrading/).
+
+**Subscribe:** [RSS / Atom feed](https://github.com/heypinchy/pinchy/releases.atom)
+
+<ReleasesList />

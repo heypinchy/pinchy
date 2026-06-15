@@ -1,0 +1,42 @@
+---
+// Renders the `releases` content collection (loaded live from GitHub Releases
+// at build time — see src/content.config.ts). Newest first, drafts and
+// pre-releases excluded. Each entry links to the full notes on GitHub.
+import { getCollection } from 'astro:content';
+
+const releases = (await getCollection('releases'))
+  .filter((release) => !release.data.isDraft && !release.data.isPrerelease)
+  .sort(
+    (a, b) =>
+      new Date(b.data.publishedAt).getTime() - new Date(a.data.publishedAt).getTime(),
+  );
+
+const formatDate = (iso: string) =>
+  new Date(iso).toLocaleDateString('en-US', {
+    year: 'numeric',
+    month: 'long',
+    day: 'numeric',
+  });
+---
+
+{
+  releases.length > 0 ? (
+    <ul style="list-style:none;padding:0;margin-top:1.5rem;">
+      {releases.map((release) => (
+        <li style="margin-bottom:1rem;">
+          <strong style="font-size:1.05rem;">
+            <a href={release.data.url}>{release.data.name || release.data.tagName}</a>
+          </strong>
+          <span style="color:var(--sl-color-gray-3);margin-left:0.5rem;font-size:0.9rem;">
+            {formatDate(release.data.publishedAt)}
+          </span>
+        </li>
+      ))}
+    </ul>
+  ) : (
+    <p>
+      Release notes are on{' '}
+      <a href="https://github.com/heypinchy/pinchy/releases">GitHub</a>.
+    </p>
+  )
+}
