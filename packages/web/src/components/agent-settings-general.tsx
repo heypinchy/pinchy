@@ -13,10 +13,13 @@ import {
   FormLabel,
   FormMessage,
 } from "@/components/ui/form";
+import { AlertTriangle } from "lucide-react";
+import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { DeleteAgentDialog } from "@/components/delete-agent-dialog";
 import { ModelPicker } from "@/components/model-picker";
 import { useModelCapabilities } from "@/hooks/use-model-capabilities";
 import { attachCapabilities } from "@/lib/model-capabilities/attach-capabilities";
+import { getAgentModelBlockReason, markToolBlockedModels } from "@/lib/model-resolver/blocklist";
 
 import { AGENT_NAME_MAX_LENGTH } from "@/lib/agent-constants";
 
@@ -68,10 +71,21 @@ export function AgentSettingsGeneral({
   // capability flags) with the capability map so the picker can render each
   // model's capability icons. Undefined while the map loads → icon-free, no crash.
   const { data: capabilities } = useModelCapabilities();
+  // Attach capability icons, then disable models the tools-blocklist flags as
+  // unreliable for the function-calling loop every agent runs (e.g.
+  // gemini-3-flash-preview). This stops the gap that let an agent be pointed at
+  // a tool-broken model and silently fail at runtime.
   const providersWithCapabilities = useMemo(
-    () => attachCapabilities(providers, capabilities),
+    () => markToolBlockedModels(attachCapabilities(providers, capabilities)),
     [providers, capabilities]
   );
+
+  // Non-destructive surfacing of an EXISTING bad assignment: an agent created
+  // before the blocklist (or via a path that skipped it) keeps its model until
+  // an admin changes it. We don't rewrite it — we warn, and the picker above
+  // guides them to a working model. Driven by the live form value so the warning
+  // clears the moment they pick a reliable model.
+  const currentModelBlockReason = values.model ? getAgentModelBlockReason(values.model) : null;
 
   useEffect(() => {
     onChange(
@@ -137,6 +151,16 @@ export function AgentSettingsGeneral({
                     deprecatedModelId={agent.model}
                   />
                 </FormControl>
+                {currentModelBlockReason && (
+                  <Alert variant="destructive" className="mt-2">
+                    <AlertTriangle className="size-4" />
+                    <AlertTitle>This model is unreliable for tool use</AlertTitle>
+                    <AlertDescription>
+                      {currentModelBlockReason} Pick a recommended model above to keep this agent
+                      working.
+                    </AlertDescription>
+                  </Alert>
+                )}
                 <FormMessage />
               </FormItem>
             )}

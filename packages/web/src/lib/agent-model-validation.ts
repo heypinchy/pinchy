@@ -1,4 +1,5 @@
 import { fetchProviderModels } from "@/lib/provider-models";
+import { getAgentModelBlockReason } from "@/lib/model-resolver/blocklist";
 
 /**
  * Validates that a qualified model id (`provider/model`) can actually serve
@@ -20,6 +21,14 @@ export async function validateAgentModel(model: string): Promise<string | null> 
     if (match.compatible === false) {
       return match.incompatibleReason ?? `Model ${model} is not compatible with agents`;
     }
+    // The provider reporting `compatible` only means "key configured + supports
+    // agents" — it does NOT mean the model is reliable for tool-calling. Reject
+    // models the tools-blocklist flags (e.g. `gemini-3-flash-preview`, whose
+    // multi-turn tool calls Gemini rejects over the ollama-cloud path). The
+    // route only calls this when the model actually changes, so an agent already
+    // on a blocked model can still save other fields — this gates new picks only.
+    const blockReason = getAgentModelBlockReason(model);
+    if (blockReason) return blockReason;
     return null;
   }
   return `Model ${model} is not available — its provider is not configured`;

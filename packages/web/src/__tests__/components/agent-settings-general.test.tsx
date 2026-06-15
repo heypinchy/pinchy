@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from "vitest";
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import "@testing-library/jest-dom";
 import { AgentSettingsGeneral } from "@/components/agent-settings-general";
@@ -263,6 +263,64 @@ describe("AgentSettingsGeneral", () => {
       const sonnetOption = options.find((o) => o.textContent?.includes("Claude Sonnet 4"));
       expect(sonnetOption).toBeDefined();
       expect(sonnetOption).not.toHaveAttribute("aria-disabled", "true");
+    });
+  });
+
+  describe("tools-blocklist guard", () => {
+    const providersWithBlocked = [
+      {
+        id: "ollama-cloud",
+        name: "Ollama Cloud",
+        models: [
+          { id: "ollama-cloud/gemini-3-flash-preview", name: "gemini-3-flash-preview" },
+          { id: "ollama-cloud/qwen3-vl:235b", name: "qwen3-vl" },
+        ],
+      },
+    ];
+
+    it("warns when the agent's current model is blocklisted for tool use", () => {
+      render(
+        <AgentSettingsGeneral
+          agent={{ ...defaultAgent, model: "ollama-cloud/gemini-3-flash-preview" }}
+          providers={providersWithBlocked}
+          onChange={vi.fn()}
+        />
+      );
+
+      // Scope to the alert: the block reason also appears in the disabled
+      // picker option, so assert it specifically inside the warning banner.
+      const alert = screen.getByRole("alert");
+      expect(within(alert).getByText(/unreliable for tool use/i)).toBeInTheDocument();
+      expect(within(alert).getByText(/Preview models/i)).toBeInTheDocument();
+    });
+
+    it("shows no warning when the current model is reliable", () => {
+      render(
+        <AgentSettingsGeneral
+          agent={{ ...defaultAgent, model: "ollama-cloud/qwen3-vl:235b" }}
+          providers={providersWithBlocked}
+          onChange={vi.fn()}
+        />
+      );
+
+      expect(screen.queryByText(/unreliable for tool use/i)).not.toBeInTheDocument();
+    });
+
+    it("disables a blocklisted model in the dropdown so it cannot be picked", async () => {
+      render(
+        <AgentSettingsGeneral
+          agent={{ ...defaultAgent, model: "ollama-cloud/qwen3-vl:235b" }}
+          providers={providersWithBlocked}
+          onChange={vi.fn()}
+        />
+      );
+
+      await userEvent.click(screen.getByRole("combobox"));
+
+      const options = screen.getAllByRole("option");
+      const blockedOption = options.find((o) => o.textContent?.includes("gemini-3-flash-preview"));
+      expect(blockedOption).toBeDefined();
+      expect(blockedOption).toHaveAttribute("aria-disabled", "true");
     });
   });
 
