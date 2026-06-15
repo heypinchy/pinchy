@@ -9,6 +9,7 @@ import { buildMemoryPromptBlock } from "@/lib/memory-prompt";
 import { appendAuditLog, safeProviderError } from "@/lib/audit";
 import { recordAuditFailure } from "@/lib/audit-deferred";
 import { ActiveRuns } from "@/server/active-runs";
+import { recordSessionTurnsUsage } from "@/lib/usage-per-turn";
 import {
   shouldEmitModelUnavailableAudit,
   shouldEmitSilentStreamAudit,
@@ -1021,6 +1022,18 @@ export class ClientRouter {
           if (activeRunRegistered) {
             this.activeRuns.updateMessageId(sessionKey, messageId);
           }
+          // #483: low-latency per-turn usage. The just-completed turn is now in
+          // OpenClaw history; scan this session's trajectory and record its
+          // exact tokens NOW rather than waiting up to a poll interval. Fire-
+          // and-forget — recordSessionTurnsUsage never throws, and DB dedup by
+          // (sessionKey, runId) makes this and the poll backstop idempotent.
+          void recordSessionTurnsUsage({
+            openclawClient: this.openclawClient,
+            agentId: agent.id,
+            userId: this.userId,
+            agentName: agent.name,
+            sessionKey,
+          });
         }
       }
 

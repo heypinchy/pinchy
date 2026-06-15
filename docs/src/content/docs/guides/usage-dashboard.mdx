@@ -48,19 +48,19 @@ Both filters apply to every card and tab on the page.
 
 ## Where the numbers come from
 
-Pinchy writes a usage record whenever an LLM call completes — both for chat turns (captured by a background poller that reads OpenClaw session snapshots) and for plugin-internal LLM calls (reported directly by the plugin). Each record carries the input/output tokens the provider reported, plus cache read and write tokens when the provider supports prompt caching.
+Pinchy writes a usage record whenever an LLM call completes. **Agent chat turns** are recorded individually and exactly — each turn's OpenClaw trajectory entry carries that turn's precise tokens, so Pinchy records one row per turn (deduplicated, so restarts and retries never double-count). **System usage** (scheduled tasks, channel bots) and **plugin-internal LLM calls** (e.g. a plugin transcoding a scanned PDF) are captured separately — the former sampled from OpenClaw's per-session counters, the latter reported directly by the plugin. Each record carries the input/output tokens the provider reported, plus cache read and write tokens when the provider supports prompt caching.
 
 Pinchy multiplies those by the per-million-token prices configured for the model and stores the result in USD with six decimals. Cache tokens use Anthropic-style pricing ratios: cache reads at 10% of the input price, cache writes at 125%.
 
 :::note[Tuning the poll interval]
-The chat-turn poller reads OpenClaw session snapshots every 60 seconds by default. Set `PINCHY_USAGE_POLL_INTERVAL_MS` to override the cadence (the value is in milliseconds, clamped to a 1000 ms floor so a misconfigured value can't hammer OpenClaw). Most deployments never need to set it.
+Chat turns are recorded the moment they complete, and a background sweep (every 60 seconds by default) backstops anything missed and records system-session usage. Set `PINCHY_USAGE_POLL_INTERVAL_MS` to override the sweep cadence (the value is in milliseconds, clamped to a 1000 ms floor so a misconfigured value can't hammer OpenClaw). Most deployments never need to set it.
 :::
 
 A few honest caveats:
 
 - **It's an estimate.** Provider invoices are the source of truth. Pinchy uses the prices baked into the OpenClaw model config, which can drift from a provider's current published rates.
 - **Cache pricing is approximate.** The 10%/125% ratios match Anthropic's published pricing. If your provider uses different cache pricing, the estimate will be off.
-- **Token counts are close, not exact.** Chat usage is captured by sampling OpenClaw's per-session counters, which are overwritten each turn — turns that complete between two polls can be missed on busy sessions. Exact per-turn accounting is tracked in [#483](https://github.com/heypinchy/pinchy/issues/483).
+- **Chat token counts are exact, per turn.** Each agent chat turn is recorded individually from its OpenClaw trajectory entry (the precise input/output/cache tokens that turn used), so nothing is dropped or double-counted even on busy sessions. System usage (scheduled tasks, channel bots) is still sampled from OpenClaw's per-session counters and can lag slightly.
 - **Local Ollama shows "—" for cost.** Local models record token counts but have no pricing config. The dashboard shows a dash instead of $0.00 to make this clear.
 - **Tool execution time isn't tracked here.** Only the LLM tokens count. The Audit Trail at `/audit` is where you go for tool-use details.
 

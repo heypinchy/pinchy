@@ -36,20 +36,21 @@ const DEFAULT_COMPLETION_TOKENS = 17;
 // the declared 42:17 input:output ratio intact — which is the invariant the
 // spec checks. (Real output tokens don't grow with history; this is a
 // deliberate determinism concession in the fake, not a fidelity claim.)
-function getUsageTokens(userMessageCount = 1): {
+function getUsageTokens(_userMessageCount = 1): {
   promptTokens: number;
   completionTokens: number;
 } {
-  const turn = Math.max(1, userMessageCount);
+  // Flat per-turn usage (#483): with lossless per-turn accounting, each turn's
+  // trajectory `model.completed` carries that turn's exact tokens and lands as
+  // one usage_records row. The fake reports a constant 42:17 per turn (no
+  // userMessageCount scaling — that was a gauge-era concession to make a
+  // CUMULATIVE counter grow). The E2E asserts EXACT per-turn counts.
   const prompt = Number(process.env.FAKE_OLLAMA_PROMPT_TOKENS);
   const completion = Number(process.env.FAKE_OLLAMA_COMPLETION_TOKENS);
   const basePrompt = Number.isFinite(prompt) && prompt >= 0 ? prompt : DEFAULT_PROMPT_TOKENS;
   const baseCompletion =
     Number.isFinite(completion) && completion >= 0 ? completion : DEFAULT_COMPLETION_TOKENS;
-  return {
-    promptTokens: basePrompt * turn,
-    completionTokens: baseCompletion * turn,
-  };
+  return { promptTokens: basePrompt, completionTokens: baseCompletion };
 }
 
 function countUserMessages(messages: unknown[]): number {

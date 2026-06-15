@@ -1,11 +1,17 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 
 const mockRecordUsage = vi.fn();
+const mockRecordSessionTurns = vi.fn();
 const mockSelect = vi.fn();
 const mockFrom = vi.fn();
 
 vi.mock("@/lib/usage", () => ({
   recordUsage: (...args: unknown[]) => mockRecordUsage(...args),
+}));
+
+// #483: chat sessions are recorded per-turn from the trajectory, not the gauge.
+vi.mock("@/lib/usage-per-turn", () => ({
+  recordSessionTurnsUsage: (...args: unknown[]) => mockRecordSessionTurns(...args),
 }));
 
 const mockWhere = vi.fn();
@@ -135,15 +141,54 @@ describe("pollAllSessions", () => {
     expect(mockRecordUsage).not.toHaveBeenCalled();
   });
 
-  it("maps OpenClaw's cacheRead/cacheWrite session fields into the snapshot", async () => {
-    // OpenClaw's session store (verified live on staging, OC 2026.5.28) names
-    // the cache counters `cacheRead` / `cacheWrite` — NOT `cacheReadTokens` /
-    // `cacheWriteTokens`. Reading the wrong names left every usage_record with
-    // cache=0 while Anthropic served ~97% of input from the prompt cache, so
-    // the dashboard showed "Input: 7" for a ~400k-token day.
+  it("routes chat sessions to the per-turn trajectory recorder, not the gauge (#483)", async () => {
+    const client = makeOpenClawClient([
+      { key: "agent:agent-1:direct:user-1", inputTokens: 100, outputTokens: 50, model: "claude" },
+    ]);
+    await pollAllSessions(client);
+    expect(mockRecordUsage).not.toHaveBeenCalled();
+    expect(mockRecordSessionTurns).toHaveBeenCalledWith({
+      openclawClient: client,
+      agentId: "agent-1",
+      userId: "user-1",
+      agentName: "Smithers",
+      sessionKey: "agent:agent-1:direct:user-1",
+    });
+  });
+
+  it("scans every chat session regardless of the gauge token counts (dedup makes it safe)", async () => {
+    // A chat session whose gauge shows 0/0 still gets scanned — the just-
+    // completed turn lives in the trajectory even when the gauge was reset.
+    const client = makeOpenClawClient([
+      { key: "agent:agent-1:direct:user-1", inputTokens: 0, outputTokens: 0 },
+    ]);
+    await pollAllSessions(client);
+    expect(mockRecordSessionTurns).toHaveBeenCalledTimes(1);
+    expect(mockRecordUsage).not.toHaveBeenCalled();
+  });
+
+  it("system sessions use the gauge delta path, not the per-turn recorder", async () => {
+    const client = makeOpenClawClient([
+      { key: "agent:agent-1:cron:job-1", inputTokens: 100, outputTokens: 50, model: "claude" },
+    ]);
+    await pollAllSessions(client);
+    expect(mockRecordSessionTurns).not.toHaveBeenCalled();
+    expect(mockRecordUsage).toHaveBeenCalledWith(
+      expect.objectContaining({
+        userId: "system",
+        agentId: "agent-1",
+        sessionKey: "agent:agent-1:cron:job-1",
+      })
+    );
+  });
+
+  it("maps OpenClaw's cacheRead/cacheWrite session fields into the gauge snapshot (system sessions)", async () => {
+    // The #482 cache-field-name fix: OpenClaw's session store names the
+    // counters `cacheRead`/`cacheWrite` (verified live, OC 2026.5.28), NOT the
+    // `*Tokens` spellings. Still applies to the gauge path (system sessions).
     const client = makeOpenClawClient([
       {
-        key: "agent:agent-1:direct:user-1",
+        key: "agent:agent-1:cron:job-1",
         inputTokens: 3,
         outputTokens: 80,
         cacheRead: 14404,
@@ -164,10 +209,10 @@ describe("pollAllSessions", () => {
     );
   });
 
-  it("still accepts the cacheReadTokens/cacheWriteTokens spelling as fallback", async () => {
+  it("still accepts the cacheReadTokens/cacheWriteTokens spelling as fallback (gauge)", async () => {
     const client = makeOpenClawClient([
       {
-        key: "agent:agent-1:direct:user-1",
+        key: "agent:agent-1:cron:job-1",
         inputTokens: 10,
         outputTokens: 5,
         cacheReadTokens: 111,
@@ -188,11 +233,11 @@ describe("pollAllSessions", () => {
     );
   });
 
-  it("does not skip a session whose only activity is cache traffic", async () => {
+  it("does not skip a system session whose only activity is cache traffic (gauge)", async () => {
     // Last-turn gauges can show input=0/output=0 while cache counters moved.
     const client = makeOpenClawClient([
       {
-        key: "agent:agent-1:direct:user-1",
+        key: "agent:agent-1:cron:job-1",
         inputTokens: 0,
         outputTokens: 0,
         cacheRead: 5000,
@@ -206,55 +251,25 @@ describe("pollAllSessions", () => {
     expect(mockRecordUsage).toHaveBeenCalledTimes(1);
   });
 
-  it("calls recordUsage for each session with tokens", async () => {
-    mockFrom._agentResult = [
-      { id: "agent-1", name: "Smithers" },
-      { id: "agent-2", name: "Burns" },
-    ];
+  it("records gauge usage for a system session with the forwarded snapshot", async () => {
+    mockFrom._agentResult = [{ id: "agent-1", name: "Smithers" }];
     const client = makeOpenClawClient([
-      {
-        key: "agent:agent-1:direct:user-1",
-        inputTokens: 100,
-        outputTokens: 50,
-        model: "claude",
-      },
-      {
-        key: "agent:agent-2:direct:user-2",
-        inputTokens: 200,
-        outputTokens: 80,
-        model: "claude",
-      },
+      { key: "agent:agent-1:cron:job-1", inputTokens: 100, outputTokens: 50, model: "claude" },
     ]);
 
     await pollAllSessions(client);
 
-    expect(mockRecordUsage).toHaveBeenCalledTimes(2);
     // The poller MUST pass sessionSnapshot so recordUsage does not issue a
-    // second sessions.list() round-trip per session. Check the full shape
-    // including the forwarded snapshot fields.
+    // second sessions.list() round-trip per session.
     expect(mockRecordUsage).toHaveBeenCalledWith({
       openclawClient: client,
-      userId: "user-1",
+      userId: "system",
       agentId: "agent-1",
       agentName: "Smithers",
-      sessionKey: "agent:agent-1:direct:user-1",
+      sessionKey: "agent:agent-1:cron:job-1",
       sessionSnapshot: {
         inputTokens: 100,
         outputTokens: 50,
-        cacheReadTokens: undefined,
-        cacheWriteTokens: undefined,
-        model: "claude",
-      },
-    });
-    expect(mockRecordUsage).toHaveBeenCalledWith({
-      openclawClient: client,
-      userId: "user-2",
-      agentId: "agent-2",
-      agentName: "Burns",
-      sessionKey: "agent:agent-2:direct:user-2",
-      sessionSnapshot: {
-        inputTokens: 200,
-        outputTokens: 80,
         cacheReadTokens: undefined,
         cacheWriteTokens: undefined,
         model: "claude",
@@ -262,9 +277,9 @@ describe("pollAllSessions", () => {
     });
   });
 
-  it("skips sessions with zero tokens", async () => {
+  it("skips system sessions with zero tokens", async () => {
     const client = makeOpenClawClient([
-      { key: "agent:agent-1:direct:user-1", inputTokens: 0, outputTokens: 0 },
+      { key: "agent:agent-1:main", inputTokens: 0, outputTokens: 0 },
     ]);
     await pollAllSessions(client);
     expect(mockRecordUsage).not.toHaveBeenCalled();
@@ -276,6 +291,7 @@ describe("pollAllSessions", () => {
     ]);
     await pollAllSessions(client);
     expect(mockRecordUsage).not.toHaveBeenCalled();
+    expect(mockRecordSessionTurns).not.toHaveBeenCalled();
   });
 
   it("records system sessions with userId='system'", async () => {
@@ -292,13 +308,15 @@ describe("pollAllSessions", () => {
     );
   });
 
-  it("falls back to agentId when agent name is not in DB", async () => {
+  it("falls back to agentId when agent name is not in DB (path-agnostic)", async () => {
     mockFrom._agentResult = []; // empty agents table
     const client = makeOpenClawClient([
       { key: "agent:ghost-agent:direct:user-1", inputTokens: 100, outputTokens: 50 },
     ]);
     await pollAllSessions(client);
-    expect(mockRecordUsage).toHaveBeenCalledWith(
+    // Chat session → per-turn recorder; the agentName fallback is computed
+    // before the chat/system branch, so it applies on either path.
+    expect(mockRecordSessionTurns).toHaveBeenCalledWith(
       expect.objectContaining({
         agentId: "ghost-agent",
         agentName: "ghost-agent",
@@ -333,7 +351,8 @@ describe("pollAllSessions", () => {
 
     await pollAllSessions(client);
 
-    expect(mockRecordUsage).toHaveBeenCalledWith(
+    // Chat session → per-turn recorder, which receives the resolved userId.
+    expect(mockRecordSessionTurns).toHaveBeenCalledWith(
       expect.objectContaining({
         // userId should be the original-case DB id, not the lowercase from the key
         userId: "zLGhGKUwYqZeQfA4IMwG2oIDSxoYJVqz",
@@ -358,16 +377,18 @@ describe("pollAllSessions", () => {
     );
   });
 
-  it("does not throw when a single recordUsage call rejects", async () => {
+  it("does not throw when a single gauge recordUsage call rejects", async () => {
     mockFrom._agentResult = [
       { id: "agent-1", name: "A1" },
       { id: "agent-2", name: "A2" },
     ];
     mockRecordUsage.mockRejectedValueOnce(new Error("db error")).mockResolvedValueOnce(undefined);
 
+    // System sessions use the gauge path; a rejecting recordUsage must not
+    // abort the whole poll.
     const client = makeOpenClawClient([
-      { key: "agent:agent-1:direct:u1", inputTokens: 10, outputTokens: 5 },
-      { key: "agent:agent-2:direct:u2", inputTokens: 20, outputTokens: 8 },
+      { key: "agent:agent-1:cron:j1", inputTokens: 10, outputTokens: 5 },
+      { key: "agent:agent-2:cron:j2", inputTokens: 20, outputTokens: 8 },
     ]);
 
     await expect(pollAllSessions(client)).resolves.toBeUndefined();
@@ -441,21 +462,21 @@ describe("startUsagePoller honors the configured interval", () => {
 
     // No poll before the (short) interval elapses.
     await vi.advanceTimersByTimeAsync(1_999);
-    expect(mockRecordUsage).not.toHaveBeenCalled();
+    expect(mockRecordSessionTurns).not.toHaveBeenCalled();
 
     // First tick at 2s, not 60s.
     await vi.advanceTimersByTimeAsync(1);
-    expect(mockRecordUsage).toHaveBeenCalledTimes(1);
+    expect(mockRecordSessionTurns).toHaveBeenCalledTimes(1);
 
     await vi.advanceTimersByTimeAsync(2_000);
-    expect(mockRecordUsage).toHaveBeenCalledTimes(2);
+    expect(mockRecordSessionTurns).toHaveBeenCalledTimes(2);
   });
 });
 
 describe("startUsagePoller / stopUsagePoller", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    mockRecordUsage.mockResolvedValue(undefined);
+    mockRecordSessionTurns.mockResolvedValue(undefined);
     mockFrom._agentResult = [{ id: "agent-1", name: "Smithers" }];
     stopUsagePoller();
     vi.useFakeTimers();
@@ -491,7 +512,7 @@ describe("startUsagePoller / stopUsagePoller", () => {
     // Flush any microtasks — no poll should have fired yet
     await vi.advanceTimersByTimeAsync(0);
 
-    expect(mockRecordUsage).not.toHaveBeenCalled();
+    expect(mockRecordSessionTurns).not.toHaveBeenCalled();
 
     stopUsagePoller();
   });
@@ -504,11 +525,11 @@ describe("startUsagePoller / stopUsagePoller", () => {
 
     // First interval tick at 60s
     await vi.advanceTimersByTimeAsync(60_000);
-    expect(mockRecordUsage).toHaveBeenCalledTimes(1);
+    expect(mockRecordSessionTurns).toHaveBeenCalledTimes(1);
 
     // Second interval tick at 120s
     await vi.advanceTimersByTimeAsync(60_000);
-    expect(mockRecordUsage).toHaveBeenCalledTimes(2);
+    expect(mockRecordSessionTurns).toHaveBeenCalledTimes(2);
   });
 
   it("stops polling on stopUsagePoller", async () => {
@@ -517,13 +538,13 @@ describe("startUsagePoller / stopUsagePoller", () => {
     ]);
     startUsagePoller(client);
     await vi.advanceTimersByTimeAsync(60_000);
-    expect(mockRecordUsage).toHaveBeenCalledTimes(1); // first tick only
+    expect(mockRecordSessionTurns).toHaveBeenCalledTimes(1); // first tick only
 
     stopUsagePoller();
     expect(_isPollerRunning()).toBe(false);
 
     await vi.advanceTimersByTimeAsync(120_000);
-    expect(mockRecordUsage).toHaveBeenCalledTimes(1); // no more calls after stop
+    expect(mockRecordSessionTurns).toHaveBeenCalledTimes(1); // no more calls after stop
   });
 
   it("is idempotent — multiple starts don't create duplicate intervals", async () => {
@@ -536,6 +557,6 @@ describe("startUsagePoller / stopUsagePoller", () => {
 
     await vi.advanceTimersByTimeAsync(60_000);
     // Three start calls but only one interval — one tick = 1
-    expect(mockRecordUsage).toHaveBeenCalledTimes(1);
+    expect(mockRecordSessionTurns).toHaveBeenCalledTimes(1);
   });
 });

@@ -1,4 +1,5 @@
 import { db } from "@/db";
+import { estimateTurnCostUsd } from "@/lib/usage-cost";
 import { usageRecords } from "@/db/schema";
 import { eq, sum } from "drizzle-orm";
 import type { OpenClawClient } from "openclaw-node";
@@ -79,7 +80,7 @@ export function _resetUsageWatermarksForTest(): void {
   sessionWatermarks.clear();
 }
 
-async function getModelPricing(
+export async function getModelPricing(
   openclawClient: OpenClawClient,
   modelId: string
 ): Promise<{ input: number; output: number } | null> {
@@ -221,16 +222,15 @@ async function recordUsageImpl(params: RecordUsageParams, normalizedKey: string)
       if (model) {
         const pricing = await getModelPricing(openclawClient, model);
         if (pricing) {
-          // Cache pricing defaults: Anthropic-style ratios (OpenClaw config lacks cache-specific pricing)
-          const cacheReadPrice = pricing.input * 0.1;
-          const cacheWritePrice = pricing.input * 1.25;
-          const cost =
-            (deltaInput * pricing.input +
-              deltaOutput * pricing.output +
-              deltaCacheRead * cacheReadPrice +
-              deltaCacheWrite * cacheWritePrice) /
-            1_000_000;
-          estimatedCostUsd = cost.toFixed(6);
+          estimatedCostUsd = estimateTurnCostUsd(
+            {
+              inputTokens: deltaInput,
+              outputTokens: deltaOutput,
+              cacheReadTokens: deltaCacheRead,
+              cacheWriteTokens: deltaCacheWrite,
+            },
+            pricing
+          );
         }
       }
     } catch (costError) {

@@ -65,13 +65,15 @@ describe("fake-ollama usage block — OpenAI /v1/chat/completions (the path OC u
     });
   });
 
-  it("scales both token counts with the user-message count so multi-turn usage grows", async () => {
+  it("reports FLAT per-turn usage regardless of user-message count (#483)", async () => {
     process.env.FAKE_OLLAMA_PROMPT_TOKENS = "42";
     process.env.FAKE_OLLAMA_COMPLETION_TOKENS = "17";
 
-    // Two user messages (a second turn re-sending history) → both axes double,
-    // preserving the 42:17 ratio. The growth guarantees a positive poller
-    // delta even on a session that already carries history.
+    // A second turn re-sends history (multiple user messages), but with lossless
+    // per-turn accounting each turn's usage is recorded as its OWN exact row —
+    // there is no cumulative gauge to inflate. The fake therefore reports a flat
+    // 42:17 per turn, no userMessageCount scaling (a gauge-era concession the
+    // #483 rework removed). The E2E asserts exact per-turn counts.
     const raw = await postChat("/v1/chat/completions", {
       stream: true,
       messages: [
@@ -90,9 +92,9 @@ describe("fake-ollama usage block — OpenAI /v1/chat/completions (the path OC u
       .find((u) => u !== undefined);
 
     expect(usage).toEqual({
-      prompt_tokens: 84,
-      completion_tokens: 34,
-      total_tokens: 118,
+      prompt_tokens: 42,
+      completion_tokens: 17,
+      total_tokens: 59,
     });
   });
 

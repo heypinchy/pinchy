@@ -167,9 +167,9 @@ function makeClient(sessionRef: { current: MutableSession }) {
   } as unknown as Parameters<typeof pollAllSessions>[0];
 }
 
-const SESSION_KEY = "agent:agent-1:direct:user-1";
+const SESSION_KEY = "agent:agent-1:cron:job-1";
 const baseParams = {
-  userId: "user-1",
+  userId: "system",
   agentId: "agent-1",
   agentName: "Smithers",
   sessionKey: SESSION_KEY,

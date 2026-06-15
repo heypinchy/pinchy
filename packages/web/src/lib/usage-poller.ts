@@ -1,6 +1,7 @@
 import type { OpenClawClient } from "openclaw-node";
 import { isNull } from "drizzle-orm";
 import { recordUsage } from "@/lib/usage";
+import { recordSessionTurnsUsage } from "@/lib/usage-per-turn";
 import { db } from "@/db";
 import { agents, users } from "@/db/schema";
 
@@ -106,6 +107,31 @@ export async function pollAllSessions(openclawClient: OpenClawClient): Promise<v
     const userIdMap = new Map(allUsers.map((u) => [u.id.toLowerCase(), u.id]));
 
     for (const session of sessions) {
+      const parsed = parseSessionKey(session.key);
+      if (!parsed) continue;
+
+      const agentName = agentNameMap.get(parsed.agentId) ?? parsed.agentId;
+
+      if (parsed.type === "chat") {
+        // Lossless per-turn accounting (#483): chat usage is recorded from the
+        // trajectory's exact per-turn `model.completed` events, NOT the gauge
+        // counters (which OpenClaw overwrites each turn, so sampling drops
+        // turns). This poll is a backstop scan; the chat `done` path scans with
+        // lower latency. DB dedup by (sessionKey, runId) makes re-scans no-ops,
+        // so we scan every chat session regardless of the gauge token counts.
+        const userId = userIdMap.get(parsed.userId.toLowerCase()) ?? parsed.userId;
+        await recordSessionTurnsUsage({
+          openclawClient,
+          agentId: parsed.agentId,
+          userId,
+          agentName,
+          sessionKey: session.key,
+        });
+        continue;
+      }
+
+      // System sessions (main/cron/hook/channel) have no per-user trajectory we
+      // scan, so they stay on the gauge delta path.
       const cacheReadTokens = session.cacheRead ?? session.cacheReadTokens;
       const cacheWriteTokens = session.cacheWrite ?? session.cacheWriteTokens;
       const hasTokens =
@@ -115,18 +141,9 @@ export async function pollAllSessions(openclawClient: OpenClawClient): Promise<v
         (cacheWriteTokens ?? 0) > 0;
       if (!hasTokens) continue;
 
-      const parsed = parseSessionKey(session.key);
-      if (!parsed) continue;
-
-      const agentName = agentNameMap.get(parsed.agentId) ?? parsed.agentId;
-      const userId =
-        parsed.type === "chat"
-          ? (userIdMap.get(parsed.userId.toLowerCase()) ?? parsed.userId)
-          : parsed.userId; // "system" stays as-is
-
       await recordUsage({
         openclawClient,
-        userId,
+        userId: parsed.userId, // "system"
         agentId: parsed.agentId,
         agentName,
         sessionKey: session.key,

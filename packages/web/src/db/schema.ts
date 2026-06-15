@@ -359,12 +359,24 @@ export const usageRecords = pgTable(
       precision: 10,
       scale: 6,
     }),
+    // Per-turn accounting (#483): the OpenClaw run id of the `model.completed`
+    // turn this row records, plus the trajectory `seq` watermark. Both nullable
+    // so the gauge poller (system sessions) and the /api/internal/usage/record
+    // sink (plugin vision tokens) keep inserting without a run id.
+    runId: text("run_id"),
+    seq: integer("seq"),
   },
   (table) => [
     index("idx_usage_timestamp").on(table.timestamp),
     index("idx_usage_user").on(table.userId),
     index("idx_usage_agent").on(table.agentId),
     index("idx_usage_session_key").on(table.sessionKey),
+    // Idempotent per-turn inserts: one row per (session, run). A plain unique
+    // index suffices — Postgres treats NULLs as distinct (default NULLS
+    // DISTINCT), so per-turn rows (run_id NOT NULL) dedup while the gauge poller
+    // and the /api/internal/usage/record sink (run_id NULL) insert freely.
+    // onConflictDoNothing(target [sessionKey, runId]) relies on this index.
+    uniqueIndex("uq_usage_session_run").on(table.sessionKey, table.runId),
   ]
 );
 
