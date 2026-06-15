@@ -1,6 +1,6 @@
 {
   "name": "@pinchy/web",
-  "version": "0.5.7",
+  "version": "0.5.8",
   "private": true,
   "scripts": {
     "dev": "node -r ./server-preload.cjs --import tsx server.ts",
