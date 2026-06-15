@@ -178,6 +178,38 @@ The default `pinchy_dev` database password is public in our repository, so runni
 
 Settings → Security gains a **Secrets** card showing where each secret comes from — environment variable, persisted file in the Docker volume, or not created yet. The same information is available from the shell via `GET /api/health` (a new `secrets` object with provenance values only — never the secrets themselves). This makes the auto-generated file fallback visible from outside the container, so you can tell "secret loaded from the volume" apart from "no secret at all" before rotating anything.
 
+#### License now fails closed on expiry, with seat grace and renewal prompts
+
+Enterprise licensing was reworked so an expired key can never silently widen access. The change is behavioural — nothing to configure — but worth knowing:
+
+- **Fail-closed expiry.** When a license lapses, restricted agents stay restricted and group-based access keeps being enforced. Pinchy never falls back to "everything visible to everyone." All data is untouched; entering a new key re-activates management instantly.
+- **30-day grace for paid keys.** A paid key keeps working for 30 days past its paid-until date (trial keys expire immediately at their expiry). After grace, existing restrictions hold and management operations (creating/editing groups, changing agent visibility, analytics export) lock until a new key is entered. **Restriction-tightening always works without a license** — an admin can still remove users from groups or deactivate them at any time.
+- **Seat grace.** Invites keep working up to 20% over your seat count; beyond that, new invitations pause (existing users are never deactivated). The seat counter and an inline notice make the headroom visible.
+- **Renewal prompts.** The license banner now shows trial days remaining (dismissible per session) and a renewal reminder starting 14 days before a paid key expires; gated feature cards link to renewal.
+
+#### Chat survives tab switches and reconnects without crashing
+
+Backgrounding a chat tab mid-reply and returning to it — or any reconnect while a run is still streaming — no longer trips the "Something went wrong" error screen. The chat view now keeps a stable in-flight assistant slot across the WebSocket reconnect, so disconnect, timeout, and resume transitions never leave the message list in the index-mismatch state that produced the crash. Nothing to configure; reload any chat tab left open across the upgrade once.
+
+#### Smarter model and attachment handling
+
+- **PDFs are never wrongly blocked.** Pinchy used to gate PDF attachments on a model "documents" capability that didn't reflect reality — PDFs are routed through OpenClaw's `pdf` tool, not the model's native input. The false block is gone; PDFs attach and work regardless of the model's native document support.
+- **Model changes are validated.** Updating an agent's model now rejects a model whose provider isn't configured (no API key) with a clear `400`, instead of silently leaving the agent unable to chat. Leaving the model unchanged (e.g. a name-only edit) still works even if its provider was since disconnected.
+- **Ollama Cloud catalog reconciled** with the live model list — newly tool-reliable models added, known-broken ones kept out. No action required; the list refreshes from the built-in catalog.
+
+#### Sturdier DOCX ingestion
+
+DOCX uploads are now guarded against decompression ("zip bomb") attacks on two layers — a pre-decompress size check and a post-decompress cap — and malformed/ZIP64 archives are rejected fail-closed. Ordinary documents are unaffected.
+
+#### Dependencies
+
+- **OpenClaw 2026.6.5** (was 2026.5.28) — picked up via `Dockerfile.openclaw`, surfaced in `GET /api/version`. Same protocol train; backward-compatible patch bump.
+- **esbuild ≥ 0.28.1** — a transitive build-time dependency, bumped to clear GHSA-gv7w-rqvm-qjhr (CVSS 8.1). Build-tooling only; nothing ships it to production or to operators.
+
+#### Database migrations
+
+`0038` drops the unused `documents`/`audio`/`video` columns from the `models` capability table (they had no consumer — see the PDF-routing note above). Additive cleanup, runs automatically on startup, no manual steps and no data you'd miss.
+
 ## Upgrading from v0.5.6 to v0.5.7
 
 ### Breaking changes
