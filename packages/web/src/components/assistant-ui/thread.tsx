@@ -35,7 +35,7 @@ import {
   SquareIcon,
   X,
 } from "lucide-react";
-import { type FC, useState, useEffect, useRef, useContext, createContext } from "react";
+import { type FC, useState, useEffect, useRef, useContext } from "react";
 import {
   AgentIdContext,
   AgentNameContext,
@@ -45,8 +45,6 @@ import {
   PendingUploadsContext,
   RemovePendingUploadContext,
   RetryPendingUploadContext,
-  CanEditContext,
-  IsAdminContext,
 } from "@/components/chat";
 import { DiagnosticsExportDialog } from "@/components/diagnostics-export-dialog";
 import { Progress } from "@/components/ui/progress";
@@ -54,31 +52,6 @@ import type { PendingUpload } from "@/hooks/use-ws-runtime";
 import { RetryButton } from "@/components/chat/retry-button";
 import { useComposerRuntime } from "@assistant-ui/react";
 import { getDraft, saveDraft } from "@/lib/draft-store";
-import { useModelCapabilities } from "@/hooks/use-model-capabilities";
-import { useAgentsContext } from "@/components/agents-provider";
-import { requiredCapabilityForFile } from "@/lib/attachment-capability";
-import { RecoveryPanel } from "@/components/recovery-panel";
-import { apiGet, apiPatch } from "@/lib/api-client";
-import { attachCapabilities } from "@/lib/model-capabilities/attach-capabilities";
-import { toast } from "sonner";
-import { parseUnsupportedAttachmentError } from "@/lib/chat-errors";
-
-export type RecoveryStateSetter = (state: { files: File[]; model: string } | null) => void;
-
-// Shape of /api/providers/models — configured providers with their live model
-// lists. Capabilities are joined client-side via attachCapabilities().
-type RecoveryProviderGroup = {
-  id: string;
-  name: string;
-  models: { id: string; name: string; compatible?: boolean; incompatibleReason?: string }[];
-};
-
-type RecoveryContextValue = {
-  recoveryState: { files: File[]; model: string } | null;
-  setRecoveryState: RecoveryStateSetter;
-};
-
-export const RecoveryContext = createContext<RecoveryContextValue | null>(null);
 
 function formatTimestamp(iso: string): string {
   const date = new Date(iso);
@@ -106,35 +79,28 @@ const MessageTimestamp: FC = () => {
 };
 
 const ThreadInner: FC<{ isReconcilingMessages: boolean }> = ({ isReconcilingMessages }) => {
-  const [recoveryState, setRecoveryState] = useState<{
-    files: File[];
-    model: string;
-  } | null>(null);
-
   return (
-    <RecoveryContext.Provider value={{ recoveryState, setRecoveryState }}>
-      <ThreadPrimitive.Viewport className="aui-thread-viewport relative flex flex-1 flex-col overflow-x-auto overflow-y-scroll scroll-smooth px-4 pt-4">
-        {!isReconcilingMessages && (
-          <>
-            <AuiIf condition={(s) => s.thread.isEmpty}>
-              <ThreadWelcome />
-            </AuiIf>
+    <ThreadPrimitive.Viewport className="aui-thread-viewport relative flex flex-1 flex-col overflow-x-auto overflow-y-scroll scroll-smooth px-4 pt-4">
+      {!isReconcilingMessages && (
+        <>
+          <AuiIf condition={(s) => s.thread.isEmpty}>
+            <ThreadWelcome />
+          </AuiIf>
 
-            <ThreadPrimitive.Messages
-              components={{
-                UserMessage,
-                AssistantMessage,
-              }}
-            />
-          </>
-        )}
+          <ThreadPrimitive.Messages
+            components={{
+              UserMessage,
+              AssistantMessage,
+            }}
+          />
+        </>
+      )}
 
-        <ThreadPrimitive.ViewportFooter className="aui-thread-viewport-footer sticky bottom-0 mx-auto mt-auto flex w-full max-w-(--thread-max-width) flex-col gap-4 overflow-visible rounded-t-3xl bg-background pb-4 md:pb-6">
-          <ThreadScrollToBottom />
-          <Composer />
-        </ThreadPrimitive.ViewportFooter>
-      </ThreadPrimitive.Viewport>
-    </RecoveryContext.Provider>
+      <ThreadPrimitive.ViewportFooter className="aui-thread-viewport-footer sticky bottom-0 mx-auto mt-auto flex w-full max-w-(--thread-max-width) flex-col gap-4 overflow-visible rounded-t-3xl bg-background pb-4 md:pb-6">
+        <ThreadScrollToBottom />
+        <Composer />
+      </ThreadPrimitive.ViewportFooter>
+    </ThreadPrimitive.Viewport>
   );
 };
 
@@ -395,162 +361,15 @@ export function PendingUploadChips() {
 }
 
 export const Composer: FC = () => {
-  const recoveryCtx = useContext(RecoveryContext);
-  const [localRecoveryState, setLocalRecoveryState] = useState<{
-    files: File[];
-    model: string;
-  } | null>(null);
-
-  // When rendered inside ThreadInner, use the shared context state so that
-  // AssistantErrorOrContent can also trigger the recovery panel. When rendered
-  // standalone (e.g. in tests), fall back to local state.
-  const [recoveryProviders, setRecoveryProviders] = useState<RecoveryProviderGroup[]>([]);
-  const recoveryState = recoveryCtx ? recoveryCtx.recoveryState : localRecoveryState;
-  const setRecoveryState: RecoveryStateSetter = recoveryCtx
-    ? recoveryCtx.setRecoveryState
-    : setLocalRecoveryState;
-
-  const agentId = useContext(AgentIdContext);
-  const canEditAgent = useContext(CanEditContext);
-  const isAdmin = useContext(IsAdminContext);
-  const { getAgent, sortedAgents, refresh: refreshAgents } = useAgentsContext();
-  const composerRuntime = useComposerRuntime({ optional: true });
-  const { data: capabilities } = useModelCapabilities();
-  // Pinchy routes attachments through PendingUploadsContext (two-phase upload)
-  // rather than composerRuntime.attachments. Both paths must be checked.
-  const pendingUploads = useContext(PendingUploadsContext);
-
-  const agent = agentId ? getAgent(agentId) : undefined;
-  const agentModel = agent?.model ?? "";
-  const agentName = agent?.name ?? "";
-
-  // Agents (other than the current one) whose model satisfies the capability
-  // the blocked attachment needs. Surfaces in RecoveryPanel as a fallback for
-  // users who cannot edit the current agent's model (e.g. non-admins viewing
-  // a shared agent).
-  const recoveryCapability = recoveryState?.files[0]
-    ? requiredCapabilityForFile(recoveryState.files[0].type)
-    : null;
-  const otherCompatibleAgents =
-    recoveryCapability && capabilities
-      ? sortedAgents
-          .filter((a) => a.id !== agentId)
-          .filter((a) => {
-            const caps = capabilities[a.model];
-            return caps?.[recoveryCapability] === true;
-          })
-          .map((a) => ({ id: a.id, name: a.name }))
-      : [];
-
-  // Inspects the current attachments (both assistant-ui composer attachments
-  // and Pinchy's PendingUploads) and returns any files whose required capability
-  // the current model doesn't support.
-  function getBlockedFiles(): File[] {
-    const modelCaps = agentModel ? capabilities?.[agentModel] : undefined;
-    if (!modelCaps) return [];
-
-    // Pinchy's two-phase upload path: files are in PendingUploadsContext.
-    const blockedPending = pendingUploads
-      .map((u) => u.file)
-      .filter((file) => {
-        const cap = requiredCapabilityForFile(file.type);
-        return cap !== null && !modelCaps[cap];
-      });
-
-    // Legacy assistant-ui composer attachments (kept for compatibility).
-    const state = composerRuntime?.getState();
-    const attachments = state?.attachments ?? [];
-    const blockedComposer = attachments
-      .filter((a): a is typeof a & { file: File } => "file" in a && a.file instanceof File)
-      .map((a) => a.file)
-      .filter((file) => {
-        const cap = requiredCapabilityForFile(file.type);
-        return cap !== null && !modelCaps[cap];
-      });
-
-    return [...blockedPending, ...blockedComposer];
-  }
-
-  function maybeBlock(e: { preventDefault: () => void }): boolean {
-    const blockedFiles = getBlockedFiles();
-    if (blockedFiles.length > 0) {
-      e.preventDefault();
-      setRecoveryState({ files: blockedFiles, model: agentModel });
-      return true;
-    }
-    setRecoveryState(null);
-    return false;
-  }
-
-  function handleSubmit(e: React.FormEvent<HTMLFormElement>) {
-    maybeBlock(e);
-  }
-
-  function handleSendClick(e: React.MouseEvent<HTMLButtonElement>) {
-    maybeBlock(e);
-  }
-
-  // The recovery dropdown must offer only models the agent can actually be
-  // switched to — i.e. models of CONFIGURED providers, the same source the
-  // agent settings use (/api/providers/models). The capability map alone is
-  // the full seeded catalog and would offer models of unconfigured providers
-  // (the v0.5.7 broken-agent trap). Fetched lazily when the panel opens; the
-  // capability join lights up the picker's filter and icons.
-  const panelOpen = recoveryState !== null;
-  useEffect(() => {
-    if (!panelOpen) return;
-    let cancelled = false;
-    apiGet<{ providers: RecoveryProviderGroup[] }>("/api/providers/models")
-      .then((res) => {
-        if (!cancelled) setRecoveryProviders(res.providers ?? []);
-      })
-      .catch((e: unknown) => {
-        if (cancelled) return;
-        setRecoveryProviders([]);
-        toast.error(e instanceof Error ? e.message : "Failed to load available models");
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [panelOpen]);
-
-  const providers = attachCapabilities(recoveryProviders, capabilities);
-
-  // Typing is always allowed — only the send button reflects connection
-  // state. A reconnect mid-sentence must not block the user from finishing
-  // their thought; submission is what's gated.
+  // Capability gating used to live here: a text-only model would block an image
+  // send and pop the recovery dialog. That's gone — the WebSocket chat router
+  // now routes an image-bearing turn to a vision-capable fallback model (or
+  // returns an actionable error when none is configured), so the composer just
+  // sends and lets the server decide. Typing is always allowed; only the send
+  // button reflects connection state.
   return (
-    <ComposerPrimitive.Root
-      className="aui-composer-root relative flex w-full flex-col"
-      onSubmit={handleSubmit}
-    >
+    <ComposerPrimitive.Root className="aui-composer-root relative flex w-full flex-col">
       <DraftPersistence />
-      {recoveryState && (
-        <RecoveryPanel
-          filename={recoveryState.files[0]?.name ?? "attachment"}
-          capability={requiredCapabilityForFile(recoveryState.files[0]?.type ?? "") ?? "vision"}
-          agentName={agentName}
-          agentModel={recoveryState.model}
-          canEditAgent={canEditAgent}
-          isAdmin={isAdmin}
-          providers={providers}
-          otherCompatibleAgents={otherCompatibleAgents}
-          onUpdateAgent={async (newModel) => {
-            if (agentId) {
-              await apiPatch(`/api/agents/${agentId}`, { model: newModel });
-              // Pull the fresh agent state so the live model in
-              // useAgentsContext reflects the change immediately. Without
-              // this, the hard-block check in handleSendClick still sees
-              // the old model and re-blocks the next send until the 30s
-              // poll fires.
-              await refreshAgents();
-            }
-            setRecoveryState(null);
-          }}
-          onRemoveAttachment={() => setRecoveryState(null)}
-          onDismiss={() => setRecoveryState(null)}
-        />
-      )}
       <PinchyDropZone className="aui-composer-attachment-dropzone flex w-full flex-col rounded-2xl border border-input bg-background px-1 pt-2 outline-none transition-shadow has-[textarea:focus-visible]:border-ring has-[textarea:focus-visible]:ring-2 has-[textarea:focus-visible]:ring-ring/20">
         <PendingUploadChips />
         <ComposerAttachments />
@@ -561,7 +380,7 @@ export const Composer: FC = () => {
           autoFocus
           aria-label="Message input"
         />
-        <ComposerAction onSendClick={handleSendClick} />
+        <ComposerAction />
       </PinchyDropZone>
     </ComposerPrimitive.Root>
   );
@@ -623,25 +442,9 @@ const MessageError: FC = () => {
 const AssistantErrorOrContent: FC<{ actionSlot?: React.ReactNode }> = ({ actionSlot }) => {
   const error = useMessage((s) => s.metadata?.custom?.error as ChatError | undefined);
   const agentId = useContext(AgentIdContext) ?? "";
-  const { getAgent } = useAgentsContext();
-  const recoveryCtx = useContext(RecoveryContext);
-  const setRecoveryState = recoveryCtx?.setRecoveryState ?? (() => {});
 
-  const providerError = error?.providerError;
-  const unsupported = providerError ? parseUnsupportedAttachmentError(providerError) : null;
-
-  useEffect(() => {
-    if (!unsupported) return;
-    const agent = agentId ? getAgent(agentId) : undefined;
-    setRecoveryState({ files: [], model: agent?.model ?? "" });
-  }, [unsupported, agentId, getAgent, setRecoveryState]);
-
-  if (error && !unsupported) {
+  if (error) {
     return <ChatErrorMessage error={error} agentId={agentId} actionSlot={actionSlot} />;
-  }
-
-  if (unsupported) {
-    return null;
   }
 
   return (

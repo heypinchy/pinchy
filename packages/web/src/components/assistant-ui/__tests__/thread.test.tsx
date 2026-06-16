@@ -182,33 +182,6 @@ vi.mock("@/components/assistant-ui/chat-error-message", () => ({
   ),
 }));
 
-vi.mock("@/components/recovery-panel", () => ({
-  RecoveryPanel: ({
-    filename,
-    onDismiss,
-    onRemoveAttachment,
-    providers,
-  }: {
-    filename: string;
-    onDismiss: () => void;
-    onRemoveAttachment: () => void;
-    providers: { id: string }[];
-  }) => (
-    <div
-      role="region"
-      aria-label="Can't be sent"
-      data-testid="recovery-panel"
-      data-provider-ids={providers.map((p) => p.id).join(",")}
-    >
-      <span>{filename}</span>
-      <button aria-label="Dismiss" onClick={onDismiss}>
-        Dismiss
-      </button>
-      <button onClick={onRemoveAttachment}>Remove attachment</button>
-    </div>
-  ),
-}));
-
 vi.mock("@/components/chat", async () => {
   const React = await import("react");
   return {
@@ -699,41 +672,19 @@ describe("FilePart component (re-exported AttachmentPreview)", () => {
   });
 });
 
-describe("Composer attachment capability hard-block", () => {
+// The composer used to gate attachments client-side: an image on a text-only
+// model would call preventDefault() and pop a model-swap recovery dialog. That
+// gating is gone — the WebSocket chat router now routes an image-bearing turn to
+// a vision-capable fallback model (or returns an actionable error), so the
+// composer always sends and lets the server decide. These guard against the
+// client block being reintroduced.
+describe("Composer no longer gates attachments client-side", () => {
   beforeEach(() => {
     auiState.isRunning = false;
   });
 
-  it("prevents send and renders RecoveryPanel when PNG is attached to a vision-incapable model", async () => {
-    const pngFile = new File(["data"], "photo.png", { type: "image/png" });
-
-    const { useComposerRuntime } = await import("@assistant-ui/react");
-    vi.mocked(useComposerRuntime).mockReturnValue({
-      getState: () => ({
-        text: "hello",
-        attachments: [{ file: pngFile }],
-      }),
-      setText: vi.fn(),
-      addAttachment: vi.fn(),
-    } as never);
-
-    const { useModelCapabilities } = await import("@/hooks/use-model-capabilities");
-    vi.mocked(useModelCapabilities).mockReturnValue({
-      data: { "openai/gpt-4o-mini": { vision: false, documents: false } },
-      isLoading: false,
-      error: undefined,
-      refetch: vi.fn(),
-    });
-
-    const { useAgentsContext } = await import("@/components/agents-provider");
-    vi.mocked(useAgentsContext).mockReturnValue({
-      agents: [],
-      sortedAgents: [],
-      getAgent: vi.fn(() => ({ id: "agent-1", model: "openai/gpt-4o-mini" }) as never),
-    });
-
-    const { ChatStatusContext } = await import("@/components/chat");
-    const { AgentIdContext } = await import("@/components/chat");
+  it("does not preventDefault on submit — image routing is decided server-side", async () => {
+    const { ChatStatusContext, AgentIdContext } = await import("@/components/chat");
     const { Composer } = await import("@/components/assistant-ui/thread");
 
     render(
@@ -746,272 +697,13 @@ describe("Composer attachment capability hard-block", () => {
 
     const form = document.querySelector("form")!;
     expect(form).toBeTruthy();
-
-    const submitEvent = new Event("submit", { bubbles: true, cancelable: true });
-    form.dispatchEvent(submitEvent);
-
-    expect(submitEvent.defaultPrevented).toBe(true);
-    await waitFor(() => {
-      expect(screen.getByRole("region", { name: /can't be sent/i })).toBeInTheDocument();
-    });
-  });
-
-  it("renders RecoveryPanel with diagnostic after blocked send", async () => {
-    const pngFile = new File(["data"], "screenshot.png", { type: "image/png" });
-
-    const { useComposerRuntime } = await import("@assistant-ui/react");
-    vi.mocked(useComposerRuntime).mockReturnValue({
-      getState: () => ({
-        text: "",
-        attachments: [{ file: pngFile }],
-      }),
-      setText: vi.fn(),
-      addAttachment: vi.fn(),
-    } as never);
-
-    const { useModelCapabilities } = await import("@/hooks/use-model-capabilities");
-    vi.mocked(useModelCapabilities).mockReturnValue({
-      data: { "openai/gpt-4o-mini": { vision: false, documents: false } },
-      isLoading: false,
-      error: undefined,
-      refetch: vi.fn(),
-    });
-
-    const { useAgentsContext } = await import("@/components/agents-provider");
-    vi.mocked(useAgentsContext).mockReturnValue({
-      agents: [],
-      sortedAgents: [],
-      getAgent: vi.fn(() => ({ id: "agent-1", model: "openai/gpt-4o-mini" }) as never),
-    });
-
-    const { ChatStatusContext, AgentIdContext } = await import("@/components/chat");
-    const { Composer } = await import("@/components/assistant-ui/thread");
-
-    render(
-      <AgentIdContext.Provider value="agent-1">
-        <ChatStatusContext.Provider value={{ kind: "ready" }}>
-          <Composer />
-        </ChatStatusContext.Provider>
-      </AgentIdContext.Provider>
-    );
-
-    const form = document.querySelector("form")!;
-    form.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
-
-    expect(await screen.findByRole("region", { name: /can't be sent/i })).toBeInTheDocument();
-    expect(screen.getByText("screenshot.png")).toBeInTheDocument();
-  });
-
-  // Regression guard for the v0.5.7 production bug, part 2: the recovery
-  // dropdown must list models of CONFIGURED providers only. Building it from
-  // the raw capability map (the full seeded catalog) offered models of
-  // unconfigured providers — and updating an agent to one of those broke it.
-  it("feeds the RecoveryPanel from /api/providers/models, not the raw capability map", async () => {
-    const pngFile = new File(["data"], "photo.png", { type: "image/png" });
-
-    const { useComposerRuntime } = await import("@assistant-ui/react");
-    vi.mocked(useComposerRuntime).mockReturnValue({
-      getState: () => ({
-        text: "hello",
-        attachments: [{ file: pngFile }],
-      }),
-      setText: vi.fn(),
-      addAttachment: vi.fn(),
-    } as never);
-
-    // Capability map contains the full catalog — including anthropic, whose
-    // provider is NOT configured. Only ollama-cloud is configured.
-    const { useModelCapabilities } = await import("@/hooks/use-model-capabilities");
-    vi.mocked(useModelCapabilities).mockReturnValue({
-      data: {
-        "ollama-cloud/text-only": { vision: false, longContext: false, tools: true },
-        "ollama-cloud/qwen3-vl:235b": { vision: true, longContext: true, tools: true },
-        "anthropic/claude-sonnet-4-6": { vision: true, longContext: true, tools: true },
-      },
-      isLoading: false,
-      error: undefined,
-      refetch: vi.fn(),
-    });
-
-    const { apiGet } = await import("@/lib/api-client");
-    vi.mocked(apiGet).mockResolvedValue({
-      providers: [
-        {
-          id: "ollama-cloud",
-          name: "Ollama Cloud",
-          models: [
-            { id: "ollama-cloud/text-only", name: "text-only" },
-            { id: "ollama-cloud/qwen3-vl:235b", name: "qwen3-vl:235b" },
-          ],
-        },
-      ],
-    });
-
-    const { useAgentsContext } = await import("@/components/agents-provider");
-    vi.mocked(useAgentsContext).mockReturnValue({
-      agents: [],
-      sortedAgents: [],
-      getAgent: vi.fn(() => ({ id: "agent-1", model: "ollama-cloud/text-only" }) as never),
-    });
-
-    const { ChatStatusContext, AgentIdContext } = await import("@/components/chat");
-    const { Composer } = await import("@/components/assistant-ui/thread");
-
-    render(
-      <AgentIdContext.Provider value="agent-1">
-        <ChatStatusContext.Provider value={{ kind: "ready" }}>
-          <Composer />
-        </ChatStatusContext.Provider>
-      </AgentIdContext.Provider>
-    );
-
-    const form = document.querySelector("form")!;
-    form.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
-
-    const panel = await screen.findByTestId("recovery-panel");
-    await waitFor(() => {
-      expect(vi.mocked(apiGet)).toHaveBeenCalledWith("/api/providers/models");
-      // anthropic (unconfigured) must NOT appear even though it's in the map.
-      expect(panel.getAttribute("data-provider-ids")).toBe("ollama-cloud");
-    });
-  });
-
-  // Regression guard for the v0.5.7 production bug: PDFs are analyzed via
-  // OpenClaw's built-in `pdf` tool (model resolved by Pinchy independently of
-  // the agent model), so the agent model's capabilities must never block a
-  // PDF send — not even a model with no documents/vision capability at all.
-  it("allows PDF send regardless of agent model capabilities — PDFs route via the pdf tool", async () => {
-    const pdfFile = new File(["data"], "invoice.pdf", { type: "application/pdf" });
-
-    const { useComposerRuntime } = await import("@assistant-ui/react");
-    vi.mocked(useComposerRuntime).mockReturnValue({
-      getState: () => ({
-        text: "what does this invoice say?",
-        attachments: [{ file: pdfFile }],
-      }),
-      setText: vi.fn(),
-      addAttachment: vi.fn(),
-    } as never);
-
-    const { useModelCapabilities } = await import("@/hooks/use-model-capabilities");
-    vi.mocked(useModelCapabilities).mockReturnValue({
-      data: { "ollama-cloud/gemini-3-flash-preview": { vision: true, documents: false } },
-      isLoading: false,
-      error: undefined,
-      refetch: vi.fn(),
-    });
-
-    const { useAgentsContext } = await import("@/components/agents-provider");
-    vi.mocked(useAgentsContext).mockReturnValue({
-      agents: [],
-      sortedAgents: [],
-      getAgent: vi.fn(
-        () => ({ id: "agent-1", model: "ollama-cloud/gemini-3-flash-preview" }) as never
-      ),
-    });
-
-    const { ChatStatusContext, AgentIdContext } = await import("@/components/chat");
-    const { Composer } = await import("@/components/assistant-ui/thread");
-
-    render(
-      <AgentIdContext.Provider value="agent-1">
-        <ChatStatusContext.Provider value={{ kind: "ready" }}>
-          <Composer />
-        </ChatStatusContext.Provider>
-      </AgentIdContext.Provider>
-    );
-
-    const form = document.querySelector("form")!;
     const submitEvent = new Event("submit", { bubbles: true, cancelable: true });
     form.dispatchEvent(submitEvent);
 
     expect(submitEvent.defaultPrevented).toBe(false);
-    expect(screen.queryByRole("region", { name: /can't be sent/i })).not.toBeInTheDocument();
   });
 
-  it("allows send when PNG is attached to a vision-capable model", async () => {
-    const pngFile = new File(["data"], "photo.png", { type: "image/png" });
-
-    const { useComposerRuntime } = await import("@assistant-ui/react");
-    vi.mocked(useComposerRuntime).mockReturnValue({
-      getState: () => ({
-        text: "hello",
-        attachments: [{ file: pngFile }],
-      }),
-      setText: vi.fn(),
-      addAttachment: vi.fn(),
-    } as never);
-
-    const { useModelCapabilities } = await import("@/hooks/use-model-capabilities");
-    vi.mocked(useModelCapabilities).mockReturnValue({
-      data: { "openai/gpt-4o": { vision: true, documents: true } },
-      isLoading: false,
-      error: undefined,
-      refetch: vi.fn(),
-    });
-
-    const { useAgentsContext } = await import("@/components/agents-provider");
-    vi.mocked(useAgentsContext).mockReturnValue({
-      agents: [],
-      sortedAgents: [],
-      getAgent: vi.fn(() => ({ id: "agent-1", model: "openai/gpt-4o" }) as never),
-    });
-
-    const { ChatStatusContext } = await import("@/components/chat");
-    const { AgentIdContext } = await import("@/components/chat");
-    const { Composer } = await import("@/components/assistant-ui/thread");
-
-    render(
-      <AgentIdContext.Provider value="agent-1">
-        <ChatStatusContext.Provider value={{ kind: "ready" }}>
-          <Composer />
-        </ChatStatusContext.Provider>
-      </AgentIdContext.Provider>
-    );
-
-    const form = document.querySelector("form")!;
-    const submitEvent = new Event("submit", { bubbles: true, cancelable: true });
-    form.dispatchEvent(submitEvent);
-
-    expect(submitEvent.defaultPrevented).toBe(false);
-    expect(screen.queryByRole("region", { name: /can't be sent/i })).not.toBeInTheDocument();
-  });
-
-  // Regression: clicking the Send button hits an onClick handler that
-  // assistant-ui composes with its internal `send()` callback. The onClick
-  // path runs BEFORE the form's submit phase, so the form-level onSubmit
-  // alone is too late — the runtime has already fired. The send button's
-  // onClick must call preventDefault to stop both the in-onClick send() and
-  // the subsequent form-submit. This test pins that the click path triggers
-  // the recovery panel just like the form-submit path does.
-  it("blocks the send button click and renders RecoveryPanel", async () => {
-    const pngFile = new File(["data"], "photo.png", { type: "image/png" });
-
-    const { useComposerRuntime } = await import("@assistant-ui/react");
-    vi.mocked(useComposerRuntime).mockReturnValue({
-      getState: () => ({
-        text: "hello",
-        attachments: [{ file: pngFile }],
-      }),
-      setText: vi.fn(),
-      addAttachment: vi.fn(),
-    } as never);
-
-    const { useModelCapabilities } = await import("@/hooks/use-model-capabilities");
-    vi.mocked(useModelCapabilities).mockReturnValue({
-      data: { "openai/gpt-4o-mini": { vision: false, documents: false } },
-      isLoading: false,
-      error: undefined,
-      refetch: vi.fn(),
-    });
-
-    const { useAgentsContext } = await import("@/components/agents-provider");
-    vi.mocked(useAgentsContext).mockReturnValue({
-      agents: [],
-      sortedAgents: [],
-      getAgent: vi.fn(() => ({ id: "agent-1", model: "openai/gpt-4o-mini" }) as never),
-    });
-
+  it("never renders a capability-recovery panel", async () => {
     const { ChatStatusContext, AgentIdContext } = await import("@/components/chat");
     const { Composer } = await import("@/components/assistant-ui/thread");
 
@@ -1023,9 +715,6 @@ describe("Composer attachment capability hard-block", () => {
       </AgentIdContext.Provider>
     );
 
-    const sendButton = screen.getByRole("button", { name: /send message/i });
-    fireEvent.click(sendButton);
-
-    expect(await screen.findByRole("region", { name: /can't be sent/i })).toBeInTheDocument();
+    expect(screen.queryByRole("region", { name: /can't be sent/i })).not.toBeInTheDocument();
   });
 });
