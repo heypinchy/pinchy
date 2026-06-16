@@ -220,6 +220,32 @@ describe("ClientRouter", () => {
     mockAgentsList.mockResolvedValue({ defaultId: "agent-1", agents: [{ id: "agent-1" }] });
   });
 
+  describe("computeSessionKey", () => {
+    // computeSessionKey is private; reach it via a typed cast seam, mirroring
+    // the `as unknown as` casts used elsewhere in this file. The userId
+    // segment must always come from the server-side `this.userId`, never from
+    // client input.
+    type SessionKeyAccess = { computeSessionKey(agentId: string, chatId?: string): string };
+
+    it("returns the bare per-user key when no chatId is given", () => {
+      const key = (router as unknown as SessionKeyAccess).computeSessionKey("agent-1");
+      expect(key).toBe("agent:agent-1:direct:user-1");
+    });
+
+    it("appends the chatId segment when a chatId is given", () => {
+      const key = (router as unknown as SessionKeyAccess).computeSessionKey("agent-1", "v1k2n3p4");
+      expect(key).toBe("agent:agent-1:direct:user-1:v1k2n3p4");
+    });
+
+    it("keeps the userId segment from this.userId regardless of chatId", () => {
+      const access = router as unknown as SessionKeyAccess;
+      expect(access.computeSessionKey("agent-1", "chat-a")).toBe(
+        "agent:agent-1:direct:user-1:chat-a"
+      );
+      expect(access.computeSessionKey("agent-2")).toBe("agent:agent-2:direct:user-1");
+    });
+  });
+
   it("should return error when agent not found", async () => {
     const clientWs = createMockClientWs();
     mockFindFirst.mockResolvedValue(null);

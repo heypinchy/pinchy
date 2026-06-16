@@ -123,8 +123,9 @@ export class ClientRouter {
     private activeRuns: ActiveRuns = new ActiveRuns()
   ) {}
 
-  private computeSessionKey(agentId: string): string {
-    return `agent:${agentId}:direct:${this.userId}`;
+  private computeSessionKey(agentId: string, chatId?: string): string {
+    const base = `agent:${agentId}:direct:${this.userId}`;
+    return chatId ? `${base}:${chatId}` : base;
   }
 
   async handleMessage(clientWs: WebSocket, message: BrowserMessage): Promise<void> {
