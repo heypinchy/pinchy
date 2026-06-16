@@ -69,6 +69,14 @@ describe("livenessReducer", () => {
         status: "idle",
       });
     });
+
+    it("does NOT override a failed state (a late/duplicate completed keeps the failure)", () => {
+      // A fast-run reconnect verdict (`liveness: failed`) plus the pipe's own
+      // terminal `liveness: completed` can overlap. The authoritative failure
+      // must win — only `started`/`reset` clears it.
+      const failed: LivenessState = { status: "failed", reason: "gateway dropped" };
+      expect(livenessReducer(failed, { type: "completed" })).toEqual(failed);
+    });
   });
 
   describe("failed (the only source of `failed`)", () => {
@@ -86,6 +94,16 @@ describe("livenessReducer", () => {
         status: "failed",
         reason: "timeout from server",
       });
+    });
+
+    it("is sticky: a later `completed` keeps `failed`, but `started` clears it", () => {
+      const responding: LivenessState = { status: "responding" };
+      const failed = livenessReducer(responding, { type: "failed", reason: "real" });
+      // A late/duplicate completed must not clear the failure.
+      const stillFailed = livenessReducer(failed, { type: "completed" });
+      expect(stillFailed).toEqual({ status: "failed", reason: "real" });
+      // Only a fresh turn (started) clears it.
+      expect(livenessReducer(stillFailed, { type: "started" })).toEqual({ status: "responding" });
     });
   });
 
