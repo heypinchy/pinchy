@@ -5,6 +5,7 @@ import {
   MAX_LIVE_BUNDLES,
   useChatSession,
   useVisitedAgentIds,
+  useVisitedSessions,
   type RuntimeBundle,
 } from "@/components/chat-session-provider";
 
@@ -14,6 +15,7 @@ const wrapper = ({ children }: { children: React.ReactNode }) => (
 
 function fakeBundle(overrides: Partial<RuntimeBundle> = {}): RuntimeBundle {
   return {
+    agentId: "fake-agent",
     runtime: { __id: "fake-runtime" } as never,
     isRunning: false,
     isConnected: true,
@@ -115,6 +117,67 @@ describe("ChatSessionProvider", () => {
 
     act(() => result.current.remove());
     expect(result.current.bundle).toBeUndefined();
+  });
+
+  describe("chatId session keying (#508)", () => {
+    it("isolates bundles for the same agent across different chatIds", () => {
+      const { result } = renderHook(
+        () => ({
+          legacy: useChatSession("agent-A"),
+          chatX: useChatSession("agent-A", "chat-x"),
+          chatY: useChatSession("agent-A", "chat-y"),
+        }),
+        { wrapper }
+      );
+
+      act(() => result.current.chatX.publish(fakeBundle({ agentId: "agent-A", isRunning: true })));
+
+      // Only the chat-x bundle exists; the legacy and chat-y keys stay empty.
+      expect(result.current.chatX.bundle?.isRunning).toBe(true);
+      expect(result.current.legacy.bundle).toBeUndefined();
+      expect(result.current.chatY.bundle).toBeUndefined();
+    });
+
+    it("keeps the legacy (no-chatId) bundle independent from a chat-scoped one", () => {
+      const { result } = renderHook(
+        () => ({
+          legacy: useChatSession("agent-A"),
+          chatX: useChatSession("agent-A", "chat-x"),
+        }),
+        { wrapper }
+      );
+
+      act(() =>
+        result.current.legacy.publish(fakeBundle({ agentId: "agent-A", hasInitialContent: true }))
+      );
+
+      expect(result.current.legacy.bundle?.hasInitialContent).toBe(true);
+      expect(result.current.chatX.bundle).toBeUndefined();
+    });
+
+    it("useVisitedSessions reports agentId + chatId for each live session", () => {
+      const { result } = renderHook(
+        () => ({
+          sessions: useVisitedSessions(),
+          publishLegacy: useChatSession("agent-A").publish,
+          publishChat: useChatSession("agent-A", "chat-x").publish,
+        }),
+        { wrapper }
+      );
+
+      expect(result.current.sessions).toEqual([]);
+
+      act(() => result.current.publishLegacy(fakeBundle({ agentId: "agent-A" })));
+      act(() => result.current.publishChat(fakeBundle({ agentId: "agent-A", chatId: "chat-x" })));
+
+      const byKey = Object.fromEntries(result.current.sessions.map((s) => [s.key, s]));
+      expect(byKey["agent-A"]).toEqual({ key: "agent-A", agentId: "agent-A", chatId: undefined });
+      expect(byKey["agent-A:chat-x"]).toEqual({
+        key: "agent-A:chat-x",
+        agentId: "agent-A",
+        chatId: "chat-x",
+      });
+    });
   });
 
   describe("LRU eviction (MAX_LIVE_BUNDLES cap)", () => {

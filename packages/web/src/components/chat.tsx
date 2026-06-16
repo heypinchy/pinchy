@@ -48,6 +48,12 @@ function getStatusIndicator(status: ChatStatus): { colorClass: string; label: st
 
 export const AgentAvatarContext = createContext<string | null>(null);
 export const AgentIdContext = createContext<string | null>(null);
+/**
+ * The current chat's id (#508), or null for the default/legacy chat. Provided
+ * alongside AgentIdContext so descendants can build chat-scoped URLs and
+ * API calls without re-deriving it from the route.
+ */
+export const ChatIdContext = createContext<string | null>(null);
 export const AgentNameContext = createContext<string | null>(null);
 export const AgentModelContext = createContext<string | null>(null);
 export const RetryResendContext = createContext<(messageId: string) => void>(() => {});
@@ -110,6 +116,8 @@ const PLACEHOLDER_RUNTIME = {} as AssistantRuntime;
 interface ChatProps {
   agentId: string;
   agentName: string;
+  /** Optional per-chat id (#508). Omitted → the default/legacy chat. */
+  chatId?: string;
   configuring?: boolean;
   isPersonal?: boolean;
   avatarUrl?: string;
@@ -120,6 +128,7 @@ interface ChatProps {
 export function Chat({
   agentId,
   agentName,
+  chatId,
   configuring = false,
   isPersonal = false,
   avatarUrl,
@@ -134,13 +143,15 @@ export function Chat({
     : avatarUrl;
   const displayIsPersonal = liveAgent?.isPersonal ?? isPersonal;
 
-  const { bundle: chatBundle, publish } = useChatSession(agentId);
+  const { bundle: chatBundle, publish } = useChatSession(agentId, chatId);
 
-  // Register this agent with the provider on first mount so
+  // Register this (agent, chat) with the provider on first mount so
   // ChatSessionMounts spins up a hidden runtime instance.
   useEffect(() => {
     if (!chatBundle) {
       publish({
+        agentId,
+        chatId,
         runtime: PLACEHOLDER_RUNTIME,
         isRunning: false,
         isConnected: false,
@@ -160,7 +171,7 @@ export function Chat({
         retryPendingUpload: () => {},
       });
     }
-  }, [chatBundle, publish]);
+  }, [chatBundle, publish, agentId, chatId]);
 
   // Hooks must be called unconditionally (Rules of Hooks), so we destructure
   // bundle fields with defaults and call useChatStatus on every render —
@@ -204,101 +215,103 @@ export function Chat({
 
   return (
     <AgentIdContext.Provider value={agentId}>
-      <AgentNameContext.Provider value={displayName}>
-        <AgentModelContext.Provider value={liveAgent?.model ?? null}>
-          <AssistantRuntimeProvider runtime={runtime}>
-            <ChatStatusContext.Provider value={chatStatus}>
-              <RetryContinueContext.Provider value={onRetryContinue}>
-                <RetryResendContext.Provider value={onRetryResend}>
-                  <PendingUploadsContext.Provider value={pendingUploads}>
-                    <AddPendingUploadContext.Provider value={addPendingUpload}>
-                      <RemovePendingUploadContext.Provider value={removePendingUpload}>
-                        <RetryPendingUploadContext.Provider value={retryPendingUpload}>
-                          <AgentAvatarContext.Provider value={displayAvatar ?? null}>
-                            <div className="flex flex-col h-full min-h-0">
-                              <MobileChatHeader
-                                agentId={agentId}
-                                agentName={displayName}
-                                avatarUrl={displayAvatar}
-                                canEdit={canEdit}
-                              />
-                              <header className="hidden md:flex p-4 border-b items-center justify-between shrink-0">
-                                <div className="flex items-center gap-2 animate-in fade-in duration-300">
-                                  {displayAvatar && (
-                                    // eslint-disable-next-line @next/next/no-img-element
-                                    <img
-                                      src={displayAvatar}
-                                      alt=""
-                                      className="size-7 rounded-full"
-                                    />
-                                  )}
-                                  <h1 className="font-bold">{displayName}</h1>
-                                  <TooltipProvider>
-                                    <Tooltip>
-                                      <TooltipTrigger asChild>
-                                        <Badge variant="outline" className="text-xs font-normal">
-                                          {displayIsPersonal ? "Private" : "Shared"}
-                                        </Badge>
-                                      </TooltipTrigger>
-                                      <TooltipContent>
-                                        {displayIsPersonal
-                                          ? "Your conversations are private and not shared with anyone."
-                                          : "Your conversations help build team knowledge that's available to all team members."}
-                                      </TooltipContent>
-                                    </Tooltip>
-                                  </TooltipProvider>
+      <ChatIdContext.Provider value={chatId ?? null}>
+        <AgentNameContext.Provider value={displayName}>
+          <AgentModelContext.Provider value={liveAgent?.model ?? null}>
+            <AssistantRuntimeProvider runtime={runtime}>
+              <ChatStatusContext.Provider value={chatStatus}>
+                <RetryContinueContext.Provider value={onRetryContinue}>
+                  <RetryResendContext.Provider value={onRetryResend}>
+                    <PendingUploadsContext.Provider value={pendingUploads}>
+                      <AddPendingUploadContext.Provider value={addPendingUpload}>
+                        <RemovePendingUploadContext.Provider value={removePendingUpload}>
+                          <RetryPendingUploadContext.Provider value={retryPendingUpload}>
+                            <AgentAvatarContext.Provider value={displayAvatar ?? null}>
+                              <div className="flex flex-col h-full min-h-0">
+                                <MobileChatHeader
+                                  agentId={agentId}
+                                  agentName={displayName}
+                                  avatarUrl={displayAvatar}
+                                  canEdit={canEdit}
+                                />
+                                <header className="hidden md:flex p-4 border-b items-center justify-between shrink-0">
+                                  <div className="flex items-center gap-2 animate-in fade-in duration-300">
+                                    {displayAvatar && (
+                                      // eslint-disable-next-line @next/next/no-img-element
+                                      <img
+                                        src={displayAvatar}
+                                        alt=""
+                                        className="size-7 rounded-full"
+                                      />
+                                    )}
+                                    <h1 className="font-bold">{displayName}</h1>
+                                    <TooltipProvider>
+                                      <Tooltip>
+                                        <TooltipTrigger asChild>
+                                          <Badge variant="outline" className="text-xs font-normal">
+                                            {displayIsPersonal ? "Private" : "Shared"}
+                                          </Badge>
+                                        </TooltipTrigger>
+                                        <TooltipContent>
+                                          {displayIsPersonal
+                                            ? "Your conversations are private and not shared with anyone."
+                                            : "Your conversations help build team knowledge that's available to all team members."}
+                                        </TooltipContent>
+                                      </Tooltip>
+                                    </TooltipProvider>
+                                  </div>
+                                  <div className="flex items-center gap-3">
+                                    {hasInitialContent && <SessionActionsMenu agentId={agentId} />}
+                                    {canEdit && (
+                                      <Link
+                                        href={`/chat/${agentId}/settings`}
+                                        aria-label="Settings"
+                                        className="text-muted-foreground hover:text-foreground transition-colors"
+                                      >
+                                        <Settings className="size-5" />
+                                      </Link>
+                                    )}
+                                    <TooltipProvider delayDuration={200}>
+                                      <Tooltip>
+                                        <TooltipTrigger asChild>
+                                          <button
+                                            type="button"
+                                            aria-label={indicator.label}
+                                            className="cursor-default p-1.5 -m-1.5 inline-flex items-center justify-center rounded-full focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                                          >
+                                            <span
+                                              className={`size-2 rounded-full shrink-0 ${indicator.colorClass}`}
+                                            />
+                                          </button>
+                                        </TooltipTrigger>
+                                        <TooltipContent>{indicator.label}</TooltipContent>
+                                      </Tooltip>
+                                    </TooltipProvider>
+                                  </div>
+                                </header>
+                                <div className="flex-1 min-h-0 animate-in fade-in duration-300">
+                                  <Thread isReconcilingMessages={isReconcilingMessages} />
                                 </div>
-                                <div className="flex items-center gap-3">
-                                  {hasInitialContent && <SessionActionsMenu agentId={agentId} />}
-                                  {canEdit && (
-                                    <Link
-                                      href={`/chat/${agentId}/settings`}
-                                      aria-label="Settings"
-                                      className="text-muted-foreground hover:text-foreground transition-colors"
-                                    >
-                                      <Settings className="size-5" />
-                                    </Link>
-                                  )}
-                                  <TooltipProvider delayDuration={200}>
-                                    <Tooltip>
-                                      <TooltipTrigger asChild>
-                                        <button
-                                          type="button"
-                                          aria-label={indicator.label}
-                                          className="cursor-default p-1.5 -m-1.5 inline-flex items-center justify-center rounded-full focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-                                        >
-                                          <span
-                                            className={`size-2 rounded-full shrink-0 ${indicator.colorClass}`}
-                                          />
-                                        </button>
-                                      </TooltipTrigger>
-                                      <TooltipContent>{indicator.label}</TooltipContent>
-                                    </Tooltip>
-                                  </TooltipProvider>
-                                </div>
-                              </header>
-                              <div className="flex-1 min-h-0 animate-in fade-in duration-300">
-                                <Thread isReconcilingMessages={isReconcilingMessages} />
+                                {!displayIsPersonal && (
+                                  <p className="text-xs text-muted-foreground px-3 py-1">
+                                    Files uploaded here are visible to anyone with access to this
+                                    agent.
+                                  </p>
+                                )}
+                                <ChatStatusBanner status={chatStatus} isDelayed={isDelayed} />
                               </div>
-                              {!displayIsPersonal && (
-                                <p className="text-xs text-muted-foreground px-3 py-1">
-                                  Files uploaded here are visible to anyone with access to this
-                                  agent.
-                                </p>
-                              )}
-                              <ChatStatusBanner status={chatStatus} isDelayed={isDelayed} />
-                            </div>
-                          </AgentAvatarContext.Provider>
-                        </RetryPendingUploadContext.Provider>
-                      </RemovePendingUploadContext.Provider>
-                    </AddPendingUploadContext.Provider>
-                  </PendingUploadsContext.Provider>
-                </RetryResendContext.Provider>
-              </RetryContinueContext.Provider>
-            </ChatStatusContext.Provider>
-          </AssistantRuntimeProvider>
-        </AgentModelContext.Provider>
-      </AgentNameContext.Provider>
+                            </AgentAvatarContext.Provider>
+                          </RetryPendingUploadContext.Provider>
+                        </RemovePendingUploadContext.Provider>
+                      </AddPendingUploadContext.Provider>
+                    </PendingUploadsContext.Provider>
+                  </RetryResendContext.Provider>
+                </RetryContinueContext.Provider>
+              </ChatStatusContext.Provider>
+            </AssistantRuntimeProvider>
+          </AgentModelContext.Provider>
+        </AgentNameContext.Provider>
+      </ChatIdContext.Provider>
     </AgentIdContext.Provider>
   );
 }

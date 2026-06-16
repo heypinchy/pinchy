@@ -371,7 +371,16 @@ export function shouldReplaceLocalWithServerHistory(
   return lastNonError.status === "sent" && historyMessages.length > prev.length;
 }
 
-export function useWsRuntime(agentId: string): {
+export function useWsRuntime(
+  agentId: string,
+  /**
+   * Optional per-chat identifier (#508). When present it is threaded onto the
+   * `message` and `history` WS frames so the server routes to a distinct
+   * OpenClaw session within this (user, agent) pair. Omitted → the legacy
+   * per-user session key (current/default chat).
+   */
+  chatId?: string
+): {
   runtime: AssistantRuntime;
   isRunning: boolean;
   isConnected: boolean;
@@ -505,9 +514,14 @@ export function useWsRuntime(agentId: string): {
   // so a single stale tick can corrupt the new agent's message list.
   // The react-hooks/purity rule warns against reading refs during render, but
   // here it's the only way to close the race — the timing requirement wins.
-  const [prevAgentId, setPrevAgentId] = useState(agentId);
-  if (prevAgentId !== agentId) {
-    setPrevAgentId(agentId);
+  // Reset on either an agentId OR chatId change (#508). Switching the chat
+  // within the same agent must wipe stale messages and re-load the new chat's
+  // history exactly like an agent switch does — otherwise the previous chat's
+  // transcript would bleed into the new one before the history reconcile lands.
+  const [prevSessionKey, setPrevSessionKey] = useState(`${agentId}\0${chatId ?? ""}`);
+  const sessionKey = `${agentId}\0${chatId ?? ""}`;
+  if (prevSessionKey !== sessionKey) {
+    setPrevSessionKey(sessionKey);
     setMessages(capMessages([]));
     setIsRunning(false);
     setIsDelayed(false);
@@ -652,7 +666,7 @@ export function useWsRuntime(agentId: string): {
         // (which runs in handleHistory) and the history-response send.
         pendingHistoryRef.current = true;
         frameBufferRef.current = [];
-        wsRef.current.send(JSON.stringify({ type: "history", agentId }));
+        wsRef.current.send(JSON.stringify({ type: "history", agentId, ...(chatId && { chatId }) }));
       } else {
         connect();
       }
@@ -714,7 +728,8 @@ export function useWsRuntime(agentId: string): {
         // on the (always-sent) history response — no stall, no benefit lost.
         pendingHistoryRef.current = true;
         frameBufferRef.current = [];
-        ws.send(JSON.stringify({ type: "history", agentId }));
+        // #508: scope the history request to the active chat's session.
+        ws.send(JSON.stringify({ type: "history", agentId, ...(chatId && { chatId }) }));
 
         // Flush any message that was queued while disconnected/connecting
         if (pendingMessageRef.current) {
@@ -1344,8 +1359,11 @@ export function useWsRuntime(agentId: string): {
       ackTimers.clear();
       wsRef.current?.close();
     };
+    // chatId (#508) is intentionally in the deps: switching the chat must tear
+    // down the old WS and reconnect so the fresh connect() sends a history
+    // frame for the new chat's session key.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [agentId]);
+  }, [agentId, chatId]);
 
   // Auto-recovery: when OpenClaw becomes reachable again after being unavailable,
   // re-request history so the session is populated with any messages that arrived
@@ -1362,9 +1380,9 @@ export function useWsRuntime(agentId: string): {
     if (wasConnected === fullyConnected) return;
     // Rising edge: was disconnected/unavailable, is now fully connected
     if (fullyConnected && !wasConnected && isHistoryLoaded) {
-      wsRef.current?.send(JSON.stringify({ type: "history", agentId }));
+      wsRef.current?.send(JSON.stringify({ type: "history", agentId, ...(chatId && { chatId }) }));
     }
-  }, [fullyConnected, isHistoryLoaded, agentId]);
+  }, [fullyConnected, isHistoryLoaded, agentId, chatId]);
 
   /**
    * Send a JSON-serialised payload over the WebSocket if it's open, otherwise
@@ -1479,6 +1497,7 @@ export function useWsRuntime(agentId: string): {
         content: text,
         ...(attachmentIds.length > 0 && { attachmentIds }),
         agentId,
+        ...(chatId && { chatId }),
         clientMessageId,
       });
 
@@ -1507,7 +1526,7 @@ export function useWsRuntime(agentId: string): {
       }, 10_000);
       pendingAckTimers.current.set(clientMessageId, ackTimer);
     },
-    [agentId, dispatchMessages, dispatchLiveness, sendOrQueue, pendingUploads] // setPendingUploads is stable (useState setter)
+    [agentId, chatId, dispatchMessages, dispatchLiveness, sendOrQueue, pendingUploads] // setPendingUploads is stable (useState setter)
   );
 
   const onRetryContinue = useCallback(
@@ -1534,6 +1553,7 @@ export function useWsRuntime(agentId: string): {
       const payload = JSON.stringify({
         type: "message",
         agentId,
+        ...(chatId && { chatId }),
         content: lastUserMsg.content,
         clientMessageId: lastUserMsg.id,
         isRetry: true,
@@ -1542,7 +1562,7 @@ export function useWsRuntime(agentId: string): {
 
       sendOrQueue(payload);
     },
-    [agentId, messages, dispatchMessages, dispatchLiveness, sendOrQueue]
+    [agentId, chatId, messages, dispatchMessages, dispatchLiveness, sendOrQueue]
   );
 
   const onRetryResend = useCallback(
@@ -1572,6 +1592,7 @@ export function useWsRuntime(agentId: string): {
       const payload = JSON.stringify({
         type: "message",
         agentId,
+        ...(chatId && { chatId }),
         content: failedMsg.content,
         clientMessageId: messageId,
         isRetry: true,
@@ -1586,7 +1607,7 @@ export function useWsRuntime(agentId: string): {
       }, 10_000);
       pendingAckTimers.current.set(messageId, ackTimer);
     },
-    [agentId, messages, dispatchMessages, dispatchLiveness, sendOrQueue]
+    [agentId, chatId, messages, dispatchMessages, dispatchLiveness, sendOrQueue]
   );
 
   // Fire-and-forget: the upload's outcome is driven entirely through the

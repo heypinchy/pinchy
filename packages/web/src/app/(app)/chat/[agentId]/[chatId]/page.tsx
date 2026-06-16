@@ -1,0 +1,79 @@
+import type { Metadata } from "next";
+import { db } from "@/db";
+import { activeAgents } from "@/db/schema";
+import { eq } from "drizzle-orm";
+import { notFound } from "next/navigation";
+import { Chat } from "@/components/chat";
+import { requireAuth } from "@/lib/require-auth";
+import { assertAgentAccess, effectiveVisibility } from "@/lib/agent-access";
+import { getUserGroupIds, getAgentGroupIds } from "@/lib/groups";
+import { getLicenseState } from "@/lib/enterprise";
+import { getAgentAvatarSvg } from "@/lib/avatar";
+
+export async function generateMetadata({
+  params,
+}: {
+  params: Promise<{ agentId: string; chatId: string }>;
+}): Promise<Metadata> {
+  const { agentId } = await params;
+  const agent = await db
+    .select({ name: activeAgents.name })
+    .from(activeAgents)
+    .where(eq(activeAgents.id, agentId))
+    .then((rows) => rows[0]);
+
+  return { title: agent?.name ?? "Chat" };
+}
+
+export default async function ChatPage({
+  params,
+}: {
+  params: Promise<{ agentId: string; chatId: string }>;
+}) {
+  const { agentId, chatId } = await params;
+  const session = await requireAuth();
+  const userId = session.user.id!;
+  const userRole = session.user.role;
+
+  const agent = await db
+    .select()
+    .from(activeAgents)
+    .where(eq(activeAgents.id, agentId))
+    .then((rows) => rows[0]);
+
+  if (!agent) notFound();
+
+  const licenseState = await getLicenseState();
+  const effVis = effectiveVisibility(agent.visibility, licenseState);
+  const needsGroups = userRole !== "admin" && effVis === "restricted";
+
+  const [userGroupIds, agentGroupIds] = await Promise.all([
+    needsGroups ? getUserGroupIds(userId) : Promise.resolve([]),
+    needsGroups ? getAgentGroupIds(agentId) : Promise.resolve([]),
+  ]);
+
+  try {
+    assertAgentAccess(agent, userId, userRole, userGroupIds, agentGroupIds, licenseState);
+  } catch {
+    notFound();
+  }
+
+  const avatarUrl = getAgentAvatarSvg({ avatarSeed: agent.avatarSeed, name: agent.name });
+  const isAdmin = userRole === "admin";
+  const canEdit = isAdmin || (agent.isPersonal && agent.ownerId === userId);
+
+  return (
+    <Chat
+      // Keying on (agentId, chatId) (#508) remounts <Chat> on a chat switch so
+      // the runtime reconnects to the new session with no stale-message bleed.
+      key={`${agent.id}:${chatId}`}
+      agentId={agent.id}
+      chatId={chatId}
+      agentName={agent.name}
+      isPersonal={agent.isPersonal}
+      avatarUrl={avatarUrl}
+      canEdit={canEdit}
+      isAdmin={isAdmin}
+    />
+  );
+}

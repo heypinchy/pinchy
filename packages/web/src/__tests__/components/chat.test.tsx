@@ -104,6 +104,16 @@ describe("Chat", () => {
     expect(screen.getByTestId("thread")).toBeInTheDocument();
   });
 
+  it("passes the chatId through to useChatSession (#508)", () => {
+    render(<Chat agentId="agent-1" agentName="Smithers" chatId="chat-x" />);
+    expect(mockUseChatSession).toHaveBeenCalledWith("agent-1", "chat-x");
+  });
+
+  it("calls useChatSession without a chatId for the legacy/default chat", () => {
+    render(<Chat agentId="agent-1" agentName="Smithers" />);
+    expect(mockUseChatSession).toHaveBeenCalledWith("agent-1", undefined);
+  });
+
   describe("status indicator colors and labels", () => {
     function getDotColor(label: string | RegExp): string {
       // The accessible label sits on the wrapping <button> (focusable, larger

@@ -3,22 +3,29 @@
 import { useContext, useEffect, useRef } from "react";
 import { usePathname } from "next/navigation";
 import { useWsRuntime } from "@/hooks/use-ws-runtime";
-import { useVisitedAgentIds, ChatSessionStoreContext } from "@/components/chat-session-provider";
+import {
+  useVisitedSessions,
+  chatSessionKey,
+  ChatSessionStoreContext,
+} from "@/components/chat-session-provider";
 import { apiPost } from "@/lib/api-client";
 
 export function ChatSessionMounts() {
-  const visitedAgentIds = useVisitedAgentIds();
+  const visitedSessions = useVisitedSessions();
   return (
     <>
-      {visitedAgentIds.map((agentId) => (
-        <ChatSessionInstance key={agentId} agentId={agentId} />
+      {visitedSessions.map(({ key, agentId, chatId }) => (
+        // `key` is the composite (agentId, chatId) store key (#508). Switching
+        // chats yields a new key → React remounts the instance → useWsRuntime
+        // reconnects to the new session, so no stale messages bleed across.
+        <ChatSessionInstance key={key} agentId={agentId} chatId={chatId} />
       ))}
     </>
   );
 }
 
-function ChatSessionInstance({ agentId }: { agentId: string }) {
-  const bundle = useWsRuntime(agentId);
+function ChatSessionInstance({ agentId, chatId }: { agentId: string; chatId?: string }) {
+  const bundle = useWsRuntime(agentId, chatId);
 
   // Access the store directly (not via useStore) so we can call publish
   // without subscribing to the bundle in the store. Subscribing to our own
@@ -52,7 +59,7 @@ function ChatSessionInstance({ agentId }: { agentId: string }) {
       turnStartedAt.current = null;
     }
     previousIsRunning.current = bundle.isRunning;
-  }, [bundle.isRunning, isOnThisChat, agentId]);
+  }, [bundle.isRunning, isOnThisChat, agentId, chatId]);
 
   // Capture the bundle callbacks in the effect closure. In production,
   // useWsRuntime memoizes them with useCallback so they are stable across
@@ -75,7 +82,9 @@ function ChatSessionInstance({ agentId }: { agentId: string }) {
     const lastError = bundle.reconnectExhausted
       ? "Connection lost. Reload the page to resume."
       : null;
-    store.getState().publish(agentId, {
+    store.getState().publish(chatSessionKey(agentId, chatId), {
+      agentId,
+      chatId,
       runtime: bundle.runtime,
       isRunning: bundle.isRunning,
       isConnected: bundle.isConnected,
@@ -97,6 +106,7 @@ function ChatSessionInstance({ agentId }: { agentId: string }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [
     agentId,
+    chatId,
     store,
     bundle.runtime,
     bundle.isRunning,

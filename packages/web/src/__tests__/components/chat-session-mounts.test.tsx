@@ -18,8 +18,8 @@ vi.mock("next/navigation", () => ({
 const useWsRuntimeSpy = vi.fn();
 
 vi.mock("@/hooks/use-ws-runtime", () => ({
-  useWsRuntime: (agentId: string) => {
-    useWsRuntimeSpy(agentId);
+  useWsRuntime: (agentId: string, chatId?: string) => {
+    useWsRuntimeSpy(agentId, chatId);
     return {
       runtime: { __id: `rt-${agentId}` } as never,
       isRunning: mockIsRunning,
@@ -39,6 +39,7 @@ vi.mock("@/hooks/use-ws-runtime", () => ({
 
 function seedBundle(agentId: string, publish: (b: any) => void) {
   publish({
+    agentId,
     runtime: { __id: `seed-${agentId}` } as never,
     isRunning: false,
     isConnected: false,
@@ -82,8 +83,47 @@ describe("ChatSessionMounts", () => {
       </ChatSessionProvider>
     );
 
-    expect(useWsRuntimeSpy).toHaveBeenCalledWith("agent-A");
-    expect(useWsRuntimeSpy).toHaveBeenCalledWith("agent-B");
+    // chatId is undefined for legacy (no-chatId) sessions (#508).
+    expect(useWsRuntimeSpy).toHaveBeenCalledWith("agent-A", undefined);
+    expect(useWsRuntimeSpy).toHaveBeenCalledWith("agent-B", undefined);
+  });
+
+  it("passes the chatId to useWsRuntime for a chat-scoped session (#508)", () => {
+    function Visitor() {
+      const session = useChatSession("agent-A", "chat-x");
+      if (!session.bundle) {
+        session.publish({
+          agentId: "agent-A",
+          chatId: "chat-x",
+          runtime: { __id: "seed-agent-A:chat-x" } as never,
+          isRunning: false,
+          isConnected: false,
+          isHistoryLoaded: false,
+          isReconcilingMessages: false,
+          hasInitialContent: false,
+          isOpenClawConnected: false,
+          isDelayed: false,
+          reconnectExhausted: false,
+          payloadRejected: false,
+          isOrphaned: false,
+          onRetryContinue: vi.fn(),
+          onRetryResend: vi.fn(),
+          lastError: null,
+        } as any);
+      }
+      return null;
+    }
+
+    useWsRuntimeSpy.mockClear();
+
+    render(
+      <ChatSessionProvider>
+        <Visitor />
+        <ChatSessionMounts />
+      </ChatSessionProvider>
+    );
+
+    expect(useWsRuntimeSpy).toHaveBeenCalledWith("agent-A", "chat-x");
   });
 
   it("keeps a mount alive when an unrelated child remounts", () => {

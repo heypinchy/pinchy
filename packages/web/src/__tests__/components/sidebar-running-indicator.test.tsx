@@ -9,6 +9,7 @@ import { AgentSidebarIndicator } from "@/components/agent-sidebar-indicator";
 
 function makeBundle(overrides: Partial<RuntimeBundle> = {}): RuntimeBundle {
   return {
+    agentId: "agent-A",
     runtime: {} as never,
     isRunning: false,
     isConnected: true,

@@ -828,6 +828,82 @@ describe("useWsRuntime", () => {
     expect(ws.send).toHaveBeenCalledWith(JSON.stringify({ type: "history", agentId: "agent-1" }));
   });
 
+  // #508 — the chats feature threads an optional chatId from the URL all the
+  // way to the WS frames. When present it selects a distinct OpenClaw session
+  // within the (user, agent) pair; when absent the legacy per-user key is used.
+  // The server (client-router) already accepts message.chatId on both the send
+  // and history paths, so these tests pin the CLIENT half of that contract.
+  describe("chatId threading (#508)", () => {
+    it("includes chatId on the initial history frame when provided", () => {
+      renderHook(() => useWsRuntime("agent-1", "chat-abc"));
+      const ws = wsInstances[0];
+
+      act(() => {
+        ws.onopen?.();
+      });
+
+      const historyFrame = JSON.parse(ws.send.mock.calls[0][0]);
+      expect(historyFrame.type).toBe("history");
+      expect(historyFrame.agentId).toBe("agent-1");
+      expect(historyFrame.chatId).toBe("chat-abc");
+    });
+
+    it("omits chatId on the history frame when not provided (legacy)", () => {
+      renderHook(() => useWsRuntime("agent-1"));
+      const ws = wsInstances[0];
+
+      act(() => {
+        ws.onopen?.();
+      });
+
+      const historyFrame = JSON.parse(ws.send.mock.calls[0][0]);
+      expect(historyFrame.type).toBe("history");
+      expect(historyFrame.agentId).toBe("agent-1");
+      expect("chatId" in historyFrame).toBe(false);
+    });
+
+    it("includes chatId on the message send frame when provided", () => {
+      const { result } = renderHook(() => useWsRuntime("agent-1", "chat-abc"));
+      const ws = wsInstances[0];
+
+      act(() => {
+        ws.onopen?.();
+      });
+      act(() => {
+        result.current.runtime.onNew({
+          content: [{ type: "text", text: "Hello" }],
+          parentId: "root",
+        });
+      });
+
+      // calls[0] is the history request, calls[1] is the user message
+      const sentMessage = JSON.parse(ws.send.mock.calls[1][0]);
+      expect(sentMessage.type).toBe("message");
+      expect(sentMessage.content).toBe("Hello");
+      expect(sentMessage.agentId).toBe("agent-1");
+      expect(sentMessage.chatId).toBe("chat-abc");
+    });
+
+    it("omits chatId on the message send frame when not provided (legacy)", () => {
+      const { result } = renderHook(() => useWsRuntime("agent-1"));
+      const ws = wsInstances[0];
+
+      act(() => {
+        ws.onopen?.();
+      });
+      act(() => {
+        result.current.runtime.onNew({
+          content: [{ type: "text", text: "Hello" }],
+          parentId: "root",
+        });
+      });
+
+      const sentMessage = JSON.parse(ws.send.mock.calls[1][0]);
+      expect(sentMessage.type).toBe("message");
+      expect("chatId" in sentMessage).toBe(false);
+    });
+  });
+
   it("should populate messages from history response", () => {
     const { result } = renderHook(() => useWsRuntime("agent-1"));
     const ws = wsInstances[0];
