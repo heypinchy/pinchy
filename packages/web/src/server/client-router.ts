@@ -1,4 +1,10 @@
-import type { OpenClawClient, ChatAttachment, ChatChunk, ChatOptions } from "openclaw-node";
+import type {
+  OpenClawClient,
+  ChatAttachment,
+  ChatChunk,
+  ChatOptions,
+  AgentWaitResult,
+} from "openclaw-node";
 import { chatWithDispatchRaceRetry } from "@/server/chat-dispatch-retry";
 import { waitForAgentInRuntime } from "@/server/agent-readiness";
 import type { WebSocket } from "ws";
@@ -54,6 +60,14 @@ const CONNECTION_TIMEOUT_MS = 10_000;
 // with periodic frames. We send a "thinking" heartbeat every 15s — frequent
 // enough to defeat any reasonable idle timer, sparse enough not to spam.
 const THINKING_HEARTBEAT_MS = 15_000;
+
+// How long the reconnect path waits on the gateway's authoritative
+// run-liveness oracle (`agentWait`) before giving up on a verdict. Short by
+// design: a reconnect must resolve quickly, and `agentWait` returns a
+// `pending`/`timeout` result (still alive) rather than throwing when the run
+// outlives the window — that's already the "responding" verdict. A throw is an
+// infra hiccup, which we deliberately do NOT turn into a `failed` verdict.
+const RECONNECT_LIVENESS_TIMEOUT_MS = 5_000;
 
 type RetryReason = "orphan" | "partial_stream_failure" | "send_failure";
 const ALLOWED_RETRY_REASONS: ReadonlySet<string> = new Set([
@@ -677,6 +691,18 @@ export class ClientRouter {
     // preserves its existing messages rather than replacing them with a greeting.
     let sessionKnown = false;
 
+    // Authoritative reconnect verdict (chat-liveness-observer Task 2A, Part 2).
+    // When there is a STARTED in-flight run for this session, the gateway's
+    // `agentWait` oracle is the source of truth for whether the run is still
+    // alive, has completed, or has failed — replacing the old client-side
+    // silence guess. We capture the runId here (the same gate as
+    // `activeRunSignal`: a started run with a real runId) and emit the verdict
+    // in the `finally` below so it always follows the history frame the client
+    // is about to reconcile against. A pending run has no meaningful runId yet,
+    // so it is intentionally excluded.
+    const livenessRunId =
+      activeRun && activeRun.firstChunkAt !== null ? activeRun.runId : undefined;
+
     try {
       await this.waitForConnection();
 
@@ -767,7 +793,84 @@ export class ClientRouter {
         return;
       }
       await sendGreeting();
+    } finally {
+      // Emit the authoritative reconnect liveness verdict AFTER the history has
+      // been sent (whatever branch produced it, including the early `return`s in
+      // the catch above). The history is what `completed` refers to ("the reply
+      // is/should be in the history just sent"), so the verdict must come last.
+      if (livenessRunId !== undefined) {
+        await this.emitReconnectLivenessVerdict(clientWs, sessionKey, livenessRunId);
+      }
     }
+  }
+
+  /**
+   * Ask the gateway's authoritative run-liveness oracle (`agentWait`) whether
+   * the in-flight run for a reconnecting session is still alive, completed, or
+   * failed, and emit a single `liveness` frame with the verdict. This is the
+   * core of "only fail when we are sure": Pinchy never guesses failure from
+   * silence anymore.
+   *
+   * Mapping:
+   *   - ended (status "ok" with `endedAt`, OR no `livenessState` and ended) and
+   *     NOT abandoned → `completed` (the reply is/should be in the history we
+   *     just sent).
+   *   - still alive (`status` pending/timeout with `livenessState` working /
+   *     paused / blocked) → `responding` (keep the UI on "responding"; NEVER
+   *     fail a run that is still going).
+   *   - `livenessState: "abandoned"`, or `status: "error"` → `failed` with a
+   *     reason from `stopReason` (or a generic fallback).
+   *
+   * Infra hiccups (a thrown `agentWait`) are deliberately NOT turned into a
+   * `failed` verdict — we log and skip, letting the existing flow continue.
+   */
+  private async emitReconnectLivenessVerdict(
+    clientWs: WebSocket,
+    sessionKey: string,
+    runId: string
+  ): Promise<void> {
+    let result: AgentWaitResult;
+    try {
+      result = await this.openclawClient.agentWait(runId, {
+        timeoutMs: RECONNECT_LIVENESS_TIMEOUT_MS,
+      });
+    } catch (err) {
+      // A gateway hiccup must never manufacture a failure. Log and skip the
+      // verdict; the history flow already completed.
+      console.warn(
+        `[client-router] agentWait failed for run ${runId} on reconnect; skipping liveness verdict:`,
+        err instanceof Error ? err.message : err
+      );
+      return;
+    }
+
+    const abandoned = result.livenessState === "abandoned";
+    const ended = result.status === "ok" || result.endedAt !== undefined;
+
+    if (result.status === "error" || abandoned) {
+      this.broadcastForRun(sessionKey, clientWs, {
+        type: "liveness",
+        state: "failed",
+        reason: result.stopReason ?? "the agent run ended without a response",
+      });
+      return;
+    }
+
+    if (ended) {
+      this.broadcastForRun(sessionKey, clientWs, {
+        type: "liveness",
+        state: "completed",
+      });
+      return;
+    }
+
+    // Still alive (pending/timeout with a non-terminal livenessState, or no
+    // terminal signal at all). Keep the UI on "responding" — never fail a run
+    // that is still going.
+    this.broadcastForRun(sessionKey, clientWs, {
+      type: "liveness",
+      state: "responding",
+    });
   }
 
   // Shared streaming loop used by handleMessage. Handles heartbeat, chunk
@@ -802,6 +905,11 @@ export class ClientRouter {
     // or an explicit error chunk closes the safety net.
     let sawText = false;
     let sawError = false;
+    // Authoritative liveness: set when a terminal `liveness: failed` verdict has
+    // been emitted (a real error chunk OR the silent-stream synthesis). Gates
+    // the terminal `liveness: completed` so a failed run is never also reported
+    // as completed.
+    let emittedFailedLiveness = false;
 
     // Heartbeat is intentionally deferred until the first chunk arrives.
     // Starting it immediately would reset the client-side stuck timer even
@@ -884,6 +992,15 @@ export class ClientRouter {
           }
           activeRunRegistered = true;
           activeRunId = chunk.runId;
+          // Authoritative liveness: the run has actually started streaming.
+          // Additive to the existing chunk/done frames — the client switchover
+          // is a later task. Emitted exactly once per run (gated by
+          // `activeRunRegistered` above), before the chunk-specific handling so
+          // the "responding" verdict precedes the first text/ack frame.
+          this.broadcastForRun(sessionKey, clientWs, {
+            type: "liveness",
+            state: "responding",
+          });
           if (process.env.PINCHY_E2E_CHAT_TRACE === "1") {
             console.log(
               `[trace:chat] first-chunk session=${sessionKey} runId=${chunk.runId} ` +
@@ -996,6 +1113,15 @@ export class ClientRouter {
               ...(modelUnavailable ? { modelUnavailable } : {}),
               ...(upstreamFormatError ? { upstreamFormatError } : {}),
             });
+            // Authoritative liveness: this is a terminal failure. Reuse the
+            // provider error text already computed above so the client never has
+            // to guess failure from silence. Additive to the `error` frame.
+            this.broadcastForRun(sessionKey, clientWs, {
+              type: "liveness",
+              state: "failed",
+              reason: chunk.text,
+            });
+            emittedFailedLiveness = true;
             if (modelUnavailable && shouldEmitModelUnavailableAudit(agent.id, agent.model ?? "")) {
               // PII note: `chunk.text` is the raw provider error string. For
               // 5xx upstream failures (the only branch we audit here) the
@@ -1129,6 +1255,14 @@ export class ClientRouter {
           hint: getErrorHint(providerError, this.userRole),
           messageId,
         });
+        // Authoritative liveness: a silent stream is a terminal failure too, so
+        // the client never falls back to a timer guess for this class either.
+        this.broadcastForRun(sessionKey, clientWs, {
+          type: "liveness",
+          state: "failed",
+          reason: providerError,
+        });
+        emittedFailedLiveness = true;
 
         // Issue #355: umbrella `chat.agent_error` for the silent-stream
         // synthesised error too, so the universal measurement signal
@@ -1170,6 +1304,21 @@ export class ClientRouter {
             recordAuditFailure(err, auditEntry);
           }
         }
+      }
+
+      // Authoritative liveness: the run reached its natural terminal end WITHOUT
+      // a failure. Gate on `!emittedFailedLiveness` so a stream that already
+      // emitted a terminal `liveness: failed` (a real error chunk OR the
+      // silent-stream synthesis above) is never contradicted with a `completed`
+      // verdict. Emitted BEFORE the `complete` frame so `complete` stays the
+      // genuine "no more frames" terminator the client keys its spinner off of.
+      // Additive to the `complete` frame; the client switchover to liveness is a
+      // later task.
+      if (!emittedFailedLiveness) {
+        this.broadcastForRun(sessionKey, clientWs, {
+          type: "liveness",
+          state: "completed",
+        });
       }
 
       // Tell the client the entire request is finished. Unlike "done" events
