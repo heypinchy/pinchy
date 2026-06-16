@@ -197,6 +197,40 @@ describe("ChatSwitcher", () => {
     expect(push).toHaveBeenCalledWith("/chat/agent-1");
   });
 
+  it("selecting a Telegram chat pushes /chat/<agentId>/telegram (the read-only mirror)", async () => {
+    const user = userEvent.setup();
+    mockChats(allChats);
+    render(<ChatSwitcher agentId="agent-1" chatId="chat-abc" agentName="Smithers" />);
+
+    const menu = await screen.findByRole("menu");
+    await user.click(within(menu).getByText("Telegram chat"));
+
+    // Telegram chats have a null chatId but must NOT collide with the default
+    // web chat — they navigate to the dedicated read-only Telegram view.
+    expect(push).toHaveBeenCalledWith("/chat/agent-1/telegram");
+  });
+
+  it("marks the Telegram chat active and labels the trigger 'Telegram' when activeTelegram is set", async () => {
+    mockChats(allChats);
+    render(<ChatSwitcher agentId="agent-1" chatId={null} agentName="Smithers" activeTelegram />);
+
+    const menu = await screen.findByRole("menu");
+
+    // On the Telegram view, the Telegram row carries the active indicator...
+    const telegramRow = within(menu).getByText("Telegram chat").closest("[role='menuitem']")!;
+    expect(within(telegramRow as HTMLElement).getByLabelText("Current chat")).toBeInTheDocument();
+
+    // ...and the default web chat is NOT treated as active even though chatId is null.
+    const fallback = new Date(legacyChat.lastInteractionAt).toLocaleDateString();
+    const defaultRow = within(menu)
+      .getByText(`Chat from ${fallback}`)
+      .closest("[role='menuitem']")!;
+    expect(within(defaultRow as HTMLElement).queryByLabelText("Current chat")).toBeNull();
+
+    // The trigger reflects the Telegram channel.
+    expect(screen.getByRole("button", { name: /Telegram/i })).toBeInTheDocument();
+  });
+
   it("shows a loading state while fetching", async () => {
     let resolve!: (value: { chats: ChatListItem[] }) => void;
     (apiGet as ReturnType<typeof vi.fn>).mockReturnValue(

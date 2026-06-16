@@ -22,17 +22,26 @@ interface ChatSwitcherProps {
   /** The active chat from the URL, or null for the default/legacy chat. */
   chatId: string | null;
   agentName: string;
+  /**
+   * True when the switcher is rendered on the read-only Telegram view
+   * (`/chat/<agentId>/telegram`). The Telegram view has no `chatId` of its own,
+   * so the URL-derived `isActive` (web-only) can't recognize it — this flag
+   * tells the switcher to mark the Telegram row active instead.
+   */
+  activeTelegram?: boolean;
 }
 
 /**
- * Whether `item` is the chat the URL currently points at. The active URL always
- * refers to a WEB chat (`/chat/<agentId>` → default, `/chat/<agentId>/<id>` →
- * specific), so Telegram chats are never active — even the default Telegram
- * chat carries `chatId: null` and would otherwise collide with the default web
- * chat.
+ * Whether `item` is the chat the URL currently points at.
+ *
+ * Web chats match by `chatId` (`/chat/<agentId>` → default, `/chat/<agentId>/<id>`
+ * → specific). Telegram chats live at the dedicated `/chat/<agentId>/telegram`
+ * view and carry `chatId: null`, so they'd otherwise collide with the default
+ * web chat — they are only active when `activeTelegram` is set.
  */
-function isActive(item: ChatListItem, chatId: string | null): boolean {
-  return item.origin === "web" && item.chatId === chatId;
+function isActive(item: ChatListItem, chatId: string | null, activeTelegram: boolean): boolean {
+  if (item.origin === "telegram") return activeTelegram;
+  return item.chatId === chatId && !activeTelegram;
 }
 
 /** Title to show for a chat — the saved label, or a date-stamped fallback. */
@@ -77,7 +86,12 @@ function relativeTime(ms: number, now: number = Date.now()): string {
  * open) rather than blocking the header — switching chats is a convenience, not
  * a critical path.
  */
-export function ChatSwitcher({ agentId, chatId, agentName }: ChatSwitcherProps) {
+export function ChatSwitcher({
+  agentId,
+  chatId,
+  agentName,
+  activeTelegram = false,
+}: ChatSwitcherProps) {
   const router = useRouter();
   const [chats, setChats] = useState<ChatListItem[]>([]);
   const [isLoading, setIsLoading] = useState(true);
@@ -103,14 +117,26 @@ export function ChatSwitcher({ agentId, chatId, agentName }: ChatSwitcherProps) 
     };
   }, [agentId]);
 
-  const current = chats.find((c) => isActive(c, chatId));
-  const triggerLabel = current ? chatTitle(current) : (agentName ?? "Chat");
+  const current = chats.find((c) => isActive(c, chatId, activeTelegram));
+  // On the Telegram view the active row may not have loaded yet, so fall back
+  // to a literal "Telegram" label there rather than the agent name.
+  const triggerLabel = current
+    ? chatTitle(current)
+    : activeTelegram
+      ? "Telegram"
+      : (agentName ?? "Chat");
 
   function startNewChat() {
     router.push(`/chat/${agentId}/${generateChatId()}`);
   }
 
   function openChat(item: ChatListItem) {
+    // Telegram chats open the dedicated read-only mirror; web chats open their
+    // own session (or the default chat when chatId is null).
+    if (item.origin === "telegram") {
+      router.push(`/chat/${agentId}/telegram`);
+      return;
+    }
     router.push(item.chatId ? `/chat/${agentId}/${item.chatId}` : `/chat/${agentId}`);
   }
 
@@ -138,7 +164,7 @@ export function ChatSwitcher({ agentId, chatId, agentName }: ChatSwitcherProps) 
           </DropdownMenuLabel>
         ) : (
           chats.map((item) => {
-            const active = isActive(item, chatId);
+            const active = isActive(item, chatId, activeTelegram);
             return (
               <DropdownMenuItem
                 key={item.sessionId}
