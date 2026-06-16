@@ -26,6 +26,11 @@
  * see use-ws-runtime-resume-crash.test.tsx). These tests pin the proximate,
  * deterministic invariant instead: a refocus/recovery reconcile must NEVER
  * reduce the rendered message count outside the unmount gate.
+ *
+ * These tests drive that recovery reconcile via a WS close+reconnect, which hits
+ * the IDENTICAL history-reconcile path as a real tab refocus (visibilitychange →
+ * suspend → recover → history). The literal visibilitychange round-trip is
+ * exercised by the real-browser e2e (18-tab-refocus-shrink.spec.ts).
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { renderHook, act } from "@testing-library/react";
@@ -152,7 +157,7 @@ describe("useWsRuntime — tab-refocus reconcile must not shrink the message lis
     const after = messagesOf(result.current.runtime).length;
     // The refocus must NOT reduce the rendered count: a shorter list applied
     // while the thread is mounted (isReconcilingMessages stays false here) is the
-    // tapClientLookup crash precondition. Current code shrinks 4 → 1.
+    // tapClientLookup crash precondition. Without the fix the list shrinks 4 → 1.
     expect(result.current.isReconcilingMessages).toBe(false);
     expect(after).toBeGreaterThanOrEqual(before);
     expect(result.current.isRunning).toBe(true);

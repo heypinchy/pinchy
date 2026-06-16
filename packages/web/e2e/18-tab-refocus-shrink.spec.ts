@@ -113,7 +113,14 @@ test.describe("tab refocus reconcile", () => {
                       partialContent: "",
                     },
                   };
-            setTimeout(() => this.onmessage?.({ data: JSON.stringify(payload) }), 0);
+            // Record DELIVERY (not just the request) so the test can poll for
+            // the recovery reconcile instead of sleeping a fixed interval.
+            const deliveredNo = globalState.historyRequests;
+            setTimeout(() => {
+              this.onmessage?.({ data: JSON.stringify(payload) });
+              (window as unknown as { __historyDelivered?: number }).__historyDelivered =
+                deliveredNo;
+            }, 0);
             return;
           }
         }
@@ -157,28 +164,39 @@ test.describe("tab refocus reconcile", () => {
     await expect(page.getByText("reply four")).toBeVisible();
 
     // Tab backgrounded, then refocused — drops the WS and re-requests history.
+    // The two visibility events are separate round-trips, so they serialize
+    // (suspend closes the WS before recover reconnects) without a fixed gap.
     await page.evaluate(() => {
       (window as unknown as { __setVisibility: (v: string) => void }).__setVisibility("hidden");
     });
-    await page.waitForTimeout(150);
     await page.evaluate(() => {
       (window as unknown as { __setVisibility: (v: string) => void }).__setVisibility("visible");
     });
 
-    // Give the recovery history + activeRun reconcile time to land (and crash,
-    // pre-fix). A short settle is enough — the reconcile is synchronous.
-    await page.waitForTimeout(1000);
+    // Wait for the recovery history (request #2 — the empty + activeRun frame)
+    // to be DELIVERED, rather than sleeping a fixed interval.
+    await expect
+      .poll(() =>
+        page.evaluate(
+          () => (window as unknown as { __historyDelivered?: number }).__historyDelivered ?? 0
+        )
+      )
+      .toBeGreaterThanOrEqual(2);
+    // The reconcile's setMessages → React commit (where the pre-fix crash throws)
+    // lands one task after delivery; a short, bounded settle covers that commit.
+    await page.waitForTimeout(200);
 
-    // The error boundary must NOT have replaced the chat view.
+    // The error boundary must NOT have replaced the chat view, and no
+    // tapClientLookup error may have been thrown.
     await expect(page.getByText("Something went wrong")).toHaveCount(0);
     expect(
       pageErrors.find((m) => m.includes("tapClientLookup") || m.includes("out of bounds")),
       `page threw: ${pageErrors.join(" | ")}`
     ).toBeUndefined();
 
-    // The locally-known conversation is preserved (not shrunk away), and the
-    // composer is still interactive — a crashed view would have neither.
-    await expect(assistantBubbles.count()).resolves.toBeGreaterThanOrEqual(4);
+    // The locally-known conversation is preserved (pre-fix the list shrinks away
+    // and a trailing-index child throws), and "reply four" is still visible.
+    await expect(assistantBubbles).toHaveCount(4);
     await expect(page.getByText("reply four")).toBeVisible();
   });
 });
