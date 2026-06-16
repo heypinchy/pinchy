@@ -426,6 +426,130 @@ describe("useWsRuntime", () => {
     expect(errorMsg.metadata.custom.error.providerError).toBe("Some upstream error");
   });
 
+  describe("authoritative liveness frames", () => {
+    function sendAndOpen(result: ReturnType<typeof renderHook>["result"], ws: MockWebSocket) {
+      act(() => {
+        ws.onopen?.();
+      });
+      act(() => {
+        result.current.runtime.onNew({
+          content: [{ type: "text", text: "Hello" }],
+          parentId: "root",
+        });
+      });
+    }
+
+    it("shows a retryable failure bubble when a liveness:failed frame arrives", () => {
+      const { result } = renderHook(() => useWsRuntime("agent-1"));
+      const ws = wsInstances[0];
+      sendAndOpen(result, ws);
+      expect(result.current.runtime.isRunning).toBe(true);
+
+      act(() => {
+        ws.onmessage?.({
+          data: JSON.stringify({
+            type: "liveness",
+            state: "failed",
+            reason: "the agent run ended without a response",
+          }),
+        });
+      });
+
+      // Spinner stops and a retryable bubble carrying the server reason shows.
+      expect(result.current.runtime.isRunning).toBe(false);
+      const messages = result.current.runtime.messages;
+      const failureMsg = messages.find(
+        (m: any) =>
+          m.role === "assistant" &&
+          m.metadata?.custom?.error?.message === "the agent run ended without a response"
+      );
+      expect(failureMsg).toBeDefined();
+      expect(failureMsg.metadata.custom.retryable).toBe(true);
+    });
+
+    it("falls back to a generic reason when liveness:failed omits one", () => {
+      const { result } = renderHook(() => useWsRuntime("agent-1"));
+      const ws = wsInstances[0];
+      sendAndOpen(result, ws);
+
+      act(() => {
+        ws.onmessage?.({ data: JSON.stringify({ type: "liveness", state: "failed" }) });
+      });
+
+      const messages = result.current.runtime.messages;
+      const failureMsg = messages.find(
+        (m: any) => m.role === "assistant" && m.metadata?.custom?.error?.message
+      );
+      expect(failureMsg).toBeDefined();
+      expect(failureMsg.metadata.custom.error.message).toBe(
+        "The agent run ended without a response."
+      );
+    });
+
+    it("keeps the richer error bubble when liveness:failed follows an error frame", () => {
+      const { result } = renderHook(() => useWsRuntime("agent-1"));
+      const ws = wsInstances[0];
+      sendAndOpen(result, ws);
+
+      // The server emits the rich `error` frame first, then the additive
+      // `liveness: failed` verdict. The generic liveness bubble must NOT
+      // clobber the detailed provider-error bubble.
+      act(() => {
+        ws.onmessage?.({
+          data: JSON.stringify({
+            type: "error",
+            agentName: "Smithers",
+            providerError: "Your credit balance is too low.",
+            hint: "Please contact your administrator.",
+            messageId: "msg-1",
+          }),
+        });
+      });
+      act(() => {
+        ws.onmessage?.({
+          data: JSON.stringify({
+            type: "liveness",
+            state: "failed",
+            reason: "Your credit balance is too low.",
+          }),
+        });
+      });
+
+      const messages = result.current.runtime.messages;
+      const errorMsgs = messages.filter(
+        (m: any) => m.role === "assistant" && m.metadata?.custom?.error
+      );
+      // Exactly one bubble, and it is the rich provider-error one.
+      expect(errorMsgs).toHaveLength(1);
+      expect(errorMsgs[0].metadata.custom.error.providerError).toBe(
+        "Your credit balance is too low."
+      );
+      expect(errorMsgs[0].metadata.custom.error.message).toBeUndefined();
+    });
+
+    it("liveness:responding keeps the run going and liveness:completed stops it without a bubble", () => {
+      const { result } = renderHook(() => useWsRuntime("agent-1"));
+      const ws = wsInstances[0];
+      sendAndOpen(result, ws);
+
+      act(() => {
+        ws.onmessage?.({ data: JSON.stringify({ type: "liveness", state: "responding" }) });
+      });
+      expect(result.current.runtime.isRunning).toBe(true);
+
+      // A completed verdict does not itself stop the spinner — `complete` is the
+      // genuine terminator — but it must never produce a failure bubble.
+      act(() => {
+        ws.onmessage?.({ data: JSON.stringify({ type: "liveness", state: "completed" }) });
+      });
+      const messages = result.current.runtime.messages;
+      const errorMsg = messages.find(
+        (m: any) => m.role === "assistant" && m.metadata?.custom?.error
+      );
+      expect(errorMsg).toBeUndefined();
+    });
+  });
+
   it("should stay running when only done arrives (turn end), and stop on complete", () => {
     const { result } = renderHook(() => useWsRuntime("agent-1"));
     const ws = wsInstances[0];

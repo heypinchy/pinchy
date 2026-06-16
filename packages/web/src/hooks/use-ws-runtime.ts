@@ -28,6 +28,12 @@ import { reduceMessages, type Action } from "./message-status-reducer";
 import type { MessageStatus } from "./message-status-reducer";
 import { isOrphaned as computeIsOrphaned } from "./orphan-detector";
 import {
+  livenessReducer,
+  INITIAL_LIVENESS,
+  type LivenessState,
+  type LivenessEvent,
+} from "./liveness-state";
+import {
   CLIENT_IMAGE_COMPRESSION_TARGET_BYTES,
   CLIENT_MAX_ATTACHMENT_SIZE_BYTES,
 } from "@/lib/limits";
@@ -424,6 +430,22 @@ export function useWsRuntime(agentId: string): {
   const [isRunning, setIsRunning] = useState(false);
   const [isConnected, setIsConnected] = useState(false);
   const [isDelayed, setIsDelayed] = useState(false);
+  /**
+   * Authoritative run-liveness, driven by the server's `liveness` frame
+   * (responding / completed / failed) plus the local display-only `slowHint`
+   * timer. This is the single source of truth for the terminal failure bubble
+   * — replacing the old client-side guessing (orphan detector, 60s stuck timer,
+   * disconnect-grace). The cardinal rule of `livenessReducer` makes it
+   * structurally impossible for any timer to produce a `failed` status; only an
+   * authoritative server `liveness: failed` frame can. See liveness-state.ts.
+   *
+   * Held in a ref (not React state) because every consumer is a synchronous WS
+   * frame handler created inside the connection effect — they read/dispatch
+   * without a stale closure, matching the `messagesRef`/`isRunningRef` pattern
+   * used throughout. Renders that need to react to a verdict (the failure
+   * bubble) go through `setMessages`, which re-renders on its own.
+   */
+  const livenessRef = useRef<LivenessState>(INITIAL_LIVENESS);
   const [isHistoryLoaded, setIsHistoryLoaded] = useState(false);
   const [isReconcilingMessages, setIsReconcilingMessages] = useState(false);
   const [pendingUploads, setPendingUploads] = useState<PendingUpload[]>([]);
@@ -527,6 +549,10 @@ export function useWsRuntime(agentId: string): {
     setMessages(capMessages([]));
     setIsRunning(false);
     setIsDelayed(false);
+    // Reset the liveness machine for the new agent. Updating the ref
+    // synchronously here (same rationale as the timer cleanup below) means any
+    // frame handler that fires before the next commit sees the cleared state.
+    livenessRef.current = INITIAL_LIVENESS;
     setIsHistoryLoaded(false);
     setIsReconcilingMessages(false);
     setKnownEmptyHistory(false);
@@ -585,6 +611,16 @@ export function useWsRuntime(agentId: string): {
 
   const dispatchMessages = useCallback((action: Action) => {
     setMessages((prev) => capMessages(reduceMessages(prev, action)));
+  }, []);
+
+  /**
+   * Advance the authoritative liveness machine held in `livenessRef`. The WS
+   * frame handlers read it synchronously to decide whether a `failed` verdict
+   * is in effect; nothing renders directly off the ref (the failure bubble is
+   * injected via `setMessages`).
+   */
+  const dispatchLiveness = useCallback((event: LivenessEvent) => {
+    livenessRef.current = livenessReducer(livenessRef.current, event);
   }, []);
 
   useEffect(() => {
@@ -1113,6 +1149,61 @@ export function useWsRuntime(agentId: string): {
           return;
         }
 
+        if (data.type === "liveness") {
+          // Authoritative run-liveness from the server (which gets it from the
+          // OpenClaw gateway). This is the ONLY source of a terminal failure
+          // verdict — the client no longer guesses failure from silence or a
+          // timer. Map the wire state onto the liveness machine; the machine's
+          // cardinal rule guarantees `failed` can only ever come from a
+          // `failed` event (see liveness-state.ts).
+          const state = data.state as "responding" | "completed" | "failed";
+          if (state === "responding") {
+            dispatchLiveness({ type: "started" });
+          } else if (state === "completed") {
+            dispatchLiveness({ type: "completed" });
+          } else if (state === "failed") {
+            const reason =
+              typeof data.reason === "string" && data.reason.trim().length > 0
+                ? data.reason
+                : "The agent run ended without a response.";
+            dispatchLiveness({ type: "failed", reason });
+            // Surface the terminal failure bubble — but only if no richer
+            // authoritative `error` bubble is already shown. The server emits
+            // BOTH an `error` frame (rich provider/model/format detail) AND a
+            // `liveness: failed` frame for a real provider error; the `error`
+            // arrives first, so this guard keeps that detailed bubble instead
+            // of clobbering it with a generic one. When the failure comes from
+            // a path that emits ONLY a liveness verdict (the reconnect
+            // `agentWait` oracle, an abandoned run), there is no error bubble
+            // and this injects the generic one. The placeholder swap keeps the
+            // isRunning flip below count-neutral (#470).
+            isRunningRef.current = false;
+            setIsRunning(false);
+            inflightRunIdRef.current = null;
+            if (delayTimerRef.current) {
+              clearTimeout(delayTimerRef.current);
+              delayTimerRef.current = null;
+            }
+            setMessages((prev) => {
+              if (prev.some((m) => m.error)) return prev;
+              return capMessages(
+                replaceTrailingPlaceholder(prev, {
+                  id: uuid(),
+                  role: "assistant",
+                  content: "",
+                  error: { message: reason },
+                  retryable: true,
+                  retryReason: hasReceivedChunkRef.current
+                    ? ("partial_stream_failure" as const)
+                    : ("send_failure" as const),
+                })
+              );
+            });
+            hasReceivedChunkRef.current = false;
+          }
+          return;
+        }
+
         if (data.type === "ack") {
           // Cancel the pending timeout timer before dispatching the ack
           const clientMessageId = data.clientMessageId as string;
@@ -1491,6 +1582,9 @@ export function useWsRuntime(agentId: string): {
       isRunningRef.current = true;
       hasReceivedChunkRef.current = false;
       setIsRunning(true);
+      // A new turn starts — drive the liveness machine to `responding`. This
+      // clears any prior failure/slow state so a fresh send always starts clean.
+      dispatchLiveness({ type: "started" });
 
       // Start delay hint timer
       if (delayTimerRef.current) {
@@ -1498,6 +1592,7 @@ export function useWsRuntime(agentId: string): {
       }
       delayTimerRef.current = setTimeout(() => {
         setIsDelayed(true);
+        dispatchLiveness({ type: "slowHint" });
       }, DELAY_HINT_MS);
 
       // Start stuck timer — fires if no activity (chunk or thinking) for 60s
@@ -1536,7 +1631,7 @@ export function useWsRuntime(agentId: string): {
       }, 10_000);
       pendingAckTimers.current.set(clientMessageId, ackTimer);
     },
-    [agentId, dispatchMessages, sendOrQueue, pendingUploads] // setPendingUploads is stable (useState setter)
+    [agentId, dispatchMessages, dispatchLiveness, sendOrQueue, pendingUploads] // setPendingUploads is stable (useState setter)
   );
 
   const onRetryContinue = useCallback(
@@ -1557,6 +1652,8 @@ export function useWsRuntime(agentId: string): {
       hasReceivedChunkRef.current = false;
       trimTrailingOnNextChunkRef.current = true;
       setIsRunning(true);
+      // A retry starts a fresh turn — clear any prior failed/slow liveness.
+      dispatchLiveness({ type: "started" });
 
       const payload = JSON.stringify({
         type: "message",
@@ -1569,7 +1666,7 @@ export function useWsRuntime(agentId: string): {
 
       sendOrQueue(payload);
     },
-    [agentId, messages, dispatchMessages, sendOrQueue]
+    [agentId, messages, dispatchMessages, dispatchLiveness, sendOrQueue]
   );
 
   const onRetryResend = useCallback(
@@ -1583,6 +1680,8 @@ export function useWsRuntime(agentId: string): {
 
       isRunningRef.current = true;
       setIsRunning(true);
+      // A retry starts a fresh turn — clear any prior failed/slow liveness.
+      dispatchLiveness({ type: "started" });
 
       // Start delay hint timer
       if (delayTimerRef.current) {
@@ -1590,6 +1689,7 @@ export function useWsRuntime(agentId: string): {
       }
       delayTimerRef.current = setTimeout(() => {
         setIsDelayed(true);
+        dispatchLiveness({ type: "slowHint" });
       }, DELAY_HINT_MS);
 
       // Start stuck timer — fires if no activity (chunk or thinking) for 60s
@@ -1613,7 +1713,7 @@ export function useWsRuntime(agentId: string): {
       }, 10_000);
       pendingAckTimers.current.set(messageId, ackTimer);
     },
-    [agentId, messages, dispatchMessages, sendOrQueue]
+    [agentId, messages, dispatchMessages, dispatchLiveness, sendOrQueue]
   );
 
   // Fire-and-forget: the upload's outcome is driven entirely through the
