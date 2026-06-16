@@ -33,7 +33,7 @@ export async function DELETE() {
   // is auto-deduped when there's nothing to remove, avoiding a 30 s overlay for
   // a no-op.
   clearAllAllowStores();
-  updateTelegramChannelConfig(null, null, null);
+  updateTelegramChannelConfig(null, null);
 
   await appendAuditLog({
     actorType: "user",

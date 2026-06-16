@@ -101,11 +101,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ age
   // fields like agents.defaults to avoid hot-reloads that break polling).
   // updateTelegramChannelConfig() also notifies restart-state on actual write so
   // /api/health/openclaw reflects the pending OC restart.
-  updateTelegramChannelConfig(
-    agentId,
-    { botToken },
-    null // Don't touch identityLinks — preserved from existing config
-  );
+  updateTelegramChannelConfig(agentId, { botToken });
 
   // Populate allow-from store with all linked users who have permission to this agent
   await recalculateTelegramAllowStores();
@@ -160,7 +156,7 @@ export async function DELETE(req: Request, { params }: { params: Promise<{ agent
   clearAllowStoreForAccount(agentId);
   // Remove this account from config (other accounts preserved).
   // updateTelegramChannelConfig() notifies restart-state on actual write.
-  updateTelegramChannelConfig(agentId, null, null);
+  updateTelegramChannelConfig(agentId, null);
 
   await appendAuditLog({
     actorType: "user",

@@ -47,8 +47,7 @@ export function sanitizeOpenClawConfig(): boolean {
  */
 export function updateTelegramChannelConfig(
   accountId: string | null,
-  account: { botToken: string } | null,
-  identityLinks: Record<string, string[]> | null
+  account: { botToken: string } | null
 ): void {
   const existing = readExistingConfig();
 
@@ -132,13 +131,18 @@ export function updateTelegramChannelConfig(
     existing.bindings = undefined;
   }
 
-  const session = (existing.session as Record<string, unknown>) || {};
+  // #508: identityLinks is no longer Pinchy-owned. Purge any stale value left by
+  // a pre-per-task version unconditionally — this targeted writer spreads the
+  // on-disk `session` block independently of build.ts, so without the strip a
+  // bot connect/disconnect on a prod/demo install that still carries a baked-in
+  // identityLinks would preserve it forever, keeping OpenClaw's unification of
+  // Telegram and the web session alive. We purge ONLY identityLinks; every other
+  // (OC-enriched) session key is preserved.
+  const session = { ...((existing.session as Record<string, unknown>) || {}) };
+  delete session.identityLinks;
   existing.session = {
     ...session,
     dmScope: "per-peer",
-    // null = "don't touch existing identityLinks" (used by bot connect/disconnect).
-    // Non-null = overwrite with provided value (used by link/unlink).
-    ...(identityLinks !== null && { identityLinks }),
   };
 
   const newContent = JSON.stringify(existing, null, 2).trimEnd() + "\n";

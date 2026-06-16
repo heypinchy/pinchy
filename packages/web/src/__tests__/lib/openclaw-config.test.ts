@@ -4897,7 +4897,7 @@ describe("restart-state integration", () => {
     const { restartState } = await import("@/server/restart-state");
     mockedReadFileSync.mockReturnValue(JSON.stringify({ gateway: { mode: "local", bind: "lan" } }));
 
-    updateTelegramChannelConfig("agent-99", { botToken: "tg-secret-token" }, null);
+    updateTelegramChannelConfig("agent-99", { botToken: "tg-secret-token" });
 
     expect(mockedWriteFileSync).toHaveBeenCalled();
     expect(restartState.notifyRestart).toHaveBeenCalledOnce();
@@ -4910,14 +4910,14 @@ describe("restart-state integration", () => {
 
     // First write produces canonical content
     mockedReadFileSync.mockReturnValue(JSON.stringify({ gateway: { mode: "local", bind: "lan" } }));
-    updateTelegramChannelConfig("agent-99", { botToken: "tg-secret-token" }, null);
+    updateTelegramChannelConfig("agent-99", { botToken: "tg-secret-token" });
     const firstWrite = mockedWriteFileSync.mock.calls[0][1] as string;
 
     vi.clearAllMocks();
     // Second call with identical resulting content — dedup should kick in
     mockedReadFileSync.mockReturnValue(firstWrite);
 
-    updateTelegramChannelConfig("agent-99", { botToken: "tg-secret-token" }, null);
+    updateTelegramChannelConfig("agent-99", { botToken: "tg-secret-token" });
 
     expect(mockedWriteFileSync).not.toHaveBeenCalled();
     expect(restartState.notifyRestart).not.toHaveBeenCalled();
@@ -5186,6 +5186,99 @@ describe("restart-state integration", () => {
     // dmScope and the daily-reset override are still Pinchy-owned and stay.
     expect(config.session.dmScope).toBe("per-peer");
     expect(config.session.reset).toEqual({ mode: "idle", idleMinutes: 525600 });
+    // Per-user peer binding still routes the linked user's DMs to their agent.
+    expect(config.bindings).toEqual(
+      expect.arrayContaining([
+        {
+          agentId: "agent-1",
+          match: {
+            channel: "telegram",
+            accountId: "agent-1",
+            peer: { kind: "dm", id: "999888" },
+          },
+        },
+      ])
+    );
+  });
+
+  it("PURGES a stale session.identityLinks already on disk on regenerate (#508 upgrade path)", async () => {
+    // THE UPGRADE SCENARIO. The cold-start test above only proves we no longer
+    // EMIT identityLinks from scratch. But prod/demo installs that ran a
+    // pre-per-task version already have `session.identityLinks` baked into
+    // openclaw.json (it was written for every linked Telegram user). Commit
+    // 2517a0fb stopped writing it but does NOT remove a pre-existing one:
+    // regenerate spreads the on-disk `session` block, so a stale identityLinks
+    // rides along forever → OpenClaw keeps unifying Telegram with the web
+    // session → the #508 footgun stays UNFIXED on exactly the deployments that
+    // have it. The fix must actively PURGE the key, not just stop writing it.
+    //
+    // We purge ONLY identityLinks — any other foreign session key OpenClaw may
+    // have stamped is preserved (same denylist philosophy as the channels
+    // block above).
+    const existingConfig = {
+      gateway: { mode: "local", bind: "lan", auth: { token: "secret" } },
+      session: {
+        // Stale Pinchy-written unification link from before the per-task model.
+        identityLinks: { "user-1": ["telegram:999"] },
+        // Pinchy-owned reset override that must survive.
+        reset: { mode: "idle", idleMinutes: 525600 },
+        // A foreign OC-enriched session key that must NOT be purged.
+        ocEnrichedSessionField: "keep-me",
+      },
+    };
+    mockedReadFileSync.mockReturnValue(JSON.stringify(existingConfig));
+
+    let callCount = 0;
+    mockedDb.select.mockReturnValue({
+      from: vi.fn().mockImplementation(() => {
+        callCount++;
+        if (callCount === 1) {
+          // agents table — personal agent so a per-user peer binding is made.
+          return Object.assign(
+            Promise.resolve([
+              {
+                id: "agent-1",
+                name: "Smithers",
+                model: "m",
+                allowedTools: [],
+                isPersonal: true,
+                ownerId: "user-1",
+              },
+            ]),
+            { innerJoin: mockInnerJoin([]), where: vi.fn().mockResolvedValue([]) }
+          );
+        }
+        if (callCount === 4) {
+          // channel_links table — a linked Telegram user exists.
+          return Object.assign(
+            Promise.resolve([{ userId: "user-1", channel: "telegram", channelUserId: "999888" }]),
+            { innerJoin: mockInnerJoin([]), where: vi.fn().mockResolvedValue([]) }
+          );
+        }
+        return Object.assign(Promise.resolve([]), {
+          innerJoin: mockInnerJoin([]),
+          where: vi.fn().mockResolvedValue([]),
+        });
+      }),
+    } as never);
+
+    mockedGetSetting.mockImplementation(async (key: string) => {
+      if (key === "telegram_bot_token:agent-1") return "token";
+      if (key === "telegram_bot_username:agent-1") return "bot";
+      return null;
+    });
+
+    await regenerateOpenClawConfig();
+
+    const written = mockedWriteFileSync.mock.calls[0][1] as string;
+    const config = JSON.parse(written);
+
+    // The stale identityLinks must be GONE — this is the upgrade fix.
+    expect(config.session.identityLinks).toBeUndefined();
+    // Everything else stays: dmScope, the reset override, AND the foreign key.
+    expect(config.session.dmScope).toBe("per-peer");
+    expect(config.session.reset).toEqual({ mode: "idle", idleMinutes: 525600 });
+    expect(config.session.ocEnrichedSessionField).toBe("keep-me");
     // Per-user peer binding still routes the linked user's DMs to their agent.
     expect(config.bindings).toEqual(
       expect.arrayContaining([
@@ -6411,7 +6504,7 @@ describe("telegram botToken plain string (OpenClaw 2026.4.26 does not support Se
       })
     );
 
-    updateTelegramChannelConfig("agent-99", { botToken: "tg-secret-token" }, null);
+    updateTelegramChannelConfig("agent-99", { botToken: "tg-secret-token" });
 
     const written = mockedWriteFileSync.mock.calls[0][1] as string;
     const config = JSON.parse(written);
@@ -6432,11 +6525,42 @@ describe("telegram botToken plain string (OpenClaw 2026.4.26 does not support Se
       })
     );
 
-    updateTelegramChannelConfig("agent-99", { botToken: "tg-secret-token" }, null);
+    updateTelegramChannelConfig("agent-99", { botToken: "tg-secret-token" });
 
     const written = mockedWriteFileSync.mock.calls[0][1] as string;
     const config = JSON.parse(written);
     expect(config.channels.telegram.enabled).toBe(true);
+  });
+
+  it("updateTelegramChannelConfig PURGES a stale session.identityLinks on the targeted write path (#508 upgrade path)", () => {
+    // The targeted write (bot connect/disconnect, no full regenerate) spreads
+    // the on-disk `session` block independently of build.ts. On a prod/demo
+    // install that already has a stale `session.identityLinks` baked in from a
+    // pre-per-task version, a bot connect/disconnect would otherwise preserve
+    // it forever → OpenClaw keeps unifying Telegram with the web session. The
+    // targeted writer must ALSO purge it unconditionally. Only identityLinks
+    // is purged; other session fields are preserved.
+    mockedReadFileSync.mockReturnValue(
+      JSON.stringify({
+        gateway: { mode: "local", bind: "lan" },
+        session: {
+          identityLinks: { "user-1": ["telegram:999"] },
+          reset: { mode: "idle", idleMinutes: 525600 },
+          ocEnrichedSessionField: "keep-me",
+        },
+      })
+    );
+
+    updateTelegramChannelConfig("agent-99", { botToken: "tg-secret-token" });
+
+    const written = mockedWriteFileSync.mock.calls[0][1] as string;
+    const config = JSON.parse(written);
+    // Stale identityLinks gone.
+    expect(config.session.identityLinks).toBeUndefined();
+    // dmScope set, other session fields preserved.
+    expect(config.session.dmScope).toBe("per-peer");
+    expect(config.session.reset).toEqual({ mode: "idle", idleMinutes: 525600 });
+    expect(config.session.ocEnrichedSessionField).toBe("keep-me");
   });
 
   it("updateTelegramChannelConfig throws if existing config is unreadable (avoids clobber from EACCES, #314)", () => {
@@ -6458,9 +6582,9 @@ describe("telegram botToken plain string (OpenClaw 2026.4.26 does not support Se
       throw err;
     });
 
-    expect(() =>
-      updateTelegramChannelConfig("agent-99", { botToken: "tg-secret-token" }, null)
-    ).toThrow(/EACCES|gateway\.mode/);
+    expect(() => updateTelegramChannelConfig("agent-99", { botToken: "tg-secret-token" })).toThrow(
+      /EACCES|gateway\.mode/
+    );
     expect(mockedWriteFileSync).not.toHaveBeenCalled();
     warnSpy.mockRestore();
   });

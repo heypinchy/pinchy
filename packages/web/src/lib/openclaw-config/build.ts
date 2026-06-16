@@ -381,6 +381,16 @@ export async function regenerateOpenClawConfig() {
   const existingUpdate = (existing.update as Record<string, unknown>) || {};
   const existingCanvasHost = (existing.canvasHost as Record<string, unknown>) || {};
 
+  // #508: identityLinks is no longer Pinchy-owned. Purge any stale value left by
+  // a pre-per-task version so UPGRADES actually un-unify Telegram. We only
+  // STOPPED writing it in 2517a0fb; regenerate spreads the on-disk session,
+  // which would otherwise preserve a baked-in identityLinks forever — OpenClaw
+  // keeps folding the linked Telegram peer's DMs into the web session on exactly
+  // the prod/demo installs that already have the key. We purge ONLY
+  // identityLinks; every other (OC-enriched) session key is preserved.
+  const existingSessionPurged = { ...((existing.session as Record<string, unknown>) || {}) };
+  delete existingSessionPurged.identityLinks;
+
   const config: Record<string, unknown> = {
     gateway,
     // Disable OpenClaw's mDNS announcer. Pinchy always runs OpenClaw inside
@@ -445,9 +455,12 @@ export async function regenerateOpenClawConfig() {
     // Spread existing session fields so OpenClaw-enriched sibling keys are
     // preserved across regenerations (same pattern as gateway, discovery, etc.).
     // Only `reset` is Pinchy-owned; everything else OpenClaw may stamp belongs
-    // to OpenClaw and must survive a config regenerate unchanged.
+    // to OpenClaw and must survive a config regenerate unchanged. `identityLinks`
+    // is stripped above (see `existingSessionPurged`, #508); stripping it here
+    // cascades to the telegram block below, which spreads this already-assembled
+    // `config.session` (not raw `existing.session`), so no second strip is needed.
     session: {
-      ...(existing.session as Record<string, unknown>),
+      ...existingSessionPurged,
       reset: { mode: "idle" as const, idleMinutes: 525600 },
     },
   };
