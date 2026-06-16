@@ -7,8 +7,8 @@ export function AgentSidebarIndicator({ agentId }: { agentId: string }) {
   if (!bundle) return null;
 
   // Error wins over running: a stale error shouldn't be hidden by a
-  // freshly-started retry. Error clears when the user retries, which
-  // sets isRunning=true and resolves isOrphaned.
+  // freshly-started retry. The only sidebar error is reconnect exhaustion;
+  // it clears once the connection is re-established.
   if (bundle.lastError) {
     return (
       <span

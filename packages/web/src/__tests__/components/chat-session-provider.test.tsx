@@ -24,7 +24,6 @@ function fakeBundle(overrides: Partial<RuntimeBundle> = {}): RuntimeBundle {
     isDelayed: false,
     reconnectExhausted: false,
     payloadRejected: false,
-    isOrphaned: false,
     onRetryContinue: vi.fn(),
     onRetryResend: vi.fn(),
     lastError: null,
