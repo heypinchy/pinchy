@@ -16,6 +16,7 @@ import {
   shouldEmitUpstreamFormatErrorAudit,
 } from "@/server/model-unavailable-throttle";
 import { SessionCache } from "@/server/session-cache";
+import { resolveUserPlaceholder } from "@/server/user-placeholder";
 import { getErrorHint } from "@/server/error-hints";
 import { classifyModelError, classifyUpstreamFormatError } from "@/server/model-error-classifier";
 import {
@@ -293,7 +294,7 @@ export class ClientRouter {
         extraPromptParts.push(`## About the current user\n${user.context}`);
       }
       if (!this.sessionCache.has(sessionKey) && agent.greetingMessage) {
-        const personalizedGreeting = this.resolveUserPlaceholder(agent.greetingMessage, user?.name);
+        const personalizedGreeting = resolveUserPlaceholder(agent.greetingMessage, user?.name);
         extraPromptParts.push(
           `The user just opened this chat for the first time. You already greeted them with this message: "${personalizedGreeting}". Do not introduce yourself again. Continue the conversation naturally.`
         );
@@ -1179,18 +1180,10 @@ export class ClientRouter {
     });
   }
 
-  private resolveUserPlaceholder(text: string, userName: string | null | undefined): string {
-    if (userName) {
-      return text.replace(/\{user\}/g, userName);
-    }
-    // Remove ", {user}" patterns first, then any remaining "{user}" with trailing punctuation
-    return text.replace(/,\s*\{user\}/g, "").replace(/\{user\}[,.]?\s*/g, "");
-  }
-
   private async getPersonalizedGreeting(rawGreeting: string): Promise<string> {
     if (!rawGreeting.includes("{user}")) return rawGreeting;
     const user = await db.query.users.findFirst({ where: eq(users.id, this.userId) });
-    return this.resolveUserPlaceholder(rawGreeting, user?.name);
+    return resolveUserPlaceholder(rawGreeting, user?.name);
   }
 
   private sanitizeError(err: unknown): string {
