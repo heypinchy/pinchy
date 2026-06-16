@@ -2103,6 +2103,234 @@ const plugin = {
       { name: "odoo_schedule_activity" },
     );
 
+    // 5c. odoo_complete_activity
+    api.registerTool(
+      (ctx: PluginToolContext) => {
+        const agentId = ctx.agentId;
+        if (!agentId) return null;
+        const config = getAgentConfig(agentConfigs, agentId);
+        if (!config) return null;
+
+        return {
+          name: "odoo_complete_activity",
+          label: "Odoo Complete Activity",
+          description:
+            "Mark a scheduled activity as done — posts a completion note to the record's chatter and clears the activity from the to-do list so it no longer shows as pending or overdue. Pass the activity's `_pinchy_ref` (from `odoo_read` on `mail.activity`, or the response of `odoo_schedule_activity`) and an optional `feedback` note. Use this to close out follow-ups you have handled.",
+          parameters: {
+            type: "object",
+            properties: {
+              target: {
+                type: "string",
+                description:
+                  "Opaque `_pinchy_ref` of the mail.activity to complete (from `odoo_read` on `mail.activity` or the response of `odoo_schedule_activity`).",
+              },
+              feedback: {
+                type: "string",
+                description:
+                  'Optional note recorded in the completion message, e.g. "Called, customer confirmed".',
+              },
+            },
+            required: ["target"],
+            additionalProperties: false,
+          },
+          async execute(_toolCallId: string, params: Record<string, unknown>) {
+            try {
+              const target = params.target;
+              if (typeof target !== "string" || target.length === 0) {
+                return errorResult(
+                  new Error(
+                    "`target` is required: pass the _pinchy_ref of the activity to complete.",
+                  ),
+                );
+              }
+              const decoded = decodeRef(target);
+              if (
+                decoded.integrationType !== "odoo" ||
+                decoded.connectionId !== config.connectionId
+              ) {
+                return errorResult(
+                  new Error(
+                    "`target` ref does not belong to this Odoo connection.",
+                  ),
+                );
+              }
+              if (decoded.model !== "mail.activity") {
+                return errorResult(
+                  new Error(
+                    "`target` must be a mail.activity ref — read the activity with `odoo_read` on `mail.activity` first.",
+                  ),
+                );
+              }
+              if (
+                !checkPermission(config.permissions, "mail.activity", "write")
+              ) {
+                return permissionDenied("write", "mail.activity");
+              }
+
+              const kwargs: Record<string, unknown> = {};
+              if (
+                typeof params.feedback === "string" &&
+                params.feedback.trim().length > 0
+              ) {
+                kwargs.feedback = params.feedback.trim();
+              }
+
+              await withAuthRetry(agentId, config, (client) =>
+                client.callMethod(
+                  "mail.activity",
+                  "action_feedback",
+                  [[decoded.id]],
+                  kwargs,
+                ),
+              );
+
+              return {
+                content: [
+                  {
+                    type: "text",
+                    text: JSON.stringify({ completed: true, id: decoded.id }),
+                  },
+                ],
+              };
+            } catch (error) {
+              return errorResult(error, {
+                operation: "write",
+                model: "mail.activity",
+              });
+            }
+          },
+        };
+      },
+      { name: "odoo_complete_activity" },
+    );
+
+    // 5d. odoo_reschedule_activity
+    api.registerTool(
+      (ctx: PluginToolContext) => {
+        const agentId = ctx.agentId;
+        if (!agentId) return null;
+        const config = getAgentConfig(agentConfigs, agentId);
+        if (!config) return null;
+
+        return {
+          name: "odoo_reschedule_activity",
+          label: "Odoo Reschedule Activity",
+          description:
+            "Change a scheduled activity's due date and/or assignee without closing it. Pass the activity's `_pinchy_ref` and at least one of `dueDate` (YYYY-MM-DD) or `assignee` (exact user name or an opaque res.users ref). Use this to push a follow-up to a new date or hand it to someone else.",
+          parameters: {
+            type: "object",
+            properties: {
+              target: {
+                type: "string",
+                description:
+                  "Opaque `_pinchy_ref` of the mail.activity to reschedule (from `odoo_read` on `mail.activity`).",
+              },
+              dueDate: {
+                type: "string",
+                description: "New deadline in YYYY-MM-DD format.",
+              },
+              assignee: {
+                type: "string",
+                description:
+                  "New assignee: exact user name or an opaque res.users ref.",
+              },
+            },
+            required: ["target"],
+            additionalProperties: false,
+          },
+          async execute(_toolCallId: string, params: Record<string, unknown>) {
+            try {
+              const target = params.target;
+              if (typeof target !== "string" || target.length === 0) {
+                return errorResult(
+                  new Error(
+                    "`target` is required: pass the _pinchy_ref of the activity to reschedule.",
+                  ),
+                );
+              }
+              const dueDateRaw =
+                typeof params.dueDate === "string" ? params.dueDate.trim() : "";
+              const assigneeRaw =
+                typeof params.assignee === "string"
+                  ? params.assignee.trim()
+                  : "";
+              if (dueDateRaw.length === 0 && assigneeRaw.length === 0) {
+                return errorResult(
+                  new Error(
+                    "Provide at least one of `dueDate` (YYYY-MM-DD) or `assignee` to reschedule.",
+                  ),
+                );
+              }
+              if (
+                dueDateRaw.length > 0 &&
+                !/^\d{4}-\d{2}-\d{2}$/.test(dueDateRaw)
+              ) {
+                return errorResult(
+                  new Error("`dueDate` must be in YYYY-MM-DD format."),
+                );
+              }
+
+              const decoded = decodeRef(target);
+              if (
+                decoded.integrationType !== "odoo" ||
+                decoded.connectionId !== config.connectionId
+              ) {
+                return errorResult(
+                  new Error(
+                    "`target` ref does not belong to this Odoo connection.",
+                  ),
+                );
+              }
+              if (decoded.model !== "mail.activity") {
+                return errorResult(
+                  new Error(
+                    "`target` must be a mail.activity ref — read the activity with `odoo_read` on `mail.activity` first.",
+                  ),
+                );
+              }
+              if (
+                !checkPermission(config.permissions, "mail.activity", "write")
+              ) {
+                return permissionDenied("write", "mail.activity");
+              }
+
+              const success = await withAuthRetry(
+                agentId,
+                config,
+                async (client) => {
+                  const values: Record<string, unknown> = {};
+                  if (dueDateRaw.length > 0) values.date_deadline = dueDateRaw;
+                  if (assigneeRaw.length > 0) {
+                    values.user_id = await resolveAssigneeUserId(
+                      client,
+                      config.connectionId,
+                      assigneeRaw,
+                    );
+                  }
+                  return client.write("mail.activity", [decoded.id], values);
+                },
+              );
+
+              return {
+                content: [
+                  {
+                    type: "text",
+                    text: JSON.stringify({ success, id: decoded.id }),
+                  },
+                ],
+              };
+            } catch (error) {
+              return errorResult(error, {
+                operation: "write",
+                model: "mail.activity",
+              });
+            }
+          },
+        };
+      },
+      { name: "odoo_reschedule_activity" },
+    );
+
     // 6. odoo_write
     api.registerTool(
       (ctx: PluginToolContext) => {

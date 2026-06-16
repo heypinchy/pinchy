@@ -464,4 +464,64 @@ describe("pinchy-odoo mail.activity scheduling against real mock-odoo", () => {
     expect(created!.res_model).toBe("crm.lead");
     expect(created!.res_id).toBe(1);
   });
+
+  it("odoo_complete_activity marks a scheduled activity done (removes it)", async () => {
+    const tools = createApi({ [activityAgentId]: activityConfig });
+    const schedule = findTool(tools, "odoo_schedule_activity", activityAgentId);
+    const complete = findTool(tools, "odoo_complete_activity", activityAgentId);
+
+    const scheduled = await schedule.execute("c-sched-complete", {
+      target: leadRef(1, "Big Fence Order"),
+      summary: "Activity to complete",
+      dueDate: "2026-07-10",
+    });
+    const { _pinchy_ref } = JSON.parse(scheduled.content[0].text) as {
+      _pinchy_ref: string;
+    };
+    expect(
+      (await activities()).some((a) => a.summary === "Activity to complete"),
+    ).toBe(true);
+
+    const result = await complete.execute("c-complete", {
+      target: _pinchy_ref,
+      feedback: "Spoke to the customer, quote accepted",
+    });
+    expect(result.isError).toBeFalsy();
+
+    // action_feedback marks done → the activity is gone from the open list.
+    expect(
+      (await activities()).some((a) => a.summary === "Activity to complete"),
+    ).toBe(false);
+  });
+
+  it("odoo_reschedule_activity updates the deadline and reassigns the activity", async () => {
+    const tools = createApi({ [activityAgentId]: activityConfig });
+    const schedule = findTool(tools, "odoo_schedule_activity", activityAgentId);
+    const reschedule = findTool(
+      tools,
+      "odoo_reschedule_activity",
+      activityAgentId,
+    );
+
+    const scheduled = await schedule.execute("c-sched-resched", {
+      target: leadRef(1, "Big Fence Order"),
+      summary: "Activity to reschedule",
+      dueDate: "2026-07-11",
+    });
+    const { id, _pinchy_ref } = JSON.parse(scheduled.content[0].text) as {
+      id: number;
+      _pinchy_ref: string;
+    };
+
+    const result = await reschedule.execute("c-resched", {
+      target: _pinchy_ref,
+      dueDate: "2026-08-01",
+      assignee: "Mitch Admin",
+    });
+    expect(result.isError).toBeFalsy();
+
+    const updated = (await activities()).find((a) => a.id === id);
+    expect(updated!.date_deadline).toBe("2026-08-01");
+    expect(updated!.user_id).toBe(2);
+  });
 });

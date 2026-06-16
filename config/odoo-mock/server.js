@@ -844,6 +844,16 @@ function handleJsonRpc(body) {
         return true;
       }
 
+      // mail.activity.action_feedback — mark an activity done. In real Odoo
+      // this posts a completion message to the chatter and then unlinks the
+      // activity; we model the unlink (the visible end state) and ignore the
+      // optional `feedback` kwarg.
+      if (objMethod === "action_feedback") {
+        const ids = positionalArgs[0] || [];
+        store[model] = store[model].filter((r) => !ids.includes(r.id));
+        return true;
+      }
+
       return false;
     }
   }

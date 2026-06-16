@@ -152,7 +152,7 @@ Pinchy uses an **allow-list** model for agent permissions: agents have **no tool
 Tools are organized into two categories:
 
 - **Safe tools** — workspace and approved-directory read access (`pinchy_ls`, `pinchy_read`), plus opt-in web search/fetch (`pinchy_web_search`, `pinchy_web_fetch`). All paths are validated against the agent's allow-list at runtime.
-- **Powerful tools** — actions that change state outside the conversation: `pinchy_write` for workspace writes, and the Odoo / email write tools (`odoo_create`, `odoo_schedule_activity`, `odoo_write`, `odoo_attach_file`, `odoo_delete`, `email_draft`, `email_send`). Pinchy does not expose a shell-execution tool or an unrestricted "read any file" tool; OpenClaw's native filesystem and shell groups are explicitly denied at config-generation time.
+- **Powerful tools** — actions that change state outside the conversation: `pinchy_write` for workspace writes, and the Odoo / email write tools (`odoo_create`, `odoo_schedule_activity`, `odoo_complete_activity`, `odoo_reschedule_activity`, `odoo_write`, `odoo_attach_file`, `odoo_delete`, `email_draft`, `email_send`). Pinchy does not expose a shell-execution tool or an unrestricted "read any file" tool; OpenClaw's native filesystem and shell groups are explicitly denied at config-generation time.
 
 When an agent has safe tools enabled, the `pinchy-files` plugin validates every file access request against the agent's allowed directories, with symlink resolution to prevent escapes.
 

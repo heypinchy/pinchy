@@ -101,6 +101,21 @@ export const TOOL_REGISTRY: readonly ToolDefinition[] = [
     integration: "odoo",
   },
   {
+    id: "odoo_complete_activity",
+    label: "Odoo: Complete activity",
+    description:
+      "Mark a scheduled activity as done (posts a completion note and clears it from the to-do list)",
+    category: "powerful",
+    integration: "odoo",
+  },
+  {
+    id: "odoo_reschedule_activity",
+    label: "Odoo: Reschedule activity",
+    description: "Change a scheduled activity's due date and/or assignee without closing it",
+    category: "powerful",
+    integration: "odoo",
+  },
+  {
     id: "odoo_write",
     label: "Odoo: Update records",
     description: "Modify existing records in Odoo",
@@ -242,6 +257,8 @@ const ODOO_READ_TOOLS = [
 const ODOO_WRITE_TOOLS = [
   "odoo_create",
   "odoo_schedule_activity",
+  "odoo_complete_activity",
+  "odoo_reschedule_activity",
   "odoo_write",
   "odoo_attach_file",
 ] as const;
@@ -252,7 +269,11 @@ const ODOO_DELETE_TOOLS = ["odoo_delete"] as const;
 // preset detection to "custom" (mirrors the deprecated-alias handling in
 // `detectOdooAccessLevel`). New agents get them via the preset; old agents
 // stay classified by their base read/write/delete tools until re-aligned.
-const ODOO_ADDITIVE_TOOLS = new Set<string>(["odoo_schedule_activity"]);
+const ODOO_ADDITIVE_TOOLS = new Set<string>([
+  "odoo_schedule_activity",
+  "odoo_complete_activity",
+  "odoo_reschedule_activity",
+]);
 
 /** Returns all Odoo tool definitions from the registry. */
 export function getOdooTools(): ToolDefinition[] {

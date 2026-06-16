@@ -12,6 +12,8 @@
       "odoo_aggregate",
       "odoo_create",
       "odoo_schedule_activity",
+      "odoo_complete_activity",
+      "odoo_reschedule_activity",
       "odoo_write",
       "odoo_delete",
       "odoo_attach_file"

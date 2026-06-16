@@ -133,8 +133,8 @@ importers:
   packages/plugins/pinchy-odoo:
     dependencies:
       odoo-node:
-        specifier: ^0.2.0
-        version: 0.2.0
+        specifier: ^0.3.0
+        version: 0.3.0
     devDependencies:
       typescript:
         specifier: ^6.0.3
@@ -237,8 +237,8 @@ importers:
         specifier: ^0.4.6
         version: 0.4.6(react-dom@19.2.6(react@19.2.6))(react@19.2.6)
       odoo-node:
-        specifier: 0.2.0
-        version: 0.2.0
+        specifier: 0.3.0
+        version: 0.3.0
       openclaw-node:
         specifier: 0.12.1
         version: 0.12.1
@@ -5288,8 +5288,8 @@ packages:
   obug@2.1.1:
     resolution: {integrity: sha512-uTqF9MuPraAQ+IsnPf366RG4cP9RtUi7MLO1N3KEc+wb0a6yKpeL0lmk2IB1jY5KHPAlTc6T/JRdC/YqxHNwkQ==}
 
-  odoo-node@0.2.0:
-    resolution: {integrity: sha512-ov7PNKyyR3YUqU0nrubjA+CuRO5ehzKMky3+WCtGanRxqMQAUOODFX/4kY+UTE1ygJlY+sF+IhZwc1Uf5Suu3w==}
+  odoo-node@0.3.0:
+    resolution: {integrity: sha512-Mos5zrln/P9Rqq+phKoCeGWBBpfUo3WMd67k0q+89e3yz0QQUaG4OkoJkU0hmAy1yE8PrPHNT3QE5iIkKwRqqA==}
     engines: {node: '>=20.0.0'}
 
   on-finished@2.4.1:
@@ -11913,7 +11913,7 @@ snapshots:
 
   obug@2.1.1: {}
 
-  odoo-node@0.2.0: {}
+  odoo-node@0.3.0: {}
 
   on-finished@2.4.1:
     dependencies:

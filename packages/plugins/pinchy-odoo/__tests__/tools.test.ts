@@ -10,6 +10,7 @@ const mockCreate = vi.fn();
 const mockWrite = vi.fn();
 const mockUnlink = vi.fn();
 const mockFields = vi.fn();
+const mockCallMethod = vi.fn();
 
 vi.mock("odoo-node", () => {
   const MockOdooClient = vi.fn(function (this: Record<string, unknown>) {
@@ -20,6 +21,7 @@ vi.mock("odoo-node", () => {
     this.write = mockWrite;
     this.unlink = mockUnlink;
     this.fields = mockFields;
+    this.callMethod = mockCallMethod;
   });
   return { OdooClient: MockOdooClient };
 });
@@ -905,9 +907,9 @@ describe("odoo_list_models", () => {
 });
 
 describe("tool registration", () => {
-  it("registers all 11 tools (including the deprecated odoo_schema alias)", () => {
+  it("registers all 13 tools (including the deprecated odoo_schema alias)", () => {
     const tools = createApi({ [agentId]: agentConfig });
-    expect(tools).toHaveLength(11);
+    expect(tools).toHaveLength(13);
     const names = tools.map((t) => t.name);
     expect(names).toContain("odoo_list_models");
     expect(names).toContain("odoo_describe_model");
@@ -917,6 +919,8 @@ describe("tool registration", () => {
     expect(names).toContain("odoo_aggregate");
     expect(names).toContain("odoo_create");
     expect(names).toContain("odoo_schedule_activity");
+    expect(names).toContain("odoo_complete_activity");
+    expect(names).toContain("odoo_reschedule_activity");
     expect(names).toContain("odoo_write");
     expect(names).toContain("odoo_delete");
     expect(names).toContain("odoo_attach_file");
@@ -3680,5 +3684,173 @@ describe("odoo_schedule_activity", () => {
       "does not belong to this Odoo connection",
     );
     expect(mockCreate).not.toHaveBeenCalled();
+  });
+});
+
+describe("odoo_complete_activity", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.stubEnv("PINCHY_REF_TOKEN_KEY", "a".repeat(64));
+  });
+
+  const cfg = {
+    connectionId: "conn-test-1",
+    permissions: { "mail.activity": ["read", "create", "write"] },
+  };
+  const activityRef = (connectionId = "conn-test-1"): string =>
+    encodeRef({
+      integrationType: "odoo",
+      connectionId,
+      model: "mail.activity",
+      id: 5,
+      label: "Call about the quote",
+    });
+
+  it("is registered as a tool", () => {
+    const tools = createApi({ [agentId]: cfg });
+    expect(tools.map((t) => t.name)).toContain("odoo_complete_activity");
+  });
+
+  it("calls action_feedback on the activity with the feedback note", async () => {
+    mockCallMethod.mockResolvedValue(true);
+    const tools = createApi({ [agentId]: cfg });
+    const tool = findTool(tools, "odoo_complete_activity", agentId)!;
+    const result = await tool.execute("c", {
+      target: activityRef(),
+      feedback: "Spoke to the customer",
+    });
+    expect(result.isError).toBeFalsy();
+    expect(mockCallMethod).toHaveBeenCalledWith(
+      "mail.activity",
+      "action_feedback",
+      [[5]],
+      { feedback: "Spoke to the customer" },
+    );
+  });
+
+  it("omits the feedback kwarg when none is given", async () => {
+    mockCallMethod.mockResolvedValue(true);
+    const tools = createApi({ [agentId]: cfg });
+    const tool = findTool(tools, "odoo_complete_activity", agentId)!;
+    await tool.execute("c", { target: activityRef() });
+    expect(mockCallMethod).toHaveBeenCalledWith(
+      "mail.activity",
+      "action_feedback",
+      [[5]],
+      {},
+    );
+  });
+
+  it("requires write on mail.activity", async () => {
+    const tools = createApi({
+      [agentId]: {
+        connectionId: "conn-test-1",
+        permissions: { "mail.activity": ["read"] },
+      },
+    });
+    const tool = findTool(tools, "odoo_complete_activity", agentId)!;
+    const result = await tool.execute("c", { target: activityRef() });
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain("Permission denied");
+    expect(mockCallMethod).not.toHaveBeenCalled();
+  });
+
+  it("rejects a target that is not a mail.activity record", async () => {
+    const leadRef = encodeRef({
+      integrationType: "odoo",
+      connectionId: "conn-test-1",
+      model: "crm.lead",
+      id: 1,
+      label: "x",
+    });
+    const tools = createApi({ [agentId]: cfg });
+    const tool = findTool(tools, "odoo_complete_activity", agentId)!;
+    const result = await tool.execute("c", { target: leadRef });
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toMatch(/mail\.activity/);
+    expect(mockCallMethod).not.toHaveBeenCalled();
+  });
+});
+
+describe("odoo_reschedule_activity", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.stubEnv("PINCHY_REF_TOKEN_KEY", "a".repeat(64));
+  });
+
+  const cfg = {
+    connectionId: "conn-test-1",
+    permissions: { "mail.activity": ["read", "create", "write"] },
+  };
+  const activityRef = (): string =>
+    encodeRef({
+      integrationType: "odoo",
+      connectionId: "conn-test-1",
+      model: "mail.activity",
+      id: 5,
+      label: "Call about the quote",
+    });
+
+  it("is registered as a tool", () => {
+    const tools = createApi({ [agentId]: cfg });
+    expect(tools.map((t) => t.name)).toContain("odoo_reschedule_activity");
+  });
+
+  it("writes the new deadline and resolves the new assignee", async () => {
+    mockSearchRead.mockImplementation(async (model: string) =>
+      model === "res.users"
+        ? { records: [{ id: 2 }], total: 1, limit: 2, offset: 0 }
+        : { records: [], total: 0, limit: 0, offset: 0 },
+    );
+    mockWrite.mockResolvedValue(true);
+
+    const tools = createApi({ [agentId]: cfg });
+    const tool = findTool(tools, "odoo_reschedule_activity", agentId)!;
+    const result = await tool.execute("c", {
+      target: activityRef(),
+      dueDate: "2026-08-01",
+      assignee: "Mitch Admin",
+    });
+
+    expect(result.isError).toBeFalsy();
+    expect(mockWrite).toHaveBeenCalledWith("mail.activity", [5], {
+      date_deadline: "2026-08-01",
+      user_id: 2,
+    });
+  });
+
+  it("writes only the deadline when no assignee is given", async () => {
+    mockWrite.mockResolvedValue(true);
+    const tools = createApi({ [agentId]: cfg });
+    const tool = findTool(tools, "odoo_reschedule_activity", agentId)!;
+    await tool.execute("c", { target: activityRef(), dueDate: "2026-08-01" });
+    expect(mockWrite).toHaveBeenCalledWith("mail.activity", [5], {
+      date_deadline: "2026-08-01",
+    });
+  });
+
+  it("errors when neither dueDate nor assignee is provided", async () => {
+    const tools = createApi({ [agentId]: cfg });
+    const tool = findTool(tools, "odoo_reschedule_activity", agentId)!;
+    const result = await tool.execute("c", { target: activityRef() });
+    expect(result.isError).toBe(true);
+    expect(mockWrite).not.toHaveBeenCalled();
+  });
+
+  it("requires write on mail.activity", async () => {
+    const tools = createApi({
+      [agentId]: {
+        connectionId: "conn-test-1",
+        permissions: { "mail.activity": ["read"] },
+      },
+    });
+    const tool = findTool(tools, "odoo_reschedule_activity", agentId)!;
+    const result = await tool.execute("c", {
+      target: activityRef(),
+      dueDate: "2026-08-01",
+    });
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain("Permission denied");
+    expect(mockWrite).not.toHaveBeenCalled();
   });
 });

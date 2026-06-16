@@ -37,12 +37,14 @@ describe("TOOL_REGISTRY", () => {
 
   it("contains powerful tools", () => {
     const powerful = TOOL_REGISTRY.filter((t) => t.category === "powerful");
-    expect(powerful.length).toBe(10);
+    expect(powerful.length).toBe(12);
     expect(powerful.map((t) => t.id)).toEqual([
       "pinchy_web_search",
       "pinchy_web_fetch",
       "odoo_create",
       "odoo_schedule_activity",
+      "odoo_complete_activity",
+      "odoo_reschedule_activity",
       "odoo_write",
       "odoo_delete",
       "odoo_attach_file",
@@ -161,8 +163,8 @@ describe("computeDeniedGroups", () => {
 describe("Odoo access level helpers", () => {
   it("all odoo tools have integration: 'odoo'", () => {
     const odooTools = TOOL_REGISTRY.filter((t) => t.id.startsWith("odoo_"));
-    // 10 active tools + 1 deprecated alias (odoo_schema) = 11.
-    expect(odooTools.length).toBe(11);
+    // 12 active tools + 1 deprecated alias (odoo_schema) = 13.
+    expect(odooTools.length).toBe(13);
     for (const tool of odooTools) {
       expect(tool.integration).toBe("odoo");
     }
@@ -224,7 +226,7 @@ describe("Odoo access level helpers", () => {
     ]);
   });
 
-  it("getOdooToolsForAccessLevel('read-write') returns 9 tools", () => {
+  it("getOdooToolsForAccessLevel('read-write') returns 11 tools", () => {
     const tools = getOdooToolsForAccessLevel("read-write");
     expect(tools).toEqual([
       "odoo_list_models",
@@ -234,12 +236,14 @@ describe("Odoo access level helpers", () => {
       "odoo_aggregate",
       "odoo_create",
       "odoo_schedule_activity",
+      "odoo_complete_activity",
+      "odoo_reschedule_activity",
       "odoo_write",
       "odoo_attach_file",
     ]);
   });
 
-  it("getOdooToolsForAccessLevel('full') returns all 10 tools", () => {
+  it("getOdooToolsForAccessLevel('full') returns all 12 tools", () => {
     const tools = getOdooToolsForAccessLevel("full");
     expect(tools).toEqual([
       "odoo_list_models",
@@ -249,6 +253,8 @@ describe("Odoo access level helpers", () => {
       "odoo_aggregate",
       "odoo_create",
       "odoo_schedule_activity",
+      "odoo_complete_activity",
+      "odoo_reschedule_activity",
       "odoo_write",
       "odoo_attach_file",
       "odoo_delete",
@@ -260,9 +266,9 @@ describe("Odoo access level helpers", () => {
     expect(tools).toEqual(["odoo_list_models", "odoo_describe_model"]);
   });
 
-  it("getOdooTools() returns exactly 11 tools (10 active + 1 deprecated alias)", () => {
+  it("getOdooTools() returns exactly 13 tools (12 active + 1 deprecated alias)", () => {
     const tools = getOdooTools();
-    expect(tools).toHaveLength(11);
+    expect(tools).toHaveLength(13);
     expect(tools.every((t) => t.integration === "odoo")).toBe(true);
   });
 

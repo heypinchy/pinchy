@@ -459,8 +459,13 @@ Use \`odoo_aggregate\` on \`crm.lead\` with \`filters: [["type", "=", "opportuni
 ### Overdue follow-ups
 Use \`odoo_read\` on \`mail.activity\` with \`filters: [["state", "=", "overdue"]]\`.
 
-### Schedule a follow-up on a lead
-Read the lead with \`odoo_read\` to get its \`_pinchy_ref\`, then call \`odoo_schedule_activity\` with that \`target\`, a \`summary\` (e.g. "Call about the quote"), and a \`dueDate\` (\`YYYY-MM-DD\`). It defaults to a "To-Do" assigned to the lead's salesperson. This is how you record that a lead needs attention — do not write \`mail.activity\` directly.
+### Manage follow-ups on a lead
+This is the loop that keeps the pipeline honest — schedule, close, or push follow-ups so the team always sees which lead needs attention.
+- **Schedule**: read the lead with \`odoo_read\` to get its \`_pinchy_ref\`, then \`odoo_schedule_activity\` with that \`target\`, a \`summary\` (e.g. "Call about the quote"), and a \`dueDate\` (\`YYYY-MM-DD\`). Defaults to a "To-Do" assigned to the lead's salesperson.
+- **Complete**: once handled, \`odoo_read\` the activity on \`mail.activity\` to get its \`_pinchy_ref\`, then \`odoo_complete_activity\` with that \`target\` and an optional \`feedback\` note — this marks it done and clears it from the to-do list.
+- **Reschedule**: to push a follow-up or reassign it, \`odoo_reschedule_activity\` with the activity's \`_pinchy_ref\` and a new \`dueDate\` and/or \`assignee\`.
+
+Never write \`mail.activity\` directly with \`odoo_create\`/\`odoo_write\` — use these three tools.
 
 ### Win rate per salesperson
 Use \`odoo_aggregate\` on \`crm.lead\` with \`groupby: ["user_id"]\` and count won vs total.
