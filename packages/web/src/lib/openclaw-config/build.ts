@@ -19,7 +19,7 @@ import { TOOL_CAPABLE_OLLAMA_CLOUD_MODELS, OLLAMA_CLOUD_COST } from "@/lib/ollam
 import { getModelCatalogForProvider } from "@/lib/openclaw-builtin-models";
 import { getOpenClawWorkspacePath, getAgentBootstrapSizes } from "@/lib/workspace";
 import { resolveBootstrapCaps } from "./bootstrap-caps";
-import { CONFIG_PATH, OPENCLAW_CONTROL_UI_ALLOWED_ORIGINS } from "./paths";
+import { CONFIG_PATH } from "./paths";
 import { configsAreEquivalentUpToOpenClawMetadata } from "./normalize";
 import { readExistingConfig, pushConfigInBackground } from "./write";
 import {
@@ -41,6 +41,7 @@ import {
 } from "./provider-defaults";
 import { resolveDefaultPdfModel, resolveDefaultImageModel } from "./default-media-models";
 import { deepMerge } from "./deep-merge";
+import { buildGatewayBlock } from "./gateway";
 
 /**
  * Public docs URL configuration for the bundled `pinchy-docs` plugin.
@@ -171,10 +172,9 @@ export async function regenerateOpenClawConfig() {
     }
   }
 
-  // Build the gateway block. mode and bind are always set. auth.token is written
-  // as a plain string — OpenClaw requires a literal string for gateway auth and
-  // does not resolve SecretRef objects in the gateway.auth block.
-  // The same token is also written to secrets.json so Pinchy can read it.
+  // Build the gateway block (see buildGatewayBlock for the mode/bind/auth and
+  // Control-UI rationale). The token is resolved here because it's reused later
+  // when writing secrets.json and the plugin gatewayToken bootstrap creds.
   const existingGateway = (existing.gateway as Record<string, unknown>) || {};
   const gatewayTokenValue = await readGatewayTokenFromConfig(existing);
   if (!gatewayTokenValue) {
@@ -185,34 +185,7 @@ export async function regenerateOpenClawConfig() {
         "Writing empty token — OpenClaw auth will reject requests until the token is provisioned."
     );
   }
-
-  // Disable OpenClaw's built-in Control UI. Pinchy IS the external control
-  // surface (running its own UI on port 7777); OpenClaw's `/__openclaw__/control/*`
-  // routes on port 18789 are unused, cost memory, and add an attack surface
-  // we don't need. Per OpenClaw's own schema guidance: "disable when an
-  // external control surface replaces it."
-  const existingControlUi = (existingGateway.controlUi as Record<string, unknown>) || {};
-  const gateway: Record<string, unknown> = {
-    ...existingGateway,
-    mode: "local",
-    bind: "lan",
-    auth: {
-      mode: "token",
-      token: gatewayTokenValue || "",
-    },
-    controlUi: {
-      ...existingControlUi,
-      enabled: false,
-      // Always emit allowedOrigins so OC's reload diff never sees this
-      // restart-class field appear/disappear. Preserve OC's enriched value if
-      // the config already carries a valid array (a prior config.apply
-      // persisted it); otherwise seed the same origins OC would. See
-      // OPENCLAW_CONTROL_UI_ALLOWED_ORIGINS in paths.ts for the full rationale.
-      allowedOrigins: Array.isArray(existingControlUi.allowedOrigins)
-        ? existingControlUi.allowedOrigins
-        : OPENCLAW_CONTROL_UI_ALLOWED_ORIGINS,
-    },
-  };
+  const gateway = buildGatewayBlock(existingGateway, gatewayTokenValue);
 
   // Read all agents from DB
   const allAgents = await db.select().from(agents);
