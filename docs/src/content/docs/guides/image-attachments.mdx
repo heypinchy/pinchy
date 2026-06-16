@@ -38,11 +38,11 @@ Most of the time you don't need to think about this — the agent picks the righ
 
 ## When something goes wrong
 
-| You see                                  | What it means                                                                 | What to do                                                |
-| ---------------------------------------- | ----------------------------------------------------------------------------- | --------------------------------------------------------- |
-| **"Couldn't process this image format"** | The image is in a format Pinchy can't re-encode (e.g. HEIC) and is too large. | Convert it to JPEG or PNG and try again.                  |
-| **"Image too large"**                    | The encoded message exceeded the WebSocket frame limit.                       | Use a smaller image, or crop before attaching.            |
-| **Agent ignores the image entirely**     | The model you're using doesn't support vision.                                | Switch to a vision-capable model in the agent's settings. |
+| You see                                    | What it means                                                                 | What to do                                                       |
+| ------------------------------------------ | ----------------------------------------------------------------------------- | ---------------------------------------------------------------- |
+| **"Couldn't process this image format"**   | The image is in a format Pinchy can't re-encode (e.g. HEIC) and is too large. | Convert it to JPEG or PNG and try again.                         |
+| **"Image too large"**                      | The encoded message exceeded the WebSocket frame limit.                       | Use a smaller image, or crop before attaching.                   |
+| **"No image-capable model is configured"** | Your agent's model is text-only and no vision model exists to fall back to.   | Ask an admin to configure a vision-capable provider (see below). |
 
 ## Model capability matrix
 
@@ -67,7 +67,13 @@ Whether the agent can actually see an image depends on the underlying LLM. As of
 - **Google** Gemini Pro/Flash — full vision support
 - **Local Ollama** — only models marked as vision-capable (e.g. `llama3.2-vision`, `gemma3`)
 
-If you attach an image to a text-only model, the model won't see it. Pinchy doesn't block this — some users intentionally route images through tool calls — but the result depends entirely on what the agent does with the attachment.
+## Text-only models: automatic image handling
+
+You don't have to put your agent on a vision model just to send the occasional screenshot. When you attach an image to an agent whose chat model is **text-only**, Pinchy routes that one turn to a vision-capable model for you — the agent's configured model is left untouched, and the very next text-only message goes straight back to it. Nothing to toggle; the image just works.
+
+Which model handles it: Pinchy prefers a vision model from the **same provider** as your agent's model (so the conversation stays coherent), and falls back to the image model configured for your deployment otherwise. The switch is recorded in the [audit trail](/concepts/audit-trail/) as `chat.image_model_fallback`, so it's always clear which model saw an image.
+
+The only time this can't work is when **no** image-capable model is configured anywhere. Then Pinchy tells you so directly — ask an admin to configure a vision-capable provider (Anthropic, OpenAI, Google, or Ollama Cloud / local Ollama with a vision model). It will never silently drop the image and answer as if it weren't there.
 
 ## How templates declare required capabilities
 
