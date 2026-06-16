@@ -10,6 +10,13 @@ describe("classifyUsageSource", () => {
     expect(classifyUsageSource("agent:abc123:direct:user-with-dashes-42")).toBe("chat");
   });
 
+  it("classifies 5-segment chat sessions with a chatId as 'chat' (#508)", () => {
+    // The chats feature appends a chatId segment:
+    // agent:<agentId>:direct:<userId>:<chatId>. The prefix match must keep
+    // bucketing these as chat usage rather than falling through to system.
+    expect(classifyUsageSource("agent:smithers:direct:user-1:chat-abc")).toBe("chat");
+  });
+
   it("classifies plugin sessions as 'plugin'", () => {
     expect(classifyUsageSource("plugin:pinchy-files")).toBe("plugin");
   });

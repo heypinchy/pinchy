@@ -50,8 +50,11 @@ export function parseSessionKey(key: string): ParsedSessionKey | null {
   const scope = match[2];
   if (!agentId || !scope) return null;
 
-  // direct:<userId> → chat session. Preserve userId even if it contains colons.
-  const directMatch = /^direct:(.+)$/.exec(scope);
+  // direct:<userId> → chat session. Capture ONLY the userId segment: the chats
+  // feature appends a trailing chatId (direct:<userId>:<chatId>), and a greedy
+  // capture would fold the chatId into the userId, mis-attributing usage to a
+  // bogus id that never matches the users table. The userId never contains a colon.
+  const directMatch = /^direct:([^:]+)/.exec(scope);
   if (directMatch) {
     return { agentId, userId: directMatch[1], type: "chat" };
   }

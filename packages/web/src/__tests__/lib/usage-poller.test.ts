@@ -95,11 +95,16 @@ describe("parseSessionKey", () => {
     });
   });
 
-  it("preserves userId with colons (e.g. OpenClaw lowercased UUIDs)", () => {
-    const result = parseSessionKey("agent:a1:direct:user-123:extra");
+  // Chats feature (#508): direct session keys gained a trailing chatId segment
+  // (agent:<agentId>:direct:<userId>:<chatId>). The userId segment never
+  // contains a colon, so it must be captured WITHOUT swallowing the chatId —
+  // otherwise usage is attributed to the bogus user id "<userId>:<chatId>"
+  // which never matches the users table.
+  it("extracts only the userId from a 5-segment chat session key with a chatId", () => {
+    const result = parseSessionKey("agent:a1:direct:user-123:chat-abc");
     expect(result).toEqual({
       agentId: "a1",
-      userId: "user-123:extra",
+      userId: "user-123",
       type: "chat",
     });
   });

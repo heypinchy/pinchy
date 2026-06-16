@@ -201,6 +201,72 @@ describe("POST /api/internal/audit/tool-use", () => {
     });
   });
 
+  // Chats feature (#508): once session keys gain a chatId segment
+  // (agent:<agentId>:direct:<userId>:<chatId>), user attribution must capture
+  // ONLY the userId segment. A greedy parser would mis-attribute the audit row
+  // to the bogus actor "<userId>:<chatId>".
+  describe("user attribution with chatId session keys (#508)", () => {
+    it("extracts only the userId from a legacy 4-segment direct session key", async () => {
+      const res = await POST(
+        makeRequest({
+          phase: "end",
+          toolName: "browser",
+          agentId: "agent-1",
+          sessionKey: "agent:agent-1:direct:user-1",
+          result: { ok: true },
+        })
+      );
+
+      expect(res.status).toBe(200);
+      expect(appendAuditLog).toHaveBeenCalledWith(
+        expect.objectContaining({
+          actorType: "user",
+          actorId: "user-1",
+        })
+      );
+    });
+
+    it("extracts only the userId from a 5-segment direct session key with a chatId", async () => {
+      const res = await POST(
+        makeRequest({
+          phase: "end",
+          toolName: "browser",
+          agentId: "agent-1",
+          sessionKey: "agent:agent-1:direct:user-1:chat-abc",
+          result: { ok: true },
+        })
+      );
+
+      expect(res.status).toBe(200);
+      // NOT "user-1:chat-abc" — the chatId must not bleed into the actor id.
+      expect(appendAuditLog).toHaveBeenCalledWith(
+        expect.objectContaining({
+          actorType: "user",
+          actorId: "user-1",
+        })
+      );
+    });
+
+    it("falls back to agent actor for non-direct session keys", async () => {
+      const res = await POST(
+        makeRequest({
+          phase: "end",
+          toolName: "pinchy_read",
+          sessionKey: "agent:agent-9:main",
+          result: "ok",
+        })
+      );
+
+      expect(res.status).toBe(200);
+      expect(appendAuditLog).toHaveBeenCalledWith(
+        expect.objectContaining({
+          actorType: "agent",
+          actorId: "agent-9",
+        })
+      );
+    });
+  });
+
   it("derives outcome='success' and error=null when payload has no error", async () => {
     await POST(
       makeRequest({

@@ -47,7 +47,11 @@ function extractAgentIdFromSessionKey(sessionKey: string | undefined): string | 
 
 function extractUserIdFromSessionKey(sessionKey: string | undefined): string | undefined {
   if (!sessionKey) return undefined;
-  return /^agent:[^:]+:direct:(.+)$/.exec(sessionKey)?.[1];
+  // Capture only the userId segment. Direct session keys gained a trailing
+  // chatId segment with the chats feature (agent:<agentId>:direct:<userId>:<chatId>);
+  // a greedy `(.+)$` would swallow `<userId>:<chatId>` and mis-attribute the
+  // audit row. The userId itself never contains a colon.
+  return /^agent:[^:]+:direct:([^:]+)/.exec(sessionKey)?.[1];
 }
 
 // Trim and reject blank strings; turns "" or "   " into undefined so optional
