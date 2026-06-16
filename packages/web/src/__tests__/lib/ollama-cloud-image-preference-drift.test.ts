@@ -1,9 +1,9 @@
 import { describe, it, expect } from "vitest";
 
-import { OLLAMA_CLOUD_IMAGE_PREFERENCE } from "@/lib/openclaw-config/build";
+import { OLLAMA_CLOUD_IMAGE_PREFERENCE } from "@/lib/openclaw-config/default-media-models";
 import { TOOL_CAPABLE_OLLAMA_CLOUD_MODELS } from "@/lib/ollama-cloud-models";
 
-// `pickOllamaCloudImageModel()` in build.ts iterates
+// `pickOllamaCloudImageModel()` in default-media-models.ts iterates
 // `OLLAMA_CLOUD_IMAGE_PREFERENCE` and returns the first ID that exists in
 // `TOOL_CAPABLE_OLLAMA_CLOUD_MODELS`. The function does NOT re-check the
 // `vision` flag on the matched entry — it relies on this drift guard.
