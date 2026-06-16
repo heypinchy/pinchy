@@ -178,4 +178,69 @@ describe("classifyUserSessions", () => {
     expect(result.some((c) => c.sessionId === "cron")).toBe(false);
     expect(result.some((c) => c.sessionId === "unlinked")).toBe(false);
   });
+
+  it("returns [] for an empty userId even with empty-principal keys (no fail-open leak)", () => {
+    // An empty userId must never become a matchable principal. Keys whose
+    // principal segment is empty (`agent:a:direct:` → parts[3]==="", or
+    // `agent::direct:`) must NOT be attributed to the empty user.
+    const sessions: RawSession[] = [
+      { key: "agent:a:direct:", sessionId: "x", lastInteractionAt: 1 },
+      { key: "agent::direct:", sessionId: "y", lastInteractionAt: 2 },
+    ];
+
+    const result = classifyUserSessions(sessions, "", new Set());
+
+    expect(result).toEqual([]);
+  });
+
+  it("excludes a key with an empty/trailing-colon principal for a normal userId (fail closed)", () => {
+    // A trailing-colon key produces an empty principal segment, which is never
+    // a valid identity. It must be excluded regardless of the requesting user.
+    const sessions: RawSession[] = [
+      { key: "agent:a:direct:", sessionId: "empty-principal", lastInteractionAt: 1 },
+    ];
+
+    const result = classifyUserSessions(sessions, "u-1", new Set());
+
+    expect(result).toEqual([]);
+  });
+
+  it("skips malformed entries without throwing and returns only the valid web chat (no DoS)", () => {
+    // OpenClaw's `sessions.list` is untyped wire output. A null/number/missing
+    // `key` or a null array element must be skipped, not throw and nuke the
+    // whole list. The cast mirrors the real untyped input crossing the boundary.
+    const sessions = [
+      { key: null, sessionId: "bad-null-key", lastInteractionAt: 1 },
+      { key: 12345, sessionId: "bad-number-key", lastInteractionAt: 2 },
+      { sessionId: "bad-missing-key", lastInteractionAt: 3 },
+      null,
+      { key: webKey("u-1", "chat-ok"), sessionId: "good-web", lastInteractionAt: 99 },
+    ] as unknown as RawSession[];
+
+    let result: ReturnType<typeof classifyUserSessions> | undefined;
+    expect(() => {
+      result = classifyUserSessions(sessions, "u-1", new Set());
+    }).not.toThrow();
+
+    expect(result).toEqual([
+      {
+        sessionId: "good-web",
+        key: webKey("u-1", "chat-ok"),
+        origin: "web",
+        writable: true,
+        chatId: "chat-ok",
+        lastInteractionAt: 99,
+      },
+    ]);
+  });
+
+  it("requires exact-equality principal matching, never a prefix/substring (userId 'u' vs principal 'u2')", () => {
+    const sessions: RawSession[] = [
+      { key: webKey("u2"), sessionId: "prefix-collision", lastInteractionAt: 1 },
+    ];
+
+    const result = classifyUserSessions(sessions, "u", new Set());
+
+    expect(result).toEqual([]);
+  });
 });

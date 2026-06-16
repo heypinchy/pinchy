@@ -32,12 +32,26 @@ export type ClassifiedChat = {
 export function classifyUserSessions(
   sessions: RawSession[],
   userId: string,
+  // MUST already be lowercased by the caller. OpenClaw lowercases the principal
+  // segment on storage, and this function compares the raw (lowercased) principal
+  // against this set verbatim — it does not normalize members itself. A peer id
+  // that is not lowercased here will silently never match.
   linkedTelegramPeerIds: ReadonlySet<string>
 ): ClassifiedChat[] {
+  // An empty (or non-string) userId is never a valid identity. Guarding here
+  // stops `ownPrincipal === ""` from matching keys with an empty principal
+  // segment (e.g. `agent:a:direct:`), which would be a cross-user/empty leak.
+  if (typeof userId !== "string" || userId.length === 0) return [];
+
   const ownPrincipal = userId.toLowerCase();
   const result: ClassifiedChat[] = [];
 
   for (const session of sessions) {
+    // `sessions.list` is untyped wire output from OpenClaw. Skip non-conforming
+    // entries (null element, missing/non-string key) instead of throwing — one
+    // bad entry must not nuke the whole list (fail closed, never fail broken).
+    if (!session || typeof session.key !== "string") continue;
+
     const parts = session.key.split(":");
 
     // Only agent direct keys: agent:<agentId>:direct:<principal>[:<chatId>].
@@ -46,6 +60,10 @@ export function classifyUserSessions(
 
     const principal = parts[3];
     const extra = parts.slice(4);
+
+    // An empty principal segment (trailing-colon key) is never a valid
+    // identity, for both the web and Telegram paths. Fail closed.
+    if (!principal) continue;
     const lastInteractionAt = session.lastInteractionAt ?? session.updatedAt ?? 0;
 
     if (principal === ownPrincipal) {
