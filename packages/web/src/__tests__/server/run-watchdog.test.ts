@@ -1,15 +1,23 @@
 /**
  * Unit tests for the server-side `RunWatchdog`. The watchdog scans the
- * `ActiveRuns` registry every 30s, finds runs whose absolute age exceeds
- * the per-deployment cap (default 15 min), and tears them down: abort the
- * OC run, broadcast a terminal error frame to listeners, write the
- * `chat.run_timed_out` audit row, drop the entry from the registry.
+ * `ActiveRuns` registry every 30s for the FIRST-CHUNK backstop only: a run
+ * Pinchy dispatched but the gateway never acknowledged (no first chunk within
+ * the timeout — a wedged/rate-limited lane, a dispatch race OpenClaw can't see).
+ * It tears such a run down with a RETRYABLE error: abort the OC run, broadcast a
+ * "didn't start responding" frame to listeners, write the
+ * `chat.run_no_first_chunk` audit row, drop the entry.
  *
- * Why this exists: stuck runs are the worst observability blind spot.
- * Before #310 Tier 2, a hung OC run had no audit trail, no operator
- * signal, and depended on the browser's client-side timer firing — which
- * doesn't fire if the tab is backgrounded. The watchdog is the
- * server-side belt to that suspenders.
+ * The redundant 15-min absolute-duration cap (`chat.run_timed_out`) was REMOVED
+ * (chat-liveness-observer Task 2A, Part 3): OpenClaw self-aborts stuck/idle runs
+ * (120s idle, ~5min stuck), so a Pinchy-side absolute cap was both redundant AND
+ * harmful — it killed slow-but-alive runs. Authoritative run liveness now comes
+ * from the gateway's `agentWait` oracle (see client-router.ts).
+ *
+ * Why the first-chunk guard stays: stuck-at-dispatch runs are the worst
+ * observability blind spot. Before #310 Tier 2, a dispatched-but-never-streamed
+ * OC run had no audit trail, no operator signal, and depended on the browser's
+ * client-side timer firing — which doesn't fire if the tab is backgrounded. The
+ * watchdog is the server-side belt to that suspenders.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import type { WebSocket } from "ws";
@@ -22,14 +30,6 @@ function fakeWs(): WebSocket {
 
 const FIFTEEN_MIN = 15 * 60 * 1000;
 const NINETY_S = 90 * 1000;
-const baseRun = {
-  runId: "run-1",
-  sessionKey: "agent:a1:direct:u1",
-  agentId: "a1",
-  userId: "u1",
-  agentName: "Smithers",
-  startedAt: 1_000_000,
-};
 
 // Shared shape for a dispatch-time (pending) registration in these tests.
 const basePending = {
@@ -45,7 +45,6 @@ describe("runWatchdogTick", () => {
   let runs: ActiveRuns;
   let chatAbort: ReturnType<typeof vi.fn>;
   let writeAudit: ReturnType<typeof vi.fn>;
-  let broadcastTimeout: ReturnType<typeof vi.fn>;
   let broadcastNoFirstChunk: ReturnType<typeof vi.fn>;
   let deps: WatchdogDeps;
 
@@ -53,16 +52,13 @@ describe("runWatchdogTick", () => {
     runs = new ActiveRuns();
     chatAbort = vi.fn().mockResolvedValue(undefined);
     writeAudit = vi.fn().mockResolvedValue(undefined);
-    broadcastTimeout = vi.fn();
     broadcastNoFirstChunk = vi.fn();
     deps = {
       activeRuns: runs,
       chatAbort,
       writeAudit,
-      broadcastTimeout,
       broadcastNoFirstChunk,
       now: () => 1_000_000 + FIFTEEN_MIN + 1,
-      maxRunDurationMs: FIFTEEN_MIN,
       firstChunkTimeoutMs: NINETY_S,
     };
   });
@@ -75,121 +71,30 @@ describe("runWatchdogTick", () => {
     await runWatchdogTick(deps);
     expect(chatAbort).not.toHaveBeenCalled();
     expect(writeAudit).not.toHaveBeenCalled();
-    expect(broadcastTimeout).not.toHaveBeenCalled();
+    expect(broadcastNoFirstChunk).not.toHaveBeenCalled();
   });
 
-  it("does nothing when no run is stuck", async () => {
-    runs.register({ ...baseRun, startedAt: deps.now() - 60_000, ws: fakeWs() });
+  it("leaves a STARTED run alone — OpenClaw, not Pinchy, owns its liveness now", async () => {
+    const ws = fakeWs();
+    // A run that started streaming 15min+ ago. Pinchy no longer caps started-run
+    // duration; OpenClaw self-aborts stuck/idle runs and `agentWait` is the
+    // authoritative oracle. The watchdog must NOT tear this down.
+    runs.registerPending({ ...basePending, submittedAt: 1_000_000, ws });
+    runs.markFirstChunk(basePending.sessionKey, 1_000_000, "real-run-7");
+
     await runWatchdogTick(deps);
+
     expect(chatAbort).not.toHaveBeenCalled();
     expect(writeAudit).not.toHaveBeenCalled();
+    expect(broadcastNoFirstChunk).not.toHaveBeenCalled();
     expect(runs.size()).toBe(1);
-  });
-
-  it("aborts the OC run, writes a chat.run_timed_out audit row, broadcasts to listeners, and drops the entry", async () => {
-    const ws = fakeWs();
-    runs.register({ ...baseRun, ws });
-
-    await runWatchdogTick(deps);
-
-    expect(chatAbort).toHaveBeenCalledTimes(1);
-    expect(chatAbort).toHaveBeenCalledWith(baseRun.sessionKey, baseRun.runId);
-
-    expect(writeAudit).toHaveBeenCalledTimes(1);
-    const auditCall = writeAudit.mock.calls[0]![0];
-    expect(auditCall.eventType).toBe("chat.run_timed_out");
-    expect(auditCall.actorType).toBe("system");
-    expect(auditCall.outcome).toBe("failure");
-    expect(auditCall.resource).toBe(`agent:${baseRun.agentId}`);
-    expect(auditCall.detail.agent).toEqual({ id: baseRun.agentId, name: baseRun.agentName });
-    expect(auditCall.detail.user).toEqual({ id: baseRun.userId });
-    expect(auditCall.detail.sessionKey).toBe(baseRun.sessionKey);
-    expect(auditCall.detail.runId).toBe(baseRun.runId);
-    expect(auditCall.detail.elapsedMs).toBe(FIFTEEN_MIN + 1);
-    expect(auditCall.detail.maxRunDurationMs).toBe(FIFTEEN_MIN);
-
-    expect(broadcastTimeout).toHaveBeenCalledTimes(1);
-    const broadcastCall = broadcastTimeout.mock.calls[0]![0] as ActiveRun;
-    expect(broadcastCall.sessionKey).toBe(baseRun.sessionKey);
-
-    expect(runs.size()).toBe(0);
-  });
-
-  it("processes multiple stuck runs in a single tick", async () => {
-    runs.register({ ...baseRun, sessionKey: "s1", ws: fakeWs() });
-    runs.register({
-      ...baseRun,
-      sessionKey: "s2",
-      runId: "run-2",
-      agentName: "Other",
-      ws: fakeWs(),
-    });
-
-    await runWatchdogTick(deps);
-
-    expect(chatAbort).toHaveBeenCalledTimes(2);
-    expect(writeAudit).toHaveBeenCalledTimes(2);
-    expect(runs.size()).toBe(0);
-  });
-
-  it("continues processing other stuck runs even if chatAbort throws for one", async () => {
-    chatAbort.mockImplementation(async (sessionKey: string) => {
-      if (sessionKey === "s1") throw new Error("OC gateway disconnected");
-    });
-
-    runs.register({ ...baseRun, sessionKey: "s1", ws: fakeWs() });
-    runs.register({ ...baseRun, sessionKey: "s2", runId: "run-2", ws: fakeWs() });
-
-    await runWatchdogTick(deps);
-
-    // The audit row must still land for the abort-failed run — that's the
-    // whole point of writing audit BEFORE the side effects. Operators need
-    // to see "we tried to kill a stuck run and even the abort failed".
-    expect(writeAudit).toHaveBeenCalledTimes(2);
-    expect(runs.size()).toBe(0);
-  });
-
-  it("continues processing other stuck runs even if writeAudit throws for one", async () => {
-    writeAudit.mockImplementation(async (entry: { detail: { sessionKey: string } }) => {
-      if (entry.detail.sessionKey === "s1") throw new Error("audit DB down");
-    });
-
-    runs.register({ ...baseRun, sessionKey: "s1", ws: fakeWs() });
-    runs.register({ ...baseRun, sessionKey: "s2", runId: "run-2", ws: fakeWs() });
-
-    await runWatchdogTick(deps);
-
-    // chatAbort and broadcastTimeout still fire for s1 (best-effort) AND
-    // both still fire for s2 — a failing writeAudit for s1 must not
-    // poison the loop.
-    expect(chatAbort).toHaveBeenCalledTimes(2);
-    expect(broadcastTimeout).toHaveBeenCalledTimes(2);
-    expect(runs.size()).toBe(0);
-  });
-
-  it("continues processing other stuck runs even if broadcastTimeout throws for one", async () => {
-    broadcastTimeout.mockImplementation((run: ActiveRun) => {
-      if (run.sessionKey === "s1") throw new Error("send to dead socket");
-    });
-
-    runs.register({ ...baseRun, sessionKey: "s1", ws: fakeWs() });
-    runs.register({ ...baseRun, sessionKey: "s2", runId: "run-2", ws: fakeWs() });
-
-    await runWatchdogTick(deps);
-
-    // Audit and abort still ran for both. s1's failed broadcast didn't
-    // stop the registry-delete or s2's processing.
-    expect(writeAudit).toHaveBeenCalledTimes(2);
-    expect(chatAbort).toHaveBeenCalledTimes(2);
-    expect(runs.size()).toBe(0);
   });
 
   // ---------------------------------------------------------------------------
   // B-1: first-chunk backstop. A run the backend ACCEPTED but never streamed
   // (a wedged/rate-limited lane) is registered as "pending" at dispatch time.
   // If no first chunk arrives within firstChunkTimeoutMs, the watchdog tears it
-  // down with a *retryable* error so the user isn't stuck on a blank thread —
-  // distinct from the terminal 15-min absolute timeout.
+  // down with a *retryable* error so the user isn't stuck on a blank thread.
   // ---------------------------------------------------------------------------
   describe("first-chunk backstop (pending runs that never stream)", () => {
     it("audits chat.run_no_first_chunk, aborts, broadcasts retryable, and drops the entry", async () => {
@@ -218,10 +123,9 @@ describe("runWatchdogTick", () => {
       expect(chatAbort).toHaveBeenCalledTimes(1);
       expect(chatAbort).toHaveBeenCalledWith(basePending.sessionKey, "provisional-1");
 
-      // Retryable broadcast, NOT the terminal timeout broadcast.
+      // Retryable broadcast.
       expect(broadcastNoFirstChunk).toHaveBeenCalledTimes(1);
       expect(broadcastNoFirstChunk.mock.calls[0]![0].sessionKey).toBe(basePending.sessionKey);
-      expect(broadcastTimeout).not.toHaveBeenCalled();
 
       expect(runs.size()).toBe(0);
     });
@@ -238,38 +142,77 @@ describe("runWatchdogTick", () => {
       expect(runs.size()).toBe(1);
     });
 
-    it("a run that DID start is governed by the absolute cap, not the first-chunk backstop", async () => {
-      const ws = fakeWs();
-      // Pending, then a first chunk arrives 15min+ ago → it's a started, stuck run.
-      runs.registerPending({ ...basePending, submittedAt: 1_000_000, ws });
-      runs.markFirstChunk(basePending.sessionKey, 1_000_000, "real-run-7");
-
-      await runWatchdogTick(deps);
-
-      // Terminal timeout path fired, not the retryable no-first-chunk path.
-      expect(broadcastTimeout).toHaveBeenCalledTimes(1);
-      expect(broadcastNoFirstChunk).not.toHaveBeenCalled();
-      expect(writeAudit.mock.calls[0]![0].eventType).toBe("chat.run_timed_out");
-      expect(writeAudit.mock.calls[0]![0].detail.runId).toBe("real-run-7");
-      expect(runs.size()).toBe(0);
-    });
-
-    it("processes both a stuck (started) run and an unstarted run in one tick", async () => {
-      runs.register({ ...baseRun, sessionKey: "s-stuck", ws: fakeWs() });
+    it("processes multiple unstarted runs in one tick", async () => {
       runs.registerPending({
         ...basePending,
-        sessionKey: "s-unstarted",
+        sessionKey: "s-u1",
+        submittedAt: 1_000_000,
+        ws: fakeWs(),
+      });
+      runs.registerPending({
+        ...basePending,
+        sessionKey: "s-u2",
         submittedAt: 1_000_000,
         ws: fakeWs(),
       });
 
       await runWatchdogTick(deps);
 
-      expect(broadcastTimeout).toHaveBeenCalledTimes(1);
-      expect(broadcastNoFirstChunk).toHaveBeenCalledTimes(1);
+      expect(broadcastNoFirstChunk).toHaveBeenCalledTimes(2);
       expect(writeAudit).toHaveBeenCalledTimes(2);
-      const events = writeAudit.mock.calls.map((c) => c[0].eventType).sort();
-      expect(events).toEqual(["chat.run_no_first_chunk", "chat.run_timed_out"]);
+      const events = writeAudit.mock.calls.map((c) => c[0].eventType);
+      expect(events).toEqual(["chat.run_no_first_chunk", "chat.run_no_first_chunk"]);
+      expect(runs.size()).toBe(0);
+    });
+
+    it("continues processing other unstarted runs even if chatAbort throws for one", async () => {
+      chatAbort.mockImplementation(async (sessionKey: string) => {
+        if (sessionKey === "p1") throw new Error("OC gateway disconnected");
+      });
+      runs.registerPending({
+        ...basePending,
+        sessionKey: "p1",
+        submittedAt: 1_000_000,
+        ws: fakeWs(),
+      });
+      runs.registerPending({
+        ...basePending,
+        sessionKey: "p2",
+        submittedAt: 1_000_000,
+        ws: fakeWs(),
+      });
+
+      await runWatchdogTick(deps);
+
+      // The audit row must still land for the abort-failed run — that's the
+      // whole point of writing audit BEFORE the side effects.
+      expect(writeAudit).toHaveBeenCalledTimes(2);
+      expect(runs.size()).toBe(0);
+    });
+
+    it("continues processing other unstarted runs even if writeAudit throws for one", async () => {
+      writeAudit.mockImplementation(async (entry: { detail: { sessionKey: string } }) => {
+        if (entry.detail.sessionKey === "p1") throw new Error("audit DB down");
+      });
+      runs.registerPending({
+        ...basePending,
+        sessionKey: "p1",
+        submittedAt: 1_000_000,
+        ws: fakeWs(),
+      });
+      runs.registerPending({
+        ...basePending,
+        sessionKey: "p2",
+        submittedAt: 1_000_000,
+        ws: fakeWs(),
+      });
+
+      await runWatchdogTick(deps);
+
+      // chatAbort and broadcastNoFirstChunk still fire for both — a failing
+      // writeAudit for p1 must not poison the loop.
+      expect(chatAbort).toHaveBeenCalledTimes(2);
+      expect(broadcastNoFirstChunk).toHaveBeenCalledTimes(2);
       expect(runs.size()).toBe(0);
     });
 
@@ -312,8 +255,8 @@ describe("runWatchdogTick", () => {
 
       expect(chatAbort).not.toHaveBeenCalled();
       expect(broadcastNoFirstChunk).not.toHaveBeenCalled();
-      // The run started mid-teardown — leave it in the registry under the
-      // absolute 15-min cap instead of killing it.
+      // The run started mid-teardown — leave it in the registry; OpenClaw now
+      // owns liveness for started runs.
       expect(runs.size()).toBe(1);
     });
 

@@ -5,9 +5,10 @@
  * Pinchy ↔ OpenClaw connection keeps draining the stream — but Pinchy has no
  * way to attribute those chunks to anything (issue #310). `ActiveRuns` is the
  * in-memory map keyed by `sessionKey` that holds run state (runId, timing,
- * listener WebSockets) so a watchdog can scan for stuck runs, terminal audit
- * events can describe what happened, and a reconnecting browser can join the
- * existing listener set (Tier 2b).
+ * listener WebSockets) so a watchdog can scan for runs that never streamed a
+ * first chunk (the first-chunk backstop), terminal audit events can describe
+ * what happened, and a reconnecting browser can join the existing listener set
+ * (Tier 2b).
  */
 import { describe, it, expect, beforeEach } from "vitest";
 import type { WebSocket } from "ws";
@@ -270,59 +271,6 @@ describe("ActiveRuns", () => {
       expect(runs.get("s1")?.listeners.has(wsClosing)).toBe(false);
       expect(runs.get("s1")?.listeners.has(wsOther)).toBe(true);
       expect(runs.get("s2")?.listeners.has(wsClosing)).toBe(false);
-    });
-  });
-
-  describe("scanForStuckRuns", () => {
-    const FIFTEEN_MIN = 15 * 60 * 1000;
-
-    it("returns runs whose startedAt is older than maxRunDurationMs (absolute age cap)", () => {
-      const ws = fakeWs();
-      const start = 1_000_000;
-      runs.register({ ...baseRun, sessionKey: "s-old", startedAt: start, ws });
-      runs.register({
-        ...baseRun,
-        runId: "run-2",
-        sessionKey: "s-fresh",
-        startedAt: start + FIFTEEN_MIN - 5_000,
-        ws,
-      });
-
-      const now = start + FIFTEEN_MIN + 1; // exactly 1ms past the cap for s-old
-      const stuck = runs.scanForStuckRuns(now, FIFTEEN_MIN);
-
-      expect(stuck).toHaveLength(1);
-      expect(stuck[0].sessionKey).toBe("s-old");
-    });
-
-    it("returns an empty array when no runs exceed the cap", () => {
-      const ws = fakeWs();
-      runs.register({ ...baseRun, ws });
-      expect(runs.scanForStuckRuns(baseRun.startedAt + 60_000, FIFTEEN_MIN)).toEqual([]);
-    });
-
-    it("returns an empty array when there are no runs at all", () => {
-      expect(runs.scanForStuckRuns(Date.now(), FIFTEEN_MIN)).toEqual([]);
-    });
-
-    it("excludes pending runs — they belong to the first-chunk backstop, not the absolute cap", () => {
-      const ws = fakeWs();
-      const submit = 1_000_000;
-      runs.registerPending({
-        runId: "p1",
-        sessionKey: "s-pending",
-        agentId: "a1",
-        userId: "u1",
-        agentName: "Smithers",
-        currentMessageId: "m1",
-        submittedAt: submit,
-        ws,
-      });
-
-      // Even well past the 15-min cap, a never-started run must NOT be reported
-      // here — otherwise the watchdog would tear it down twice (once as
-      // chat.run_no_first_chunk, once as chat.run_timed_out).
-      expect(runs.scanForStuckRuns(submit + FIFTEEN_MIN + 60_000, FIFTEEN_MIN)).toEqual([]);
     });
   });
 

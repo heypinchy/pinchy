@@ -11,11 +11,7 @@ import { openClawConnectionState } from "./src/server/openclaw-connection-state"
 import { applyKeepAliveTuning } from "./src/server/http-keepalive";
 import { setOpenClawClient } from "./src/server/openclaw-client";
 import { getActiveRunsSingleton } from "./src/server/active-runs-singleton";
-import {
-  startRunWatchdog,
-  DEFAULT_MAX_RUN_DURATION_MS,
-  DEFAULT_FIRST_CHUNK_TIMEOUT_MS,
-} from "./src/server/run-watchdog";
+import { startRunWatchdog, DEFAULT_FIRST_CHUNK_TIMEOUT_MS } from "./src/server/run-watchdog";
 import {
   ChannelHealthMonitor,
   startChannelHealthWatchdog,
@@ -370,17 +366,17 @@ ${domain ? `<p><a href="https://${domain}">Go to ${domain} →</a></p>` : ""}
 
     setOpenClawClient(openclawClient);
 
-    // #310 Tier 2a: start the run watchdog now that the OpenClaw client
-    // exists. The watchdog scans `activeRuns` every 30s for absolute
-    // timeouts, calls chatAbort on stuck runs, writes the
-    // `chat.run_timed_out` audit row, and broadcasts a terminal frame to
-    // any still-connected listener. The stop fn is registered with the
-    // shutdown handlers so SIGTERM clears the interval cleanly.
+    // #310 Tier 2a / chat-liveness-observer: start the run watchdog now that the
+    // OpenClaw client exists. The watchdog scans `activeRuns` every 30s for the
+    // first-chunk backstop ONLY — a run Pinchy dispatched but the gateway never
+    // acknowledged (a dispatch race OpenClaw can't see). The redundant 15-min
+    // absolute cap was removed: OpenClaw self-aborts stuck/idle runs and the
+    // authoritative `agentWait` oracle now owns run liveness. The stop fn is
+    // registered with the shutdown handlers so SIGTERM clears the interval.
     const ocForWatchdog = openclawClient;
     const stopRunWatchdog = startRunWatchdog({
       activeRuns,
       now: () => Date.now(),
-      maxRunDurationMs: DEFAULT_MAX_RUN_DURATION_MS,
       firstChunkTimeoutMs: DEFAULT_FIRST_CHUNK_TIMEOUT_MS,
       chatAbort: async (sessionKey, runId) => {
         await ocForWatchdog.chatAbort(sessionKey, runId);
@@ -390,25 +386,6 @@ ${domain ? `<p><a href="https://${domain}">Go to ${domain} →</a></p>` : ""}
           await appendAuditLog(entry);
         } catch (err) {
           recordAuditFailure(err, entry);
-        }
-      },
-      broadcastTimeout: (run) => {
-        // No `messageId` field: omit (don't set to null) so the client's
-        // error-frame handler — which keys on `data.messageId !== undefined`
-        // for message-level attribution — cleanly falls back to the
-        // "no specific message" rendering path. Tier 2b's `currentMessageId`
-        // on ActiveRun will allow attaching to a specific bubble; until
-        // then the timeout-error is unattributed by design.
-        const payload = JSON.stringify({
-          type: "error",
-          agentName: run.agentName,
-          providerError: `This run timed out after ${Math.floor(
-            DEFAULT_MAX_RUN_DURATION_MS / 60_000
-          )}m. Please retry.`,
-          runTimedOut: true,
-        });
-        for (const ws of run.listeners) {
-          if (ws.readyState === WebSocket.OPEN) ws.send(payload);
         }
       },
       broadcastNoFirstChunk: (run) => {

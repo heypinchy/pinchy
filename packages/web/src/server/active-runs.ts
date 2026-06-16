@@ -26,21 +26,21 @@ export interface ActiveRun {
   agentId: string;
   /**
    * Owner of the run. Snapshotted at registration so the watchdog can include
-   * `user.id` in the `chat.run_timed_out` / `chat.run_no_first_chunk` audit
-   * rows even though the watchdog itself acts as `system / watchdog`. PII rules
-   * forbid email/name here — operators join against the users table when they
-   * need a human-readable name.
+   * `user.id` in the `chat.run_no_first_chunk` audit row even though the
+   * watchdog itself acts as `system / watchdog`. PII rules forbid email/name
+   * here — operators join against the users table when they need a
+   * human-readable name.
    */
   userId: string;
   agentName: string;
   /**
    * Wall-clock time the run started streaming (its first chunk). For a
    * dispatch-time pending run this is seeded to the submit time and re-anchored
-   * to the real first-chunk time by `markFirstChunk`. The watchdog's absolute
-   * cap (`scanForStuckRuns`, default 15 min) measures from here for runs that
-   * DO start but never finish. The complementary "stream never started" case is
-   * no longer left to the client's 60s timer alone — `firstChunkAt === null` +
-   * `scanForUnstartedRuns` is the server-side backstop (B-1).
+   * to the real first-chunk time by `markFirstChunk`. Once a run starts, its
+   * liveness is owned by OpenClaw (which self-aborts stuck/idle runs) and the
+   * authoritative `agentWait` oracle — Pinchy no longer caps started-run
+   * duration. The complementary "stream never started" case is the server-side
+   * first-chunk backstop: `firstChunkAt === null` + `scanForUnstartedRuns` (B-1).
    */
   startedAt: number;
   /**
@@ -287,32 +287,14 @@ export class ActiveRuns {
   }
 
   /**
-   * Find runs whose absolute age exceeds the per-run cap. Used by the
-   * watchdog (30s interval) to identify stuck runs. The watchdog is
-   * responsible for the side effects (abort the OC run, audit the
-   * timeout, broadcast an error chunk to listeners, delete from the
-   * registry) — this method only reports.
-   */
-  scanForStuckRuns(now: number, maxRunDurationMs: number): ActiveRun[] {
-    const stuck: ActiveRun[] = [];
-    for (const run of this.runs.values()) {
-      // Pending runs (no first chunk yet) are owned by `scanForUnstartedRuns`,
-      // not the absolute cap — guarding here prevents the same run being torn
-      // down twice in one tick.
-      if (run.firstChunkAt !== null && now - run.startedAt > maxRunDurationMs) {
-        stuck.push(run);
-      }
-    }
-    return stuck;
-  }
-
-  /**
    * Find PENDING runs (registered at dispatch, no first chunk yet) whose wait
    * since `submittedAt` exceeds the first-chunk timeout. Used by the watchdog
    * (B-1) to tear down a run the backend accepted but never streamed — e.g. a
-   * wedged or rate-limited lane. Distinct from `scanForStuckRuns`, which caps
-   * runs that DID start but never finish. A run that has produced any chunk
-   * (`firstChunkAt !== null`) is never returned here.
+   * wedged or rate-limited lane. This guards a Pinchy-specific dispatch race
+   * OpenClaw can't see; once a run starts streaming, OpenClaw owns its liveness
+   * (it self-aborts stuck/idle runs) and the authoritative `agentWait` oracle is
+   * the source of truth. A run that has produced any chunk (`firstChunkAt !==
+   * null`) is never returned here.
    */
   scanForUnstartedRuns(now: number, firstChunkTimeoutMs: number): ActiveRun[] {
     const unstarted: ActiveRun[] = [];

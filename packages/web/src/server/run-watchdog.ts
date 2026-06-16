@@ -1,20 +1,5 @@
 import type { ActiveRun, ActiveRuns } from "@/server/active-runs";
 
-/**
- * Default per-run hard timeout. After this much absolute wall-clock time
- * the watchdog tears the run down regardless of activity.
- *
- * Rationale: OpenAI's hosted Assistants API uses 10 min, Anthropic's
- * Claude Agent SDK uses ~10 min for streaming. We pick 15 min because
- * Pinchy's workload mix (local Ollama, KB-agents with PDF vision,
- * air-gapped deployments) is meaningfully slower than the hosted-only
- * profile those numbers are calibrated for. See #310 Tier 2 decision #9.
- *
- * No per-agent override in v0.6.0 (YAGNI) — surface as a per-deployment
- * env-var if we ever see a legitimate use case.
- */
-export const DEFAULT_MAX_RUN_DURATION_MS = 15 * 60 * 1000;
-
 /** Watchdog scan cadence — every 30 seconds. */
 export const WATCHDOG_INTERVAL_MS = 30_000;
 
@@ -36,31 +21,16 @@ export const WATCHDOG_INTERVAL_MS = 30_000;
  */
 export const DEFAULT_FIRST_CHUNK_TIMEOUT_MS = 180_000;
 
-export interface AuditPayload {
-  actorType: "system";
-  actorId: "watchdog";
-  eventType: "chat.run_timed_out";
-  resource: string;
-  outcome: "failure";
-  detail: {
-    agent: { id: string; name: string };
-    // The user whose run was forcibly terminated. We snapshot just the id
-    // (no email/name) because the audit trail forbids PII in detail and
-    // the user record may still be queryable for richer joining later.
-    user: { id: string };
-    sessionKey: string;
-    runId: string;
-    elapsedMs: number;
-    maxRunDurationMs: number;
-  };
-}
-
 /**
  * Audit row for a run that was accepted but never produced a first chunk
- * within the first-chunk timeout (B-1) — a wedged/rate-limited lane. Distinct
- * from `chat.run_timed_out` (a run that started but never finished) so an
- * analyst can tell "the backend never started responding" apart from "the
- * backend started but ran long". Same PII rules: only `user.id` in detail.
+ * within the first-chunk timeout (B-1) — a wedged/rate-limited lane. This
+ * guards a Pinchy-specific dispatch race that OpenClaw itself can't see: a run
+ * Pinchy dispatched but the gateway never acknowledged. The absolute-duration
+ * cap that used to live here was removed — OpenClaw self-aborts stuck/idle runs
+ * (120s idle, ~5min stuck), so a Pinchy-side absolute cap was both redundant
+ * AND harmful (it killed slow-but-alive runs). The authoritative liveness
+ * signal (`agentWait`) is now the source of truth for run liveness. Same PII
+ * rules: only `user.id` in detail.
  */
 export interface NoFirstChunkAuditPayload {
   actorType: "system";
@@ -79,7 +49,7 @@ export interface NoFirstChunkAuditPayload {
   };
 }
 
-export type WatchdogAuditPayload = AuditPayload | NoFirstChunkAuditPayload;
+export type WatchdogAuditPayload = NoFirstChunkAuditPayload;
 
 export interface WatchdogDeps {
   activeRuns: ActiveRuns;
@@ -95,99 +65,48 @@ export interface WatchdogDeps {
    */
   writeAudit: (entry: WatchdogAuditPayload) => Promise<void>;
   /**
-   * Broadcast a terminal error frame to every connected listener so the
-   * user sees a "Timed out after 15m 0s" bubble instead of an indefinite
-   * spinner. Sync — listeners take whatever side effect they want.
-   */
-  broadcastTimeout: (run: ActiveRun) => void;
-  /**
    * Broadcast a RETRYABLE error frame for a run that never produced a first
-   * chunk (B-1) — "the agent didn't start responding, retry". Separate from
-   * `broadcastTimeout` because this case is recoverable (the user can resend)
-   * whereas the 15-min absolute timeout is terminal. Sync.
+   * chunk (B-1) — "the agent didn't start responding, retry". This case is
+   * recoverable (the user can resend). Sync.
    */
   broadcastNoFirstChunk: (run: ActiveRun) => void;
   /** Injected so tests can use a fixed clock. */
   now: () => number;
-  maxRunDurationMs: number;
   /**
    * How long a dispatched run may wait for its first chunk before the
-   * watchdog tears it down as `chat.run_no_first_chunk`. Far shorter than the
-   * `maxRunDurationMs` absolute cap, but above the dispatch-race retry budget
-   * (default 180s) so a never-acknowledged run surfaces without false-aborting
-   * a run that's just waiting out an OpenClaw restart.
+   * watchdog tears it down as `chat.run_no_first_chunk`. Above the dispatch-race
+   * retry budget (default 180s) so a never-acknowledged run surfaces without
+   * false-aborting a run that's just waiting out an OpenClaw restart.
    */
   firstChunkTimeoutMs: number;
 }
 
 /**
- * Run one tick: scan for stuck runs and tear them down. Resilient to
- * per-run failures — one stuck run failing to abort doesn't prevent the
- * others from being processed.
+ * Run one tick: tear down runs the backend accepted but never streamed a first
+ * chunk for (the first-chunk backstop, B-1). Resilient to per-run failures —
+ * one run failing to abort doesn't prevent the others from being processed.
+ *
+ * The absolute-duration cap (15-min `chat.run_timed_out`) that used to also run
+ * here was removed: OpenClaw self-aborts stuck/idle runs (120s idle, ~5min
+ * stuck), so a Pinchy-side absolute cap was redundant AND harmful — it killed
+ * slow-but-alive runs. The first-chunk guard stays because it covers a
+ * Pinchy-specific dispatch race OpenClaw can't see (a run Pinchy dispatched but
+ * the gateway never acknowledged). Authoritative run liveness now comes from the
+ * gateway's `agentWait` oracle (see client-router.ts).
  *
  * Ordering inside the per-run block:
- *   1. writeAudit (await): the audit row must land. This is the closest
- *      thing to a compliance signal we have for "your agent run was
- *      forcibly terminated by the system".
- *   2. chatAbort (try/catch): best-effort. OC may be offline, the run may
- *      already be over server-side, etc. Either way we don't block the
- *      rest of the work.
- *   3. broadcastTimeout (sync): inform every listener.
+ *   1. writeAudit (await): the audit row must land.
+ *   2. chatAbort (try/catch): best-effort. OC may be offline, etc.
+ *   3. broadcastNoFirstChunk (sync): inform every listener with a RETRYABLE
+ *      error frame.
  *   4. activeRuns.delete: drop the entry.
  *
- * Errors in writeAudit or broadcastTimeout are logged and swallowed so
+ * Errors in writeAudit or broadcastNoFirstChunk are logged and swallowed so
  * one failing run can't stop the loop.
  */
 export async function runWatchdogTick(deps: WatchdogDeps): Promise<void> {
-  const stuck = deps.activeRuns.scanForStuckRuns(deps.now(), deps.maxRunDurationMs);
-  for (const run of stuck) {
-    const elapsedMs = deps.now() - run.startedAt;
-    const audit: AuditPayload = {
-      actorType: "system",
-      actorId: "watchdog",
-      eventType: "chat.run_timed_out",
-      resource: `agent:${run.agentId}`,
-      outcome: "failure",
-      detail: {
-        agent: { id: run.agentId, name: run.agentName },
-        user: { id: run.userId },
-        sessionKey: run.sessionKey,
-        runId: run.runId,
-        elapsedMs,
-        maxRunDurationMs: deps.maxRunDurationMs,
-      },
-    };
-    try {
-      await deps.writeAudit(audit);
-    } catch (err) {
-      // Audit failure must never stop the loop — recordAuditFailure on
-      // the caller side already preserves the gap signal. Logging here
-      // is a belt to that suspenders.
-      console.error("[run-watchdog] writeAudit failed:", err);
-    }
-    try {
-      await deps.chatAbort(run.sessionKey, run.runId);
-    } catch (err) {
-      console.warn(
-        `[run-watchdog] chatAbort failed for ${run.sessionKey} (run ${run.runId}):`,
-        err
-      );
-    }
-    // Re-check after the (networked) abort await: a resend may have replaced
-    // this run on the same session. Don't broadcast A's timeout to B's tab or
-    // delete B's entry.
-    if (deps.activeRuns.get(run.sessionKey) !== run) continue;
-    try {
-      deps.broadcastTimeout(run);
-    } catch (err) {
-      console.error("[run-watchdog] broadcastTimeout failed:", err);
-    }
-    deps.activeRuns.deleteIfRunId(run.sessionKey, run.runId);
-  }
-
   // B-1: tear down runs that were accepted but never produced a first chunk
-  // within the first-chunk timeout (a wedged/rate-limited lane). Same ordering
-  // and per-run resilience as the absolute-timeout loop above, but a RETRYABLE
+  // within the first-chunk timeout (a wedged/rate-limited lane). A RETRYABLE
   // broadcast and a distinct audit event — the user can resend, and operators
   // get a forensic row for "the backend never started responding".
   const unstarted = deps.activeRuns.scanForUnstartedRuns(deps.now(), deps.firstChunkTimeoutMs);
@@ -218,7 +137,7 @@ export async function runWatchdogTick(deps: WatchdogDeps): Promise<void> {
     }
     // Re-check after the audit await: a real first chunk may have started the
     // run while the audit was in flight — don't abort/notify a run that just
-    // began streaming (leave it to the absolute 15-min cap instead).
+    // began streaming (OpenClaw now owns liveness for started runs).
     if (deps.activeRuns.get(run.sessionKey) !== run || run.firstChunkAt !== null) continue;
     try {
       await deps.chatAbort(run.sessionKey, run.runId);
