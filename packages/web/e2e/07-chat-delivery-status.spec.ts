@@ -305,7 +305,10 @@ test.describe("chat delivery status and retry E2E", () => {
   // one, so reconnect connections never trigger the history-reconcile path
   // that would wipe the partial + error messages from local state.
   // ────────────────────────────────────────────────────────────────────────────
-  test("partial stream preserved and Retry appears after disconnect", async ({ page, request }) => {
+  test("mid-stream disconnect preserves the partial reply and shows no false failure bubble", async ({
+    page,
+    request,
+  }) => {
     await setupAdmin(request);
 
     await page.addInitScript(() => {
@@ -428,12 +431,19 @@ test.describe("chat delivery status and retry E2E", () => {
       (window as unknown as Record<string, () => void>).__triggerDisconnect?.()
     );
 
-    // A disconnect error bubble must appear after the partial response
-    await expect(page.locator('[data-role="assistant"]').last()).toContainText("Connection lost", {
-      timeout: 5000,
-    });
-
-    // The Retry button must be visible on the error bubble
-    await expect(page.getByRole("button", { name: "Retry" })).toBeVisible({ timeout: 5000 });
+    // New behavior (chat-liveness redesign): a mid-stream disconnect is a
+    // connectivity event handled by the reconnect/status axis — it must NOT
+    // synthesize a per-message chat failure bubble. The old "Connection lost"
+    // bubble + Retry were client-side guessing; failure is now shown only from
+    // an authoritative liveness/error frame. The partial reply must be
+    // preserved (not wiped), and no false failure bubble may appear.
+    await expect(page.locator('[data-role="assistant"]').nth(1)).toContainText(
+      "Partial response...",
+      { timeout: 5000 }
+    );
+    await expect(page.getByText("Connection lost")).toHaveCount(0);
+    // Scope to in-thread alerts: page-level insecure/enterprise banners also use
+    // role="alert" and are not failure signals.
+    await expect(page.locator('[data-role="assistant"] [role="alert"]')).toHaveCount(0);
   });
 });

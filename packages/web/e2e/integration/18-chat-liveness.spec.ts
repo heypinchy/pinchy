@@ -73,7 +73,11 @@ test.describe("Chat liveness — slow run banner, dying run failure", () => {
     await expect(input).toBeVisible({ timeout: 10000 });
 
     const assistantBubbles = page.locator('[data-role="assistant"]');
-    const errorAlerts = page.locator('[role="alert"]');
+    // Scope to chat failure bubbles (chat-error-message renders role="alert"
+    // INSIDE an assistant message). Page chrome — the insecure-connection and
+    // enterprise/license banners — also use role="alert", so a bare
+    // [role="alert"] locator would always match them and is NOT a failure signal.
+    const errorAlerts = page.locator('[data-role="assistant"] [role="alert"]');
 
     await input.fill(`${FAKE_OLLAMA_LIVENESS_SLOW_TRIGGER}: please take your time`);
     await input.press("Enter");
@@ -180,9 +184,11 @@ test.describe("Chat liveness — slow run banner, dying run failure", () => {
     await page.reload();
     await waitForOpenClawConnected(page);
 
-    // No error boundary, and — the liveness invariant — no failure bubble.
+    // No error boundary, and — the liveness invariant — no chat failure bubble.
+    // Scope to in-thread alerts; the page-level insecure/enterprise banners also
+    // use role="alert" and are not failure signals.
     await expect(page.getByText("Something went wrong")).toHaveCount(0);
-    await expect(page.locator('[role="alert"]')).toHaveCount(0);
+    await expect(page.locator('[data-role="assistant"] [role="alert"]')).toHaveCount(0);
 
     // The reply resumes and completes in a single bubble.
     const assistantMessage = page.locator('[data-role="assistant"]').last();
