@@ -15,6 +15,9 @@ const {
   mockShouldEmitSilentStreamAudit,
   mockShouldEmitUpstreamFormatErrorAudit,
   mockMaterializeAttachments,
+  mockListVisionModels,
+  mockIsModelVisionCapable,
+  mockReadExistingConfig,
 } = vi.hoisted(() => ({
   mockChat: vi.fn(),
   mockSessionsHistory: vi.fn(),
@@ -29,6 +32,10 @@ const {
   mockShouldEmitSilentStreamAudit: vi.fn().mockReturnValue(true),
   mockShouldEmitUpstreamFormatErrorAudit: vi.fn().mockReturnValue(true),
   mockMaterializeAttachments: vi.fn().mockResolvedValue({ chatAttachments: [], workspaceRefs: [] }),
+  // Image-fallback I/O adapters used by the chat router on image turns.
+  mockListVisionModels: vi.fn().mockResolvedValue([]),
+  mockIsModelVisionCapable: vi.fn().mockReturnValue(false),
+  mockReadExistingConfig: vi.fn().mockReturnValue({}),
 }));
 
 vi.mock("@/lib/agent-access", async (importOriginal) => {
@@ -74,12 +81,24 @@ vi.mock("@/db", () => ({
         findFirst: mockUserFindFirst,
       },
     },
+    // db.select().from(models).where(...) — used by listVisionCandidates on image turns.
+    select: () => ({ from: () => ({ where: () => mockListVisionModels() }) }),
   },
 }));
 
 vi.mock("@/db/schema", () => ({
   agents: { id: "id" },
   users: { id: "id" },
+  models: { vision: "vision", provider: "provider", modelId: "modelId", tools: "tools" },
+}));
+
+vi.mock("@/lib/model-vision", () => ({
+  isModelVisionCapable: (...args: unknown[]) => mockIsModelVisionCapable(...args),
+}));
+
+vi.mock("@/lib/openclaw-config/write", () => ({
+  readExistingConfig: (...args: unknown[]) => mockReadExistingConfig(...args),
+  pushConfigInBackground: vi.fn(),
 }));
 
 vi.mock("drizzle-orm", () => ({
@@ -4384,6 +4403,105 @@ describe("ClientRouter", () => {
       );
 
       consoleSpy.mockRestore();
+    });
+  });
+
+  describe("image-model fallback (text-only agent + image)", () => {
+    const ATTACHMENT_ID = "550e8400-e29b-41d4-a716-446655440000";
+    const TEXT_ONLY_AGENT = { ...defaultAgent, model: "zhipu/glm-5.1", allowedTools: [] };
+
+    function imageAttachment() {
+      return {
+        chatAttachments: [
+          { type: "image", fileName: "shot.png", mimeType: "image/png", content: "AAAA" },
+        ],
+        workspaceRefs: [],
+      };
+    }
+
+    async function* okStream() {
+      yield { type: "text" as const, text: "ok" };
+      yield { type: "done" as const, text: "" };
+    }
+
+    it("routes an image turn on a text-only agent to the same-provider vision fallback, leaving the agent's model untouched", async () => {
+      mockFindFirst.mockResolvedValue(TEXT_ONLY_AGENT);
+      mockIsModelVisionCapable.mockReturnValue(false);
+      mockMaterializeAttachments.mockResolvedValue(imageAttachment());
+      mockListVisionModels.mockResolvedValue([
+        { provider: "zhipu", modelId: "glm-4v", vision: true, tools: true },
+      ]);
+      mockChat.mockReturnValue(okStream());
+
+      await router.handleMessage(createMockClientWs() as any, {
+        type: "message",
+        content: "What is in this image?",
+        attachmentIds: [ATTACHMENT_ID],
+        agentId: "agent-1",
+      });
+
+      // The turn is forwarded on the vision fallback, NOT the agent's text-only model.
+      const [, options] = mockChat.mock.calls[0];
+      expect(options.provider).toBe("zhipu");
+      expect(options.model).toBe("glm-4v");
+
+      // Governance: the per-turn switch is audited with both models snapshotted.
+      const audit = mockAppendAuditLog.mock.calls
+        .map((c) => c[0])
+        .find((e) => e.eventType === "chat.image_model_fallback");
+      expect(audit).toBeDefined();
+      expect(audit.detail.agentModel).toBe("zhipu/glm-5.1");
+      expect(audit.detail.fallbackModel).toBe("zhipu/glm-4v");
+      expect(audit.outcome).toBe("success");
+    });
+
+    it("sends a vision_unavailable error and does not dispatch when no vision model is configured anywhere", async () => {
+      mockFindFirst.mockResolvedValue(TEXT_ONLY_AGENT);
+      mockIsModelVisionCapable.mockReturnValue(false);
+      mockMaterializeAttachments.mockResolvedValue(imageAttachment());
+      mockListVisionModels.mockResolvedValue([]);
+      mockReadExistingConfig.mockReturnValue({});
+      mockChat.mockReturnValue(okStream());
+
+      const clientWs = createMockClientWs();
+      await router.handleMessage(clientWs as any, {
+        type: "message",
+        content: "What is in this image?",
+        attachmentIds: [ATTACHMENT_ID],
+        agentId: "agent-1",
+      });
+
+      const errors = clientWs.sent.map((s) => JSON.parse(s)).filter((m) => m.type === "error");
+      expect(errors.some((e) => e.code === "vision_unavailable")).toBe(true);
+      expect(mockChat).not.toHaveBeenCalled();
+    });
+
+    it("does not switch models or query the catalog when the agent's own model is vision-capable", async () => {
+      mockFindFirst.mockResolvedValue({
+        ...defaultAgent,
+        model: "openai/gpt-5.5",
+        allowedTools: [],
+      });
+      mockIsModelVisionCapable.mockReturnValue(true);
+      mockMaterializeAttachments.mockResolvedValue(imageAttachment());
+      mockChat.mockReturnValue(okStream());
+
+      await router.handleMessage(createMockClientWs() as any, {
+        type: "message",
+        content: "What is in this image?",
+        attachmentIds: [ATTACHMENT_ID],
+        agentId: "agent-1",
+      });
+
+      const [, options] = mockChat.mock.calls[0];
+      expect(options.provider).toBe("openai");
+      expect(options.model).toBe("gpt-5.5");
+      const audit = mockAppendAuditLog.mock.calls
+        .map((c) => c[0])
+        .find((e) => e.eventType === "chat.image_model_fallback");
+      expect(audit).toBeUndefined();
+      // Vision-capable agent model short-circuits before any catalog I/O.
+      expect(mockListVisionModels).not.toHaveBeenCalled();
     });
   });
 });
