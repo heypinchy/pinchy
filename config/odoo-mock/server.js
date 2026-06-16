@@ -469,23 +469,27 @@ function getDefaultRecords() {
   };
 }
 
-// In-memory data store
-let store = getDefaultRecords();
-let nextIds = {}; // per-model auto-increment counters
+// In-memory data store. `store` and `nextIds` are keyed by the model name,
+// which arrives from the (test-only) JSON-RPC request. They are Maps — not
+// plain objects — so a request-supplied model name is never used as an object
+// property key, structurally eliminating the remote-property-injection /
+// prototype-pollution sink that a `store[model] = …` write would otherwise be.
+let store = new Map(Object.entries(getDefaultRecords()));
+let nextIds = new Map(); // per-model auto-increment counters
 let accessRights = {}; // { "sale.order": { read: true, create: false, ... } }
 
 function resetNextIds() {
-  nextIds = {};
-  for (const [model, records] of Object.entries(store)) {
+  nextIds = new Map();
+  for (const [model, records] of store) {
     const maxId = records.reduce((m, r) => Math.max(m, r.id || 0), 0);
-    nextIds[model] = maxId + 1;
+    nextIds.set(model, maxId + 1);
   }
 }
 
 function ensureModel(model) {
-  if (!store[model]) {
-    store[model] = [];
-    nextIds[model] = 1;
+  if (!store.has(model)) {
+    store.set(model, []);
+    nextIds.set(model, 1);
   }
 }
 
@@ -676,7 +680,7 @@ function handleJsonRpc(body) {
       const kwArgs = args[6] || {};
 
       ensureModel(model);
-      const allRecords = store[model];
+      const allRecords = store.get(model);
 
       // search_read
       if (objMethod === "search_read") {
@@ -796,16 +800,16 @@ function handleJsonRpc(body) {
           const irModelId = Array.isArray(values.res_model_id)
             ? values.res_model_id[0]
             : values.res_model_id;
-          const modelRec = (store["ir.model"] || []).find(
+          const modelRec = (store.get("ir.model") || []).find(
             (r) => r.id === irModelId,
           );
           if (modelRec) values.res_model = modelRec.model;
         }
 
-        const newId = nextIds[model] || 1;
-        nextIds[model] = newId + 1;
+        const newId = nextIds.get(model) || 1;
+        nextIds.set(model, newId + 1);
         const newRecord = { id: newId, ...values };
-        store[model].push(newRecord);
+        store.get(model).push(newRecord);
         return newId;
       }
 
@@ -813,7 +817,7 @@ function handleJsonRpc(body) {
       if (objMethod === "write") {
         const ids = positionalArgs[0] || [];
         const values = positionalArgs[1] || {};
-        for (const record of store[model]) {
+        for (const record of store.get(model)) {
           if (ids.includes(record.id)) {
             Object.assign(record, values);
           }
@@ -840,7 +844,10 @@ function handleJsonRpc(body) {
       // unlink
       if (objMethod === "unlink") {
         const ids = positionalArgs[0] || [];
-        store[model] = store[model].filter((r) => !ids.includes(r.id));
+        store.set(
+          model,
+          store.get(model).filter((r) => !ids.includes(r.id)),
+        );
         return true;
       }
 
@@ -850,7 +857,10 @@ function handleJsonRpc(body) {
       // optional `feedback` kwarg.
       if (objMethod === "action_feedback") {
         const ids = positionalArgs[0] || [];
-        store[model] = store[model].filter((r) => !ids.includes(r.id));
+        store.set(
+          model,
+          store.get(model).filter((r) => !ids.includes(r.id)),
+        );
         return true;
       }
 
@@ -953,7 +963,7 @@ const controlServer = http.createServer(async (req, res) => {
 
   // Reset to defaults
   if (req.method === "POST" && path === "/control/reset") {
-    store = getDefaultRecords();
+    store = new Map(Object.entries(getDefaultRecords()));
     resetNextIds();
     accessRights = {};
     authMode = "ok";
@@ -978,15 +988,18 @@ const controlServer = http.createServer(async (req, res) => {
     for (const record of body.records) {
       if (record.id) {
         // Remove existing record with same id
-        store[body.model] = store[body.model].filter((r) => r.id !== record.id);
-        store[body.model].push(record);
-        if (record.id >= (nextIds[body.model] || 1)) {
-          nextIds[body.model] = record.id + 1;
+        store.set(
+          body.model,
+          store.get(body.model).filter((r) => r.id !== record.id),
+        );
+        store.get(body.model).push(record);
+        if (record.id >= (nextIds.get(body.model) || 1)) {
+          nextIds.set(body.model, record.id + 1);
         }
       } else {
-        const newId = nextIds[body.model] || 1;
-        nextIds[body.model] = newId + 1;
-        store[body.model].push({ id: newId, ...record });
+        const newId = nextIds.get(body.model) || 1;
+        nextIds.set(body.model, newId + 1);
+        store.get(body.model).push({ id: newId, ...record });
       }
     }
     sendJson(res, 200, {
@@ -1004,7 +1017,7 @@ const controlServer = http.createServer(async (req, res) => {
       sendJson(res, 400, { error: "Need ?model= parameter" });
       return;
     }
-    sendJson(res, 200, store[model] || []);
+    sendJson(res, 200, store.get(model) || []);
     return;
   }
 
