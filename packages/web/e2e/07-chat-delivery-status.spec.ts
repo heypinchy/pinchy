@@ -151,9 +151,20 @@ test.describe("chat delivery status and retry E2E", () => {
   });
 
   // ────────────────────────────────────────────────────────────────────────────
-  // Task 5.2 — Orphan bubble: no assistant response after ack + complete
+  // Authoritative failure: a run that produces no assistant response surfaces a
+  // failure bubble ONLY from the server's `liveness: failed` verdict.
+  //
+  // This replaces the obsolete client-side "orphan detector" scenario. The old
+  // behavior synthesized "The agent didn't respond." from silence (ack +
+  // complete with no chunks) using a client-side guess. That detector was the
+  // source of the production false-failure bug and has been removed: failure is
+  // now shown ONLY from an authoritative server signal (the `liveness: failed`
+  // frame the real server emits for a silent/abandoned run — see
+  // client-router.ts). The mock therefore sends `ack` + `liveness: failed`
+  // (the real wire shape) instead of a bare `complete`, and we assert the
+  // authoritative failure bubble + Retry rather than the deleted orphan text.
   // ────────────────────────────────────────────────────────────────────────────
-  test("orphan error bubble appears when last message has no assistant response", async ({
+  test("authoritative failure bubble appears when the server emits liveness: failed", async ({
     page,
     request,
   }) => {
@@ -220,14 +231,27 @@ test.describe("chat delivery status and retry E2E", () => {
               });
             }, 0);
 
-            // … but the agent never responds — send complete with no chunks.
-            // This triggers isOrphaned: last message is user with status "sent",
-            // isRunning=false, isHistoryLoaded=true.
+            // … the agent never produces any assistant output, and the server
+            // emits an authoritative terminal failure verdict. This is the real
+            // wire shape (see client-router.ts: a silent/abandoned run
+            // broadcasts `liveness: failed`). The client renders the failure
+            // bubble ONLY from this signal — never from a silence guess.
+            setTimeout(() => {
+              this.onmessage?.({
+                data: JSON.stringify({
+                  type: "liveness",
+                  state: "failed",
+                  reason: "The model did not produce a response. It may have timed out.",
+                }),
+              });
+            }, 10);
+
+            // The run is finished — the spinner stops.
             setTimeout(() => {
               this.onmessage?.({
                 data: JSON.stringify({ type: "complete" }),
               });
-            }, 10);
+            }, 20);
           }
         }
 
@@ -252,13 +276,18 @@ test.describe("chat delivery status and retry E2E", () => {
     await page.getByLabel("Message input").fill("hello");
     await page.getByRole("button", { name: "Send message" }).click();
 
-    // The synthetic orphan bubble must appear — "The agent didn't respond."
+    // The authoritative failure bubble must appear, showing the server's reason.
+    // The OLD synthetic "The agent didn't respond." orphan text is gone — failure
+    // is now surfaced ONLY from the `liveness: failed` verdict above.
     await expect(page.locator('[data-role="assistant"]').last()).toContainText(
-      "The agent didn't respond.",
+      "The model did not produce a response. It may have timed out.",
       { timeout: 5000 }
     );
 
-    // The Retry button must be visible on the orphan bubble
+    // The deleted orphan copy must NOT appear anywhere.
+    await expect(page.getByText("The agent didn't respond.")).toHaveCount(0);
+
+    // The Retry button must be visible on the failure bubble.
     await expect(page.getByRole("button", { name: "Retry" })).toBeVisible({ timeout: 5000 });
   });
 

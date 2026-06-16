@@ -74,9 +74,16 @@ const SLOW_STREAM_DELAY_MS = 500;
 const LIVENESS_SLOW_TRIGGER = "E2E_LIVENESS_SLOW_RESPONSE";
 const LIVENESS_SLOW_RESPONSE =
   "Working on it, this is taking a little while to put together for you.";
-// Initial stall before the first token. Modest but clearly past any sub-second
-// "taking longer" threshold a liveness observer would use.
-const LIVENESS_SLOW_DELAY_MS = 4000;
+// Initial stall before the first token. Must sit PAST the client's
+// "taking longer than usual" threshold (DELAY_HINT_MS = 15_000 in
+// use-ws-runtime.ts) so the banner deterministically engages while the run is
+// still in flight — and, because the stall precedes the first token, it engages
+// BEFORE any assistant text renders. The run never fails (it completes
+// normally afterwards), so this is the regression case proving a slow-but-alive
+// run shows the banner and NEVER a failure bubble. 18s gives a ~3s cushion over
+// the 15s threshold to stay deterministic on a loaded CI host without making
+// the spec needlessly slow.
+const LIVENESS_SLOW_DELAY_MS = 18000;
 
 // DYING: simulates a provider/stream failure. On the OpenAI-completions surface
 // pi-ai expects a 200 SSE stream, so the most faithful "the provider died
