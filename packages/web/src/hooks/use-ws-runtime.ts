@@ -1071,7 +1071,33 @@ export function useWsRuntime(agentId: string): {
             if (
               shouldReplaceLocalWithServerHistory(prev, historyMessages, shouldRecoverFromHistory)
             ) {
-              return capMessages(historyMessages);
+              const next = capMessages(historyMessages);
+              // Never let this synchronous (un-gated) replace SHRINK the rendered
+              // list. assistant-ui renders `thread.messages.length` message
+              // components keyed by INDEX; if the array gets shorter while
+              // <ThreadPrimitive.Messages> is mounted, a trailing-index child
+              // re-renders (via its own store subscription) before React drops it
+              // and reads `tapClientLookup.get({ index })` out of bounds — the
+              // intermittent "Index N out of bounds (length: N)" tab-refocus
+              // crash (#510) that survived the placeholder (#470) and anchor fixes.
+              //
+              // Genuine shrinks are supposed to go through
+              // stageDestructiveHistoryReconcile (the isReconcilingMessages
+              // unmount gate), but that staging is SKIPPED whenever an `activeRun`
+              // is in play — and a mid-run refocus can legitimately hand us a
+              // server history SHORTER than the rich local list (the in-flight
+              // reply isn't persisted yet, or OpenClaw history is transiently
+              // empty during a restart — see client-router.ts handleHistory's
+              // `messages: [], sessionKnown: true, activeRun` branch). In every
+              // such case the local list is the more-complete view, so keep it:
+              // isRunning was already preserved by the activeRun block above and
+              // future chunks still merge into the trailing assistant by id. This
+              // also guards the concurrent-render case where `prev` is longer than
+              // the messagesRef snapshot the staging decision used.
+              if (next.length < prev.length) {
+                return prev;
+              }
+              return next;
             }
             return prev;
           });
