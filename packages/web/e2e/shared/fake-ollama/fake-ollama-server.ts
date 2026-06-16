@@ -62,6 +62,33 @@ const SLOW_STREAM_TRIGGER = "E2E_SLOW_STREAM";
 const SLOW_STREAM_RESPONSE = "one two three four five six seven eight nine ten";
 const SLOW_STREAM_DELAY_MS = 500;
 
+// ── Chat-liveness triggers ─────────────────────────────────────────────────
+// Building blocks for the chat-liveness E2E specs (asserted in a later task).
+//
+// SLOW: a normal text response that streams genuinely slowly — slow enough for
+// a "taking longer than expected" UI state to engage before the stream
+// completes. It pauses LIVENESS_SLOW_DELAY_MS before emitting the first token
+// (so even a single-word response trips the threshold) and then streams the
+// rest word-by-word at SLOW_STREAM_DELAY_MS. The response is multi-word so the
+// per-word slow helpers still produce a real incremental stream.
+const LIVENESS_SLOW_TRIGGER = "E2E_LIVENESS_SLOW_RESPONSE";
+const LIVENESS_SLOW_RESPONSE =
+  "Working on it, this is taking a little while to put together for you.";
+// Initial stall before the first token. Modest but clearly past any sub-second
+// "taking longer" threshold a liveness observer would use.
+const LIVENESS_SLOW_DELAY_MS = 4000;
+
+// DYING: simulates a provider/stream failure. On the OpenAI-completions surface
+// pi-ai expects a 200 SSE stream, so the most faithful "the provider died
+// mid-response" signal is to start the stream, emit a partial token, then tear
+// the socket down WITHOUT a finish_reason or [DONE] — an abruptly-ended stream.
+// On the Ollama-native surface we do the same: write a partial NDJSON chunk
+// (done:false) and destroy the socket. This mirrors a real upstream crash far
+// better than a clean error body would, and gives the liveness observer an
+// authoritative terminal failure rather than a graceful completion.
+const LIVENESS_DYING_TRIGGER = "E2E_LIVENESS_DYING_RESPONSE";
+const LIVENESS_DYING_PARTIAL = "Starting to respond";
+
 // Per-plugin tool triggers — one per plugin, used by behavior tests to assert
 // that the plugin loaded and registerTool() worked end-to-end.
 const FILES_LS_TRIGGER = "E2E_FILES_LS_TOOL";
@@ -244,6 +271,40 @@ async function streamTextResponseSlow(res: http.ServerResponse, text: string) {
     // Client disconnected mid-stream — normal in mid-stream disconnect tests.
   }
   res.end();
+}
+
+// Ollama-native "the provider died mid-response": send headers + one partial
+// NDJSON chunk (done:false), then destroy the socket so the client sees a
+// truncated, never-completed stream — an authoritative terminal failure.
+function streamTextResponseDying(res: http.ServerResponse, partial: string) {
+  res.writeHead(200, {
+    "Content-Type": "application/x-ndjson",
+    "Cache-Control": "no-cache",
+    Connection: "keep-alive",
+  });
+  res.flushHeaders();
+  res.socket?.setNoDelay(true);
+  res.socket?.on("error", (err: NodeJS.ErrnoException) => {
+    if (err.code !== "EPIPE" && err.code !== "ECONNRESET") {
+      console.error("[fake-ollama] socket error:", err);
+    }
+  });
+  // Flush the partial chunk to the wire BEFORE destroying the socket — the
+  // write callback fires once the data has been handed to the kernel, so the
+  // client reliably receives the partial token before seeing the reset.
+  res.write(
+    JSON.stringify({
+      model: MODEL_NAME,
+      created_at: new Date().toISOString(),
+      message: { role: "assistant", content: partial },
+      done: false,
+    }) + "\n",
+    () => {
+      // Abruptly tear the connection down instead of res.end() — no `done:true`
+      // chunk, no done_reason. The client's stream reader sees a premature close.
+      setImmediate(() => res.socket?.destroy());
+    }
+  );
 }
 
 function readJsonBody(req: http.IncomingMessage): Promise<Record<string, unknown>> {
@@ -433,6 +494,105 @@ async function streamOpenAiTextSlow(res: http.ServerResponse, text: string) {
   }
 }
 
+/**
+ * OpenAI-compatible "taking longer than expected" stream: stalls for
+ * `initialDelayMs` BEFORE the first token, then streams word-by-word at
+ * SLOW_STREAM_DELAY_MS and completes normally. The leading stall is what lets a
+ * single liveness threshold engage regardless of response length — mirrors a
+ * real provider that's slow to start generating.
+ */
+async function streamOpenAiTextSlowStart(
+  res: http.ServerResponse,
+  text: string,
+  initialDelayMs: number
+) {
+  sseHeaders(res);
+  res.socket?.setNoDelay(true);
+  res.socket?.on("error", (err: NodeJS.ErrnoException) => {
+    if (err.code !== "EPIPE" && err.code !== "ECONNRESET") {
+      console.error("[fake-ollama] socket error:", err);
+    }
+  });
+  const words = text.split(" ");
+  try {
+    await new Promise((r) => setTimeout(r, initialDelayMs));
+    for (let i = 0; i < words.length; i++) {
+      const piece = i === 0 ? words[i] : " " + words[i];
+      sseWrite(res, chatCompletionChunk({ content: piece }));
+      if (i < words.length - 1) {
+        await new Promise((r) => setTimeout(r, SLOW_STREAM_DELAY_MS));
+      }
+    }
+    sseWrite(res, chatCompletionChunk({ finishReason: "stop" }));
+    sseDone(res);
+  } catch {
+    // Client disconnected mid-stream — normal in mid-stream disconnect tests.
+  }
+}
+
+// Ollama-native "taking longer than expected": same leading-stall semantics as
+// streamOpenAiTextSlowStart but in NDJSON, for the /api/chat surface.
+async function streamTextResponseSlowStart(
+  res: http.ServerResponse,
+  text: string,
+  initialDelayMs: number
+) {
+  res.writeHead(200, {
+    "Content-Type": "application/x-ndjson",
+    "Cache-Control": "no-cache",
+    Connection: "keep-alive",
+  });
+  res.flushHeaders();
+  res.socket?.setNoDelay(true);
+  res.socket?.on("error", (err: NodeJS.ErrnoException) => {
+    if (err.code !== "EPIPE" && err.code !== "ECONNRESET") {
+      console.error("[fake-ollama] socket error:", err);
+    }
+  });
+  const words = text.split(" ");
+  try {
+    await new Promise((r) => setTimeout(r, initialDelayMs));
+    for (const [index, word] of words.entries()) {
+      const isLast = index === words.length - 1;
+      const chunk = {
+        model: MODEL_NAME,
+        created_at: new Date().toISOString(),
+        message: { role: "assistant", content: index === 0 ? word : " " + word },
+        done: isLast,
+        ...(isLast && { done_reason: "stop", total_duration: 1000000 }),
+      };
+      res.write(JSON.stringify(chunk) + "\n");
+      if (!isLast) {
+        await new Promise((r) => setTimeout(r, SLOW_STREAM_DELAY_MS));
+      }
+    }
+  } catch {
+    // Client disconnected mid-stream — normal in mid-stream disconnect tests.
+  }
+  res.end();
+}
+
+// OpenAI-compatible "the provider died mid-response": open the SSE stream, emit
+// one partial token, then destroy the socket — no finish_reason, no [DONE].
+// pi-ai's stream reader sees a premature close, the authoritative terminal
+// failure the liveness observer must surface.
+function streamOpenAiTextDying(res: http.ServerResponse, partial: string) {
+  sseHeaders(res);
+  res.socket?.setNoDelay(true);
+  res.socket?.on("error", (err: NodeJS.ErrnoException) => {
+    if (err.code !== "EPIPE" && err.code !== "ECONNRESET") {
+      console.error("[fake-ollama] socket error:", err);
+    }
+  });
+  // Flush the partial SSE chunk before destroying the socket so the client
+  // reliably receives the partial token ahead of the connection reset.
+  res.write(`data: ${JSON.stringify(chatCompletionChunk({ content: partial }))}\n\n`, () => {
+    // Abruptly tear the connection down — no finish_reason:stop, no usage,
+    // no [DONE]. The client's stream reader sees a premature close.
+    setImmediate(() => res.socket?.destroy());
+  });
+}
+
 function streamOpenAiToolCalls(
   res: http.ServerResponse,
   toolName: string,
@@ -533,6 +693,16 @@ export async function handleRequest(req: http.IncomingMessage, res: http.ServerR
       return;
     }
 
+    if (lastContent.includes(LIVENESS_DYING_TRIGGER) && !hasToolResult) {
+      streamTextResponseDying(res, LIVENESS_DYING_PARTIAL);
+      return;
+    }
+
+    if (lastContent.includes(LIVENESS_SLOW_TRIGGER) && !hasToolResult) {
+      await streamTextResponseSlowStart(res, LIVENESS_SLOW_RESPONSE, LIVENESS_SLOW_DELAY_MS);
+      return;
+    }
+
     streamTextResponse(
       res,
       activeTrigger ? activeTrigger.response : FAKE_RESPONSE,
@@ -587,6 +757,20 @@ export async function handleRequest(req: http.IncomingMessage, res: http.ServerR
       return;
     }
 
+    // Liveness DYING: abruptly-ended stream (provider death). Checked before the
+    // slow trigger because both are independent prompts; order is for clarity.
+    if (lastContent.includes(LIVENESS_DYING_TRIGGER) && !hasToolResult) {
+      streamOpenAiTextDying(res, LIVENESS_DYING_PARTIAL);
+      return;
+    }
+
+    // Liveness SLOW: stalls before the first token so a "taking longer" UI state
+    // engages, then completes normally.
+    if (lastContent.includes(LIVENESS_SLOW_TRIGGER) && !hasToolResult) {
+      await streamOpenAiTextSlowStart(res, LIVENESS_SLOW_RESPONSE, LIVENESS_SLOW_DELAY_MS);
+      return;
+    }
+
     streamOpenAiText(
       res,
       activeTrigger ? activeTrigger.response : FAKE_RESPONSE,
@@ -613,6 +797,12 @@ export const FAKE_OLLAMA_DOMAIN_LOCK_TOOL_RESPONSE = DOMAIN_LOCK_TOOL_RESPONSE;
 export const FAKE_OLLAMA_SLOW_STREAM_TRIGGER = SLOW_STREAM_TRIGGER;
 export const FAKE_OLLAMA_SLOW_STREAM_RESPONSE = SLOW_STREAM_RESPONSE;
 export const FAKE_OLLAMA_SLOW_STREAM_DELAY_MS = SLOW_STREAM_DELAY_MS;
+// Chat-liveness triggers (slow "taking longer" + dying provider failure).
+export const FAKE_OLLAMA_LIVENESS_SLOW_TRIGGER = LIVENESS_SLOW_TRIGGER;
+export const FAKE_OLLAMA_LIVENESS_SLOW_RESPONSE = LIVENESS_SLOW_RESPONSE;
+export const FAKE_OLLAMA_LIVENESS_SLOW_DELAY_MS = LIVENESS_SLOW_DELAY_MS;
+export const FAKE_OLLAMA_LIVENESS_DYING_TRIGGER = LIVENESS_DYING_TRIGGER;
+export const FAKE_OLLAMA_LIVENESS_DYING_PARTIAL = LIVENESS_DYING_PARTIAL;
 export const FAKE_OLLAMA_FILES_LS_TOOL_TRIGGER = FILES_LS_TRIGGER;
 export const FAKE_OLLAMA_FILES_LS_TOOL_RESPONSE = FILES_LS_RESPONSE;
 export const FAKE_OLLAMA_FILES_READ_DOCX_TOOL_TRIGGER = FILES_READ_DOCX_TRIGGER;
