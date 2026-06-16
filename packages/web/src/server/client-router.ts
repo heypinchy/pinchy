@@ -51,6 +51,7 @@ import {
   AttachmentAlreadyAttachedError,
 } from "@/server/attachment-pipeline";
 import { attachmentIdsSchema } from "@/lib/schemas/uploads";
+import { chatIdSchema } from "@/lib/schemas/sessions";
 
 const WS_OPEN = 1;
 const CONNECTION_TIMEOUT_MS = 10_000;
@@ -92,11 +93,19 @@ interface ChatMessage {
   retryReason?: RetryReason;
   /** Two-phase upload IDs from the staged-upload flow. */
   attachmentIds?: string[];
+  /**
+   * Opaque per-chat identifier (#508). Selects which OpenClaw session within
+   * this (user, agent) pair the message routes to. Omitted → the legacy
+   * per-user session key.
+   */
+  chatId?: string;
 }
 
 interface HistoryRequestMessage {
   type: "history";
   agentId: string;
+  /** Per-chat identifier (#508). See ChatMessage.chatId. */
+  chatId?: string;
 }
 
 type BrowserMessage = ChatMessage | HistoryRequestMessage;
@@ -126,6 +135,32 @@ export class ClientRouter {
   private computeSessionKey(agentId: string, chatId?: string): string {
     const base = `agent:${agentId}:direct:${this.userId}`;
     return chatId ? `${base}:${chatId}` : base;
+  }
+
+  /**
+   * Resolve the client-supplied chatId (#508) into the value passed to
+   * computeSessionKey, validating it at the WS trust boundary.
+   *
+   * - No chatId → `{ ok: true, chatId: undefined }` (legacy per-user key).
+   * - Valid chatId → `{ ok: true, chatId }`.
+   * - Invalid chatId → an `INVALID_CHAT_ID` error frame is sent to the client
+   *   and `{ ok: false }` is returned. We do NOT silently fall back to the
+   *   legacy key: a malformed chatId must never route a message (or a history
+   *   read) into the wrong or default conversation.
+   */
+  private resolveChatId(
+    clientWs: WebSocket,
+    chatId: string | undefined
+  ): { ok: true; chatId: string | undefined } | { ok: false } {
+    if (chatId === undefined) {
+      return { ok: true, chatId: undefined };
+    }
+    const parsed = chatIdSchema.safeParse(chatId);
+    if (!parsed.success) {
+      this.sendToClient(clientWs, { type: "error", code: "INVALID_CHAT_ID" });
+      return { ok: false };
+    }
+    return { ok: true, chatId: parsed.data };
   }
 
   async handleMessage(clientWs: WebSocket, message: BrowserMessage): Promise<void> {
@@ -176,7 +211,9 @@ export class ClientRouter {
     }
 
     if (message.type === "history") {
-      return this.handleHistory(clientWs, agent);
+      const resolved = this.resolveChatId(clientWs, message.chatId);
+      if (!resolved.ok) return;
+      return this.handleHistory(clientWs, agent, resolved.chatId);
     }
 
     // Reject legacy attachment shape: clients that still send structured content
@@ -191,7 +228,9 @@ export class ClientRouter {
       return;
     }
 
-    const sessionKey = this.computeSessionKey(message.agentId);
+    const resolvedChat = this.resolveChatId(clientWs, message.chatId);
+    if (!resolvedChat.ok) return;
+    const sessionKey = this.computeSessionKey(message.agentId, resolvedChat.chatId);
 
     const messageId = crypto.randomUUID();
 
@@ -556,9 +595,10 @@ export class ClientRouter {
 
   private async handleHistory(
     clientWs: WebSocket,
-    agent: { id: string; greetingMessage: string }
+    agent: { id: string; greetingMessage: string },
+    chatId?: string
   ): Promise<void> {
-    const sessionKey = this.computeSessionKey(agent.id);
+    const sessionKey = this.computeSessionKey(agent.id, chatId);
 
     // #310 Tier 2b: re-attach this ws to the appropriate listener set
     // BEFORE the history send so any chunks arriving during the await

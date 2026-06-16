@@ -363,6 +363,122 @@ describe("ClientRouter", () => {
     ]);
   });
 
+  describe("chatId session-key threading (#508)", () => {
+    it("dispatches to the chatId-scoped session key when a valid chatId is sent", async () => {
+      // Seed the chatId-scoped key into the cache so the first-time-greeting
+      // prompt isn't appended — this test isolates the session-key value.
+      sessionCache.refresh([{ key: "agent:agent-1:direct:user-1:v1k2n3p4" }]);
+      async function* fakeStream() {
+        yield { type: "text" as const, text: "Hello!" };
+        yield { type: "done" as const, text: "" };
+      }
+      mockChat.mockReturnValue(fakeStream());
+
+      await router.handleMessage(createMockClientWs() as any, {
+        type: "message",
+        content: "Hi Smithers",
+        agentId: "agent-1",
+        chatId: "v1k2n3p4",
+      });
+
+      expect(mockChat).toHaveBeenCalledWith("Hi Smithers", {
+        agentId: "agent-1",
+        sessionKey: "agent:agent-1:direct:user-1:v1k2n3p4",
+      });
+    });
+
+    it("falls back to the legacy per-user key when no chatId is sent", async () => {
+      async function* fakeStream() {
+        yield { type: "text" as const, text: "Hello!" };
+        yield { type: "done" as const, text: "" };
+      }
+      mockChat.mockReturnValue(fakeStream());
+
+      await router.handleMessage(createMockClientWs() as any, {
+        type: "message",
+        content: "Hi Smithers",
+        agentId: "agent-1",
+      });
+
+      expect(mockChat).toHaveBeenCalledWith("Hi Smithers", {
+        agentId: "agent-1",
+        sessionKey: "agent:agent-1:direct:user-1",
+      });
+    });
+
+    it("rejects an invalid chatId with INVALID_CHAT_ID and does not dispatch", async () => {
+      async function* fakeStream() {
+        yield { type: "text" as const, text: "Hello!" };
+        yield { type: "done" as const, text: "" };
+      }
+      mockChat.mockReturnValue(fakeStream());
+
+      const clientWs = createMockClientWs();
+      await router.handleMessage(clientWs as any, {
+        type: "message",
+        content: "Hi Smithers",
+        agentId: "agent-1",
+        chatId: "bad/id",
+      });
+
+      // No dispatch to OpenClaw — a malformed chatId must not leak the message
+      // into the wrong (or default) conversation.
+      expect(mockChat).not.toHaveBeenCalled();
+
+      const messages = clientWs.sent.map((s) => JSON.parse(s));
+      expect(messages.some((m) => m.type === "error" && m.code === "INVALID_CHAT_ID")).toBe(true);
+    });
+
+    it("rejects a colon-bearing chatId with INVALID_CHAT_ID and does not dispatch", async () => {
+      async function* fakeStream() {
+        yield { type: "text" as const, text: "Hello!" };
+        yield { type: "done" as const, text: "" };
+      }
+      mockChat.mockReturnValue(fakeStream());
+
+      const clientWs = createMockClientWs();
+      await router.handleMessage(clientWs as any, {
+        type: "message",
+        content: "Hi Smithers",
+        agentId: "agent-1",
+        chatId: "a:b",
+      });
+
+      expect(mockChat).not.toHaveBeenCalled();
+      const messages = clientWs.sent.map((s) => JSON.parse(s));
+      expect(messages.some((m) => m.type === "error" && m.code === "INVALID_CHAT_ID")).toBe(true);
+    });
+
+    it("loads history for the chatId-scoped session key when a valid chatId is sent", async () => {
+      const clientWs = createMockClientWs();
+      mockSessionsHistory.mockResolvedValue({
+        messages: [{ role: "user", content: "Hello", timestamp: 1708460000000 }],
+      });
+
+      await router.handleMessage(clientWs as any, {
+        type: "history",
+        agentId: "agent-1",
+        chatId: "v1k2n3p4",
+      });
+
+      expect(mockSessionsHistory).toHaveBeenCalledWith("agent:agent-1:direct:user-1:v1k2n3p4");
+    });
+
+    it("rejects an invalid chatId on the history path with INVALID_CHAT_ID and does not load history", async () => {
+      const clientWs = createMockClientWs();
+
+      await router.handleMessage(clientWs as any, {
+        type: "history",
+        agentId: "agent-1",
+        chatId: "bad/id",
+      });
+
+      expect(mockSessionsHistory).not.toHaveBeenCalled();
+      const messages = clientWs.sent.map((s) => JSON.parse(s));
+      expect(messages.some((m) => m.type === "error" && m.code === "INVALID_CHAT_ID")).toBe(true);
+    });
+  });
+
   it("should send streamed chunks to browser client", async () => {
     const clientWs = createMockClientWs();
     async function* fakeStream() {
