@@ -1,9 +1,10 @@
 /**
  * Canonical test suite for useWsRuntime.
  *
- * Covers system aspects (reconnect, agent switching, history reload, delay/
- * stuck timers, 1009 frame handling) AND the callback API (`onRetryContinue`,
- * `onRetryResend`, status-reducer flow, `isOpenClawConnected`).
+ * Covers system aspects (reconnect, agent switching, history reload, the
+ * authoritative `liveness` frame, the delay hint, 1009 frame handling) AND the
+ * callback API (`onRetryContinue`, `onRetryResend`, status-reducer flow,
+ * `isOpenClawConnected`).
  *
  * One mocking strategy throughout: real WebSocket via `vi.stubGlobal` +
  * the hook's `result.current.runtime` exposes the config that was passed to
@@ -547,6 +548,36 @@ describe("useWsRuntime", () => {
         (m: any) => m.role === "assistant" && m.metadata?.custom?.error
       );
       expect(errorMsg).toBeUndefined();
+    });
+
+    it("REGRESSION: no failure bubble appears from elapsed time alone (the false 'didn't respond' bug)", () => {
+      // The whole bug being fixed: the client used to fabricate a failure from
+      // silence (orphan detector, 60s stuck timer, disconnect grace). Now the
+      // server is alive and streaming (responding), time passes well beyond
+      // every former guess window, and WITHOUT an authoritative `liveness:
+      // failed` frame no failure bubble may ever appear and the run stays alive.
+      const { result } = renderHook(() => useWsRuntime("agent-1"));
+      const ws = wsInstances[0];
+      sendAndOpen(result, ws);
+
+      act(() => {
+        ws.onmessage?.({ data: JSON.stringify({ type: "liveness", state: "responding" }) });
+      });
+      act(() => {
+        vi.advanceTimersByTime(300_000);
+      });
+
+      const failureMsg = result.current.runtime.messages.find(
+        (m: any) =>
+          m.role === "assistant" &&
+          (m.metadata?.custom?.error?.message ||
+            m.metadata?.custom?.error?.timedOut ||
+            m.metadata?.custom?.error?.disconnected ||
+            m.metadata?.custom?.syntheticOrphanError)
+      );
+      expect(failureMsg).toBeUndefined();
+      // The run is still considered in flight — no terminal frame arrived.
+      expect(result.current.isRunning).toBe(true);
     });
   });
 
@@ -1825,7 +1856,11 @@ describe("useWsRuntime", () => {
   });
 
   describe("disconnect during active stream", () => {
-    it("should add a disconnect error message when stream is interrupted by a WebSocket error followed by close", () => {
+    it("does NOT inject a failure bubble when a stream is interrupted mid-run (silence is not failure)", () => {
+      // The client no longer guesses failure from a disconnect. On close it
+      // stops the spinner and relies on reconnect + the server's authoritative
+      // `agentWait` liveness verdict (which arrives as a `liveness` frame after
+      // the history refetch). This is the core of the chat-liveness fix.
       const { result } = renderHook(() => useWsRuntime("agent-1"));
       const ws = wsInstances[0];
 
@@ -1842,24 +1877,26 @@ describe("useWsRuntime", () => {
 
       expect(result.current.runtime.isRunning).toBe(true);
 
-      // Real browser behavior: onerror always fires before onclose
+      // Real browser behavior: onerror always fires before onclose.
       act(() => {
         ws.onerror?.();
         ws.onclose?.();
       });
 
-      // Disconnect bubble is now deferred 2s — give a successful reconnect
-      // a chance to land first (issue #199). Advance past the grace window
-      // to surface the bubble for assertion.
+      // Advance well past every former guess window — no failure bubble appears.
       act(() => {
-        vi.advanceTimersByTime(2000);
+        vi.advanceTimersByTime(120_000);
       });
 
-      const messages = result.current.runtime.messages;
-      const disconnectError = messages.find(
-        (m: any) => m.role === "assistant" && m.metadata?.custom?.error?.disconnected === true
+      expect(result.current.runtime.isRunning).toBe(false);
+      const disconnectError = result.current.runtime.messages.find(
+        (m: any) =>
+          m.role === "assistant" &&
+          (m.metadata?.custom?.error?.disconnected === true ||
+            m.metadata?.custom?.error?.timedOut === true ||
+            m.metadata?.custom?.error?.message)
       );
-      expect(disconnectError).toBeDefined();
+      expect(disconnectError).toBeUndefined();
     });
 
     it("should not inject a disconnect error into the new agent chat when switching during an active stream", () => {
@@ -1897,42 +1934,6 @@ describe("useWsRuntime", () => {
       expect(result.current.runtime.messages).toHaveLength(0);
     });
 
-    it("should add a disconnect error message when stream is interrupted by close", () => {
-      const { result } = renderHook(() => useWsRuntime("agent-1"));
-      const ws = wsInstances[0];
-
-      act(() => {
-        ws.onopen?.();
-      });
-
-      act(() => {
-        result.current.runtime.onNew({
-          content: [{ type: "text", text: "Hello" }],
-          parentId: "root",
-        });
-      });
-
-      expect(result.current.runtime.isRunning).toBe(true);
-
-      // Disconnect while stream is active
-      act(() => {
-        ws.onclose?.();
-      });
-
-      // Disconnect bubble is now deferred 2s — give a successful reconnect
-      // a chance to land first (issue #199). Advance past the grace window
-      // to surface the bubble for assertion.
-      act(() => {
-        vi.advanceTimersByTime(2000);
-      });
-
-      const messages = result.current.runtime.messages;
-      const disconnectError = messages.find(
-        (m: any) => m.role === "assistant" && m.metadata?.custom?.error?.disconnected === true
-      );
-      expect(disconnectError).toBeDefined();
-    });
-
     it("should not add a disconnect error message when idle (no active stream)", () => {
       const { result } = renderHook(() => useWsRuntime("agent-1"));
       const ws = wsInstances[0];
@@ -1957,13 +1958,12 @@ describe("useWsRuntime", () => {
       expect(result.current.runtime.messages).toHaveLength(messagesBefore);
     });
 
-    // Regression guard for #199: the disconnect bubble injection is deferred
-    // by DISCONNECT_ERROR_GRACE_MS so a successful reconnect+history-reconcile
-    // can land first. Without this, the messages array shrinks 4→3 during
-    // reconcile and assistant-ui's index-based AssistantMessage subscription
-    // throws "tapClientLookup: Index N out of bounds (length: N)" before the
-    // trailing component can unmount. See use-ws-runtime.ts.
-    it("does NOT inject the disconnect bubble when reconnect+history-reconcile lands within the grace window", () => {
+    // A mid-stream disconnect followed by a successful reconnect+history-reconcile
+    // must never surface a failure bubble — the canonical reply just lands. This
+    // is now the default (silence is not failure): there is no client-side guess
+    // to defer, and the reconcile replaces local state without an intermediate
+    // shrink (the #199 index-out-of-bounds crash this guards against).
+    it("does NOT show a failure bubble when reconnect+history-reconcile lands after a mid-stream disconnect", () => {
       const { result } = renderHook(() => useWsRuntime("agent-1"));
       const ws = wsInstances[0];
 
@@ -1999,7 +1999,7 @@ describe("useWsRuntime", () => {
         ws.onclose?.();
       });
 
-      // Bubble must NOT be present immediately — it's deferred.
+      // No failure bubble on close — the client doesn't guess failure.
       const beforeReconnect = result.current.runtime.messages;
       expect(
         beforeReconnect.find(
@@ -2031,7 +2031,7 @@ describe("useWsRuntime", () => {
         });
       });
 
-      // Advance past the full grace window — bubble must STAY cancelled.
+      // Advance well past any former timer window — no failure bubble ever.
       act(() => {
         vi.advanceTimersByTime(2000);
       });
@@ -2049,39 +2049,6 @@ describe("useWsRuntime", () => {
       );
     });
 
-    it("DOES inject the disconnect bubble when reconnect does not arrive within the grace window", () => {
-      const { result } = renderHook(() => useWsRuntime("agent-1"));
-      const ws = wsInstances[0];
-
-      act(() => {
-        ws.onopen?.();
-      });
-      act(() => {
-        ws.onmessage?.({ data: JSON.stringify({ type: "history", messages: [] }) });
-      });
-
-      act(() => {
-        result.current.runtime.onNew({
-          content: [{ type: "text", text: "Hello" }],
-          parentId: "root",
-        });
-      });
-      act(() => {
-        ws.onclose?.();
-      });
-
-      // Advance past grace window with no reconnect/history.
-      act(() => {
-        vi.advanceTimersByTime(2000);
-      });
-
-      const messages = result.current.runtime.messages;
-      const disconnectError = messages.find(
-        (m: any) => m.role === "assistant" && m.metadata?.custom?.error?.disconnected === true
-      );
-      expect(disconnectError).toBeDefined();
-    });
-
     it("stages a destructive history reconcile behind a message-subtree remount", () => {
       const { result } = renderHook(() => useWsRuntime("agent-1"));
       const ws1 = wsInstances[0];
@@ -2097,6 +2064,10 @@ describe("useWsRuntime", () => {
           parentId: "root",
         });
       });
+      // A partial chunk lands, then an authoritative `liveness: failed` verdict
+      // produces a local error bubble. The destructive staged reconcile must
+      // fire when local state carries an error bubble (the #199 index-shrink
+      // guard), so we drive that state via the new liveness mechanism.
       act(() => {
         ws1.onmessage?.({
           data: JSON.stringify({
@@ -2105,15 +2076,23 @@ describe("useWsRuntime", () => {
             content: "Partial summary",
           }),
         });
+        ws1.onmessage?.({
+          data: JSON.stringify({ type: "liveness", state: "failed", reason: "stream dropped" }),
+        });
         ws1.onclose?.();
       });
 
-      act(() => {
-        vi.advanceTimersByTime(2000);
-      });
-
       const localLength = result.current.runtime.messages.length;
-      expect(localLength).toBeGreaterThan(2);
+      // user + error bubble (the partial chunk's placeholder is replaced by the
+      // failure bubble) → length 2, and crucially one carries an error.
+      expect(result.current.runtime.messages.some((m: any) => m.metadata?.custom?.error)).toBe(
+        true
+      );
+
+      // Reconnect backoff fires after 1s, creating a fresh WebSocket.
+      act(() => {
+        vi.advanceTimersByTime(1000);
+      });
 
       const ws2 = wsInstances[1];
       act(() => {
@@ -2423,204 +2402,6 @@ describe("useWsRuntime", () => {
     });
   });
 
-  describe("stuck request timeout", () => {
-    it("should add a timeout error message after 60 seconds without any activity", () => {
-      const { result } = renderHook(() => useWsRuntime("agent-1"));
-      const ws = wsInstances[0];
-
-      act(() => {
-        ws.onopen?.();
-      });
-
-      act(() => {
-        result.current.runtime.onNew({
-          content: [{ type: "text", text: "Hello" }],
-          parentId: "root",
-        });
-      });
-
-      expect(result.current.runtime.isRunning).toBe(true);
-
-      // 59 seconds — should still be running
-      act(() => {
-        vi.advanceTimersByTime(59_000);
-      });
-      expect(result.current.runtime.isRunning).toBe(true);
-
-      // 60 seconds without any activity — stuck timeout fires
-      act(() => {
-        vi.advanceTimersByTime(1_000);
-      });
-      expect(result.current.runtime.isRunning).toBe(false);
-
-      const messages = result.current.runtime.messages;
-      const timeoutError = messages.find(
-        (m: any) => m.role === "assistant" && m.metadata?.custom?.error?.timedOut === true
-      );
-      expect(timeoutError).toBeDefined();
-    });
-
-    it("should reset the stuck timer when a chunk arrives", () => {
-      const { result } = renderHook(() => useWsRuntime("agent-1"));
-      const ws = wsInstances[0];
-
-      act(() => {
-        ws.onopen?.();
-      });
-
-      act(() => {
-        result.current.runtime.onNew({
-          content: [{ type: "text", text: "Hello" }],
-          parentId: "root",
-        });
-      });
-
-      // 50 seconds pass, then a chunk arrives
-      act(() => {
-        vi.advanceTimersByTime(50_000);
-      });
-      act(() => {
-        ws.onmessage?.({
-          data: JSON.stringify({ type: "chunk", content: "Hi", messageId: "msg-1" }),
-        });
-      });
-
-      // 50 more seconds — still under 60s from last activity, should not timeout
-      act(() => {
-        vi.advanceTimersByTime(50_000);
-      });
-      expect(result.current.runtime.isRunning).toBe(true);
-
-      // 10 more seconds (60s since last chunk) — now it should timeout
-      act(() => {
-        vi.advanceTimersByTime(10_000);
-      });
-      expect(result.current.runtime.isRunning).toBe(false);
-    });
-
-    it("should reset the stuck timer when a thinking heartbeat arrives", () => {
-      const { result } = renderHook(() => useWsRuntime("agent-1"));
-      const ws = wsInstances[0];
-
-      act(() => {
-        ws.onopen?.();
-      });
-
-      act(() => {
-        result.current.runtime.onNew({
-          content: [{ type: "text", text: "Hello" }],
-          parentId: "root",
-        });
-      });
-
-      // 50 seconds pass, then a thinking heartbeat arrives
-      act(() => {
-        vi.advanceTimersByTime(50_000);
-      });
-      act(() => {
-        ws.onmessage?.({
-          data: JSON.stringify({ type: "thinking" }),
-        });
-      });
-
-      // 59 more seconds — still under 60s from last heartbeat
-      act(() => {
-        vi.advanceTimersByTime(59_000);
-      });
-      expect(result.current.runtime.isRunning).toBe(true);
-    });
-
-    it("should clear the stuck timer when complete arrives", () => {
-      const { result } = renderHook(() => useWsRuntime("agent-1"));
-      const ws = wsInstances[0];
-
-      act(() => {
-        ws.onopen?.();
-      });
-
-      act(() => {
-        result.current.runtime.onNew({
-          content: [{ type: "text", text: "Hello" }],
-          parentId: "root",
-        });
-      });
-
-      act(() => {
-        ws.onmessage?.({
-          data: JSON.stringify({ type: "chunk", content: "Hi", messageId: "msg-1" }),
-        });
-      });
-      act(() => {
-        ws.onmessage?.({
-          data: JSON.stringify({ type: "complete" }),
-        });
-      });
-
-      // Advance past 60s — should NOT fire timeout because stream is done
-      act(() => {
-        vi.advanceTimersByTime(120_000);
-      });
-
-      const messages = result.current.runtime.messages;
-      const timeoutError = messages.find(
-        (m: any) => m.role === "assistant" && m.metadata?.custom?.error?.timedOut === true
-      );
-      expect(timeoutError).toBeUndefined();
-    });
-
-    it("should clear the stuck timer on disconnect", () => {
-      const { result } = renderHook(() => useWsRuntime("agent-1"));
-      const ws = wsInstances[0];
-
-      act(() => {
-        ws.onopen?.();
-      });
-
-      act(() => {
-        result.current.runtime.onNew({
-          content: [{ type: "text", text: "Hello" }],
-          parentId: "root",
-        });
-      });
-
-      // Disconnect at 30s — should clear stuck timer
-      act(() => {
-        vi.advanceTimersByTime(30_000);
-      });
-      act(() => {
-        ws.onclose?.();
-      });
-
-      // Advance to 90s total — stuck timer must NOT fire (it was cleared on disconnect)
-      act(() => {
-        vi.advanceTimersByTime(60_000);
-      });
-
-      const messages = result.current.runtime.messages;
-      const timeoutErrors = messages.filter(
-        (m: any) => m.role === "assistant" && m.metadata?.custom?.error?.timedOut === true
-      );
-      // Disconnect error yes, but no separate timeout error
-      expect(timeoutErrors).toHaveLength(0);
-    });
-
-    it("should not start stuck timer when no message has been sent", () => {
-      const { result } = renderHook(() => useWsRuntime("agent-1"));
-      const ws = wsInstances[0];
-
-      act(() => {
-        ws.onopen?.();
-      });
-
-      act(() => {
-        vi.advanceTimersByTime(120_000);
-      });
-
-      expect(result.current.runtime.isRunning).toBe(false);
-      expect(result.current.runtime.messages).toHaveLength(0);
-    });
-  });
-
   describe("openclaw restart messages", () => {
     it("should call triggerRestart when openclaw:restarting message is received", () => {
       renderHook(() => useWsRuntime("agent-1"));
@@ -2860,59 +2641,8 @@ describe("useWsRuntime", () => {
     }
   );
 
-  // ── status reducer + orphan detector ────────────────────────────────────────
-  describe("status reducer + orphan detector", () => {
-    it("transitions user message from sending to sent on ack, then isOrphaned=true after complete", async () => {
-      const { result } = renderHook(() => useWsRuntime("agent-1"));
-
-      // Open the WebSocket connection
-      await act(async () => {
-        latestWs().simulateOpen();
-        // Deliver history (empty) so isHistoryLoaded=true
-        latestWs().simulateMessage({ type: "history", messages: [] });
-      });
-
-      expect(result.current.isHistoryLoaded).toBe(true);
-      // Not orphaned yet (no messages)
-      expect(result.current.isOrphaned).toBe(false);
-
-      // Send a user message
-      await act(async () => {
-        result.current.runtime.onNew(makeUserMessage("hello"));
-      });
-
-      // isRunning is true → not orphaned even though last message is user
-      expect(result.current.isOrphaned).toBe(false);
-
-      // Capture the clientMessageId from the outgoing WS frame
-      const ws = latestWs();
-      const sentPayload = JSON.parse(ws.send.mock.calls.at(-1)![0] as string) as {
-        type: string;
-        clientMessageId: string;
-      };
-      expect(sentPayload.type).toBe("message");
-      expect(sentPayload.clientMessageId).toMatch(
-        /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
-      );
-
-      // Deliver ack — message transitions sending → sent, but isRunning still true
-      await act(async () => {
-        ws.simulateMessage({ type: "ack", clientMessageId: sentPayload.clientMessageId });
-      });
-
-      // Still not orphaned because isRunning=true
-      expect(result.current.isOrphaned).toBe(false);
-
-      // Deliver complete — isRunning resets to false
-      await act(async () => {
-        ws.simulateMessage({ type: "complete" });
-      });
-
-      // Now: last message is user, status=sent, isRunning=false, isHistoryLoaded=true
-      // → isOrphaned must be true
-      expect(result.current.isOrphaned).toBe(true);
-    });
-
+  // ── status reducer ───────────────────────────────────────────────────────────
+  describe("status reducer", () => {
     it("includes clientMessageId in the outgoing WS frame", async () => {
       const { result } = renderHook(() => useWsRuntime("agent-1"));
 
@@ -2969,120 +2699,6 @@ describe("useWsRuntime", () => {
       // History messages have no status (server payload didn't include one),
       // and crucially they did NOT transition to "failed".
       expect(historyUserMsg!.metadata?.custom?.status).not.toBe("failed");
-    });
-
-    it("isOrphaned is false when assistant has responded", async () => {
-      const { result } = renderHook(() => useWsRuntime("agent-1"));
-
-      await act(async () => {
-        latestWs().simulateOpen();
-        latestWs().simulateMessage({ type: "history", messages: [] });
-      });
-
-      await act(async () => {
-        result.current.runtime.onNew(makeUserMessage("hello"));
-      });
-
-      const ws = latestWs();
-      const sentPayload = JSON.parse(ws.send.mock.calls.at(-1)![0] as string) as {
-        clientMessageId: string;
-      };
-
-      await act(async () => {
-        ws.simulateMessage({ type: "ack", clientMessageId: sentPayload.clientMessageId });
-        ws.simulateMessage({
-          type: "chunk",
-          messageId: "assistant-msg-1",
-          content: "Hello!",
-        });
-        ws.simulateMessage({ type: "complete" });
-      });
-
-      // Last message is assistant → not orphaned
-      expect(result.current.isOrphaned).toBe(false);
-    });
-
-    it("exposes synthetic orphan error bubble when isOrphaned is true", async () => {
-      const { result } = renderHook(() => useWsRuntime("agent-1"));
-
-      await act(async () => {
-        latestWs().simulateOpen();
-        latestWs().simulateMessage({ type: "history", messages: [] });
-      });
-
-      await act(async () => {
-        result.current.runtime.onNew(makeUserMessage("hello"));
-      });
-
-      const ws = latestWs();
-      const sentPayload = JSON.parse(ws.send.mock.calls.at(-1)![0] as string) as {
-        clientMessageId: string;
-      };
-
-      await act(async () => {
-        ws.simulateMessage({ type: "ack", clientMessageId: sentPayload.clientMessageId });
-        ws.simulateMessage({ type: "complete" });
-      });
-
-      // isOrphaned=true: last message is sent user, agent is idle, history loaded
-      expect(result.current.isOrphaned).toBe(true);
-
-      // The synthetic orphan bubble must be appended to the thread messages
-      const messages = result.current.runtime.messages as Array<{
-        role: string;
-        id: string;
-        content: Array<{ type: string; text: string }>;
-        metadata?: {
-          custom?: { syntheticOrphanError?: boolean; retryable?: boolean; retryReason?: string };
-        };
-      }>;
-      const lastMsg = messages[messages.length - 1];
-      expect(lastMsg.role).toBe("assistant");
-      expect(lastMsg.content).toEqual([{ type: "text", text: "The agent didn't respond." }]);
-      expect(lastMsg.metadata?.custom?.syntheticOrphanError).toBe(true);
-      expect(lastMsg.metadata?.custom?.retryable).toBe(true);
-      expect(lastMsg.metadata?.custom?.retryReason).toBe("orphan");
-    });
-
-    it("synthetic orphan bubble disappears when isRunning becomes true", async () => {
-      const { result } = renderHook(() => useWsRuntime("agent-1"));
-
-      await act(async () => {
-        latestWs().simulateOpen();
-        latestWs().simulateMessage({ type: "history", messages: [] });
-      });
-
-      await act(async () => {
-        result.current.runtime.onNew(makeUserMessage("hello"));
-      });
-
-      const ws = latestWs();
-      const sentPayload = JSON.parse(ws.send.mock.calls.at(-1)![0] as string) as {
-        clientMessageId: string;
-      };
-
-      await act(async () => {
-        ws.simulateMessage({ type: "ack", clientMessageId: sentPayload.clientMessageId });
-        ws.simulateMessage({ type: "complete" });
-      });
-
-      // Now orphaned
-      expect(result.current.isOrphaned).toBe(true);
-
-      // Send a new message — isRunning becomes true → orphan disappears
-      await act(async () => {
-        result.current.runtime.onNew(makeUserMessage("retry"));
-      });
-
-      expect(result.current.isOrphaned).toBe(false);
-      // No synthetic bubble in thread messages
-      const messages = result.current.runtime.messages as Array<{
-        metadata?: { custom?: { syntheticOrphanError?: boolean } };
-      }>;
-      const hasSyntheticBubble = messages.some(
-        (m) => m.metadata?.custom?.syntheticOrphanError === true
-      );
-      expect(hasSyntheticBubble).toBe(false);
     });
   });
 
@@ -3275,37 +2891,14 @@ describe("useWsRuntime", () => {
       expect(result.current.isDelayed).toBe(false);
     });
 
-    it("resets after 60s stuck timeout with no activity", async () => {
-      const { result } = renderHook(() => useWsRuntime("agent-1"));
-
-      await act(async () => {
-        latestWs().simulateOpen();
-        latestWs().simulateMessage({ type: "history", messages: [] });
-      });
-
-      await act(async () => {
-        result.current.runtime.onNew(makeUserMessage("hello"));
-      });
-
-      expect(result.current.isRunning).toBe(true);
-
-      // Advance 60 seconds — stuck timer fires, isRunning must reset
-      await act(async () => {
-        await vi.advanceTimersByTimeAsync(60_000);
-      });
-
-      expect(result.current.isRunning).toBe(false);
-      expect(result.current.isDelayed).toBe(false);
-    });
-
-    it("does NOT reset isRunning on 10s ack timeout — stuck timer (60s) is the safety valve", async () => {
+    it("does NOT reset isRunning on the 10s ack timeout, nor from any elapsed time alone", async () => {
       // The 10s ack timeout governs message DELIVERY status only — it marks the
-      // user message as "failed" if OpenClaw never sent an ack. But isRunning is
-      // intentionally kept true until a real terminal event (complete / error /
-      // disconnect / 60s stuck timeout). This keeps the spinner showing so the
-      // user knows the agent might still be working (e.g. OpenClaw received the
-      // message but the ack frame was dropped). The 60s stuck timer is the
-      // unconditional safety valve that resets isRunning if truly nothing happens.
+      // user message as "failed" if OpenClaw never sent an ack. isRunning is
+      // intentionally kept true until a REAL terminal event (complete / error /
+      // disconnect / authoritative liveness:failed). There is no longer a 60s
+      // stuck timer, so no amount of elapsed silence resets isRunning or
+      // fabricates a failure — that client-side guess was the bug. The spinner
+      // keeps showing so the user knows the agent might still be working.
       const { result } = renderHook(() => useWsRuntime("agent-1"));
 
       await act(async () => {
@@ -3319,28 +2912,37 @@ describe("useWsRuntime", () => {
 
       expect(result.current.isRunning).toBe(true);
 
-      // Advance 10 seconds — ack timeout fires, message → failed
-      // The WebSocket stays connected (no simulateClose)
+      // Advance 10 seconds — ack timeout fires, message → failed.
+      // The WebSocket stays connected (no simulateClose).
       await act(async () => {
         await vi.advanceTimersByTimeAsync(10_000);
       });
 
-      // isRunning is still true — ack timeout only affects delivery status, not running state
+      // isRunning still true — ack timeout only affects delivery status.
       expect(result.current.isRunning).toBe(true);
 
-      // Advance to 60 seconds — stuck timer fires, now isRunning resets
+      // Advance well past the former 60s stuck window — isRunning STAYS true and
+      // no failure bubble appears, because no authoritative terminal frame came.
       await act(async () => {
-        await vi.advanceTimersByTimeAsync(50_000);
+        await vi.advanceTimersByTimeAsync(120_000);
       });
 
-      expect(result.current.isRunning).toBe(false);
-      expect(result.current.isDelayed).toBe(false);
+      expect(result.current.isRunning).toBe(true);
+      const failureBubble = result.current.runtime.messages.find(
+        (m: any) =>
+          m.role === "assistant" &&
+          (m.metadata?.custom?.error?.timedOut === true || m.metadata?.custom?.error?.message)
+      );
+      expect(failureBubble).toBeUndefined();
     });
   });
 
   // ── injected error bubbles have retryable: true ─────────────────────────────
   describe("injected error bubbles have retryable: true", () => {
-    it("disconnect error bubble has retryReason 'send_failure' when no chunks were received", async () => {
+    it("liveness:failed bubble is retryable with the right retryReason for each chunk state", async () => {
+      // No chunks received → send_failure; chunks received → partial_stream_failure.
+      // The authoritative liveness:failed verdict replaces the old disconnect /
+      // stuck-timer bubbles as the source of a retryable terminal failure.
       const { result } = renderHook(() => useWsRuntime("agent-1"));
 
       await act(async () => {
@@ -3348,99 +2950,46 @@ describe("useWsRuntime", () => {
         latestWs().simulateMessage({ type: "history", messages: [] });
       });
 
+      // Case 1: failure before any chunk → send_failure.
       await act(async () => {
         result.current.runtime.onNew(makeUserMessage("hello"));
       });
-
-      // WS dies BEFORE any chunk arrives — no last turn to continue, must resend.
       await act(async () => {
-        latestWs().simulateClose();
-      });
-
-      // Disconnect bubble is now deferred 2s — give a successful reconnect a
-      // chance to land first (issue #199). Advance past the grace window.
-      await act(async () => {
-        await vi.advanceTimersByTimeAsync(2000);
+        latestWs().simulateMessage({
+          type: "liveness",
+          state: "failed",
+          reason: "the agent run ended without a response",
+        });
       });
 
       expect(result.current.isRunning).toBe(false);
-
-      const messages = result.current.runtime.messages as Array<{
+      let messages = result.current.runtime.messages as Array<{
         role: string;
         metadata?: { custom?: { retryable?: boolean; retryReason?: string } };
       }>;
-      const lastMsg = messages[messages.length - 1];
+      let lastMsg = messages[messages.length - 1];
       expect(lastMsg.role).toBe("assistant");
       expect(lastMsg.metadata?.custom?.retryable).toBe(true);
       expect(lastMsg.metadata?.custom?.retryReason).toBe("send_failure");
-    });
 
-    it("disconnect error bubble has retryable: true in metadata", async () => {
-      const { result } = renderHook(() => useWsRuntime("agent-1"));
-
+      // Case 2: a fresh turn that streams a chunk, then fails → partial_stream_failure.
       await act(async () => {
-        latestWs().simulateOpen();
-        latestWs().simulateMessage({ type: "history", messages: [] });
+        result.current.runtime.onNew(makeUserMessage("again"));
       });
-
-      await act(async () => {
-        result.current.runtime.onNew(makeUserMessage("hello"));
-      });
-
-      // Start a stream (chunk arrives) then WS disconnects
       await act(async () => {
         latestWs().simulateMessage({ type: "chunk", messageId: "m1", content: "Partial..." });
+        latestWs().simulateMessage({
+          type: "liveness",
+          state: "failed",
+          reason: "stream dropped",
+        });
       });
 
-      await act(async () => {
-        latestWs().simulateClose();
-      });
-
-      // Disconnect bubble is now deferred 2s — give a successful reconnect a
-      // chance to land first (issue #199). Advance past the grace window.
-      await act(async () => {
-        await vi.advanceTimersByTimeAsync(2000);
-      });
-
-      // isRunning should have been true, so a disconnect error bubble was injected
-      expect(result.current.isRunning).toBe(false);
-
-      const messages = result.current.runtime.messages as Array<{
+      messages = result.current.runtime.messages as Array<{
         role: string;
         metadata?: { custom?: { retryable?: boolean; retryReason?: string } };
       }>;
-      const lastMsg = messages[messages.length - 1];
-      expect(lastMsg.role).toBe("assistant");
-      expect(lastMsg.metadata?.custom?.retryable).toBe(true);
-      expect(lastMsg.metadata?.custom?.retryReason).toBe("partial_stream_failure");
-    });
-
-    it("stuck timeout error bubble has retryable: true in metadata", async () => {
-      const { result } = renderHook(() => useWsRuntime("agent-1"));
-
-      await act(async () => {
-        latestWs().simulateOpen();
-        latestWs().simulateMessage({ type: "history", messages: [] });
-      });
-
-      await act(async () => {
-        result.current.runtime.onNew(makeUserMessage("hello"));
-      });
-
-      expect(result.current.isRunning).toBe(true);
-
-      // Advance 60 seconds — stuck timer fires
-      await act(async () => {
-        await vi.advanceTimersByTimeAsync(60_000);
-      });
-
-      expect(result.current.isRunning).toBe(false);
-
-      const messages = result.current.runtime.messages as Array<{
-        role: string;
-        metadata?: { custom?: { retryable?: boolean; retryReason?: string } };
-      }>;
-      const lastMsg = messages[messages.length - 1];
+      lastMsg = messages[messages.length - 1];
       expect(lastMsg.role).toBe("assistant");
       expect(lastMsg.metadata?.custom?.retryable).toBe(true);
       expect(lastMsg.metadata?.custom?.retryReason).toBe("partial_stream_failure");
@@ -3530,7 +3079,7 @@ describe("useWsRuntime", () => {
       expect(assistantMessages.length).toBeGreaterThanOrEqual(1);
     });
 
-    it("does not wipe local state on reconnect when last message is the disconnect error bubble", async () => {
+    it("does not wipe local state on reconnect when last message is an error bubble", async () => {
       const { result } = renderHook(() => useWsRuntime("agent-1"));
 
       // Open WS, load empty history
@@ -3539,7 +3088,9 @@ describe("useWsRuntime", () => {
         latestWs().simulateMessage({ type: "history", messages: [] });
       });
 
-      // Send a message and receive a partial chunk
+      // Send a message, receive a partial chunk, then an authoritative error
+      // frame produces a local error bubble (the case that used to be the
+      // deferred disconnect bubble).
       await act(async () => {
         result.current.runtime.onNew(makeUserMessage("hello"));
       });
@@ -3551,17 +3102,16 @@ describe("useWsRuntime", () => {
       await act(async () => {
         ws.simulateMessage({ type: "ack", clientMessageId: sentPayload.clientMessageId });
         ws.simulateMessage({ type: "chunk", messageId: "asst-1", content: "Partial " });
+        ws.simulateMessage({ type: "error", message: "Stream broke" });
       });
 
-      // Simulate disconnect — arms reconcile, schedules deferred error bubble
+      // Disconnect — arms reconcile.
       await act(async () => {
         ws.simulateClose();
       });
 
-      // Reconnect with EMPTY history before the deferral fires — empty history
-      // can't be canonical, so the local state stays. The deferred bubble timer
-      // is NOT cancelled (only non-empty history cancels it), so advancing past
-      // the grace window surfaces the bubble.
+      // Reconnect with EMPTY history — empty history can't be canonical, so the
+      // local state (including the error bubble) must stay.
       await act(async () => {
         await vi.advanceTimersByTimeAsync(1000); // backoff for reconnect
       });
@@ -3570,16 +3120,11 @@ describe("useWsRuntime", () => {
         latestWs().simulateMessage({ type: "history", messages: [] });
       });
 
-      // Advance past the disconnect-bubble grace window (issue #199).
-      await act(async () => {
-        await vi.advanceTimersByTimeAsync(2000);
-      });
-
       const messages = result.current.runtime.messages as Array<{
         role: string;
         metadata?: { custom?: { error?: unknown } };
       }>;
-      expect(messages.length).toBeGreaterThanOrEqual(3); // user + partial assistant + error
+      expect(messages.length).toBeGreaterThanOrEqual(2); // user + error bubble
 
       // Local state must be preserved — empty server history can't be canonical
       // when we still have unpersisted local state ending in an error bubble.
@@ -4071,10 +3616,11 @@ describe("useWsRuntime", () => {
         await vi.advanceTimersByTimeAsync(10_000);
       });
 
-      // At this point isRunning is still true (ack timeout doesn't reset it)
-      // Advance to 60s so stuck timer resets isRunning to false
+      // At this point isRunning is still true (ack timeout doesn't reset it).
+      // A WS disconnect is a real terminal event that stops the spinner (no
+      // failure bubble — that's the chat-liveness fix). isRunning → false.
       await act(async () => {
-        await vi.advanceTimersByTimeAsync(50_000);
+        ws.simulateClose();
       });
 
       expect(result.current.isRunning).toBe(false);
@@ -4170,13 +3716,18 @@ describe("useWsRuntime", () => {
         latestWs().simulateMessage({ type: "complete" });
       });
 
-      // After complete: local messages = [user "hello from user" status="sent"].
-      // Last message is user with status "sent" → isOrphaned=true.
-      // This confirms the reconcile upgraded "sending" → "sent".
-      expect(result.current.isOrphaned).toBe(true);
+      // The reconcile upgraded the in-flight user message from "sending" → "sent"
+      // because its content appears in the reloaded history.
+      const userMsg = (
+        result.current.runtime.messages as Array<{
+          role: string;
+          metadata?: { custom?: { status?: string } };
+        }>
+      ).find((m) => m.role === "user");
+      expect(userMsg?.metadata?.custom?.status).toBe("sent");
     });
 
-    it("marks in-flight sending message as sent (isOrphaned=true) when history contains it and assistant hasn't replied yet", async () => {
+    it("marks an in-flight sending message as sent when history contains it and the assistant hasn't replied yet", async () => {
       const { result } = renderHook(() => useWsRuntime("agent-1"));
 
       // Connect and load initial empty history
@@ -4204,9 +3755,16 @@ describe("useWsRuntime", () => {
         latestWs().simulateMessage({ type: "complete" });
       });
 
-      // After complete: last message is user with status "sent" (reconciled from history),
-      // isRunning=false, isHistoryLoaded=true → isOrphaned=true
-      expect(result.current.isOrphaned).toBe(true);
+      // The user message is reconciled from history → status "sent". (No
+      // client-side orphan guess any more — the server's liveness verdict is
+      // authoritative for whether the run is still going / failed.)
+      const userMsg = (
+        result.current.runtime.messages as Array<{
+          role: string;
+          metadata?: { custom?: { status?: string } };
+        }>
+      ).find((m) => m.role === "user");
+      expect(userMsg?.metadata?.custom?.status).toBe("sent");
     });
 
     it("fails in-flight sending messages that don't appear in reloaded history", async () => {
@@ -4237,17 +3795,23 @@ describe("useWsRuntime", () => {
         latestWs().simulateMessage({ type: "complete" });
       });
 
-      // The sending message should now be "failed" — not in history.
-      // isOrphaned is false because status="failed" (not "sent")
-      expect(result.current.isOrphaned).toBe(false);
+      // The sending message should now be "failed" — it never appeared in
+      // history, so the reducer marks it as not delivered.
+      const userMsg = (
+        result.current.runtime.messages as Array<{
+          role: string;
+          metadata?: { custom?: { status?: string } };
+        }>
+      ).find((m) => m.role === "user");
+      expect(userMsg?.metadata?.custom?.status).toBe("failed");
     });
 
-    // Issue #310: production users saw "The agent didn't respond" even though
-    // the assistant reply had landed safely on OpenClaw. Root cause: the WS
-    // dropped between ack and the first chunk, so the last non-error local
-    // message was the user's send. The reconcile gate at use-ws-runtime.ts
-    // required `lastNonError.role === "assistant"`, which fails in this
-    // window — server history was ignored and the orphan stuck around.
+    // Issue #310: production users saw a false failure even though the
+    // assistant reply had landed safely on OpenClaw. Root cause: the WS dropped
+    // between ack and the first chunk, so the last non-error local message was
+    // the user's send. The reconcile gate at use-ws-runtime.ts required
+    // `lastNonError.role === "assistant"`, which fails in this window — server
+    // history was ignored and the canonical reply never replaced local state.
     it("reconciles from history when WS dropped before any assistant chunk arrived (#310)", async () => {
       const { result } = renderHook(() => useWsRuntime("agent-1"));
 
@@ -4290,11 +3854,6 @@ describe("useWsRuntime", () => {
         });
       });
 
-      // Advance past the disconnect-bubble grace window — bubble must stay
-      // cancelled because reconcile landed within the window.
-      await act(async () => {
-        await vi.advanceTimersByTimeAsync(2000);
-      });
       // Flush the staged-replace timer (stageDestructiveHistoryReconcile uses
       // a 0ms setTimeout to remount the message subtree before swapping).
       await act(async () => {
@@ -4307,7 +3866,7 @@ describe("useWsRuntime", () => {
         metadata?: { custom?: { error?: unknown } };
       }>;
 
-      // No synthetic disconnect bubble — reconcile happened in time
+      // No failure bubble — reconcile replaced local state with canonical history
       const errorBubbles = messages.filter(
         (m) => m.role === "assistant" && m.metadata?.custom?.error
       );
@@ -4316,9 +3875,6 @@ describe("useWsRuntime", () => {
       // Canonical assistant reply must be the last message
       expect(messages.at(-1)?.role).toBe("assistant");
       expect(messages.at(-1)?.content[0].text).toBe("25 days of paid leave per year.");
-
-      // isOrphaned must be false — the orphan was healed via reconcile
-      expect(result.current.isOrphaned).toBe(false);
     });
 
     describe("binary file attachments (PDF)", () => {

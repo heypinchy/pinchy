@@ -5,14 +5,15 @@
  * `isRunning && last.role !== "assistant"` and removes it on any
  * `isRunning → false` flip — that removal shrinks the rendered count and a
  * stale trailing-index subscriber crashes the view (`tapClientLookup: Index N
- * out of bounds (length: N)`). Two unguarded flips existed: the
- * lifecycle-suspend branch and the #199 grace branch of ws.onclose.
+ * out of bounds (length: N)`).
  *
  * The fix kills the class at the source: the send path appends Pinchy's OWN
  * empty in-flight assistant placeholder, so the list always ends in an
- * assistant while running and the optimistic message never exists. These
- * tests pin the proximate invariant (jsdom cannot reproduce the tap-scheduler
- * race itself — see the #470 lesson).
+ * assistant while running and the optimistic message never exists. A terminal
+ * verdict (an authoritative `error` frame or `liveness: failed`) REPLACES that
+ * placeholder rather than appending beside it, so the isRunning flip stays
+ * count-neutral. These tests pin the proximate invariant (jsdom cannot
+ * reproduce the tap-scheduler race itself — see the #470 lesson).
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { renderHook, act } from "@testing-library/react";
@@ -145,15 +146,18 @@ describe("useWsRuntime — in-flight placeholder invariant", () => {
     expect(msgs[msgs.length - 1]?.role).toBe("assistant");
   });
 
-  it("the deferred disconnect bubble REPLACES the placeholder instead of appending next to it", () => {
+  it("a liveness:failed verdict REPLACES the placeholder instead of appending next to it", () => {
     const { hook, ws } = setup();
     act(() => sendText(hook.result, "hello"));
     const countAfterSend = messagesOf(hook.result.current.runtime).length;
 
-    act(() => ws.simulateClose());
-    act(() => {
-      vi.advanceTimersByTime(2100); // DISCONNECT_ERROR_GRACE_MS
-    });
+    act(() =>
+      ws.simulateMessage({
+        type: "liveness",
+        state: "failed",
+        reason: "no response from the agent",
+      })
+    );
 
     const msgs = messagesOf(hook.result.current.runtime);
     expect(msgs.length).toBe(countAfterSend); // bubble took the placeholder's slot
@@ -162,17 +166,22 @@ describe("useWsRuntime — in-flight placeholder invariant", () => {
     expect(errorOf(last)).toBeTruthy();
   });
 
-  it("the stuck-timeout bubble REPLACES the placeholder instead of appending next to it", () => {
-    const { hook } = setup();
+  it("a liveness:failed verdict after a streamed chunk appends the bubble, preserving the partial", () => {
+    const { hook, ws } = setup();
     act(() => sendText(hook.result, "hello"));
     const countAfterSend = messagesOf(hook.result.current.runtime).length;
 
-    act(() => {
-      vi.advanceTimersByTime(61_000); // STUCK_TIMEOUT_MS
-    });
+    // First chunk adopts the placeholder (it now carries real content), then the
+    // run fails authoritatively. Because the trailing assistant is no longer an
+    // EMPTY placeholder, the failure bubble appends beside the partial reply
+    // rather than overwriting it — matching the `error` frame behaviour.
+    act(() => ws.simulateMessage({ type: "chunk", messageId: "srv-1", content: "Partial" }));
+    act(() => ws.simulateMessage({ type: "liveness", state: "failed", reason: "stream dropped" }));
 
     const msgs = messagesOf(hook.result.current.runtime);
-    expect(msgs.length).toBe(countAfterSend);
+    expect(msgs.length).toBe(countAfterSend + 1); // partial reply kept + new bubble
     expect(errorOf(msgs[msgs.length - 1])).toBeTruthy();
+    // The partial assistant reply survives.
+    expect(msgs.some((m) => m.id === "srv-1")).toBe(true);
   });
 });

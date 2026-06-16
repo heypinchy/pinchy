@@ -6,7 +6,6 @@ import { ChatSessionMounts } from "@/components/chat-session-mounts";
 
 // Mutable state that tests can override to control useWsRuntime's return value.
 let mockIsRunning = false;
-let mockIsOrphaned = false;
 let mockReconnectExhausted = false;
 let mockPayloadRejected = false;
 let mockPathname = "/agents";
@@ -32,7 +31,6 @@ vi.mock("@/hooks/use-ws-runtime", () => ({
       isDelayed: false,
       reconnectExhausted: mockReconnectExhausted,
       payloadRejected: mockPayloadRejected,
-      isOrphaned: mockIsOrphaned,
       onRetryContinue: vi.fn(),
       onRetryResend: vi.fn(),
     };
@@ -51,7 +49,6 @@ function seedBundle(agentId: string, publish: (b: any) => void) {
     isDelayed: false,
     reconnectExhausted: false,
     payloadRejected: false,
-    isOrphaned: false,
     onRetryContinue: vi.fn(),
     onRetryResend: vi.fn(),
     lastError: null,
@@ -61,7 +58,6 @@ function seedBundle(agentId: string, publish: (b: any) => void) {
 describe("ChatSessionMounts", () => {
   beforeEach(() => {
     mockIsRunning = false;
-    mockIsOrphaned = false;
     mockReconnectExhausted = false;
     mockPayloadRejected = false;
     mockPathname = "/agents";
@@ -243,13 +239,6 @@ describe("ChatSessionMounts", () => {
       return observed[observed.length - 1];
     }
 
-    it("publishes lastError='The agent did not respond' when bundle.isOrphaned is true", () => {
-      const bundle = lastBundleFor("agent-orphan", () => {
-        mockIsOrphaned = true;
-      });
-      expect(bundle?.lastError).toBe("The agent did not respond");
-    });
-
     it("publishes lastError='Connection lost...' when bundle.reconnectExhausted is true", () => {
       const bundle = lastBundleFor("agent-exhausted", () => {
         mockReconnectExhausted = true;
@@ -257,20 +246,12 @@ describe("ChatSessionMounts", () => {
       expect(bundle?.lastError).toMatch(/connection lost/i);
     });
 
-    it("publishes lastError=null when neither isOrphaned nor reconnectExhausted is set", () => {
+    it("publishes lastError=null when reconnectExhausted is not set", () => {
+      // Per-turn failures are now authoritative `liveness: failed` verdicts
+      // rendered as a thread bubble — they are NOT surfaced as a sidebar
+      // lastError. Reconnect exhaustion is the only sidebar error.
       const bundle = lastBundleFor("agent-healthy", () => {});
       expect(bundle?.lastError).toBeNull();
-    });
-
-    it("prefers reconnectExhausted message over isOrphaned when both are true", () => {
-      // reconnectExhausted is the more severe state — the user can't recover
-      // without reloading, while isOrphaned just means the current turn timed
-      // out. The more-severe message wins so the sidebar tooltip is actionable.
-      const bundle = lastBundleFor("agent-both", () => {
-        mockIsOrphaned = true;
-        mockReconnectExhausted = true;
-      });
-      expect(bundle?.lastError).toMatch(/connection lost/i);
     });
   });
 });

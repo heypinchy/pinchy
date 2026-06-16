@@ -26,7 +26,6 @@ import type { ChatError } from "@/components/assistant-ui/chat-error-message";
 import { upstreamFormatErrorSchema } from "@/lib/schemas/chat-frames";
 import { reduceMessages, type Action } from "./message-status-reducer";
 import type { MessageStatus } from "./message-status-reducer";
-import { isOrphaned as computeIsOrphaned } from "./orphan-detector";
 import {
   livenessReducer,
   INITIAL_LIVENESS,
@@ -78,7 +77,6 @@ export interface WsMessage {
 }
 
 const DELAY_HINT_MS = 15_000;
-const STUCK_TIMEOUT_MS = 60_000;
 /**
  * Cap on the Tier 2b pre-history frame buffer. The buffer holds chunks
  * that arrive on a fresh ws between `addListener` (server-side) and the
@@ -286,24 +284,6 @@ export const attachmentAdapter = new CompositeAttachmentAdapter([
 
 const MAX_RECONNECT_ATTEMPTS = 10;
 const MAX_BUNDLED_MESSAGES = 200;
-/**
- * Grace period before a disconnect-mid-stream is surfaced as a chat error
- * bubble. If the next reconnect succeeds and history reconciles within this
- * window, no bubble is shown — the user just sees the canonical reply land.
- *
- * Why we defer the bubble: when reconcile replaces `[..., partial-chunk,
- * error-bubble]` with the canonical history, the message list shrinks. The
- * `<AssistantMessage>` component subscribed to the trailing index reads its
- * stale snapshot on the next subscription notification and assistant-ui
- * throws "tapClientLookup: Index N out of bounds (length: N)" before React
- * can unmount it (issue #199). Adding the bubble only AFTER reconcile fails
- * keeps the message-list length stable across reconnects in the common case.
- *
- * The 2000 ms cap is comfortably above the first reconnect backoff (1000 ms)
- * plus a typical history-roundtrip; reconnect attempts further out (2 s, 4 s,
- * 5 s) still trigger the bubble because they cross this threshold.
- */
-const DISCONNECT_ERROR_GRACE_MS = 2_000;
 
 function capMessages<T>(messages: T[]): T[] {
   if (messages.length <= MAX_BUNDLED_MESSAGES) return messages;
@@ -416,7 +396,6 @@ export function useWsRuntime(agentId: string): {
   hasInitialContent: boolean;
   reconnectExhausted: boolean;
   payloadRejected: boolean;
-  isOrphaned: boolean;
   onRetryContinue: (reason: "orphan" | "partial_stream_failure" | "send_failure") => void;
   onRetryResend: (messageId: string) => void;
   pendingUploads: PendingUpload[];
@@ -462,8 +441,6 @@ export function useWsRuntime(agentId: string): {
   const wsRef = useRef<WebSocket | null>(null);
   const connectRef = useRef<(() => void) | null>(null);
   const delayTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const stuckTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const resetStuckTimerRef = useRef<(() => void) | null>(null);
   const mountedRef = useRef(true);
   const reconnectAttemptRef = useRef(0);
   const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -472,21 +449,6 @@ export function useWsRuntime(agentId: string): {
   const messagesRef = useRef<WsMessage[]>([]);
   const shouldRecoverFromHistoryRef = useRef(false);
   const lifecycleSuspendedRef = useRef(false);
-  /**
-   * Pending-disconnect-error timer. Set by `onclose` when a stream is
-   * interrupted; cleared when a successful history reconcile lands within
-   * DISCONNECT_ERROR_GRACE_MS. If the timer fires, the disconnect bubble is
-   * appended. See comment on `DISCONNECT_ERROR_GRACE_MS` for why this is
-   * deferred (issue #199 / assistant-ui index-snapshot race).
-   *
-   * Carries the `retryReason` chosen at close time — `partial_stream_failure`
-   * if any chunks arrived, otherwise `send_failure` — so a delayed firing
-   * still classifies the failure correctly.
-   */
-  const pendingDisconnectErrorRef = useRef<{
-    timer: ReturnType<typeof setTimeout>;
-    retryReason: "partial_stream_failure" | "send_failure";
-  } | null>(null);
   const pendingMessageRef = useRef<string | null>(null);
   const isRunningRef = useRef(false);
   /**
@@ -574,13 +536,6 @@ export function useWsRuntime(agentId: string): {
       // eslint-disable-next-line react-hooks/refs
       reconcileFinishTimerRef.current = null;
     }
-    // eslint-disable-next-line react-hooks/refs
-    if (pendingDisconnectErrorRef.current) {
-      // eslint-disable-next-line react-hooks/refs
-      clearTimeout(pendingDisconnectErrorRef.current.timer);
-      // eslint-disable-next-line react-hooks/refs
-      pendingDisconnectErrorRef.current = null;
-    }
     // Revoke object URLs from previous agent's pending uploads and clear the list.
     setPendingUploads((prev) => {
       for (const u of prev) {
@@ -637,13 +592,6 @@ export function useWsRuntime(agentId: string): {
     // `ackTimers` and `pendingAckTimers.current` always point to the same Map.
     const ackTimers = pendingAckTimers.current;
 
-    function clearStuckTimer() {
-      if (stuckTimerRef.current) {
-        clearTimeout(stuckTimerRef.current);
-        stuckTimerRef.current = null;
-      }
-    }
-
     function clearReconcileTimers() {
       if (reconcileApplyTimerRef.current) {
         clearTimeout(reconcileApplyTimerRef.current);
@@ -656,16 +604,11 @@ export function useWsRuntime(agentId: string): {
     }
 
     function clearUiTimers() {
-      clearStuckTimer();
       clearReconcileTimers();
       setIsReconcilingMessages(false);
       if (delayTimerRef.current) {
         clearTimeout(delayTimerRef.current);
         delayTimerRef.current = null;
-      }
-      if (pendingDisconnectErrorRef.current) {
-        clearTimeout(pendingDisconnectErrorRef.current.timer);
-        pendingDisconnectErrorRef.current = null;
       }
       for (const timer of pendingAckTimers.current.values()) {
         clearTimeout(timer);
@@ -739,30 +682,6 @@ export function useWsRuntime(agentId: string): {
       recoverFromPageLifecycle();
     }
 
-    function resetStuckTimer() {
-      clearStuckTimer();
-      stuckTimerRef.current = setTimeout(() => {
-        isRunningRef.current = false;
-        setIsRunning(false);
-        setIsDelayed(false);
-        setMessages((prev) =>
-          capMessages(
-            replaceTrailingPlaceholder(prev, {
-              id: uuid(),
-              role: "assistant",
-              content: "",
-              error: { timedOut: true },
-              retryable: true,
-              retryReason: "partial_stream_failure" as const,
-            })
-          )
-        );
-      }, STUCK_TIMEOUT_MS);
-    }
-
-    // Expose resetStuckTimer to onNew (defined outside this useEffect)
-    resetStuckTimerRef.current = resetStuckTimer;
-
     function connect() {
       const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
       const ws = new WebSocket(`${protocol}//${window.location.host}/api/ws?agentId=${agentId}`);
@@ -803,7 +722,6 @@ export function useWsRuntime(agentId: string): {
         if (wsRef.current === ws) wsRef.current = null;
         setIsConnected(false);
         setIsDelayed(false);
-        clearStuckTimer();
         // Tier 2b: drop any pre-history buffer from the dying connection
         // so it can't bleed into the next ws's drain. The next onopen
         // re-arms pendingHistoryRef before sending its own history req.
@@ -855,41 +773,17 @@ export function useWsRuntime(agentId: string): {
           return;
         }
 
-        // If a stream was in progress, defer injecting the disconnect error
-        // bubble — give the imminent reconnect+history-reconcile a chance to
-        // land first. If reconcile arrives within DISCONNECT_ERROR_GRACE_MS,
-        // it will clear this timer and the bubble is never shown. This keeps
-        // the message-list length stable across reconnects in the common case
-        // (avoids issue #199 / assistant-ui index-snapshot race).
-        if (isRunningRef.current) {
-          isRunningRef.current = false;
-          setIsRunning(false);
-          if (pendingDisconnectErrorRef.current) {
-            clearTimeout(pendingDisconnectErrorRef.current.timer);
-          }
-          const retryReason = hasReceivedChunkRef.current
-            ? ("partial_stream_failure" as const)
-            : ("send_failure" as const);
-          const timer = setTimeout(() => {
-            pendingDisconnectErrorRef.current = null;
-            if (!mountedRef.current) return;
-            setMessages((prev) =>
-              capMessages(
-                replaceTrailingPlaceholder(prev, {
-                  id: uuid(),
-                  role: "assistant",
-                  content: "",
-                  error: { disconnected: true },
-                  retryable: true,
-                  retryReason,
-                })
-              )
-            );
-          }, DISCONNECT_ERROR_GRACE_MS);
-          pendingDisconnectErrorRef.current = { timer, retryReason };
-        } else {
-          setIsRunning(false);
-        }
+        // Stop the spinner for the disconnected gap, but do NOT inject a
+        // failure bubble. A mid-stream disconnect is no longer guessed to be a
+        // failure: the reconnect below refetches history and the server's
+        // authoritative `agentWait` verdict arrives as a `liveness` frame after
+        // the reconcile (responding → keep going, completed → reply landed,
+        // failed → the only path that shows the failure bubble). The
+        // `activeRun` history signal re-arms the spinner if the run is still
+        // in flight. This is the core of the chat-liveness fix: silence is
+        // never failure.
+        isRunningRef.current = false;
+        setIsRunning(false);
 
         setIsHistoryLoaded(false);
         setKnownEmptyHistory(false);
@@ -910,10 +804,9 @@ export function useWsRuntime(agentId: string): {
 
       ws.onerror = () => {
         if (connectionAgentId !== agentIdRef.current || wsRef.current !== ws) return;
-        // onclose always fires after onerror — let onclose handle isRunning and
-        // the disconnect error injection so the user sees the right feedback.
+        // onclose always fires after onerror — let onclose handle isRunning so
+        // the reconnect + authoritative liveness verdict drive the UI.
         setIsConnected(false);
-        clearStuckTimer();
       };
 
       // Tier 2b: extracted so the buffered-frame drain after history
@@ -969,18 +862,6 @@ export function useWsRuntime(agentId: string): {
             timestamp?: string;
             files?: WsFileMeta[];
           }> = data.messages ?? [];
-          // Successful history reconcile within the grace window — cancel
-          // the deferred disconnect bubble so the user just sees the
-          // canonical reply land without a transient error bubble. See
-          // DISCONNECT_ERROR_GRACE_MS (issue #199).
-          if (
-            shouldRecoverFromHistoryRef.current &&
-            serverMessages.length > 0 &&
-            pendingDisconnectErrorRef.current
-          ) {
-            clearTimeout(pendingDisconnectErrorRef.current.timer);
-            pendingDisconnectErrorRef.current = null;
-          }
           const sessionKnown: boolean = data.sessionKnown === true;
           // Server tells us the session exists but its history is currently
           // unavailable (e.g. OpenClaw restart race). Without this flag the
@@ -1040,10 +921,6 @@ export function useWsRuntime(agentId: string): {
             isRunningRef.current = true;
             setIsRunning(true);
             inflightRunIdRef.current = activeRun.runId;
-            if (pendingDisconnectErrorRef.current) {
-              clearTimeout(pendingDisconnectErrorRef.current.timer);
-              pendingDisconnectErrorRef.current = null;
-            }
           }
           const shouldRecoverFromHistory = shouldRecoverFromHistoryRef.current;
           const prevMessages = messagesRef.current;
@@ -1184,6 +1061,13 @@ export function useWsRuntime(agentId: string): {
               clearTimeout(delayTimerRef.current);
               delayTimerRef.current = null;
             }
+            // Capture the retry classification synchronously — reading
+            // hasReceivedChunkRef inside the (deferred) setMessages updater
+            // would see whatever a later frame left it as. Like the `error`
+            // handler, the flag itself is reset by the next turn's onNew/retry.
+            const retryReason = hasReceivedChunkRef.current
+              ? ("partial_stream_failure" as const)
+              : ("send_failure" as const);
             setMessages((prev) => {
               if (prev.some((m) => m.error)) return prev;
               return capMessages(
@@ -1193,13 +1077,10 @@ export function useWsRuntime(agentId: string): {
                   content: "",
                   error: { message: reason },
                   retryable: true,
-                  retryReason: hasReceivedChunkRef.current
-                    ? ("partial_stream_failure" as const)
-                    : ("send_failure" as const),
+                  retryReason,
                 })
               );
             });
-            hasReceivedChunkRef.current = false;
           }
           return;
         }
@@ -1220,7 +1101,6 @@ export function useWsRuntime(agentId: string): {
         if (data.type === "thinking") {
           // Server keep-alive: defeats browser/proxy WebSocket idle
           // timeouts during long pauses (e.g. local Ollama tool-use loops).
-          // Reset stuck timer so a slow-but-alive agent doesn't get killed.
           // Also cancel any pending ack timers — OpenClaw is clearly processing
           // this session so the message was received.
           for (const timer of pendingAckTimers.current.values()) {
@@ -1229,7 +1109,6 @@ export function useWsRuntime(agentId: string): {
           pendingAckTimers.current.clear();
           isRunningRef.current = true;
           setIsRunning(true);
-          resetStuckTimer();
           return;
         }
 
@@ -1243,7 +1122,6 @@ export function useWsRuntime(agentId: string): {
           isRunningRef.current = true;
           hasReceivedChunkRef.current = true;
           setIsRunning(true);
-          resetStuckTimer();
 
           if (delayTimerRef.current) {
             clearTimeout(delayTimerRef.current);
@@ -1294,7 +1172,6 @@ export function useWsRuntime(agentId: string): {
             clearTimeout(delayTimerRef.current);
             delayTimerRef.current = null;
           }
-          clearStuckTimer();
           setIsDelayed(false);
           isRunningRef.current = false;
           hasReceivedChunkRef.current = false;
@@ -1309,7 +1186,6 @@ export function useWsRuntime(agentId: string): {
             clearTimeout(delayTimerRef.current);
             delayTimerRef.current = null;
           }
-          clearStuckTimer();
           setIsDelayed(false);
 
           // PROTOCOL_OUTDATED: the server rejected a legacy frame shape.
@@ -1326,25 +1202,6 @@ export function useWsRuntime(agentId: string): {
             isRunningRef.current = false;
             hasReceivedChunkRef.current = false;
             setIsRunning(false);
-            return;
-          }
-
-          // Tier 2b: cross-check runId on watchdog-timeout error frames
-          // against the in-flight runId we recorded from the activeRun
-          // signal. A mismatch means the server forcibly aborted some
-          // OTHER run for this session (e.g. a stale background turn) —
-          // ignore it so we don't surface a misleading timeout for the
-          // run the user is actually watching. Frames without runId
-          // (every non-watchdog error path) pass through unchanged.
-          if (
-            data.runTimedOut === true &&
-            typeof data.runId === "string" &&
-            inflightRunIdRef.current !== null &&
-            data.runId !== inflightRunIdRef.current
-          ) {
-            console.warn(
-              `[use-ws-runtime] ignoring run_timed_out for ${safeLogId(data.runId)} — current in-flight run is ${safeLogId(inflightRunIdRef.current)}`
-            );
             return;
           }
 
@@ -1455,11 +1312,6 @@ export function useWsRuntime(agentId: string): {
       if (delayTimerRef.current) {
         clearTimeout(delayTimerRef.current);
       }
-      if (pendingDisconnectErrorRef.current) {
-        clearTimeout(pendingDisconnectErrorRef.current.timer);
-        pendingDisconnectErrorRef.current = null;
-      }
-      clearStuckTimer();
       // Clear all pending ack timers to avoid memory leaks and stale dispatches.
       // Use the snapshot captured at effect start (see comment above) — the ref
       // is never reassigned, so the snapshot points to the same Map.
@@ -1534,14 +1386,6 @@ export function useWsRuntime(agentId: string): {
 
       const clientMessageId = uuid();
 
-      // A new turn starts — cancel any pending deferred disconnect bubble
-      // from a prior interrupted turn so the bubble doesn't land in the
-      // middle of a fresh exchange.
-      if (pendingDisconnectErrorRef.current) {
-        clearTimeout(pendingDisconnectErrorRef.current.timer);
-        pendingDisconnectErrorRef.current = null;
-      }
-
       // Add the user message directly with status: "sending" and an ISO timestamp
       // for display. The reducer is used only for status transitions (ack, timeout,
       // etc.) on already-added messages — not for the initial insertion, so we keep
@@ -1594,9 +1438,6 @@ export function useWsRuntime(agentId: string): {
         setIsDelayed(true);
         dispatchLiveness({ type: "slowHint" });
       }, DELAY_HINT_MS);
-
-      // Start stuck timer — fires if no activity (chunk or thinking) for 60s
-      resetStuckTimerRef.current?.();
 
       const payload = JSON.stringify({
         type: "message",
@@ -1691,9 +1532,6 @@ export function useWsRuntime(agentId: string): {
         setIsDelayed(true);
         dispatchLiveness({ type: "slowHint" });
       }, DELAY_HINT_MS);
-
-      // Start stuck timer — fires if no activity (chunk or thinking) for 60s
-      resetStuckTimerRef.current?.();
 
       // Re-send the WS frame with the SAME clientMessageId and original content
       const payload = JSON.stringify({
@@ -1946,7 +1784,6 @@ export function useWsRuntime(agentId: string): {
     [agentId, draftId, pendingUploads] // uploadAttachment is a stable import, not in deps
   );
 
-  const isOrphaned = computeIsOrphaned(messages, { isRunning, isHistoryLoaded });
   const hasInitialContent = messages.length > 0 || knownEmptyHistory;
 
   const convertedMessages = useMemo(() => {
@@ -1955,22 +1792,8 @@ export function useWsRuntime(agentId: string): {
     // streaming-resume reconcile can transiently produce one — never let it
     // reach assistant-ui. See dedupe-by-id.ts and the root-cause fix in the
     // history `activeRun` reconcile below.
-    const base = dedupeById(messages.map(convertMessage));
-    if (isOrphaned) {
-      return [
-        ...base,
-        {
-          role: "assistant" as const,
-          id: "synthetic-orphan",
-          content: [{ type: "text" as const, text: "The agent didn't respond." }],
-          metadata: {
-            custom: { syntheticOrphanError: true, retryable: true, retryReason: "orphan" },
-          },
-        },
-      ];
-    }
-    return base;
-  }, [messages, isOrphaned]);
+    return dedupeById(messages.map(convertMessage));
+  }, [messages]);
 
   const runtime = useExternalStoreRuntime({
     messages: convertedMessages,
@@ -1993,7 +1816,6 @@ export function useWsRuntime(agentId: string): {
     isOpenClawConnected,
     reconnectExhausted,
     payloadRejected,
-    isOrphaned,
     onRetryContinue,
     onRetryResend,
     pendingUploads,

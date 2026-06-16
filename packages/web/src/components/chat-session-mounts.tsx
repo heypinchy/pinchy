@@ -68,13 +68,13 @@ function ChatSessionInstance({ agentId }: { agentId: string }) {
   } = bundle;
 
   useEffect(() => {
-    // reconnectExhausted wins: the user can't recover without reloading, so
-    // its tooltip is more actionable than the per-turn isOrphaned hint.
+    // The only sidebar-surfaced error is reconnect exhaustion — the user can't
+    // recover without reloading. Per-turn failures are now authoritative
+    // `liveness: failed` verdicts rendered as a retryable bubble in the thread,
+    // not a client-side "agent did not respond" guess.
     const lastError = bundle.reconnectExhausted
       ? "Connection lost. Reload the page to resume."
-      : bundle.isOrphaned
-        ? "The agent did not respond"
-        : null;
+      : null;
     store.getState().publish(agentId, {
       runtime: bundle.runtime,
       isRunning: bundle.isRunning,
@@ -86,7 +86,6 @@ function ChatSessionInstance({ agentId }: { agentId: string }) {
       isDelayed: bundle.isDelayed,
       reconnectExhausted: bundle.reconnectExhausted,
       payloadRejected: bundle.payloadRejected,
-      isOrphaned: bundle.isOrphaned,
       onRetryContinue,
       onRetryResend,
       lastError,
@@ -109,7 +108,6 @@ function ChatSessionInstance({ agentId }: { agentId: string }) {
     bundle.isDelayed,
     bundle.reconnectExhausted,
     bundle.payloadRejected,
-    bundle.isOrphaned,
     bundle.pendingUploads,
   ]);
 

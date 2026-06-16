@@ -151,7 +151,6 @@ export function Chat({
         isDelayed: false,
         reconnectExhausted: false,
         payloadRejected: false,
-        isOrphaned: false,
         onRetryContinue: () => {},
         onRetryResend: () => {},
         lastError: null,
