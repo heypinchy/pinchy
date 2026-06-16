@@ -48,3 +48,23 @@ export type ChatListItem = {
   title: string | null;
   lastInteractionAt: number;
 };
+
+/**
+ * One message in the read-only Telegram transcript mirror returned by
+ * `GET /api/agents/[agentId]/telegram-chat` (#508). Shared between the route's
+ * response mapping and the read-only web view so the contract can't drift.
+ *
+ * This is a deliberately minimal projection of OpenClaw's history entry: the
+ * web view mirrors the user's linked Telegram conversation read-only (no
+ * posting), so it only needs who said what and when. Tool/system turns and
+ * attachment-chip metadata that the live chat carries are dropped here.
+ *
+ * - `role` is `"user"` (the linked Telegram peer) or `"assistant"` (the agent).
+ * - `text` is the rendered message text, with OpenClaw protocol markup removed.
+ * - `timestamp` is epoch milliseconds, or `0` when OpenClaw omits it.
+ */
+export type TelegramTranscriptMessage = {
+  role: "user" | "assistant";
+  text: string;
+  timestamp: number;
+};
