@@ -33,6 +33,12 @@ export const pluginConfigSchema = z
         freshness: z.string().optional(),
       })
       .optional(),
+    "pinchy-approvals": z
+      .object({
+        confirmTools: z.array(z.string()),
+      })
+      .strict()
+      .optional(),
   })
   .strict();
 

@@ -104,3 +104,26 @@ describe("pluginConfigSchema — pinchy-files", () => {
     expect(result.success).toBe(false);
   });
 });
+
+describe("pluginConfigSchema — pinchy-approvals", () => {
+  it("accepts a confirmTools list", () => {
+    const result = pluginConfigSchema.safeParse({
+      "pinchy-approvals": { confirmTools: ["odoo_write", "email_send"] },
+    });
+    expect(result.success).toBe(true);
+  });
+
+  it("accepts an empty confirmTools list", () => {
+    const result = pluginConfigSchema.safeParse({
+      "pinchy-approvals": { confirmTools: [] },
+    });
+    expect(result.success).toBe(true);
+  });
+
+  it("rejects unknown fields in pinchy-approvals config", () => {
+    const result = pluginConfigSchema.safeParse({
+      "pinchy-approvals": { confirmTools: [], evil_field: "x" },
+    });
+    expect(result.success).toBe(false);
+  });
+});
