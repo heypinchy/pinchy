@@ -40,6 +40,7 @@ import {
   BUILTIN_PROVIDER_API,
 } from "./provider-defaults";
 import { resolveDefaultPdfModel, resolveDefaultImageModel } from "./default-media-models";
+import { deepMerge } from "./deep-merge";
 
 /**
  * Public docs URL configuration for the bundled `pinchy-docs` plugin.
@@ -109,31 +110,6 @@ const OLLAMA_LOCAL_DEFAULT_CONTEXT_WINDOW = 32_768;
  * reaches OpenClaw anyway).
  */
 const OLLAMA_LOCAL_MAX_TOKENS_CAP = 8_192;
-
-function deepMerge(
-  target: Record<string, unknown>,
-  source: Record<string, unknown>
-): Record<string, unknown> {
-  const result = { ...target };
-  for (const key of Object.keys(source)) {
-    if (
-      source[key] &&
-      typeof source[key] === "object" &&
-      !Array.isArray(source[key]) &&
-      target[key] &&
-      typeof target[key] === "object" &&
-      !Array.isArray(target[key])
-    ) {
-      result[key] = deepMerge(
-        target[key] as Record<string, unknown>,
-        source[key] as Record<string, unknown>
-      );
-    } else {
-      result[key] = source[key];
-    }
-  }
-  return result;
-}
 
 export async function regenerateOpenClawConfig() {
   // `readExistingConfig` distinguishes two recoverable failure modes:
