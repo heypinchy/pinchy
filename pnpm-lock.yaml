@@ -240,8 +240,8 @@ importers:
         specifier: 0.3.0
         version: 0.3.0
       openclaw-node:
-        specifier: 0.12.1
-        version: 0.12.1
+        specifier: 0.13.0
+        version: 0.13.0
       pdfkit:
         specifier: ^0.18.0
         version: 0.18.0
@@ -5315,8 +5315,8 @@ packages:
       zod:
         optional: true
 
-  openclaw-node@0.12.1:
-    resolution: {integrity: sha512-aOPhmN7OKyut7DVs3/LitA+QU5tAtrEMY3gSQ/uJXpCN3Dy4JYeEkIjyYX0hViCdxsOJ9LWfCjtiaB3kTPCupw==}
+  openclaw-node@0.13.0:
+    resolution: {integrity: sha512-hEU3kO3G2do36IrfFqEENoXsmcMzWbm5cDtzRZTV4CFRe7qG4nvFJSy57IejGcHEL7xNoyUmyb+rGChOxbcnFg==}
     engines: {node: '>=20.0.0'}
 
   openclaw@2026.6.5:
@@ -11932,7 +11932,7 @@ snapshots:
       ws: 8.21.0
       zod: 4.4.3
 
-  openclaw-node@0.12.1:
+  openclaw-node@0.13.0:
     optionalDependencies:
       ws: 8.21.0
     transitivePeerDependencies:
