@@ -130,7 +130,6 @@ vi.mock("@/server/openclaw-client", () => ({
 import { writeFileSync, readFileSync, existsSync, mkdirSync } from "fs";
 import {
   regenerateOpenClawConfig,
-  updateIdentityLinks,
   sanitizeOpenClawConfig,
   seedRestartClassOverridesIfMissing,
   seedGatewayTokenIfMissing,
@@ -5122,15 +5121,36 @@ describe("restart-state integration", () => {
     expect(config.bindings).toBeUndefined();
   });
 
-  it("should include identityLinks from channel_links table", async () => {
+  it("should NOT emit session.identityLinks even when channel_links exist (#508 per-task sessions)", async () => {
+    // #508: We moved to a PER-TASK session model — web and Telegram are now
+    // SEPARATE OpenClaw sessions. Emitting `session.identityLinks` made
+    // OpenClaw fold a linked Telegram peer's DMs into the SAME session as the
+    // user's web chat (`agent:<id>:direct:<userId>`), which is what let a
+    // Telegram `/new` wipe the web history and prevented Telegram from showing
+    // as its own chat. Removing the identityLinks emission gives each Telegram
+    // peer its own per-peer session (`agent:<id>:direct:<peerId>`), surfaced as
+    // a read-only "Telegram" chat by the Chats list (attributed via
+    // channel_links). This is a DELIBERATE behaviour change: the unification
+    // was the bug. `dmScope: "per-peer"`, the reset override, and the per-user
+    // peer bindings (which route DMs to the right personal agent) must stay.
     let callCount = 0;
     mockedDb.select.mockReturnValue({
       from: vi.fn().mockImplementation(() => {
         callCount++;
         if (callCount === 1) {
-          // First call: agents table
+          // First call: agents table — personal agent so a per-user peer
+          // binding is generated for the linked user.
           return Object.assign(
-            Promise.resolve([{ id: "agent-1", name: "Smithers", model: "m", allowedTools: [] }]),
+            Promise.resolve([
+              {
+                id: "agent-1",
+                name: "Smithers",
+                model: "m",
+                allowedTools: [],
+                isPersonal: true,
+                ownerId: "user-1",
+              },
+            ]),
             { innerJoin: mockInnerJoin([]), where: vi.fn().mockResolvedValue([]) }
           );
         }
@@ -5161,9 +5181,24 @@ describe("restart-state integration", () => {
     const written = mockedWriteFileSync.mock.calls[0][1] as string;
     const config = JSON.parse(written);
 
-    expect(config.session.identityLinks).toEqual({
-      "user-1": ["telegram:999888"],
-    });
+    // identityLinks must NOT be emitted (#508).
+    expect(config.session.identityLinks).toBeUndefined();
+    // dmScope and the daily-reset override are still Pinchy-owned and stay.
+    expect(config.session.dmScope).toBe("per-peer");
+    expect(config.session.reset).toEqual({ mode: "idle", idleMinutes: 525600 });
+    // Per-user peer binding still routes the linked user's DMs to their agent.
+    expect(config.bindings).toEqual(
+      expect.arrayContaining([
+        {
+          agentId: "agent-1",
+          match: {
+            channel: "telegram",
+            accountId: "agent-1",
+            peer: { kind: "dm", id: "999888" },
+          },
+        },
+      ])
+    );
   });
 
   it("preserves all non-Pinchy-owned fields from existingTelegram on regenerate", async () => {
@@ -6317,112 +6352,13 @@ describe("secrets provider config block", () => {
   });
 });
 
-describe("updateIdentityLinks", () => {
-  beforeEach(() => {
-    vi.clearAllMocks();
-    mockedExistsSync.mockReturnValue(true);
-  });
-
-  it("should only update session.identityLinks without touching other fields", async () => {
-    const existingConfig = {
-      gateway: { mode: "local", bind: "lan", auth: { token: "secret" } },
-      env: { ANTHROPIC_API_KEY: "sk-ant-key" },
-      agents: {
-        defaults: { model: { primary: "anthropic/claude" }, heartbeat: { intervalMs: 1800000 } },
-        list: [{ id: "agent-1", name: "Smithers" }],
-      },
-      channels: { telegram: { enabled: true, botToken: "123:abc", dmPolicy: "pairing" } },
-      plugins: { allow: ["telegram", "pinchy-audit"], entries: {} },
-      meta: { version: "1.0" },
-    };
-    mockedReadFileSync.mockReturnValue(JSON.stringify(existingConfig));
-
-    const { updateIdentityLinks } = await import("@/lib/openclaw-config");
-    await updateIdentityLinks({ "user-1": ["telegram:8754697762"] });
-
-    expect(mockedWriteFileSync).toHaveBeenCalledOnce();
-    const written = JSON.parse(mockedWriteFileSync.mock.calls[0][1] as string);
-
-    // identityLinks updated
-    expect(written.session.identityLinks).toEqual({ "user-1": ["telegram:8754697762"] });
-
-    // Everything else preserved exactly
-    expect(written.agents.defaults.heartbeat).toEqual({ intervalMs: 1800000 });
-    expect(written.agents.defaults.model).toEqual({ primary: "anthropic/claude" });
-    expect(written.agents.list).toEqual([{ id: "agent-1", name: "Smithers" }]);
-    expect(written.env.ANTHROPIC_API_KEY).toBe("sk-ant-key");
-    expect(written.plugins.allow).toEqual(["telegram", "pinchy-audit"]);
-    expect(written.meta.version).toBe("1.0");
-    expect(written.channels.telegram.botToken).toBe("123:abc");
-  });
-
-  it("should remove identityLinks when called with empty object", async () => {
-    const existingConfig = {
-      gateway: { mode: "local" },
-      session: { dmScope: "per-peer", identityLinks: { "user-1": ["telegram:123"] } },
-    };
-    mockedReadFileSync.mockReturnValue(JSON.stringify(existingConfig));
-
-    const { updateIdentityLinks } = await import("@/lib/openclaw-config");
-    await updateIdentityLinks({});
-
-    const written = JSON.parse(mockedWriteFileSync.mock.calls[0][1] as string);
-    expect(written.session.identityLinks).toEqual({});
-    expect(written.session.dmScope).toBe("per-peer");
-    expect(written.gateway.mode).toBe("local");
-  });
-
-  it("should skip write when identityLinks unchanged", async () => {
-    const existingConfig = {
-      gateway: { mode: "local" },
-      session: { identityLinks: { "user-1": ["telegram:123"] } },
-    };
-    // readFileSync is called twice: once by readExistingConfig, once by the skip-if-unchanged check.
-    // Both must return the same content that would be produced by JSON.stringify(updated, null, 2)
-    // followed by trimEnd() + "\n" — see openclaw-config.ts for the format-match rationale.
-    const serialized = JSON.stringify(existingConfig, null, 2).trimEnd() + "\n";
-    mockedReadFileSync.mockReturnValue(serialized);
-
-    const { updateIdentityLinks } = await import("@/lib/openclaw-config");
-    updateIdentityLinks({ "user-1": ["telegram:123"] });
-
-    expect(mockedWriteFileSync).not.toHaveBeenCalled();
-  });
-
-  it("regression: throws if existing config is unreadable (avoids clobber from EACCES, #314)", async () => {
-    // This reproduces the production-image telegram-e2e cascade: while
-    // OpenClaw is mid-SIGUSR1-restart, openclaw.json is briefly root:0600.
-    //
-    // Two layers of defence:
-    //   1. `readExistingConfig` propagates persistent EACCES rather than
-    //      returning {} (#314 — returning {} let `regenerateOpenClawConfig`
-    //      emit a thin payload that triggered the inotify cascade).
-    //   2. `updateIdentityLinks` independently guards on missing gateway.mode
-    //      so non-EACCES paths (ENOENT, parse error) also can't clobber the
-    //      gateway block.
-    //
-    // Under EACCES the throw now comes from layer 1; either error message is
-    // acceptable as long as no file write happens.
-    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
-    mockedExistsSync.mockReturnValue(true);
-    mockedReadFileSync.mockImplementation(() => {
-      const err = new Error("EACCES: permission denied") as Error & { code: string };
-      err.code = "EACCES";
-      throw err;
-    });
-
-    const { updateIdentityLinks } = await import("@/lib/openclaw-config");
-
-    // Throwing (rather than silently returning) lets the API route surface
-    // the failure as a 5xx so the user can retry, instead of dropping the
-    // identity-link update on the floor.
-    expect(() => updateIdentityLinks({ "user-1": ["telegram:123"] })).toThrow(
-      /EACCES|gateway\.mode/
-    );
-    expect(mockedWriteFileSync).not.toHaveBeenCalled();
-    warnSpy.mockRestore();
-  });
-});
+// NOTE (#508): the `describe("updateIdentityLinks", ...)` block was removed
+// here together with the `updateIdentityLinks` helper it covered. We moved to
+// a per-task session model and stopped emitting `session.identityLinks`, so
+// the targeted-write helper has no remaining caller. The EACCES clobber-guard
+// it exercised is still covered for the surviving targeted writers by the
+// `updateTelegramChannelConfig` EACCES test below. Deletion authorized via the
+// `Allow-test-deletion: #508` commit trailer.
 
 describe("telegram botToken plain string (OpenClaw 2026.4.26 does not support SecretRef in channel configs)", () => {
   beforeEach(() => {
