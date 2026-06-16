@@ -1,7 +1,13 @@
 import { describe, it, expect, beforeEach, afterEach, vi, expectTypeOf } from "vitest";
 import { createHmac } from "crypto";
-import { computeRowHmacV1, computeRowHmacV2, ROW_HMAC_VERIFIERS } from "@/lib/audit-hmac";
-import { truncateDetail, redactEmail, scrubEmails } from "@/lib/audit";
+import {
+  computeRowHmacV1,
+  computeRowHmacV2,
+  ROW_HMAC_VERIFIERS,
+  truncateDetail,
+  redactEmail,
+  scrubEmails,
+} from "@/lib/audit";
 import type { AuditLogEntry } from "@/lib/audit";
 
 describe("computeRowHmac", () => {
