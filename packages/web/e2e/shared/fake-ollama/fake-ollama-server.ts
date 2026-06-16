@@ -204,6 +204,7 @@ function streamTextResponse(res: http.ServerResponse, text: string, userMessageC
 }
 
 async function streamTextResponseSlow(res: http.ServerResponse, text: string) {
+  const { promptTokens, completionTokens } = getUsageTokens();
   res.writeHead(200, {
     "Content-Type": "application/x-ndjson",
     "Cache-Control": "no-cache",
@@ -233,7 +234,12 @@ async function streamTextResponseSlow(res: http.ServerResponse, text: string) {
         created_at: new Date().toISOString(),
         message: { role: "assistant", content: index === 0 ? word : " " + word },
         done: isLast,
-        ...(isLast && { done_reason: "stop", total_duration: 1000000 }),
+        ...(isLast && {
+          done_reason: "stop",
+          total_duration: 1000000,
+          prompt_eval_count: promptTokens,
+          eval_count: completionTokens,
+        }),
       };
       res.write(JSON.stringify(chunk) + "\n");
       if (!isLast) {
@@ -427,6 +433,8 @@ async function streamOpenAiTextSlow(res: http.ServerResponse, text: string) {
       }
     }
     sseWrite(res, chatCompletionChunk({ finishReason: "stop" }));
+    // Usage on the slow path too — same no-usage flake class as tool calls.
+    sseWrite(res, usageChunk());
     sseDone(res);
   } catch {
     // Client disconnected mid-stream — normal in mid-stream disconnect tests.
@@ -441,6 +449,10 @@ function streamOpenAiToolCalls(
   sseHeaders(res);
   sseWrite(res, chatCompletionChunk({ toolCalls: [{ name: toolName, arguments: args }] }));
   sseWrite(res, chatCompletionChunk({ finishReason: "tool_calls" }));
+  // Emit usage even on tool-call turns. Without it OpenClaw self-estimates the
+  // real prompt size (~18k) and writes that into the trajectory, contaminating
+  // the per-turn usage_records rows and flaking usage-tracking.spec.ts.
+  sseWrite(res, usageChunk());
   sseDone(res);
 }
 
@@ -503,6 +515,7 @@ export async function handleRequest(req: http.IncomingMessage, res: http.ServerR
     const activeTrigger = TOOL_TRIGGERS.find(({ trigger }) => lastContent.includes(trigger));
 
     if (activeTrigger && !hasToolResult) {
+      const { promptTokens, completionTokens } = getUsageTokens(countUserMessages(messages));
       writeNdjson(res, [
         {
           model: MODEL_NAME,
@@ -522,6 +535,9 @@ export async function handleRequest(req: http.IncomingMessage, res: http.ServerR
           done: true,
           done_reason: "stop",
           total_duration: 1000000,
+          // Usage even on tool-call turns — see streamOpenAiToolCalls for why.
+          prompt_eval_count: promptTokens,
+          eval_count: completionTokens,
         },
       ]);
       return;

@@ -10,7 +10,11 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import * as http from "http";
 import type { AddressInfo } from "net";
-import { handleRequest } from "../../../e2e/shared/fake-ollama/fake-ollama-server";
+import {
+  handleRequest,
+  FAKE_OLLAMA_FILES_LS_TOOL_TRIGGER,
+  FAKE_OLLAMA_SLOW_STREAM_TRIGGER,
+} from "../../../e2e/shared/fake-ollama/fake-ollama-server";
 
 let server: http.Server;
 let baseUrl: string;
@@ -37,6 +41,16 @@ async function postChat(path: string, body: unknown): Promise<string> {
     body: JSON.stringify(body),
   });
   return res.text();
+}
+
+/** Pull the usage object out of whichever OpenAI SSE chunk carries it. */
+function sseUsage(raw: string): Record<string, number> | undefined {
+  return raw
+    .split("\n\n")
+    .map((line) => line.replace(/^data: /, "").trim())
+    .filter((p) => p && p !== "[DONE]")
+    .map((p) => (JSON.parse(p) as { usage?: Record<string, number> }).usage)
+    .find((u) => u !== undefined);
 }
 
 describe("fake-ollama usage block — OpenAI /v1/chat/completions (the path OC uses)", () => {
@@ -104,18 +118,43 @@ describe("fake-ollama usage block — OpenAI /v1/chat/completions (the path OC u
       messages: [{ role: "user", content: "hello" }],
     });
 
-    const usage = raw
-      .split("\n\n")
-      .map((line) => line.replace(/^data: /, "").trim())
-      .filter((p) => p && p !== "[DONE]")
-      .map((p) => JSON.parse(p) as { usage?: Record<string, number> })
-      .map((c) => c.usage)
-      .find((u) => u !== undefined);
+    const usage = sseUsage(raw);
 
     expect(usage).toBeDefined();
     expect(usage!.prompt_tokens).toBeGreaterThan(0);
     expect(usage!.completion_tokens).toBeGreaterThan(0);
     expect(usage!.total_tokens).toBe(usage!.prompt_tokens + usage!.completion_tokens);
+  });
+
+  // Tool-call and slow-stream turns must ALSO report usage. When they don't,
+  // OpenClaw self-estimates the real prompt size (~18k for the Smithers
+  // bootstrap) into the trajectory, which the per-turn recorder stores as a
+  // ~18k usage_records row — the source of the usage-tracking.spec.ts flake
+  // (one row != 42 in). Pin every completion shape to the configured usage.
+  it("emits the usage block on tool-call turns", async () => {
+    process.env.FAKE_OLLAMA_PROMPT_TOKENS = "42";
+    process.env.FAKE_OLLAMA_COMPLETION_TOKENS = "17";
+
+    const raw = await postChat("/v1/chat/completions", {
+      stream: true,
+      messages: [{ role: "user", content: FAKE_OLLAMA_FILES_LS_TOOL_TRIGGER }],
+    });
+
+    // Sanity: this really is a tool-call response, not a plain text reply.
+    expect(raw).toContain("tool_calls");
+    expect(sseUsage(raw)).toEqual({ prompt_tokens: 42, completion_tokens: 17, total_tokens: 59 });
+  });
+
+  it("emits the usage block on slow-stream turns", { timeout: 20000 }, async () => {
+    process.env.FAKE_OLLAMA_PROMPT_TOKENS = "42";
+    process.env.FAKE_OLLAMA_COMPLETION_TOKENS = "17";
+
+    const raw = await postChat("/v1/chat/completions", {
+      stream: true,
+      messages: [{ role: "user", content: FAKE_OLLAMA_SLOW_STREAM_TRIGGER }],
+    });
+
+    expect(sseUsage(raw)).toEqual({ prompt_tokens: 42, completion_tokens: 17, total_tokens: 59 });
   });
 });
 
@@ -138,6 +177,35 @@ describe("fake-ollama usage block — Ollama-native /api/chat", () => {
       .find((c) => c.done === true);
 
     expect(finalChunk).toBeDefined();
+    expect(finalChunk!.prompt_eval_count).toBe(100);
+    expect(finalChunk!.eval_count).toBe(25);
+  });
+
+  it("reports prompt_eval_count / eval_count on tool-call turns too", async () => {
+    process.env.FAKE_OLLAMA_PROMPT_TOKENS = "100";
+    process.env.FAKE_OLLAMA_COMPLETION_TOKENS = "25";
+
+    const raw = await postChat("/api/chat", {
+      stream: true,
+      messages: [{ role: "user", content: FAKE_OLLAMA_FILES_LS_TOOL_TRIGGER }],
+    });
+
+    const finalChunk = raw
+      .split("\n")
+      .filter((l) => l.trim())
+      .map(
+        (l) =>
+          JSON.parse(l) as {
+            done?: boolean;
+            prompt_eval_count?: number;
+            eval_count?: number;
+            message?: { tool_calls?: unknown };
+          }
+      )
+      .find((c) => c.done === true);
+
+    expect(finalChunk).toBeDefined();
+    expect(finalChunk!.message?.tool_calls, "should be a tool-call response").toBeDefined();
     expect(finalChunk!.prompt_eval_count).toBe(100);
     expect(finalChunk!.eval_count).toBe(25);
   });
