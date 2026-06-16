@@ -930,7 +930,7 @@ Get the current enterprise license status and seat usage. Any authenticated user
 | `seatsUsed`     | number         | Number of seats currently in use: active users + valid pending invitations                                     |
 | `maxUsers`      | number         | Maximum seats allowed by the license. `0` means unlimited.                                                     |
 
-**Seat cap behaviour:** when `seatsUsed >= maxUsers` and `maxUsers > 0`, the **Invite User** button is disabled and the API rejects new invitations with `403`. Existing users are never affected. See [Enterprise Setup — Seat cap enforcement](/guides/enterprise-setup/#seat-cap-enforcement) for the full explanation.
+**Seat cap behaviour:** the seat cap is a **soft cap with a 20% grace window**. When `maxUsers > 0`, invites keep working up to `floor(1.2 * maxUsers)` seats (for example 12 on a 10-seat license); in the 100–120% grace band admins see a notice but invites still succeed and nothing is blocked. Only when `seatsUsed >= floor(1.2 * maxUsers)` is the **Invite User** button disabled and the API rejects new invitations with `403` (the response includes `graceCap`). Existing users are never affected. See [Enterprise Setup — Seat cap enforcement](/guides/enterprise-setup/#seat-cap-enforcement) for the full explanation.
 
 **Errors:**
 
@@ -1090,7 +1090,7 @@ Retrieve a paginated, filterable audit log. **Admin only.**
 | ----------- | ------ | ------- | ------------------------------------------------------- |
 | `page`      | number | 1       | Page number                                             |
 | `limit`     | number | 50      | Entries per page                                        |
-| `eventType` | string | —       | Filter by event type (e.g., `auth.login`, `tool.shell`) |
+| `eventType` | string | —       | Filter by event type (e.g., `auth.login`, `tool.pinchy_read`) |
 | `actorId`   | string | —       | Filter by user ID                                       |
 | `from`      | string | —       | Start date (ISO 8601)                                   |
 | `to`        | string | —       | End date (ISO 8601)                                     |
@@ -1186,7 +1186,8 @@ List the distinct event types present in the current audit log. Useful for popul
     "file.upload.staged",
     "file.upload.attached",
     "file.upload.expired",
-    "tool.shell",
+    "tool.pinchy_read",
+    "tool.odoo_read",
     "tool.denied"
   ]
 }

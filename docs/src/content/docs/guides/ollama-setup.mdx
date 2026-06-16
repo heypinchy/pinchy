@@ -23,10 +23,12 @@ This is the setup for teams that need full air-gap compliance or simply want to 
 ## Connect Ollama to Pinchy
 
 <Steps>
-  1. Go to **Settings → LLM Provider** 2. Click **Ollama (Local)** 3. Enter the
-  URL where Ollama is running (see [deployment options](#deployment-options)
-  below) 4. Click **Save** — Pinchy validates the connection and discovers your
-  models
+
+1.  Go to **Settings → LLM Provider**
+2.  Click **Ollama (Local)**
+3.  Enter the URL where Ollama is running (see [deployment options](#deployment-options) below)
+4.  Click **Save** — Pinchy validates the connection and discovers your models
+
 </Steps>
 
 That's it. Your agents now use your local Ollama models.
@@ -269,7 +271,7 @@ agents) with cloud providers (interactive agents).
 
 **Agents reply with "Blocked hostname or private/internal/special-use IP address"**
 
-- OpenClaw 2026.5.x ships an SSRF guard that blocks outbound HTTP to private-network destinations by default. Pinchy %%PINCHY_VERSION%% works around this by setting `request.allowPrivateNetwork: true` only on the `ollama-local` provider in the generated `openclaw.json`, so calls to local Ollama go through but the guard stays active for every other provider.
+- OpenClaw 2026.6.x ships an SSRF guard that blocks outbound HTTP to private-network destinations by default. Pinchy %%PINCHY_VERSION%% works around this by setting `request.allowPrivateNetwork: true` only on the `ollama-local` provider in the generated `openclaw.json`, so calls to local Ollama go through but the guard stays active for every other provider.
 - If you see this error after upgrading, regenerate the config — restart Pinchy or change any provider setting in **Settings → Providers** and save, which triggers a fresh write. Verify the resulting `openclaw.json` has `request.allowPrivateNetwork: true` under your `ollama-local` provider entry.
 
 **No models appear after connecting**

@@ -204,7 +204,7 @@ Never commit `.env` files or secrets to version control. The `.gitignore` in the
 
 Pinchy's Docker Compose setup uses an internal network. PostgreSQL and OpenClaw are not exposed to the host network.
 
-### Localhost binding (default since v0.4.3)
+### Localhost binding (default)
 
 Pinchy's default port binding is `127.0.0.1:7777`, which means it only accepts connections from localhost. A reverse proxy (Caddy, nginx) running on the same host forwards traffic from ports 80/443 to Pinchy on 7777.
 

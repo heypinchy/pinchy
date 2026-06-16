@@ -98,4 +98,4 @@ Knowledge Base agents can read text files, Markdown, **Word documents** (`.docx`
 
 Directories mounted under `/data/` are **admin-curated and read-only for agents** — they hold your organization's reference documents and are not writable by agents under any configuration.
 
-This is intentional: it keeps your authoritative documents separate from anything an agent might generate or derive. An agent that has the **Write files** permission saves results to its own `uploads/` workspace, not to `/data/`. See [Agent Permissions](/concepts/agent-permissions/) for details on the workspace write capability.
+This is intentional: it keeps your authoritative documents separate from anything an agent might generate or derive. An agent that has the **Write files** permission saves results to its own `workbench/` workspace, not to `/data/`. (The legacy `uploads/` directory stays writable for backward compatibility, but new agents should write to `workbench/`.) See [Agent Permissions](/concepts/agent-permissions/) for details on the workspace write capability.

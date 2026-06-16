@@ -27,7 +27,7 @@ Choose **Knowledge Base** from the template options. This template pre-configure
 
 Give your agent a descriptive name, for example "HR Policy Assistant" or "Engineering Docs". You can also add an optional tagline like "Answers questions about company HR policies". Then click **Create**.
 
-The agent is created with an auto-generated avatar and you are taken to its chat page. The Knowledge Base template pre-fills operating instructions (AGENTS.md) with document-answering guidelines. The agent has safe file tools enabled by default, but it does not yet know which directories to access. You need to configure that in the Permissions tab.
+The agent is created with an auto-generated avatar and you are taken to its chat page. The Knowledge Base template pre-fills operating instructions (AGENTS.md) with document-answering guidelines. The agent can already list and read files — that capability is built in, not a toggle — but it does not yet know which directories to access. You scope that in the Permissions tab with the **Allowed Directories** picker.
 
 ## 5. Configure directory access
 
@@ -35,7 +35,7 @@ Open the agent's settings by clicking the gear icon, then select the **Permissio
 
 ![Permissions tab with safe tools and directory picker](/screenshots/agent-settings-permissions.png)
 
-Under **Safe Tools**, you will see that "List approved directories" and "Read approved files" are already enabled (because the Knowledge Base template includes them). Below the safe tools checkboxes, the **Allowed Directories** picker shows all directories found under `/data/`.
+Under **Knowledge Base**, the **Allowed Directories** picker shows all directories found under `/data/`. Listing and reading files is built into the agent, so there are no separate file-tool toggles to enable — you only choose which directories the agent may reach.
 
 Select the directories that contain the documents this agent should be able to read. For example, if you mounted your HR policies at `/data/hr-policies` and your engineering handbook at `/data/engineering`, select one or both.
 

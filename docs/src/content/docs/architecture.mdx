@@ -5,7 +5,7 @@ description: How Pinchy wraps OpenClaw, the request flow, and the tech stack.
 
 ## Overview
 
-Pinchy is **not a fork** of OpenClaw. It's a governance layer on top of it. OpenClaw handles agent execution, tool use, and model communication. Pinchy adds authentication, provider management, agent permissions, cryptographic audit trails, and (soon) team management.
+Pinchy is **not a fork** of OpenClaw. It's a governance layer on top of it. OpenClaw handles agent execution, tool use, and model communication. Pinchy adds authentication, provider management, agent permissions, cryptographic audit trails, and team management.
 
 ```mermaid
 ---
@@ -158,7 +158,7 @@ When an agent has safe tools enabled, the `pinchy-files` plugin validates every 
 
 In addition to the allow-list, every agent has built-in PDF and image readers that are **scoped to its own [workspace](/concepts/workspaces/)** — they cannot reach files outside the workspace, regardless of permissions. Each workspace has two subdirectories: `uploads/` (files the user attached in chat) and `workbench/` (the agent's writable area for `pinchy_write` deliverables). Both are created eagerly on workspace spawn, so a fresh agent can save files immediately without needing a prior user upload.
 
-Smithers agents also use the `pinchy-context` plugin, which provides `save_user_context` and `save_org_context` tools. These tools call Pinchy's internal API (authenticated via a shared gateway token) to save context from the onboarding interview directly to the database and sync it to agent workspaces.
+Smithers agents also use the `pinchy-context` plugin, which provides `pinchy_save_user_context` and `pinchy_save_org_context` tools. These tools call Pinchy's internal API (authenticated via a shared gateway token) to save context from the onboarding interview directly to the database and sync it to agent workspaces.
 
 All agent-accessible files live under `/data/` in the container, mounted via Docker volumes. This means even if all software layers failed, the agent can only see files that were explicitly mounted.
 

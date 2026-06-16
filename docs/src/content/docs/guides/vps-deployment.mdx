@@ -89,9 +89,9 @@ All three start together via Docker Compose. Only the `pinchy` container publish
    | `BETTER_AUTH_SECRET` | Signs user sessions                                  |
    | `ENCRYPTION_KEY`     | Encrypts LLM provider API keys at rest (AES-256-GCM) |
 
-   If you don't set them, Pinchy auto-generates `BETTER_AUTH_SECRET` and `ENCRYPTION_KEY` and persists them as files in a Docker volume (`pinchy-secrets`). This works fine for normal operation — **but** if that volume is ever deleted (e.g. during a server migration or an accidental `docker compose down -v`), the generated secrets are lost and encrypted data becomes unreadable. `DB_PASSWORD` defaults to a weak development value.
+   If you don't set them, Pinchy auto-manages all three on first boot: it generates `BETTER_AUTH_SECRET` and `ENCRYPTION_KEY`, and the entrypoint also generates a strong `DB_PASSWORD` (rewriting `DATABASE_URL` to match). All three are persisted as files in a Docker volume (`pinchy-secrets`). This works fine for normal operation — **but** if that volume is ever deleted (e.g. during a server migration or an accidental `docker compose down -v`), the generated secrets are lost and encrypted data becomes unreadable.
 
-   For production, pin all three explicitly:
+   You only need to set these manually if you want to pin your own values. For production, you may prefer to pin all three explicitly so they live in your `.env` (and your backups) rather than only in the volume:
 
    ```bash
    nano /opt/pinchy/.env
