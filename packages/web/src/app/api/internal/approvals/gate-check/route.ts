@@ -6,6 +6,7 @@ import { gateCheckSchema } from "@/lib/schemas/approvals";
 import { decideGate } from "@/lib/approvals/service";
 import { computeArgsDigest } from "@/lib/approvals/digest";
 import { summarizeArgs } from "@/lib/approvals/summary";
+import { getConfirmTools } from "@/lib/approvals/policy";
 import { appendAuditLog, type AuditLogEntry } from "@/lib/audit";
 import { recordAuditFailure } from "@/lib/audit-deferred";
 import { db } from "@/db";
@@ -31,6 +32,18 @@ export async function POST(request: NextRequest) {
   if ("error" in parsed) return parsed.error;
   const { agentId, sessionKey, senderId, toolName, params } = parsed.data;
 
+  // Policy lives server-side: load the agent and short-circuit ungated tools
+  // so the gate adds no pending row (and the plugin can safely call this for
+  // every tool). One DB read keeps the policy always-fresh — no plugin cache.
+  const [agent] = await db
+    .select({ name: agents.name, pluginConfig: agents.pluginConfig })
+    .from(agents)
+    .where(eq(agents.id, agentId))
+    .limit(1);
+  if (!agent || !getConfirmTools(agent.pluginConfig).includes(toolName)) {
+    return NextResponse.json({ decision: "allow" });
+  }
+
   const requesterId = deriveRequesterId(senderId, sessionKey);
   if (!requesterId) {
     // Fail closed: a gated tool must not run for an unidentifiable user.
@@ -52,11 +65,6 @@ export async function POST(request: NextRequest) {
 
   // Audit a fresh request once (not on retries) and every consume.
   if (result.created || result.decision === "allow") {
-    const [agent] = await db
-      .select({ name: agents.name })
-      .from(agents)
-      .where(eq(agents.id, agentId))
-      .limit(1);
     const [requester] = await db
       .select({ name: users.name })
       .from(users)
