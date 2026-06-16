@@ -1,7 +1,18 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 import { render, screen } from "@testing-library/react";
 import "@testing-library/jest-dom";
 import { MobileChatHeader } from "@/components/mobile-chat-header";
+
+// The header now renders <ChatSwitcher>, which uses the app router and fetches
+// the chat list. Stub both so the header renders in isolation.
+vi.mock("next/navigation", () => ({
+  useRouter: () => ({ push: vi.fn() }),
+}));
+
+vi.mock("@/lib/api-client", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/lib/api-client")>();
+  return { ...actual, apiGet: vi.fn().mockResolvedValue({ chats: [] }) };
+});
 
 describe("MobileChatHeader", () => {
   const defaultProps = {

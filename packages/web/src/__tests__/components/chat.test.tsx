@@ -65,6 +65,18 @@ vi.mock("next/link", () => ({
   ),
 }));
 
+// The desktop header now renders <ChatSwitcher>, which uses the app router and
+// fetches the chat list. Stub both so Chat renders in isolation (with no other
+// chats, the switcher falls back to the agent name in its trigger).
+vi.mock("next/navigation", () => ({
+  useRouter: () => ({ push: vi.fn() }),
+}));
+
+vi.mock("@/lib/api-client", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/lib/api-client")>();
+  return { ...actual, apiGet: vi.fn().mockResolvedValue({ chats: [] }) };
+});
+
 const DEFAULT_BUNDLE = {
   runtime: {} as any,
   isConnected: true,

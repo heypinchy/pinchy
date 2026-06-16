@@ -4,6 +4,7 @@ import { withAuth } from "@/lib/api-auth";
 import { getAgentWithAccess } from "@/lib/agent-access";
 import { getOpenClawClient } from "@/server/openclaw-client";
 import { classifyUserSessions, type RawSession } from "@/lib/chats/classify-sessions";
+import type { ChatListItem } from "@/lib/schemas/sessions";
 import { db } from "@/db";
 import { channelLinks } from "@/db/schema";
 
@@ -53,10 +54,19 @@ export const GET = withAuth<RouteContext>(async (_request, { params }, session) 
   const classified = classifyUserSessions(scoped, userId, linkedTelegramPeerIds);
 
   // Carry the human-readable title (the session label, if any) and sort by
-  // recency so the most recent conversation surfaces first.
+  // recency so the most recent conversation surfaces first. The internal
+  // session `key` stays server-side — the client only needs the fields in
+  // `ChatListItem`.
   const labelByKey = new Map(scoped.map((s) => [s.key, s.label ?? null]));
-  const chats = classified
-    .map((c) => ({ ...c, title: labelByKey.get(c.key) ?? null }))
+  const chats: ChatListItem[] = classified
+    .map((c) => ({
+      chatId: c.chatId,
+      sessionId: c.sessionId,
+      origin: c.origin,
+      writable: c.writable,
+      title: labelByKey.get(c.key) ?? null,
+      lastInteractionAt: c.lastInteractionAt,
+    }))
     .sort((a, b) => b.lastInteractionAt - a.lastInteractionAt);
 
   return NextResponse.json({ chats });

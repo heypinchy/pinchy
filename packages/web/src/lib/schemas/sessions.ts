@@ -25,3 +25,26 @@ export const chatIdSchema = z
   .min(1)
   .max(64)
   .regex(/^[a-z0-9-]+$/);
+
+/**
+ * One row in the response of `GET /api/agents/[agentId]/chats` — the user's
+ * chats with an agent (#508). Shared between the route's response mapping and
+ * the ChatSwitcher client component so the contract can't silently drift.
+ *
+ * - `chatId` is `null` for the legacy/default chat (the pre-#508 web session
+ *   with no trailing chat segment).
+ * - `origin` is where the chat happens: `web` (this app) or `telegram` (a
+ *   linked Telegram peer, surfaced read-only).
+ * - `writable` is `false` for Telegram chats; the web UI shows them read-only.
+ * - `title` is the human-readable session label, or `null` when unset.
+ * - `lastInteractionAt` is epoch milliseconds; the list is sorted by it
+ *   (most recent first).
+ */
+export type ChatListItem = {
+  chatId: string | null;
+  sessionId: string;
+  origin: "web" | "telegram";
+  writable: boolean;
+  title: string | null;
+  lastInteractionAt: number;
+};

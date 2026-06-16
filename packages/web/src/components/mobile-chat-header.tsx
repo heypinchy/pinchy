@@ -1,9 +1,12 @@
 import Link from "next/link";
 import { ArrowLeft, Settings } from "lucide-react";
+import { ChatSwitcher } from "@/components/chat-switcher";
 
 interface MobileChatHeaderProps {
   agentId: string;
   agentName: string;
+  /** Active chat from the URL, or null for the default/legacy chat (#508). */
+  chatId?: string | null;
   avatarUrl?: string;
   canEdit?: boolean;
 }
@@ -11,6 +14,7 @@ interface MobileChatHeaderProps {
 export function MobileChatHeader({
   agentId,
   agentName,
+  chatId = null,
   avatarUrl,
   canEdit = false,
 }: MobileChatHeaderProps) {
@@ -25,7 +29,7 @@ export function MobileChatHeader({
           // eslint-disable-next-line @next/next/no-img-element
           <img src={avatarUrl} alt={agentName} className="size-6 rounded-full shrink-0" />
         )}
-        <span className="font-bold truncate">{agentName}</span>
+        <ChatSwitcher agentId={agentId} chatId={chatId} agentName={agentName} />
       </div>
 
       {canEdit ? (

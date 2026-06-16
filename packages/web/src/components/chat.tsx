@@ -12,6 +12,7 @@ import Link from "next/link";
 import { Settings } from "lucide-react";
 import { MobileChatHeader } from "@/components/mobile-chat-header";
 import { SessionActionsMenu } from "@/components/session-actions-menu";
+import { ChatSwitcher } from "@/components/chat-switcher";
 import { Badge } from "@/components/ui/badge";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { type ChatStatus, useChatStatus } from "@/hooks/use-chat-status";
@@ -231,6 +232,7 @@ export function Chat({
                                 <MobileChatHeader
                                   agentId={agentId}
                                   agentName={displayName}
+                                  chatId={chatId ?? null}
                                   avatarUrl={displayAvatar}
                                   canEdit={canEdit}
                                 />
@@ -244,7 +246,11 @@ export function Chat({
                                         className="size-7 rounded-full"
                                       />
                                     )}
-                                    <h1 className="font-bold">{displayName}</h1>
+                                    <ChatSwitcher
+                                      agentId={agentId}
+                                      chatId={chatId ?? null}
+                                      agentName={displayName}
+                                    />
                                     <TooltipProvider>
                                       <Tooltip>
                                         <TooltipTrigger asChild>
