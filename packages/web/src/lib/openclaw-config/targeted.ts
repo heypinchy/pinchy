@@ -33,53 +33,6 @@ export function sanitizeOpenClawConfig(): boolean {
 }
 
 /**
- * Update only session.identityLinks in the config file.
- *
- * Unlike regenerateOpenClawConfig(), this reads the existing config and only
- * modifies session.identityLinks. All other fields (agents.defaults, env,
- * plugins, channels, meta, etc.) are preserved byte-for-byte. This avoids
- * unnecessary diffs that trigger hot-reloads breaking Telegram polling
- * (openclaw#47458).
- *
- * OpenClaw treats identityLinks changes as "dynamic reads" — no channel
- * restart, no hot-reload, just updated in memory.
- */
-export function updateIdentityLinks(identityLinks: Record<string, string[]>): void {
-  const existing = readExistingConfig();
-
-  // Same safety as updateTelegramChannelConfig — see comment there.
-  const existingGateway = existing.gateway as Record<string, unknown> | undefined;
-  if (!existingGateway?.mode) {
-    throw new Error(
-      "[openclaw-config] updateIdentityLinks: existing config has no gateway.mode " +
-        "(likely EACCES race on /openclaw-config/openclaw.json). Retry the request."
-    );
-  }
-
-  const session = (existing.session as Record<string, unknown>) || {};
-  const updatedSession = {
-    ...session,
-    identityLinks,
-  };
-
-  const updated = { ...existing, session: updatedSession };
-
-  // Only write if content actually changed. Format matches OpenClaw's
-  // writeConfigFile output (trimEnd + "\n") so SHA256 hashes line up
-  // for the reload-subsystem dedup. See call site of regenerateOpenClawConfig
-  // for the full rationale.
-  const newContent = JSON.stringify(updated, null, 2).trimEnd() + "\n";
-  try {
-    const current = readFileSync(CONFIG_PATH, "utf-8");
-    if (current === newContent) return;
-  } catch {
-    // File doesn't exist — write it
-  }
-
-  writeConfigAtomic(newContent);
-}
-
-/**
  * Update a single Telegram account in the config (add or remove).
  *
  * Uses OpenClaw's multi-account format: channels.telegram.accounts.<accountId>.

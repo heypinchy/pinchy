@@ -146,9 +146,9 @@ export async function regenerateOpenClawConfig() {
       // *will* run later — true for change-on-change flows (subsequent setting
       // edits, channel pair/unpair, agent CRUD), and boot-inits re-regenerate
       // unconditionally. One-shot actions with no follow-up mutation are the
-      // only blind spot; targeted writes (updateTelegramChannelConfig,
-      // updateIdentityLinks) still throw under EACCES so those callers surface
-      // 5xx and the user can retry.
+      // only blind spot; targeted writes (updateTelegramChannelConfig)
+      // still throw under EACCES so those callers surface 5xx and the user
+      // can retry.
       return;
     }
   }
@@ -1038,15 +1038,6 @@ export async function regenerateOpenClawConfig() {
 
   if (Object.keys(accounts).length > 0) {
     const links = await db.select().from(channelLinks);
-    const identityLinks: Record<string, string[]> = {};
-    for (const link of links) {
-      const identity = `${link.channel}:${link.channelUserId}`;
-      if (!identityLinks[link.userId]) {
-        identityLinks[link.userId] = [identity];
-      } else {
-        identityLinks[link.userId].push(identity);
-      }
-    }
 
     // Build per-user peer bindings for personal agents (e.g. Smithers).
     // Each linked user's DMs are routed to THEIR personal agent, not the
@@ -1140,11 +1131,20 @@ export async function regenerateOpenClawConfig() {
     // assembly above. Overwriting the whole block here would re-enable
     // OpenClaw's default daily session reset whenever telegram is configured,
     // silently losing chat history at 4:00 AM gateway-local time.
+    // #508: per-task session model. We intentionally do NOT emit
+    // `session.identityLinks`. Emitting it made OpenClaw fold a linked
+    // Telegram peer's DMs into the SAME session as the user's web chat
+    // (`agent:<id>:direct:<userId>`), which let a Telegram `/new` wipe web
+    // history and prevented Telegram from surfacing as its own chat. Without
+    // identityLinks each Telegram peer gets its own per-peer session
+    // (`agent:<id>:direct:<peerId>`), which the Chats list shows as a
+    // read-only "Telegram" chat (attributed via channel_links). `dmScope:
+    // "per-peer"` and the reset override stay; the per-user peer bindings
+    // above still route each linked user's DMs to their personal agent.
     const existingSession = (config.session as Record<string, unknown>) ?? {};
     config.session = {
       ...existingSession,
       dmScope: "per-peer",
-      ...(Object.keys(identityLinks).length > 0 && { identityLinks }),
     };
   }
 

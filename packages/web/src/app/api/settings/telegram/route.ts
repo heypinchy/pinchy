@@ -3,7 +3,6 @@ import { NextResponse } from "next/server";
 import { z } from "zod";
 import { withAuth } from "@/lib/api-auth";
 import { resolvePairingCode } from "@/lib/telegram-pairing";
-import { updateIdentityLinks } from "@/lib/openclaw-config";
 import { recalculateTelegramAllowStores, removePairingRequest } from "@/lib/telegram-allow-store";
 import { db } from "@/db";
 import { channelLinks } from "@/db/schema";
@@ -11,24 +10,6 @@ import { eq, and } from "drizzle-orm";
 import { parseRequestBody } from "@/lib/api-validation";
 
 const linkTelegramSchema = z.object({ code: z.string().min(1) });
-
-/**
- * Build identityLinks map from all telegram channel links in DB.
- * Format: { userId: ["telegram:channelUserId"] }
- */
-async function buildIdentityLinks(): Promise<Record<string, string[]>> {
-  const links = await db.select().from(channelLinks);
-  const identityLinks: Record<string, string[]> = {};
-  for (const link of links) {
-    const identity = `${link.channel}:${link.channelUserId}`;
-    if (!identityLinks[link.userId]) {
-      identityLinks[link.userId] = [identity];
-    } else {
-      identityLinks[link.userId].push(identity);
-    }
-  }
-  return identityLinks;
-}
 
 export const GET = withAuth(async (_req, _ctx, session) => {
   const link = await db.query.channelLinks.findFirst({
@@ -79,9 +60,11 @@ export const POST = withAuth(async (req, _ctx, session) => {
   // Recalculate per-account allow-from stores (permission-aware)
   await recalculateTelegramAllowStores();
 
-  // Update only identityLinks in config (targeted write — no agents.defaults diff,
-  // no hot-reload, no Telegram polling disruption)
-  updateIdentityLinks(await buildIdentityLinks());
+  // #508: per-task session model. We no longer write session.identityLinks —
+  // each Telegram peer keeps its own per-peer OpenClaw session rather than
+  // being folded into the user's web chat session. Pinchy's own authorization
+  // (Chats list, Telegram allow-listing) reads channel_links directly, so the
+  // link is fully effective without any identityLinks emission.
 
   return NextResponse.json({ linked: true, telegramUserId });
 });
@@ -104,8 +87,9 @@ export const DELETE = withAuth(async (_req, _ctx, session) => {
   // Recalculate per-account allow-from stores (removes unlinked user)
   await recalculateTelegramAllowStores();
 
-  // Update identityLinks (targeted write — removes this user's mapping)
-  updateIdentityLinks(await buildIdentityLinks());
+  // #508: per-task session model — no session.identityLinks to update. The
+  // per-account allow-from recalculation above (driven by channel_links) is
+  // the sole config-side effect of unlinking.
 
   return NextResponse.json({ linked: false });
 });

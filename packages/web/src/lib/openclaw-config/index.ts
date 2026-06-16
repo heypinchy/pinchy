@@ -18,6 +18,5 @@ export {
   sanitizeOpenClawConfig,
   seedRestartClassOverridesIfMissing,
   seedGatewayTokenIfMissing,
-  updateIdentityLinks,
   updateTelegramChannelConfig,
 } from "./targeted";

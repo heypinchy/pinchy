@@ -16,10 +16,11 @@ vi.mock("@/lib/telegram-pairing", () => ({
   resolvePairingCode: (...args: unknown[]) => mockResolvePairingCode(...args),
 }));
 
-const mockUpdateIdentityLinks = vi.fn();
-vi.mock("@/lib/openclaw-config", () => ({
-  updateIdentityLinks: (...args: unknown[]) => mockUpdateIdentityLinks(...args),
-}));
+// #508: the route no longer writes session.identityLinks (per-task session
+// model — each Telegram peer keeps its own per-peer OpenClaw session). It no
+// longer imports anything from @/lib/openclaw-config, so there is nothing to
+// mock here; the assertions below verify channel_links + allow-store remain
+// the only effects of link/unlink.
 
 const mockRecalculateTelegramAllowStores = vi.fn().mockResolvedValue(undefined);
 const mockRemovePairingRequest = vi.fn();
@@ -124,7 +125,6 @@ describe("POST /api/settings/telegram", () => {
       }),
     });
     mockResolvePairingCode.mockReturnValue({ found: true, telegramUserId: "8734062810" });
-    mockUpdateIdentityLinks.mockReturnValue(undefined);
   });
 
   it("returns 401 when unauthenticated", async () => {
@@ -155,8 +155,8 @@ describe("POST /api/settings/telegram", () => {
     // Per-account allow-from stores recalculated (permission-aware)
     expect(mockRecalculateTelegramAllowStores).toHaveBeenCalled();
 
-    // identityLinks updated (targeted write, no full config regeneration)
-    expect(mockUpdateIdentityLinks).toHaveBeenCalled();
+    // #508: no session.identityLinks write — channel_links + the allow-store
+    // recalc are the only effects of linking under the per-task session model.
   });
 
   it("returns 400 when pairing code is invalid", async () => {
@@ -214,7 +214,7 @@ describe("DELETE /api/settings/telegram", () => {
     // Per-account allow-from stores recalculated (removes unlinked user)
     expect(mockRecalculateTelegramAllowStores).toHaveBeenCalled();
 
-    // identityLinks updated (targeted write, no full config regeneration)
-    expect(mockUpdateIdentityLinks).toHaveBeenCalled();
+    // #508: no session.identityLinks write on unlink either — the allow-store
+    // recalc (driven by channel_links) is the sole config-side effect.
   });
 });
