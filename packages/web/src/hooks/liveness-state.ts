@@ -44,8 +44,12 @@ export function livenessReducer(state: LivenessState, event: LivenessEvent): Liv
       return state.status === "responding" ? { status: "slow" } : state;
 
     case "completed":
-      // A turn finished successfully; ready for the next one.
-      return { status: "idle" };
+      // A turn finished successfully; ready for the next one. A `completed`
+      // must NEVER override an authoritative `failed` — a fast-run reconnect
+      // verdict (`failed`) and the pipe's own terminal `completed` can overlap
+      // on the wire, and the failure has to win. Only `started`/`reset` clears
+      // a failed state. (Cardinal rule corollary: `failed` is sticky.)
+      return state.status === "failed" ? state : { status: "idle" };
 
     case "failed":
       // The ONLY transition that yields `failed`.
