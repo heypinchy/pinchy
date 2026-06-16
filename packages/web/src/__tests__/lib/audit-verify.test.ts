@@ -21,7 +21,8 @@ vi.mock("@/db", () => ({
   },
 }));
 
-import { computeRowHmacV1, computeRowHmacV2, verifyIntegrity } from "@/lib/audit";
+import { computeRowHmacV1, computeRowHmacV2 } from "@/lib/audit-hmac";
+import { verifyIntegrity } from "@/lib/audit";
 
 const secret = Buffer.from("a".repeat(64), "hex");
 
