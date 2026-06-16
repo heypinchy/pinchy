@@ -67,6 +67,7 @@ export type AuditEventType =
   | "chat.run_no_first_chunk"
   | "chat.run_aborted"
   | "chat.run_completed_after_disconnect"
+  | "chat.image_model_fallback"
   | "agent.model_unavailable"
   | "agent.memory_changed"
   | "agent.upstream_format_error"

@@ -29,8 +29,11 @@ import {
   stripFinalEnvelope,
 } from "@/server/silent-reply-buffer";
 import { db } from "@/db";
-import { agents, users } from "@/db/schema";
+import { agents, users, models } from "@/db/schema";
 import { eq } from "drizzle-orm";
+import { isModelVisionCapable } from "@/lib/model-vision";
+import { resolveImageTurnModel, type VisionCandidate } from "@/lib/image-fallback";
+import { readExistingConfig } from "@/lib/openclaw-config/write";
 import {
   type ProcessedWorkspaceRef,
   buildAttachmentBlock,
@@ -252,19 +255,81 @@ export class ClientRouter {
         agentId: message.agentId,
         sessionKey,
       };
-      // Forward the agent's configured provider/model so OpenClaw's `agent`
-      // RPC resolves capability checks (notably image-input support) against
-      // the right model. Without this, server-methods falls back to the
-      // gateway-wide default model — see #324 / openclaw-node 0.9.0.
-      // Split on the FIRST '/' only: provider is before, model is the
-      // rest (model ids can themselves contain '/', e.g. HuggingFace).
-      if (agent.model) {
-        const slashIdx = agent.model.indexOf("/");
-        if (slashIdx > 0 && slashIdx < agent.model.length - 1) {
-          chatOptions.provider = agent.model.slice(0, slashIdx);
-          chatOptions.model = agent.model.slice(slashIdx + 1);
+
+      // Decide which model runs THIS turn. Normally the agent's own model, but an
+      // image sent to a text-only agent model is routed to a vision-capable
+      // fallback for this turn only — the agent's stored model is untouched and
+      // the next text turn resolves straight back to it. We do this because
+      // OpenClaw's `agent` RPC throws on image+text-only instead of offloading
+      // (the offload path lives only on `chat.send`, which can't carry the
+      // `extraSystemPrompt`/`provider`/`model` params Pinchy depends on). Routing
+      // the turn keeps per-user context intact and avoids permanently swapping
+      // the agent's model the way the old recovery dialog did.
+      const turnModel = await resolveImageTurnModel({
+        agentModel: agent.model,
+        agentUsesTools: ((agent.allowedTools as string[] | null) ?? []).length > 0,
+        attachmentMimeTypes: chatAttachments.map((a) => a.mimeType ?? ""),
+        deps: {
+          modelSupportsVision: isModelVisionCapable,
+          listVisionCandidates,
+          getGlobalImageModel: getConfiguredImageModel,
+        },
+      });
+
+      if (turnModel.kind === "blocked") {
+        // Image needs vision, the agent's model can't read images, and no
+        // image-capable model is configured anywhere to fall back to. Surface a
+        // clear, actionable error instead of letting OpenClaw reject the turn —
+        // the fix is an admin configuring a vision model, not swapping this
+        // agent's model.
+        this.sendToClient(clientWs, {
+          type: "error",
+          code: "vision_unavailable",
+          message:
+            "This agent's model can't read images, and no image-capable model is configured to handle them. Ask an admin to configure one in Settings.",
+        });
+        return;
+      }
+
+      // Forward the resolved provider/model so OpenClaw's `agent` RPC resolves
+      // capability checks (notably image-input support) against the right model.
+      // Without this, server-methods falls back to the gateway-wide default model
+      // — see #324 / openclaw-node 0.9.0. Split on the FIRST '/' only: provider is
+      // before, model is the rest (model ids can themselves contain '/').
+      const turnModelRef = turnModel.kind === "fallback" ? turnModel.model : agent.model;
+      if (turnModelRef) {
+        const slashIdx = turnModelRef.indexOf("/");
+        if (slashIdx > 0 && slashIdx < turnModelRef.length - 1) {
+          chatOptions.provider = turnModelRef.slice(0, slashIdx);
+          chatOptions.model = turnModelRef.slice(slashIdx + 1);
         }
       }
+
+      if (turnModel.kind === "fallback") {
+        // Governance: a CISO needs to see that this turn's image went to a model
+        // other than the agent's configured one. Non-request (WS) context, so
+        // record-on-failure rather than rollback.
+        const fallbackAudit = {
+          actorType: "user" as const,
+          actorId: this.userId,
+          eventType: "chat.image_model_fallback" as const,
+          resource: `agent:${message.agentId}`,
+          detail: {
+            agent: { id: agent.id, name: agent.name },
+            sessionKey,
+            agentModel: agent.model,
+            fallbackModel: turnModel.model,
+            reason: "text_only_model_received_image",
+          },
+          outcome: "success" as const,
+        };
+        try {
+          await appendAuditLog(fallbackAudit);
+        } catch (err) {
+          recordAuditFailure(err, fallbackAudit);
+        }
+      }
+
       if (chatAttachments.length > 0) {
         chatOptions.attachments = chatAttachments;
       }
@@ -1297,5 +1362,39 @@ export class ClientRouter {
     } catch (err) {
       recordAuditFailure(err, auditEntry);
     }
+  }
+}
+
+/**
+ * Vision-capable models from the catalog, used as fallback candidates for an
+ * image turn on a text-only agent. Returned in the catalog's natural order; the
+ * resolver layers same-provider preference on top.
+ */
+async function listVisionCandidates(): Promise<VisionCandidate[]> {
+  const rows = await db.select().from(models).where(eq(models.vision, true));
+  return rows.map((m) => ({
+    id: `${m.provider}/${m.modelId}`,
+    provider: m.provider,
+    tools: m.tools ?? false,
+  }));
+}
+
+/**
+ * The system-wide image model Pinchy already pinned into
+ * `agents.defaults.imageModel` (resolveDefaultImageModel, at config-gen time) —
+ * used as the cross-provider fallback when the agent's own provider has no
+ * vision model. Returns null when the config can't be read; the same-provider
+ * candidate path still applies.
+ */
+function getConfiguredImageModel(): string | null {
+  try {
+    const cfg = readExistingConfig();
+    const agentsCfg = cfg.agents as
+      | { defaults?: { imageModel?: { primary?: unknown } } }
+      | undefined;
+    const primary = agentsCfg?.defaults?.imageModel?.primary;
+    return typeof primary === "string" && primary.length > 0 ? primary : null;
+  } catch {
+    return null;
   }
 }
