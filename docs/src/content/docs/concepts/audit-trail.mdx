@@ -17,10 +17,10 @@ Pinchy logs event types across several categories:
 
 ### Tool execution
 
-| Event Type        | Description                                                                                                       |
-| ----------------- | ----------------------------------------------------------------------------------------------------------------- |
+| Event Type        | Description                                                                                                                     |
+| ----------------- | ------------------------------------------------------------------------------------------------------------------------------- |
 | `tool.<toolName>` | An agent executed a tool — event type is dynamic per tool (e.g. `tool.pinchy_read`, `tool.odoo_read`, `tool.pinchy_web_search`) |
-| `tool.denied`     | An agent attempted to use a tool that was not in its allow-list                                                   |
+| `tool.denied`     | An agent attempted to use a tool that was not in its allow-list                                                                 |
 
 Each tool execution produces **one audit entry** — logged when the tool call completes (end phase only). The detail includes the tool name, parameters, and result. Start events are received but not persisted.
 
@@ -65,7 +65,7 @@ exports too.
 | `auth.login`                    | A user successfully logged in                                                                                                                                                                                                                                                                                                                                                           |
 | `auth.failed`                   | A login attempt failed (wrong password, unknown email)                                                                                                                                                                                                                                                                                                                                  |
 | `auth.logout`                   | A user logged out                                                                                                                                                                                                                                                                                                                                                                       |
-| `auth.csrf_blocked`             | A state-changing request was rejected because its `Origin` / `Referer` headers didn't match the locked domain. Detail captures `method`, `pathname`, `origin`, `referer`, and `remoteAddress` — see [Hardening › CSRF gate](/guides/hardening/#cross-site-request-forgery-csrf-protection).                                                                                                                              |
+| `auth.csrf_blocked`             | A state-changing request was rejected because its `Origin` / `Referer` headers didn't match the locked domain. Detail captures `method`, `pathname`, `origin`, `referer`, and `remoteAddress` — see [Hardening › CSRF gate](/guides/hardening/#cross-site-request-forgery-csrf-protection).                                                                                             |
 | `auth.password_reset_completed` | A user finished a password-reset invite. On success, detail snapshots the target `{id, name}` and the invite id; all of that user's existing sessions are revoked in the same transaction. On failure (rare — e.g. DB error mid-flow), `outcome: failure` is written with the error message and the entire reset rolls back so the old password and the reset token both remain usable. |
 
 ### Agent management
