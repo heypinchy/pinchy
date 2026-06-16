@@ -37,7 +37,7 @@ async function seedUser(role: "admin" | "member" = "member") {
     .returning();
   return u;
 }
-async function seedAgent(ownerId: string) {
+async function seedAgent(ownerId: string, confirmTools: string[] = ["odoo_write"]) {
   const [a] = await db
     .insert(agents)
     .values({
@@ -45,6 +45,7 @@ async function seedAgent(ownerId: string) {
       model: "anthropic/claude-haiku-4-5-20251001",
       greetingMessage: "Hi",
       ownerId,
+      pluginConfig: { "pinchy-approvals": { confirmTools } },
     })
     .returning();
   return a;
@@ -95,6 +96,12 @@ describe("approval routes (integration, real DB)", () => {
   it("rejects gate-check without the gateway token", async () => {
     const res = await gateCheck(gateReq(gateBody(), null));
     expect(res.status).toBe(401);
+  });
+
+  it("allows an ungated tool without creating a pending request", async () => {
+    const res = await (await gateCheck(gateReq(gateBody({ toolName: "odoo_list_models" })))).json();
+    expect(res.decision).toBe("allow");
+    expect(await db.select().from(toolApproval)).toHaveLength(0);
   });
 
   it("blocks an un-approved gated call: one pending row, one requested-audit, idempotent on retry", async () => {

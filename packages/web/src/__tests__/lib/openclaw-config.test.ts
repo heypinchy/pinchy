@@ -5443,6 +5443,7 @@ describe("restart-state integration", () => {
       "pinchy-audit",
       "telegram",
       "pinchy-files",
+      "pinchy-approvals",
       "document-extract",
     ]);
   });
@@ -5885,6 +5886,7 @@ describe("restart-state integration", () => {
         "pinchy-docs",
         "telegram",
         "pinchy-files",
+        "pinchy-approvals",
         "document-extract",
       ]);
     }

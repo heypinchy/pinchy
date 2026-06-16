@@ -776,6 +776,17 @@ export async function regenerateOpenClawConfig() {
     },
   };
 
+  // Always include pinchy-approvals and keep it enabled. Its before_tool_call
+  // gate must see every tool call to enforce the per-agent confirmation policy
+  // (#124 Tier 2). The policy decision is made server-side per call.
+  entries["pinchy-approvals"] = {
+    enabled: true,
+    config: {
+      apiBaseUrl: process.env.PINCHY_INTERNAL_URL || `http://pinchy:${process.env.PORT || "7777"}`,
+      gatewayToken: gatewayTokenString,
+    },
+  };
+
   // Note: pinchy-files is always included (workspace uploads) — per-agent paths are built above.
 
   // Collect Odoo integration configs for agents with integration permissions
