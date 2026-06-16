@@ -905,9 +905,9 @@ describe("odoo_list_models", () => {
 });
 
 describe("tool registration", () => {
-  it("registers all 10 tools (including the deprecated odoo_schema alias)", () => {
+  it("registers all 11 tools (including the deprecated odoo_schema alias)", () => {
     const tools = createApi({ [agentId]: agentConfig });
-    expect(tools).toHaveLength(10);
+    expect(tools).toHaveLength(11);
     const names = tools.map((t) => t.name);
     expect(names).toContain("odoo_list_models");
     expect(names).toContain("odoo_describe_model");
@@ -916,6 +916,7 @@ describe("tool registration", () => {
     expect(names).toContain("odoo_count");
     expect(names).toContain("odoo_aggregate");
     expect(names).toContain("odoo_create");
+    expect(names).toContain("odoo_schedule_activity");
     expect(names).toContain("odoo_write");
     expect(names).toContain("odoo_delete");
     expect(names).toContain("odoo_attach_file");
@@ -2184,7 +2185,9 @@ describe("client caching (#209 layer 2: credentials fetched lazily, cached)", ()
       json: async () => ({ type: "odoo", credentials: testCredentials }),
     } as unknown as Response);
 
-    mockSearchRead.mockRejectedValueOnce(new Error("HTTP 503 Service Unavailable"));
+    mockSearchRead.mockRejectedValueOnce(
+      new Error("HTTP 503 Service Unavailable"),
+    );
 
     const tools = createApi({ [agentId]: agentConfig });
     const tool = findTool(tools, "odoo_read", agentId)!;
@@ -3535,5 +3538,147 @@ describe("cross-company write guard", () => {
     expect(result.isError).toBe(true);
     expect(result.content[0].text).toMatch(/cross-company/i);
     expect(mockWrite).not.toHaveBeenCalled();
+  });
+});
+
+describe("odoo_schedule_activity", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.stubEnv("PINCHY_REF_TOKEN_KEY", "a".repeat(64));
+  });
+
+  const activityConfig = {
+    connectionId: "conn-test-1",
+    permissions: {
+      "crm.lead": ["read", "create", "write"],
+      "mail.activity": ["read", "create", "write"],
+    },
+  };
+
+  function leadRef(connectionId = "conn-test-1"): string {
+    return encodeRef({
+      integrationType: "odoo",
+      connectionId,
+      model: "crm.lead",
+      id: 1,
+      label: "Big Fence Order",
+    });
+  }
+
+  it("is registered as a tool", () => {
+    const tools = createApi({ [agentId]: activityConfig });
+    expect(tools.map((t) => t.name)).toContain("odoo_schedule_activity");
+  });
+
+  it("builds the mail.activity payload with resolved res_model_id, default To-Do type, and the lead's salesperson", async () => {
+    mockSearchRead.mockImplementation(async (model: string) => {
+      if (model === "ir.model")
+        return { records: [{ id: 5 }], total: 1, limit: 1, offset: 0 };
+      if (model === "ir.model.data")
+        return {
+          records: [{ id: 1, res_id: 9 }],
+          total: 1,
+          limit: 1,
+          offset: 0,
+        };
+      if (model === "crm.lead")
+        return {
+          records: [{ id: 1, user_id: [7, "Sally Seller"] }],
+          total: 1,
+          limit: 1,
+          offset: 0,
+        };
+      return { records: [], total: 0, limit: 0, offset: 0 };
+    });
+    mockCreate.mockResolvedValue(42);
+
+    const tools = createApi({ [agentId]: activityConfig });
+    const tool = findTool(tools, "odoo_schedule_activity", agentId)!;
+    const result = await tool.execute("c", {
+      target: leadRef(),
+      summary: "Call about the quote",
+      dueDate: "2026-06-30",
+    });
+
+    expect(result.isError).toBeFalsy();
+    expect(mockCreate).toHaveBeenCalledWith("mail.activity", {
+      res_model_id: 5,
+      res_id: 1,
+      date_deadline: "2026-06-30",
+      summary: "Call about the quote",
+      activity_type_id: 9,
+      user_id: 7,
+    });
+    const data = JSON.parse(result.content[0].text);
+    expect(data.id).toBe(42);
+    expect(data._pinchy_ref).toMatch(/^pinchy_ref:v1:/);
+  });
+
+  it("falls back to Odoo's default activity type when the To-Do xmlid is absent", async () => {
+    mockSearchRead.mockImplementation(async (model: string) => {
+      if (model === "ir.model")
+        return { records: [{ id: 5 }], total: 1, limit: 1, offset: 0 };
+      // ir.model.data lookup finds nothing → no activity_type_id forced
+      return { records: [], total: 0, limit: 0, offset: 0 };
+    });
+    mockCreate.mockResolvedValue(1);
+
+    const tools = createApi({ [agentId]: activityConfig });
+    const tool = findTool(tools, "odoo_schedule_activity", agentId)!;
+    await tool.execute("c", {
+      target: leadRef(),
+      summary: "Follow up",
+      dueDate: "2026-06-30",
+    });
+
+    const [, values] = mockCreate.mock.calls[0];
+    expect(values).not.toHaveProperty("activity_type_id");
+    expect(values).not.toHaveProperty("user_id");
+  });
+
+  it("denies the call when the agent lacks create on mail.activity", async () => {
+    const tools = createApi({
+      [agentId]: {
+        connectionId: "conn-test-1",
+        permissions: { "crm.lead": ["read"] },
+      },
+    });
+    const tool = findTool(tools, "odoo_schedule_activity", agentId)!;
+    const result = await tool.execute("c", {
+      target: leadRef(),
+      summary: "x",
+      dueDate: "2026-06-30",
+    });
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain("Permission denied");
+    expect(mockCreate).not.toHaveBeenCalled();
+  });
+
+  it("rejects a malformed dueDate before touching Odoo", async () => {
+    const tools = createApi({ [agentId]: activityConfig });
+    const tool = findTool(tools, "odoo_schedule_activity", agentId)!;
+    const result = await tool.execute("c", {
+      target: leadRef(),
+      summary: "x",
+      dueDate: "next friday",
+    });
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain("YYYY-MM-DD");
+    expect(mockCreate).not.toHaveBeenCalled();
+  });
+
+  it("rejects a target ref from a different connection", async () => {
+    const tools = createApi({ [agentId]: activityConfig });
+    const tool = findTool(tools, "odoo_schedule_activity", agentId)!;
+    const result = await tool.execute("c", {
+      target: leadRef("conn-OTHER"),
+      summary: "x",
+      dueDate: "2026-06-30",
+    });
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain(
+      "does not belong to this Odoo connection",
+    );
+    expect(mockCreate).not.toHaveBeenCalled();
   });
 });

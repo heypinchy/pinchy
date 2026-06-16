@@ -37,11 +37,12 @@ describe("TOOL_REGISTRY", () => {
 
   it("contains powerful tools", () => {
     const powerful = TOOL_REGISTRY.filter((t) => t.category === "powerful");
-    expect(powerful.length).toBe(9);
+    expect(powerful.length).toBe(10);
     expect(powerful.map((t) => t.id)).toEqual([
       "pinchy_web_search",
       "pinchy_web_fetch",
       "odoo_create",
+      "odoo_schedule_activity",
       "odoo_write",
       "odoo_delete",
       "odoo_attach_file",
@@ -160,8 +161,8 @@ describe("computeDeniedGroups", () => {
 describe("Odoo access level helpers", () => {
   it("all odoo tools have integration: 'odoo'", () => {
     const odooTools = TOOL_REGISTRY.filter((t) => t.id.startsWith("odoo_"));
-    // 9 active tools + 1 deprecated alias (odoo_schema) = 10.
-    expect(odooTools.length).toBe(10);
+    // 10 active tools + 1 deprecated alias (odoo_schema) = 11.
+    expect(odooTools.length).toBe(11);
     for (const tool of odooTools) {
       expect(tool.integration).toBe("odoo");
     }
@@ -223,7 +224,7 @@ describe("Odoo access level helpers", () => {
     ]);
   });
 
-  it("getOdooToolsForAccessLevel('read-write') returns 8 tools", () => {
+  it("getOdooToolsForAccessLevel('read-write') returns 9 tools", () => {
     const tools = getOdooToolsForAccessLevel("read-write");
     expect(tools).toEqual([
       "odoo_list_models",
@@ -232,12 +233,13 @@ describe("Odoo access level helpers", () => {
       "odoo_count",
       "odoo_aggregate",
       "odoo_create",
+      "odoo_schedule_activity",
       "odoo_write",
       "odoo_attach_file",
     ]);
   });
 
-  it("getOdooToolsForAccessLevel('full') returns all 9 tools", () => {
+  it("getOdooToolsForAccessLevel('full') returns all 10 tools", () => {
     const tools = getOdooToolsForAccessLevel("full");
     expect(tools).toEqual([
       "odoo_list_models",
@@ -246,6 +248,7 @@ describe("Odoo access level helpers", () => {
       "odoo_count",
       "odoo_aggregate",
       "odoo_create",
+      "odoo_schedule_activity",
       "odoo_write",
       "odoo_attach_file",
       "odoo_delete",
@@ -257,9 +260,9 @@ describe("Odoo access level helpers", () => {
     expect(tools).toEqual(["odoo_list_models", "odoo_describe_model"]);
   });
 
-  it("getOdooTools() returns exactly 10 tools (9 active + 1 deprecated alias)", () => {
+  it("getOdooTools() returns exactly 11 tools (10 active + 1 deprecated alias)", () => {
     const tools = getOdooTools();
-    expect(tools).toHaveLength(10);
+    expect(tools).toHaveLength(11);
     expect(tools.every((t) => t.integration === "odoo")).toBe(true);
   });
 
@@ -276,6 +279,41 @@ describe("Odoo access level helpers", () => {
   });
 
   it("detectOdooAccessLevel correctly identifies read-write preset", () => {
+    expect(
+      detectOdooAccessLevel([
+        "odoo_list_models",
+        "odoo_describe_model",
+        "odoo_read",
+        "odoo_count",
+        "odoo_aggregate",
+        "odoo_create",
+        "odoo_write",
+        "odoo_attach_file",
+      ])
+    ).toBe("read-write");
+  });
+
+  it("detectOdooAccessLevel keeps a read-write agent classified after odoo_schedule_activity is added", () => {
+    // New agents created from the updated preset carry odoo_schedule_activity;
+    // it is additive and must still read as "read-write", not "custom".
+    expect(
+      detectOdooAccessLevel([
+        "odoo_list_models",
+        "odoo_describe_model",
+        "odoo_read",
+        "odoo_count",
+        "odoo_aggregate",
+        "odoo_create",
+        "odoo_schedule_activity",
+        "odoo_write",
+        "odoo_attach_file",
+      ])
+    ).toBe("read-write");
+  });
+
+  it("detectOdooAccessLevel keeps a pre-existing read-write agent (without odoo_schedule_activity) classified", () => {
+    // Production agents predate the tool and never received it. Their absence
+    // of odoo_schedule_activity must NOT flip them to "custom".
     expect(
       detectOdooAccessLevel([
         "odoo_list_models",

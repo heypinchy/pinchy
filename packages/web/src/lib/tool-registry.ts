@@ -93,6 +93,14 @@ export const TOOL_REGISTRY: readonly ToolDefinition[] = [
     integration: "odoo",
   },
   {
+    id: "odoo_schedule_activity",
+    label: "Odoo: Schedule activity",
+    description:
+      "Schedule a follow-up activity (planned to-do) on an Odoo record so it surfaces in activity views",
+    category: "powerful",
+    integration: "odoo",
+  },
+  {
     id: "odoo_write",
     label: "Odoo: Update records",
     description: "Modify existing records in Odoo",
@@ -231,8 +239,20 @@ const ODOO_READ_TOOLS = [
   "odoo_count",
   "odoo_aggregate",
 ] as const;
-const ODOO_WRITE_TOOLS = ["odoo_create", "odoo_write", "odoo_attach_file"] as const;
+const ODOO_WRITE_TOOLS = [
+  "odoo_create",
+  "odoo_schedule_activity",
+  "odoo_write",
+  "odoo_attach_file",
+] as const;
 const ODOO_DELETE_TOOLS = ["odoo_delete"] as const;
+
+// Additive Odoo tools introduced after the read-write/full presets shipped.
+// Existing agents predate them, so their presence or absence must NOT flip
+// preset detection to "custom" (mirrors the deprecated-alias handling in
+// `detectOdooAccessLevel`). New agents get them via the preset; old agents
+// stay classified by their base read/write/delete tools until re-aligned.
+const ODOO_ADDITIVE_TOOLS = new Set<string>(["odoo_schedule_activity"]);
 
 /** Returns all Odoo tool definitions from the registry. */
 export function getOdooTools(): ToolDefinition[] {
@@ -268,7 +288,10 @@ export function detectOdooAccessLevel(allowedToolIds: string[]): OdooAccessLevel
   const deprecatedIds = new Set(
     TOOL_REGISTRY.filter((t) => t.deprecated && t.integration === "odoo").map((t) => t.id)
   );
-  const odooIds = allowedToolIds.filter((id) => id.startsWith("odoo_") && !deprecatedIds.has(id));
+  // Ignore both deprecated aliases and additive post-preset tools so neither
+  // flips an otherwise-matching agent to "custom".
+  const ignored = (id: string) => deprecatedIds.has(id) || ODOO_ADDITIVE_TOOLS.has(id);
+  const odooIds = allowedToolIds.filter((id) => id.startsWith("odoo_") && !ignored(id));
   const odooSet = new Set(odooIds);
 
   const presets: [OdooAccessLevel, readonly string[]][] = [
@@ -277,7 +300,8 @@ export function detectOdooAccessLevel(allowedToolIds: string[]): OdooAccessLevel
     ["read-only", getOdooToolsForAccessLevel("read-only")],
   ];
 
-  for (const [level, tools] of presets) {
+  for (const [level, presetTools] of presets) {
+    const tools = presetTools.filter((t) => !ignored(t));
     if (odooSet.size === tools.length && tools.every((t) => odooSet.has(t))) {
       return level;
     }

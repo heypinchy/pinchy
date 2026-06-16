@@ -20,6 +20,7 @@ import { createRequire } from "module";
 import { createServer, type Server } from "http";
 import { AddressInfo } from "net";
 import plugin from "../index";
+import { encodeRef } from "../integration-ref";
 
 const require = createRequire(import.meta.url);
 
@@ -327,5 +328,140 @@ describe("pinchy-odoo against real mock-odoo + mock-pinchy (#209 layer 2)", () =
 
     expect(result.isError).toBe(true);
     expect(result.content[0].text).toContain("404");
+  });
+});
+
+describe("pinchy-odoo mail.activity scheduling against real mock-odoo", () => {
+  const activityAgentId = "agent-activity";
+  const activityConnectionId = "conn-activity";
+  const activityConfig = {
+    connectionId: activityConnectionId,
+    permissions: {
+      "crm.lead": ["read", "create", "write"],
+      "mail.activity": ["read", "create", "write"],
+    },
+    modelNames: { "crm.lead": "Lead/Opportunity", "mail.activity": "Activity" },
+  };
+
+  beforeAll(async () => {
+    // Reset the store (its defaults now seed crm.lead / mail.activity /
+    // ir.model.data) and point this connection at the in-process mock-odoo.
+    await fetch(`http://127.0.0.1:${mockOdoo.controlPort}/control/reset`, {
+      method: "POST",
+    });
+    credentialsByConnectionId.set(activityConnectionId, {
+      url: `http://127.0.0.1:${mockOdoo.jsonRpcPort}`,
+      db: "testdb",
+      uid: 2,
+      apiKey: "test-api-key",
+    });
+  });
+
+  function leadRef(id: number, label: string): string {
+    return encodeRef({
+      integrationType: "odoo",
+      connectionId: activityConnectionId,
+      model: "crm.lead",
+      id,
+      label,
+    });
+  }
+
+  async function activities(): Promise<Array<Record<string, unknown>>> {
+    return (await fetch(
+      `http://127.0.0.1:${mockOdoo.controlPort}/control/records?model=mail.activity`,
+    ).then((r) => r.json())) as Array<Record<string, unknown>>;
+  }
+
+  it("GUARD: the mock enforces Odoo's res_id CHECK — an activity with no model link is rejected", async () => {
+    const tools = createApi({ [activityAgentId]: activityConfig });
+    const tool = findTool(tools, "odoo_create", activityAgentId);
+    const result = await tool.execute("c-orphan", {
+      model: "mail.activity",
+      values: { res_id: 1, summary: "orphan", date_deadline: "2026-06-30" },
+    });
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain("not null res_id");
+  });
+
+  it("odoo_schedule_activity resolves res_model_id from the target ref and links the activity to the right record", async () => {
+    const tools = createApi({ [activityAgentId]: activityConfig });
+    const tool = findTool(tools, "odoo_schedule_activity", activityAgentId);
+    const result = await tool.execute("c-schedule", {
+      target: leadRef(1, "Big Fence Order — Müller GmbH"),
+      summary: "Call the customer about the quote",
+      dueDate: "2026-06-30",
+    });
+    expect(result.isError).toBeFalsy();
+
+    const created = (await activities()).find(
+      (a) => a.summary === "Call the customer about the quote",
+    );
+    expect(created).toBeTruthy();
+    // res_model_id resolved to the ir.model id for crm.lead (seed id 5)
+    expect(created!.res_model_id).toBe(5);
+    expect(created!.res_model).toBe("crm.lead");
+    expect(created!.res_id).toBe(1);
+    // default To-Do activity type resolved via ir.model.data (seed id 1)
+    expect(created!.activity_type_id).toBe(1);
+    // assignee defaults to the lead's salesperson (seed user 7)
+    expect(created!.user_id).toBe(7);
+    expect(created!.date_deadline).toBe("2026-06-30");
+  });
+
+  it("odoo_schedule_activity accepts an explicit assignee by exact name", async () => {
+    const tools = createApi({ [activityAgentId]: activityConfig });
+    const tool = findTool(tools, "odoo_schedule_activity", activityAgentId);
+    const result = await tool.execute("c-assignee", {
+      target: leadRef(1, "Big Fence Order"),
+      summary: "Send revised proposal",
+      dueDate: "2026-07-01",
+      assignee: "Mitch Admin",
+    });
+    expect(result.isError).toBeFalsy();
+
+    const created = (await activities()).find(
+      (a) => a.summary === "Send revised proposal",
+    );
+    expect(created!.user_id).toBe(2);
+  });
+
+  it("odoo_schedule_activity links a lead with no salesperson without forcing a user", async () => {
+    const tools = createApi({ [activityAgentId]: activityConfig });
+    const tool = findTool(tools, "odoo_schedule_activity", activityAgentId);
+    const result = await tool.execute("c-noowner", {
+      target: leadRef(2, "Cold inbound — no owner yet"),
+      summary: "Qualify this lead",
+      dueDate: "2026-07-02",
+    });
+    expect(result.isError).toBeFalsy();
+
+    const created = (await activities()).find(
+      (a) => a.summary === "Qualify this lead",
+    );
+    expect(created!.res_id).toBe(2);
+    expect(created!.user_id).toBeUndefined();
+  });
+
+  it("SAFETY-NET: odoo_create on mail.activity with a res_model string (legacy agent path) is translated to res_model_id", async () => {
+    const tools = createApi({ [activityAgentId]: activityConfig });
+    const tool = findTool(tools, "odoo_create", activityAgentId);
+    const result = await tool.execute("c-legacy", {
+      model: "mail.activity",
+      values: {
+        res_model: "crm.lead",
+        res_id: 1,
+        summary: "Legacy path follow-up",
+        date_deadline: "2026-07-03",
+      },
+    });
+    expect(result.isError).toBeFalsy();
+
+    const created = (await activities()).find(
+      (a) => a.summary === "Legacy path follow-up",
+    );
+    expect(created!.res_model_id).toBe(5);
+    expect(created!.res_model).toBe("crm.lead");
+    expect(created!.res_id).toBe(1);
   });
 });

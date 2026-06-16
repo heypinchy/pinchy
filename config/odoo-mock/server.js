@@ -161,6 +161,143 @@ const MODEL_FIELDS = {
       readonly: true,
     },
   },
+  // External-id registry. Backs xmlid → record-id resolution (e.g. the
+  // canonical "To-Do" activity type `mail.mail_activity_data_todo`).
+  "ir.model.data": {
+    id: { string: "ID", type: "integer", required: false, readonly: true },
+    module: { string: "Module", type: "char", required: true, readonly: false },
+    name: {
+      string: "External Identifier",
+      type: "char",
+      required: true,
+      readonly: false,
+    },
+    model: { string: "Model", type: "char", required: true, readonly: false },
+    res_id: {
+      string: "Record ID",
+      type: "integer",
+      required: false,
+      readonly: false,
+    },
+  },
+  "res.users": {
+    id: { string: "ID", type: "integer", required: false, readonly: true },
+    name: { string: "Name", type: "char", required: true, readonly: false },
+    login: { string: "Login", type: "char", required: true, readonly: false },
+  },
+  "crm.lead": {
+    id: { string: "ID", type: "integer", required: false, readonly: true },
+    name: {
+      string: "Opportunity",
+      type: "char",
+      required: true,
+      readonly: false,
+    },
+    type: {
+      string: "Type",
+      type: "selection",
+      required: false,
+      readonly: false,
+      selection: [
+        ["lead", "Lead"],
+        ["opportunity", "Opportunity"],
+      ],
+    },
+    user_id: {
+      string: "Salesperson",
+      type: "many2one",
+      required: false,
+      readonly: false,
+      relation: "res.users",
+    },
+    partner_id: {
+      string: "Customer",
+      type: "many2one",
+      required: false,
+      readonly: false,
+      relation: "res.partner",
+    },
+  },
+  "mail.activity.type": {
+    id: { string: "ID", type: "integer", required: false, readonly: true },
+    name: { string: "Name", type: "char", required: true, readonly: false },
+    category: {
+      string: "Action",
+      type: "selection",
+      required: false,
+      readonly: false,
+      selection: [
+        ["default", "None"],
+        ["upload_file", "Upload Document"],
+        ["phonecall", "Phonecall"],
+      ],
+    },
+  },
+  // Mirrors Odoo's real mail.activity field contract: `res_model_id` is the
+  // required FK to ir.model; `res_model` is a READONLY related char computed
+  // from it; `res_id` is a many2one_reference guarded by a SQL CHECK that it
+  // is non-null and non-zero. Writing `res_model` directly is a no-op — the
+  // exact trap that broke direct mail.activity creation (see create handler).
+  "mail.activity": {
+    id: { string: "ID", type: "integer", required: false, readonly: true },
+    res_model_id: {
+      string: "Document Model",
+      type: "many2one",
+      required: true,
+      readonly: false,
+      relation: "ir.model",
+    },
+    res_model: {
+      string: "Related Document Model",
+      type: "char",
+      required: false,
+      readonly: true,
+    },
+    res_id: {
+      string: "Related Document ID",
+      type: "many2one_reference",
+      required: false,
+      readonly: false,
+    },
+    activity_type_id: {
+      string: "Activity Type",
+      type: "many2one",
+      required: false,
+      readonly: false,
+      relation: "mail.activity.type",
+    },
+    summary: {
+      string: "Summary",
+      type: "char",
+      required: false,
+      readonly: false,
+    },
+    note: { string: "Note", type: "html", required: false, readonly: false },
+    date_deadline: {
+      string: "Due Date",
+      type: "date",
+      required: true,
+      readonly: false,
+    },
+    user_id: {
+      string: "Assigned to",
+      type: "many2one",
+      required: false,
+      readonly: false,
+      relation: "res.users",
+    },
+    state: {
+      string: "State",
+      type: "selection",
+      required: false,
+      readonly: true,
+      selection: [
+        ["overdue", "Overdue"],
+        ["today", "Today"],
+        ["planned", "Planned"],
+      ],
+    },
+  },
 };
 
 // ---------------------------------------------------------------------------
@@ -287,7 +424,48 @@ function getDefaultRecords() {
       { id: 2, model: "res.partner", name: "Contact" },
       { id: 3, model: "product.product", name: "Product" },
       { id: 4, model: "res.country", name: "Country" },
+      { id: 5, model: "crm.lead", name: "Lead/Opportunity" },
+      { id: 6, model: "mail.activity", name: "Activity" },
+      { id: 7, model: "mail.activity.type", name: "Activity Type" },
+      { id: 8, model: "res.users", name: "User" },
     ],
+    "res.users": [
+      { id: 2, name: "Mitch Admin", login: "admin" },
+      { id: 7, name: "Sally Seller", login: "sally" },
+    ],
+    "crm.lead": [
+      {
+        id: 1,
+        name: "Big Fence Order — Müller GmbH",
+        type: "opportunity",
+        user_id: [7, "Sally Seller"],
+        partner_id: [1, "Müller GmbH"],
+      },
+      {
+        id: 2,
+        name: "Cold inbound — no owner yet",
+        type: "lead",
+        user_id: false,
+        partner_id: false,
+      },
+    ],
+    "mail.activity.type": [
+      { id: 1, name: "To-Do", category: "default" },
+      { id: 2, name: "Call", category: "phonecall" },
+    ],
+    // The canonical xmlid for the To-Do activity type, mirroring Odoo's
+    // `mail.mail_activity_data_todo`. Lets the plugin resolve the default
+    // activity type locale-independently via ir.model.data.
+    "ir.model.data": [
+      {
+        id: 1,
+        module: "mail",
+        name: "mail_activity_data_todo",
+        model: "mail.activity.type",
+        res_id: 1,
+      },
+    ],
+    "mail.activity": [],
   };
 }
 
@@ -485,7 +663,10 @@ function handleJsonRpc(body) {
     // object/execute_kw
     if (service === "object" && svcMethod === "execute_kw") {
       if (authMode === "fail") {
-        return { __jsonrpc_error: true, message: "access denied: invalid credentials" };
+        return {
+          __jsonrpc_error: true,
+          message: "access denied: invalid credentials",
+        };
       }
       const args = params.args || [];
       // args: [db, uid, apiKey, model, method, positionalArgs, kwArgs]
@@ -591,7 +772,36 @@ function handleJsonRpc(body) {
 
       // create
       if (objMethod === "create") {
-        const values = positionalArgs[0] || {};
+        const values = { ...(positionalArgs[0] || {}) };
+
+        // mail.activity enforces Odoo's real contract:
+        //  - `res_model` is a READONLY related field of `res_model_id`; any
+        //    incoming value is dropped (writing it is a no-op in Odoo).
+        //  - the SQL CHECK `res_id IS NOT NULL AND res_id != 0` rejects an
+        //    activity that is not linked to a concrete record. Without a
+        //    `res_model_id` the related `res_model` stays empty and the
+        //    many2one_reference `res_id` never persists — which is exactly
+        //    how a create that only passes `res_model` + `res_id` fails.
+        if (model === "mail.activity") {
+          delete values.res_model;
+          if (!values.res_model_id || !values.res_id) {
+            return {
+              __jsonrpc_error: true,
+              message:
+                "Activities have to be linked to records with a not null res_id.",
+            };
+          }
+          // Compute the readonly related `res_model` from res_model_id so
+          // reads surface it the way Odoo does.
+          const irModelId = Array.isArray(values.res_model_id)
+            ? values.res_model_id[0]
+            : values.res_model_id;
+          const modelRec = (store["ir.model"] || []).find(
+            (r) => r.id === irModelId,
+          );
+          if (modelRec) values.res_model = modelRec.model;
+        }
+
         const newId = nextIds[model] || 1;
         nextIds[model] = newId + 1;
         const newRecord = { id: newId, ...values };

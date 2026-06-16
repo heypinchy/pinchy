@@ -910,6 +910,180 @@ async function normalizeMany2OneValues(
   return normalized;
 }
 
+// The canonical Odoo external id for the built-in "To-Do" activity type.
+// Resolving the type through ir.model.data keeps the default locale-
+// independent — `mail.activity.type.name` is translated ("To-Do" vs
+// "Zu erledigen"), the xmlid is not.
+const TODO_ACTIVITY_XMLID = { module: "mail", name: "mail_activity_data_todo" };
+
+/**
+ * Resolve the ir.model database id for a technical model name
+ * (e.g. "crm.lead" → 5). `mail.activity` links to its document through the
+ * required `res_model_id` FK to ir.model — NOT the readonly related
+ * `res_model` char. Writing `res_model` is silently dropped by Odoo, which
+ * leaves the activity's `res_id` reference dangling and trips the
+ * `res_id IS NOT NULL AND res_id != 0` SQL CHECK. ir.model is world-readable
+ * for internal users, so this lookup needs no extra model grant.
+ */
+async function resolveIrModelId(
+  client: OdooClient,
+  technicalModel: string,
+): Promise<number> {
+  const result = await client.searchRead(
+    "ir.model",
+    [["model", "=", technicalModel]],
+    { fields: ["id"], limit: 1 },
+  );
+  const record = getSearchReadRecords(result)[0];
+  const id = record ? recordId(record) : null;
+  if (id === null) {
+    throw new Error(
+      `Could not resolve the Odoo model "${technicalModel}" — no ir.model row found.`,
+    );
+  }
+  return id;
+}
+
+/**
+ * Resolve the default "To-Do" activity type id via its xmlid. Returns null
+ * (rather than throwing) when ir.model.data is unreadable or the xmlid is
+ * absent, so the caller can fall back to Odoo's own default activity type.
+ */
+async function resolveDefaultActivityTypeId(
+  client: OdooClient,
+): Promise<number | null> {
+  try {
+    const result = await client.searchRead(
+      "ir.model.data",
+      [
+        ["module", "=", TODO_ACTIVITY_XMLID.module],
+        ["name", "=", TODO_ACTIVITY_XMLID.name],
+      ],
+      { fields: ["res_id"], limit: 1 },
+    );
+    const record = getSearchReadRecords(result)[0];
+    return record && typeof record.res_id === "number" ? record.res_id : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Resolve an activity type id from its exact (untranslated) name. */
+async function resolveActivityTypeByName(
+  client: OdooClient,
+  name: string,
+): Promise<number> {
+  const result = await client.searchRead(
+    "mail.activity.type",
+    [["name", "=", name]],
+    { fields: ["id"], limit: 1 },
+  );
+  const record = getSearchReadRecords(result)[0];
+  const id = record ? recordId(record) : null;
+  if (id === null) {
+    throw new Error(
+      `Could not resolve activity type "${name}". Use an exact activity type name (e.g. "To-Do", "Call", "Email").`,
+    );
+  }
+  return id;
+}
+
+/**
+ * Resolve an `assignee` to a res.users id. Accepts an opaque res.users ref
+ * (`pinchy_ref:…`) or an exact user name. Throws a clear error on an
+ * ambiguous name or a ref that does not point at res.users.
+ */
+async function resolveAssigneeUserId(
+  client: OdooClient,
+  connectionId: string,
+  assignee: string,
+): Promise<number> {
+  if (assignee.startsWith("pinchy_ref:")) {
+    const ref = decodeRef(assignee);
+    if (
+      ref.integrationType !== "odoo" ||
+      ref.connectionId !== connectionId ||
+      ref.model !== "res.users"
+    ) {
+      throw new Error("`assignee` ref must point to a res.users record.");
+    }
+    return ref.id;
+  }
+  const result = await client.searchRead(
+    "res.users",
+    [["name", "=", assignee]],
+    {
+      fields: ["id"],
+      limit: 2,
+    },
+  );
+  const ids = uniqueIds(getSearchReadRecords(result));
+  if (ids.length === 1) return ids[0];
+  if (ids.length === 0) {
+    throw new Error(
+      `Could not resolve assignee "${assignee}" — no matching user.`,
+    );
+  }
+  throw new Error(
+    `Could not resolve assignee "${assignee}" — multiple users match; pass an opaque res.users ref instead.`,
+  );
+}
+
+/**
+ * Best-effort lookup of a target record's salesperson (`user_id`) so a
+ * scheduled activity lands in the right person's "My Activities" list.
+ * Returns null when the model has no `user_id` field or none is set —
+ * Odoo then assigns the activity to its creator.
+ */
+async function resolveTargetSalespersonId(
+  client: OdooClient,
+  targetModel: string,
+  targetId: number,
+): Promise<number | null> {
+  try {
+    const result = await client.searchRead(
+      targetModel,
+      [["id", "=", targetId]],
+      { fields: ["user_id"], limit: 1 },
+    );
+    const record = getSearchReadRecords(result)[0];
+    const userId = record?.user_id;
+    return Array.isArray(userId) && typeof userId[0] === "number"
+      ? userId[0]
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Legacy-path safety net for direct `mail.activity` creation. Agent
+ * instructions written before `odoo_schedule_activity` existed tell the model
+ * to write `res_model` (a string) — but `res_model` is a readonly related
+ * field of the required `res_model_id` FK, so Odoo drops the write and the
+ * create fails the `res_id` CHECK. When we see that shape, resolve
+ * `res_model_id` from the technical name and drop the inert `res_model`.
+ * Production agents carry a frozen AGENTS.md, so this keeps them working
+ * without a manual re-align. Runs AFTER many2one normalization, so the
+ * injected integer id reaches Odoo verbatim (the "raw numeric IDs" guard
+ * only inspects agent-supplied values, never this resolved one).
+ */
+async function ensureActivityResModelId(
+  client: OdooClient,
+  model: string,
+  values: Record<string, unknown>,
+): Promise<Record<string, unknown>> {
+  if (model !== "mail.activity") return values;
+  if (values.res_model_id != null) return values;
+  if (typeof values.res_model !== "string" || values.res_model.length === 0) {
+    return values;
+  }
+  const irModelId = await resolveIrModelId(client, values.res_model);
+  const next: Record<string, unknown> = { ...values, res_model_id: irModelId };
+  delete next.res_model;
+  return next;
+}
+
 /**
  * Pull a human-readable company name out of a raw Odoo `company_id` value.
  * Odoo returns m2o values as `[id, "display_name"]` tuples (before we wrap
@@ -1182,8 +1356,14 @@ const plugin = {
         try {
           return await fn(fresh);
         } catch (retryErr) {
-          const retryMsg = retryErr instanceof Error ? retryErr.message : String(retryErr);
-          await reportAuthFailure(apiBaseUrl, config.connectionId, gatewayToken, retryMsg);
+          const retryMsg =
+            retryErr instanceof Error ? retryErr.message : String(retryErr);
+          await reportAuthFailure(
+            apiBaseUrl,
+            config.connectionId,
+            gatewayToken,
+            retryMsg,
+          );
           throw retryErr;
         }
       }
@@ -1686,6 +1866,11 @@ const plugin = {
                       model,
                       cleaned,
                     );
+                    values = await ensureActivityResModelId(
+                      client,
+                      model,
+                      values,
+                    );
                   } else {
                     values = params.values as Record<string, unknown>;
                   }
@@ -1731,6 +1916,191 @@ const plugin = {
         };
       },
       { name: "odoo_create" },
+    );
+
+    // 5b. odoo_schedule_activity
+    api.registerTool(
+      (ctx: PluginToolContext) => {
+        const agentId = ctx.agentId;
+        if (!agentId) return null;
+        const config = getAgentConfig(agentConfigs, agentId);
+        if (!config) return null;
+
+        return {
+          name: "odoo_schedule_activity",
+          label: "Odoo Schedule Activity",
+          description:
+            'Schedule a follow-up activity (a planned to-do with a due date) on an existing Odoo record such as a CRM lead, so it surfaces in Odoo\'s activity views and shows the team which record needs attention. Pass the `_pinchy_ref` of the target record (from odoo_read or odoo_create), a short `summary`, and a `dueDate` (YYYY-MM-DD). Optionally set `note`, an `assignee` (exact user name or an opaque res.users ref; defaults to the record\'s salesperson), and an `activityType` (exact name such as "Call"; defaults to "To-Do"). This is the correct way to create activities — do NOT create `mail.activity` records directly with odoo_create.',
+          parameters: {
+            type: "object",
+            properties: {
+              target: {
+                type: "string",
+                description:
+                  'Opaque `_pinchy_ref` of the record to attach the activity to (from odoo_read or odoo_create). Do NOT pass raw numeric IDs or "model,id" strings.',
+              },
+              summary: {
+                type: "string",
+                description:
+                  'Short title of the follow-up, e.g. "Call about the quote".',
+              },
+              dueDate: {
+                type: "string",
+                description: "Deadline in YYYY-MM-DD format.",
+              },
+              note: {
+                type: "string",
+                description:
+                  "Optional longer description / context for the activity.",
+              },
+              assignee: {
+                type: "string",
+                description:
+                  "Optional. Exact user name or an opaque res.users ref. Defaults to the target record's salesperson, or the API user if none is set.",
+              },
+              activityType: {
+                type: "string",
+                description:
+                  'Optional exact activity type name (e.g. "To-Do", "Call", "Email"). Defaults to "To-Do".',
+              },
+            },
+            required: ["target", "summary", "dueDate"],
+            additionalProperties: false,
+          },
+          async execute(_toolCallId: string, params: Record<string, unknown>) {
+            try {
+              const target = params.target;
+              if (typeof target !== "string" || target.length === 0) {
+                return errorResult(
+                  new Error(
+                    "`target` is required: pass the _pinchy_ref of the record to attach the activity to.",
+                  ),
+                );
+              }
+              const summary = params.summary;
+              if (typeof summary !== "string" || summary.trim().length === 0) {
+                return errorResult(new Error("`summary` is required."));
+              }
+              const dueDate = params.dueDate;
+              if (
+                typeof dueDate !== "string" ||
+                !/^\d{4}-\d{2}-\d{2}$/.test(dueDate)
+              ) {
+                return errorResult(
+                  new Error("`dueDate` is required in YYYY-MM-DD format."),
+                );
+              }
+
+              const decoded = decodeRef(target);
+              if (
+                decoded.integrationType !== "odoo" ||
+                decoded.connectionId !== config.connectionId
+              ) {
+                return errorResult(
+                  new Error(
+                    "`target` ref does not belong to this Odoo connection.",
+                  ),
+                );
+              }
+              const targetModel = decoded.model;
+              const targetId = decoded.id;
+
+              if (
+                !checkPermission(config.permissions, "mail.activity", "create")
+              ) {
+                return permissionDenied("create", "mail.activity");
+              }
+              if (!checkPermission(config.permissions, targetModel, "read")) {
+                return permissionDenied("read", targetModel);
+              }
+
+              const id = await withAuthRetry(
+                agentId,
+                config,
+                async (client) => {
+                  const resModelId = await resolveIrModelId(
+                    client,
+                    targetModel,
+                  );
+
+                  const activityTypeRequested =
+                    typeof params.activityType === "string"
+                      ? params.activityType.trim()
+                      : "";
+                  const activityTypeId =
+                    activityTypeRequested.length > 0
+                      ? await resolveActivityTypeByName(
+                          client,
+                          activityTypeRequested,
+                        )
+                      : await resolveDefaultActivityTypeId(client);
+
+                  const assigneeRequested =
+                    typeof params.assignee === "string"
+                      ? params.assignee.trim()
+                      : "";
+                  const userId =
+                    assigneeRequested.length > 0
+                      ? await resolveAssigneeUserId(
+                          client,
+                          config.connectionId,
+                          assigneeRequested,
+                        )
+                      : await resolveTargetSalespersonId(
+                          client,
+                          targetModel,
+                          targetId,
+                        );
+
+                  const values: Record<string, unknown> = {
+                    res_model_id: resModelId,
+                    res_id: targetId,
+                    date_deadline: dueDate,
+                    summary: summary.trim(),
+                  };
+                  if (
+                    typeof params.note === "string" &&
+                    params.note.length > 0
+                  ) {
+                    values.note = params.note;
+                  }
+                  if (activityTypeId != null) {
+                    values.activity_type_id = activityTypeId;
+                  }
+                  if (userId != null) {
+                    values.user_id = userId;
+                  }
+
+                  return client.create("mail.activity", values);
+                },
+              );
+
+              const ref = encodeRef({
+                integrationType: "odoo",
+                connectionId: config.connectionId,
+                model: "mail.activity",
+                id: id as number,
+                label: summary.trim(),
+              });
+
+              return {
+                content: [
+                  {
+                    type: "text",
+                    text: JSON.stringify({ id, _pinchy_ref: ref }),
+                  },
+                ],
+              };
+            } catch (error) {
+              return errorResult(error, {
+                operation: "create",
+                model: "mail.activity",
+              });
+            }
+          },
+        };
+      },
+      { name: "odoo_schedule_activity" },
     );
 
     // 6. odoo_write
@@ -1783,6 +2153,11 @@ const plugin = {
                       config.connectionId,
                       model,
                       cleaned,
+                    );
+                    values = await ensureActivityResModelId(
+                      client,
+                      model,
+                      values,
                     );
                   } else {
                     values = params.values as Record<string, unknown>;
