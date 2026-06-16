@@ -20,6 +20,7 @@ const APPLICATION_TABLES = [
   "uploaded_files",
   "usage_records",
   "agent_connection_permissions",
+  "tool_approval",
   "integration_connections",
   "email_workflows",
   "email_workflow_connections",
