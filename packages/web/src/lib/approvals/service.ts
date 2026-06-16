@@ -6,7 +6,13 @@ import { toolApproval } from "@/db/schema";
  * this is short — past it the request fails closed. */
 export const DEFAULT_CONFIRM_TTL_MS = 15 * 60 * 1000;
 
-export type GateDecision = { decision: "allow" | "block"; requestId: string };
+export type GateDecision = {
+  decision: "allow" | "block";
+  requestId: string;
+  /** True only when a brand-new pending request row was inserted — lets the
+   * route audit `approval.requested` once, not on every retry. */
+  created: boolean;
+};
 
 export interface DecideGateInput {
   agentId: string;
@@ -52,7 +58,7 @@ export async function decideGate(input: DecideGateInput): Promise<GateDecision> 
     RETURNING id
   `)) as unknown as { id: string }[];
   if (consumed.length > 0) {
-    return { decision: "allow", requestId: consumed[0].id };
+    return { decision: "allow", requestId: consumed[0].id, created: false };
   }
 
   const existing = await db
@@ -70,11 +76,11 @@ export async function decideGate(input: DecideGateInput): Promise<GateDecision> 
     )
     .limit(1);
   if (existing.length > 0) {
-    return { decision: "block", requestId: existing[0].id };
+    return { decision: "block", requestId: existing[0].id, created: false };
   }
 
   const ttlMs = input.ttlMs ?? DEFAULT_CONFIRM_TTL_MS;
-  const [created] = await db
+  const [inserted] = await db
     .insert(toolApproval)
     .values({
       agentId: input.agentId,
@@ -88,7 +94,7 @@ export async function decideGate(input: DecideGateInput): Promise<GateDecision> 
       expiresAt: new Date(now.getTime() + ttlMs),
     })
     .returning({ id: toolApproval.id });
-  return { decision: "block", requestId: created.id };
+  return { decision: "block", requestId: inserted.id, created: true };
 }
 
 export type ResolveResult =
