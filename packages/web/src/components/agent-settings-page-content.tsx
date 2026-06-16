@@ -84,6 +84,7 @@ interface PermissionsValues {
     permissions: Array<{ model: string; operation: string }>;
   }>;
   webSearchConfig?: AgentPluginConfig["pinchy-web"];
+  confirmTools?: string[];
 }
 
 interface AccessValues {
@@ -291,6 +292,7 @@ export function AgentSettingsPageContent({ initialTab }: { initialTab?: string }
           ...agent?.pluginConfig,
           "pinchy-files": { allowed_paths: permissionsDraft.current.allowedPaths },
           "pinchy-web": permissionsDraft.current.webSearchConfig,
+          "pinchy-approvals": { confirmTools: permissionsDraft.current.confirmTools ?? [] },
         };
 
         // Save each active integration separately, or clear all if none
