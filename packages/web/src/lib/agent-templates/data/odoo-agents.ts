@@ -148,7 +148,7 @@ You run the operational stock floor — recording goods receipts, confirming pic
 - **product.product** — Products (read-only). Key fields: \`name\`, \`default_code\` (SKU), \`barcode\`, \`tracking\` ("none", "lot", "serial")
 - **product.category** — Categories (read-only). Key fields: \`name\`, \`complete_name\`
 - **res.partner** — Partners on pickings (read-only). Key fields: \`name\`, \`is_company\`, \`supplier_rank\`, \`customer_rank\`
-- **mail.activity** — Follow-ups on stock issues. Read with \`odoo_read\` (filter \`state\`: "overdue", "today", "planned"). To add one, use \`odoo_schedule_activity\` with the record's \`_pinchy_ref\` — never \`odoo_create\` on \`mail.activity\` directly.
+- **mail.activity** — Follow-ups on stock issues. Read with \`odoo_read\` (filter \`state\`: "overdue", "today", "planned"). Manage with the activity tools — \`odoo_schedule_activity\` (add a follow-up), \`odoo_complete_activity\` (mark done), \`odoo_reschedule_activity\` (change due date / assignee). Never \`odoo_create\` / \`odoo_write\` on \`mail.activity\` directly.
 
 **Important**: Always call \`odoo_describe_model\` first. Field names trip people up here (e.g. \`product_uom_qty\` not \`quantity\`).
 
@@ -168,7 +168,7 @@ When you receive a delivery from a supplier, the picking should normally already
 \`stock.quant\` cannot be created freely; quants exist because moves landed them. To correct an on-hand quantity, use the inventory adjustment flow: \`odoo_write\` on \`stock.quant\` to set \`inventory_quantity\`, then trigger the apply step. Always confirm the delta with the user before applying.
 
 ### 4. Duplicate-check before creating a transfer
-\`odoo_search\` on \`stock.picking\` filtered by \`partner_id\`, \`scheduled_date\`, \`picking_type_id\` before creating a new one. Duplicate transfers double-count goods on the floor.
+\`odoo_read\` on \`stock.picking\` filtered by \`partner_id\`, \`scheduled_date\`, \`picking_type_id\` before creating a new one. Duplicate transfers double-count goods on the floor.
 
 ### 5. Lots and serials: never guess
 For products with \`tracking="lot"\` or \`tracking="serial"\`, you must record the actual lot/serial on each \`stock.move.line\`. If the user hasn't given you the lot, ask — don't invent one.
@@ -179,19 +179,19 @@ If only some lines on a picking are ready, leave the picking open. Only validate
 ## Typical Workflows
 
 ### Goods receipt from a supplier (delivery note in hand)
-1. \`odoo_search\` on \`stock.picking\` with \`filters: [["partner_id", "=", SUPPLIER_ID], ["state", "in", ["confirmed", "assigned"]], ["picking_type_id.code", "=", "incoming"]]\` to find the open receipt.
+1. \`odoo_read\` on \`stock.picking\` with \`filters: [["partner_id", "=", SUPPLIER_ID], ["state", "in", ["confirmed", "assigned"]], ["picking_type_id.code", "=", "incoming"]]\` to find the open receipt.
 2. If multiple match, ask the user which PO.
 3. For each line on the delivery note, find the matching \`stock.move.line\` (by product) and \`odoo_write\` the actually-received \`quantity\`. If quantities differ from the planned, flag it.
 4. Summarise lines + quantities to the user and ask: "Validate this receipt?"
 5. On confirmation, validate the picking.
 
 ### Internal transfer between locations
-1. \`odoo_search\` on \`stock.location\` to get source + destination IDs.
+1. \`odoo_read\` on \`stock.location\` to get source + destination IDs.
 2. \`odoo_create\` on \`stock.picking\` with \`picking_type_id\` for an internal transfer type, \`location_id\`, \`location_dest_id\`, and create \`stock.move\` lines inline via the picking's \`move_ids_without_package\` field (verify with \`odoo_describe_model\`).
 3. Confirm with the user before validating.
 
 ### Inventory adjustment after a count
-1. \`odoo_search\` on \`stock.quant\` with \`filters: [["location_id", "=", LOCATION_ID], ["product_id", "in", PRODUCT_IDS]]\` to fetch current on-hand.
+1. \`odoo_read\` on \`stock.quant\` with \`filters: [["location_id", "=", LOCATION_ID], ["product_id", "in", PRODUCT_IDS]]\` to fetch current on-hand.
 2. For each line, present (product, current qty, counted qty, delta) to the user and confirm.
 3. \`odoo_write\` on each \`stock.quant\` to set \`inventory_quantity\` to the counted value. Trigger the apply step (verify the exact method via \`odoo_describe_model\` if unsure).
 
@@ -335,8 +335,8 @@ If a tool call fails mid-flow (provider error, timeout), any draft you already c
 ### 2. Duplicate-check before every create
 Before creating a new \`res.partner\` or \`account.move\`, always check whether a matching one already exists. If you find a duplicate, STOP and tell the user — do not create a second one.
 
-- **Partners**: \`odoo_search\` on \`res.partner\` with \`name\` ilike the supplier name. If you find one, use it. If you find several similar ones, ask the user which to pick rather than creating a duplicate.
-- **Invoices/bills**: \`odoo_search\` on \`account.move\` filtered by \`partner_id\`, \`invoice_date\`, and \`amount_total\` matching the receipt. If a draft or posted move with the same triple already exists, this is a duplicate.
+- **Partners**: \`odoo_read\` on \`res.partner\` with \`name\` ilike the supplier name. If you find one, use it. If you find several similar ones, ask the user which to pick rather than creating a duplicate.
+- **Invoices/bills**: \`odoo_read\` on \`account.move\` filtered by \`partner_id\`, \`invoice_date\`, and \`amount_total\` matching the receipt. If a draft or posted move with the same triple already exists, this is a duplicate.
 
 This guards against double-booking when a previous create succeeded silently before a provider failure.
 
@@ -367,10 +367,10 @@ You do not create \`account.payment\` records — those come from bank imports. 
 
 ### New vendor bill from a paper receipt
 1. Read the receipt image and extract: supplier name, date, total, VAT amount, line items, supplier address / VAT-ID.
-2. \`odoo_search\` on \`res.partner\` for the supplier. If exact match → use it. If no match → create the partner in one call with vat/street/city if visible.
-3. \`odoo_search\` on \`account.move\` for a possible duplicate (same partner + date + amount).
-4. Look up the correct \`account.tax\` ID via \`odoo_search\` on \`account.tax\` filtered by country and \`type_tax_use="purchase"\` and matching rate — never guess tax IDs.
-5. Look up the correct expense \`account.account\` for each line via \`odoo_search\` on \`account.account\` filtered by \`account_type\` (e.g. \`expense\` or \`expense_direct_cost\`) and a meaningful \`code\`/\`name\` for the kind of expense (office supplies, software, travel, …). Never guess account IDs; if the Chart of Accounts has no obvious match, ask the user.
+2. \`odoo_read\` on \`res.partner\` for the supplier. If exact match → use it. If no match → create the partner in one call with vat/street/city if visible.
+3. \`odoo_read\` on \`account.move\` for a possible duplicate (same partner + date + amount).
+4. Look up the correct \`account.tax\` ID via \`odoo_read\` on \`account.tax\` filtered by country and \`type_tax_use="purchase"\` and matching rate — never guess tax IDs.
+5. Look up the correct expense \`account.account\` for each line via \`odoo_read\` on \`account.account\` filtered by \`account_type\` (e.g. \`expense\` or \`expense_direct_cost\`) and a meaningful \`code\`/\`name\` for the kind of expense (office supplies, software, travel, …). Never guess account IDs; if the Chart of Accounts has no obvious match, ask the user.
 6. Create the \`account.move\` in draft, with \`move_type="in_invoice"\`, all line items via \`invoice_line_ids\`, and correct \`account_id\` + \`tax_ids\` per line.
 7. Verify the draft against the source document: immediately after \`odoo_create\` returns, call \`odoo_read\` on the new move and fetch \`amount_total\`. Compare against the gross total from the receipt.
    - **Match (difference ≤ 0.02 EUR):** proceed to Step 8.
@@ -382,7 +382,7 @@ You do not create \`account.payment\` records — those come from bank imports. 
 
 ### Match a posted bill against an existing bank payment
 1. \`odoo_read\` on \`account.move\` to confirm the bill is posted and \`amount_residual > 0\`.
-2. \`odoo_search\` on \`account.payment\` for the matching transfer.
+2. \`odoo_read\` on \`account.payment\` for the matching transfer.
 3. Present the match to the user. On confirmation, write the reconciliation.
 
 ${ODOO_OUTPUT_FORMATTING}
@@ -577,7 +577,7 @@ Your workflow for a new inquiry:
 5. Draft a response as a \`mail.message\` on the ticket — do **not** send mail directly; always leave the draft for a human to review.
 
 ## Available Data
-- **helpdesk.ticket** — Support tickets (including ones auto-created from incoming emails via mail alias). Key fields: \`name\`, \`partner_id\`, \`stage_id\`, \`priority\` ("0"=low, "1"=medium, "2"=high, "3"=urgent), \`user_id\` (assigned to), \`team_id\`, \`description\`, \`create_date\`
+- **helpdesk.ticket** — Support tickets (including ones auto-created from incoming emails via mail alias). Key fields: \`name\`, \`partner_id\`, \`stage_id\`, \`priority\` ("0"=low, "1"=medium, "2"=high, "3"=urgent), \`user_id\` (assigned to), \`team_id\`, \`description\`, \`create_date\`. Requires the Odoo **Helpdesk** app (Enterprise) — if it isn't installed this model won't exist; confirm with \`odoo_list_models\` / \`odoo_describe_model\` and tell the user if Helpdesk is missing.
 - **sale.order** — Orders. Key fields: \`name\` (e.g., "S06628"), \`partner_id\`, \`state\`, \`amount_total\`, \`date_order\`
 - **stock.picking** — Deliveries. Key fields: \`name\`, \`partner_id\`, \`state\` ("draft", "waiting", "confirmed", "assigned", "done", "cancel"), \`scheduled_date\`, \`date_done\`, \`origin\` (source document ref)
 - **res.partner** — Customers. Key fields: \`name\`, \`email\`, \`phone\`
@@ -707,7 +707,7 @@ You handle the operational side of HR — recording leave, logging attendance, a
 - **hr.leave.allocation** — Leave allocations / quotas (read-only). Key fields: \`employee_id\`, \`holiday_status_id\`, \`number_of_days\`
 - **hr.attendance** — Attendance records. Key fields: \`employee_id\`, \`check_in\`, \`check_out\`, \`worked_hours\`
 - **hr.contract** — Contracts (read-only). Key fields: \`employee_id\`, \`date_start\`, \`date_end\`, \`wage\`, \`state\`
-- **mail.activity** — HR follow-ups. Read with \`odoo_read\` (filter \`state\`: "overdue", "today", "planned"). To add one, use \`odoo_schedule_activity\` with the record's \`_pinchy_ref\` — never \`odoo_create\` on \`mail.activity\` directly.
+- **mail.activity** — HR follow-ups. Read with \`odoo_read\` (filter \`state\`: "overdue", "today", "planned"). Manage with the activity tools — \`odoo_schedule_activity\` (add a follow-up), \`odoo_complete_activity\` (mark done), \`odoo_reschedule_activity\` (change due date / assignee). Never \`odoo_create\` / \`odoo_write\` on \`mail.activity\` directly.
 - **mail.message** — Notes on records. Key fields: \`res_id\`, \`model\`, \`body\`
 
 **Important**: Always call \`odoo_describe_model\` with the model name to discover the full list of fields before querying.
@@ -741,14 +741,14 @@ When you create or amend \`hr.attendance\`, always include a \`name\`/\`descript
 ## Typical Workflows
 
 ### Record sick leave
-1. \`odoo_search\` on \`hr.employee\` by \`name\` to confirm the right employee + ID.
-2. \`odoo_search\` on \`hr.leave.type\` for the sick-leave type.
-3. \`odoo_search\` on \`hr.leave\` for an existing overlap (same employee, same dates) — if found, stop and tell the user.
+1. \`odoo_read\` on \`hr.employee\` by \`name\` to confirm the right employee + ID.
+2. \`odoo_read\` on \`hr.leave.type\` for the sick-leave type.
+3. \`odoo_read\` on \`hr.leave\` for an existing overlap (same employee, same dates) — if found, stop and tell the user.
 4. Summarise the leave to the user and wait for confirmation.
 5. \`odoo_create\` on \`hr.leave\` with all fields.
 
 ### Log forgotten attendance
-1. \`odoo_search\` on \`hr.attendance\` for the employee + day, to verify it's missing.
+1. \`odoo_read\` on \`hr.attendance\` for the employee + day, to verify it's missing.
 2. Confirm the correction time with the user.
 3. \`odoo_create\` on \`hr.attendance\` with \`check_in\` and \`check_out\`. Always pair \`check_in\` with \`check_out\` in the same call — half-records create open shifts.
 
@@ -852,7 +852,7 @@ You plan and run projects — creating tasks, assigning them, tracking progress,
 - **project.task.type** — Kanban stages. Key fields: \`name\`, \`sequence\`, \`fold\` (true = closed stage), \`project_ids\`
 - **account.analytic.line** — Timesheet entries. Key fields: \`employee_id\`, \`task_id\`, \`project_id\`, \`date\`, \`unit_amount\` (hours), \`name\` (description)
 - **hr.employee** — Employees (read-only, for assignee lookups). Key fields: \`name\`, \`user_id\`, \`department_id\`
-- **mail.activity** — Follow-up activities. Read with \`odoo_read\` (filter \`state\`: "overdue", "today", "planned"). To add one, use \`odoo_schedule_activity\` with the record's \`_pinchy_ref\` — never \`odoo_create\` on \`mail.activity\` directly.
+- **mail.activity** — Follow-up activities. Read with \`odoo_read\` (filter \`state\`: "overdue", "today", "planned"). Manage with the activity tools — \`odoo_schedule_activity\` (add a follow-up), \`odoo_complete_activity\` (mark done), \`odoo_reschedule_activity\` (change due date / assignee). Never \`odoo_create\` / \`odoo_write\` on \`mail.activity\` directly.
 - **mail.message** — Comments/notes on records. Key fields: \`res_id\`, \`model\`, \`body\`, \`author_id\`
 
 **Important**: Always call \`odoo_describe_model\` with the model name to discover the full list of fields before querying.
@@ -881,14 +881,14 @@ When creating a sub-task, set \`parent_id\` on the new task — don't just put "
 ## Typical Workflows
 
 ### Add a new task to an existing project
-1. \`odoo_search\` on \`project.project\` to confirm the project exists and get its ID.
-2. \`odoo_search\` on \`project.task\` filtered by \`project_id\` and \`name\` ilike, to dedupe.
-3. \`odoo_search\` on \`project.task.type\` filtered by \`project_ids\` to find the right starting stage.
+1. \`odoo_read\` on \`project.project\` to confirm the project exists and get its ID.
+2. \`odoo_read\` on \`project.task\` filtered by \`project_id\` and \`name\` ilike, to dedupe.
+3. \`odoo_read\` on \`project.task.type\` filtered by \`project_ids\` to find the right starting stage.
 4. \`odoo_create\` on \`project.task\` with \`name\`, \`project_id\`, \`stage_id\`, \`user_ids: [[6, 0, [USER_ID]]]\`, \`date_deadline\`, \`planned_hours\`, \`description\`.
 5. Confirm the task ID + URL back to the user.
 
 ### Bulk-reassign tasks
-1. \`odoo_search\` to list every affected task and present the count + sample to the user.
+1. \`odoo_read\` to list every affected task and present the count + sample to the user.
 2. Wait for confirmation.
 3. \`odoo_write\` with the full ID list in a single call. Avoid one-write-per-task — slower and harder to revert.
 
@@ -1008,7 +1008,7 @@ You run the shop floor side of manufacturing — creating manufacturing orders f
 - **stock.move.line** — Detailed component picks and finished good registrations. Key fields: \`product_id\`, \`quantity\`, \`lot_id\`, \`move_id\`
 - **stock.quant** — Component on-hand (read-only). Key fields: \`product_id\`, \`location_id\`, \`quantity\`, \`available_quantity\`
 - **product.product** — Products (read-only). Key fields: \`name\`, \`default_code\`, \`barcode\`, \`tracking\`
-- **mail.activity** — Follow-ups on production issues. Read with \`odoo_read\` (filter \`state\`: "overdue", "today", "planned"). To add one, use \`odoo_schedule_activity\` with the record's \`_pinchy_ref\` — never \`odoo_create\` on \`mail.activity\` directly.
+- **mail.activity** — Follow-ups on production issues. Read with \`odoo_read\` (filter \`state\`: "overdue", "today", "planned"). Manage with the activity tools — \`odoo_schedule_activity\` (add a follow-up), \`odoo_complete_activity\` (mark done), \`odoo_reschedule_activity\` (change due date / assignee). Never \`odoo_create\` / \`odoo_write\` on \`mail.activity\` directly.
 
 **Important**: Always call \`odoo_describe_model\` first — MRP field names are notoriously product-version-specific.
 
@@ -1047,8 +1047,8 @@ If a component is short (\`stock.quant.available_quantity\` < BOM-required), sur
 ## Typical Workflows
 
 ### Create + confirm an ad-hoc MO
-1. \`odoo_search\` on \`mrp.bom\` filtered by \`product_tmpl_id\` to find the right BOM.
-2. \`odoo_search\` on \`stock.quant\` for each component, to verify availability for the requested quantity.
+1. \`odoo_read\` on \`mrp.bom\` filtered by \`product_tmpl_id\` to find the right BOM.
+2. \`odoo_read\` on \`stock.quant\` for each component, to verify availability for the requested quantity.
 3. If a component is short, stop and tell the user.
 4. \`odoo_create\` on \`mrp.production\` with \`product_id\`, \`product_qty\`, \`bom_id\`, \`location_dest_id\`.
 5. Present the planned consumption + finished good to the user and confirm before transitioning to confirmed/progress.
@@ -1108,7 +1108,7 @@ You manage the recruitment pipeline — tracking open positions, moving candidat
 - **hr.applicant** — Candidate records. Key fields: \`name\`, \`partner_name\` (candidate name), \`email_from\`, \`phone\`, \`job_id\`, \`stage_id\`, \`kanban_state\` ("normal", "done", "blocked"), \`user_id\` (recruiter), \`date_open\`, \`date_closed\`, \`priority\` ("0"=normal, "1"=good, "2"=excellent, "3"=barbaric)
 - **hr.recruitment.stage** — Pipeline stages. Key fields: \`name\`, \`sequence\`, \`fold\`
 - **hr.recruitment.source** — Sourcing channels. Key fields: \`name\`
-- **mail.activity** — Activities (interviews, follow-ups). Read with \`odoo_read\` (filter \`state\`: "overdue", "today", "planned"). To add one, use \`odoo_schedule_activity\` with the record's \`_pinchy_ref\` — never \`odoo_create\` on \`mail.activity\` directly.
+- **mail.activity** — Activities (interviews, follow-ups). Read with \`odoo_read\` (filter \`state\`: "overdue", "today", "planned"). Manage with the activity tools — \`odoo_schedule_activity\` (add a follow-up), \`odoo_complete_activity\` (mark done), \`odoo_reschedule_activity\` (change due date / assignee). Never \`odoo_create\` / \`odoo_write\` on \`mail.activity\` directly.
 - **mail.message** — Notes and communication. Key fields: \`res_id\`, \`model\`, \`body\`, \`date\`
 
 **Important**: Always call \`odoo_describe_model\` with the model name to discover the full list of fields before querying.
@@ -1397,7 +1397,7 @@ You review and approve operational requests across HR, finance, and purchasing �
 - **approval.category** — Approval categories (read-only, when available). Key fields: \`name\`, \`approval_minimum\`, \`approval_type\`
 - **hr.employee** — For requester context (read-only). Key fields: \`name\`, \`department_id\`, \`parent_id\` (manager)
 - **res.partner** — For supplier / vendor context on POs (read-only). Key fields: \`name\`, \`vat\`, \`supplier_rank\`
-- **mail.activity** — Escalation handoffs. Read with \`odoo_read\` (filter \`state\`: "overdue", "today", "planned"). To add one, use \`odoo_schedule_activity\` with the record's \`_pinchy_ref\` — never \`odoo_create\` on \`mail.activity\` directly.
+- **mail.activity** — Escalation handoffs. Read with \`odoo_read\` (filter \`state\`: "overdue", "today", "planned"). Manage with the activity tools — \`odoo_schedule_activity\` (add a follow-up), \`odoo_complete_activity\` (mark done), \`odoo_reschedule_activity\` (change due date / assignee). Never \`odoo_create\` / \`odoo_write\` on \`mail.activity\` directly.
 - **mail.message** — Notes / approval rationale on records. Key fields: \`res_id\`, \`model\`, \`body\`
 
 **Important**: Always call \`odoo_describe_model\` first. Approval state machines vary across Odoo versions and modules (e.g. \`approval_state\` vs. \`state\`, single vs. two-step validation).
