@@ -12,10 +12,10 @@ CREATE TABLE "tool_approval" (
 	"status" "approval_status" DEFAULT 'pending' NOT NULL,
 	"approver_id" text,
 	"decision_reason" text,
-	"created_at" timestamp DEFAULT now() NOT NULL,
-	"decided_at" timestamp,
-	"consumed_at" timestamp,
-	"expires_at" timestamp NOT NULL
+	"created_at" timestamp with time zone DEFAULT now() NOT NULL,
+	"decided_at" timestamp with time zone,
+	"consumed_at" timestamp with time zone,
+	"expires_at" timestamp with time zone NOT NULL
 );
 --> statement-breakpoint
 ALTER TABLE "tool_approval" ADD CONSTRAINT "tool_approval_agent_id_agents_id_fk" FOREIGN KEY ("agent_id") REFERENCES "public"."agents"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint

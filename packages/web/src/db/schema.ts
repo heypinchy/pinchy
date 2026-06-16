@@ -40,6 +40,14 @@ export type AgentPluginConfig = {
     country?: string;
     freshness?: string;
   };
+  /**
+   * Tools that require an inline human confirmation before the agent may
+   * execute them (#124 Tier 2). The acting user approves their own call;
+   * the gate (pinchy-approvals) enforces it server-side.
+   */
+  "pinchy-approvals"?: {
+    confirmTools: string[];
+  };
 };
 
 /**
@@ -216,10 +224,10 @@ export const toolApproval = pgTable(
       onDelete: "set null",
     }),
     decisionReason: text("decision_reason"),
-    createdAt: timestamp("created_at").notNull().defaultNow(),
-    decidedAt: timestamp("decided_at"),
-    consumedAt: timestamp("consumed_at"),
-    expiresAt: timestamp("expires_at").notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    decidedAt: timestamp("decided_at", { withTimezone: true }),
+    consumedAt: timestamp("consumed_at", { withTimezone: true }),
+    expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
   },
   (table) => [
     // The gate's hot path looks up an unconsumed grant for an exact call.
