@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import { Check, ChevronDown, Lock, Plus } from "lucide-react";
 import {
@@ -50,6 +50,44 @@ function chatTitle(item: ChatListItem): string {
   return `Chat from ${new Date(item.lastInteractionAt).toLocaleDateString()}`;
 }
 
+/** sessionId we tag the optimistic current-chat row with (it has no real OpenClaw session yet). */
+const SYNTHETIC_CURRENT_SESSION_ID = "__optimistic-current__";
+
+/**
+ * Ensure the chat the URL currently points at is ALWAYS in the list, even
+ * before its first message creates an OpenClaw session (standard ChatGPT/Claude
+ * behaviour). If the server list already contains the current web chat we use
+ * that entry as-is; otherwise we prepend a synthetic "New chat" row so the user
+ * always sees where they are. Telegram is never synthesized — its sessions are
+ * created in Telegram, not here.
+ */
+function withOptimisticCurrentChat(
+  chats: ChatListItem[],
+  chatId: string | null,
+  activeTelegram: boolean
+): ChatListItem[] {
+  // On the Telegram view the active chat is a real telegram session, so there
+  // is no web chat to synthesize.
+  if (activeTelegram) return chats;
+
+  const alreadyListed = chats.some((c) => c.origin === "web" && c.chatId === chatId);
+  if (alreadyListed) return chats;
+
+  const synthetic: ChatListItem = {
+    chatId,
+    sessionId: SYNTHETIC_CURRENT_SESSION_ID,
+    origin: "web",
+    writable: true,
+    title: "New chat",
+    // A stable "always newest" sentinel (not Date.now(), which is impure in
+    // render) so the brand-new chat sorts to the top of the recency-ordered
+    // list. The dropdown shows relative-time per row but the current chat is
+    // expected at the top regardless.
+    lastInteractionAt: Number.MAX_SAFE_INTEGER,
+  };
+  return [synthetic, ...chats];
+}
+
 /**
  * Short, human relative-time hint ("2h ago", "just now"). Best-effort and
  * locale-aware; we never block the list on it.
@@ -96,11 +134,11 @@ export function ChatSwitcher({
   const [chats, setChats] = useState<ChatListItem[]>([]);
   const [isLoading, setIsLoading] = useState(true);
 
-  // Fetch the chat list once per (agent) mount. `isLoading` starts true via
-  // useState, so we don't re-set it here — that keeps the effect free of a
-  // synchronous setState (react-hooks/set-state-in-effect). A failed fetch
-  // degrades quietly to the empty state rather than blocking the header.
-  useEffect(() => {
+  // Re-fetch the chat list on each load. Returns a cleanup-aware fetch so both
+  // the mount effect and the open handler can ignore a settled result after the
+  // component unmounts. A failed fetch degrades quietly to the empty state
+  // rather than blocking the header.
+  const loadChats = useCallback(() => {
     let cancelled = false;
     apiGet<{ chats: ChatListItem[] }>(`/api/agents/${agentId}/chats`)
       .then((res) => {
@@ -117,14 +155,42 @@ export function ChatSwitcher({
     };
   }, [agentId]);
 
-  const current = chats.find((c) => isActive(c, chatId, activeTelegram));
-  // On the Telegram view the active row may not have loaded yet, so fall back
-  // to a literal "Telegram" label there rather than the agent name.
-  const triggerLabel = current
-    ? chatTitle(current)
-    : activeTelegram
-      ? "Telegram"
-      : (agentName ?? "Chat");
+  // Fetch once on mount so the trigger label reflects the active chat's title
+  // without the user having to open the dropdown. `isLoading` starts true via
+  // useState so we don't re-set it here (keeps the effect free of a synchronous
+  // setState — react-hooks/set-state-in-effect).
+  useEffect(() => loadChats(), [loadChats]);
+
+  // Re-fetch every time the dropdown opens so sessions created since mount (e.g.
+  // by a message just sent in the active chat) appear. The result is discarded
+  // on close, so there's nothing to clean up here.
+  const handleOpenChange = useCallback(
+    (next: boolean) => {
+      if (next) loadChats();
+    },
+    [loadChats]
+  );
+
+  // Always include the current chat — optimistically as "New chat" when it has
+  // no OpenClaw session yet — sorted to the top.
+  const displayChats = useMemo(
+    () => withOptimisticCurrentChat(chats, chatId, activeTelegram),
+    [chats, chatId, activeTelegram]
+  );
+
+  const current = displayChats.find((c) => isActive(c, chatId, activeTelegram));
+  // The header trigger shows the active chat's title — but for the OPTIMISTIC
+  // current row (a brand-new/default chat with no real session yet) we keep the
+  // agent name in the persistent header rather than a generic "New chat"; the
+  // dropdown still lists that row as "New chat". On the Telegram view the active
+  // row may not have loaded yet, so fall back to a literal "Telegram" label.
+  const currentIsOptimistic = current?.sessionId === SYNTHETIC_CURRENT_SESSION_ID;
+  const triggerLabel =
+    current && !currentIsOptimistic
+      ? chatTitle(current)
+      : activeTelegram
+        ? "Telegram"
+        : (agentName ?? "Chat");
 
   function startNewChat() {
     router.push(`/chat/${agentId}/${generateChatId()}`);
@@ -141,7 +207,7 @@ export function ChatSwitcher({
   }
 
   return (
-    <DropdownMenu>
+    <DropdownMenu onOpenChange={handleOpenChange}>
       <DropdownMenuTrigger asChild>
         <Button variant="ghost" className="h-auto min-w-0 gap-1.5 px-2 py-1">
           <span className="truncate font-bold">{triggerLabel}</span>
@@ -158,12 +224,12 @@ export function ChatSwitcher({
           <DropdownMenuLabel className="text-muted-foreground font-normal">
             Loading your chats…
           </DropdownMenuLabel>
-        ) : chats.length === 0 ? (
+        ) : displayChats.length === 0 ? (
           <DropdownMenuLabel className="text-muted-foreground font-normal">
             No other chats yet
           </DropdownMenuLabel>
         ) : (
-          chats.map((item) => {
+          displayChats.map((item) => {
             const active = isActive(item, chatId, activeTelegram);
             return (
               <DropdownMenuItem

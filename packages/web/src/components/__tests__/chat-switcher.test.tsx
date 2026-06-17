@@ -21,9 +21,24 @@ import { apiGet } from "@/lib/api-client";
 
 // Render the dropdown content inline so we can assert items without Radix's
 // portal + pointer-capture mechanics (same approach template-selector.test.tsx
-// uses for tooltips).
+// uses for tooltips). We also expose a hidden "open-dropdown" button that fires
+// `onOpenChange(true)` so tests can simulate opening the menu (the component
+// re-fetches its chat list on open).
 vi.mock("@/components/ui/dropdown-menu", () => ({
-  DropdownMenu: ({ children }: { children: React.ReactNode }) => <div>{children}</div>,
+  DropdownMenu: ({
+    children,
+    onOpenChange,
+  }: {
+    children: React.ReactNode;
+    onOpenChange?: (open: boolean) => void;
+  }) => (
+    <div>
+      <button type="button" data-testid="open-dropdown" onClick={() => onOpenChange?.(true)}>
+        open
+      </button>
+      {children}
+    </div>
+  ),
   DropdownMenuTrigger: ({ children }: { children: React.ReactNode; asChild?: boolean }) => (
     <div>{children}</div>
   ),
@@ -247,19 +262,33 @@ describe("ChatSwitcher", () => {
     await waitFor(() => expect(screen.queryByText(/Loading/i)).toBeNull());
   });
 
-  it("shows an empty state when there are no other chats", async () => {
+  it("shows an empty state when there are no chats", async () => {
     mockChats([]);
-    render(<ChatSwitcher agentId="agent-1" chatId={null} agentName="Smithers" />);
+    // The empty state is only reachable on the read-only Telegram view: the web
+    // view always synthesizes the current chat optimistically (see Fix 1), so a
+    // web list is never truly empty. On the Telegram view there's no web chat to
+    // synthesize, so an empty server list stays empty.
+    render(<ChatSwitcher agentId="agent-1" chatId={null} agentName="Smithers" activeTelegram />);
 
     expect(await screen.findByText(/No other chats yet/i)).toBeInTheDocument();
   });
 
   it("degrades to an empty list when the fetch fails", async () => {
     (apiGet as ReturnType<typeof vi.fn>).mockRejectedValue(new Error("network"));
+    // On the Telegram view nothing is synthesized, so a failed fetch settles to
+    // the empty state — proving the failure path doesn't crash the header.
+    render(<ChatSwitcher agentId="agent-1" chatId={null} agentName="Smithers" activeTelegram />);
+
+    expect(await screen.findByText(/No other chats yet/i)).toBeInTheDocument();
+  });
+
+  it("on the web view, a failed fetch still shows the current chat optimistically (no crash)", async () => {
+    (apiGet as ReturnType<typeof vi.fn>).mockRejectedValue(new Error("network"));
     render(<ChatSwitcher agentId="agent-1" chatId={null} agentName="Smithers" />);
 
-    // No crash; resolves to the empty state once the failed fetch settles.
-    expect(await screen.findByText(/No other chats yet/i)).toBeInTheDocument();
+    // The default web chat is always visible even when the list fails to load.
+    const menu = await screen.findByRole("menu");
+    expect(optimisticRow(menu)).not.toBeNull();
   });
 
   it("renders the current chat's title in the trigger", async () => {
@@ -268,5 +297,104 @@ describe("ChatSwitcher", () => {
 
     // The trigger reflects the active chat's title once loaded.
     expect(await screen.findByRole("button", { name: /Quarterly report/i })).toBeInTheDocument();
+  });
+
+  // --- Fix 1: current/new chat is always visible (optimistic + refetch) -----
+
+  // The permanent "New chat" ACTION item (the one with the Plus icon that starts
+  // a fresh chat) also reads "New chat", so we can't disambiguate the synthetic
+  // current-chat ROW by text alone. A chat ROW renders its title inside a
+  // `truncate` span (the action item's label is a bare text node) — that's the
+  // stable structural discriminator. Returns the synthetic row, or null when no
+  // optimistic row was synthesized.
+  function optimisticRow(menu: HTMLElement): HTMLElement | null {
+    return (
+      within(menu)
+        .getAllByText("New chat")
+        .filter((el) => el.classList.contains("truncate"))
+        .map((el) => el.closest("[role='menuitem']") as HTMLElement | null)
+        .find((row): row is HTMLElement => row != null) ?? null
+    );
+  }
+
+  it("optimistically shows a brand-new chat (not in the server list) as the active 'New chat'", async () => {
+    // The server list does NOT contain the current chatId — a brand-new chat
+    // that has not produced an OpenClaw session yet.
+    mockChats([webChat, telegramChat, legacyChat]);
+    render(<ChatSwitcher agentId="agent-1" chatId="brand-new-chat" agentName="Smithers" />);
+
+    const menu = await screen.findByRole("menu");
+
+    // A synthetic "New chat" row appears, marked active.
+    const newChatRow = optimisticRow(menu)!;
+    expect(newChatRow).not.toBeNull();
+    expect(within(newChatRow).getByLabelText("Current chat")).toBeInTheDocument();
+
+    // The persistent header trigger keeps the agent name for an untitled
+    // optimistic chat (not a generic "New chat") — the dropdown row carries the
+    // "New chat" label, the header stays the agent identity.
+    expect(screen.getByRole("button", { name: /Smithers/i })).toBeInTheDocument();
+
+    // It sorts to the top (newest), ahead of the server chats — it's the first
+    // chat row (a menuitem whose title sits in a `truncate` span) below the
+    // "New chat" action item + separator.
+    const rows = within(menu).getAllByRole("menuitem");
+    const firstChatRow = rows.find((r) => r.querySelector(".truncate") != null)!;
+    expect(firstChatRow.textContent).toContain("New chat");
+  });
+
+  it("optimistically shows the default web chat (chatId null) as 'New chat' when the server list lacks it", async () => {
+    // Server list has only a telegram chat — no web chat at all. The default
+    // web chat (chatId null) must still surface optimistically and active.
+    mockChats([telegramChat]);
+    render(<ChatSwitcher agentId="agent-1" chatId={null} agentName="Smithers" />);
+
+    const menu = await screen.findByRole("menu");
+    const newChatRow = optimisticRow(menu)!;
+    expect(newChatRow).not.toBeNull();
+    expect(within(newChatRow).getByLabelText("Current chat")).toBeInTheDocument();
+  });
+
+  it("does NOT synthesize a duplicate when the current chat IS in the server list", async () => {
+    mockChats(allChats);
+    render(<ChatSwitcher agentId="agent-1" chatId="chat-abc" agentName="Smithers" />);
+
+    const menu = await screen.findByRole("menu");
+
+    // The current chat (chat-abc) is the server's "Quarterly report" entry — it
+    // is shown as-is, with no extra synthetic "New chat" row.
+    expect(optimisticRow(menu)).toBeNull();
+    const activeRow = within(menu).getByText("Quarterly report").closest("[role='menuitem']")!;
+    expect(within(activeRow as HTMLElement).getByLabelText("Current chat")).toBeInTheDocument();
+  });
+
+  it("does NOT synthesize a web 'New chat' when on the read-only Telegram view", async () => {
+    // On the Telegram view chatId is null but activeTelegram is set — the active
+    // chat is the telegram row, so we must not invent a web "New chat".
+    mockChats([telegramChat]);
+    render(<ChatSwitcher agentId="agent-1" chatId={null} agentName="Smithers" activeTelegram />);
+
+    const menu = await screen.findByRole("menu");
+    expect(optimisticRow(menu)).toBeNull();
+  });
+
+  it("re-fetches the chat list every time the dropdown opens", async () => {
+    const user = userEvent.setup();
+    mockChats(allChats);
+    render(<ChatSwitcher agentId="agent-1" chatId="chat-abc" agentName="Smithers" />);
+
+    // Initial mount fetch.
+    await screen.findByRole("menu");
+    expect(apiGet).toHaveBeenCalledTimes(1);
+
+    // Opening the dropdown triggers a fresh fetch so a just-created session
+    // (e.g. from a message sent moments ago) shows up.
+    await user.click(screen.getByTestId("open-dropdown"));
+    await waitFor(() => expect(apiGet).toHaveBeenCalledTimes(2));
+    expect(apiGet).toHaveBeenLastCalledWith("/api/agents/agent-1/chats");
+
+    // Re-opening fetches again.
+    await user.click(screen.getByTestId("open-dropdown"));
+    await waitFor(() => expect(apiGet).toHaveBeenCalledTimes(3));
   });
 });
