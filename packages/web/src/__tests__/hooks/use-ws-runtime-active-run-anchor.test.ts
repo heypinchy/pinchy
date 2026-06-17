@@ -122,6 +122,51 @@ describe("useWsRuntime — activeRun reconcile anchors a trailing assistant", ()
     expect(JSON.stringify(last.content)).toContain("one two three");
   });
 
+  it("preserves the already-streamed prefix when a FULL reload races live deltas ahead of the late history response", () => {
+    // Full page reload mid-stream. Unlike an in-context reconnect, a reload
+    // gives a FRESH hook: shouldRecoverFromHistory starts false. The server
+    // still has the in-flight run and, while it async-fetches chat.history,
+    // broadcasts the post-subscribe deltas (the SUFFIX) to the freshly
+    // subscribed ws — so " two"/" three" arrive BEFORE the history response,
+    // which carries the already-streamed prefix "one" as partialContent.
+    //
+    // The prefix and suffix never overlap (server's "never both" guarantee), so
+    // the resumed reply must be "one two three", not the suffix-only " two three".
+    const { result } = renderHook(() => useWsRuntime("agent-1"));
+    const ws = wsInstances[0]!;
+    act(() => ws.simulateOpen());
+
+    // Post-subscribe deltas arrive first (the new ws missed "one" — it went to
+    // the pre-reload connection). Each carries the in-flight message id.
+    act(() => ws.simulateMessage({ type: "chunk", messageId: "srv-1", content: " two" }));
+    act(() => ws.simulateMessage({ type: "chunk", messageId: "srv-1", content: " three" }));
+
+    // The late history response carries the pre-reload prefix as partialContent.
+    act(() =>
+      ws.simulateMessage({
+        type: "history",
+        messages: [{ role: "user", content: "list one..ten" }],
+        activeRun: {
+          runId: "run-1",
+          messageId: "srv-1",
+          startedAt: 1000,
+          partialContent: "one",
+        },
+      })
+    );
+
+    const msgs = (
+      result.current.runtime as { messages?: { id: string; role: string; content?: unknown }[] }
+    ).messages!;
+    const last = msgs[msgs.length - 1]!;
+    expect(last.role).toBe("assistant");
+    expect(last.id).toBe("srv-1");
+    // Exactly one bubble carries the run id — no duplicate.
+    expect(msgs.filter((m) => m.id === "srv-1")).toHaveLength(1);
+    // The prefix must NOT be dropped: full reply is "one two three".
+    expect(JSON.stringify(last.content)).toContain("one two three");
+  });
+
   it("anchors the trailing assistant in place when the reply IS in history", () => {
     const { result } = renderHook(() => useWsRuntime("agent-1"));
     const ws = wsInstances[0]!;

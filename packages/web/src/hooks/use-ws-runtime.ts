@@ -695,19 +695,25 @@ export function useWsRuntime(agentId: string): {
         setReconnectExhausted(false);
         setPayloadRejected(false);
         reconnectAttemptRef.current = 0;
-        // Tier 2b: arm the pre-history buffer ONLY when we're in a
-        // recovery context (set by `onclose` on the previous connection
-        // or by a page-lifecycle resume). On an initial load there's no
-        // active run on the server yet — buffering would just stall the
-        // first chunk for no benefit and break tests that exercise the
-        // chunk path without preceding history. The race we're guarding
-        // against (chunks arriving via `addListener` before the history
-        // response) can only happen on reconnect, because the server
-        // can't have a listener for a ws it hasn't seen yet.
-        if (shouldRecoverFromHistoryRef.current) {
-          pendingHistoryRef.current = true;
-          frameBufferRef.current = [];
-        }
+        // Tier 2b: arm the pre-history buffer on EVERY open, then drain it
+        // when the history response lands. The server's handleHistory does
+        // `addListener` and THEN async-fetches chat.history before replying,
+        // so any in-flight run's chunks can be broadcast to this ws BEFORE the
+        // history response carrying the resume buffer (`partialContent`). Those
+        // chunks must wait so they merge ONTO the anchored prefix instead of
+        // building a competing suffix-only bubble.
+        //
+        // This was previously gated on `shouldRecoverFromHistoryRef` (set only
+        // by an in-context close/lifecycle resume). That missed the FULL page
+        // reload: a reload starts a fresh hook with the flag false, yet the
+        // server still has the in-flight run — so the pre-history deltas raced
+        // ahead unbuffered, built a "two three…"-only bubble, and the already-
+        // streamed first word was lost (the `18-chat-liveness:155` flake). It
+        // also missed the multi-tab case. Arming unconditionally is safe: on a
+        // genuinely fresh load nothing is streaming, so the buffer drains empty
+        // on the (always-sent) history response — no stall, no benefit lost.
+        pendingHistoryRef.current = true;
+        frameBufferRef.current = [];
         ws.send(JSON.stringify({ type: "history", agentId }));
 
         // Flush any message that was queued while disconnected/connecting
@@ -1352,6 +1358,18 @@ export function useWsRuntime(agentId: string): {
   const sendOrQueue = useCallback((payload: string) => {
     const ws = wsRef.current;
     if (ws?.readyState === WebSocket.OPEN) {
+      // A user-initiated send proves the client is interactive — i.e. past the
+      // initial history-load window (the composer is gated on isHistoryLoaded).
+      // The pre-history buffer (armed on every open) must therefore be disarmed
+      // now so THIS turn's chunks stream straight through instead of waiting for
+      // a history response that won't come mid-turn. A resuming reload never
+      // sends, so its buffer stays armed until the history response drains the
+      // raced-ahead deltas onto the anchored prefix. Only disarm when nothing is
+      // buffered — the gated composer can't produce a real pre-history backlog,
+      // and this guarantees such a backlog is never silently dropped.
+      if (pendingHistoryRef.current && frameBufferRef.current.length === 0) {
+        pendingHistoryRef.current = false;
+      }
       ws.send(payload);
     } else {
       pendingMessageRef.current = payload;
