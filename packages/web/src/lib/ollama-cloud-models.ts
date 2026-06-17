@@ -113,13 +113,6 @@ export const TOOL_CAPABLE_OLLAMA_CLOUD_MODELS = [
     vision: true,
   },
   {
-    id: "glm-4.6",
-    contextWindow: 202752,
-    maxTokens: 8192,
-    reasoning: true,
-    vision: false,
-  },
-  {
     id: "glm-4.7",
     contextWindow: 202752,
     maxTokens: 8192,
@@ -136,6 +129,19 @@ export const TOOL_CAPABLE_OLLAMA_CLOUD_MODELS = [
   {
     id: "glm-5.1",
     contextWindow: 202752,
+    maxTokens: 8192,
+    reasoning: true,
+    vision: false,
+  },
+  {
+    // GLM-5.2, verified against the live API on 2026-06-17: structured
+    // tool_call in round 1 plus a clean multi-turn follow-up (HTTP 200 with a
+    // coherent answer after a tool result), and the /v1/chat/completions
+    // endpoint returns HTTP 400 "this model does not support image input" —
+    // text-only, like the rest of the GLM line. Library page: 976K context
+    // ("NK" = N×1024 → 999424), tags "tools thinking cloud", Text-only input.
+    id: "glm-5.2",
+    contextWindow: 999424,
     maxTokens: 8192,
     reasoning: true,
     vision: false,
@@ -167,28 +173,6 @@ export const TOOL_CAPABLE_OLLAMA_CLOUD_MODELS = [
     maxTokens: 8192,
     reasoning: true,
     vision: true,
-  },
-  {
-    // Non-thinking kimi-k2 line (the thinking variant, kimi-k2-thinking, is
-    // NOT in this catalog: removed in #305 for HTTP 500s, and a 2026-06-11
-    // re-probe showed every request now fails HTTP 400 "prompt too long" even
-    // for ~1k-token prompts — its serving-side context accounting is broken).
-    // kimi-k2:1t itself probed clean against the live API on 2026-06-12:
-    // structured tool_calls in 4/4 single-turn rounds plus a clean multi-turn
-    // follow-up. Text-only input; library page: 256K context, "tools" tag
-    // without "thinking".
-    id: "kimi-k2:1t",
-    contextWindow: 262144,
-    maxTokens: 8192,
-    reasoning: false,
-    vision: false,
-  },
-  {
-    id: "minimax-m2",
-    contextWindow: 204800,
-    maxTokens: 8192,
-    reasoning: true,
-    vision: false,
   },
   {
     id: "minimax-m2.1",
@@ -290,20 +274,6 @@ export const TOOL_CAPABLE_OLLAMA_CLOUD_MODELS = [
     maxTokens: 8192,
     reasoning: false,
     vision: false,
-  },
-  {
-    id: "qwen3-vl:235b",
-    contextWindow: 262144,
-    maxTokens: 8192,
-    reasoning: true,
-    vision: true,
-  },
-  {
-    id: "qwen3-vl:235b-instruct",
-    contextWindow: 262144,
-    maxTokens: 8192,
-    reasoning: true,
-    vision: true,
   },
   {
     // The ollama.com/library/qwen3.5 page lists image input, but the live

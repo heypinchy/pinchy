@@ -109,15 +109,27 @@ these derived sites in the SAME change:
 6. **Handle REMOVED.** Delete the stale entry, then fix any `tsc` error it
    surfaces in `providers/ollama-cloud.ts` (re-point the tier).
 
-7. **Update the drift test.** Add an assertion in
-   `ollama-cloud-models.test.ts` for each non-obvious flag, with the empirical
-   evidence in the comment (this is the TDD record of what you verified).
+7. **Update the drift tests.** The catalog is snapshotted in several tests —
+   adding/removing a model drifts ALL of them, not just the first one:
+   - `__tests__/lib/ollama-cloud-models.test.ts` — add a dated, empirical
+     assertion for each non-obvious flag (the TDD record of what you verified).
+   - `__tests__/lib/provider-models.test.ts` — model-ID lists + a hardcoded
+     count (`toHaveLength`).
+   - `__tests__/lib/openclaw-config.test.ts` — the written-config list, the
+     per-model `contextWindow`, and the `reasoning`/`input` lists.
+   - `__tests__/lib/model-vision.integration.test.ts` — `isModelVisionCapable`
+     assertions (DB-backed; only `pnpm test:db` runs it, not `pnpm test`).
+   - `__tests__/lib/ollama-cloud-image-preference-drift.test.ts` — guards the
+     image-preference list.
 
-8. **Run the gates:**
+8. **Run the gates** — the FULL suites, not just the one drift test. A removed
+   model drifts unit AND DB-backed snapshots; `pnpm test` alone misses the
+   `*.integration.test.ts` ones (that gap cost a red CI run once):
 
    ```bash
    pnpm test:scripts
-   pnpm -C packages/web test src/__tests__/lib/ollama-cloud-models.test.ts
+   pnpm -C packages/web test          # full unit suite — all the snapshot tests
+   pnpm -C packages/web test:db       # DB-backed: model-vision.integration etc.
    pnpm -C packages/web exec tsc --noEmit   # union catches stale IDs in resolvers
    ```
 

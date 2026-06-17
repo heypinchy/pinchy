@@ -73,17 +73,27 @@ describe("Ollama Cloud model catalog — empirically verified capabilities", () 
     expect(m!.contextWindow).toBe(262144);
   });
 
-  it("includes kimi-k2:1t as tool-capable, non-reasoning, text-only", () => {
-    // Library tags: "tools cloud" (no thinking tag — the thinking variant is
-    // the separate kimi-k2-thinking, which stays out, see below), input
-    // text-only, 256K context. Tools confirmed empirically 2026-06-12:
-    // structured tool_calls in 4/4 single-turn rounds plus a clean multi-turn
-    // follow-up call after a tool result.
-    const m = byId("kimi-k2:1t");
+  it("includes glm-5.2 with reasoning, text-only, 976K context", () => {
+    // Added 2026-06-17 (Ollama announced GLM-5.2). Library tags
+    // "tools thinking cloud", Text-only input, 976K context. Verified against
+    // the live API: a structured tool_call in round 1 plus a clean multi-turn
+    // follow-up (HTTP 200 with a coherent answer after a tool result), and
+    // HTTP 400 "this model does not support image input" on image payloads —
+    // text-only, like the rest of the GLM line.
+    const m = byId("glm-5.2");
     expect(m).toBeDefined();
-    expect(m!.reasoning).toBe(false);
+    expect(m!.reasoning).toBe(true);
     expect(m!.vision).toBe(false);
-    expect(m!.contextWindow).toBe(262144);
+    expect(m!.contextWindow).toBe(999424);
+    expect(VISION_OLLAMA_CLOUD_MODEL_IDS.has("glm-5.2")).toBe(false);
+  });
+
+  it("dropped kimi-k2:1t — Ollama removed it from the cloud catalog (2026-06-17)", () => {
+    // Verified tool-capable on 2026-06-12 (4/4 single-turn + a clean multi-turn
+    // follow-up), but the 2026-06-17 `models:discover` sweep found it gone from
+    // /v1/models. Leaving a model the live API no longer serves would resurface
+    // the llama3.3:70b -> HTTP 404 class of bug, so it was dropped.
+    expect(TOOL_CAPABLE_OLLAMA_CLOUD_MODEL_IDS).not.toContain("kimi-k2:1t");
   });
 
   it("keeps cogito-2.1:671b out — leaks raw tool-call template text", () => {
@@ -113,6 +123,14 @@ describe("Ollama Cloud model catalog — empirically verified capabilities", () 
     // across two independent runs, the same multi-turn failure mode that got
     // kimi-k2-thinking removed in #305. Every Pinchy agent runs multi-turn
     // tool loops, so all three stay out despite the library page's vision tag.
+    //
+    // Re-probed 2026-06-17 (during the GLM-5.2 sweep): all three now passed a
+    // single multi-turn round (round-2 HTTP 200 with a coherent answer). That
+    // flip-flop is exactly the intermittency that disqualified qwen3-next — one
+    // clean run does not certify reliability — and gemma3 is an older sibling
+    // of gemma4:31b, which we already carry with verified vision. Vision could
+    // not be re-confirmed (the image endpoint was returning blanket 5xx that
+    // day). They stay out until a deliberate multi-run + vision re-evaluation.
     for (const id of ["gemma3:4b", "gemma3:12b", "gemma3:27b"]) {
       expect(TOOL_CAPABLE_OLLAMA_CLOUD_MODEL_IDS).not.toContain(id);
     }

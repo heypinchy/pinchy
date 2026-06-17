@@ -286,18 +286,16 @@ describe("fetchProviderModels", () => {
             { id: "devstral-small-2:24b" },
             { id: "gemini-3-flash-preview" },
             { id: "gemma4:31b" },
-            { id: "glm-4.6" },
             { id: "glm-4.7" },
             { id: "glm-5" },
             { id: "glm-5.1" },
+            { id: "glm-5.2" },
             { id: "gpt-oss:20b" },
             { id: "gpt-oss:120b" },
             // kimi-k2-thinking: still returned by Ollama API but removed from Pinchy allowlist (#305)
             { id: "kimi-k2-thinking" },
             { id: "kimi-k2.5" },
             { id: "kimi-k2.6" },
-            { id: "kimi-k2:1t" },
-            { id: "minimax-m2" },
             { id: "minimax-m2.1" },
             { id: "minimax-m2.5" },
             { id: "minimax-m2.7" },
@@ -312,8 +310,6 @@ describe("fetchProviderModels", () => {
             { id: "qwen3-coder-next" },
             { id: "qwen3-coder:480b" },
             { id: "qwen3-next:80b" },
-            { id: "qwen3-vl:235b" },
-            { id: "qwen3-vl:235b-instruct" },
             { id: "qwen3.5:397b" },
             { id: "rnj-1:8b" },
             // Tool-broken on the live chat/completions endpoint — must be filtered out
@@ -343,16 +339,14 @@ describe("fetchProviderModels", () => {
         "ollama-cloud/devstral-small-2:24b",
         "ollama-cloud/gemini-3-flash-preview",
         "ollama-cloud/gemma4:31b",
-        "ollama-cloud/glm-4.6",
         "ollama-cloud/glm-4.7",
         "ollama-cloud/glm-5",
         "ollama-cloud/glm-5.1",
+        "ollama-cloud/glm-5.2",
         "ollama-cloud/gpt-oss:20b",
         "ollama-cloud/gpt-oss:120b",
         "ollama-cloud/kimi-k2.5",
         "ollama-cloud/kimi-k2.6",
-        "ollama-cloud/kimi-k2:1t",
-        "ollama-cloud/minimax-m2",
         "ollama-cloud/minimax-m2.1",
         "ollama-cloud/minimax-m2.5",
         "ollama-cloud/minimax-m2.7",
@@ -366,8 +360,6 @@ describe("fetchProviderModels", () => {
         "ollama-cloud/nemotron-3-ultra",
         "ollama-cloud/qwen3-coder-next",
         "ollama-cloud/qwen3-coder:480b",
-        "ollama-cloud/qwen3-vl:235b",
-        "ollama-cloud/qwen3-vl:235b-instruct",
         "ollama-cloud/qwen3.5:397b",
         "ollama-cloud/rnj-1:8b",
       ])
@@ -380,7 +372,7 @@ describe("fetchProviderModels", () => {
     expect(ids).not.toContain("ollama-cloud/qwen3-next:80b");
     // minimax-m3 was added to the allowlist (vision + tools confirmed live).
     expect(ids).toContain("ollama-cloud/minimax-m3");
-    expect(ids).toHaveLength(35);
+    expect(ids).toHaveLength(31);
 
     // Tool-broken models are filtered out (probed 2026-06-12: gemma3:4b leaks
     // pseudo tool calls as text, gemma3:12b serves HTTP 500, gemma3:27b
@@ -429,7 +421,7 @@ describe("fetchProviderModels", () => {
     const ids = ollama!.models.map((m) => m.id);
     // kimi-k2-thinking removed from allowlist (#305 — Ollama Cloud returns HTTP 500 for this model)
     expect(ids).not.toContain("ollama-cloud/kimi-k2-thinking");
-    expect(ids).toHaveLength(35);
+    expect(ids).toHaveLength(31);
     expect(ids).toEqual(
       expect.arrayContaining([
         "ollama-cloud/deepseek-v3.1:671b",
@@ -440,16 +432,14 @@ describe("fetchProviderModels", () => {
         "ollama-cloud/devstral-small-2:24b",
         "ollama-cloud/gemini-3-flash-preview",
         "ollama-cloud/gemma4:31b",
-        "ollama-cloud/glm-4.6",
         "ollama-cloud/glm-4.7",
         "ollama-cloud/glm-5",
         "ollama-cloud/glm-5.1",
+        "ollama-cloud/glm-5.2",
         "ollama-cloud/gpt-oss:20b",
         "ollama-cloud/gpt-oss:120b",
         "ollama-cloud/kimi-k2.5",
         "ollama-cloud/kimi-k2.6",
-        "ollama-cloud/kimi-k2:1t",
-        "ollama-cloud/minimax-m2",
         "ollama-cloud/minimax-m2.1",
         "ollama-cloud/minimax-m2.5",
         "ollama-cloud/minimax-m2.7",
@@ -463,8 +453,6 @@ describe("fetchProviderModels", () => {
         "ollama-cloud/nemotron-3-ultra",
         "ollama-cloud/qwen3-coder-next",
         "ollama-cloud/qwen3-coder:480b",
-        "ollama-cloud/qwen3-vl:235b",
-        "ollama-cloud/qwen3-vl:235b-instruct",
         "ollama-cloud/qwen3.5:397b",
         "ollama-cloud/rnj-1:8b",
       ])

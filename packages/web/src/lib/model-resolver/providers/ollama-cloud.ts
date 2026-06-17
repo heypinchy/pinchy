@@ -30,7 +30,11 @@ const BY_TIER_FAMILY: Record<
   balanced: {
     general: "ollama-cloud/glm-4.7",
     coder: "ollama-cloud/qwen3-coder:480b",
-    vision: "ollama-cloud/qwen3-vl:235b",
+    // qwen3-vl:235b(-instruct) was the pick but Ollama dropped both from the
+    // cloud catalog (2026-06-17 discovery sweep). gemma4:31b is the balanced
+    // vision replacement: vision+reasoning+tools, 262K context, already
+    // empirically verified in ollama-cloud-models.ts.
+    vision: "ollama-cloud/gemma4:31b",
   },
   reasoning: {
     general: "ollama-cloud/deepseek-v4-pro",

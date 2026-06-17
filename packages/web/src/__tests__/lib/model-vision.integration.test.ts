@@ -70,9 +70,12 @@ describe("Ollama cloud vision models (from DB seed)", () => {
     expect(isModelVisionCapable("ollama-cloud/ministral-3:14b")).toBe(true);
   });
 
-  it("returns true for both qwen3-vl variants", () => {
-    expect(isModelVisionCapable("ollama-cloud/qwen3-vl:235b")).toBe(true);
-    expect(isModelVisionCapable("ollama-cloud/qwen3-vl:235b-instruct")).toBe(true);
+  it("returns true for kimi-k2.6", () => {
+    // Replaces the old qwen3-vl:235b(-instruct) block — Ollama dropped both
+    // from the cloud catalog (2026-06-17). kimi-k2.5 / minimax-m3 /
+    // mistral-large-3 already have their own dedicated cases above; kimi-k2.6
+    // was the one vision model still lacking one.
+    expect(isModelVisionCapable("ollama-cloud/kimi-k2.6")).toBe(true);
   });
 
   it("returns true for gemma4:31b", () => {

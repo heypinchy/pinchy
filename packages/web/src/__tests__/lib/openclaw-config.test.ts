@@ -1826,16 +1826,14 @@ describe("regenerateOpenClawConfig", () => {
         "devstral-small-2:24b",
         "gemini-3-flash-preview",
         "gemma4:31b",
-        "glm-4.6",
         "glm-4.7",
         "glm-5",
         "glm-5.1",
+        "glm-5.2",
         "gpt-oss:120b",
         "gpt-oss:20b",
         "kimi-k2.5",
         "kimi-k2.6",
-        "kimi-k2:1t",
-        "minimax-m2",
         "minimax-m2.1",
         "minimax-m2.5",
         "minimax-m2.7",
@@ -1849,8 +1847,6 @@ describe("regenerateOpenClawConfig", () => {
         "nemotron-3-ultra",
         "qwen3-coder-next",
         "qwen3-coder:480b",
-        "qwen3-vl:235b",
-        "qwen3-vl:235b-instruct",
         "qwen3.5:397b",
         "rnj-1:8b",
       ].sort()
@@ -1885,14 +1881,14 @@ describe("regenerateOpenClawConfig", () => {
     // 160K
     expect(ctx["deepseek-v3.1:671b"]).toBe(163840);
     expect(ctx["deepseek-v3.2"]).toBe(163840);
-    // 198K (GLM family, minimax-m2.5)
-    expect(ctx["glm-4.6"]).toBe(202752);
+    // 198K (GLM 4.x/5.x family, minimax-m2.5)
     expect(ctx["glm-4.7"]).toBe(202752);
     expect(ctx["glm-5"]).toBe(202752);
     expect(ctx["glm-5.1"]).toBe(202752);
     expect(ctx["minimax-m2.5"]).toBe(202752);
+    // 976K (GLM-5.2 — "NK" = N×1024 → 999424)
+    expect(ctx["glm-5.2"]).toBe(999424);
     // 200K (other minimax variants)
-    expect(ctx["minimax-m2"]).toBe(204800);
     expect(ctx["minimax-m2.1"]).toBe(204800);
     expect(ctx["minimax-m2.7"]).toBe(204800);
     // 256K — the most common class
@@ -1900,7 +1896,6 @@ describe("regenerateOpenClawConfig", () => {
     expect(ctx["gemma4:31b"]).toBe(262144);
     expect(ctx["kimi-k2.5"]).toBe(262144);
     expect(ctx["kimi-k2.6"]).toBe(262144);
-    expect(ctx["kimi-k2:1t"]).toBe(262144);
     expect(ctx["ministral-3:3b"]).toBe(262144);
     expect(ctx["ministral-3:8b"]).toBe(262144);
     expect(ctx["ministral-3:14b"]).toBe(262144);
@@ -1909,8 +1904,6 @@ describe("regenerateOpenClawConfig", () => {
     expect(ctx["nemotron-3-ultra"]).toBe(262144);
     expect(ctx["qwen3-coder-next"]).toBe(262144);
     expect(ctx["qwen3-coder:480b"]).toBe(262144);
-    expect(ctx["qwen3-vl:235b"]).toBe(262144);
-    expect(ctx["qwen3-vl:235b-instruct"]).toBe(262144);
     expect(ctx["qwen3.5:397b"]).toBe(262144);
     // 384K
     expect(ctx["devstral-small-2:24b"]).toBe(393216);
@@ -1961,8 +1954,6 @@ describe("regenerateOpenClawConfig", () => {
       "ministral-3:8b",
       "ministral-3:14b",
       "mistral-large-3:675b",
-      "qwen3-vl:235b",
-      "qwen3-vl:235b-instruct",
     ];
     for (const id of visionModels) {
       expect(byId[id].input).toEqual(["text", "image"]);
@@ -1980,7 +1971,9 @@ describe("regenerateOpenClawConfig", () => {
     // 2026-06 additions: both are text-only lines (no image input tag, and
     // vision is never assumed without an empirical probe).
     expect(byId["nemotron-3-ultra"].input).toEqual(["text"]);
-    expect(byId["kimi-k2:1t"].input).toEqual(["text"]);
+    // glm-5.2: library lists Text-only; live API returns HTTP 400 "does not
+    // support image input" (2026-06-17). Text-only like the rest of the GLM line.
+    expect(byId["glm-5.2"].input).toEqual(["text"]);
 
     // Reasoning-capable cloud models per ollama.com/search?c=thinking&c=cloud
     const reasoningModels = [
@@ -1990,23 +1983,20 @@ describe("regenerateOpenClawConfig", () => {
       "deepseek-v4-pro",
       "gemini-3-flash-preview",
       "gemma4:31b",
-      "glm-4.6",
       "glm-4.7",
       "glm-5",
       "glm-5.1",
+      "glm-5.2",
       "gpt-oss:20b",
       "gpt-oss:120b",
       "kimi-k2.5",
       "kimi-k2.6",
-      "minimax-m2",
       "minimax-m2.5",
       "minimax-m2.7",
       "minimax-m3",
       "nemotron-3-nano:30b",
       "nemotron-3-super",
       "nemotron-3-ultra",
-      "qwen3-vl:235b",
-      "qwen3-vl:235b-instruct",
       "qwen3.5:397b",
     ];
     for (const id of reasoningModels) {
@@ -2014,13 +2004,10 @@ describe("regenerateOpenClawConfig", () => {
     }
     // Non-reasoning — qwen3-coder-next explicitly "Non-thinking mode only",
     // ministral-3 / mistral-large-3 / devstral-* and rnj-1 not tagged,
-    // minimax-m2.1 absent from Ollama's thinking tag list, kimi-k2:1t is the
-    // non-thinking kimi-k2 line (the thinking variant is the separate — and
-    // broken — kimi-k2-thinking).
+    // minimax-m2.1 absent from Ollama's thinking tag list.
     const nonReasoningModels = [
       "devstral-2:123b",
       "devstral-small-2:24b",
-      "kimi-k2:1t",
       "minimax-m2.1",
       "ministral-3:3b",
       "ministral-3:8b",
@@ -6889,7 +6876,8 @@ describe("regenerateOpenClawConfig imageModel.primary (#416)", () => {
     // and kimi-k2.5/k2.6 accept image input but occasionally misread digits,
     // and qwen3.5:397b only claims vision (it hallucinates image contents and
     // is flagged text-only). The image-default picker explicitly prefers the
-    // "canonical vision line" — qwen3-vl > gemini-3-flash > gemma4 — over
+    // best empirically vision-verified models — gemini-3-flash > minimax-m3 >
+    // gemma4 (qwen3-vl led this list until Ollama dropped it upstream) — over
     // those weaker models.
     mockedGetSetting.mockImplementation(async (key: string) =>
       key === "ollama_cloud_api_key" ? "test-key" : null
@@ -6897,7 +6885,7 @@ describe("regenerateOpenClawConfig imageModel.primary (#416)", () => {
     await regenerateOpenClawConfig();
 
     const config = JSON.parse(mockedWriteFileSync.mock.calls[0][1] as string);
-    expect(config.agents.defaults.imageModel.primary).toBe("ollama-cloud/qwen3-vl:235b-instruct");
+    expect(config.agents.defaults.imageModel.primary).toBe("ollama-cloud/gemini-3-flash-preview");
   });
 
   it("native vision providers (anthropic, google) beat ollama-cloud for imageModel", async () => {

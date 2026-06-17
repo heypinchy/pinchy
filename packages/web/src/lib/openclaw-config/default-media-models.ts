@@ -81,8 +81,10 @@ export async function resolveDefaultPdfModel(): Promise<string | null> {
  * image input but occasionally misread digits, and `qwen3.5:397b` only
  * claims vision — it hallucinates image contents and is now flagged
  * vision:false (see ollama-cloud-models.ts). We pin the choice to the
- * canonical vision line (`qwen3-vl` > `gemini-3-flash-preview` > `gemma4`)
- * via the typed `OLLAMA_CLOUD_IMAGE_PREFERENCE` list. The TypeScript
+ * best empirically vision-verified models (`gemini-3-flash-preview` >
+ * `minimax-m3` > `gemma4:31b`; qwen3-vl led this list until Ollama dropped it
+ * from the cloud catalog) via the typed `OLLAMA_CLOUD_IMAGE_PREFERENCE` list.
+ * The TypeScript
  * constraint on that list (must be `OllamaCloudModelId`) means an unknown
  * ID fails to compile, so a runtime fallback to
  * `getDefaultModel("ollama-cloud")` would only fire if every preference
@@ -107,9 +109,14 @@ const IMAGE_MODEL_PREFERENCE: readonly ProviderName[] = [
 // silently de-syncing (e.g. if a future catalog update demotes one of
 // these models the way #416 demoted devstral).
 export const OLLAMA_CLOUD_IMAGE_PREFERENCE: readonly OllamaCloudModelId[] = [
-  "qwen3-vl:235b-instruct",
-  "qwen3-vl:235b",
+  // qwen3-vl:235b(-instruct) led this list but Ollama dropped both from the
+  // cloud catalog (2026-06-17 discovery sweep). The remaining picks are all
+  // empirically vision-verified: gemini-3-flash-preview (1M context; blocked
+  // only for *tool* slots, fine for pure image description) and minimax-m3
+  // (reads numbers + circle colors correctly across distinct images) lead,
+  // with gemma4:31b behind them.
   "gemini-3-flash-preview",
+  "minimax-m3",
   "gemma4:31b",
 ];
 
