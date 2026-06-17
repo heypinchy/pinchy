@@ -162,7 +162,7 @@ function renderStepWithLink(label: string, link: { text: string; url: string }) 
         href={link.url}
         target="_blank"
         rel="noopener noreferrer"
-        className="text-primary hover:underline"
+        className="text-primary-accent hover:underline"
       >
         {link.text}
       </a>
@@ -394,7 +394,7 @@ export function ProviderKeyForm({
                       href={errorDocs.href}
                       target="_blank"
                       rel="noopener noreferrer"
-                      className="inline-flex items-center gap-1 text-sm font-medium text-primary hover:underline"
+                      className="inline-flex items-center gap-1 text-sm font-medium text-primary-accent hover:underline"
                     >
                       {errorDocs.label}
                       <ExternalLink className="size-3" />
@@ -428,7 +428,7 @@ export function ProviderKeyForm({
                     href={PROVIDERS[provider].guide.keyUrl}
                     target="_blank"
                     rel="noopener noreferrer"
-                    className="inline-flex items-center gap-1 text-sm font-medium text-primary hover:underline"
+                    className="inline-flex items-center gap-1 text-sm font-medium text-primary-accent hover:underline"
                   >
                     {isUrlProvider ? "Setup guide" : `Go to ${PROVIDERS[provider].name}`}
                     <ExternalLink className="size-3" />

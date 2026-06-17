@@ -346,7 +346,7 @@ export function TelegramLinkSettings({ isAdmin }: TelegramLinkSettingsProps) {
                 href={botLink}
                 target="_blank"
                 rel="noopener noreferrer"
-                className="inline-flex items-center gap-1 text-sm text-primary hover:underline"
+                className="inline-flex items-center gap-1 text-sm text-primary-accent hover:underline"
               >
                 Or open in Telegram
                 <ExternalLink className="size-3" />
@@ -370,7 +370,7 @@ export function TelegramLinkSettings({ isAdmin }: TelegramLinkSettingsProps) {
                 <p>OpenClaw: access not configured.</p>
                 <p>Your Telegram user id: 1234567890</p>
                 <div className="rounded-md border-2 border-primary/30 bg-primary/5 px-2.5 py-1.5 text-gray-800">
-                  Pairing code: <span className="font-bold text-primary">ABC123XY</span>
+                  Pairing code: <span className="font-bold text-primary-accent">ABC123XY</span>
                 </div>
                 <p>
                   Ask the bot owner to approve with:
