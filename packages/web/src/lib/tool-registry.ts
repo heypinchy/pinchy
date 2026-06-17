@@ -116,6 +116,45 @@ export const TOOL_REGISTRY: readonly ToolDefinition[] = [
     integration: "odoo",
   },
   {
+    id: "odoo_confirm_order",
+    label: "Odoo: Confirm sale order",
+    description:
+      "Confirm a quotation into a sales order (action_confirm — creates deliveries/procurement)",
+    category: "powerful",
+    integration: "odoo",
+  },
+  {
+    id: "odoo_apply_inventory",
+    label: "Odoo: Apply inventory count",
+    description: "Post a counted inventory adjustment on a stock.quant (action_apply_inventory)",
+    category: "powerful",
+    integration: "odoo",
+  },
+  {
+    id: "odoo_validate_picking",
+    label: "Odoo: Validate picking",
+    description:
+      "Validate a stock transfer (button_validate); reports a handoff if Odoo needs a backorder decision",
+    category: "powerful",
+    integration: "odoo",
+  },
+  {
+    id: "odoo_mark_mo_done",
+    label: "Odoo: Mark MO done",
+    description:
+      "Mark a manufacturing order done (button_mark_done); reports a handoff if Odoo needs a backorder/consumption decision",
+    category: "powerful",
+    integration: "odoo",
+  },
+  {
+    id: "odoo_set_approval",
+    label: "Odoo: Set approval decision",
+    description:
+      "Approve or refuse an expense report, purchase order, leave request, or approval request via its blessed method",
+    category: "powerful",
+    integration: "odoo",
+  },
+  {
     id: "odoo_write",
     label: "Odoo: Update records",
     description: "Modify existing records in Odoo",
@@ -259,6 +298,11 @@ const ODOO_WRITE_TOOLS = [
   "odoo_schedule_activity",
   "odoo_complete_activity",
   "odoo_reschedule_activity",
+  "odoo_confirm_order",
+  "odoo_apply_inventory",
+  "odoo_validate_picking",
+  "odoo_mark_mo_done",
+  "odoo_set_approval",
   "odoo_write",
   "odoo_attach_file",
 ] as const;
@@ -273,6 +317,11 @@ const ODOO_ADDITIVE_TOOLS = new Set<string>([
   "odoo_schedule_activity",
   "odoo_complete_activity",
   "odoo_reschedule_activity",
+  "odoo_confirm_order",
+  "odoo_apply_inventory",
+  "odoo_validate_picking",
+  "odoo_mark_mo_done",
+  "odoo_set_approval",
 ]);
 
 /** Returns all Odoo tool definitions from the registry. */

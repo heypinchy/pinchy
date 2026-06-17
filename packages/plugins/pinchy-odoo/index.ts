@@ -1085,6 +1085,48 @@ async function ensureActivityResModelId(
 }
 
 /**
+ * Variant A wizard handling for record-action tools. Odoo button/action
+ * methods (e.g. `stock.picking.button_validate`, `mrp.production.button_mark_done`)
+ * return `True` when they finish cleanly, but return an `ir.actions.act_window`
+ * dict when Odoo needs a human decision first — a backorder, an
+ * immediate-transfer confirmation, a consumption warning. We never claim the
+ * operation succeeded in that case; we surface the pending wizard's model so
+ * the caller can tell the user to finish it in Odoo. Returns the wizard's
+ * `res_model` (or a generic label) when the result is such an action, else null.
+ */
+export function describePendingWizard(result: unknown): string | null {
+  if (!isRecord(result)) return null;
+  const type = result.type;
+  if (typeof type === "string" && type.startsWith("ir.actions")) {
+    return typeof result.res_model === "string" && result.res_model.length > 0
+      ? result.res_model
+      : "a follow-up confirmation step";
+  }
+  return null;
+}
+
+/**
+ * Allow-list of approval-style state transitions reachable through
+ * `odoo_set_approval`. Each model maps a decision to the exact Odoo method.
+ * This IS the governance surface — only these blessed (model, method) pairs are
+ * callable, never an arbitrary method. `reasonPositional` methods take the
+ * refusal reason as the first method argument after the recordset ids.
+ */
+export const APPROVAL_ROUTES: Record<
+  string,
+  { approve: string; refuse: string; reasonPositional?: boolean }
+> = {
+  "hr.expense.sheet": {
+    approve: "approve_expense_sheets",
+    refuse: "refuse_sheet",
+    reasonPositional: true,
+  },
+  "purchase.order": { approve: "button_confirm", refuse: "button_cancel" },
+  "hr.leave": { approve: "action_approve", refuse: "action_refuse" },
+  "approval.request": { approve: "action_approve", refuse: "action_refuse" },
+};
+
+/**
  * Pull a human-readable company name out of a raw Odoo `company_id` value.
  * Odoo returns m2o values as `[id, "display_name"]` tuples (before we wrap
  * them) or `false` for single-company tenants. Returns `null` for any other
@@ -2329,6 +2371,287 @@ const plugin = {
         };
       },
       { name: "odoo_reschedule_activity" },
+    );
+
+    // 5e–5h. Governed record-action tools. Each invokes one allow-listed Odoo
+    // button/action method via callMethod. Variant A: if Odoo returns a wizard
+    // action instead of completing, we report a handoff rather than faking
+    // success.
+    function recordActionFactory(spec: {
+      name: string;
+      label: string;
+      description: string;
+      model: string;
+      method: string;
+    }) {
+      return (ctx: PluginToolContext) => {
+        const agentId = ctx.agentId;
+        if (!agentId) return null;
+        const config = getAgentConfig(agentConfigs, agentId);
+        if (!config) return null;
+
+        return {
+          name: spec.name,
+          label: spec.label,
+          description: spec.description,
+          parameters: {
+            type: "object",
+            properties: {
+              target: {
+                type: "string",
+                description: `Opaque \`_pinchy_ref\` of the ${spec.model} record (from odoo_read or odoo_create).`,
+              },
+            },
+            required: ["target"],
+            additionalProperties: false,
+          },
+          async execute(_toolCallId: string, params: Record<string, unknown>) {
+            try {
+              const target = params.target;
+              if (typeof target !== "string" || target.length === 0) {
+                return errorResult(
+                  new Error(
+                    `\`target\` is required: pass the _pinchy_ref of the ${spec.model} record.`,
+                  ),
+                );
+              }
+              const decoded = decodeRef(target);
+              if (
+                decoded.integrationType !== "odoo" ||
+                decoded.connectionId !== config.connectionId
+              ) {
+                return errorResult(
+                  new Error(
+                    "`target` ref does not belong to this Odoo connection.",
+                  ),
+                );
+              }
+              if (decoded.model !== spec.model) {
+                return errorResult(
+                  new Error(`\`target\` must be a ${spec.model} ref.`),
+                );
+              }
+              if (!checkPermission(config.permissions, spec.model, "write")) {
+                return permissionDenied("write", spec.model);
+              }
+
+              const result = await withAuthRetry(agentId, config, (client) =>
+                client.callMethod(spec.model, spec.method, [[decoded.id]], {}),
+              );
+
+              const pending = describePendingWizard(result);
+              if (pending) {
+                return {
+                  content: [
+                    {
+                      type: "text",
+                      text: JSON.stringify({
+                        completed: false,
+                        needsHuman: true,
+                        pendingStep: pending,
+                        message: `Odoo could not finish this automatically — it needs a human decision in the "${pending}" step (e.g. a backorder, immediate-transfer, or consumption confirmation). Ask the user to complete it in Odoo.`,
+                      }),
+                    },
+                  ],
+                };
+              }
+              return {
+                content: [
+                  {
+                    type: "text",
+                    text: JSON.stringify({ completed: true, id: decoded.id }),
+                  },
+                ],
+              };
+            } catch (error) {
+              return errorResult(error, {
+                operation: "write",
+                model: spec.model,
+              });
+            }
+          },
+        };
+      };
+    }
+
+    api.registerTool(
+      recordActionFactory({
+        name: "odoo_confirm_order",
+        label: "Odoo Confirm Sale Order",
+        description:
+          "Confirm a draft/sent quotation into a sales order via Odoo's `action_confirm` — the only correct way to confirm an order (it creates the deliveries and procurement). Do NOT confirm by writing `state` directly; that skips those side effects. Pass the sale.order `_pinchy_ref`.",
+        model: "sale.order",
+        method: "action_confirm",
+      }),
+      { name: "odoo_confirm_order" },
+    );
+
+    api.registerTool(
+      recordActionFactory({
+        name: "odoo_apply_inventory",
+        label: "Odoo Apply Inventory Count",
+        description:
+          "Apply a counted inventory adjustment on a `stock.quant` (Odoo's `action_apply_inventory`) — run this AFTER writing `inventory_quantity` on the quant, to post the adjustment into real stock. Pass the stock.quant `_pinchy_ref`.",
+        model: "stock.quant",
+        method: "action_apply_inventory",
+      }),
+      { name: "odoo_apply_inventory" },
+    );
+
+    api.registerTool(
+      recordActionFactory({
+        name: "odoo_validate_picking",
+        label: "Odoo Validate Picking",
+        description:
+          "Validate a stock transfer / picking (Odoo's `button_validate`) to post the physical move. If Odoo needs a backorder or immediate-transfer decision it will NOT auto-complete — the tool reports that so a human can finish it. Pass the stock.picking `_pinchy_ref`. Always confirm the per-line quantities with the user first.",
+        model: "stock.picking",
+        method: "button_validate",
+      }),
+      { name: "odoo_validate_picking" },
+    );
+
+    api.registerTool(
+      recordActionFactory({
+        name: "odoo_mark_mo_done",
+        label: "Odoo Mark Manufacturing Order Done",
+        description:
+          "Mark a manufacturing order done (Odoo's `button_mark_done`) to record consumption and finished goods. If Odoo needs a backorder / consumption decision it will NOT auto-complete — the tool reports that for a human to finish. Pass the mrp.production `_pinchy_ref`. Confirm quantities with the user first.",
+        model: "mrp.production",
+        method: "button_mark_done",
+      }),
+      { name: "odoo_mark_mo_done" },
+    );
+
+    // 5i. odoo_set_approval (parameterized over an allow-list of approval models)
+    api.registerTool(
+      (ctx: PluginToolContext) => {
+        const agentId = ctx.agentId;
+        if (!agentId) return null;
+        const config = getAgentConfig(agentConfigs, agentId);
+        if (!config) return null;
+
+        return {
+          name: "odoo_set_approval",
+          label: "Odoo Set Approval Decision",
+          description:
+            'Approve or refuse an approval-style record (expense report, purchase order, leave request, or generic approval) via its blessed Odoo method — never by writing `state` directly. Pass the record\'s `_pinchy_ref`, a `decision` ("approve" or "refuse"), and an optional `reason` (recorded on refusal where supported, e.g. expense reports). Supported models: hr.expense.sheet, purchase.order, hr.leave, approval.request.',
+          parameters: {
+            type: "object",
+            properties: {
+              target: {
+                type: "string",
+                description:
+                  "Opaque `_pinchy_ref` of the record to approve or refuse.",
+              },
+              decision: {
+                type: "string",
+                enum: ["approve", "refuse"],
+                description: '"approve" or "refuse".',
+              },
+              reason: {
+                type: "string",
+                description:
+                  "Optional reason, recorded on refusal where the model supports it (e.g. expense reports).",
+              },
+            },
+            required: ["target", "decision"],
+            additionalProperties: false,
+          },
+          async execute(_toolCallId: string, params: Record<string, unknown>) {
+            try {
+              const target = params.target;
+              if (typeof target !== "string" || target.length === 0) {
+                return errorResult(
+                  new Error(
+                    "`target` is required: pass the _pinchy_ref of the record.",
+                  ),
+                );
+              }
+              const decision: "approve" | "refuse" | null =
+                params.decision === "approve"
+                  ? "approve"
+                  : params.decision === "refuse"
+                    ? "refuse"
+                    : null;
+              if (!decision) {
+                return errorResult(
+                  new Error('`decision` must be "approve" or "refuse".'),
+                );
+              }
+              const decoded = decodeRef(target);
+              if (
+                decoded.integrationType !== "odoo" ||
+                decoded.connectionId !== config.connectionId
+              ) {
+                return errorResult(
+                  new Error(
+                    "`target` ref does not belong to this Odoo connection.",
+                  ),
+                );
+              }
+              const route = APPROVAL_ROUTES[decoded.model];
+              if (!route) {
+                return errorResult(
+                  new Error(
+                    `${decoded.model} is not an approvable model. Supported: ${Object.keys(
+                      APPROVAL_ROUTES,
+                    ).join(", ")}.`,
+                  ),
+                );
+              }
+              if (
+                !checkPermission(config.permissions, decoded.model, "write")
+              ) {
+                return permissionDenied("write", decoded.model);
+              }
+
+              const method = route[decision];
+              const reason =
+                typeof params.reason === "string" ? params.reason.trim() : "";
+              const args: unknown[] =
+                decision === "refuse" && route.reasonPositional
+                  ? [[decoded.id], reason || "Refused"]
+                  : [[decoded.id]];
+
+              const result = await withAuthRetry(agentId, config, (client) =>
+                client.callMethod(decoded.model, method, args, {}),
+              );
+
+              const pending = describePendingWizard(result);
+              if (pending) {
+                return {
+                  content: [
+                    {
+                      type: "text",
+                      text: JSON.stringify({
+                        completed: false,
+                        needsHuman: true,
+                        pendingStep: pending,
+                        message: `Odoo opened a follow-up step ("${pending}") that needs a human decision — ask the user to complete it in Odoo.`,
+                      }),
+                    },
+                  ],
+                };
+              }
+              return {
+                content: [
+                  {
+                    type: "text",
+                    text: JSON.stringify({
+                      completed: true,
+                      id: decoded.id,
+                      decision,
+                    }),
+                  },
+                ],
+              };
+            } catch (error) {
+              return errorResult(error, { operation: "write" });
+            }
+          },
+        };
+      },
+      { name: "odoo_set_approval" },
     );
 
     // 6. odoo_write

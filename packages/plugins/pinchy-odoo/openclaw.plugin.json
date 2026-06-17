@@ -14,6 +14,11 @@
       "odoo_schedule_activity",
       "odoo_complete_activity",
       "odoo_reschedule_activity",
+      "odoo_confirm_order",
+      "odoo_apply_inventory",
+      "odoo_validate_picking",
+      "odoo_mark_mo_done",
+      "odoo_set_approval",
       "odoo_write",
       "odoo_delete",
       "odoo_attach_file"

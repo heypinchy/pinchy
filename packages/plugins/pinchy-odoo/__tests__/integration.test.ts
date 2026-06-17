@@ -525,3 +525,88 @@ describe("pinchy-odoo mail.activity scheduling against real mock-odoo", () => {
     expect(updated!.user_id).toBe(2);
   });
 });
+
+describe("pinchy-odoo record-action tools against real mock-odoo", () => {
+  const actionAgentId = "agent-actions";
+  const actionConnectionId = "conn-actions";
+  const actionConfig = {
+    connectionId: actionConnectionId,
+    permissions: {
+      "sale.order": ["read", "write"],
+      "stock.picking": ["read", "write"],
+      "hr.expense.sheet": ["read", "write"],
+    },
+  };
+
+  beforeAll(async () => {
+    await fetch(`http://127.0.0.1:${mockOdoo.controlPort}/control/reset`, {
+      method: "POST",
+    });
+    credentialsByConnectionId.set(actionConnectionId, {
+      url: `http://127.0.0.1:${mockOdoo.jsonRpcPort}`,
+      db: "testdb",
+      uid: 2,
+      apiKey: "test-api-key",
+    });
+  });
+
+  function ref(model: string, id: number): string {
+    return encodeRef({
+      integrationType: "odoo",
+      connectionId: actionConnectionId,
+      model,
+      id,
+      label: model,
+    });
+  }
+
+  it("odoo_confirm_order calls action_confirm and reports completed", async () => {
+    const tools = createApi({ [actionAgentId]: actionConfig });
+    const tool = findTool(tools, "odoo_confirm_order", actionAgentId);
+    const result = await tool.execute("c-confirm", {
+      target: ref("sale.order", 1),
+    });
+    expect(result.isError).toBeFalsy();
+    expect(JSON.parse(result.content[0].text).completed).toBe(true);
+  });
+
+  it("odoo_validate_picking hands off (Variant A) when Odoo returns a backorder wizard", async () => {
+    await fetch(
+      `http://127.0.0.1:${mockOdoo.controlPort}/control/method-response`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          model: "stock.picking",
+          method: "button_validate",
+          response: {
+            type: "ir.actions.act_window",
+            res_model: "stock.backorder.confirmation",
+          },
+        }),
+      },
+    );
+    const tools = createApi({ [actionAgentId]: actionConfig });
+    const tool = findTool(tools, "odoo_validate_picking", actionAgentId);
+    const result = await tool.execute("c-validate", {
+      target: ref("stock.picking", 5),
+    });
+    expect(result.isError).toBeFalsy();
+    const data = JSON.parse(result.content[0].text);
+    expect(data.completed).toBe(false);
+    expect(data.needsHuman).toBe(true);
+    expect(data.pendingStep).toBe("stock.backorder.confirmation");
+  });
+
+  it("odoo_set_approval refuses an expense sheet end-to-end", async () => {
+    const tools = createApi({ [actionAgentId]: actionConfig });
+    const tool = findTool(tools, "odoo_set_approval", actionAgentId);
+    const result = await tool.execute("c-refuse", {
+      target: ref("hr.expense.sheet", 9),
+      decision: "refuse",
+      reason: "Over budget",
+    });
+    expect(result.isError).toBeFalsy();
+    expect(JSON.parse(result.content[0].text).completed).toBe(true);
+  });
+});

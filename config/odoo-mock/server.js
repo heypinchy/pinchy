@@ -477,6 +477,9 @@ function getDefaultRecords() {
 let store = new Map(Object.entries(getDefaultRecords()));
 let nextIds = new Map(); // per-model auto-increment counters
 let accessRights = {}; // { "sale.order": { read: true, create: false, ... } }
+// Override results for generic record-action method calls, keyed by
+// "<model>.<method>" — used to simulate Odoo returning a wizard action.
+let methodResponses = {};
 
 function resetNextIds() {
   nextIds = new Map();
@@ -864,6 +867,20 @@ function handleJsonRpc(body) {
         return true;
       }
 
+      // Generic record-action methods (action_*, button_*, and a few approval
+      // methods). In real Odoo these return `true` when they finish cleanly,
+      // or an `ir.actions.act_window` dict when a wizard (backorder, etc.) is
+      // needed. Default to `true`; a test can override the result per
+      // (model, method) via POST /control/method-response to simulate a wizard.
+      if (
+        /^(action_|button_)/.test(objMethod) ||
+        objMethod === "approve_expense_sheets" ||
+        objMethod === "refuse_sheet"
+      ) {
+        const key = `${model}.${objMethod}`;
+        return key in methodResponses ? methodResponses[key] : true;
+      }
+
       return false;
     }
   }
@@ -961,11 +978,26 @@ const controlServer = http.createServer(async (req, res) => {
     return;
   }
 
+  // Configure a record-action method to return a wizard action (instead of
+  // the default `true`), to exercise the Variant A handoff path.
+  // Body: { model, method, response }
+  if (req.method === "POST" && path === "/control/method-response") {
+    const body = await readBody(req);
+    if (!body || !body.model || !body.method) {
+      sendJson(res, 400, { error: "Need { model, method, response }" });
+      return;
+    }
+    methodResponses[`${body.model}.${body.method}`] = body.response;
+    sendJson(res, 200, { status: "configured" });
+    return;
+  }
+
   // Reset to defaults
   if (req.method === "POST" && path === "/control/reset") {
     store = new Map(Object.entries(getDefaultRecords()));
     resetNextIds();
     accessRights = {};
+    methodResponses = {};
     authMode = "ok";
     authConfig = {
       db: "testdb",

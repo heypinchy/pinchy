@@ -907,9 +907,9 @@ describe("odoo_list_models", () => {
 });
 
 describe("tool registration", () => {
-  it("registers all 13 tools (including the deprecated odoo_schema alias)", () => {
+  it("registers all 18 tools (including the deprecated odoo_schema alias)", () => {
     const tools = createApi({ [agentId]: agentConfig });
-    expect(tools).toHaveLength(13);
+    expect(tools).toHaveLength(18);
     const names = tools.map((t) => t.name);
     expect(names).toContain("odoo_list_models");
     expect(names).toContain("odoo_describe_model");
@@ -921,6 +921,11 @@ describe("tool registration", () => {
     expect(names).toContain("odoo_schedule_activity");
     expect(names).toContain("odoo_complete_activity");
     expect(names).toContain("odoo_reschedule_activity");
+    expect(names).toContain("odoo_confirm_order");
+    expect(names).toContain("odoo_apply_inventory");
+    expect(names).toContain("odoo_validate_picking");
+    expect(names).toContain("odoo_mark_mo_done");
+    expect(names).toContain("odoo_set_approval");
     expect(names).toContain("odoo_write");
     expect(names).toContain("odoo_delete");
     expect(names).toContain("odoo_attach_file");
@@ -3852,5 +3857,234 @@ describe("odoo_reschedule_activity", () => {
     expect(result.isError).toBe(true);
     expect(result.content[0].text).toContain("Permission denied");
     expect(mockWrite).not.toHaveBeenCalled();
+  });
+});
+
+describe("odoo record-action tools (confirm / apply / validate / mark-done)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.stubEnv("PINCHY_REF_TOKEN_KEY", "a".repeat(64));
+  });
+
+  const RECORD_ACTIONS = [
+    {
+      tool: "odoo_confirm_order",
+      model: "sale.order",
+      method: "action_confirm",
+    },
+    {
+      tool: "odoo_apply_inventory",
+      model: "stock.quant",
+      method: "action_apply_inventory",
+    },
+    {
+      tool: "odoo_validate_picking",
+      model: "stock.picking",
+      method: "button_validate",
+    },
+    {
+      tool: "odoo_mark_mo_done",
+      model: "mrp.production",
+      method: "button_mark_done",
+    },
+  ] as const;
+
+  function ref(model: string): string {
+    return encodeRef({
+      integrationType: "odoo",
+      connectionId: "conn-test-1",
+      model,
+      id: 7,
+      label: "x",
+    });
+  }
+
+  for (const { tool, model, method } of RECORD_ACTIONS) {
+    describe(tool, () => {
+      const cfg = {
+        connectionId: "conn-test-1",
+        permissions: { [model]: ["read", "write"] },
+      };
+
+      it("is registered", () => {
+        expect(createApi({ [agentId]: cfg }).map((t) => t.name)).toContain(
+          tool,
+        );
+      });
+
+      it(`calls ${method} and reports completed`, async () => {
+        mockCallMethod.mockResolvedValue(true);
+        const t = findTool(createApi({ [agentId]: cfg }), tool, agentId)!;
+        const result = await t.execute("c", { target: ref(model) });
+        expect(result.isError).toBeFalsy();
+        expect(mockCallMethod).toHaveBeenCalledWith(model, method, [[7]], {});
+        expect(JSON.parse(result.content[0].text).completed).toBe(true);
+      });
+
+      it("hands off (does not claim success) on a wizard action", async () => {
+        mockCallMethod.mockResolvedValue({
+          type: "ir.actions.act_window",
+          res_model: "stock.backorder.confirmation",
+        });
+        const t = findTool(createApi({ [agentId]: cfg }), tool, agentId)!;
+        const result = await t.execute("c", { target: ref(model) });
+        expect(result.isError).toBeFalsy();
+        const data = JSON.parse(result.content[0].text);
+        expect(data.completed).toBe(false);
+        expect(data.needsHuman).toBe(true);
+        expect(data.pendingStep).toBe("stock.backorder.confirmation");
+      });
+
+      it("requires write permission", async () => {
+        const t = findTool(
+          createApi({
+            [agentId]: {
+              connectionId: "conn-test-1",
+              permissions: { [model]: ["read"] },
+            },
+          }),
+          tool,
+          agentId,
+        )!;
+        const result = await t.execute("c", { target: ref(model) });
+        expect(result.isError).toBe(true);
+        expect(result.content[0].text).toContain("Permission denied");
+        expect(mockCallMethod).not.toHaveBeenCalled();
+      });
+
+      it("rejects a ref for the wrong model", async () => {
+        const t = findTool(createApi({ [agentId]: cfg }), tool, agentId)!;
+        const result = await t.execute("c", { target: ref("res.partner") });
+        expect(result.isError).toBe(true);
+        expect(mockCallMethod).not.toHaveBeenCalled();
+      });
+    });
+  }
+});
+
+describe("odoo_set_approval", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.stubEnv("PINCHY_REF_TOKEN_KEY", "a".repeat(64));
+  });
+
+  function ref(model: string): string {
+    return encodeRef({
+      integrationType: "odoo",
+      connectionId: "conn-test-1",
+      model,
+      id: 3,
+      label: "x",
+    });
+  }
+
+  it("approves a purchase order via button_confirm", async () => {
+    mockCallMethod.mockResolvedValue(true);
+    const t = findTool(
+      createApi({
+        [agentId]: {
+          connectionId: "conn-test-1",
+          permissions: { "purchase.order": ["read", "write"] },
+        },
+      }),
+      "odoo_set_approval",
+      agentId,
+    )!;
+    const result = await t.execute("c", {
+      target: ref("purchase.order"),
+      decision: "approve",
+    });
+    expect(result.isError).toBeFalsy();
+    expect(mockCallMethod).toHaveBeenCalledWith(
+      "purchase.order",
+      "button_confirm",
+      [[3]],
+      {},
+    );
+  });
+
+  it("refuses an expense sheet via refuse_sheet with the reason as a positional arg", async () => {
+    mockCallMethod.mockResolvedValue(true);
+    const t = findTool(
+      createApi({
+        [agentId]: {
+          connectionId: "conn-test-1",
+          permissions: { "hr.expense.sheet": ["read", "write"] },
+        },
+      }),
+      "odoo_set_approval",
+      agentId,
+    )!;
+    const result = await t.execute("c", {
+      target: ref("hr.expense.sheet"),
+      decision: "refuse",
+      reason: "Over budget",
+    });
+    expect(result.isError).toBeFalsy();
+    expect(mockCallMethod).toHaveBeenCalledWith(
+      "hr.expense.sheet",
+      "refuse_sheet",
+      [[3], "Over budget"],
+      {},
+    );
+  });
+
+  it("rejects an unsupported model", async () => {
+    const t = findTool(
+      createApi({
+        [agentId]: {
+          connectionId: "conn-test-1",
+          permissions: { "sale.order": ["read", "write"] },
+        },
+      }),
+      "odoo_set_approval",
+      agentId,
+    )!;
+    const result = await t.execute("c", {
+      target: ref("sale.order"),
+      decision: "approve",
+    });
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toMatch(/not an approvable model/);
+    expect(mockCallMethod).not.toHaveBeenCalled();
+  });
+
+  it("rejects an invalid decision", async () => {
+    const t = findTool(
+      createApi({
+        [agentId]: {
+          connectionId: "conn-test-1",
+          permissions: { "purchase.order": ["read", "write"] },
+        },
+      }),
+      "odoo_set_approval",
+      agentId,
+    )!;
+    const result = await t.execute("c", {
+      target: ref("purchase.order"),
+      decision: "maybe",
+    });
+    expect(result.isError).toBe(true);
+    expect(mockCallMethod).not.toHaveBeenCalled();
+  });
+
+  it("requires write permission on the target model", async () => {
+    const t = findTool(
+      createApi({
+        [agentId]: {
+          connectionId: "conn-test-1",
+          permissions: { "purchase.order": ["read"] },
+        },
+      }),
+      "odoo_set_approval",
+      agentId,
+    )!;
+    const result = await t.execute("c", {
+      target: ref("purchase.order"),
+      decision: "approve",
+    });
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain("Permission denied");
+    expect(mockCallMethod).not.toHaveBeenCalled();
   });
 });

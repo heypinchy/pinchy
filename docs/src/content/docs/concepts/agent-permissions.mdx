@@ -98,22 +98,27 @@ This conversion runs automatically whenever the OpenClaw config is regenerated �
 
 When you connect Odoo and grant an agent access to it, Pinchy automatically enables the appropriate tools based on the access level you choose. You don't need to enable these tools manually — they're managed through the Permissions tab.
 
-| Tool                    | Tool ID                    | What it does                                                                                      | Access level required |
-| ----------------------- | -------------------------- | ------------------------------------------------------------------------------------------------- | --------------------- |
-| **List models**         | `odoo_list_models`         | List all available Odoo models on the connection                                                  | Read-only             |
-| **Describe model**      | `odoo_describe_model`      | Discover fields and types for a specific model                                                    | Read-only             |
-| **Read data**           | `odoo_read`                | Query records with filters and field selection                                                    | Read-only             |
-| **Count records**       | `odoo_count`               | Count matching records without transferring data                                                  | Read-only             |
-| **Aggregate data**      | `odoo_aggregate`           | Server-side sums, averages, and grouping                                                          | Read-only             |
-| **Create records**      | `odoo_create`              | Create new records                                                                                | Read & Write          |
-| **Schedule activity**   | `odoo_schedule_activity`   | Schedule a follow-up activity (planned to-do) on a record so it surfaces in Odoo's activity views | Read & Write          |
-| **Complete activity**   | `odoo_complete_activity`   | Mark a scheduled activity as done — posts a completion note and clears it from the to-do list     | Read & Write          |
-| **Reschedule activity** | `odoo_reschedule_activity` | Change a scheduled activity's due date and/or assignee without closing it                         | Read & Write          |
-| **Update records**      | `odoo_write`               | Modify existing records                                                                           | Read & Write          |
-| **Attach file**         | `odoo_attach_file`         | Attach an uploaded file to an existing record as `ir.attachment`                                  | Read & Write          |
-| **Delete records**      | `odoo_delete`              | Delete records                                                                                    | Full                  |
+| Tool                      | Tool ID                    | What it does                                                                                                   | Access level required |
+| ------------------------- | -------------------------- | -------------------------------------------------------------------------------------------------------------- | --------------------- |
+| **List models**           | `odoo_list_models`         | List all available Odoo models on the connection                                                               | Read-only             |
+| **Describe model**        | `odoo_describe_model`      | Discover fields and types for a specific model                                                                 | Read-only             |
+| **Read data**             | `odoo_read`                | Query records with filters and field selection                                                                 | Read-only             |
+| **Count records**         | `odoo_count`               | Count matching records without transferring data                                                               | Read-only             |
+| **Aggregate data**        | `odoo_aggregate`           | Server-side sums, averages, and grouping                                                                       | Read-only             |
+| **Create records**        | `odoo_create`              | Create new records                                                                                             | Read & Write          |
+| **Schedule activity**     | `odoo_schedule_activity`   | Schedule a follow-up activity (planned to-do) on a record so it surfaces in Odoo's activity views              | Read & Write          |
+| **Complete activity**     | `odoo_complete_activity`   | Mark a scheduled activity as done — posts a completion note and clears it from the to-do list                  | Read & Write          |
+| **Reschedule activity**   | `odoo_reschedule_activity` | Change a scheduled activity's due date and/or assignee without closing it                                      | Read & Write          |
+| **Confirm sale order**    | `odoo_confirm_order`       | Confirm a quotation (Odoo's `action_confirm` — creates deliveries/procurement; not a raw state write)          | Read & Write          |
+| **Apply inventory count** | `odoo_apply_inventory`     | Post a counted inventory adjustment on a `stock.quant` (`action_apply_inventory`)                              | Read & Write          |
+| **Validate picking**      | `odoo_validate_picking`    | Validate a stock transfer (`button_validate`); hands off if Odoo needs a backorder decision                    | Read & Write          |
+| **Mark MO done**          | `odoo_mark_mo_done`        | Mark a manufacturing order done (`button_mark_done`); hands off if Odoo needs a backorder/consumption decision | Read & Write          |
+| **Set approval decision** | `odoo_set_approval`        | Approve/refuse an expense report, purchase order, leave request, or approval request via its blessed method    | Read & Write          |
+| **Update records**        | `odoo_write`               | Modify existing records                                                                                        | Read & Write          |
+| **Attach file**           | `odoo_attach_file`         | Attach an uploaded file to an existing record as `ir.attachment`                                               | Read & Write          |
+| **Delete records**        | `odoo_delete`              | Delete records                                                                                                 | Full                  |
 
-For example, setting an agent to "Read-only" enables the five read-shaped tools. "Read & Write" adds create, the three activity tools (schedule / complete / reschedule), write, and attach-file. "Full" adds delete.
+For example, setting an agent to "Read-only" enables the five read-shaped tools. "Read & Write" adds create, the three activity tools (schedule / complete / reschedule), the governed action tools (confirm order, apply inventory, validate picking, mark MO done, set approval), write, and attach-file. "Full" adds delete.
 
 :::note[Cross-company write protection]
 For multi-company Odoo databases, the `pinchy-odoo` plugin refuses to write a record whose embedded `_pinchy_ref` company tag disagrees with the company implied by the relation chain (top-level field only). This prevents a class of silent cross-company mistakes — for example, applying a Company A fiscal position to a partner that lives under Company B. See [Connect Odoo → Multi-company databases](/guides/connect-odoo/#multi-company-databases) for the full story.
