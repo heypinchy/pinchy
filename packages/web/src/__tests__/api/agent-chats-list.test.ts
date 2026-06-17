@@ -18,8 +18,9 @@ vi.mock("@/lib/agent-access", () => ({
 }));
 
 const mockList = vi.fn();
+const mockHistory = vi.fn();
 vi.mock("@/server/openclaw-client", () => ({
-  getOpenClawClient: () => ({ sessions: { list: mockList } }),
+  getOpenClawClient: () => ({ sessions: { list: mockList, history: mockHistory } }),
 }));
 
 // `db.select().from().where()` returns the linked channel rows for THIS user.
@@ -117,6 +118,10 @@ describe("GET /api/agents/[agentId]/chats", () => {
 
   beforeEach(async () => {
     vi.clearAllMocks();
+    // Fresh module per test so the route's process-local title cache (keyed by
+    // sessionId, 60s TTL) doesn't leak a derived title from one test into the
+    // next (several tests reuse the s-web-legacy sessionId).
+    vi.resetModules();
     mockGetSession.mockResolvedValue({
       user: { id: "user-1", email: "user@test.com", role: "member" },
     });
@@ -126,6 +131,9 @@ describe("GET /api/agents/[agentId]/chats", () => {
       { channel: "telegram", userId: "user-1", channelUserId: "tg-peer-111" },
     ]);
     mockList.mockResolvedValue(mixedSessions());
+    // Default: no transcript, so labelless chats stay title-null unless a test
+    // opts a session into a first-user-message history below.
+    mockHistory.mockResolvedValue({ messages: [] });
 
     const mod = await import("@/app/api/agents/[agentId]/chats/route");
     GET = mod.GET;
@@ -197,5 +205,100 @@ describe("GET /api/agents/[agentId]/chats", () => {
     mockList.mockRejectedValueOnce(new Error("OpenClaw WS disconnected"));
     const res = await GET(makeRequest(), ctx as never);
     expect(res.status).toBe(502);
+  });
+
+  // ── Fix 2: derive list titles from the first user message ────────────────
+
+  describe("title derivation from the first user message", () => {
+    /**
+     * Route `mockHistory` per session KEY. Web chats are keyed
+     * `agent:agent-1:direct:user-1[:<chatId>]`. Anything not mapped returns an
+     * empty transcript.
+     */
+    function historyByKey(entries: Record<string, { role: string; content: unknown }[]>) {
+      const map = new Map(Object.entries(entries));
+      mockHistory.mockImplementation(async (key: string) => ({ messages: map.get(key) ?? [] }));
+    }
+
+    it("derives a labelless web chat's title from its first user message", async () => {
+      // s-web-legacy is the labelless web chat keyed at `…:direct:user-1`.
+      historyByKey({
+        "agent:agent-1:direct:user-1": [
+          { role: "assistant", content: "Hi, how can I help?" },
+          { role: "user", content: "What were our Q3 sales numbers?" },
+          { role: "assistant", content: "Let me check." },
+        ],
+      });
+
+      const res = await GET(makeRequest(), ctx as never);
+      const body = await res.json();
+      const byId = new Map(body.chats.map((c: { sessionId: string }) => [c.sessionId, c]));
+
+      const legacy = byId.get("s-web-legacy") as { title: string | null };
+      expect(legacy.title).toBe("What were our Q3 sales numbers?");
+    });
+
+    it("truncates a long first user message to ~60 chars", async () => {
+      const long =
+        "Please summarize the entire quarterly earnings report including every regional breakdown and footnote";
+      historyByKey({ "agent:agent-1:direct:user-1": [{ role: "user", content: long }] });
+
+      const res = await GET(makeRequest(), ctx as never);
+      const body = await res.json();
+      const byId = new Map(body.chats.map((c: { sessionId: string }) => [c.sessionId, c]));
+      const legacy = byId.get("s-web-legacy") as { title: string | null };
+
+      expect(legacy.title).not.toBeNull();
+      expect(legacy.title!.length).toBeLessThanOrEqual(61); // 60 + an ellipsis char
+      expect(legacy.title!).toMatch(/^Please summarize the entire quarterly earnings/);
+      expect(legacy.title!.endsWith("…")).toBe(true);
+    });
+
+    it("keeps the saved label and does NOT read history when a label exists", async () => {
+      // s-web-new HAS a label ("Quarterly report"); its history must not be read.
+      const res = await GET(makeRequest(), ctx as never);
+      const body = await res.json();
+      const byId = new Map(body.chats.map((c: { sessionId: string }) => [c.sessionId, c]));
+
+      const web = byId.get("s-web-new") as { title: string | null };
+      expect(web.title).toBe("Quarterly report");
+
+      // The labelled chat's session key was never passed to sessions.history.
+      const fetchedKeys = mockHistory.mock.calls.map((c) => c[0]);
+      expect(fetchedKeys).not.toContain("agent:agent-1:direct:user-1:chat-abc");
+    });
+
+    it("leaves title null for a labelless chat with no user message", async () => {
+      // Default mockHistory returns empty messages → no first user message.
+      const res = await GET(makeRequest(), ctx as never);
+      const body = await res.json();
+      const byId = new Map(body.chats.map((c: { sessionId: string }) => [c.sessionId, c]));
+
+      const legacy = byId.get("s-web-legacy") as { title: string | null };
+      expect(legacy.title).toBeNull();
+    });
+
+    it("does NOT read history for Telegram chats — their title stays the label", async () => {
+      const res = await GET(makeRequest(), ctx as never);
+      const body = await res.json();
+      const byId = new Map(body.chats.map((c: { sessionId: string }) => [c.sessionId, c]));
+
+      const telegram = byId.get("s-telegram") as { title: string | null };
+      expect(telegram.title).toBe("Telegram chat");
+
+      // The Telegram peer's session key was never passed to sessions.history.
+      const fetchedKeys = mockHistory.mock.calls.map((c) => c[0]);
+      expect(fetchedKeys).not.toContain("agent:agent-1:direct:tg-peer-111");
+    });
+
+    it("still returns chats when history reads fail (title falls back to null)", async () => {
+      mockHistory.mockRejectedValue(new Error("history unavailable"));
+      const res = await GET(makeRequest(), ctx as never);
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      const byId = new Map(body.chats.map((c: { sessionId: string }) => [c.sessionId, c]));
+      const legacy = byId.get("s-web-legacy") as { title: string | null };
+      expect(legacy.title).toBeNull();
+    });
   });
 });
