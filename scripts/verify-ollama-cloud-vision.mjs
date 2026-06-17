@@ -24,6 +24,11 @@ import { readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
+import {
+  parseOllamaCloudModels,
+  MODEL_ID_PATTERN,
+} from "./lib/ollama-cloud-source.mjs";
+
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const MODELS_TS = resolve(
   __dirname,
@@ -52,53 +57,15 @@ function parseArgs(argv) {
   return args;
 }
 
-// Tight allowlist for model IDs as they appear in the curated source file.
-// Ollama Cloud IDs use lowercase letters, digits, and the punctuation set
-// `[.:_-]` (e.g. `qwen3-vl:235b-instruct`, `gpt-oss:120b`, `deepseek-v3.1:671b`).
-// Validating against this pattern at parse time gives the outbound HTTP
-// request a guaranteed-safe shape and prevents anything pathological from
-// flowing from the file into the network sink. CodeQL recognises this as
-// a sanitizer for the "file data → outbound request" finding.
-const MODEL_ID_PATTERN = /^[a-z0-9][a-z0-9.:_-]*$/;
-
-function extractModelEntries(source) {
-  // Parse the `id` / `vision` pairs inside TOOL_CAPABLE_OLLAMA_CLOUD_MODELS.
-  // Strategy: strip line and block comments first (each with a simple
-  // non-backtracking regex — no nested quantifiers, no ReDoS risk), then
-  // run a flat match-pair regex over the cleaned source. The previous
-  // single-regex approach used an alternation-with-quantifier inside the
-  // object body that could backtrack catastrophically on adversarial input.
-  // A proper TS parser is overkill for a one-shot script; this two-pass
-  // approach is both faster and easier to reason about.
-  const stripped = source
-    // Line comments: `//…\n`. `[^\n]*` cannot backtrack across newlines.
-    .replace(/\/\/[^\n]*/g, "")
-    // Block comments: `/*…*/`. Lazy `[\s\S]*?` paired with a single
-    // terminator means no alternation-induced backtracking.
-    .replace(/\/\*[\s\S]*?\*\//g, "");
-
-  const entries = [];
-  const pairRegex = /id:\s*"([^"]+)"\s*,[\s\S]*?vision:\s*(true|false)/g;
-  let match;
-  while ((match = pairRegex.exec(stripped)) !== null) {
-    const id = match[1];
-    if (!MODEL_ID_PATTERN.test(id)) {
-      throw new Error(
-        `verify-ollama-cloud-vision: parsed model ID "${id}" does not match the safe ID allowlist (${MODEL_ID_PATTERN}). ` +
-          `Refusing to send this to the Ollama Cloud API — fix the source file or widen the pattern deliberately.`,
-      );
-    }
-    entries.push({ id, vision: match[2] === "true" });
-  }
-  if (entries.length === 0) {
+async function testModel(id, apiKey) {
+  // Re-assert the safe-ID allowlist right at the network sink. The shared
+  // parser already validates, but co-locating the barrier with the fetch keeps
+  // the file-data -> outbound-request dataflow provably sanitized for CodeQL.
+  if (!MODEL_ID_PATTERN.test(id)) {
     throw new Error(
-      "verify-ollama-cloud-vision: no model entries parsed from ollama-cloud-models.ts",
+      `verify-ollama-cloud-vision: refusing to send unsafe model id "${id}" to the API.`,
     );
   }
-  return entries;
-}
-
-async function testModel(id, apiKey) {
   const body = {
     model: id,
     max_tokens: 16,
@@ -142,7 +109,7 @@ async function main() {
 
   const args = parseArgs(process.argv.slice(2));
   const source = readFileSync(MODELS_TS, "utf8");
-  const all = extractModelEntries(source);
+  const all = parseOllamaCloudModels(source);
   const targets = args.only ? all.filter((m) => m.id === args.only) : all;
   if (targets.length === 0) {
     process.stderr.write(`No models matched --only=${args.only}\n`);
