@@ -11,6 +11,39 @@ import { join } from "node:path";
 
 const DEFAULT_STATE_DIR = "/openclaw-config";
 
+// OpenClaw (root) rewrites `sessions.json` / `*.trajectory.jsonl` as mode 0600
+// on every session update; start-openclaw.sh's chmod loop reopens them to
+// 0644/0755 within ~50ms, but Pinchy (uid 999) can read in that window and hit
+// a TRANSIENT EACCES. Letting that abort the read silently drops the turn's
+// per-turn usage (the chat-`done` recorder and the poller both read these
+// files): in production the turn is under-counted until a later poll happens to
+// land outside a 0600 window; in CI the delayed row leaks into a later
+// usage-tracking spec's before→after measurement window and flakes the
+// exact-token assertion. A transient EACCES therefore means "retry after a
+// chmod-loop tick", NOT "give up".
+//
+// ENOENT is deliberately NOT retried — it's the legitimate "no session /
+// trajectory recorded yet" case the callers translate to null /
+// TrajectoryFileNotFoundError and the usage poller backstops on its next pass.
+//
+// Bounded budget mirrors openclaw-config/write.ts's #314 retry: 5 × 100ms
+// covers two chmod-loop ticks worst case. Async sleep (not the sync busy-wait
+// used there) because these readers are already async and run off-request.
+const EACCES_RETRY_ATTEMPTS = 5;
+const EACCES_RETRY_DELAY_MS = 100;
+
+async function readFileResilient(path: string): Promise<string> {
+  for (let attempt = 0; ; attempt++) {
+    try {
+      return await readFile(path, "utf8");
+    } catch (err) {
+      const code = (err as NodeJS.ErrnoException).code;
+      if (code !== "EACCES" || attempt >= EACCES_RETRY_ATTEMPTS - 1) throw err;
+      await new Promise((resolve) => setTimeout(resolve, EACCES_RETRY_DELAY_MS));
+    }
+  }
+}
+
 function getStateDir(): string {
   return process.env.OPENCLAW_STATE_DIR ?? DEFAULT_STATE_DIR;
 }
@@ -65,7 +98,7 @@ export async function resolveSessionId(
   const path = join(sessionsDir(agentId), "sessions.json");
   let raw: string;
   try {
-    raw = await readFile(path, "utf8");
+    raw = await readFileResilient(path);
   } catch (err) {
     if ((err as NodeJS.ErrnoException).code === "ENOENT") return null;
     throw err;
@@ -105,7 +138,7 @@ export async function readTrajectoryJsonl(agentId: string, sessionId: string): P
   assertSafeSegment(sessionId, "sessionId");
   const path = join(sessionsDir(agentId), `${sessionId}.trajectory.jsonl`);
   try {
-    return await readFile(path, "utf8");
+    return await readFileResilient(path);
   } catch (err) {
     if ((err as NodeJS.ErrnoException).code === "ENOENT") {
       throw new TrajectoryFileNotFoundError(path);
