@@ -221,9 +221,16 @@ test.describe.serial("Chats — per-task session model (#508)", () => {
       username: TG_USERNAME,
       firstName: "ChatsE2E",
     });
-    const codeMatch = pairResp.match(/Pairing code:\s*(\S+)/i);
+    // OpenClaw sends the pairing code wrapped in HTML under parse_mode=HTML
+    // ("Pairing code:\n\n<pre><code>CODE\n</code></pre>"). Skip leading
+    // whitespace, HTML tags, and Markdown backtick fences, then capture only the
+    // alphanumeric code. Capturing a restricted charset (no `<`) instead of
+    // stripping the tags with a `.replace` afterwards avoids CodeQL's
+    // incomplete-multi-character-sanitization finding while still ignoring the
+    // wrapping markup, and stays correct if OpenClaw switches to a code fence.
+    const codeMatch = pairResp.match(/Pairing code:(?:\s|<[^>]+>|`)*([A-Za-z0-9][A-Za-z0-9_-]*)/i);
     expect(codeMatch, `expected a pairing code, got: ${pairResp.slice(0, 200)}`).toBeTruthy();
-    const code = codeMatch![1].replace(/<[^>]+>/g, "").trim();
+    const code = codeMatch![1].trim();
 
     const linkRes = await linkTelegram(code);
     expect(linkRes.status).toBe(200);
