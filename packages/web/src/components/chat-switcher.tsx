@@ -209,8 +209,8 @@ export function ChatSwitcher({
   return (
     <DropdownMenu onOpenChange={handleOpenChange}>
       <DropdownMenuTrigger asChild>
-        <Button variant="ghost" className="h-auto min-w-0 gap-1.5 px-2 py-1">
-          <span className="truncate font-bold">{triggerLabel}</span>
+        <Button variant="ghost" className="h-auto min-w-0 shrink gap-1.5 px-2 py-1">
+          <span className="min-w-0 truncate font-bold">{triggerLabel}</span>
           <ChevronDown className="size-4 shrink-0 opacity-70" />
         </Button>
       </DropdownMenuTrigger>

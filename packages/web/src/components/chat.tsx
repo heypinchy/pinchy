@@ -237,13 +237,13 @@ export function Chat({
                                   canEdit={canEdit}
                                 />
                                 <header className="hidden md:flex p-4 border-b items-center justify-between shrink-0">
-                                  <div className="flex items-center gap-2 animate-in fade-in duration-300">
+                                  <div className="flex items-center gap-2 min-w-0 flex-1 animate-in fade-in duration-300">
                                     {displayAvatar && (
                                       // eslint-disable-next-line @next/next/no-img-element
                                       <img
                                         src={displayAvatar}
                                         alt=""
-                                        className="size-7 rounded-full"
+                                        className="size-7 rounded-full shrink-0"
                                       />
                                     )}
                                     <ChatSwitcher
@@ -254,7 +254,10 @@ export function Chat({
                                     <TooltipProvider>
                                       <Tooltip>
                                         <TooltipTrigger asChild>
-                                          <Badge variant="outline" className="text-xs font-normal">
+                                          <Badge
+                                            variant="outline"
+                                            className="text-xs font-normal shrink-0"
+                                          >
                                             {displayIsPersonal ? "Private" : "Shared"}
                                           </Badge>
                                         </TooltipTrigger>
@@ -266,7 +269,7 @@ export function Chat({
                                       </Tooltip>
                                     </TooltipProvider>
                                   </div>
-                                  <div className="flex items-center gap-3">
+                                  <div className="flex items-center gap-3 shrink-0">
                                     {hasInitialContent && <SessionActionsMenu agentId={agentId} />}
                                     {canEdit && (
                                       <Link
