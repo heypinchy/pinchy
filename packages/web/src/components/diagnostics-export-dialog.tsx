@@ -143,7 +143,7 @@ export function DiagnosticsExportDialog({
           <button
             type="button"
             onClick={() => setWhatsIncludedOpen(true)}
-            className="text-sm text-primary underline-offset-4 hover:underline focus-visible:underline focus-visible:outline-none"
+            className="text-sm text-primary-accent underline-offset-4 hover:underline focus-visible:underline focus-visible:outline-none"
           >
             What&apos;s included?
           </button>

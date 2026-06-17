@@ -255,7 +255,7 @@ export function SettingsSecurity() {
             href={docsUrl("guides/domain-lock")}
             target="_blank"
             rel="noopener noreferrer"
-            className="text-sm text-primary underline"
+            className="text-sm text-primary-accent underline"
           >
             Read the setup guide →
           </a>

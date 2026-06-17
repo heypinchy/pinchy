@@ -322,7 +322,7 @@ export function OdooPermissionSection({
                                 {models.length > 1 && (
                                   <button
                                     type="button"
-                                    className="text-xs font-normal text-primary hover:underline"
+                                    className="text-xs font-normal text-primary-accent hover:underline"
                                     onPointerDown={(e) => {
                                       e.preventDefault();
                                       for (const m of models) addModel(m.model);

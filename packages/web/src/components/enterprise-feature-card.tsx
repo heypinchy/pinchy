@@ -65,7 +65,7 @@ export function EnterpriseFeatureCard({
       <CardHeader>
         <CardTitle className="flex items-center gap-2">
           {feature}
-          <span className="text-xs font-normal bg-primary/10 text-primary px-2 py-0.5 rounded-full">
+          <span className="text-xs font-normal bg-primary/10 text-primary-accent px-2 py-0.5 rounded-full">
             Pro
           </span>
         </CardTitle>
@@ -77,7 +77,7 @@ export function EnterpriseFeatureCard({
           <p className="text-sm font-medium">How to enable</p>
           <p className="text-sm text-muted-foreground">
             Set your license key in{" "}
-            <a href="/settings?tab=license" className="text-primary underline">
+            <a href="/settings?tab=license" className="text-primary-accent underline">
               Settings → License
             </a>
             , or via the{" "}

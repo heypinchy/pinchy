@@ -9,7 +9,7 @@ export async function InsecureBanner({ isAdmin }: { isAdmin: boolean }) {
   return (
     <div
       role="alert"
-      className="flex items-center justify-center gap-2 bg-amber-500 px-4 py-2 text-sm text-white"
+      className="flex items-center justify-center gap-2 bg-amber-500 px-4 py-2 text-sm text-amber-950"
     >
       <ShieldAlert className="size-4 shrink-0" />
       <span>Your Pinchy instance is not secured. Lock your domain to enable HTTPS hardening.</span>

@@ -36,6 +36,15 @@ describe("InsecureBanner", () => {
     expect(link.closest("a")?.getAttribute("href")).toBe("/settings?tab=security");
   });
 
+  it("uses AA-contrast dark text on amber, not white (white-on-amber-500 is ~2.1:1)", async () => {
+    vi.mocked(isInsecureMode).mockResolvedValue(true);
+    const Component = await InsecureBanner({ isAdmin: true });
+    render(Component);
+    const banner = screen.getByRole("alert");
+    expect(banner.className).not.toContain("text-white");
+    expect(banner.className).toContain("text-amber-950");
+  });
+
   it("should show 'contact administrator' for non-admins", async () => {
     vi.mocked(isInsecureMode).mockResolvedValue(true);
     const Component = await InsecureBanner({ isAdmin: false });

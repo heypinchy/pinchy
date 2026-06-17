@@ -156,7 +156,7 @@ export function SettingsLicense({ onEnterpriseActivated, initialLicense }: Setti
                   href={conversionLink(PORTAL_URL, "settings-license", "pro-10")}
                   target="_blank"
                   rel="noopener noreferrer"
-                  className="text-primary underline"
+                  className="text-primary-accent underline"
                 >
                   Renew
                 </a>
@@ -204,7 +204,7 @@ export function SettingsLicense({ onEnterpriseActivated, initialLicense }: Setti
                   href={conversionLink(PORTAL_URL, "settings-license", "pro-10")}
                   target="_blank"
                   rel="noopener noreferrer"
-                  className="text-primary underline"
+                  className="text-primary-accent underline"
                 >
                   Renew
                 </a>
@@ -213,7 +213,7 @@ export function SettingsLicense({ onEnterpriseActivated, initialLicense }: Setti
                   href={conversionLink(PRICING_URL, "settings-license", "pro-10")}
                   target="_blank"
                   rel="noopener noreferrer"
-                  className="text-primary underline"
+                  className="text-primary-accent underline"
                 >
                   See pricing
                 </a>

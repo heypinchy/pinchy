@@ -300,7 +300,7 @@ export function AgentTelegramSettings({
                     href="https://web.telegram.org"
                     target="_blank"
                     rel="noopener noreferrer"
-                    className="text-primary hover:underline"
+                    className="text-primary-accent hover:underline"
                   >
                     Telegram Web
                   </a>{" "}
@@ -313,7 +313,7 @@ export function AgentTelegramSettings({
                       href="https://t.me/BotFather"
                       target="_blank"
                       rel="noopener noreferrer"
-                      className="text-primary hover:underline"
+                      className="text-primary-accent hover:underline"
                     >
                       @BotFather
                     </a>{" "}
