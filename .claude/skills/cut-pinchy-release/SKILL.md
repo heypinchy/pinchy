@@ -57,7 +57,7 @@ Work through **every** item in **CONTRIBUTING.md § "Pre-release checklist"** �
 
 1. **Watch the Release workflow.** `gh run watch "$(gh run list --workflow Release --limit 1 --json databaseId --jq '.[0].databaseId')"`. A failure means the release is **not installable** — do not announce until green. Recovery steps are in CONTRIBUTING.md § "If the release workflow fails".
 2. **Tags are immutable — never force-update a tag.** A broken release is fixed with a _patch release_, not a re-push.
-3. **Re-check the production-server overrides.** `demo.heypinchy.com` and `pinchy.heypinchy.com` both track released tags and each carry a `docker-compose.override.yml` holding workarounds for upstream bugs. After each release, check whether the override is still needed (the upstream fix may have shipped in this release) and remove it if not.
+3. **Re-check deployment overrides.** Any long-running deployment that pins a `docker-compose.override.yml` (to work around upstream bugs not yet fixed) should be reviewed after each release — the upstream fix may have shipped in this release, in which case drop the override.
 
 ## Red flags — STOP
 
