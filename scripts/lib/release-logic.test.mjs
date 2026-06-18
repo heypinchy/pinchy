@@ -11,6 +11,8 @@ import {
   assertVersionMatchesTag,
   finalizeUpgradeSection,
   assertNoStaleUpgradeSections,
+  deriveStagingChecklist,
+  checkReleaseVerification,
 } from "./release-logic.mjs";
 
 // parseAndValidateVersion
@@ -562,4 +564,143 @@ test("assertNoStaleUpgradeSections ignores placeholders outside version sections
     "Current.",
   ].join("\n");
   assert.doesNotThrow(() => assertNoStaleUpgradeSections(mdx, "0.5.8"));
+});
+
+// deriveStagingChecklist — turns the target section's `####` subheadings into a
+// release-specific "verify on staging" checklist (the bespoke gate). Breaking
+// changes are flagged; "None." breaking changes yield no breaking items.
+
+const CHECKLIST_MDX = [
+  "## Upgrading from v0.5.8 to %%PINCHY_VERSION%%",
+  "",
+  "### Breaking changes",
+  "",
+  "#### Telegram and web no longer share one conversation",
+  "",
+  "Body.",
+  "",
+  "### Upgrade notes",
+  "",
+  "#### Multiple chats per agent",
+  "",
+  "Body.",
+  "",
+  "#### Sturdier streaming and reconnects",
+  "",
+  "Body.",
+  "",
+  "## Upgrading from v0.5.7 to v0.5.8",
+  "",
+  "#### Older feature (must NOT leak into the v0.6.0 checklist)",
+].join("\n");
+
+test("deriveStagingChecklist extracts #### subheadings as items, flagging breaking ones", () => {
+  const items = deriveStagingChecklist(CHECKLIST_MDX, "0.5.8", "0.6.0");
+  assert.deepEqual(items, [
+    { title: "Telegram and web no longer share one conversation", breaking: true },
+    { title: "Multiple chats per agent", breaking: false },
+    { title: "Sturdier streaming and reconnects", breaking: false },
+  ]);
+});
+
+test("deriveStagingChecklist does not leak a later section's subheadings", () => {
+  const items = deriveStagingChecklist(CHECKLIST_MDX, "0.5.8", "0.6.0");
+  assert.ok(!items.some((i) => /Older feature/.test(i.title)));
+});
+
+test("deriveStagingChecklist yields no breaking items when Breaking changes is 'None.'", () => {
+  const mdx = [
+    "## Upgrading from v0.5.8 to %%PINCHY_VERSION%%",
+    "",
+    "### Breaking changes",
+    "",
+    "None.",
+    "",
+    "### Upgrade notes",
+    "",
+    "#### A nice improvement",
+    "",
+    "Body.",
+  ].join("\n");
+  const items = deriveStagingChecklist(mdx, "0.5.8", "0.6.0");
+  assert.deepEqual(items, [{ title: "A nice improvement", breaking: false }]);
+});
+
+test("deriveStagingChecklist falls back to a generic item when there are no #### subheadings", () => {
+  const mdx = [
+    "## Upgrading from v0.5.8 to %%PINCHY_VERSION%%",
+    "",
+    "### Breaking changes",
+    "",
+    "None.",
+    "",
+    "### Upgrade notes",
+    "",
+    "Standard upgrade — just bump and pull.",
+  ].join("\n");
+  const items = deriveStagingChecklist(mdx, "0.5.8", "0.6.0");
+  assert.equal(items.length, 1);
+  assert.equal(items[0].breaking, false);
+  assert.match(items[0].title, /upgrade notes/i);
+});
+
+test("deriveStagingChecklist returns [] when the target section is missing", () => {
+  const mdx = "## Upgrading from v0.5.6 to v0.5.7\n\n#### Unrelated\n";
+  assert.deepEqual(deriveStagingChecklist(mdx, "0.5.8", "0.6.0"), []);
+});
+
+test("deriveStagingChecklist works on a concrete (post-finalize) target heading too", () => {
+  const mdx = [
+    "## Upgrading from v0.5.8 to v0.6.0",
+    "",
+    "### Breaking changes",
+    "",
+    "None.",
+    "",
+    "### Upgrade notes",
+    "",
+    "#### A feature",
+    "",
+    "Body.",
+  ].join("\n");
+  const items = deriveStagingChecklist(mdx, "0.5.8", "0.6.0");
+  assert.deepEqual(items, [{ title: "A feature", breaking: false }]);
+});
+
+// checkReleaseVerification — ties the staging attestation to the exact commit.
+
+test("checkReleaseVerification ok when verified SHA matches HEAD", () => {
+  const r = checkReleaseVerification({
+    verifiedSha: "abc1234def567",
+    headSha: "abc1234def567",
+  });
+  assert.equal(r.ok, true);
+});
+
+test("checkReleaseVerification accepts a short verified SHA that prefixes HEAD", () => {
+  const r = checkReleaseVerification({
+    verifiedSha: "abc1234",
+    headSha: "abc1234def5678901234",
+  });
+  assert.equal(r.ok, true);
+});
+
+test("checkReleaseVerification fails on SHA mismatch", () => {
+  const r = checkReleaseVerification({
+    verifiedSha: "abc1234",
+    headSha: "def9999000",
+  });
+  assert.equal(r.ok, false);
+  assert.match(r.message, /match|head/i);
+});
+
+test("checkReleaseVerification fails when no attestation is provided", () => {
+  const r = checkReleaseVerification({ verifiedSha: "", headSha: "abc1234def" });
+  assert.equal(r.ok, false);
+  assert.match(r.message, /--verified|attestation|staging/i);
+});
+
+test("checkReleaseVerification rejects a too-short verified SHA", () => {
+  const r = checkReleaseVerification({ verifiedSha: "abc", headSha: "abc1234def567" });
+  assert.equal(r.ok, false);
 });

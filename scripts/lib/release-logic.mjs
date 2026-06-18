@@ -316,3 +316,105 @@ export function assertNoStaleUpgradeSections(mdx, latestReleasedVersion) {
     );
   }
 }
+
+/**
+ * Derives a release-specific "verify on staging" checklist from the target
+ * upgrade-notes section.
+ *
+ * The release-specific verification is bespoke every time — what to click
+ * through depends on what actually changed. That list already exists: it's the
+ * `#### …` subheadings under `### Breaking changes` and `### Upgrade notes` of
+ * this release's section. This turns each into a checklist item, flagging the
+ * ones under Breaking changes (which deserve the closest look). A "None."
+ * Breaking-changes subsection simply has no `####` and yields no items.
+ *
+ * Only the target section is scanned (sliced to the next `## ` heading), so a
+ * later release's subheadings never leak in. If the section has no `####`
+ * subheadings at all, a single generic item is returned so the operator still
+ * verifies the notes rather than getting an empty list.
+ *
+ * @param {string} mdx
+ * @param {string} prevVersion - no leading 'v'
+ * @param {string} targetVersion - no leading 'v'
+ * @returns {Array<{title: string, breaking: boolean}>}
+ */
+export function deriveStagingChecklist(mdx, prevVersion, targetVersion) {
+  const heading = new RegExp(
+    `^##\\s+Upgrading\\s+from\\s+v${escapeRegex(prevVersion)}\\s+to\\s+(v${escapeRegex(targetVersion)}|%%PINCHY_VERSION%%)\\s*$`,
+    "m",
+  );
+  const m = heading.exec(mdx);
+  if (!m) return [];
+
+  const remainder = mdx.slice(m.index + m[0].length);
+  const nextH2 = /^## /m.exec(remainder);
+  const sectionBody = remainder.slice(0, nextH2 ? nextH2.index : remainder.length);
+
+  const subRe = /^###\s+(.+?)\s*$/gm;
+  const subs = [];
+  let sm;
+  while ((sm = subRe.exec(sectionBody)) !== null) {
+    subs.push({ name: sm[1].trim(), index: sm.index, len: sm[0].length });
+  }
+
+  const items = [];
+  for (let i = 0; i < subs.length; i++) {
+    const bodyStart = subs[i].index + subs[i].len;
+    const bodyEnd = i + 1 < subs.length ? subs[i + 1].index : sectionBody.length;
+    const body = sectionBody.slice(bodyStart, bodyEnd);
+    const breaking = /^breaking changes$/i.test(subs[i].name);
+    const hRe = /^####\s+(.+?)\s*$/gm;
+    let hm;
+    while ((hm = hRe.exec(body)) !== null) {
+      items.push({ title: hm[1].trim(), breaking });
+    }
+  }
+
+  if (items.length === 0) {
+    return [
+      {
+        title: `Verify the changes described in the v${targetVersion} upgrade notes`,
+        breaking: false,
+      },
+    ];
+  }
+  return items;
+}
+
+/**
+ * Checks a staging attestation against the commit being released.
+ *
+ * The release-specific staging verification can't be made fraud-proof, but it
+ * can be anchored to the exact code: the operator passes the SHA they verified
+ * on staging (`:next` builds the tip of main), and it must match HEAD — the
+ * commit about to be tagged. A short SHA that prefixes HEAD is accepted
+ * (`git rev-parse --short`). Returns a result rather than throwing so callers
+ * decide whether to warn or hard-fail.
+ *
+ * @param {{verifiedSha?: string, headSha?: string}} args
+ * @returns {{ok: boolean, message: string}}
+ */
+export function checkReleaseVerification({ verifiedSha, headSha }) {
+  const v = (verifiedSha || "").trim().toLowerCase();
+  const h = (headSha || "").trim().toLowerCase();
+  if (!v) {
+    return {
+      ok: false,
+      message:
+        "No staging attestation provided. Verify this commit on staging, then pass --verified=$(git rev-parse HEAD).",
+    };
+  }
+  if (v.length < 7) {
+    return {
+      ok: false,
+      message: `Attestation SHA "${verifiedSha}" is too short — pass at least 7 chars (use $(git rev-parse HEAD)).`,
+    };
+  }
+  if (!(h.startsWith(v) || v.startsWith(h))) {
+    return {
+      ok: false,
+      message: `Attestation SHA ${verifiedSha} does not match HEAD ${headSha} — you verified a different commit than you're releasing.`,
+    };
+  }
+  return { ok: true, message: `Staging attestation matches HEAD (${h.slice(0, 12)}).` };
+}
