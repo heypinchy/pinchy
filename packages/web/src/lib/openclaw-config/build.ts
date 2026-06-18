@@ -371,6 +371,12 @@ export async function regenerateOpenClawConfig() {
     // `skills: []` excludes them; an explicit list narrows to just our
     // first-party skills. Behavior verified in the smoke-test against OC
     // 2026.6.5: empty list → 0/59 ready, all "excluded".
+    //
+    // The `?? []` is defense-in-depth. Migration 0040 set the column to
+    // `notNull().default('[]')`, so at runtime the value is never null for
+    // an inserted row — but Drizzle's type still allows it, and an
+    // in-flight insert that races a regenerate could otherwise surface as
+    // an opaque TypeError instead of a clean empty allowlist.
     const rawSkills = (agent.skills as string[] | null) ?? [];
     const skills: string[] = [];
     for (const id of rawSkills) {
@@ -380,14 +386,33 @@ export async function regenerateOpenClawConfig() {
         );
       }
       skills.push(id);
-      // Materialize the SKILL.md into the agent's workspace so OC's
-      // workspace-tier loader (highest precedence) finds it.
-      writeWorkspaceSkill(agent.id, id, getSkillBody(id));
     }
     agentEntry.skills = skills;
 
     return agentEntry;
   });
+
+  // Materialize SKILL.md files into each agent's workspace AFTER the entry
+  // map. Two reasons to do it in a second pass rather than inside .map():
+  //
+  //   1. `.map()` is supposed to be pure; emitting side effects from inside
+  //      it surprises both linters and reviewers.
+  //   2. We skip soft-deleted agents here. Pre-existing behavior writes
+  //      pinchy-files config for all agents (incl. tombstoned ones), but
+  //      that's an upstream issue. Materializing skill files into stale
+  //      workspaces would only add to the litter — there is no reader for
+  //      those files anyway since OC won't be told the agent exists once
+  //      the user-delete flow rms the workspace.
+  for (const agent of allAgents) {
+    if (agent.deletedAt) continue;
+    const rawSkills = (agent.skills as string[] | null) ?? [];
+    for (const id of rawSkills) {
+      if (!isKnownSkill(id)) continue; // already thrown in the map() above
+      // SKILL.md body is process-cached (see getSkillBody), so the same
+      // skill across N agents costs one disk read total, not N.
+      writeWorkspaceSkill(agent.id, id, getSkillBody(id));
+    }
+  }
 
   // Build complete config — gateway and OpenClaw-enriched fields preserved,
   // everything else from DB. OpenClaw adds meta, commands, etc. at startup;

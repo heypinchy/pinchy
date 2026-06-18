@@ -53,6 +53,14 @@ describe("workspace skills", () => {
     it("rejects a skillId with slashes", () => {
       expect(() => getWorkspaceSkillPath("agent-1", "foo/bar")).toThrow(/invalid skill/i);
     });
+
+    it("rejects a skillId starting with a digit (AgentSkills.io convention)", () => {
+      expect(() => getWorkspaceSkillPath("agent-1", "99-bottles")).toThrow(/invalid skill/i);
+    });
+
+    it("rejects a skillId with uppercase letters", () => {
+      expect(() => getWorkspaceSkillPath("agent-1", "WebSearch")).toThrow(/invalid skill/i);
+    });
   });
 
   describe("writeWorkspaceSkill", () => {

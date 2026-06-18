@@ -78,9 +78,11 @@ function assertValidAgentId(agentId: string): void {
 // loading order. Validated in the smoke-test against OC 2026.6.5 — see
 // master issue #543 for the full architecture rationale.
 function assertValidSkillId(skillId: string): void {
-  // SKILL.md authors restrict to lowercase kebab-case anyway, but the real
-  // requirement is path-safety: no slashes, no dots, no traversal sequences.
-  if (!skillId || !/^[a-z0-9][a-z0-9-]*$/.test(skillId)) {
+  // Path-safety (no slashes, dots, traversal sequences) AND the
+  // AgentSkills.io convention (lowercase kebab-case starting with a letter).
+  // Starting-with-digit ids ("99-bottles") match the regex but break the
+  // convention and create unfriendly directory names — reject them.
+  if (!skillId || !/^[a-z][a-z0-9-]*$/.test(skillId)) {
     throw new Error(`Invalid skillId: ${skillId}`);
   }
 }

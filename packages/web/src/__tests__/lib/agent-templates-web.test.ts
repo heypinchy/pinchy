@@ -43,16 +43,27 @@ describe("market-monitor template (v1 web-search pilot)", () => {
   });
 });
 
-describe("AGENT_TEMPLATES — additive defaultSkills", () => {
-  it("existing templates without defaultSkills keep working (backwards compat)", () => {
+describe("AGENT_TEMPLATES — defaultSkills drift guard", () => {
+  it("every template's defaultSkills (if present) references only known skills", () => {
+    // Same convention as KNOWN_PINCHY_PLUGINS — a template that lists a
+    // skill not in KNOWN_SKILLS would silently emit a malformed allowlist
+    // entry and trip the runtime guard in regenerateOpenClawConfig only
+    // when a real user tries to instantiate the template. Catch it here.
+    for (const [id, t] of Object.entries(AGENT_TEMPLATES)) {
+      for (const skillId of t.defaultSkills ?? []) {
+        expect(KNOWN_SKILLS, `template "${id}" references unknown skill "${skillId}"`).toContain(
+          skillId
+        );
+      }
+    }
+  });
+
+  it("templates without defaultSkills keep working (backwards compat)", () => {
     // Field is optional. Templates can omit it; agents created from such
     // templates get skills: [] in their DB row.
-    for (const t of Object.values(AGENT_TEMPLATES)) {
-      // No assertion on the field being present — just verify the type
-      // accepts the absence (compile-time check via the spread).
-      const _check: string[] | undefined = t.defaultSkills;
-      void _check;
-    }
-    expect(true).toBe(true);
+    const withoutSkills = Object.entries(AGENT_TEMPLATES).filter(
+      ([, t]) => t.defaultSkills === undefined
+    );
+    expect(withoutSkills.length).toBeGreaterThan(0);
   });
 });

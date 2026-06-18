@@ -16,14 +16,23 @@ export function isKnownSkill(id: string): id is SkillId {
 
 const SKILLS_DIR = join(__dirname);
 
+// First-party skill bodies are bundled with the build — they never change
+// at runtime within a process. Cache to avoid re-reading the same file once
+// per agent during `regenerateOpenClawConfig()` (50 agents on the same
+// skill = 50 redundant disk reads without this).
+const SKILL_BODY_CACHE = new Map<SkillId, string>();
+
 export function getSkillBody(id: SkillId): string {
   if (!isKnownSkill(id)) {
     throw new Error(`unknown skill: ${id}`);
   }
-  // Resolve from the compiled location too — in production this file lives
-  // alongside the per-skill subdirectories under `lib/skills/`.
+  const cached = SKILL_BODY_CACHE.get(id);
+  if (cached !== undefined) return cached;
+
   const path = join(SKILLS_DIR, id, "SKILL.md");
-  return readFileSync(path, "utf-8");
+  const body = readFileSync(path, "utf-8");
+  SKILL_BODY_CACHE.set(id, body);
+  return body;
 }
 
 export interface SkillFrontmatter {

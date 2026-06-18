@@ -13,9 +13,8 @@ export const WEB_TEMPLATES: Record<string, AgentTemplate> = {
     iconName: "Newspaper",
     name: "Market & News Monitor",
     description: "Track market trends, industry news, and competitor signals from the public web",
-    // No allowedTools listed here — the skill body teaches the model when
-    // to call pinchy_web_search / pinchy_web_fetch, and the agent's
-    // allowedTools row is populated from the template at create-time.
+    // Tools the agent is permitted to invoke. Workflow guidance for HOW
+    // and WHEN to call them lives in the web-search skill body, not here.
     allowedTools: ["pinchy_web_search", "pinchy_web_fetch"],
     pluginId: "pinchy-web",
     defaultSkills: ["web-search"],
