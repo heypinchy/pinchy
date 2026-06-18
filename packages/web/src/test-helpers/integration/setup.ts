@@ -21,6 +21,7 @@ const APPLICATION_TABLES = [
   "agent_connection_permissions",
   "integration_connections",
   "channel_links",
+  "channel_messages",
   "agent_groups",
   "user_groups",
   "invite_groups",
