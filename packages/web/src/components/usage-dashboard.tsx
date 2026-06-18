@@ -312,6 +312,40 @@ export function UsageDashboard({
 
   const hasData = (summary?.agents?.length ?? 0) > 0;
 
+  // Headline KPI cards plus an optional per-source breakdown. Following the
+  // pattern established by the Anthropic/OpenAI usage dashboards, the breakdown
+  // only appears once it distinguishes >= 2 sources — a lone source card would
+  // just duplicate "Total Tokens" (e.g. Chat == Total when system/plugin are
+  // zero). The grid then lays every visible card out in a single row
+  // (--stat-cols) so the chart below is never pushed off-screen.
+  const sourceCards = [
+    { label: "Chat Tokens", bucket: chatBucket },
+    { label: "System Tokens", bucket: systemBucket },
+    { label: "Plugin Tokens", bucket: pluginBucket },
+  ].filter((s) => s.bucket.tokens > 0);
+  const showBreakdown = Boolean(summary?.totals) && sourceCards.length >= 2;
+
+  const statCards: { label: string; value: React.ReactNode; subtitle?: React.ReactNode }[] = [
+    {
+      label: "Total Tokens",
+      value: formatTokens(totalTokens),
+      subtitle: <FormattedCost value={totalCost} />,
+    },
+    { label: "Estimated Cost", value: <FormattedCost value={totalCost} /> },
+  ];
+  if (totalCacheTokens > 0) {
+    statCards.push({ label: "Cache Tokens", value: formatTokens(totalCacheTokens) });
+  }
+  if (showBreakdown) {
+    for (const { label, bucket } of sourceCards) {
+      statCards.push({
+        label,
+        value: formatTokens(bucket.tokens),
+        subtitle: <FormattedCost value={bucket.cost} />,
+      });
+    }
+  }
+
   function handleRetry() {
     setError(null);
     setSummary(null);
@@ -413,37 +447,14 @@ export function UsageDashboard({
         <p>No usage data available.</p>
       ) : (
         <>
-          <div className="grid grid-cols-3 gap-2 sm:gap-3">
-            <StatCard
-              label="Total Tokens"
-              value={formatTokens(totalTokens)}
-              subtitle={<FormattedCost value={totalCost} />}
-            />
-            <StatCard label="Estimated Cost" value={<FormattedCost value={totalCost} />} />
-            {totalCacheTokens > 0 && (
-              <StatCard label="Cache Tokens" value={formatTokens(totalCacheTokens)} />
-            )}
-            {summary?.totals && chatBucket.tokens > 0 && (
-              <StatCard
-                label="Chat Tokens"
-                value={formatTokens(chatBucket.tokens)}
-                subtitle={<FormattedCost value={chatBucket.cost} />}
-              />
-            )}
-            {summary?.totals && systemBucket.tokens > 0 && (
-              <StatCard
-                label="System Tokens"
-                value={formatTokens(systemBucket.tokens)}
-                subtitle={<FormattedCost value={systemBucket.cost} />}
-              />
-            )}
-            {summary?.totals && pluginBucket.tokens > 0 && (
-              <StatCard
-                label="Plugin Tokens"
-                value={formatTokens(pluginBucket.tokens)}
-                subtitle={<FormattedCost value={pluginBucket.cost} />}
-              />
-            )}
+          <div
+            data-testid="usage-stat-grid"
+            className="grid grid-cols-3 gap-2 sm:gap-3 sm:[grid-template-columns:repeat(var(--stat-cols),minmax(0,1fr))]"
+            style={{ "--stat-cols": statCards.length } as React.CSSProperties}
+          >
+            {statCards.map((c) => (
+              <StatCard key={c.label} label={c.label} value={c.value} subtitle={c.subtitle} />
+            ))}
           </div>
 
           <Card>

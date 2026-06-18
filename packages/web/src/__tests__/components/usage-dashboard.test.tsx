@@ -290,6 +290,58 @@ describe("UsageDashboard", () => {
       expect(screen.queryByText("System Tokens")).not.toBeInTheDocument();
       expect(screen.queryByText("Plugin Tokens")).not.toBeInTheDocument();
     });
+
+    it("suppresses the source breakdown when only one source has tokens", async () => {
+      // Best practice (Anthropic/OpenAI usage dashboards): a lone source card
+      // just duplicates "Total Tokens" — e.g. Chat == Total when system/plugin
+      // are zero. The per-source breakdown only earns its space once it
+      // distinguishes >= 2 sources.
+      mockBothEndpoints({
+        agents: mockSummaryResponse.agents,
+        totals: {
+          chat: { inputTokens: "500000", outputTokens: "700000", cost: "3.50" },
+          system: { inputTokens: "0", outputTokens: "0", cost: "0" },
+          plugin: { inputTokens: "0", outputTokens: "0", cost: "0" },
+        },
+      });
+      render(<UsageDashboard />);
+
+      await waitFor(() => {
+        expect(screen.getByText("Total Tokens")).toBeInTheDocument();
+      });
+
+      expect(screen.queryByText("Chat Tokens")).not.toBeInTheDocument();
+      expect(screen.queryByText("System Tokens")).not.toBeInTheDocument();
+      expect(screen.queryByText("Plugin Tokens")).not.toBeInTheDocument();
+    });
+  });
+
+  describe("stat card layout", () => {
+    it("keeps every visible stat card in a single row (columns track card count)", async () => {
+      // Regression guard for the screenshot/desktop layout: a hardcoded
+      // grid-cols-3 wrapped a 4th+ card onto a second row, pushing the chart
+      // off-screen. The grid must size its column count to the number of
+      // visible cards so they always sit in one row.
+      mockBothEndpoints({
+        agents: mockSummaryResponse.agents,
+        totals: {
+          chat: { inputTokens: "500000", outputTokens: "700000", cost: "3.50" },
+          system: { inputTokens: "50000", outputTokens: "10000", cost: "0.40" },
+          plugin: { inputTokens: "100000", outputTokens: "20000", cost: "0.92" },
+        },
+      });
+      render(<UsageDashboard />);
+
+      await waitFor(() => {
+        expect(screen.getByText("Chat Tokens")).toBeInTheDocument();
+      });
+
+      // Total Tokens, Estimated Cost, Chat, System, Plugin = 5 cards
+      // (this mock carries no cache tokens).
+      const grid = screen.getByTestId("usage-stat-grid");
+      expect(grid.children).toHaveLength(5);
+      expect(grid.style.getPropertyValue("--stat-cols")).toBe("5");
+    });
   });
 
   it("should display agent table with agent names and formatted values", async () => {
