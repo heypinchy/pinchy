@@ -36,6 +36,38 @@ npx playwright test screenshots/capture.ts
 | `user-management.png` | User list & roles |
 | `groups.png` | Group-based access control |
 
+### Full window vs. focused variants
+
+Every capture is the **full 1280×720 app window** — the docs
+(`docs.heypinchy.com`) use these so readers see *where* a feature lives.
+
+Marketing pages shrink images hard (especially on 375px mobile), where a full
+window becomes an unreadable slice. For the screens that appear large on the
+marketing site we additionally capture a **focused element screenshot** of the
+relevant panel, written to `output/focus/<name>.png` (same base name, `focus/`
+subdir). These are **additive** — the full-window files are never replaced.
+
+| Focused file | Element captured |
+|------|-------------|
+| `focus/agent-settings-permissions.png` | Content region (`<main>`, no sidebar/banner) |
+| `focus/audit-trail.png` | Content region (`<main>`, no sidebar/banner) |
+| `focus/usage-dashboard.png` | Content region (`<main>`, no sidebar/banner) |
+| `focus/groups.png` | Content region (`<main>`, no sidebar/banner) |
+| `focus/user-management.png` | Content region (`<main>`, no sidebar/banner) |
+
+The selector is the only tuning knob — pass it as the 3rd arg to
+`screenshot(page, name, selector)`. All five use `main` (the shadcn
+`SidebarInset`): a fixed, viewport-sized box that drops the sidebar and the
+already-hidden banners, so focused shots are about legibility, not banner
+removal. Tighter per-panel selectors (e.g. just a tab panel's allow-list) are
+possible but `main` is what we ship — element-screenshotting a tall panel
+inside the scroll container hit Playwright stability timeouts, whereas `main`'s
+fixed box is reliable.
+
+Both variants ship in the `pinchy-screenshots` artifact (the upload is
+recursive over `screenshots/output/`), so the website's `pull-screenshots.yml`
+receives the `focus/` subdir automatically.
+
 ## Environment variables
 
 | Variable | Default | Description |

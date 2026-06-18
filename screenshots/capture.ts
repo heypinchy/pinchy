@@ -40,7 +40,17 @@ async function login(page: Page) {
   await page.context().storageState({ path: STORAGE_STATE });
 }
 
-async function screenshot(page: Page, name: string) {
+/**
+ * Capture a screenshot to OUTPUT_DIR/<name>.
+ *
+ * Without `target`, captures the full 1280x720 window (the docs consumer wants
+ * this — readers see where a feature lives in the app). With a `target`
+ * selector, captures just that element: a focused, legible panel for the
+ * marketing site, which shrinks images hard (especially on 375px mobile). Both
+ * variants are produced additively from the same loaded page — never replace
+ * the full shots, other consumers depend on them.
+ */
+async function screenshot(page: Page, name: string, target?: string) {
   const dir = path.dirname(path.join(OUTPUT_DIR, name));
   if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
   // Hide the warning/promo banners so marketing screenshots show the app the
@@ -57,7 +67,15 @@ async function screenshot(page: Page, name: string) {
     content:
       '[data-testid="insecure-banner"],[data-testid="enterprise-banner"]{display:none !important}',
   });
-  await page.screenshot({ path: `${OUTPUT_DIR}/${name}`, fullPage: false });
+  const out = `${OUTPUT_DIR}/${name}`;
+  if (target) {
+    // .first() guards against nested matches; animations:"disabled" freezes
+    // CSS/Web animations so the element's box settles (element screenshots
+    // wait for a stable bounding box, unlike page.screenshot).
+    await page.locator(target).first().screenshot({ path: out, animations: "disabled" });
+  } else {
+    await page.screenshot({ path: out, fullPage: false });
+  }
 }
 
 // Get agent ID from API
@@ -79,6 +97,8 @@ test.describe("Feature screenshots", () => {
     await page.goto(`${BASE_URL}/audit`);
     await page.waitForTimeout(2000);
     await screenshot(page, "audit-trail.png");
+    // Focused: the content region (<main>) drops the sidebar + banners.
+    await screenshot(page, "focus/audit-trail.png", "main");
   });
 
   test("02 chat interface", async ({ page }) => {
@@ -150,6 +170,8 @@ test.describe("Feature screenshots", () => {
       }
     }
     await screenshot(page, "agent-settings-permissions.png");
+    // Focused: the content region (<main>) drops the sidebar + banners.
+    await screenshot(page, "focus/agent-settings-permissions.png", "main");
   });
 
   test("agent settings - web search", async ({ page }) => {
@@ -207,6 +229,8 @@ test.describe("Feature screenshots", () => {
     }
     await page.waitForTimeout(1500);
     await screenshot(page, "user-management.png");
+    // Focused: the content region (<main>) drops the sidebar + banners.
+    await screenshot(page, "focus/user-management.png", "main");
   });
 
   test("groups", async ({ page }) => {
@@ -220,12 +244,16 @@ test.describe("Feature screenshots", () => {
     }
     await page.waitForTimeout(1500);
     await screenshot(page, "groups.png");
+    // Focused: the content region (<main>) drops the sidebar + banners.
+    await screenshot(page, "focus/groups.png", "main");
   });
 
   test("usage dashboard", async ({ page }) => {
     await page.goto(`${BASE_URL}/usage`);
     await page.waitForTimeout(2500);
     await screenshot(page, "usage-dashboard.png");
+    // Focused: the content region (<main>) drops the sidebar + banners.
+    await screenshot(page, "focus/usage-dashboard.png", "main");
   });
 
   test("agent settings - telegram", async ({ page }) => {
