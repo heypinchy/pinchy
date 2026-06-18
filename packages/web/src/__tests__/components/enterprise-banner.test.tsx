@@ -98,13 +98,20 @@ describe("EnterpriseBanner", () => {
     expect(screen.getByRole("alert")).toHaveTextContent("Trial: 1 day remaining.");
   });
 
-  it("exposes a stable data-testid so screenshot tooling can hide it", async () => {
-    // The screenshot capture pipeline hides this banner via a CSS selector on
-    // [data-testid="enterprise-banner"]. Keep the hook stable so a refactor
-    // can't silently re-expose the "Buy Pinchy Pro" trial promo in marketing
-    // screenshots.
-    await renderWithStatus(statusJson({ state: "trial", type: "trial", daysRemaining: 23 }));
-    expect(screen.getByRole("alert").getAttribute("data-testid")).toBe("enterprise-banner");
+  it("wraps all banner bars in a single stable data-testid hook", async () => {
+    // The screenshot capture pipeline hides this region via a CSS selector on
+    // [data-testid="enterprise-banner"]. The hook must stay a SINGLE element
+    // even when several bars stack (trial + seat pressure), so it's a reliable,
+    // unambiguous handle (getByTestId) and a refactor can't silently re-expose
+    // the "Buy Pinchy Pro" promo in marketing screenshots.
+    await renderWithStatus(
+      statusJson({ state: "trial", type: "trial", daysRemaining: 23, seatsUsed: 11, maxUsers: 10 })
+    );
+    // Two bars render (trial + seat pressure)…
+    expect(screen.getAllByRole("alert").length).toBeGreaterThanOrEqual(2);
+    // …but exactly one test-id wrapper contains them.
+    const hook = screen.getByTestId("enterprise-banner");
+    expect(hook).toContainElement(screen.getByText("Trial: 23 days remaining."));
   });
 
   it("shows the trial-expired banner with a pricing CTA and no re-trial button", async () => {
