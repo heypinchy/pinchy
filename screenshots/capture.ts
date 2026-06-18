@@ -43,6 +43,20 @@ async function login(page: Page) {
 async function screenshot(page: Page, name: string) {
   const dir = path.dirname(path.join(OUTPUT_DIR, name));
   if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+  // Hide the warning/promo banners so marketing screenshots show the app the
+  // way a domain-locked, licensed production instance does: the amber
+  // "instance is not secured" warning and the "Buy Pinchy Pro" trial banner.
+  // We hide rather than configure these away: locking a real domain would
+  // silence the warning but also turns on the host-check (403 for localhost)
+  // and Secure cookies (rejected over HTTP), breaking the capture run; the
+  // trial banner is inherent to the trial license CI mints for screenshots.
+  // Injected here, after the page has loaded (head exists) — an addInitScript
+  // runs before document.documentElement exists and silently throws, leaving
+  // the banners visible. There is no CSP to block the injected <style>.
+  await page.addStyleTag({
+    content:
+      '[data-testid="insecure-banner"],[data-testid="enterprise-banner"]{display:none !important}',
+  });
   await page.screenshot({ path: `${OUTPUT_DIR}/${name}`, fullPage: false });
 }
 
@@ -58,17 +72,6 @@ test.describe("Feature screenshots", () => {
   test.use({ viewport: VIEWPORT, deviceScaleFactor: 2 });
 
   test.beforeEach(async ({ page }) => {
-    // Hide the "instance is not secured" banner. Locking a domain would silence
-    // it for real, but that also flips on the host-check (403 for localhost) and
-    // Secure cookies (rejected over HTTP), which breaks the capture run. Hiding
-    // the banner in the tooling yields the same view a properly domain-locked
-    // production instance shows, without that fallout. Runs before every
-    // navigation; documentElement always exists this early.
-    await page.addInitScript(() => {
-      const style = document.createElement("style");
-      style.textContent = '[data-testid="insecure-banner"]{display:none !important}';
-      document.documentElement.appendChild(style);
-    });
     await login(page);
   });
 

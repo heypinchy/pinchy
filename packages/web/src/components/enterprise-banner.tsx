@@ -137,7 +137,11 @@ function BannerBar({ banner, onDismiss }: { banner: Banner; onDismiss: (key: str
   const toneClass =
     banner.tone === "warn" ? "bg-amber-500 text-white" : "bg-muted text-foreground border-b";
   return (
-    <div role="alert" className={`relative px-8 py-2 text-sm text-center ${toneClass}`}>
+    <div
+      role="alert"
+      data-testid="enterprise-banner"
+      className={`relative px-8 py-2 text-sm text-center ${toneClass}`}
+    >
       {banner.message}{" "}
       {banner.links.map((link, i) => (
         <span key={link.href}>

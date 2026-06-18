@@ -98,6 +98,15 @@ describe("EnterpriseBanner", () => {
     expect(screen.getByRole("alert")).toHaveTextContent("Trial: 1 day remaining.");
   });
 
+  it("exposes a stable data-testid so screenshot tooling can hide it", async () => {
+    // The screenshot capture pipeline hides this banner via a CSS selector on
+    // [data-testid="enterprise-banner"]. Keep the hook stable so a refactor
+    // can't silently re-expose the "Buy Pinchy Pro" trial promo in marketing
+    // screenshots.
+    await renderWithStatus(statusJson({ state: "trial", type: "trial", daysRemaining: 23 }));
+    expect(screen.getByRole("alert").getAttribute("data-testid")).toBe("enterprise-banner");
+  });
+
   it("shows the trial-expired banner with a pricing CTA and no re-trial button", async () => {
     const expiresAt = new Date("2026-06-01T00:00:00.000Z");
     await renderWithStatus(
