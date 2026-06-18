@@ -71,8 +71,12 @@ interface CaptureChannelMessage {
 // Channels whose direct conversations Pinchy mirrors. Widen to add Slack etc.
 const CAPTURED_CHANNELS = new Set(["telegram"]);
 
+// Strip trailing slashes without a regex: `/\/+$/` trips CodeQL's
+// js/polynomial-redos heuristic. A linear scan is unambiguously safe.
 function normalizeBaseUrl(url: string): string {
-  return url.replace(/\/+$/, "");
+  let end = url.length;
+  while (end > 0 && url.charCodeAt(end - 1) === 47 /* "/" */) end--;
+  return url.slice(0, end);
 }
 
 /**
