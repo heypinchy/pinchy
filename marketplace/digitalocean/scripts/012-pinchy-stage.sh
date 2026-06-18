@@ -9,11 +9,17 @@ VERSION="${application_version:?application_version not set by Packer}"
 
 mkdir -p /opt/pinchy /var/www/pinchy-loading
 
-# Compose file + loading page for exactly this release
+# Compose file for exactly this release (required — fail the build if missing)
 curl -fsSL "https://raw.githubusercontent.com/heypinchy/pinchy/${VERSION}/docker-compose.yml" \
   -o /opt/pinchy/docker-compose.yml
-curl -fsSL "https://github.com/heypinchy/pinchy/releases/download/${VERSION}/installing.html" \
-  -o /var/www/pinchy-loading/index.html
+
+# Loading page is cosmetic — tolerate a missing release asset with a minimal
+# fallback so a build never fails on it.
+if ! curl -fsSL "https://github.com/heypinchy/pinchy/releases/download/${VERSION}/installing.html" \
+  -o /var/www/pinchy-loading/index.html; then
+  echo '<!doctype html><meta http-equiv="refresh" content="5"><title>Starting Pinchy</title><body style="font-family:sans-serif;text-align:center;margin-top:20vh">Pinchy is starting&hellip; this page refreshes automatically.</body>' \
+    > /var/www/pinchy-loading/index.html
+fi
 
 # Bake only the version pin. Secrets are per-Droplet (added on first boot).
 echo "PINCHY_VERSION=${VERSION}" > /opt/pinchy/.env

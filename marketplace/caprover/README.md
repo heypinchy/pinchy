@@ -26,11 +26,14 @@ silent.
    the real tmpfs.
 
 2. **CapRover ignores `depends_on`/healthcheck ordering.** Production gates
-   start order (db healthy -> pinchy -> openclaw). CapRover starts services
-   independently, so first boot relies on `restart: unless-stopped` to converge:
-   pinchy/openclaw restart until the database (and each other) are reachable.
-   First boot is therefore a little noisier, but self-heals. **This is the main
-   thing to confirm on the test deploy below.**
+   start order (db healthy -> pinchy -> openclaw); CapRover starts services
+   independently. Pinchy is built to tolerate this (see `packages/web/server.ts`):
+   it starts its HTTP server first, connects to PostgreSQL lazily (per request),
+   and reconnects to OpenClaw on a 1s interval with unlimited retries — so it
+   converges on its own as the database and OpenClaw come up, rather than
+   crash-looping on first boot. `restart: unless-stopped` is only a backstop for
+   the rare case where an already-set-up instance restarts before its database
+   is ready. Expect a few seconds of connection-retry logs on first boot.
 
 `extra_hosts` (the `ollama.local` host-gateway mapping for a local Ollama) is
 also unsupported by CapRover's parser and is omitted — use a cloud model
@@ -47,8 +50,8 @@ CapRover:
 2. In the CapRover dashboard: **Apps -> One-Click Apps/Databases ->
    `>> TEMPLATE <<`**, paste the contents of `pinchy.yml`, and deploy.
 3. Verify:
-   - all three services come up (allow a couple of restart cycles — see
-     deviation 2),
+   - all three services come up (Pinchy may log DB/OpenClaw connection retries
+     for a few seconds while they start — see deviation 2),
    - the web app reaches the setup wizard at its URL (enable HTTPS first),
    - the three shared volumes work (pinchy and openclaw both read/write
      `oc-config`, `oc-secrets`, `workspaces`, `oc-extensions`),
