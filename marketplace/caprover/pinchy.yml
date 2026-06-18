@@ -27,6 +27,10 @@ services:
     environment:
       DATABASE_URL: postgresql://pinchy:$$cap_db_password@srv-captain--$$cap_appname-db:5432/pinchy
       OPENCLAW_WS_URL: ws://srv-captain--$$cap_appname-openclaw:18789
+      # OpenClaw plugins call back to Pinchy's API at this URL. It defaults to
+      # http://pinchy:7777 (the compose service name), which doesn't resolve on
+      # CapRover — services are reached as srv-captain--<appname>-<service>.
+      PINCHY_INTERNAL_URL: http://srv-captain--$$cap_appname-pinchy:7777
       BETTER_AUTH_SECRET: $$cap_auth_secret
       ENCRYPTION_KEY: $$cap_encryption_key
       PINCHY_ENTERPRISE_KEY: $$cap_enterprise_key
