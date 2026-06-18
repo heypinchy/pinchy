@@ -378,6 +378,20 @@ describe("ChatSwitcher", () => {
     expect(optimisticRow(menu)).toBeNull();
   });
 
+  it("shows 'Not saved yet' on the synthetic new-chat row, never a far-future time", async () => {
+    // The optimistic row carries a MAX_SAFE_INTEGER sentinel timestamp so it
+    // sorts to the top; it must NOT render as a relative time ("in 292 million
+    // years"). A brand-new chat has no real interaction time yet.
+    mockChats([webChat, telegramChat, legacyChat]);
+    render(<ChatSwitcher agentId="agent-1" chatId="brand-new-chat" agentName="Smithers" />);
+
+    const menu = await screen.findByRole("menu");
+    const newChatRow = optimisticRow(menu)!;
+    expect(newChatRow).not.toBeNull();
+    expect(within(newChatRow).getByText(/Not saved yet/i)).toBeInTheDocument();
+    expect(within(newChatRow).queryByText(/year/i)).toBeNull();
+  });
+
   it("re-fetches the chat list every time the dropdown opens", async () => {
     const user = userEvent.setup();
     mockChats(allChats);

@@ -258,7 +258,9 @@ export function ChatSwitcher({
                     )}
                   </span>
                   <span className="text-muted-foreground text-xs">
-                    {relativeTime(item.lastInteractionAt)}
+                    {item.sessionId === SYNTHETIC_CURRENT_SESSION_ID
+                      ? "Not saved yet"
+                      : relativeTime(item.lastInteractionAt)}
                   </span>
                 </span>
               </DropdownMenuItem>
