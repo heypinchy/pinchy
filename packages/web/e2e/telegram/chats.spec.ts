@@ -184,9 +184,12 @@ test.describe.serial("Chats — per-task session model (#508)", () => {
     const aChatIds = aChats.map((c) => c.chatId);
     expect(aChatIds).toContain(chatIdA);
     expect(aChatIds).not.toContain(chatIdB);
-    // Every chat A sees is a web chat owned by A (no foreign principals leaked).
-    for (const c of aChats) {
-      expect(c.origin === "web" || c.origin === "telegram").toBe(true);
+    // No foreign web chat leaks into A's list: every web chat A sees is A's own
+    // (chatIdA, or the legacy null chat) — never user B's chatIdB. A bare
+    // `origin === "web" || "telegram"` check would be a tautology on the union
+    // type; this asserts the real per-row boundary.
+    for (const c of aChats.filter((x) => x.origin === "web")) {
+      expect(c.chatId === chatIdA || c.chatId === null).toBe(true);
     }
 
     // And the reverse: user B sees their own chat, never user A's.
@@ -301,22 +304,20 @@ test.describe.serial("Chats — per-task session model (#508)", () => {
       "web chat must survive a Telegram /new — the per-task model keeps them separate"
     ).toContain(chatIdA);
 
-    // 2. Its history STILL loads (the web session was not reset/archived). We
-    //    re-send into the SAME web session and confirm the turn round-trips —
-    //    a wiped session would have surfaced as a fresh, separate key. The web
-    //    chat being present in (1) with the same chatId already proves the
-    //    session key survived; this is the stronger liveness check.
-    await sendWebChatMessage({
-      cookie: adminCookie,
-      agentId,
-      chatId: chatIdA,
-      text: "Still here after the Telegram reset?",
-    });
-    const stillThere = await getChatsAs(adminCookie, agentId);
-    const webChat = stillThere.find((c) => c.chatId === chatIdA);
-    expect(webChat, "web chat session is still reachable after Telegram /new").toBeTruthy();
-    expect(webChat!.origin).toBe("web");
-    expect(webChat!.writable).toBe(true);
+    // 2. The web SESSION itself is untouched — same OpenClaw sessionId before
+    //    and after the reset. A session reset rotates the sessionId and archives
+    //    the old transcript, so an unchanged id is positive proof the history was
+    //    not wiped. This is strictly stronger than re-sending a message (which
+    //    would re-materialize a wiped session and pass even on a regression).
+    const beforeSessionId = beforeWeb.find((c) => c.chatId === chatIdA)!.sessionId;
+    const afterChat = afterWeb.find((c) => c.chatId === chatIdA);
+    expect(afterChat, "web chat session is still reachable after Telegram /new").toBeTruthy();
+    expect(
+      afterChat!.sessionId,
+      "the web session must NOT be reset/rotated by a Telegram /new — same id = history intact"
+    ).toBe(beforeSessionId);
+    expect(afterChat!.origin).toBe("web");
+    expect(afterChat!.writable).toBe(true);
   });
 
   test("Telegram read-only view: transcript renders, no composer, Continue-on-Telegram present", async ({
