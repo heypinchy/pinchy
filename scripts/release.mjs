@@ -33,6 +33,7 @@ import {
   assertUpgradingSectionExists,
   finalizeUpgradeSection,
 } from "./lib/release-logic.mjs";
+import { bumpMarketplaceVersion } from "./lib/marketplace-version.mjs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const ROOT = resolve(__dirname, "..");
@@ -174,6 +175,16 @@ writeFileSync(
 );
 log(`  ✔ .env.example → v${version}`);
 
+// Keep the marketplace listing templates pinned to the released version, so a
+// fresh DigitalOcean install starts on the current release rather than drifting
+// behind. The marketplace-version drift guard fails CI if this is ever skipped.
+const doTemplatePath = resolve(ROOT, "marketplace/digitalocean/template.json");
+writeFileSync(
+  doTemplatePath,
+  bumpMarketplaceVersion(readFileSync(doTemplatePath, "utf8"), version),
+);
+log(`  ✔ marketplace/digitalocean/template.json → v${version}`);
+
 // Freeze the in-progress upgrade-notes section so the just-released version's
 // `%%PINCHY_VERSION%%` placeholders become concrete. Without this, the section
 // keeps the placeholder and the next release's docs build mis-renders these
@@ -191,7 +202,7 @@ if (finalizedMdx !== upgradingMdx) {
 
 log("\nCommitting...");
 exec(
-  `git add package.json packages/web/package.json .env.example "${upgradingMdxPath}"`,
+  `git add package.json packages/web/package.json .env.example marketplace/digitalocean/template.json "${upgradingMdxPath}"`,
 );
 exec(`git commit -m "${buildCommitMessage(version)}"`);
 log(`  ✔ Committed`);
