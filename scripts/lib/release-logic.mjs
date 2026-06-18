@@ -196,3 +196,123 @@ export function extractUpgradeNotes(mdx, prevVersion, targetVersion) {
 
   return body.trim().replace(/%%PINCHY_VERSION%%/g, `v${targetVersion}`);
 }
+
+/**
+ * Freezes the in-progress upgrade-notes section at release time.
+ *
+ * During development the newest section is written as
+ * `## Upgrading from v<prev> to %%PINCHY_VERSION%%`, and its body may use
+ * `%%PINCHY_VERSION%%` too (e.g. "Starting with %%PINCHY_VERSION%% …"). Once the
+ * version is known, this replaces every `%%PINCHY_VERSION%%` occurrence WITHIN
+ * that one section (heading + body, sliced to the next `## ` heading) with
+ * `v<target>` and returns the rewritten mdx.
+ *
+ * Why it exists: the v0.5.8 release shipped without freezing its section, so the
+ * heading stayed `from v0.5.7 to %%PINCHY_VERSION%%` and the body kept literal
+ * placeholders. Because docs/scripts/inject-version.sh resolves
+ * `%%PINCHY_VERSION%%` to the *current* build version, those v0.5.8 notes would
+ * mis-render as the next release's. The release script calls this so the miss is
+ * structurally impossible going forward.
+ *
+ * Everything outside the matched section is left byte-for-byte: older,
+ * already-concrete entries, and the preamble / "Standard upgrade" section whose
+ * `%%PINCHY_VERSION%%` is an intentional build-time "latest version" display.
+ *
+ * @param {string} mdx
+ * @param {string} prevVersion - no leading 'v' (e.g. "0.5.8")
+ * @param {string} targetVersion - no leading 'v' (e.g. "0.6.0")
+ * @returns {string} mdx with the matched section frozen; unchanged if the
+ *   heading already uses a concrete target or no matching section exists.
+ */
+export function finalizeUpgradeSection(mdx, prevVersion, targetVersion) {
+  const headingPattern = new RegExp(
+    `^##\\s+Upgrading\\s+from\\s+v${escapeRegex(prevVersion)}\\s+to\\s+%%PINCHY_VERSION%%\\s*$`,
+    "m",
+  );
+  const match = headingPattern.exec(mdx);
+  if (!match) return mdx;
+
+  const sectionStart = match.index;
+  const afterHeading = sectionStart + match[0].length;
+  const remainder = mdx.slice(afterHeading);
+  const nextHeading = /^## /m.exec(remainder);
+  const sectionEnd = nextHeading
+    ? afterHeading + nextHeading.index
+    : mdx.length;
+
+  const before = mdx.slice(0, sectionStart);
+  const section = mdx.slice(sectionStart, sectionEnd);
+  const after = mdx.slice(sectionEnd);
+
+  return before + section.replace(/%%PINCHY_VERSION%%/g, `v${targetVersion}`) + after;
+}
+
+/**
+ * Asserts upgrading.mdx carries no stale `%%PINCHY_VERSION%%` in a released
+ * version's section. CI guard (run from scripts/lib/upgrading-mdx-freshness.test.mjs)
+ * against the exact drift that shipped in v0.5.8.
+ *
+ * Invariant enforced:
+ *  - At most ONE `## Upgrading from vX to %%PINCHY_VERSION%%` section may exist
+ *    (the current/in-progress one). Two means a prior release never froze.
+ *  - If one exists, its `from` version must equal the latest released version
+ *    (root package.json#version). A lagging `from` means the previous release
+ *    forgot to freeze its notes.
+ *  - A frozen (concrete-headed `to vY`) section must not keep `%%PINCHY_VERSION%%`
+ *    anywhere in its body.
+ *
+ * Scope: only `## Upgrading from vX to …` sections are inspected. The preamble
+ * and the "Standard upgrade" section legitimately render `%%PINCHY_VERSION%%` as
+ * a build-time "latest version" display, so they are out of scope.
+ *
+ * @param {string} mdx
+ * @param {string} latestReleasedVersion - no leading 'v' (e.g. "0.5.8")
+ * @throws {Error} on a stale, lagging, or duplicated placeholder section
+ */
+export function assertNoStaleUpgradeSections(mdx, latestReleasedVersion) {
+  const latest = parseAndValidateVersion(latestReleasedVersion);
+  const headingRe =
+    /^##\s+Upgrading\s+from\s+v(\d+\.\d+\.\d+)\s+to\s+(v\d+\.\d+\.\d+|%%PINCHY_VERSION%%)\s*$/gm;
+
+  const matches = [];
+  let m;
+  while ((m = headingRe.exec(mdx)) !== null) {
+    matches.push({ from: m[1], to: m[2], index: m.index, headingLen: m[0].length });
+  }
+
+  const placeholderSections = [];
+  for (const s of matches) {
+    const afterHeading = s.index + s.headingLen;
+    const remainder = mdx.slice(afterHeading);
+    const nextHeading = /^## /m.exec(remainder);
+    const body = remainder.slice(0, nextHeading ? nextHeading.index : remainder.length);
+
+    if (s.to === "%%PINCHY_VERSION%%") {
+      placeholderSections.push(s);
+    } else if (body.includes("%%PINCHY_VERSION%%")) {
+      throw new Error(
+        `Stale %%PINCHY_VERSION%% in the frozen "Upgrading from v${s.from} to v${s.to}" section body.\n` +
+          `Frozen sections must use the concrete version — replace %%PINCHY_VERSION%% with v${s.to} there.`,
+      );
+    }
+  }
+
+  if (placeholderSections.length > 1) {
+    const froms = placeholderSections.map((s) => `v${s.from}`).join(", ");
+    throw new Error(
+      `Multiple in-progress upgrade sections still use %%PINCHY_VERSION%% (${froms}).\n` +
+        `Only the current section (from v${latest}) may — freeze the older one to its released version.`,
+    );
+  }
+
+  if (placeholderSections.length === 1 && placeholderSections[0].from !== latest) {
+    const from = placeholderSections[0].from;
+    throw new Error(
+      `Stale upgrade-notes section: "Upgrading from v${from} to %%PINCHY_VERSION%%", ` +
+        `but the latest released version is v${latest}.\n` +
+        `A prior release forgot to freeze its notes. Change that heading to ` +
+        `"## Upgrading from v${from} to v${latest}" (and freeze its body placeholders), ` +
+        `then add a fresh "## Upgrading from v${latest} to %%PINCHY_VERSION%%" section.`,
+    );
+  }
+}

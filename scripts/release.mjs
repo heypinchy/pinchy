@@ -31,6 +31,7 @@ import {
   buildTagName,
   buildCommitMessage,
   assertUpgradingSectionExists,
+  finalizeUpgradeSection,
 } from "./lib/release-logic.mjs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -173,10 +174,25 @@ writeFileSync(
 );
 log(`  ✔ .env.example → v${version}`);
 
+// Freeze the in-progress upgrade-notes section so the just-released version's
+// `%%PINCHY_VERSION%%` placeholders become concrete. Without this, the section
+// keeps the placeholder and the next release's docs build mis-renders these
+// notes as that version's (the v0.5.8 miss). No-op if the author already wrote
+// a concrete `to v${version}` heading.
+const finalizedMdx = finalizeUpgradeSection(upgradingMdx, prevVersion, version);
+if (finalizedMdx !== upgradingMdx) {
+  writeFileSync(upgradingMdxPath, finalizedMdx);
+  log(`  ✔ upgrading.mdx → froze v${prevVersion}→%%PINCHY_VERSION%% section to v${version}`);
+} else {
+  log(`  ✔ upgrading.mdx → section already concrete (nothing to freeze)`);
+}
+
 // ─── Commit, tag, push ────────────────────────────────────────────────────────
 
 log("\nCommitting...");
-exec("git add package.json packages/web/package.json .env.example");
+exec(
+  `git add package.json packages/web/package.json .env.example "${upgradingMdxPath}"`,
+);
 exec(`git commit -m "${buildCommitMessage(version)}"`);
 log(`  ✔ Committed`);
 

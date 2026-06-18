@@ -9,6 +9,8 @@ import {
   extractUpgradeNotes,
   bumpEnvExample,
   assertVersionMatchesTag,
+  finalizeUpgradeSection,
+  assertNoStaleUpgradeSections,
 } from "./release-logic.mjs";
 
 // parseAndValidateVersion
@@ -395,4 +397,169 @@ BAZ=qux
   // Exactly one PINCHY_VERSION= line (not counting the commented one)
   const matches = output.match(/^PINCHY_VERSION=/gm) || [];
   assert.equal(matches.length, 1);
+});
+
+// finalizeUpgradeSection — freezes the in-progress section at release time so
+// the v0.5.8 "section left on %%PINCHY_VERSION%%" miss can't recur.
+
+test("finalizeUpgradeSection freezes the heading placeholder to v<target>", () => {
+  const mdx = [
+    "## Upgrading from v0.5.8 to %%PINCHY_VERSION%%",
+    "",
+    "### Breaking changes",
+    "",
+    "None.",
+    "",
+    "### Upgrade notes",
+    "",
+    "Standard upgrade.",
+  ].join("\n");
+  const out = finalizeUpgradeSection(mdx, "0.5.8", "0.6.0");
+  assert.match(out, /^## Upgrading from v0\.5\.8 to v0\.6\.0$/m);
+  assert.doesNotMatch(out, /%%PINCHY_VERSION%%/);
+});
+
+test("finalizeUpgradeSection freezes body placeholders within the section too", () => {
+  const mdx = [
+    "## Upgrading from v0.5.8 to %%PINCHY_VERSION%%",
+    "",
+    "### Breaking changes",
+    "",
+    "None.",
+    "",
+    "### Upgrade notes",
+    "",
+    "Starting with %%PINCHY_VERSION%% the thing changes.",
+    "",
+    "```bash",
+    "sed -i 's/PINCHY_VERSION=v0.5.8/PINCHY_VERSION=%%PINCHY_VERSION%%/' .env",
+    "```",
+  ].join("\n");
+  const out = finalizeUpgradeSection(mdx, "0.5.8", "0.6.0");
+  assert.match(out, /Starting with v0\.6\.0 the thing changes\./);
+  assert.match(out, /PINCHY_VERSION=v0\.6\.0/);
+  assert.doesNotMatch(out, /%%PINCHY_VERSION%%/);
+});
+
+test("finalizeUpgradeSection leaves older concrete sections untouched", () => {
+  const mdx = [
+    "## Upgrading from v0.5.8 to %%PINCHY_VERSION%%",
+    "",
+    "Current notes.",
+    "",
+    "## Upgrading from v0.5.7 to v0.5.8",
+    "",
+    "Older notes mentioning v0.5.8.",
+  ].join("\n");
+  const out = finalizeUpgradeSection(mdx, "0.5.8", "0.6.0");
+  assert.match(out, /## Upgrading from v0\.5\.7 to v0\.5\.8/);
+  assert.match(out, /Older notes mentioning v0\.5\.8\./);
+});
+
+test("finalizeUpgradeSection does not touch placeholders outside the matched section (preamble)", () => {
+  const mdx = [
+    "## Standard upgrade",
+    "",
+    "Bump to PINCHY_VERSION=%%PINCHY_VERSION%% (build-time display).",
+    "",
+    "## Upgrading from v0.5.8 to %%PINCHY_VERSION%%",
+    "",
+    "Current section.",
+  ].join("\n");
+  const out = finalizeUpgradeSection(mdx, "0.5.8", "0.6.0");
+  // The build-time display placeholder in "Standard upgrade" must survive.
+  assert.match(out, /PINCHY_VERSION=%%PINCHY_VERSION%% \(build-time display\)/);
+  // The version section heading is frozen.
+  assert.match(out, /## Upgrading from v0\.5\.8 to v0\.6\.0/);
+});
+
+test("finalizeUpgradeSection is a no-op when the heading already uses a concrete target", () => {
+  const mdx = "## Upgrading from v0.5.8 to v0.6.0\n\nAlready concrete.\n";
+  assert.equal(finalizeUpgradeSection(mdx, "0.5.8", "0.6.0"), mdx);
+});
+
+test("finalizeUpgradeSection is a no-op when no matching section exists", () => {
+  const mdx = "## Upgrading from v0.5.6 to v0.5.7\n\nUnrelated.\n";
+  assert.equal(finalizeUpgradeSection(mdx, "0.5.8", "0.6.0"), mdx);
+});
+
+// assertNoStaleUpgradeSections — CI guard against unfrozen / drifted sections.
+
+test("assertNoStaleUpgradeSections passes when the single placeholder section matches latest", () => {
+  const mdx = [
+    "## Upgrading from v0.5.8 to %%PINCHY_VERSION%%",
+    "",
+    "Current.",
+    "",
+    "## Upgrading from v0.5.7 to v0.5.8",
+    "",
+    "Older.",
+  ].join("\n");
+  assert.doesNotThrow(() => assertNoStaleUpgradeSections(mdx, "0.5.8"));
+});
+
+test("assertNoStaleUpgradeSections passes with zero placeholder sections (post-release state)", () => {
+  const mdx = [
+    "## Upgrading from v0.5.8 to v0.6.0",
+    "",
+    "Frozen current.",
+    "",
+    "## Upgrading from v0.5.7 to v0.5.8",
+    "",
+    "Older.",
+  ].join("\n");
+  assert.doesNotThrow(() => assertNoStaleUpgradeSections(mdx, "0.6.0"));
+});
+
+test("assertNoStaleUpgradeSections throws when the placeholder section's 'from' lags the latest tag (the v0.5.8 miss)", () => {
+  const mdx = [
+    "## Upgrading from v0.5.7 to %%PINCHY_VERSION%%",
+    "",
+    "These are really v0.5.8 notes that were never frozen.",
+  ].join("\n");
+  assert.throws(
+    () => assertNoStaleUpgradeSections(mdx, "0.5.8"),
+    /stale upgrade-notes section/i,
+  );
+});
+
+test("assertNoStaleUpgradeSections throws on two placeholder sections", () => {
+  const mdx = [
+    "## Upgrading from v0.5.8 to %%PINCHY_VERSION%%",
+    "",
+    "Current.",
+    "",
+    "## Upgrading from v0.5.7 to %%PINCHY_VERSION%%",
+    "",
+    "Unfrozen older.",
+  ].join("\n");
+  assert.throws(
+    () => assertNoStaleUpgradeSections(mdx, "0.5.8"),
+    /multiple in-progress upgrade sections/i,
+  );
+});
+
+test("assertNoStaleUpgradeSections throws when a frozen (concrete) section body still has a placeholder", () => {
+  const mdx = [
+    "## Upgrading from v0.5.7 to v0.5.8",
+    "",
+    "Starting with %%PINCHY_VERSION%% something happens.",
+  ].join("\n");
+  assert.throws(
+    () => assertNoStaleUpgradeSections(mdx, "0.5.8"),
+    /stale %%PINCHY_VERSION%%/i,
+  );
+});
+
+test("assertNoStaleUpgradeSections ignores placeholders outside version sections (preamble / Standard upgrade)", () => {
+  const mdx = [
+    "## Standard upgrade",
+    "",
+    "Bump to PINCHY_VERSION=%%PINCHY_VERSION%% (build-time display).",
+    "",
+    "## Upgrading from v0.5.8 to %%PINCHY_VERSION%%",
+    "",
+    "Current.",
+  ].join("\n");
+  assert.doesNotThrow(() => assertNoStaleUpgradeSections(mdx, "0.5.8"));
 });
