@@ -29,4 +29,11 @@ fi
 sed -i "s/INSTALL_START_TIME/$(date +%s)000/" /var/www/pinchy-loading/index.html 2>/dev/null || true
 
 # Bring Pinchy up — images were pre-pulled at build time, so this is fast.
-cd /opt/pinchy && docker compose up -d
+# Retry a few times: cloud-init per-instance runs once, so a transient failure
+# (e.g. the Docker daemon not yet ready) must not leave the stack down.
+cd /opt/pinchy
+for attempt in 1 2 3 4 5; do
+  docker compose up -d && break
+  echo "docker compose up attempt ${attempt} failed; retrying in 5s..."
+  sleep 5
+done

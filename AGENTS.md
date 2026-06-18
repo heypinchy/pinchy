@@ -13,6 +13,7 @@ Status: early development. The core is working: setup wizard, authentication, pr
 - `config/` - OpenClaw config support, startup scripts, mock services for integration/E2E tests.
 - `docs/` - Astro Starlight documentation. It is standalone and has its own `package.json` and lockfile.
 - `sample-data/` - Sample knowledge-base data mounted into Docker at `/data/`.
+- `marketplace/` - 1-Click deploy templates (DigitalOcean Packer image, CapRover one-click). Version-pinned to the release and guarded by `scripts/lib/marketplace-version.test.mjs` + `marketplace-lint.test.mjs`.
 - `docker-compose*.yml` - Development, production, integration, and E2E stack definitions.
 - `PERSONALITY.md` - Brand voice guide. Read before writing user-facing UI or docs copy.
 
