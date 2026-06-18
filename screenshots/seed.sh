@@ -465,7 +465,13 @@ BEGIN
       ) VALUES (
         day_date + (floor(random() * 43200) || ' seconds')::INTERVAL,
         user_ids[u_idx], agent_ids[a_idx], agent_names[a_idx],
-        'agent:' || agent_ids[a_idx] || ':user-' || lower(user_ids[u_idx]),
+        -- Use the real per-user chat session key (agent:<id>:direct:<userId>).
+        -- The summary API classifies usage into chat/system/plugin buckets from
+        -- this key (agent:%:direct:% => chat). The old ':user-' format matched
+        -- none of those patterns, so every seeded row fell through to "system",
+        -- making the dashboard show a redundant "System Tokens == Total Tokens"
+        -- card. With the correct key the demo data reads as genuine chat usage.
+        'agent:' || agent_ids[a_idx] || ':direct:' || user_ids[u_idx],
         agent_models[a_idx], inp, outp,
         floor(random() * inp * 0.3)::INTEGER,
         floor(random() * inp * 0.1)::INTEGER,
