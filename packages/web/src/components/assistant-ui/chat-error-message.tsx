@@ -1,13 +1,17 @@
 "use client";
 
-import { AlertTriangle, Clock, WifiOff } from "lucide-react";
+import { AlertTriangle, Clock, WifiOff, X } from "lucide-react";
 import Link from "next/link";
 import { useState, type FC, type ReactNode } from "react";
 import { PROVIDER_SETTINGS_HINT } from "@/server/error-hints";
 import { ReportIssueLink } from "@/components/report-issue-link";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { Button } from "@/components/ui/button";
-import type { ModelUnavailableError, UpstreamFormatError } from "@/lib/schemas/chat-frames";
+import type {
+  ModelUnavailableError,
+  UpstreamFormatError,
+  TransientError,
+} from "@/lib/schemas/chat-frames";
 
 export interface ChatError {
   agentName?: string;
@@ -19,18 +23,87 @@ export interface ChatError {
   payloadTooLarge?: true;
   modelUnavailable?: ModelUnavailableError;
   upstreamFormatError?: UpstreamFormatError;
+  transientError?: TransientError;
   attachmentInvalid?: true;
 }
+
+// Honest, cause-specific copy. The `transient` audit class spans all of these,
+// so the bubble must name the actual cause rather than always saying "rate
+// limit". See `transientErrorSchema` in chat-frames.ts.
+const TRANSIENT_REASON_COPY: Record<TransientError["reason"], string> = {
+  rate_limit: "The model provider is rate-limiting requests right now.",
+  overloaded: "The model provider is overloaded right now.",
+  timeout: "The model provider timed out.",
+  unavailable: "The model provider is temporarily unavailable.",
+};
 
 export const ChatErrorMessage: FC<{
   error: ChatError;
   agentId: string;
   actionSlot?: ReactNode;
-}> = ({ error, agentId, actionSlot }) => {
+  /**
+   * A historical error replayed from durable storage on chat load uses the
+   * polite `status` live-region; only a just-happened live error is assertive
+   * (`alert`), so screen readers aren't re-interrupted on every page load.
+   */
+  historical?: boolean;
+  /** When provided, renders a dismiss control that clears the persisted error. */
+  onDismiss?: () => void;
+}> = ({ error, agentId, actionSlot, historical = false, onDismiss }) => {
   const [isOpen, setIsOpen] = useState(false);
 
   const wrapperClass =
     "rounded-md border border-destructive bg-destructive/10 p-3 text-sm dark:bg-destructive/5";
+
+  if (error.transientError) {
+    const t = error.transientError;
+    return (
+      <div role={historical ? "status" : "alert"} className={wrapperClass}>
+        <div className="flex items-center gap-2 font-medium text-destructive dark:text-red-200">
+          <AlertTriangle className="size-4 shrink-0" data-testid="error-warning-icon" />
+          <span className="flex-1">{`${error.agentName ?? "The agent"} paused`}</span>
+          {onDismiss && (
+            <button
+              type="button"
+              onClick={onDismiss}
+              aria-label="Dismiss"
+              className="shrink-0 rounded-xs opacity-70 transition-opacity hover:opacity-100"
+            >
+              <X className="size-4" />
+            </button>
+          )}
+          {actionSlot}
+        </div>
+        <p className="mt-1.5 text-destructive/90 dark:text-red-300/90">
+          {TRANSIENT_REASON_COPY[t.reason]} This is usually brief — wait a moment, then retry if
+          needed.
+        </p>
+        {t.sideEffects && (
+          <p
+            className="mt-1.5 font-medium text-destructive/90 dark:text-red-300/90"
+            data-testid="side-effects-warning"
+          >
+            The agent may have already performed some actions before stopping — review before
+            retrying to avoid duplicates.
+          </p>
+        )}
+        {error.providerError && (
+          <Collapsible open={isOpen} onOpenChange={setIsOpen} className="mt-3">
+            <CollapsibleTrigger asChild>
+              <Button variant="ghost" size="sm" className="text-xs">
+                Technical details
+              </Button>
+            </CollapsibleTrigger>
+            <CollapsibleContent>
+              <pre className="mt-1 text-xs text-destructive/75 dark:text-red-300/75 whitespace-pre-wrap break-words">
+                {error.providerError}
+              </pre>
+            </CollapsibleContent>
+          </Collapsible>
+        )}
+      </div>
+    );
+  }
 
   if (error.payloadTooLarge) {
     return (

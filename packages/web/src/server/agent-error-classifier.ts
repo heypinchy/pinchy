@@ -30,6 +30,7 @@ import {
   PROVIDER_CONFIG_PATTERN,
   HTTP_5XX_PATTERN,
 } from "@/server/error-patterns";
+import type { TransientReason } from "@/lib/schemas/chat-frames";
 
 /**
  * Stable, write-once label set persisted into `audit_log.detail.errorClass`
@@ -85,6 +86,24 @@ export function classifySynthesisedError(reason: SynthesisedErrorReason): AgentE
       return _never;
     }
   }
+}
+
+// Sub-partition of TRANSIENT_PATTERN so the chat bubble can be honest about the
+// specific cause. `transient` (the audit class) spans rate-limit, overloaded,
+// timeout and HTTP 529 — calling all of them "rate limit" in the UI would be a
+// lie for an overloaded/timeout failure. Order matters: "rate limit exceeded"
+// is rate_limit, not a generic match. Only called once a text has already been
+// classified `transient`; unknown-transient text falls back to "unavailable"
+// rather than guessing a specific cause.
+const RATE_LIMIT_REASON_PATTERN = /rate[_ ]?limit|too many requests/i;
+const OVERLOADED_REASON_PATTERN = /overloaded|529/i;
+const TIMEOUT_REASON_PATTERN = /time[_ ]?d?[_ ]?out/i;
+
+export function classifyTransientReason(errorText: string): TransientReason {
+  if (RATE_LIMIT_REASON_PATTERN.test(errorText)) return "rate_limit";
+  if (OVERLOADED_REASON_PATTERN.test(errorText)) return "overloaded";
+  if (TIMEOUT_REASON_PATTERN.test(errorText)) return "timeout";
+  return "unavailable";
 }
 
 export function classifyAgentError(errorText: string): AgentErrorClass {

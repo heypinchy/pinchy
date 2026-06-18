@@ -1,7 +1,110 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 import { render, screen, fireEvent } from "@testing-library/react";
 import "@testing-library/jest-dom";
 import { ChatErrorMessage } from "@/components/assistant-ui/chat-error-message";
+
+describe("ChatErrorMessage — transient (rate limit / overloaded) branch", () => {
+  it("renders honest, rate-limit-specific copy for a rate_limit transient error", () => {
+    render(
+      <ChatErrorMessage
+        error={{
+          agentName: "Penny",
+          transientError: { kind: "transient", reason: "rate_limit", sideEffects: false },
+        }}
+        agentId="agent-1"
+      />
+    );
+
+    expect(screen.getByText("Penny paused")).toBeInTheDocument();
+    expect(screen.getByText(/rate-limiting/i)).toBeInTheDocument();
+  });
+
+  it("does NOT claim 'rate limit' when the transient cause is overloaded", () => {
+    render(
+      <ChatErrorMessage
+        error={{
+          agentName: "Penny",
+          transientError: { kind: "transient", reason: "overloaded", sideEffects: false },
+        }}
+        agentId="agent-1"
+      />
+    );
+
+    expect(screen.getByText(/overloaded/i)).toBeInTheDocument();
+    expect(screen.queryByText(/rate.?limit/i)).not.toBeInTheDocument();
+  });
+
+  it("warns about possible duplicate side effects when the run already acted", () => {
+    render(
+      <ChatErrorMessage
+        error={{
+          agentName: "Penny",
+          transientError: { kind: "transient", reason: "rate_limit", sideEffects: true },
+        }}
+        agentId="agent-1"
+      />
+    );
+
+    expect(screen.getByTestId("side-effects-warning")).toHaveTextContent(/duplicat/i);
+  });
+
+  it("omits the side-effects warning for a read-only run", () => {
+    render(
+      <ChatErrorMessage
+        error={{
+          agentName: "Penny",
+          transientError: { kind: "transient", reason: "rate_limit", sideEffects: false },
+        }}
+        agentId="agent-1"
+      />
+    );
+
+    expect(screen.queryByTestId("side-effects-warning")).not.toBeInTheDocument();
+  });
+
+  it("uses an assertive alert role for a live error and a polite status role for a historical one", () => {
+    const { rerender } = render(
+      <ChatErrorMessage
+        error={{
+          agentName: "Penny",
+          transientError: { kind: "transient", reason: "rate_limit", sideEffects: false },
+        }}
+        agentId="agent-1"
+      />
+    );
+    expect(screen.getByRole("alert")).toBeInTheDocument();
+
+    rerender(
+      <ChatErrorMessage
+        error={{
+          agentName: "Penny",
+          transientError: { kind: "transient", reason: "rate_limit", sideEffects: false },
+        }}
+        agentId="agent-1"
+        historical
+      />
+    );
+    expect(screen.getByRole("status")).toBeInTheDocument();
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+  });
+
+  it("calls onDismiss when the dismiss control is clicked", () => {
+    const onDismiss = vi.fn();
+    render(
+      <ChatErrorMessage
+        error={{
+          agentName: "Penny",
+          transientError: { kind: "transient", reason: "rate_limit", sideEffects: false },
+        }}
+        agentId="agent-1"
+        onDismiss={onDismiss}
+      />
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: /dismiss/i }));
+    expect(onDismiss).toHaveBeenCalledTimes(1);
+  });
+});
 
 describe("ChatErrorMessage", () => {
   it("should render provider error with agent name and hint", () => {

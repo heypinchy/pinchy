@@ -1,5 +1,29 @@
 import { describe, it, expect } from "vitest";
-import { classifyAgentError, classifySynthesisedError } from "@/server/agent-error-classifier";
+import {
+  classifyAgentError,
+  classifySynthesisedError,
+  classifyTransientReason,
+} from "@/server/agent-error-classifier";
+
+describe("classifyTransientReason", () => {
+  it("names a rate limit as rate_limit", () => {
+    expect(classifyTransientReason("⚠️ API rate limit reached")).toBe("rate_limit");
+    expect(classifyTransientReason("Too many requests")).toBe("rate_limit");
+  });
+
+  it("names overloaded / HTTP 529 as overloaded", () => {
+    expect(classifyTransientReason("The model is overloaded")).toBe("overloaded");
+    expect(classifyTransientReason("HTTP 529 from upstream")).toBe("overloaded");
+  });
+
+  it("names a timeout as timeout", () => {
+    expect(classifyTransientReason("the request timed out")).toBe("timeout");
+  });
+
+  it("falls back to unavailable rather than guessing 'rate limit' for unknown transient text", () => {
+    expect(classifyTransientReason("temporary upstream blip")).toBe("unavailable");
+  });
+});
 
 describe("classifyAgentError", () => {
   it("classifies the production FailoverError with incomplete terminal response (issue #355)", () => {
