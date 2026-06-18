@@ -75,15 +75,17 @@ describe("upgrade flow includes Docker image disk-hygiene step (#370)", () => {
   });
 
   it("latest version-specific upgrade one-liner pipes through prune", () => {
-    // The %%PINCHY_VERSION%% section ships in the active release notes.
-    // It must show the same hygiene step as the Standard upgrade flow so
-    // copy-paste deployments stay consistent. We match the heading version
-    // pattern agnostically so this test survives each release bump without
-    // hand-editing — the `%%PINCHY_VERSION%%` placeholder is the stable
-    // anchor that identifies the current section.
+    // The newest upgrade-notes section must show the same hygiene step as the
+    // Standard upgrade flow so copy-paste deployments stay consistent. The
+    // anchor is the FIRST `## Upgrading from …` heading — sections are listed
+    // newest-first — whether it still carries the `%%PINCHY_VERSION%%`
+    // placeholder (mid-development) or was frozen to a concrete version by the
+    // release script's auto-finalize step (right after a release). Anchoring on
+    // the placeholder alone broke on every release commit, when the current
+    // section has just been frozen and no placeholder section exists yet.
     const currentSection = sectionBetween(
       upgrading,
-      /^##\s+Upgrading from v[\d.]+ to %%PINCHY_VERSION%%\s*$/m,
+      /^##\s+Upgrading from v[\d.]+ to (?:v[\d.]+|%%PINCHY_VERSION%%)\s*$/m,
       /^##\s+Upgrading from /m
     );
     expect(currentSection, "current-version upgrade section not found").toBeDefined();
