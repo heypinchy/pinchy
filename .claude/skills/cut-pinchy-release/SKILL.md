@@ -60,6 +60,15 @@ Two mechanisms now make this impossible:
 
 ## Before you run `pnpm release`
 
+**Step 0 — run the preflight and turn every `[ ]` into a blocking task.** `pnpm release:preflight <version>` prints the gate status plus the **manual** gates the script can't enforce: a release-specific staging checklist **auto-derived from this release's upgrade notes** (the `#### …` subheadings under `### Breaking changes` / `### Upgrade notes`), the standard regression smoke, and the PWA check. This exists because manual gates that live only as prose get silently skipped next to the script's hard gates — that is exactly how v0.6.0 shipped with the staging click-through never done.
+
+So, mechanically:
+
+1. Run `pnpm release:preflight <version>`.
+2. For **each `[ ]`** it prints, create a task (TodoWrite/Task), and make the `pnpm release` task **`blockedBy`** all of them. Do not start the release task while any remain open.
+3. Verify each on the **real `:next` staging instance** (`staging.heypinchy.com`) — it carries the upgrade path + real agents/data; the ephemeral CI E2E stacks don't. The release-specific items are different every release, which is why they're generated from the notes rather than hardcoded.
+4. The preflight then prints the exact `pnpm release <version> --verified=$(git rev-parse HEAD)` command. The `--verified` SHA ties your attestation to the commit you actually tested on staging. (A hard `--verified` gate in `release.mjs` is planned once it can be verified end-to-end against a real staging release; today it's enforced by this task discipline + the preflight echo.)
+
 Work through **every** item in **CONTRIBUTING.md § "Pre-release checklist"** — that is the canonical, always-current list, so don't re-derive or copy it. The script and CI already enforce the mechanical gates (clean tree, on `main`, CI green, tag free, `upgrading.mdx` section present with both subsections, `pnpm audit --audit-level=high --prod`). The human judgment calls the script _can't_ enforce — verify each against CONTRIBUTING — include:
 
 - All feature/fix PRs for this release merged to `main`; `pnpm outdated` reviewed.
@@ -85,6 +94,7 @@ Work through **every** item in **CONTRIBUTING.md § "Pre-release checklist"** �
 | "The version bump is just cosmetic"                     | `/api/version` and the public Releases page read it. It IS the shipped version.  |
 | "Deadline — skip the checklist"                         | The checklist is the only thing the script _can't_ enforce.                      |
 | "I can release from this worktree/branch"               | Releases cut from clean `main` only. The script refuses otherwise.               |
+| "`pnpm release` went green, so I'm done"                | Green ≠ verified. The staging click-through + PWA are manual gates the script can't see. Run `release:preflight`, make each `[ ]` a blocking task, verify on `:next` first. |
 
 ## Common mistakes
 
