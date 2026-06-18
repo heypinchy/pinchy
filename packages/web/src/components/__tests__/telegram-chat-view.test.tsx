@@ -129,6 +129,9 @@ describe("TelegramChatView", () => {
     // unmistakable, distinct from the chat-switcher trigger.
     const indicator = within(header).getByTestId("telegram-channel-indicator");
     expect(indicator).toHaveTextContent("Telegram");
+    // It carries a distinct accessible name so a screen reader doesn't hear a
+    // bare "Telegram" twice (the chat-switcher trigger is also named "Telegram").
+    expect(indicator).toHaveAccessibleName(/telegram channel/i);
   });
 
   it("reflects the agent's visibility in the header (Private vs Shared)", async () => {

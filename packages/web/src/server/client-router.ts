@@ -657,9 +657,15 @@ export class ClientRouter {
             if (Array.isArray(msg.content)) {
               content = msg.content
                 .filter(
-                  (part: { type: string; text?: string }) => part.type === "text" && part.text
+                  (
+                    part: { type?: string; text?: string } | null | undefined
+                  ): part is { text: string } =>
+                    part != null &&
+                    part.type === "text" &&
+                    typeof part.text === "string" &&
+                    part.text.length > 0
                 )
-                .map((part: { text?: string }) => part.text!)
+                .map((part) => part.text)
                 .join(" ");
             } else {
               content = typeof msg.content === "string" ? msg.content : "";
