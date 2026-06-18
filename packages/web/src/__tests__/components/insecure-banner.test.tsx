@@ -45,6 +45,16 @@ describe("InsecureBanner", () => {
     expect(banner.className).toContain("text-amber-950");
   });
 
+  it("exposes a stable data-testid so screenshot tooling can hide it", async () => {
+    // The screenshot capture pipeline hides this banner via a CSS selector on
+    // [data-testid="insecure-banner"]. Keep the hook stable so a refactor can't
+    // silently re-expose the "not secured" warning in marketing screenshots.
+    vi.mocked(isInsecureMode).mockResolvedValue(true);
+    const Component = await InsecureBanner({ isAdmin: true });
+    render(Component);
+    expect(screen.getByRole("alert").getAttribute("data-testid")).toBe("insecure-banner");
+  });
+
   it("should show 'contact administrator' for non-admins", async () => {
     vi.mocked(isInsecureMode).mockResolvedValue(true);
     const Component = await InsecureBanner({ isAdmin: false });

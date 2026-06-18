@@ -58,6 +58,17 @@ test.describe("Feature screenshots", () => {
   test.use({ viewport: VIEWPORT, deviceScaleFactor: 2 });
 
   test.beforeEach(async ({ page }) => {
+    // Hide the "instance is not secured" banner. Locking a domain would silence
+    // it for real, but that also flips on the host-check (403 for localhost) and
+    // Secure cookies (rejected over HTTP), which breaks the capture run. Hiding
+    // the banner in the tooling yields the same view a properly domain-locked
+    // production instance shows, without that fallout. Runs before every
+    // navigation; documentElement always exists this early.
+    await page.addInitScript(() => {
+      const style = document.createElement("style");
+      style.textContent = '[data-testid="insecure-banner"]{display:none !important}';
+      document.documentElement.appendChild(style);
+    });
     await login(page);
   });
 
