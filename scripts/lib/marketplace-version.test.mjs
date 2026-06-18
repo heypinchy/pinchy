@@ -8,10 +8,14 @@ import {
   readMarketplaceVersion,
   bumpMarketplaceVersion,
   assertMarketplaceVersionInSync,
+  readCaproverVersion,
+  bumpCaproverVersion,
+  assertCaproverVersionInSync,
 } from "./marketplace-version.mjs";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..");
 const TEMPLATE_PATH = resolve(ROOT, "marketplace/digitalocean/template.json");
+const CAPROVER_PATH = resolve(ROOT, "marketplace/caprover/pinchy.yml");
 const ENV_EXAMPLE_PATH = resolve(ROOT, ".env.example");
 const RELEASE_MJS = resolve(ROOT, "scripts/release.mjs");
 
@@ -23,6 +27,14 @@ const SAMPLE_TEMPLATE = JSON.stringify(
   null,
   2,
 );
+
+const SAMPLE_CAPROVER = `caproverOneClickApp:
+  variables:
+    - id: $$cap_pinchy_version
+      defaultValue: 'v0.5.8'
+    - id: $$cap_db_password
+      defaultValue: $$cap_gen_random_hex(32)
+`;
 
 // ─── Pure helpers ─────────────────────────────────────────────────────────────
 
@@ -90,6 +102,57 @@ test("assertMarketplaceVersionInSync throws when versions differ", () => {
   );
 });
 
+// ─── CapRover template helpers ────────────────────────────────────────────────
+
+test("readCaproverVersion reads the version variable's defaultValue", () => {
+  assert.equal(readCaproverVersion(SAMPLE_CAPROVER), "v0.5.8");
+});
+
+test("readCaproverVersion ignores the random-hex secret defaults", () => {
+  // Only the version variable has a version-shaped default; the secrets use
+  // $$cap_gen_random_hex(...), which must not be mistaken for a version.
+  assert.equal(readCaproverVersion(SAMPLE_CAPROVER), "v0.5.8");
+});
+
+test("readCaproverVersion throws when no version default is present", () => {
+  assert.throws(
+    () => readCaproverVersion("variables:\n  - id: x\n"),
+    /version defaultValue/,
+  );
+});
+
+test("bumpCaproverVersion sets the version default, preserving quotes", () => {
+  const bumped = bumpCaproverVersion(SAMPLE_CAPROVER, "0.6.0");
+  assert.equal(readCaproverVersion(bumped), "v0.6.0");
+  assert.match(bumped, /defaultValue: 'v0\.6\.0'/);
+});
+
+test("bumpCaproverVersion leaves the secret defaults untouched", () => {
+  const bumped = bumpCaproverVersion(SAMPLE_CAPROVER, "0.6.0");
+  assert.match(bumped, /\$\$cap_gen_random_hex\(32\)/);
+});
+
+test("bumpCaproverVersion throws on a template without a version default", () => {
+  assert.throws(
+    () => bumpCaproverVersion("variables:\n  - id: x\n", "0.6.0"),
+    /version defaultValue/,
+  );
+});
+
+test("assertCaproverVersionInSync passes when versions match", () => {
+  assert.doesNotThrow(() =>
+    assertCaproverVersionInSync(SAMPLE_CAPROVER, "PINCHY_VERSION=v0.5.8\n"),
+  );
+});
+
+test("assertCaproverVersionInSync throws when versions differ", () => {
+  assert.throws(
+    () =>
+      assertCaproverVersionInSync(SAMPLE_CAPROVER, "PINCHY_VERSION=v0.6.0\n"),
+    /out of sync/,
+  );
+});
+
 // ─── Real-file drift guard ────────────────────────────────────────────────────
 // The committed DigitalOcean template must always pin the same version as
 // .env.example. `pnpm release` bumps both; this fails a PR the moment they drift.
@@ -102,11 +165,17 @@ test("the DigitalOcean template version matches .env.example PINCHY_VERSION", ()
   );
 });
 
+test("the CapRover template version matches .env.example PINCHY_VERSION", () => {
+  const template = readFileSync(CAPROVER_PATH, "utf8");
+  const envExample = readFileSync(ENV_EXAMPLE_PATH, "utf8");
+  assert.doesNotThrow(() => assertCaproverVersionInSync(template, envExample));
+});
+
 // ─── Release-script wiring guard ──────────────────────────────────────────────
 // The drift guard only protects us if `pnpm release` actually bumps the
 // marketplace template. These textual sweeps fail if a refactor drops the bump.
 
-test("release.mjs bumps the marketplace template version", () => {
+test("release.mjs bumps both marketplace template versions", () => {
   const src = readFileSync(RELEASE_MJS, "utf8");
   assert.match(
     src,
@@ -118,12 +187,22 @@ test("release.mjs bumps the marketplace template version", () => {
     /marketplace\/digitalocean\/template\.json/,
     "release.mjs must write the DigitalOcean template.json on release",
   );
+  assert.match(
+    src,
+    /bumpCaproverVersion/,
+    "release.mjs must call bumpCaproverVersion so the CapRover template tracks the release",
+  );
+  assert.match(
+    src,
+    /marketplace\/caprover\/pinchy\.yml/,
+    "release.mjs must write the CapRover pinchy.yml on release",
+  );
 });
 
-test("release.mjs commits the marketplace template", () => {
+test("release.mjs commits both marketplace templates", () => {
   const src = readFileSync(RELEASE_MJS, "utf8");
-  // The single `git add` line in release.mjs must include the template so the
-  // bump lands in the release commit rather than as a dangling local change.
+  // The single `git add` line in release.mjs must include the templates so the
+  // bumps land in the release commit rather than as dangling local changes.
   const addLine = src
     .split("\n")
     .find((l) => l.includes("git add") && l.includes("package.json"));
@@ -132,5 +211,10 @@ test("release.mjs commits the marketplace template", () => {
     addLine,
     /marketplace\/digitalocean\/template\.json/,
     "the release commit's `git add` must include the DigitalOcean template.json",
+  );
+  assert.match(
+    addLine,
+    /marketplace\/caprover\/pinchy\.yml/,
+    "the release commit's `git add` must include the CapRover pinchy.yml",
   );
 });

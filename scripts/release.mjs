@@ -33,7 +33,10 @@ import {
   assertUpgradingSectionExists,
   finalizeUpgradeSection,
 } from "./lib/release-logic.mjs";
-import { bumpMarketplaceVersion } from "./lib/marketplace-version.mjs";
+import {
+  bumpMarketplaceVersion,
+  bumpCaproverVersion,
+} from "./lib/marketplace-version.mjs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const ROOT = resolve(__dirname, "..");
@@ -185,6 +188,13 @@ writeFileSync(
 );
 log(`  ✔ marketplace/digitalocean/template.json → v${version}`);
 
+const caproverTemplatePath = resolve(ROOT, "marketplace/caprover/pinchy.yml");
+writeFileSync(
+  caproverTemplatePath,
+  bumpCaproverVersion(readFileSync(caproverTemplatePath, "utf8"), version),
+);
+log(`  ✔ marketplace/caprover/pinchy.yml → v${version}`);
+
 // Freeze the in-progress upgrade-notes section so the just-released version's
 // `%%PINCHY_VERSION%%` placeholders become concrete. Without this, the section
 // keeps the placeholder and the next release's docs build mis-renders these
@@ -202,7 +212,7 @@ if (finalizedMdx !== upgradingMdx) {
 
 log("\nCommitting...");
 exec(
-  `git add package.json packages/web/package.json .env.example marketplace/digitalocean/template.json "${upgradingMdxPath}"`,
+  `git add package.json packages/web/package.json .env.example marketplace/digitalocean/template.json marketplace/caprover/pinchy.yml "${upgradingMdxPath}"`,
 );
 exec(`git commit -m "${buildCommitMessage(version)}"`);
 log(`  ✔ Committed`);

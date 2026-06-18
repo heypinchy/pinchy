@@ -68,23 +68,87 @@ export function bumpMarketplaceVersion(content, version) {
 }
 
 /**
- * Asserts the marketplace template's pinned version equals `.env.example`'s
- * PINCHY_VERSION. `pnpm release` bumps both, so any divergence means a release
- * forgot the marketplace template (or someone hand-edited one of them).
- *
- * @param {string} templateJson - contents of the Packer template
- * @param {string} envExample - contents of .env.example
- * @throws {Error} if the two versions differ
+ * Reads the pinned version from the CapRover one-click template's YAML
+ * contents (the `$$cap_pinchy_version` variable's `defaultValue`). The version
+ * variable is the only one with a version-shaped default — the secrets use
+ * `$$cap_gen_random_hex(...)` — so a single regex matches it unambiguously.
+ * @param {string} templateYaml
+ * @returns {string} the version with its leading 'v' (e.g. "v0.6.0")
+ * @throws {Error} if no version default is present
  */
-export function assertMarketplaceVersionInSync(templateJson, envExample) {
-  const marketplace = readMarketplaceVersion(templateJson);
-  const env = readPinchyVersionFromEnv(envExample);
-  if (marketplace !== env) {
+export function readCaproverVersion(templateYaml) {
+  const match = /defaultValue:\s*['"]?(v\d+\.\d+\.\d+)['"]?/.exec(templateYaml);
+  if (!match) {
     throw new Error(
-      `Marketplace template version (${marketplace}) is out of sync with ` +
-        `.env.example PINCHY_VERSION (${env}).\n` +
-        `'pnpm release' bumps both together — they must match. ` +
-        `Re-run the release bump or align the marketplace template.`,
+      "CapRover template has no version defaultValue (v X.Y.Z) to read",
     );
   }
+  return match[1];
+}
+
+/**
+ * Returns the CapRover template YAML with the `$$cap_pinchy_version` default
+ * set to `v<version>`. Surgical replace of just that value — preserves quoting,
+ * formatting, and the trailing newline.
+ * @param {string} content - raw CapRover template contents
+ * @param {string} version - release version, no 'v' prefix (e.g. "0.6.0")
+ * @returns {string}
+ * @throws {Error} if no version default is present
+ */
+export function bumpCaproverVersion(content, version) {
+  const pattern = /(defaultValue:\s*['"]?)v\d+\.\d+\.\d+(['"]?)/;
+  if (!pattern.test(content)) {
+    throw new Error(
+      "CapRover template has no version defaultValue (v X.Y.Z) to bump",
+    );
+  }
+  return content.replace(pattern, `$1v${version}$2`);
+}
+
+/**
+ * Asserts a marketplace template's pinned version equals `.env.example`'s
+ * PINCHY_VERSION. `pnpm release` bumps every template, so any divergence means
+ * a release forgot one (or someone hand-edited it).
+ *
+ * @param {string} actualVersion - version read from a template (e.g. "v0.6.0")
+ * @param {string} envExample - contents of .env.example
+ * @param {string} label - human name of the template, for the error message
+ * @throws {Error} if the versions differ
+ */
+export function assertVersionInSync(actualVersion, envExample, label) {
+  const env = readPinchyVersionFromEnv(envExample);
+  if (actualVersion !== env) {
+    throw new Error(
+      `${label} version (${actualVersion}) is out of sync with ` +
+        `.env.example PINCHY_VERSION (${env}).\n` +
+        `'pnpm release' bumps both together — they must match. ` +
+        `Re-run the release bump or align the template.`,
+    );
+  }
+}
+
+/**
+ * Drift guard for the DigitalOcean Packer template.
+ * @param {string} templateJson - contents of the Packer template
+ * @param {string} envExample - contents of .env.example
+ */
+export function assertMarketplaceVersionInSync(templateJson, envExample) {
+  assertVersionInSync(
+    readMarketplaceVersion(templateJson),
+    envExample,
+    "DigitalOcean template",
+  );
+}
+
+/**
+ * Drift guard for the CapRover one-click template.
+ * @param {string} templateYaml - contents of the CapRover template
+ * @param {string} envExample - contents of .env.example
+ */
+export function assertCaproverVersionInSync(templateYaml, envExample) {
+  assertVersionInSync(
+    readCaproverVersion(templateYaml),
+    envExample,
+    "CapRover template",
+  );
 }
