@@ -344,11 +344,17 @@ test.describe.serial("Chats — per-task session model (#508)", () => {
     await expect(page.getByTestId("telegram-chat-header")).toBeVisible({ timeout: 30000 });
     await expect(page.getByTestId("telegram-channel-indicator")).toBeVisible();
 
-    // The transcript renders with at least one message (seeded above). The peer
-    // was linked + chatted in the previous test; the read-only mirror reads the
-    // server-derived session for user A's own peer.
+    // The transcript renders with at least one message. The peer chatted in the
+    // previous test, then sent `/new`. This asserts the message SURVIVES that
+    // reset in the mirror — which is only true because the `pinchy-transcript`
+    // plugin captured the inbound/outbound messages into Pinchy's own
+    // `channel_messages` store (message_received / message_sent hooks), so the
+    // read-only mirror renders from Pinchy's durable record rather than
+    // OpenClaw's session-scoped chat.history (which `/new` empties). This is the
+    // regression the Pinchy-owned-transcript work fixed: pre-reset history stays
+    // visible, matching what the user still sees in Telegram.
     await expect(page.getByTestId("telegram-transcript")).toBeVisible({ timeout: 30000 });
-    await expect(page.getByTestId("telegram-message-0")).toBeVisible();
+    await expect(page.getByTestId("telegram-message-0")).toBeVisible({ timeout: 15000 });
 
     // NO composer: the read-only view renders no message input. assistant-ui's
     // composer textarea (present on the live chat) must be absent here.

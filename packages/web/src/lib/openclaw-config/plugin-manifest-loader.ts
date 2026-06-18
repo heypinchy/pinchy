@@ -1,6 +1,7 @@
 import pinchyFilesManifest from "../../../../plugins/pinchy-files/openclaw.plugin.json";
 import pinchyContextManifest from "../../../../plugins/pinchy-context/openclaw.plugin.json";
 import pinchyAuditManifest from "../../../../plugins/pinchy-audit/openclaw.plugin.json";
+import pinchyTranscriptManifest from "../../../../plugins/pinchy-transcript/openclaw.plugin.json";
 import pinchyDocsManifest from "../../../../plugins/pinchy-docs/openclaw.plugin.json";
 import pinchyEmailManifest from "../../../../plugins/pinchy-email/openclaw.plugin.json";
 import pinchyOdooManifest from "../../../../plugins/pinchy-odoo/openclaw.plugin.json";
@@ -10,6 +11,7 @@ export const KNOWN_PINCHY_PLUGINS = [
   "pinchy-files",
   "pinchy-context",
   "pinchy-audit",
+  "pinchy-transcript",
   "pinchy-docs",
   "pinchy-email",
   "pinchy-odoo",
@@ -29,6 +31,7 @@ export const INTERNAL_PLUGINS = [
   "pinchy-context",
   "pinchy-docs",
   "pinchy-audit",
+  "pinchy-transcript",
 ] as const satisfies readonly KnownPinchyPlugin[];
 
 // Compile-time exhaustiveness check: every known plugin must appear in exactly
@@ -55,6 +58,7 @@ const MANIFESTS: Record<KnownPinchyPlugin, PluginManifest> = {
   "pinchy-files": pinchyFilesManifest as unknown as PluginManifest,
   "pinchy-context": pinchyContextManifest as unknown as PluginManifest,
   "pinchy-audit": pinchyAuditManifest as unknown as PluginManifest,
+  "pinchy-transcript": pinchyTranscriptManifest as unknown as PluginManifest,
   "pinchy-docs": pinchyDocsManifest as unknown as PluginManifest,
   "pinchy-email": pinchyEmailManifest as unknown as PluginManifest,
   "pinchy-odoo": pinchyOdooManifest as unknown as PluginManifest,

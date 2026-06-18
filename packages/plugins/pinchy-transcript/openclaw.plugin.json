@@ -1,0 +1,21 @@
+{
+  "id": "pinchy-transcript",
+  "name": "Pinchy Transcript",
+  "description": "Captures channel conversation messages into Pinchy's durable transcript store.",
+  "activation": {
+    "onStartup": true
+  },
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "apiBaseUrl": {
+        "type": "string"
+      },
+      "gatewayToken": {
+        "type": "string"
+      }
+    },
+    "required": ["apiBaseUrl", "gatewayToken"]
+  }
+}

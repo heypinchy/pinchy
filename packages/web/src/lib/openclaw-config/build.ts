@@ -558,6 +558,18 @@ export async function regenerateOpenClawConfig() {
     },
   };
 
+  // Always include pinchy-transcript and keep it enabled. It captures inbound/
+  // outbound channel messages (message_received / message_sent hooks) into
+  // Pinchy's durable transcript store so the read-only conversation mirror
+  // survives OpenClaw session resets.
+  entries["pinchy-transcript"] = {
+    enabled: true,
+    config: {
+      apiBaseUrl: process.env.PINCHY_INTERNAL_URL || `http://pinchy:${process.env.PORT || "7777"}`,
+      gatewayToken: gatewayTokenString,
+    },
+  };
+
   // Note: pinchy-files is always included (workspace uploads) — per-agent paths are built above.
 
   // Collect Odoo integration configs for agents with integration permissions

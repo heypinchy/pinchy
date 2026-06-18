@@ -78,6 +78,7 @@ const SCHEMA_SYNC_COVERAGES: ReadonlyArray<SchemaSyncCoverage> = [
 const NO_SCHEMA_REQUIRED: ReadonlyArray<KnownPinchyPlugin> = [
   // Internal plugins — no external schema sync, no per-template schema declaration.
   "pinchy-audit",
+  "pinchy-transcript",
   "pinchy-context",
   "pinchy-docs",
   "pinchy-files",
