@@ -42,6 +42,22 @@ A `gh release create` shortcut now fails the workflow **before any artifact exis
 - **Build-time guard** — `scripts/assert-package-version.mjs <tag>` runs before the image build; fails if `package.json` / `packages/web/package.json` don't match the tag.
 - **Runtime guard** — the `end-user-install-published` job smoke-tests `/api/version` against the tag on the _published_ image.
 
+## The upgrade-notes section auto-finalizes (since v0.6.0, the v0.5.8 incident)
+
+`upgrading.mdx` is cumulative: one `## Upgrading from v<prev> to <target>` section per release. During development the **current** section is written with the `%%PINCHY_VERSION%%` placeholder (heading and body), because the next version number isn't known yet. `docs/scripts/inject-version.sh` resolves that placeholder to the **build-time** version — so only the single newest section may carry it; every older section must already be **concrete** (`to vX.Y.Z`).
+
+The v0.5.8 release forgot to freeze its section: the heading stayed `from v0.5.7 to %%PINCHY_VERSION%%` and the body kept literal placeholders. That's a silent time-bomb — the v0.5.8 notes render fine for v0.5.8, then mis-render as the next version's the moment newer docs build. v0.6.0's release prep had to repair it.
+
+Two mechanisms now make this impossible:
+
+- **Auto-finalize in the release commit.** `pnpm release X.Y.Z` calls `finalizeUpgradeSection()` (`scripts/lib/release-logic.mjs`): it freezes the current `from v<prev> to %%PINCHY_VERSION%%` section — heading **and** body placeholders — to `vX.Y.Z`, and includes the edited `upgrading.mdx` in the `chore: release vX.Y.Z` commit. So the release script now touches **four** files, not three: `.env.example`, `package.json`, `packages/web/package.json`, **and** `docs/src/content/docs/guides/upgrading.mdx`.
+- **Freshness guard in CI.** `scripts/lib/upgrading-mdx-freshness.test.mjs` (via `assertNoStaleUpgradeSections`, run in `pnpm test:scripts`) fails any PR where a released version's section still carries `%%PINCHY_VERSION%%`, where two sections carry it, or where the placeholder section's `from` doesn't equal `package.json#version` (the latest released version). The preamble / "Standard upgrade" display placeholder is out of scope.
+
+**What this means for you when cutting a release:**
+
+- You only write the **new** `## Upgrading from v<prev> to %%PINCHY_VERSION%%` section (with `%%PINCHY_VERSION%%` placeholders is fine and preferred). The script freezes it for you at release time.
+- After a release lands, the **first** upgrade-affecting change should add a fresh `## Upgrading from v<just-released> to %%PINCHY_VERSION%%` section for the next cycle. If nobody does, the next release's gate fails loudly at the start (no `from v<just-released>` section) — which is the safety net, not a surprise.
+
 ## Before you run `pnpm release`
 
 Work through **every** item in **CONTRIBUTING.md § "Pre-release checklist"** — that is the canonical, always-current list, so don't re-derive or copy it. The script and CI already enforce the mechanical gates (clean tree, on `main`, CI green, tag free, `upgrading.mdx` section present with both subsections, `pnpm audit --audit-level=high --prod`). The human judgment calls the script _can't_ enforce — verify each against CONTRIBUTING — include:
@@ -50,7 +66,7 @@ Work through **every** item in **CONTRIBUTING.md § "Pre-release checklist"** �
 - `Dockerfile.openclaw` version bumped if OpenClaw was upgraded.
 - Model-resolver spot-check if models or templates changed.
 - **Ollama Cloud catalog** → run the `update-ollama-cloud-models` skill every release to refresh the catalog.
-- `docs/src/content/docs/guides/upgrading.mdx` has a new `## Upgrading from v<prev> to %%PINCHY_VERSION%%` section containing `### Breaking changes` (write "None." if none) and `### Upgrade notes`. The script aborts without it.
+- `docs/src/content/docs/guides/upgrading.mdx` has a new `## Upgrading from v<prev> to %%PINCHY_VERSION%%` section containing `### Breaking changes` (write "None." if none) and `### Upgrade notes`. The script aborts without it, **freezes the placeholder for you** at release time, and a CI guard rejects stale placeholders — see "The upgrade-notes section auto-finalizes" above.
 - Staging (`:next`) click-through + PWA install check.
 
 ## After the release
