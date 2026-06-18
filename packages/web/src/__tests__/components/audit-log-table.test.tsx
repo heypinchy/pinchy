@@ -2,7 +2,10 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { render, screen, waitFor, within, fireEvent } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import "@testing-library/jest-dom";
+import { toast } from "sonner";
 import { AuditLogTable } from "@/components/audit-log-table";
+
+vi.mock("sonner", () => ({ toast: { success: vi.fn(), error: vi.fn() } }));
 
 // Radix UI Select uses pointer capture and scrollIntoView which jsdom doesn't support
 if (!Element.prototype.hasPointerCapture) {
@@ -585,6 +588,97 @@ describe("AuditLogTable", () => {
     const codeElement = document.querySelector(".json-highlight code");
     expect(codeElement).not.toBeNull();
     expect(codeElement!.innerHTML).toContain('class="token');
+  });
+
+  async function openFirstEntryDetail() {
+    const user = userEvent.setup();
+    await waitFor(() => {
+      expect(screen.getAllByText("auth.login").length).toBeGreaterThan(0);
+    });
+    const allLoginElements = screen.getAllByText("auth.login");
+    const clickableRow =
+      allLoginElements[0].closest("tr") ?? allLoginElements[0].closest("div.rounded");
+    await user.click(clickableRow!);
+    await waitFor(() => {
+      expect(screen.getByText("Entry Detail")).toBeInTheDocument();
+    });
+    return user;
+  }
+
+  it("renders the detail sheet wide enough to read JSON (overrides the narrow default)", async () => {
+    renderWithEntriesLoaded();
+    await openFirstEntryDetail();
+
+    const content = document.querySelector('[data-slot="sheet-content"]');
+    expect(content).not.toBeNull();
+    // Wider, responsive cap so the JSON body is readable.
+    expect(content).toHaveClass("sm:max-w-xl", "lg:max-w-2xl", "xl:max-w-3xl");
+    // tailwind-merge must have dropped the cramped 384px default from the primitive.
+    expect(content).not.toHaveClass("sm:max-w-sm");
+    expect(content).not.toHaveClass("w-3/4");
+  });
+
+  it("wraps long JSON values instead of scrolling them off-screen horizontally", async () => {
+    renderWithEntriesLoaded();
+    await openFirstEntryDetail();
+
+    const pre = document.querySelector("pre");
+    expect(pre).not.toBeNull();
+    // break-all matches the repo precedent for long unbreakable tokens (HMAC, ids).
+    expect(pre).toHaveClass("whitespace-pre-wrap", "break-all");
+    // No horizontal-scroll-only container — that is the readability complaint.
+    expect(pre).not.toHaveClass("overflow-auto");
+  });
+
+  it("copies the JSON detail to the clipboard via the Copy JSON button", async () => {
+    renderWithEntriesLoaded();
+    await openFirstEntryDetail();
+
+    // Install the clipboard mock AFTER openFirstEntryDetail: userEvent.setup()
+    // attaches its own navigator.clipboard stub and would otherwise shadow ours.
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, "clipboard", {
+      value: { writeText },
+      writable: true,
+      configurable: true,
+    });
+
+    // fireEvent (not userEvent) — the button lives inside the Radix Sheet, whose
+    // open state sets pointer-events:none on body, which userEvent rejects.
+    fireEvent.click(screen.getByRole("button", { name: /copy json/i }));
+
+    // entry 1 detail is { email: "admin@example.com" }, pretty-printed.
+    await waitFor(() => {
+      expect(writeText).toHaveBeenCalledWith(
+        JSON.stringify({ email: "admin@example.com" }, null, 2)
+      );
+    });
+  });
+
+  it("surfaces a toast.error when copying the JSON detail fails", async () => {
+    const originalExec = document.execCommand;
+    document.execCommand = vi.fn().mockReturnValue(false);
+
+    try {
+      renderWithEntriesLoaded();
+      await openFirstEntryDetail();
+
+      // After openFirstEntryDetail (userEvent.setup attaches a working clipboard
+      // stub) simulate a non-secure context: no clipboard API, execCommand fails.
+      Object.defineProperty(navigator, "clipboard", {
+        value: undefined,
+        writable: true,
+        configurable: true,
+      });
+
+      fireEvent.click(screen.getByRole("button", { name: /copy json/i }));
+
+      await waitFor(() => {
+        expect(toast.error).toHaveBeenCalled();
+      });
+    } finally {
+      document.execCommand = originalExec;
+    }
   });
 
   it("should highlight tampered rows with data attribute after integrity check", async () => {
