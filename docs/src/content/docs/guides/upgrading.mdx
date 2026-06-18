@@ -149,7 +149,53 @@ If you need to roll back after an upgrade:
   backup step matters.
 </Aside>
 
-## Upgrading from v0.5.7 to %%PINCHY_VERSION%%
+## Upgrading from v0.5.8 to %%PINCHY_VERSION%%
+
+### Breaking changes
+
+#### Telegram and web no longer share one conversation
+
+Pinchy now uses **per-chat sessions**. Web and Telegram are separate OpenClaw sessions instead of being folded into one. Previously, an agent linked to a Telegram peer merged that peer's DMs into the user's web chat — which is why a Telegram `/new` could wipe web history. Starting with %%PINCHY_VERSION%%, each Telegram peer gets its own session and shows up as a read-only chat in the agent's Chats list.
+
+- **No action required.** The stale link is removed automatically the next time the OpenClaw config is regenerated (any settings save, or the first boot after the upgrade). Permissions are unaffected — the Chats list and Telegram allow-listing read channel links directly, not the removed setting.
+- **Where your history goes.** Your existing web conversation keeps everything under its current session, including Telegram messages that were previously merged in. Telegram starts a fresh, separate thread from the upgrade onward — so a Telegram chat that suddenly looks empty isn't lost; its past messages live in the web conversation.
+
+### Upgrade notes
+
+The standard flow applies:
+
+```bash
+cd /opt/pinchy
+sed -i 's/PINCHY_VERSION=v0.5.8/PINCHY_VERSION=%%PINCHY_VERSION%%/' .env
+docker compose pull && docker compose up -d && docker image prune -f
+```
+
+#### Multiple chats per agent
+
+Each agent now keeps a list of separate conversations per user. A **chat switcher** in the chat header lets you start a new chat, jump between existing ones, and see the current one at a glance. Chat titles are derived from the first message you send, so the list stays scannable. New chats show a "Not saved yet" marker until the first message lands.
+
+#### Telegram conversations are visible as read-only chats
+
+When an agent is connected to Telegram, each linked peer's conversation appears in the Chats list as a **read-only** transcript. You can read what was said over Telegram from the web UI; replying still happens in Telegram. This makes Telegram activity auditable from the same place as web chats.
+
+#### Sturdier streaming and reconnects
+
+Backgrounding a chat tab mid-reply, reloading during a stream, or reconnecting while a run is still in flight no longer corrupts the message list. The chat view keeps a stable in-flight assistant slot across reconnects and discards stale pre-history buffers, so resume, timeout, and full-reload transitions land cleanly. Nothing to configure.
+
+#### Usage analytics read retry
+
+Reading OpenClaw session files for usage analytics now retries transient `EACCES` errors instead of failing the request, so per-user/per-turn usage numbers stay reliable under concurrent writes.
+
+#### Dependencies
+
+- **openclaw-node 0.13.0** (was 0.12.1) and **odoo-node 0.3.0** (was 0.2.0) — client-library bumps bundled into the images; no operator action.
+- **hono override raised to ≥ 4.12.25** — a transitive web-framework dependency, bumped to clear a published advisory. Build/runtime dependency only.
+
+#### Database migrations
+
+None this release.
+
+## Upgrading from v0.5.7 to v0.5.8
 
 ### Breaking changes
 
@@ -161,13 +207,13 @@ The standard flow applies:
 
 ```bash
 cd /opt/pinchy
-sed -i 's/PINCHY_VERSION=v0.5.7/PINCHY_VERSION=%%PINCHY_VERSION%%/' .env
+sed -i 's/PINCHY_VERSION=v0.5.7/PINCHY_VERSION=v0.5.8/' .env
 docker compose pull && docker compose up -d && docker image prune -f
 ```
 
 #### Automatic migration off the default database password
 
-The default `pinchy_dev` database password is public in our repository, so running on it was never real protection. Starting with %%PINCHY_VERSION%%, installations that never set `DB_PASSWORD` are migrated automatically on their first boot after the upgrade: Pinchy generates a strong password, persists it in the `pinchy-secrets` Docker volume (the same place the encryption key already lives), and applies it to PostgreSQL — no action required, no downtime beyond the normal upgrade restart.
+The default `pinchy_dev` database password is public in our repository, so running on it was never real protection. Starting with v0.5.8, installations that never set `DB_PASSWORD` are migrated automatically on their first boot after the upgrade: Pinchy generates a strong password, persists it in the `pinchy-secrets` Docker volume (the same place the encryption key already lives), and applies it to PostgreSQL — no action required, no downtime beyond the normal upgrade restart.
 
 - **If you set `DB_PASSWORD` in `.env`:** nothing changes. Your value always wins — and if you ever set it without updating PostgreSQL itself, Pinchy now applies it for you on the next boot instead of failing to connect.
 - **If you never set `DB_PASSWORD`:** the migration runs once, invisibly. Settings → Security shows the database password as _Auto-generated (Docker volume)_, and `GET /api/health` reports `"db_password": "generated"`.
