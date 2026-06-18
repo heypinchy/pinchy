@@ -435,3 +435,94 @@ test.describe("Plugin behavior — pinchy-files", () => {
     }
   });
 });
+
+// ── Plugin behavior: pinchy-approvals ────────────────────────────────────────
+// Proves the pinchy-approvals before_tool_call gate loaded and enforces the
+// per-agent confirmation policy end-to-end: a tool an admin marked as
+// "require confirmation" is BLOCKED (no tool.<name> dispatch) and instead
+// produces an approval.requested record; the acting user can then approve it
+// via the decision route (approval.granted). Mirrors the pinchy-files probe:
+// gate pinchy_ls on Smithers, trigger it, assert the audit lifecycle.
+test.describe("Plugin behavior — pinchy-approvals", () => {
+  test("a gated tool is blocked into an approval request the user can grant", async ({ page }) => {
+    await login(page);
+    const agentId = await getSmithersAgentId(page);
+
+    const beforeRes = await page.request.get(`/api/agents/${agentId}`);
+    expect(beforeRes.status()).toBe(200);
+    const before = (await beforeRes.json()) as {
+      allowedTools: string[] | null;
+      pluginConfig: Record<string, unknown> | null;
+    };
+    const originalAllowedTools = before.allowedTools ?? [];
+    const originalPluginConfig = before.pluginConfig ?? null;
+
+    const patchRes = await page.request.patch(`/api/agents/${agentId}`, {
+      data: {
+        allowedTools: [...new Set([...originalAllowedTools, "pinchy_ls"])],
+        pluginConfig: {
+          ...(originalPluginConfig ?? {}),
+          "pinchy-files": { allowed_paths: ["/data"] },
+          "pinchy-approvals": { confirmTools: ["pinchy_ls"] },
+        },
+      },
+    });
+    expect(patchRes.status()).toBe(200);
+
+    try {
+      await waitForOpenClawConnected(page);
+      await page.goto(`/chat/${agentId}`);
+      await expect(page).toHaveURL(`/chat/${agentId}`, { timeout: 10000 });
+
+      const input = page.getByPlaceholder(/send a message/i);
+      await expect(input).toBeVisible({ timeout: 10000 });
+      await input.fill(`${FAKE_OLLAMA_FILES_LS_TOOL_TRIGGER}: list knowledge base files`);
+      await input.press("Enter");
+
+      // The gate blocks the call and records approval.requested for this agent.
+      let requestId: string | null = null;
+      const deadline = Date.now() + 30000;
+      while (Date.now() < deadline) {
+        const res = await page.request.get("/api/audit?eventType=approval.requested&limit=10");
+        expect(res.status()).toBe(200);
+        const audit = await res.json();
+        const entry = audit.entries.find(
+          (e: {
+            resource: string | null;
+            detail: { toolName?: string; request?: { id: string } };
+          }) => e.detail?.toolName === "pinchy_ls" && typeof e.detail?.request?.id === "string"
+        );
+        if (entry) {
+          requestId = entry.detail.request.id as string;
+          break;
+        }
+        await new Promise((r) => setTimeout(r, 500));
+      }
+      expect(requestId, "gate should have created an approval.requested record").toBeTruthy();
+
+      // The acting user grants their own pending confirmation.
+      const decision = await page.request.post(`/api/approvals/${requestId}/decision`, {
+        data: { decision: "approve" },
+      });
+      expect(decision.status()).toBe(200);
+
+      // The decision is recorded as approval.granted.
+      let granted = false;
+      const grantDeadline = Date.now() + 15000;
+      while (Date.now() < grantDeadline) {
+        const res = await page.request.get("/api/audit?eventType=approval.granted&limit=10");
+        const audit = await res.json();
+        granted = audit.entries.some(
+          (e: { resource: string | null }) => e.resource === `approval:${requestId}`
+        );
+        if (granted) break;
+        await new Promise((r) => setTimeout(r, 500));
+      }
+      expect(granted).toBe(true);
+    } finally {
+      await page.request.patch(`/api/agents/${agentId}`, {
+        data: { allowedTools: originalAllowedTools, pluginConfig: originalPluginConfig },
+      });
+    }
+  });
+});

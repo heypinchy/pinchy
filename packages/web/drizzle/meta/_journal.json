@@ -281,6 +281,13 @@
       "when": 1781544172048,
       "tag": "0039_faithful_tyger_tiger",
       "breakpoints": true
+    },
+    {
+      "idx": 40,
+      "version": "7",
+      "when": 1781622167523,
+      "tag": "0040_dazzling_red_skull",
+      "breakpoints": true
     }
   ]
 }

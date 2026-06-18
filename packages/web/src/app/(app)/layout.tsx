@@ -12,6 +12,7 @@ import { InsecureBanner } from "@/components/insecure-banner";
 import { DevToolbar } from "@/components/dev-toolbar";
 import { ChatSessionProvider } from "@/components/chat-session-provider";
 import { ChatSessionMounts } from "@/components/chat-session-mounts";
+import { ApprovalsInbox } from "@/components/approvals-inbox";
 
 export default async function AppLayout({ children }: { children: React.ReactNode }) {
   await cookies();
@@ -40,6 +41,7 @@ export default async function AppLayout({ children }: { children: React.ReactNod
           </SidebarInset>
         </SidebarProvider>
         <ChatSessionMounts />
+        <ApprovalsInbox />
         {process.env.NODE_ENV === "development" && <DevToolbar />}
       </ChatSessionProvider>
     </AgentsProvider>

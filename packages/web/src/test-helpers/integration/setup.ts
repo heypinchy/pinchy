@@ -19,6 +19,7 @@ const APPLICATION_TABLES = [
   "uploaded_files",
   "usage_records",
   "agent_connection_permissions",
+  "tool_approval",
   "integration_connections",
   "channel_links",
   "agent_groups",

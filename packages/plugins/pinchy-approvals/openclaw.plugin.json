@@ -1,0 +1,21 @@
+{
+  "id": "pinchy-approvals",
+  "name": "Pinchy Approvals",
+  "description": "Human-in-the-loop confirmation gate for tool calls an admin marked as requiring approval.",
+  "activation": {
+    "onStartup": true
+  },
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "apiBaseUrl": {
+        "type": "string"
+      },
+      "gatewayToken": {
+        "type": "string"
+      }
+    },
+    "required": ["apiBaseUrl", "gatewayToken"]
+  }
+}

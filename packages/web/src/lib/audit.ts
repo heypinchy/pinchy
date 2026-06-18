@@ -82,7 +82,12 @@ export type AuditEventType =
   | "integration.credentials_updated"
   | "file.upload.staged"
   | "file.upload.attached"
-  | "file.upload.expired";
+  | "file.upload.expired"
+  | "approval.requested"
+  | "approval.granted"
+  | "approval.denied"
+  | "approval.consumed"
+  | "approval.expired";
 
 interface HmacFieldsV1 {
   timestamp: Date;
@@ -296,6 +301,26 @@ export type AuditLogEntry =
   | (AuditLogBase & {
       eventType: `chat.${string}`;
       detail?: Record<string, unknown>;
+    })
+  | (AuditLogBase & {
+      // Tool-call confirmation lifecycle (#124 Tier 2). `argsDigest` is a
+      // PII-free sha256; the human-readable arg summary lives in the
+      // operational `tool_approval` row, never in the audit detail.
+      eventType:
+        | "approval.requested"
+        | "approval.granted"
+        | "approval.denied"
+        | "approval.consumed"
+        | "approval.expired";
+      detail: {
+        request: { id: string };
+        agent: { id: string; name: string | null };
+        requester: { id: string; name: string | null };
+        approver?: { id: string; name: string | null };
+        toolName: string;
+        argsDigest: string;
+        reason?: string;
+      };
     })
   | (AuditLogBase & {
       // Channel-health watchdog (A-1/A-2/A-4): a channel poller (Telegram, …)
