@@ -281,6 +281,13 @@
       "when": 1781544172048,
       "tag": "0039_faithful_tyger_tiger",
       "breakpoints": true
+    },
+    {
+      "idx": 40,
+      "version": "7",
+      "when": 1781789770668,
+      "tag": "0040_fresh_ultimates",
+      "breakpoints": true
     }
   ]
 }

@@ -257,6 +257,60 @@ export const channelLinks = pgTable(
   ]
 );
 
+/**
+ * Durable per-channel conversation transcript owned by Pinchy (#541 follow-up).
+ *
+ * Pinchy captures inbound/outbound channel messages via the `pinchy-transcript`
+ * OpenClaw plugin (message_received / message_sent hooks) and stores them here,
+ * so the read-only conversation mirror renders from Pinchy's own record instead
+ * of OpenClaw's session-scoped `chat.history`. That makes the mirror robust
+ * against OpenClaw session semantics — `/new` resets, the 4 AM daily reset,
+ * compaction, and id rotation no longer blank the view — and aligns the
+ * conversation record with Pinchy's audit/governance model.
+ *
+ * `peerId` is the channel-side user id (e.g. the Telegram peer), lowercased to
+ * match `channel_links.channelUserId` and the `agent:<id>:direct:<peer>`
+ * session-key segment. `externalId` is the channel's own message id (or a
+ * deterministic surrogate when the hook omits one) and is the idempotency key:
+ * the capture endpoint upserts on (channel, agentId, peerId, direction,
+ * externalId) so retries / duplicate hook fires never double-insert.
+ */
+export const channelMessages = pgTable(
+  "channel_messages",
+  {
+    id: text("id")
+      .primaryKey()
+      .$defaultFn(() => crypto.randomUUID()),
+    agentId: text("agent_id")
+      .notNull()
+      .references(() => agents.id, { onDelete: "cascade" }),
+    channel: text("channel").notNull(),
+    peerId: text("peer_id").notNull(),
+    direction: text("direction").notNull(),
+    externalId: text("external_id").notNull(),
+    content: text("content").notNull(),
+    sentAt: timestamp("sent_at").notNull(),
+    recordedAt: timestamp("recorded_at").notNull().defaultNow(),
+  },
+  (table) => [
+    // Read path: one user's transcript for (agent, channel, peer), chronological.
+    index("channel_messages_agent_channel_peer_idx").on(
+      table.agentId,
+      table.channel,
+      table.peerId,
+      table.sentAt
+    ),
+    // Idempotent capture: a given channel message is recorded once per direction.
+    uniqueIndex("channel_messages_dedup_uniq").on(
+      table.channel,
+      table.agentId,
+      table.peerId,
+      table.direction,
+      table.externalId
+    ),
+  ]
+);
+
 export const settings = pgTable("settings", {
   key: text("key").primaryKey(),
   value: text("value").notNull(),
