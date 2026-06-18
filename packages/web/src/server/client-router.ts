@@ -9,6 +9,7 @@ import { chatWithDispatchRaceRetry } from "@/server/chat-dispatch-retry";
 import { waitForAgentInRuntime } from "@/server/agent-readiness";
 import type { WebSocket } from "ws";
 import { assertAgentAccess, effectiveVisibility } from "@/lib/agent-access";
+import { directSessionKey } from "@/lib/session-key";
 import { getUserGroupIds, getAgentGroupIds } from "@/lib/groups";
 import { getLicenseState } from "@/lib/enterprise";
 import { buildMemoryPromptBlock } from "@/lib/memory-prompt";
@@ -133,8 +134,7 @@ export class ClientRouter {
   ) {}
 
   private computeSessionKey(agentId: string, chatId?: string): string {
-    const base = `agent:${agentId}:direct:${this.userId}`;
-    return chatId ? `${base}:${chatId}` : base;
+    return directSessionKey(agentId, this.userId, chatId);
   }
 
   /**
