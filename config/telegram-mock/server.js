@@ -55,6 +55,30 @@ const pollingTokens = new Set();
 const conflict409Tokens = new Set();
 let conflict409All = false;
 
+// Clear all per-test state. Mirrors POST /control/reset so the route and the
+// unit test share one definition.
+//
+// IMPORTANT: `updateIdCounter` is deliberately NOT reset here. Real Telegram
+// hands out `update_id` as a globally monotonic counter that never restarts,
+// and an already-running getUpdates long-poll keeps its acknowledged offset
+// across our resets (it does not re-call getMe). If we rewound the counter to
+// a low value, freshly injected updates would carry an `update_id` below that
+// stale offset and `handleGetUpdates` would silently filter them out — the bot
+// would never see the message. Keeping the counter monotonic guarantees every
+// post-reset update still exceeds any offset OpenClaw could be holding.
+function resetState() {
+  botResponses.length = 0;
+  pendingUpdates.clear();
+  bots.clear();
+  pollingTokens.clear();
+  conflict409Tokens.clear();
+  conflict409All = false;
+  // message_id may safely reset, unlike update_id: nothing filters on it
+  // (botResponses is cleared and read back by timestamp), whereas a stale
+  // long-poll offset filters incoming updates against update_id.
+  messageIdCounter = 1000;
+}
+
 // ── Anthropic API mock (for model prewarm) ─────────────────────────────
 
 function handleAnthropicRequest(url, body) {
@@ -95,6 +119,45 @@ function notifyUpdateListeners(token) {
   const listeners = updateListeners.get(token) || [];
   updateListeners.set(token, []);
   for (const cb of listeners) cb();
+}
+
+// Simulate a user sending a message to the bot: build a Telegram update,
+// queue it for the token's long-poll, and wake any waiting getUpdates. Shared
+// by POST /control/sendMessage and the unit test. Returns the new update_id.
+function injectMessage({ token, chatId, text, userId, username, firstName, lastName }) {
+  const updateId = ++updateIdCounter;
+  const update = {
+    update_id: updateId,
+    message: {
+      message_id: ++messageIdCounter,
+      from: {
+        id: parseInt(userId || chatId),
+        is_bot: false,
+        first_name: firstName || "TestUser",
+        last_name: lastName || "",
+        username: username || "testuser",
+      },
+      chat: {
+        id: parseInt(chatId),
+        type: "private",
+        first_name: firstName || "TestUser",
+        last_name: lastName || "",
+        username: username || "testuser",
+      },
+      date: Math.floor(Date.now() / 1000),
+      text,
+    },
+  };
+
+  if (!pendingUpdates.has(token)) {
+    pendingUpdates.set(token, []);
+  }
+  pendingUpdates.get(token).push(update);
+
+  // Notify any long-polling getUpdates requests
+  notifyUpdateListeners(token);
+
+  return updateId;
 }
 
 // getUpdates is async (long-poll) — handled separately
@@ -280,51 +343,24 @@ function startControlServer() {
 
       // POST /control/sendMessage — simulate user sending a message to bot
       if (req.method === "POST" && url.pathname === "/control/sendMessage") {
-        const { token, chatId, text, userId, username, firstName, lastName } =
-          JSON.parse(body);
+        const opts = JSON.parse(body);
 
-        if (!token || !chatId || !text) {
+        if (!opts.token || !opts.chatId || !opts.text) {
           res.writeHead(400);
           res.end(JSON.stringify({ error: "token, chatId, and text required" }));
           return;
         }
 
-        const updateId = ++updateIdCounter;
-        const update = {
-          update_id: updateId,
-          message: {
-            message_id: ++messageIdCounter,
-            from: {
-              id: parseInt(userId || chatId),
-              is_bot: false,
-              first_name: firstName || "TestUser",
-              last_name: lastName || "",
-              username: username || "testuser",
-            },
-            chat: {
-              id: parseInt(chatId),
-              type: "private",
-              first_name: firstName || "TestUser",
-              last_name: lastName || "",
-              username: username || "testuser",
-            },
-            date: Math.floor(Date.now() / 1000),
-            text,
-          },
-        };
-
-        if (!pendingUpdates.has(token)) {
-          pendingUpdates.set(token, []);
-        }
-        pendingUpdates.get(token).push(update);
-
-        // Notify any long-polling getUpdates requests
-        notifyUpdateListeners(token);
+        const updateId = injectMessage(opts);
 
         res.writeHead(200);
         res.end(JSON.stringify({ ok: true, updateId }));
+        // Strip CR/LF from the user-provided values before logging (CodeQL
+        // js/log-injection — it only recognises an explicit newline replace).
+        const safeChatId = String(opts.chatId).replace(/[\r\n]/g, "");
+        const safeText = String(opts.text).replace(/[\r\n]/g, "");
         console.log(
-          `[telegram-mock] Injected message from user ${chatId}: "${text}"`
+          `[telegram-mock] Injected message from user ${safeChatId}: "${safeText}"`
         );
         return;
       }
@@ -349,14 +385,7 @@ function startControlServer() {
 
       // POST /control/reset — clear all state
       if (req.method === "POST" && url.pathname === "/control/reset") {
-        botResponses.length = 0;
-        pendingUpdates.clear();
-        bots.clear();
-        pollingTokens.clear();
-        conflict409Tokens.clear();
-        conflict409All = false;
-        messageIdCounter = 1000;
-        updateIdCounter = 100;
+        resetState();
         res.writeHead(200);
         res.end(JSON.stringify({ ok: true }));
         console.log("[telegram-mock] State reset");
@@ -446,7 +475,14 @@ async function main() {
   console.log("[telegram-mock] Ready");
 }
 
-main().catch((err) => {
-  console.error("[telegram-mock] Fatal:", err);
-  process.exit(1);
-});
+// Only boot the servers when run directly (node server.js / Docker CMD).
+// When required from a unit test we just want the pure handlers below, with
+// no ports bound (443 is privileged and unavailable outside the container).
+if (require.main === module) {
+  main().catch((err) => {
+    console.error("[telegram-mock] Fatal:", err);
+    process.exit(1);
+  });
+}
+
+module.exports = { resetState, injectMessage, handleGetUpdates };
