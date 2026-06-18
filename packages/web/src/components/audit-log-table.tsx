@@ -5,7 +5,9 @@ import Prism from "prismjs";
 import "prismjs/components/prism-json";
 import "./json-highlight.css";
 import Link from "next/link";
-import { CircleCheck, CircleX } from "lucide-react";
+import { CircleCheck, CircleX, CopyIcon, CheckIcon } from "lucide-react";
+import { toast } from "sonner";
+import { useCopyToClipboard } from "@/hooks/use-copy-to-clipboard";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
@@ -177,6 +179,13 @@ export function AuditLogTable() {
   const [verifyResult, setVerifyResult] = useState<VerifyResult | null>(null);
   const [verifying, setVerifying] = useState(false);
   const [availableEventTypes, setAvailableEventTypes] = useState<string[]>([]);
+  const { isCopied, copy } = useCopyToClipboard();
+
+  async function handleCopyDetail() {
+    if (!selectedEntry) return;
+    const ok = await copy(JSON.stringify(selectedEntry.detail, null, 2));
+    if (!ok) toast.error("Failed to copy to clipboard");
+  }
 
   useEffect(() => {
     fetch("/api/audit/event-types")
@@ -540,7 +549,13 @@ export function AuditLogTable() {
       )}
 
       <Sheet open={!!selectedEntry} onOpenChange={(open) => !open && setSelectedEntry(null)}>
-        <SheetContent>
+        {/*
+          Override the primitive's cramped `sm:max-w-sm` (384px) with a wider,
+          responsive cap so the JSON body is readable. The override MUST keep an
+          `sm:` variant — tailwind-merge only shadows `sm:max-w-sm` with another
+          `sm:`-prefixed max-width.
+        */}
+        <SheetContent className="w-full sm:max-w-xl lg:max-w-2xl xl:max-w-3xl">
           <SheetHeader>
             <SheetTitle>Entry Detail</SheetTitle>
             <SheetDescription>Full audit log entry information</SheetDescription>
@@ -586,8 +601,27 @@ export function AuditLogTable() {
                 </div>
               )}
               <div>
-                <p className="text-sm font-medium text-muted-foreground">Detail</p>
-                <pre className="mt-1 rounded bg-muted p-3 text-sm overflow-auto json-highlight">
+                <div className="flex items-center justify-between">
+                  <p className="text-sm font-medium text-muted-foreground">Detail</p>
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    className="h-7 gap-1.5 text-xs"
+                    onClick={handleCopyDetail}
+                    aria-label="Copy JSON"
+                  >
+                    {isCopied ? (
+                      <CheckIcon className="size-3.5" />
+                    ) : (
+                      <CopyIcon className="size-3.5" />
+                    )}
+                    {isCopied ? "Copied" : "Copy JSON"}
+                  </Button>
+                </div>
+                {/* break-all wraps long unbreakable tokens (ids, HMAC) instead of
+                    scrolling them off-screen — matches the rowHmac render below. */}
+                <pre className="mt-1 rounded bg-muted p-3 text-sm whitespace-pre-wrap break-all json-highlight">
                   <code
                     dangerouslySetInnerHTML={{
                       __html: highlightJson(JSON.stringify(selectedEntry.detail, null, 2)),
