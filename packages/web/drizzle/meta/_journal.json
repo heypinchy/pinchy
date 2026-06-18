@@ -288,6 +288,13 @@
       "when": 1781789770668,
       "tag": "0040_fresh_ultimates",
       "breakpoints": true
+    },
+    {
+      "idx": 41,
+      "version": "7",
+      "when": 1781859608593,
+      "tag": "0041_steady_stryfe",
+      "breakpoints": true
     }
   ]
 }

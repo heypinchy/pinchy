@@ -491,3 +491,56 @@ export const uploadedFiles = pgTable(
     index("idx_uploaded_files_user_agent_draft").on(t.userId, t.agentId, t.draftId),
   ]
 );
+
+/**
+ * Durable agent-error visibility (Concern 1). An OpenClaw error chunk surfaces
+ * a live error bubble over the WS, but that bubble is ephemeral client state —
+ * a reload or a WS reconnect during a long tool loop loses it, leaving only the
+ * audit row. This table is the durable backing for the chat's "paused" banner:
+ * the latest un-superseded, un-dismissed row for a session is what the user
+ * sees on return.
+ *
+ * Why a dedicated table (not audit reuse): the audit log is append-only and
+ * per-row HMAC-signed, so an UPDATE for supersededAt/dismissedAt would break
+ * `verifyIntegrity`; its detail is PII-scrubbed/truncated and lacks the
+ * clientMessageId/runId/sideEffects granularity; and we don't want chat loads
+ * querying the compliance table on the hot path.
+ *
+ * `sessionKey` is the exact per-(agent,user) key `agent:{agentId}:direct:{userId}`
+ * — reads MUST filter on the full value, never a prefix. `clientMessageId` is
+ * the triggering user message, the anchor for both supersede (the same message
+ * later succeeds) and a safe retry. `sideEffects` records whether the failed
+ * run already executed a tool call, so the UI can warn about duplicate writes.
+ */
+export const chatSessionErrors = pgTable(
+  "chat_session_errors",
+  {
+    id: text("id")
+      .primaryKey()
+      .$defaultFn(() => crypto.randomUUID()),
+    userId: text("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    agentId: text("agent_id")
+      .notNull()
+      .references(() => agents.id, { onDelete: "cascade" }),
+    sessionKey: text("session_key").notNull(),
+    clientMessageId: text("client_message_id"),
+    runId: text("run_id"),
+    agentName: text("agent_name").notNull(),
+    model: text("model"),
+    errorClass: text("error_class").notNull(),
+    transientReason: text("transient_reason"),
+    providerError: text("provider_error").notNull(),
+    sideEffects: boolean("side_effects").notNull().default(false),
+    createdAt: timestamp("created_at").notNull().defaultNow(),
+    supersededAt: timestamp("superseded_at"),
+    dismissedAt: timestamp("dismissed_at"),
+  },
+  (t) => [
+    // Active-error lookup: newest live row for a session.
+    index("idx_chat_session_errors_session").on(t.sessionKey, t.createdAt),
+    // GC sweep: reap resolved (superseded/dismissed) rows by age.
+    index("idx_chat_session_errors_gc").on(t.createdAt),
+  ]
+);
