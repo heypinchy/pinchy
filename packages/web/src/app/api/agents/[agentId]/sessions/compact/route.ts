@@ -31,10 +31,14 @@ export const POST = withAuth<RouteContext>(async (request, { params }, session) 
   const parsed = await parseRequestBody(compactSessionSchema, request);
   if ("error" in parsed) return parsed.error;
 
-  // Per-user session scoping, identical to ClientRouter.computeSessionKey:
-  // agent:<agentId>:direct:<userId>. OpenClaw validates that the agentId in the
-  // key matches the agentId argument — see MEMORY.md "OpenClaw Sessions API".
-  const sessionKey = `agent:${agentId}:direct:${session.user.id!}`;
+  // Per-user, per-chat session scoping, identical to
+  // ClientRouter.computeSessionKey: agent:<agentId>:direct:<userId>[:<chatId>].
+  // The optional chatId (#508) targets the chat the user is actually looking at
+  // on /chat/<agentId>/<chatId>; omitting it compacts the default per-user
+  // session. OpenClaw validates that the agentId in the key matches the agentId
+  // argument — see MEMORY.md "OpenClaw Sessions API".
+  const base = `agent:${agentId}:direct:${session.user.id!}`;
+  const sessionKey = parsed.data.chatId ? `${base}:${parsed.data.chatId}` : base;
 
   // Throttle repeated compactions of the same session. The UI debounces via a
   // disabled button; this guards direct API spamming from fanning out

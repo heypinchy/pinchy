@@ -73,7 +73,6 @@ export default async function ChatPage({
       isPersonal={agent.isPersonal}
       avatarUrl={avatarUrl}
       canEdit={canEdit}
-      isAdmin={isAdmin}
     />
   );
 }

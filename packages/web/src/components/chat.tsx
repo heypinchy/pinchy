@@ -123,7 +123,6 @@ interface ChatProps {
   isPersonal?: boolean;
   avatarUrl?: string;
   canEdit?: boolean;
-  isAdmin?: boolean;
 }
 
 export function Chat({
@@ -134,7 +133,6 @@ export function Chat({
   isPersonal = false,
   avatarUrl,
   canEdit = false,
-  isAdmin = false,
 }: ChatProps) {
   const { getAgent } = useAgentsContext();
   const liveAgent = getAgent(agentId);
@@ -270,7 +268,9 @@ export function Chat({
                                     </TooltipProvider>
                                   </div>
                                   <div className="flex items-center gap-3 shrink-0">
-                                    {hasInitialContent && <SessionActionsMenu agentId={agentId} />}
+                                    {hasInitialContent && (
+                                      <SessionActionsMenu agentId={agentId} chatId={chatId} />
+                                    )}
                                     {canEdit && (
                                       <Link
                                         href={`/chat/${agentId}/settings`}

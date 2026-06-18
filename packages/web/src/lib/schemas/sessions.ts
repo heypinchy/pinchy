@@ -1,19 +1,6 @@
 import { z } from "zod";
 
 /**
- * Body for `POST /api/agents/[agentId]/sessions/compact`.
- *
- * `maxLines` is optional — when omitted, OpenClaw uses its own default
- * compaction threshold. Shared between the route handler (parseRequestBody)
- * and the client component (typed request body via z.infer).
- */
-export const compactSessionSchema = z.object({
-  maxLines: z.number().int().positive().max(100_000).optional(),
-});
-
-export type CompactSessionRequest = z.infer<typeof compactSessionSchema>;
-
-/**
  * Opaque, client-supplied identifier for one chat within a (user, agent)
  * pair. It becomes the trailing segment of the OpenClaw session key
  * (`agent:<agentId>:direct:<userId>:<chatId>`), so it must stay free of the
@@ -25,6 +12,22 @@ export const chatIdSchema = z
   .min(1)
   .max(64)
   .regex(/^[a-z0-9-]+$/);
+
+/**
+ * Body for `POST /api/agents/[agentId]/sessions/compact`.
+ *
+ * `maxLines` is optional — when omitted, OpenClaw uses its own default
+ * compaction threshold. `chatId` (#508) scopes the compaction to one chat's
+ * session; omitted → the default/legacy per-user session. Shared between the
+ * route handler (parseRequestBody) and the client component (typed request
+ * body via z.infer).
+ */
+export const compactSessionSchema = z.object({
+  maxLines: z.number().int().positive().max(100_000).optional(),
+  chatId: chatIdSchema.optional(),
+});
+
+export type CompactSessionRequest = z.infer<typeof compactSessionSchema>;
 
 /**
  * One row in the response of `GET /api/agents/[agentId]/chats` — the user's

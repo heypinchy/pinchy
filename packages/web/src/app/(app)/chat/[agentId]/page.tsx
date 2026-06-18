@@ -66,7 +66,6 @@ export default async function ChatPage({ params }: { params: Promise<{ agentId: 
       isPersonal={agent.isPersonal}
       avatarUrl={avatarUrl}
       canEdit={canEdit}
-      isAdmin={isAdmin}
     />
   );
 }

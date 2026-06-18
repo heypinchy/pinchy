@@ -50,6 +50,30 @@ describe("SessionActionsMenu", () => {
     expect(toast.error).not.toHaveBeenCalled();
   });
 
+  it("includes chatId in the request body when on a per-chat URL (#508)", async () => {
+    const user = userEvent.setup();
+    fetchSpy.mockResolvedValue(jsonResponse({ ok: true }));
+
+    render(<SessionActionsMenu agentId="agent-1" chatId="chat-abc" />);
+    await openMenuAndCompact(user);
+
+    await waitFor(() => expect(fetchSpy).toHaveBeenCalled());
+    const [, opts] = fetchSpy.mock.calls[0] as [string, RequestInit];
+    expect(JSON.parse(opts.body as string)).toEqual({ chatId: "chat-abc" });
+  });
+
+  it("omits chatId from the body for the default chat", async () => {
+    const user = userEvent.setup();
+    fetchSpy.mockResolvedValue(jsonResponse({ ok: true }));
+
+    render(<SessionActionsMenu agentId="agent-1" />);
+    await openMenuAndCompact(user);
+
+    await waitFor(() => expect(fetchSpy).toHaveBeenCalled());
+    const [, opts] = fetchSpy.mock.calls[0] as [string, RequestInit];
+    expect(JSON.parse(opts.body as string)).toEqual({});
+  });
+
   it("surfaces the server error message via toast.error on failure", async () => {
     const user = userEvent.setup();
     fetchSpy.mockResolvedValue(

@@ -85,6 +85,35 @@ describe("POST /api/agents/[agentId]/sessions/compact", () => {
     expect(mockCompact).toHaveBeenCalledWith("agent:agent-1:direct:user-1", { maxLines: 200 });
   });
 
+  it("compacts the per-CHAT session when a chatId is provided (#508)", async () => {
+    // On /chat/<agentId>/<chatId> the header action must target THAT chat's
+    // session, not the default one — the session key gets the chatId segment.
+    const res = await POST(makeRequest({ chatId: "chat-abc" }), ctx as never);
+    expect(res.status).toBe(200);
+    expect(mockCompact).toHaveBeenCalledTimes(1);
+    expect(mockCompact.mock.calls[0][0]).toBe("agent:agent-1:direct:user-1:chat-abc");
+  });
+
+  it("rejects an invalid chatId (400, no OC call)", async () => {
+    // A malformed chatId must never route a compaction into the wrong/default
+    // conversation — reject at the body-validation edge, like the WS boundary.
+    const res = await POST(makeRequest({ chatId: "bad:id" }), ctx as never);
+    expect(res.status).toBe(400);
+    expect(mockCompact).not.toHaveBeenCalled();
+  });
+
+  it("throttles per session key — compacting a different chat is NOT blocked", async () => {
+    const a = await POST(makeRequest({ chatId: "chat-a" }), ctx as never);
+    expect(a.status).toBe(200);
+    // A different chat is a different session key, so its first compaction
+    // must go through rather than hitting the previous chat's throttle window.
+    const b = await POST(makeRequest({ chatId: "chat-b" }), ctx as never);
+    expect(b.status).toBe(200);
+    expect(mockCompact).toHaveBeenCalledTimes(2);
+    expect(mockCompact.mock.calls[0][0]).toBe("agent:agent-1:direct:user-1:chat-a");
+    expect(mockCompact.mock.calls[1][0]).toBe("agent:agent-1:direct:user-1:chat-b");
+  });
+
   it("returns 400 on an invalid body (maxLines not a positive int)", async () => {
     const res = await POST(makeRequest({ maxLines: -5 }), ctx as never);
     expect(res.status).toBe(400);
