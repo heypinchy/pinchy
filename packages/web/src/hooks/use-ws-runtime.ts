@@ -413,7 +413,9 @@ export function useWsRuntime(
   retryPendingUpload: (localId: string) => void;
 } {
   const { triggerRestart } = useRestart();
-  const draftId = useDraftId(agentId);
+  // Scope the draft id to (agent, chat) so server-side upload staging can't
+  // bleed pending attachments between sibling chats of the same agent (#508).
+  const draftId = useDraftId(agentId, chatId);
   const [messages, setMessages] = useState<WsMessage[]>([]);
   const [isRunning, setIsRunning] = useState(false);
   const [isConnected, setIsConnected] = useState(false);
