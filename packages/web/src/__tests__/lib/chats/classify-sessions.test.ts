@@ -31,6 +31,29 @@ describe("classifyUserSessions", () => {
     ]);
   });
 
+  it("matches a linked Telegram peer case-insensitively (normalizes the set itself)", () => {
+    // Hardening: OpenClaw stores the principal lowercased, and callers are
+    // expected to lowercase the peer set — but the classifier no longer relies
+    // on that. Even an un-lowercased peer id must still match, so a future
+    // caller that forgets can't silently drop a user's Telegram chat.
+    const sessions: RawSession[] = [
+      { key: webKey("tg-peer-99"), sessionId: "ses_tg", lastInteractionAt: 2000 },
+    ];
+
+    const result = classifyUserSessions(sessions, "u-1", new Set(["TG-Peer-99"]));
+
+    expect(result).toEqual([
+      {
+        sessionId: "ses_tg",
+        key: webKey("tg-peer-99"),
+        origin: "telegram",
+        writable: false,
+        chatId: null,
+        lastInteractionAt: 2000,
+      },
+    ]);
+  });
+
   it("includes the user's legacy web chat (no chatId) with chatId null", () => {
     const sessions: RawSession[] = [{ key: webKey("u-1"), sessionId: "ses_2", updatedAt: 500 }];
 

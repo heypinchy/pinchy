@@ -28,8 +28,14 @@ const QUEUED_RETRY_PREFIX =
 function extractText(content: unknown): string {
   if (Array.isArray(content)) {
     return content
-      .filter((part: { type: string; text?: string }) => part.type === "text" && part.text)
-      .map((part: { text?: string }) => part.text!)
+      .filter(
+        (part: { type?: string; text?: string } | null | undefined): part is { text: string } =>
+          part != null &&
+          part.type === "text" &&
+          typeof part.text === "string" &&
+          part.text.length > 0
+      )
+      .map((part) => part.text)
       .join(" ");
   }
   return typeof content === "string" ? content : "";

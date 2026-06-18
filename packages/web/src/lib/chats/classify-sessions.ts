@@ -32,10 +32,10 @@ export type ClassifiedChat = {
 export function classifyUserSessions(
   sessions: RawSession[],
   userId: string,
-  // MUST already be lowercased by the caller. OpenClaw lowercases the principal
-  // segment on storage, and this function compares the raw (lowercased) principal
-  // against this set verbatim — it does not normalize members itself. A peer id
-  // that is not lowercased here will silently never match.
+  // The user's linked Telegram peer ids. OpenClaw lowercases the principal
+  // segment on storage, so we compare against a lowercased copy of this set —
+  // callers don't have to pre-normalize (a non-lowercased peer id still matches,
+  // so a future caller can't silently drop a user's Telegram chat).
   linkedTelegramPeerIds: ReadonlySet<string>
 ): ClassifiedChat[] {
   // An empty (or non-string) userId is never a valid identity. Guarding here
@@ -44,6 +44,10 @@ export function classifyUserSessions(
   if (typeof userId !== "string" || userId.length === 0) return [];
 
   const ownPrincipal = userId.toLowerCase();
+  const linkedPeers = new Set<string>();
+  for (const peer of linkedTelegramPeerIds) {
+    if (typeof peer === "string") linkedPeers.add(peer.toLowerCase());
+  }
   const result: ClassifiedChat[] = [];
 
   for (const session of sessions) {
@@ -82,7 +86,7 @@ export function classifyUserSessions(
       continue;
     }
 
-    if (linkedTelegramPeerIds.has(principal)) {
+    if (linkedPeers.has(principal)) {
       // A Telegram peer linked to this user. Read-only from the web UI, and
       // the key must not carry extra segments — fail closed if it does.
       if (extra.length > 0) continue;

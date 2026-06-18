@@ -129,6 +129,12 @@ export function TelegramChatView({
           </Badge>
           <Badge
             data-testid="telegram-channel-indicator"
+            // role=img + aria-label gives this indicator a single, distinct
+            // accessible name ("Telegram channel") so a screen reader doesn't
+            // announce a bare "Telegram" twice — the chat-switcher trigger is
+            // also named "Telegram" on this view.
+            role="img"
+            aria-label="Telegram channel"
             variant="secondary"
             className="gap-1 text-xs font-normal"
           >
@@ -174,7 +180,15 @@ export function TelegramChatView({
               </p>
             ) : (
               state.data.messages.map((message, index) => (
-                <TranscriptMessage key={index} message={message} index={index} />
+                // The transcript is fetched once and never reordered or
+                // paginated, so a position-derived key is stable; the
+                // timestamp/role prefix makes it descriptive and keeps it unique
+                // even if two turns ever share a position after a future change.
+                <TranscriptMessage
+                  key={`${message.timestamp}-${message.role}-${index}`}
+                  message={message}
+                  index={index}
+                />
               ))
             )}
           </div>
