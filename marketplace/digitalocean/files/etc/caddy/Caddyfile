@@ -1,0 +1,30 @@
+# Pinchy reverse proxy
+# Primary upstream: Pinchy on 127.0.0.1:7777
+# Fallback upstream: local loading page on 127.0.0.1:9999
+#
+# lb_policy first      -> prefer primary; fall back only when primary is down.
+# lb_try_duration 1s   -> fail fast so users never wait for a dead backend.
+# fail_duration 5s     -> mark unreachable backend as dead for 5s before retry.
+#
+# To enable HTTPS: replace `:80` with your domain (e.g. pinchy.example.com)
+# and run `systemctl reload caddy`. Caddy provisions Let's Encrypt automatically.
+
+:80 {
+    reverse_proxy 127.0.0.1:7777 127.0.0.1:9999 {
+        lb_policy first
+        lb_try_duration 1s
+        fail_duration 5s
+    }
+}
+
+:9999 {
+    bind 127.0.0.1
+    handle /api/* {
+        respond 503
+    }
+    handle {
+        root * /var/www/pinchy-loading
+        try_files /index.html
+        file_server
+    }
+}

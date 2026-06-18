@@ -1,0 +1,32 @@
+#!/bin/bash
+# Runs once on the first boot of each Droplet created from the Pinchy snapshot
+# (cloud-init per-instance). Generates per-Droplet secrets, sets up swap, and
+# starts Pinchy. The shared snapshot never carries these secrets.
+set -euo pipefail
+
+ENV=/opt/pinchy/.env
+
+# Per-Droplet secrets — generated here, never baked into the snapshot. Pinchy
+# would auto-generate BETTER_AUTH_SECRET / ENCRYPTION_KEY if omitted; pinning
+# them up front means the public dev defaults are never active for a moment.
+{
+  echo "DB_PASSWORD=$(openssl rand -hex 32)"
+  echo "BETTER_AUTH_SECRET=$(openssl rand -hex 32)"
+  echo "ENCRYPTION_KEY=$(openssl rand -hex 32)"
+} >> "$ENV"
+chmod 600 "$ENV"
+
+# 2 GB swap — created on first boot so the snapshot image stays small.
+if [ ! -f /swapfile ]; then
+  fallocate -l 2G /swapfile
+  chmod 600 /swapfile
+  mkswap /swapfile
+  swapon /swapfile
+  echo '/swapfile none swap sw 0 0' >> /etc/fstab
+fi
+
+# Stamp the loading page's start time so it shows elapsed install time.
+sed -i "s/INSTALL_START_TIME/$(date +%s)000/" /var/www/pinchy-loading/index.html 2>/dev/null || true
+
+# Bring Pinchy up — images were pre-pulled at build time, so this is fast.
+cd /opt/pinchy && docker compose up -d

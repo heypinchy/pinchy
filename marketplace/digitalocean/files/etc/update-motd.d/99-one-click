@@ -1,0 +1,29 @@
+#!/bin/sh
+# DigitalOcean Marketplace welcome message, shown on first SSH login.
+myip=$(hostname -I 2>/dev/null | awk '{print $1}')
+
+cat <<EOF
+
+********************************************************************************
+
+  Welcome to Pinchy — self-hosted AI agents with permissions and an audit trail.
+
+  Open Pinchy in your browser:   http://${myip}
+
+  On first launch, a setup wizard creates your admin account and connects your
+  first model. While the containers start, that address shows a loading page.
+
+  HTTPS: point a domain's A record at ${myip}, then replace ':80' with your
+  domain in /etc/caddy/Caddyfile and run 'systemctl reload caddy'.
+
+  The firewall (ufw) is enabled. Open ports: 22 (SSH), 80, 443.
+  Per-Droplet secrets are stored in /opt/pinchy/.env — keep them private.
+
+  Docs:     https://docs.heypinchy.com
+  Source:   https://github.com/heypinchy/pinchy
+
+  To remove this message: rm -f $(readlink -f "\$0")
+
+********************************************************************************
+
+EOF

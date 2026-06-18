@@ -1,0 +1,68 @@
+{
+  "variables": {
+    "do_token": "{{env `DIGITALOCEAN_TOKEN`}}",
+    "image_name": "pinchy-24-04-snapshot-{{timestamp}}",
+    "apt_packages": "apt-transport-https ca-certificates curl gnupg jq ufw debian-keyring debian-archive-keyring",
+    "application_name": "Pinchy",
+    "application_version": "v0.6.0"
+  },
+  "builders": [
+    {
+      "type": "digitalocean",
+      "api_token": "{{user `do_token`}}",
+      "image": "ubuntu-24-04-x64",
+      "region": "nyc3",
+      "size": "s-1vcpu-1gb",
+      "ssh_username": "root",
+      "snapshot_name": "{{user `image_name`}}"
+    }
+  ],
+  "provisioners": [
+    {
+      "type": "shell",
+      "inline": ["cloud-init status --wait"]
+    },
+    {
+      "type": "file",
+      "source": "files/etc/",
+      "destination": "/etc/"
+    },
+    {
+      "type": "file",
+      "source": "files/var/",
+      "destination": "/var/"
+    },
+    {
+      "type": "shell",
+      "environment_vars": [
+        "DEBIAN_FRONTEND=noninteractive",
+        "LC_ALL=C",
+        "LANG=en_US.UTF-8",
+        "LC_CTYPE=en_US.UTF-8"
+      ],
+      "inline": [
+        "apt-get -qqy update",
+        "apt-get -qqy -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold full-upgrade",
+        "apt-get -qqy -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold install {{user `apt_packages`}}",
+        "apt-get -qqy clean"
+      ]
+    },
+    {
+      "type": "shell",
+      "environment_vars": [
+        "application_name={{user `application_name`}}",
+        "application_version={{user `application_version`}}",
+        "DEBIAN_FRONTEND=noninteractive",
+        "LC_ALL=C",
+        "LANG=en_US.UTF-8",
+        "LC_CTYPE=en_US.UTF-8"
+      ],
+      "scripts": [
+        "scripts/010-docker.sh",
+        "scripts/011-caddy.sh",
+        "scripts/012-pinchy-stage.sh",
+        "scripts/900-cleanup.sh"
+      ]
+    }
+  ]
+}
