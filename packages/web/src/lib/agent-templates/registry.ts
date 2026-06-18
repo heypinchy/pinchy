@@ -3,18 +3,20 @@ import { DOCUMENT_TEMPLATES } from "./data/document-agents";
 import { EMAIL_TEMPLATES } from "./data/email-agents";
 import { KNOWLEDGE_BASE_TEMPLATES } from "./data/knowledge-base";
 import { ODOO_TEMPLATES } from "./data/odoo-agents";
+import { WEB_TEMPLATES } from "./data/web-agents";
 import type { AgentTemplate } from "./types";
 
 // Order matters: the template selector grid renders templates in this
 // iteration order. Keep `custom` between the document templates and the
-// integration-specific (odoo, email) templates so it stays visually grouped
-// with the "no integration required" templates.
+// integration-specific (odoo, email, web) templates so it stays visually
+// grouped with the "no integration required" templates.
 export const AGENT_TEMPLATES: Record<string, AgentTemplate> = {
   ...KNOWLEDGE_BASE_TEMPLATES,
   ...DOCUMENT_TEMPLATES,
   ...CUSTOM_TEMPLATES,
   ...ODOO_TEMPLATES,
   ...EMAIL_TEMPLATES,
+  ...WEB_TEMPLATES,
 };
 
 export function getTemplate(id: string): AgentTemplate | undefined {

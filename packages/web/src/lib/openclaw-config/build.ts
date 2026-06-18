@@ -17,7 +17,12 @@ import { computeDeniedGroups } from "@/lib/tool-registry";
 import type { AgentPluginConfig } from "@/db/schema";
 import { TOOL_CAPABLE_OLLAMA_CLOUD_MODELS, OLLAMA_CLOUD_COST } from "@/lib/ollama-cloud-models";
 import { getModelCatalogForProvider } from "@/lib/openclaw-builtin-models";
-import { getOpenClawWorkspacePath, getAgentBootstrapSizes } from "@/lib/workspace";
+import {
+  getOpenClawWorkspacePath,
+  getAgentBootstrapSizes,
+  writeWorkspaceSkill,
+} from "@/lib/workspace";
+import { getSkillBody, isKnownSkill } from "@/lib/skills";
 import { resolveBootstrapCaps } from "./bootstrap-caps";
 import { CONFIG_PATH } from "./paths";
 import { configsAreEquivalentUpToOpenClawMetadata } from "./normalize";
@@ -359,6 +364,27 @@ export async function regenerateOpenClawConfig() {
         userId: agent.ownerId,
       };
     }
+
+    // Skills (master issue #543). The allowlist is ALWAYS emitted — even
+    // empty — because an absent `skills` field lets OC's 58 bundled desktop
+    // skills (1password, apple-notes, ...) into Pinchy agents. An explicit
+    // `skills: []` excludes them; an explicit list narrows to just our
+    // first-party skills. Behavior verified in the smoke-test against OC
+    // 2026.6.5: empty list → 0/59 ready, all "excluded".
+    const rawSkills = (agent.skills as string[] | null) ?? [];
+    const skills: string[] = [];
+    for (const id of rawSkills) {
+      if (!isKnownSkill(id)) {
+        throw new Error(
+          `Agent ${agent.name} (${agent.id}) references unknown skill: ${id}. Add it to KNOWN_SKILLS or remove from agent.skills.`
+        );
+      }
+      skills.push(id);
+      // Materialize the SKILL.md into the agent's workspace so OC's
+      // workspace-tier loader (highest precedence) finds it.
+      writeWorkspaceSkill(agent.id, id, getSkillBody(id));
+    }
+    agentEntry.skills = skills;
 
     return agentEntry;
   });

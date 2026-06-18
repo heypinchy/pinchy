@@ -179,6 +179,7 @@ describe("POST /api/agents audit logging", () => {
         name: "Test Agent",
         model: "anthropic/claude-haiku-4-5-20251001",
         templateId: "custom",
+        skills: [],
         modelSelection: {
           source: "provider-default",
           hint: null,

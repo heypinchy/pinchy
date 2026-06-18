@@ -73,6 +73,18 @@ function assertValidAgentId(agentId: string): void {
   }
 }
 
+// Skills live under <workspace>/skills/<skillId>/SKILL.md. OpenClaw 2026.6.x
+// auto-discovers them with workspace-precedence highest in the six-tier
+// loading order. Validated in the smoke-test against OC 2026.6.5 — see
+// master issue #543 for the full architecture rationale.
+function assertValidSkillId(skillId: string): void {
+  // SKILL.md authors restrict to lowercase kebab-case anyway, but the real
+  // requirement is path-safety: no slashes, no dots, no traversal sequences.
+  if (!skillId || !/^[a-z0-9][a-z0-9-]*$/.test(skillId)) {
+    throw new Error(`Invalid skillId: ${skillId}`);
+  }
+}
+
 export function getWorkspacePath(agentId: string): string {
   assertValidAgentId(agentId);
   return join(getWorkspaceBasePath(), agentId);
@@ -159,6 +171,41 @@ export function writeWorkspaceFileInternal(
   }
 
   writeFileSync(join(workspacePath, filename), content, "utf-8");
+}
+
+// =============================================================================
+// Skills — see master issue #543 (Pinchy Skill Layer).
+//
+// OpenClaw 2026.6.x loads `<workspace>/skills/<id>/SKILL.md` automatically
+// (workspace tier is highest in OC's six-tier precedence). Pinchy writes
+// the SKILL.md files at config-regenerate time alongside the AGENTS.md /
+// SOUL.md bootstrap files, and emits `agents.list[].skills: [...]` in
+// openclaw.json to allowlist exactly the Pinchy-authored skills — never
+// the 58 bundled OC desktop skills (1password, apple-notes, ...) that are
+// irrelevant for enterprise agents.
+// =============================================================================
+
+export function getWorkspaceSkillPath(agentId: string, skillId: string): string {
+  assertValidAgentId(agentId);
+  assertValidSkillId(skillId);
+  return join(getWorkspacePath(agentId), "skills", skillId, "SKILL.md");
+}
+
+export function writeWorkspaceSkill(agentId: string, skillId: string, content: string): void {
+  assertValidAgentId(agentId);
+  assertValidSkillId(skillId);
+
+  const dir = join(getWorkspacePath(agentId), "skills", skillId);
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(join(dir, "SKILL.md"), content, "utf-8");
+}
+
+export function removeWorkspaceSkill(agentId: string, skillId: string): void {
+  assertValidAgentId(agentId);
+  assertValidSkillId(skillId);
+
+  const dir = join(getWorkspacePath(agentId), "skills", skillId);
+  rmSync(dir, { recursive: true, force: true });
 }
 
 // The files OpenClaw loads as prompt-bootstrap context for an agent

@@ -158,6 +158,11 @@ export const POST = withAdmin(async (request, _ctx, session) => {
     ...new Set([...(template.allowedTools ?? []), ...(defaultAllowedTools ?? [])]),
   ];
 
+  // Skills from the template seed the agent's allowlist. Templates without
+  // defaultSkills get an empty list — same shape as a pre-migration agent.
+  // See master issue #543.
+  const templateSkills = [...new Set(template.defaultSkills ?? [])];
+
   const [agent] = await db
     .insert(agents)
     .values({
@@ -167,6 +172,7 @@ export const POST = withAdmin(async (request, _ctx, session) => {
       pluginConfig: template.pluginId && pluginConfig ? pluginConfig : null,
       ownerId: session.user.id,
       allowedTools: mergedAllowedTools,
+      skills: templateSkills,
       tagline: tagline || template.defaultTagline || null,
       avatarSeed: generateAvatarSeed(),
       personalityPresetId: template.defaultPersonality,
@@ -187,6 +193,7 @@ export const POST = withAdmin(async (request, _ctx, session) => {
         name: agent.name,
         model: agent.model,
         templateId,
+        skills: templateSkills,
         modelSelection: {
           source: modelSelectionSource,
           hint: template.modelHint ?? null,

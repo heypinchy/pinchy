@@ -41,6 +41,15 @@ export interface AgentTemplate {
   iconName?: TemplateIconName;
   /** Per-template LLM hint used by the model resolver at agent-creation time. */
   modelHint?: ModelHint;
+  /**
+   * OpenClaw-native skills the template seeds onto new agents (see master
+   * issue #543). Each entry must appear in KNOWN_SKILLS — enforced by the
+   * drift-guard test. Pinchy writes the corresponding SKILL.md into the
+   * agent's workspace and lists the id under `agents.list[].skills` in
+   * openclaw.json. Field is additive: existing templates omit it and behave
+   * as before (agent gets skills: [] in DB).
+   */
+  defaultSkills?: string[];
 }
 
 /**

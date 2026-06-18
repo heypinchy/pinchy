@@ -7,6 +7,13 @@ export interface TemplateItem {
   requiresDirectories: boolean;
   requiresOdooConnection?: boolean;
   requiresEmailConnection?: boolean;
+  /**
+   * Template uses `pinchy-web` (public web search + page fetch). No
+   * external account or admin-managed credential is required — the plugin
+   * pulls its own credentials at runtime. Drives the access badge and the
+   * permission preview, parity with the other `requires*` flags.
+   */
+  requiresWeb?: boolean;
   odooAccessLevel?: string;
   defaultTagline: string | null;
   available?: boolean;
@@ -26,7 +33,11 @@ export interface AccessBadgeProps {
 export function getAccessBadgeProps(
   template: Pick<
     TemplateItem,
-    "requiresDirectories" | "requiresOdooConnection" | "requiresEmailConnection" | "odooAccessLevel"
+    | "requiresDirectories"
+    | "requiresOdooConnection"
+    | "requiresEmailConnection"
+    | "requiresWeb"
+    | "odooAccessLevel"
   >
 ): AccessBadgeProps | null {
   if (template.requiresEmailConnection) {
@@ -45,6 +56,9 @@ export function getAccessBadgeProps(
   if (template.requiresDirectories) {
     return { label: "Documents · Read-only", variant: "green" };
   }
+  if (template.requiresWeb) {
+    return { label: "Web · Public search", variant: "green" };
+  }
   return null;
 }
 
@@ -58,7 +72,11 @@ export interface PermissionItem {
 export function getPermissionPreviewItems(
   template: Pick<
     TemplateItem,
-    "requiresDirectories" | "requiresOdooConnection" | "requiresEmailConnection" | "odooAccessLevel"
+    | "requiresDirectories"
+    | "requiresOdooConnection"
+    | "requiresEmailConnection"
+    | "requiresWeb"
+    | "odooAccessLevel"
   >
 ): PermissionItem[] {
   if (template.requiresEmailConnection) {
@@ -91,6 +109,13 @@ export function getPermissionPreviewItems(
     return [
       { icon: "check", text: "Read files in the selected directories" },
       { icon: "cross", text: "Cannot modify or delete files" },
+    ];
+  }
+  if (template.requiresWeb) {
+    return [
+      { icon: "check", text: "Search the public web" },
+      { icon: "check", text: "Fetch public web pages" },
+      { icon: "cross", text: "Cannot access your private data or internal systems" },
     ];
   }
   return [];
@@ -142,6 +167,7 @@ const TEMPLATE_CATEGORY_MAP: Record<string, CategoryId> = {
   "odoo-project-manager": "operations",
   "odoo-marketing-analyst": "marketing-web",
   "odoo-website-analyst": "marketing-web",
+  "market-monitor": "marketing-web",
   "knowledge-base": "knowledge-compliance",
   "contract-analyzer": "knowledge-compliance",
   "proposal-comparator": "knowledge-compliance",

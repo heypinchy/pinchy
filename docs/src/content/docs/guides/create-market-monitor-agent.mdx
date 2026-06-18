@@ -1,0 +1,62 @@
+---
+title: Create a Market & News Monitor
+description: Step-by-step guide to creating an agent that watches the public web for market trends, industry news, and competitor signals.
+---
+
+This guide walks you through creating a Market & News Monitor — an agent that searches the public web for current information and cites every fact with a source URL.
+
+## Prerequisites
+
+- Pinchy is running (see [Quick Start](/getting-started/))
+- A web search provider is configured (the **Pinchy Web** plugin pulls its own credentials at runtime — no per-agent connection setup)
+- You are logged in as an admin
+
+## 1. Navigate to "New Agent"
+
+In the Pinchy sidebar, click the **+** button next to "Agents" to open the agent creation form.
+
+## 2. Select the "Market & News Monitor" template
+
+Choose **Market & News Monitor** from the **Marketing & Web** category. The template pre-configures the agent with:
+
+- A monitor persona (concise, source-grounded, recency-aware)
+- The `web-search` skill — a workflow guide that teaches the agent when to search, when to fetch a full page, and how to cite sources
+- Read-only access to the public web through `pinchy_web_search` and `pinchy_web_fetch`
+
+## 3. Enter a name and create
+
+Give your agent a descriptive name — for example "Industry Watch" or "Competitive Pulse". Click **Create**.
+
+The agent appears in your sidebar and opens its chat page. It is ready to use immediately — the web tools come from the **Pinchy Web** plugin, no per-user connection is required.
+
+## What this agent can do
+
+- Search the public web for current information
+- Fetch the full text of specific public URLs
+- Summarize what it finds, citing every claim with a source link
+- Refuse to invent facts when no source is found
+
+## What this agent **cannot** do
+
+- Access your private data, internal systems, or any connected integration
+- Send messages, post anywhere, or take any action outside this chat
+- Read any document or file on your Pinchy install
+
+## Example prompts
+
+- "What did Anthropic announce this week?"
+- "Recent news about EU AI Act enforcement for SMEs"
+- "Compare pricing for the top three project-management SaaS tools"
+- "Has [Competitor] released any product updates in 2026?"
+
+The agent will return a short answer followed by cited bullet points and a one-line "What I checked" summary describing the queries it ran.
+
+## How it works under the hood
+
+Market & News Monitor is the first template built on Pinchy's skill layer (master tracking issue #543). When you create an agent from this template:
+
+- The `web-search` skill body is materialized to the agent's workspace as `skills/web-search/SKILL.md`
+- OpenClaw 2026.6.x loads that file automatically into the agent's system prompt
+- The agent's `openclaw.json` entry lists `skills: ["web-search"]`, which also excludes OpenClaw's bundled desktop skills (1Password, Apple Notes, ...) that are irrelevant for enterprise agents
+
+You can read more about how skills work in [Skills, Templates, and Capabilities](/explanation/skills-and-templates/) (forthcoming).

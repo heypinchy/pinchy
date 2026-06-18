@@ -133,6 +133,7 @@ export default defineConfig({
           label: 'Guides',
           items: [
             { label: 'Create a Knowledge Base Agent', slug: 'guides/create-knowledge-base-agent' },
+            { label: 'Create a Market & News Monitor', slug: 'guides/create-market-monitor-agent' },
             { label: 'Mount Data Directories', slug: 'guides/mount-data-directories' },
             { label: 'User Management', slug: 'guides/user-management' },
             { label: 'Smithers Onboarding', slug: 'guides/smithers-onboarding' },

@@ -129,6 +129,11 @@ export const agents = pgTable(
     templateId: text("template_id"),
     pluginConfig: jsonb("plugin_config").$type<AgentPluginConfig>(),
     allowedTools: jsonb("allowed_tools").$type<string[]>().notNull().default([]),
+    // OpenClaw-native skill allowlist. Each entry is a Pinchy first-party
+    // skill id (see KNOWN_SKILLS in src/lib/skills/index.ts). Emitted as
+    // `agents.list[].skills` in openclaw.json; empty list correctly excludes
+    // OC's 58 bundled desktop skills. See master issue #543.
+    skills: jsonb("skills").$type<string[]>().notNull().default([]),
     ownerId: text("owner_id").references(() => users.id, { onDelete: "cascade" }),
     isPersonal: boolean("is_personal").notNull().default(false),
     visibility: text("visibility").notNull().default("restricted"),

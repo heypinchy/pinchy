@@ -73,6 +73,7 @@ export const GET = withAuth(async () => {
         requiresDirectories: template.pluginId === "pinchy-files",
         requiresOdooConnection: template.requiresOdooConnection ?? false,
         requiresEmailConnection: template.requiresEmailConnection ?? false,
+        requiresWeb: template.pluginId === "pinchy-web",
         odooAccessLevel: template.odooConfig?.accessLevel,
         defaultTagline: template.defaultTagline,
         available,

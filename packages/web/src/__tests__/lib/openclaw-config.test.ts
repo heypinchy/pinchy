@@ -659,6 +659,10 @@ describe("regenerateOpenClawConfig", () => {
         fs: { workspaceOnly: true },
       },
       heartbeat: { every: "0m" },
+      // Empty skills allowlist is intentional — see master issue #543.
+      // Excludes OC's 58 bundled desktop skills (1password, apple-notes,
+      // ...) from agents Pinchy never opted into them on.
+      skills: [],
     });
     expect(config.agents.list[1]).toEqual({
       id: "uuid-agent-2",
@@ -670,6 +674,7 @@ describe("regenerateOpenClawConfig", () => {
         fs: { workspaceOnly: true },
       },
       heartbeat: { every: "0m" },
+      skills: [],
     });
   });
 

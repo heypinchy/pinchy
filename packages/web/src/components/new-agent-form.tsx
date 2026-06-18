@@ -43,6 +43,7 @@ interface Template {
   requiresDirectories: boolean;
   requiresOdooConnection: boolean;
   requiresEmailConnection?: boolean;
+  requiresWeb?: boolean;
   odooAccessLevel?: string;
   defaultTagline: string | null;
 }

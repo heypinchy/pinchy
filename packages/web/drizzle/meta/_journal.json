@@ -295,6 +295,13 @@
       "when": 1781859608593,
       "tag": "0041_steady_stryfe",
       "breakpoints": true
+    },
+    {
+      "idx": 42,
+      "version": "7",
+      "when": 1782196410687,
+      "tag": "0042_silly_revanche",
+      "breakpoints": true
     }
   ]
 }
