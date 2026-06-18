@@ -17,24 +17,70 @@ vi.mock("@/lib/agent-access", () => ({
   getAgentWithAccess: (...args: unknown[]) => mockGetAgentWithAccess(...args),
 }));
 
-const mockHistory = vi.fn();
-vi.mock("@/server/openclaw-client", () => ({
-  getOpenClawClient: () => ({ sessions: { history: mockHistory } }),
+// drizzle expression builders are no-ops here — the mocked query chain ignores
+// them and returns fixed rows per table.
+vi.mock("drizzle-orm", () => ({
+  and: (...a: unknown[]) => a,
+  eq: (...a: unknown[]) => a,
+  asc: (...a: unknown[]) => a,
 }));
 
-// `db.select().from().where()` returns the linked channel rows for THIS user.
-const mockWhere = vi.fn();
-vi.mock("@/db", () => ({
-  db: {
-    select: vi.fn().mockReturnValue({
-      from: vi.fn().mockReturnValue({
-        where: (...args: unknown[]) => mockWhere(...args),
-      }),
-    }),
+// Schema sentinels: the route only needs object identity to pick the table.
+vi.mock("@/db/schema", () => ({
+  channelLinks: { __table: "channel_links", channel: {}, userId: {} },
+  channelMessages: {
+    __table: "channel_messages",
+    direction: {},
+    content: {},
+    sentAt: {},
+    agentId: {},
+    channel: {},
+    peerId: {},
   },
 }));
 
-// `getSetting("telegram_bot_username:<agentId>")` resolves the bot username.
+// Two queries run: channel_links (peer lookup) then channel_messages (transcript).
+// The chain is awaitable (`then`) and chainable (`where/orderBy/limit`) so both
+// the `.where()`-terminated links query and the `.limit()`-terminated messages
+// query resolve to the right rows by table identity.
+let linkRows: unknown[];
+let messageRows: unknown[];
+let messagesFail = false;
+const fromCalls: unknown[] = [];
+const messagesWhereArgs: unknown[] = [];
+vi.mock("@/db", async () => {
+  const schema = (await import("@/db/schema")) as {
+    channelLinks: unknown;
+    channelMessages: unknown;
+  };
+  const makeChain = (table: unknown) => {
+    const isMessages = table === schema.channelMessages;
+    const chain: Record<string, unknown> = {
+      where: (...a: unknown[]) => {
+        if (isMessages) messagesWhereArgs.push(...a);
+        return chain;
+      },
+      orderBy: () => chain,
+      limit: () => chain,
+      then: (resolve: (v: unknown) => unknown, reject?: (e: unknown) => unknown) => {
+        if (isMessages && messagesFail) return reject?.(new Error("db down"));
+        return resolve(isMessages ? messageRows : linkRows);
+      },
+    };
+    return chain;
+  };
+  return {
+    db: {
+      select: () => ({
+        from: (table: unknown) => {
+          fromCalls.push(table);
+          return makeChain(table);
+        },
+      }),
+    },
+  };
+});
+
 const mockGetSetting = vi.fn();
 vi.mock("@/lib/settings", () => ({
   getSetting: (...args: unknown[]) => mockGetSetting(...args),
@@ -43,34 +89,10 @@ vi.mock("@/lib/settings", () => ({
 // ── Helpers ──────────────────────────────────────────────────────────────
 
 function makeRequest() {
-  return new NextRequest("http://localhost/api/agents/agent-1/telegram-chat", {
-    method: "GET",
-  });
+  return new NextRequest("http://localhost/api/agents/agent-1/telegram-chat", { method: "GET" });
 }
 
 const ctx = { params: Promise.resolve({ agentId: "agent-1" }) };
-
-/**
- * A realistic OpenClaw `sessions.history` payload mixing the shapes the live
- * web chat already normalizes: a user turn with OpenClaw's `[timestamp]`
- * prefix, an assistant turn wrapped in `<final>` tags, and tool/system noise
- * that must be dropped.
- */
-function transcriptPayload() {
-  return {
-    messages: [
-      { role: "user", content: "[2026-06-16T10:00:00Z] Hello from Telegram", timestamp: 1000 },
-      {
-        role: "assistant",
-        content: [{ type: "text", text: "<final>Hi there!</final>" }],
-        timestamp: 2000,
-      },
-      // tool/system noise the read-only view drops, exactly like the live chat
-      { role: "tool", content: "tool result blob", timestamp: 1500 },
-      { role: "system", content: "system prompt", timestamp: 500 },
-    ],
-  };
-}
 
 // ── Tests ──────────────────────────────────────────────────────────────────
 
@@ -79,26 +101,29 @@ describe("GET /api/agents/[agentId]/telegram-chat", () => {
 
   beforeEach(async () => {
     vi.clearAllMocks();
+    fromCalls.length = 0;
+    messagesWhereArgs.length = 0;
+    messagesFail = false;
     mockGetSession.mockResolvedValue({
       user: { id: "user-1", email: "user@test.com", role: "member" },
     });
     mockGetAgentWithAccess.mockResolvedValue({ id: "agent-1", name: "Smithers" });
-    // This user has one linked Telegram peer (note mixed case to prove lowercasing).
-    mockWhere.mockResolvedValue([
-      { channel: "telegram", userId: "user-1", channelUserId: "TG-Peer-111" },
-    ]);
-    mockHistory.mockResolvedValue(transcriptPayload());
+    // This user has one linked Telegram peer (mixed case to prove lowercasing).
+    linkRows = [{ channel: "telegram", userId: "user-1", channelUserId: "TG-Peer-111" }];
+    // Pinchy-owned transcript: inbound→user, outbound→assistant, chronological.
+    messageRows = [
+      { direction: "inbound", content: "Hello from Telegram", sentAt: new Date(1000) },
+      { direction: "outbound", content: "Hi there!", sentAt: new Date(2000) },
+    ];
     mockGetSetting.mockResolvedValue("smithers_bot");
 
-    const mod = await import("@/app/api/agents/[agentId]/telegram-chat/route");
-    GET = mod.GET;
+    GET = (await import("@/app/api/agents/[agentId]/telegram-chat/route")).GET;
   });
 
   it("returns 401 when unauthenticated", async () => {
     mockGetSession.mockResolvedValueOnce(null);
     const res = await GET(makeRequest(), ctx as never);
     expect(res.status).toBe(401);
-    expect(mockHistory).not.toHaveBeenCalled();
   });
 
   it("propagates the access decision from getAgentWithAccess (403/404)", async () => {
@@ -107,15 +132,15 @@ describe("GET /api/agents/[agentId]/telegram-chat", () => {
     );
     const res = await GET(makeRequest(), ctx as never);
     expect(res.status).toBe(403);
-    expect(mockHistory).not.toHaveBeenCalled();
   });
 
-  it("resolves the session key from the authed user's link and returns mapped messages", async () => {
+  it("renders the Pinchy-owned transcript: inbound→user, outbound→assistant, in order", async () => {
     const res = await GET(makeRequest(), ctx as never);
     expect(res.status).toBe(200);
 
-    // Session key is server-derived: agent:<agentId>:direct:<lowercased peerId>.
-    expect(mockHistory).toHaveBeenCalledWith("agent:agent-1:direct:tg-peer-111", expect.anything());
+    // Reads from Pinchy's own channel_messages store, NOT OpenClaw.
+    const { channelMessages } = (await import("@/db/schema")) as { channelMessages: unknown };
+    expect(fromCalls).toContain(channelMessages);
 
     const body = await res.json();
     expect(body.messages).toEqual([
@@ -125,35 +150,41 @@ describe("GET /api/agents/[agentId]/telegram-chat", () => {
   });
 
   it("returns 404 when the authed user has no linked Telegram conversation", async () => {
-    mockWhere.mockResolvedValueOnce([]);
+    linkRows = [];
     const res = await GET(makeRequest(), ctx as never);
     expect(res.status).toBe(404);
     const body = await res.json();
     expect(body.error).toBe("No linked Telegram conversation");
-    // Never hit OpenClaw without a resolved peer.
-    expect(mockHistory).not.toHaveBeenCalled();
+    // Never query the transcript without a resolved peer.
+    const { channelMessages } = (await import("@/db/schema")) as { channelMessages: unknown };
+    expect(fromCalls).not.toContain(channelMessages);
   });
 
-  it("derives the peer from the AUTHED user only — a second user gets THEIR peer, never the first user's", async () => {
-    // A different authed user with their OWN, different link.
+  it("empty transcript renders as an empty message list (still 200)", async () => {
+    messageRows = [];
+    const res = await GET(makeRequest(), ctx as never);
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.messages).toEqual([]);
+  });
+
+  it("derives the peer from the AUTHED user only — a second user's transcript query uses THEIR peer, never the first user's", async () => {
     mockGetSession.mockResolvedValueOnce({
       user: { id: "user-2", email: "other@test.com", role: "member" },
     });
-    mockWhere.mockResolvedValueOnce([
-      { channel: "telegram", userId: "user-2", channelUserId: "tg-peer-222" },
-    ]);
+    linkRows = [{ channel: "telegram", userId: "user-2", channelUserId: "tg-peer-222" }];
 
     const res = await GET(makeRequest(), ctx as never);
     expect(res.status).toBe(200);
 
-    // The session key uses user-2's peer (222), NOT user-1's peer (111).
-    expect(mockHistory).toHaveBeenCalledWith("agent:agent-1:direct:tg-peer-222", expect.anything());
-    const calledKey = mockHistory.mock.calls[0][0] as string;
-    expect(calledKey).not.toContain("tg-peer-111");
+    // The transcript query is keyed by user-2's peer (222), never user-1's (111).
+    const where = JSON.stringify(messagesWhereArgs);
+    expect(where).toContain("tg-peer-222");
+    expect(where).not.toContain("tg-peer-111");
   });
 
-  it("returns 502 when OpenClaw sessions.history fails", async () => {
-    mockHistory.mockRejectedValueOnce(new Error("OpenClaw WS disconnected"));
+  it("returns 502 (retryable) when the transcript query fails", async () => {
+    messagesFail = true;
     const res = await GET(makeRequest(), ctx as never);
     expect(res.status).toBe(502);
   });
