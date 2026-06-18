@@ -1,0 +1,95 @@
+captainVersion: 4
+
+# Pinchy on CapRover — three services (pinchy + openclaw + postgres), wired to
+# match Pinchy's production docker-compose as closely as CapRover's one-click
+# schema allows. See README.md for two deliberate deviations CapRover forces:
+#   1. openclaw-secrets cannot be a tmpfs, so it is a regular shared volume on
+#      disk (a runtime cache rebuilt from the encrypted DB — bounded regression).
+#   2. CapRover ignores healthcheck/depends_on ordering, so the services rely on
+#      restart-on-failure to converge on first boot.
+
+services:
+  $$cap_appname-db:
+    image: postgres:17
+    restart: unless-stopped
+    volumes:
+      - $$cap_appname-pgdata:/var/lib/postgresql/data
+    environment:
+      POSTGRES_DB: pinchy
+      POSTGRES_USER: pinchy
+      POSTGRES_PASSWORD: $$cap_db_password
+    caproverExtra:
+      notExposeAsWebApp: 'true'
+
+  $$cap_appname-pinchy:
+    image: ghcr.io/heypinchy/pinchy:$$cap_pinchy_version
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: postgresql://pinchy:$$cap_db_password@srv-captain--$$cap_appname-db:5432/pinchy
+      OPENCLAW_WS_URL: ws://srv-captain--$$cap_appname-openclaw:18789
+      BETTER_AUTH_SECRET: $$cap_auth_secret
+      ENCRYPTION_KEY: $$cap_encryption_key
+      PINCHY_ENTERPRISE_KEY: $$cap_enterprise_key
+    volumes:
+      - $$cap_appname-oc-config:/openclaw-config
+      - $$cap_appname-oc-secrets:/openclaw-secrets
+      - $$cap_appname-workspaces:/openclaw-config/workspaces
+      - $$cap_appname-oc-extensions:/openclaw-extensions
+      - $$cap_appname-pinchy-secrets:/app/secrets
+    depends_on:
+      - $$cap_appname-db
+    caproverExtra:
+      containerHttpPort: '7777'
+
+  $$cap_appname-openclaw:
+    image: ghcr.io/heypinchy/pinchy-openclaw:$$cap_pinchy_version
+    restart: unless-stopped
+    volumes:
+      - $$cap_appname-oc-config:/root/.openclaw
+      - $$cap_appname-oc-secrets:/openclaw-secrets
+      - $$cap_appname-workspaces:/root/.openclaw/workspaces
+      - $$cap_appname-oc-extensions:/root/.openclaw/extensions
+      - $$cap_appname-pinchy-data:/data
+      - $$cap_appname-pdf-cache:/var/cache/pinchy-files
+    depends_on:
+      - $$cap_appname-pinchy
+    caproverExtra:
+      notExposeAsWebApp: 'true'
+
+caproverOneClickApp:
+  displayName: Pinchy
+  isOfficial: false
+  description: Self-hosted AI agents with per-agent permissions and a signed audit trail. Built on OpenClaw, open source (AGPL-3.0).
+  documentation: See https://docs.heypinchy.com — only port 7777 (the web UI) is exposed; OpenClaw and PostgreSQL stay on CapRover's internal network.
+  instructions:
+    start: >-
+      Pinchy runs as three containers (web + OpenClaw runtime + PostgreSQL).
+      Secrets are generated for you below — leave them as-is unless you manage
+      your own. After deploy, enable HTTPS on the web app and open it: a setup
+      wizard creates your admin account and connects your first model.
+    end: >-
+      Pinchy is starting. Open the web app's URL (enable HTTPS first) to reach
+      the setup wizard. The OpenClaw and database services are internal-only.
+      Docs: https://docs.heypinchy.com
+  variables:
+    - id: $$cap_pinchy_version
+      label: Pinchy version
+      defaultValue: 'v0.6.0'
+      description: The released Pinchy version to deploy (must have published images).
+      validRegex: '/^v\d+\.\d+\.\d+$/'
+    - id: $$cap_db_password
+      label: Database password
+      defaultValue: $$cap_gen_random_hex(32)
+      description: Auto-generated. Leave as-is unless you manage the credential yourself.
+    - id: $$cap_auth_secret
+      label: Session secret (BETTER_AUTH_SECRET)
+      defaultValue: $$cap_gen_random_hex(64)
+      description: Auto-generated session-signing secret. Leave as-is.
+    - id: $$cap_encryption_key
+      label: Encryption key (ENCRYPTION_KEY)
+      defaultValue: $$cap_gen_random_hex(64)
+      description: Auto-generated 64-hex-char key that encrypts provider API keys at rest. Leave as-is.
+    - id: $$cap_enterprise_key
+      label: Enterprise license key (optional)
+      defaultValue: ''
+      description: Optional. Enables Groups and agent access control. Can also be entered later in Settings -> License.
