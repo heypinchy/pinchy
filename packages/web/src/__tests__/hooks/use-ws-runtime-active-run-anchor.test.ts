@@ -204,6 +204,40 @@ describe("useWsRuntime — activeRun reconcile anchors a trailing assistant", ()
     expect(JSON.stringify(assistants[0]!.content)).toContain("one two three");
   });
 
+  it("DRAINS (does not discard) buffered deltas when there is no activeRun but the reply is not yet persisted", () => {
+    // The boundary of the stale-buffer guard. A run can be active with its
+    // first chunk not yet streamed (firstChunkAt null) when the reload's
+    // history request reaches the server — handleHistory withholds the
+    // activeRun signal in that window. The new ws subscribed before the first
+    // chunk, so it receives ALL deltas (no prefix loss); they buffer until
+    // history. History then arrives with NO activeRun but ends in the USER
+    // turn (the reply isn't persisted yet). These deltas are NOT stale — they
+    // must drain and build the bubble. (Contrast the complete-before-history
+    // case above, where history ends in the persisted assistant → discard.)
+    const { result } = renderHook(() => useWsRuntime("agent-1"));
+    const ws = wsInstances[0]!;
+    act(() => ws.simulateOpen());
+
+    act(() => ws.simulateMessage({ type: "chunk", messageId: "srv-1", content: "one" }));
+    act(() => ws.simulateMessage({ type: "chunk", messageId: "srv-1", content: " two" }));
+
+    act(() =>
+      ws.simulateMessage({
+        type: "history",
+        messages: [{ role: "user", content: "list one..ten" }],
+        // no activeRun, reply not persisted yet (history ends in the user turn)
+      })
+    );
+
+    const msgs = (
+      result.current.runtime as { messages?: { id: string; role: string; content?: unknown }[] }
+    ).messages!;
+    const assistants = msgs.filter((m) => m.role === "assistant");
+    expect(assistants).toHaveLength(1);
+    expect(assistants[0]!.id).toBe("srv-1");
+    expect(JSON.stringify(assistants[0]!.content)).toContain("one two");
+  });
+
   it("anchors the trailing assistant in place when the reply IS in history", () => {
     const { result } = renderHook(() => useWsRuntime("agent-1"));
     const ws = wsInstances[0]!;

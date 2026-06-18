@@ -142,6 +142,38 @@ describe("useWsRuntime", () => {
     expect(result.current.isConnected).toBe(false);
   });
 
+  it("streams chunks straight through after a user send — the pre-history buffer is disarmed by sending", () => {
+    // The pre-history frame buffer is armed on EVERY open (to catch a reload's
+    // raced-ahead deltas), so it must be disarmed the moment the user sends —
+    // a send proves we're past the history-load window. Without that disarm,
+    // this turn's chunks would be held waiting for a history response that
+    // never arrives mid-turn. There is intentionally NO history frame here:
+    // the chunk must render immediately, not stall in the buffer.
+    const { result } = renderHook(() => useWsRuntime("agent-1"));
+    const ws = wsInstances[0];
+
+    act(() => {
+      ws.onopen?.();
+    });
+    act(() => {
+      // Block body: do NOT return onNew's promise to act() (that would trip the
+      // async-act warning). The user message + in-flight placeholder are added
+      // synchronously before onNew's first await, which is all this test needs.
+      result.current.runtime.onNew(makeUserMessage("Hello"));
+    });
+    act(() => {
+      ws.onmessage?.({
+        data: JSON.stringify({ type: "chunk", content: "Hi there", messageId: "msg-1" }),
+      } as MessageEvent);
+    });
+
+    const msgs = (result.current.runtime as { messages: { role: string; content: unknown }[] })
+      .messages;
+    const assistant = msgs.filter((m) => m.role === "assistant").pop();
+    expect(assistant).toBeDefined();
+    expect(JSON.stringify(assistant!.content)).toContain("Hi there");
+  });
+
   it("should stop running immediately when a complete message is received", () => {
     const { result } = renderHook(() => useWsRuntime("agent-1"));
     const ws = wsInstances[0];
