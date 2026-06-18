@@ -953,20 +953,37 @@ export function useWsRuntime(agentId: string): {
           // (either branch below) so buffered chunks merge into the
           // freshly-reconciled message list, including the activeRun-
           // anchored assistant turn.
-          const drainBuffer = () => {
+          const drainBuffer = (discardStale = false) => {
             pendingHistoryRef.current = false;
             const buffered = frameBufferRef.current;
             frameBufferRef.current = [];
+            // When the run is no longer in-flight (no activeRun) AND the server
+            // history already ends in the persisted assistant reply, the frames
+            // we buffered for that turn are stale: replaying them would append a
+            // second, suffix-only assistant bubble next to the persisted one
+            // (the run completed during the history fetch — the complete-before-
+            // history reload race). Drop them. A still-streaming run whose first
+            // chunk hasn't landed also has no activeRun signal, but its history
+            // ends in the USER turn (reply not persisted yet) — `discardStale`
+            // is false there, so its buffered chunks still drain and build the
+            // bubble.
+            if (discardStale) return;
             for (const frame of buffered) {
               processFrame(frame);
             }
           };
+          // Stale iff the turn is done server-side (no activeRun) and its reply
+          // is already in history. When activeRun is set, historyMessages has
+          // been re-anchored above, but `!activeRun` short-circuits before we
+          // read it, so this only inspects the unmutated server list.
+          const bufferIsStale =
+            !activeRun && historyMessages[historyMessages.length - 1]?.role === "assistant";
 
           if (shouldStageReplace) {
             stageDestructiveHistoryReconcile(historyMessages);
             shouldRecoverFromHistoryRef.current = false;
             setIsHistoryLoaded(true);
-            drainBuffer();
+            drainBuffer(bufferIsStale);
             return;
           }
 
@@ -1028,7 +1045,7 @@ export function useWsRuntime(agentId: string): {
             history: serverMessages.map((m) => ({ role: m.role, content: m.content })),
           });
           setIsHistoryLoaded(true);
-          drainBuffer();
+          drainBuffer(bufferIsStale);
           return;
         }
 
