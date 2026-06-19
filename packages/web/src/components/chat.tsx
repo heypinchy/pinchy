@@ -5,6 +5,7 @@ import { AssistantRuntimeProvider } from "@assistant-ui/react";
 import type { AssistantRuntime } from "@assistant-ui/react";
 import type { PendingUpload } from "@/hooks/use-ws-runtime";
 import { Thread } from "@/components/assistant-ui/thread";
+import { ChatErrorBanner } from "@/components/chat-error-banner";
 import { useChatSession } from "@/components/chat-session-provider";
 import { useAgentsContext } from "@/components/agents-provider";
 import { getAgentAvatarSvg } from "@/lib/avatar";
@@ -298,6 +299,11 @@ export function Chat({
                                     </TooltipProvider>
                                   </div>
                                 </header>
+                                <ChatErrorBanner
+                                  agentId={agentId}
+                                  chatId={chatId}
+                                  onRetry={() => onRetryContinue("partial_stream_failure")}
+                                />
                                 <div className="flex-1 min-h-0 animate-in fade-in duration-300">
                                   <Thread isReconcilingMessages={isReconcilingMessages} />
                                 </div>

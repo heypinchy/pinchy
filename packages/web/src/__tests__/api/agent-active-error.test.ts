@@ -31,12 +31,10 @@ vi.mock("@/lib/audit", async (importOriginal) => {
 function getRequest(url = "http://localhost/api/agents/agent-1/active-error") {
   return new NextRequest(url, { method: "GET" });
 }
-function deleteRequest(body: Record<string, unknown>) {
-  return new NextRequest("http://localhost/api/agents/agent-1/active-error", {
-    method: "DELETE",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(body),
-  });
+function deleteRequest(id?: string) {
+  const url = new URL("http://localhost/api/agents/agent-1/active-error");
+  if (id !== undefined) url.searchParams.set("id", id);
+  return new NextRequest(url, { method: "DELETE" });
 }
 const ctx = { params: Promise.resolve({ agentId: "agent-1" }) };
 
@@ -115,14 +113,14 @@ describe("/api/agents/[agentId]/active-error", () => {
   describe("DELETE (dismiss)", () => {
     it("returns 401 when unauthenticated", async () => {
       mockGetSession.mockResolvedValueOnce(null);
-      const res = await DELETE(deleteRequest({ id: "err-1" }), ctx as never);
+      const res = await DELETE(deleteRequest("err-1"), ctx as never);
       expect(res.status).toBe(401);
       expect(mockDismiss).not.toHaveBeenCalled();
     });
 
     it("dismisses the error scoped to the owner and audits it", async () => {
       mockDismiss.mockResolvedValueOnce({ ...activeRow, dismissedAt: new Date() });
-      const res = await DELETE(deleteRequest({ id: "err-1" }), ctx as never);
+      const res = await DELETE(deleteRequest("err-1"), ctx as never);
       expect(res.status).toBe(200);
       expect(mockDismiss).toHaveBeenCalledWith({ id: "err-1", userId: "user-1" });
       expect(mockAppendAuditLog).toHaveBeenCalledWith(
@@ -132,14 +130,15 @@ describe("/api/agents/[agentId]/active-error", () => {
 
     it("returns 404 when no matching error is owned by the user", async () => {
       mockDismiss.mockResolvedValueOnce(null);
-      const res = await DELETE(deleteRequest({ id: "err-x" }), ctx as never);
+      const res = await DELETE(deleteRequest("err-x"), ctx as never);
       expect(res.status).toBe(404);
       expect(mockAppendAuditLog).not.toHaveBeenCalled();
     });
 
     it("rejects a missing id with a 400", async () => {
-      const res = await DELETE(deleteRequest({}), ctx as never);
+      const res = await DELETE(deleteRequest(), ctx as never);
       expect(res.status).toBe(400);
+      expect(mockDismiss).not.toHaveBeenCalled();
     });
   });
 });
