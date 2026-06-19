@@ -12,7 +12,7 @@
  *      - upgrading.mdx has a section for the target version
  *      - clean working tree, on main branch, CI green, tag not taken
  *      - pnpm audit --audit-level=high --prod passes (or --skip-audit)
- *   3. Bumps version in root package.json and packages/web/package.json
+ *   3. Bumps version in root package.json, packages/web/package.json, and .env.example
  *   4. Commits, tags, and pushes
  *
  * What to do manually first (see CONTRIBUTING.md):
