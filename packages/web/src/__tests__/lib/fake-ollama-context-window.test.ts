@@ -1,10 +1,8 @@
 // @vitest-environment node
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
-import {
-  startFakeOllama,
-  stopFakeOllama,
-  FAKE_OLLAMA_PORT,
-} from "../../../e2e/shared/fake-ollama/fake-ollama-server";
+import * as http from "http";
+import type { AddressInfo } from "net";
+import { handleRequest } from "../../../e2e/shared/fake-ollama/fake-ollama-server";
 
 // Regression guard for the OpenClaw 2026.5.28 budget-triggered compaction
 // overflow that turned the "Integration Tests (OpenClaw + Fake Ollama)" suite
@@ -23,15 +21,33 @@ import {
 // keeps the context window from ever being the bottleneck in these short
 // single-turn probes.
 describe("fake-ollama /api/show advertises a realistic context window", () => {
+  let server: http.Server;
+  let baseUrl: string;
+
+  // Bind an ephemeral port (0) and run handleRequest directly, exactly like the
+  // sibling fake-ollama unit tests (fake-ollama-usage, fake-ollama-liveness).
+  // This in-process test only needs to exercise the /api/show branch, so it must
+  // NOT depend on the shared fixed FAKE_OLLAMA_PORT (11435) the way the old
+  // startFakeOllama() singleton did. Under the parallel `pnpm test` run any
+  // concurrent holder of 11435 (a sibling test run, a leftover fake-ollama
+  // process, a local dev stack) turned a clean assertion into an EADDRINUSE that
+  // — because startFakeOllama() registers no `error` handler — hung beforeAll for
+  // the full hook timeout and surfaced as an unhandled error, failing the file.
+  // An OS-assigned ephemeral port cannot collide, so the test is deterministic.
   beforeAll(async () => {
-    await startFakeOllama();
+    server = http.createServer(handleRequest);
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const { port } = server.address() as AddressInfo;
+    baseUrl = `http://127.0.0.1:${port}`;
   });
   afterAll(async () => {
-    await stopFakeOllama();
+    await new Promise<void>((resolve, reject) =>
+      server.close((err) => (err ? reject(err) : resolve()))
+    );
   });
 
   it("reports a real llama context_length so OpenClaw never triggers overflow compaction during probe tests", async () => {
-    const res = await fetch(`http://127.0.0.1:${FAKE_OLLAMA_PORT}/api/show`, {
+    const res = await fetch(`${baseUrl}/api/show`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ name: "llama3.2" }),
