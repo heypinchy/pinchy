@@ -5,12 +5,13 @@
 import { describe, it, expect } from "vitest";
 
 import { db } from "@/db";
-import { users, agents, chatSessionErrors } from "@/db/schema";
+import { users, agents, chatSessionErrors, auditLog } from "@/db/schema";
 import {
   recordChatSessionError,
   getActiveChatSessionError,
   supersedeChatSessionErrors,
   dismissChatSessionError,
+  agentRanToolSince,
 } from "@/server/chat-session-errors";
 
 async function seedUser(overrides?: Partial<typeof users.$inferInsert>) {
@@ -153,5 +154,30 @@ describe("chat session errors persistence", () => {
 
     const active = await getActiveChatSessionError(sessionKey);
     expect(active!.providerError).toBe("newer");
+  });
+});
+
+describe("agentRanToolSince", () => {
+  it("detects a tool.* audit event for the agent after the cutoff, scoped by agent and time", async () => {
+    const user = await seedUser();
+    const agent = await seedAgent(user.id);
+    const cutoff = new Date(Date.now() - 1000);
+
+    expect(await agentRanToolSince(agent.id, cutoff)).toBe(false);
+
+    await db.insert(auditLog).values({
+      actorType: "user",
+      actorId: user.id,
+      eventType: "tool.pinchy_ls",
+      resource: `agent:${agent.id}`,
+      rowHmac: "test-hmac",
+      outcome: "success",
+    });
+
+    expect(await agentRanToolSince(agent.id, cutoff)).toBe(true);
+    // A different agent doesn't match.
+    expect(await agentRanToolSince("other-agent", cutoff)).toBe(false);
+    // A cutoff in the future excludes the already-written row.
+    expect(await agentRanToolSince(agent.id, new Date(Date.now() + 60_000))).toBe(false);
   });
 });

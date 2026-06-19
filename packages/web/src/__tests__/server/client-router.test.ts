@@ -20,6 +20,7 @@ const {
   mockReadExistingConfig,
   mockRecordChatSessionError,
   mockSupersedeChatSessionErrors,
+  mockAgentRanToolSince,
 } = vi.hoisted(() => ({
   mockChat: vi.fn(),
   mockSessionsHistory: vi.fn(),
@@ -40,6 +41,7 @@ const {
   mockReadExistingConfig: vi.fn().mockReturnValue({}),
   mockRecordChatSessionError: vi.fn().mockResolvedValue(undefined),
   mockSupersedeChatSessionErrors: vi.fn().mockResolvedValue(undefined),
+  mockAgentRanToolSince: vi.fn().mockResolvedValue(false),
 }));
 
 vi.mock("@/lib/agent-access", async (importOriginal) => {
@@ -137,6 +139,7 @@ vi.mock("@/lib/groups", () => ({
 vi.mock("@/server/chat-session-errors", () => ({
   recordChatSessionError: (...args: unknown[]) => mockRecordChatSessionError(...args),
   supersedeChatSessionErrors: (...args: unknown[]) => mockSupersedeChatSessionErrors(...args),
+  agentRanToolSince: (...args: unknown[]) => mockAgentRanToolSince(...args),
 }));
 
 vi.mock("@/server/model-unavailable-throttle", () => ({
@@ -212,6 +215,7 @@ describe("ClientRouter", () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    mockAgentRanToolSince.mockResolvedValue(false);
     sessionCache = new SessionCache();
     // Default: session exists and cache is fresh (equivalent to runtimeActivated: true)
     sessionCache.refresh([{ key: "agent:agent-1:direct:user-1" }]);
@@ -257,6 +261,9 @@ describe("ClientRouter", () => {
 
   describe("durable chat-session-error wiring", () => {
     it("persists a durable error on an error chunk, sideEffects=true when a tool ran", async () => {
+      // OpenClaw doesn't emit a tool chunk; the run's tool execution is detected
+      // from the audit trail (agentRanToolSince), mocked true here.
+      mockAgentRanToolSince.mockResolvedValue(true);
       async function* stream() {
         yield {
           type: "userMessagePersisted" as const,
@@ -265,7 +272,6 @@ describe("ClientRouter", () => {
           persistedAt: 0,
           runId: "r1",
         };
-        yield { type: "tool_use" as const, text: "odoo_write", runId: "r1" };
         yield { type: "error" as const, text: "⚠️ API rate limit reached", runId: "r1" };
       }
       mockChat.mockReturnValue(stream());
@@ -342,6 +348,34 @@ describe("ClientRouter", () => {
         clientMessageId: "cm-3",
       });
       expect(mockRecordChatSessionError).not.toHaveBeenCalled();
+    });
+
+    it("does NOT supersede when the run errors and then emits a terminal done", async () => {
+      // OpenClaw emits a terminal `done` after an `error` chunk to close the
+      // stream. Superseding on that would immediately clear the error we just
+      // persisted, so the durable banner would never appear (caught by the E2E).
+      async function* stream() {
+        yield {
+          type: "userMessagePersisted" as const,
+          clientMessageId: "cm-err",
+          sessionKey: undefined,
+          persistedAt: 0,
+          runId: "r1",
+        };
+        yield { type: "error" as const, text: "Rate limit reached", runId: "r1" };
+        yield { type: "done" as const, text: "", runId: "r1" };
+      }
+      mockChat.mockReturnValue(stream());
+
+      await router.handleMessage(createMockClientWs() as any, {
+        type: "message",
+        content: "x",
+        agentId: "agent-1",
+        clientMessageId: "cm-err",
+      });
+
+      expect(mockRecordChatSessionError).toHaveBeenCalledTimes(1);
+      expect(mockSupersedeChatSessionErrors).not.toHaveBeenCalled();
     });
   });
 

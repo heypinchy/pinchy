@@ -32,7 +32,11 @@ import {
   classifyTransientReason,
   type AgentErrorClass,
 } from "@/server/agent-error-classifier";
-import { recordChatSessionError, supersedeChatSessionErrors } from "@/server/chat-session-errors";
+import {
+  recordChatSessionError,
+  supersedeChatSessionErrors,
+  agentRanToolSince,
+} from "@/server/chat-session-errors";
 import {
   SILENT_REPLY_TOKEN,
   safeEmitLength,
@@ -955,10 +959,12 @@ export class ClientRouter {
     let sawText = false;
     let sawError = false;
     // Durable chat-error banner (Concern 1): the triggering user message id
-    // (anchors supersede + a safe retry) and whether the run executed a tool
-    // (so the banner can warn that a retry may duplicate already-applied writes).
+    // anchors supersede + a safe retry. `runStartedAt` (with a small clock-skew
+    // buffer) bounds the audit lookup that decides `sideEffects` — whether the
+    // run executed a tool, so the banner can warn that a retry may duplicate
+    // already-applied writes.
     let triggeringClientMessageId: string | undefined;
-    let sawToolCall = false;
+    const runStartedAt = new Date(Date.now() - 2000);
     // Authoritative liveness: set when a terminal `liveness: failed` verdict has
     // been emitted (a real error chunk OR the silent-stream synthesis). Gates
     // the terminal `liveness: completed` so a failed run is never also reported
@@ -1067,14 +1073,12 @@ export class ClientRouter {
         if (chunk.type === "error") {
           sawTerminalError = true;
         }
-        // Durable-banner bookkeeping (runs regardless of consumer state).
-        // `userMessagePersisted` is OC's first chunk and carries the triggering
-        // client message id; `tool_use` means the run dispatched a tool, so a
-        // later failure's retry could duplicate side effects.
+        // Durable-banner bookkeeping: `userMessagePersisted` is OC's first chunk
+        // and carries the triggering client message id (anchor for supersede +
+        // retry). Tool execution is NOT signalled as a chunk by OpenClaw — the
+        // sideEffects flag is derived from the audit trail at persist time.
         if (chunk.type === "userMessagePersisted") {
           triggeringClientMessageId = chunk.clientMessageId;
-        } else if (chunk.type === "tool_use") {
-          sawToolCall = true;
         }
 
         // Pinchy-side accounting — runs regardless of consumer state. The
@@ -1086,17 +1090,22 @@ export class ClientRouter {
         // turns that reach a `done` chunk count as completed sessions.
         if (chunk.type === "done") {
           this.sessionCache.add(sessionKey);
-          // The triggering message produced a successful response, so any
-          // durable error left over from a prior failed attempt of THIS message
-          // is now stale. Scoped to the triggering id so an unrelated later
-          // message succeeding never clears an unanswered error. Best-effort.
-          try {
-            await supersedeChatSessionErrors({
-              sessionKey,
-              clientMessageId: triggeringClientMessageId,
-            });
-          } catch (err) {
-            console.error("Failed to supersede durable chat error:", err);
+          // A SUCCESSFUL turn's `done` supersedes the message's durable error.
+          // OpenClaw also emits a terminal `done` AFTER an `error` chunk to close
+          // the stream — superseding on that would immediately clear the error we
+          // just persisted, so the banner would never appear. `sawTerminalError`
+          // (set on any error chunk earlier in this stream) gates it out. Scoped
+          // to the triggering id so an unrelated later message succeeding never
+          // clears an unanswered error. Best-effort.
+          if (!sawTerminalError) {
+            try {
+              await supersedeChatSessionErrors({
+                sessionKey,
+                clientMessageId: triggeringClientMessageId,
+              });
+            } catch (err) {
+              console.error("Failed to supersede durable chat error:", err);
+            }
           }
         }
 
@@ -1145,7 +1154,7 @@ export class ClientRouter {
             runId: activeRunId,
             providerError: chunk.text,
             errorClass,
-            sideEffects: sawToolCall,
+            runStartedAt,
           });
         }
 
@@ -1371,7 +1380,7 @@ export class ClientRouter {
           runId: activeRunId,
           providerError,
           errorClass: classifySynthesisedError("silent_stream"),
-          sideEffects: sawToolCall,
+          runStartedAt,
         });
 
         // Operational signal: a silent timeout shouldn't be invisible to
@@ -1585,9 +1594,13 @@ export class ClientRouter {
     runId?: string;
     providerError: string;
     errorClass: AgentErrorClass;
-    sideEffects: boolean;
+    runStartedAt: Date;
   }): Promise<void> {
     try {
+      // Derive sideEffects from the audit trail: OpenClaw doesn't signal tool
+      // execution as a chat chunk, so a `tool.*` audit row since this run began
+      // is the reliable "the agent already acted" signal.
+      const sideEffects = await agentRanToolSince(args.agent.id, args.runStartedAt);
       await recordChatSessionError({
         userId: this.userId,
         agentId: args.agent.id,
@@ -1600,7 +1613,7 @@ export class ClientRouter {
         transientReason:
           args.errorClass === "transient" ? classifyTransientReason(args.providerError) : null,
         providerError: safeProviderError(args.providerError),
-        sideEffects: args.sideEffects,
+        sideEffects,
       });
     } catch (err) {
       console.error("Failed to persist durable chat error:", err);

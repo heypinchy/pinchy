@@ -17,10 +17,39 @@
  * (`agent:{agentId}:direct:{userId}`) — never a prefix — so errors can't leak
  * across sessions or users.
  */
-import { and, desc, eq, isNull } from "drizzle-orm";
+import { and, desc, eq, gte, isNull, like } from "drizzle-orm";
 
 import { db } from "@/db";
-import { chatSessionErrors } from "@/db/schema";
+import { chatSessionErrors, auditLog } from "@/db/schema";
+
+/**
+ * Did the agent execute any tool since `since`? Used to set `sideEffects` on a
+ * persisted error so the banner can warn that a retry may DUPLICATE writes.
+ *
+ * OpenClaw does not surface tool execution as a chat-stream chunk (verified by
+ * E2E: a `tool.*` audit row lands but no `tool_use` chunk reaches the router),
+ * so the audit trail is the only reliable signal. This runs only on the rare
+ * error-persist path (once per failed run), not the hot history-load path, so
+ * the audit-table read is acceptable. Scoped by `resource = agent:{agentId}`
+ * (its case is stable, unlike the lowercased tool-audit `actorId`) plus a time
+ * lower bound — it never misses a tool this run performed (the dangerous
+ * false-negative); a different user's tool on a shared agent in the same narrow
+ * window can over-warn, which is the safe direction.
+ */
+export async function agentRanToolSince(agentId: string, since: Date): Promise<boolean> {
+  const [row] = await db
+    .select({ id: auditLog.id })
+    .from(auditLog)
+    .where(
+      and(
+        eq(auditLog.resource, `agent:${agentId}`),
+        like(auditLog.eventType, "tool.%"),
+        gte(auditLog.timestamp, since)
+      )
+    )
+    .limit(1);
+  return !!row;
+}
 
 export interface RecordChatSessionErrorInput {
   userId: string;
