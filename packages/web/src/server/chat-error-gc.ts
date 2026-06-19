@@ -1,8 +1,10 @@
 /**
  * Retention sweep for the durable chat-error store. Rows are tiny (one per agent
  * error), but resolved ones — superseded by a later success or dismissed by the
- * user — accumulate forever otherwise. Un-resolved rows are the live banner
- * state and are NEVER swept regardless of age.
+ * user — accumulate. Two windows: resolved rows are reaped after
+ * RESOLVED_RETENTION_DAYS; un-resolved rows (the live banner state) are kept far
+ * longer but still reaped after a hard UNRESOLVED_RETENTION_DAYS cap so an error
+ * a user neither retried nor dismissed can't leak forever.
  *
  * Mirrors `upload-gc.ts`: an hourly interval plus a post-startup kick, and a
  * single `sweepId` UUID per run on the summary audit row so an analyst can
@@ -15,8 +17,9 @@ import { chatSessionErrors } from "@/db/schema";
 import { appendAuditLog } from "@/lib/audit";
 import { recordAuditFailure } from "@/lib/audit-deferred";
 
-const RETENTION_DAYS = 30;
-const RETENTION_MS = RETENTION_DAYS * 24 * 60 * 60 * 1000;
+const RESOLVED_RETENTION_DAYS = 30;
+const UNRESOLVED_RETENTION_DAYS = 90;
+const DAY_MS = 24 * 60 * 60 * 1000;
 
 export interface ChatErrorSweepResult {
   swept: number;
@@ -25,14 +28,20 @@ export interface ChatErrorSweepResult {
 
 export async function sweepResolvedChatErrors(): Promise<ChatErrorSweepResult> {
   const sweepId = crypto.randomUUID();
-  const cutoff = new Date(Date.now() - RETENTION_MS);
+  const resolvedCutoff = new Date(Date.now() - RESOLVED_RETENTION_DAYS * DAY_MS);
+  const hardCutoff = new Date(Date.now() - UNRESOLVED_RETENTION_DAYS * DAY_MS);
 
   const deleted = await db
     .delete(chatSessionErrors)
     .where(
-      and(
-        lt(chatSessionErrors.createdAt, cutoff),
-        or(isNotNull(chatSessionErrors.supersededAt), isNotNull(chatSessionErrors.dismissedAt))
+      or(
+        // Resolved (superseded/dismissed) past the short window…
+        and(
+          lt(chatSessionErrors.createdAt, resolvedCutoff),
+          or(isNotNull(chatSessionErrors.supersededAt), isNotNull(chatSessionErrors.dismissedAt))
+        ),
+        // …or anything (incl. un-resolved/abandoned) past the hard cap.
+        lt(chatSessionErrors.createdAt, hardCutoff)
       )
     )
     .returning({ id: chatSessionErrors.id });
@@ -45,7 +54,12 @@ export async function sweepResolvedChatErrors(): Promise<ChatErrorSweepResult> {
       actorType: "system" as const,
       actorId: "chat-error-gc",
       outcome: "success" as const,
-      detail: { swept, retentionDays: RETENTION_DAYS, sweepId },
+      detail: {
+        swept,
+        resolvedRetentionDays: RESOLVED_RETENTION_DAYS,
+        unresolvedRetentionDays: UNRESOLVED_RETENTION_DAYS,
+        sweepId,
+      },
     };
     try {
       await appendAuditLog(entry);

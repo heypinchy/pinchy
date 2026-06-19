@@ -34,7 +34,7 @@ async function seedAgent(ownerId: string) {
 }
 
 describe("sweepResolvedChatErrors", () => {
-  it("reaps resolved rows past retention, keeps fresh and unresolved rows", async () => {
+  it("reaps resolved rows past 30d and any row past the 90d hard cap, keeps the rest", async () => {
     const user = await seedUser();
     const agent = await seedAgent(user.id);
     const sessionKey = `agent:${agent.id}:direct:${user.id}`;
@@ -47,14 +47,13 @@ describe("sweepResolvedChatErrors", () => {
       providerError: "API rate limit reached",
       sideEffects: false,
     };
-    const old = new Date("2026-01-01T00:00:00Z"); // well past the 30d window
-    const fresh = new Date();
+    const daysAgo = (n: number) => new Date(Date.now() - n * 24 * 60 * 60 * 1000);
 
     await db.insert(chatSessionErrors).values([
-      { ...base, createdAt: old, supersededAt: old }, // resolved + old → swept
-      { ...base, createdAt: old, dismissedAt: old }, // resolved + old → swept
-      { ...base, createdAt: old }, // old but UNRESOLVED (active) → kept
-      { ...base, createdAt: fresh, supersededAt: fresh }, // resolved but fresh → kept
+      { ...base, createdAt: daysAgo(40), supersededAt: daysAgo(40) }, // resolved + >30d → swept
+      { ...base, createdAt: daysAgo(100) }, // UNRESOLVED but past the 90d hard cap → swept
+      { ...base, createdAt: daysAgo(40) }, // UNRESOLVED, within 90d → kept
+      { ...base, createdAt: daysAgo(5), dismissedAt: daysAgo(5) }, // resolved but <30d → kept
     ]);
 
     const res = await sweepResolvedChatErrors();

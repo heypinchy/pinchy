@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { withAuth } from "@/lib/api-auth";
 import { getAgentWithAccess } from "@/lib/agent-access";
 import { appendAuditLog } from "@/lib/audit";
+import { recordAuditFailure } from "@/lib/audit-deferred";
 import { directSessionKey } from "@/lib/session-key";
 import { getActiveChatSessionError, dismissChatSessionError } from "@/server/chat-session-errors";
 
@@ -65,18 +66,25 @@ export const DELETE = withAuth<RouteContext>(async (request, { params }, session
     return NextResponse.json({ error: "Error not found" }, { status: 404 });
   }
 
-  await appendAuditLog({
-    actorType: "user",
+  // The dismiss already committed; never let an audit-write failure turn a
+  // successful dismiss into a 500. Record the failure for later reconciliation.
+  const auditEntry = {
+    actorType: "user" as const,
     actorId: session.user.id!,
-    eventType: "chat.error_dismissed",
+    eventType: "chat.error_dismissed" as const,
     resource: `agent:${agent.id}`,
     detail: {
       agent: { id: agent.id, name: agent.name },
       errorId: dismissed.id,
       errorClass: dismissed.errorClass,
     },
-    outcome: "success",
-  });
+    outcome: "success" as const,
+  };
+  try {
+    await appendAuditLog(auditEntry);
+  } catch (err) {
+    recordAuditFailure(err, auditEntry);
+  }
 
   return NextResponse.json({ dismissed: true });
 });

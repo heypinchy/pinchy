@@ -95,7 +95,7 @@ export const ChatErrorMessage: FC<{
               </Button>
             </CollapsibleTrigger>
             <CollapsibleContent>
-              <pre className="mt-1 text-xs text-destructive/75 dark:text-red-300/75 whitespace-pre-wrap break-words">
+              <pre className="mt-1 text-xs text-destructive/75 dark:text-red-300/75 whitespace-pre-wrap wrap-anywhere">
                 {error.providerError}
               </pre>
             </CollapsibleContent>
@@ -199,7 +199,7 @@ export const ChatErrorMessage: FC<{
             </Button>
           </CollapsibleTrigger>
           <CollapsibleContent>
-            <pre className="mt-1 text-xs text-destructive/75 dark:text-red-300/75 whitespace-pre-wrap break-words">
+            <pre className="mt-1 text-xs text-destructive/75 dark:text-red-300/75 whitespace-pre-wrap wrap-anywhere">
               {error.providerError}
             </pre>
           </CollapsibleContent>
@@ -235,7 +235,7 @@ export const ChatErrorMessage: FC<{
             </Button>
           </CollapsibleTrigger>
           <CollapsibleContent>
-            <pre className="mt-1 text-xs text-destructive/75 dark:text-red-300/75 whitespace-pre-wrap break-words">
+            <pre className="mt-1 text-xs text-destructive/75 dark:text-red-300/75 whitespace-pre-wrap wrap-anywhere">
               {error.providerError}
             </pre>
           </CollapsibleContent>
