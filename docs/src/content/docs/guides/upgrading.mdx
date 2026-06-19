@@ -165,6 +165,12 @@ sed -i 's/PINCHY_VERSION=v0.6.0/PINCHY_VERSION=%%PINCHY_VERSION%%/' .env
 docker compose pull && docker compose up -d && docker image prune -f
 ```
 
+#### One last sign-in, then your session survives updates
+
+Until now, every update could silently sign you out. On HTTPS/domain-locked instances the session cookie's name depended on a value that was computed nondeterministically at startup, so it sometimes changed between container versions and orphaned your existing login. %%PINCHY_VERSION%% pins that decision to the domain-lock state via a stable, persisted flag, so the cookie name no longer changes across restarts.
+
+One transitional effect: **this upgrade signs everyone out one final time** as the cookie name settles onto the stable value. After that, logins persist across updates as expected. Nothing to configure — just sign back in once.
+
 #### One-click deploys: DigitalOcean Marketplace and CapRover
 
 Spinning up a fresh Pinchy is now a one-click affair on two more platforms: a **DigitalOcean Marketplace** 1-Click image and a **CapRover** one-click app template. Existing installs need nothing here — this only adds new install paths. Both templates are version-pinned to the release.
