@@ -8,6 +8,7 @@ import { db } from "@/db";
 import * as schema from "@/db/schema";
 import { appendAuditLog, redactEmail } from "@/lib/audit";
 import { getCachedDomain } from "@/lib/domain";
+import { shouldUseSecureCookies } from "@/lib/secure-cookies";
 import { PASSWORD_MIN_LENGTH } from "@/lib/validate-password";
 
 /**
@@ -154,9 +155,14 @@ export const auth = betterAuth({
     return host ? [`${proto}://${host}`] : [];
   },
   advanced: {
-    // When a domain is cached, HTTPS is expected — enable Secure cookies.
-    // Without HTTPS, cookies must not have the Secure flag or browsers will reject them.
-    useSecureCookies: getCachedDomain() !== null,
+    // Secure cookies (and Better Auth's `__Secure-` cookie-NAME prefix) when a
+    // domain is locked = HTTPS/secure mode. Read from a synchronous persistent
+    // flag, NOT the async in-memory domain cache: the cache is cold at this
+    // import, so its value flipped between container generations, the cookie
+    // name changed, and every update logged users out. See @/lib/secure-cookies.
+    // (Without HTTPS the Secure flag/`__Secure-` prefix must be off or browsers
+    // reject the cookie — the flag defaults to insecure when absent.)
+    useSecureCookies: shouldUseSecureCookies(),
   },
   database: drizzleAdapter(db, {
     provider: "pg",

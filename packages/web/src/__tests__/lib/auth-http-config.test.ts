@@ -4,22 +4,40 @@ vi.mock("@/lib/domain", () => ({
   getCachedDomain: vi.fn(),
 }));
 
+vi.mock("@/lib/secure-cookies", () => ({
+  shouldUseSecureCookies: vi.fn(),
+}));
+
 describe("Auth HTTP/HTTPS configuration", () => {
   beforeEach(() => {
     vi.resetModules();
   });
 
   describe("useSecureCookies", () => {
-    it("should be false when no domain is cached", async () => {
-      const { getCachedDomain } = await import("@/lib/domain");
-      vi.mocked(getCachedDomain).mockReturnValue(null);
+    it("is false when not in secure (domain-locked) mode", async () => {
+      const { shouldUseSecureCookies } = await import("@/lib/secure-cookies");
+      vi.mocked(shouldUseSecureCookies).mockReturnValue(false);
       const mod = await import("@/lib/auth");
       expect(mod.auth.options.advanced?.useSecureCookies).toBe(false);
     });
 
-    it("should be true when a domain is cached", async () => {
+    it("is true in secure (domain-locked) mode", async () => {
+      const { shouldUseSecureCookies } = await import("@/lib/secure-cookies");
+      vi.mocked(shouldUseSecureCookies).mockReturnValue(true);
+      const mod = await import("@/lib/auth");
+      expect(mod.auth.options.advanced?.useSecureCookies).toBe(true);
+    });
+
+    it("does NOT depend on the async domain cache (regression: the cookie-name flip)", async () => {
+      // The bug: useSecureCookies read getCachedDomain() at import time, which is
+      // cold/nondeterministic, so the value — and Better Auth's `__Secure-`
+      // cookie NAME — flipped between deploys and logged users out. It must now
+      // come solely from the stable sync flag: even with the domain cache cold
+      // (null), a locked flag decides.
       const { getCachedDomain } = await import("@/lib/domain");
-      vi.mocked(getCachedDomain).mockReturnValue("pinchy.example.com");
+      const { shouldUseSecureCookies } = await import("@/lib/secure-cookies");
+      vi.mocked(getCachedDomain).mockReturnValue(null);
+      vi.mocked(shouldUseSecureCookies).mockReturnValue(true);
       const mod = await import("@/lib/auth");
       expect(mod.auth.options.advanced?.useSecureCookies).toBe(true);
     });
