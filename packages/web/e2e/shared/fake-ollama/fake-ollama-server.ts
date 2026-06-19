@@ -97,6 +97,38 @@ const LIVENESS_SLOW_DELAY_MS = 18000;
 const LIVENESS_DYING_TRIGGER = "E2E_LIVENESS_DYING_RESPONSE";
 const LIVENESS_DYING_PARTIAL = "Starting to respond";
 
+// ── Transient provider-error triggers (durable agent-error banner) ──────────
+// RATE_LIMIT: the provider returns an HTTP 429 with a rate-limit body, the
+// canonical "transient, retry later" failure. OpenClaw surfaces it as a chat
+// `error` chunk; Pinchy classifies it `transient` (TRANSIENT_PATTERN) and
+// persists it to chat_session_errors so the "paused" banner can re-surface it
+// after a reload. The body is keyword-dense (rate limit / too many requests /
+// overloaded / 429) so that however OpenClaw wraps the provider error into its
+// error-chunk text, Pinchy's classifier still reads it as transient.
+const RATE_LIMIT_TRIGGER = "E2E_RATE_LIMIT_ERROR";
+// TOOL_THEN_RATE_LIMIT: round 1 dispatches a real (read-only) tool, then round 2
+// — the follow-up with the tool result — returns the 429. The intervening
+// tool_use chunk makes Pinchy record sideEffects=true, so the banner warns that
+// a retry may duplicate already-performed actions and gates Retry behind a
+// confirmation. pinchy_ls is an always-loaded internal-plugin tool.
+const TOOL_THEN_RATE_LIMIT_TRIGGER = "E2E_TOOL_THEN_RATE_LIMIT";
+const TOOL_THEN_RATE_LIMIT_TOOL = "pinchy_ls";
+const TOOL_THEN_RATE_LIMIT_ARGS = { path: "/data" };
+
+const RATE_LIMIT_ERROR_BODY = {
+  error: {
+    message:
+      "Rate limit reached: too many requests. The model provider is overloaded (HTTP 429). Please try again in a moment.",
+    type: "rate_limit_exceeded",
+    code: "rate_limit_exceeded",
+  },
+};
+
+function sendRateLimitError(res: http.ServerResponse) {
+  res.writeHead(429, { "Content-Type": "application/json" });
+  res.end(JSON.stringify(RATE_LIMIT_ERROR_BODY));
+}
+
 // Per-plugin tool triggers — one per plugin, used by behavior tests to assert
 // that the plugin loaded and registerTool() worked end-to-end.
 const FILES_LS_TRIGGER = "E2E_FILES_LS_TOOL";
@@ -727,6 +759,43 @@ export async function handleRequest(req: http.IncomingMessage, res: http.ServerR
       return;
     }
 
+    if (lastContent.includes(RATE_LIMIT_TRIGGER) && !hasToolResult) {
+      sendRateLimitError(res);
+      return;
+    }
+
+    if (lastContent.includes(TOOL_THEN_RATE_LIMIT_TRIGGER)) {
+      if (hasToolResult) {
+        sendRateLimitError(res);
+      } else {
+        const { promptTokens, completionTokens } = getUsageTokens(countUserMessages(messages));
+        writeNdjson(res, [
+          {
+            model: MODEL_NAME,
+            created_at: new Date().toISOString(),
+            message: {
+              role: "assistant",
+              content: "",
+              tool_calls: [
+                {
+                  function: {
+                    name: TOOL_THEN_RATE_LIMIT_TOOL,
+                    arguments: TOOL_THEN_RATE_LIMIT_ARGS,
+                  },
+                },
+              ],
+            },
+            done: true,
+            done_reason: "stop",
+            total_duration: 1000000,
+            prompt_eval_count: promptTokens,
+            eval_count: completionTokens,
+          },
+        ]);
+      }
+      return;
+    }
+
     streamTextResponse(
       res,
       activeTrigger ? activeTrigger.response : FAKE_RESPONSE,
@@ -795,6 +864,24 @@ export async function handleRequest(req: http.IncomingMessage, res: http.ServerR
       return;
     }
 
+    // Transient rate-limit error (durable banner). A bare 429 surfaces as a
+    // transient chat error chunk.
+    if (lastContent.includes(RATE_LIMIT_TRIGGER) && !hasToolResult) {
+      sendRateLimitError(res);
+      return;
+    }
+
+    // Tool-then-rate-limit: round 1 dispatches a tool, round 2 (with the tool
+    // result) returns the 429 — a failure AFTER a side effect.
+    if (lastContent.includes(TOOL_THEN_RATE_LIMIT_TRIGGER)) {
+      if (hasToolResult) {
+        sendRateLimitError(res);
+      } else {
+        streamOpenAiToolCalls(res, TOOL_THEN_RATE_LIMIT_TOOL, TOOL_THEN_RATE_LIMIT_ARGS);
+      }
+      return;
+    }
+
     streamOpenAiText(
       res,
       activeTrigger ? activeTrigger.response : FAKE_RESPONSE,
@@ -827,6 +914,10 @@ export const FAKE_OLLAMA_LIVENESS_SLOW_RESPONSE = LIVENESS_SLOW_RESPONSE;
 export const FAKE_OLLAMA_LIVENESS_SLOW_DELAY_MS = LIVENESS_SLOW_DELAY_MS;
 export const FAKE_OLLAMA_LIVENESS_DYING_TRIGGER = LIVENESS_DYING_TRIGGER;
 export const FAKE_OLLAMA_LIVENESS_DYING_PARTIAL = LIVENESS_DYING_PARTIAL;
+// Transient provider-error triggers (durable agent-error banner).
+export const FAKE_OLLAMA_RATE_LIMIT_TRIGGER = RATE_LIMIT_TRIGGER;
+export const FAKE_OLLAMA_TOOL_THEN_RATE_LIMIT_TRIGGER = TOOL_THEN_RATE_LIMIT_TRIGGER;
+export const FAKE_OLLAMA_TOOL_THEN_RATE_LIMIT_TOOL = TOOL_THEN_RATE_LIMIT_TOOL;
 export const FAKE_OLLAMA_FILES_LS_TOOL_TRIGGER = FILES_LS_TRIGGER;
 export const FAKE_OLLAMA_FILES_LS_TOOL_RESPONSE = FILES_LS_RESPONSE;
 export const FAKE_OLLAMA_FILES_READ_DOCX_TOOL_TRIGGER = FILES_READ_DOCX_TRIGGER;
