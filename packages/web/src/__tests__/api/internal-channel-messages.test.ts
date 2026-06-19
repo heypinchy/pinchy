@@ -26,8 +26,8 @@ function makeRequest(body: unknown) {
 
 const validBody = {
   channel: "telegram",
+  // agentId + peer are derived from this; the body carries no peerId.
   sessionKey: "agent:agent-1:direct:TG-Peer-111",
-  peerId: "TG-Peer-111",
   direction: "inbound",
   externalId: "msg-42",
   content: "Hello over Telegram",
@@ -57,13 +57,15 @@ describe("POST /api/internal/channel-messages", () => {
     expect(mockInsert).not.toHaveBeenCalled();
   });
 
-  it("returns 400 when sessionKey is not an agent session key", async () => {
-    const res = await POST(makeRequest({ ...validBody, sessionKey: "not-a-session" }));
-    expect(res.status).toBe(400);
+  it("returns 400 for a non-direct or malformed sessionKey", async () => {
+    for (const sessionKey of ["not-a-session", "agent:agent-1:group:g", "agent:agent-1:direct:"]) {
+      const res = await POST(makeRequest({ ...validBody, sessionKey }));
+      expect(res.status, sessionKey).toBe(400);
+    }
     expect(mockInsert).not.toHaveBeenCalled();
   });
 
-  it("derives agentId from sessionKey, lowercases the peer, and upserts idempotently", async () => {
+  it("derives BOTH agentId and peer from sessionKey, lowercases the peer, and upserts idempotently", async () => {
     const res = await POST(makeRequest(validBody));
     expect(res.status).toBe(200);
 
@@ -72,7 +74,7 @@ describe("POST /api/internal/channel-messages", () => {
     expect(values).toMatchObject({
       agentId: "agent-1", // derived from sessionKey, NOT trusted from body
       channel: "telegram",
-      peerId: "tg-peer-111", // lowercased to match channel_links + read route
+      peerId: "tg-peer-111", // ALSO derived from sessionKey (no body peerId), lowercased
       direction: "inbound",
       externalId: "msg-42",
       content: "Hello over Telegram",

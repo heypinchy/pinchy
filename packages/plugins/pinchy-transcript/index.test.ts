@@ -30,11 +30,10 @@ describe("buildPayload", () => {
     sentAt: 1700000000000,
   };
 
-  it("builds an inbound telegram payload: peer from key, trimmed content, messageId as externalId", () => {
+  it("builds an inbound telegram payload: trimmed content, messageId as externalId (peer derived server-side)", () => {
     expect(buildPayload(base)).toEqual({
       channel: "telegram",
       sessionKey: SK,
-      peerId: "tg-peer-111",
       direction: "inbound",
       externalId: "msg-42",
       content: "Hello over Telegram",
@@ -69,7 +68,6 @@ describe("postChannelMessage", () => {
   const payload = {
     channel: "telegram",
     sessionKey: SK,
-    peerId: "tg-peer-111",
     direction: "inbound" as const,
     externalId: "msg-42",
     content: "hi",
@@ -139,7 +137,7 @@ describe("plugin.register", () => {
 
     expect(fetchMock).toHaveBeenCalledTimes(1);
     const body = JSON.parse(fetchMock.mock.calls[0][1].body);
-    expect(body).toMatchObject({ direction: "inbound", peerId: "tg-peer-111", content: "Hi from TG" });
+    expect(body).toMatchObject({ direction: "inbound", sessionKey: SK, content: "Hi from TG" });
   });
 
   it("captures a delivered outbound reply but SKIPS a failed delivery", async () => {

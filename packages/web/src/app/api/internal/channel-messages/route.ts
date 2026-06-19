@@ -6,11 +6,15 @@ import { db } from "@/db";
 import { channelMessages } from "@/db/schema";
 
 /**
- * Extract the agent id from a session key (`agent:<agentId>:...`). The agent is
- * derived from the session, never trusted from the body — see the schema doc.
+ * Parse `agent:<agentId>:direct:<peer>` → { agentId, peer }. Both the agent and
+ * the peer are derived from the session key, never trusted from the body — so a
+ * buggy/compromised plugin can't mis-attribute a message, and the stored peer
+ * stays consistent with the read route's `channel_links`-derived peer. Returns
+ * null for any non-direct session (group/other scopes are not mirrored).
  */
-function agentIdFromSessionKey(sessionKey: string): string | undefined {
-  return /^agent:([^:]+):/.exec(sessionKey)?.[1];
+function parseDirectSessionKey(sessionKey: string): { agentId: string; peer: string } | null {
+  const m = /^agent:([^:]+):direct:([^:]+)$/.exec(sessionKey);
+  return m ? { agentId: m[1], peer: m[2] } : null;
 }
 
 /**
@@ -40,10 +44,10 @@ export async function POST(request: NextRequest) {
   if ("error" in parsed) return parsed.error;
   const payload = parsed.data;
 
-  const agentId = agentIdFromSessionKey(payload.sessionKey);
-  if (!agentId) {
+  const session = parseDirectSessionKey(payload.sessionKey);
+  if (!session) {
     return NextResponse.json(
-      { error: "sessionKey must be of the form agent:<agentId>:..." },
+      { error: "sessionKey must be of the form agent:<agentId>:direct:<peer>" },
       { status: 400 }
     );
   }
@@ -52,11 +56,11 @@ export async function POST(request: NextRequest) {
     await db
       .insert(channelMessages)
       .values({
-        agentId,
+        agentId: session.agentId,
         channel: payload.channel,
-        // Lowercased to match channel_links.channelUserId and the direct-session
-        // peer segment the read route derives.
-        peerId: payload.peerId.toLowerCase(),
+        // Lowercased to match channel_links.channelUserId and the peer the read
+        // route derives.
+        peerId: session.peer.toLowerCase(),
         direction: payload.direction,
         externalId: payload.externalId,
         content: payload.content,

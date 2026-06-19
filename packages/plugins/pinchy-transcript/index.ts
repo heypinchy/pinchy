@@ -60,8 +60,8 @@ interface PluginApi {
 
 interface CaptureChannelMessage {
   channel: string;
+  // agentId + peer are derived server-side from sessionKey (single source of truth).
   sessionKey: string;
-  peerId: string;
   direction: "inbound" | "outbound";
   externalId: string;
   content: string;
@@ -162,15 +162,15 @@ function buildPayload(args: {
 }): CaptureChannelMessage | null {
   const { channel, sessionKey, direction, content, messageId, sentAt } = args;
   if (!channel || !CAPTURED_CHANNELS.has(channel)) return null;
-  const direct = parseDirectSessionKey(sessionKey);
-  if (!direct) return null;
+  // Only mirror DIRECT (1:1) conversations; the endpoint re-derives agent+peer
+  // from this same key, so we just gate on it being a valid direct session.
+  if (!parseDirectSessionKey(sessionKey)) return null;
   const text = (content ?? "").trim();
   if (!text) return null;
 
   return {
     channel,
     sessionKey: sessionKey!,
-    peerId: direct.peer,
     direction,
     externalId: messageId ?? surrogateId(direction, text, sentAt),
     content: text,

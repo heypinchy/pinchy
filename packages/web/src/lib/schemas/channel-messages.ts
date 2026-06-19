@@ -6,18 +6,18 @@ import { z } from "zod";
  * message. Gateway-token authed. The plugin is the only caller; this schema is
  * shared so the plugin's payload and the route's parser can never drift.
  *
- * `agentId` is intentionally NOT in the body: it is derived server-side from
- * `sessionKey` (the single source of truth, matching the audit endpoint), so a
- * compromised/buggy plugin can't mis-attribute a message to an arbitrary agent
- * by spoofing an agentId field — the agent is whatever the session is keyed to.
+ * Neither `agentId` nor `peerId` is in the body: BOTH are derived server-side
+ * from `sessionKey` (`agent:<agentId>:direct:<peer>`), the single source of
+ * truth — so a compromised/buggy plugin can't mis-attribute a message to an
+ * arbitrary agent or peer by spoofing a field. The attribution is whatever the
+ * session is keyed to, and it stays consistent with the read route (which
+ * derives the peer from `channel_links`).
  */
 export const captureChannelMessageSchema = z.object({
   /** Channel id from the hook, e.g. "telegram". */
   channel: z.string().trim().min(1),
-  /** `agent:<agentId>:direct:<peer>` — agentId is parsed from this. */
+  /** `agent:<agentId>:direct:<peer>` — agentId AND peer are parsed from this. */
   sessionKey: z.string().trim().min(1),
-  /** Channel-side user id (e.g. the Telegram peer). Lowercased on store. */
-  peerId: z.string().trim().min(1),
   /** "inbound" = user→agent, "outbound" = agent→user. */
   direction: z.enum(["inbound", "outbound"]),
   /** Channel message id, or a deterministic surrogate. The idempotency key. */
