@@ -1,36 +1,63 @@
+# syntax=docker/dockerfile:1
+#
+# Multi-stage build for the Pinchy OpenClaw runtime image.
+#
+# The OpenClaw gateway + Pinchy's plugin runtime deps include native modules
+# (better-sqlite3 and @napi-rs/canvas, both in pinchy-files) that may need to
+# COMPILE from source when a prebuilt binary doesn't match the node:22-slim
+# point release. Compiling needs python3 + build-essential — ~400 MB of
+# toolchain that is pure build-time weight. The single-stage image also shipped
+# the ~300 MB npm download cache (/root/.npm) into production for no runtime
+# benefit.
+#
+# Split it: a `builder` stage carries the toolchain and produces the compiled
+# artifacts (the global openclaw install + four /opt/*-deps bundles, all with
+# their native .node binaries already built). The `runtime` stage starts from a
+# clean node:22-slim and copies ONLY those artifacts, installing just the few
+# apt packages the gateway actually uses at runtime (git, inotify-tools,
+# procps). build-essential, python3 and the npm download cache never reach
+# production. Sibling change: Dockerfile.pinchy (PR #561).
+#
+# Offline-first guarantee (Pinchy ships air-gapped / self-hosted): the runtime
+# stage must need NO network on first boot. start-openclaw.sh's only boot work
+# is local (chmod/chown, copying the /opt/*-deps bundles into the bind-mounted
+# extension dirs, scanning /data) and `openclaw gateway`. OpenClaw 5.x dropped
+# the per-boot `npm install` of plugin runtime deps (symlink model — see
+# config/prewarm-openclaw.sh), so nothing the gateway runs at boot fetches from
+# the network. The global openclaw install is copied verbatim with its deps and
+# prebuilt .node binaries, so the CLI is fully self-contained. The build-time
+# prewarm boot below additionally proves the gateway starts inside this slim
+# stage before the image is ever published.
+
+# ---------------------------------------------------------------------------
+# Stage: builder — toolchain + global openclaw + compiled plugin deps.
+# ---------------------------------------------------------------------------
 # Pull node:22-slim via Google's Docker Hub mirror to avoid Docker Hub
 # anonymous-pull rate limits in CI. mirror.gcr.io is a free, no-auth
 # pull-through cache for `library/*` images on Docker Hub.
-FROM mirror.gcr.io/library/node:22-slim
-
-# Build-time metadata. CI passes --build-arg PINCHY_VERSION + PINCHY_BUILD_SHA;
-# local builds without --build-arg get "dev". OpenClaw's own version is the
-# `openclaw@…` pin below and surfaces via Pinchy's /api/version response.
-ARG PINCHY_VERSION=dev
-ARG PINCHY_BUILD_SHA=dev
-
-LABEL org.opencontainers.image.source="https://github.com/heypinchy/pinchy" \
-      org.opencontainers.image.title="Pinchy OpenClaw runtime" \
-      org.opencontainers.image.description="OpenClaw agent runtime + Pinchy plugin dependencies" \
-      org.opencontainers.image.licenses="AGPL-3.0" \
-      org.opencontainers.image.version="$PINCHY_VERSION" \
-      org.opencontainers.image.revision="$PINCHY_BUILD_SHA"
+FROM mirror.gcr.io/library/node:22-slim AS builder
 
 # python3 + build-essential are needed for native npm modules (better-sqlite3
 # in pinchy-files) to compile from source when the prebuilt binary doesn't
-# match the current node:22-slim point release. Without them the image build
-# fails intermittently whenever the upstream base image bumps Node.js.
-RUN apt-get update && apt-get install -y \
-      git \
-      inotify-tools \
-      procps \
+# match the current node:22-slim point release. They live ONLY in this builder
+# stage and never reach the runtime image, which is the whole point of the
+# split. Without them the build fails intermittently whenever the upstream base
+# image bumps Node.js.
+RUN apt-get update && apt-get install -y --no-install-recommends \
       python3 \
       build-essential \
     && rm -rf /var/lib/apt/lists/*
 
+# The drift guard (openclaw-version-pin-drift.test.ts) greps for this exact
+# `npm install -g openclaw@<version>` line to keep the runtime version in
+# lockstep with packages/web/package.json (which feeds /api/version). Keep the
+# literal form unchanged.
 RUN npm install -g openclaw@2026.6.8
 
-# Install pinchy-files plugin dependencies (native modules must be built in the container)
+# Install pinchy-files plugin dependencies (native modules must be built here).
+# Each bundle's node_modules is copied into /opt/<plugin>-deps so the runtime
+# stage can grab a clean, fully-built tree. The npm download cache stays in this
+# builder stage (it lives in /root/.npm, which is never copied to runtime).
 COPY packages/plugins/pinchy-files/package.json /tmp/pinchy-files/package.json
 RUN cd /tmp/pinchy-files && npm install --omit=dev && \
     mkdir -p /opt/pinchy-files-deps && \
@@ -58,12 +85,71 @@ RUN cd /tmp/pinchy-email && npm install --omit=dev && \
     cp -r /tmp/pinchy-email/node_modules /opt/pinchy-email-deps/ && \
     rm -rf /tmp/pinchy-email
 
+# ---------------------------------------------------------------------------
+# Stage: runtime — slim image with only what the gateway runs.
+# ---------------------------------------------------------------------------
+# Must be the LAST stage: CI builds with `-f Dockerfile.openclaw` and no
+# `--target`, so Docker publishes the final stage. Keep `runtime` last.
+FROM mirror.gcr.io/library/node:22-slim AS runtime
+
+# Build-time metadata. CI passes --build-arg PINCHY_VERSION + PINCHY_BUILD_SHA;
+# local builds without --build-arg get "dev". OpenClaw's own version is the
+# `openclaw@…` pin above and surfaces via Pinchy's /api/version response.
+ARG PINCHY_VERSION=dev
+ARG PINCHY_BUILD_SHA=dev
+
+LABEL org.opencontainers.image.source="https://github.com/heypinchy/pinchy" \
+      org.opencontainers.image.title="Pinchy OpenClaw runtime" \
+      org.opencontainers.image.description="OpenClaw agent runtime + Pinchy plugin dependencies" \
+      org.opencontainers.image.licenses="AGPL-3.0" \
+      org.opencontainers.image.version="$PINCHY_VERSION" \
+      org.opencontainers.image.revision="$PINCHY_BUILD_SHA"
+
+# Runtime-only apt deps. start-openclaw.sh uses inotifywait (inotify-tools) on
+# the secrets dir, pkill/ps (procps) to manage the gateway process, and git is
+# used by OpenClaw for plugin/runtime operations. build-essential and python3
+# are intentionally absent — the native modules were already compiled in the
+# builder stage and ship as prebuilt .node binaries.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      git \
+      inotify-tools \
+      procps \
+    && rm -rf /var/lib/apt/lists/*
+
+# The global openclaw install (built in the builder stage). Its native modules
+# ship as prebuilt .node binaries, so no toolchain is needed to run them — we
+# copy the install verbatim instead of re-running `npm install -g` here. That
+# keeps the ~300 MB npm download cache out of this stage entirely.
+#   - /usr/local/lib/node_modules/openclaw is the package tree.
+COPY --from=builder /usr/local/lib/node_modules /usr/local/lib/node_modules
+
+# Recreate the CLI symlink rather than COPYing it. `COPY --from` DEREFERENCES
+# symlinks, so `COPY .../bin/openclaw` would copy openclaw.mjs's *contents* to
+# /usr/local/bin/openclaw — turning the launcher into a plain file. The loader
+# resolves its build output via `new URL("./dist/entry.js", import.meta.url)`,
+# which would then point at /usr/local/bin/dist/entry.js (nonexistent) and the
+# gateway would die at boot with "missing dist/entry.(m)js (build output)".
+# A symlink keeps import.meta.url anchored at the package dir, where dist/ lives.
+RUN ln -s ../lib/node_modules/openclaw/openclaw.mjs /usr/local/bin/openclaw
+
+# Pre-built plugin runtime dependency bundles from the builder stage. These
+# carry the already-compiled native .node binaries (better-sqlite3 +
+# @napi-rs/canvas in pinchy-files-deps), so no toolchain is needed here.
+# start-openclaw.sh copies them into each plugin's node_modules on boot.
+COPY --from=builder /opt/pinchy-files-deps /opt/pinchy-files-deps
+COPY --from=builder /opt/pinchy-odoo-deps /opt/pinchy-odoo-deps
+COPY --from=builder /opt/pinchy-web-deps /opt/pinchy-web-deps
+COPY --from=builder /opt/pinchy-email-deps /opt/pinchy-email-deps
+
 # Pre-warm the bundled-plugin runtime-deps cache. Rationale and full
 # behaviour live in config/prewarm-openclaw.sh; in short: boot the
 # gateway once at build time so the npm install of ~15 plugin runtime
 # deps lands in /root/.openclaw/plugin-runtime-deps/ before any user
 # starts the container. Saves ~48s of `[plugins] staging bundled
-# runtime deps` on first boot, observed on 2-vCPU staging.
+# runtime deps` on first boot, observed on 2-vCPU staging. On OpenClaw
+# 5.x (symlink model) the per-boot install is gone, so this boot also
+# serves as a smoke test that the gateway starts in this slim runtime
+# stage — the offline-first guarantee in this file's header relies on it.
 COPY config/openclaw-prewarm.json /tmp/openclaw-prewarm.json
 COPY config/prewarm-openclaw.sh /tmp/prewarm-openclaw.sh
 RUN chmod +x /tmp/prewarm-openclaw.sh && \
