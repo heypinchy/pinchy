@@ -262,8 +262,10 @@ agents) with cloud providers (interactive agents).
   `host.docker.internal` was rejected by the local-provider auth path.
 - For non-default URLs, the URL host must be one of: `localhost`,
   `127.0.0.1`, a hostname ending in `.local`, an RFC-1918 private IPv4
-  (`192.168.*`, `10.*`, `172.16-31.*`), or one of Docker's host aliases
-  (`host.docker.internal`, `gateway.docker.internal`).
+  (`192.168.*`, `10.*`, `172.16-31.*`), or one of the recognized container-host
+  aliases (`host.docker.internal`, `gateway.docker.internal`, and OrbStack's
+  `docker.orb.internal` / `host.orb.internal`) — all auto-rewritten to
+  `ollama.local`.
 - **Upgrading from `http://ollama:11434`?** Earlier docs recommended the
   bare service name, which fails the check above. Switch to
   [option B](#b-ollama-as-a-docker-service) — add an `ollama.docker.local`

@@ -20,9 +20,10 @@ import {
 describe("openclaw-local-url", () => {
   describe("DOCKER_HOST_ALIASES", () => {
     it("contains the Docker + OrbStack host aliases that get rewritten to ollama.local in build.ts", () => {
-      // Source of truth lives in @/lib/openclaw-local-url; mirrored by
-      // build.ts#rewriteOllamaHostForOpenClaw. If a new alias is added,
-      // both the rewrite map AND this drift guard must be updated.
+      // Single source of truth lives in @/lib/openclaw-local-url and is
+      // IMPORTED by build.ts#rewriteOllamaHostForOpenClaw (not duplicated), so
+      // adding an alias to the set is all that's needed — the rewrite picks it
+      // up automatically. This test just pins the set's exact membership.
       expect([...DOCKER_HOST_ALIASES].sort()).toEqual(
         [
           "docker.for.mac.host.internal",
