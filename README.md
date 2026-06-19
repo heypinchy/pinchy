@@ -74,7 +74,7 @@ Honest caveats: Pinchy is young, the integration list is short (Odoo, Gmail, Tel
 ## Quick Start
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/heypinchy/pinchy/v0.5.7/docker-compose.yml -o docker-compose.yml
+curl -fsSL https://raw.githubusercontent.com/heypinchy/pinchy/v0.6.0/docker-compose.yml -o docker-compose.yml
 docker compose up -d
 # Open http://localhost:7777 — the setup wizard creates your admin account
 ```

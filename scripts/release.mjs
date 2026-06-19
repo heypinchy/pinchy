@@ -32,6 +32,7 @@ import {
   buildCommitMessage,
   assertUpgradingSectionExists,
   finalizeUpgradeSection,
+  bumpReadmeComposePin,
 } from "./lib/release-logic.mjs";
 import {
   bumpMarketplaceVersion,
@@ -165,6 +166,7 @@ log("\nBumping versions...");
 const rootPkgPath = resolve(ROOT, "package.json");
 const webPkgPath = resolve(ROOT, "packages/web/package.json");
 const envExamplePath = resolve(ROOT, ".env.example");
+const readmePath = resolve(ROOT, "README.md");
 
 writeFileSync(rootPkgPath, bumpPackageJson(readFileSync(rootPkgPath, "utf8"), version));
 log(`  ✔ package.json → ${version}`);
@@ -177,6 +179,15 @@ writeFileSync(
   bumpEnvExample(readFileSync(envExamplePath, "utf8"), version),
 );
 log(`  ✔ .env.example → v${version}`);
+
+// Keep the README quick-start curl pin on the released tag so the
+// one-command install is reproducible and never drifts behind (it sat on
+// v0.5.7 through the v0.5.8 and v0.6.0 releases before this).
+writeFileSync(
+  readmePath,
+  bumpReadmeComposePin(readFileSync(readmePath, "utf8"), version),
+);
+log(`  ✔ README.md quick-start pin → v${version}`);
 
 // Keep the marketplace listing templates pinned to the released version, so a
 // fresh DigitalOcean install starts on the current release rather than drifting
@@ -212,7 +223,7 @@ if (finalizedMdx !== upgradingMdx) {
 
 log("\nCommitting...");
 exec(
-  `git add package.json packages/web/package.json .env.example marketplace/digitalocean/template.json marketplace/caprover/pinchy.yml "${upgradingMdxPath}"`,
+  `git add package.json packages/web/package.json .env.example README.md marketplace/digitalocean/template.json marketplace/caprover/pinchy.yml "${upgradingMdxPath}"`,
 );
 exec(`git commit -m "${buildCommitMessage(version)}"`);
 log(`  ✔ Committed`);

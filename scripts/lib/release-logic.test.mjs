@@ -13,6 +13,7 @@ import {
   assertNoStaleUpgradeSections,
   deriveStagingChecklist,
   checkReleaseVerification,
+  bumpReadmeComposePin,
 } from "./release-logic.mjs";
 
 // parseAndValidateVersion
@@ -399,6 +400,45 @@ BAZ=qux
   // Exactly one PINCHY_VERSION= line (not counting the commented one)
   const matches = output.match(/^PINCHY_VERSION=/gm) || [];
   assert.equal(matches.length, 1);
+});
+
+// bumpReadmeComposePin — keeps the README quick-start curl pin on the released
+// tag so a fresh one-command install is reproducible. Orphaned before this:
+// the pin sat on v0.5.7 through the v0.5.8 and v0.6.0 releases.
+
+test("bumpReadmeComposePin updates the pinned docker-compose tag, preserves the rest", () => {
+  const input = `## Quick Start
+
+\`\`\`bash
+curl -fsSL https://raw.githubusercontent.com/heypinchy/pinchy/v0.5.7/docker-compose.yml -o docker-compose.yml
+docker compose up -d
+\`\`\`
+`;
+  const expected = `## Quick Start
+
+\`\`\`bash
+curl -fsSL https://raw.githubusercontent.com/heypinchy/pinchy/v0.6.0/docker-compose.yml -o docker-compose.yml
+docker compose up -d
+\`\`\`
+`;
+  assert.equal(bumpReadmeComposePin(input, "0.6.0"), expected);
+});
+
+test("bumpReadmeComposePin throws when the pinned docker-compose URL is missing", () => {
+  const input = `## Quick Start\n\nNo pinned compose URL here.\n`;
+  assert.throws(
+    () => bumpReadmeComposePin(input, "0.6.0"),
+    /No pinned docker-compose URL in README\.md/,
+  );
+});
+
+test("bumpReadmeComposePin replaces any prior version, not just a specific one", () => {
+  const input =
+    "curl https://raw.githubusercontent.com/heypinchy/pinchy/v0.4.12/docker-compose.yml -o docker-compose.yml\n";
+  assert.equal(
+    bumpReadmeComposePin(input, "0.6.0"),
+    "curl https://raw.githubusercontent.com/heypinchy/pinchy/v0.6.0/docker-compose.yml -o docker-compose.yml\n",
+  );
 });
 
 // finalizeUpgradeSection — freezes the in-progress section at release time so

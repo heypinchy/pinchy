@@ -418,3 +418,33 @@ export function checkReleaseVerification({ verifiedSha, headSha }) {
   }
   return { ok: true, message: `Staging attestation matches HEAD (${h.slice(0, 12)}).` };
 }
+
+/**
+ * Returns README.md contents with the quick-start curl pin updated to the
+ * release tag.
+ *
+ * The README's one-command install pins a concrete
+ * `raw.githubusercontent.com/heypinchy/pinchy/v<X.Y.Z>/docker-compose.yml` URL
+ * so a fresh install is reproducible. Without bumping it here the pin drifts
+ * behind every release — it sat on v0.5.7 through both the v0.5.8 and v0.6.0
+ * releases, so new users pulled a stale compose file. The release tag is created
+ * later in the same release run, so the bumped URL resolves once pushed (same
+ * pattern as the marketplace template pins).
+ *
+ * @param {string} content - raw README.md contents
+ * @param {string} version - release version, no 'v' prefix (e.g. "0.6.0")
+ * @returns {string}
+ * @throws {Error} if the pinned docker-compose URL is missing
+ */
+export function bumpReadmeComposePin(content, version) {
+  const pattern =
+    /(raw\.githubusercontent\.com\/heypinchy\/pinchy\/)v\d+\.\d+\.\d+(\/docker-compose\.yml)/g;
+  if (!pattern.test(content)) {
+    throw new Error(
+      "No pinned docker-compose URL in README.md " +
+        "(raw.githubusercontent.com/heypinchy/pinchy/v<version>/docker-compose.yml). " +
+        "The quick-start install pin moved or was removed — update bumpReadmeComposePin.",
+    );
+  }
+  return content.replace(pattern, `$1v${version}$2`);
+}
