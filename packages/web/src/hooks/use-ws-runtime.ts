@@ -1531,6 +1531,39 @@ export function useWsRuntime(
     [agentId, chatId, dispatchMessages, dispatchLiveness, sendOrQueue, pendingUploads] // setPendingUploads is stable (useState setter)
   );
 
+  // Stop button (#550). assistant-ui calls this when the user cancels an
+  // in-flight run. We tell the server to abort the OpenClaw-side run (so it
+  // stops generating and the session lane lock is released — upstream
+  // openclaw#42172) and optimistically end the turn client-side.
+  // `async` purely to satisfy assistant-ui's `onCancel: () => Promise<void>`
+  // signature — the body is synchronous (the abort is fire-and-forget over the
+  // WS and the state resets are immediate); there is nothing to await.
+  const onCancel = useCallback(async () => {
+    // Only meaningful while connected: if the socket is down there is no run
+    // to reach, and the disconnect/watchdog path already tears it down. We do
+    // NOT queue the abort — a deferred abort against a reconnected socket would
+    // target whatever run exists later, which is not what the user asked to stop.
+    if (wsRef.current?.readyState === WebSocket.OPEN) {
+      wsRef.current.send(JSON.stringify({ type: "abort", agentId, ...(chatId && { chatId }) }));
+    }
+    // Optimistically end the turn so the stop button flips back to send
+    // immediately. The server's terminal `complete` frame (emitted after the
+    // synthetic post-abort `done`) confirms this and is idempotent with the
+    // reset below.
+    if (delayTimerRef.current) {
+      clearTimeout(delayTimerRef.current);
+      delayTimerRef.current = null;
+    }
+    setIsDelayed(false);
+    isRunningRef.current = false;
+    hasReceivedChunkRef.current = false;
+    setIsRunning(false);
+    inflightRunIdRef.current = null;
+    // A user stop is a clean end of turn (partial reply preserved), not a
+    // failure — drive liveness to completed so no error UI shows.
+    dispatchLiveness({ type: "completed" });
+  }, [agentId, chatId, dispatchLiveness]);
+
   const onRetryContinue = useCallback(
     (reason: "orphan" | "partial_stream_failure" | "send_failure") => {
       // All retry reasons go through the resend path — the OpenClaw Gateway
@@ -1858,6 +1891,7 @@ export function useWsRuntime(
     isRunning,
     convertMessage: (msg: ThreadMessageLike) => msg,
     onNew,
+    onCancel,
     adapters: {
       attachments: attachmentAdapter,
     },

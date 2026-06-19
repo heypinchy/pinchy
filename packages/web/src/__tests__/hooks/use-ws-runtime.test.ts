@@ -4457,3 +4457,112 @@ describe("PROTOCOL_OUTDATED error handling", () => {
     expect(result.current.runtime.messages).toHaveLength(messagesBefore);
   });
 });
+
+describe("user-triggered abort (onCancel) (#550)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.useFakeTimers();
+    wsInstances = [];
+    vi.stubGlobal("WebSocket", MockWebSocket);
+    vi.stubGlobal("localStorage", {
+      getItem: (key: string) => localStorageStore[key] ?? null,
+      setItem: (key: string, value: string) => {
+        localStorageStore[key] = value;
+      },
+      removeItem: (key: string) => {
+        delete localStorageStore[key];
+      },
+      clear: () => {
+        Object.keys(localStorageStore).forEach((k) => delete localStorageStore[k]);
+      },
+    });
+    Object.keys(localStorageStore).forEach((k) => delete localStorageStore[k]);
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.unstubAllGlobals();
+  });
+
+  /** Parse every frame the client sent and return those of the given type. */
+  function sentFramesOfType(ws: MockWebSocket, type: string): Array<Record<string, unknown>> {
+    return ws.send.mock.calls
+      .map(([raw]) => {
+        try {
+          return JSON.parse(raw as string) as Record<string, unknown>;
+        } catch {
+          return null;
+        }
+      })
+      .filter((f): f is Record<string, unknown> => f !== null && f.type === type);
+  }
+
+  it("sends an abort frame for the active agent when the user stops the run", () => {
+    const { result } = renderHook(() => useWsRuntime("agent-1"));
+    const ws = wsInstances[0]!;
+
+    act(() => {
+      ws.onopen?.(new Event("open"));
+    });
+    act(() => {
+      result.current.runtime.onNew({
+        content: [{ type: "text", text: "Hello" }],
+        parentId: "root",
+      });
+    });
+    expect(result.current.runtime.isRunning).toBe(true);
+
+    act(() => {
+      result.current.runtime.onCancel?.();
+    });
+
+    const abortFrames = sentFramesOfType(ws, "abort");
+    expect(abortFrames).toHaveLength(1);
+    expect(abortFrames[0]).toEqual({ type: "abort", agentId: "agent-1" });
+  });
+
+  it("threads the chatId onto the abort frame when scoped to a chat (#508)", () => {
+    const { result } = renderHook(() => useWsRuntime("agent-1", "chat-abcd"));
+    const ws = wsInstances[0]!;
+
+    act(() => {
+      ws.onopen?.(new Event("open"));
+    });
+    act(() => {
+      result.current.runtime.onNew({
+        content: [{ type: "text", text: "Hello" }],
+        parentId: "root",
+      });
+    });
+
+    act(() => {
+      result.current.runtime.onCancel?.();
+    });
+
+    const abortFrames = sentFramesOfType(ws, "abort");
+    expect(abortFrames).toHaveLength(1);
+    expect(abortFrames[0]).toEqual({ type: "abort", agentId: "agent-1", chatId: "chat-abcd" });
+  });
+
+  it("optimistically stops the running state so the composer re-enables immediately", () => {
+    const { result } = renderHook(() => useWsRuntime("agent-1"));
+    const ws = wsInstances[0]!;
+
+    act(() => {
+      ws.onopen?.(new Event("open"));
+    });
+    act(() => {
+      result.current.runtime.onNew({
+        content: [{ type: "text", text: "Hello" }],
+        parentId: "root",
+      });
+    });
+    expect(result.current.runtime.isRunning).toBe(true);
+
+    act(() => {
+      result.current.runtime.onCancel?.();
+    });
+
+    expect(result.current.runtime.isRunning).toBe(false);
+  });
+});
