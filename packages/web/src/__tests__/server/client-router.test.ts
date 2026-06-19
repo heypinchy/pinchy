@@ -18,6 +18,8 @@ const {
   mockListVisionModels,
   mockIsModelVisionCapable,
   mockReadExistingConfig,
+  mockRecordChatSessionError,
+  mockSupersedeChatSessionErrors,
 } = vi.hoisted(() => ({
   mockChat: vi.fn(),
   mockSessionsHistory: vi.fn(),
@@ -36,6 +38,8 @@ const {
   mockListVisionModels: vi.fn().mockResolvedValue([]),
   mockIsModelVisionCapable: vi.fn().mockReturnValue(false),
   mockReadExistingConfig: vi.fn().mockReturnValue({}),
+  mockRecordChatSessionError: vi.fn().mockResolvedValue(undefined),
+  mockSupersedeChatSessionErrors: vi.fn().mockResolvedValue(undefined),
 }));
 
 vi.mock("@/lib/agent-access", async (importOriginal) => {
@@ -128,6 +132,11 @@ vi.mock("@/lib/audit", async (importOriginal) => {
 vi.mock("@/lib/groups", () => ({
   getUserGroupIds: (...args: unknown[]) => mockGetUserGroupIds(...args),
   getAgentGroupIds: (...args: unknown[]) => mockGetAgentGroupIds(...args),
+}));
+
+vi.mock("@/server/chat-session-errors", () => ({
+  recordChatSessionError: (...args: unknown[]) => mockRecordChatSessionError(...args),
+  supersedeChatSessionErrors: (...args: unknown[]) => mockSupersedeChatSessionErrors(...args),
 }));
 
 vi.mock("@/server/model-unavailable-throttle", () => ({
@@ -243,6 +252,96 @@ describe("ClientRouter", () => {
         "agent:agent-1:direct:user-1:chat-a"
       );
       expect(access.computeSessionKey("agent-2")).toBe("agent:agent-2:direct:user-1");
+    });
+  });
+
+  describe("durable chat-session-error wiring", () => {
+    it("persists a durable error on an error chunk, sideEffects=true when a tool ran", async () => {
+      async function* stream() {
+        yield {
+          type: "userMessagePersisted" as const,
+          clientMessageId: "cm-1",
+          sessionKey: undefined,
+          persistedAt: 0,
+          runId: "r1",
+        };
+        yield { type: "tool_use" as const, text: "odoo_write", runId: "r1" };
+        yield { type: "error" as const, text: "⚠️ API rate limit reached", runId: "r1" };
+      }
+      mockChat.mockReturnValue(stream());
+
+      await router.handleMessage(createMockClientWs() as any, {
+        type: "message",
+        content: "do it",
+        agentId: "agent-1",
+        clientMessageId: "cm-1",
+      });
+
+      expect(mockRecordChatSessionError).toHaveBeenCalledWith(
+        expect.objectContaining({
+          userId: "user-1",
+          agentId: "agent-1",
+          sessionKey: "agent:agent-1:direct:user-1",
+          clientMessageId: "cm-1",
+          agentName: "Smithers",
+          errorClass: "transient",
+          transientReason: "rate_limit",
+          sideEffects: true,
+        })
+      );
+    });
+
+    it("records sideEffects=false for a read-only run with no tool calls", async () => {
+      async function* stream() {
+        yield {
+          type: "userMessagePersisted" as const,
+          clientMessageId: "cm-2",
+          sessionKey: undefined,
+          persistedAt: 0,
+          runId: "r1",
+        };
+        yield { type: "error" as const, text: "the model is overloaded", runId: "r1" };
+      }
+      mockChat.mockReturnValue(stream());
+
+      await router.handleMessage(createMockClientWs() as any, {
+        type: "message",
+        content: "hi",
+        agentId: "agent-1",
+        clientMessageId: "cm-2",
+      });
+
+      expect(mockRecordChatSessionError).toHaveBeenCalledWith(
+        expect.objectContaining({ transientReason: "overloaded", sideEffects: false })
+      );
+    });
+
+    it("supersedes the triggering message's durable error once its run succeeds", async () => {
+      async function* stream() {
+        yield {
+          type: "userMessagePersisted" as const,
+          clientMessageId: "cm-3",
+          sessionKey: undefined,
+          persistedAt: 0,
+          runId: "r1",
+        };
+        yield { type: "text" as const, text: "All done!", runId: "r1" };
+        yield { type: "done" as const, text: "", runId: "r1" };
+      }
+      mockChat.mockReturnValue(stream());
+
+      await router.handleMessage(createMockClientWs() as any, {
+        type: "message",
+        content: "hi",
+        agentId: "agent-1",
+        clientMessageId: "cm-3",
+      });
+
+      expect(mockSupersedeChatSessionErrors).toHaveBeenCalledWith({
+        sessionKey: "agent:agent-1:direct:user-1",
+        clientMessageId: "cm-3",
+      });
+      expect(mockRecordChatSessionError).not.toHaveBeenCalled();
     });
   });
 

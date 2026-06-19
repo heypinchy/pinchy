@@ -29,8 +29,10 @@ import { classifyModelError, classifyUpstreamFormatError } from "@/server/model-
 import {
   classifyAgentError,
   classifySynthesisedError,
+  classifyTransientReason,
   type AgentErrorClass,
 } from "@/server/agent-error-classifier";
+import { recordChatSessionError, supersedeChatSessionErrors } from "@/server/chat-session-errors";
 import {
   SILENT_REPLY_TOKEN,
   safeEmitLength,
@@ -952,6 +954,11 @@ export class ClientRouter {
     // or an explicit error chunk closes the safety net.
     let sawText = false;
     let sawError = false;
+    // Durable chat-error banner (Concern 1): the triggering user message id
+    // (anchors supersede + a safe retry) and whether the run executed a tool
+    // (so the banner can warn that a retry may duplicate already-applied writes).
+    let triggeringClientMessageId: string | undefined;
+    let sawToolCall = false;
     // Authoritative liveness: set when a terminal `liveness: failed` verdict has
     // been emitted (a real error chunk OR the silent-stream synthesis). Gates
     // the terminal `liveness: completed` so a failed run is never also reported
@@ -1060,6 +1067,15 @@ export class ClientRouter {
         if (chunk.type === "error") {
           sawTerminalError = true;
         }
+        // Durable-banner bookkeeping (runs regardless of consumer state).
+        // `userMessagePersisted` is OC's first chunk and carries the triggering
+        // client message id; `tool_use` means the run dispatched a tool, so a
+        // later failure's retry could duplicate side effects.
+        if (chunk.type === "userMessagePersisted") {
+          triggeringClientMessageId = chunk.clientMessageId;
+        } else if (chunk.type === "tool_use") {
+          sawToolCall = true;
+        }
 
         // Pinchy-side accounting — runs regardless of consumer state. The
         // browser may have navigated away, but OpenClaw is still streaming
@@ -1070,6 +1086,18 @@ export class ClientRouter {
         // turns that reach a `done` chunk count as completed sessions.
         if (chunk.type === "done") {
           this.sessionCache.add(sessionKey);
+          // The triggering message produced a successful response, so any
+          // durable error left over from a prior failed attempt of THIS message
+          // is now stale. Scoped to the triggering id so an unrelated later
+          // message succeeding never clears an unanswered error. Best-effort.
+          try {
+            await supersedeChatSessionErrors({
+              sessionKey,
+              clientMessageId: triggeringClientMessageId,
+            });
+          } catch (err) {
+            console.error("Failed to supersede durable chat error:", err);
+          }
         }
 
         // Server-side error logging — unconditional. With the drain-always
@@ -1102,10 +1130,22 @@ export class ClientRouter {
           // safe because exactly one error chunk arrives per failed stream
           // (the stream terminates after it), so the await runs at most
           // once per failed request — not on a hot per-chunk path.
+          const errorClass = classifyAgentError(chunk.text);
           await this.writeAgentErrorAudit({
             agent,
-            errorClass: classifyAgentError(chunk.text),
+            errorClass,
             providerError: chunk.text,
+          });
+          // Durable banner (Concern 1): mirror the error into chat_session_errors
+          // so it survives reload/reconnect. Best-effort — never fails the stream.
+          await this.persistDurableChatError({
+            agent,
+            sessionKey,
+            clientMessageId: triggeringClientMessageId,
+            runId: activeRunId,
+            providerError: chunk.text,
+            errorClass,
+            sideEffects: sawToolCall,
           });
         }
 
@@ -1322,6 +1362,17 @@ export class ClientRouter {
           errorClass: classifySynthesisedError("silent_stream"),
           providerError,
         });
+        // Durable banner: a silent timeout is also a "no response" the user
+        // should still see after a reload. Best-effort.
+        await this.persistDurableChatError({
+          agent,
+          sessionKey,
+          clientMessageId: triggeringClientMessageId,
+          runId: activeRunId,
+          providerError,
+          errorClass: classifySynthesisedError("silent_stream"),
+          sideEffects: sawToolCall,
+        });
 
         // Operational signal: a silent timeout shouldn't be invisible to
         // admins reviewing the audit trail. Throttled per (agentId, model)
@@ -1520,6 +1571,42 @@ export class ClientRouter {
    * append-only and HMAC-signed, so GDPR Art. 17 erasure is impossible
    * by design; scrubbing at write time is the only protection.
    */
+  /**
+   * Mirror an agent error into the durable `chat_session_errors` store that
+   * backs the chat "paused" banner (Concern 1). Best-effort: a failure here is
+   * logged but never propagated, so it can't break the stream or lose the audit
+   * row that already landed. `transientReason` is only meaningful for the
+   * `transient` class, where it lets the banner name the actual cause.
+   */
+  private async persistDurableChatError(args: {
+    agent: { id: string; name: string; model?: string | null };
+    sessionKey: string;
+    clientMessageId?: string;
+    runId?: string;
+    providerError: string;
+    errorClass: AgentErrorClass;
+    sideEffects: boolean;
+  }): Promise<void> {
+    try {
+      await recordChatSessionError({
+        userId: this.userId,
+        agentId: args.agent.id,
+        sessionKey: args.sessionKey,
+        clientMessageId: args.clientMessageId ?? null,
+        runId: args.runId ?? null,
+        agentName: args.agent.name,
+        model: args.agent.model ?? null,
+        errorClass: args.errorClass,
+        transientReason:
+          args.errorClass === "transient" ? classifyTransientReason(args.providerError) : null,
+        providerError: safeProviderError(args.providerError),
+        sideEffects: args.sideEffects,
+      });
+    } catch (err) {
+      console.error("Failed to persist durable chat error:", err);
+    }
+  }
+
   private async writeAgentErrorAudit(args: {
     agent: { id: string; name: string; model?: string | null };
     errorClass: AgentErrorClass;
