@@ -58,6 +58,8 @@ A prompt is a request, not a boundary. Two ways it fails as a control:
 1. **Prompt injection.** A malicious document or message can talk the model out of its instructions.
 2. **Drift.** A model can simply not follow an instruction reliably.
 
+Prompt injection is not a fringe concern. It ranks first, as LLM01, in the [OWASP Top 10 for LLM Applications](https://owasp.org/www-project-top-10-for-large-language-model-applications/), holding the top spot for the second consecutive edition. A boundary that the single most prevalent attack against language models can switch off is not a boundary.
+
 Real permissions live in code, outside the model. If a tool is not granted, the agent cannot call it, regardless of what the prompt or the user says. The model decides _whether_ to use a granted tool; it can never reach an ungranted one.
 
 ## Granularity that matters
