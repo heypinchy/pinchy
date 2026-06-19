@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useMemo } from "react";
 import Prism from "prismjs";
 import "prismjs/components/prism-json";
 import "./json-highlight.css";
@@ -180,10 +180,16 @@ export function AuditLogTable() {
   const [verifying, setVerifying] = useState(false);
   const [availableEventTypes, setAvailableEventTypes] = useState<string[]>([]);
   const { isCopied, copy } = useCopyToClipboard();
+  // Single source for the pretty-printed detail — rendered in the <pre> and
+  // copied to the clipboard.
+  const detailJson = useMemo(
+    () => (selectedEntry ? JSON.stringify(selectedEntry.detail, null, 2) : ""),
+    [selectedEntry]
+  );
 
   async function handleCopyDetail() {
     if (!selectedEntry) return;
-    const ok = await copy(JSON.stringify(selectedEntry.detail, null, 2));
+    const ok = await copy(detailJson);
     if (!ok) toast.error("Failed to copy to clipboard");
   }
 
@@ -609,7 +615,6 @@ export function AuditLogTable() {
                     size="sm"
                     className="h-7 gap-1.5 text-xs"
                     onClick={handleCopyDetail}
-                    aria-label="Copy JSON"
                   >
                     {isCopied ? (
                       <CheckIcon className="size-3.5" />
@@ -619,12 +624,13 @@ export function AuditLogTable() {
                     {isCopied ? "Copied" : "Copy JSON"}
                   </Button>
                 </div>
-                {/* break-all wraps long unbreakable tokens (ids, HMAC) instead of
-                    scrolling them off-screen — matches the rowHmac render below. */}
-                <pre className="mt-1 rounded bg-muted p-3 text-sm whitespace-pre-wrap break-all json-highlight">
+                {/* wrap-anywhere (overflow-wrap: anywhere) breaks long unbreakable
+                    tokens (ids, HMAC) only when they'd overflow — keeps normal JSON
+                    text intact, unlike the harder break-all. */}
+                <pre className="mt-1 rounded bg-muted p-3 text-sm whitespace-pre-wrap wrap-anywhere json-highlight">
                   <code
                     dangerouslySetInnerHTML={{
-                      __html: highlightJson(JSON.stringify(selectedEntry.detail, null, 2)),
+                      __html: highlightJson(detailJson),
                     }}
                   />
                 </pre>

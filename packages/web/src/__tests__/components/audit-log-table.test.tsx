@@ -624,8 +624,8 @@ describe("AuditLogTable", () => {
 
     const pre = document.querySelector("pre");
     expect(pre).not.toBeNull();
-    // break-all matches the repo precedent for long unbreakable tokens (HMAC, ids).
-    expect(pre).toHaveClass("whitespace-pre-wrap", "break-all");
+    // wrap-anywhere breaks long unbreakable tokens (HMAC, ids) only when needed.
+    expect(pre).toHaveClass("whitespace-pre-wrap", "wrap-anywhere");
     // No horizontal-scroll-only container — that is the readability complaint.
     expect(pre).not.toHaveClass("overflow-auto");
   });
