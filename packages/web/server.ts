@@ -304,6 +304,11 @@ ${domain ? `<p><a href="https://${domain}">Go to ${domain} →</a></p>` : ""}
   const { startUploadGc, stopUploadGc } = await import("./src/server/upload-gc");
   startUploadGc();
 
+  // Reap resolved (superseded/dismissed) durable chat errors past their
+  // retention window on the same hourly + post-boot cadence.
+  const { startChatErrorGc, stopChatErrorGc } = await import("./src/server/chat-error-gc");
+  startChatErrorGc();
+
   // Graceful shutdown: stop the upload GC + usage poller intervals, close the
   // memory-audit watcher, then close the HTTP server. Without this, a SIGTERM
   // (e.g. from Docker Compose) leaves the setInterval handles dangling and
@@ -317,6 +322,7 @@ ${domain ? `<p><a href="https://${domain}">Go to ${domain} →</a></p>` : ""}
   // benefit.
   registerShutdownHandlers([
     () => stopUploadGc(),
+    () => stopChatErrorGc(),
     () => stopUsagePoller(),
     () => (stopMemoryAuditWatcher ? stopMemoryAuditWatcher() : Promise.resolve()),
     () =>
