@@ -6,19 +6,20 @@ import {
 } from "@/lib/openclaw-local-url";
 
 /**
- * Drift guard for the shared 1:1 port of OpenClaw's `isLocalBaseUrl` predicate.
- * The mirror is documented and pinned to OpenClaw 2026.4.27 — these tests pin
- * the exact behavior so a future maintainer can't silently change a boundary
- * (e.g. tighten the 172.16–172.31 RFC1918 range) without a red test.
- *
- * See `openclaw-config.test.ts` for the dual that re-exports the same helper
- * as a config-generation drift guard.
- *
- * OPENCLAW_ISLOCAL_PIN: 2026.4.27 (re-verify on bump)
+ * Tests for the local-Ollama URL handling. `isOpenClawLocalBaseUrl` is a
+ * deliberate STABLE SUBSET of OpenClaw's `isLocalBaseUrl` (only loopback,
+ * `.local`, and RFC1918 private IPv4 — conventions OpenClaw won't drop), so it
+ * can only ever be a SAFE subset: it never accepts a host OpenClaw would
+ * reject. Container-host aliases are handled separately by `DOCKER_HOST_ALIASES`
+ * (Pinchy-owned), which `build.ts#rewriteOllamaHostForOpenClaw` normalizes to
+ * `ollama.local` — passing OpenClaw via the rock-stable `.local` rule and
+ * decoupling us from its host-alias allowlist churn. So this set does NOT need
+ * re-verifying against OpenClaw on every bump; it only grows when we choose to
+ * support a new container runtime's host alias.
  */
 describe("openclaw-local-url", () => {
   describe("DOCKER_HOST_ALIASES", () => {
-    it("contains exactly the four Docker host aliases that get rewritten to ollama.local in build.ts", () => {
+    it("contains the Docker + OrbStack host aliases that get rewritten to ollama.local in build.ts", () => {
       // Source of truth lives in @/lib/openclaw-local-url; mirrored by
       // build.ts#rewriteOllamaHostForOpenClaw. If a new alias is added,
       // both the rewrite map AND this drift guard must be updated.
@@ -26,10 +27,22 @@ describe("openclaw-local-url", () => {
         [
           "docker.for.mac.host.internal",
           "docker.for.win.host.internal",
+          "docker.orb.internal",
           "gateway.docker.internal",
           "host.docker.internal",
+          "host.orb.internal",
         ].sort()
       );
+    });
+
+    it("accepts the OrbStack host aliases (normalized to ollama.local at emit)", () => {
+      // OrbStack's host aliases are NOT in OpenClaw's allowlist directly, but
+      // the rewrite normalizes them to ollama.local, so they must validate at
+      // save time rather than being falsely rejected.
+      expect(isOpenClawCompatibleOllamaUrl("http://docker.orb.internal:11434")).toBe(true);
+      expect(isOpenClawCompatibleOllamaUrl("http://host.orb.internal:11434")).toBe(true);
+      // …while a bare service name that ISN'T a known alias stays rejected.
+      expect(isOpenClawCompatibleOllamaUrl("http://ollama:11434")).toBe(false);
     });
 
     it("is immutable in practice (ReadonlySet contract)", () => {

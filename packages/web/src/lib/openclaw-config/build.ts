@@ -61,10 +61,12 @@ export const DEFAULT_DOCS_PUBLIC_BASE_URL = "https://docs.heypinchy.com";
 
 /**
  * Rewrites the user-supplied Ollama URL so OpenClaw's `isLocalBaseUrl` check
- * passes (see model-auth-CsyLGY9m.js:111 in OpenClaw 2026.4.27). Docker host
- * aliases (see DOCKER_HOST_ALIASES) get rewritten to `ollama.local`; private
- * IPv4, `*.local`, `localhost`, etc. are already on the allowlist and pass
- * through unchanged.
+ * passes. Container-host aliases (see `DOCKER_HOST_ALIASES`) get normalized to
+ * `ollama.local` — which clears the check via the rock-stable `.local` rule and
+ * decouples us from OpenClaw's host-alias allowlist churn (see the
+ * `DOCKER_HOST_ALIASES` doc for the full rationale — this is load-bearing, not a
+ * version workaround). Private IPv4, `*.local`, `localhost`, etc. are stable
+ * allowlist entries and pass through unchanged.
  *
  * Also appends `/v1` so pi-ai's openai-completions provider hits Ollama's
  * OpenAI-compatible endpoint at `/v1/chat/completions` (pi-ai appends

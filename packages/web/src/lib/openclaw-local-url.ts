@@ -1,35 +1,57 @@
 /**
- * Mirror of OpenClaw's `isLocalBaseUrl` predicate
- * (model-auth-CsyLGY9m.js:111-118 + isPrivateIpv4Host:120-126). OpenClaw
- * does not export the function through any of its public subpath exports,
- * so we re-implement it here as a 1:1 port and use it both at save time
- * (providers.ts → reject unsupported hosts before they hit the DB) and as
- * a drift guard in openclaw-config.test.ts.
+ * A deliberately CONSERVATIVE subset of OpenClaw's `isLocalBaseUrl` predicate,
+ * used at save time (providers.ts → reject unsupported hosts before they hit
+ * the DB). OpenClaw doesn't export the function, so we re-implement only the
+ * parts that are CONVENTIONS — loopback, `.local` (mDNS / RFC 6762), and
+ * RFC1918 private IPv4. Those have been in every OpenClaw version and won't
+ * drop, so this subset can only ever be a SAFE predictor: anything it accepts,
+ * OpenClaw accepts too (no false acceptance → no surprise runtime "No API key"
+ * failure).
  *
- * If upstream changes the allowlist, this mirror won't auto-detect it —
- * anyone bumping the `openclaw` version pin should grep for
- * `OPENCLAW_ISLOCAL_PIN` and re-verify the predicate, then update the
- * docs in ollama-setup.mdx if the allowlist semantics changed.
+ * It intentionally does NOT mirror OpenClaw's volatile container-host aliases
+ * (`host.docker.internal`, `*.orb.internal`, …). Those are handled by
+ * `DOCKER_HOST_ALIASES` + the `ollama.local` rewrite (see below), which
+ * decouples us from OpenClaw's allowlist churn. So — unlike a 1:1 port — this
+ * does NOT need re-verifying against OpenClaw on every version bump; the worst
+ * case is a soft, correctable false REJECTION of an alias we haven't listed,
+ * never a hard false acceptance.
  *
- * OPENCLAW_ISLOCAL_PIN: 2026.4.27 (re-verify on bump; see PR #279)
+ * Verified safe-subset-of against OpenClaw 2026.6.8 (`src/agents/model-auth.ts`
+ * `isLocalBaseUrl`). See PR #279 for the original derivation.
  */
 
 /**
- * Docker host aliases that all resolve to "the host machine running
- * Docker". None of them pass OpenClaw's `isLocalBaseUrl` allowlist
- * directly, but `build.ts#rewriteOllamaHostForOpenClaw` rewrites every
- * one of them to `ollama.local` before the URL ever lands in the
- * emitted `openclaw.json`. The save-time validator accepts these as
- * "would pass after rewrite" so users can paste the placeholder URL
- * (`host.docker.internal:11434`) without seeing a spurious rejection.
+ * Container-host aliases that all resolve to "the host machine running the
+ * container runtime" (Docker Desktop, plain Docker on Linux, OrbStack).
+ * `build.ts#rewriteOllamaHostForOpenClaw` rewrites every one of them to
+ * `ollama.local` before the URL lands in the emitted `openclaw.json`, and the
+ * save-time validator accepts them as "would pass after rewrite" so users can
+ * paste the placeholder (`host.docker.internal:11434`) without a spurious
+ * rejection.
  *
- * Kept in sync with `DOCKER_HOST_ALIASES` in openclaw-config/build.ts.
+ * Why normalize them all to `ollama.local` instead of passing the alias
+ * through? Because `ollama.local` clears OpenClaw's `isLocalBaseUrl` via the
+ * `.local` (mDNS / RFC 6762) rule — the single most stable entry in that
+ * allowlist — which **decouples Pinchy from OpenClaw's host-alias allowlist
+ * churn**. OpenClaw has changed which Docker aliases it accepts more than once
+ * (2026.4.27 had none of these; 2026.6.x added `host.docker.internal` +
+ * `*.orb.internal`). Relying on a specific alias being in that allowlist would
+ * make a routine OpenClaw bump able to break local Ollama for every self-hoster
+ * with a "No API key" error. So this rewrite is a deliberate, load-bearing
+ * decoupling — NOT a version-specific workaround to be "cleaned up" later.
+ *
+ * This list is Pinchy-owned (it grows only when we choose to support a new
+ * runtime's alias) and is kept in sync with the rewrite in
+ * openclaw-config/build.ts.
  */
 export const DOCKER_HOST_ALIASES: ReadonlySet<string> = new Set([
   "host.docker.internal",
   "gateway.docker.internal",
   "docker.for.mac.host.internal",
   "docker.for.win.host.internal",
+  // OrbStack's native host aliases (Docker Desktop alternative).
+  "docker.orb.internal",
+  "host.orb.internal",
 ]);
 
 function isPrivateIpv4Host(host: string): boolean {

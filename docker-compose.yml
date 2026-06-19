@@ -35,11 +35,13 @@ services:
     expose:
       - "18789"
     extra_hosts:
-      # ollama.local is mapped to the Docker host gateway so the OpenClaw
-      # container can reach Ollama on the host. Pinchy's build.ts rewrites
-      # host.docker.internal -> ollama.local in the emitted config because
-      # host.docker.internal is not in OpenClaw 2026.4.27's isLocalBaseUrl
-      # allowlist (*.local is).
+      # ollama.local is mapped to the host gateway so the OpenClaw container can
+      # reach Ollama on the host. Pinchy normalizes every container-host alias
+      # (host.docker.internal, *.orb.internal, ...) -> ollama.local in the
+      # emitted config, which clears OpenClaw's isLocalBaseUrl via the stable
+      # `.local` rule -- a deliberate decoupling from its host-alias allowlist
+      # (which has changed across versions). See
+      # packages/web/src/lib/openclaw-local-url.ts.
       - "ollama.local:host-gateway"
     volumes:
       - openclaw-config:/root/.openclaw

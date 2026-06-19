@@ -2269,12 +2269,13 @@ describe("regenerateOpenClawConfig", () => {
     expect(config.models.providers["ollama"].baseUrl).toBe("http://ollama.local:11434/v1");
   });
 
-  it("rewrites all known Docker host aliases to ollama.local", async () => {
-    // Docker exposes the host under multiple aliases depending on platform
-    // and version: gateway.docker.internal (alternative), docker.for.mac.*
-    // (legacy Mac), docker.for.win.* (legacy Windows). All are Docker host
-    // aliases that must reach the host machine — none are in OpenClaw's
-    // isLocalBaseUrl allowlist, so all need the same ollama.local rewrite.
+  it("rewrites all known container-host aliases to ollama.local", async () => {
+    // The host is exposed under several aliases depending on the runtime:
+    // gateway.docker.internal, docker.for.mac.* / docker.for.win.* (legacy
+    // Docker Desktop), and docker.orb.internal / host.orb.internal (OrbStack).
+    // All are normalized to ollama.local regardless of whether OpenClaw's
+    // isLocalBaseUrl happens to accept a given alias today — that's the
+    // deliberate decoupling from OpenClaw's host-alias allowlist churn.
     vi.mocked(fetchOllamaLocalModelsFromUrl).mockResolvedValue([
       {
         id: "ollama/qwen2.5:7b",
@@ -2289,6 +2290,8 @@ describe("regenerateOpenClawConfig", () => {
       "http://gateway.docker.internal:11434",
       "http://docker.for.mac.host.internal:11434",
       "http://docker.for.win.host.internal:11434",
+      "http://docker.orb.internal:11434",
+      "http://host.orb.internal:11434",
     ];
 
     for (const url of aliases) {
