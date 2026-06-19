@@ -14,7 +14,7 @@
     "models:discover": "node scripts/discover-ollama-cloud-models.mjs",
     "models:verify:vision": "node scripts/verify-ollama-cloud-vision.mjs",
     "models:verify:tools": "node scripts/verify-ollama-cloud-tools.mjs",
-    "prepare": "husky"
+    "prepare": "husky || true"
   },
   "keywords": [],
   "author": "Clemens Helm",

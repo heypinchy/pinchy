@@ -1,21 +1,35 @@
+# syntax=docker/dockerfile:1
+#
+# Multi-stage build for the Pinchy web image.
+#
+#   1. `base`   — shared Node + corepack + workspace manifests.
+#   2. `build`  — full (dev+prod) install, then `next build` to produce `.next`.
+#   3. `prod-deps` — a SEPARATE `pnpm install --prod` so devDependencies
+#      (@playwright/test, vitest, eslint, tailwindcss, typescript, prettier,
+#      @types/*, …) are pruned from the node_modules that ships at runtime.
+#   4. runtime  — a clean node:22-slim that copies in ONLY what the server
+#      needs at boot: pruned node_modules, the built `.next` (minus the
+#      build-only `.next/cache`), the TypeScript source `tsx` executes
+#      directly, the drizzle migrations `drizzle-kit migrate` applies, the
+#      `scripts/` the entrypoint runs, and the 7 Pinchy plugins.
+#
+# Why this is correct for THIS app (no Next.js standalone, no compiled
+# server output): the runtime command is
+#   NODE_ENV=production node -r ./server-preload.cjs --import tsx server.ts
+# run from /app/packages/web. The server runs the TypeScript source directly
+# via `tsx` — so `tsx`, the TS source, and the `.next` build all have to be
+# present at runtime. `tsx` and `drizzle-kit` are therefore genuine RUNTIME
+# dependencies (the entrypoint runs `drizzle-kit migrate` at boot) and live
+# in `dependencies`, not `devDependencies`, so `pnpm install --prod` keeps
+# them.
+
+# ---------------------------------------------------------------------------
+# Stage: base — shared layout + corepack-enabled pnpm.
+# ---------------------------------------------------------------------------
 # Pull node:22-slim via Google's Docker Hub mirror to avoid Docker Hub
 # anonymous-pull rate limits in CI. mirror.gcr.io is a free, no-auth
 # pull-through cache for `library/*` images on Docker Hub.
-FROM mirror.gcr.io/library/node:22-slim
-
-# Build-time metadata. CI passes --build-arg PINCHY_VERSION + PINCHY_BUILD_SHA;
-# local builds without --build-arg get "dev" so `/api/version` makes that obvious.
-ARG PINCHY_VERSION=dev
-ARG PINCHY_BUILD_SHA=dev
-# PINCHY_BUILD_SHA also reaches runtime so /api/version can surface it.
-ENV PINCHY_BUILD_SHA=$PINCHY_BUILD_SHA
-
-LABEL org.opencontainers.image.source="https://github.com/heypinchy/pinchy" \
-      org.opencontainers.image.title="Pinchy" \
-      org.opencontainers.image.description="Enterprise AI Agent Platform" \
-      org.opencontainers.image.licenses="AGPL-3.0" \
-      org.opencontainers.image.version="$PINCHY_VERSION" \
-      org.opencontainers.image.revision="$PINCHY_BUILD_SHA"
+FROM mirror.gcr.io/library/node:22-slim AS base
 
 # Cache pnpm in a shared location so the non-root pinchy user can use it
 # without re-downloading on every container start.
@@ -24,13 +38,31 @@ RUN corepack enable
 
 WORKDIR /app
 
-COPY pnpm-workspace.yaml package.json pnpm-lock.yaml ./
+# Workspace manifests + lockfile + patches first, so the (expensive) install
+# layers cache on dependency changes rather than source changes. pnpm applies
+# pnpm.patchedDependencies during install — the patch files must be present in
+# the build context before `pnpm install`, otherwise a frozen install fails
+# with ENOENT on the .patch file.
+COPY pnpm-workspace.yaml package.json pnpm-lock.yaml .npmrc ./
 COPY packages/web/package.json packages/web/
-# pnpm applies pnpm.patchedDependencies during install — the patch files must be
-# present in the build context before `pnpm install`, otherwise frozen install
-# fails with ENOENT on the .patch file.
 COPY patches/ ./patches/
 
+# ---------------------------------------------------------------------------
+# Stage: prod-deps — production-only node_modules (devDependencies pruned).
+# ---------------------------------------------------------------------------
+# A dedicated `--prod` install (vs. `pnpm prune --prod` on the build modules)
+# keeps this layer independent of the build stage and produces a clean pnpm
+# virtual store containing only runtime deps — including tsx, drizzle-kit and
+# sharp, which are in `dependencies`. The symlinked .pnpm store is preserved
+# because we copy the whole node_modules trees (root + packages/web) verbatim
+# into the runtime stage, keeping module resolution intact.
+FROM base AS prod-deps
+RUN pnpm install --prod --frozen-lockfile
+
+# ---------------------------------------------------------------------------
+# Stage: build — full install + Next.js build.
+# ---------------------------------------------------------------------------
+FROM base AS build
 RUN pnpm install --frozen-lockfile
 
 COPY packages/web packages/web
@@ -48,12 +80,79 @@ COPY packages/plugins/pinchy-web/openclaw.plugin.json packages/plugins/pinchy-we
 
 RUN cd packages/web && pnpm build
 
+# Drop the build-only Turbopack cache so it never reaches the runtime image.
+# `.next/cache` is regenerated on the next build and is frequently the single
+# biggest directory in `.next`; it is useless at runtime.
+RUN rm -rf packages/web/.next/cache
+
+# ---------------------------------------------------------------------------
+# Stage: runtime — minimal image that actually boots the server.
+# ---------------------------------------------------------------------------
+FROM mirror.gcr.io/library/node:22-slim AS runtime
+
+# Build-time metadata. CI passes --build-arg PINCHY_VERSION + PINCHY_BUILD_SHA;
+# local builds without --build-arg get "dev" so `/api/version` makes that obvious.
+ARG PINCHY_VERSION=dev
+ARG PINCHY_BUILD_SHA=dev
+# PINCHY_BUILD_SHA also reaches runtime so /api/version can surface it.
+ENV PINCHY_BUILD_SHA=$PINCHY_BUILD_SHA
+
+LABEL org.opencontainers.image.source="https://github.com/heypinchy/pinchy" \
+      org.opencontainers.image.title="Pinchy" \
+      org.opencontainers.image.description="Enterprise AI Agent Platform" \
+      org.opencontainers.image.licenses="AGPL-3.0" \
+      org.opencontainers.image.version="$PINCHY_VERSION" \
+      org.opencontainers.image.revision="$PINCHY_BUILD_SHA"
+
+# corepack/pnpm is needed at runtime: the entrypoint runs `pnpm db:migrate`
+# and `pnpm start`. Same shared cache location as the build stages.
+ENV COREPACK_HOME=/app/.cache/corepack
+RUN corepack enable
+
+WORKDIR /app
+
 EXPOSE 7777
 
 ENV PORT=7777
 ENV NODE_ENV=production
 
-WORKDIR /app/packages/web
+# Workspace manifests + patches: pnpm reads these to resolve workspace scripts
+# (`pnpm start`, `pnpm db:migrate`) and the patched-dependency map at runtime.
+COPY --from=build /app/pnpm-workspace.yaml /app/package.json /app/pnpm-lock.yaml /app/.npmrc ./
+COPY --from=build /app/patches ./patches
+
+# Production-only node_modules (devDependencies pruned). The whole tree is
+# copied verbatim — root + packages/web — so pnpm's symlinked .pnpm virtual
+# store and its module resolution remain intact.
+COPY --from=prod-deps /app/node_modules ./node_modules
+COPY --from=prod-deps /app/packages/web/node_modules ./packages/web/node_modules
+
+# The runtime TypeScript source that `tsx` executes directly, plus all config
+# (next.config.ts, drizzle.config.ts, tsconfig.json, postcss.config.mjs, …),
+# the scripts/ the entrypoint calls (resolve-db-password.mjs), the drizzle
+# migrations drizzle-kit applies, server.ts and server-preload.cjs, and the
+# public/ assets. The source tree is small; node_modules and .next/cache (the
+# bloat) are handled separately above.
+COPY --from=build /app/packages/web/src ./packages/web/src
+COPY --from=build /app/packages/web/scripts ./packages/web/scripts
+COPY --from=build /app/packages/web/drizzle ./packages/web/drizzle
+COPY --from=build /app/packages/web/public ./packages/web/public
+COPY --from=build /app/packages/web/server.ts /app/packages/web/server-preload.cjs ./packages/web/
+COPY --from=build /app/packages/web/package.json ./packages/web/
+COPY --from=build /app/packages/web/next.config.ts /app/packages/web/drizzle.config.ts /app/packages/web/tsconfig.json ./packages/web/
+COPY --from=build /app/packages/web/postcss.config.mjs /app/packages/web/components.json ./packages/web/
+
+# The built Next.js app, WITHOUT the build-only `.next/cache` (stripped in the
+# build stage). This is the compiled production app the custom server serves.
+COPY --from=build /app/packages/web/.next ./packages/web/.next
+
+# Plugin manifests at /app/packages/plugins/<name>/openclaw.plugin.json.
+# plugin-manifest-loader.ts statically imports these via the relative path
+# `../../../../plugins/<name>/openclaw.plugin.json` and `tsx` resolves that as a
+# LIVE require at runtime (not just at Next build time) — they are pulled in by
+# build.ts → validate-built-config.ts on the server boot path, so the files must
+# be present in the runtime image or server.ts crashes with MODULE_NOT_FOUND.
+COPY --from=build /app/packages/plugins ./packages/plugins
 
 # Copy Pinchy plugins to /app/pinchy-plugins/ (NOT directly to the named volume).
 # Docker only initialises a named volume from the image on first creation; upgrades
@@ -67,6 +166,8 @@ COPY packages/plugins/pinchy-docs /app/pinchy-plugins/pinchy-docs
 COPY packages/plugins/pinchy-odoo /app/pinchy-plugins/pinchy-odoo
 COPY packages/plugins/pinchy-web /app/pinchy-plugins/pinchy-web
 COPY packages/plugins/pinchy-email /app/pinchy-plugins/pinchy-email
+
+WORKDIR /app/packages/web
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
   CMD node -e "fetch('http://localhost:7777/api/health').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"
