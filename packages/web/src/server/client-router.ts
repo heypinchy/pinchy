@@ -115,7 +115,20 @@ interface HistoryRequestMessage {
   chatId?: string;
 }
 
-type BrowserMessage = ChatMessage | HistoryRequestMessage;
+/**
+ * User-triggered abort of the in-flight run (#550). Sent by the chat
+ * composer's stop button. Carries the same `agentId` (+ optional `chatId`)
+ * the chat/history frames use so the server derives the identical session
+ * key and applies the identical access check before aborting.
+ */
+interface AbortRequestMessage {
+  type: "abort";
+  agentId: string;
+  /** Per-chat identifier (#508). See ChatMessage.chatId. */
+  chatId?: string;
+}
+
+type BrowserMessage = ChatMessage | HistoryRequestMessage | AbortRequestMessage;
 
 interface HistoryMessage {
   role: string;
@@ -169,6 +182,63 @@ export class ClientRouter {
     return { ok: true, chatId: parsed.data };
   }
 
+  /**
+   * Abort the in-flight run for this (user, agent[, chat]) session (#550).
+   *
+   * Calls `chatAbort` with the runId from the active-run registry when known
+   * (precise — never aborts a newer run that already replaced this one on the
+   * same session), falling back to a sessionKey-only abort otherwise. The
+   * stream pipe for the aborted run handles the resulting synthetic terminal
+   * `done` through the existing post-abort path — no extra teardown here.
+   *
+   * Emits `chat.run_aborted` (reserved by #441, first emitted here) only when
+   * there was a run to abort, with `outcome` reflecting the RPC result so an
+   * operator sees a failed abort too. A stop click with nothing in flight still
+   * reaches `chatAbort` (a safe no-op on the gateway, so the button is never a
+   * silent no-op) but is deliberately not audited — there is no run to
+   * attribute it to, and an unbounded "aborted nothing" write is just noise a
+   * buggy or hostile client could spam.
+   */
+  private async handleAbort(
+    agent: { id: string; name: string },
+    chatId: string | undefined
+  ): Promise<void> {
+    const sessionKey = this.computeSessionKey(agent.id, chatId);
+    const run = this.activeRuns.get(sessionKey);
+
+    let outcome: "success" | "failure" = "success";
+    try {
+      await this.openclawClient.chatAbort(sessionKey, run?.runId);
+    } catch (err) {
+      outcome = "failure";
+      console.warn(
+        `[client-router] user-triggered chatAbort failed for ${sessionKey}:`,
+        err instanceof Error ? err.message : err
+      );
+    }
+
+    if (!run) return;
+
+    const auditEntry = {
+      actorType: "user" as const,
+      actorId: this.userId,
+      eventType: "chat.run_aborted" as const,
+      resource: `agent:${agent.id}`,
+      detail: {
+        agent: { id: agent.id, name: agent.name },
+        sessionKey,
+        runId: run.runId,
+        reason: "user_request",
+      },
+      outcome,
+    };
+    try {
+      await appendAuditLog(auditEntry);
+    } catch (err) {
+      recordAuditFailure(err, auditEntry);
+    }
+  }
+
   async handleMessage(clientWs: WebSocket, message: BrowserMessage): Promise<void> {
     // Look up agent and check access
     const agent = await db.query.agents.findFirst({
@@ -220,6 +290,12 @@ export class ClientRouter {
       const resolved = this.resolveChatId(clientWs, message.chatId);
       if (!resolved.ok) return;
       return this.handleHistory(clientWs, agent, resolved.chatId);
+    }
+
+    if (message.type === "abort") {
+      const resolved = this.resolveChatId(clientWs, message.chatId);
+      if (!resolved.ok) return;
+      return this.handleAbort(agent, resolved.chatId);
     }
 
     // Reject legacy attachment shape: clients that still send structured content
