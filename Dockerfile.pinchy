@@ -11,7 +11,7 @@
 #      needs at boot: pruned node_modules, the built `.next` (minus the
 #      build-only `.next/cache`), the TypeScript source `tsx` executes
 #      directly, the drizzle migrations `drizzle-kit migrate` applies, the
-#      `scripts/` the entrypoint runs, and the 7 Pinchy plugins.
+#      `scripts/` the entrypoint runs, and the 8 Pinchy plugins.
 #
 # Why this is correct for THIS app (no Next.js standalone, no compiled
 # server output): the runtime command is
@@ -121,18 +121,28 @@ ENV NODE_ENV=production
 COPY --from=build /app/pnpm-workspace.yaml /app/package.json /app/pnpm-lock.yaml /app/.npmrc ./
 COPY --from=build /app/patches ./patches
 
+# Pre-warm the corepack pnpm download cache from the build stage. COREPACK_HOME
+# is empty in this fresh runtime stage, so without this the entrypoint's first
+# `pnpm db:migrate` / `pnpm start` would fetch pnpm over the network at boot —
+# breaking air-gapped / offline-first deployments (a regression vs. the old
+# single-stage image, which cached pnpm during its build-time install). The
+# build stage already downloaded the pinned pnpm, so copy it verbatim.
+COPY --from=build /app/.cache/corepack ./.cache/corepack
+
 # Production-only node_modules (devDependencies pruned). The whole tree is
 # copied verbatim — root + packages/web — so pnpm's symlinked .pnpm virtual
 # store and its module resolution remain intact.
 COPY --from=prod-deps /app/node_modules ./node_modules
 COPY --from=prod-deps /app/packages/web/node_modules ./packages/web/node_modules
 
-# The runtime TypeScript source that `tsx` executes directly, plus all config
-# (next.config.ts, drizzle.config.ts, tsconfig.json, postcss.config.mjs, …),
-# the scripts/ the entrypoint calls (resolve-db-password.mjs), the drizzle
-# migrations drizzle-kit applies, server.ts and server-preload.cjs, and the
-# public/ assets. The source tree is small; node_modules and .next/cache (the
-# bloat) are handled separately above.
+# The runtime TypeScript source that `tsx` executes directly, plus the config
+# the server + drizzle-kit read at boot (next.config.ts, drizzle.config.ts,
+# tsconfig.json), the scripts/ the entrypoint calls (resolve-db-password.mjs),
+# the drizzle migrations drizzle-kit applies, server.ts and server-preload.cjs,
+# and the public/ assets. The source tree is small; node_modules and
+# .next/cache (the bloat) are handled separately above. Build-only configs
+# (postcss.config.mjs, components.json) are intentionally NOT copied — PostCSS
+# and the shadcn CLI run at build time, not at runtime.
 COPY --from=build /app/packages/web/src ./packages/web/src
 COPY --from=build /app/packages/web/scripts ./packages/web/scripts
 COPY --from=build /app/packages/web/drizzle ./packages/web/drizzle
@@ -140,7 +150,6 @@ COPY --from=build /app/packages/web/public ./packages/web/public
 COPY --from=build /app/packages/web/server.ts /app/packages/web/server-preload.cjs ./packages/web/
 COPY --from=build /app/packages/web/package.json ./packages/web/
 COPY --from=build /app/packages/web/next.config.ts /app/packages/web/drizzle.config.ts /app/packages/web/tsconfig.json ./packages/web/
-COPY --from=build /app/packages/web/postcss.config.mjs /app/packages/web/components.json ./packages/web/
 
 # The built Next.js app, WITHOUT the build-only `.next/cache` (stripped in the
 # build stage). This is the compiled production app the custom server serves.
