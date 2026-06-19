@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 
 vi.mock("@/lib/settings", () => ({
   getSetting: vi.fn(),
@@ -21,6 +21,25 @@ import {
 } from "@/lib/domain";
 import { getSetting, setSetting, deleteSetting } from "@/lib/settings";
 import { isSetupComplete } from "@/lib/setup";
+import { shouldUseSecureCookies } from "@/lib/secure-cookies";
+import { mkdtempSync, rmSync } from "fs";
+import { tmpdir } from "os";
+import { join } from "path";
+
+// Point the secrets-volume flag at a throwaway dir so the domain-lock-flag
+// writes in domain.ts are hermetic and never touch /app/secrets.
+let flagDir: string;
+let prevEncDir: string | undefined;
+beforeEach(() => {
+  flagDir = mkdtempSync(join(tmpdir(), "pinchy-domain-flag-"));
+  prevEncDir = process.env.ENCRYPTION_KEY_DIR;
+  process.env.ENCRYPTION_KEY_DIR = flagDir;
+});
+afterEach(() => {
+  if (prevEncDir === undefined) delete process.env.ENCRYPTION_KEY_DIR;
+  else process.env.ENCRYPTION_KEY_DIR = prevEncDir;
+  rmSync(flagDir, { recursive: true, force: true });
+});
 
 describe("getDomain", () => {
   beforeEach(() => {
@@ -129,5 +148,49 @@ describe("domain cache", () => {
       expect(deleteSetting).toHaveBeenCalledWith("domain");
       expect(getCachedDomain()).toBeNull();
     });
+  });
+});
+
+// Closes the integration loop the unit tests can't: that domain.ts actually
+// keeps the secure-cookie flag (read by auth.ts at import) in step with the
+// domain-lock state. Uses the real @/lib/secure-cookies against a temp dir.
+describe("domain-lock flag wiring (secure cookies)", () => {
+  beforeEach(() => {
+    _resetCacheForTests();
+    vi.mocked(getSetting).mockReset();
+    vi.mocked(setSetting).mockReset();
+    vi.mocked(deleteSetting).mockReset();
+  });
+
+  it("setDomainAndRefreshCache turns the secure-cookie flag on", async () => {
+    vi.mocked(setSetting).mockResolvedValue(undefined);
+    expect(shouldUseSecureCookies()).toBe(false);
+    await setDomainAndRefreshCache("pinchy.example.com");
+    expect(shouldUseSecureCookies()).toBe(true);
+  });
+
+  it("deleteDomainAndRefreshCache turns the secure-cookie flag off", async () => {
+    vi.mocked(setSetting).mockResolvedValue(undefined);
+    vi.mocked(deleteSetting).mockResolvedValue(undefined);
+    await setDomainAndRefreshCache("pinchy.example.com");
+    expect(shouldUseSecureCookies()).toBe(true);
+    await deleteDomainAndRefreshCache();
+    expect(shouldUseSecureCookies()).toBe(false);
+  });
+
+  it("loadDomainCache backfills the flag for an already-locked install", async () => {
+    vi.mocked(getSetting).mockResolvedValue("pinchy.example.com");
+    expect(shouldUseSecureCookies()).toBe(false);
+    await loadDomainCache();
+    expect(shouldUseSecureCookies()).toBe(true);
+  });
+
+  it("loadDomainCache clears a stale flag when no domain is set", async () => {
+    vi.mocked(getSetting).mockResolvedValue("pinchy.example.com");
+    await loadDomainCache();
+    expect(shouldUseSecureCookies()).toBe(true);
+    vi.mocked(getSetting).mockResolvedValue(null);
+    await loadDomainCache();
+    expect(shouldUseSecureCookies()).toBe(false);
   });
 });
