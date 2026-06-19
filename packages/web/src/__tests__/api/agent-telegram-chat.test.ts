@@ -22,7 +22,8 @@ vi.mock("@/lib/agent-access", () => ({
 vi.mock("drizzle-orm", () => ({
   and: (...a: unknown[]) => a,
   eq: (...a: unknown[]) => a,
-  asc: (...a: unknown[]) => a,
+  // desc tags its argument so the test can assert newest-first ordering.
+  desc: (col: unknown) => ({ __desc: col }),
 }));
 
 // Schema sentinels: the route only needs object identity to pick the table.
@@ -48,6 +49,7 @@ let messageRows: unknown[];
 let messagesFail = false;
 const fromCalls: unknown[] = [];
 const messagesWhereArgs: unknown[] = [];
+const messagesOrderBy: unknown[] = [];
 vi.mock("@/db", async () => {
   const schema = (await import("@/db/schema")) as {
     channelLinks: unknown;
@@ -60,7 +62,10 @@ vi.mock("@/db", async () => {
         if (isMessages) messagesWhereArgs.push(...a);
         return chain;
       },
-      orderBy: () => chain,
+      orderBy: (...a: unknown[]) => {
+        if (isMessages) messagesOrderBy.push(...a);
+        return chain;
+      },
       limit: () => chain,
       then: (resolve: (v: unknown) => unknown, reject?: (e: unknown) => unknown) => {
         if (isMessages && messagesFail) return reject?.(new Error("db down"));
@@ -103,6 +108,7 @@ describe("GET /api/agents/[agentId]/telegram-chat", () => {
     vi.clearAllMocks();
     fromCalls.length = 0;
     messagesWhereArgs.length = 0;
+    messagesOrderBy.length = 0;
     messagesFail = false;
     mockGetSession.mockResolvedValue({
       user: { id: "user-1", email: "user@test.com", role: "member" },
@@ -110,10 +116,12 @@ describe("GET /api/agents/[agentId]/telegram-chat", () => {
     mockGetAgentWithAccess.mockResolvedValue({ id: "agent-1", name: "Smithers" });
     // This user has one linked Telegram peer (mixed case to prove lowercasing).
     linkRows = [{ channel: "telegram", userId: "user-1", channelUserId: "TG-Peer-111" }];
-    // Pinchy-owned transcript: inbound→user, outbound→assistant, chronological.
+    // Pinchy-owned transcript. The route queries newest-first (desc + limit) to
+    // render the most RECENT messages, so the mock returns rows newest-first;
+    // the route must reverse them back to chronological order for rendering.
     messageRows = [
-      { direction: "inbound", content: "Hello from Telegram", sentAt: new Date(1000) },
       { direction: "outbound", content: "Hi there!", sentAt: new Date(2000) },
+      { direction: "inbound", content: "Hello from Telegram", sentAt: new Date(1000) },
     ];
     mockGetSetting.mockResolvedValue("smithers_bot");
 
@@ -142,6 +150,10 @@ describe("GET /api/agents/[agentId]/telegram-chat", () => {
     const { channelMessages } = (await import("@/db/schema")) as { channelMessages: unknown };
     expect(fromCalls).toContain(channelMessages);
 
+    // Recency: the query orders newest-first (desc) + limit, so a long
+    // conversation shows the most RECENT backlog, not the oldest. The mock
+    // returns rows newest-first; the response must be chronological (reversed).
+    expect(messagesOrderBy).toContainEqual({ __desc: expect.anything() });
     const body = await res.json();
     expect(body.messages).toEqual([
       { role: "user", text: "Hello from Telegram", timestamp: 1000 },

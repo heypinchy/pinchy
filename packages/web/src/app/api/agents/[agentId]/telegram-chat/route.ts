@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { and, asc, eq } from "drizzle-orm";
+import { and, desc, eq } from "drizzle-orm";
 import { withAuth } from "@/lib/api-auth";
 import { getAgentWithAccess } from "@/lib/agent-access";
 import { getSetting } from "@/lib/settings";
@@ -63,7 +63,9 @@ export const GET = withAuth<RouteContext>(async (_request, { params }, session) 
           eq(channelMessages.peerId, peerId)
         )
       )
-      .orderBy(asc(channelMessages.sentAt))
+      // Newest-first + limit so a long conversation renders the most RECENT
+      // HISTORY_LIMIT messages (a chat backlog), not the oldest ones.
+      .orderBy(desc(channelMessages.sentAt))
       .limit(HISTORY_LIMIT);
   } catch {
     // Transient DB error. 502 so the client surfaces a retryable "couldn't load
@@ -71,7 +73,8 @@ export const GET = withAuth<RouteContext>(async (_request, { params }, session) 
     return NextResponse.json({ error: "Failed to load Telegram conversation" }, { status: 502 });
   }
 
-  const messages: TelegramTranscriptMessage[] = rows.map((row) => ({
+  // Reverse the newest-first query result back to chronological order for display.
+  const messages: TelegramTranscriptMessage[] = rows.reverse().map((row) => ({
     role: row.direction === "inbound" ? "user" : "assistant",
     text: row.content,
     timestamp: row.sentAt.getTime(),
