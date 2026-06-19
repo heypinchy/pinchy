@@ -7,6 +7,7 @@
 // Endpoint used by OpenClaw when routing a chat message:
 //   POST /api/chat   → streaming NDJSON response
 import * as http from "http";
+import type { AddressInfo } from "net";
 
 const MODEL_NAME = "llama3.2";
 // Default response asserted by the integration test suite. The setup-wizard
@@ -852,12 +853,41 @@ export const FAKE_OLLAMA_PDF_ATTACHMENT_READ_TOOL_RESPONSE = PDF_ATTACHMENT_READ
 
 let server: http.Server | null = null;
 
-export function startFakeOllama(): Promise<void> {
-  return new Promise((resolve) => {
-    server = http.createServer(handleRequest);
-    server.listen(FAKE_OLLAMA_PORT, "0.0.0.0", () => {
-      console.log(`[fake-ollama] listening on port ${FAKE_OLLAMA_PORT}`);
-      resolve();
+/**
+ * Start the fake-ollama HTTP server and resolve with the actual bound port.
+ *
+ * @param port  Port to bind. Defaults to the well-known FAKE_OLLAMA_PORT (11435)
+ *   that the Dockerized E2E stack / OpenClaw connect to. Pass 0 for an
+ *   OS-assigned ephemeral port (used by in-process tests so they never collide
+ *   with a concurrent holder of 11435).
+ *
+ * Rejects — rather than hanging on a listen callback that never fires while the
+ * unhandled 'error' event crashes the process — if the port is already in use
+ * (EADDRINUSE) or listen otherwise fails, or if a server is already running.
+ */
+export function startFakeOllama(port: number = FAKE_OLLAMA_PORT): Promise<number> {
+  return new Promise((resolve, reject) => {
+    if (server) {
+      reject(new Error("[fake-ollama] already started; call stopFakeOllama() first"));
+      return;
+    }
+    const s = http.createServer(handleRequest);
+    const onStartupError = (err: Error) => {
+      // listen() failed (e.g. EADDRINUSE) — surface it as a rejection and leave
+      // no half-constructed, never-listening server behind (which would make a
+      // later stopFakeOllama() reject with ERR_SERVER_NOT_RUNNING).
+      server = null;
+      reject(err);
+    };
+    s.once("error", onStartupError);
+    s.listen(port, "0.0.0.0", () => {
+      server = s;
+      s.removeListener("error", onStartupError);
+      // Surface, rather than crash on, any later server-level socket error.
+      s.on("error", (err) => console.error("[fake-ollama] server error:", err));
+      const boundPort = (s.address() as AddressInfo).port;
+      console.log(`[fake-ollama] listening on port ${boundPort}`);
+      resolve(boundPort);
     });
   });
 }
