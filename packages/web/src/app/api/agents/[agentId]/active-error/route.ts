@@ -1,10 +1,8 @@
 import { NextResponse } from "next/server";
 import { withAuth } from "@/lib/api-auth";
 import { getAgentWithAccess } from "@/lib/agent-access";
-import { parseRequestBody } from "@/lib/api-validation";
 import { appendAuditLog } from "@/lib/audit";
 import { directSessionKey } from "@/lib/session-key";
-import { dismissChatErrorSchema } from "@/lib/schemas/chat-errors";
 import { getActiveChatSessionError, dismissChatSessionError } from "@/server/chat-session-errors";
 
 type RouteContext = { params: Promise<{ agentId: string }> };
@@ -44,9 +42,11 @@ export const GET = withAuth<RouteContext>(async (request, { params }, session) =
 });
 
 /**
- * Dismiss the error the banner is showing. Scoped to the owning user, so one
- * user can never clear another's banner. 404 if the id doesn't match an
- * un-dismissed error owned by the caller (e.g. it was already superseded).
+ * Dismiss the error the banner is showing, identified by `?id=`. Scoped to the
+ * owning user, so one user can never clear another's banner. 404 if the id
+ * doesn't match an un-dismissed error owned by the caller (e.g. already
+ * superseded). The id rides as a query param because DELETE carries no body
+ * through the typed `apiDelete` client.
  */
 export const DELETE = withAuth<RouteContext>(async (request, { params }, session) => {
   const { agentId } = await params;
@@ -55,13 +55,12 @@ export const DELETE = withAuth<RouteContext>(async (request, { params }, session
   if (agentOrError instanceof NextResponse) return agentOrError;
   const agent = agentOrError;
 
-  const parsed = await parseRequestBody(dismissChatErrorSchema, request);
-  if ("error" in parsed) return parsed.error;
+  const id = request.nextUrl.searchParams.get("id");
+  if (!id) {
+    return NextResponse.json({ error: "Error id is required" }, { status: 400 });
+  }
 
-  const dismissed = await dismissChatSessionError({
-    id: parsed.data.id,
-    userId: session.user.id!,
-  });
+  const dismissed = await dismissChatSessionError({ id, userId: session.user.id! });
   if (!dismissed) {
     return NextResponse.json({ error: "Error not found" }, { status: 404 });
   }
