@@ -86,6 +86,19 @@ test.describe("Durable agent-error banner", () => {
 
     await expect(page.getByTestId("error-warning-icon").last()).toBeVisible({ timeout: 60000 });
 
+    // In-session (the live path, before any reload): the LIVE error frame
+    // carries the audit-derived sideEffects flag, so the inline bubble's Retry
+    // is gated behind the SAME duplicate-write confirm as the durable banner —
+    // not just the post-reload banner. Clicking it opens the confirm instead of
+    // resending. Cancel here so the run's durable error survives to the reload
+    // assertions below.
+    await page.getByRole("button", { name: /^retry$/i }).click();
+    const liveConfirm = page.getByRole("alertdialog");
+    await expect(liveConfirm).toBeVisible();
+    await expect(liveConfirm).toContainText(/duplicate/i);
+    await liveConfirm.getByRole("button", { name: /cancel/i }).click();
+    await expect(liveConfirm).toHaveCount(0);
+
     await page.reload();
     await waitForOpenClawConnected(page);
 
