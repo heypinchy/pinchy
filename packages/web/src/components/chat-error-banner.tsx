@@ -5,17 +5,7 @@ import { apiGet, apiDelete } from "@/lib/api-client";
 import { ChatErrorMessage, type ChatError } from "@/components/assistant-ui/chat-error-message";
 import type { TransientReason } from "@/lib/schemas/chat-frames";
 import { Button } from "@/components/ui/button";
-import {
-  AlertDialog,
-  AlertDialogAction,
-  AlertDialogCancel,
-  AlertDialogContent,
-  AlertDialogDescription,
-  AlertDialogFooter,
-  AlertDialogHeader,
-  AlertDialogTitle,
-  AlertDialogTrigger,
-} from "@/components/ui/alert-dialog";
+import { DuplicateRetryConfirm } from "@/components/chat/duplicate-retry-confirm";
 
 interface ActiveError {
   id: string;
@@ -102,27 +92,13 @@ export function ChatErrorBanner({
   };
 
   const retryControl = error.sideEffects ? (
-    <AlertDialog>
-      <AlertDialogTrigger asChild>
-        <Button variant="outline" size="sm" className="h-7 text-xs">
+    <DuplicateRetryConfirm agentName={error.agentName} onConfirm={handleRetry}>
+      {(open) => (
+        <Button variant="outline" size="sm" className="h-7 text-xs" onClick={open}>
           Retry
         </Button>
-      </AlertDialogTrigger>
-      <AlertDialogContent>
-        <AlertDialogHeader>
-          <AlertDialogTitle>Retry may duplicate actions</AlertDialogTitle>
-          <AlertDialogDescription>
-            {error.agentName} had already started performing actions before it stopped. Retrying
-            re-runs the whole request and may create duplicates (e.g. duplicate records). Continue
-            only if you&apos;ve checked what was already done.
-          </AlertDialogDescription>
-        </AlertDialogHeader>
-        <AlertDialogFooter>
-          <AlertDialogCancel>Cancel</AlertDialogCancel>
-          <AlertDialogAction onClick={handleRetry}>Retry anyway</AlertDialogAction>
-        </AlertDialogFooter>
-      </AlertDialogContent>
-    </AlertDialog>
+      )}
+    </DuplicateRetryConfirm>
   ) : (
     <Button variant="outline" size="sm" className="h-7 text-xs" onClick={handleRetry}>
       Retry

@@ -50,6 +50,7 @@ import { DiagnosticsExportDialog } from "@/components/diagnostics-export-dialog"
 import { Progress } from "@/components/ui/progress";
 import type { PendingUpload } from "@/hooks/use-ws-runtime";
 import { RetryButton } from "@/components/chat/retry-button";
+import { DuplicateRetryConfirm } from "@/components/chat/duplicate-retry-confirm";
 import { useComposerRuntime } from "@assistant-ui/react";
 import { getDraft, saveDraft } from "@/lib/draft-store";
 
@@ -485,11 +486,29 @@ export const AssistantMessage: FC = () => {
         | undefined) ?? "partial_stream_failure"
   );
   const isLast = useMessage((s) => s.isLast);
+  // The failed run already ran a tool → gate retry behind a duplicate-write
+  // confirm, matching the durable banner (the live retry is the most common
+  // retry moment, so it must be gated too).
+  const sideEffects = useMessage(
+    (s) => !!(s.metadata?.custom?.error as ChatError | undefined)?.sideEffects
+  );
+  const errorAgentName = useMessage(
+    (s) => (s.metadata?.custom?.error as ChatError | undefined)?.agentName
+  );
   const onRetryContinue = useContext(RetryContinueContext);
 
   const showRetry = isRetryable && isLast;
   const retryButton = showRetry ? (
-    <RetryButton onClick={() => onRetryContinue(retryReason)} />
+    sideEffects ? (
+      <DuplicateRetryConfirm
+        agentName={errorAgentName}
+        onConfirm={() => onRetryContinue(retryReason)}
+      >
+        {(open) => <RetryButton onClick={open} />}
+      </DuplicateRetryConfirm>
+    ) : (
+      <RetryButton onClick={() => onRetryContinue(retryReason)} />
+    )
   ) : null;
 
   return (

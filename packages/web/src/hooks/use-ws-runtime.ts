@@ -1275,6 +1275,7 @@ export function useWsRuntime(
                 hint: data.hint,
                 modelUnavailable: data.modelUnavailable,
                 upstreamFormatError,
+                sideEffects: data.sideEffects,
               }
             : isAttachmentErrorCode
               ? { attachmentInvalid: true, message: data.message }
