@@ -446,6 +446,73 @@ describe("AssistantMessage retryable error bubble", () => {
     expect(screen.getByRole("button", { name: /retry/i })).toBeDisabled();
   });
 
+  it("gates the live Retry behind a duplicate-write confirm when the error has sideEffects", async () => {
+    const { useMessage } = await import("@assistant-ui/react");
+    vi.mocked(useMessage).mockImplementation(
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      (selector: (state: any) => unknown) =>
+        selector({
+          metadata: {
+            custom: {
+              error: { providerError: "rate limit", agentName: "Penny", sideEffects: true },
+              retryable: true,
+            },
+          },
+          isLast: true,
+          id: "msg-err-se",
+        })
+    );
+
+    const mockRetryContinue = vi.fn();
+    const { RetryContinueContext } = await import("@/components/chat");
+    const { AssistantMessage } = await import("@/components/assistant-ui/thread");
+    render(
+      <RetryContinueContext.Provider value={mockRetryContinue}>
+        <AssistantMessage />
+      </RetryContinueContext.Provider>
+    );
+
+    // Clicking Retry opens a confirm instead of retrying immediately.
+    fireEvent.click(screen.getByRole("button", { name: /^retry$/i }));
+    expect(mockRetryContinue).not.toHaveBeenCalled();
+    const confirm = await screen.findByRole("alertdialog");
+    expect(confirm).toHaveTextContent(/duplicate/i);
+
+    fireEvent.click(screen.getByRole("button", { name: /retry anyway/i }));
+    expect(mockRetryContinue).toHaveBeenCalledTimes(1);
+  });
+
+  it("retries directly (no confirm) when the error has no sideEffects", async () => {
+    const { useMessage } = await import("@assistant-ui/react");
+    vi.mocked(useMessage).mockImplementation(
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      (selector: (state: any) => unknown) =>
+        selector({
+          metadata: {
+            custom: {
+              error: { providerError: "rate limit", agentName: "Penny" },
+              retryable: true,
+            },
+          },
+          isLast: true,
+          id: "msg-err-nose",
+        })
+    );
+
+    const mockRetryContinue = vi.fn();
+    const { RetryContinueContext } = await import("@/components/chat");
+    const { AssistantMessage } = await import("@/components/assistant-ui/thread");
+    render(
+      <RetryContinueContext.Provider value={mockRetryContinue}>
+        <AssistantMessage />
+      </RetryContinueContext.Provider>
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: /^retry$/i }));
+    expect(mockRetryContinue).toHaveBeenCalledTimes(1);
+    expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument();
+  });
+
   it("disables Retry button and sets tooltip when ChatStatusContext is unavailable", async () => {
     const { useMessage } = await import("@assistant-ui/react");
     vi.mocked(useMessage).mockImplementation(

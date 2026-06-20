@@ -24,6 +24,12 @@ export interface ChatError {
   modelUnavailable?: ModelUnavailableError;
   upstreamFormatError?: UpstreamFormatError;
   transientError?: TransientError;
+  /**
+   * The failed run already executed a tool (audit-derived). Carried on the live
+   * error frame so the in-chat bubble can gate its retry behind a duplicate-
+   * write confirmation, matching the durable banner.
+   */
+  sideEffects?: boolean;
   attachmentInvalid?: true;
 }
 

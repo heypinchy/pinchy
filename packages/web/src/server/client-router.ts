@@ -1114,6 +1114,13 @@ export class ClientRouter {
         // exactly the chunks operators most need to see (no UI to surface
         // them). Gating this on readyState would silently swallow upstream
         // failures during nav-aways.
+        //
+        // sideEffects is computed once by the durable-persist below (audit-
+        // derived) and reused for the live error frame further down, so a
+        // failed run's in-chat retry and its durable banner agree without a
+        // second DB query — and inherit the persist's best-effort try/catch
+        // (a persist failure can never break the live error frame).
+        let liveSideEffects = false;
         if (chunk.type === "error") {
           console.error("OpenClaw error chunk:", chunk.text);
 
@@ -1147,7 +1154,8 @@ export class ClientRouter {
           });
           // Durable banner (Concern 1): mirror the error into chat_session_errors
           // so it survives reload/reconnect. Best-effort — never fails the stream.
-          await this.persistDurableChatError({
+          // Returns the audit-derived sideEffects flag, reused for the live frame.
+          liveSideEffects = await this.persistDurableChatError({
             agent,
             sessionKey,
             clientMessageId: triggeringClientMessageId,
@@ -1200,6 +1208,10 @@ export class ClientRouter {
             // modelUnavailable: that one fires on 5xx, this one on 400 schema
             // rejection, and the same chunk should never match both.
             const upstreamFormatError = classifyUpstreamFormatError(chunk.text, agent.model ?? "");
+            // Carry sideEffects on the LIVE frame too (reusing the audit-derived
+            // value the durable-persist above already computed) so the in-chat
+            // bubble's retry is gated behind the duplicate-write confirm — not
+            // just the durable banner after reload.
             this.broadcastForRun(sessionKey, clientWs, {
               type: "error",
               agentName: agent.name,
@@ -1208,6 +1220,7 @@ export class ClientRouter {
               messageId,
               ...(modelUnavailable ? { modelUnavailable } : {}),
               ...(upstreamFormatError ? { upstreamFormatError } : {}),
+              ...(liveSideEffects ? { sideEffects: true } : {}),
             });
             // Authoritative liveness: this is a terminal failure. Reuse the
             // provider error text already computed above so the client never has
@@ -1339,6 +1352,19 @@ export class ClientRouter {
       // runs before the spinner is cleared.
       if (!sawText && !sawError) {
         const providerError = "The model did not produce a response. It may have timed out.";
+        // Durable banner: a silent timeout is also a "no response" the user
+        // should still see after a reload. Best-effort. Computed before the
+        // frame so the live retry is gated on the same audit-derived
+        // sideEffects signal as the error-chunk path above.
+        const sideEffects = await this.persistDurableChatError({
+          agent,
+          sessionKey,
+          clientMessageId: triggeringClientMessageId,
+          runId: activeRunId,
+          providerError,
+          errorClass: classifySynthesisedError("silent_stream"),
+          runStartedAt,
+        });
         // Tier 2b: broadcast so a tab joined via reconnect-resume also
         // sees the synthesised error (the original ws might already be
         // gone). The listener-set fallback inside broadcastForRun reaches
@@ -1350,6 +1376,7 @@ export class ClientRouter {
           providerError,
           hint: getErrorHint(providerError, this.userRole),
           messageId,
+          ...(sideEffects ? { sideEffects: true } : {}),
         });
         // Authoritative liveness: a silent stream is a terminal failure too, so
         // the client never falls back to a timer guess for this class either.
@@ -1370,17 +1397,6 @@ export class ClientRouter {
           agent,
           errorClass: classifySynthesisedError("silent_stream"),
           providerError,
-        });
-        // Durable banner: a silent timeout is also a "no response" the user
-        // should still see after a reload. Best-effort.
-        await this.persistDurableChatError({
-          agent,
-          sessionKey,
-          clientMessageId: triggeringClientMessageId,
-          runId: activeRunId,
-          providerError,
-          errorClass: classifySynthesisedError("silent_stream"),
-          runStartedAt,
         });
 
         // Operational signal: a silent timeout shouldn't be invisible to
@@ -1595,7 +1611,7 @@ export class ClientRouter {
     providerError: string;
     errorClass: AgentErrorClass;
     runStartedAt: Date;
-  }): Promise<void> {
+  }): Promise<boolean> {
     try {
       // Derive sideEffects from the audit trail: OpenClaw doesn't signal tool
       // execution as a chat chunk, so a `tool.*` audit row since this run began
@@ -1615,8 +1631,13 @@ export class ClientRouter {
         providerError: safeProviderError(args.providerError),
         sideEffects,
       });
+      return sideEffects;
     } catch (err) {
       console.error("Failed to persist durable chat error:", err);
+      // Best-effort: a persist failure must never break the live error frame.
+      // Default to "no side effects" so the in-chat retry stays ungated rather
+      // than spuriously demanding a duplicate-write confirm.
+      return false;
     }
   }
 
