@@ -63,6 +63,14 @@ When you send a message and move to a different page in Pinchy, the chat keeps r
 
 A full page reload does not lose the reply either. Pinchy re-attaches the reloaded chat to the in-flight run through its stable session key, so any output that arrived while the page was reloading still lands in the same bubble and streaming continues. Only a restart of the Pinchy server drops in-flight runs.
 
+## Paused: agent errors survive a reload
+
+Some agent errors are only temporary — the model provider is rate-limiting requests, is overloaded, timed out, or is briefly unavailable. When one of these interrupts a run, the chat shows an error bubble that names the actual cause (we don't label everything a "rate limit").
+
+That bubble lives in the conversation, so a reload — or a reconnect during a long tool loop — would normally lose it, leaving you unsure whether anything went wrong. Pinchy keeps it instead. The error re-surfaces as a **paused banner** above the message composer when you come back, with the same cause-specific explanation. From there you decide: **Retry** resends your last message, or **Dismiss** clears the banner once you've moved on.
+
+The banner is scoped to you and the agent you're chatting with, so you only ever see the error that's actually yours. Dismissing it clears it for good — it won't reappear on the next reload.
+
 ## Long-running responses time out
 
 A single response can't run forever. A server-side watchdog caps each run at about 15 minutes of wall-clock time. If a reply hasn't finished by then, Pinchy aborts it and shows a **"timed out after 15m — please retry"** error bubble with a **Retry** button so you can send the same message again.

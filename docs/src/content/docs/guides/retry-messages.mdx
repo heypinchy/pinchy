@@ -14,6 +14,14 @@ There are four situations where Retry shows up, and in each case the button labe
 - **Timed out** — The agent kept working but hit Pinchy's 15-minute per-run limit, so the server stopped it. This is the server-side watchdog, distinct from the 60-second "No response" case above. You'll see a separate "timed out after 15m" bubble with a Retry button.
 - **Partial response** — The agent started responding but the connection dropped mid-stream. The partial text is preserved, and a Retry button on the error bubble triggers a continuation. The new response appends below.
 
+## Retrying after the agent already acted
+
+Sometimes a run fails _after_ the agent has already done something — created a record, sent an email, called a tool. Resending the whole request would run those actions a second time and could leave duplicates behind.
+
+When Pinchy sees that the failed run already performed an action, Retry asks first. You'll get a short confirmation — **"Retry may duplicate actions"** — noting that the agent had started before it stopped. Continue once you've checked what was already done, or cancel if you'd rather review first. When the failed run hadn't acted yet, Retry just resends — no extra step.
+
+It's the same prompt wherever you retry: the live error bubble in the thread and the paused banner you see after a reload both ask the same question before re-running anything.
+
 ## What you don't need to do
 
 You don't need to copy your message, refresh the page, or figure out what went wrong. Click Retry — Pinchy picks up from the right place.
