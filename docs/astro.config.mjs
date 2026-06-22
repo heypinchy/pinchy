@@ -108,7 +108,7 @@ export default defineConfig({
         },
       ],
       logo: {
-        src: './src/assets/pinchy-logo.png',
+        src: './src/assets/pinchy-logo.svg',
       },
       favicon: '/favicon.png',
       customCss: ['./src/styles/custom.css'],
