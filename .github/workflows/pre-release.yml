@@ -13,7 +13,7 @@ jobs:
     name: Build & push :next and :sha-<short>
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Short SHA
         id: sha
@@ -26,21 +26,21 @@ jobs:
           echo "version=${PKG_VERSION}+sha.${{ steps.sha.outputs.short }}" >> "$GITHUB_OUTPUT"
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
+        uses: docker/setup-buildx-action@v4
         with:
           config-inline: |
             [registry."docker.io"]
               mirrors = ["mirror.gcr.io"]
 
       - name: Log in to GHCR
-        uses: docker/login-action@v3
+        uses: docker/login-action@v4
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Build and push Pinchy image (:next, :sha-<short>)
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         with:
           context: .
           file: Dockerfile.pinchy
@@ -56,7 +56,7 @@ jobs:
             PINCHY_BUILD_SHA=${{ github.sha }}
 
       - name: Build and push OpenClaw image (:next, :sha-<short>)
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         with:
           context: .
           file: Dockerfile.openclaw
