@@ -80,9 +80,12 @@ Work through **every** item in **CONTRIBUTING.md § "Pre-release checklist"** �
 
 ## After the release
 
-1. **Watch the Release workflow.** `gh run watch "$(gh run list --workflow Release --limit 1 --json databaseId --jq '.[0].databaseId')"`. A failure means the release is **not installable** — do not announce until green. Recovery steps are in CONTRIBUTING.md § "If the release workflow fails".
-2. **Tags are immutable — never force-update a tag.** A broken release is fixed with a _patch release_, not a re-push.
-3. **Re-check deployment overrides.** Any long-running deployment that pins a `docker-compose.override.yml` (to work around upstream bugs not yet fixed) should be reviewed after each release — the upstream fix may have shipped in this release, in which case drop the override.
+1. **Watch BOTH post-tag runs to a _verified_ green — never trust a watch's exit code.** The tag push starts the **Release** workflow (images + GitHub Release) **and** a fresh **CI** run on the new `chore: release` commit. That commit carries new content the pre-release CI never saw — the version bumps and the **auto-finalized `upgrading.mdx`** — which is exactly how v0.6.0 turned `main` red (the finalize removed the `%%PINCHY_VERSION%%` placeholder a test anchored on). So a green pre-release CI does **not** mean the release commit is green.
+   - `gh run watch <id>` and `gh pr checks --watch` **routinely exit 0 prematurely**: right after a push no checks are registered yet (zero-checks race), and staged `needs:` jobs (E2E) only start after the build job. The watch exiting is not proof.
+   - **Confirm the authoritative signal instead:** `gh run view <id> --json status,conclusion` → `completed` / `success` with no failed jobs; and for a PR, `gh pr view <n> --json mergeStateStatus` → `CLEAN` (not `UNSTABLE`/`BLOCKING`). Only then merge/announce. A Release-workflow failure means the release is **not installable** — recovery in CONTRIBUTING.md § "If the release workflow fails".
+2. **Red CI: classify transient vs. real before reacting.** Is `main` green for the same check? A crash in **Node/pnpm internals** during dependency download (e.g. an undici `assert(!this.paused)`), a **6h runner stall**, or a **fresh OSV advisory** are infrastructure → a rerun is the correct response. A failure in our own test/build logic is real → fix it, don't blind-rerun. (Flaky _tests we own_ get fixed at the root, never papered over with reruns.)
+3. **Tags are immutable — never force-update a tag.** A broken release is fixed with a _patch release_, not a re-push.
+4. **Re-check deployment overrides.** Any long-running deployment that pins a `docker-compose.override.yml` (to work around upstream bugs not yet fixed) should be reviewed after each release — the upstream fix may have shipped in this release, in which case drop the override.
 
 ## Red flags — STOP
 
@@ -95,6 +98,9 @@ Work through **every** item in **CONTRIBUTING.md § "Pre-release checklist"** �
 | "Deadline — skip the checklist"                         | The checklist is the only thing the script _can't_ enforce.                      |
 | "I can release from this worktree/branch"               | Releases cut from clean `main` only. The script refuses otherwise.               |
 | "`pnpm release` went green, so I'm done"                | Green ≠ verified. The staging click-through + PWA are manual gates the script can't see. Run `release:preflight`, make each `[ ]` a blocking task, verify on `:next` first. |
+| "The watch exited 0, so CI is green"                    | `gh run/pr checks --watch` exits early when checks register late (right after a push) or stage in via `needs:`. Confirm `conclusion: success` + `mergeStateStatus: CLEAN` before merging/announcing. |
+| "Pre-release CI was green, so the release commit is fine" | The `chore: release` commit adds the version bumps + the auto-finalized `upgrading.mdx`. Watch the fresh CI run on that commit too — v0.6.0 turned main red exactly here. |
+| "CI is red — rerun it"                                  | Classify first. Infra (Node/pnpm crash, runner stall, fresh OSV) with `main` green → rerun. Our own test/build → real, fix it. |
 
 ## Common mistakes
 
