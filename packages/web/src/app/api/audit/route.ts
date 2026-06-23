@@ -10,8 +10,12 @@ export async function GET(request: NextRequest) {
   if (sessionOrError instanceof NextResponse) return sessionOrError;
 
   const url = new URL(request.url);
-  const page = Math.max(1, parseInt(url.searchParams.get("page") || "1"));
-  const limit = Math.min(100, Math.max(1, parseInt(url.searchParams.get("limit") || "50")));
+  // parseInt yields NaN on non-numeric input; Math.max(1, NaN) is NaN, which
+  // would propagate into the SQL offset. Fall back to the default instead.
+  const pageRaw = parseInt(url.searchParams.get("page") || "1", 10);
+  const page = Number.isNaN(pageRaw) ? 1 : Math.max(1, pageRaw);
+  const limitRaw = parseInt(url.searchParams.get("limit") || "50", 10);
+  const limit = Number.isNaN(limitRaw) ? 50 : Math.min(100, Math.max(1, limitRaw));
   const eventType = url.searchParams.get("eventType");
   const actorId = url.searchParams.get("actorId");
   const from = url.searchParams.get("from");
@@ -26,9 +30,21 @@ export async function GET(request: NextRequest) {
     // v1 rows predate status tracking — there's no honest "success" for them.
     conditions.push(eq(auditLog.outcome, status));
   }
-  if (from) conditions.push(gte(auditLog.timestamp, new Date(from)));
+  // A non-date string (e.g. ?from=notadate) becomes an Invalid Date which
+  // drizzle throws a RangeError on at serialization — an unhandled 500 for a
+  // mistyped filter. Reject it with a structured 400 instead.
+  if (from) {
+    const fromDate = new Date(from);
+    if (Number.isNaN(fromDate.getTime())) {
+      return NextResponse.json({ error: "Invalid 'from' date" }, { status: 400 });
+    }
+    conditions.push(gte(auditLog.timestamp, fromDate));
+  }
   if (to) {
     const toDate = new Date(to);
+    if (Number.isNaN(toDate.getTime())) {
+      return NextResponse.json({ error: "Invalid 'to' date" }, { status: 400 });
+    }
     if (!to.includes("T") && !to.includes(" ")) toDate.setUTCHours(23, 59, 59, 999);
     conditions.push(lte(auditLog.timestamp, toDate));
   }

@@ -66,9 +66,20 @@ export async function GET(request: NextRequest) {
   if (status === "success" || status === "failure") {
     conditions.push(eq(auditLog.outcome, status));
   }
-  if (from) conditions.push(gte(auditLog.timestamp, new Date(from)));
+  // A non-date string becomes an Invalid Date that drizzle throws on at
+  // serialization — an unhandled 500 for a mistyped filter. Reject with a 400.
+  if (from) {
+    const fromDate = new Date(from);
+    if (Number.isNaN(fromDate.getTime())) {
+      return NextResponse.json({ error: "Invalid 'from' date" }, { status: 400 });
+    }
+    conditions.push(gte(auditLog.timestamp, fromDate));
+  }
   if (to) {
     const toDate = new Date(to);
+    if (Number.isNaN(toDate.getTime())) {
+      return NextResponse.json({ error: "Invalid 'to' date" }, { status: 400 });
+    }
     if (!to.includes("T") && !to.includes(" ")) toDate.setUTCHours(23, 59, 59, 999);
     conditions.push(lte(auditLog.timestamp, toDate));
   }

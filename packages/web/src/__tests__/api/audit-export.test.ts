@@ -877,4 +877,12 @@ describe("GET /api/audit/export", () => {
     );
     expect(sanitizeDetail).toHaveBeenCalled();
   });
+
+  it("returns 400 for an invalid 'from' date instead of crashing the export", async () => {
+    mockOrderBy.mockResolvedValue([]);
+    const { GET } = await import("@/app/api/audit/export/route");
+    const request = new Request("http://localhost/api/audit/export?from=notadate");
+    const response = await GET(request as unknown as Parameters<typeof GET>[0]);
+    expect(response.status).toBe(400);
+  });
 });

@@ -573,4 +573,30 @@ describe("GET /api/audit", () => {
     expect(body.entries[0].resourceName).toBe("Banned User");
     expect(body.entries[0].resourceDeleted).toBe(true);
   });
+
+  it("returns 400 for an invalid 'from' date instead of crashing the query", async () => {
+    // new Date("notadate") is an Invalid Date; pushed into a timestamp bound it
+    // makes drizzle throw a RangeError at serialization → an unhandled 500.
+    setupMocks();
+    const req = new NextRequest("http://localhost/api/audit?from=notadate");
+    const res = await GET(req);
+    expect(res.status).toBe(400);
+  });
+
+  it("returns 400 for an invalid 'to' date", async () => {
+    setupMocks();
+    const req = new NextRequest("http://localhost/api/audit?to=garbage");
+    const res = await GET(req);
+    expect(res.status).toBe(400);
+  });
+
+  it("falls back to default page/limit for non-numeric values (no NaN offsets)", async () => {
+    setupMocks();
+    const req = new NextRequest("http://localhost/api/audit?page=abc&limit=xyz");
+    const res = await GET(req);
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.page).toBe(1);
+    expect(body.limit).toBe(50);
+  });
 });
