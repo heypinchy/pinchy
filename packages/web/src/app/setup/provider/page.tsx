@@ -2,7 +2,6 @@
 
 import { useState } from "react";
 import { useRouter } from "next/navigation";
-import Image from "next/image";
 import { AlertTriangle } from "lucide-react";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -27,7 +26,8 @@ export default function SetupProviderPage() {
     return (
       <div className="min-h-screen flex items-center justify-center px-4">
         <div className="w-full max-w-md flex flex-col items-center gap-6">
-          <Image src="/pinchy-logo.png" alt="Pinchy" width={80} height={85} priority />
+          {/* eslint-disable-next-line @next/next/no-img-element */}
+          <img src="/pinchy-logo.svg" alt="Pinchy" width={80} height={85} />
 
           <Card className="w-full">
             <CardHeader className="text-center">
@@ -54,7 +54,8 @@ export default function SetupProviderPage() {
   return (
     <div className="min-h-screen flex items-center justify-center px-4">
       <div className="w-full max-w-md flex flex-col items-center gap-6">
-        <Image src="/pinchy-logo.png" alt="Pinchy" width={80} height={85} priority />
+        {/* eslint-disable-next-line @next/next/no-img-element */}
+        <img src="/pinchy-logo.svg" alt="Pinchy" width={80} height={85} />
 
         {noVision && (
           <div className="w-full flex items-start gap-3 rounded-md border border-amber-500/40 bg-amber-50 px-4 py-3 text-sm text-amber-900 dark:bg-amber-950/30 dark:text-amber-200">

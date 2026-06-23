@@ -98,7 +98,7 @@ describe("AppSidebar", () => {
     renderSidebar(false);
     const logo = screen.getByAltText("Pinchy");
     expect(logo).toBeInTheDocument();
-    expect(logo).toHaveAttribute("src", "/pinchy-logo.png");
+    expect(logo).toHaveAttribute("src", "/pinchy-logo.svg");
   });
 
   it("should render agent names", () => {

@@ -3,7 +3,6 @@
 import { useState } from "react";
 import { authClient } from "@/lib/auth-client";
 import { useRouter } from "next/navigation";
-import Image from "next/image";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
@@ -62,7 +61,8 @@ export default function LoginPage() {
   return (
     <div className="min-h-screen flex items-center justify-center px-4">
       <div className="w-full max-w-md flex flex-col items-center gap-6">
-        <Image src="/pinchy-logo.png" alt="Pinchy" width={80} height={85} priority />
+        {/* eslint-disable-next-line @next/next/no-img-element */}
+        <img src="/pinchy-logo.svg" alt="Pinchy" width={80} height={85} />
 
         <Card className="w-full">
           <CardHeader>
