@@ -149,6 +149,54 @@ If you need to roll back after an upgrade:
   backup step matters.
 </Aside>
 
+## Upgrading from v0.6.0 to %%PINCHY_VERSION%%
+
+### Breaking changes
+
+None.
+
+### Upgrade notes
+
+The standard flow applies:
+
+```bash
+cd /opt/pinchy
+sed -i 's/PINCHY_VERSION=v0.6.0/PINCHY_VERSION=%%PINCHY_VERSION%%/' .env
+docker compose pull && docker compose up -d && docker image prune -f
+```
+
+#### One-click deploys: DigitalOcean Marketplace and CapRover
+
+Spinning up a fresh Pinchy is now a one-click affair on two more platforms: a **DigitalOcean Marketplace** 1-Click image and a **CapRover** one-click app template. Existing installs need nothing here — this only adds new install paths. Both templates are version-pinned to the release.
+
+#### Agent skills
+
+Agents now carry a **skills** allowlist (migration `0042` adds the column, defaulting to none). This release lays the foundation plus a web-search skill pilot and a market-monitor template. Existing agents are unaffected until you assign skills in their settings.
+
+#### Pinchy-owned chat transcript
+
+Pinchy now mirrors conversations into its own store (`channel_messages`) via the `pinchy-transcript` plugin, instead of relying solely on OpenClaw's session-scoped history. The transcript is immune to `/new`, daily resets, and compaction, and backs the read-only channel views. Nothing to configure; the mirror starts filling from the upgrade onward.
+
+#### Durable "paused" error banner
+
+When an agent run fails, the chat now shows a **persistent banner above the composer** with honest, cause-specific wording, instead of a transient message that vanishes on reload. The active error is stored (`chat_session_errors`), exposed via GET/dismiss endpoints, and swept once resolved. Reload-safe; nothing to configure.
+
+#### Audit detail sheet
+
+The audit entry-detail sheet is wider and its JSON payload is now one-click copyable — easier to pull a full audit record for review or an incident report.
+
+#### Dependencies
+
+- **OpenClaw 2026.6.8** (was 2026.6.5) — picked up via `Dockerfile.openclaw`, surfaced in `GET /api/version`. Same protocol train; backward-compatible patch bump. The runtime image is now a slimmer multi-stage build (faster pulls), with no behavioural change.
+
+### Database migrations
+
+Three additive migrations run automatically on startup — no manual steps, nothing you'd miss:
+
+- `0040` — `channel_messages` table (the Pinchy-owned transcript mirror).
+- `0041` — `chat_session_errors` table (the durable paused-error banner).
+- `0042` — adds the `skills` column to `agents` (defaults to empty) for the agent-skills allowlist.
+
 ## Upgrading from v0.5.8 to v0.6.0
 
 ### Breaking changes
