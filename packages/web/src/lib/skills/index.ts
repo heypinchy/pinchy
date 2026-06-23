@@ -14,12 +14,18 @@ export function isKnownSkill(id: string): id is SkillId {
   return (KNOWN_SKILLS as readonly string[]).includes(id);
 }
 
-const SKILLS_DIR = join(__dirname);
+// SKILL.md files live in the source tree (src/lib/skills/<id>/SKILL.md) and are
+// copied into the runtime image. Resolve from process.cwd() — the packages/web
+// project root in dev, test, AND production (the image sets WORKDIR
+// /app/packages/web) — NOT __dirname: Next.js rewrites __dirname to a synthetic
+// "/ROOT/…" path in compiled API routes, so a __dirname-relative read ENOENTs in
+// production and broke creating an agent from a skill-bearing template
+// (web-search). versions.ts and skills.test.ts both anchor on process.cwd() too.
+const SKILLS_DIR = join(process.cwd(), "src/lib/skills");
 
-// First-party skill bodies are bundled with the build — they never change
-// at runtime within a process. Cache to avoid re-reading the same file once
-// per agent during `regenerateOpenClawConfig()` (50 agents on the same
-// skill = 50 redundant disk reads without this).
+// Skill bodies never change at runtime within a process. Cache to avoid
+// re-reading the same file once per agent during `regenerateOpenClawConfig()`
+// (50 agents on the same skill = 50 redundant disk reads without this).
 const SKILL_BODY_CACHE = new Map<SkillId, string>();
 
 export function getSkillBody(id: SkillId): string {
