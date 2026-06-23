@@ -1,6 +1,16 @@
 // @vitest-environment node
 import { describe, it, expect } from "vitest";
-import { validateAccess, MAX_FILE_SIZE, MAX_PDF_FILE_SIZE, ALLOWED_ROOTS } from "./validate";
+import { mkdtempSync, mkdirSync, symlinkSync, realpathSync, rmSync, writeFileSync } from "fs";
+import { join } from "path";
+import { tmpdir } from "os";
+import {
+  validateAccess,
+  realpathWriteTarget,
+  assertNoSymlinkEscape,
+  MAX_FILE_SIZE,
+  MAX_PDF_FILE_SIZE,
+  ALLOWED_ROOTS,
+} from "./validate";
 
 const agentConfig = {
   allowed_paths: ["/data/hr-docs/", "/data/policies/"],
@@ -290,5 +300,86 @@ describe("path-boundary matching (sibling-directory escape)", () => {
         "read"
       )
     ).not.toThrow();
+  });
+});
+
+describe("realpathWriteTarget (symlink resolution on the write path)", () => {
+  it("resolves a symlinked ancestor for a not-yet-existing file", () => {
+    const base = mkdtempSync(join(tmpdir(), "pinchy-symlink-"));
+    try {
+      const sandbox = join(base, "sandbox");
+      const outside = join(base, "outside");
+      mkdirSync(sandbox);
+      mkdirSync(outside);
+      // sandbox/link -> outside (a symlinked parent dir escaping the sandbox)
+      symlinkSync(outside, join(sandbox, "link"));
+
+      const resolved = realpathWriteTarget(join(sandbox, "link", "secret.txt"));
+
+      // The cut target now points at the real out-of-sandbox location, so a
+      // containment check sees the escape instead of the innocent-looking
+      // sandbox/link/... path.
+      expect(resolved).toBe(join(realpathSync(outside), "secret.txt"));
+    } finally {
+      rmSync(base, { recursive: true, force: true });
+    }
+  });
+
+  it("returns the resolved path unchanged when no symlink is involved", () => {
+    const base = mkdtempSync(join(tmpdir(), "pinchy-symlink-"));
+    try {
+      const resolved = realpathWriteTarget(join(base, "plain.txt"));
+      expect(resolved).toBe(join(realpathSync(base), "plain.txt"));
+    } finally {
+      rmSync(base, { recursive: true, force: true });
+    }
+  });
+
+  it("resolves the final component when it is an existing symlink (overwrite case)", () => {
+    const base = mkdtempSync(join(tmpdir(), "pinchy-symlink-"));
+    try {
+      const outside = join(base, "outside");
+      mkdirSync(outside);
+      const realFile = join(outside, "real.txt");
+      writeFileSync(realFile, "x");
+      const link = join(base, "alias.txt");
+      symlinkSync(realFile, link);
+
+      expect(realpathWriteTarget(link)).toBe(realpathSync(realFile));
+    } finally {
+      rmSync(base, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("assertNoSymlinkEscape (write-path symlink containment)", () => {
+  it("throws when a symlinked ancestor escapes the write roots", () => {
+    const base = mkdtempSync(join(tmpdir(), "pinchy-escape-"));
+    try {
+      const sandbox = join(base, "sandbox");
+      const outside = join(base, "outside");
+      mkdirSync(sandbox);
+      mkdirSync(outside);
+      symlinkSync(outside, join(sandbox, "link"));
+
+      expect(() =>
+        assertNoSymlinkEscape(join(sandbox, "link", "secret.txt"), [sandbox])
+      ).toThrow(/escapes the sandbox/);
+    } finally {
+      rmSync(base, { recursive: true, force: true });
+    }
+  });
+
+  it("does not throw for a plain write target inside a (possibly symlinked) root", () => {
+    // Guards against a false reject on symlinked roots (e.g. macOS /var ->
+    // /private/var): both sides are realpath-resolved before comparison.
+    const base = mkdtempSync(join(tmpdir(), "pinchy-escape-"));
+    try {
+      const sandbox = join(base, "sandbox");
+      mkdirSync(sandbox);
+      expect(() => assertNoSymlinkEscape(join(sandbox, "ok.txt"), [sandbox])).not.toThrow();
+    } finally {
+      rmSync(base, { recursive: true, force: true });
+    }
   });
 });

@@ -1,6 +1,6 @@
 // @vitest-environment node
 import { describe, it, expect, vi, beforeEach, afterEach, afterAll } from "vitest";
-import { readFileSync as realReadFileSync, mkdtempSync, rmSync, mkdirSync, writeFileSync } from "fs";
+import { readFileSync as realReadFileSync, mkdtempSync, rmSync, mkdirSync, writeFileSync, symlinkSync, existsSync } from "fs";
 import { join } from "path";
 import { tmpdir } from "os";
 import Database from "better-sqlite3";
@@ -881,6 +881,33 @@ describe("pinchy_write tool", () => {
     expect(tool).not.toBeNull();
     expect(tool.name).toBe("pinchy_write");
     expect(tool.label).toBe("Write File");
+  });
+
+  it("rejects a write whose ancestor symlink escapes the sandbox", async () => {
+    // A pre-planted symlink whose parent dir escapes the sandbox: sandbox/link
+    // -> outside. The read tools realpath before validating; the write path
+    // must reject this too, or the write follows the link out of bounds.
+    const sandbox = join(tmpDir, "sandbox");
+    const outside = join(tmpDir, "outside");
+    mkdirSync(sandbox);
+    mkdirSync(outside);
+    symlinkSync(outside, join(sandbox, "link"));
+
+    const api = createMockApi({
+      "agent-1": { allowed_paths: [sandbox], write_paths: [sandbox] },
+    });
+    const { default: plugin } = await import("./index");
+    plugin.register!(api as any);
+    const tool = getWriteFactory()({ agentId: "agent-1" });
+
+    const result = await tool.execute("call-1", {
+      path: join(sandbox, "link", "secret.txt"),
+      content: "x",
+    });
+
+    expect(result.isError).toBe(true);
+    // The escape must not have created the file at the real out-of-bounds path.
+    expect(existsSync(join(outside, "secret.txt"))).toBe(false);
   });
 
   it("creates a new file with fail-on-exists default", async () => {

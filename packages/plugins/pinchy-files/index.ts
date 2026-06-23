@@ -2,7 +2,7 @@ import { readdirSync, statSync, realpathSync } from "fs";
 import { readFile, open, writeFile } from "fs/promises";
 import { createHash } from "crypto";
 import { join, extname, basename } from "path";
-import { validateAccess, MAX_FILE_SIZE, MAX_PDF_FILE_SIZE, MAX_DOCX_FILE_SIZE, type AgentFileConfig } from "./validate";
+import { validateAccess, assertNoSymlinkEscape, MAX_FILE_SIZE, MAX_PDF_FILE_SIZE, MAX_DOCX_FILE_SIZE, type AgentFileConfig } from "./validate";
 import { extractDocxText } from "./docx-extract";
 import { extractPdfText } from "./pdf-extract";
 import { formatPdfResult } from "./pdf-format";
@@ -499,6 +499,12 @@ const plugin = {
                 requestedPath,
                 "write"
               );
+
+              // Defense in depth: the read tools realpath before validating, so
+              // a symlink inside an allowed dir pointing outside it is caught.
+              // The lexical check above can't see that, so reject any write
+              // whose real (symlink-resolved) target escapes the write roots.
+              assertNoSymlinkEscape(requestedPath, writePaths);
 
               const buffer = Buffer.from(content, "utf-8");
               if (buffer.byteLength > MAX_FILE_SIZE) {
