@@ -1,7 +1,6 @@
 "use client";
 
 import Link from "next/link";
-import Image from "next/image";
 import { usePathname } from "next/navigation";
 import { BarChart3, Bug, ClipboardList, Plus, Settings } from "lucide-react";
 import { LogoutButton } from "@/components/logout-button";
@@ -36,7 +35,8 @@ export function AppSidebar({ isAdmin }: AppSidebarProps) {
     <Sidebar>
       <SidebarHeader>
         <div className="px-2 py-3 flex items-center gap-3">
-          <Image src="/pinchy-logo.png" alt="Pinchy" width={32} height={34} />
+          {/* eslint-disable-next-line @next/next/no-img-element */}
+          <img src="/pinchy-logo.svg" alt="Pinchy" width={32} height={34} />
           <span className="font-bold text-lg">Pinchy</span>
         </div>
       </SidebarHeader>

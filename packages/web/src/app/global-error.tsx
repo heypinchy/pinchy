@@ -32,7 +32,7 @@ export default function GlobalError({
             }}
           >
             {/* eslint-disable-next-line @next/next/no-img-element */}
-            <img src="/pinchy-logo.png" alt="Pinchy" width={80} height={85} />
+            <img src="/pinchy-logo.svg" alt="Pinchy" width={80} height={85} />
 
             <div style={{ textAlign: "center" }}>
               <h1 style={{ fontSize: "1.5rem", fontWeight: "bold", margin: "0 0 0.5rem 0" }}>

@@ -1,6 +1,5 @@
 "use client";
 
-import Image from "next/image";
 import { ReportIssueLink } from "@/components/report-issue-link";
 
 export default function ErrorPage({
@@ -13,7 +12,8 @@ export default function ErrorPage({
   return (
     <div className="min-h-screen flex items-center justify-center">
       <div className="w-full max-w-md flex flex-col items-center gap-6 px-4">
-        <Image src="/pinchy-logo.png" alt="Pinchy" width={80} height={85} priority />
+        {/* eslint-disable-next-line @next/next/no-img-element */}
+        <img src="/pinchy-logo.svg" alt="Pinchy" width={80} height={85} />
 
         <div className="text-center space-y-2">
           <h1 className="text-2xl font-bold">Something went wrong</h1>
