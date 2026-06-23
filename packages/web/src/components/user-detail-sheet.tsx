@@ -100,43 +100,59 @@ export function UserDetailSheet({
   async function handleSave() {
     setSaving(true);
     try {
-      const promises: Promise<Response>[] = [];
-
-      if (selectedRole !== user.role) {
-        promises.push(
-          fetch(`/api/users/${user.id}`, {
-            method: "PATCH",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ role: selectedRole }),
-          })
-        );
-      }
-
+      const roleChanged = selectedRole !== user.role;
       const originalIds = new Set(user.groups.map((g) => g.id));
       const groupsChanged =
         selectedGroupIds.size !== originalIds.size ||
         [...selectedGroupIds].some((id) => !originalIds.has(id));
 
-      if (groupsChanged) {
-        promises.push(
-          fetch(`/api/users/${user.id}/groups`, {
+      // The role PATCH and groups PUT are independent writes, so one can land
+      // while the other fails. Track them separately instead of gating on
+      // results.every(ok), which reports a total failure on a partial success
+      // and leaves the table out of sync with what actually persisted.
+      const rolePromise = roleChanged
+        ? fetch(`/api/users/${user.id}`, {
+            method: "PATCH",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ role: selectedRole }),
+          })
+        : null;
+
+      const groupsPromise = groupsChanged
+        ? fetch(`/api/users/${user.id}/groups`, {
             method: "PUT",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ groupIds: [...selectedGroupIds] }),
           })
-        );
-      }
+        : null;
 
-      const results = await Promise.all(promises);
-      const allOk = results.every((r) => r.ok);
+      const [roleRes, groupsRes] = await Promise.all([rolePromise, groupsPromise]);
 
-      if (allOk) {
+      const roleOk = !rolePromise || (roleRes?.ok ?? false);
+      const groupsOk = !groupsPromise || (groupsRes?.ok ?? false);
+
+      if (roleOk && groupsOk) {
         toast("User updated");
         onSaved();
         onOpenChange(false);
-      } else {
-        toast.error("Failed to update user");
+        return;
       }
+
+      if (roleOk || groupsOk) {
+        // Partial success: refetch so the list reflects the half that landed,
+        // and keep the sheet open with a specific message so a retry only
+        // re-applies the failed half.
+        onSaved();
+        toast.error(
+          !roleOk
+            ? "Group membership saved, but the role change failed. Please retry."
+            : "Role saved, but group membership could not be updated. Please retry."
+        );
+        return;
+      }
+
+      // Total failure: nothing persisted, keep the sheet open.
+      toast.error("Failed to update user. Please try again.");
     } finally {
       setSaving(false);
     }

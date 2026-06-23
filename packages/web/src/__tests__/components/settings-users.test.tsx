@@ -4,6 +4,9 @@ import userEvent from "@testing-library/user-event";
 import "@testing-library/jest-dom";
 import { SettingsUsers } from "@/components/settings-users";
 
+const mockToast = vi.hoisted(() => ({ error: vi.fn(), success: vi.fn() }));
+vi.mock("sonner", () => ({ toast: mockToast }));
+
 // Mock window.location.origin for invite link generation
 Object.defineProperty(window, "location", {
   value: { origin: "http://localhost:7777" },
@@ -647,6 +650,43 @@ describe("SettingsUsers", () => {
         expect(global.fetch).toHaveBeenCalledWith("/api/users/invites/inv-1", {
           method: "DELETE",
         });
+      });
+    });
+
+    it("shows an error toast when Revoke fails (no silent flicker-back)", async () => {
+      const user = userEvent.setup();
+      mockFetchForUsers(mockUsers, [pendingInvite]);
+      render(<SettingsUsers currentUserId="user-1" />);
+
+      await waitFor(() => {
+        expect(screen.getAllByText("pending@example.com").length).toBeGreaterThanOrEqual(1);
+      });
+
+      vi.mocked(global.fetch).mockImplementation(async (url, init) => {
+        if (String(url) === "/api/users/invites/inv-1" && init?.method === "DELETE") {
+          return { ok: false, status: 500 } as Response; // DELETE fails server-side
+        }
+        if (String(url) === "/api/users") {
+          return { ok: true, json: async () => ({ users: mockUsers }) } as Response;
+        }
+        if (String(url) === "/api/users/invites") {
+          return { ok: true, json: async () => ({ invites: [pendingInvite] }) } as Response;
+        }
+        if (String(url) === "/api/groups") {
+          return { ok: true, json: async () => [] } as Response;
+        }
+        if (String(url) === "/api/enterprise/status") {
+          return { ok: true, json: async () => ({ enterprise: false }) } as Response;
+        }
+        return { ok: false } as Response;
+      });
+
+      const table = screen.getByRole("table");
+      const inviteRow = within(table).getAllByText("pending@example.com")[0].closest("tr")!;
+      await user.click(within(inviteRow).getByRole("button", { name: "Revoke" }));
+
+      await waitFor(() => {
+        expect(mockToast.error).toHaveBeenCalledWith(expect.stringMatching(/failed to revoke/i));
       });
     });
 

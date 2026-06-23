@@ -134,7 +134,12 @@ export function SettingsUsers({ currentUserId, refreshKey }: SettingsUsersProps)
   function handleRevoke(inviteId: string) {
     startRevokeTransition(async () => {
       applyOptimistic({ type: "removeInvite", id: inviteId });
-      await fetch(`/api/users/invites/${inviteId}`, { method: "DELETE" });
+      const res = await fetch(`/api/users/invites/${inviteId}`, { method: "DELETE" });
+      // fetchUsers() re-introduces the optimistically-removed row on failure;
+      // surface why it flickered back instead of failing silently.
+      if (!res.ok) {
+        toast.error("Failed to revoke invite. Please try again.");
+      }
       fetchUsers();
     });
   }
@@ -142,6 +147,7 @@ export function SettingsUsers({ currentUserId, refreshKey }: SettingsUsersProps)
   async function handleResend(item: UserListItem & { kind: "invite" }) {
     const deleteRes = await fetch(`/api/users/invites/${item.id}`, { method: "DELETE" });
     if (!deleteRes.ok) {
+      toast.error("Failed to resend invite. Please try again.");
       fetchUsers();
       return;
     }
@@ -153,6 +159,8 @@ export function SettingsUsers({ currentUserId, refreshKey }: SettingsUsersProps)
     if (res.ok) {
       const data = await res.json();
       setResetLink(buildInviteUrl(window.location.origin, data.token));
+    } else {
+      toast.error("Failed to resend invite. Please try again.");
     }
     fetchUsers();
   }

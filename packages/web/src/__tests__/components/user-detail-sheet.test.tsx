@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen } from "@testing-library/react";
+import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import "@testing-library/jest-dom";
 import { UserDetailSheet } from "@/components/user-detail-sheet";
@@ -8,6 +8,10 @@ import type { UserListItem } from "@/lib/user-list";
 vi.mock("@/lib/enterprise", () => ({
   // Client component — mock at fetch level instead
 }));
+
+// toast is both callable (toast("…")) and has .error/.success.
+const mockToast = vi.hoisted(() => Object.assign(vi.fn(), { error: vi.fn(), success: vi.fn() }));
+vi.mock("sonner", () => ({ toast: mockToast }));
 
 // Radix UI Select uses pointer capture and scrollIntoView which jsdom doesn't support
 if (!Element.prototype.hasPointerCapture) {
@@ -336,6 +340,51 @@ describe("UserDetailSheet", () => {
     );
     expect(screen.getByRole("combobox")).toBeDisabled();
     expect(screen.getByRole("checkbox", { name: /engineering/i })).toBeDisabled();
+  });
+
+  it("on partial save failure keeps the sheet open, refetches, and reports what failed", async () => {
+    const user = userEvent.setup();
+    const onSaved = vi.fn();
+    const onOpenChange = vi.fn();
+
+    // role PATCH lands, groups PUT fails — the classic partial-success case.
+    vi.spyOn(global, "fetch").mockImplementation(async (url, init) => {
+      if (String(url) === "/api/users/u1" && init?.method === "PATCH") {
+        return { ok: true, json: async () => ({}) } as Response;
+      }
+      if (String(url) === "/api/users/u1/groups" && init?.method === "PUT") {
+        return { ok: false, status: 500 } as Response;
+      }
+      return { ok: true, json: async () => ({}) } as Response;
+    });
+
+    render(
+      <UserDetailSheet
+        user={mockUser}
+        allGroups={allGroups}
+        isEnterprise={true}
+        currentUserId="admin-1"
+        open={true}
+        onOpenChange={onOpenChange}
+        onSaved={onSaved}
+      />
+    );
+
+    // Change the role and toggle a group so both writes fire.
+    await user.click(screen.getByRole("combobox"));
+    await user.click(screen.getByRole("option", { name: /admin/i }));
+    await user.click(screen.getByRole("checkbox", { name: /marketing/i }));
+    await user.click(screen.getByRole("button", { name: /save/i }));
+
+    await waitFor(() => {
+      expect(mockToast.error).toHaveBeenCalledWith(
+        expect.stringMatching(/group membership could not be updated/i)
+      );
+    });
+    // The role half landed — refetch so the table reflects it.
+    expect(onSaved).toHaveBeenCalled();
+    // The sheet must stay open so the user can retry the failed half.
+    expect(onOpenChange).not.toHaveBeenCalledWith(false);
   });
 
   it("should show copied feedback when reset link Copy button is clicked", async () => {
