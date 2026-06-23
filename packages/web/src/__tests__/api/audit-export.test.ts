@@ -147,6 +147,42 @@ describe("GET /api/audit/export", () => {
     expect(body).toContain("abc123");
   });
 
+  it("neutralizes a formula-injection display name in the CSV output", async () => {
+    // A low-priv user can set their own display name (PATCH /api/users/me); it
+    // surfaces here as actorName in the admin-only export. A leading `=` must
+    // not start a spreadsheet formula in the admin's Excel/Sheets.
+    mockOrderBy.mockResolvedValue([
+      {
+        id: 1,
+        timestamp: new Date("2026-02-21T10:00:00Z"),
+        actorType: "user",
+        actorId: "user-1",
+        eventType: "auth.login",
+        resource: null,
+        detail: null,
+        rowHmac: "abc123",
+        version: 2,
+        outcome: "success",
+        error: null,
+        actorName: '=HYPERLINK("http://evil","x")',
+        actorBanned: null,
+        resourceAgentName: null,
+        resourceAgentDeleted: null,
+        resourceUserName: null,
+        resourceUserBanned: null,
+      },
+    ]);
+
+    const { GET } = await import("@/app/api/audit/export/route");
+    const request = new Request("http://localhost/api/audit/export");
+    const response = await GET(request as unknown as Parameters<typeof GET>[0]);
+    const body = await response.text();
+
+    // Neutralized to text ("'=HYPERLINK...), never a raw formula start.
+    expect(body).toContain(`"'=HYPERLINK`);
+    expect(body).not.toContain(`"=HYPERLINK`);
+  });
+
   it("returns empty CSV (header only) when no entries", async () => {
     mockOrderBy.mockResolvedValue([]);
 

@@ -5,16 +5,9 @@ import { parseDays } from "@/lib/usage-params";
 import { db } from "@/db";
 import { usageRecords } from "@/db/schema";
 import { desc, gte, eq, and } from "drizzle-orm";
+import { csvEscape } from "@/lib/csv";
 
 const MAX_EXPORT_ROWS = 100_000;
-
-/** Escape a value for CSV per RFC 4180: wrap in double quotes if it contains comma, quote, or newline. */
-function csvEscape(value: string): string {
-  if (value.includes(",") || value.includes('"') || value.includes("\n")) {
-    return `"${value.replace(/"/g, '""')}"`;
-  }
-  return value;
-}
 
 export async function GET(request: NextRequest) {
   const sessionOrError = await requireAdmin();

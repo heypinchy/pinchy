@@ -6,11 +6,8 @@ import { desc, eq, and, gte, lte, sql } from "drizzle-orm";
 import { alias } from "drizzle-orm/pg-core";
 import { sanitizeDetail } from "@/lib/audit-sanitize";
 import { appendAuditLog } from "@/lib/audit";
+import { csvField } from "@/lib/csv";
 import { renderAuditPdf, buildFilterSummary, type AuditExportRow } from "@/lib/audit-pdf";
-
-function csvField(value: string): string {
-  return `"${value.replace(/"/g, '""')}"`;
-}
 
 function isErrorObject(value: unknown): value is { message: string } {
   return (
