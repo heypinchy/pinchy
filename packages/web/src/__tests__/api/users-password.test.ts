@@ -25,7 +25,12 @@ vi.mock("@/lib/auth", () => {
   };
 });
 
+vi.mock("@/lib/audit", () => ({
+  appendAuditLog: vi.fn().mockResolvedValue(undefined),
+}));
+
 import { auth } from "@/lib/auth";
+import { appendAuditLog } from "@/lib/audit";
 
 // ── Helpers ──────────────────────────────────────────────────────────────
 
@@ -153,5 +158,49 @@ describe("POST /api/users/me/password", () => {
       makePostRequest({ currentPassword: "oldpass1234567", newPassword: "Br1ghtNova!2" })
     );
     expect(response.status).toBe(200);
+  });
+
+  // A password change is a security-sensitive credential mutation. Per the
+  // project's own reasoning on the invite/claim reset branch, it must be
+  // audited regardless of who triggers it — self-service is not an exemption.
+  it("writes an auth.password_changed audit row with outcome success", async () => {
+    const response = await POST(
+      makePostRequest({ currentPassword: "oldpass1234567", newPassword: "Br1ghtNova!2" })
+    );
+    expect(response.status).toBe(200);
+    expect(appendAuditLog).toHaveBeenCalledWith(
+      expect.objectContaining({
+        eventType: "auth.password_changed",
+        actorType: "user",
+        actorId: "user-1",
+        resource: "user-1",
+        outcome: "success",
+      })
+    );
+  });
+
+  it("writes an auth.password_changed audit row with outcome failure when the current password is wrong", async () => {
+    vi.mocked(auth.api.changePassword).mockRejectedValueOnce(new Error("Invalid credentials"));
+
+    const response = await POST(
+      makePostRequest({ currentPassword: "wrongpass1234", newPassword: "Br1ghtNova!2" })
+    );
+    expect(response.status).toBe(403);
+    expect(appendAuditLog).toHaveBeenCalledWith(
+      expect.objectContaining({
+        eventType: "auth.password_changed",
+        actorType: "user",
+        actorId: "user-1",
+        resource: "user-1",
+        outcome: "failure",
+      })
+    );
+  });
+
+  it("never logs the password value in the audit detail", async () => {
+    await POST(makePostRequest({ currentPassword: "oldpass1234567", newPassword: "Br1ghtNova!2" }));
+    const serialized = JSON.stringify(vi.mocked(appendAuditLog).mock.calls);
+    expect(serialized).not.toContain("Br1ghtNova!2");
+    expect(serialized).not.toContain("oldpass1234567");
   });
 });

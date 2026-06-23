@@ -35,6 +35,16 @@ export async function PUT(req: NextRequest) {
     // Invalid key — roll back
     await deleteSetting("enterprise_key");
     clearLicenseCache();
+    // A rejected license-activation attempt is a governance-relevant security
+    // action; audit the failure (never log the key value itself).
+    await appendAuditLog({
+      eventType: "config.changed",
+      actorType: "user",
+      actorId: sessionOrError.user.id,
+      detail: { setting: "enterprise_key", reason: "invalid_or_expired" },
+      outcome: "failure",
+      error: { message: "Invalid or expired license key" },
+    });
     return NextResponse.json({ error: "Invalid or expired license key" }, { status: 400 });
   }
 

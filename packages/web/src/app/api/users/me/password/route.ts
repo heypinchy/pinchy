@@ -1,4 +1,3 @@
-// audit-exempt: users changing their own password is a self-service action
 import { NextResponse } from "next/server";
 import { headers } from "next/headers";
 import { z } from "zod";
@@ -6,6 +5,7 @@ import { auth } from "@/lib/auth";
 import { withAuth } from "@/lib/api-auth";
 import { parseRequestBody } from "@/lib/api-validation";
 import { validatePassword } from "@/lib/validate-password";
+import { appendAuditLog } from "@/lib/audit";
 
 // Shape only — length/breach-list policy is enforced post-parse via
 // validatePassword() so the same rules apply to setup, invite-claim, and
@@ -15,7 +15,7 @@ const changePasswordSchema = z.object({
   newPassword: z.string(),
 });
 
-export const POST = withAuth(async (request) => {
+export const POST = withAuth(async (request, _ctx, session) => {
   const parsed = await parseRequestBody(changePasswordSchema, request);
   if ("error" in parsed) return parsed.error;
   const { currentPassword, newPassword } = parsed.data;
@@ -24,6 +24,11 @@ export const POST = withAuth(async (request) => {
   if (passwordError) {
     return NextResponse.json({ error: passwordError }, { status: 400 });
   }
+
+  // A password change is a security-sensitive credential mutation, so it is
+  // audited regardless of who triggers it — same reasoning as the invite/claim
+  // reset branch. Never log the password values themselves.
+  const userId = session.user.id;
 
   try {
     await auth.api.changePassword({
@@ -34,8 +39,25 @@ export const POST = withAuth(async (request) => {
       },
       headers: await headers(),
     });
-    return NextResponse.json({ success: true });
   } catch {
+    await appendAuditLog({
+      actorType: "user",
+      actorId: userId,
+      eventType: "auth.password_changed",
+      resource: userId,
+      outcome: "failure",
+      error: { message: "Invalid current password" },
+    });
     return NextResponse.json({ error: "Current password is incorrect" }, { status: 403 });
   }
+
+  await appendAuditLog({
+    actorType: "user",
+    actorId: userId,
+    eventType: "auth.password_changed",
+    resource: userId,
+    outcome: "success",
+  });
+
+  return NextResponse.json({ success: true });
 });

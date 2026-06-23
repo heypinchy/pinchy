@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 import { validateGatewayToken } from "@/lib/gateway-auth";
-import { appendAuditLog } from "@/lib/audit";
+import { appendAuditLog, safeProviderError } from "@/lib/audit";
 import { sanitizeDetail } from "@/lib/audit-sanitize";
 import { parseRequestBody } from "@/lib/api-validation";
 
@@ -153,11 +153,17 @@ export async function POST(request: NextRequest) {
   const outcome: "success" | "failure" =
     payload.error || hasSemanticFailure ? "failure" : "success";
 
-  const detailError = resolveDetailError({
+  // Tool error strings are arbitrary upstream text and can echo an email or a
+  // secret. The audit row is HMAC-signed and append-only, so scrub before the
+  // value lands in detail.error or the error column (GDPR Art. 17 + secret
+  // leakage). safeProviderError applies scrubEmails + a byte cap; sanitizeDetail
+  // (applied later to detail) only catches secret patterns, not emails.
+  const rawDetailError = resolveDetailError({
     payloadError: payload.error,
     resultDetailsError: resultDetails?.error,
     semanticErrorMessage,
   });
+  const detailError = rawDetailError !== undefined ? safeProviderError(rawDetailError) : undefined;
 
   // Audit entries should answer: who, what, when, on what, outcome.
   // No full result payloads (contain business data), no OpenClaw-internal IDs.
@@ -188,9 +194,9 @@ export async function POST(request: NextRequest) {
   const sanitizedDetail = sanitizeDetail(detail);
 
   const error = payload.error
-    ? { message: payload.error }
+    ? { message: safeProviderError(payload.error) }
     : semanticErrorMessage
-      ? { message: semanticErrorMessage }
+      ? { message: safeProviderError(semanticErrorMessage) }
       : null;
 
   try {

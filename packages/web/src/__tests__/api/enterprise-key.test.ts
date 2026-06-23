@@ -140,7 +140,33 @@ describe("PUT /api/enterprise/key", () => {
     expect(setSetting).toHaveBeenCalled();
     expect(clearLicenseCache).toHaveBeenCalled();
     expect(deleteSetting).toHaveBeenCalledWith("enterprise_key");
-    // Should NOT log audit for failed attempt
-    expect(appendAuditLog).not.toHaveBeenCalled();
+    // A rejected license-activation attempt is a governance-relevant security
+    // action and must leave a failure trail — silence is the bug.
+    expect(appendAuditLog).toHaveBeenCalledWith(
+      expect.objectContaining({
+        eventType: "config.changed",
+        actorType: "user",
+        actorId: "u1",
+        outcome: "failure",
+      })
+    );
+  });
+
+  it("does not write the license key value into the failure audit detail", async () => {
+    vi.mocked(getSession).mockResolvedValueOnce({
+      user: { id: "u1", role: "admin", name: "Admin" },
+    } as any);
+    vi.mocked(getLicenseStatus).mockResolvedValueOnce({ active: false, features: [] } as any);
+
+    const { PUT } = await import("@/app/api/enterprise/key/route");
+    const req = new Request("http://localhost/api/enterprise/key", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ key: "super-secret-invalid-token" }),
+    });
+    await PUT(req);
+
+    const serialized = JSON.stringify(vi.mocked(appendAuditLog).mock.calls);
+    expect(serialized).not.toContain("super-secret-invalid-token");
   });
 });

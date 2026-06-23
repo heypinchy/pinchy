@@ -5,9 +5,15 @@ vi.mock("@/lib/gateway-auth", () => ({
   validateGatewayToken: vi.fn().mockReturnValue(true),
 }));
 
-vi.mock("@/lib/audit", () => ({
-  appendAuditLog: vi.fn().mockResolvedValue(undefined),
-}));
+// Partial mock: keep the real (pure) scrub helpers so we exercise actual
+// redaction behaviour, stub only the DB-backed appendAuditLog.
+vi.mock("@/lib/audit", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/lib/audit")>();
+  return {
+    ...actual,
+    appendAuditLog: vi.fn().mockResolvedValue(undefined),
+  };
+});
 
 import { validateGatewayToken } from "@/lib/gateway-auth";
 import { appendAuditLog } from "@/lib/audit";
@@ -742,6 +748,48 @@ describe("POST /api/internal/audit/tool-use", () => {
       expect(detail?.success).toBe(false);
       expect(detail?.error).toBe("AccessError: permission denied");
       expect(detail).not.toHaveProperty("result");
+    });
+  });
+
+  // The audit row is HMAC-signed and append-only, so any email/PII that lands
+  // in error.message or detail.error can never be redacted later (GDPR Art. 17
+  // conflict). Tool error strings are arbitrary upstream text (e.g. an Odoo or
+  // email tool echoing a contact address), so both sinks must be scrubbed.
+  describe("PII scrubbing of tool error messages", () => {
+    it("scrubs an email from a transport (payload.error) failure in both the error column and detail.error", async () => {
+      await POST(
+        makeRequest({
+          phase: "end",
+          toolName: "pinchy_odoo",
+          agentId: "agent-9",
+          sessionKey: "agent:agent-9:direct:user-9",
+          error: "no contact found for jane.doe@example.com",
+        })
+      );
+
+      const entry = vi.mocked(appendAuditLog).mock.calls[0]?.[0];
+      expect(JSON.stringify(entry)).not.toContain("jane.doe@example.com");
+      expect(entry?.error?.message).toContain("<email-redacted>");
+      expect((entry?.detail as Record<string, unknown>)?.error).toContain("<email-redacted>");
+    });
+
+    it("scrubs an email from a semantic (result.isError) failure message", async () => {
+      await POST(
+        makeRequest({
+          phase: "end",
+          toolName: "pinchy_email",
+          agentId: "agent-8",
+          sessionKey: "agent:agent-8:direct:user-8",
+          result: {
+            isError: true,
+            content: [{ type: "text", text: "delivery bounced from admin@corp.example" }],
+          },
+        })
+      );
+
+      const entry = vi.mocked(appendAuditLog).mock.calls[0]?.[0];
+      expect(JSON.stringify(entry)).not.toContain("admin@corp.example");
+      expect(entry?.error?.message).toContain("<email-redacted>");
     });
   });
 });
