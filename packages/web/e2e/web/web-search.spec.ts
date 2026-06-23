@@ -100,6 +100,60 @@ test.describe("pinchy-web — Brave Search E2E", () => {
     expect(webConn).toBeDefined();
     expect(webConn!.id).toBe(connectionId);
   });
+
+  test("creating an agent from the Market & News Monitor template succeeds (SKILL.md prod-bundle regression, PR #576)", async () => {
+    // Regression guard for PR #576 (fix/skills-md-runtime-path).
+    //
+    // getSkillBody() in src/lib/skills/index.ts reads SKILL.md off disk to
+    // materialize the workspace skill during regenerateOpenClawConfig(). It
+    // used to anchor on __dirname — but the Next.js bundler rewrites __dirname
+    // to a synthetic "/ROOT/…" path in compiled API routes, so in the
+    // PRODUCTION image (this Dockerfile.pinchy E2E job — NOT a dev stack)
+    // creating an agent from a skill-bearing template ENOENT'd inside
+    // regenerateOpenClawConfig() and POST /api/agents 500'd:
+    //   ENOENT … /ROOT/packages/web/src/lib/skills/web-search/SKILL.md
+    // Dev/test never caught it (real __dirname there; vitest doesn't bundle).
+    // PR #576 re-anchored on process.cwd(). This guard can only bite against
+    // the bundled prod image, which is exactly what this job runs.
+    //
+    // "Market & News Monitor" (templateId "market-monitor") is the only
+    // built-in template with defaultSkills: ["web-search"], so creating it is
+    // what drives getSkillBody() through the bundled /api/agents route.
+    //
+    // Relies on this describe's anthropic seed: market-monitor's
+    // modelHint (capabilities tools+vision) resolves via resolveAnthropic,
+    // which maps tier→model statically and never throws. A seeded provider
+    // without those caps would 422 (template_capability_unavailable) instead
+    // of the 201/500 this guard checks — keep the seed anthropic.
+    const createRes = await pinchyPost(
+      "/api/agents",
+      { name: `MarketMonitor-${Date.now()}`, templateId: "market-monitor" },
+      cookie
+    );
+    const createBody = await createRes.text();
+    // Pre-fix: 500 (ENOENT on the /ROOT/… SKILL.md). Post-fix: 201.
+    expect(createRes.status, createBody).toBe(201);
+    const agent = JSON.parse(createBody) as { id: string; skills: string[] };
+
+    try {
+      // The skill allowlist was seeded from the template — proof the
+      // skill-bearing path (not just any create) was exercised.
+      expect(agent.skills).toEqual(["web-search"]);
+
+      // And the agent actually persisted (the create wasn't a phantom 201).
+      const listRes = await pinchyGet("/api/agents", cookie);
+      expect(listRes.status).toBe(200);
+      const visible = (await listRes.json()) as Array<{ id: string }>;
+      expect(visible.some((a) => a.id === agent.id)).toBe(true);
+    } finally {
+      // Clean up the shared agent so it doesn't leak into later tests in this
+      // file. Note this delete itself regenerates OpenClaw config (deleteAgent
+      // → regenerateOpenClawConfig), so it adds a config.apply rather than
+      // saving one — the dispatch probe's 60s rate-limit drain below absorbs
+      // the create+delete pair.
+      await pinchyDelete(`/api/agents/${agent.id}`, cookie);
+    }
+  });
 });
 
 // ── Dispatch probe (pinchy-web plugin coverage) ──────────────────────────────
