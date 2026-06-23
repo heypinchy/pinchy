@@ -596,6 +596,30 @@ describe("PUT /api/groups/[groupId]/members", () => {
     );
   });
 
+  it("returns 400 (not an FK 500) and skips the wipe when a userId does not exist", async () => {
+    vi.mocked(auth.api.getSession).mockResolvedValueOnce({
+      user: { id: "admin-1", role: "admin" },
+      expires: "",
+    } as any);
+    mockSelectWhere.mockReset();
+    mockSelectWhere
+      .mockResolvedValueOnce([{ id: "group-1" }]) // group exists
+      .mockResolvedValueOnce([]) // existing members (none)
+      .mockResolvedValueOnce([]); // user names — the requested user is unknown
+
+    const request = new NextRequest("http://localhost:7777/api/groups/group-1/members", {
+      method: "PUT",
+      body: JSON.stringify({ userIds: ["ghost-user"] }),
+    });
+    const response = await PUT(request, {
+      params: Promise.resolve({ groupId: "group-1" }),
+    });
+
+    expect(response.status).toBe(400);
+    // The membership wipe must not run on invalid input.
+    expect(mockDeleteWhere).not.toHaveBeenCalled();
+  });
+
   it("logs only removals when members are removed", async () => {
     vi.mocked(auth.api.getSession).mockResolvedValueOnce({
       user: { id: "admin-1", role: "admin" },

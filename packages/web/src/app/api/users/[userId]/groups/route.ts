@@ -58,6 +58,16 @@ export async function PUT(
       : [];
   const nameMap = new Map(groupRows.map((g) => [g.id, g.name]));
 
+  // Reject unknown group ids with a structured 400. Otherwise the bulk insert
+  // below hits a NOT NULL foreign-key violation that surfaces as an unhandled
+  // 500 — and only after the membership wipe has already run. Previous
+  // memberships always exist, so anything missing from nameMap is a genuinely
+  // unknown requested id (e.g. a group deleted between page load and submit).
+  const unknownGroupIds = groupIds.filter((id: string) => !nameMap.has(id));
+  if (unknownGroupIds.length > 0) {
+    return NextResponse.json({ error: "Unknown group ids", ids: unknownGroupIds }, { status: 400 });
+  }
+
   // 4. Compute added/removed diff
   const added = groupIds
     .filter((id: string) => !previousGroupIds.has(id))

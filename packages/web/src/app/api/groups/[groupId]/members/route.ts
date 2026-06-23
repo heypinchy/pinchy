@@ -91,6 +91,15 @@ export async function PUT(
       : [];
   const nameMap = new Map(userNames.map((u) => [u.id, u.name]));
 
+  // Reject unknown user ids with a structured 400. Otherwise the bulk insert
+  // below hits a NOT NULL foreign-key violation that surfaces as an unhandled
+  // 500 — after the membership wipe has already run. Removed ids always exist
+  // (they're current members), so only genuinely-unknown added ids are missing.
+  const unknownUserIds = addedIds.filter((id) => !nameMap.has(id));
+  if (unknownUserIds.length > 0) {
+    return NextResponse.json({ error: "Unknown user ids", ids: unknownUserIds }, { status: 400 });
+  }
+
   await db.delete(userGroups).where(eq(userGroups.groupId, groupId));
 
   if (userIds.length > 0) {

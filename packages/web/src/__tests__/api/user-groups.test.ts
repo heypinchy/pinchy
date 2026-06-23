@@ -85,7 +85,14 @@ describe("PUT /api/users/[userId]/groups", () => {
     mockIsEnterprise.mockResolvedValueOnce(false);
 
     // user-1 currently has no groups — adding g1 would widen nothing but
-    // creates a new restriction-bearing membership, which is gated.
+    // creates a new restriction-bearing membership, which is gated. g1 is a
+    // real group, so it passes the existence check and reaches the license gate.
+    mockSelectWhere.mockReset();
+    mockSelectWhere
+      .mockResolvedValueOnce([{ id: "user-1", name: "Max Müller" }]) // user lookup
+      .mockResolvedValueOnce([]) // previous memberships (none)
+      .mockResolvedValueOnce([{ id: "g1", name: "Engineering" }]); // group names — g1 exists
+
     const request = new NextRequest("http://localhost:7777/api/users/user-1/groups", {
       method: "PUT",
       body: JSON.stringify({ groupIds: ["g1"] }),
@@ -98,6 +105,30 @@ describe("PUT /api/users/[userId]/groups", () => {
     const body = await response.json();
     expect(body.error).toBe("License required");
     expect(body.message).toMatch(/Removing users from groups always works/);
+  });
+
+  it("returns 400 (not an FK 500) and skips the wipe when a groupId does not exist", async () => {
+    vi.mocked(auth.api.getSession).mockResolvedValueOnce({
+      user: { id: "admin-1", role: "admin" },
+      expires: "",
+    } as any);
+    mockSelectWhere.mockReset();
+    mockSelectWhere
+      .mockResolvedValueOnce([{ id: "user-1", name: "Max Müller" }]) // user lookup
+      .mockResolvedValueOnce([]) // previous memberships
+      .mockResolvedValueOnce([]); // group names — the requested group is unknown
+
+    const request = new NextRequest("http://localhost:7777/api/users/user-1/groups", {
+      method: "PUT",
+      body: JSON.stringify({ groupIds: ["ghost-group"] }),
+    });
+    const response = await PUT(request, {
+      params: Promise.resolve({ userId: "user-1" }),
+    });
+
+    expect(response.status).toBe(400);
+    // The membership wipe must not run on invalid input.
+    expect(mockDeleteWhere).not.toHaveBeenCalled();
   });
 
   it("allows removal-only updates without an active license (carve-out, § 5)", async () => {
