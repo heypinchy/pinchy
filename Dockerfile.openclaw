@@ -158,6 +158,10 @@ RUN chmod +x /tmp/prewarm-openclaw.sh && \
 
 COPY config/openclaw.json /root/.openclaw/openclaw.json
 COPY config/start-openclaw.sh /start-openclaw.sh
+# Device-pairing auto-approver invoked per tick by start-openclaw.sh. Kept as a
+# separate Node module so its requestId-churn convergence is unit-testable
+# (config/__tests__/auto-approve-once.test.mjs) instead of embedded bash.
+COPY config/auto-approve-once.mjs /auto-approve-once.mjs
 RUN chmod +x /start-openclaw.sh
 
 # Bake Pinchy's user-facing docs into the image so Smithers' docs_list /

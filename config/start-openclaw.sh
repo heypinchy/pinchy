@@ -184,25 +184,30 @@ auto_approve_devices() {
             sleep 5
             continue
         fi
-        # `openclaw devices approve --latest` is preview-only since 2026.4.10.
-        # It prints the requestId but exits with code 1 without approving.
-        # We parse the requestId from the output and approve explicitly.
+        # Approve the *live* pending request, tracking requestId churn.
         #
-        # In OpenClaw 5.x, scope upgrades (operator.pairing → operator.admin)
-        # from non-loopback clients trigger a second approval round that the
-        # CLI cannot approve via WebSocket (it would need operator.admin itself,
-        # causing infinite scope-upgrade loops). The fix: omit --url so the CLI
-        # reads the gateway URL from openclaw.json and, on WS rejection, falls
-        # back to direct local-file approval (shouldUseLocalPairingFallback).
-        # The local fallback bypasses WebSocket auth entirely and writes the
-        # approval directly into /root/.openclaw/ — safe because this script
-        # runs inside the OpenClaw container with the same filesystem.
-        local approve_output request_id
-        approve_output=$(openclaw devices approve --latest 2>&1 || true)
-        request_id=$(echo "$approve_output" | grep -oE 'openclaw devices approve [a-zA-Z0-9_=-]+' | awk '{print $NF}' || true)
-        if [ -n "$request_id" ]; then
-            openclaw devices approve "$request_id" >/dev/null 2>&1 || true
-        fi
+        # `openclaw devices approve --latest` is preview-only: it prints the
+        # pending requestId and exits 1 without approving, so the id must be
+        # approved with a second, explicit `approve <id>` call. While pairing is
+        # pending Pinchy keeps reconnecting (exponential backoff), and every
+        # reconnect makes OpenClaw mint a fresh requestId — so the discovered id
+        # can already be stale by the time a separate approve call lands, and the
+        # gateway rejects it with "unknown requestId" (or "device pairing
+        # approval denied" on the operator.admin scope-upgrade round). The old
+        # two-step bash discover→approve left a multi-second window for that
+        # churn and then slept 5 s before retrying, so the device could stay
+        # unapproved long enough that Pinchy never connected within the
+        # setup-wizard E2E budget (the flake; CI run 28011331943).
+        #
+        # auto-approve-once.mjs collapses discover+approve into one process and
+        # re-discovers immediately on a stale-id failure, converging on whatever
+        # request is actually pending now. It omits --url so the CLI resolves the
+        # loopback gateway from openclaw.json (and can fall back to direct
+        # local-file approval for the operator.admin scope upgrade). The outer
+        # loop here still owns cadence, the token gate, the connected-signal stop
+        # condition, and the 5-minute safety cap.
+        # Covered by config/__tests__/auto-approve-once.test.mjs.
+        node /auto-approve-once.mjs || true
         elapsed=$((elapsed + 5))
         sleep 5
     done
