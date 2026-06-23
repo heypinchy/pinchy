@@ -88,11 +88,6 @@ export function markToolBlockedModels<
   }));
 }
 
-/** True when the given agent chat model is flagged unreliable for tool use. */
-export function isAgentModelToolBlocked(modelId: string): boolean {
-  return isBlocked(modelId, AGENT_MODEL_REQUIRED_CAPABILITIES);
-}
-
 /** The reason an agent chat model is tool-blocked, or null. For settings warnings. */
 export function getAgentModelBlockReason(modelId: string): string | null {
   return getBlockReason(modelId, AGENT_MODEL_REQUIRED_CAPABILITIES);
