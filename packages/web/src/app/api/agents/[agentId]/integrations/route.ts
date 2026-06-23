@@ -3,8 +3,9 @@ import { z } from "zod";
 import { eq, and } from "drizzle-orm";
 import { withAdmin } from "@/lib/api-auth";
 import { db } from "@/db";
-import { agentConnectionPermissions, integrationConnections } from "@/db/schema";
-import { appendAuditLog } from "@/lib/audit";
+import { agentConnectionPermissions, integrationConnections, agents } from "@/db/schema";
+import { appendAuditLog, type AuditLogEntry } from "@/lib/audit";
+import { recordAuditFailure } from "@/lib/audit-deferred";
 import { parseRequestBody } from "@/lib/api-validation";
 
 const setAgentIntegrationsSchema = z.object({
@@ -83,7 +84,16 @@ export const PUT = withAdmin<RouteContext>(async (request, { params }, session) 
   if ("error" in parsed) return parsed.error;
   const { connectionId, permissions } = parsed.data;
 
+  let existingPerms: { model: string; operation: string }[];
   try {
+    // Validate the agent exists. The path param is unconstrained; a stale UI
+    // can submit a deleted agentId, which would otherwise reach a raw FK
+    // violation on insert and surface as a 500 with the DB error text.
+    const agentRows = await db.select({ id: agents.id }).from(agents).where(eq(agents.id, agentId));
+    if (agentRows.length === 0) {
+      return NextResponse.json({ error: "Agent not found" }, { status: 404 });
+    }
+
     // Validate connection exists
     const connRows = await db
       .select()
@@ -96,7 +106,7 @@ export const PUT = withAdmin<RouteContext>(async (request, { params }, session) 
     // Atomic replace: read existing → delete → insert within a single transaction
     // to guarantee the INSERT sees the DELETE's effects (avoids unique constraint
     // violations from connection pool timing).
-    const existingPerms = await db.transaction(async (tx) => {
+    existingPerms = await db.transaction(async (tx) => {
       const existing = await tx
         .select()
         .from(agentConnectionPermissions)
@@ -129,48 +139,60 @@ export const PUT = withAdmin<RouteContext>(async (request, { params }, session) 
 
       return existing;
     });
-
-    // Config regeneration is NOT done here — the caller (agent settings save flow)
-    // triggers it via the agent PATCH, which reads the already-updated permissions
-    // from the DB. This avoids double config writes and OpenClaw restarts.
-
-    // Build audit diff
-    const oldSet = new Set(existingPerms.map((p) => `${p.model}:${p.operation}`));
-    const newSet = new Set(
-      permissions.map((p: { model: string; operation: string }) => `${p.model}:${p.operation}`)
-    );
-
-    const added = permissions
-      .filter((p: { model: string; operation: string }) => !oldSet.has(`${p.model}:${p.operation}`))
-      .map((p: { model: string; operation: string }) => ({
-        model: p.model,
-        operation: p.operation,
-      }));
-
-    const removed = existingPerms
-      .filter((p) => !newSet.has(`${p.model}:${p.operation}`))
-      .map((p) => ({ model: p.model, operation: p.operation }));
-
-    await appendAuditLog({
-      actorType: "user",
-      actorId: session.user.id!,
-      eventType: "config.changed",
-      resource: `agent:${agentId}`,
-      detail: {
-        action: "agent_integration_permissions_updated",
-        agentId,
-        connectionId,
-        changes: { added, removed },
-      },
-      outcome: "success",
-    });
-
-    return NextResponse.json({ success: true });
   } catch (err) {
-    console.error("[integrations PUT] Unhandled error:", err);
-    const message = err instanceof Error ? err.message : "Internal server error";
-    return NextResponse.json({ error: message }, { status: 500 });
+    // Log the real error server-side, but never echo the raw DB driver message
+    // (constraint/table names) back to the client.
+    console.error("[integrations PUT] permission update failed:", err);
+    return NextResponse.json(
+      { error: "Failed to update integration permissions" },
+      { status: 500 }
+    );
   }
+
+  // Config regeneration is NOT done here — the caller (agent settings save flow)
+  // triggers it via the agent PATCH, which reads the already-updated permissions
+  // from the DB. This avoids double config writes and OpenClaw restarts.
+
+  // Build audit diff
+  const oldSet = new Set(existingPerms.map((p) => `${p.model}:${p.operation}`));
+  const newSet = new Set(
+    permissions.map((p: { model: string; operation: string }) => `${p.model}:${p.operation}`)
+  );
+
+  const added = permissions
+    .filter((p: { model: string; operation: string }) => !oldSet.has(`${p.model}:${p.operation}`))
+    .map((p: { model: string; operation: string }) => ({
+      model: p.model,
+      operation: p.operation,
+    }));
+
+  const removed = existingPerms
+    .filter((p) => !newSet.has(`${p.model}:${p.operation}`))
+    .map((p) => ({ model: p.model, operation: p.operation }));
+
+  // The permission change has already committed; an audit-write failure must
+  // not turn a successful change into a 500. Record the failure for later
+  // reconciliation instead (same pattern as the active-error dismiss route).
+  const auditEntry: AuditLogEntry = {
+    actorType: "user",
+    actorId: session.user.id!,
+    eventType: "config.changed",
+    resource: `agent:${agentId}`,
+    detail: {
+      action: "agent_integration_permissions_updated",
+      agentId,
+      connectionId,
+      changes: { added, removed },
+    },
+    outcome: "success",
+  };
+  try {
+    await appendAuditLog(auditEntry);
+  } catch (err) {
+    recordAuditFailure(err, auditEntry);
+  }
+
+  return NextResponse.json({ success: true });
 });
 
 /**

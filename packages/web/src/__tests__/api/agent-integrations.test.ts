@@ -8,6 +8,7 @@ const {
   mockInsertValues,
   mockDeleteWhere,
   mockAppendAuditLog,
+  mockRecordAuditFailure,
   mockTransaction,
   mockTxDeleteWhere,
   mockTxInsertValues,
@@ -38,6 +39,7 @@ const {
     mockInsertValues: vi.fn(),
     mockDeleteWhere: vi.fn(),
     mockAppendAuditLog: vi.fn().mockResolvedValue(undefined),
+    mockRecordAuditFailure: vi.fn(),
     mockTransaction,
     mockTxDeleteWhere,
     mockTxInsertValues,
@@ -69,6 +71,10 @@ vi.mock("@/lib/openclaw-config", () => ({
 
 vi.mock("@/lib/audit", () => ({
   appendAuditLog: (...args: unknown[]) => mockAppendAuditLog(...args),
+}));
+
+vi.mock("@/lib/audit-deferred", () => ({
+  recordAuditFailure: (...args: unknown[]) => mockRecordAuditFailure(...args),
 }));
 
 import { GET, PUT, DELETE } from "@/app/api/agents/[agentId]/integrations/route";
@@ -213,7 +219,22 @@ describe("PUT /api/agents/[agentId]/integrations", () => {
     expect(res.status).toBe(400);
   });
 
+  it("returns 404 when agent does not exist", async () => {
+    mockSelectWhere.mockResolvedValueOnce([]); // agent not found
+
+    const req = new NextRequest(`http://localhost:7777/api/agents/ghost-agent/integrations`, {
+      method: "PUT",
+      body: JSON.stringify({ connectionId: CONNECTION_ID, permissions: [] }),
+    });
+    const res = await PUT(req, makeParams("ghost-agent"));
+
+    expect(res.status).toBe(404);
+    const body = await res.json();
+    expect(body.error).toBe("Agent not found");
+  });
+
   it("returns 404 when connection does not exist", async () => {
+    mockSelectWhere.mockResolvedValueOnce([{ id: AGENT_ID }]); // agent exists
     mockSelectWhere.mockResolvedValueOnce([]); // connection not found
 
     const req = new NextRequest(`http://localhost:7777/api/agents/${AGENT_ID}/integrations`, {
@@ -227,7 +248,8 @@ describe("PUT /api/agents/[agentId]/integrations", () => {
 
   it("deletes existing permissions and inserts new ones", async () => {
     // Connection exists (validation query runs outside transaction)
-    mockSelectWhere.mockResolvedValueOnce([{ id: CONNECTION_ID }]);
+    mockSelectWhere.mockResolvedValueOnce([{ id: AGENT_ID }]); // agent exists
+    mockSelectWhere.mockResolvedValueOnce([{ id: CONNECTION_ID }]); // connection exists
     // Existing permissions for diff (inside transaction)
     mockTxSelectWhere.mockResolvedValueOnce([{ model: "res.partner", operation: "read" }]);
 
@@ -249,7 +271,8 @@ describe("PUT /api/agents/[agentId]/integrations", () => {
   });
 
   it("does not call regenerateOpenClawConfig (delegated to agent PATCH)", async () => {
-    mockSelectWhere.mockResolvedValueOnce([{ id: CONNECTION_ID }]);
+    mockSelectWhere.mockResolvedValueOnce([{ id: AGENT_ID }]); // agent exists
+    mockSelectWhere.mockResolvedValueOnce([{ id: CONNECTION_ID }]); // connection exists
     mockTxSelectWhere.mockResolvedValueOnce([]);
 
     const req = new NextRequest(`http://localhost:7777/api/agents/${AGENT_ID}/integrations`, {
@@ -266,7 +289,8 @@ describe("PUT /api/agents/[agentId]/integrations", () => {
   });
 
   it("writes audit log with added/removed diff", async () => {
-    mockSelectWhere.mockResolvedValueOnce([{ id: CONNECTION_ID }]);
+    mockSelectWhere.mockResolvedValueOnce([{ id: AGENT_ID }]); // agent exists
+    mockSelectWhere.mockResolvedValueOnce([{ id: CONNECTION_ID }]); // connection exists
     // Existing permissions (inside transaction)
     mockTxSelectWhere.mockResolvedValueOnce([
       { model: "res.partner", operation: "read" },
@@ -302,7 +326,8 @@ describe("PUT /api/agents/[agentId]/integrations", () => {
 
   it("wraps DELETE+INSERT in a database transaction", async () => {
     // Connection exists (validation query runs outside transaction)
-    mockSelectWhere.mockResolvedValueOnce([{ id: CONNECTION_ID }]);
+    mockSelectWhere.mockResolvedValueOnce([{ id: AGENT_ID }]); // agent exists
+    mockSelectWhere.mockResolvedValueOnce([{ id: CONNECTION_ID }]); // connection exists
     mockTxSelectWhere.mockResolvedValueOnce([]);
 
     const req = new NextRequest(`http://localhost:7777/api/agents/${AGENT_ID}/integrations`, {
@@ -324,7 +349,8 @@ describe("PUT /api/agents/[agentId]/integrations", () => {
   });
 
   it("handles empty permissions (clear all)", async () => {
-    mockSelectWhere.mockResolvedValueOnce([{ id: CONNECTION_ID }]);
+    mockSelectWhere.mockResolvedValueOnce([{ id: AGENT_ID }]); // agent exists
+    mockSelectWhere.mockResolvedValueOnce([{ id: CONNECTION_ID }]); // connection exists
     mockTxSelectWhere.mockResolvedValueOnce([{ model: "res.partner", operation: "read" }]);
 
     const req = new NextRequest(`http://localhost:7777/api/agents/${AGENT_ID}/integrations`, {
@@ -340,6 +366,51 @@ describe("PUT /api/agents/[agentId]/integrations", () => {
     expect(mockTxDeleteWhere).toHaveBeenCalled();
     // Should not insert when permissions are empty
     expect(mockTxInsertValues).not.toHaveBeenCalled();
+  });
+
+  it("does not turn a committed change into a 500 when the audit write fails", async () => {
+    mockSelectWhere.mockResolvedValueOnce([{ id: AGENT_ID }]); // agent exists
+    mockSelectWhere.mockResolvedValueOnce([{ id: CONNECTION_ID }]); // connection exists
+    mockTxSelectWhere.mockResolvedValueOnce([]);
+    mockAppendAuditLog.mockRejectedValueOnce(new Error("audit db unavailable"));
+
+    const req = new NextRequest(`http://localhost:7777/api/agents/${AGENT_ID}/integrations`, {
+      method: "PUT",
+      body: JSON.stringify({
+        connectionId: CONNECTION_ID,
+        permissions: [{ model: "res.partner", operation: "read" }],
+      }),
+    });
+    const res = await PUT(req, makeParams(AGENT_ID));
+
+    // The permission change already committed; the audit failure must be
+    // recorded for reconciliation, not surfaced as a 500.
+    expect(res.status).toBe(200);
+    expect(mockRecordAuditFailure).toHaveBeenCalled();
+  });
+
+  it("does not leak the raw DB error text when the permission write fails", async () => {
+    mockSelectWhere.mockResolvedValueOnce([{ id: AGENT_ID }]); // agent exists
+    mockSelectWhere.mockResolvedValueOnce([{ id: CONNECTION_ID }]); // connection exists
+    mockTransaction.mockRejectedValueOnce(
+      new Error(
+        'insert or update on table "agent_connection_permissions" violates foreign key constraint "agent_connection_permissions_agent_id_agents_id_fk"'
+      )
+    );
+
+    const req = new NextRequest(`http://localhost:7777/api/agents/${AGENT_ID}/integrations`, {
+      method: "PUT",
+      body: JSON.stringify({
+        connectionId: CONNECTION_ID,
+        permissions: [{ model: "res.partner", operation: "read" }],
+      }),
+    });
+    const res = await PUT(req, makeParams(AGENT_ID));
+
+    expect(res.status).toBe(500);
+    const body = await res.json();
+    expect(body.error).toBe("Failed to update integration permissions");
+    expect(JSON.stringify(body)).not.toContain("foreign key constraint");
   });
 });
 
