@@ -23,7 +23,7 @@ import {
   type AssistantRuntime,
 } from "@assistant-ui/react";
 import type { ChatError } from "@/components/assistant-ui/chat-error-message";
-import { upstreamFormatErrorSchema } from "@/lib/schemas/chat-frames";
+import { upstreamFormatErrorSchema, modelUnavailableErrorSchema } from "@/lib/schemas/chat-frames";
 import { reduceMessages, type Action } from "./message-status-reducer";
 import type { MessageStatus } from "./message-status-reducer";
 import {
@@ -1259,6 +1259,18 @@ export function useWsRuntime(
             ? upstreamFormatErrorParsed.data
             : undefined;
 
+          // Same defense-in-depth as upstreamFormatError above: validate the
+          // model-unavailable payload before it reaches the dedicated bubble, so
+          // a stale or malformed frame can't render garbage (undefined model /
+          // httpStatus). On parse failure the bare providerError still surfaces
+          // via the generic bubble. Revives the otherwise-unused schema.
+          const modelUnavailableParsed = data.modelUnavailable
+            ? modelUnavailableErrorSchema.safeParse(data.modelUnavailable)
+            : null;
+          const modelUnavailable = modelUnavailableParsed?.success
+            ? modelUnavailableParsed.data
+            : undefined;
+
           // All attachment-related server error codes map onto the dedicated
           // "Invalid file" UI so the user sees the server's actionable message
           // instead of a generic "unknown error" fallback (issue #324).
@@ -1273,7 +1285,7 @@ export function useWsRuntime(
                 agentName: data.agentName,
                 providerError: data.providerError,
                 hint: data.hint,
-                modelUnavailable: data.modelUnavailable,
+                modelUnavailable,
                 upstreamFormatError,
                 sideEffects: data.sideEffects,
               }

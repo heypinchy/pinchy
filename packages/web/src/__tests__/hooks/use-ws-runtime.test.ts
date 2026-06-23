@@ -459,6 +459,88 @@ describe("useWsRuntime", () => {
     expect(errorMsg.metadata.custom.error.providerError).toBe("Some upstream error");
   });
 
+  it("forwards a valid modelUnavailable payload onto the error metadata", () => {
+    const { result } = renderHook(() => useWsRuntime("agent-1"));
+    const ws = wsInstances[0];
+
+    act(() => {
+      ws.onopen?.();
+    });
+    act(() => {
+      result.current.runtime.onNew({
+        content: [{ type: "text", text: "Hello" }],
+        parentId: "root",
+      });
+    });
+
+    act(() => {
+      ws.onmessage?.({
+        data: JSON.stringify({
+          type: "error",
+          agentName: "Smithers",
+          providerError: "rawError=503 the model is overloaded",
+          messageId: "msg-1",
+          modelUnavailable: {
+            kind: "model_unavailable",
+            model: "ollama-cloud/glm-4.6",
+            httpStatus: 503,
+            ref: "abc-123",
+          },
+        }),
+      });
+    });
+
+    const messages = result.current.runtime.messages;
+    const errorMsg = messages.find((m: any) => m.role === "assistant" && m.metadata?.custom?.error);
+    expect(errorMsg).toBeDefined();
+    expect(errorMsg.metadata.custom.error.modelUnavailable).toEqual({
+      kind: "model_unavailable",
+      model: "ollama-cloud/glm-4.6",
+      httpStatus: 503,
+      ref: "abc-123",
+    });
+  });
+
+  it("drops a malformed modelUnavailable payload (defense-in-depth zod safeParse)", () => {
+    // A stale/malformed frame whose modelUnavailable shape doesn't match the
+    // schema (missing model, wrong httpStatus type) must not be passed through
+    // to the dedicated bubble, which would render undefined/garbage. The bare
+    // providerError stays available for the generic bubble.
+    const { result } = renderHook(() => useWsRuntime("agent-1"));
+    const ws = wsInstances[0];
+
+    act(() => {
+      ws.onopen?.();
+    });
+    act(() => {
+      result.current.runtime.onNew({
+        content: [{ type: "text", text: "Hello" }],
+        parentId: "root",
+      });
+    });
+
+    act(() => {
+      ws.onmessage?.({
+        data: JSON.stringify({
+          type: "error",
+          agentName: "Smithers",
+          providerError: "Some upstream error",
+          messageId: "msg-1",
+          modelUnavailable: {
+            kind: "model_unavailable",
+            httpStatus: "not-a-number",
+          },
+        }),
+      });
+    });
+
+    const messages = result.current.runtime.messages;
+    const errorMsg = messages.find((m: any) => m.role === "assistant" && m.metadata?.custom?.error);
+    expect(errorMsg).toBeDefined();
+    expect(errorMsg.metadata.custom.error.modelUnavailable).toBeUndefined();
+    expect(errorMsg.metadata.custom.error.providerError).toBe("Some upstream error");
+  });
+
   describe("authoritative liveness frames", () => {
     function sendAndOpen(result: ReturnType<typeof renderHook>["result"], ws: MockWebSocket) {
       act(() => {
