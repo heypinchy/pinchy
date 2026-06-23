@@ -7,6 +7,7 @@ import {
   truncateDetail,
   redactEmail,
   scrubEmails,
+  safeProviderError,
 } from "@/lib/audit";
 import type { AuditLogEntry } from "@/lib/audit";
 
@@ -231,6 +232,42 @@ describe("truncateDetail", () => {
     const large = { data: "x".repeat(3000) };
     const result = truncateDetail(large) as Record<string, unknown>;
     expect(result._truncated).toBe(true);
+  });
+
+  it("caps multi-byte detail at 2048 BYTES, not characters", () => {
+    // 1000 CJK chars = ~3000 UTF-8 bytes but only ~1000 UTF-16 code units.
+    // A character-count check waves this through unchanged even though the
+    // serialized payload is well over the 2048-byte AGENTS.md cap.
+    const detail = { note: "界".repeat(1000) };
+    const serialized = JSON.stringify(detail);
+    expect(serialized.length).toBeLessThanOrEqual(2048); // passes a naive char check
+    expect(Buffer.byteLength(serialized, "utf8")).toBeGreaterThan(2048); // but exceeds the byte cap
+
+    const result = truncateDetail(detail);
+    expect(Buffer.byteLength(JSON.stringify(result), "utf8")).toBeLessThanOrEqual(2048);
+  });
+
+  it("does not split a multi-byte sequence when truncating", () => {
+    const detail = { note: "界".repeat(5000) };
+    const result = truncateDetail(detail) as Record<string, unknown>;
+    // A non-fatal decode replaces a dangling partial byte sequence rather than
+    // leaving invalid UTF-8 in the summary; JSON.stringify must not throw.
+    expect(() => JSON.stringify(result)).not.toThrow();
+    expect(result._truncated).toBe(true);
+  });
+});
+
+describe("safeProviderError", () => {
+  it("scrubs emails from free text", () => {
+    expect(safeProviderError("contact user@example.com please")).toContain("<email-redacted>");
+  });
+
+  it("caps multi-byte provider errors at the byte limit, not the character count", () => {
+    // 500 CJK chars = ~1500 UTF-8 bytes but only 500 UTF-16 code units, so a
+    // code-unit slice at 1024 never trims it.
+    const text = "界".repeat(500);
+    const result = safeProviderError(text);
+    expect(Buffer.byteLength(result, "utf8")).toBeLessThanOrEqual(1024);
   });
 });
 

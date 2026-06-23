@@ -18,7 +18,12 @@ vi.mock("@/lib/encryption", () => ({
   getOrCreateSecret: (...args: unknown[]) => mockGetOrCreateSecret(...args),
 }));
 
-import { appendAuditLog, type AuditLogEntry } from "@/lib/audit";
+import {
+  appendAuditLog,
+  computeRowHmacV1,
+  computeRowHmacV2,
+  type AuditLogEntry,
+} from "@/lib/audit";
 import { auditLog } from "@/db/schema";
 
 describe("appendAuditLog", () => {
@@ -269,7 +274,7 @@ describe("appendAuditLog", () => {
     void _bad;
   });
 
-  it("v2 rows are hashed with computeRowHmacV2 (rowHmac differs from v1 hash)", async () => {
+  it("hashes v2 rows with computeRowHmacV2 over the stored fields (and not as a v1 hash)", async () => {
     await appendAuditLog({
       actorType: "user",
       actorId: "user-1",
@@ -281,6 +286,27 @@ describe("appendAuditLog", () => {
     const inserted = mockValues.mock.calls[0][0];
     expect(inserted.rowHmac).toMatch(/^[0-9a-f]{64}$/);
     expect(inserted.version).toBe(2);
+
+    // Pin the writer's HMAC inputs to the verifier's: recompute the HMAC over
+    // the EXACT fields that were stored. If appendAuditLog ever hashes a
+    // different field set (drops outcome/error, hashes detail before
+    // truncation, …) the produced hex string is still 64 chars and the shape
+    // assertion above stays green — but verifyIntegrity recomputes over the
+    // stored fields and would flag every newly-written row as tampered. This
+    // round-trip catches that drift at write time.
+    const fields = {
+      timestamp: inserted.timestamp,
+      eventType: inserted.eventType,
+      actorType: inserted.actorType,
+      actorId: inserted.actorId,
+      resource: inserted.resource,
+      detail: inserted.detail,
+      outcome: inserted.outcome,
+      error: inserted.error,
+    };
+    expect(inserted.rowHmac).toBe(computeRowHmacV2(fakeSecret, fields));
+    // The title's promise: a v2 row is NOT hashed like a v1 row.
+    expect(inserted.rowHmac).not.toBe(computeRowHmacV1(fakeSecret, fields));
   });
 
   it("accepts attachment.uploaded with the required detail shape", async () => {

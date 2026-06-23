@@ -238,9 +238,25 @@ export function scrubEmails(text: string): string {
  *   audit field; well under the 2048-byte AGENTS.md detail cap, which
  *   leaves headroom for surrounding detail fields.
  */
+// Truncate a UTF-8 string to at most `maxBytes`, measuring and cutting in
+// bytes (not UTF-16 code units). The cut backs up to the nearest UTF-8
+// character boundary so a multi-byte sequence is never split — and so we never
+// emit a replacement char, which would itself add bytes and overshoot the cap.
+function truncateUtf8(text: string, maxBytes: number): string {
+  const buf = Buffer.from(text, "utf8");
+  if (buf.length <= maxBytes) return text;
+  let end = maxBytes;
+  // 0b10xxxxxx is a UTF-8 continuation byte; while we're on one, we're mid
+  // character, so step back to the lead byte and drop the partial character.
+  while (end > 0 && (buf.readUInt8(end) & 0xc0) === 0x80) {
+    end--;
+  }
+  return buf.subarray(0, end).toString("utf8");
+}
+
 const PROVIDER_ERROR_MAX_BYTES = 1024;
 export function safeProviderError(text: string): string {
-  return scrubEmails(text).slice(0, PROVIDER_ERROR_MAX_BYTES);
+  return truncateUtf8(scrubEmails(text), PROVIDER_ERROR_MAX_BYTES);
 }
 
 const MAX_DETAIL_BYTES = 2048;
@@ -248,11 +264,15 @@ const MAX_DETAIL_BYTES = 2048;
 export function truncateDetail(detail: AuditDetail | null | undefined): AuditDetail | null {
   if (detail === null || detail === undefined) return null;
   const serialized = JSON.stringify(detail);
-  if (serialized.length <= MAX_DETAIL_BYTES) return detail;
+  // Measure in UTF-8 bytes — `.length` is UTF-16 code units, so multi-byte
+  // content (CJK, emoji) could otherwise pass the cap while serializing to
+  // 2-4x the byte size (AGENTS.md: "Keep audit detail under 2048 bytes").
+  const byteLength = Buffer.byteLength(serialized, "utf8");
+  if (byteLength <= MAX_DETAIL_BYTES) return detail;
   return {
     _truncated: true,
-    _originalSize: serialized.length,
-    summary: serialized.slice(0, MAX_DETAIL_BYTES - 100),
+    _originalSize: byteLength,
+    summary: truncateUtf8(serialized, MAX_DETAIL_BYTES - 100),
   };
 }
 
