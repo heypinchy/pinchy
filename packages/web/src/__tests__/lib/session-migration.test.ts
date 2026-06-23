@@ -114,4 +114,23 @@ describe("migrateSessionKeys", () => {
 
     expect(mockedWriteFileSync).toHaveBeenCalledTimes(2);
   });
+
+  it("isolates a corrupt sessions.json so later agents still migrate", () => {
+    mockedReaddirSync.mockReturnValue(["agent-1", "agent-2"] as unknown as ReturnType<
+      typeof readdirSync
+    >);
+    mockedReadFileSync.mockImplementation((p) => {
+      // agent-1's file is truncated/corrupt JSON (e.g. a partial write).
+      if (String(p).includes("agent-1")) return "{ this is not valid json";
+      return JSON.stringify({ "agent:agent-2:user-uid-2": { sessionId: "s2" } });
+    });
+
+    // One corrupt file must not abort the whole sweep.
+    expect(() => migrateSessionKeys("/data/openclaw")).not.toThrow();
+
+    // agent-2 still gets migrated despite agent-1's corrupt file.
+    expect(mockedWriteFileSync).toHaveBeenCalledTimes(1);
+    const written = JSON.parse(mockedWriteFileSync.mock.calls[0][1] as string);
+    expect(written).toEqual({ "agent:agent-2:direct:uid-2": { sessionId: "s2" } });
+  });
 });

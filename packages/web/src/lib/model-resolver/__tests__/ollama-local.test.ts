@@ -66,4 +66,22 @@ describe("resolveOllamaLocal", () => {
     const r = resolveOllamaLocal({ tier: "fast", capabilities: ["vision"] }, smallOnly);
     expect(r.model).toBe("ollama-local/qwen3-vl:8b");
   });
+
+  it("classifies a sub-1B (M-suffix) tool model as fast, not reasoning", () => {
+    // Ollama reports sub-1B sizes with an M suffix ("360M"). A naive
+    // parseFloat("360M")===360 reads as >40 → "reasoning", so the fast-tier
+    // lookup misses and the pick degrades to the last-resort branch.
+    const tiny: OllamaLocalModelInfo[] = [
+      {
+        id: "ollama-local/smollm2:360m",
+        name: "smollm2:360m",
+        parameterSize: "360M",
+        capabilities: { vision: false, tools: true, completion: true, thinking: false },
+      },
+    ];
+    const r = resolveOllamaLocal({ tier: "fast", capabilities: ["tools"] }, tiny);
+    expect(r.model).toBe("ollama-local/smollm2:360m");
+    // Resolved as a genuine fast-tier match, not the "closest available" fallback.
+    expect(r.reason).not.toContain("closest available");
+  });
 });

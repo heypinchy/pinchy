@@ -1,4 +1,4 @@
-import type { OllamaLocalModelInfo } from "@/lib/provider-models";
+import { parseParameterSize, type OllamaLocalModelInfo } from "@/lib/provider-models";
 import { getPreferredFamilies, matchesFamily } from "../families";
 import { isBlocked } from "../blocklist";
 import { TemplateCapabilityUnavailableError } from "../types";
@@ -14,9 +14,12 @@ function hasCapability(model: OllamaLocalModelInfo, cap: ModelCapability): boole
 }
 
 function tierOf(model: OllamaLocalModelInfo): "fast" | "balanced" | "reasoning" {
-  const gb = parseFloat(model.parameterSize ?? "0");
-  if (gb < 10) return "fast";
-  if (gb < 40) return "balanced";
+  // Use the canonical unit-aware parser: Ollama's parameter_size is suffixed
+  // ("7B", "70B", but also "494M" for sub-1B models). A bare parseFloat would
+  // read "494M" as 494 and mis-tier a tiny model as "reasoning".
+  const params = parseParameterSize(model.parameterSize ?? "0");
+  if (params < 10_000_000_000) return "fast";
+  if (params < 40_000_000_000) return "balanced";
   return "reasoning";
 }
 

@@ -177,7 +177,7 @@ export const BALANCED_PATTERNS: Record<ProviderName, RegExp> = {
 import { BALANCED_ANCHORS } from "@/lib/provider-model-constants";
 export { BALANCED_ANCHORS };
 
-function parseParameterSize(size: string): number {
+export function parseParameterSize(size: string): number {
   const match = size.match(/^([\d.]+)([BMK]?)$/i);
   if (!match) return 0;
   const num = parseFloat(match[1]);
