@@ -61,7 +61,13 @@ describe("shouldUseSecureCookies", () => {
   });
 
   it("never throws and returns false when the secrets dir is unreadable", () => {
-    process.env.ENCRYPTION_KEY_DIR = "/proc/nonexistent-secure-cookies-path";
+    // Point the secrets dir BELOW a regular file so every fs call fails with
+    // ENOTDIR. Do NOT use a /proc/<x> path here: on Linux + Node 22 a recursive
+    // mkdir of a non-creatable /proc child infinite-loops in MKDirpSync instead
+    // of failing fast, which hung CI for 6h on this PR (#558).
+    const blockingFile = join(dir, "blocking-file");
+    writeFileSync(blockingFile, "x");
+    process.env.ENCRYPTION_KEY_DIR = join(blockingFile, "secrets");
     expect(() => shouldUseSecureCookies()).not.toThrow();
     expect(shouldUseSecureCookies()).toBe(false);
   });
@@ -74,7 +80,13 @@ describe("writeDomainLockFlag", () => {
   });
 
   it("never throws when the target dir cannot be created", () => {
-    process.env.ENCRYPTION_KEY_DIR = "/proc/nonexistent-secure-cookies-path";
+    // Parent is a regular file -> mkdirSync fails with ENOTDIR (terminal).
+    // Avoid a /proc/<x> path: on Linux + Node 22, mkdirSync(path, { recursive:
+    // true }) of a non-creatable /proc child infinite-loops in MKDirpSync
+    // instead of throwing, which hung CI for 6h on this PR (#558).
+    const blockingFile = join(dir, "blocking-file");
+    writeFileSync(blockingFile, "x");
+    process.env.ENCRYPTION_KEY_DIR = join(blockingFile, "secrets");
     expect(() => writeDomainLockFlag("pinchy.example.com")).not.toThrow();
     expect(() => writeDomainLockFlag(null)).not.toThrow();
   });
