@@ -202,10 +202,10 @@ auto_approve_devices() {
         # auto-approve-once.mjs collapses discover+approve into one process and
         # re-discovers immediately on a stale-id failure, converging on whatever
         # request is actually pending now. It omits --url so the CLI resolves the
-        # loopback gateway from openclaw.json (and can fall back to direct
-        # local-file approval for the operator.admin scope upgrade). The outer
-        # loop here still owns cadence, the token gate, the connected-signal stop
-        # condition, and the 5-minute safety cap.
+        # gateway from openclaw.json and connects over loopback — which is what
+        # lets the in-container CLI authenticate as a trusted operator to approve
+        # the operator.admin request. The outer loop here still owns cadence, the
+        # token gate, the connected-signal stop condition, and the safety cap.
         # Covered by config/__tests__/auto-approve-once.test.mjs.
         node /auto-approve-once.mjs || true
         elapsed=$((elapsed + 5))

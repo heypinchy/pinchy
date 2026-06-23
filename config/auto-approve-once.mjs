@@ -27,7 +27,7 @@
 // instead of losing a whole ~13 s outer tick — so it converges on whatever
 // request is actually pending right now. The bash outer loop in
 // start-openclaw.sh still owns cadence, the token gate, the connected-signal
-// stop condition, and the 5-minute safety cap.
+// stop condition, and the overall pairing safety cap.
 //
 // Covered by config/__tests__/auto-approve-once.test.mjs.
 
@@ -35,11 +35,19 @@ import { spawnSync } from "node:child_process";
 import { existsSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
-// Bounded burst per invocation. With ~1/3 of attempts racing a reconnect, 6
-// attempts drives the per-tick miss probability to ~(1/3)^6 ≈ 0.0014 while
-// staying well under the outer loop's 5-minute safety cap. Tunable via env.
+// Bounded burst per invocation: re-discover + re-approve a handful of times so
+// a couple of reconnect-driven requestId rotations are absorbed within a single
+// tick, then hand back to the outer loop. The outer loop in start-openclaw.sh
+// owns the overall pairing deadline; this only caps one tick's work. Tunable
+// via env.
 const DEFAULT_MAX_ATTEMPTS =
   Number(process.env.PINCHY_APPROVE_MAX_ATTEMPTS) || 6;
+
+// Per-CLI-call timeout. Each `openclaw devices` invocation loads the full plugin
+// system, so allow generous headroom — but never block the tick forever on a
+// stalled call (a hung discover/approve would otherwise wedge the whole burst).
+const CLI_TIMEOUT_MS =
+  Number(process.env.PINCHY_APPROVE_CLI_TIMEOUT_MS) || 30000;
 
 const SIGNAL_PATH =
   process.env.PINCHY_DEVICE_APPROVED_SIGNAL ||
@@ -113,7 +121,13 @@ export function approveLatestOnce({
 }
 
 function realExec(args) {
-  const result = spawnSync("openclaw", args, { encoding: "utf8" });
+  const result = spawnSync("openclaw", args, {
+    encoding: "utf8",
+    timeout: CLI_TIMEOUT_MS,
+  });
+  // A timeout (or signal kill) leaves status === null; map any non-numeric exit
+  // to a failure so approveLatestOnce re-discovers rather than treating it as a
+  // successful approve.
   return {
     code: typeof result.status === "number" ? result.status : 1,
     stdout: result.stdout ?? "",
