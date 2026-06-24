@@ -402,6 +402,22 @@ describe("scrubEmails", () => {
     expect(out).not.toContain("devcraft.academy");
     expect(out).not.toContain("@");
   });
+
+  it("redacts internationalized-domain (IDN) emails", () => {
+    const out = scrubEmails("no contact for kunde@münchen.de in the directory");
+    expect(out).toContain("<email-redacted>");
+    expect(out).not.toContain("münchen.de");
+  });
+
+  it("redacts IP-literal-domain emails", () => {
+    const out = scrubEmails("bounce from user@[192.168.1.1] rejected");
+    expect(out).toContain("<email-redacted>");
+    expect(out).not.toContain("192.168.1.1");
+  });
+
+  it("still ignores a social @handle mention (no TLD)", () => {
+    expect(scrubEmails("ping @alice about the deploy")).toBe("ping @alice about the deploy");
+  });
 });
 
 describe("AuditLogEntry — integration events", () => {

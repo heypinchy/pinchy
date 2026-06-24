@@ -26,6 +26,14 @@ describe("classifyModelError", () => {
     expect(classifyModelError("HTTP 429: Too Many Requests", "openai/gpt-x")).toBeNull();
   });
 
+  it("returns null for HTTP 529 (transient overload), not model_unavailable", () => {
+    // 529 matches HTTP_5XX_PATTERN but is Anthropic's "overloaded, retry"
+    // signal — transient. It must classify the same way the umbrella classifier
+    // does (transient), so it doesn't pollute the model-unavailable dashboard.
+    expect(classifyModelError("HTTP 529: Anthropic overloaded", "anthropic/claude-x")).toBeNull();
+    expect(classifyModelError("HTTP 503: model is overloaded", "anthropic/claude-x")).toBeNull();
+  });
+
   it("returns null when error text has no HTTP status", () => {
     expect(classifyModelError("Network unreachable", "openai/gpt-x")).toBeNull();
   });

@@ -81,6 +81,23 @@ describe("GET /api/audit/verify", () => {
     expect(mockVerifyIntegrity).toHaveBeenCalledWith(10, 20);
   });
 
+  it("returns 400 for a non-numeric fromId instead of crashing (NaN into SQL)", async () => {
+    const { GET } = await import("@/app/api/audit/verify/route");
+    const request = new Request("http://localhost/api/audit/verify?fromId=abc");
+    const response = await GET(request as any);
+
+    expect(response.status).toBe(400);
+    expect(mockVerifyIntegrity).not.toHaveBeenCalled();
+  });
+
+  it("returns 400 for a non-numeric toId", async () => {
+    const { GET } = await import("@/app/api/audit/verify/route");
+    const request = new Request("http://localhost/api/audit/verify?toId=xyz");
+    const response = await GET(request as any);
+
+    expect(response.status).toBe(400);
+  });
+
   it("should call verifyIntegrity without params when none provided", async () => {
     mockVerifyIntegrity.mockResolvedValue({
       valid: true,

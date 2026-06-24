@@ -248,7 +248,12 @@ export function redactEmail(email: string): RedactedEmail {
  * The regex deliberately requires a TLD (`\.[A-Za-z]{2,}`) so social
  * `@handle` mentions in free text don't get mistaken for emails.
  */
-const EMAIL_LIKE_PATTERN = /[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/g;
+// Unicode-aware: \p{L} covers internationalized-domain (IDN) emails like
+// user@münchen.de, and the bracket alternative covers IP-literal domains like
+// user@[192.168.1.1] — both of which the old ASCII-only class let through into
+// the HMAC-signed, un-redactable audit detail. The TLD-required branch is kept
+// so a social `@handle` mention isn't mistaken for an email.
+const EMAIL_LIKE_PATTERN = /[\p{L}\p{N}._%+-]+@(?:\[[^\]\s]+\]|[\p{L}\p{N}.-]+\.[\p{L}]{2,})/gu;
 
 export function scrubEmails(text: string): string {
   return text.replace(EMAIL_LIKE_PATTERN, "<email-redacted>");
