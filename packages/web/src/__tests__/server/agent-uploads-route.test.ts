@@ -5,14 +5,24 @@ import { tmpdir } from "os";
 
 // Hoisted mocks for getSession + agent access — same pattern as
 // other route tests (see e.g. agent-access.test.ts).
-const { mockGetSession, mockGetAgentWithAccess } = vi.hoisted(() => ({
+const { mockGetSession, mockGetAgentWithAccess, mockOwnershipLookup } = vi.hoisted(() => ({
   mockGetSession: vi.fn(),
   mockGetAgentWithAccess: vi.fn(),
+  mockOwnershipLookup: vi.fn(),
 }));
 
 vi.mock("@/lib/auth", () => ({ getSession: mockGetSession }));
 vi.mock("@/lib/agent-access", () => ({
   getAgentWithAccess: mockGetAgentWithAccess,
+}));
+vi.mock("@/db", () => ({
+  db: {
+    select: () => ({
+      from: () => ({
+        where: (...args: unknown[]) => mockOwnershipLookup(...args),
+      }),
+    }),
+  },
 }));
 vi.mock("next/headers", () => ({
   headers: vi.fn().mockResolvedValue(new Headers()),
@@ -24,11 +34,12 @@ beforeEach(() => {
   vi.clearAllMocks();
   tmpRoot = mkdtempSync(join(tmpdir(), "pinchy-uploads-route-test-"));
   vi.stubEnv("WORKSPACE_BASE_PATH", tmpRoot);
-  // Default: authenticated, has access
+  // Default: authenticated, has access, and OWNS the requested file.
   mockGetSession.mockResolvedValue({
     user: { id: "user-1", role: "member" },
   });
   mockGetAgentWithAccess.mockResolvedValue({ id: "agent-1", name: "Smithers" });
+  mockOwnershipLookup.mockResolvedValue([{ id: "file-1" }]);
 });
 
 afterEach(() => {
@@ -86,6 +97,19 @@ describe("GET /api/agents/[agentId]/uploads/[filename]", () => {
     writeUpload("agent-1", "invoice.pdf", PDF_BYTES);
     const res = await callGET("agent-1", "invoice.pdf");
     expect(res.status).toBe(401);
+  });
+
+  it("returns 404 (IDOR) when another user with agent access requests a file they did not upload", async () => {
+    // user-2 has read access to the shared agent (agent access passes) and the
+    // file physically exists, but the file belongs to user-1 — no owned row.
+    mockGetSession.mockResolvedValue({ user: { id: "user-2", role: "member" } });
+    mockOwnershipLookup.mockResolvedValue([]); // no uploadedFiles row owned by user-2
+    writeUpload("agent-1", "salary.pdf", PDF_BYTES);
+
+    const res = await callGET("agent-1", "salary.pdf");
+
+    // 404, not 403 — a non-owner must not even be able to confirm the file exists.
+    expect(res.status).toBe(404);
   });
 
   it("forwards the getAgentWithAccess denial response verbatim (403 from helper → 403 to caller)", async () => {

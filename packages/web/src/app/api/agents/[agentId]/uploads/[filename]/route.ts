@@ -4,9 +4,12 @@ import { NextResponse } from "next/server";
 import { open, stat } from "fs/promises";
 import { join, resolve, sep, extname } from "path";
 import { fileTypeFromBuffer } from "file-type";
+import { and, eq } from "drizzle-orm";
 import { withAuth } from "@/lib/api-auth";
 import { getAgentWithAccess } from "@/lib/agent-access";
 import { getWorkspacePath } from "@/lib/workspace";
+import { db } from "@/db";
+import { uploadedFiles } from "@/db/schema";
 import {
   sanitizeFilename,
   ALLOWED_ATTACHMENT_MIMES,
@@ -32,6 +35,25 @@ export const GET = withAuth<Params>(async (_req, { params }, session) => {
   try {
     safeName = sanitizeFilename(rawFilename);
   } catch {
+    return new NextResponse("Not found", { status: 404 });
+  }
+
+  // Per-user ownership check. Agent access alone is NOT sufficient: a shared
+  // agent's uploads/ directory co-mingles every member's attachments, so agent
+  // read access would otherwise let user B fetch user A's file by its
+  // predictable filename (IDOR). Require an uploadedFiles row owned by the
+  // caller. 404 (not 403) so non-owners can't even confirm the file exists.
+  const owned = await db
+    .select({ id: uploadedFiles.id })
+    .from(uploadedFiles)
+    .where(
+      and(
+        eq(uploadedFiles.agentId, agentId),
+        eq(uploadedFiles.filename, safeName),
+        eq(uploadedFiles.userId, session.user.id!)
+      )
+    );
+  if (owned.length === 0) {
     return new NextResponse("Not found", { status: 404 });
   }
 
