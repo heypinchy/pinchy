@@ -38,6 +38,7 @@ import {
 import { type FC, useState, useEffect, useRef, useContext } from "react";
 import {
   AgentIdContext,
+  ChatIdContext,
   AgentNameContext,
   RetryResendContext,
   RetryContinueContext,
@@ -52,7 +53,7 @@ import type { PendingUpload } from "@/hooks/use-ws-runtime";
 import { RetryButton } from "@/components/chat/retry-button";
 import { DuplicateRetryConfirm } from "@/components/chat/duplicate-retry-confirm";
 import { useComposerRuntime } from "@assistant-ui/react";
-import { getDraft, saveDraft } from "@/lib/draft-store";
+import { getDraft, saveDraft, draftKey } from "@/lib/draft-store";
 
 function formatTimestamp(iso: string): string {
   const date = new Date(iso);
@@ -246,34 +247,45 @@ export const ThreadWelcome: FC = () => {
   );
 };
 
-const DraftPersistence: FC = () => {
+/**
+ * Persists the composer draft (text + attachments) per chat (#508), scoped to the
+ * current (agentId, chatId) so a draft never bleeds into a sibling chat of the
+ * same agent. It saves on every composer change rather than only on unmount: an
+ * unmount-only save closes over stale state and races the next chat's restore
+ * during navigation (the deleted-draft resurrection). Because `saveDraft`
+ * auto-clears an empty composer, both a send (assistant-ui empties the composer)
+ * and a manual delete clear the draft with no extra special case.
+ */
+export const DraftPersistence: FC = () => {
   const agentId = useContext(AgentIdContext);
+  const chatId = useContext(ChatIdContext);
   const composerRuntime = useComposerRuntime({ optional: true });
-  const runtimeRef = useRef(composerRuntime);
-
-  useEffect(() => {
-    runtimeRef.current = composerRuntime;
-  }, [composerRuntime]);
 
   useEffect(() => {
     if (!agentId || !composerRuntime) return;
+    const key = draftKey(agentId, chatId);
 
-    const draft = getDraft(agentId);
+    // Restore this chat's draft on mount.
+    const draft = getDraft(key);
     if (draft) {
       composerRuntime.setText(draft.text);
       draft.files.forEach((file) => composerRuntime.addAttachment(file));
     }
 
-    return () => {
-      const rt = runtimeRef.current;
-      if (!rt) return;
-      const state = rt.getState();
+    const persist = () => {
+      const state = composerRuntime.getState();
       const files = state.attachments
         .filter((a): a is typeof a & { file: File } => "file" in a && a.file instanceof File)
         .map((a) => a.file);
-      saveDraft(agentId, { text: state.text, files });
+      saveDraft(key, { text: state.text, files });
     };
-  }, [agentId, composerRuntime]);
+    const unsubscribe = composerRuntime.subscribe(persist);
+
+    return () => {
+      persist(); // flush the latest state before this chat's composer unmounts
+      unsubscribe();
+    };
+  }, [agentId, chatId, composerRuntime]);
 
   return null;
 };

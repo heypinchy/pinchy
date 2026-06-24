@@ -5,18 +5,33 @@ export interface Draft {
 
 const drafts = new Map<string, Draft>();
 
-export function getDraft(agentId: string): Draft | undefined {
-  return drafts.get(agentId);
+/**
+ * Store key for one composer draft, scoped to a single (agent, chat) pair (#508).
+ *
+ * A draft belongs to ONE chat, never to the agent as a whole — otherwise a draft
+ * typed in one chat surfaces in a sibling chat of the same agent (the cross-session
+ * bleed bug). When `chatId` is omitted the key is the bare `agentId`, byte-identical
+ * to the pre-per-chat key, so the default/legacy chat keeps its existing entry.
+ *
+ * Mirrors `chatSessionKey` in chat-session-provider.tsx (same `(agent, chat)` →
+ * key shape); kept local so the draft store stays a standalone, dependency-free lib.
+ */
+export function draftKey(agentId: string, chatId?: string | null): string {
+  return chatId ? `${agentId}:${chatId}` : agentId;
 }
 
-export function saveDraft(agentId: string, draft: Draft): void {
+export function getDraft(key: string): Draft | undefined {
+  return drafts.get(key);
+}
+
+export function saveDraft(key: string, draft: Draft): void {
   if (!draft.text && draft.files.length === 0) {
-    drafts.delete(agentId);
+    drafts.delete(key);
     return;
   }
-  drafts.set(agentId, draft);
+  drafts.set(key, draft);
 }
 
-export function clearDraft(agentId: string): void {
-  drafts.delete(agentId);
+export function clearDraft(key: string): void {
+  drafts.delete(key);
 }

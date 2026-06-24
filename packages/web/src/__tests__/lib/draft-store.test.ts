@@ -1,5 +1,33 @@
 import { describe, it, expect, beforeEach } from "vitest";
-import { getDraft, saveDraft, clearDraft } from "@/lib/draft-store";
+import { getDraft, saveDraft, clearDraft, draftKey } from "@/lib/draft-store";
+
+describe("draftKey", () => {
+  it("scopes a draft to a single (agent, chat) pair", () => {
+    // The bare agentId is the key for the default/legacy chat (chatId omitted)
+    // — byte-identical to the pre-per-chat key so existing drafts don't move.
+    expect(draftKey("agent-1")).toBe("agent-1");
+    expect(draftKey("agent-1", "chat-a")).toBe("agent-1:chat-a");
+  });
+
+  it("never collides across chats of the same agent", () => {
+    expect(draftKey("agent-1", "chat-a")).not.toBe(draftKey("agent-1", "chat-b"));
+    // The default chat key can't collide with a per-chat key (segment count).
+    expect(draftKey("agent-1")).not.toBe(draftKey("agent-1", "chat-a"));
+  });
+
+  it("isolates drafts between two chats of the same agent (the bleed bug)", () => {
+    saveDraft(draftKey("agent-1", "chat-a"), { text: "draft A", files: [] });
+    saveDraft(draftKey("agent-1", "chat-b"), { text: "draft B", files: [] });
+
+    expect(getDraft(draftKey("agent-1", "chat-a"))?.text).toBe("draft A");
+    expect(getDraft(draftKey("agent-1", "chat-b"))?.text).toBe("draft B");
+    // The default chat of the same agent stays empty — no bleed from a sibling.
+    expect(getDraft(draftKey("agent-1"))).toBeUndefined();
+
+    clearDraft(draftKey("agent-1", "chat-a"));
+    clearDraft(draftKey("agent-1", "chat-b"));
+  });
+});
 
 describe("draft-store", () => {
   beforeEach(() => {

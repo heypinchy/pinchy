@@ -118,15 +118,18 @@ test.describe("In-app navigation chat persistence (#199)", () => {
   //
   // 2. "Composer draft survives in-app navigation"
   //    The composer state in @assistant-ui/react is internal to the
-  //    AssistantRuntime. While the runtime instance survives the
-  //    consumer's unmount/remount (proven by runtime-stability.test.tsx),
-  //    the composer's textarea value is not preserved by the runtime in
-  //    the version we use; the textarea reads its initial value as ""
-  //    on every mount. Until that's fixed upstream (or we wrap the
-  //    composer with our own draft cache), claiming "draft survives
-  //    navigation" would be a false promise — so this test was removed
-  //    along with the corresponding line in
-  //    docs/explanation/chat-states.mdx.
+  //    AssistantRuntime, and the textarea reads its initial value as ""
+  //    on every mount — so the runtime alone does NOT carry a draft across
+  //    a consumer remount. Pinchy therefore wraps the composer with its own
+  //    per-(agent,chat) draft cache (the DraftPersistence component +
+  //    draft-store), which restores the draft on mount and clears it on send
+  //    or manual delete. That behaviour — per-chat isolation (no bleed),
+  //    restore-on-return, and clear-on-empty — is pinned against the REAL
+  //    assistant-ui composer in
+  //    src/components/assistant-ui/__tests__/draft-persistence.test.tsx,
+  //    which is the right level: the draft is pure client state and does not
+  //    cross OpenClaw, so an E2E here would add no coverage the component
+  //    test doesn't already give deterministically.
   //
   // 3. "Sidebar pulse dot stays visible after navigating to /agents"
   //    The user-visible feature relies on Next.js client-side navigation

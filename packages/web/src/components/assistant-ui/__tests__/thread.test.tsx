@@ -125,6 +125,8 @@ vi.mock("@assistant-ui/react", () => ({
 vi.mock("@/lib/draft-store", () => ({
   getDraft: vi.fn(() => null),
   saveDraft: vi.fn(),
+  draftKey: (agentId: string, chatId?: string | null) =>
+    chatId ? `${agentId}:${chatId}` : agentId,
 }));
 
 vi.mock("@/lib/api-client", () => ({
@@ -187,6 +189,7 @@ vi.mock("@/components/chat", async () => {
   return {
     AgentAvatarContext: React.createContext<string | null>(null),
     AgentIdContext: React.createContext<string | null>(null),
+    ChatIdContext: React.createContext<string | null>(null),
     AgentModelContext: React.createContext<string | null>(null),
     RetryResendContext: React.createContext<(messageId: string) => void>(() => {}),
     RetryContinueContext: React.createContext<() => void>(() => {}),
