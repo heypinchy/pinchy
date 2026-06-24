@@ -225,6 +225,10 @@ describe("pinchy-audit plugin", () => {
       {
         toolName: "pinchy_read",
         params: { path: "/data/policy.md" },
+        // The after event carries the same runId as before (real OpenClaw
+        // behavior) so the start record correlates; only the IDENTITY fields
+        // (agentId/sessionKey/sessionId) are missing and recovered from the map.
+        runId: "run-from-start",
       },
       {
         toolName: "pinchy_read",
@@ -251,6 +255,52 @@ describe("pinchy-audit plugin", () => {
         durationMs: undefined,
       }),
     });
+  });
+
+  it("attributes each concurrent same-name tool call to its OWN agent", async () => {
+    const { default: plugin } = await import("./index");
+    plugin.register?.(
+      createMockApi({ apiBaseUrl: "http://pinchy:7777", gatewayToken: "gw-token" }) as any
+    );
+
+    const beforeHook = mockOn.mock.calls.find((c) => c[0] === "before_tool_call")?.[1];
+    const afterHook = mockOn.mock.calls.find((c) => c[0] === "after_tool_call")?.[1];
+
+    // Two different agents start the SAME tool, interleaved (the plugin instance
+    // is shared across agents). The second start must NOT clobber the first.
+    await beforeHook(
+      { toolName: "pinchy_read", toolCallId: "tc-A", params: {} },
+      {
+        agentId: "agent-A",
+        sessionKey: "agent:agent-A:main",
+        sessionId: "sess-A",
+        runId: "run-A",
+        toolName: "pinchy_read",
+      }
+    );
+    await beforeHook(
+      { toolName: "pinchy_read", toolCallId: "tc-B", params: {} },
+      {
+        agentId: "agent-B",
+        sessionKey: "agent:agent-B:main",
+        sessionId: "sess-B",
+        runId: "run-B",
+        toolName: "pinchy_read",
+      }
+    );
+
+    // Agent A's call ends, carrying only its toolCallId (identity fields absent).
+    await afterHook(
+      { toolName: "pinchy_read", toolCallId: "tc-A", params: {} },
+      { toolName: "pinchy_read" }
+    );
+
+    // The end row must be attributed to agent A — not the most-recent start (B).
+    const lastBody = JSON.parse(vi.mocked(fetch).mock.lastCall![1]!.body as string);
+    expect(lastBody.phase).toBe("end");
+    expect(lastBody.toolCallId).toBe("tc-A");
+    expect(lastBody.agentId).toBe("agent-A");
+    expect(lastBody.sessionKey).toBe("agent:agent-A:main");
   });
 
   describe("sensitive data sanitization", () => {
