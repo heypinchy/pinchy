@@ -42,7 +42,14 @@ interface UserDetailSheetProps {
   currentUserId: string;
   open: boolean;
   onOpenChange: (open: boolean) => void;
+  /** Full success: refetch the list AND close the sheet (parent unmounts it). */
   onSaved: () => void;
+  /**
+   * Partial success: refetch the list but KEEP the sheet open so the user can
+   * retry the failed half. Distinct from `onSaved`, which closes the sheet —
+   * calling `onSaved` here would unmount the sheet and lose the retry path.
+   */
+  onRefresh?: () => void;
 }
 
 export function UserDetailSheet({
@@ -53,6 +60,7 @@ export function UserDetailSheet({
   open,
   onOpenChange,
   onSaved,
+  onRefresh,
 }: UserDetailSheetProps) {
   const [selectedRole, setSelectedRole] = useState(user.role);
   const [selectedGroupIds, setSelectedGroupIds] = useState<Set<string>>(
@@ -141,8 +149,9 @@ export function UserDetailSheet({
       if (roleOk || groupsOk) {
         // Partial success: refetch so the list reflects the half that landed,
         // and keep the sheet open with a specific message so a retry only
-        // re-applies the failed half.
-        onSaved();
+        // re-applies the failed half. Use onRefresh (refetch-only), NOT onSaved
+        // — the latter closes the sheet in the parent and would kill the retry.
+        onRefresh?.();
         toast.error(
           !roleOk
             ? "Group membership saved, but the role change failed. Please retry."

@@ -342,9 +342,10 @@ describe("UserDetailSheet", () => {
     expect(screen.getByRole("checkbox", { name: /engineering/i })).toBeDisabled();
   });
 
-  it("on partial save failure keeps the sheet open, refetches, and reports what failed", async () => {
+  it("on partial save failure keeps the sheet open via onRefresh (NOT onSaved, which closes it)", async () => {
     const user = userEvent.setup();
     const onSaved = vi.fn();
+    const onRefresh = vi.fn();
     const onOpenChange = vi.fn();
 
     // role PATCH lands, groups PUT fails — the classic partial-success case.
@@ -367,6 +368,7 @@ describe("UserDetailSheet", () => {
         open={true}
         onOpenChange={onOpenChange}
         onSaved={onSaved}
+        onRefresh={onRefresh}
       />
     );
 
@@ -381,9 +383,12 @@ describe("UserDetailSheet", () => {
         expect.stringMatching(/group membership could not be updated/i)
       );
     });
-    // The role half landed — refetch so the table reflects it.
-    expect(onSaved).toHaveBeenCalled();
-    // The sheet must stay open so the user can retry the failed half.
+    // The role half landed — refetch the list so it reflects the saved half...
+    expect(onRefresh).toHaveBeenCalled();
+    // ...but the sheet must stay open. `onSaved` is the parent's close+refetch
+    // (it sets selectedUser=null, unmounting the sheet), so it must NOT fire on
+    // partial success — that was the contradiction the comment claimed to avoid.
+    expect(onSaved).not.toHaveBeenCalled();
     expect(onOpenChange).not.toHaveBeenCalledWith(false);
   });
 
