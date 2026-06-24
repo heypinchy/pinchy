@@ -19,7 +19,10 @@ export type TelegramValidationResult = TelegramValidationSuccess | TelegramValid
 export async function validateTelegramBotToken(token: string): Promise<TelegramValidationResult> {
   const apiUrl = process.env.TELEGRAM_API_URL || "https://api.telegram.org";
   try {
-    const response = await fetch(`${apiUrl}/bot${token}/getMe`);
+    // Bound the probe so a stalled upstream can't pin the request handler.
+    const response = await fetch(`${apiUrl}/bot${token}/getMe`, {
+      signal: AbortSignal.timeout(10_000),
+    });
     const data = await response.json();
 
     if (!data.ok) {

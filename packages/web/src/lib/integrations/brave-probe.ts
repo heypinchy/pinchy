@@ -18,6 +18,7 @@ export async function probeBraveApiKey(
   try {
     const res = await fetch("https://api.search.brave.com/res/v1/web/search?q=ping&count=1", {
       headers: { "X-Subscription-Token": apiKey, Accept: "application/json" },
+      signal: AbortSignal.timeout(10_000),
     });
     if (res.ok) return { success: true };
 

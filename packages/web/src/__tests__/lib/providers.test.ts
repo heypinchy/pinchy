@@ -168,13 +168,19 @@ describe("validateProviderUrl", () => {
     );
     const result = await validateProviderUrl("http://localhost:11434");
     expect(result).toEqual({ valid: true });
-    expect(fetch).toHaveBeenCalledWith("http://localhost:11434/api/tags");
+    expect(fetch).toHaveBeenCalledWith(
+      "http://localhost:11434/api/tags",
+      expect.objectContaining({ signal: expect.any(AbortSignal) })
+    );
   });
 
   it("should strip trailing slash from URL", async () => {
     vi.mocked(fetch).mockResolvedValue(new Response("{}", { status: 200 }));
     await validateProviderUrl("http://localhost:11434/");
-    expect(fetch).toHaveBeenCalledWith("http://localhost:11434/api/tags");
+    expect(fetch).toHaveBeenCalledWith(
+      "http://localhost:11434/api/tags",
+      expect.objectContaining({ signal: expect.any(AbortSignal) })
+    );
   });
 
   it("should return network_error when Ollama is unreachable", async () => {
@@ -210,7 +216,10 @@ describe("validateProviderUrl", () => {
       );
       const result = await validateProviderUrl("http://ollama.docker.local:11434");
       expect(result).toEqual({ valid: true });
-      expect(fetch).toHaveBeenCalledWith("http://ollama.docker.local:11434/api/tags");
+      expect(fetch).toHaveBeenCalledWith(
+        "http://ollama.docker.local:11434/api/tags",
+        expect.objectContaining({ signal: expect.any(AbortSignal) })
+      );
     });
 
     it("accepts http://host.docker.internal:11434 (Docker host alias, rewritten to ollama.local at config-emit time)", async () => {

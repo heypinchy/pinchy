@@ -46,7 +46,10 @@ describe("validateTelegramBotToken", () => {
       botId: 123456789,
       botUsername: "SmithersBot",
     });
-    expect(fetchMock).toHaveBeenCalledWith("https://api.telegram.org/bot123:abc/getMe");
+    expect(fetchMock).toHaveBeenCalledWith(
+      "https://api.telegram.org/bot123:abc/getMe",
+      expect.objectContaining({ signal: expect.any(AbortSignal) })
+    );
   });
 
   it("should return invalid for a bad token", async () => {
@@ -79,7 +82,10 @@ describe("validateTelegramBotToken", () => {
     });
 
     await validateTelegramBotToken("token123:xyz");
-    expect(fetchMock).toHaveBeenCalledWith("https://api.telegram.org/bottoken123:xyz/getMe");
+    expect(fetchMock).toHaveBeenCalledWith(
+      "https://api.telegram.org/bottoken123:xyz/getMe",
+      expect.objectContaining({ signal: expect.any(AbortSignal) })
+    );
   });
 
   it("should use TELEGRAM_API_URL env var when set", async () => {
@@ -93,7 +99,10 @@ describe("validateTelegramBotToken", () => {
     });
 
     const result = await validateTelegramBotToken("test-token:abc");
-    expect(fetchMock).toHaveBeenCalledWith("http://mock-telegram:9001/bottest-token:abc/getMe");
+    expect(fetchMock).toHaveBeenCalledWith(
+      "http://mock-telegram:9001/bottest-token:abc/getMe",
+      expect.objectContaining({ signal: expect.any(AbortSignal) })
+    );
     expect(result).toEqual({ valid: true, botId: 42, botUsername: "test_bot" });
 
     delete process.env.TELEGRAM_API_URL;

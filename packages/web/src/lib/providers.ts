@@ -81,6 +81,12 @@ export function resolveProviderBaseUrl(provider: ProviderName, fallback: string)
   return (envVar && process.env[envVar]) || fallback;
 }
 
+// Credential/URL probes run in request context. Without a timeout, a host that
+// accepts the connection but never responds pins the request handler until
+// undici's coarse internal timeout (minutes). Bound every probe explicitly,
+// mirroring the Ollama discovery path (provider-models.ts ollamaFetchSignal).
+const PROVIDER_PROBE_TIMEOUT_MS = 10_000;
+
 function makeValidationRequest(provider: ProviderName, apiKey: string): Promise<Response> {
   switch (provider) {
     case "anthropic":
@@ -91,6 +97,7 @@ function makeValidationRequest(provider: ProviderName, apiKey: string): Promise<
             "x-api-key": apiKey,
             "anthropic-version": "2023-06-01",
           },
+          signal: AbortSignal.timeout(PROVIDER_PROBE_TIMEOUT_MS),
         }
       );
     case "openai":
@@ -98,11 +105,12 @@ function makeValidationRequest(provider: ProviderName, apiKey: string): Promise<
         headers: {
           Authorization: `Bearer ${apiKey}`,
         },
+        signal: AbortSignal.timeout(PROVIDER_PROBE_TIMEOUT_MS),
       });
     case "google":
       return fetch(
         `${resolveProviderBaseUrl("google", "https://generativelanguage.googleapis.com")}/v1beta/models?key=${apiKey}`,
-        {}
+        { signal: AbortSignal.timeout(PROVIDER_PROBE_TIMEOUT_MS) }
       );
     case "ollama-cloud":
       // /v1/models is a public catalog and returns 200 for any token, so it
@@ -118,6 +126,7 @@ function makeValidationRequest(provider: ProviderName, apiKey: string): Promise<
             "Content-Type": "application/json",
           },
           body: "{}",
+          signal: AbortSignal.timeout(PROVIDER_PROBE_TIMEOUT_MS),
         }
       );
     case "ollama-local":
@@ -143,7 +152,9 @@ export async function validateProviderUrl(url: string): Promise<ValidationResult
     return { valid: false, error: "unsupported_local_host", host: parsedHost };
   }
   try {
-    const response = await fetch(`${url.replace(/\/$/, "")}/api/tags`);
+    const response = await fetch(`${url.replace(/\/$/, "")}/api/tags`, {
+      signal: AbortSignal.timeout(PROVIDER_PROBE_TIMEOUT_MS),
+    });
     if (response.ok) return { valid: true };
     return { valid: false, error: "provider_error", status: response.status };
   } catch {
