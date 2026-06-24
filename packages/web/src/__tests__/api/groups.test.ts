@@ -52,12 +52,20 @@ const mockDeleteReturning = vi.fn();
 const mockDeleteWhere = vi.fn().mockReturnValue({ returning: mockDeleteReturning });
 const mockDelete = vi.fn().mockReturnValue({ where: mockDeleteWhere });
 
+// db.transaction(cb) runs cb with a tx that reuses the same delete/insert mocks,
+// so existing assertions on mockDelete/mockInsert keep working while the route's
+// membership wipe+insert run atomically inside one transaction.
+const mockTransaction = vi.fn(async (cb: (tx: unknown) => unknown) =>
+  cb({ delete: mockDelete, insert: mockInsert })
+);
+
 vi.mock("@/db", () => ({
   db: {
     select: mockSelectFields,
     insert: mockInsert,
     update: mockUpdate,
     delete: mockDelete,
+    transaction: (cb: (tx: unknown) => unknown) => mockTransaction(cb),
   },
 }));
 
@@ -536,10 +544,40 @@ describe("PUT /api/groups/[groupId]/members", () => {
     // Reset delete mock for members route (it doesn't use returning)
     mockDeleteWhere.mockResolvedValue(undefined);
     mockReturning.mockResolvedValue([]);
+    // Re-establish the transaction runner cleared by clearAllMocks.
+    mockTransaction.mockImplementation(async (cb: (tx: unknown) => unknown) =>
+      cb({ delete: mockDelete, insert: mockInsert })
+    );
     // Default: group exists
     mockSelectWhere.mockResolvedValue([{ id: "group-1" }]);
     const mod = await import("@/app/api/groups/[groupId]/members/route");
     PUT = mod.PUT;
+  });
+
+  it("replaces memberships atomically inside a single transaction (no half-wiped group on insert failure)", async () => {
+    // The wipe (delete) and the re-insert must be one atomic unit: if the insert
+    // fails (a concurrent user delete, an I/O error), the delete must roll back
+    // so the group is never left with its members wiped and none re-added.
+    vi.mocked(auth.api.getSession).mockResolvedValueOnce({
+      user: { id: "admin-1", role: "admin" },
+      expires: "",
+    } as any);
+    mockSelectWhere
+      .mockResolvedValueOnce([{ id: "group-1" }]) // group exists
+      .mockResolvedValueOnce([{ userId: "user-old", groupId: "group-1" }]) // existing members
+      .mockResolvedValueOnce([{ id: "user-1", name: "User One" }]); // names
+
+    const request = new NextRequest("http://localhost:7777/api/groups/group-1/members", {
+      method: "PUT",
+      body: JSON.stringify({ userIds: ["user-1"] }),
+    });
+    await PUT(request, { params: Promise.resolve({ groupId: "group-1" }) });
+
+    // The mutation ran through db.transaction, and the delete+insert went to the
+    // tx (rolled back together on failure) rather than as two standalone writes.
+    expect(mockTransaction).toHaveBeenCalledTimes(1);
+    expect(mockDelete).toHaveBeenCalled();
+    expect(mockInsert).toHaveBeenCalled();
   });
 
   it("replaces member list for admin with added/removed diff", async () => {

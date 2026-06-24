@@ -100,11 +100,16 @@ export async function PUT(
     return NextResponse.json({ error: "Unknown user ids", ids: unknownUserIds }, { status: 400 });
   }
 
-  await db.delete(userGroups).where(eq(userGroups.groupId, groupId));
-
-  if (userIds.length > 0) {
-    await db.insert(userGroups).values(userIds.map((userId: string) => ({ userId, groupId })));
-  }
+  // Atomic replace: the membership wipe and the re-insert must commit or roll
+  // back together. As two standalone statements, an insert failure (a user
+  // deleted in the validation→insert window, or any I/O error) would leave the
+  // group wiped with nothing re-added — silent membership loss.
+  await db.transaction(async (tx) => {
+    await tx.delete(userGroups).where(eq(userGroups.groupId, groupId));
+    if (userIds.length > 0) {
+      await tx.insert(userGroups).values(userIds.map((userId: string) => ({ userId, groupId })));
+    }
+  });
 
   after(() =>
     appendAuditLog({
