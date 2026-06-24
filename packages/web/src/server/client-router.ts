@@ -16,6 +16,8 @@ import { buildMemoryPromptBlock } from "@/lib/memory-prompt";
 import { appendAuditLog, safeProviderError } from "@/lib/audit";
 import { recordAuditFailure } from "@/lib/audit-deferred";
 import { ActiveRuns } from "@/server/active-runs";
+import { iterateUntilAborted } from "@/server/abortable-stream";
+import { NEVER_DISCONNECTS, type DisconnectSignal } from "@/server/openclaw-disconnect-signal";
 import { recordSessionTurnsUsage } from "@/lib/usage-per-turn";
 import {
   shouldEmitModelUnavailableAudit,
@@ -149,7 +151,16 @@ export class ClientRouter {
      * watchdog and don't share state across ClientRouter instances anyway.
      * Production wires the singleton from `active-runs-singleton.ts`.
      */
-    private activeRuns: ActiveRuns = new ActiveRuns()
+    private activeRuns: ActiveRuns = new ActiveRuns(),
+    /**
+     * Shared "OpenClaw socket dropped" signal (#7). When OpenClaw disconnects
+     * mid-stream, openclaw-node's chat() generator hangs forever, so the drain
+     * loop in `pipeStream` races each chunk against this signal to break out
+     * and run its cleanup instead of leaking the heartbeat + ActiveRuns entry.
+     * Defaults to a never-firing signal so tests keep the prior drain-to-end
+     * behavior; production wires the real one in `server.ts`.
+     */
+    private disconnectSignal: DisconnectSignal = NEVER_DISCONNECTS
   ) {}
 
   private computeSessionKey(agentId: string, chatId?: string): string {
@@ -1091,9 +1102,22 @@ export class ClientRouter {
     // silent-stream synthesis + `complete` frame so the user isn't
     // double-signalled for an event the watchdog already handled.
     let tornDownByWatchdog = false;
+    // #7: set when OpenClaw drops the socket mid-stream. The chat() generator
+    // then hangs forever, so we race each chunk against the disconnect signal
+    // and break out. There is no real terminal verdict to compute in that case
+    // (the run did NOT complete), so this gates the silent-stream synthesis,
+    // the `complete`/`liveness` frames, and the `run_completed_after_disconnect`
+    // audit below — only the finally cleanup (heartbeat + registry) still runs.
+    let openclawDisconnected = false;
 
     try {
-      for await (const chunk of stream) {
+      for await (const chunk of iterateUntilAborted(
+        stream,
+        this.disconnectSignal.whenDisconnected(),
+        () => {
+          openclawDisconnected = true;
+        }
+      )) {
         // Lazily start the keep-alive heartbeat on the first chunk.
         //
         // For client-originated messages (always have a `clientMessageId`)
@@ -1427,6 +1451,14 @@ export class ClientRouter {
         }
       }
 
+      // #7: OpenClaw dropped the socket mid-stream. The stream will never
+      // produce a terminal chunk, so there is nothing to synthesize and no
+      // genuine `complete`. Skip straight to the finally cleanup so the
+      // heartbeat interval and ActiveRuns entry don't leak. The browser WS is
+      // being closed by the disconnect handler, which fires the client's own
+      // reconnect/error recovery.
+      if (openclawDisconnected) return;
+
       // C-1: the watchdog already tore this run down (the loop broke on the
       // synthetic post-abort `done`) and already notified the user with a
       // retryable error — skip the silent-stream synthesis and the `complete`
@@ -1551,7 +1583,11 @@ export class ClientRouter {
       // covered by the existing chat.agent_error / classified events.
       if (activeRunRegistered) {
         const run = this.activeRuns.get(sessionKey);
-        if (run && run.listeners.size === 0 && !sawTerminalError) {
+        // `!openclawDisconnected`: a run abandoned because OpenClaw dropped the
+        // socket did NOT complete, so it must not be logged as
+        // `run_completed_after_disconnect` (that event means the browser left
+        // but the reply still finished server-side).
+        if (run && run.listeners.size === 0 && !sawTerminalError && !openclawDisconnected) {
           const auditEntry = {
             actorType: "user" as const,
             actorId: this.userId,

@@ -28,6 +28,11 @@ import { eq } from "drizzle-orm";
 import { WsRateLimiter } from "./src/server/ws-rate-limit";
 import { setupOpenClawDisconnectHandler } from "./src/server/openclaw-disconnect-handler";
 import {
+  OpenClawDisconnectSignal,
+  NEVER_DISCONNECTS,
+  type DisconnectSignal,
+} from "./src/server/openclaw-disconnect-signal";
+import {
   setupOpenClawStatusBroadcaster,
   createColdStartStatusBroadcaster,
 } from "./src/server/openclaw-status-broadcaster";
@@ -122,6 +127,11 @@ ${domain ? `<p><a href="https://${domain}">Go to ${domain} →</a></p>` : ""}
   });
 
   let openclawClient: OpenClawClient | null = null;
+  // #7: shared "OpenClaw socket dropped" signal, wired once the client exists.
+  // ClientRouter's drain loop races chunks against it so a mid-stream disconnect
+  // can't wedge a run's heartbeat + ActiveRuns entry. Until the client is up,
+  // no chat runs exist, so the never-firing default is correct.
+  let disconnectSignal: DisconnectSignal = NEVER_DISCONNECTS;
   // Pre-construct a cold-start stand-in so the WS server always has a
   // broadcaster to call. Belt-and-suspenders for issue #198: even if a
   // future client change reintroduces an optimistic default, a browser
@@ -215,7 +225,8 @@ ${domain ? `<p><a href="https://${domain}">Go to ${domain} →</a></p>` : ""}
           sessionInfo.userId,
           sessionInfo.userRole,
           sessionCache,
-          activeRuns
+          activeRuns,
+          disconnectSignal
         )
       : null;
 
@@ -380,6 +391,9 @@ ${domain ? `<p><a href="https://${domain}">Go to ${domain} →</a></p>` : ""}
     });
 
     setOpenClawClient(openclawClient);
+    // #7: one shared disconnect signal for every ClientRouter (one listener on
+    // the client total, regardless of concurrent runs).
+    disconnectSignal = new OpenClawDisconnectSignal(openclawClient);
 
     // #310 Tier 2a / chat-liveness-observer: start the run watchdog now that the
     // OpenClaw client exists. The watchdog scans `activeRuns` every 30s for the
