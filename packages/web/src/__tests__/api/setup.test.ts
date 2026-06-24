@@ -98,7 +98,7 @@ vi.mock("@/lib/provider-models", () => ({
 import { ensureWorkspace } from "@/lib/workspace";
 import { auth } from "@/lib/auth";
 import { regenerateOpenClawConfig } from "@/lib/openclaw-config";
-import { markOpenClawConfigReady } from "@/lib/openclaw-config-ready";
+import { markOpenClawConfigReady, isOpenClawConfigReady } from "@/lib/openclaw-config-ready";
 
 import { db } from "@/db";
 
@@ -280,13 +280,15 @@ describe("POST /api/setup", () => {
     expect(markOpenClawConfigReady).not.toHaveBeenCalled();
   });
 
-  it("should return 403 when setup is already complete", async () => {
+  it("should return 403 when setup is already complete and config is in place", async () => {
     vi.mocked(db.query.users.findFirst).mockResolvedValue({
       id: "1",
       email: "admin@test.com",
       name: "Admin",
       role: "admin",
     });
+    // Config was already written, so a retry is genuinely a no-op.
+    vi.mocked(isOpenClawConfigReady).mockReturnValue(true);
 
     const request = makeRequest({
       name: "New User",
@@ -298,6 +300,31 @@ describe("POST /api/setup", () => {
 
     expect(response.status).toBe(403);
     expect(data.error).toBe("Setup already complete");
+  });
+
+  it("recovers in-process when the admin exists but the config was never written", async () => {
+    // Prior setup POST created the admin + agent, but its regenerate threw, so
+    // the config was never written and isOpenClawConfigReady is false.
+    vi.mocked(db.query.users.findFirst).mockResolvedValue({
+      id: "1",
+      email: "admin@test.com",
+      name: "Admin",
+      role: "admin",
+    });
+    vi.mocked(isOpenClawConfigReady).mockReturnValue(false);
+    vi.mocked(regenerateOpenClawConfig).mockResolvedValueOnce(undefined);
+
+    const request = makeRequest({
+      name: "New User",
+      email: "new@test.com",
+      password: "Br1ghtNova!2",
+    });
+    const response = await POST(request as any);
+
+    // The retry completes the config write instead of dead-ending at 403.
+    expect(response.status).toBe(200);
+    expect(regenerateOpenClawConfig).toHaveBeenCalled();
+    expect(markOpenClawConfigReady).toHaveBeenCalled();
   });
 });
 

@@ -4,7 +4,7 @@ import { z } from "zod";
 import { createAdmin } from "@/lib/setup";
 import { validatePassword } from "@/lib/validate-password";
 import { regenerateOpenClawConfig } from "@/lib/openclaw-config";
-import { markOpenClawConfigReady } from "@/lib/openclaw-config-ready";
+import { markOpenClawConfigReady, isOpenClawConfigReady } from "@/lib/openclaw-config-ready";
 import { parseRequestBody } from "@/lib/api-validation";
 
 const setupSchema = z.object({
@@ -46,6 +46,23 @@ export async function POST(request: NextRequest) {
     return NextResponse.json(user, { status: 201 });
   } catch (error) {
     if (error instanceof Error && error.message === "Setup already complete") {
+      // The admin already exists. If the config was never written (a prior setup
+      // POST created the admin + agent but its regenerate threw), let the retry
+      // complete the config step in-process instead of dead-ending at 403 until
+      // a process restart re-runs the boot-time regenerate.
+      if (!isOpenClawConfigReady()) {
+        try {
+          await regenerateOpenClawConfig();
+          markOpenClawConfigReady();
+          return NextResponse.json({ recovered: true }, { status: 200 });
+        } catch (regenErr) {
+          console.error("[setup] config recovery regenerate failed:", regenErr);
+          return NextResponse.json(
+            { error: "OpenClaw config write failed; check server logs and retry setup." },
+            { status: 500 }
+          );
+        }
+      }
       return NextResponse.json({ error: "Setup already complete" }, { status: 403 });
     }
     console.error("[setup] createAdmin failed:", error);
