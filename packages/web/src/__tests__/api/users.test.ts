@@ -72,7 +72,7 @@ import { regenerateOpenClawConfig } from "@/lib/openclaw-config";
 import { deleteWorkspace } from "@/lib/workspace";
 import { appendAuditLog } from "@/lib/audit";
 import { db } from "@/db";
-import { users } from "@/db/schema";
+import { users, sessions } from "@/db/schema";
 
 // ── GET /api/users ───────────────────────────────────────────────────────
 
@@ -317,7 +317,9 @@ describe("DELETE /api/users/[userId]", () => {
     expect(mockUpdate.set).toHaveBeenCalledWith(
       expect.objectContaining({ banned: true, banReason: "Deactivated by admin" })
     );
-    expect(db.delete).not.toHaveBeenCalled();
+    // A deactivated user's existing sessions must be revoked immediately —
+    // otherwise the session cookie keeps full access until natural expiry.
+    expect(db.delete).toHaveBeenCalledWith(sessions);
     expect(appendAuditLog).toHaveBeenCalledWith(
       expect.objectContaining({
         eventType: "user.deleted",

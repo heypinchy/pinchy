@@ -2,7 +2,7 @@ import { NextRequest, NextResponse, after } from "next/server";
 import { z } from "zod";
 import { requireAdmin } from "@/lib/api-auth";
 import { db } from "@/db";
-import { users, agents } from "@/db/schema";
+import { users, agents, sessions } from "@/db/schema";
 import { eq, and, count } from "drizzle-orm";
 import { regenerateOpenClawConfig } from "@/lib/openclaw-config";
 import { deleteWorkspace } from "@/lib/workspace";
@@ -102,6 +102,13 @@ export async function DELETE(
   if (!deactivated) {
     return NextResponse.json({ error: "User not found" }, { status: 404 });
   }
+
+  // Revoke the user's active sessions immediately. Better Auth only enforces
+  // the `banned` flag at session-creation time, not on session reads, so an
+  // already-issued cookie would otherwise keep full access (incl. admin) until
+  // natural expiry. This mirrors the official admin.banUser behavior and the
+  // invite/claim reset flow, which both delete sessions.
+  await db.delete(sessions).where(eq(sessions.userId, userId));
 
   after(() =>
     appendAuditLog({
