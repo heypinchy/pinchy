@@ -88,15 +88,44 @@ describe("migrateSessionKeys", () => {
     expect(mockedWriteFileSync).not.toHaveBeenCalled();
   });
 
-  it("should handle missing sessions.json gracefully", () => {
+  it("skips a missing sessions.json quietly (ENOENT is not an error)", () => {
+    // No existsSync precheck (that was a check-then-use race): a genuinely
+    // absent file surfaces as ENOENT from readFileSync and must be skipped
+    // WITHOUT logging — an agent that simply has no sessions yet is the normal
+    // case, not a fault to surface.
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
     mockedReaddirSync.mockReturnValue(["agent-1"] as unknown as ReturnType<typeof readdirSync>);
-    mockedExistsSync.mockImplementation((p) => {
-      if (String(p).includes("sessions.json")) return false;
-      return true;
+    mockedReadFileSync.mockImplementation(() => {
+      throw Object.assign(new Error("ENOENT: no such file or directory"), { code: "ENOENT" });
     });
 
     expect(() => migrateSessionKeys("/data/openclaw")).not.toThrow();
     expect(mockedWriteFileSync).not.toHaveBeenCalled();
+    expect(errorSpy).not.toHaveBeenCalled();
+    errorSpy.mockRestore();
+  });
+
+  it("logs and skips an unreadable sessions.json (non-ENOENT) without aborting the sweep", () => {
+    // A real read failure (permissions, I/O) IS worth surfacing — but it still
+    // must isolate to that agent so later agents keep migrating.
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    mockedReaddirSync.mockReturnValue(["agent-1", "agent-2"] as unknown as ReturnType<
+      typeof readdirSync
+    >);
+    mockedReadFileSync.mockImplementation((p) => {
+      if (String(p).includes("agent-1")) {
+        throw Object.assign(new Error("EACCES: permission denied"), { code: "EACCES" });
+      }
+      return JSON.stringify({ "agent:agent-2:user-uid-2": { sessionId: "s2" } });
+    });
+
+    migrateSessionKeys("/data/openclaw");
+
+    expect(errorSpy).toHaveBeenCalled();
+    expect(mockedWriteFileSync).toHaveBeenCalledTimes(1);
+    const written = JSON.parse(mockedWriteFileSync.mock.calls[0][1] as string);
+    expect(written).toEqual({ "agent:agent-2:direct:uid-2": { sessionId: "s2" } });
+    errorSpy.mockRestore();
   });
 
   it("should process multiple agent directories", () => {

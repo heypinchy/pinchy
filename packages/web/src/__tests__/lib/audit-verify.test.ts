@@ -1,18 +1,15 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 
-const { mockLimit, mockOrderBy, mockWhere, mockFrom, mockSelect, mockInsert, mockValues } =
-  vi.hoisted(() => {
-    // verifyIntegrity now keyset-paginates: select().from().where().orderBy().limit().
-    // The terminal awaited call is .limit(), so test data is staged on mockLimit.
-    const mockLimit = vi.fn();
-    const mockOrderBy = vi.fn().mockReturnValue({ limit: mockLimit });
-    const mockWhere = vi.fn().mockReturnValue({ orderBy: mockOrderBy });
-    const mockFrom = vi.fn().mockReturnValue({ where: mockWhere });
-    const mockSelect = vi.fn().mockReturnValue({ from: mockFrom });
-    const mockValues = vi.fn();
-    const mockInsert = vi.fn().mockReturnValue({ values: mockValues });
-    return { mockLimit, mockOrderBy, mockWhere, mockFrom, mockSelect, mockInsert, mockValues };
-  });
+const { mockLimit, mockOrderBy, mockWhere, mockFrom, mockSelect } = vi.hoisted(() => {
+  // verifyIntegrity now keyset-paginates: select().from().where().orderBy().limit().
+  // The terminal awaited call is .limit(), so test data is staged on mockLimit.
+  const mockLimit = vi.fn();
+  const mockOrderBy = vi.fn().mockReturnValue({ limit: mockLimit });
+  const mockWhere = vi.fn().mockReturnValue({ orderBy: mockOrderBy });
+  const mockFrom = vi.fn().mockReturnValue({ where: mockWhere });
+  const mockSelect = vi.fn().mockReturnValue({ from: mockFrom });
+  return { mockLimit, mockOrderBy, mockWhere, mockFrom, mockSelect };
+});
 
 vi.mock("@/lib/encryption", () => ({
   getOrCreateSecret: vi.fn(() => Buffer.from("a".repeat(64), "hex")),
@@ -21,7 +18,6 @@ vi.mock("@/lib/encryption", () => ({
 vi.mock("@/db", () => ({
   db: {
     select: (...args: unknown[]) => mockSelect(...args),
-    insert: (...args: unknown[]) => mockInsert(...args),
   },
 }));
 
