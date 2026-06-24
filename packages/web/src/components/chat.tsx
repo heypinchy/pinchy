@@ -17,6 +17,7 @@ import { ChatSwitcher } from "@/components/chat-switcher";
 import { Badge } from "@/components/ui/badge";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { type ChatStatus, useChatStatus } from "@/hooks/use-chat-status";
+import { recordLastChat } from "@/lib/last-chat-store";
 
 function getStatusIndicator(status: ChatStatus): { colorClass: string; label: string } {
   switch (status.kind) {
@@ -144,6 +145,14 @@ export function Chat({
   const displayIsPersonal = liveAgent?.isPersonal ?? isPersonal;
 
   const { bundle: chatBundle, publish } = useChatSession(agentId, chatId);
+
+  // Remember this as the chat the user last had open for this agent (#508), so
+  // clicking the agent in the sidebar returns here instead of the oldest chat.
+  // Per-device by design (localStorage). Viewing the default chat (no chatId)
+  // clears the pointer so the sidebar falls back to the most recent chat.
+  useEffect(() => {
+    recordLastChat(agentId, chatId);
+  }, [agentId, chatId]);
 
   // Register this (agent, chat) with the provider on first mount so
   // ChatSessionMounts spins up a hidden runtime instance.

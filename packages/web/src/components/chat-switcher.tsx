@@ -212,7 +212,10 @@ export function ChatSwitcher({
       router.push(`/chat/${agentId}/telegram`);
       return;
     }
-    router.push(item.chatId ? `/chat/${agentId}/${item.chatId}` : `/chat/${agentId}`);
+    // The legacy/default chat (chatId null) is opened explicitly with `?keep` so
+    // the default route renders it instead of redirecting to the most-recent
+    // chat (#508) — otherwise picking it here would bounce to another chat.
+    router.push(item.chatId ? `/chat/${agentId}/${item.chatId}` : `/chat/${agentId}?keep=1`);
   }
 
   return (

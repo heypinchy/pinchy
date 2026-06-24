@@ -200,7 +200,7 @@ describe("ChatSwitcher", () => {
     expect(push).toHaveBeenCalledWith("/chat/agent-1/chat-abc");
   });
 
-  it("selecting the default chat (chatId null) pushes /chat/<agentId>", async () => {
+  it("selecting the default chat (chatId null) pushes /chat/<agentId>?keep (no redirect)", async () => {
     const user = userEvent.setup();
     mockChats(allChats);
     render(<ChatSwitcher agentId="agent-1" chatId="chat-abc" agentName="Smithers" />);
@@ -209,7 +209,9 @@ describe("ChatSwitcher", () => {
     const fallback = new Date(legacyChat.lastInteractionAt).toLocaleDateString();
     await user.click(within(menu).getByText(`Chat from ${fallback}`));
 
-    expect(push).toHaveBeenCalledWith("/chat/agent-1");
+    // `?keep` marks this as an explicit choice of the legacy/default chat so the
+    // default route renders it instead of redirecting to the most-recent chat (#508).
+    expect(push).toHaveBeenCalledWith("/chat/agent-1?keep=1");
   });
 
   it("selecting a Telegram chat pushes /chat/<agentId>/telegram (the read-only mirror)", async () => {

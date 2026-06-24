@@ -2,6 +2,8 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
+import { useMemo, useSyncExternalStore } from "react";
+import { getLastChat } from "@/lib/last-chat-store";
 import { BarChart3, Bug, ClipboardList, Plus, Settings } from "lucide-react";
 import { LogoutButton } from "@/components/logout-button";
 import { useAgentsContext } from "@/components/agents-provider";
@@ -26,10 +28,44 @@ interface AppSidebarProps {
   isAdmin: boolean;
 }
 
+// localStorage has no same-tab change event; a cross-tab write fires "storage".
+// Same-tab updates are picked up because navigating re-renders the sidebar
+// (usePathname), which re-runs the snapshot read below.
+function subscribeLastChats(callback: () => void) {
+  if (typeof window === "undefined") return () => {};
+  window.addEventListener("storage", callback);
+  return () => window.removeEventListener("storage", callback);
+}
+
 export function AppSidebar({ isAdmin }: AppSidebarProps) {
   const pathname = usePathname();
   const { sortedAgents } = useAgentsContext();
   const { authFailedCount } = useIntegrationHealth(isAdmin);
+
+  // Resolve each agent's link to the chat last viewed on THIS device (#508), so
+  // clicking an agent returns the user where they left off instead of the oldest
+  // chat. Read via useSyncExternalStore (not an effect) so the server snapshot is
+  // empty — links fall back to the bare /chat/<agentId>, where the server resolves
+  // the most-recent chat — and the client reads localStorage without a hydration
+  // mismatch or a synchronous setState. The snapshot is a JSON string so its
+  // identity stays stable (Object.is) between renders when nothing changed.
+  const agentIds = sortedAgents.map((a) => a.id);
+  const serializedLastChats = useSyncExternalStore(
+    subscribeLastChats,
+    () => {
+      const map: Record<string, string> = {};
+      for (const id of agentIds) {
+        const last = getLastChat(id);
+        if (last) map[id] = last;
+      }
+      return JSON.stringify(map);
+    },
+    () => "{}"
+  );
+  const lastChatById = useMemo(
+    () => JSON.parse(serializedLastChats) as Record<string, string>,
+    [serializedLastChats]
+  );
 
   return (
     <Sidebar>
@@ -47,6 +83,8 @@ export function AppSidebar({ isAdmin }: AppSidebarProps) {
             <SidebarMenu>
               {sortedAgents.map((agent) => {
                 const isActive = pathname.startsWith(`/chat/${agent.id}`);
+                const lastChat = lastChatById[agent.id];
+                const href = lastChat ? `/chat/${agent.id}/${lastChat}` : `/chat/${agent.id}`;
                 return (
                   <SidebarMenuItem key={agent.id}>
                     <SidebarMenuButton
@@ -59,7 +97,7 @@ export function AppSidebar({ isAdmin }: AppSidebarProps) {
                           : ""
                       }`}
                     >
-                      <Link href={`/chat/${agent.id}`}>
+                      <Link href={href}>
                         {/* eslint-disable-next-line @next/next/no-img-element */}
                         <img
                           src={getAgentAvatarSvg({

@@ -83,6 +83,7 @@ describe("AppSidebar", () => {
     vi.clearAllMocks();
     mockUsePathname.mockReturnValue("/chat/1");
     setAgents([]);
+    localStorage.clear();
   });
 
   afterEach(() => {
@@ -325,6 +326,39 @@ describe("AppSidebar", () => {
       renderSidebar(false);
       const activeButton = screen.getByRole("link", { name: /beta/i }).closest("[data-active]");
       expect(activeButton).toHaveAttribute("data-active", "true");
+    });
+  });
+
+  describe("last-viewed chat link (#508)", () => {
+    const agents: Agent[] = [
+      {
+        id: "agent-1",
+        name: "Alpha",
+        model: "anthropic/claude-sonnet-4-6",
+        isPersonal: false,
+        tagline: null,
+        avatarSeed: null,
+      },
+    ];
+
+    it("links the agent to the chat last viewed on this device", async () => {
+      localStorage.setItem("pinchy:lastChat:agent-1", "chat-xyz");
+      setAgents(agents);
+      renderSidebar(false);
+
+      await waitFor(() => {
+        expect(screen.getByRole("link", { name: /alpha/i })).toHaveAttribute(
+          "href",
+          "/chat/agent-1/chat-xyz"
+        );
+      });
+    });
+
+    it("falls back to the bare agent chat when nothing is recorded (server resolves the default)", () => {
+      setAgents(agents);
+      renderSidebar(false);
+      // No localStorage entry → the default route resolves the most-recent chat.
+      expect(screen.getByRole("link", { name: /alpha/i })).toHaveAttribute("href", "/chat/agent-1");
     });
   });
 

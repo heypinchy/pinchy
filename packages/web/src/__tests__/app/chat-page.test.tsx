@@ -5,8 +5,19 @@ const mockNotFound = vi.fn(() => {
   throw new Error("NOT_FOUND");
 });
 
+const mockRedirect = vi.fn((url: string) => {
+  throw new Error(`REDIRECT:${url}`);
+});
+
 vi.mock("next/navigation", () => ({
   notFound: () => mockNotFound(),
+  redirect: (url: string) => mockRedirect(url),
+}));
+
+const mockSessionsList = vi.fn();
+
+vi.mock("@/server/openclaw-client", () => ({
+  getOpenClawClient: () => ({ sessions: { list: mockSessionsList } }),
 }));
 
 const dbSelectMock = {
@@ -90,6 +101,8 @@ describe("ChatPage", () => {
     dbSelectMock.from.mockReturnValue({ where: dbSelectMock.where });
     mockGetUserGroupIds.mockResolvedValue([]);
     mockGetAgentGroupIds.mockResolvedValue([]);
+    // Default: no other sessions → no redirect, render the default chat.
+    mockSessionsList.mockResolvedValue({ sessions: [] });
   });
 
   it("calls notFound when a non-admin user tries to access another user's personal agent", async () => {
@@ -288,5 +301,65 @@ describe("ChatPage", () => {
     render(result);
 
     expect(capturedChatProps.avatarUrl).toBe("data:image/svg+xml;utf8,mock-my-seed");
+  });
+
+  it("redirects to the most-recently-interacted named chat (#508)", async () => {
+    const sharedAgent = { id: "agent-2", name: "Shared Agent", ownerId: null, isPersonal: false };
+    mockRequireAuth.mockResolvedValue({ user: { id: "user-1", role: "member" } });
+    dbSelectMock.where.mockResolvedValue([sharedAgent]);
+    mockAssertAgentAccess.mockImplementation(() => {});
+    mockSessionsList.mockResolvedValue({
+      sessions: [
+        { key: "agent:agent-2:direct:user-1", sessionId: "s-default", lastInteractionAt: 100 },
+        { key: "agent:agent-2:direct:user-1:chat-x", sessionId: "s-x", lastInteractionAt: 200 },
+      ],
+    });
+
+    await expect(
+      ChatPage({
+        params: Promise.resolve({ agentId: "agent-2" }),
+        searchParams: Promise.resolve({}),
+      })
+    ).rejects.toThrow("REDIRECT:/chat/agent-2/chat-x");
+
+    expect(mockRedirect).toHaveBeenCalledWith("/chat/agent-2/chat-x");
+  });
+
+  it("does NOT redirect when ?keep is set (explicit default chat)", async () => {
+    const sharedAgent = { id: "agent-2", name: "Shared Agent", ownerId: null, isPersonal: false };
+    mockRequireAuth.mockResolvedValue({ user: { id: "user-1", role: "member" } });
+    dbSelectMock.where.mockResolvedValue([sharedAgent]);
+    mockAssertAgentAccess.mockImplementation(() => {});
+    mockSessionsList.mockResolvedValue({
+      sessions: [
+        { key: "agent:agent-2:direct:user-1:chat-x", sessionId: "s-x", lastInteractionAt: 200 },
+      ],
+    });
+
+    const result = await ChatPage({
+      params: Promise.resolve({ agentId: "agent-2" }),
+      searchParams: Promise.resolve({ keep: "1" }),
+    });
+    render(result);
+
+    expect(mockRedirect).not.toHaveBeenCalled();
+    expect(screen.getByTestId("mock-chat")).toBeInTheDocument();
+  });
+
+  it("renders the default chat when OpenClaw is unreachable", async () => {
+    const sharedAgent = { id: "agent-2", name: "Shared Agent", ownerId: null, isPersonal: false };
+    mockRequireAuth.mockResolvedValue({ user: { id: "user-1", role: "member" } });
+    dbSelectMock.where.mockResolvedValue([sharedAgent]);
+    mockAssertAgentAccess.mockImplementation(() => {});
+    mockSessionsList.mockRejectedValue(new Error("openclaw down"));
+
+    const result = await ChatPage({
+      params: Promise.resolve({ agentId: "agent-2" }),
+      searchParams: Promise.resolve({}),
+    });
+    render(result);
+
+    expect(mockRedirect).not.toHaveBeenCalled();
+    expect(screen.getByTestId("mock-chat")).toBeInTheDocument();
   });
 });
