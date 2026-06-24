@@ -883,6 +883,19 @@ export class ClientRouter {
           sessionKnown: true,
           ...(activeRunSignal ? { activeRun: activeRunSignal } : {}),
         });
+      } else if (activeRunSignal) {
+        // A started run is authoritative proof the session exists even though
+        // OpenClaw hasn't yet indexed it into history/sessions.list — the
+        // first-message-on-a-fresh-chat reload window. Carry the activeRun
+        // anchor so the reconnecting client seeds the in-flight assistant bubble
+        // (and the trailing liveness verdict has a message to anchor to) instead
+        // of replacing the live run with a bare greeting.
+        this.sendToClient(clientWs, {
+          type: "history",
+          messages: [],
+          sessionKnown: true,
+          activeRun: activeRunSignal,
+        });
       } else {
         // No session known — show greeting for new conversations
         await sendGreeting();

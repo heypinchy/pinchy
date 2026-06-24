@@ -215,6 +215,46 @@ describe("ClientRouter handleHistory ↔ ActiveRuns resume (#310 Tier 2b)", () =
     expect(historyFrame!.activeRun).toBeUndefined();
   });
 
+  it("seeds the activeRun anchor (not a greeting) on a fresh chat whose started run isn't indexed yet", async () => {
+    // Empty session cache + empty sessions.list → sessionKnown is false. But a
+    // run has started and OpenClaw just hasn't persisted/indexed the user
+    // message yet — the first-message-on-a-fresh-chat reload window.
+    sessionCache.clear();
+    const sessionKey = "agent:agent-1:direct:user-1";
+    activeRuns.register({
+      runId: "run-fresh",
+      sessionKey,
+      agentId: "agent-1",
+      userId: "user-1",
+      agentName: "Smithers",
+      startedAt: 2000,
+      currentMessageId: "msg-fresh",
+      ws: createMockWs(),
+    });
+    activeRuns.setContent(sessionKey, "Working on it");
+
+    mockSessionsHistory.mockResolvedValue({ messages: [] }); // OC hasn't persisted yet
+    mockSessionsList.mockResolvedValue([]); // session not indexed yet
+
+    const ws = createMockWs();
+    const router = new ClientRouter(
+      buildClient() as never,
+      "user-1",
+      "member",
+      sessionCache,
+      activeRuns
+    );
+
+    await router.handleMessage(ws, { type: "history", agentId: "agent-1" });
+
+    const historyFrame = ws.sent.find((f) => f.type === "history");
+    expect(historyFrame).toBeDefined();
+    // Carries the activeRun anchor + sessionKnown — NOT a bare greeting.
+    expect(historyFrame!.activeRun).toMatchObject({ runId: "run-fresh", messageId: "msg-fresh" });
+    expect(historyFrame!.sessionKnown).toBe(true);
+    expect(historyFrame!.messages).toEqual([]);
+  });
+
   it("detaches the ws from any other run's listener set before joining the new chat's set (agent switch)", async () => {
     // The user was watching chat A (with an active run), then switches
     // their single tab to chat B. The ws should no longer receive
