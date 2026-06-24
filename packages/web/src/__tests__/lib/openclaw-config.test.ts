@@ -111,8 +111,23 @@ vi.mock("@/lib/provider-models", () => {
     "ollama-cloud": "ollama-cloud/gemini-3-flash-preview",
     "ollama-local": "",
   };
+  // Default "live" catalog: all three ollama-cloud image-preference models are
+  // present. Individual tests override this to simulate an upstream retirement
+  // (a model dropping out of /v1/models).
+  const fetchProviderModels = vi.fn(async () => [
+    {
+      id: "ollama-cloud",
+      name: "Ollama Cloud",
+      models: [
+        { id: "ollama-cloud/gemini-3-flash-preview", name: "gemini-3-flash-preview" },
+        { id: "ollama-cloud/minimax-m3", name: "minimax-m3" },
+        { id: "ollama-cloud/gemma4:31b", name: "gemma4:31b" },
+      ],
+    },
+  ]);
   return {
     getDefaultModel: vi.fn(async (provider: string) => defaults[provider] ?? ""),
+    fetchProviderModels,
     fetchOllamaLocalModelsFromUrl: vi.fn().mockResolvedValue([]),
   };
 });
@@ -141,8 +156,9 @@ import { pushConfigInBackground, _resetPushGeneration } from "@/lib/openclaw-con
 import { getPendingConfigPushCount, _resetConfigPushState } from "@/lib/openclaw-config/push-state";
 import { db } from "@/db";
 import { getSetting } from "@/lib/settings";
-import { fetchOllamaLocalModelsFromUrl } from "@/lib/provider-models";
+import { fetchOllamaLocalModelsFromUrl, fetchProviderModels } from "@/lib/provider-models";
 
+const mockedFetchProviderModels = vi.mocked(fetchProviderModels);
 const mockedWriteFileSync = vi.mocked(writeFileSync);
 const mockedReadFileSync = vi.mocked(readFileSync);
 const mockedExistsSync = vi.mocked(existsSync);
@@ -6998,5 +7014,45 @@ describe("regenerateOpenClawConfig imageModel.primary (#416)", () => {
 
     const config = JSON.parse(mockedWriteFileSync.mock.calls[0][1] as string);
     expect(config.agents.defaults.imageModel.primary).toBe("google/gemini-2.5-flash");
+  });
+
+  it("skips a preferred ollama-cloud image model that is no longer in the live catalog", async () => {
+    // The v0.5.8 incident: `gemini-3-flash-preview` would normally win, but if
+    // Ollama retires it upstream it drops out of /v1/models. The resolver must
+    // NOT pin the dead model — it falls through to the next LIVE preference.
+    mockedGetSetting.mockImplementation(async (key: string) =>
+      key === "ollama_cloud_api_key" ? "test-key" : null
+    );
+    mockedFetchProviderModels.mockResolvedValueOnce([
+      {
+        id: "ollama-cloud",
+        name: "Ollama Cloud",
+        // gemini-3-flash-preview retired upstream → absent here.
+        models: [
+          { id: "ollama-cloud/minimax-m3", name: "minimax-m3" },
+          { id: "ollama-cloud/gemma4:31b", name: "gemma4:31b" },
+        ],
+      },
+    ]);
+    await regenerateOpenClawConfig();
+
+    const config = JSON.parse(mockedWriteFileSync.mock.calls[0][1] as string);
+    expect(config.agents.defaults.imageModel.primary).toBe("ollama-cloud/minimax-m3");
+  });
+
+  it("emits no imageModel when no preferred ollama-cloud model is live", async () => {
+    // Every vision-verified preference has been retired upstream. Better to
+    // emit no imageModel (built-in image tool simply doesn't register) than to
+    // pin a dead model that 410s on every call.
+    mockedGetSetting.mockImplementation(async (key: string) =>
+      key === "ollama_cloud_api_key" ? "test-key" : null
+    );
+    mockedFetchProviderModels.mockResolvedValueOnce([
+      { id: "ollama-cloud", name: "Ollama Cloud", models: [] },
+    ]);
+    await regenerateOpenClawConfig();
+
+    const config = JSON.parse(mockedWriteFileSync.mock.calls[0][1] as string);
+    expect(config.agents?.defaults?.imageModel).toBeUndefined();
   });
 });

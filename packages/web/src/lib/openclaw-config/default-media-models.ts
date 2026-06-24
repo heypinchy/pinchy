@@ -1,6 +1,6 @@
 import { PROVIDERS, type ProviderName } from "@/lib/providers";
 import { getSetting } from "@/lib/settings";
-import { getDefaultModel } from "@/lib/provider-models";
+import { getDefaultModel, fetchProviderModels } from "@/lib/provider-models";
 import { isModelVisionCapable } from "@/lib/model-vision";
 import { ensureModelCapabilityCacheLoaded } from "@/lib/model-capabilities/cache";
 import {
@@ -120,9 +120,40 @@ export const OLLAMA_CLOUD_IMAGE_PREFERENCE: readonly OllamaCloudModelId[] = [
   "gemma4:31b",
 ];
 
-function pickOllamaCloudImageModel(): string | null {
+/**
+ * Bare ollama-cloud model ids that are currently LIVE — i.e. present in the
+ * provider's `/v1/models` catalog right now.
+ *
+ * `fetchProviderModels` already intersects the live `/v1/models` response with
+ * the curated tool-capable set and, on a fetch failure, falls back to the full
+ * curated list (`FALLBACK_MODELS`). So this is "live ∩ curated, degrading to
+ * curated when offline" — exactly the availability signal we want, without a
+ * second network call. We strip the `ollama-cloud/` prefix to compare against
+ * the bare catalog ids in `OLLAMA_CLOUD_IMAGE_PREFERENCE`.
+ */
+async function fetchLiveOllamaCloudModelIds(): Promise<Set<string>> {
+  const providers = await fetchProviderModels();
+  const oc = providers.find((p) => p.id === "ollama-cloud");
+  if (!oc) return new Set();
+  return new Set(oc.models.map((m) => m.id.replace(/^ollama-cloud\//, "")));
+}
+
+/**
+ * Pick the best vision-verified ollama-cloud image model that is BOTH curated
+ * (empirically vision-capable) AND currently live in the catalog.
+ *
+ * The live-availability gate is the fix for the v0.5.8 incident: the resolver
+ * used to pick a model purely from the static curated list, so when Ollama
+ * retired `qwen3-vl:235b-instruct` upstream (HTTP 410) the dead model stayed
+ * pinned in `openclaw.json` until the next Pinchy upgrade. Intersecting with
+ * the live `/v1/models` catalog means a retired model is skipped immediately —
+ * the resolver falls through to the next live preference (`minimax-m3` …).
+ */
+async function pickOllamaCloudImageModel(): Promise<string | null> {
+  const liveIds = await fetchLiveOllamaCloudModelIds();
   for (const id of OLLAMA_CLOUD_IMAGE_PREFERENCE) {
-    if (TOOL_CAPABLE_OLLAMA_CLOUD_MODELS.some((m) => m.id === id)) {
+    const curated = TOOL_CAPABLE_OLLAMA_CLOUD_MODELS.some((m) => m.id === id);
+    if (curated && liveIds.has(id)) {
       return `ollama-cloud/${id}`;
     }
   }
@@ -135,7 +166,7 @@ export async function resolveDefaultImageModel(): Promise<string | null> {
     const key = await getSetting(PROVIDERS[provider].settingsKey);
     if (!key) continue;
     if (provider === "ollama-cloud") {
-      const picked = pickOllamaCloudImageModel();
+      const picked = await pickOllamaCloudImageModel();
       if (picked) return picked;
       continue;
     }
