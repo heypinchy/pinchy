@@ -7,6 +7,15 @@ import { regenerateOpenClawConfig } from "@/lib/openclaw-config";
 import { markOpenClawConfigReady, isOpenClawConfigReady } from "@/lib/openclaw-config-ready";
 import { parseRequestBody } from "@/lib/api-validation";
 
+// Coalesces concurrent config-recovery retries into a single regeneration.
+// The recovery path is reachable without auth (the admin already exists), so a
+// flood of POSTs in the transient "admin exists, config not ready" window would
+// otherwise each kick off a regenerateOpenClawConfig() — an I/O-bound
+// resource-exhaustion vector. While one regeneration is in flight, later
+// requests await it instead of starting their own. Module-scoped because a
+// Next.js route module is a per-process singleton.
+let recoveryInFlight: Promise<void> | null = null;
+
 const setupSchema = z.object({
   name: z
     .string()
@@ -52,8 +61,19 @@ export async function POST(request: NextRequest) {
       // a process restart re-runs the boot-time regenerate.
       if (!isOpenClawConfigReady()) {
         try {
-          await regenerateOpenClawConfig();
-          markOpenClawConfigReady();
+          // Start a regeneration only if none is already running; concurrent
+          // retries share the same in-flight promise. Cleared on settle so a
+          // genuine retry after a failure can start a fresh attempt.
+          if (!recoveryInFlight) {
+            recoveryInFlight = regenerateOpenClawConfig()
+              .then(() => {
+                markOpenClawConfigReady();
+              })
+              .finally(() => {
+                recoveryInFlight = null;
+              });
+          }
+          await recoveryInFlight;
           return NextResponse.json({ recovered: true }, { status: 200 });
         } catch (regenErr) {
           console.error("[setup] config recovery regenerate failed:", regenErr);
