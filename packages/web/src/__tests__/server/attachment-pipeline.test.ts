@@ -60,6 +60,27 @@ describe("buildAttachmentBlock", () => {
     expect(block).not.toContain("analyze with `pdf`");
   });
 
+  it("routes images to `pinchy_read`, not OpenClaw's built-in `image` tool", async () => {
+    // The built-in `image` tool only registers when Pinchy emits `imageModel`,
+    // which is auto-resolved and dies when the upstream model is retired (the
+    // same class of failure that broke the `pdf` tool, #501). pinchy_read reads
+    // image files as image content blocks via the runtime modelAuth API and
+    // works on every provider/model — so images route through it too.
+    const { buildAttachmentBlock } = await import("@/server/attachment-pipeline");
+    const block = buildAttachmentBlock([
+      {
+        relativePath: "uploads/receipt.png",
+        absolutePath: "/root/.openclaw/workspaces/test/uploads/receipt.png",
+        mimeType: "image/png",
+        sizeBytes: 30_000,
+        contentHash: "c".repeat(64),
+        reused: false,
+      },
+    ]);
+    expect(block).toContain("analyze with `pinchy_read`");
+    expect(block).not.toContain("analyze with `image`");
+  });
+
   it("returns empty string when no uploads", async () => {
     const { buildAttachmentBlock } = await import("@/server/attachment-pipeline");
     expect(buildAttachmentBlock([])).toBe("");
@@ -108,9 +129,11 @@ describe("buildAttachmentBlock", () => {
         reused: false,
       },
     ]);
-    // Must reference the actual built-in tool names
-    expect(block).toMatch(/\bpdf\b/);
-    expect(block).toMatch(/\bimage\b/);
+    // Both PDF and image attachments route through pinchy_read (the built-in
+    // pdf/image tools are no longer registered — see model-resilience work).
+    expect(block.match(/analyze with `pinchy_read`/g)).toHaveLength(2);
+    expect(block).not.toContain("analyze with `pdf`");
+    expect(block).not.toContain("analyze with `image`");
     // Must use the absolute workspace path (not relative)
     expect(block).toContain("/root/.openclaw/workspaces/agent-1/uploads/invoice.pdf");
     expect(block).toContain("/root/.openclaw/workspaces/agent-1/uploads/photo.png");

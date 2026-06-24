@@ -273,7 +273,13 @@ function toolNameForMime(mimeType: string): string {
   // pdfModel points at — so it fails "Unknown model" for the common case
   // (v0.5.8 staging finding; OpenClaw upstream issue filed separately).
   if (mimeType === "application/pdf") return "`pinchy_read`";
-  if (mimeType.startsWith("image/")) return "`image`";
+  // Images route through pinchy_read too, NOT OpenClaw's built-in `image`
+  // tool. That tool only registers when Pinchy emits `imageModel`, which is
+  // auto-resolved against the live vision-capable models and dies when the
+  // upstream model is retired (HTTP 410) — the same failure class that broke
+  // the `pdf` tool (#501). pinchy_read reads images as image content blocks
+  // via the runtime modelAuth API and works on every provider/model/version.
+  if (mimeType.startsWith("image/")) return "`pinchy_read`";
   // Text formats (CSV, Markdown, JSON, YAML, plain text) are workspace files
   // read via the pinchy_read plugin tool rather than an OpenClaw built-in.
   if (
