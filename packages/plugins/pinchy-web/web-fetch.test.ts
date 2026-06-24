@@ -469,4 +469,53 @@ describe("webFetch", () => {
       expect(result.content).toBe("This is plain text content");
     });
   });
+
+  describe("body size cap (OOM guard)", () => {
+    it("rejects a response whose Content-Length exceeds the byte budget", async () => {
+      fetchMock.mockResolvedValue({
+        ok: true,
+        status: 200,
+        statusText: "OK",
+        headers: new Map([
+          ["content-type", "text/plain"],
+          ["content-length", String(100 * 1024 * 1024)],
+        ]),
+        text: async () => {
+          throw new Error("body must not be read when Content-Length is over budget");
+        },
+      });
+
+      const result = await webFetch("https://example.com/huge", { maxChars: 1000 });
+
+      expect(result.isError).toBe(true);
+      expect(result.content).toMatch(/too large/i);
+    });
+
+    it("stops streaming the body at the byte cap when Content-Length is absent", async () => {
+      let chunksPulled = 0;
+      const body = new ReadableStream<Uint8Array>({
+        pull(controller) {
+          chunksPulled++;
+          controller.enqueue(new Uint8Array(1024).fill(65)); // 1 KB of 'A'
+          if (chunksPulled > 100) controller.close(); // would be ~100 KB total
+        },
+      });
+      fetchMock.mockResolvedValue({
+        ok: true,
+        status: 200,
+        statusText: "OK",
+        headers: new Map([["content-type", "text/plain"]]), // no content-length
+        body,
+        text: async () => {
+          throw new Error("must not buffer the whole body via text()");
+        },
+      });
+
+      const result = await webFetch("https://example.com/chunked", { maxChars: 100 });
+
+      expect(result.isError).toBeUndefined();
+      // cap = 100 * 8 = 800 bytes ≈ 1 chunk, so we stop far before the 100-chunk end.
+      expect(chunksPulled).toBeLessThan(5);
+    });
+  });
 });

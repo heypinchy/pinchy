@@ -139,6 +139,33 @@ function checkDomainAllowed(
   return null;
 }
 
+// Read a response body but stop once `maxBytes` have been read, so a huge or
+// lying response can't be fully buffered into memory. Falls back to res.text()
+// when the body isn't a readable stream (e.g. some mocks).
+async function readBodyCapped(res: Response, maxBytes: number): Promise<string> {
+  if (!res.body || typeof res.body.getReader !== "function") {
+    const full = await res.text();
+    return full.length > maxBytes ? full.slice(0, maxBytes) : full;
+  }
+  const reader = res.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  try {
+    let result = await reader.read();
+    while (!result.done) {
+      if (result.value) {
+        chunks.push(result.value);
+        total += result.value.byteLength;
+        if (total >= maxBytes) break;
+      }
+      result = await reader.read();
+    }
+  } finally {
+    reader.cancel().catch(() => {});
+  }
+  return new TextDecoder("utf-8").decode(Buffer.concat(chunks));
+}
+
 export async function webFetch(
   url: string,
   config: WebFetchConfig = {},
@@ -244,7 +271,19 @@ export async function webFetch(
     }
 
     const contentType = res.headers.get("content-type") ?? "";
-    const text = await res.text();
+
+    // Cap how much of the body we materialize. res.text() would buffer a
+    // multi-gigabyte response fully into a JS string before the maxChars slice
+    // below — an OOM vector. Budget for UTF-8 worst case (~4 bytes/char) plus
+    // HTML markup overhead, reject early on an honest Content-Length, and stop
+    // streaming once the cap is exceeded regardless (Content-Length can lie or
+    // be absent under chunked encoding).
+    const maxBodyBytes = maxChars * 8;
+    const contentLength = Number(res.headers.get("content-length"));
+    if (Number.isFinite(contentLength) && contentLength > maxBodyBytes) {
+      return { content: `Response too large (${contentLength} bytes).`, isError: true };
+    }
+    const text = await readBodyCapped(res, maxBodyBytes);
 
     // Extract readable content
     let extracted: string;
