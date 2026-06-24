@@ -142,7 +142,7 @@ function checkDomainAllowed(
 // Read a response body but stop once `maxBytes` have been read, so a huge or
 // lying response can't be fully buffered into memory. Falls back to res.text()
 // when the body isn't a readable stream (e.g. some mocks).
-async function readBodyCapped(res: Response, maxBytes: number): Promise<string> {
+export async function readBodyCapped(res: Response, maxBytes: number): Promise<string> {
   if (!res.body || typeof res.body.getReader !== "function") {
     const full = await res.text();
     return full.length > maxBytes ? full.slice(0, maxBytes) : full;
@@ -154,9 +154,19 @@ async function readBodyCapped(res: Response, maxBytes: number): Promise<string> 
     let result = await reader.read();
     while (!result.done) {
       if (result.value) {
+        const remaining = maxBytes - total;
+        if (result.value.byteLength >= remaining) {
+          // This chunk reaches the cap: keep only the bytes up to it and stop,
+          // so we never buffer or decode more than maxBytes even when a single
+          // chunk is huge or the Content-Length lied. The result is sliced to
+          // maxChars downstream, so a byte-boundary cut at the very end can't
+          // surface as a visible artifact.
+          chunks.push(result.value.subarray(0, remaining));
+          total = maxBytes;
+          break;
+        }
         chunks.push(result.value);
         total += result.value.byteLength;
-        if (total >= maxBytes) break;
       }
       result = await reader.read();
     }

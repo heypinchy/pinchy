@@ -10,7 +10,38 @@ vi.mock("node:dns/promises", () => ({
 }));
 
 // Import after mock setup
-const { webFetch, pinnedLookup } = await import("./web-fetch.js");
+const { webFetch, pinnedLookup, readBodyCapped } = await import("./web-fetch.js");
+
+// Build a Response whose body streams the given byte chunks, to exercise
+// readBodyCapped's streaming cap path (the text() fallback is used elsewhere).
+function streamResponse(chunks: Uint8Array[]): Response {
+  let i = 0;
+  return {
+    body: {
+      getReader: () => ({
+        read: async () =>
+          i < chunks.length ? { done: false, value: chunks[i++] } : { done: true, value: undefined },
+        cancel: async () => {},
+      }),
+    },
+  } as unknown as Response;
+}
+
+describe("readBodyCapped streaming byte cap", () => {
+  it("never collects more than maxBytes when a single chunk overshoots the cap", async () => {
+    // One 1000-byte chunk arriving against an 800-byte cap. ASCII → 1 byte/char,
+    // so the decoded length equals the byte count we kept.
+    const out = await readBodyCapped(streamResponse([new Uint8Array(1000).fill(65)]), 800);
+    expect(out.length).toBeLessThanOrEqual(800);
+  });
+
+  it("accumulates multiple chunks but still stops exactly at the cap", async () => {
+    const chunk = () => new Uint8Array(300).fill(66);
+    const out = await readBodyCapped(streamResponse([chunk(), chunk(), chunk()]), 800);
+    expect(out.length).toBeLessThanOrEqual(800);
+    expect(out.length).toBeGreaterThan(0);
+  });
+});
 
 describe("webFetch", () => {
   let fetchMock: ReturnType<typeof vi.fn>;
