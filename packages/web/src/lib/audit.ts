@@ -1,5 +1,5 @@
 import { createHmac } from "crypto";
-import { asc, desc, gte, lte, and, sql } from "drizzle-orm";
+import { asc, desc, gt, gte, lte, and, sql } from "drizzle-orm";
 import { db } from "@/db";
 import { auditLog, type AuditDetail } from "@/db/schema";
 import { getOrCreateSecret } from "@/lib/encryption";
@@ -553,60 +553,91 @@ interface VerifyResult {
   chainBreakIds: number[];
 }
 
-export async function verifyIntegrity(fromId?: number, toId?: number): Promise<VerifyResult> {
+// Rows processed per fetch. The whole audit_log can grow unbounded, so loading
+// it all at once (the old behavior) risked OOM-ing the process on a large table.
+// Keyset pagination caps resident memory to one page regardless of table size.
+const VERIFY_PAGE_SIZE = 5000;
+
+export async function verifyIntegrity(
+  fromId?: number,
+  toId?: number,
+  opts?: { pageSize?: number }
+): Promise<VerifyResult> {
   const secret = getOrCreateSecret("audit_hmac_secret");
-
-  const conditions = [];
-  if (fromId !== undefined) conditions.push(gte(auditLog.id, fromId));
-  if (toId !== undefined) conditions.push(lte(auditLog.id, toId));
-
-  const entries = await db
-    .select()
-    .from(auditLog)
-    .where(conditions.length > 0 ? and(...conditions) : undefined)
-    .orderBy(asc(auditLog.id));
+  const pageSize = opts?.pageSize ?? VERIFY_PAGE_SIZE;
 
   const invalidIds: number[] = [];
   const chainBreakIds: number[] = [];
+  let totalChecked = 0;
   // rowHmac of the previous row in range; undefined before the first row so the
-  // first row in a partial range isn't chain-checked against a missing predecessor.
+  // first row in a partial range isn't chain-checked against a missing
+  // predecessor. Carried ACROSS pages so a chain break that straddles a page
+  // boundary is still detected.
   let prevRowHmac: string | null | undefined = undefined;
+  // Exclusive lower-bound cursor for keyset pagination. Undefined on the first
+  // page (which honors `fromId`); afterwards it advances past the last id seen.
+  let cursor: number | undefined = undefined;
 
-  for (const entry of entries) {
-    const verifier = ROW_HMAC_VERIFIERS[entry.version];
-    if (!verifier) {
-      invalidIds.push(entry.id);
+  for (;;) {
+    const conditions = [];
+    if (cursor !== undefined) conditions.push(gt(auditLog.id, cursor));
+    else if (fromId !== undefined) conditions.push(gte(auditLog.id, fromId));
+    if (toId !== undefined) conditions.push(lte(auditLog.id, toId));
+
+    const page = await db
+      .select()
+      .from(auditLog)
+      .where(conditions.length > 0 ? and(...conditions) : undefined)
+      .orderBy(asc(auditLog.id))
+      .limit(pageSize);
+
+    if (page.length === 0) break;
+
+    for (const entry of page) {
+      totalChecked++;
+      const verifier = ROW_HMAC_VERIFIERS[entry.version];
+      if (!verifier) {
+        invalidIds.push(entry.id);
+        prevRowHmac = entry.rowHmac;
+        continue;
+      }
+
+      const expectedHmac = verifier(secret, {
+        timestamp: entry.timestamp,
+        eventType: entry.eventType,
+        actorType: entry.actorType,
+        actorId: entry.actorId,
+        resource: entry.resource,
+        detail: entry.detail,
+        outcome: (entry.outcome ?? "success") as "success" | "failure",
+        error: entry.error as { message: string } | null,
+        prevHmac: entry.prevHmac, // v3 verifier uses this; v1/v2 ignore it
+      });
+
+      if (expectedHmac !== entry.rowHmac) {
+        invalidIds.push(entry.id);
+      } else if (
+        entry.version >= 3 &&
+        prevRowHmac !== undefined &&
+        entry.prevHmac !== prevRowHmac
+      ) {
+        // The row's own HMAC is intact, but its chain link no longer matches the
+        // preceding row — a row between them was deleted, or the rows were
+        // reordered. The per-row HMAC alone can't catch this.
+        chainBreakIds.push(entry.id);
+      }
+
       prevRowHmac = entry.rowHmac;
-      continue;
     }
 
-    const expectedHmac = verifier(secret, {
-      timestamp: entry.timestamp,
-      eventType: entry.eventType,
-      actorType: entry.actorType,
-      actorId: entry.actorId,
-      resource: entry.resource,
-      detail: entry.detail,
-      outcome: (entry.outcome ?? "success") as "success" | "failure",
-      error: entry.error as { message: string } | null,
-      prevHmac: entry.prevHmac, // v3 verifier uses this; v1/v2 ignore it
-    });
-
-    if (expectedHmac !== entry.rowHmac) {
-      invalidIds.push(entry.id);
-    } else if (entry.version >= 3 && prevRowHmac !== undefined && entry.prevHmac !== prevRowHmac) {
-      // The row's own HMAC is intact, but its chain link no longer matches the
-      // preceding row — a row between them was deleted, or the rows were
-      // reordered. The per-row HMAC alone can't catch this.
-      chainBreakIds.push(entry.id);
-    }
-
-    prevRowHmac = entry.rowHmac;
+    // A short page is the last page; stop before issuing an empty follow-up.
+    if (page.length < pageSize) break;
+    cursor = page[page.length - 1].id;
   }
 
   return {
     valid: invalidIds.length === 0 && chainBreakIds.length === 0,
-    totalChecked: entries.length,
+    totalChecked,
     invalidIds,
     chainBreakIds,
   };
