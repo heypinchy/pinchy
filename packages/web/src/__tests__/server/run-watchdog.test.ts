@@ -22,7 +22,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import type { WebSocket } from "ws";
 import { ActiveRuns, type ActiveRun } from "@/server/active-runs";
-import { runWatchdogTick, type WatchdogDeps } from "@/server/run-watchdog";
+import { runWatchdogTick, startRunWatchdog, type WatchdogDeps } from "@/server/run-watchdog";
 
 function fakeWs(): WebSocket {
   return {} as unknown as WebSocket;
@@ -290,6 +290,42 @@ describe("runWatchdogTick", () => {
       expect(survivor!.runId).toBe("msg-B");
       expect(survivor!.firstChunkAt).toBeNull();
       expect(broadcastNoFirstChunk).not.toHaveBeenCalled();
+    });
+  });
+
+  describe("startRunWatchdog re-entrancy", () => {
+    it("skips an overlapping tick while the previous one is still in flight", async () => {
+      vi.useFakeTimers();
+      try {
+        const ws = fakeWs();
+        // A pending run past the first-chunk timeout → the tick writeAudits + aborts.
+        runs.registerPending({ ...basePending, submittedAt: 1_000_000, ws });
+
+        // Make the first tick hang inside writeAudit so the next interval overlaps it.
+        let resolveAudit: () => void = () => {};
+        writeAudit.mockImplementationOnce(
+          () =>
+            new Promise<void>((r) => {
+              resolveAudit = r;
+            })
+        );
+
+        const stop = startRunWatchdog(deps, 1000);
+
+        // First interval fires → tick starts and hangs in writeAudit.
+        await vi.advanceTimersByTimeAsync(1000);
+        // Second interval fires while the first tick is still awaiting writeAudit.
+        await vi.advanceTimersByTimeAsync(1000);
+
+        // The re-entrancy guard kept the second tick from re-processing the run
+        // and writing a duplicate audit row.
+        expect(writeAudit).toHaveBeenCalledTimes(1);
+
+        resolveAudit();
+        stop();
+      } finally {
+        vi.useRealTimers();
+      }
     });
   });
 });

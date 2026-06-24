@@ -169,10 +169,22 @@ export function startRunWatchdog(
   deps: WatchdogDeps,
   intervalMs: number = WATCHDOG_INTERVAL_MS
 ): () => void {
+  // Re-entrancy guard: a tick performs networked awaits (writeAudit, then a
+  // chatAbort that can block up to ~30s when OpenClaw is wedged), so a single
+  // tick can exceed the interval. Without this, a second tick would start while
+  // the first is mid-flight, re-process the same unstarted run, and write a
+  // duplicate chat.run_no_first_chunk row plus a redundant abort/broadcast.
+  let ticking = false;
   const handle = setInterval(() => {
-    void runWatchdogTick(deps).catch((err) => {
-      console.error("[run-watchdog] tick failed:", err);
-    });
+    if (ticking) return;
+    ticking = true;
+    void runWatchdogTick(deps)
+      .catch((err) => {
+        console.error("[run-watchdog] tick failed:", err);
+      })
+      .finally(() => {
+        ticking = false;
+      });
   }, intervalMs);
   // Don't keep the Node process alive solely for the watchdog — important
   // for graceful shutdown and for tests that import this module.
