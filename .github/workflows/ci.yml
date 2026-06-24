@@ -2014,7 +2014,11 @@ jobs:
           # --accept treats transient server responses (rate-limit + 5xx, e.g.
           # GitHub returning a 504 during a brief outage) as OK so they don't
           # red-light unrelated PRs. Genuinely broken links (404/410) still fail.
-          args: "--no-progress --max-retries 3 --retry-wait-time 5 --accept '200..=299,429,500..=599' '**/*.md' '**/*.mdx' --exclude-path node_modules --exclude-path .git --exclude-path docs --exclude 'localhost' --exclude 'linkedin\\.com' --exclude 'sonner\\.emilkowal\\.dev' --exclude 'squawkhq\\.com' --exclude 'contributor-covenant\\.org' --exclude 'star-history\\.com'"
+          # github.com/heypinchy/website is excluded because it's a SEPARATE
+          # PRIVATE repo: the job's GITHUB_TOKEN is scoped to this repo only, so
+          # lychee gets a 404 even though the link is valid for maintainers. The
+          # release docs intentionally cross-reference it.
+          args: "--no-progress --max-retries 3 --retry-wait-time 5 --accept '200..=299,429,500..=599' '**/*.md' '**/*.mdx' --exclude-path node_modules --exclude-path .git --exclude-path docs --exclude 'localhost' --exclude 'github\\.com/heypinchy/website' --exclude 'linkedin\\.com' --exclude 'sonner\\.emilkowal\\.dev' --exclude 'squawkhq\\.com' --exclude 'contributor-covenant\\.org' --exclude 'star-history\\.com'"
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
