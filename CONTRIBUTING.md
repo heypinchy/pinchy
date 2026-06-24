@@ -272,7 +272,7 @@ The release script and CI enforce image builds, GHCR visibility, end-user instal
       Open the staging URL in Chrome Desktop — confirm an install icon appears in the address bar and clicking it produces a standalone window.
       Open the same URL in iOS Safari — confirm **Share → Add to Home Screen** produces a launcher icon that opens Pinchy full-screen with a branded splash.
 
-**Marketing website** (separate repo: [`heypinchy/website`](https://github.com/heypinchy/website))
+**Marketing website** (separate, maintainer-only repo — `heypinchy/website`, private)
 
 - [ ] Reflect this release on heypinchy.com per that repo's own **release-update workflow** (its `CLAUDE.md` → "Release update workflow" / "Release Checklist"): sync screenshots, update the feature grid + affected feature/integration pages, refresh `/vs/*` competitor claims, write the release blog post, add 301s for any URL moves, run the link checker. It's a separate repo with its own deploy (push to `main` → S3/CloudFront, no staging). Feature-page copy can be drafted pre-release; the release blog post + screenshots of the shipped UI are finalized once the release is live (see "After the release" in the `cut-pinchy-release` skill). The docs site (`docs.heypinchy.com`) is **not** this step — it's handled automatically by the release workflow + the per-PR docs convention; the marketing website is the separate, manual one that otherwise gets forgotten.
 
