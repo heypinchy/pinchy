@@ -326,6 +326,35 @@ describe("POST /api/setup", () => {
     expect(regenerateOpenClawConfig).toHaveBeenCalled();
     expect(markOpenClawConfigReady).toHaveBeenCalled();
   });
+
+  it("coalesces concurrent recovery retries into a single config regeneration", async () => {
+    // A flood of POSTs while in the (admin exists, config not ready) state must
+    // not each kick off its own regenerateOpenClawConfig — that's an
+    // unauthenticated resource-exhaustion vector. Concurrent recoveries share
+    // one in-flight regeneration.
+    vi.mocked(db.query.users.findFirst).mockResolvedValue({
+      id: "1",
+      email: "admin@test.com",
+      name: "Admin",
+      role: "admin",
+    });
+    vi.mocked(isOpenClawConfigReady).mockReturnValue(false);
+    // Each regeneration stays pending for a tick so all three POSTs reach the
+    // recovery branch before any resolves — that's the window in which a guard
+    // must coalesce them. A short real-timer delay (not microtasks) guarantees
+    // they all arrive first, and resolves on its own so nothing hangs even when
+    // the guard is missing (each POST just starts its own timer).
+    vi.mocked(regenerateOpenClawConfig).mockImplementation(
+      () => new Promise<void>((r) => setTimeout(r, 10))
+    );
+
+    const fire = () =>
+      POST(makeRequest({ name: "X", email: "x@test.com", password: "Br1ghtNova!2" }) as any);
+    const responses = await Promise.all([fire(), fire(), fire()]);
+
+    expect(responses.every((r) => r.status === 200)).toBe(true);
+    expect(regenerateOpenClawConfig).toHaveBeenCalledOnce();
+  });
 });
 
 describe("seedDefaultAgent", () => {
