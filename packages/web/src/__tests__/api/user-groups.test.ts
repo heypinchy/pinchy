@@ -43,11 +43,18 @@ const mockSelectFields = vi.fn().mockReturnValue({ from: mockSelectFrom });
 const mockDeleteWhere = vi.fn().mockResolvedValue(undefined);
 const mockDelete = vi.fn().mockReturnValue({ where: mockDeleteWhere });
 
+// db.transaction(cb) runs cb with a tx reusing the delete/insert mocks, so the
+// route's atomic wipe+insert is exercised and existing assertions still hold.
+const mockTransaction = vi.fn(async (cb: (tx: unknown) => unknown) =>
+  cb({ delete: mockDelete, insert: mockInsert })
+);
+
 vi.mock("@/db", () => ({
   db: {
     select: mockSelectFields,
     insert: mockInsert,
     delete: mockDelete,
+    transaction: (cb: (tx: unknown) => unknown) => mockTransaction(cb),
   },
 }));
 
@@ -68,6 +75,10 @@ describe("PUT /api/users/[userId]/groups", () => {
     vi.clearAllMocks();
     mockDeleteWhere.mockResolvedValue(undefined);
     mockIsEnterprise.mockResolvedValue(true);
+    // Re-establish the transaction runner cleared by clearAllMocks.
+    mockTransaction.mockImplementation(async (cb: (tx: unknown) => unknown) =>
+      cb({ delete: mockDelete, insert: mockInsert })
+    );
     // Default: user exists (first select call), groups exist (second), previous memberships (third)
     mockSelectWhere
       .mockResolvedValueOnce([{ id: "user-1", name: "Max Müller" }]) // user lookup
@@ -75,6 +86,31 @@ describe("PUT /api/users/[userId]/groups", () => {
       .mockResolvedValueOnce([]); // previous memberships
     const mod = await import("@/app/api/users/[userId]/groups/route");
     PUT = mod.PUT;
+  });
+
+  it("replaces group memberships atomically inside a single transaction", async () => {
+    // The wipe + re-insert must commit or roll back together; otherwise an
+    // insert failure leaves the user stripped of all groups with none re-added.
+    vi.mocked(auth.api.getSession).mockResolvedValueOnce({
+      user: { id: "admin-1", role: "admin" },
+      expires: "",
+    } as any);
+    // Select order in the route: user lookup → previous memberships → group names.
+    mockSelectWhere.mockReset();
+    mockSelectWhere
+      .mockResolvedValueOnce([{ id: "user-1", name: "Max Müller" }]) // user exists
+      .mockResolvedValueOnce([]) // no previous memberships
+      .mockResolvedValueOnce([{ id: "g1", name: "Engineering" }]); // requested group exists
+
+    const request = new NextRequest("http://localhost:7777/api/users/user-1/groups", {
+      method: "PUT",
+      body: JSON.stringify({ groupIds: ["g1"] }),
+    });
+    await PUT(request, { params: Promise.resolve({ userId: "user-1" }) });
+
+    expect(mockTransaction).toHaveBeenCalledTimes(1);
+    expect(mockDelete).toHaveBeenCalled();
+    expect(mockInsert).toHaveBeenCalled();
   });
 
   it("returns a structured 403 when adding groups without an active license", async () => {

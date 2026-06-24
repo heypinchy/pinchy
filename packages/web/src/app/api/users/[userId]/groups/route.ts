@@ -92,13 +92,16 @@ export async function PUT(
     );
   }
 
-  // 5. Delete all existing userGroups for this userId
-  await db.delete(userGroups).where(eq(userGroups.userId, userId));
-
-  // 6. Insert new userGroups (skip if empty)
-  if (groupIds.length > 0) {
-    await db.insert(userGroups).values(groupIds.map((groupId: string) => ({ userId, groupId })));
-  }
+  // 5+6. Atomic replace: the wipe and the re-insert must commit or roll back
+  // together. As two standalone statements, an insert failure (a group deleted
+  // in the validation→insert window, or any I/O error) would strip the user of
+  // every group with none re-added — silent membership loss.
+  await db.transaction(async (tx) => {
+    await tx.delete(userGroups).where(eq(userGroups.userId, userId));
+    if (groupIds.length > 0) {
+      await tx.insert(userGroups).values(groupIds.map((groupId: string) => ({ userId, groupId })));
+    }
+  });
 
   // 7. Schedule audit log via after() so the response isn't blocked and any
   // errors flow through Next's error handler instead of being swallowed.
