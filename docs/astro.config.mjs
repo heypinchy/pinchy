@@ -25,7 +25,7 @@ export default defineConfig({
             tag: 'script',
             attrs: {
               defer: true,
-              src: 'https://cloud.umami.is/script.js',
+              src: 'https://analytics.helmcraft.ai/script.js',
               'data-website-id': process.env.UMAMI_WEBSITE_ID,
             },
           },
