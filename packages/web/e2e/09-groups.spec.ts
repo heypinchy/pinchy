@@ -23,6 +23,25 @@ test.describe.serial("Groups CRUD", () => {
       // Idempotent: ignore if already created by an earlier spec
     });
 
+    // Warm the dynamic /api/groups/[groupId] route (PATCH + DELETE). The E2E
+    // server runs Next in dev mode, which compiles a route on its FIRST request
+    // (~5s) — and that cost lands on whichever test hits the route first. It
+    // previously fell on the timed "edit a group name" Save (the PATCH measured
+    // next.js: 5.0s / application-code: 39ms), blowing the 5s dialog-close
+    // assertion even though the handler itself was fast. Pay the compile cost
+    // once here, untimed, so the real tests hit an already-compiled route. This
+    // fixes the root cause without loosening any per-test timeout.
+    //
+    // A nonexistent id is enough: Next compiles the route module on the first
+    // request to its path (before the handler runs), so the 404/400 response
+    // still warms it — and nothing is created, so no stray group leaks into the
+    // table assertions below.
+    const MISSING_GROUP_ID = "00000000-0000-0000-0000-000000000000";
+    await page.request.patch(`/api/groups/${MISSING_GROUP_ID}`, {
+      data: { name: "__warmup__", description: null },
+    });
+    await page.request.delete(`/api/groups/${MISSING_GROUP_ID}`);
+
     await page.close();
   });
 
