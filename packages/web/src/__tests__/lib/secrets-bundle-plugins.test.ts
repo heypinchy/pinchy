@@ -4,6 +4,42 @@ vi.mock("@/lib/plugin-secrets-source", () => ({
   getOrCreatePluginSecret: vi.fn(),
 }));
 
+vi.mock("@/lib/settings", () => ({
+  getSetting: vi.fn(),
+}));
+
+describe("collectProviderSecrets", () => {
+  beforeEach(() => {
+    vi.resetModules();
+    vi.clearAllMocks();
+  });
+
+  it("does not emit a phantom apiKey for the URL-auth ollama-local provider", async () => {
+    const { getSetting } = await import("@/lib/settings");
+    vi.mocked(getSetting).mockImplementation(async (key: string) =>
+      key === "ollama_local_url" ? "http://host.docker.internal:11434" : null
+    );
+
+    const { collectProviderSecrets } = await import("@/lib/openclaw-config/secrets-bundle");
+    const result = await collectProviderSecrets();
+
+    // The local Ollama URL is not a secret; it must not appear as a credential.
+    expect(result.providers).not.toHaveProperty("ollama-local");
+  });
+
+  it("still emits real api-key providers", async () => {
+    const { getSetting } = await import("@/lib/settings");
+    vi.mocked(getSetting).mockImplementation(async (key: string) =>
+      key === "anthropic_api_key" ? "sk-ant-real" : null
+    );
+
+    const { collectProviderSecrets } = await import("@/lib/openclaw-config/secrets-bundle");
+    const result = await collectProviderSecrets();
+
+    expect(result.providers.anthropic).toEqual({ apiKey: "sk-ant-real" });
+  });
+});
+
 describe("collectPluginSecrets", () => {
   beforeEach(() => {
     vi.resetModules();

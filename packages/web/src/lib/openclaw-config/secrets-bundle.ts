@@ -48,6 +48,11 @@ export interface ProviderSecretsCollection {
 export async function collectProviderSecrets(): Promise<ProviderSecretsCollection> {
   const providers: Record<string, { apiKey: string }> = {};
   for (const [providerKey, providerConfig] of Object.entries(PROVIDERS)) {
+    // URL-auth providers (ollama-local) have no API key — their settings value
+    // is a base URL. Emitting it as providers.<name>.apiKey writes a phantom
+    // "credential" into secrets.json that nothing resolves and that misleads
+    // rotation/audit tooling. Only collect real api-key providers.
+    if (providerConfig.authType === "url") continue;
     const apiKey = await getSetting(providerConfig.settingsKey);
     if (apiKey) {
       providers[providerKey] = { apiKey };

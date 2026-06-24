@@ -1,7 +1,7 @@
 export { AGENT_NAME_MAX_LENGTH } from "@/lib/agent-constants";
 
 import { db } from "@/db";
-import { agents, type AgentPluginConfig } from "@/db/schema";
+import { agents, agentConnectionPermissions, type AgentPluginConfig } from "@/db/schema";
 import { eq } from "drizzle-orm";
 import { regenerateOpenClawConfig } from "@/lib/openclaw-config";
 import { deleteWorkspace } from "@/lib/workspace";
@@ -32,6 +32,10 @@ export async function deleteAgent(id: string) {
 
   if (updated) {
     deleteWorkspace(id);
+    // Remove the agent's integration grants at the DB level so they can't be
+    // re-emitted into the runtime config (the Odoo/email permission loops key
+    // off agentConnectionPermissions, not agents.deletedAt).
+    await db.delete(agentConnectionPermissions).where(eq(agentConnectionPermissions.agentId, id));
     // Clean up Telegram bot settings if this agent had a bot
     await deleteSetting(`telegram_bot_token:${id}`);
     await deleteSetting(`telegram_bot_username:${id}`);

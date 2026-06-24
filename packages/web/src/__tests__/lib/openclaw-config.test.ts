@@ -678,6 +678,36 @@ describe("regenerateOpenClawConfig", () => {
     });
   });
 
+  it("excludes soft-deleted (tombstoned) agents from agents.list", async () => {
+    const agentsData = [
+      {
+        id: "live-1",
+        name: "Smithers",
+        model: "anthropic/claude-opus-4-7",
+        createdAt: new Date(),
+        deletedAt: null,
+      },
+      {
+        id: "dead-1",
+        name: "Ghost",
+        model: "openai/gpt-5.4",
+        createdAt: new Date(),
+        deletedAt: new Date(),
+      },
+    ];
+    mockedDb.select.mockReturnValue({ from: mockFrom(agentsData) } as never);
+    mockedGetSetting.mockResolvedValue(null);
+
+    await regenerateOpenClawConfig();
+
+    const config = JSON.parse(mockedWriteFileSync.mock.calls[0][1] as string);
+    const ids = config.agents.list.map((a: { id: string }) => a.id);
+    expect(ids).toContain("live-1");
+    // A tombstoned agent must not be a live, addressable agent in the runtime
+    // config (it would point at a deleted workspace + keep its tool config).
+    expect(ids).not.toContain("dead-1");
+  });
+
   it("includes the OpenClaw bundled `document-extract` extension in plugins.allow so the pdf tool's extraction fallback works", async () => {
     // Simulate existing plugins.allow WITHOUT document-extract
     mockedReadFileSync.mockReturnValue(

@@ -196,6 +196,11 @@ export async function regenerateOpenClawConfig() {
 
   // Read all agents from DB
   const allAgents = await db.select().from(agents);
+  // Live (non-tombstoned) agents. Soft-deleted agents must never be emitted as
+  // addressable agents, tool configs, or integration grants in the runtime
+  // config — they'd point at a deleted workspace and keep their permissions.
+  // `allAgents` is kept only where tombstones are explicitly skipped already.
+  const liveAgents = allAgents.filter((a) => !a.deletedAt);
 
   // Pattern A from CLAUDE.md "Secrets Handling": secret pair for each LLM
   // provider with a configured apiKey. Helper returns a fresh mutable map;
@@ -260,7 +265,7 @@ export async function regenerateOpenClawConfig() {
   const pluginConfigs: Record<string, Record<string, Record<string, unknown>>> = {};
   let contextPluginAgents: Record<string, { tools: string[]; userId: string }> | undefined;
 
-  const agentsList = allAgents.map((agent) => {
+  const agentsList = liveAgents.map((agent) => {
     const agentEntry: Record<string, unknown> = {
       id: agent.id,
       name: agent.name,
@@ -403,7 +408,7 @@ export async function regenerateOpenClawConfig() {
   //      workspaces would only add to the litter — there is no reader for
   //      those files anyway since OC won't be told the agent exists once
   //      the user-delete flow rms the workspace.
-  for (const agent of allAgents) {
+  for (const agent of liveAgents) {
     if (agent.deletedAt) continue;
     const rawSkills = (agent.skills as string[] | null) ?? [];
     for (const id of rawSkills) {
@@ -734,7 +739,7 @@ export async function regenerateOpenClawConfig() {
 
     const webAgentConfigs: Record<string, Record<string, unknown>> = {};
 
-    for (const agent of allAgents) {
+    for (const agent of liveAgents) {
       const allowedTools = (agent.allowedTools as string[]) || [];
       const hasWebSearch = allowedTools.includes("pinchy_web_search");
       const hasWebFetch = allowedTools.includes("pinchy_web_fetch");
@@ -1100,7 +1105,7 @@ export async function regenerateOpenClawConfig() {
   const bindings: TelegramBinding[] = [];
   const personalBotsAccountIds: Array<{ accountId: string; ownerId: string | null }> = [];
 
-  for (const agent of allAgents) {
+  for (const agent of liveAgents) {
     const botToken = await getSetting(`telegram_bot_token:${agent.id}`);
     if (botToken) {
       accounts[agent.id] = { botToken };
@@ -1355,7 +1360,7 @@ export async function regenerateOpenClawConfig() {
   );
 
   const configRoot = dirname(CONFIG_PATH);
-  for (const agent of allAgents) {
+  for (const agent of liveAgents) {
     const modelPrefix = agent.model?.split("/")[0] ?? "";
     const agentProfileProvider = MODEL_PREFIX_TO_AUTH_PROFILE[modelPrefix];
     const agentProviders: AuthProfilesProvider[] =

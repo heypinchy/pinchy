@@ -14,7 +14,7 @@ vi.mock("@/db", () => {
       ]),
     }),
   });
-  const deleteMock = vi.fn();
+  const deleteMock = vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue(undefined) });
   return { db: { update: updateMock, delete: deleteMock } };
 });
 
@@ -36,7 +36,7 @@ vi.mock("@/lib/settings", () => ({
 }));
 
 import { deleteAgent } from "@/lib/agents";
-import { agents } from "@/db/schema";
+import { agents, agentConnectionPermissions } from "@/db/schema";
 import { db } from "@/db";
 import { regenerateOpenClawConfig } from "@/lib/openclaw-config";
 import { deleteWorkspace } from "@/lib/workspace";
@@ -139,7 +139,7 @@ describe("deleteAgent — soft-delete", () => {
     expect(result).toBeDefined();
   });
 
-  it("does NOT call db.delete", async () => {
+  it("soft-deletes the agent row but removes its integration permissions", async () => {
     const mockUpdate = {
       set: vi.fn().mockReturnThis(),
       where: vi.fn().mockReturnValue({
@@ -149,9 +149,16 @@ describe("deleteAgent — soft-delete", () => {
       }),
     };
     vi.mocked(db.update).mockReturnValueOnce(mockUpdate as never);
+    vi.mocked(db.delete).mockReturnValue({
+      where: vi.fn().mockResolvedValue(undefined),
+    } as never);
 
     await deleteAgent("agent-1");
 
-    expect(db.delete).not.toHaveBeenCalled();
+    // The agent row is soft-deleted (deletedAt), never hard-deleted...
+    expect(db.delete).not.toHaveBeenCalledWith(agents);
+    // ...but its integration grants are removed at the DB level so they can't
+    // be re-emitted into the runtime config.
+    expect(db.delete).toHaveBeenCalledWith(agentConnectionPermissions);
   });
 });
