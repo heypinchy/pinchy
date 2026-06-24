@@ -76,7 +76,7 @@ export class WsRateLimiter {
     if (now - this.lastSweep < WINDOW_MS) return;
     this.lastSweep = now;
     for (const [ip, record] of this.ipUpgrades) {
-      if (now - record.windowStart > WINDOW_MS) {
+      if (now - record.windowStart >= WINDOW_MS) {
         this.ipUpgrades.delete(ip);
       }
     }
@@ -87,7 +87,7 @@ export class WsRateLimiter {
     this.pruneStale(now);
     const record = this.ipUpgrades.get(ip);
 
-    if (!record || now - record.windowStart > WINDOW_MS) {
+    if (!record || now - record.windowStart >= WINDOW_MS) {
       this.ipUpgrades.set(ip, { count: 1, windowStart: now });
       return true;
     }

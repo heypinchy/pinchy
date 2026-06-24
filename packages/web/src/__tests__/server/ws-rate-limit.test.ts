@@ -167,6 +167,34 @@ describe("WsRateLimiter", () => {
       expect(limiter.allowUpgrade("10.0.0.2")).toBe(true);
     });
 
+    it("treats a record exactly at the window boundary as a fresh window (>= semantics)", () => {
+      // The window is [windowStart, windowStart + WINDOW_MS): a record exactly
+      // WINDOW_MS old has elapsed and must reset, not linger one tick longer.
+      // Keeps the reset (allowUpgrade) and the eviction (pruneStale) boundaries
+      // identical so they can't disagree by a millisecond.
+      const limiter = new WsRateLimiter({ maxUpgradesPerIpPerMinute: 1 });
+
+      expect(limiter.allowUpgrade("10.0.0.5")).toBe(true);
+      expect(limiter.allowUpgrade("10.0.0.5")).toBe(false); // over the limit
+
+      vi.advanceTimersByTime(60_000); // EXACTLY one window
+
+      // At the boundary the window is considered elapsed → counter resets.
+      expect(limiter.allowUpgrade("10.0.0.5")).toBe(true);
+    });
+
+    it("evicts a record exactly at the window boundary on sweep", () => {
+      const limiter = new WsRateLimiter();
+      limiter.allowUpgrade("9.9.9.9");
+      expect(limiter.trackedIpCount).toBe(1);
+
+      // A fresh IP exactly WINDOW_MS later triggers a sweep that must evict the
+      // boundary-aged record (>=), leaving only the fresh one.
+      vi.advanceTimersByTime(60_000);
+      limiter.allowUpgrade("8.8.8.8");
+      expect(limiter.trackedIpCount).toBe(1);
+    });
+
     it("evicts stale IP records so the map does not grow unbounded", () => {
       const limiter = new WsRateLimiter();
 
