@@ -340,6 +340,11 @@ export const auditLog = pgTable(
     outcome: text("outcome"), // 'success' | 'failure' | null (null only for v1)
     error: jsonb("error"), // { message: string } | null, only when outcome='failure'
     rowHmac: text("row_hmac").notNull(),
+    // v3+ hash-chain link: the rowHmac of the immediately-preceding audit row
+    // (null for the genesis row and for legacy v1/v2 rows). Binding each row to
+    // its predecessor makes row deletion and reordering tamper-evident, not just
+    // field tampering. See VERSIONING.md.
+    prevHmac: text("prev_hmac"),
   },
   (table) => [
     index("idx_audit_timestamp").on(table.timestamp),

@@ -19,13 +19,23 @@ evolution without invalidating historical entries.
    row's extra fields would produce a non-matching hash anyway (the structure
    differs).
 
-## v2 is the only write path
+## v3 is the current write path
 
-**As of PR #109**, application code always writes v2 rows. The write path
-has no v1 branch. Legacy v1 rows created before PR #109 remain in the
-database unchanged and stay verifiable via `computeRowHmacV1`. Never
-write a v1 row from application code — only the historical rows predating
-this PR are allowed to exist at v1.
+Application code now writes **v3** rows. v3 = v2 + a `prevHmac` hash-chain link:
+each row binds the `rowHmac` of the immediately-preceding row, so deleting a
+middle row or reordering rows is tamper-evident — not just field tampering.
+`appendAuditLog` runs inside a transaction holding a `pg_advisory_xact_lock` so
+concurrent appends are serialized and the chain can't fork. `verifyIntegrity`
+recomputes each row's own HMAC AND checks every v3 row's chain link against its
+predecessor (reported via `chainBreakIds`).
+
+Legacy v1/v2 rows remain unchanged and stay verifiable via their own
+`computeRowHmacVN`; they have a null `prevHmac` and are not chain-checked. The
+first v3 row chains to whatever row preceded it (v2 or none).
+
+**As of PR #109**, application code wrote v2 rows; before that, v1. Never write
+a v1 or v2 row from application code now — only historical rows are allowed at
+those versions.
 
 ## Adding a new version (e.g. v3)
 

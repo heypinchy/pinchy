@@ -3,6 +3,7 @@ import { createHmac } from "crypto";
 import {
   computeRowHmacV1,
   computeRowHmacV2,
+  computeRowHmacV3,
   ROW_HMAC_VERIFIERS,
   truncateDetail,
   redactEmail,
@@ -165,6 +166,28 @@ describe("computeRowHmac version dispatch", () => {
     // Captured 2026-04-07. NEVER change without reading VERSIONING.md.
     const fixture = computeRowHmacV2(secret, { ...baseFields, outcome: "success", error: null });
     expect(fixture).toEqual("793d4cfb759f62f8e09b8fe40bd18fa6fdad40ebe3f37d3cbb2052e54ee36b98");
+  });
+
+  it("v3 hash matches the known-good regression fixture", () => {
+    // Captured 2026-06-24. NEVER change without reading VERSIONING.md.
+    const fixture = computeRowHmacV3(secret, {
+      ...baseFields,
+      outcome: "success",
+      error: null,
+      prevHmac: "c".repeat(64),
+    });
+    expect(fixture).toEqual("1488e008fcfdf45ad720fe959239cacd7496fdf7d640529e22b1f0b6e5d44ebf");
+  });
+
+  it("v3 hash differs from v2 (version literal + chain link)", () => {
+    const v2 = computeRowHmacV2(secret, { ...baseFields, outcome: "success", error: null });
+    const v3 = computeRowHmacV3(secret, {
+      ...baseFields,
+      outcome: "success",
+      error: null,
+      prevHmac: null,
+    });
+    expect(v3).not.toEqual(v2);
   });
 
   it("ROW_HMAC_VERIFIERS[1] matches computeRowHmacV1 directly", () => {

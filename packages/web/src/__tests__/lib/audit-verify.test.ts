@@ -21,9 +21,27 @@ vi.mock("@/db", () => ({
   },
 }));
 
-import { computeRowHmacV1, computeRowHmacV2, verifyIntegrity } from "@/lib/audit";
+import { computeRowHmacV1, computeRowHmacV2, computeRowHmacV3, verifyIntegrity } from "@/lib/audit";
 
 const secret = Buffer.from("a".repeat(64), "hex");
+
+// Build a v3 row whose chain link points at `prevHmac` and whose own rowHmac is
+// computed over the full v3 field set (incl. prevHmac).
+function makeV3Entry(id: number, prevHmac: string | null) {
+  const fields = {
+    timestamp: new Date("2026-02-21T10:00:00Z"),
+    eventType: "auth.login",
+    actorType: "user" as const,
+    actorId: `user-${id}`,
+    resource: `user:${id}`,
+    detail: null,
+    outcome: "success" as "success" | "failure",
+    error: null as { message: string } | null,
+    prevHmac,
+  };
+  const rowHmac = computeRowHmacV3(secret, fields);
+  return { id, version: 3, ...fields, rowHmac };
+}
 
 function makeEntry(id: number, overrides?: { tampered?: boolean }) {
   const fields = {
@@ -89,6 +107,7 @@ describe("verifyIntegrity", () => {
       valid: true,
       totalChecked: 3,
       invalidIds: [],
+      chainBreakIds: [],
     });
   });
 
@@ -102,6 +121,7 @@ describe("verifyIntegrity", () => {
       valid: false,
       totalChecked: 3,
       invalidIds: [2],
+      chainBreakIds: [],
     });
   });
 
@@ -115,6 +135,7 @@ describe("verifyIntegrity", () => {
       valid: true,
       totalChecked: 2,
       invalidIds: [],
+      chainBreakIds: [],
     });
     // Verify that where() was called (meaning conditions were applied)
     expect(mockWhere).toHaveBeenCalled();
@@ -129,6 +150,7 @@ describe("verifyIntegrity", () => {
       valid: true,
       totalChecked: 0,
       invalidIds: [],
+      chainBreakIds: [],
     });
   });
 
@@ -174,6 +196,65 @@ describe("verifyIntegrity", () => {
       valid: false,
       totalChecked: 3,
       invalidIds: [1, 3],
+      chainBreakIds: [],
+    });
+  });
+
+  describe("v3 hash-chain (deletion / reorder detection)", () => {
+    it("validates an intact v3 chain", async () => {
+      const r1 = makeV3Entry(1, null);
+      const r2 = makeV3Entry(2, r1.rowHmac);
+      const r3 = makeV3Entry(3, r2.rowHmac);
+      mockOrderBy.mockResolvedValue([r1, r2, r3]);
+
+      const result = await verifyIntegrity();
+
+      expect(result).toEqual({
+        valid: true,
+        totalChecked: 3,
+        invalidIds: [],
+        chainBreakIds: [],
+      });
+    });
+
+    it("flags a deleted middle row even though every surviving row's HMAC is intact", async () => {
+      const r1 = makeV3Entry(1, null);
+      const r2 = makeV3Entry(2, r1.rowHmac);
+      const r3 = makeV3Entry(3, r2.rowHmac);
+      // r2 deleted: r3 still points at r2's hmac, but its predecessor is now r1.
+      mockOrderBy.mockResolvedValue([r1, r3]);
+
+      const result = await verifyIntegrity();
+
+      expect(result.valid).toBe(false);
+      expect(result.invalidIds).toEqual([]); // each row's own HMAC still verifies
+      expect(result.chainBreakIds).toEqual([3]); // the broken link is detected
+    });
+
+    it("flags reordered rows", async () => {
+      const r1 = makeV3Entry(1, null);
+      const r2 = makeV3Entry(2, r1.rowHmac);
+      const r3 = makeV3Entry(3, r2.rowHmac);
+      // Rows returned out of chain order (e.g. ids were swapped by an attacker).
+      mockOrderBy.mockResolvedValue([r1, r3, r2]);
+
+      const result = await verifyIntegrity();
+
+      expect(result.valid).toBe(false);
+      expect(result.chainBreakIds.length).toBeGreaterThan(0);
+    });
+
+    it("does not chain-check the first row of a partial range", async () => {
+      // A bounded verify starts mid-chain, so the first row's prevHmac has no
+      // in-range predecessor to compare against — it must not be flagged.
+      const r5 = makeV3Entry(5, "f".repeat(64));
+      const r6 = makeV3Entry(6, r5.rowHmac);
+      mockOrderBy.mockResolvedValue([r5, r6]);
+
+      const result = await verifyIntegrity(5, 6);
+
+      expect(result.valid).toBe(true);
+      expect(result.chainBreakIds).toEqual([]);
     });
   });
 });

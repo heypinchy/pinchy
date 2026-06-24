@@ -2,12 +2,30 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 
 const mockInsert = vi.fn();
 const mockValues = vi.fn();
+// Returns the "previous row" the chain reads inside the transaction. Default:
+// no prior row (genesis → prevHmac null).
+const mockPrevRow = vi.fn();
 
+// appendAuditLog now runs inside db.transaction with an advisory lock and a
+// "read the latest row's hmac" select; mock the tx surface it uses.
 vi.mock("@/db", () => ({
   db: {
-    insert: (...args: unknown[]) => {
-      mockInsert(...args);
-      return { values: mockValues };
+    transaction: async (cb: (tx: unknown) => unknown) => {
+      const tx = {
+        execute: vi.fn().mockResolvedValue(undefined),
+        select: () => ({
+          from: () => ({
+            orderBy: () => ({
+              limit: () => mockPrevRow(),
+            }),
+          }),
+        }),
+        insert: (...args: unknown[]) => {
+          mockInsert(...args);
+          return { values: mockValues };
+        },
+      };
+      return cb(tx);
     },
   },
 }));
@@ -22,6 +40,7 @@ import {
   appendAuditLog,
   computeRowHmacV1,
   computeRowHmacV2,
+  computeRowHmacV3,
   type AuditLogEntry,
 } from "@/lib/audit";
 import { auditLog } from "@/db/schema";
@@ -33,6 +52,7 @@ describe("appendAuditLog", () => {
     vi.clearAllMocks();
     mockGetOrCreateSecret.mockReturnValue(fakeSecret);
     mockValues.mockResolvedValue(undefined);
+    mockPrevRow.mockResolvedValue([]); // genesis: no previous row
   });
 
   it("should insert a row into the audit_log table", async () => {
@@ -161,7 +181,7 @@ describe("appendAuditLog", () => {
     });
 
     const inserted = mockValues.mock.calls[0][0];
-    expect(inserted.version).toBe(2);
+    expect(inserted.version).toBe(3);
     expect(inserted.outcome).toBe("success");
     expect(inserted.error).toBeNull();
   });
@@ -178,7 +198,7 @@ describe("appendAuditLog", () => {
     });
 
     const inserted = mockValues.mock.calls[0][0];
-    expect(inserted.version).toBe(2);
+    expect(inserted.version).toBe(3);
     expect(inserted.outcome).toBe("failure");
     expect(inserted.error).toEqual({ message: "Brave API key missing" });
   });
@@ -215,7 +235,7 @@ describe("appendAuditLog", () => {
       outcome: "success",
     });
     const inserted = mockValues.mock.calls[0][0];
-    expect(inserted.version).toBe(2);
+    expect(inserted.version).toBe(3);
     expect(inserted.outcome).toBe("success");
     expect(inserted.error).toBeNull();
   });
@@ -230,7 +250,7 @@ describe("appendAuditLog", () => {
       error: { message: "Invalid credentials" },
     });
     const inserted = mockValues.mock.calls[0][0];
-    expect(inserted.version).toBe(2);
+    expect(inserted.version).toBe(3);
     expect(inserted.outcome).toBe("failure");
     expect(inserted.error).toEqual({ message: "Invalid credentials" });
   });
@@ -245,7 +265,7 @@ describe("appendAuditLog", () => {
       outcome: "success",
     });
     const inserted = mockValues.mock.calls[0][0];
-    expect(inserted.version).toBe(2);
+    expect(inserted.version).toBe(3);
     expect(inserted.outcome).toBe("success");
     expect(inserted.error).toBeNull();
   });
@@ -259,7 +279,7 @@ describe("appendAuditLog", () => {
       outcome: "success",
     });
     const inserted = mockValues.mock.calls[0][0];
-    expect(inserted.version).toBe(2);
+    expect(inserted.version).toBe(3);
     expect(inserted.outcome).toBe("success");
   });
 
@@ -274,7 +294,9 @@ describe("appendAuditLog", () => {
     void _bad;
   });
 
-  it("hashes v2 rows with computeRowHmacV2 over the stored fields (and not as a v1 hash)", async () => {
+  it("hashes v3 rows with computeRowHmacV3 over the stored fields (and not as v1/v2)", async () => {
+    // A prior row exists, so this row's prevHmac chains to it.
+    mockPrevRow.mockResolvedValueOnce([{ rowHmac: "a".repeat(64) }]);
     await appendAuditLog({
       actorType: "user",
       actorId: "user-1",
@@ -285,14 +307,15 @@ describe("appendAuditLog", () => {
     });
     const inserted = mockValues.mock.calls[0][0];
     expect(inserted.rowHmac).toMatch(/^[0-9a-f]{64}$/);
-    expect(inserted.version).toBe(2);
+    expect(inserted.version).toBe(3);
+    // The chain link is stored.
+    expect(inserted.prevHmac).toBe("a".repeat(64));
 
     // Pin the writer's HMAC inputs to the verifier's: recompute the HMAC over
-    // the EXACT fields that were stored. If appendAuditLog ever hashes a
-    // different field set (drops outcome/error, hashes detail before
-    // truncation, …) the produced hex string is still 64 chars and the shape
-    // assertion above stays green — but verifyIntegrity recomputes over the
-    // stored fields and would flag every newly-written row as tampered. This
+    // the EXACT fields that were stored (incl. prevHmac). If appendAuditLog ever
+    // hashes a different field set the produced hex is still 64 chars and the
+    // shape assertion above stays green — but verifyIntegrity recomputes over
+    // the stored fields and would flag every newly-written row as tampered. This
     // round-trip catches that drift at write time.
     const fields = {
       timestamp: inserted.timestamp,
@@ -303,10 +326,36 @@ describe("appendAuditLog", () => {
       detail: inserted.detail,
       outcome: inserted.outcome,
       error: inserted.error,
+      prevHmac: inserted.prevHmac,
     };
-    expect(inserted.rowHmac).toBe(computeRowHmacV2(fakeSecret, fields));
-    // The title's promise: a v2 row is NOT hashed like a v1 row.
+    expect(inserted.rowHmac).toBe(computeRowHmacV3(fakeSecret, fields));
+    // A v3 row is NOT hashed like v1 or v2 (version literal + chain link differ).
     expect(inserted.rowHmac).not.toBe(computeRowHmacV1(fakeSecret, fields));
+    expect(inserted.rowHmac).not.toBe(computeRowHmacV2(fakeSecret, fields));
+  });
+
+  it("chains prevHmac to the rowHmac of the most recent existing row", async () => {
+    mockPrevRow.mockResolvedValueOnce([{ rowHmac: "b".repeat(64) }]);
+    await appendAuditLog({
+      actorType: "user",
+      actorId: "user-1",
+      eventType: "auth.login",
+      outcome: "success",
+    });
+    const inserted = mockValues.mock.calls[0][0];
+    expect(inserted.prevHmac).toBe("b".repeat(64));
+  });
+
+  it("writes a null prevHmac for the genesis row (empty table)", async () => {
+    // mockPrevRow defaults to [] (no previous row).
+    await appendAuditLog({
+      actorType: "user",
+      actorId: "user-1",
+      eventType: "auth.login",
+      outcome: "success",
+    });
+    const inserted = mockValues.mock.calls[0][0];
+    expect(inserted.prevHmac).toBeNull();
   });
 
   it("accepts attachment.uploaded with the required detail shape", async () => {

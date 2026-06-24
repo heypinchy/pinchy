@@ -1,8 +1,13 @@
 import { createHmac } from "crypto";
-import { asc, gte, lte, and } from "drizzle-orm";
+import { asc, desc, gte, lte, and, sql } from "drizzle-orm";
 import { db } from "@/db";
 import { auditLog, type AuditDetail } from "@/db/schema";
 import { getOrCreateSecret } from "@/lib/encryption";
+
+// Transaction-scoped advisory lock key that serializes audit appends so the
+// prev-hash chain can never fork (two writers must not read the same
+// predecessor). Arbitrary fixed constant, unique to the audit chain.
+const AUDIT_CHAIN_LOCK_KEY = 738291002;
 
 // ── Audit Detail Base Types ─────────────────────────────────────────────
 
@@ -99,6 +104,11 @@ interface HmacFieldsV2 extends HmacFieldsV1 {
   error: { message: string } | null;
 }
 
+interface HmacFieldsV3 extends HmacFieldsV2 {
+  // rowHmac of the immediately-preceding audit row, or null for the genesis row.
+  prevHmac: string | null;
+}
+
 /**
  * Recursively sort object keys to produce a canonical JSON representation.
  * PostgreSQL JSONB reorders keys (by length, then alphabetically), so without
@@ -146,15 +156,36 @@ export function computeRowHmacV2(secret: Buffer, fields: HmacFieldsV2): string {
   return createHmac("sha256", secret).update(payload).digest("hex");
 }
 
+// v3 = v2 + a hash-chain link. The payload keeps v2's positions 0-8 unchanged
+// (with the version literal flipped to 3 for downgrade protection) and appends
+// prevHmac at the END, per the VERSIONING.md recipe. Binding each row to its
+// predecessor's hash makes deletion/reordering of rows tamper-evident.
+export function computeRowHmacV3(secret: Buffer, fields: HmacFieldsV3): string {
+  const payload = JSON.stringify([
+    fields.timestamp.toISOString(),
+    fields.eventType,
+    fields.actorType,
+    fields.actorId,
+    fields.resource,
+    sortKeys(fields.detail),
+    3, // version — downgrade protection (see VERSIONING.md)
+    fields.outcome,
+    sortKeys(fields.error),
+    fields.prevHmac, // v3 chain link, appended at END
+  ]);
+  return createHmac("sha256", secret).update(payload).digest("hex");
+}
+
 // Per-version HMAC functions used for both writing (appendAuditLog) and verifying
 // (verifyIntegrity). v1 functions ignore v2-only fields by design — never delete
 // or modify a version's function: see VERSIONING.md (added in a follow-up task).
 export const ROW_HMAC_VERIFIERS: Record<
   number,
-  (secret: Buffer, fields: HmacFieldsV1 | HmacFieldsV2) => string
+  (secret: Buffer, fields: HmacFieldsV1 | HmacFieldsV2 | HmacFieldsV3) => string
 > = {
   1: (secret, fields) => computeRowHmacV1(secret, fields),
   2: (secret, fields) => computeRowHmacV2(secret, fields as HmacFieldsV2),
+  3: (secret, fields) => computeRowHmacV3(secret, fields as HmacFieldsV3),
 };
 
 /**
@@ -465,28 +496,46 @@ export async function appendAuditLog(entry: AuditLogEntry): Promise<void> {
   const outcome = entry.outcome;
   const error = entry.error ?? null;
 
-  const rowHmac = computeRowHmacV2(secret, {
-    timestamp,
-    eventType: entry.eventType,
-    actorType: entry.actorType,
-    actorId: entry.actorId,
-    resource: entry.resource ?? null,
-    detail,
-    outcome,
-    error,
-  });
+  // v3 hash-chain: each row binds the rowHmac of the immediately-preceding row.
+  // The write runs inside a transaction holding an advisory lock so concurrent
+  // appends are serialized — otherwise two writers could read the same
+  // predecessor and fork the chain, which verifyIntegrity would (correctly) then
+  // flag as tampering.
+  await db.transaction(async (tx) => {
+    await tx.execute(sql`SELECT pg_advisory_xact_lock(${AUDIT_CHAIN_LOCK_KEY})`);
 
-  await db.insert(auditLog).values({
-    timestamp,
-    actorType: entry.actorType,
-    actorId: entry.actorId,
-    eventType: entry.eventType,
-    resource: entry.resource ?? null,
-    detail,
-    version: 2,
-    outcome,
-    error,
-    rowHmac,
+    const [prev] = await tx
+      .select({ rowHmac: auditLog.rowHmac })
+      .from(auditLog)
+      .orderBy(desc(auditLog.id))
+      .limit(1);
+    const prevHmac = prev?.rowHmac ?? null;
+
+    const rowHmac = computeRowHmacV3(secret, {
+      timestamp,
+      eventType: entry.eventType,
+      actorType: entry.actorType,
+      actorId: entry.actorId,
+      resource: entry.resource ?? null,
+      detail,
+      outcome,
+      error,
+      prevHmac,
+    });
+
+    await tx.insert(auditLog).values({
+      timestamp,
+      actorType: entry.actorType,
+      actorId: entry.actorId,
+      eventType: entry.eventType,
+      resource: entry.resource ?? null,
+      detail,
+      version: 3,
+      outcome,
+      error,
+      rowHmac,
+      prevHmac,
+    });
   });
 }
 
@@ -494,6 +543,9 @@ interface VerifyResult {
   valid: boolean;
   totalChecked: number;
   invalidIds: number[];
+  // v3 chain links that don't point at their predecessor's rowHmac — evidence
+  // of a deleted (middle) row or a reordering, distinct from field tampering.
+  chainBreakIds: number[];
 }
 
 export async function verifyIntegrity(fromId?: number, toId?: number): Promise<VerifyResult> {
@@ -510,11 +562,16 @@ export async function verifyIntegrity(fromId?: number, toId?: number): Promise<V
     .orderBy(asc(auditLog.id));
 
   const invalidIds: number[] = [];
+  const chainBreakIds: number[] = [];
+  // rowHmac of the previous row in range; undefined before the first row so the
+  // first row in a partial range isn't chain-checked against a missing predecessor.
+  let prevRowHmac: string | null | undefined = undefined;
 
   for (const entry of entries) {
     const verifier = ROW_HMAC_VERIFIERS[entry.version];
     if (!verifier) {
       invalidIds.push(entry.id);
+      prevRowHmac = entry.rowHmac;
       continue;
     }
 
@@ -527,16 +584,25 @@ export async function verifyIntegrity(fromId?: number, toId?: number): Promise<V
       detail: entry.detail,
       outcome: (entry.outcome ?? "success") as "success" | "failure",
       error: entry.error as { message: string } | null,
+      prevHmac: entry.prevHmac, // v3 verifier uses this; v1/v2 ignore it
     });
 
     if (expectedHmac !== entry.rowHmac) {
       invalidIds.push(entry.id);
+    } else if (entry.version >= 3 && prevRowHmac !== undefined && entry.prevHmac !== prevRowHmac) {
+      // The row's own HMAC is intact, but its chain link no longer matches the
+      // preceding row — a row between them was deleted, or the rows were
+      // reordered. The per-row HMAC alone can't catch this.
+      chainBreakIds.push(entry.id);
     }
+
+    prevRowHmac = entry.rowHmac;
   }
 
   return {
-    valid: invalidIds.length === 0,
+    valid: invalidIds.length === 0 && chainBreakIds.length === 0,
     totalChecked: entries.length,
     invalidIds,
+    chainBreakIds,
   };
 }

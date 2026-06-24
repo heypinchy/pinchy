@@ -1,0 +1,1 @@
+ALTER TABLE "audit_log" ADD COLUMN "prev_hmac" text;
