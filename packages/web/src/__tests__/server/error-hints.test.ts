@@ -43,6 +43,31 @@ describe("getErrorHint", () => {
     );
   });
 
+  describe("generic OpenClaw provider-rejection envelope → role-based hint (#584)", () => {
+    // Ground truth from staging audit (2026-06-24): when a provider rejects a
+    // run for an account-side reason (e.g. depleted credit), OpenClaw collapses
+    // the cause into this exact generic catch-all and emits it as the error
+    // chunk text. The distinguishing reason never reaches Pinchy, so we can't
+    // honestly classify it (audit class stays `unknown`) — but we CAN stop
+    // showing it bare and point an admin at their provider configuration.
+    const genericEnvelope =
+      "LLM request failed: provider rejected the request schema or tool payload.";
+
+    it("should return admin hint for the generic provider-rejection envelope", () => {
+      expect(getErrorHint(genericEnvelope, "admin")).toBe(PROVIDER_SETTINGS_HINT);
+    });
+
+    it("should return member hint for the generic provider-rejection envelope", () => {
+      expect(getErrorHint(genericEnvelope, "member")).toBe("Please contact your administrator.");
+    });
+
+    it("should match case-insensitively", () => {
+      expect(getErrorHint("PROVIDER REJECTED THE REQUEST SCHEMA OR TOOL PAYLOAD", "admin")).toBe(
+        PROVIDER_SETTINGS_HINT
+      );
+    });
+  });
+
   describe("unrecognized errors → null", () => {
     it("should return null for unrecognized errors", () => {
       expect(getErrorHint("Something completely unexpected", "admin")).toBeNull();

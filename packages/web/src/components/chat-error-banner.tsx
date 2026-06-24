@@ -17,6 +17,8 @@ interface ActiveError {
   sideEffects: boolean;
   clientMessageId: string | null;
   createdAt: string;
+  /** Role-gated guidance computed server-side from providerError (#584). */
+  hint: string | null;
 }
 
 const TRANSIENT_REASONS: TransientReason[] = ["rate_limit", "overloaded", "timeout", "unavailable"];
@@ -37,7 +39,11 @@ function toChatError(error: ActiveError): ChatError {
       },
     };
   }
-  return { agentName: error.agentName, providerError: error.providerError };
+  return {
+    agentName: error.agentName,
+    providerError: error.providerError,
+    hint: error.hint,
+  };
 }
 
 /**

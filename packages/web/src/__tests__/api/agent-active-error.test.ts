@@ -93,6 +93,36 @@ describe("/api/agents/[agentId]/active-error", () => {
       expect(mockGetActive).toHaveBeenCalledWith("agent:agent-1:direct:user-1");
     });
 
+    it("includes a role-appropriate hint for the generic provider-rejection envelope (#584)", async () => {
+      // The durable banner shows no hint of its own; without one, a provider
+      // rejection reads like a malformed-request bug. The server computes the
+      // hint from providerError + role so the banner can point an admin at
+      // their provider configuration.
+      mockGetSession.mockResolvedValueOnce({ user: { id: "user-1", role: "admin" } });
+      mockGetActive.mockResolvedValueOnce({
+        ...activeRow,
+        errorClass: "unknown",
+        transientReason: null,
+        providerError: "LLM request failed: provider rejected the request schema or tool payload.",
+      });
+      const res = await GET(getRequest(), ctx as never);
+      const body = await res.json();
+      expect(body.error.hint).toBe("Go to Settings > Providers to check your API configuration.");
+    });
+
+    it("computes the member hint from the caller's role", async () => {
+      // Default session role is `member`; non-admins can't fix provider config.
+      mockGetActive.mockResolvedValueOnce({
+        ...activeRow,
+        errorClass: "unknown",
+        transientReason: null,
+        providerError: "LLM request failed: provider rejected the request schema or tool payload.",
+      });
+      const res = await GET(getRequest(), ctx as never);
+      const body = await res.json();
+      expect(body.error.hint).toBe("Please contact your administrator.");
+    });
+
     it("scopes the lookup to the chatId when provided", async () => {
       mockGetActive.mockResolvedValueOnce(null);
       await GET(

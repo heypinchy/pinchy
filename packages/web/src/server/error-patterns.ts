@@ -48,3 +48,18 @@ export const PROVIDER_CONFIG_PATTERN =
  * before we widen this anchor.
  */
 export const HTTP_5XX_PATTERN = /HTTP\s+(5\d\d)\b/i;
+
+/**
+ * OpenClaw's generic failover catch-all. When a provider rejects a run for a
+ * reason OpenClaw collapses (verified on staging: depleted credit surfaces as
+ * this string, not "credit balance too low"), the error chunk carries exactly
+ * this wording and nothing else — the distinguishing cause stays in OpenClaw's
+ * internal failover decision and never reaches Pinchy (issue #584). Because the
+ * real cause is unknowable from this text, it must NOT widen
+ * `PROVIDER_CONFIG_PATTERN` (that would assert an unproven cause in the
+ * append-only audit trail). It is used only by the user-facing hint to stop
+ * showing the bare wording — which reads like a malformed-request bug — and
+ * instead point an admin at their provider configuration.
+ */
+export const PROVIDER_REJECTED_GENERIC_PATTERN =
+  /provider rejected the request schema or tool payload/i;

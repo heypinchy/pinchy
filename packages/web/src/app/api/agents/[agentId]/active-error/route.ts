@@ -5,6 +5,7 @@ import { appendAuditLog } from "@/lib/audit";
 import { recordAuditFailure } from "@/lib/audit-deferred";
 import { directSessionKey } from "@/lib/session-key";
 import { getActiveChatSessionError, dismissChatSessionError } from "@/server/chat-session-errors";
+import { getErrorHint } from "@/server/error-hints";
 
 type RouteContext = { params: Promise<{ agentId: string }> };
 
@@ -34,6 +35,10 @@ export const GET = withAuth<RouteContext>(async (request, { params }, session) =
           errorClass: row.errorClass,
           transientReason: row.transientReason,
           providerError: row.providerError,
+          // The banner renders no hint of its own; derive the same role-gated
+          // guidance the live error frame gets (client-router) so a durable
+          // provider-rejection points an admin at their provider config (#584).
+          hint: getErrorHint(row.providerError, session.user.role),
           sideEffects: row.sideEffects,
           clientMessageId: row.clientMessageId,
           createdAt: row.createdAt,
