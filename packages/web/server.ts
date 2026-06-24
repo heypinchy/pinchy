@@ -10,6 +10,7 @@ import { restartState } from "./src/server/restart-state";
 import { openClawConnectionState } from "./src/server/openclaw-connection-state";
 import { applyKeepAliveTuning } from "./src/server/http-keepalive";
 import { setOpenClawClient } from "./src/server/openclaw-client";
+import { once } from "./src/lib/once";
 import { getActiveRunsSingleton } from "./src/server/active-runs-singleton";
 import { startRunWatchdog, DEFAULT_FIRST_CHUNK_TIMEOUT_MS } from "./src/server/run-watchdog";
 import {
@@ -233,8 +234,16 @@ ${domain ? `<p><a href="https://${domain}">Go to ${domain} →</a></p>` : ""}
       }
     });
 
-    clientWs.on("close", () => {
+    // An abruptly-dropped socket emits BOTH `error` and `close`. The
+    // connection-count decrement is not idempotent, so guard it with `once` to
+    // avoid under-counting (which would silently weaken the per-user
+    // connection cap). sessionMap/activeRuns deletes are idempotent.
+    const releaseConnectionOnce = once(() => {
       if (sessionInfo) wsRateLimiter.releaseConnection(sessionInfo.userId);
+    });
+
+    clientWs.on("close", () => {
+      releaseConnectionOnce();
       sessionMap.delete(clientWs);
       // #310 Tier 2a: detach this ws from any active-run listener sets so
       // chunks for a still-streaming OC run no longer try to send through
@@ -245,7 +254,7 @@ ${domain ? `<p><a href="https://${domain}">Go to ${domain} →</a></p>` : ""}
 
     clientWs.on("error", (err) => {
       console.error("Client WebSocket error:", err.message);
-      if (sessionInfo) wsRateLimiter.releaseConnection(sessionInfo.userId);
+      releaseConnectionOnce();
       sessionMap.delete(clientWs);
       activeRuns.removeListenerFromAll(clientWs);
     });

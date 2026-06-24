@@ -166,5 +166,22 @@ describe("WsRateLimiter", () => {
       // Different IP should still be allowed
       expect(limiter.allowUpgrade("10.0.0.2")).toBe(true);
     });
+
+    it("evicts stale IP records so the map does not grow unbounded", () => {
+      const limiter = new WsRateLimiter();
+
+      // Three one-shot IPs that never come back.
+      limiter.allowUpgrade("1.1.1.1");
+      limiter.allowUpgrade("2.2.2.2");
+      limiter.allowUpgrade("3.3.3.3");
+      expect(limiter.trackedIpCount).toBe(3);
+
+      // After the window elapses, the next upgrade from a fresh IP triggers a
+      // sweep that drops the three stale records.
+      vi.advanceTimersByTime(60_001);
+      limiter.allowUpgrade("4.4.4.4");
+
+      expect(limiter.trackedIpCount).toBe(1); // only the fresh IP remains
+    });
   });
 });

@@ -27,6 +27,12 @@ export class WsRateLimiter {
   private onReject?: (reason: RejectionReason) => void;
   private connectionCounts = new Map<string, number>();
   private ipUpgrades = new Map<string, IpUpgradeRecord>();
+  private lastSweep = 0;
+
+  /** Number of IPs currently tracked in the upgrade window (for tests/observability). */
+  get trackedIpCount(): number {
+    return this.ipUpgrades.size;
+  }
 
   constructor(options: WsRateLimiterOptions = {}) {
     // Defaults are tuned to absorb legitimate UI behavior — exponential
@@ -61,8 +67,24 @@ export class WsRateLimiter {
     }
   }
 
+  // Drop IP records whose window has elapsed. Without this, an entry for an IP
+  // that never returns lives forever — an unbounded leak under varied/hostile
+  // client IPs. Amortized to run at most once per window so it stays O(1) per
+  // call on average. A stale record is meaningless (allowUpgrade would reset it
+  // anyway), so eviction changes no rate-limiting behavior.
+  private pruneStale(now: number): void {
+    if (now - this.lastSweep < WINDOW_MS) return;
+    this.lastSweep = now;
+    for (const [ip, record] of this.ipUpgrades) {
+      if (now - record.windowStart > WINDOW_MS) {
+        this.ipUpgrades.delete(ip);
+      }
+    }
+  }
+
   allowUpgrade(ip: string): boolean {
     const now = Date.now();
+    this.pruneStale(now);
     const record = this.ipUpgrades.get(ip);
 
     if (!record || now - record.windowStart > WINDOW_MS) {
