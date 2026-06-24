@@ -15,6 +15,7 @@ import { getLicenseState } from "@/lib/enterprise";
 import { buildMemoryPromptBlock } from "@/lib/memory-prompt";
 import { appendAuditLog, safeProviderError } from "@/lib/audit";
 import { recordAuditFailure } from "@/lib/audit-deferred";
+import { maybeSelfHealOnModelError } from "@/server/model-self-heal";
 import { ActiveRuns } from "@/server/active-runs";
 import { iterateUntilAborted } from "@/server/abortable-stream";
 import { NEVER_DISCONNECTS, type DisconnectSignal } from "@/server/openclaw-disconnect-signal";
@@ -1797,6 +1798,11 @@ export class ClientRouter {
     } catch (err) {
       recordAuditFailure(err, auditEntry);
     }
+
+    // Self-heal: if this error means the agent's model was retired upstream
+    // (HTTP 410 / "Unknown model"), regenerate config so it re-resolves to a
+    // live model. Fire-and-forget + debounced + never throws.
+    void maybeSelfHealOnModelError(args.providerError);
   }
 }
 
