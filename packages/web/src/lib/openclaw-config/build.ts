@@ -199,7 +199,8 @@ export async function regenerateOpenClawConfig() {
   // Live (non-tombstoned) agents. Soft-deleted agents must never be emitted as
   // addressable agents, tool configs, or integration grants in the runtime
   // config — they'd point at a deleted workspace and keep their permissions.
-  // `allAgents` is kept only where tombstones are explicitly skipped already.
+  // Prefer `liveAgents` everywhere an agent is emitted; `allAgents` is only for
+  // cases that legitimately need tombstones (e.g. id-stability bookkeeping).
   const liveAgents = allAgents.filter((a) => !a.deletedAt);
 
   // Pattern A from CLAUDE.md "Secrets Handling": secret pair for each LLM
@@ -572,7 +573,7 @@ export async function regenerateOpenClawConfig() {
 
   // Enable pinchy-docs for all personal agents (Smithers) so they can read
   // platform documentation on demand. The plugin scopes itself to listed agents.
-  const personalAgentIds = allAgents.filter((a) => a.isPersonal && !a.deletedAt).map((a) => a.id);
+  const personalAgentIds = liveAgents.filter((a) => a.isPersonal).map((a) => a.id);
   if (personalAgentIds.length > 0) {
     // Three-state setting (see DOCS_PUBLIC_BASE_URL_SETTING_KEY doc-comment):
     // unset → default, empty → opt-out, value → use as-is.
@@ -1130,7 +1131,7 @@ export async function regenerateOpenClawConfig() {
       const telegramLinks = links.filter((l) => l.channel === "telegram");
       // Map userId → their personal agent ID (hoisted outside loop)
       const personalAgentsByOwner = new Map(
-        allAgents.filter((a) => a.isPersonal && !a.deletedAt).map((a) => [a.ownerId, a.id])
+        liveAgents.filter((a) => a.isPersonal).map((a) => [a.ownerId, a.id])
       );
 
       for (const { accountId } of personalBotsAccountIds) {

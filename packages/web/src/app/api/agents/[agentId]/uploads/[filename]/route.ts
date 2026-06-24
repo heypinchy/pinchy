@@ -1,5 +1,6 @@
-// audit-exempt: read-only access to the caller's own uploaded attachments —
-// no state change, audit log not required (see AGENTS.md § audit rules).
+// audit-exempt: read-only download, no state change (see AGENTS.md § audit
+// rules). Access is still gated — the GET enforces per-user ownership via an
+// uploadedFiles lookup to prevent IDOR on shared agents (see below).
 import { NextResponse } from "next/server";
 import { open, stat } from "fs/promises";
 import { join, resolve, sep, extname } from "path";
