@@ -27,6 +27,9 @@ vi.mock("@/lib/avatar", () => ({
 
 vi.mock("@/components/chat-session-provider", () => ({
   useChatSession: mockUseChatSession,
+  // ChatSwitcher (rendered in the header) reads run-state via this hook to
+  // refresh the chat title when a run completes; idle in these tests.
+  useChatSessionIsRunning: () => false,
 }));
 
 vi.mock("@/hooks/use-chat-status", () => ({

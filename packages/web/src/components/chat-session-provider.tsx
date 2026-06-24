@@ -131,6 +131,23 @@ export function useChatSession(agentId: string, chatId?: string) {
   );
 }
 
+// A shared empty store used as a fallback so run-state reads never throw when a
+// component happens to render outside a ChatSessionProvider (e.g. isolated
+// component tests). It stays empty, so isRunning resolves to false.
+const fallbackStore = createChatSessionStore();
+
+/**
+ * Non-throwing subscription to whether the given chat's run is currently in
+ * flight. Unlike `useChatSession`, returns `false` rather than throwing when
+ * there is no ChatSessionProvider above — so a header component (ChatSwitcher)
+ * can react to run-completion without coupling its render to the provider.
+ */
+export function useChatSessionIsRunning(agentId: string, chatId?: string): boolean {
+  const store = useContext(ChatSessionStoreContext) ?? fallbackStore;
+  const key = chatSessionKey(agentId, chatId);
+  return useStore(store, (s) => s.bundles[key]?.isRunning ?? false);
+}
+
 export function useVisitedAgentIds(): string[] {
   const store = useStoreOrThrow();
   // Serialize to a stable string so useSyncExternalStore snapshot is referentially
