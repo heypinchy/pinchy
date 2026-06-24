@@ -169,7 +169,7 @@ docker compose pull && docker compose up -d && docker image prune -f
 
 Until now, every update could silently sign you out. On HTTPS/domain-locked instances the session cookie's name depended on a value that was computed nondeterministically at startup, so it sometimes changed between container versions and orphaned your existing login. %%PINCHY_VERSION%% pins that decision to the domain-lock state via a stable, persisted flag, so the cookie name no longer changes across restarts.
 
-One transitional effect: **this upgrade signs everyone out one final time** as the cookie name settles onto the stable value. After that, logins persist across updates as expected. Nothing to configure — just sign back in once.
+One transitional effect: **this upgrade may sign you out one final time** as the cookie name settles onto the stable value. The flag is reconciled before the server starts, so the very first boot already uses the stable cookie name — no second sign-out, and Secure cookies are never briefly downgraded. After that, logins persist across updates as expected. Nothing to configure — just sign back in once if prompted.
 
 #### One-click deploys: DigitalOcean Marketplace and CapRover
 

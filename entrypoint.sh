@@ -80,5 +80,16 @@ fi
 echo '[pinchy] Running database migrations...'
 su -s /bin/sh pinchy -c 'cd /app/packages/web && pnpm db:migrate'
 
+# Reconcile the Secure-cookie (domain-lock) flag from the DB BEFORE the server
+# starts. auth.ts reads it at module import (eager: server.ts -> ws-auth ->
+# @/lib/auth), which is too early for in-process bootInits to write it. Doing it
+# here — pre-node, after migrations so the settings table exists — means the
+# very first boot after a domain-locked upgrade already issues Secure/`__Secure-`
+# cookies, so the cookie name never flips and users aren't logged out (nor
+# briefly served non-Secure cookies). Non-fatal: a failure degrades to
+# non-Secure cookies (login still works) rather than blocking the boot.
+echo '[pinchy] Reconciling Secure-cookie (domain-lock) flag...'
+su -s /bin/sh pinchy -c 'cd /app/packages/web && node scripts/reconcile-domain-lock-flag.mjs' || true
+
 echo '[pinchy] Starting server...'
 exec su -s /bin/sh pinchy -c 'cd /app/packages/web && exec pnpm start'

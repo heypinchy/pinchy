@@ -17,6 +17,14 @@
  * stable across restarts. The DB setting remains the source of truth; this file
  * is a sync cache kept in step on every lock/unlock and on each boot.
  *
+ * Crucially, `auth.ts` imports EAGERLY (server.ts -> ws-auth -> @/lib/auth), so
+ * `shouldUseSecureCookies()` runs before in-process `bootInits()` can backfill
+ * the flag. The Docker entrypoint therefore reconciles the flag from the DB
+ * BEFORE `node` starts (scripts/reconcile-domain-lock-flag.mjs), so the very
+ * first boot after a domain-locked upgrade already reads the correct value —
+ * the in-process `writeDomainLockFlag` calls below are a backfill for dev/test
+ * and any path that skips the entrypoint.
+ *
  * Node-only (uses `fs`). Do NOT import from Edge middleware — use
  * `@/lib/domain-cache`'s `getCachedDomain()` there.
  */
