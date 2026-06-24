@@ -364,6 +364,9 @@ export function SettingsUsers({ currentUserId, refreshKey }: SettingsUsersProps)
             setSelectedUser(null);
             fetchUsers();
           }}
+          // Partial success: refresh the list but keep the sheet open so the
+          // user can retry the half that failed (no setSelectedUser(null)).
+          onRefresh={fetchUsers}
         />
       )}
     </div>
