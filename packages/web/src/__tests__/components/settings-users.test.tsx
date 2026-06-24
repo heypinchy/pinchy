@@ -754,6 +754,76 @@ describe("SettingsUsers", () => {
       });
     });
 
+    it("reports which resend step failed: revoking the old invite", async () => {
+      const user = userEvent.setup();
+      mockFetchForUsers(mockUsers, [expiredInvite]);
+      render(<SettingsUsers currentUserId="user-1" />);
+      await waitFor(() => {
+        expect(screen.getAllByText("expired@example.com").length).toBeGreaterThanOrEqual(1);
+      });
+
+      let postCalled = false;
+      vi.mocked(global.fetch).mockImplementation(async (url, init) => {
+        if (String(url) === "/api/users/invites/inv-2" && init?.method === "DELETE") {
+          return { ok: false, status: 500 } as Response;
+        }
+        if (String(url) === "/api/users/invite" && init?.method === "POST") {
+          postCalled = true;
+          return { ok: true, json: async () => ({ token: "x" }) } as Response;
+        }
+        if (String(url) === "/api/users") {
+          return { ok: true, json: async () => ({ users: mockUsers }) } as Response;
+        }
+        if (String(url) === "/api/users/invites") {
+          return { ok: true, json: async () => ({ invites: [] }) } as Response;
+        }
+        return { ok: true, json: async () => [] } as Response;
+      });
+
+      const table = screen.getByRole("table");
+      const inviteRow = within(table).getAllByText("expired@example.com")[0].closest("tr")!;
+      await user.click(within(inviteRow).getByRole("button", { name: "Resend" }));
+
+      await waitFor(() => {
+        expect(mockToast.error).toHaveBeenCalledWith(expect.stringMatching(/revoke.*old invite/i));
+      });
+      // The new invite must not be created if revoking the old one failed.
+      expect(postCalled).toBe(false);
+    });
+
+    it("reports which resend step failed: creating the new invite", async () => {
+      const user = userEvent.setup();
+      mockFetchForUsers(mockUsers, [expiredInvite]);
+      render(<SettingsUsers currentUserId="user-1" />);
+      await waitFor(() => {
+        expect(screen.getAllByText("expired@example.com").length).toBeGreaterThanOrEqual(1);
+      });
+
+      vi.mocked(global.fetch).mockImplementation(async (url, init) => {
+        if (String(url) === "/api/users/invites/inv-2" && init?.method === "DELETE") {
+          return { ok: true, json: async () => ({ success: true }) } as Response;
+        }
+        if (String(url) === "/api/users/invite" && init?.method === "POST") {
+          return { ok: false, status: 500 } as Response;
+        }
+        if (String(url) === "/api/users") {
+          return { ok: true, json: async () => ({ users: mockUsers }) } as Response;
+        }
+        if (String(url) === "/api/users/invites") {
+          return { ok: true, json: async () => ({ invites: [] }) } as Response;
+        }
+        return { ok: true, json: async () => [] } as Response;
+      });
+
+      const table = screen.getByRole("table");
+      const inviteRow = within(table).getAllByText("expired@example.com")[0].closest("tr")!;
+      await user.click(within(inviteRow).getByRole("button", { name: "Resend" }));
+
+      await waitFor(() => {
+        expect(mockToast.error).toHaveBeenCalledWith(expect.stringMatching(/create.*new invite/i));
+      });
+    });
+
     it("should render status badges for all statuses", async () => {
       const deactivatedUser = {
         id: "user-4",

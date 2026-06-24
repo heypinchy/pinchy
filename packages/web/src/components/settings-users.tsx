@@ -145,9 +145,12 @@ export function SettingsUsers({ currentUserId, refreshKey }: SettingsUsersProps)
   }
 
   async function handleResend(item: UserListItem & { kind: "invite" }) {
+    // Resend = revoke the old invite, then create a fresh one. Report which of
+    // the two steps failed so the admin knows whether the old invite is still
+    // live (revoke failed) or simply no replacement was issued (create failed).
     const deleteRes = await fetch(`/api/users/invites/${item.id}`, { method: "DELETE" });
     if (!deleteRes.ok) {
-      toast.error("Failed to resend invite. Please try again.");
+      toast.error("Failed to revoke the old invite. Please try again.");
       fetchUsers();
       return;
     }
@@ -160,7 +163,7 @@ export function SettingsUsers({ currentUserId, refreshKey }: SettingsUsersProps)
       const data = await res.json();
       setResetLink(buildInviteUrl(window.location.origin, data.token));
     } else {
-      toast.error("Failed to resend invite. Please try again.");
+      toast.error("Failed to create the new invite. Please try again.");
     }
     fetchUsers();
   }
