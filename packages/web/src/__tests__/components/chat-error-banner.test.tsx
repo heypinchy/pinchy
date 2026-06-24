@@ -10,6 +10,13 @@ vi.mock("@/lib/api-client", () => ({
   apiDelete: (...args: unknown[]) => mockApiDelete(...args),
 }));
 
+// The thread's inline-error signal (#583). Default false so the banner renders
+// as before; the suppression test flips it to true.
+let mockHasInlineError = false;
+vi.mock("@/components/chat-session-provider", () => ({
+  useChatSessionHasInlineError: () => mockHasInlineError,
+}));
+
 const transientRow = {
   id: "err-1",
   agentName: "Penny",
@@ -39,6 +46,7 @@ const providerRejectionRow = {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  mockHasInlineError = false;
   mockApiDelete.mockResolvedValue({ dismissed: true });
 });
 
@@ -69,6 +77,22 @@ describe("ChatErrorBanner", () => {
 
     await waitFor(() => expect(screen.getByText("Smithers couldn't respond")).toBeInTheDocument());
     expect(screen.getByRole("link", { name: /settings > providers/i })).toBeInTheDocument();
+  });
+
+  it("suppresses itself when the thread already shows the inline error for this run (#583)", async () => {
+    // The banner is a fallback for an error the live bubble LOST to reload/
+    // reconnect. When the runtime bundle survives a nav-away/back, the inline
+    // turn-failure bubble is still on screen — rendering the banner too would
+    // duplicate the same failure. With the thread's inline error present, the
+    // banner renders nothing even though an active error exists server-side.
+    mockHasInlineError = true;
+    mockApiGet.mockResolvedValue({ error: transientRow });
+    const { container } = render(<ChatErrorBanner agentId="agent-1" onRetry={vi.fn()} />);
+
+    // Give the mount fetch a chance to resolve; the banner must still be empty.
+    await waitFor(() => expect(mockApiGet).toHaveBeenCalled());
+    expect(screen.queryByText("Penny paused")).not.toBeInTheDocument();
+    expect(container).toBeEmptyDOMElement();
   });
 
   it("dismisses via the API and hides the banner", async () => {

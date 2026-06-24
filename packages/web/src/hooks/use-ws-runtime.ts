@@ -405,6 +405,12 @@ export function useWsRuntime(
   hasInitialContent: boolean;
   reconnectExhausted: boolean;
   payloadRejected: boolean;
+  /**
+   * True while an inline turn-failure bubble is in the thread (#583). Lets the
+   * durable paused-error banner suppress itself as a fallback rather than
+   * duplicate a failure that is already visible inline.
+   */
+  hasInlineError: boolean;
   onRetryContinue: (reason: "orphan" | "partial_stream_failure" | "send_failure") => void;
   onRetryResend: (messageId: string) => void;
   pendingUploads: PendingUpload[];
@@ -1921,6 +1927,10 @@ export function useWsRuntime(
     isOpenClawConnected,
     reconnectExhausted,
     payloadRejected,
+    // #583: whether an inline turn-failure bubble is currently in the thread.
+    // The durable paused-error banner reads this (via the published bundle) to
+    // suppress itself when the same failure is already shown inline.
+    hasInlineError: messages.some((m) => m.error),
     onRetryContinue,
     onRetryResend,
     pendingUploads,

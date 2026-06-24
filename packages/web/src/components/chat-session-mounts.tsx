@@ -95,6 +95,7 @@ function ChatSessionInstance({ agentId, chatId }: { agentId: string; chatId?: st
       isDelayed: bundle.isDelayed,
       reconnectExhausted: bundle.reconnectExhausted,
       payloadRejected: bundle.payloadRejected,
+      hasInlineError: bundle.hasInlineError,
       onRetryContinue,
       onRetryResend,
       lastError,
@@ -118,6 +119,7 @@ function ChatSessionInstance({ agentId, chatId }: { agentId: string; chatId?: st
     bundle.isDelayed,
     bundle.reconnectExhausted,
     bundle.payloadRejected,
+    bundle.hasInlineError,
     bundle.pendingUploads,
   ]);
 

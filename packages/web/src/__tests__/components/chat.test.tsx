@@ -37,6 +37,9 @@ vi.mock("@/components/chat-session-provider", () => ({
   // ChatSwitcher (rendered in the header) reads run-state via this hook to
   // refresh the chat title when a run completes; idle in these tests.
   useChatSessionIsRunning: () => false,
+  // ChatErrorBanner reads this to suppress itself when the thread already shows
+  // the inline error (#583); no inline error in these tests.
+  useChatSessionHasInlineError: () => false,
 }));
 
 vi.mock("@/hooks/use-chat-status", () => ({

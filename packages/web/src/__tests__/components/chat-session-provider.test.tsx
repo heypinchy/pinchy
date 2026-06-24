@@ -4,6 +4,7 @@ import {
   ChatSessionProvider,
   MAX_LIVE_BUNDLES,
   useChatSession,
+  useChatSessionHasInlineError,
   useVisitedAgentIds,
   useVisitedSessions,
   type RuntimeBundle,
@@ -107,6 +108,44 @@ describe("ChatSessionProvider", () => {
     act(() => result.current.publishB(fakeBundle()));
 
     expect(result.current.ids.sort()).toEqual(["agent-A", "agent-B"]);
+  });
+
+  describe("useChatSessionHasInlineError (#583)", () => {
+    it("returns false when the session has no bundle", () => {
+      const { result } = renderHook(() => useChatSessionHasInlineError("agent-1"), { wrapper });
+      expect(result.current).toBe(false);
+    });
+
+    it("reflects the published bundle's hasInlineError flag", () => {
+      const { result } = renderHook(
+        () => ({
+          session: useChatSession("agent-1"),
+          hasInlineError: useChatSessionHasInlineError("agent-1"),
+        }),
+        { wrapper }
+      );
+
+      act(() => result.current.session.publish(fakeBundle({ hasInlineError: true })));
+      expect(result.current.hasInlineError).toBe(true);
+    });
+
+    it("defaults to false when the flag is absent (legacy placeholder bundle)", () => {
+      const { result } = renderHook(
+        () => ({
+          session: useChatSession("agent-1"),
+          hasInlineError: useChatSessionHasInlineError("agent-1"),
+        }),
+        { wrapper }
+      );
+
+      act(() => result.current.session.publish(fakeBundle()));
+      expect(result.current.hasInlineError).toBe(false);
+    });
+
+    it("does not throw outside a ChatSessionProvider (non-throwing fallback)", () => {
+      const { result } = renderHook(() => useChatSessionHasInlineError("agent-1"));
+      expect(result.current).toBe(false);
+    });
   });
 
   it("remove() clears the bundle for that agent", () => {

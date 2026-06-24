@@ -33,6 +33,13 @@ export interface RuntimeBundle {
   isDelayed: boolean;
   reconnectExhausted: boolean;
   payloadRejected: boolean;
+  /**
+   * The thread currently shows an inline turn-failure bubble (#583). Optional
+   * so the placeholder bundle and legacy publishers stay valid; absent ≙ false.
+   * Read by the durable paused-error banner to suppress itself when the same
+   * failure is already on screen inline, making the banner a true fallback.
+   */
+  hasInlineError?: boolean;
   onRetryContinue: (reason: "orphan" | "partial_stream_failure" | "send_failure") => void;
   onRetryResend: (messageId: string) => void;
   lastError: string | null;
@@ -146,6 +153,19 @@ export function useChatSessionIsRunning(agentId: string, chatId?: string): boole
   const store = useContext(ChatSessionStoreContext) ?? fallbackStore;
   const key = chatSessionKey(agentId, chatId);
   return useStore(store, (s) => s.bundles[key]?.isRunning ?? false);
+}
+
+/**
+ * Non-throwing subscription to whether the given chat's thread currently shows
+ * an inline turn-failure bubble (#583). Mirrors `useChatSessionIsRunning`'s
+ * fallback-store pattern so the durable paused-error banner — which lives
+ * outside the runtime — can suppress itself when the failure is already
+ * visible inline, without coupling its render to the provider.
+ */
+export function useChatSessionHasInlineError(agentId: string, chatId?: string): boolean {
+  const store = useContext(ChatSessionStoreContext) ?? fallbackStore;
+  const key = chatSessionKey(agentId, chatId);
+  return useStore(store, (s) => s.bundles[key]?.hasInlineError ?? false);
 }
 
 export function useVisitedAgentIds(): string[] {

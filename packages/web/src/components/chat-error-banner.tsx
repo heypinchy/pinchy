@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { apiGet, apiDelete } from "@/lib/api-client";
+import { useChatSessionHasInlineError } from "@/components/chat-session-provider";
 import { ChatErrorMessage, type ChatError } from "@/components/assistant-ui/chat-error-message";
 import type { TransientReason } from "@/lib/schemas/chat-frames";
 import { Button } from "@/components/ui/button";
@@ -65,6 +66,13 @@ export function ChatErrorBanner({
 }) {
   const [error, setError] = useState<ActiveError | null>(null);
 
+  // #583: the banner is a FALLBACK for a failure the live bubble lost to a
+  // reload/reconnect. When the runtime bundle survives a nav-away/back, the
+  // inline turn-failure bubble is still on screen — so suppress the banner to
+  // avoid showing the same failure twice. The thread is the single source of
+  // truth; the banner only fills in when no inline error is present.
+  const hasInlineError = useChatSessionHasInlineError(agentId, chatId ?? undefined);
+
   useEffect(() => {
     let cancelled = false;
     const url = chatId
@@ -82,7 +90,7 @@ export function ChatErrorBanner({
     };
   }, [agentId, chatId]);
 
-  if (!error) return null;
+  if (!error || hasInlineError) return null;
 
   const handleDismiss = () => {
     const id = error.id;
