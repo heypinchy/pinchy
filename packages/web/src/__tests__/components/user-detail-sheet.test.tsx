@@ -390,6 +390,14 @@ describe("UserDetailSheet", () => {
     // partial success — that was the contradiction the comment claimed to avoid.
     expect(onSaved).not.toHaveBeenCalled();
     expect(onOpenChange).not.toHaveBeenCalledWith(false);
+
+    // The sheet stays MOUNTED, so the user's in-progress edits survive for the
+    // retry: the role still reads "admin" and Marketing is still checked. (If
+    // the sheet had unmounted, this state would be lost and a retry would
+    // re-submit stale data.)
+    expect(screen.getByRole("combobox")).toHaveTextContent(/admin/i);
+    expect(screen.getByRole("checkbox", { name: /marketing/i })).toBeChecked();
+    expect(screen.getByRole("button", { name: /save/i })).toBeEnabled();
   });
 
   it("should show copied feedback when reset link Copy button is clicked", async () => {

@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 
-const { mockLimit, mockOrderBy, mockWhere, mockFrom, mockSelect } = vi.hoisted(() => {
+const { mockLimit, mockOrderBy, mockWhere, mockFrom, mockSelect, gtCursors } = vi.hoisted(() => {
   // verifyIntegrity now keyset-paginates: select().from().where().orderBy().limit().
   // The terminal awaited call is .limit(), so test data is staged on mockLimit.
   const mockLimit = vi.fn();
@@ -8,7 +8,12 @@ const { mockLimit, mockOrderBy, mockWhere, mockFrom, mockSelect } = vi.hoisted((
   const mockWhere = vi.fn().mockReturnValue({ orderBy: mockOrderBy });
   const mockFrom = vi.fn().mockReturnValue({ where: mockWhere });
   const mockSelect = vi.fn().mockReturnValue({ from: mockFrom });
-  return { mockLimit, mockOrderBy, mockWhere, mockFrom, mockSelect };
+  // Records the cursor passed to each keyset `gt(auditLog.id, cursor)` so tests
+  // can assert the cursor actually advances across pages (not just that
+  // pagination ran). gt() is only used for the keyset cursor — fromId uses gte,
+  // toId uses lte — so this captures exactly the page-to-page progression.
+  const gtCursors: unknown[] = [];
+  return { mockLimit, mockOrderBy, mockWhere, mockFrom, mockSelect, gtCursors };
 });
 
 vi.mock("@/lib/encryption", () => ({
@@ -20,6 +25,18 @@ vi.mock("@/db", () => ({
     select: (...args: unknown[]) => mockSelect(...args),
   },
 }));
+
+// Keep real drizzle operators, but tap `gt` to capture the keyset cursor value.
+vi.mock("drizzle-orm", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("drizzle-orm")>();
+  return {
+    ...actual,
+    gt: (col: unknown, val: unknown) => {
+      gtCursors.push(val);
+      return (actual.gt as (c: unknown, v: unknown) => unknown)(col, val);
+    },
+  };
+});
 
 import { computeRowHmacV1, computeRowHmacV2, computeRowHmacV3, verifyIntegrity } from "@/lib/audit";
 
@@ -282,6 +299,7 @@ describe("verifyIntegrity", () => {
       const r4 = makeV3Entry(4, r3.rowHmac);
       const r5 = makeV3Entry(5, r4.rowHmac);
       servePaged([r1, r2, r3, r4, r5], 2);
+      gtCursors.length = 0;
 
       const result = await verifyIntegrity(undefined, undefined, { pageSize: 2 });
 
@@ -295,6 +313,11 @@ describe("verifyIntegrity", () => {
       // at once. (A short final page ends the walk; an exact-multiple table
       // would issue one extra empty fetch.)
       expect(mockSelect).toHaveBeenCalledTimes(3);
+      // The cursor genuinely ADVANCES across pages: after page 1 ([r1,r2]) the
+      // next fetch asks for id > 2, and after page 2 ([r3,r4]) for id > 4. This
+      // guards against a broken refactor that paginates by re-fetching from the
+      // same cursor (or never advancing) — which mockSelect-count alone misses.
+      expect(gtCursors).toEqual([2, 4]);
     });
 
     it("detects a deleted row whose break straddles a page boundary", async () => {
