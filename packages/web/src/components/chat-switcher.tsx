@@ -16,6 +16,8 @@ import { Badge } from "@/components/ui/badge";
 import { apiGet } from "@/lib/api-client";
 import type { ChatListItem } from "@/lib/schemas/sessions";
 import { generateChatId } from "@/lib/chats/generate-chat-id";
+import { useChatSessionIsRunning } from "@/components/chat-session-provider";
+import { useRunCompletionEffect } from "@/hooks/use-run-completion-effect";
 
 interface ChatSwitcherProps {
   agentId: string;
@@ -160,6 +162,13 @@ export function ChatSwitcher({
   // useState so we don't re-set it here (keeps the effect free of a synchronous
   // setState — react-hooks/set-state-in-effect).
   useEffect(() => loadChats(), [loadChats]);
+
+  // Refresh the list the moment the active chat's run finishes, so the server-
+  // derived title (from the first user message) appears immediately. Without
+  // this a brand-new chat keeps showing the agent name in the header until the
+  // dropdown is reopened or the agent is switched.
+  const isRunning = useChatSessionIsRunning(agentId, chatId ?? undefined);
+  useRunCompletionEffect(isRunning, loadChats);
 
   // Re-fetch every time the dropdown opens so sessions created since mount (e.g.
   // by a message just sent in the active chat) appear. The result is discarded
