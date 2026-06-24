@@ -18,3 +18,27 @@ describe("entrypoint.sh plugin runtime check", () => {
     expect(ENTRYPOINT).toMatch(/openclaw-extensions/);
   });
 });
+
+describe("entrypoint.sh Secure-cookie (domain-lock) reconcile", () => {
+  it("runs the domain-lock reconciler before starting the server", () => {
+    expect(ENTRYPOINT).toContain("reconcile-domain-lock-flag.mjs");
+  });
+
+  it("reconciles AFTER migrations (settings table exists) and BEFORE the server boots", () => {
+    // auth.ts reads the flag at import; the server must not start until the
+    // flag reflects the DB `domain` setting, and the settings table must be
+    // migrated first. Order: db:migrate -> reconcile -> pnpm start.
+    const migrate = ENTRYPOINT.indexOf("db:migrate");
+    const reconcile = ENTRYPOINT.indexOf("reconcile-domain-lock-flag.mjs");
+    const start = ENTRYPOINT.lastIndexOf("pnpm start");
+    expect(migrate).toBeGreaterThanOrEqual(0);
+    expect(reconcile).toBeGreaterThan(migrate);
+    expect(start).toBeGreaterThan(reconcile);
+  });
+
+  it("never blocks the boot if the reconcile fails", () => {
+    // The reconcile invocation must be non-fatal (degrades to non-Secure
+    // cookies; login still works) — guarded by a trailing `|| true`.
+    expect(ENTRYPOINT).toMatch(/reconcile-domain-lock-flag\.mjs'\s*\|\|\s*true/);
+  });
+});
