@@ -27,24 +27,15 @@ fi
 # it can enter the directory and rename files atomically.
 chown pinchy:pinchy /openclaw-secrets 2>/dev/null || true
 
-# Refresh plugin directories on every startup. The named Docker volume
-# (openclaw-extensions) is only initialised from the image on first creation;
-# subsequent upgrades leave stale content from the previous image.
-#
-# Critically idempotent: we only re-copy a plugin if its directory is missing
-# or differs from the image. Untouched files mean no spurious inotify events
-# for OpenClaw's plugin watcher (which would otherwise cause it to re-init the
-# plugin runtime on every container start, blocking the event loop for tens
-# of seconds — see Telegram E2E investigation for the failure mode).
-for plugin_src in /app/pinchy-plugins/*/; do
-  plugin_name=$(basename "$plugin_src")
-  plugin_dst="/openclaw-extensions/$plugin_name"
-  if [ ! -d "$plugin_dst" ] || ! diff -rq "$plugin_src" "$plugin_dst" >/dev/null 2>&1; then
-    rm -rf "$plugin_dst"
-    cp -r "$plugin_src" "$plugin_dst"
-    echo "[entrypoint] synced plugin: $plugin_name"
-  fi
-done
+# Refresh plugin SOURCE in the shared openclaw-extensions volume on every
+# startup (the named volume is only seeded from the image on first creation;
+# upgrades otherwise keep stale content from the previous image). The sync
+# PRESERVES each plugin's node_modules: those are installed solely by the
+# OpenClaw container (start-openclaw.sh) from baked /opt/<plugin>-deps bundles
+# and are the only copy, so a pinchy-only restart must never wipe them. Logic +
+# its regression test live in config/sync-plugins.sh / sync-plugins.test.ts
+# (guards the PR #275 regression that wiped deps and broke plugin load).
+sh /sync-plugins.sh
 
 # Verify every Pinchy plugin shipped in the image landed in the shared
 # extensions volume. If a Dockerfile.pinchy COPY line is missing, OpenClaw

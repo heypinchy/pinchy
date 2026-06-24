@@ -516,6 +516,55 @@ jobs:
           fi
           echo "Clean startup verified (restarts=$RESTART_COUNT, connection_errors=$ERROR_COUNT)"
 
+      - name: Verify plugins load + deps survive a pinchy-only restart (PR #275 regression)
+        run: |
+          # External-dep plugins' node_modules are installed ONLY by the
+          # OpenClaw container (start-openclaw.sh) from baked /opt/<plugin>-deps
+          # bundles — the pinchy image ships plugin SOURCE with no node_modules.
+          # PR #275 made pinchy's per-boot source sync `rm -rf; cp -r`, which
+          # wiped those deps on every pinchy restart, so a pinchy-only recreate
+          # (openclaw left running) broke pinchy-web / pinchy-files /
+          # pinchy-odoo with "Cannot find module". A fresh full-stack boot
+          # happens to order correctly, which is why CI never caught it. This
+          # reproduces the partial restart and asserts the deps survive.
+          set -e
+          DEP_PLUGINS="pinchy-web pinchy-files pinchy-odoo pinchy-email"
+
+          echo "== assert no plugin failed to load on initial boot =="
+          if docker compose logs openclaw 2>&1 | grep -E "failed to (load|initialize)|Cannot find module"; then
+            echo "::error::a Pinchy plugin failed to load (missing runtime dep in the openclaw image?)"
+            docker compose logs openclaw | tail -80
+            exit 1
+          fi
+
+          assert_deps() {
+            for p in $DEP_PLUGINS; do
+              # Only plugins the openclaw image bundled deps for must have node_modules.
+              if docker compose exec -T openclaw sh -c "test -d /opt/$p-deps"; then
+                if ! docker compose exec -T openclaw sh -c "test -d /root/.openclaw/extensions/$p/node_modules"; then
+                  echo "::error::$p/node_modules missing $1 — the plugin source sync wiped OpenClaw-installed deps"
+                  exit 1
+                fi
+              fi
+            done
+            echo "all bundled-plugin node_modules present $1"
+          }
+          assert_deps "(initial boot)"
+
+          echo "== pinchy-only recreate: re-runs the source sync, openclaw left running =="
+          docker compose up -d --no-deps --force-recreate pinchy
+          for i in $(seq 1 30); do
+            curl -sf http://localhost:7777/api/health >/dev/null 2>&1 && break
+            if [ "$i" -eq 30 ]; then
+              echo "::error::pinchy did not become healthy after recreate"
+              docker compose logs pinchy | tail -40
+              exit 1
+            fi
+            sleep 2
+          done
+          assert_deps "(after pinchy-only recreate)"
+          echo "Plugin deps survived a pinchy-only restart"
+
       # Regression guard for the openclaw-node deviceToken bug that broke the
       # v0.4.1 demo. Pinchy had been running fine; an upgrade recreated both
       # containers, gateway.auth.token got regenerated (race between Pinchy's

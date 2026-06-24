@@ -42,3 +42,26 @@ describe("entrypoint.sh Secure-cookie (domain-lock) reconcile", () => {
     expect(ENTRYPOINT).toMatch(/reconcile-domain-lock-flag\.mjs'\s*\|\|\s*true/);
   });
 });
+
+describe("plugin-source sync preserves node_modules (PR #275 regression guard)", () => {
+  const SYNC_PLUGINS = readFileSync(resolve(REPO_ROOT, "config/sync-plugins.sh"), "utf8");
+
+  it("entrypoint delegates the plugin-source sync to sync-plugins.sh", () => {
+    expect(ENTRYPOINT).toContain("/sync-plugins.sh");
+  });
+
+  it("excludes node_modules from change-detection", () => {
+    // node_modules is installed by the OpenClaw container, not shipped in the
+    // image source. Including it in the diff makes the sync ALWAYS differ and
+    // re-run, which is what destroyed the deps in #275.
+    expect(SYNC_PLUGINS).toMatch(/diff\b[^\n]*--exclude=node_modules/);
+  });
+
+  it("replaces stale source without ever deleting node_modules", () => {
+    // The fix: delete only non-node_modules entries, never `rm -rf` the whole
+    // plugin dir (the #275 bug that wiped OpenClaw-installed deps and broke
+    // pinchy-web / pinchy-files / pinchy-odoo on a pinchy-only restart).
+    expect(SYNC_PLUGINS).toMatch(/!\s+-name\s+node_modules/);
+    expect(SYNC_PLUGINS).not.toMatch(/rm\s+-rf\s+"\$plugin_dst"/);
+  });
+});

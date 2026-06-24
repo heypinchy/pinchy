@@ -186,6 +186,9 @@ RUN groupadd -r -g 999 pinchy && useradd -r -u 999 -g pinchy -d /app pinchy
 RUN mkdir -p /app/secrets /openclaw-config/workspaces && chown -R pinchy:pinchy /app /app/secrets /openclaw-config/workspaces
 
 COPY entrypoint.sh /entrypoint.sh
-RUN chmod +x /entrypoint.sh
+# Plugin-source sync helper the entrypoint runs on every boot. Extracted from
+# entrypoint.sh so its node_modules-preservation invariant is unit-testable.
+COPY config/sync-plugins.sh /sync-plugins.sh
+RUN chmod +x /entrypoint.sh /sync-plugins.sh
 
 ENTRYPOINT ["/entrypoint.sh"]
