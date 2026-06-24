@@ -162,7 +162,6 @@ export async function readBodyCapped(res: Response, maxBytes: number): Promise<s
           // maxChars downstream, so a byte-boundary cut at the very end can't
           // surface as a visible artifact.
           chunks.push(result.value.subarray(0, remaining));
-          total = maxBytes;
           break;
         }
         chunks.push(result.value);
