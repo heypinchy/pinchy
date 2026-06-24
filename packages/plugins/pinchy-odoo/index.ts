@@ -2835,6 +2835,21 @@ const plugin = {
               const targetRef = params.targetRef as string;
               const decoded = decodeRef(targetRef);
 
+              // Enforce per-connection isolation: a ref minted for a DIFFERENT
+              // connection decodes validly under this deployment's single ref
+              // key, so reject it before acting — same guard every other
+              // ref-consuming Odoo tool applies.
+              if (
+                decoded.integrationType !== "odoo" ||
+                decoded.connectionId !== config.connectionId
+              ) {
+                return errorResult(
+                  new Error(
+                    "`targetRef` ref does not belong to this Odoo connection.",
+                  ),
+                );
+              }
+
               if (
                 !checkPermission(config.permissions, "ir.attachment", "create")
               ) {

@@ -2274,6 +2274,32 @@ describe("odoo_attach_file", () => {
     );
   });
 
+  it("rejects a targetRef minted for a DIFFERENT connection (tenant isolation)", async () => {
+    // A ref for conn-test-2 decodes validly under the shared per-deployment ref
+    // key, but this agent is bound to conn-test-1 — it must be refused before
+    // any ir.attachment create, matching every sibling ref-consuming tool.
+    const foreignRef = encodeRef({
+      integrationType: "odoo",
+      connectionId: "conn-test-2",
+      model: "account.move",
+      id: 42,
+      label: "INV/2025/0001",
+    });
+    mockReadFile.mockResolvedValue(Buffer.from("x"));
+
+    const tools = createApi({ [attachAgentId]: attachAgentConfig });
+    const tool = findTool(tools, "odoo_attach_file", attachAgentId)!;
+
+    const result = await tool.execute("call-foreign", {
+      targetRef: foreignRef,
+      filename: "receipt.jpg",
+    });
+
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain("does not belong to this Odoo connection");
+    expect(mockCreate).not.toHaveBeenCalled();
+  });
+
   it("returns permission denied when ir.attachment.create is missing", async () => {
     const targetRef = encodeRef({
       integrationType: "odoo",
