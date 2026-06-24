@@ -167,6 +167,22 @@ function cleanupRecentToolStarts(recentStarts: Map<string, RecentToolStart>): vo
   }
 }
 
+// Key the start record by a per-call identity, not by tool name. The plugin
+// instance is shared across agents, so two overlapping calls of the SAME tool
+// name (two agents, or one agent's parallel tool calls) would collide on a
+// name-only key and the after-hook would read back the wrong agent/session,
+// misattributing a tamper-evident audit row. toolCallId is the most specific;
+// runId scopes the fallback to one run; toolName alone is the last resort.
+function toolStartKey(
+  toolCallId: string | undefined,
+  runId: string | undefined,
+  toolName: string,
+): string {
+  if (toolCallId) return toolCallId;
+  if (runId) return `${runId}:${toolName}`;
+  return toolName;
+}
+
 const MAX_RETRIES = 2;
 
 async function postToolAuditEvent(
@@ -239,7 +255,12 @@ const plugin = {
       const beforeEvent = event as BeforeToolCallEvent;
       const agentId = ctx.agentId ?? extractAgentIdFromSessionKey(ctx.sessionKey);
 
-      recentStarts.set(beforeEvent.toolName, {
+      const startKey = toolStartKey(
+        beforeEvent.toolCallId ?? ctx.toolCallId,
+        beforeEvent.runId ?? ctx.runId,
+        beforeEvent.toolName,
+      );
+      recentStarts.set(startKey, {
         agentId,
         sessionKey: ctx.sessionKey,
         sessionId: ctx.sessionId,
@@ -262,7 +283,12 @@ const plugin = {
     api.on("after_tool_call", async (event, ctx) => {
       cleanupRecentToolStarts(recentStarts);
       const afterEvent = event as AfterToolCallEvent;
-      const recent = recentStarts.get(afterEvent.toolName);
+      const startKey = toolStartKey(
+        afterEvent.toolCallId ?? ctx.toolCallId,
+        afterEvent.runId ?? ctx.runId,
+        afterEvent.toolName,
+      );
+      const recent = recentStarts.get(startKey);
       const sessionKey = ctx.sessionKey ?? recent?.sessionKey;
       const sessionId = ctx.sessionId ?? recent?.sessionId;
       const runId = afterEvent.runId ?? ctx.runId ?? recent?.runId;
