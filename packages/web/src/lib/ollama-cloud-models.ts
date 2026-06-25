@@ -175,6 +175,19 @@ export const TOOL_CAPABLE_OLLAMA_CLOUD_MODELS = [
     vision: true,
   },
   {
+    // Tools verified 4/4 rounds (structured tool_call + clean multi-turn,
+    // 2026-06-25) — reliably tool-capable, no multi-turn-500 regression. The
+    // library page lists "vision" (image/video via MoonViT), but the live
+    // /v1/chat/completions returns HTTP 500 on image_url payloads (2026-06-25,
+    // 2 rounds), so vision:false — the page lies and we never hand it an image.
+    // `reasoning:true` from the library "thinking" tag (kimi-k2.5/2.6 parity).
+    id: "kimi-k2.7-code",
+    contextWindow: 262144,
+    maxTokens: 8192,
+    reasoning: true,
+    vision: false,
+  },
+  {
     id: "minimax-m2.1",
     contextWindow: 204800,
     maxTokens: 8192,

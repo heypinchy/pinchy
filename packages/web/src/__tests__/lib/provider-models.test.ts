@@ -296,6 +296,7 @@ describe("fetchProviderModels", () => {
             { id: "kimi-k2-thinking" },
             { id: "kimi-k2.5" },
             { id: "kimi-k2.6" },
+            { id: "kimi-k2.7-code" },
             { id: "minimax-m2.1" },
             { id: "minimax-m2.5" },
             { id: "minimax-m2.7" },
@@ -347,6 +348,7 @@ describe("fetchProviderModels", () => {
         "ollama-cloud/gpt-oss:120b",
         "ollama-cloud/kimi-k2.5",
         "ollama-cloud/kimi-k2.6",
+        "ollama-cloud/kimi-k2.7-code",
         "ollama-cloud/minimax-m2.1",
         "ollama-cloud/minimax-m2.5",
         "ollama-cloud/minimax-m2.7",
@@ -372,7 +374,7 @@ describe("fetchProviderModels", () => {
     expect(ids).not.toContain("ollama-cloud/qwen3-next:80b");
     // minimax-m3 was added to the allowlist (vision + tools confirmed live).
     expect(ids).toContain("ollama-cloud/minimax-m3");
-    expect(ids).toHaveLength(31);
+    expect(ids).toHaveLength(32);
 
     // Tool-broken models are filtered out (probed 2026-06-12: gemma3:4b leaks
     // pseudo tool calls as text, gemma3:12b serves HTTP 500, gemma3:27b
@@ -421,7 +423,7 @@ describe("fetchProviderModels", () => {
     const ids = ollama!.models.map((m) => m.id);
     // kimi-k2-thinking removed from allowlist (#305 — Ollama Cloud returns HTTP 500 for this model)
     expect(ids).not.toContain("ollama-cloud/kimi-k2-thinking");
-    expect(ids).toHaveLength(31);
+    expect(ids).toHaveLength(32);
     expect(ids).toEqual(
       expect.arrayContaining([
         "ollama-cloud/deepseek-v3.1:671b",
@@ -440,6 +442,7 @@ describe("fetchProviderModels", () => {
         "ollama-cloud/gpt-oss:120b",
         "ollama-cloud/kimi-k2.5",
         "ollama-cloud/kimi-k2.6",
+        "ollama-cloud/kimi-k2.7-code",
         "ollama-cloud/minimax-m2.1",
         "ollama-cloud/minimax-m2.5",
         "ollama-cloud/minimax-m2.7",

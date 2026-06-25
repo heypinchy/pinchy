@@ -64,6 +64,15 @@ describe("Ollama cloud vision models (from DB seed)", () => {
     expect(isModelVisionCapable("ollama-cloud/qwen3.5:397b")).toBe(false);
   });
 
+  it("returns FALSE for kimi-k2.7-code (library claims vision, live API 500s)", () => {
+    // Unlike its kimi-k2.5/2.6 siblings (vision-capable above), the -code
+    // variant's library page claims image input (MoonViT) but the live
+    // `/v1/chat/completions` returns HTTP 500 on image_url payloads (probed
+    // 2026-06-25, 2 rounds). Flagged vision:false so it's never picked for
+    // images — its value is reliable tools, not vision.
+    expect(isModelVisionCapable("ollama-cloud/kimi-k2.7-code")).toBe(false);
+  });
+
   it("returns true for every ministral-3 variant", () => {
     expect(isModelVisionCapable("ollama-cloud/ministral-3:3b")).toBe(true);
     expect(isModelVisionCapable("ollama-cloud/ministral-3:8b")).toBe(true);

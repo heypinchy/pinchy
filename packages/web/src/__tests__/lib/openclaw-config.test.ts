@@ -1868,6 +1868,7 @@ describe("regenerateOpenClawConfig", () => {
         "gpt-oss:20b",
         "kimi-k2.5",
         "kimi-k2.6",
+        "kimi-k2.7-code",
         "minimax-m2.1",
         "minimax-m2.5",
         "minimax-m2.7",
@@ -1930,6 +1931,7 @@ describe("regenerateOpenClawConfig", () => {
     expect(ctx["gemma4:31b"]).toBe(262144);
     expect(ctx["kimi-k2.5"]).toBe(262144);
     expect(ctx["kimi-k2.6"]).toBe(262144);
+    expect(ctx["kimi-k2.7-code"]).toBe(262144);
     expect(ctx["ministral-3:3b"]).toBe(262144);
     expect(ctx["ministral-3:8b"]).toBe(262144);
     expect(ctx["ministral-3:14b"]).toBe(262144);
@@ -2002,6 +2004,10 @@ describe("regenerateOpenClawConfig", () => {
     expect(byId["deepseek-v3.2"].input).toEqual(["text"]);
     expect(byId["devstral-small-2:24b"].input).toEqual(["text"]);
     expect(byId["qwen3.5:397b"].input).toEqual(["text"]);
+    // kimi-k2.7-code: library page claims image input (MoonViT), but the live
+    // /v1/chat/completions returns HTTP 500 on image_url payloads (probed
+    // 2026-06-25, 2 rounds) — text-only, unlike its kimi-k2.5/2.6 siblings.
+    expect(byId["kimi-k2.7-code"].input).toEqual(["text"]);
     // 2026-06 additions: both are text-only lines (no image input tag, and
     // vision is never assumed without an empirical probe).
     expect(byId["nemotron-3-ultra"].input).toEqual(["text"]);
@@ -2025,6 +2031,7 @@ describe("regenerateOpenClawConfig", () => {
       "gpt-oss:120b",
       "kimi-k2.5",
       "kimi-k2.6",
+      "kimi-k2.7-code",
       "minimax-m2.5",
       "minimax-m2.7",
       "minimax-m3",

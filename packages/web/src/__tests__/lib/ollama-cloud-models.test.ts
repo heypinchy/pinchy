@@ -131,9 +131,30 @@ describe("Ollama Cloud model catalog — empirically verified capabilities", () 
     // of gemma4:31b, which we already carry with verified vision. Vision could
     // not be re-confirmed (the image endpoint was returning blanket 5xx that
     // day). They stay out until a deliberate multi-run + vision re-evaluation.
+    //
+    // Re-triaged 2026-06-25 (v0.7.x catalog sweep): ollama.com/library/gemma3
+    // now lists only vision — no "tools" tag at all — so the family isn't even
+    // a tool candidate any more. No tag → not added (every Pinchy agent uses
+    // tools); the prior multi-turn-500 evidence stands.
     for (const id of ["gemma3:4b", "gemma3:12b", "gemma3:27b"]) {
       expect(TOOL_CAPABLE_OLLAMA_CLOUD_MODEL_IDS).not.toContain(id);
     }
+  });
+
+  it("includes kimi-k2.7-code with reasoning, text-only, 256K context", () => {
+    // Added 2026-06-25 (v0.7.x catalog sweep). ollama.com/library/kimi-k2.7-code
+    // lists tools + thinking + vision (image/video via MoonViT), 256K context.
+    // Tools verified empirically 4/4 rounds against /v1/chat/completions
+    // (structured tool_call + clean multi-turn follow-up) — no multi-turn-500
+    // regression, unlike its kimi-k2-thinking sibling. Vision is flagged false:
+    // the live endpoint returns HTTP 500 on image_url payloads (2 rounds), so
+    // the library "vision" tag is a lie here, same shape as qwen3.5:397b.
+    const m = TOOL_CAPABLE_OLLAMA_CLOUD_MODELS.find((x) => x.id === "kimi-k2.7-code");
+    expect(m).toBeDefined();
+    expect(m!.reasoning).toBe(true);
+    expect(m!.vision).toBe(false);
+    expect(m!.contextWindow).toBe(262144);
+    expect(VISION_OLLAMA_CLOUD_MODEL_IDS.has("kimi-k2.7-code")).toBe(false);
   });
 
   it("every model declares vision and carries no dead capability fields", () => {
