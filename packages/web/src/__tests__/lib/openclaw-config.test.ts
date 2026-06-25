@@ -7055,4 +7055,17 @@ describe("regenerateOpenClawConfig imageModel.primary (#416)", () => {
     const config = JSON.parse(mockedWriteFileSync.mock.calls[0][1] as string);
     expect(config.agents?.defaults?.imageModel).toBeUndefined();
   });
+
+  it("emits no imageModel when the live catalog has no ollama-cloud provider at all", async () => {
+    // Defensive: if /v1/models fetch yields no ollama-cloud entry (and the
+    // FALLBACK didn't kick in), the live id set is empty → no pick, no pin.
+    mockedGetSetting.mockImplementation(async (key: string) =>
+      key === "ollama_cloud_api_key" ? "test-key" : null
+    );
+    mockedFetchProviderModels.mockResolvedValueOnce([]);
+    await regenerateOpenClawConfig();
+
+    const config = JSON.parse(mockedWriteFileSync.mock.calls[0][1] as string);
+    expect(config.agents?.defaults?.imageModel).toBeUndefined();
+  });
 });

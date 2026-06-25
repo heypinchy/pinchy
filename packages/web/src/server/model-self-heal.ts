@@ -1,5 +1,6 @@
 import { isRetiredModelError } from "@/lib/model-retirement";
 import { regenerateOpenClawConfig } from "@/lib/openclaw-config";
+import { resetCache } from "@/lib/provider-models";
 
 /**
  * Runtime self-heal: when a chat/tool dispatch fails because the configured
@@ -42,6 +43,12 @@ export async function maybeSelfHealOnModelError(error: unknown): Promise<boolean
   if (!shouldSelfHeal(error, lastHealAtMs, now)) return false;
   lastHealAtMs = now;
   try {
+    // Bust the 1h provider-models cache FIRST. `regenerateOpenClawConfig`
+    // re-resolves media models via `fetchProviderModels`, which is cached for
+    // an hour — without this reset the re-resolution would read stale data
+    // that still lists the just-retired model and re-pin it, making the heal a
+    // no-op until the cache expired.
+    resetCache();
     await regenerateOpenClawConfig();
     console.log(
       "[pinchy] Self-heal: regenerated OpenClaw config after a retired-model dispatch error"

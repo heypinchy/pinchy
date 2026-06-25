@@ -157,9 +157,9 @@ describe("buildAttachmentBlock", () => {
   });
 
   // The previous implementation silently fell back to a vague "the
-  // appropriate built-in tool" string for any MIME outside PDF/image. That
+  // appropriate built-in tool" string for any MIME outside the allowlist. That
   // would leave the agent guessing on a future MIME we forgot to wire.
-  it("throws when given a MIME type with no registered built-in tool", async () => {
+  it("throws when given a MIME type with no registered tool", async () => {
     const { buildAttachmentBlock } = await import("@/server/attachment-pipeline");
     expect(() =>
       buildAttachmentBlock([
@@ -172,7 +172,7 @@ describe("buildAttachmentBlock", () => {
           reused: false,
         },
       ])
-    ).toThrow(/no built-in tool/i);
+    ).toThrow(/no tool registered/i);
   });
 });
 

@@ -254,44 +254,42 @@ export async function materializeAttachments(
   return { chatAttachments, workspaceRefs };
 }
 
+// Text formats analyzed as workspace files. PDFs and images are handled by
+// the prefix/exact checks in toolNameForMime.
+const PINCHY_READ_TEXT_MIMES = new Set([
+  "text/plain",
+  "text/csv",
+  "text/markdown",
+  "application/json",
+  "text/yaml",
+]);
+
 /**
- * Resolve the built-in OpenClaw tool name for a given attachment MIME type.
+ * Resolve the tool an attachment of `mimeType` should be analyzed with.
  *
- * Throws if a MIME type slips through that's outside the documented set —
- * the upload hint must be specific (which built-in tool to call), and a
- * silent fallback ("the appropriate built-in tool") would leave the agent
- * guessing. If a new attachment type is whitelisted, this function must be
- * updated in the same change.
+ * Every supported type routes through pinchy-files' own `pinchy_read` — a
+ * plugin tool, NOT an OpenClaw built-in. It has a full PDF subsystem
+ * (pdf-extract for the text layer; pdf-vision for scanned pages), reads images
+ * as image content blocks, and resolves credentials through the runtime
+ * modelAuth API, so it works on every provider/model/version. We deliberately
+ * do NOT use OpenClaw's built-in `pdf`/`image` tools: they only register when
+ * Pinchy emits `pdfModel`/`imageModel`, which is auto-resolved and 410s when
+ * the upstream model is retired (v0.5.8 incident, #501).
+ *
+ * Throws on a MIME outside the documented set — the upload hint must be
+ * specific, and a silent fallback would leave the agent guessing. If a new
+ * attachment type is whitelisted, update this allowlist in the same change.
  */
 function toolNameForMime(mimeType: string): string {
-  // PDFs are read via pinchy-files' own `pinchy_read`, which has a full,
-  // tested PDF subsystem (pdf-extract for the text layer; pdf-vision for
-  // scanned pages) and resolves credentials through the runtime modelAuth
-  // API. We deliberately do NOT use OpenClaw's built-in `pdf` tool: it
-  // resolves its model only against the per-agent models.json catalog, which
-  // never contains the built-in providers (anthropic/openai/google) a typical
-  // pdfModel points at — so it fails "Unknown model" for the common case
-  // (v0.5.8 staging finding; OpenClaw upstream issue filed separately).
-  if (mimeType === "application/pdf") return "`pinchy_read`";
-  // Images route through pinchy_read too, NOT OpenClaw's built-in `image`
-  // tool. That tool only registers when Pinchy emits `imageModel`, which is
-  // auto-resolved against the live vision-capable models and dies when the
-  // upstream model is retired (HTTP 410) — the same failure class that broke
-  // the `pdf` tool (#501). pinchy_read reads images as image content blocks
-  // via the runtime modelAuth API and works on every provider/model/version.
-  if (mimeType.startsWith("image/")) return "`pinchy_read`";
-  // Text formats (CSV, Markdown, JSON, YAML, plain text) are workspace files
-  // read via the pinchy_read plugin tool rather than an OpenClaw built-in.
   if (
-    mimeType === "text/plain" ||
-    mimeType === "text/csv" ||
-    mimeType === "text/markdown" ||
-    mimeType === "application/json" ||
-    mimeType === "text/yaml"
-  )
+    mimeType === "application/pdf" ||
+    mimeType.startsWith("image/") ||
+    PINCHY_READ_TEXT_MIMES.has(mimeType)
+  ) {
     return "`pinchy_read`";
+  }
   throw new Error(
-    `attachment-pipeline: no built-in tool registered for MIME ${mimeType}. ` +
+    `attachment-pipeline: no tool registered for MIME ${mimeType}. ` +
       `Update toolNameForMime() when adding a new attachment type.`
   );
 }
