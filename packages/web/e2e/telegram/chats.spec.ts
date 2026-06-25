@@ -426,6 +426,23 @@ test.describe.serial("Chats — per-task session model (#508)", () => {
       after.messages.length,
       "a listed Telegram chat must remain readable via the OpenClaw history fallback"
     ).toBeGreaterThan(0);
+
+    // It renders the ACTUAL conversation, not just "something non-empty": the
+    // exact message we sent must come back through the history fallback.
+    expect(
+      after.messages.some((m) =>
+        m.text.includes("Message that we will hide from Pinchy's own store")
+      ),
+      "the fallback must render the real message text from OpenClaw history"
+    ).toBe(true);
+
+    // ...and in chronological order (oldest→newest), matching the live chat and
+    // the channel_messages path. Guards the source-ordering assumption.
+    const timestamps = after.messages.map((m) => m.timestamp);
+    expect(
+      timestamps.every((t, i) => i === 0 || t >= timestamps[i - 1]),
+      "fallback transcript must be in chronological order"
+    ).toBe(true);
   });
 
   test.afterAll(async () => {

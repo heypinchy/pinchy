@@ -99,15 +99,7 @@ export const GET = withAuth<RouteContext>(async (_request, { params }, session) 
       const raw = (await getOpenClawClient().sessions.history(sessionKey, {
         limit: HISTORY_LIMIT,
       })) as { messages?: RawHistoryMessage[] } | undefined;
-      const fallback = mapTelegramTranscript(raw?.messages ?? []);
-      if (fallback.length > 0) {
-        // A capture gap, surfaced. Expected for pre-existing conversations; if it
-        // recurs for ACTIVE chats, the transcript plugin is not capturing.
-        console.warn(
-          `[telegram-chat] no captured messages for agent ${agentId}; rendering ${fallback.length} from OpenClaw history fallback`
-        );
-        messages = fallback;
-      }
+      messages = mapTelegramTranscript(raw?.messages ?? []);
     } catch {
       // History unreachable — leave the empty result intact.
     }
