@@ -63,7 +63,7 @@ When you send a message and move to a different page in Pinchy, the chat keeps r
 
 A full page reload does not lose the reply either. Pinchy re-attaches the reloaded chat to the in-flight run through its stable session key, so any output that arrived while the page was reloading still lands in the same bubble and streaming continues. Only a restart of the Pinchy server drops in-flight runs.
 
-An unsent message you've typed is kept too. Each chat holds its own draft, so a message you start in one chat never appears in another — and when you leave a chat and come back, your draft is waiting where you left it. Sending the message clears the draft; so does deleting the text yourself.
+An unsent message you've typed is kept too. Each chat holds its own draft, so a message you start in one chat never appears in another — and your typed text is waiting where you left it when you return, even after a full page reload or closing and reopening the tab. Sending the message clears the draft; so does deleting the text yourself.
 
 Clicking an agent in the sidebar reopens the chat you last had open with that agent on this device, rather than starting from the oldest one. The first time you open an agent on a new device, Pinchy takes you to your most recent conversation with it.
 
