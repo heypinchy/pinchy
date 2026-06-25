@@ -14,7 +14,7 @@
 // so a dependency change that breaks the draft contract shows up HERE.
 
 import { describe, it, expect, beforeEach } from "vitest";
-import { render, screen, fireEvent, act } from "@testing-library/react";
+import { render, screen, fireEvent, act, waitFor } from "@testing-library/react";
 import { useEffect, type FC } from "react";
 import {
   AssistantRuntimeProvider,
@@ -26,9 +26,30 @@ import {
 } from "@assistant-ui/react";
 import { DraftPersistence } from "@/components/assistant-ui/thread";
 import { AgentIdContext, ChatIdContext } from "@/components/chat";
-import { getDraft, clearDraft, draftKey } from "@/lib/draft-store";
+import { getDraft, saveDraft, clearDraft, draftKey } from "@/lib/draft-store";
 
 const AGENT = "agent-1";
+
+// Minimal attachment adapter so the runtime accepts addAttachment during restore.
+// Mirrors the shape of Pinchy's real adapter: a composer attachment that carries
+// the original File and is ready to send.
+const testAttachmentAdapter = {
+  accept: "*",
+  async add({ file }: { file: File }) {
+    return {
+      id: file.name,
+      type: "document" as const,
+      name: file.name,
+      contentType: file.type,
+      file,
+      status: { type: "requires-action" as const, reason: "composer-send" as const },
+    };
+  },
+  async send(attachment: { id: string; name: string; file: File }) {
+    return { ...attachment, status: { type: "complete" as const } };
+  },
+  async remove() {},
+};
 
 let composerApi: ComposerRuntime | null = null;
 const CaptureComposer: FC = () => {
@@ -49,6 +70,7 @@ const Harness: FC<{ chatId: string | null }> = ({ chatId }) => {
     isRunning: false,
     convertMessage: (m: ThreadMessageLike) => m,
     onNew: async () => {},
+    adapters: { attachments: testAttachmentAdapter },
   });
   return (
     <AgentIdContext.Provider value={AGENT}>
@@ -133,5 +155,25 @@ describe("DraftPersistence (per-chat composer draft)", () => {
 
     expect(composerApi!.getState().text).toBe("");
     expect(getDraft(draftKey(AGENT, "chat-a"))).toBeUndefined();
+  });
+
+  it("restores a file attachment without clobbering the stored draft mid-restore", async () => {
+    const file = new File(["data"], "report.pdf", { type: "application/pdf" });
+    saveDraft(draftKey(AGENT, "chat-a"), { text: "see attached", files: [file] });
+
+    render(<Harness chatId="chat-a" />);
+
+    // Attachment restore is async — wait for the file to land in the composer.
+    await waitFor(() => {
+      expect(composerApi!.getState().attachments).toHaveLength(1);
+    });
+    expect(composerApi!.getState().attachments[0].name).toBe("report.pdf");
+    expect(composerApi!.getState().text).toBe("see attached");
+
+    // A persist firing while attachments were still being re-added must NOT have
+    // written a partial (text-only) set over the complete stored draft.
+    const stored = getDraft(draftKey(AGENT, "chat-a"));
+    expect(stored?.files).toHaveLength(1);
+    expect(stored?.text).toBe("see attached");
   });
 });

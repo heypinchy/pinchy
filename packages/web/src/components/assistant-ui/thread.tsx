@@ -255,6 +255,11 @@ export const ThreadWelcome: FC = () => {
  * during navigation (the deleted-draft resurrection). Because `saveDraft`
  * auto-clears an empty composer, both a send (assistant-ui empties the composer)
  * and a manual delete clear the draft with no extra special case.
+ *
+ * `addAttachment` is async, so attachment restore completes after a tick. We gate
+ * `persist` behind a `restored` flag and only subscribe once restore has settled,
+ * so a notification fired while attachments are still being re-added can never
+ * write a partial file set back over the complete stored draft.
  */
 export const DraftPersistence: FC = () => {
   const agentId = useContext(AgentIdContext);
@@ -265,25 +270,41 @@ export const DraftPersistence: FC = () => {
     if (!agentId || !composerRuntime) return;
     const key = draftKey(agentId, chatId);
 
-    // Restore this chat's draft on mount.
-    const draft = getDraft(key);
-    if (draft) {
-      composerRuntime.setText(draft.text);
-      draft.files.forEach((file) => composerRuntime.addAttachment(file));
-    }
+    let cancelled = false;
+    let restored = false;
+    let unsubscribe: (() => void) | undefined;
 
     const persist = () => {
+      if (!restored) return; // never clobber the stored draft mid-restore
       const state = composerRuntime.getState();
       const files = state.attachments
         .filter((a): a is typeof a & { file: File } => "file" in a && a.file instanceof File)
         .map((a) => a.file);
       saveDraft(key, { text: state.text, files });
     };
-    const unsubscribe = composerRuntime.subscribe(persist);
+
+    // Restore this chat's draft, then start persisting. With no attachments this
+    // runs synchronously, so the common text-only path subscribes before the user
+    // can type; attachments add a short async window during which persist stays a
+    // no-op (guarded above).
+    const restore = async () => {
+      const draft = getDraft(key);
+      if (draft) {
+        composerRuntime.setText(draft.text);
+        for (const file of draft.files) {
+          await composerRuntime.addAttachment(file);
+          if (cancelled) return;
+        }
+      }
+      restored = true;
+      unsubscribe = composerRuntime.subscribe(persist);
+    };
+    void restore();
 
     return () => {
-      persist(); // flush the latest state before this chat's composer unmounts
-      unsubscribe();
+      cancelled = true;
+      persist(); // flush the latest state (no-op if restore hasn't settled)
+      unsubscribe?.();
     };
   }, [agentId, chatId, composerRuntime]);
 

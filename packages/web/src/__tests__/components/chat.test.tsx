@@ -4,10 +4,17 @@ import "@testing-library/jest-dom";
 import { Chat } from "@/components/chat";
 import type { Agent } from "@/components/agent-list";
 
-const { mockGetAgent, mockUseChatStatus, mockUseChatSession } = vi.hoisted(() => ({
-  mockGetAgent: vi.fn() as ReturnType<typeof vi.fn>,
-  mockUseChatStatus: vi.fn(),
-  mockUseChatSession: vi.fn(),
+const { mockGetAgent, mockUseChatStatus, mockUseChatSession, mockRecordLastChat } = vi.hoisted(
+  () => ({
+    mockGetAgent: vi.fn() as ReturnType<typeof vi.fn>,
+    mockUseChatStatus: vi.fn(),
+    mockUseChatSession: vi.fn(),
+    mockRecordLastChat: vi.fn(),
+  })
+);
+
+vi.mock("@/lib/last-chat-store", () => ({
+  recordLastChat: (...args: unknown[]) => mockRecordLastChat(...args),
 }));
 
 vi.mock("@/components/agents-provider", () => ({
@@ -127,6 +134,16 @@ describe("Chat", () => {
   it("calls useChatSession without a chatId for the legacy/default chat", () => {
     render(<Chat agentId="agent-1" agentName="Smithers" />);
     expect(mockUseChatSession).toHaveBeenCalledWith("agent-1", undefined);
+  });
+
+  it("records the viewed chat as last-opened for this agent (#508)", () => {
+    render(<Chat agentId="agent-1" agentName="Smithers" chatId="chat-x" />);
+    expect(mockRecordLastChat).toHaveBeenCalledWith("agent-1", "chat-x");
+  });
+
+  it("records the default chat (no chatId) so the last-chat pointer is cleared (#508)", () => {
+    render(<Chat agentId="agent-1" agentName="Smithers" />);
+    expect(mockRecordLastChat).toHaveBeenCalledWith("agent-1", undefined);
   });
 
   describe("status indicator colors and labels", () => {
