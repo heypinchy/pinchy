@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach } from "vitest";
+import { describe, it, expect, beforeEach, vi } from "vitest";
 import { getDraft, saveDraft, clearDraft, draftKey } from "@/lib/draft-store";
 
 describe("draftKey", () => {
@@ -74,5 +74,58 @@ describe("draft-store", () => {
     saveDraft("agent-1", { text: "", files: [file] });
     expect(getDraft("agent-1")).toBeDefined();
     expect(getDraft("agent-1")?.files).toHaveLength(1);
+  });
+});
+
+describe("draft-store localStorage persistence (survives reload)", () => {
+  // A fresh module instance models a full page reload: its in-memory Map starts
+  // empty, but jsdom localStorage is shared, so a persisted draft must reappear.
+  beforeEach(() => {
+    localStorage.clear();
+    vi.resetModules();
+  });
+
+  it("recovers the draft text from localStorage after a reload", async () => {
+    const first = await import("@/lib/draft-store");
+    first.saveDraft(first.draftKey("agent-1", "chat-a"), { text: "survive reload", files: [] });
+
+    vi.resetModules();
+    const reloaded = await import("@/lib/draft-store");
+    expect(reloaded.getDraft(reloaded.draftKey("agent-1", "chat-a"))).toEqual({
+      text: "survive reload",
+      files: [],
+    });
+  });
+
+  it("does not resurrect file attachments across a reload (text-only recovery)", async () => {
+    const first = await import("@/lib/draft-store");
+    const file = new File(["x"], "a.txt", { type: "text/plain" });
+    first.saveDraft(first.draftKey("agent-1"), { text: "with file", files: [file] });
+
+    vi.resetModules();
+    const reloaded = await import("@/lib/draft-store");
+    const recovered = reloaded.getDraft(reloaded.draftKey("agent-1"));
+    expect(recovered?.text).toBe("with file");
+    expect(recovered?.files).toEqual([]);
+  });
+
+  it("clears the persisted text so a cleared draft stays gone after a reload", async () => {
+    const first = await import("@/lib/draft-store");
+    first.saveDraft(first.draftKey("agent-1"), { text: "temp", files: [] });
+    first.clearDraft(first.draftKey("agent-1"));
+
+    vi.resetModules();
+    const reloaded = await import("@/lib/draft-store");
+    expect(reloaded.getDraft(reloaded.draftKey("agent-1"))).toBeUndefined();
+  });
+
+  it("removes the persisted text on auto-clear (empty save)", async () => {
+    const first = await import("@/lib/draft-store");
+    first.saveDraft(first.draftKey("agent-1"), { text: "temp", files: [] });
+    first.saveDraft(first.draftKey("agent-1"), { text: "", files: [] });
+
+    vi.resetModules();
+    const reloaded = await import("@/lib/draft-store");
+    expect(reloaded.getDraft(reloaded.draftKey("agent-1"))).toBeUndefined();
   });
 });
