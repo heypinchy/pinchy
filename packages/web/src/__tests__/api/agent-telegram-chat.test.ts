@@ -91,6 +91,23 @@ vi.mock("@/lib/settings", () => ({
   getSetting: (...args: unknown[]) => mockGetSetting(...args),
 }));
 
+// OpenClaw session history is the FALLBACK source when Pinchy's own
+// channel_messages store has nothing for the peer yet (e.g. a conversation that
+// predates the pinchy-transcript capture). Mocked so the route never needs a
+// live gateway.
+const mockHistory = vi.fn();
+vi.mock("@/server/openclaw-client", () => ({
+  getOpenClawClient: () => ({ sessions: { history: (...a: unknown[]) => mockHistory(...a) } }),
+}));
+
+// `mapTelegramTranscript` pulls in the attachment pipeline (db/audit/uploads).
+// Stub the one function it calls so importing the route stays light and the
+// mapper's own normalization (role filter, <final> strip, timestamp prefix) is
+// still exercised for real.
+vi.mock("@/server/attachment-pipeline", () => ({
+  parseAttachmentBlock: (text: string) => ({ cleanText: text, files: [] }),
+}));
+
 // ── Helpers ──────────────────────────────────────────────────────────────
 
 function makeRequest() {
@@ -124,6 +141,9 @@ describe("GET /api/agents/[agentId]/telegram-chat", () => {
       { direction: "inbound", content: "Hello from Telegram", sentAt: new Date(1000) },
     ];
     mockGetSetting.mockResolvedValue("smithers_bot");
+    // Default: OpenClaw history is empty too, so the fallback yields nothing
+    // unless a test populates it.
+    mockHistory.mockResolvedValue({ messages: [] });
 
     GET = (await import("@/app/api/agents/[agentId]/telegram-chat/route")).GET;
   });
@@ -159,6 +179,11 @@ describe("GET /api/agents/[agentId]/telegram-chat", () => {
       { role: "user", text: "Hello from Telegram", timestamp: 1000 },
       { role: "assistant", text: "Hi there!", timestamp: 2000 },
     ]);
+
+    // The durable Pinchy store is the SOLE source when it has the transcript —
+    // OpenClaw history is never consulted. This preserves the #553 win
+    // (immunity to /new, daily reset, compaction).
+    expect(mockHistory).not.toHaveBeenCalled();
   });
 
   it("returns 404 when the authed user has no linked Telegram conversation", async () => {
@@ -172,8 +197,50 @@ describe("GET /api/agents/[agentId]/telegram-chat", () => {
     expect(fromCalls).not.toContain(channelMessages);
   });
 
-  it("empty transcript renders as an empty message list (still 200)", async () => {
+  it("renders an empty list (still 200) when neither the Pinchy store nor OpenClaw history has anything", async () => {
     messageRows = [];
+    mockHistory.mockResolvedValueOnce({ messages: [] });
+    const res = await GET(makeRequest(), ctx as never);
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.messages).toEqual([]);
+    // The fallback WAS attempted — an empty Pinchy store is not assumed to mean
+    // an empty conversation.
+    expect(mockHistory).toHaveBeenCalled();
+  });
+
+  it("falls back to OpenClaw session history when the Pinchy store is empty (e.g. a conversation that predates capture)", async () => {
+    // No captured rows — the exact state a real upgrade produces: OpenClaw holds
+    // the conversation, but pinchy-transcript was not running when it happened.
+    messageRows = [];
+    mockHistory.mockResolvedValueOnce({
+      messages: [
+        { role: "user", content: "Older inbound message", timestamp: 1000 },
+        { role: "assistant", content: "<final>Older reply</final>", timestamp: 2000 },
+      ],
+    });
+
+    const res = await GET(makeRequest(), ctx as never);
+    expect(res.status).toBe(200);
+
+    // The fallback reads the per-peer OpenClaw session, SERVER-DERIVED from the
+    // authed user's link (lowercased) — never trusting client input. Pinning the
+    // key shape here also guards against a dmScope drift at the read layer.
+    expect(mockHistory).toHaveBeenCalledWith(
+      "agent:agent-1:direct:tg-peer-111",
+      expect.objectContaining({ limit: expect.any(Number) })
+    );
+
+    const body = await res.json();
+    expect(body.messages).toEqual([
+      { role: "user", text: "Older inbound message", timestamp: 1000 },
+      { role: "assistant", text: "Older reply", timestamp: 2000 },
+    ]);
+  });
+
+  it("the history fallback is best-effort: a failed history read degrades to an empty list (still 200), not a 502", async () => {
+    messageRows = [];
+    mockHistory.mockRejectedValueOnce(new Error("gateway down"));
     const res = await GET(makeRequest(), ctx as never);
     expect(res.status).toBe(200);
     const body = await res.json();

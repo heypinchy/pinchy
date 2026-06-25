@@ -48,6 +48,7 @@ import {
   sendWebChatMessage,
   getChatsAs,
   getTelegramChatAs,
+  deleteCapturedTelegramMessages,
   type ChatListItem,
 } from "./helpers";
 import { waitForOpenClawStable, waitForAgentDispatchable } from "../shared/dispatch-probe";
@@ -369,6 +370,62 @@ test.describe.serial("Chats — per-task session model (#508)", () => {
 
     // The read-only banner makes the nature explicit.
     await expect(page.getByText(/This conversation happens on Telegram/i)).toBeVisible();
+  });
+
+  // ── Invariant: listed ⟹ readable, even for conversations Pinchy never captured ──
+  // The 2026-06 regression: PR #553 switched the mirror's read source from
+  // OpenClaw `chat.history` to Pinchy's `channel_messages` WITHOUT backfilling,
+  // so every conversation that predated the transcript plugin rendered empty —
+  // and the green E2E never noticed, because all tests start from a clean state
+  // where capture is live from message #1. This test exercises the exact state a
+  // real upgrade produces: OpenClaw holds the history, Pinchy captured nothing.
+  test("a listed Telegram chat stays readable even when Pinchy captured nothing (OpenClaw history fallback)", async () => {
+    // Send a FRESH message so the per-peer OpenClaw session has history (the
+    // earlier `/new` reset it). Capture mirrors it into channel_messages.
+    await sendTelegramMessage({
+      token: BOT_TOKEN,
+      chatId: TG_PEER_ID,
+      text: "Message that we will hide from Pinchy's own store",
+      userId: TG_PEER_ID,
+      username: TG_USERNAME,
+      firstName: "ChatsE2E",
+    });
+
+    // Precondition: Pinchy captured it (mirror renders from channel_messages).
+    let tg = await getTelegramChatAs(adminCookie, agentId);
+    for (let i = 0; i < 20 && (tg.status !== 200 || tg.messages.length === 0); i++) {
+      await new Promise((r) => setTimeout(r, 1500));
+      tg = await getTelegramChatAs(adminCookie, agentId);
+    }
+    expect(
+      tg.messages.length,
+      "precondition: message captured into channel_messages"
+    ).toBeGreaterThan(0);
+
+    // Now WIPE Pinchy's captured rows — simulating a pre-capture conversation.
+    // OpenClaw still holds the session history.
+    await deleteCapturedTelegramMessages(TG_PEER_ID);
+
+    // The chat is STILL listed (listing reads channel_links + OpenClaw sessions,
+    // not channel_messages)...
+    const chats = await getChatsAs(adminCookie, agentId);
+    expect(
+      chats.some((c) => c.origin === "telegram"),
+      "telegram chat still listed"
+    ).toBe(true);
+
+    // ...and STILL readable: the mirror falls back to the peer's OpenClaw session
+    // history. A source switch that blanks pre-existing conversations fails here.
+    let after = await getTelegramChatAs(adminCookie, agentId);
+    for (let i = 0; i < 20 && (after.status !== 200 || after.messages.length === 0); i++) {
+      await new Promise((r) => setTimeout(r, 1000));
+      after = await getTelegramChatAs(adminCookie, agentId);
+    }
+    expect(after.status).toBe(200);
+    expect(
+      after.messages.length,
+      "a listed Telegram chat must remain readable via the OpenClaw history fallback"
+    ).toBeGreaterThan(0);
   });
 
   test.afterAll(async () => {

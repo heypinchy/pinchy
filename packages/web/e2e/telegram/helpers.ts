@@ -105,6 +105,23 @@ export async function createAgent(name: string): Promise<{ id: string; name: str
   return { id, name };
 }
 
+/**
+ * Delete Pinchy's captured transcript rows for a Telegram peer, simulating a
+ * conversation that PREDATES the pinchy-transcript plugin: OpenClaw still holds
+ * the session history, but Pinchy's `channel_messages` store has nothing. Used
+ * to prove the read-only mirror falls back to OpenClaw history — the
+ * "listed ⟹ readable" invariant the #553 source switch must preserve.
+ */
+export async function deleteCapturedTelegramMessages(peerId: string): Promise<void> {
+  const dbUrl = process.env.DATABASE_URL || stackDbUrl(5434);
+  const { default: postgres } = await import("postgres");
+  const sql = postgres(dbUrl);
+  await sql`
+    DELETE FROM channel_messages WHERE channel = 'telegram' AND peer_id = ${peerId.toLowerCase()}
+  `;
+  await sql.end();
+}
+
 // ── Bot setup helpers ──────────────────────────────────────────────────
 
 export async function connectBot(
