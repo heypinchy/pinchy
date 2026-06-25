@@ -440,6 +440,69 @@ describe("pinchy_read PDF integration", () => {
     }
   });
 
+  it("prefers the pluginConfig.visionModel over the agent's own chat model for vision", async () => {
+    // The agent's chat model is anthropic, but Pinchy emitted a dedicated
+    // visionModel pointing at google. Vision must dispatch to GOOGLE — proving
+    // scanned-page description is decoupled from the (possibly text-only) chat
+    // model and uses the live-resolved visionModel instead.
+    vi.resetModules();
+    const { rmSync: rm } = await import("fs");
+    const cacheSqlite = join(testCacheDir, "pdf-cache.sqlite");
+    rm(cacheSqlite, { force: true });
+    rm(cacheSqlite + "-wal", { force: true });
+    rm(cacheSqlite + "-shm", { force: true });
+
+    const mockResolveApiKey = vi.fn().mockResolvedValue({ apiKey: "test-key" });
+    const api = createMockApi({ "agent-1": { allowed_paths: [FIXTURES + "/"] } });
+    (api as any).pluginConfig.visionModel = "google/gemini-2.5-flash";
+    (api as any).runtime = {
+      ...api.runtime,
+      modelAuth: { resolveApiKeyForProvider: mockResolveApiKey },
+      config: {
+        loadConfig: () => ({
+          agents: { list: [{ id: "agent-1", model: "anthropic/claude-haiku-4-5-20251001" }] },
+        }),
+      },
+    };
+
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        candidates: [{ content: { parts: [{ text: "Vision via google" }] } }],
+      }),
+    });
+
+    try {
+      const { default: plugin } = await import("./index");
+      vi.clearAllMocks();
+      (globalThis.fetch as any).mockResolvedValue({
+        ok: true,
+        json: async () => ({
+          candidates: [{ content: { parts: [{ text: "Vision via google" }] } }],
+        }),
+      });
+      mockResolveApiKey.mockResolvedValue({ apiKey: "test-key" });
+
+      plugin.register!(api as any);
+      const readFactory = mockRegisterTool.mock.calls.find(
+        (call: any[]) => call[1]?.name === "pinchy_read"
+      )?.[0];
+      const tool = readFactory({ agentId: "agent-1" });
+      await tool.execute("call-1", { path: join(FIXTURES, "scanned.pdf") });
+
+      // The override (google) wins over the agent's anthropic model.
+      expect(mockResolveApiKey).toHaveBeenCalledWith(
+        expect.objectContaining({ provider: "google" })
+      );
+      expect(mockResolveApiKey).not.toHaveBeenCalledWith(
+        expect.objectContaining({ provider: "anthropic" })
+      );
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
   it("uses cache for repeated PDF reads", async () => {
     const fixturePath = join(FIXTURES, "text-only.pdf");
     const api = createMockApi({ "agent-1": { allowed_paths: [FIXTURES + "/"] } });

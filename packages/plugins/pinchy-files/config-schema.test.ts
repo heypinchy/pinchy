@@ -21,6 +21,7 @@ const manifest = loadPluginManifest("pinchy-files");
 const REPRESENTATIVE_EMITTED_CONFIG = {
   apiBaseUrl: "http://pinchy:7777",
   gatewayToken: "test-token",
+  visionModel: "ollama-cloud/gemini-3-flash-preview",
   agents: {
     "agent-uuid": {
       allowed_paths: ["/data/knowledge-base"],
@@ -57,6 +58,18 @@ describe("pinchy-files manifest contract", () => {
           write_paths: ["/data/kb"],
         },
       },
+    };
+    const result = validatePluginEntry(manifest, config);
+    if (!result.ok) throw new Error(result.errors.join("\n"));
+    expect(result.ok).toBe(true);
+  });
+
+  it("accepts the top-level visionModel field (pinchy_read scanned-page vision)", () => {
+    const config = {
+      apiBaseUrl: "http://pinchy:7777",
+      gatewayToken: "test-token",
+      visionModel: "anthropic/claude-haiku-4-5-20251001",
+      agents: { "agent-1": { allowed_paths: ["/data/kb"] } },
     };
     const result = validatePluginEntry(manifest, config);
     if (!result.ok) throw new Error(result.errors.join("\n"));

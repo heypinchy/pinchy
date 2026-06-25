@@ -1398,6 +1398,50 @@ describe("regenerateOpenClawConfig", () => {
     });
   });
 
+  it("emits a live-resolved visionModel into pinchy-files config (decoupled from the agent's chat model)", async () => {
+    const existingConfig = {
+      gateway: { mode: "local", bind: "lan", auth: { token: "gw-token-files" } },
+    };
+    mockedReadFileSync.mockReturnValue(JSON.stringify(existingConfig));
+    // ollama-cloud-only stack: the agent's chat model may be text-only, so the
+    // vision model must come from the dedicated live-resolved pick, not the
+    // agent model.
+    mockedGetSetting.mockImplementation(async (key: string) =>
+      key === "ollama_cloud_api_key" ? "test-key" : null
+    );
+    mockedDb.select.mockReturnValue({
+      from: mockFrom([
+        {
+          id: "kb-agent-id",
+          name: "Invoice Reader",
+          model: "ollama-cloud/glm-4.7", // text-only chat model
+          templateId: "knowledge-base",
+          pluginConfig: { "pinchy-files": { allowed_paths: ["/data/invoices/"] } },
+          allowedTools: [],
+          createdAt: new Date(),
+        },
+      ]),
+    } as never);
+
+    await regenerateOpenClawConfig();
+
+    // Setting a provider key triggers an extra (secrets/profiles) write, so
+    // pick the openclaw config write by content (the one carrying `plugins`)
+    // rather than assuming a call index.
+    const config = mockedWriteFileSync.mock.calls
+      .map((c) => {
+        try {
+          return JSON.parse(c[1] as string);
+        } catch {
+          return null;
+        }
+      })
+      .find((c) => c && c.plugins);
+    expect(config.plugins.entries["pinchy-files"].config.visionModel).toBe(
+      "ollama-cloud/gemini-3-flash-preview"
+    );
+  });
+
   it("injects workspace/uploads into pinchy-files.allowed_paths for every agent", async () => {
     mockedDb.select.mockReturnValue({
       from: mockFrom([

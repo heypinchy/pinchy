@@ -101,6 +101,14 @@ interface PluginApi {
     agents?: Record<string, AgentFileConfig>;
     apiBaseUrl?: string;
     gatewayToken?: string;
+    /**
+     * Dedicated vision model for scanned-page description, resolved by Pinchy
+     * against the live `/v1/models` catalog and emitted into plugin config.
+     * Decouples vision from the agent's chat model (which may be text-only) and
+     * is kept fresh by Pinchy's self-heal/background-refresh, so it never points
+     * at a retired model. Falls back to the agent's own model when absent.
+     */
+    visionModel?: string;
   };
   registerTool: (
     factory: (ctx: PluginToolContext) => AgentTool | null,
@@ -217,6 +225,9 @@ const plugin = {
     const agentConfigs = api.pluginConfig?.agents ?? {};
     const apiBaseUrl = api.pluginConfig?.apiBaseUrl;
     const gatewayToken = api.pluginConfig?.gatewayToken;
+    // Pinchy-resolved, live-checked vision model for scanned pages. Preferred
+    // over the agent's (possibly text-only) chat model when present.
+    const visionModelOverride = api.pluginConfig?.visionModel;
 
     // Capture runtime APIs for vision (direct LLM API calls for scanned pages)
     const modelAuth = (api as any).runtime?.modelAuth as {
@@ -348,11 +359,14 @@ const plugin = {
                   const cfg = loadConfig();
                   const agentInfo = resolveAgentInfo(cfg, agentId);
                   resolvedAgentName = agentInfo.name;
-                  if (agentInfo.model) {
+                  // Prefer Pinchy's dedicated, live-resolved vision model; fall
+                  // back to the agent's own model only when none was emitted.
+                  const visionModel = visionModelOverride ?? agentInfo.model;
+                  if (visionModel) {
                     visionConfig = createVisionConfig({
                       modelAuth,
                       cfg,
-                      model: agentInfo.model,
+                      model: visionModel,
                     });
                   }
                 }

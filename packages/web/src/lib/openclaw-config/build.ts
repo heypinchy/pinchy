@@ -547,12 +547,20 @@ export async function regenerateOpenClawConfig() {
   // /api/internal/usage/record. Unlike pinchy-context which only exposes
   // per-agent `agents`, pinchy-files adds the two top-level keys alongside.
   if (pluginConfigs["pinchy-files"]) {
+    // Dedicated vision model for pinchy_read's scanned-page description. Same
+    // best-live-vision-model resolution as the (legacy) built-in image tool,
+    // but consumed by our own plugin — so it works on every provider/version
+    // and, resolved against the live /v1/models catalog, never points at a
+    // retired model. Omitted when no vision provider is configured; the plugin
+    // then falls back to the agent's own model.
+    const visionModel = await resolveDefaultImageModel();
     entries["pinchy-files"] = {
       enabled: true,
       config: {
         apiBaseUrl:
           process.env.PINCHY_INTERNAL_URL || `http://pinchy:${process.env.PORT || "7777"}`,
         gatewayToken: gatewayTokenString,
+        ...(visionModel ? { visionModel } : {}),
         agents: pluginConfigs["pinchy-files"],
       },
     };
