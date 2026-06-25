@@ -33,7 +33,7 @@
     "@assistant-ui/react": "^0.14.11",
     "@assistant-ui/react-markdown": "^0.14.1",
     "@dicebear/core": "^9.4.2",
-    "@dicebear/fun-emoji": "^9.4.2",
+    "@dicebear/notionists": "^9.4.2",
     "@hookform/resolvers": "^5.4.0",
     "@types/pdfkit": "^0.17.6",
     "ajv": "^8.20.0",

@@ -180,36 +180,25 @@ personalityPresetId: text("personality_preset_id"), // Which preset was used (fo
 
 ### Avatar System
 
-**Library:** DiceBear `bottts-neutral` style.
+**Library:** DiceBear `notionists` style (CC0), rendered fully offline via `@dicebear/core` + `@dicebear/notionists` — no external API call, so it works in self-hosted/air-gapped deployments. The avatar is derived deterministically from the stored `avatarSeed` at render time and returned as an inline SVG data URI.
 
-**Rendering logic:**
+**On-brand by construction (`packages/web/src/lib/avatar.ts`):**
+
+- **Background** is locked to the warm Pinchy brand ramp; DiceBear picks one tone per seed, so every agent stays on-brand.
+- **Head-focused framing** (`scale` + `translateY`) zooms onto the face so the head fills the circle instead of wasting space on the torso.
+- **Curated hairstyles** deliberately exclude culturally specific headwear (turban/headscarf) and props (hat, headphones). The masculine and feminine sets are disjoint; the mixed pool is the default.
+- **Presentation** (feminine / masculine / mixed) is pinned only for an explicit, curated allow-list of clearly-gendered names we ship (e.g. Ada, Maya → feminine; Sherlock → masculine). We never *infer* gender from an arbitrary user-provided name — everything else uses the mixed pool.
 
 ```typescript
-// packages/web/src/lib/avatar.ts
-
-const SMITHERS_AVATAR_PATH = "/images/smithers-avatar.png";
-
-export function getAgentAvatarUrl(agent: {
-  avatarSeed: string | null;
-  avatarBg: string | null;
-  name: string;
-}): string {
-  const seed = agent.avatarSeed || agent.name;
-
-  // Special case: Smithers gets the custom lobster avatar
-  if (seed === "__smithers__") {
-    return SMITHERS_AVATAR_PATH;
-  }
-
-  const bg = (agent.avatarBg || "#6b7280").replace("#", "");
-  return `https://api.dicebear.com/9.x/bottts-neutral/svg?seed=${encodeURIComponent(seed)}&backgroundColor=${bg}`;
+// packages/web/src/lib/avatar.ts (shape)
+export function getAgentAvatarSvg(agent: { avatarSeed: string | null; name: string }): string {
+  const seed = agent.avatarSeed ?? agent.name;
+  if (seed === "__smithers__") return SMITHERS_AVATAR_PATH; // reserved crab mascot
+  return createAvatar(notionists, buildNotionistsOptions(seed, agent.name)).toDataUri();
 }
 ```
 
-**Alternative (no external API dependency):**
-Install `@dicebear/core` + `@dicebear/collection` and generate SVGs server-side. Better for self-hosted/air-gapped deployments. Render at build time or cache.
-
-**Smithers custom avatar:** Place `smithers-avatar.png` (the V3 we generated) at `packages/web/public/images/smithers-avatar.png`.
+**The crab stays scarce.** The red-crab mascot is reserved for the product mark and the default `__smithers__` agent (a hand-drawn lobster at `packages/web/public/images/smithers-avatar.png`) — never stamped on every agent. Per-agent avatars use the neutral `notionists` faces above.
 
 ### Avatar UI in Agent Creation/Settings
 
