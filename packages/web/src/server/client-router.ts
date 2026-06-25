@@ -1802,6 +1802,12 @@ export class ClientRouter {
     // Self-heal: if this error means the agent's model was retired upstream
     // (HTTP 410 / "Unknown model"), regenerate config so it re-resolves to a
     // live model. Fire-and-forget + debounced + never throws.
+    //
+    // Scope: this hook covers the CHAT-model path (an agent pinned to a model
+    // that was retired). The built-in pdf/image tools hit the same failure on
+    // their own dispatch path, but Pinchy is removing those in favour of
+    // pinchy_read (#501 follow-up), so we don't wire self-heal into the
+    // tool-dispatch audit path here.
     void maybeSelfHealOnModelError(args.providerError);
   }
 }
