@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
-import { Check, ChevronDown, Lock, Plus } from "lucide-react";
+import { Check, ChevronDown, Lock, Plus, Send } from "lucide-react";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -12,7 +12,6 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { Button } from "@/components/ui/button";
-import { Badge } from "@/components/ui/badge";
 import { apiGet } from "@/lib/api-client";
 import type { ChatListItem } from "@/lib/schemas/sessions";
 import { generateChatId } from "@/lib/chats/generate-chat-id";
@@ -257,16 +256,29 @@ export function ChatSwitcher({
                 <span className="flex min-w-0 flex-1 flex-col">
                   <span className="flex items-center gap-1.5">
                     <span className="truncate">{chatTitle(item)}</span>
+                    {/* Compact channel/permission markers. The full "Telegram"
+                        wording lives in the chat header; here the row is narrow,
+                        so a titled icon stands in — `title` gives a hover tooltip
+                        and `aria-label` the accessible name. */}
                     {item.origin === "telegram" && (
-                      <Badge variant="secondary" className="text-xs font-normal">
-                        Telegram
-                      </Badge>
+                      <span
+                        role="img"
+                        aria-label="Telegram"
+                        title="Telegram"
+                        className="text-muted-foreground inline-flex shrink-0"
+                      >
+                        <Send className="size-3" aria-hidden="true" />
+                      </span>
                     )}
                     {!item.writable && (
-                      <Lock
-                        className="text-muted-foreground size-3 shrink-0"
+                      <span
+                        role="img"
                         aria-label="Read-only"
-                      />
+                        title="Read-only"
+                        className="text-muted-foreground inline-flex shrink-0"
+                      >
+                        <Lock className="size-3" aria-hidden="true" />
+                      </span>
                     )}
                   </span>
                   <span className="text-muted-foreground text-xs">

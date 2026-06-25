@@ -119,24 +119,34 @@ describe("ChatSwitcher", () => {
     expect(within(menu).getByText(`Chat from ${fallback}`)).toBeInTheDocument();
   });
 
-  it("shows the Telegram badge and a read-only marker only on the Telegram chat", async () => {
+  it("shows a titled Telegram icon (not the word) and a titled read-only marker only on the Telegram chat", async () => {
     mockChats(allChats);
     render(<ChatSwitcher agentId="agent-1" chatId="chat-abc" agentName="Smithers" />);
 
     const menu = await screen.findByRole("menu");
 
-    // Exactly one Telegram badge and one read-only marker.
-    expect(within(menu).getByText("Telegram")).toBeInTheDocument();
+    // The channel is shown as a compact icon, not the word "Telegram", so the
+    // narrow row stays uncluttered. The full label lives in the chat header.
+    expect(within(menu).queryByText("Telegram", { exact: true })).toBeNull();
+
+    // The icon still carries an accessible name AND a hover title explaining it.
+    const telegramMarkers = within(menu).getAllByLabelText("Telegram");
+    expect(telegramMarkers).toHaveLength(1);
+    expect(telegramMarkers[0]).toHaveAttribute("title", "Telegram");
+
+    // Exactly one read-only marker, and it explains itself on hover too.
     const readOnlyMarkers = within(menu).getAllByLabelText("Read-only");
     expect(readOnlyMarkers).toHaveLength(1);
+    expect(readOnlyMarkers[0]).toHaveAttribute("title", "Read-only");
 
-    // The read-only marker belongs to the Telegram row, not a web row.
+    // Both markers belong to the Telegram row, not a web row.
     const telegramRow = within(menu).getByText("Telegram chat").closest("[role='menuitem']")!;
+    expect(within(telegramRow as HTMLElement).getByLabelText("Telegram")).toBeInTheDocument();
     expect(within(telegramRow as HTMLElement).getByLabelText("Read-only")).toBeInTheDocument();
 
     const webRow = within(menu).getByText("Quarterly report").closest("[role='menuitem']")!;
     expect(within(webRow as HTMLElement).queryByLabelText("Read-only")).toBeNull();
-    expect(within(webRow as HTMLElement).queryByText("Telegram")).toBeNull();
+    expect(within(webRow as HTMLElement).queryByLabelText("Telegram")).toBeNull();
   });
 
   it("marks the active chat (matching the chatId prop) with an active indicator", async () => {
