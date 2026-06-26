@@ -1277,19 +1277,34 @@ async function reportAuthFailure(
   }
 }
 
+/**
+ * Build an MCP-style error result. Every error result MUST carry
+ * `details.error`, not just the `isError` flag: OpenClaw strips `isError`
+ * before forwarding the result to `/api/internal/audit/tool-use` (OC bug
+ * #404), and the audit endpoint then falls back to `result.details.error` to
+ * record `outcome: failure`. Without it, a failed odoo tool call is silently
+ * audited as success. Route ALL error results through this helper so that
+ * invariant cannot be forgotten at an individual call site.
+ */
+function toolError(text: string): {
+  content: ContentBlock[];
+  isError: true;
+  details: { error: string };
+} {
+  return {
+    isError: true,
+    content: [{ type: "text", text }],
+    details: { error: text },
+  };
+}
+
 function permissionDenied(
   operation: string,
   model: string,
-): { content: ContentBlock[]; isError: true } {
-  return {
-    isError: true,
-    content: [
-      {
-        type: "text",
-        text: `Permission denied: ${operation} on ${model} is not allowed for this agent.`,
-      },
-    ],
-  };
+): { content: ContentBlock[]; isError: true; details: { error: string } } {
+  return toolError(
+    `Permission denied: ${operation} on ${model} is not allowed for this agent.`,
+  );
 }
 
 function isOdooAccessError(error: unknown): boolean {
@@ -1306,24 +1321,15 @@ function isOdooAccessError(error: unknown): boolean {
 function errorResult(
   error: unknown,
   context?: { operation?: string; model?: string },
-): { content: ContentBlock[]; isError: true } {
+): { content: ContentBlock[]; isError: true; details: { error: string } } {
   if (isOdooAccessError(error) && context?.model) {
     const op = context.operation ?? "access";
-    return {
-      isError: true,
-      content: [
-        {
-          type: "text",
-          text: `Odoo denied permission to ${op} on ${context.model}. The Odoo user's permissions may have changed since the last sync. An admin can re-sync the connection in Settings > Integrations to update available permissions.`,
-        },
-      ],
-    };
+    return toolError(
+      `Odoo denied permission to ${op} on ${context.model}. The Odoo user's permissions may have changed since the last sync. An admin can re-sync the connection in Settings > Integrations to update available permissions.`,
+    );
   }
   const message = error instanceof Error ? error.message : "Unknown error";
-  return {
-    isError: true,
-    content: [{ type: "text", text: `Error: ${message}` }],
-  };
+  return toolError(`Error: ${message}`);
 }
 
 const plugin = {
@@ -1446,23 +1452,10 @@ const plugin = {
       try {
         const model = params.model;
         if (typeof model !== "string" || model.length === 0) {
-          return {
-            isError: true as const,
-            content: [
-              { type: "text" as const, text: "`model` is required (string)." },
-            ],
-          };
+          return toolError("`model` is required (string).");
         }
         if (!config.permissions[model]) {
-          return {
-            isError: true as const,
-            content: [
-              {
-                type: "text" as const,
-                text: `Model "${model}" is not available for this agent.`,
-              },
-            ],
-          };
+          return toolError(`Model "${model}" is not available for this agent.`);
         }
 
         const rawFields = await withAuthRetry(agentId, config, (client) =>
@@ -2821,15 +2814,9 @@ const plugin = {
               // agent could otherwise pass `../../etc/passwd` and have the
               // plugin attach arbitrary container files to an Odoo record.
               if (!isSafeFilename(filename)) {
-                return {
-                  isError: true as const,
-                  content: [
-                    {
-                      type: "text",
-                      text: `Invalid filename: "${filename}". Must be a plain file name without path components (no "/", no "\\", no "..", no leading ".").`,
-                    },
-                  ],
-                };
+                return toolError(
+                  `Invalid filename: "${filename}". Must be a plain file name without path components (no "/", no "\\", no "..", no leading ".").`,
+                );
               }
 
               const targetRef = params.targetRef as string;
@@ -2873,15 +2860,9 @@ const plugin = {
                     ? String((err as { code: unknown }).code)
                     : "";
                 if (code === "ENOENT") {
-                  return {
-                    isError: true as const,
-                    content: [
-                      {
-                        type: "text",
-                        text: `File not found: ${filename}. Make sure the file was uploaded before calling odoo_attach_file.`,
-                      },
-                    ],
-                  };
+                  return toolError(
+                    `File not found: ${filename}. Make sure the file was uploaded before calling odoo_attach_file.`,
+                  );
                 }
                 throw err;
               }
@@ -2889,15 +2870,9 @@ const plugin = {
               if (fileSize > MAX_ATTACHMENT_BYTES) {
                 const sizeMb = (fileSize / 1024 / 1024).toFixed(1);
                 const maxMb = (MAX_ATTACHMENT_BYTES / 1024 / 1024).toFixed(0);
-                return {
-                  isError: true as const,
-                  content: [
-                    {
-                      type: "text",
-                      text: `File too large: ${filename} is ${sizeMb} MB, max allowed is ${maxMb} MB.`,
-                    },
-                  ],
-                };
+                return toolError(
+                  `File too large: ${filename} is ${sizeMb} MB, max allowed is ${maxMb} MB.`,
+                );
               }
 
               const fileBuffer = await readFile(filePath);

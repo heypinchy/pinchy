@@ -1984,6 +1984,72 @@ describe("error handling", () => {
     expect(result.isError).toBe(true);
   });
 
+  // Audit-integrity contract: OpenClaw strips the MCP `isError` flag before
+  // forwarding tool results to /api/internal/audit/tool-use (OC bug #404), so
+  // the audit endpoint falls back to `result.details.error` to record a
+  // failure. Without it, a failed odoo tool call is logged as outcome=success
+  // (the 2026-06-25 false-success incident: vendor-bill creates threw on an
+  // ambiguous partner, never reached Odoo, yet were audited as success).
+  it("attaches details.error on a client-thrown error so the audit records a failure even when OpenClaw strips isError", async () => {
+    mockSearchRead.mockRejectedValue(new Error("Connection refused"));
+
+    const tools = createApi({ [agentId]: agentConfig });
+    const tool = findTool(tools, "odoo_read", agentId)!;
+
+    const result = await tool.execute("call-1", {
+      model: "sale.order",
+      filters: [],
+    });
+
+    expect(result.isError).toBe(true);
+    expect((result.details as { error?: string } | undefined)?.error).toContain(
+      "Connection refused",
+    );
+  });
+
+  it("attaches details.error on a permission-denied result", async () => {
+    const tools = createApi({ [agentId]: agentConfig });
+    const tool = findTool(tools, "odoo_create", agentId)!;
+
+    // sale.order grants only "read" in testPermissions → create is denied.
+    const result = await tool.execute("call-1", {
+      model: "sale.order",
+      values: { name: "Should not be created" },
+    });
+
+    expect(result.isError).toBe(true);
+    expect((result.details as { error?: string } | undefined)?.error).toContain(
+      "Permission denied",
+    );
+  });
+
+  it("attaches details.error on an inline validation error (odoo_describe_model without model)", async () => {
+    const tools = createApi({ [agentId]: agentConfig });
+    const tool = findTool(tools, "odoo_describe_model", agentId)!;
+
+    const result = await tool.execute("call-1", {});
+
+    expect(result.isError).toBe(true);
+    expect((result.details as { error?: string } | undefined)?.error).toMatch(
+      /model.*required/i,
+    );
+  });
+
+  it("attaches details.error on an inline validation error (odoo_attach_file invalid filename)", async () => {
+    const tools = createApi({ [agentId]: agentConfig });
+    const tool = findTool(tools, "odoo_attach_file", agentId)!;
+
+    const result = await tool.execute("call-1", {
+      filename: "../../etc/passwd",
+      targetRef: "x",
+    });
+
+    expect(result.isError).toBe(true);
+    expect((result.details as { error?: string } | undefined)?.error).toContain(
+      "Invalid filename",
+    );
+  });
+
   it("returns permission message for Odoo access errors", async () => {
     mockSearchRead.mockRejectedValue(
       new Error("AccessError: no read access on sale.order"),
@@ -2296,7 +2362,9 @@ describe("odoo_attach_file", () => {
     });
 
     expect(result.isError).toBe(true);
-    expect(result.content[0].text).toContain("does not belong to this Odoo connection");
+    expect(result.content[0].text).toContain(
+      "does not belong to this Odoo connection",
+    );
     expect(mockCreate).not.toHaveBeenCalled();
   });
 
