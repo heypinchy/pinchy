@@ -149,6 +149,66 @@ If you need to roll back after an upgrade:
   backup step matters.
 </Aside>
 
+## Upgrading from v0.7.0 to %%PINCHY_VERSION%%
+
+### Breaking changes
+
+None. The tighter agent tool boundary described below changes runtime behaviour for existing agents, but it only removes built-ins that were never meant to be reachable — see the note under Upgrade notes.
+
+### Upgrade notes
+
+The standard flow applies:
+
+```bash
+cd /opt/pinchy
+sed -i 's/PINCHY_VERSION=v0.7.0/PINCHY_VERSION=%%PINCHY_VERSION%%/' .env
+docker compose pull && docker compose up -d && docker image prune -f
+```
+
+#### Tamper-evident audit log (hash-chained)
+
+The audit log now binds every row into an HMAC **hash-chain**: each row's signature includes its predecessor's, so deleting a row from the middle, truncating the tail, or reordering history breaks the chain — not just editing a field. `verifyIntegrity` checks each link and reports any breaks. Historical rows are never re-signed — existing entries stay verifiable under their original signature, and the chain starts binding from the upgrade onward. Nothing to configure.
+
+#### Tighter tool boundary for agents
+
+Governed agents now run against a **fail-closed allowlist** — exactly the audited Pinchy plugin tools plus a few read-only built-ins (`memory_search`, `memory_get`, `pdf`, `image`, `session_status`) — instead of a deny-list that left powerful built-ins silently reachable and unaudited. Anything not on the list — `cron`, `gateway`, `message`, `nodes`, `subagents`/`sessions_*`, the `tts`/`image_generate`/`music_generate`/`video_generate` generators, and any built-in a future OpenClaw version adds — is now denied by default. Existing agents pick this up automatically when their OpenClaw config regenerates on startup; there's no migration and nothing to configure. These built-ins were never an audited Pinchy capability, so no governed agent should notice — and they're denied by design, not re-grantable through agent permissions.
+
+#### Security hardening
+
+A round of fixes from this cycle that need no action on your part:
+
+- attachment downloads now enforce per-user ownership (closes an IDOR gap)
+- deactivating a user immediately revokes their active sessions
+- the file-write path resolves symlinks before writing
+- audit and usage CSV exports neutralize spreadsheet formula injection
+- `webFetch` caps response bodies to bound memory use
+
+#### Models: self-healing config and smarter vision routing
+
+- Pinchy now self-heals its OpenClaw config when a dispatch hits a retired model, instead of leaving the agent stuck on an unavailable model.
+- Ollama Cloud vision models resolve against the live catalog, and `kimi-k2.7-code` joins the curated catalog.
+- Image reads route through the audited `pinchy_read` tool (with its own resolved vision model) rather than OpenClaw's built-in image tool, and image-turn fallbacks pick the best-vision model while honouring the tools blocklist.
+
+#### Chat quality-of-life
+
+- The composer keeps your unsent draft across reloads, scoped per conversation.
+- Selecting an agent reopens your last-viewed conversation.
+- Agents now carry brand-themed avatars.
+
+#### Telegram conversations from before the upgrade
+
+Telegram conversations that predate Pinchy's own transcript store now render through an OpenClaw history fallback, so upgrading no longer leaves older chats blank. The Telegram channel also shows as a titled icon in the chat list.
+
+#### Dependencies
+
+- **OpenClaw 2026.6.8** — unchanged from v0.7.0.
+
+### Database migrations
+
+One additive migration runs automatically on startup — no manual steps:
+
+- `0043` — adds the nullable `prev_hmac` column to `audit_log`, backing the tamper-evident audit hash-chain.
+
 ## Upgrading from v0.6.0 to v0.7.0
 
 ### Breaking changes
