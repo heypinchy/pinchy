@@ -218,7 +218,8 @@ export async function regenerateOpenClawConfig() {
   const pinchyDefaults: Record<string, unknown> = {
     // Disable OpenClaw's native pre-compaction memory flush. The flush hard-codes
     // the built-in `read`/`write` tools (OpenClaw's MEMORY_FLUSH_ALLOWED_TOOL_NAMES),
-    // which Pinchy denies via `group:fs` for every agent (see tool-registry.ts).
+    // which Pinchy never adds to any agent's tool allowlist (see computeAllowedTools
+    // in tool-registry.ts — the native fs tools are denied by omission).
     // It therefore runs with zero tools, flails through "tool not found" attempts,
     // returns NO_REPLY, and consumes the user's inbound turn — on production it
     // silently dropped a Telegram receipt image. Pinchy already owns memory
@@ -262,7 +263,7 @@ export async function regenerateOpenClawConfig() {
     pinchyDefaults.imageModel = { primary: imageModel };
   }
 
-  // Build agents list with OpenClaw-side workspace paths, tools.deny, and plugin configs
+  // Build agents list with OpenClaw-side workspace paths, tools.allow, and plugin configs
   const pluginConfigs: Record<string, Record<string, Record<string, unknown>>> = {};
   let contextPluginAgents: Record<string, { tools: string[]; userId: string }> | undefined;
 
@@ -892,10 +893,10 @@ export async function regenerateOpenClawConfig() {
   //
   // Plugins we keep on (despite Pinchy not using them yet):
   //   - browser: planned feature. The `browser`/`canvas` tools live in
-  //     OpenClaw's `group:ui`, which the tool-registry deny-list denies for
-  //     every agent (see ALL_GROUPS + the drift guard), so the plugin can load
-  //     here without any agent reaching the real browser until we add an
-  //     explicit per-agent opt-in.
+  //     OpenClaw's `group:ui` and are excluded from the fail-closed allowlist
+  //     (computeAllowedTools omits them; see the drift guard in
+  //     tool-registry.test.ts), so the plugin can load here without any agent
+  //     reaching the real browser until we add an explicit per-agent opt-in.
   //   - memory-core: activation.onStartup=false; lazy and free at startup.
   //   - talk-voice: leaf TTS-voice picker; tiny, future voice work.
   // Bundled OpenClaw extensions that Pinchy depends on but that aren't

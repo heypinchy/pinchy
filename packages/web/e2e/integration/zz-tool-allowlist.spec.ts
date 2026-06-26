@@ -26,7 +26,9 @@ import { login, getSmithersAgentId, waitForOpenClawConnected } from "./helpers";
 const TOOLS_SEEN_URL = `http://localhost:${FAKE_OLLAMA_PORT}/__pinchy_fake_ollama/tools-seen`;
 
 // Built-ins a governed Pinchy agent must NEVER be offered. If any of these ever
-// shows up in OpenClaw's advertised tool list, the allowlist has regressed.
+// shows up in OpenClaw's advertised tool list, the allowlist has regressed. Kept
+// in parity with MUST_NOT_ALLOW_BUILTINS in tool-registry.test.ts (the emit-layer
+// drift guard) so the runtime guard covers the same dangerous built-in set.
 const FORBIDDEN_BUILTINS = [
   "exec",
   "process",
@@ -37,6 +39,7 @@ const FORBIDDEN_BUILTINS = [
   "apply_patch",
   "web_fetch",
   "web_search",
+  "x_search",
   "browser",
   "canvas",
   "cron",
@@ -45,7 +48,11 @@ const FORBIDDEN_BUILTINS = [
   "nodes",
   "subagents",
   "sessions_spawn",
+  "sessions_send",
   "image_generate",
+  "music_generate",
+  "video_generate",
+  "tts",
 ];
 
 test.describe("Tool allowlist — fail-closed at runtime (#605)", () => {
