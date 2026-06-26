@@ -2050,6 +2050,19 @@ describe("error handling", () => {
     );
   });
 
+  it("rejects a non-array `filters` with a clear error instead of forwarding garbage to Odoo", async () => {
+    const tools = createApi({ [agentId]: agentConfig });
+    const tool = findTool(tools, "odoo_count", agentId)!;
+
+    const result = await tool.execute("call-1", {
+      model: "sale.order",
+      filters: "not-an-array",
+    });
+
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toMatch(/filters.*array/i);
+  });
+
   it("returns permission message for Odoo access errors", async () => {
     mockSearchRead.mockRejectedValue(
       new Error("AccessError: no read access on sale.order"),

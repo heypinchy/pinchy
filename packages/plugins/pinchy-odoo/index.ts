@@ -1,6 +1,6 @@
 import { readFile, stat } from "./io";
 import { basename, extname } from "path";
-import { OdooClient } from "odoo-node";
+import { OdooClient, type OdooDomain } from "odoo-node";
 import { checkPermission, type Permissions } from "./permissions";
 import { decodeRef, encodeRef } from "./integration-ref";
 
@@ -307,7 +307,9 @@ const COMMON_FIELDS = [
   "ref",
 ] as const;
 
-const COMMON_INDEX = new Map(COMMON_FIELDS.map((f, i) => [f, i]));
+const COMMON_INDEX = new Map<string, number>(
+  COMMON_FIELDS.map((f, i) => [f, i]),
+);
 
 export function sortFieldsByPriority(fields: OdooField[]): OdooField[] {
   return [...fields].sort((a, b) => {
@@ -316,6 +318,22 @@ export function sortFieldsByPriority(fields: OdooField[]): OdooField[] {
     if (ia !== ib) return ia - ib;
     return a.name.localeCompare(b.name);
   });
+}
+
+/**
+ * Narrow an untrusted, tool-supplied `filters` value into an Odoo search
+ * domain. A domain is always an array of `[field, op, value]` tuples plus
+ * `&`/`|`/`!` operators; an omitted filter means "match everything" (`[]`).
+ * Reject non-array input early with a clear message instead of forwarding
+ * garbage to Odoo, where it surfaces as an opaque server error. Individual
+ * tuple shapes are left to Odoo to validate.
+ */
+function asDomain(value: unknown): OdooDomain {
+  if (value === undefined || value === null) return [];
+  if (!Array.isArray(value)) {
+    throw new Error("`filters` must be an array (an Odoo search domain).");
+  }
+  return value as OdooDomain;
 }
 
 interface CompactSchemaOptions {
@@ -1687,7 +1705,7 @@ const plugin = {
                   );
                   const records = await client.searchRead(
                     model,
-                    params.filters as unknown[],
+                    asDomain(params.filters),
                     {
                       fields: effectiveFields,
                       limit: params.limit as number | undefined,
@@ -1755,7 +1773,7 @@ const plugin = {
               }
 
               const count = await withAuthRetry(agentId, config, (client) =>
-                client.searchCount(model, params.filters as unknown[]),
+                client.searchCount(model, asDomain(params.filters)),
               );
 
               return {
@@ -1829,7 +1847,7 @@ const plugin = {
               const result = await withAuthRetry(agentId, config, (client) =>
                 client.readGroup(
                   model,
-                  params.filters as unknown[],
+                  asDomain(params.filters),
                   params.fields as string[],
                   params.groupby as string[],
                   {
