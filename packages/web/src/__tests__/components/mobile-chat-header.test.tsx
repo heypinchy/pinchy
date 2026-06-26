@@ -75,6 +75,6 @@ describe("MobileChatHeader", () => {
     render(<MobileChatHeader {...defaultProps} avatarUrl="/avatar.png" />);
     const img = screen.getByRole("img");
     expect(img).toHaveAttribute("alt", "Smithers");
-    expect(img).toHaveClass("size-6");
+    expect(img).toHaveClass("size-8");
   });
 });

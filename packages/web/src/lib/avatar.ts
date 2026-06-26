@@ -4,16 +4,34 @@ import { uuid } from "@/lib/uuid";
 
 const SMITHERS_AVATAR_PATH = "/images/smithers-avatar.png";
 
-// Warm Pinchy brand ramp. DiceBear picks one deterministically from the seed,
-// so every agent's background stays on-brand.
-export const BACKGROUND_COLORS = [
-  "ef4444", // red (primary)
-  "f97316", // orange (primary)
-  "c2410c", // burnt orange
-  "b23a48", // deep rose
-  "9e4b2a", // terracotta
-  "dc4634", // warm red
-];
+// Warm-led brand palette with a few accents for variety. Each entry pairs a
+// solid background with a light "skin" tint of the same hue. The notionists
+// faces are black-and-white line art with white fills, so we recolor those
+// white fills to the skin tint — a duotone that lets the colour read through
+// the face instead of leaving it plain black-and-white.
+const PALETTE = [
+  { bg: "ef4444", skin: "f8cfc7" }, // red
+  { bg: "f97316", skin: "fbdcbb" }, // orange
+  { bg: "c2410c", skin: "e9bda7" }, // terracotta
+  { bg: "d9486a", skin: "f3c4d0" }, // rose
+  { bg: "e0991f", skin: "f4e0ad" }, // amber
+  { bg: "b23a48", skin: "e6bfc4" }, // deep red
+  { bg: "2bb3a3", skin: "c2e7e1" }, // teal
+  { bg: "3b82c4", skin: "c8dcef" }, // blue
+  { bg: "5aa84f", skin: "d2e7cd" }, // green
+  { bg: "9b7ede", skin: "ded3f3" }, // violet
+] as const;
+
+export const BACKGROUND_COLORS = PALETTE.map((p) => p.bg);
+
+// Deterministically pick a palette entry from the seed, so the chosen
+// background and its matching skin tint are known to us (DiceBear's own random
+// pick wouldn't tell us which colour it landed on).
+function pickPalette(seed: string): (typeof PALETTE)[number] {
+  let h = 0;
+  for (let i = 0; i < seed.length; i++) h = (Math.imul(h, 31) + seed.charCodeAt(i)) >>> 0;
+  return PALETTE[h % PALETTE.length];
+}
 
 // Curated notionists hairstyles. We deliberately exclude culturally specific
 // headwear (turban/headscarf: variant61-63) and props (hat, headphones:
@@ -107,10 +125,10 @@ export function buildNotionistsOptions(seed: string, name: string) {
     size: 64,
     // Head-focused framing: zoom in and nudge down so the face fills the circle
     // instead of wasting space on the torso. Fine-tune these two values here.
-    scale: 150,
-    translateY: 16,
+    scale: 180,
+    translateY: 14,
     radius: 50,
-    backgroundColor: [...BACKGROUND_COLORS],
+    backgroundColor: [pickPalette(seed).bg],
     brows: [...BROWS],
     lips: [...LIPS],
     nose: [...NOSE],
@@ -129,8 +147,12 @@ export function getAgentAvatarSvg(agent: { avatarSeed: string | null; name: stri
     return SMITHERS_AVATAR_PATH;
   }
 
-  const avatar = createAvatar(notionists, buildNotionistsOptions(seed, agent.name));
-  return avatar.toDataUri();
+  const { skin } = pickPalette(seed);
+  const svg = createAvatar(notionists, buildNotionistsOptions(seed, agent.name)).toString();
+  // Tint the white fills (face/collar) to a light shade of the background hue,
+  // so the face carries colour instead of staying plain black-and-white.
+  const tinted = svg.replace(/#ffffff/gi, `#${skin}`).replace(/#fff\b/gi, `#${skin}`);
+  return `data:image/svg+xml,${encodeURIComponent(tinted)}`;
 }
 
 export function generateAvatarSeed(): string {

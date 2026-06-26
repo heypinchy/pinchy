@@ -40,6 +40,15 @@ describe("getAgentAvatarSvg", () => {
     const b = getAgentAvatarSvg({ avatarSeed: "seed-b", name: "X" });
     expect(a).not.toBe(b);
   });
+
+  it("renders a brand background and tints the white face fills away", () => {
+    const result = getAgentAvatarSvg({ avatarSeed: "seed-a", name: "X" });
+    const svg = decodeURIComponent(result.replace(/^data:image\/svg\+xml,/, "")).toLowerCase();
+    // a brand background colour is present...
+    expect(BACKGROUND_COLORS.some((c) => svg.includes(c))).toBe(true);
+    // ...and the plain white face fills have been recoloured.
+    expect(svg).not.toContain("#ffffff");
+  });
 });
 
 describe("resolvePresentation", () => {
@@ -65,14 +74,18 @@ describe("resolvePresentation", () => {
 });
 
 describe("buildNotionistsOptions", () => {
-  it("locks the background to the warm brand ramp", () => {
-    expect(buildNotionistsOptions("s", "Quill").backgroundColor).toEqual(BACKGROUND_COLORS);
+  it("picks a single background from the brand palette, deterministically", () => {
+    const opts = buildNotionistsOptions("s", "Quill");
+    expect(opts.backgroundColor).toHaveLength(1);
+    expect(BACKGROUND_COLORS).toContain(opts.backgroundColor[0]);
+    // same seed -> same colour
+    expect(buildNotionistsOptions("s", "Quill").backgroundColor).toEqual(opts.backgroundColor);
   });
 
   it("uses a head-focused framing", () => {
     const opts = buildNotionistsOptions("s", "Quill");
-    expect(opts.scale).toBe(150);
-    expect(opts.translateY).toBe(16);
+    expect(opts.scale).toBe(180);
+    expect(opts.translateY).toBe(14);
   });
 
   it("suppresses gestures and body icons", () => {

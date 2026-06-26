@@ -27,7 +27,7 @@ export function MobileChatHeader({
       <div className="flex items-center gap-2 min-w-0 flex-1 justify-center">
         {avatarUrl && (
           // eslint-disable-next-line @next/next/no-img-element
-          <img src={avatarUrl} alt={agentName} className="size-6 rounded-full shrink-0" />
+          <img src={avatarUrl} alt={agentName} className="size-8 rounded-full shrink-0" />
         )}
         <ChatSwitcher agentId={agentId} chatId={chatId} agentName={agentName} />
       </div>

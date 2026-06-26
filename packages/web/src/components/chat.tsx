@@ -235,14 +235,14 @@ export function Chat({
                                   avatarUrl={displayAvatar}
                                   canEdit={canEdit}
                                 />
-                                <header className="hidden md:flex p-4 border-b items-center justify-between shrink-0">
+                                <header className="hidden md:flex px-4 py-2.5 border-b items-center justify-between shrink-0">
                                   <div className="flex items-center gap-2 min-w-0 flex-1 animate-in fade-in duration-300">
                                     {displayAvatar && (
                                       // eslint-disable-next-line @next/next/no-img-element
                                       <img
                                         src={displayAvatar}
                                         alt=""
-                                        className="size-7 rounded-full shrink-0"
+                                        className="size-10 rounded-full shrink-0"
                                       />
                                     )}
                                     <ChatSwitcher

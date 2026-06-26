@@ -67,7 +67,7 @@ export function AppSidebar({ isAdmin }: AppSidebarProps) {
                             name: agent.name,
                           })}
                           alt=""
-                          className="size-8 rounded-full shrink-0"
+                          className="size-9 rounded-full shrink-0"
                         />
                         <div className="flex flex-col min-w-0 flex-1">
                           <span className="truncate font-semibold" title={agent.name}>
