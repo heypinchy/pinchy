@@ -19,14 +19,14 @@ runs:
   using: composite
   steps:
     - name: Setup pnpm
-      uses: pnpm/action-setup@v4
+      uses: pnpm/action-setup@v6
 
     - name: Setup Node.js
-      uses: actions/setup-node@v4
+      uses: actions/setup-node@v6
       with:
         node-version: ${{ inputs.node-version }}
         # Only enable pnpm cache when we're going to actually run
-        # `pnpm install` below — otherwise setup-node@v4's Post-step
+        # `pnpm install` below — otherwise setup-node@v6's Post-step
         # tries to save a never-populated pnpm store and fails with
         # "Path Validation Error: Path(s) specified in the action for
         # caching do(es) not exist", failing the entire job. The CodeQL
