@@ -1,4 +1,4 @@
-// packages/web/e2e/integration/21-tool-allowlist.spec.ts
+// packages/web/e2e/integration/zz-tool-allowlist.spec.ts
 //
 // Runtime read-side guard for the fail-closed tool allowlist (#605).
 //
@@ -13,8 +13,14 @@
 // Without this, a future OpenClaw change to allow-resolution semantics could
 // silently re-expose forbidden built-ins and only this real round-trip would
 // catch it. See also tool-registry.test.ts (emit-layer drift guard).
+//
+// `zz-` prefix on purpose: this spec posts a message into Smithers' shared
+// conversation, and `agent-chat.spec.ts` asserts a *pristine* single response
+// with a non-`.last()` locator. The integration suite runs serially
+// (workers:1), so running last keeps that assumption intact — every spec that
+// tolerates accumulated history already uses `.last()`/`.first()`.
 import { test, expect } from "@playwright/test";
-import { FAKE_OLLAMA_PORT, FAKE_OLLAMA_RESPONSE } from "../shared/fake-ollama/fake-ollama-server";
+import { FAKE_OLLAMA_PORT } from "../shared/fake-ollama/fake-ollama-server";
 import { login, getSmithersAgentId, waitForOpenClawConnected } from "./helpers";
 
 const TOOLS_SEEN_URL = `http://localhost:${FAKE_OLLAMA_PORT}/__pinchy_fake_ollama/tools-seen`;
@@ -50,14 +56,15 @@ test.describe("Tool allowlist — fail-closed at runtime (#605)", () => {
     await waitForOpenClawConnected(page);
 
     // Drive one full model round-trip so OpenClaw advertises this agent's tools.
+    // We don't assert on the reply text (other specs own the happy path) — the
+    // tools-seen poll below is the synchronization point.
     const input = page.getByPlaceholder(/send a message/i);
     await expect(input).toBeVisible({ timeout: 10000 });
     await input.fill("Hello, are you there?");
     await input.press("Enter");
-    await expect(page.getByText(FAKE_OLLAMA_RESPONSE).first()).toBeVisible({ timeout: 30000 });
 
     // The fake Ollama records the union of every tool OpenClaw advertised.
-    // Poll until populated (the final advertise may land just after the reply).
+    // Poll until populated (the advertise lands when OpenClaw calls the model).
     let toolsSeen: string[] = [];
     await expect
       .poll(
