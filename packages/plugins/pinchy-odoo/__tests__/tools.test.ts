@@ -1358,6 +1358,23 @@ describe("odoo_count", () => {
     ]);
   });
 
+  it("treats omitted `filters` as an empty domain (match all), not an error", async () => {
+    // asDomain maps undefined/null to [] so an agent that omits filters counts
+    // all records instead of erroring (or forwarding `undefined` to Odoo).
+    mockSearchCount.mockResolvedValue(7);
+
+    const tools = createApi({ [agentId]: agentConfig });
+    const tool = findTool(tools, "odoo_count", agentId)!;
+
+    const result = await tool.execute("call-no-filters", {
+      model: "sale.order",
+    });
+
+    expect(result.isError).toBeFalsy();
+    expect(mockSearchCount).toHaveBeenCalledWith("sale.order", []);
+    expect(JSON.parse(result.content[0].text).count).toBe(7);
+  });
+
   it("denies count on unpermitted model", async () => {
     const tools = createApi({ [agentId]: agentConfig });
     const tool = findTool(tools, "odoo_count", agentId)!;
@@ -2063,6 +2080,19 @@ describe("error handling", () => {
     expect(result.content[0].text).toMatch(/filters.*array/i);
   });
 
+  it("attaches details.error on an inline validation error (odoo_describe_model on a non-permitted model)", async () => {
+    const tools = createApi({ [agentId]: agentConfig });
+    const tool = findTool(tools, "odoo_describe_model", agentId)!;
+
+    // stock.move is absent from testPermissions → "not available".
+    const result = await tool.execute("call-1", { model: "stock.move" });
+
+    expect(result.isError).toBe(true);
+    expect((result.details as { error?: string } | undefined)?.error).toMatch(
+      /not available/i,
+    );
+  });
+
   it("returns permission message for Odoo access errors", async () => {
     mockSearchRead.mockRejectedValue(
       new Error("AccessError: no read access on sale.order"),
@@ -2377,6 +2407,59 @@ describe("odoo_attach_file", () => {
     expect(result.isError).toBe(true);
     expect(result.content[0].text).toContain(
       "does not belong to this Odoo connection",
+    );
+    expect(mockCreate).not.toHaveBeenCalled();
+  });
+
+  it("attaches details.error when the upload file is missing (ENOENT)", async () => {
+    const targetRef = encodeRef({
+      integrationType: "odoo",
+      connectionId: "conn-test-1",
+      model: "account.move",
+      id: 42,
+      label: "INV/2025/0001",
+    });
+    mockStat.mockRejectedValue(
+      Object.assign(new Error("no such file"), { code: "ENOENT" }),
+    );
+
+    const tools = createApi({ [attachAgentId]: attachAgentConfig });
+    const tool = findTool(tools, "odoo_attach_file", attachAgentId)!;
+
+    const result = await tool.execute("call-enoent", {
+      targetRef,
+      filename: "missing.jpg",
+    });
+
+    expect(result.isError).toBe(true);
+    expect((result.details as { error?: string } | undefined)?.error).toContain(
+      "File not found",
+    );
+    expect(mockCreate).not.toHaveBeenCalled();
+  });
+
+  it("attaches details.error when the file exceeds the size limit", async () => {
+    const targetRef = encodeRef({
+      integrationType: "odoo",
+      connectionId: "conn-test-1",
+      model: "account.move",
+      id: 42,
+      label: "INV/2025/0001",
+    });
+    mockStat.mockResolvedValue({ size: 26 * 1024 * 1024 }); // > 25 MB cap
+    mockReadFile.mockResolvedValue(Buffer.from("x"));
+
+    const tools = createApi({ [attachAgentId]: attachAgentConfig });
+    const tool = findTool(tools, "odoo_attach_file", attachAgentId)!;
+
+    const result = await tool.execute("call-toobig", {
+      targetRef,
+      filename: "huge.jpg",
+    });
+
+    expect(result.isError).toBe(true);
+    expect((result.details as { error?: string } | undefined)?.error).toContain(
+      "File too large",
     );
     expect(mockCreate).not.toHaveBeenCalled();
   });
