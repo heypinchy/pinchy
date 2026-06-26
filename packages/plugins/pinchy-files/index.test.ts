@@ -367,9 +367,15 @@ describe("pinchy_read PDF integration", () => {
     expect(result.content[0].text).not.toContain("<document>");
   });
 
-  it("calls vision API for scanned pages when modelAuth is available", async () => {
-    // Reset the module cache so a fresh PdfCache instance is created.
-    // A previous test may have cached the scanned PDF result without vision.
+  // Shared harness for the scanned-page vision path: fresh module/cache, a
+  // mocked modelAuth + loadConfig runtime, and a globally-mocked fetch returning
+  // `fetchJson`. Returns the tool result and the modelAuth spy so each test can
+  // assert on the dispatched provider and/or extracted text. Restores fetch.
+  async function runScannedPdfVision(opts: {
+    agentModel: string;
+    visionModelOverride?: string;
+    fetchJson: () => Promise<unknown>;
+  }): Promise<{ result: any; mockResolveApiKey: ReturnType<typeof vi.fn> }> {
     vi.resetModules();
     const { rmSync: rm } = await import("fs");
     const cacheSqlite = join(testCacheDir, "pdf-cache.sqlite");
@@ -379,65 +385,52 @@ describe("pinchy_read PDF integration", () => {
 
     const mockResolveApiKey = vi.fn().mockResolvedValue({ apiKey: "test-key" });
     const api = createMockApi({ "agent-1": { allowed_paths: [FIXTURES + "/"] } });
-
-    // Add runtime with modelAuth and config
+    if (opts.visionModelOverride) {
+      (api as any).pluginConfig.visionModel = opts.visionModelOverride;
+    }
     (api as any).runtime = {
       ...api.runtime,
-      modelAuth: {
-        resolveApiKeyForProvider: mockResolveApiKey,
-      },
+      modelAuth: { resolveApiKeyForProvider: mockResolveApiKey },
       config: {
-        loadConfig: () => ({
-          agents: {
-            list: [{ id: "agent-1", model: "anthropic/claude-haiku-4-5-20251001" }],
-          },
-        }),
+        loadConfig: () => ({ agents: { list: [{ id: "agent-1", model: opts.agentModel }] } }),
       },
     };
 
-    // Mock fetch globally to simulate Anthropic API response
     const originalFetch = globalThis.fetch;
-    globalThis.fetch = vi.fn().mockResolvedValue({
-      ok: true,
-      json: async () => ({
-        content: [{ type: "text", text: "Vision extracted: HWB 234 kWh/m²a" }],
-      }),
-    });
-
+    globalThis.fetch = vi.fn().mockResolvedValue({ ok: true, json: opts.fetchJson });
     try {
       const { default: plugin } = await import("./index");
-      vi.clearAllMocks(); // Clear import-related mocks but keep our fetch mock
-
-      // Re-setup our mocks after clearAllMocks
-      (globalThis.fetch as any).mockResolvedValue({
-        ok: true,
-        json: async () => ({
-          content: [{ type: "text", text: "Vision extracted: HWB 234 kWh/m²a" }],
-        }),
-      });
+      vi.clearAllMocks(); // Clear import-related mocks but keep our fetch + auth mocks
+      (globalThis.fetch as any).mockResolvedValue({ ok: true, json: opts.fetchJson });
       mockResolveApiKey.mockResolvedValue({ apiKey: "test-key" });
 
       plugin.register!(api as any);
-
       const readFactory = mockRegisterTool.mock.calls.find(
         (call: any[]) => call[1]?.name === "pinchy_read"
       )?.[0];
       const tool = readFactory({ agentId: "agent-1" });
-
-      const fixturePath = join(FIXTURES, "scanned.pdf");
-      const result = await tool.execute("call-1", { path: fixturePath });
-
-      // resolveApiKeyForProvider should be called with {provider, cfg} object
-      expect(mockResolveApiKey).toHaveBeenCalledWith(
-        expect.objectContaining({ provider: "anthropic" })
-      );
-
-      // The result should contain the vision-extracted text, NOT the fallback
-      expect(result.content[0].text).toContain("HWB 234");
-      expect(result.content[0].text).not.toContain("Unable to extract text");
+      const result = await tool.execute("call-1", { path: join(FIXTURES, "scanned.pdf") });
+      return { result, mockResolveApiKey };
     } finally {
       globalThis.fetch = originalFetch;
     }
+  }
+
+  it("calls vision API for scanned pages when modelAuth is available", async () => {
+    const { result, mockResolveApiKey } = await runScannedPdfVision({
+      agentModel: "anthropic/claude-haiku-4-5-20251001",
+      fetchJson: async () => ({
+        content: [{ type: "text", text: "Vision extracted: HWB 234 kWh/m²a" }],
+      }),
+    });
+
+    // resolveApiKeyForProvider should be called with {provider, cfg} object
+    expect(mockResolveApiKey).toHaveBeenCalledWith(
+      expect.objectContaining({ provider: "anthropic" })
+    );
+    // The result should contain the vision-extracted text, NOT the fallback
+    expect(result.content[0].text).toContain("HWB 234");
+    expect(result.content[0].text).not.toContain("Unable to extract text");
   });
 
   it("prefers the pluginConfig.visionModel over the agent's own chat model for vision", async () => {
@@ -445,62 +438,21 @@ describe("pinchy_read PDF integration", () => {
     // visionModel pointing at google. Vision must dispatch to GOOGLE — proving
     // scanned-page description is decoupled from the (possibly text-only) chat
     // model and uses the live-resolved visionModel instead.
-    vi.resetModules();
-    const { rmSync: rm } = await import("fs");
-    const cacheSqlite = join(testCacheDir, "pdf-cache.sqlite");
-    rm(cacheSqlite, { force: true });
-    rm(cacheSqlite + "-wal", { force: true });
-    rm(cacheSqlite + "-shm", { force: true });
-
-    const mockResolveApiKey = vi.fn().mockResolvedValue({ apiKey: "test-key" });
-    const api = createMockApi({ "agent-1": { allowed_paths: [FIXTURES + "/"] } });
-    (api as any).pluginConfig.visionModel = "google/gemini-2.5-flash";
-    (api as any).runtime = {
-      ...api.runtime,
-      modelAuth: { resolveApiKeyForProvider: mockResolveApiKey },
-      config: {
-        loadConfig: () => ({
-          agents: { list: [{ id: "agent-1", model: "anthropic/claude-haiku-4-5-20251001" }] },
-        }),
-      },
-    };
-
-    const originalFetch = globalThis.fetch;
-    globalThis.fetch = vi.fn().mockResolvedValue({
-      ok: true,
-      json: async () => ({
+    const { mockResolveApiKey } = await runScannedPdfVision({
+      agentModel: "anthropic/claude-haiku-4-5-20251001",
+      visionModelOverride: "google/gemini-2.5-flash",
+      fetchJson: async () => ({
         candidates: [{ content: { parts: [{ text: "Vision via google" }] } }],
       }),
     });
 
-    try {
-      const { default: plugin } = await import("./index");
-      vi.clearAllMocks();
-      (globalThis.fetch as any).mockResolvedValue({
-        ok: true,
-        json: async () => ({
-          candidates: [{ content: { parts: [{ text: "Vision via google" }] } }],
-        }),
-      });
-      mockResolveApiKey.mockResolvedValue({ apiKey: "test-key" });
-
-      plugin.register!(api as any);
-      const readFactory = mockRegisterTool.mock.calls.find(
-        (call: any[]) => call[1]?.name === "pinchy_read"
-      )?.[0];
-      const tool = readFactory({ agentId: "agent-1" });
-      await tool.execute("call-1", { path: join(FIXTURES, "scanned.pdf") });
-
-      // The override (google) wins over the agent's anthropic model.
-      expect(mockResolveApiKey).toHaveBeenCalledWith(
-        expect.objectContaining({ provider: "google" })
-      );
-      expect(mockResolveApiKey).not.toHaveBeenCalledWith(
-        expect.objectContaining({ provider: "anthropic" })
-      );
-    } finally {
-      globalThis.fetch = originalFetch;
-    }
+    // The override (google) wins over the agent's anthropic model.
+    expect(mockResolveApiKey).toHaveBeenCalledWith(
+      expect.objectContaining({ provider: "google" })
+    );
+    expect(mockResolveApiKey).not.toHaveBeenCalledWith(
+      expect.objectContaining({ provider: "anthropic" })
+    );
   });
 
   it("uses cache for repeated PDF reads", async () => {

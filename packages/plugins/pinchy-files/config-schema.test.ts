@@ -17,7 +17,9 @@ import { loadPluginManifest } from "../../web/src/lib/openclaw-config/plugin-man
 
 const manifest = loadPluginManifest("pinchy-files");
 
-// Mirrors the shape regenerateOpenClawConfig() emits at packages/web/src/lib/openclaw-config/build.ts:260-270.
+// Mirrors the shape regenerateOpenClawConfig() emits for the pinchy-files
+// plugin entry (see the `entries["pinchy-files"]` block in
+// packages/web/src/lib/openclaw-config/build.ts).
 const REPRESENTATIVE_EMITTED_CONFIG = {
   apiBaseUrl: "http://pinchy:7777",
   gatewayToken: "test-token",

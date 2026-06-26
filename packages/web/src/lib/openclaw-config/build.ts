@@ -551,8 +551,10 @@ export async function regenerateOpenClawConfig() {
     // best-live-vision-model resolution as the (legacy) built-in image tool,
     // but consumed by our own plugin — so it works on every provider/version
     // and, resolved against the live /v1/models catalog, never points at a
-    // retired model. Omitted when no vision provider is configured; the plugin
-    // then falls back to the agent's own model.
+    // retired model. This is a single provider-default pick (e.g. Anthropic →
+    // Haiku), NOT the per-agent chat model — matching the old pdfModel/imageModel
+    // behaviour. Omitted when no vision provider is configured; the plugin then
+    // falls back to the agent's own model.
     const visionModel = await resolveDefaultImageModel();
     entries["pinchy-files"] = {
       enabled: true,

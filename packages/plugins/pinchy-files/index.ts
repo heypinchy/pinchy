@@ -106,7 +106,11 @@ interface PluginApi {
      * against the live `/v1/models` catalog and emitted into plugin config.
      * Decouples vision from the agent's chat model (which may be text-only) and
      * is kept fresh by Pinchy's self-heal/background-refresh, so it never points
-     * at a retired model. Falls back to the agent's own model when absent.
+     * at a retired model.
+     *
+     * Absent only when no vision provider is configured at all — in that case
+     * the plugin falls back to the agent's own model, which is likely text-only,
+     * so scanned-page vision may simply be unavailable (same as before).
      */
     visionModel?: string;
   };
@@ -226,7 +230,11 @@ const plugin = {
     const apiBaseUrl = api.pluginConfig?.apiBaseUrl;
     const gatewayToken = api.pluginConfig?.gatewayToken;
     // Pinchy-resolved, live-checked vision model for scanned pages. Preferred
-    // over the agent's (possibly text-only) chat model when present.
+    // over the agent's (possibly text-only) chat model when present. Captured
+    // here at register() time, exactly like apiBaseUrl/gatewayToken above — so
+    // a self-heal/background-refresh that rewrites this value takes effect only
+    // once OpenClaw re-registers the plugin on config hot-reload (verified by
+    // the dispatch E2E), not mid-process.
     const visionModelOverride = api.pluginConfig?.visionModel;
 
     // Capture runtime APIs for vision (direct LLM API calls for scanned pages)
