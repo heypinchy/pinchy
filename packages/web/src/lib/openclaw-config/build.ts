@@ -884,8 +884,11 @@ export async function regenerateOpenClawConfig() {
   //     has no phone integration.
   //
   // Plugins we keep on (despite Pinchy not using them yet):
-  //   - browser: planned feature; gated by tool-registry deny-list anyway
-  //     so users can't reach it without admin opt-in.
+  //   - browser: planned feature. The `browser`/`canvas` tools live in
+  //     OpenClaw's `group:ui`, which the tool-registry deny-list denies for
+  //     every agent (see ALL_GROUPS + the drift guard), so the plugin can load
+  //     here without any agent reaching the real browser until we add an
+  //     explicit per-agent opt-in.
   //   - memory-core: activation.onStartup=false; lazy and free at startup.
   //   - talk-voice: leaf TTS-voice picker; tiny, future voice work.
   // Bundled OpenClaw extensions that Pinchy depends on but that aren't

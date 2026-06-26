@@ -165,6 +165,54 @@ describe("computeDeniedGroups", () => {
   });
 });
 
+describe("deny-list drift guard vs OpenClaw built-in tool groups", () => {
+  // OpenClaw built-in tool → group membership, transcribed from
+  // docs/gateway/config-tools.md (OpenClaw 2026.6.8). Re-check on every OpenClaw
+  // upgrade: if a powerful built-in is added or moves group, update this fixture
+  // — which forces a conscious decision about whether Pinchy denies it. This is
+  // the guard that would have caught `browser` (group:ui) being reachable while
+  // only group:runtime/fs/web were denied.
+  const OPENCLAW_TOOL_GROUPS: Record<string, readonly string[]> = {
+    "group:runtime": ["exec", "process", "code_execution"],
+    "group:fs": ["read", "write", "edit", "apply_patch"],
+    "group:web": ["web_search", "x_search", "web_fetch"],
+    "group:ui": ["browser", "canvas"],
+  };
+
+  // Built-in tools a governed Pinchy agent must NEVER reach: code execution, raw
+  // filesystem, raw web access, the real browser, and the canvas. Pinchy exposes
+  // none of these — it ships permissioned, audited pinchy_* equivalents instead.
+  const MUST_DENY_BUILTINS = [
+    "exec",
+    "process",
+    "code_execution",
+    "read",
+    "write",
+    "edit",
+    "apply_patch",
+    "web_search",
+    "x_search",
+    "web_fetch",
+    "browser",
+    "canvas",
+  ] as const;
+
+  it("denies (by group or standalone) every built-in a governed agent must never reach", () => {
+    const denied = new Set(computeDeniedGroups([]));
+    for (const tool of MUST_DENY_BUILTINS) {
+      const group = Object.entries(OPENCLAW_TOOL_GROUPS).find(([, tools]) =>
+        tools.includes(tool)
+      )?.[0];
+      const covered = denied.has(tool) || (group !== undefined && denied.has(group));
+      expect(covered, `built-in "${tool}" (group ${group ?? "none"}) must be denied`).toBe(true);
+    }
+  });
+
+  it("denies group:ui so the native `browser` and `canvas` tools are unreachable", () => {
+    expect(computeDeniedGroups([])).toContain("group:ui");
+  });
+});
+
 describe("Odoo access level helpers", () => {
   it("all odoo tools have integration: 'odoo'", () => {
     const odooTools = TOOL_REGISTRY.filter((t) => t.id.startsWith("odoo_"));

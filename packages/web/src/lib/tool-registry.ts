@@ -222,7 +222,12 @@ export const TOOL_REGISTRY: readonly ToolDefinition[] = [
   },
 ];
 
-const ALL_GROUPS = ["group:runtime", "group:fs", "group:web"] as const;
+// OpenClaw built-in tool groups Pinchy denies for every agent because it
+// exposes no tool from them (it ships permissioned, audited pinchy_* equivalents
+// instead). `group:ui` covers the native `browser` and `canvas` tools — denying
+// it keeps the real browser behind a future per-agent opt-in rather than
+// silently available (see the deny-list drift guard in tool-registry.test.ts).
+const ALL_GROUPS = ["group:runtime", "group:fs", "group:web", "group:ui"] as const;
 
 // `pdf` and `image` are deliberately NOT in this list. They are read-only
 // vision/document tools that respect `tools.fs.workspaceOnly`, and they

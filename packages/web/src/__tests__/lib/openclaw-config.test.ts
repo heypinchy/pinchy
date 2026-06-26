@@ -671,7 +671,7 @@ describe("regenerateOpenClawConfig", () => {
       model: "anthropic/claude-opus-4-7",
       workspace: "/root/.openclaw/workspaces/uuid-agent-1",
       tools: {
-        deny: ["group:runtime", "group:fs", "group:web", "image_generate"],
+        deny: ["group:runtime", "group:fs", "group:web", "group:ui", "image_generate"],
         fs: { workspaceOnly: true },
       },
       heartbeat: { every: "0m" },
@@ -686,7 +686,7 @@ describe("regenerateOpenClawConfig", () => {
       model: "openai/gpt-5.4",
       workspace: "/root/.openclaw/workspaces/uuid-agent-2",
       tools: {
-        deny: ["group:runtime", "group:fs", "group:web", "image_generate"],
+        deny: ["group:runtime", "group:fs", "group:web", "group:ui", "image_generate"],
         fs: { workspaceOnly: true },
       },
       heartbeat: { every: "0m" },
