@@ -177,7 +177,15 @@ export async function POST(request: NextRequest) {
   if (payload.durationMs !== undefined) detail.durationMs = payload.durationMs;
 
   if (resultDetails) {
-    delete detail.params;
+    // Param-suppression is the PII contract for CURATED details — fields
+    // beyond `error` (e.g. pinchy_write replacing sensitive content with
+    // path/contentHash). An error-only `details: { error }`, which every
+    // failed tool now emits so OpenClaw's isError-stripping (#404) can't mask
+    // the failure, must NOT suppress params: forensics need to know what the
+    // failed call attempted (the 2026-06-25 false-success incident hinged on
+    // those params being lost).
+    const curatesNonErrorFields = Object.keys(resultDetails).some((k) => k !== "error");
+    if (curatesNonErrorFields) delete detail.params;
     Object.assign(detail, resultDetails);
     // Plugins must not override these system fields. Re-apply after merge.
     detail.toolName = payload.toolName;
