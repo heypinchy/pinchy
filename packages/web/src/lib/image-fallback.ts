@@ -1,4 +1,6 @@
 import { requiredCapabilityForFile } from "@/lib/attachment-capability";
+import { isBlocked } from "@/lib/model-resolver/blocklist";
+import type { ModelCapability } from "@/lib/model-resolver/types";
 
 /**
  * Per-turn image-model fallback decision.
@@ -60,6 +62,17 @@ export type VisionCandidate = {
  * system-wide default (or any remaining candidate) — a cross-provider swap is a
  * better outcome than blocking the user outright.
  *
+ * Before any of that, every candidate (and the global default) is filtered
+ * through the SAME tools blocklist the model picker and agent-model validation
+ * already enforce. Without this, a tool-using agent's image turn could be routed
+ * to a model the rest of Pinchy forbids — exactly what happened to text-only
+ * agents on an ollama-cloud stack: the seeder marks every cloud model
+ * `tools: true`, so `gemini-3-flash-preview` (vision + tools, but blocklisted
+ * because `-preview` drops `thought_signature` and the provider rejects the
+ * tool payload with a 400 — pinchy#344/#338) was picked first and crashed the
+ * turn. The blocklist only forbids it WHEN tools are required, so a chat-only
+ * agent can still use a preview model for pure image description.
+ *
  * `candidates` are passed in caller-defined preference order.
  */
 export function resolveVisionFallbackModel(params: {
@@ -68,10 +81,13 @@ export function resolveVisionFallbackModel(params: {
   candidates: VisionCandidate[];
   globalDefault: string | null;
 }): string | null {
+  const requiredCaps: ModelCapability[] = params.agentUsesTools ? ["vision", "tools"] : ["vision"];
+  const usable = params.candidates.filter((c) => !isBlocked(c.id, requiredCaps));
+
   const slashIdx = params.agentModel.indexOf("/");
   const agentProvider = slashIdx > 0 ? params.agentModel.slice(0, slashIdx) : "";
 
-  const sameProvider = params.candidates.filter((c) => c.provider === agentProvider);
+  const sameProvider = usable.filter((c) => c.provider === agentProvider);
   if (sameProvider.length > 0) {
     if (params.agentUsesTools) {
       return (sameProvider.find((c) => c.tools) ?? sameProvider[0]).id;
@@ -79,8 +95,10 @@ export function resolveVisionFallbackModel(params: {
     return sameProvider[0].id;
   }
 
-  if (params.globalDefault) return params.globalDefault;
-  if (params.candidates.length > 0) return params.candidates[0].id;
+  if (params.globalDefault && !isBlocked(params.globalDefault, requiredCaps)) {
+    return params.globalDefault;
+  }
+  if (usable.length > 0) return usable[0].id;
   return null;
 }
 

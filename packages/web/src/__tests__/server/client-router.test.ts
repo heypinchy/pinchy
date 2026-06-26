@@ -4730,6 +4730,44 @@ describe("ClientRouter", () => {
       expect(audit.outcome).toBe("success");
     });
 
+    it("does not route a tool-using agent's image turn to a tools-blocked preview model — picks the next usable same-provider vision model", async () => {
+      // Piper's exact shape: a text-only agent (GLM 5.2) that uses tools (Odoo),
+      // on an ollama-cloud stack. The seeder marks every ollama-cloud model
+      // tools:true, so the catalog hands back gemini-3-flash-preview first —
+      // but it is on the tools blocklist (-preview drops thought_signature →
+      // provider rejects the tool payload with a 400, pinchy#344/#338). The
+      // fallback must skip it and take the next usable vision+tools model.
+      mockFindFirst.mockResolvedValue({
+        ...defaultAgent,
+        model: "ollama-cloud/glm-5.2",
+        allowedTools: ["odoo_search_read"],
+      });
+      mockIsModelVisionCapable.mockReturnValue(false);
+      mockMaterializeAttachments.mockResolvedValue(imageAttachment());
+      mockListVisionModels.mockResolvedValue([
+        { provider: "ollama-cloud", modelId: "gemini-3-flash-preview", vision: true, tools: true },
+        { provider: "ollama-cloud", modelId: "minimax-m3", vision: true, tools: true },
+      ]);
+      mockChat.mockReturnValue(okStream());
+
+      await router.handleMessage(createMockClientWs() as any, {
+        type: "message",
+        content: "What is in this image?",
+        attachmentIds: [ATTACHMENT_ID],
+        agentId: "agent-1",
+      });
+
+      const [, options] = mockChat.mock.calls[0];
+      expect(options.provider).toBe("ollama-cloud");
+      expect(options.model).toBe("minimax-m3");
+
+      const audit = mockAppendAuditLog.mock.calls
+        .map((c) => c[0])
+        .find((e) => e.eventType === "chat.image_model_fallback");
+      expect(audit).toBeDefined();
+      expect(audit.detail.fallbackModel).toBe("ollama-cloud/minimax-m3");
+    });
+
     it("sends a vision_unavailable error and does not dispatch when no vision model is configured anywhere", async () => {
       mockFindFirst.mockResolvedValue(TEXT_ONLY_AGENT);
       mockIsModelVisionCapable.mockReturnValue(false);

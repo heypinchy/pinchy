@@ -71,7 +71,7 @@ Whether the agent can actually see an image depends on the underlying LLM. As of
 
 You don't have to put your agent on a vision model just to send the occasional screenshot. When you attach an image to an agent whose chat model is **text-only**, Pinchy routes that one turn to a vision-capable model for you — the agent's configured model is left untouched, and the very next text-only message goes straight back to it. Nothing to toggle; the image just works.
 
-Which model handles it: Pinchy prefers a vision model from the **same provider** as your agent's model (so the conversation stays coherent), and falls back to the image model configured for your deployment otherwise. The switch is recorded in the [audit trail](/concepts/audit-trail/) as `chat.image_model_fallback`, so it's always clear which model saw an image.
+Which model handles it: Pinchy prefers a vision model from the **same provider** as your agent's model (so the conversation stays coherent), and falls back to the image model configured for your deployment otherwise. If your agent uses tools, Pinchy only picks a fallback that handles tool calls reliably — so sending a screenshot never costs the agent its tools for that turn. The switch is recorded in the [audit trail](/concepts/audit-trail/) as `chat.image_model_fallback`, so it's always clear which model saw an image.
 
 The only time this can't work is when **no** image-capable model is configured anywhere. Then Pinchy tells you so directly — ask an admin to configure a vision-capable provider (Anthropic, OpenAI, Google, or Ollama Cloud / local Ollama with a vision model). It will never silently drop the image and answer as if it weren't there.
 
