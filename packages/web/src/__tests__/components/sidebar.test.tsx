@@ -165,6 +165,7 @@ describe("AppSidebar", () => {
       const { container } = renderSidebar(false);
       const avatar = container.querySelector('img[src="data:image/svg+xml;utf8,mock-my-seed"]');
       expect(avatar).toBeInTheDocument();
+      expect(avatar).toHaveClass("size-9");
     });
 
     it("should render Smithers avatar for __smithers__ seed", () => {

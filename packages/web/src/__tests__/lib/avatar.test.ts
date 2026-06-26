@@ -5,6 +5,7 @@ import {
   resolvePresentation,
   buildNotionistsOptions,
   BACKGROUND_COLORS,
+  PALETTE,
   HAIR_MASCULINE,
   HAIR_FEMININE,
   HAIR_MIXED,
@@ -41,12 +42,15 @@ describe("getAgentAvatarSvg", () => {
     expect(a).not.toBe(b);
   });
 
-  it("renders a brand background and tints the white face fills away", () => {
+  it("renders a brand background and tints the white face fills to the matching skin", () => {
     const result = getAgentAvatarSvg({ avatarSeed: "seed-a", name: "X" });
     const svg = decodeURIComponent(result.replace(/^data:image\/svg\+xml,/, "")).toLowerCase();
-    // a brand background colour is present...
-    expect(BACKGROUND_COLORS.some((c) => svg.includes(c))).toBe(true);
-    // ...and the plain white face fills have been recoloured.
+    // the chosen brand background is present...
+    const entry = PALETTE.find((p) => svg.includes(p.bg));
+    expect(entry).toBeDefined();
+    // ...and the white face fills are recoloured to *that* background's skin tint,
+    // not just stripped (guards against the tint silently no-op-ing).
+    expect(svg).toContain(entry?.skin ?? "__no_match__");
     expect(svg).not.toContain("#ffffff");
   });
 });
