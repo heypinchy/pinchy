@@ -41,4 +41,25 @@ describe("compareVisionFallbackPreference", () => {
     ]);
     expect(sorted[0]).toBe("anthropic/claude-opus-4");
   });
+
+  it("breaks ties between two models on the same native provider alphabetically", () => {
+    // Native providers carry no curated intra-provider order, so two models on
+    // the same provider fall through to the deterministic alphabetical tiebreak.
+    const sorted = sortedIds([
+      { provider: "anthropic", modelId: "claude-opus-4" },
+      { provider: "anthropic", modelId: "claude-haiku-4" },
+    ]);
+    expect(sorted).toEqual(["anthropic/claude-haiku-4", "anthropic/claude-opus-4"]);
+  });
+
+  it("ranks a provider absent from the preference list (e.g. ollama-local) behind the listed providers", () => {
+    // ollama-local isn't in IMAGE_MODEL_PREFERENCE, so its vision models sort
+    // after every listed provider — including ollama-cloud — in the global
+    // order the resolver uses for its cross-provider last resort.
+    const sorted = sortedIds([
+      { provider: "ollama-local", modelId: "llama3.2-vision" },
+      { provider: "ollama-cloud", modelId: "minimax-m3" },
+    ]);
+    expect(sorted).toEqual(["ollama-cloud/minimax-m3", "ollama-local/llama3.2-vision"]);
+  });
 });
