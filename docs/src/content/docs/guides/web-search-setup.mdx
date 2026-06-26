@@ -49,6 +49,10 @@ Adding a connection does not give any agent web access. You must explicitly enab
 If no Brave Search API key is configured, you'll see an info banner in the Web Search section pointing you to Settings → Integrations.
 :::
 
+:::note[What the page fetcher can read]
+**Fetch web pages** reads a page's static HTML — it does not run JavaScript. Most sites work, but if a page renders its content client-side (a JavaScript single-page app) or sits behind anti-bot protection, a static fetch returns no usable text. In that case the agent reports that the page may be client-side rendered, blocked, or simply have little text — rather than returning raw markup. Point the agent at a more text-friendly URL where one exists.
+:::
+
 ## 4. Configure per-agent filters
 
 When you enable web search tools for an agent, additional filter options appear below the checkboxes. These let you control what the agent can search and fetch. Restrictions apply to **both** Search the web and Fetch web pages.

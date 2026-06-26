@@ -10,7 +10,8 @@ vi.mock("node:dns/promises", () => ({
 }));
 
 // Import after mock setup
-const { webFetch, pinnedLookup, readBodyCapped } = await import("./web-fetch.js");
+const { webFetch, pinnedLookup, readBodyCapped, extractReadableContent, visibleTextFromHtml } =
+  await import("./web-fetch.js");
 
 // Build a Response whose body streams the given byte chunks, to exercise
 // readBodyCapped's streaming cap path (the text() fallback is used elsewhere).
@@ -60,6 +61,12 @@ describe("webFetch", () => {
     vi.unstubAllGlobals();
     vi.restoreAllMocks();
   });
+
+  // Routing/SSRF/redirect tests care only about isError, not the body. Use a
+  // body with enough real text to clear extractReadableContent's empty-content
+  // guard, so these tests stay decoupled from content-extraction behaviour.
+  const ROUTING_FIXTURE =
+    "<html><body><article><p>This is an ordinary web page whose body carries enough readable prose for the extractor to treat it as genuine content.</p></article></body></html>";
 
   function mockHtmlResponse(html: string, status = 200) {
     fetchMock.mockResolvedValue({
@@ -114,7 +121,7 @@ describe("webFetch", () => {
 
   describe("domain filtering", () => {
     it("allows URL matching allowedDomains", async () => {
-      mockHtmlResponse("<html><body><p>Content</p></body></html>");
+      mockHtmlResponse(ROUTING_FIXTURE);
 
       const result = await webFetch("https://github.com/foo", {
         allowedDomains: ["github.com"],
@@ -136,7 +143,7 @@ describe("webFetch", () => {
     });
 
     it("allows subdomains of allowedDomains", async () => {
-      mockHtmlResponse("<html><body><p>Docs</p></body></html>");
+      mockHtmlResponse(ROUTING_FIXTURE);
 
       const result = await webFetch("https://docs.github.com/foo", {
         allowedDomains: ["github.com"],
@@ -157,7 +164,7 @@ describe("webFetch", () => {
     });
 
     it("matches allowedDomains case-insensitively", async () => {
-      mockHtmlResponse("<html><body><p>hi</p></body></html>");
+      mockHtmlResponse(ROUTING_FIXTURE);
       const result = await webFetch("https://GitHub.com/user/repo", {
         allowedDomains: ["github.com"],
       });
@@ -165,7 +172,7 @@ describe("webFetch", () => {
     });
 
     it("treats a trailing-dot hostname as matching allowedDomains", async () => {
-      mockHtmlResponse("<html><body><p>hi</p></body></html>");
+      mockHtmlResponse(ROUTING_FIXTURE);
       const result = await webFetch("https://github.com./user/repo", {
         allowedDomains: ["github.com"],
       });
@@ -173,7 +180,7 @@ describe("webFetch", () => {
     });
 
     it("allows any public URL when no domain config is set", async () => {
-      mockHtmlResponse("<html><body><p>Any content</p></body></html>");
+      mockHtmlResponse(ROUTING_FIXTURE);
 
       const result = await webFetch("https://any-site.example.org/page");
 
@@ -270,7 +277,7 @@ describe("webFetch", () => {
     it("allows IPv4-mapped IPv6 wrapping a public IPv4 (::ffff:8.8.8.8)", async () => {
       resolve4Mock.mockResolvedValue([]);
       resolve6Mock.mockResolvedValue(["::ffff:8.8.8.8"]);
-      mockHtmlResponse("<html><body><p>OK</p></body></html>");
+      mockHtmlResponse(ROUTING_FIXTURE);
 
       const result = await webFetch("https://example.com/page");
 
@@ -349,7 +356,7 @@ describe("webFetch", () => {
         .mockResolvedValueOnce(["93.184.216.34"]) // guard sees public
         .mockResolvedValueOnce(["10.0.0.5"]); // a second resolution would see private
       resolve6Mock.mockResolvedValue([]);
-      mockHtmlResponse("<html><body><p>Safe</p></body></html>");
+      mockHtmlResponse(ROUTING_FIXTURE);
 
       const result = await webFetch("https://example.com/page");
 
@@ -373,7 +380,7 @@ describe("webFetch", () => {
       resolve6Mock.mockClear();
 
       // No DNS to rebind — the URL itself names the destination address.
-      mockHtmlResponse("<html><body><p>Direct</p></body></html>");
+      mockHtmlResponse(ROUTING_FIXTURE);
 
       const result = await webFetch("https://93.184.216.34/page");
 
@@ -548,5 +555,96 @@ describe("webFetch", () => {
       // cap = 100 * 8 = 800 bytes ≈ 1 chunk, so we stop far before the 100-chunk end.
       expect(chunksPulled).toBeLessThan(5);
     });
+  });
+});
+
+describe("extractReadableContent", () => {
+  // A JavaScript single-page-app shell: the real content is rendered client-side,
+  // so the static HTML carries no readable prose (the zaruba-edv.at case). The
+  // old code fell back to `?? text` and shipped ~50KB of raw markup to the agent
+  // with isError unset — an honest, distinct error is required instead.
+  it("flags a client-side-rendered shell instead of returning raw HTML markup", () => {
+    const spa = `<!DOCTYPE html><html dir="ltr" lang="en"><head><title>App</title>
+      <meta name="app-name" content="export_website"></head>
+      <body><div id="root"></div><script>window.__APP__=1;</script></body></html>`;
+
+    const result = extractReadableContent(spa, "text/html", 50000);
+
+    expect(result.isError).toBe(true);
+    expect(result.content).not.toContain("<");
+    expect(result.content).not.toContain("DOCTYPE");
+    // Honest empty-state: names client-side rendering as ONE possibility...
+    expect(result.content.toLowerCase()).toMatch(/client-side|javascript|single-page/);
+    // ...without asserting it as the sole cause (a short static page is also possible).
+    expect(result.content.toLowerCase()).toMatch(/little text|or simply|little textual/);
+  });
+
+  // A content-rich marketing/landing page with no <article> element. Readability
+  // grabs only a fragment of such pages (the ambersearch.de case: 1048 of 5241
+  // visible chars), so we must fall back to the full visible text — keeping the
+  // first AND last section — rather than to a fragment or raw markup.
+  it("returns full visible text when Readability under-extracts a non-article page", () => {
+    const sections = Array.from(
+      { length: 14 },
+      (_, i) => `<section><div>Heading ${i}</div><div>Distinct marketing line number ${i}.</div></section>`,
+    ).join("");
+    const html = `<!DOCTYPE html><html><head><title>Marketing</title></head><body><header>Home Pricing Login</header>${sections}</body></html>`;
+
+    const result = extractReadableContent(html, "text/html", 50000);
+
+    expect(result.isError).toBeFalsy();
+    expect(result.content).not.toContain("<");
+    expect(result.content).toContain("Distinct marketing line number 0.");
+    expect(result.content).toContain("Distinct marketing line number 13.");
+    // Header chrome survives only on the visible-text branch (Readability strips
+    // nav), proving the fallback ran rather than Readability capturing the page.
+    expect(result.content).toContain("Pricing");
+  });
+
+  // A well-structured article: Readability's clean extraction is preferred over
+  // the raw visible text (which would include nav/footer chrome).
+  it("uses Readability's clean text for a well-structured article", () => {
+    const para =
+      "<p>This is a substantial paragraph of genuine article prose that Readability recognises as the main body of the document.</p>";
+    const html = `<html><body><nav>Home About Contact</nav><article><h1>Headline</h1>${para.repeat(5)}</article><footer>Footer chrome junk</footer></body></html>`;
+
+    const result = extractReadableContent(html, "text/html", 50000);
+
+    expect(result.isError).toBeFalsy();
+    expect(result.content).toContain("substantial paragraph of genuine article prose");
+    expect(result.content).not.toContain("<");
+  });
+
+  // Script/style code must never leak into the visible-text fallback, even when
+  // the closing tag is irregular (e.g. `</script >` with a space). Regex tag
+  // stripping misses these (CodeQL js/bad-tag-filter); DOM parsing does not.
+  it("strips script and style code from visible text despite irregular closing tags", () => {
+    const html = `<!DOCTYPE html><html><head><style>.brand{color:#f00}</style ></head>
+      <body><div>Hello world visible content</div>
+      <script>window.SECRET_TOKEN = "leakme12345";</script >
+      <div>second visible block</div></body></html>`;
+
+    const out = visibleTextFromHtml(html);
+
+    expect(out).toContain("Hello world visible content");
+    expect(out).not.toContain("SECRET_TOKEN");
+    expect(out).not.toContain("leakme12345");
+    expect(out).not.toContain("color:#f00");
+  });
+
+  it("truncates extracted text at maxChars with a marker", () => {
+    const html = `<html><body><article><p>${"word ".repeat(400)}</p></article></body></html>`;
+
+    const result = extractReadableContent(html, "text/html", 100);
+
+    expect(result.content.length).toBeLessThanOrEqual(100 + "\n\n[truncated]".length);
+    expect(result.content).toContain("[truncated]");
+  });
+
+  it("returns non-HTML content unchanged", () => {
+    const result = extractReadableContent("plain text body", "text/plain", 50000);
+
+    expect(result.isError).toBeFalsy();
+    expect(result.content).toBe("plain text body");
   });
 });

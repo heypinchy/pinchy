@@ -175,6 +175,88 @@ export async function readBodyCapped(res: Response, maxBytes: number): Promise<s
   return new TextDecoder("utf-8").decode(Buffer.concat(chunks));
 }
 
+// Below this many characters of extracted text we treat a 200 response as
+// having no usable content. Tuned to flag SPA shells and anti-bot challenge
+// pages (a handful of visible chars, e.g. zaruba-edv.at's "ZARUBA-EDV") while
+// letting genuinely short pages through (an example.com-sized page is ~100+).
+const MIN_READABLE_CHARS = 25;
+// Readability gives cleaner output than the raw visible text, but on non-article
+// pages (marketing / landing pages like ambersearch.de) it captures only a
+// fragment. Keep its result only when it covers at least this share of the
+// page's visible text; otherwise fall back to the full visible text.
+const READABILITY_KEEP_RATIO = 0.5;
+
+function collapseWhitespace(s: string): string {
+  return s.replace(/\s+/g, " ").trim();
+}
+
+// Recover human-visible text from HTML by parsing the DOM and dropping
+// non-content elements, then reading the body's text. This is the fallback when
+// Readability misfires: it rescues content-rich non-article pages, and by
+// yielding almost nothing on a client-rendered shell it lets us report an honest
+// error instead of dumping raw markup at the agent (the pre-fix `?? text`
+// behaviour returned ~50KB of tags for SPA pages). DOM parsing (not regex tag
+// stripping) is used so script/style code can't leak through irregular closing
+// tags like `</script >` (CodeQL js/bad-tag-filter).
+export function visibleTextFromHtml(html: string): string {
+  const { document } = parseHTML(html);
+  for (const el of document.querySelectorAll("script, style, noscript, template")) {
+    el.remove();
+  }
+  const root = document.body ?? document.documentElement;
+  return collapseWhitespace(root?.textContent ?? "");
+}
+
+function capText(s: string, maxChars: number): string {
+  return s.length > maxChars ? s.slice(0, maxChars) + "\n\n[truncated]" : s;
+}
+
+/**
+ * Turn a fetched body into the text the agent should read.
+ *
+ * For HTML we prefer Readability's article extraction, but fall back to the
+ * full visible text when Readability returns null or captures only a fragment
+ * (common on SPA shells and marketing pages). If even the visible text is
+ * essentially empty, the page is client-rendered or blocked, so we surface that
+ * as an error rather than returning unusable markup.
+ */
+export function extractReadableContent(
+  text: string,
+  contentType: string,
+  maxChars: number,
+): { content: string; isError?: boolean } {
+  if (!contentType.includes("text/html")) {
+    return { content: capText(text, maxChars) };
+  }
+
+  const { document } = parseHTML(text);
+  const article = new Readability(document).parse();
+  const readable = collapseWhitespace(article?.textContent ?? "");
+  const visible = visibleTextFromHtml(text);
+
+  // Deliberate trade-off: when Readability captured too little we take the full
+  // visible text, accepting some nav/footer chrome in exchange for completeness.
+  // For non-article pages (marketing/landing) that is the right call; for a
+  // chrome-heavy article it can be noisier than Readability's clean extraction.
+  const chosen =
+    readable.length >= Math.max(MIN_READABLE_CHARS, visible.length * READABILITY_KEEP_RATIO)
+      ? readable
+      : visible;
+
+  if (chosen.length < MIN_READABLE_CHARS) {
+    return {
+      content:
+        "Fetched the page, but it returned almost no readable text. It may be " +
+        "rendered client-side (a JavaScript single-page app), blocked by anti-bot " +
+        "protection, or simply contain little text. A static fetch cannot read " +
+        "client-rendered content.",
+      isError: true,
+    };
+  }
+
+  return { content: capText(chosen, maxChars) };
+}
+
 export async function webFetch(
   url: string,
   config: WebFetchConfig = {},
@@ -294,22 +376,7 @@ export async function webFetch(
     }
     const text = await readBodyCapped(res, maxBodyBytes);
 
-    // Extract readable content
-    let extracted: string;
-    if (contentType.includes("text/html")) {
-      const { document } = parseHTML(text);
-      const reader = new Readability(document);
-      const article = reader.parse();
-      extracted = article?.textContent ?? text;
-    } else {
-      extracted = text;
-    }
-
-    if (extracted.length > maxChars) {
-      extracted = extracted.slice(0, maxChars) + "\n\n[truncated]";
-    }
-
-    return { content: extracted };
+    return extractReadableContent(text, contentType, maxChars);
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     return { content: `Failed to fetch URL: ${message}`, isError: true };
