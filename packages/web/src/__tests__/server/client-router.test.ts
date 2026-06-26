@@ -4768,6 +4768,37 @@ describe("ClientRouter", () => {
       expect(audit.detail.fallbackModel).toBe("ollama-cloud/minimax-m3");
     });
 
+    it("picks the vision fallback deterministically, independent of the catalog's row order", async () => {
+      // listVisionCandidates queries the models table without an ORDER BY, so
+      // Postgres can return rows in any order. The fallback must still resolve
+      // deterministically — the alphabetically-first usable same-provider model
+      // — not whatever the DB happened to hand back first. Rows here arrive in
+      // reverse-alphabetical order to prove the resolver re-sorts them.
+      mockFindFirst.mockResolvedValue({
+        ...defaultAgent,
+        model: "ollama-cloud/glm-5.2",
+        allowedTools: ["odoo_search_read"],
+      });
+      mockIsModelVisionCapable.mockReturnValue(false);
+      mockMaterializeAttachments.mockResolvedValue(imageAttachment());
+      mockListVisionModels.mockResolvedValue([
+        { provider: "ollama-cloud", modelId: "minimax-m3", vision: true, tools: true },
+        { provider: "ollama-cloud", modelId: "gemma4:31b", vision: true, tools: true },
+      ]);
+      mockChat.mockReturnValue(okStream());
+
+      await router.handleMessage(createMockClientWs() as any, {
+        type: "message",
+        content: "What is in this image?",
+        attachmentIds: [ATTACHMENT_ID],
+        agentId: "agent-1",
+      });
+
+      const [, options] = mockChat.mock.calls[0];
+      expect(options.provider).toBe("ollama-cloud");
+      expect(options.model).toBe("gemma4:31b");
+    });
+
     it("sends a vision_unavailable error and does not dispatch when no vision model is configured anywhere", async () => {
       mockFindFirst.mockResolvedValue(TEXT_ONLY_AGENT);
       mockIsModelVisionCapable.mockReturnValue(false);

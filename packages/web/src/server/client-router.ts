@@ -1814,16 +1814,21 @@ export class ClientRouter {
 
 /**
  * Vision-capable models from the catalog, used as fallback candidates for an
- * image turn on a text-only agent. Returned in the catalog's natural order; the
- * resolver layers same-provider preference on top.
+ * image turn on a text-only agent. Sorted by `provider/modelId` so the resolver
+ * gets a STABLE order to layer same-provider preference on top of: the query has
+ * no `ORDER BY` and `models.id` is a random UUID, so Postgres' natural row order
+ * is non-deterministic — without this sort, which usable model an image turn
+ * lands on could vary between identical requests.
  */
 async function listVisionCandidates(): Promise<VisionCandidate[]> {
   const rows = await db.select().from(models).where(eq(models.vision, true));
-  return rows.map((m) => ({
-    id: `${m.provider}/${m.modelId}`,
-    provider: m.provider,
-    tools: m.tools ?? false,
-  }));
+  return rows
+    .map((m) => ({
+      id: `${m.provider}/${m.modelId}`,
+      provider: m.provider,
+      tools: m.tools ?? false,
+    }))
+    .sort((a, b) => a.id.localeCompare(b.id));
 }
 
 /**

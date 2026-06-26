@@ -89,4 +89,20 @@ describe("resolveVisionFallbackModel", () => {
     });
     expect(model).toBe("ollama-cloud/gemini-3-flash-preview");
   });
+
+  it("swaps to a usable cross-provider candidate when every same-provider vision model is blocked for a tool agent — better than blocking", () => {
+    // Same-provider (ollama-cloud) only offers the blocked preview model, but a
+    // usable vision+tools model exists on another provider and no global default
+    // is set. A cross-provider swap beats blocking the user outright.
+    const model = resolveVisionFallbackModel({
+      agentModel: "ollama-cloud/glm-5.2",
+      agentUsesTools: true,
+      candidates: [
+        { id: "ollama-cloud/gemini-3-flash-preview", provider: "ollama-cloud", tools: true },
+        { id: "anthropic/claude-opus-4", provider: "anthropic", tools: true },
+      ],
+      globalDefault: null,
+    });
+    expect(model).toBe("anthropic/claude-opus-4");
+  });
 });
