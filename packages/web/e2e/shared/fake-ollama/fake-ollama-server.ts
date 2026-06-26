@@ -141,6 +141,13 @@ const CONTEXT_SAVE_USER_TRIGGER = "E2E_CONTEXT_SAVE_USER_TOOL";
 const CONTEXT_SAVE_USER_RESPONSE = "Context saved: coverage probe complete.";
 const ODOO_LIST_MODELS_TRIGGER = "E2E_ODOO_LIST_MODELS_TOOL";
 const ODOO_LIST_MODELS_RESPONSE = "Models listed: coverage probe complete.";
+// Deliberately FAILING odoo call: odoo_read on a model the probe agent lacks
+// permission for (it only holds sale.order read). The call has valid array
+// args so it clears OpenClaw's input-schema check and reaches the plugin,
+// which returns permissionDenied → details.error → audit outcome=failure.
+// Proves a failed odoo tool is no longer recorded as false-success (#404 path).
+const ODOO_READ_DENIED_TRIGGER = "E2E_ODOO_READ_DENIED_TOOL";
+const ODOO_READ_DENIED_RESPONSE = "Read attempted: coverage probe complete.";
 const EMAIL_LIST_TRIGGER = "E2E_EMAIL_LIST_TOOL";
 const EMAIL_LIST_RESPONSE = "Emails listed: coverage probe complete.";
 const EMAIL_SEND_TRIGGER = "E2E_EMAIL_SEND_TOOL";
@@ -196,6 +203,12 @@ const TOOL_TRIGGERS: TriggerConfig[] = [
     response: ODOO_LIST_MODELS_RESPONSE,
     toolName: "odoo_list_models",
     arguments: {},
+  },
+  {
+    trigger: ODOO_READ_DENIED_TRIGGER,
+    response: ODOO_READ_DENIED_RESPONSE,
+    toolName: "odoo_read",
+    arguments: { model: "res.partner", filters: [] },
   },
   {
     trigger: EMAIL_LIST_TRIGGER,
@@ -927,6 +940,7 @@ export const FAKE_OLLAMA_CONTEXT_SAVE_USER_TOOL_TRIGGER = CONTEXT_SAVE_USER_TRIG
 export const FAKE_OLLAMA_CONTEXT_SAVE_USER_TOOL_RESPONSE = CONTEXT_SAVE_USER_RESPONSE;
 export const FAKE_OLLAMA_ODOO_LIST_MODELS_TOOL_TRIGGER = ODOO_LIST_MODELS_TRIGGER;
 export const FAKE_OLLAMA_ODOO_LIST_MODELS_TOOL_RESPONSE = ODOO_LIST_MODELS_RESPONSE;
+export const FAKE_OLLAMA_ODOO_READ_DENIED_TRIGGER = ODOO_READ_DENIED_TRIGGER;
 export const FAKE_OLLAMA_EMAIL_LIST_TOOL_TRIGGER = EMAIL_LIST_TRIGGER;
 export const FAKE_OLLAMA_EMAIL_LIST_TOOL_RESPONSE = EMAIL_LIST_RESPONSE;
 export const FAKE_OLLAMA_EMAIL_SEND_TOOL_TRIGGER = EMAIL_SEND_TRIGGER;

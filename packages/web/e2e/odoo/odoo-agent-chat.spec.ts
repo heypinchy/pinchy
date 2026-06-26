@@ -16,6 +16,7 @@ import {
 } from "./helpers";
 import {
   FAKE_OLLAMA_ODOO_LIST_MODELS_TOOL_TRIGGER,
+  FAKE_OLLAMA_ODOO_READ_DENIED_TRIGGER,
   FAKE_OLLAMA_PORT,
   startFakeOllama,
   stopFakeOllama,
@@ -332,10 +333,12 @@ test.describe("Odoo dispatch probe (pinchy-odoo plugin coverage)", () => {
       { model: "sale.order", operation: "read" },
     ]);
 
-    // 7. Allow odoo_list_models — second config regen with the tool in the allow-list.
+    // 7. Allow odoo_list_models (happy-path probe) + odoo_read (failure probe:
+    //    the agent only holds sale.order read, so an odoo_read on res.partner
+    //    hits permissionDenied inside the plugin).
     const patchRes = await pinchyPatch(
       `/api/agents/${dispatchAgentId}`,
-      { allowedTools: ["odoo_list_models"] },
+      { allowedTools: ["odoo_list_models", "odoo_read"] },
       dispatchCookie
     );
     expect(patchRes.status).toBe(200);
@@ -401,5 +404,53 @@ test.describe("Odoo dispatch probe (pinchy-odoo plugin coverage)", () => {
       deadlineMs: 160_000,
     });
     expect(found).toBe(true);
+  });
+
+  test("a failed odoo tool is audited as outcome=failure, not false-success", async ({
+    page,
+  }, testInfo) => {
+    // Regression guard for the 2026-06-25 false-success incident: a failed
+    // odoo tool call (here permissionDenied) must land in the audit log as
+    // outcome=failure. The plugin returns { isError, details: { error } };
+    // OpenClaw strips isError (#404), so the audit endpoint relies on the
+    // plugin-supplied details.error to record the failure. Before the fix this
+    // exact row was recorded as outcome=success with a green checkmark.
+    testInfo.setTimeout(180_000);
+
+    await loginViaUI(page, getAdminEmail(), getAdminPassword());
+
+    // Capture the cutoff BEFORE dispatch so the poll cannot match a stale row.
+    const since = new Date().toISOString();
+
+    await page.goto(`/chat/${dispatchAgentId}`);
+    await expect(page).toHaveURL(`/chat/${dispatchAgentId}`, { timeout: 10_000 });
+
+    const input = page.getByPlaceholder(/send a message/i);
+    await expect(input).toBeVisible({ timeout: 10_000 });
+    await input.fill(`${FAKE_OLLAMA_ODOO_READ_DENIED_TRIGGER}: read partners`);
+    await input.press("Enter");
+
+    // Poll for a FAILURE-outcome row specifically (status=failure). pollAuditForTool
+    // only proves an entry exists; here the outcome is the whole point.
+    const deadline = Date.now() + 160_000;
+    let foundFailure = false;
+    while (Date.now() < deadline) {
+      const res = await page.request.get(
+        `/api/audit?eventType=tool.odoo_read&status=failure&from=${encodeURIComponent(
+          since
+        )}&limit=10`
+      );
+      if (res.status() === 200) {
+        const audit = (await res.json()) as {
+          entries: Array<{ resource: string | null }>;
+        };
+        if (audit.entries.some((entry) => entry.resource === `agent:${dispatchAgentId}`)) {
+          foundFailure = true;
+          break;
+        }
+      }
+      await new Promise((r) => setTimeout(r, 500));
+    }
+    expect(foundFailure).toBe(true);
   });
 });
