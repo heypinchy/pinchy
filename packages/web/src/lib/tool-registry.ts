@@ -1,3 +1,5 @@
+import { getAllPinchyPluginToolNames } from "@/lib/openclaw-config/plugin-manifest-loader";
+
 export interface ToolDefinition {
   id: string;
   label: string;
@@ -222,20 +224,29 @@ export const TOOL_REGISTRY: readonly ToolDefinition[] = [
   },
 ];
 
-// OpenClaw built-in tool groups Pinchy denies for every agent because it
-// exposes no tool from them (it ships permissioned, audited pinchy_* equivalents
-// instead). `group:ui` covers the native `browser` and `canvas` tools — denying
-// it keeps the real browser behind a future per-agent opt-in rather than
-// silently available (see the deny-list drift guard in tool-registry.test.ts).
-const ALL_GROUPS = ["group:runtime", "group:fs", "group:web", "group:ui"] as const;
-
-// `pdf` and `image` are deliberately NOT in this list. They are read-only
-// vision/document tools that respect `tools.fs.workspaceOnly`, and they
-// power Pinchy's chat-attachment feature: the upload-hint instructs the
-// agent to call them with the workspace path. `image_generate` stays denied
-// because it produces new content (token cost, output side-effects) and
-// belongs behind explicit admin opt-in.
-const STANDALONE_DENY = ["image_generate"] as const;
+// OpenClaw built-in (or bundled-plugin) tools Pinchy intentionally keeps
+// reachable, on top of the Pinchy plugin tools. Everything NOT in the emitted
+// allowlist is denied — so this list is the complete set of non-Pinchy tools an
+// agent may use:
+//   - memory_search / memory_get: the bundled `memory-core` plugin powers
+//     Pinchy's agent-memory feature (see memory-prompt.ts). They are
+//     plugin-owned, so they must be allowed by NAME — `group:memory` does NOT
+//     match them (verified against OpenClaw 2026.6.8).
+//   - pdf / image: read-only vision/document tools that respect
+//     `tools.fs.workspaceOnly`. They power chat attachments: the upload hint
+//     tells the agent to call them with the workspace path.
+//   - session_status: read-only self-status (the baseline `minimal` profile).
+// Notably ABSENT (hence denied): image_generate / music_generate /
+// video_generate / tts (produce new content — admin-only), the native
+// browser/canvas (group:ui), cron, gateway, message, nodes, subagents,
+// sessions_*, and raw exec/fs/web.
+const INTENDED_BUILTIN_TOOLS = [
+  "memory_search",
+  "memory_get",
+  "pdf",
+  "image",
+  "session_status",
+] as const;
 
 export function getToolById(id: string): ToolDefinition | undefined {
   return TOOL_REGISTRY.find((t) => t.id === id);
@@ -246,13 +257,21 @@ export function getToolsByCategory(category: "safe" | "powerful"): ToolDefinitio
 }
 
 /**
- * Compute which OpenClaw tool groups and standalone tools to deny.
- * Since no Pinchy-managed tool maps to an OpenClaw group or standalone tool,
- * this always returns the full deny list. The parameter is kept for forward
- * compatibility.
+ * Compute the fail-closed tool allowlist emitted per agent as `tools.allow`.
+ *
+ * With no `tools.profile` set, OpenClaw treats `allow` as an absolute allowlist
+ * (effective = full ∩ allow), so anything not listed here is denied — including
+ * built-ins added in future OpenClaw versions. The list is every Pinchy plugin
+ * tool (derived from the manifests, so it can't drift) plus the intentionally
+ * allowed read-only built-ins.
+ *
+ * The same superset is emitted for every agent: per-agent tool gating already
+ * happens inside each plugin's own config (the plugin only registers the tools
+ * that agent is permitted), so listing a tool an agent lacks is a harmless
+ * no-match. This allowlist is the OUTER boundary against built-ins.
  */
-export function computeDeniedGroups(_allowedToolIds: string[]): string[] {
-  return [...ALL_GROUPS, ...STANDALONE_DENY];
+export function computeAllowedTools(): string[] {
+  return [...getAllPinchyPluginToolNames(), ...INTENDED_BUILTIN_TOOLS];
 }
 
 // --- Email operation helpers ---

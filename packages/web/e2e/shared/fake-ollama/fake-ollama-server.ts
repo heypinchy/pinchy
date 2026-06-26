@@ -10,6 +10,22 @@ import * as http from "http";
 import type { AddressInfo } from "net";
 
 const MODEL_NAME = "llama3.2";
+
+// Union of every tool name OpenClaw has advertised to the model across all
+// chat requests this process has served. Lets a test assert the *effective*
+// per-agent tool policy OpenClaw resolved from Pinchy's emitted config —
+// the read-side proof of the fail-closed allowlist (#605): a forbidden
+// built-in (cron/exec/gateway/browser) must never appear here. Union (not
+// last-seen) makes the assertion immune to request ordering across agents.
+const advertisedToolNames = new Set<string>();
+
+function recordAdvertisedTools(payload: Record<string, unknown>): void {
+  const tools = Array.isArray(payload.tools) ? payload.tools : [];
+  for (const tool of tools) {
+    const name = (tool as { function?: { name?: unknown } })?.function?.name;
+    if (typeof name === "string") advertisedToolNames.add(name);
+  }
+}
 // Default response asserted by the integration test suite. The setup-wizard
 // E2E container overrides this via FAKE_OLLAMA_RESPONSE so its spec can
 // assert the same canonical "Sure, happy to help..." reply as the other
@@ -679,6 +695,15 @@ export async function handleRequest(req: http.IncomingMessage, res: http.ServerR
     return;
   }
 
+  // Read-side probe for the #605 tool-allowlist guard: returns the union of
+  // every tool name OpenClaw has advertised to the model so far. A test asserts
+  // forbidden built-ins never appear and the agent's own tools do.
+  if (method === "GET" && url === "/__pinchy_fake_ollama/tools-seen") {
+    res.writeHead(200, { "Content-Type": "application/json" });
+    res.end(JSON.stringify({ tools: [...advertisedToolNames].sort() }));
+    return;
+  }
+
   if (method === "GET" && url === "/api/tags") {
     res.writeHead(200, { "Content-Type": "application/json" });
     res.end(
@@ -718,6 +743,7 @@ export async function handleRequest(req: http.IncomingMessage, res: http.ServerR
 
   if (method === "POST" && url === "/api/chat") {
     const payload = await readJsonBody(req);
+    recordAdvertisedTools(payload);
     const messages = Array.isArray(payload.messages) ? payload.messages : [];
     const lastUserMessage = [...messages]
       .reverse()
@@ -840,6 +866,7 @@ export async function handleRequest(req: http.IncomingMessage, res: http.ServerR
 
   if (method === "POST" && url === "/v1/chat/completions") {
     const payload = await readJsonBody(req);
+    recordAdvertisedTools(payload);
     const messages = Array.isArray(payload.messages) ? payload.messages : [];
     const lastUserMessage = [...messages]
       .reverse()

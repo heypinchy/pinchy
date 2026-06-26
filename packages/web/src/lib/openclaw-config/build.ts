@@ -13,7 +13,7 @@ import {
   channelLinks,
 } from "@/db/schema";
 import { getSetting } from "@/lib/settings";
-import { computeDeniedGroups } from "@/lib/tool-registry";
+import { computeAllowedTools } from "@/lib/tool-registry";
 import type { AgentPluginConfig } from "@/db/schema";
 import { TOOL_CAPABLE_OLLAMA_CLOUD_MODELS, OLLAMA_CLOUD_COST } from "@/lib/ollama-cloud-models";
 import { getModelCatalogForProvider } from "@/lib/openclaw-builtin-models";
@@ -299,18 +299,25 @@ export async function regenerateOpenClawConfig() {
       );
     }
 
-    // Compute denied tool groups from allowed tools
+    // Fail-closed tool policy: emit an explicit allowlist (`tools.allow`) of
+    // exactly the Pinchy plugin tools plus the intentionally-allowed read-only
+    // built-ins (memory, pdf, image, session_status — see computeAllowedTools).
+    // With no `tools.profile` set, OpenClaw treats `allow` as an absolute
+    // allowlist (full ∩ allow), so every other built-in is denied by default,
+    // including ones added in future OpenClaw versions: cron, gateway, message,
+    // nodes, subagents, sessions_*, the media generators, raw exec/fs/web, and
+    // the native browser/canvas. Per-agent tool gating still happens inside each
+    // plugin's config; this allowlist is the outer boundary. Verified live
+    // against OpenClaw 2026.6.8 — `allow` matches tool names (not plugin ids,
+    // groups, or wildcards) and a profile would intersect the allowlist to ∅.
+    // See issue #605.
+    //
+    // `tools.fs.workspaceOnly` confines the built-in `pdf`/`image` tools to the
+    // agent's own workspace; without it they would have unrestricted
+    // host-filesystem access (CISO-review note, PR #316).
     const allowedTools = (agent.allowedTools as string[]) || [];
-    const deniedGroups = computeDeniedGroups(allowedTools);
-    if (deniedGroups.length > 0) {
-      agentEntry.tools = { deny: deniedGroups };
-    }
-
-    // Confine the built-in `pdf` and `image` tools to the agent's own
-    // workspace directory. Without this, the tools would have unrestricted
-    // host-filesystem access. See CISO-review note in PR #316.
     agentEntry.tools = {
-      ...((agentEntry.tools as Record<string, unknown>) ?? {}),
+      allow: computeAllowedTools(),
       fs: { workspaceOnly: true },
     };
 

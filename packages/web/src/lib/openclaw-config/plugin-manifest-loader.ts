@@ -52,6 +52,7 @@ export interface PluginManifest {
   name: string;
   description?: string;
   configSchema: Record<string, unknown>;
+  contracts?: { tools?: string[] };
 }
 
 const MANIFESTS: Record<KnownPinchyPlugin, PluginManifest> = {
@@ -71,4 +72,23 @@ export function loadPluginManifest(id: KnownPinchyPlugin): PluginManifest {
     throw new Error(`Unknown Pinchy plugin id: ${id}`);
   }
   return manifest;
+}
+
+/**
+ * The union of every tool name declared by a Pinchy plugin manifest
+ * (`contracts.tools`), deduplicated and sorted. This is the source of truth for
+ * the per-agent tool allowlist (see `computeAllowedTools` in tool-registry.ts):
+ * because the allowlist is derived from the manifests, adding a tool to a
+ * plugin automatically widens the allowlist — no second list to keep in sync.
+ * Plugins with no tools (pinchy-audit, pinchy-transcript — hooks only) simply
+ * contribute nothing.
+ */
+export function getAllPinchyPluginToolNames(): string[] {
+  const names = new Set<string>();
+  for (const id of KNOWN_PINCHY_PLUGINS) {
+    for (const tool of MANIFESTS[id].contracts?.tools ?? []) {
+      names.add(tool);
+    }
+  }
+  return [...names].sort();
 }

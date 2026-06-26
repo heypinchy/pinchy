@@ -58,7 +58,7 @@ Powerful tools let the agent **change state outside the conversation** — write
 
 Powerful integration tools (Odoo write/delete, email draft/send) are covered in their own sections below.
 
-Pinchy does **not** expose a shell-execution tool or an unrestricted "read any file" tool. OpenClaw's native filesystem and shell groups are denied by default at config-generation time — see [How permissions reach OpenClaw](#how-permissions-reach-openclaw) below. If you need shell-style automation, do it through a custom OpenClaw plugin so the actions are bounded by the plugin's contract.
+Pinchy does **not** expose a shell-execution tool or an unrestricted "read any file" tool. OpenClaw's native filesystem and shell tools are never added to an agent's allow-list, so they stay unreachable — see [How permissions reach OpenClaw](#how-permissions-reach-openclaw) below. If you need shell-style automation, do it through a custom OpenClaw plugin so the actions are bounded by the plugin's contract.
 
 ## The Permissions tab
 
@@ -86,11 +86,11 @@ See the [Mount Data Directories](/guides/mount-data-directories/) guide for inst
 
 ## How permissions reach OpenClaw
 
-Pinchy controls what tools an agent can use. OpenClaw's native tools (shell, file system, web) are not exposed directly — Pinchy replaces them with its own sandboxed tools and integration tools. This gives Pinchy full control over what each agent can do.
+Pinchy controls what tools an agent can use. OpenClaw's native tools (shell, file system, raw web, the built-in browser) are not exposed directly — Pinchy replaces them with its own sandboxed and integration tools. This gives Pinchy full control over what each agent can do.
 
-Under the hood, Pinchy converts its allow-list into a deny-list at config generation time using `computeDeniedGroups()`. This function takes the list of tool IDs an admin has enabled and returns all tool groups that should be blocked. The result is written into each agent's `tools.deny` array in the OpenClaw config.
+Under the hood, Pinchy emits a **fail-closed allow-list** into each agent's OpenClaw config. The `computeAllowedTools()` function returns exactly the Pinchy plugin tools plus a small set of read-only built-ins (memory search, PDF and image reading, session status), and Pinchy writes that set into the agent's `tools.allow` array — with no tool profile set, so OpenClaw treats it as an absolute allow-list. Every other built-in is therefore denied by default, **including tools added in future OpenClaw versions**: shell execution, raw file access, the native web and browser tools, scheduling (`cron`), gateway control, cross-session spawning, outbound messaging, and the media generators.
 
-This conversion runs automatically whenever the OpenClaw config is regenerated — admins never interact with the deny-list directly.
+This is the same fail-closed principle as the per-agent allow-list above, applied one layer down at the runtime boundary: rather than chasing a deny-list that must be revisited on every OpenClaw upgrade, Pinchy lists only what it trusts and denies the rest by default. It runs automatically whenever the OpenClaw config is regenerated — admins never interact with it directly. Per-agent tool gating still happens inside each Pinchy plugin, which only registers the tools an agent is permitted to use; the allow-list is the outer boundary that keeps everything else out.
 
 ## Integration tools
 
@@ -168,12 +168,13 @@ After creating an agent, you can change its permissions at any time via the Perm
 
 ## Defense in depth
 
-Pinchy does not rely on any single layer for security. Four layers work together:
+Pinchy does not rely on any single layer for security. Five layers work together:
 
 1. **Docker volumes** — only directories explicitly mounted into the container are accessible at all
 2. **Allow-list enforcement** — only tools an admin explicitly enables are available to the agent
-3. **Plugin path validation** — the `pinchy-files` plugin checks every requested path against the agent's allowed directories
-4. **Symlink resolution** — paths are resolved to their real location before validation, preventing symlink-based escapes
+3. **Runtime tool allow-list** — Pinchy emits an absolute `tools.allow` to OpenClaw, so built-ins Pinchy never surfaces (shell, raw file access, `cron`, gateway control, the native browser, …) are unreachable even if a plugin or future OpenClaw version would otherwise expose them
+4. **Plugin path validation** — the `pinchy-files` plugin checks every requested path against the agent's allowed directories
+5. **Symlink resolution** — paths are resolved to their real location before validation, preventing symlink-based escapes
 
 If any one layer fails, the others still prevent unauthorized access.
 

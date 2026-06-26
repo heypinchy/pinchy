@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { isOpenClawLocalBaseUrl } from "@/lib/openclaw-local-url";
+import { computeAllowedTools } from "@/lib/tool-registry";
 
 vi.mock("@/lib/model-vision", () => ({
   isModelVisionCapable: vi.fn((modelId: string) => {
@@ -671,7 +672,7 @@ describe("regenerateOpenClawConfig", () => {
       model: "anthropic/claude-opus-4-7",
       workspace: "/root/.openclaw/workspaces/uuid-agent-1",
       tools: {
-        deny: ["group:runtime", "group:fs", "group:web", "group:ui", "image_generate"],
+        allow: computeAllowedTools(),
         fs: { workspaceOnly: true },
       },
       heartbeat: { every: "0m" },
@@ -686,7 +687,7 @@ describe("regenerateOpenClawConfig", () => {
       model: "openai/gpt-5.4",
       workspace: "/root/.openclaw/workspaces/uuid-agent-2",
       tools: {
-        deny: ["group:runtime", "group:fs", "group:web", "group:ui", "image_generate"],
+        allow: computeAllowedTools(),
         fs: { workspaceOnly: true },
       },
       heartbeat: { every: "0m" },
@@ -757,17 +758,18 @@ describe("regenerateOpenClawConfig", () => {
     expect(agentEntry.tools.fs).toEqual({ workspaceOnly: true });
   });
 
-  // Locks the combined chat-attachment security contract (PR #316 review #3):
+  // Locks the combined chat-attachment security contract (PR #316 review #3),
+  // re-expressed for the fail-closed allowlist posture (#605):
   //
   //   1. `pdf` and `image` MUST be available to every agent — they're the
   //      built-in tools the upload hint instructs the agent to call. If
-  //      either ends up in `tools.deny`, the entire attachment feature
+  //      either is missing from `tools.allow`, the entire attachment feature
   //      silently breaks: the agent receives a path it cannot read.
   //
-  //   2. `image_generate` MUST remain denied. It produces new content
-  //      (token cost, output side-effects) and belongs behind explicit
+  //   2. `image_generate` MUST stay out of the allowlist. It produces new
+  //      content (token cost, output side-effects) and belongs behind explicit
   //      admin opt-in. This is the explicit boundary documented in
-  //      tool-registry.ts § STANDALONE_DENY.
+  //      tool-registry.ts § INTENDED_BUILTIN_TOOLS.
   //
   //   3. `tools.fs.workspaceOnly === true` MUST be set. Without it, `pdf`
   //      and `image` have unrestricted host-filesystem access — an agent
@@ -777,7 +779,7 @@ describe("regenerateOpenClawConfig", () => {
   // confined to the workspace, but cannot generate new content without
   // admin permission. Regression in any one of them silently changes the
   // security posture for every Pinchy install.
-  it("locks the chat-attachment security contract: pdf/image allowed + workspace-confined + image_generate denied", async () => {
+  it("locks the chat-attachment security contract: pdf/image allowed + workspace-confined + image_generate excluded", async () => {
     const agentsData = [
       {
         id: "security-contract-agent",
@@ -795,14 +797,14 @@ describe("regenerateOpenClawConfig", () => {
     const agentEntry = config.agents.list.find(
       (a: { id: string }) => a.id === "security-contract-agent"
     );
-    const deny = (agentEntry.tools?.deny ?? []) as string[];
+    const allow = (agentEntry.tools?.allow ?? []) as string[];
 
-    // (1) pdf/image MUST be reachable (NOT in the deny list).
-    expect(deny).not.toContain("pdf");
-    expect(deny).not.toContain("image");
+    // (1) pdf/image MUST be reachable (present in the allowlist).
+    expect(allow).toContain("pdf");
+    expect(allow).toContain("image");
 
-    // (2) image_generate MUST stay denied (admin-only).
-    expect(deny).toContain("image_generate");
+    // (2) image_generate MUST stay out of the allowlist (admin-only).
+    expect(allow).not.toContain("image_generate");
 
     // (3) workspace confinement MUST be active.
     expect(agentEntry.tools.fs).toEqual({ workspaceOnly: true });
@@ -1267,7 +1269,7 @@ describe("regenerateOpenClawConfig", () => {
     });
   });
 
-  it("should deny all groups for agents with only safe tools", async () => {
+  it("emits a fail-closed allowlist (not a deny list) for agents with only safe tools", async () => {
     mockedDb.select.mockReturnValue({
       from: mockFrom([
         {
@@ -1291,13 +1293,19 @@ describe("regenerateOpenClawConfig", () => {
     const kbAgent = config.agents.list.find((a: { id: string }) => a.id === "kb-agent-id");
 
     expect(kbAgent.tools).toBeDefined();
-    expect(kbAgent.tools.deny).toContain("group:runtime");
-    expect(kbAgent.tools.deny).toContain("group:fs");
-    expect(kbAgent.tools.deny).toContain("group:web");
-    expect(kbAgent.tools.allow).toBeUndefined();
+    // Allowlist posture: tools.allow is set, tools.deny is gone entirely.
+    expect(kbAgent.tools.allow).toBeDefined();
+    expect(kbAgent.tools.deny).toBeUndefined();
+    // The agent's own filesystem tools are inside the allowlist.
+    expect(kbAgent.tools.allow).toContain("pinchy_ls");
+    expect(kbAgent.tools.allow).toContain("pinchy_read");
+    // Fail-closed: raw runtime/fs/web/ui + automation built-ins stay out.
+    for (const blocked of ["exec", "read", "write", "web_fetch", "browser", "cron", "gateway"]) {
+      expect(kbAgent.tools.allow).not.toContain(blocked);
+    }
   });
 
-  it("should deny all groups for agents with empty allowedTools", async () => {
+  it("emits a fail-closed allowlist for agents with empty allowedTools", async () => {
     mockedDb.select.mockReturnValue({
       from: mockFrom([
         {
@@ -1319,9 +1327,13 @@ describe("regenerateOpenClawConfig", () => {
     const customAgent = config.agents.list.find((a: { id: string }) => a.id === "custom-agent-id");
 
     expect(customAgent.tools).toBeDefined();
-    expect(customAgent.tools.deny).toContain("group:runtime");
-    expect(customAgent.tools.deny).toContain("group:fs");
-    expect(customAgent.tools.deny).toContain("group:web");
+    expect(customAgent.tools.allow).toBeDefined();
+    expect(customAgent.tools.deny).toBeUndefined();
+    // Even with no Pinchy tools granted, the agent never reaches powerful
+    // built-ins — the allowlist is fail-closed against the whole built-in set.
+    for (const blocked of ["exec", "read", "write", "web_fetch", "browser", "cron", "gateway"]) {
+      expect(customAgent.tools.allow).not.toContain(blocked);
+    }
   });
 
   it("should include pinchy-files plugin config for agents with safe tools", async () => {

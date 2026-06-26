@@ -3,7 +3,7 @@ import {
   TOOL_REGISTRY,
   getToolById,
   getToolsByCategory,
-  computeDeniedGroups,
+  computeAllowedTools,
   getOdooTools,
   getOdooToolsForAccessLevel,
   detectOdooAccessLevel,
@@ -11,6 +11,7 @@ import {
   getEmailToolsForOperations,
   detectEmailOperations,
 } from "@/lib/tool-registry";
+import { getAllPinchyPluginToolNames } from "@/lib/openclaw-config/plugin-manifest-loader";
 
 describe("TOOL_REGISTRY", () => {
   it("contains safe tools", () => {
@@ -134,55 +135,103 @@ describe("getToolsByCategory", () => {
   });
 });
 
-describe("computeDeniedGroups", () => {
-  it("does not deny the OpenClaw built-in `pdf` tool — it powers chat-attachment PDF reading", () => {
-    const denied = computeDeniedGroups([]);
-    expect(denied).not.toContain("pdf");
+describe("computeAllowedTools", () => {
+  it("allows the OpenClaw built-in `pdf` tool — it powers chat-attachment PDF reading", () => {
+    expect(computeAllowedTools()).toContain("pdf");
   });
 
-  it("does not deny the OpenClaw built-in `image` tool — same reason for image attachments", () => {
-    const denied = computeDeniedGroups([]);
-    expect(denied).not.toContain("image");
+  it("allows the OpenClaw built-in `image` tool — same reason for image attachments", () => {
+    expect(computeAllowedTools()).toContain("image");
   });
 
-  it("still denies `image_generate` (write/output tool, requires explicit opt-in)", () => {
-    const denied = computeDeniedGroups([]);
-    expect(denied).toContain("image_generate");
+  it("allows memory_search/memory_get (bundled memory-core plugin powers agent memory)", () => {
+    const allowed = computeAllowedTools();
+    expect(allowed).toContain("memory_search");
+    expect(allowed).toContain("memory_get");
   });
 
-  it("always returns the base group deny list", () => {
-    const denied = computeDeniedGroups([]);
-    expect(denied).toContain("group:runtime");
-    expect(denied).toContain("group:fs");
-    expect(denied).toContain("group:web");
+  it("allows session_status (read-only self-status, the baseline `minimal` tool)", () => {
+    expect(computeAllowedTools()).toContain("session_status");
   });
 
-  it("returns same deny list even when tool IDs are passed (forward compat)", () => {
-    const denied = computeDeniedGroups(["pinchy_ls", "odoo_create"]);
-    expect(denied).not.toContain("pdf");
-    expect(denied).not.toContain("image");
-    expect(denied).toContain("image_generate");
+  it("does NOT allow `image_generate` (produces new content, requires explicit opt-in)", () => {
+    expect(computeAllowedTools()).not.toContain("image_generate");
+  });
+
+  it("includes every Pinchy plugin tool from the manifests (no plugin tool silently blocked)", () => {
+    const allowed = new Set(computeAllowedTools());
+    for (const tool of getAllPinchyPluginToolNames()) {
+      expect(allowed.has(tool), `plugin tool "${tool}" must be in the allowlist`).toBe(true);
+    }
+  });
+
+  it("is fail-closed: never allows raw runtime/fs/web/ui or other powerful built-ins", () => {
+    const allowed = new Set(computeAllowedTools());
+    const mustNeverAllow = [
+      "exec",
+      "process",
+      "code_execution",
+      "read",
+      "write",
+      "edit",
+      "apply_patch",
+      "web_search",
+      "x_search",
+      "web_fetch",
+      "browser",
+      "canvas",
+      "cron",
+      "gateway",
+      "message",
+      "nodes",
+      "subagents",
+      "sessions_spawn",
+      "sessions_send",
+      "tts",
+      "music_generate",
+      "video_generate",
+    ];
+    for (const tool of mustNeverAllow) {
+      expect(allowed.has(tool), `built-in "${tool}" must NOT be in the allowlist`).toBe(false);
+    }
   });
 });
 
-describe("deny-list drift guard vs OpenClaw built-in tool groups", () => {
+describe("allow-list drift guard vs OpenClaw built-in tool groups", () => {
   // OpenClaw built-in tool → group membership, transcribed from
   // docs/gateway/config-tools.md (OpenClaw 2026.6.8). Re-check on every OpenClaw
   // upgrade: if a powerful built-in is added or moves group, update this fixture
-  // — which forces a conscious decision about whether Pinchy denies it. This is
-  // the guard that would have caught `browser` (group:ui) being reachable while
-  // only group:runtime/fs/web were denied.
+  // — which forces a conscious decision about whether the allowlist should keep
+  // excluding it. Because Pinchy now emits an ALLOWlist (not a deny list), any
+  // new built-in is denied by default; this guard exists to prove the dangerous
+  // ones stay out and the intended read-only ones stay in.
   const OPENCLAW_TOOL_GROUPS: Record<string, readonly string[]> = {
     "group:runtime": ["exec", "process", "code_execution"],
     "group:fs": ["read", "write", "edit", "apply_patch"],
     "group:web": ["web_search", "x_search", "web_fetch"],
     "group:ui": ["browser", "canvas"],
+    "group:automation": ["heartbeat_respond", "cron", "gateway"],
+    "group:messaging": ["message"],
+    "group:nodes": ["nodes"],
+    "group:media": ["image", "image_generate", "music_generate", "video_generate", "tts"],
+    // group:sessions — subagents/session spawning/cross-session messaging.
+    "group:sessions": [
+      "sessions_list",
+      "sessions_history",
+      "sessions_send",
+      "sessions_spawn",
+      "sessions_yield",
+      "subagents",
+      "session_status",
+    ],
   };
 
   // Built-in tools a governed Pinchy agent must NEVER reach: code execution, raw
-  // filesystem, raw web access, the real browser, and the canvas. Pinchy exposes
-  // none of these — it ships permissioned, audited pinchy_* equivalents instead.
-  const MUST_DENY_BUILTINS = [
+  // filesystem/web, the real browser/canvas, scheduling + gateway control,
+  // cross-session/agent fan-out, outbound messaging/nodes, and content
+  // generators. Pinchy exposes none of these — it ships permissioned, audited
+  // pinchy_* equivalents (or governs them through its own config) instead.
+  const MUST_NOT_ALLOW_BUILTINS = [
     "exec",
     "process",
     "code_execution",
@@ -195,21 +244,46 @@ describe("deny-list drift guard vs OpenClaw built-in tool groups", () => {
     "web_fetch",
     "browser",
     "canvas",
+    "cron",
+    "gateway",
+    "message",
+    "nodes",
+    "subagents",
+    "sessions_spawn",
+    "sessions_send",
+    "image_generate",
+    "music_generate",
+    "video_generate",
+    "tts",
   ] as const;
 
-  it("denies (by group or standalone) every built-in a governed agent must never reach", () => {
-    const denied = new Set(computeDeniedGroups([]));
-    for (const tool of MUST_DENY_BUILTINS) {
+  // The ONLY non-Pinchy tools the allowlist may contain (read-only / attachment
+  // helpers). Anything else from group:media etc. must stay out.
+  const INTENDED_BUILTINS = ["memory_search", "memory_get", "pdf", "image", "session_status"];
+
+  it("excludes every built-in a governed agent must never reach", () => {
+    const allowed = new Set(computeAllowedTools());
+    for (const tool of MUST_NOT_ALLOW_BUILTINS) {
       const group = Object.entries(OPENCLAW_TOOL_GROUPS).find(([, tools]) =>
         tools.includes(tool)
       )?.[0];
-      const covered = denied.has(tool) || (group !== undefined && denied.has(group));
-      expect(covered, `built-in "${tool}" (group ${group ?? "none"}) must be denied`).toBe(true);
+      expect(
+        allowed.has(tool),
+        `built-in "${tool}" (group ${group ?? "none"}) must be excluded from the allowlist`
+      ).toBe(false);
     }
   });
 
-  it("denies group:ui so the native `browser` and `canvas` tools are unreachable", () => {
-    expect(computeDeniedGroups([])).toContain("group:ui");
+  it("excludes the native browser/canvas (group:ui) — preserves the #603 boundary", () => {
+    const allowed = computeAllowedTools();
+    expect(allowed).not.toContain("browser");
+    expect(allowed).not.toContain("canvas");
+  });
+
+  it("allows no non-Pinchy tool beyond the intended read-only built-ins", () => {
+    const pluginTools = new Set(getAllPinchyPluginToolNames());
+    const nonPinchy = computeAllowedTools().filter((t) => !pluginTools.has(t));
+    expect(nonPinchy.sort()).toEqual([...INTENDED_BUILTINS].sort());
   });
 });
 
