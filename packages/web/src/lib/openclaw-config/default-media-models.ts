@@ -176,3 +176,44 @@ export async function resolveDefaultImageModel(): Promise<string | null> {
   }
   return null;
 }
+
+function providerImageRank(provider: string): number {
+  const idx = IMAGE_MODEL_PREFERENCE.indexOf(provider as ProviderName);
+  return idx >= 0 ? idx : IMAGE_MODEL_PREFERENCE.length;
+}
+
+function ollamaCloudVisionRank(provider: string, modelId: string): number {
+  if (provider !== "ollama-cloud") return 0;
+  const idx = OLLAMA_CLOUD_IMAGE_PREFERENCE.indexOf(modelId as OllamaCloudModelId);
+  return idx >= 0 ? idx : OLLAMA_CLOUD_IMAGE_PREFERENCE.length;
+}
+
+/**
+ * Comparator (best first) for ordering vision-capable models as per-turn image
+ * fallbacks. Mirrors `resolveDefaultImageModel`'s preference so the fallback
+ * lands on the same QUALITY order rather than a non-deterministic DB row order:
+ *
+ *   1. Native-vision providers first, in `IMAGE_MODEL_PREFERENCE` order.
+ *   2. Within ollama-cloud, the curated `OLLAMA_CLOUD_IMAGE_PREFERENCE` order
+ *      (e.g. `minimax-m3` ahead of `gemma4:31b`), with uncurated vision models
+ *      ranked after the curated ones.
+ *   3. Ties broken alphabetically by `provider/modelId` for determinism.
+ *
+ * This only orders by quality. The tools blocklist (which keeps a tool agent
+ * off `gemini-3-flash-preview` even though it tops the curated list) is applied
+ * separately by `resolveVisionFallbackModel`.
+ */
+export function compareVisionFallbackPreference(
+  a: { provider: string; modelId: string },
+  b: { provider: string; modelId: string }
+): number {
+  const pa = providerImageRank(a.provider);
+  const pb = providerImageRank(b.provider);
+  if (pa !== pb) return pa - pb;
+
+  const ma = ollamaCloudVisionRank(a.provider, a.modelId);
+  const mb = ollamaCloudVisionRank(b.provider, b.modelId);
+  if (ma !== mb) return ma - mb;
+
+  return `${a.provider}/${a.modelId}`.localeCompare(`${b.provider}/${b.modelId}`);
+}

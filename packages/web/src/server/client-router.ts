@@ -51,6 +51,7 @@ import { eq } from "drizzle-orm";
 import { isModelVisionCapable } from "@/lib/model-vision";
 import { resolveImageTurnModel, type VisionCandidate } from "@/lib/image-fallback";
 import { readExistingConfig } from "@/lib/openclaw-config/write";
+import { compareVisionFallbackPreference } from "@/lib/openclaw-config/default-media-models";
 import {
   type ProcessedWorkspaceRef,
   buildAttachmentBlock,
@@ -1814,21 +1815,20 @@ export class ClientRouter {
 
 /**
  * Vision-capable models from the catalog, used as fallback candidates for an
- * image turn on a text-only agent. Sorted by `provider/modelId` so the resolver
- * gets a STABLE order to layer same-provider preference on top of: the query has
- * no `ORDER BY` and `models.id` is a random UUID, so Postgres' natural row order
- * is non-deterministic — without this sort, which usable model an image turn
- * lands on could vary between identical requests.
+ * image turn on a text-only agent. Sorted best-first by
+ * `compareVisionFallbackPreference` so the resolver layers same-provider
+ * preference on a QUALITY order — the same order `resolveDefaultImageModel`
+ * uses — rather than Postgres' natural row order: the query has no `ORDER BY`
+ * and `models.id` is a random UUID, so without this sort which usable model an
+ * image turn lands on would be non-deterministic.
  */
 async function listVisionCandidates(): Promise<VisionCandidate[]> {
   const rows = await db.select().from(models).where(eq(models.vision, true));
-  return rows
-    .map((m) => ({
-      id: `${m.provider}/${m.modelId}`,
-      provider: m.provider,
-      tools: m.tools ?? false,
-    }))
-    .sort((a, b) => a.id.localeCompare(b.id));
+  return rows.sort(compareVisionFallbackPreference).map((m) => ({
+    id: `${m.provider}/${m.modelId}`,
+    provider: m.provider,
+    tools: m.tools ?? false,
+  }));
 }
 
 /**

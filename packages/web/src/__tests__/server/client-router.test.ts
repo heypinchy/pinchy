@@ -4768,12 +4768,14 @@ describe("ClientRouter", () => {
       expect(audit.detail.fallbackModel).toBe("ollama-cloud/minimax-m3");
     });
 
-    it("picks the vision fallback deterministically, independent of the catalog's row order", async () => {
+    it("picks the highest-quality vision fallback, independent of catalog row order and alphabetical order", async () => {
       // listVisionCandidates queries the models table without an ORDER BY, so
-      // Postgres can return rows in any order. The fallback must still resolve
-      // deterministically — the alphabetically-first usable same-provider model
-      // — not whatever the DB happened to hand back first. Rows here arrive in
-      // reverse-alphabetical order to prove the resolver re-sorts them.
+      // Postgres can return rows in any order. The fallback must resolve by
+      // QUALITY (OLLAMA_CLOUD_IMAGE_PREFERENCE ranks minimax-m3 above gemma4:31b)
+      // — not by DB row order, and not alphabetically. The rows here are ordered
+      // so that both "first row" (gemma4:31b) and "alphabetically first"
+      // (gemma4:31b < minimax-m3) would pick the WRONG model if quality were
+      // ignored, so a minimax-m3 result proves the preference sort.
       mockFindFirst.mockResolvedValue({
         ...defaultAgent,
         model: "ollama-cloud/glm-5.2",
@@ -4782,8 +4784,8 @@ describe("ClientRouter", () => {
       mockIsModelVisionCapable.mockReturnValue(false);
       mockMaterializeAttachments.mockResolvedValue(imageAttachment());
       mockListVisionModels.mockResolvedValue([
-        { provider: "ollama-cloud", modelId: "minimax-m3", vision: true, tools: true },
         { provider: "ollama-cloud", modelId: "gemma4:31b", vision: true, tools: true },
+        { provider: "ollama-cloud", modelId: "minimax-m3", vision: true, tools: true },
       ]);
       mockChat.mockReturnValue(okStream());
 
@@ -4796,7 +4798,7 @@ describe("ClientRouter", () => {
 
       const [, options] = mockChat.mock.calls[0];
       expect(options.provider).toBe("ollama-cloud");
-      expect(options.model).toBe("gemma4:31b");
+      expect(options.model).toBe("minimax-m3");
     });
 
     it("sends a vision_unavailable error and does not dispatch when no vision model is configured anywhere", async () => {
