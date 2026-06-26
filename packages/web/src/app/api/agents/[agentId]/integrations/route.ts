@@ -1,30 +1,80 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
-import { eq, and } from "drizzle-orm";
+import { eq } from "drizzle-orm";
 import { withAdmin } from "@/lib/api-auth";
 import { db } from "@/db";
-import { agentConnectionPermissions, integrationConnections, agents } from "@/db/schema";
-import { appendAuditLog, type AuditLogEntry } from "@/lib/audit";
-import { recordAuditFailure } from "@/lib/audit-deferred";
+import {
+  agentConnectionPermissions,
+  agentMcpToolPermissions,
+  integrationConnections,
+} from "@/db/schema";
+import { appendAuditLog } from "@/lib/audit";
 import { parseRequestBody } from "@/lib/api-validation";
+import { regenerateOpenClawConfig } from "@/lib/openclaw-config";
+import type { McpIntegrationData } from "@/lib/integrations/types";
+import { isMcpEnabled } from "@/lib/feature-flags";
 
-const setAgentIntegrationsSchema = z.object({
+// ── Discriminated-union types ─────────────────────────────────────────────────
+
+type OdooEntry = { model: string; operation: string };
+
+/** A tool the connection currently advertises, with its server-provided description. */
+type McpAvailableTool = { name: string; description: string };
+
+type IntegrationPermission =
+  | { kind: "odoo"; connectionId: string; entries: OdooEntry[] }
+  | {
+      kind: "mcp";
+      connectionId: string;
+      connectionName: string;
+      availableTools: McpAvailableTool[];
+      tools: string[];
+    };
+
+type DriftEntry = { connectionName: string; removedTool: string };
+
+// ── Zod schemas ───────────────────────────────────────────────────────────────
+
+const odooPermissionSchema = z.object({
+  kind: z.literal("odoo"),
   connectionId: z.string().min(1),
-  permissions: z.array(z.object({ model: z.string().min(1), operation: z.string().min(1) })),
+  entries: z.array(z.object({ model: z.string().min(1), operation: z.string().min(1) })),
 });
+
+const mcpPermissionSchema = z.object({
+  kind: z.literal("mcp"),
+  connectionId: z.string().min(1),
+  tools: z.array(z.string().min(1)),
+});
+
+const setAgentIntegrationsSchema = z.array(
+  z.discriminatedUnion("kind", [odooPermissionSchema, mcpPermissionSchema])
+);
 
 type RouteContext = { params: Promise<{ agentId: string }> };
 
 /**
  * GET /api/agents/[agentId]/integrations
  *
- * Returns current integration permissions for this agent, grouped by connection.
+ * Returns current integration permissions for this agent.
+ *
+ * Response shape:
+ * {
+ *   permissions: IntegrationPermission[],
+ *   drift: Array<{ connectionName: string; removedTool: string }>
+ * }
+ *
+ * Odoo entries: { kind: "odoo", connectionId, entries: [{ model, operation }] }
+ * MCP entries:  { kind: "mcp", connectionId, connectionName, availableTools, tools }
+ *
+ * Drift entries are MCP tool permissions that reference a tool no longer
+ * present in the connection's data.tools list (e.g. after a re-sync).
  */
 export const GET = withAdmin<RouteContext>(async (_req, { params }) => {
   const { agentId } = await params;
 
-  // Join permissions with connections
-  const rows = await db
+  // ── Odoo permissions ──────────────────────────────────────────────────────
+  const odooRows = await db
     .select()
     .from(agentConnectionPermissions)
     .innerJoin(
@@ -33,166 +83,277 @@ export const GET = withAdmin<RouteContext>(async (_req, { params }) => {
     )
     .where(eq(agentConnectionPermissions.agentId, agentId));
 
-  // Group by connection
-  const grouped = new Map<
+  const odooGrouped = new Map<
     string,
-    {
-      connectionId: string;
-      connectionName: string;
-      connectionType: string;
-      permissions: Array<{ model: string; modelName: string; operation: string }>;
-    }
+    { kind: "odoo"; connectionId: string; entries: OdooEntry[] }
   >();
 
-  for (const row of rows) {
+  for (const row of odooRows) {
     const conn = row.integration_connections;
     const perm = row.agent_connection_permissions;
 
-    if (!grouped.has(conn.id)) {
-      grouped.set(conn.id, {
-        connectionId: conn.id,
-        connectionName: conn.name,
-        connectionType: conn.type,
-        permissions: [],
-      });
+    if (!odooGrouped.has(conn.id)) {
+      odooGrouped.set(conn.id, { kind: "odoo", connectionId: conn.id, entries: [] });
     }
-
-    // Look up human-readable model name from connection's cached schema
-    const models = (conn.data as { models?: Array<{ model: string; name: string }> })?.models;
-    const modelInfo = models?.find((m) => m.model === perm.model);
-    const modelName = modelInfo?.name ?? perm.model;
-
-    grouped.get(conn.id)!.permissions.push({
-      model: perm.model,
-      modelName,
-      operation: perm.operation,
-    });
+    odooGrouped.get(conn.id)!.entries.push({ model: perm.model, operation: perm.operation });
   }
 
-  return NextResponse.json(Array.from(grouped.values()));
+  // ── MCP permissions (skipped when PINCHY_MCP_ENABLED is off) ─────────────
+  const mcpGrouped = new Map<
+    string,
+    {
+      kind: "mcp";
+      connectionId: string;
+      connectionName: string;
+      availableTools: McpAvailableTool[];
+      tools: string[];
+    }
+  >();
+
+  const drift: DriftEntry[] = [];
+
+  if (isMcpEnabled()) {
+    const mcpRows = await db
+      .select()
+      .from(agentMcpToolPermissions)
+      .innerJoin(
+        integrationConnections,
+        eq(agentMcpToolPermissions.connectionId, integrationConnections.id)
+      )
+      .where(eq(agentMcpToolPermissions.agentId, agentId));
+
+    for (const row of mcpRows) {
+      const conn = row.integration_connections;
+      const perm = row.agent_mcp_tool_permissions;
+      const connData = conn.data as McpIntegrationData | null;
+      const availableNames = new Set((connData?.tools ?? []).map((t) => t.name));
+
+      if (!mcpGrouped.has(conn.id)) {
+        mcpGrouped.set(conn.id, {
+          kind: "mcp",
+          connectionId: conn.id,
+          connectionName: conn.name,
+          // Carry the server-provided description so the Permissions UI can show
+          // what each tool does instead of a bare snake_case name.
+          availableTools: (connData?.tools ?? []).map((t) => ({
+            name: t.name,
+            description: t.description ?? "",
+          })),
+          tools: [],
+        });
+      }
+
+      // Drift detection: tool was granted but no longer available
+      if (!availableNames.has(perm.toolName)) {
+        drift.push({ connectionName: conn.name, removedTool: perm.toolName });
+      } else {
+        mcpGrouped.get(conn.id)!.tools.push(perm.toolName);
+      }
+    }
+  }
+
+  // ── Combine and sort by connectionId ──────────────────────────────────────
+  const permissions: IntegrationPermission[] = [
+    ...odooGrouped.values(),
+    ...mcpGrouped.values(),
+  ].sort((a, b) => a.connectionId.localeCompare(b.connectionId));
+
+  return NextResponse.json({ permissions, drift });
 });
 
 /**
  * PUT /api/agents/[agentId]/integrations
  *
- * Replace all permissions for this agent on a given connection.
+ * Atomically replace ALL integration permissions for this agent.
+ * Body: IntegrationPermission[] (discriminated union of odoo/mcp entries)
+ *
+ * Returns 409 if an MCP tool is no longer available on its connection.
  */
 export const PUT = withAdmin<RouteContext>(async (request, { params }, session) => {
   const { agentId } = await params;
 
   const parsed = await parseRequestBody(setAgentIntegrationsSchema, request);
   if ("error" in parsed) return parsed.error;
-  const { connectionId, permissions } = parsed.data;
+  const body = parsed.data;
 
-  let existingPerms: { model: string; operation: string }[];
   try {
-    // Validate the agent exists. The path param is unconstrained; a stale UI
-    // can submit a deleted agentId, which would otherwise reach a raw FK
-    // violation on insert and surface as a 500 with the DB error text.
-    const agentRows = await db.select({ id: agents.id }).from(agents).where(eq(agents.id, agentId));
-    if (agentRows.length === 0) {
-      return NextResponse.json({ error: "Agent not found" }, { status: 404 });
+    // ── Validate MCP tool availability (before transaction) ─────────────────
+    const mcpEntries = body.filter(
+      (e): e is Extract<IntegrationPermission, { kind: "mcp" }> => e.kind === "mcp"
+    );
+
+    // Reject MCP entries when the feature flag is off
+    if (!isMcpEnabled() && mcpEntries.length > 0) {
+      return NextResponse.json({ error: "Not found" }, { status: 404 });
     }
 
-    // Validate connection exists
-    const connRows = await db
-      .select()
-      .from(integrationConnections)
-      .where(eq(integrationConnections.id, connectionId));
-    if (connRows.length === 0) {
-      return NextResponse.json({ error: "Connection not found" }, { status: 404 });
+    // Load MCP connection data for all MCP entries (for validation + audit snapshot)
+    const mcpConnectionMap = new Map<
+      string,
+      { id: string; name: string; data: McpIntegrationData }
+    >();
+
+    for (const entry of mcpEntries) {
+      if (mcpConnectionMap.has(entry.connectionId)) continue;
+
+      const connection = await db.query.integrationConnections.findFirst({
+        where: eq(integrationConnections.id, entry.connectionId),
+      });
+
+      if (!connection) {
+        return NextResponse.json({ error: "Connection not found" }, { status: 404 });
+      }
+
+      const connData = connection.data as McpIntegrationData;
+      mcpConnectionMap.set(entry.connectionId, {
+        id: connection.id,
+        name: connection.name,
+        data: connData,
+      });
+
+      const availableTools = new Set(connData.tools.map((t) => t.name));
+      for (const tool of entry.tools) {
+        if (!availableTools.has(tool)) {
+          return NextResponse.json({ error: `Tool no longer available: ${tool}` }, { status: 409 });
+        }
+      }
     }
 
-    // Atomic replace: read existing → delete → insert within a single transaction
-    // to guarantee the INSERT sees the DELETE's effects (avoids unique constraint
-    // violations from connection pool timing).
-    existingPerms = await db.transaction(async (tx) => {
+    // ── Atomic replace: read old MCP state, delete both tables, re-insert ───
+    const oldMcpPerms = await db.transaction(async (tx) => {
+      // Read existing MCP permissions before delete (for audit diff)
       const existing = await tx
         .select()
-        .from(agentConnectionPermissions)
-        .where(
-          and(
-            eq(agentConnectionPermissions.agentId, agentId),
-            eq(agentConnectionPermissions.connectionId, connectionId)
-          )
-        );
+        .from(agentMcpToolPermissions)
+        .where(eq(agentMcpToolPermissions.agentId, agentId));
 
+      // Delete all Odoo permissions for this agent
       await tx
         .delete(agentConnectionPermissions)
-        .where(
-          and(
-            eq(agentConnectionPermissions.agentId, agentId),
-            eq(agentConnectionPermissions.connectionId, connectionId)
-          )
-        );
+        .where(eq(agentConnectionPermissions.agentId, agentId));
 
-      if (permissions.length > 0) {
-        await tx.insert(agentConnectionPermissions).values(
-          permissions.map((p: { model: string; operation: string }) => ({
+      // Delete all MCP permissions for this agent
+      await tx.delete(agentMcpToolPermissions).where(eq(agentMcpToolPermissions.agentId, agentId));
+
+      // Re-insert Odoo permissions
+      const odooEntries = body.filter(
+        (e): e is Extract<IntegrationPermission, { kind: "odoo" }> => e.kind === "odoo"
+      );
+      if (odooEntries.length > 0) {
+        const odooRows = odooEntries.flatMap((e) =>
+          e.entries.map((perm) => ({
             agentId,
-            connectionId: connectionId,
-            model: p.model,
-            operation: p.operation,
+            connectionId: e.connectionId,
+            model: perm.model,
+            operation: perm.operation,
           }))
         );
+        if (odooRows.length > 0) {
+          await tx.insert(agentConnectionPermissions).values(odooRows);
+        }
+      }
+
+      // Re-insert MCP permissions
+      if (mcpEntries.length > 0) {
+        const mcpRows = mcpEntries.flatMap((e) =>
+          e.tools.map((tool) => ({
+            agentId,
+            connectionId: e.connectionId,
+            toolName: tool,
+          }))
+        );
+        if (mcpRows.length > 0) {
+          await tx.insert(agentMcpToolPermissions).values(mcpRows);
+        }
       }
 
       return existing;
     });
+
+    // ── Compute MCP diff for audit ──────────────────────────────────────────
+    // Group old MCP perms by connectionId
+    const oldMcpByConn = new Map<string, Set<string>>();
+    for (const perm of oldMcpPerms) {
+      const set = oldMcpByConn.get(perm.connectionId) ?? new Set<string>();
+      set.add(perm.toolName);
+      oldMcpByConn.set(perm.connectionId, set);
+    }
+
+    // Group new MCP perms by connectionId
+    const newMcpByConn = new Map<string, Set<string>>();
+    for (const entry of mcpEntries) {
+      newMcpByConn.set(entry.connectionId, new Set(entry.tools));
+    }
+
+    // Collect all affected connectionIds
+    const allConnIds = new Set([...oldMcpByConn.keys(), ...newMcpByConn.keys()]);
+
+    const mcpToolsAdded: Array<{ connection: { id: string; name: string }; tool: string }> = [];
+    const mcpToolsRemoved: Array<{ connection: { id: string; name: string }; tool: string }> = [];
+
+    for (const connId of allConnIds) {
+      const conn = mcpConnectionMap.get(connId);
+      const connSnapshot = conn ? { id: conn.id, name: conn.name } : { id: connId, name: connId };
+
+      const oldTools = oldMcpByConn.get(connId) ?? new Set<string>();
+      const newTools = newMcpByConn.get(connId) ?? new Set<string>();
+
+      for (const tool of newTools) {
+        if (!oldTools.has(tool)) {
+          mcpToolsAdded.push({ connection: connSnapshot, tool });
+        }
+      }
+      for (const tool of oldTools) {
+        if (!newTools.has(tool)) {
+          mcpToolsRemoved.push({ connection: connSnapshot, tool });
+        }
+      }
+    }
+
+    // ── Regenerate OpenClaw config — only when MCP permissions changed ────
+    // Odoo/email/web-search plugins fetch credentials AND per-agent
+    // permissions lazily at runtime (Pattern B from AGENTS.md § Secret
+    // Handling), so the emitted config doesn't include those grants and
+    // doesn't need a regen on permission change. MCP is different: the
+    // emitted `agentTools` map IS in the plugin config, so a regen is
+    // required when those entries shift.
+    //
+    // Skipping the no-op regen also avoids a real race: a follow-up
+    // PATCH /api/agents/:id (e.g. allowedTools) triggers its own regen,
+    // and two regens within ~13 s hit OpenClaw's config.apply rate
+    // limit — see e2e/email/email.spec.ts dispatch probe (run 26042864847).
+    const mcpPermsTouched = oldMcpPerms.length > 0 || mcpEntries.length > 0;
+    if (mcpPermsTouched) {
+      await regenerateOpenClawConfig();
+    }
+
+    // ── Audit log ──────────────────────────────────────────────────────────
+    // `UpdateDetail` requires `changes: Record<string, { from, to }>`.
+    // The structured MCP diff (added/removed) doesn't fit that shape, so we
+    // use the `[key: string]: unknown` index on `UpdateDetail` to carry it as
+    // a top-level sibling of `changes`.
+    await appendAuditLog({
+      actorType: "user",
+      actorId: session.user.id!,
+      eventType: "agent.updated",
+      resource: `agent:${agentId}`,
+      detail: {
+        agentId,
+        changes: {},
+        mcpTools: {
+          added: mcpToolsAdded,
+          removed: mcpToolsRemoved,
+        },
+      },
+      outcome: "success",
+    });
+
+    return NextResponse.json({ success: true });
   } catch (err) {
-    // Log the real error server-side, but never echo the raw DB driver message
-    // (constraint/table names) back to the client.
-    console.error("[integrations PUT] permission update failed:", err);
-    return NextResponse.json(
-      { error: "Failed to update integration permissions" },
-      { status: 500 }
-    );
+    console.error("[integrations PUT] Unhandled error:", err);
+    const message = err instanceof Error ? err.message : "Internal server error";
+    return NextResponse.json({ error: message }, { status: 500 });
   }
-
-  // Config regeneration is NOT done here — the caller (agent settings save flow)
-  // triggers it via the agent PATCH, which reads the already-updated permissions
-  // from the DB. This avoids double config writes and OpenClaw restarts.
-
-  // Build audit diff
-  const oldSet = new Set(existingPerms.map((p) => `${p.model}:${p.operation}`));
-  const newSet = new Set(
-    permissions.map((p: { model: string; operation: string }) => `${p.model}:${p.operation}`)
-  );
-
-  const added = permissions
-    .filter((p: { model: string; operation: string }) => !oldSet.has(`${p.model}:${p.operation}`))
-    .map((p: { model: string; operation: string }) => ({
-      model: p.model,
-      operation: p.operation,
-    }));
-
-  const removed = existingPerms
-    .filter((p) => !newSet.has(`${p.model}:${p.operation}`))
-    .map((p) => ({ model: p.model, operation: p.operation }));
-
-  // The permission change has already committed; an audit-write failure must
-  // not turn a successful change into a 500. Record the failure for later
-  // reconciliation instead (same pattern as the active-error dismiss route).
-  const auditEntry: AuditLogEntry = {
-    actorType: "user",
-    actorId: session.user.id!,
-    eventType: "config.changed",
-    resource: `agent:${agentId}`,
-    detail: {
-      action: "agent_integration_permissions_updated",
-      agentId,
-      connectionId,
-      changes: { added, removed },
-    },
-    outcome: "success",
-  };
-  try {
-    await appendAuditLog(auditEntry);
-  } catch (err) {
-    recordAuditFailure(err, auditEntry);
-  }
-
-  return NextResponse.json({ success: true });
 });
 
 /**
@@ -203,21 +364,22 @@ export const PUT = withAdmin<RouteContext>(async (request, { params }, session) 
 export const DELETE = withAdmin<RouteContext>(async (_req, { params }, session) => {
   const { agentId } = await params;
 
-  // Get existing permissions for audit log
-  const existingPerms = await db
+  // Get existing Odoo permissions for audit log
+  const existingOdooPerms = await db
     .select()
     .from(agentConnectionPermissions)
     .where(eq(agentConnectionPermissions.agentId, agentId));
 
-  // Delete all permissions for this agent
+  // Delete all Odoo permissions for this agent
   await db
     .delete(agentConnectionPermissions)
     .where(eq(agentConnectionPermissions.agentId, agentId));
 
-  // Config regeneration is NOT done here — see PUT handler comment.
+  // Delete all MCP permissions for this agent
+  await db.delete(agentMcpToolPermissions).where(eq(agentMcpToolPermissions.agentId, agentId));
 
   // Audit log
-  const removed = existingPerms.map((p) => ({ model: p.model, operation: p.operation }));
+  const removed = existingOdooPerms.map((p) => ({ model: p.model, operation: p.operation }));
 
   await appendAuditLog({
     actorType: "user",

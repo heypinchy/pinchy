@@ -44,6 +44,7 @@ import {
   SILENT_REPLY_TOKEN,
   safeEmitLength,
   stripFinalEnvelope,
+  stripControlTokens,
 } from "@/server/silent-reply-buffer";
 import { db } from "@/db";
 import { agents, users, models } from "@/db/schema";
@@ -1295,7 +1296,7 @@ export class ClientRouter {
             });
           } else if (chunk.type === "text") {
             sawText = true;
-            textBuffer = stripFinalEnvelope(textBuffer + chunk.text);
+            textBuffer = stripControlTokens(stripFinalEnvelope(textBuffer + chunk.text));
             const safeLen = safeEmitLength(textBuffer);
             if (safeLen > 0) {
               const emit = textBuffer.slice(0, safeLen);

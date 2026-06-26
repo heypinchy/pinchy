@@ -4,11 +4,12 @@ import { isDeepStrictEqual } from "util";
 import { writeSecretsFile, secretRef, type SecretsBundle } from "@/lib/openclaw-secrets";
 import { PROVIDERS, type ProviderName, resolveProviderBaseUrl } from "@/lib/providers";
 import { getDefaultModel, fetchOllamaLocalModelsFromUrl } from "@/lib/provider-models";
-import { eq, ne } from "drizzle-orm";
+import { and, eq, ne } from "drizzle-orm";
 import { db } from "@/db";
 import {
   agents,
   agentConnectionPermissions,
+  agentMcpToolPermissions,
   integrationConnections,
   channelLinks,
 } from "@/db/schema";
@@ -779,6 +780,94 @@ export async function regenerateOpenClawConfig() {
           agents: webAgentConfigs,
         },
       };
+    }
+  }
+
+  // Collect MCP integration configs for active connections with agent tool grants.
+  // Credentials are NEVER emitted in the config — the plugin fetches them at
+  // runtime from /api/internal/integrations/<connectionId>/credentials using the
+  // gateway token as Bearer auth (same pattern as pinchy-odoo / pinchy-email).
+  const activeMcpConnections = await db
+    .select()
+    .from(integrationConnections)
+    .where(
+      and(eq(integrationConnections.type, "mcp"), eq(integrationConnections.status, "active"))
+    );
+
+  if (activeMcpConnections.length > 0) {
+    // Fetch all MCP tool permissions in one query and group client-side.
+    const allMcpPerms = await db.select().from(agentMcpToolPermissions);
+
+    // Build a per-connection set of tools currently exposed by the upstream
+    // server. Permissions referencing tools that are no longer exposed (drift)
+    // are filtered out — emitting them would cause the plugin to register
+    // tools the server doesn't have.
+    const exposedToolsByConn = new Map<string, Set<string>>();
+    for (const conn of activeMcpConnections) {
+      const tools = ((conn.data ?? {}) as { tools?: Array<{ name: string }> }).tools ?? [];
+      exposedToolsByConn.set(conn.id, new Set(tools.map((t) => t.name)));
+    }
+
+    // Build agentTools map per connectionId: { [agentId]: toolName[] }
+    const agentToolsByConn = new Map<string, Record<string, string[]>>();
+    for (const perm of allMcpPerms) {
+      const exposed = exposedToolsByConn.get(perm.connectionId);
+      if (!exposed || !exposed.has(perm.toolName)) continue; // skip drifted/inactive
+      if (!agentToolsByConn.has(perm.connectionId)) {
+        agentToolsByConn.set(perm.connectionId, {});
+      }
+      const agentTools = agentToolsByConn.get(perm.connectionId)!;
+      if (!agentTools[perm.agentId]) {
+        agentTools[perm.agentId] = [];
+      }
+      agentTools[perm.agentId].push(perm.toolName);
+    }
+
+    // OpenClaw-NATIVE remote MCP via Pinchy's credential-injecting proxy: emit a
+    // top-level `mcp.servers.<key>` block whose `url` points at
+    // /api/internal/mcp-proxy/<connectionId> (authed with the gateway token) +
+    // per-agent `tools.allow`. OpenClaw owns transport/discovery/tool
+    // materialization (dynamic tools, no contracts.tools gate); the Pinchy proxy
+    // decrypts and injects the real third-party token at request time and
+    // forwards to the upstream server. So NO third-party credential lands in
+    // openclaw.json and NO OpenClaw restart is needed to add or rotate a
+    // connection. (The non-secret extra headers, e.g. HighLevel locationId, are
+    // injected by the proxy from the connection row — never emitted here.)
+    const { buildNativeMcp } = await import("./native-mcp");
+
+    const nativeInputs = [];
+    for (const conn of activeMcpConnections) {
+      const agentTools = agentToolsByConn.get(conn.id);
+      if (!agentTools || Object.keys(agentTools).length === 0) continue;
+
+      const data = (conn.data ?? {}) as { transport?: string };
+
+      nativeInputs.push({
+        id: conn.id,
+        transport: (data.transport ?? "http") as "http" | "sse" | "streamable-http",
+        agentTools,
+      });
+    }
+
+    if (nativeInputs.length > 0) {
+      const proxyBaseUrl =
+        process.env.PINCHY_INTERNAL_URL || `http://pinchy:${process.env.PORT || "7777"}`;
+      const native = buildNativeMcp(nativeInputs, {
+        proxyBaseUrl,
+        gatewayToken: gatewayTokenString,
+      });
+      config.mcp = { servers: native.servers };
+
+      // Merge the per-agent MCP tool allowlist into agents.list[].tools.allow.
+      // agentsList is the SAME array referenced by config.agents.list above,
+      // so mutating the entries here is reflected in the emitted config.
+      for (const agentEntry of agentsList as Array<Record<string, unknown>>) {
+        const allow = native.toolAllowByAgent[agentEntry.id as string];
+        if (!allow || allow.length === 0) continue;
+        const tools = (agentEntry.tools as Record<string, unknown>) ?? {};
+        const existingAllow = (tools.allow as string[] | undefined) ?? [];
+        agentEntry.tools = { ...tools, allow: [...existingAllow, ...allow] };
+      }
     }
   }
 

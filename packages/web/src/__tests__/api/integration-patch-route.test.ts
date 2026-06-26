@@ -36,6 +36,12 @@ vi.mock("@/lib/integrations/probe", () => ({
   probeIntegrationCredentials: (...args: unknown[]) => mockProbeIntegrationCredentials(...args),
 }));
 
+const mockListMcpTools = vi.fn();
+vi.mock("@/lib/integrations/mcp-client", () => ({
+  listMcpTools: (...args: unknown[]) => mockListMcpTools(...args),
+  mcpErrorCodeFromError: () => "unauthorized",
+}));
+
 const mockClearIntegrationAuthError = vi.fn().mockResolvedValue(undefined);
 vi.mock("@/lib/integrations/auth-state", () => ({
   clearIntegrationAuthError: (...args: unknown[]) => mockClearIntegrationAuthError(...args),
@@ -364,5 +370,96 @@ describe("PATCH /api/integrations/[connectionId] — credential probe", () => {
     expect(body.error).toMatch(/concurrent/i);
     // Probe still ran before the write
     expect(mockProbeIntegrationCredentials).toHaveBeenCalled();
+  });
+});
+
+describe("PATCH /api/integrations/[connectionId] — MCP credential rotation", () => {
+  const mcpConnection = {
+    id: "conn-mcp-1",
+    type: "mcp",
+    name: "GitHub",
+    description: "",
+    credentials: "encrypted-creds",
+    data: {
+      type: "mcp",
+      preset: "github",
+      transport: "http",
+      url: "https://api.githubcopilot.com/mcp/",
+      tools: [{ name: "list_repos", inputSchema: {} }],
+      lastSyncAt: "2026-01-01T00:00:00.000Z",
+    },
+    status: "active",
+    createdAt: new Date("2026-01-01"),
+    updatedAt: new Date("2026-01-01"),
+  };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockGetSession.mockResolvedValue(adminSession);
+    mockSelectWhere.mockResolvedValue([mcpConnection]);
+    mockDecrypt.mockReturnValue(JSON.stringify({ token: "ghp_old" }));
+    mockEncrypt.mockReturnValue("encrypted-creds");
+    mockUpdateSet.mockReturnValue({
+      where: vi.fn().mockReturnValue({
+        returning: vi.fn().mockResolvedValue([{ ...mcpConnection, name: "GitHub" }]),
+      }),
+    });
+  });
+
+  it("rotates an MCP token by re-discovering tools via listMcpTools, never the Odoo probe", async () => {
+    mockListMcpTools.mockResolvedValue([
+      { name: "list_repos", inputSchema: {} },
+      { name: "create_issue", inputSchema: {} },
+    ]);
+
+    const { PATCH } = await import("@/app/api/integrations/[connectionId]/route");
+    const response = await PATCH(
+      makeRequest("/api/integrations/conn-mcp-1", {
+        method: "PATCH",
+        body: JSON.stringify({ credentials: { token: "ghp_new" } }),
+      }),
+      { params: Promise.resolve({ connectionId: "conn-mcp-1" }) }
+    );
+
+    expect(response.status).toBe(200);
+    // Validates the new token against the upstream server using the stored
+    // url/transport — the probe registry doesn't know mcp.
+    expect(mockProbeIntegrationCredentials).not.toHaveBeenCalled();
+    expect(mockListMcpTools).toHaveBeenCalledWith(
+      expect.objectContaining({
+        url: "https://api.githubcopilot.com/mcp/",
+        transport: "http",
+        token: "ghp_new",
+      })
+    );
+    expect(mockUpdateSet).toHaveBeenCalled();
+    expect(mockClearIntegrationAuthError).toHaveBeenCalledWith(
+      expect.objectContaining({ connectionId: "conn-mcp-1" })
+    );
+    expect(mockAppendAuditLog).toHaveBeenCalledWith(
+      expect.objectContaining({
+        eventType: "integration.credentials_updated",
+        detail: expect.objectContaining({ fields: expect.arrayContaining(["token"]) }),
+        outcome: "success",
+      })
+    );
+  });
+
+  it("rejects the rotation with 400 when the new token fails discovery — no write", async () => {
+    mockListMcpTools.mockRejectedValue(new Error("MCP server returned 401 Unauthorized"));
+
+    const { PATCH } = await import("@/app/api/integrations/[connectionId]/route");
+    const response = await PATCH(
+      makeRequest("/api/integrations/conn-mcp-1", {
+        method: "PATCH",
+        body: JSON.stringify({ credentials: { token: "ghp_bad" } }),
+      }),
+      { params: Promise.resolve({ connectionId: "conn-mcp-1" }) }
+    );
+    const body = await response.json();
+
+    expect(response.status).toBe(400);
+    expect(body.error).toBeDefined();
+    expect(mockUpdateSet).not.toHaveBeenCalled();
   });
 });

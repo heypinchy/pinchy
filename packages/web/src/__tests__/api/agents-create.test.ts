@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 
 vi.mock("next/headers", () => ({
   headers: vi.fn().mockResolvedValue(new Headers()),
@@ -22,13 +22,19 @@ vi.mock("@/lib/auth", () => {
   };
 });
 
-const { insertValuesMock, permissionsInsertValuesMock, dbInsertMock, dbSelectFromMock } =
-  vi.hoisted(() => ({
-    insertValuesMock: vi.fn(),
-    permissionsInsertValuesMock: vi.fn().mockReturnValue(Promise.resolve()),
-    dbInsertMock: vi.fn(),
-    dbSelectFromMock: vi.fn(),
-  }));
+const {
+  insertValuesMock,
+  permissionsInsertValuesMock,
+  mcpPermissionsInsertValuesMock,
+  dbInsertMock,
+  dbSelectFromMock,
+} = vi.hoisted(() => ({
+  insertValuesMock: vi.fn(),
+  permissionsInsertValuesMock: vi.fn().mockReturnValue(Promise.resolve()),
+  mcpPermissionsInsertValuesMock: vi.fn().mockReturnValue(Promise.resolve()),
+  dbInsertMock: vi.fn(),
+  dbSelectFromMock: vi.fn(),
+}));
 vi.mock("@/db", () => {
   const agentsInsertChain = {
     values: insertValuesMock.mockReturnValue({
@@ -48,17 +54,16 @@ vi.mock("@/db", () => {
   const permissionsInsertChain = {
     values: permissionsInsertValuesMock,
   };
+  const mcpPermissionsInsertChain = {
+    values: mcpPermissionsInsertValuesMock,
+  };
 
   const drizzleName = Symbol.for("drizzle:Name");
   dbInsertMock.mockImplementation((table: Record<symbol, string>) => {
-    if (
-      table &&
-      typeof table === "object" &&
-      drizzleName in table &&
-      table[drizzleName] === "agent_connection_permissions"
-    ) {
-      return permissionsInsertChain;
-    }
+    const tableName =
+      table && typeof table === "object" && drizzleName in table ? table[drizzleName] : undefined;
+    if (tableName === "agent_connection_permissions") return permissionsInsertChain;
+    if (tableName === "agent_mcp_tool_permissions") return mcpPermissionsInsertChain;
     return agentsInsertChain;
   });
 
@@ -1177,6 +1182,180 @@ describe("POST /api/agents", () => {
       source: "template-hint",
       hint: expect.objectContaining({ tier: "balanced" }),
       reason: expect.stringContaining("balanced"),
+    });
+  });
+
+  describe("MCP recommendedTools auto-grant", () => {
+    // A template's recommendedTools wish-list was purely declarative before:
+    // it only gated template availability, but nothing ever granted the tools.
+    // An MCP agent (e.g. GitHub PR Reviewer) was created with zero tool
+    // permissions, so the model saw no tools and improvised "no MCP connected".
+    // These lock in that creation auto-grants the recommended tools an active
+    // matching connection actually advertises — least-privilege: only the
+    // wish-listed tools, never the whole catalogue.
+    afterEach(() => {
+      vi.unstubAllEnvs();
+    });
+
+    function githubReviewerRequest() {
+      return new NextRequest("http://localhost:7777/api/agents", {
+        method: "POST",
+        body: JSON.stringify({ name: "Merlin", templateId: "github-pr-reviewer" }),
+      });
+    }
+
+    it("grants the recommended GitHub tools from an active matching connection", async () => {
+      vi.stubEnv("PINCHY_MCP_ENABLED", "1");
+
+      // Connection advertises the three review tools plus an extra — only the
+      // wish-listed three should be granted. Tool names mirror the live GitHub
+      // MCP server (pull_request_read / list_pull_requests / *_review_write).
+      dbSelectFromMock.mockReturnValueOnce({
+        where: vi.fn().mockResolvedValue([
+          {
+            id: "gh-conn-1",
+            data: {
+              type: "mcp",
+              preset: "github",
+              tools: [
+                { name: "pull_request_read" },
+                { name: "list_pull_requests" },
+                { name: "pull_request_review_write" },
+                { name: "list_issues" },
+              ],
+            },
+          },
+        ]),
+      });
+
+      const response = await POST(githubReviewerRequest());
+      expect(response.status).toBe(201);
+
+      const rows = mcpPermissionsInsertValuesMock.mock.calls[0]?.[0];
+      expect(rows).toEqual([
+        { agentId: "new-agent-id", connectionId: "gh-conn-1", toolName: "pull_request_read" },
+        { agentId: "new-agent-id", connectionId: "gh-conn-1", toolName: "list_pull_requests" },
+        {
+          agentId: "new-agent-id",
+          connectionId: "gh-conn-1",
+          toolName: "pull_request_review_write",
+        },
+      ]);
+      // OpenClaw config must be regenerated so the new grants reach the runtime.
+      expect(regenerateOpenClawConfig).toHaveBeenCalled();
+      // All recommended tools granted → no warning surfaced to the user.
+      const body = await response.json();
+      expect(body.warnings).toBeUndefined();
+    });
+
+    it("writes a config.changed audit entry snapshotting the granted MCP tools", async () => {
+      vi.stubEnv("PINCHY_MCP_ENABLED", "1");
+      const { appendAuditLog } = await import("@/lib/audit");
+      const spy = vi.mocked(appendAuditLog);
+
+      dbSelectFromMock.mockReturnValueOnce({
+        where: vi.fn().mockResolvedValue([
+          {
+            id: "gh-conn-1",
+            data: {
+              type: "mcp",
+              preset: "github",
+              tools: [
+                { name: "pull_request_read" },
+                { name: "list_pull_requests" },
+                { name: "pull_request_review_write" },
+              ],
+            },
+          },
+        ]),
+      });
+
+      await POST(githubReviewerRequest());
+
+      const auditCall = spy.mock.calls.find(
+        ([arg]) =>
+          (arg as { eventType?: string }).eventType === "config.changed" &&
+          (arg as { detail?: { action?: string } }).detail?.action ===
+            "agent_integration_permissions_auto_configured"
+      );
+      expect(auditCall).toBeDefined();
+      const detail = (auditCall![0] as { detail: Record<string, unknown> }).detail;
+      expect(detail.agentId).toBe("new-agent-id");
+      expect(detail.mcpTools).toEqual([
+        { connectionId: "gh-conn-1", tool: "pull_request_read" },
+        { connectionId: "gh-conn-1", tool: "list_pull_requests" },
+        { connectionId: "gh-conn-1", tool: "pull_request_review_write" },
+      ]);
+    });
+
+    it("does not grant MCP tools when the connection advertises none of them", async () => {
+      vi.stubEnv("PINCHY_MCP_ENABLED", "1");
+
+      dbSelectFromMock.mockReturnValueOnce({
+        where: vi
+          .fn()
+          .mockResolvedValue([
+            { id: "gh-conn-1", data: { type: "mcp", preset: "github", tools: [] } },
+          ]),
+      });
+
+      const response = await POST(githubReviewerRequest());
+      expect(response.status).toBe(201);
+      expect(mcpPermissionsInsertValuesMock).not.toHaveBeenCalled();
+    });
+
+    it("warns when the connection exposes none of the recommended tools (stale/renamed names)", async () => {
+      // This is the exact 2026-06 Merlin failure: GitHub renamed its MCP tools,
+      // so the template's recommendedTools matched nothing, the agent shipped
+      // with zero tools, and there was NO signal. The create response must now
+      // carry a warning the client surfaces as a toast.
+      vi.stubEnv("PINCHY_MCP_ENABLED", "1");
+
+      dbSelectFromMock.mockReturnValueOnce({
+        where: vi.fn().mockResolvedValue([
+          {
+            id: "gh-conn-1",
+            data: {
+              type: "mcp",
+              preset: "github",
+              // Real, but NOT the template's recommended names.
+              tools: [{ name: "get_me" }, { name: "list_issues" }],
+            },
+          },
+        ]),
+      });
+
+      const response = await POST(githubReviewerRequest());
+      expect(response.status).toBe(201);
+      expect(mcpPermissionsInsertValuesMock).not.toHaveBeenCalled();
+
+      const body = await response.json();
+      expect(Array.isArray(body.warnings)).toBe(true);
+      expect(body.warnings.length).toBeGreaterThan(0);
+      // Actionable: points the admin at the Permissions tab.
+      expect(body.warnings.join(" ")).toMatch(/permission/i);
+    });
+
+    it("skips MCP auto-grant when no active matching connection exists", async () => {
+      vi.stubEnv("PINCHY_MCP_ENABLED", "1");
+      // dbSelectFromMock default resolves [] → no connections.
+
+      const response = await POST(githubReviewerRequest());
+      expect(response.status).toBe(201);
+      expect(mcpPermissionsInsertValuesMock).not.toHaveBeenCalled();
+      // No connection at all is still "recommended tools couldn't be connected".
+      const body = await response.json();
+      expect(Array.isArray(body.warnings)).toBe(true);
+    });
+
+    it("does not auto-grant MCP tools when the MCP feature flag is off", async () => {
+      // Flag intentionally not stubbed → isMcpEnabled() === false.
+      const response = await POST(githubReviewerRequest());
+      expect(response.status).toBe(201);
+      expect(mcpPermissionsInsertValuesMock).not.toHaveBeenCalled();
+      // Feature off → the MCP block never runs → no warning noise.
+      const body = await response.json();
+      expect(body.warnings).toBeUndefined();
     });
   });
 });

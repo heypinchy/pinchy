@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useEffect } from "react";
-import { useForm } from "react-hook-form";
+import { useForm, useWatch } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
 import {
@@ -34,38 +34,31 @@ import { toast } from "sonner";
 import { PasswordInput } from "@/components/password-input";
 import { parseOdooSubdomainHint, generateConnectionName } from "@/lib/integrations/odoo-url";
 import { normalizeUrl } from "@/lib/url";
-import { Loader2, CheckCircle2, AlertTriangle, Copy, Check } from "lucide-react";
+import {
+  Loader2,
+  CheckCircle2,
+  AlertTriangle,
+  Copy,
+  Check,
+  ExternalLink,
+  ChevronRight,
+} from "lucide-react";
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { useCopyToClipboard } from "@/hooks/use-copy-to-clipboard";
-import { OdooIcon, GoogleIcon, BraveIcon } from "./integration-icons";
+import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
+import { cn } from "@/lib/utils";
 import { docsUrl } from "./docs-link";
-
-interface IntegrationType {
-  id: string;
-  name: string;
-  description: string;
-  icon: React.ComponentType<{ className?: string }>;
-}
-
-const INTEGRATION_TYPES: IntegrationType[] = [
-  {
-    id: "odoo",
-    name: "Odoo",
-    description: "Connect your Odoo ERP to query sales, inventory, and customer data.",
-    icon: OdooIcon,
-  },
-  {
-    id: "google",
-    name: "Google",
-    description: "Connect your Google account to sync email via Gmail.",
-    icon: GoogleIcon,
-  },
-  {
-    id: "web-search",
-    name: "Web Search (Brave)",
-    description: "Search the web and fetch pages via Brave Search API.",
-    icon: BraveIcon,
-  },
-];
+import { MCP_PRESETS, getMcpPreset, type McpPreset } from "@/lib/integrations/mcp-presets";
+import { mcpErrorMessage, type McpErrorDisplay } from "@/lib/integrations/mcp-error-messages";
+import type { McpTool } from "@/lib/integrations/types";
+import { isMcpEnabledClient } from "@/lib/feature-flags";
+import {
+  INTEGRATION_TYPES,
+  MCP_TYPE_TO_PRESET,
+  isMcpType,
+  type IntegrationTypeId,
+} from "./integration-types";
 
 // --- Wizard state ---
 
@@ -87,6 +80,34 @@ const webSearchFormSchema = z.object({
 });
 
 type WebSearchFormValues = z.infer<typeof webSearchFormSchema>;
+
+const mcpFormSchema = z
+  .object({
+    preset: z.enum([
+      "github",
+      "linear",
+      "atlassian",
+      "stripe",
+      "cloudflare",
+      "intercom",
+      "highlevel",
+      "generic",
+    ]),
+    url: z.string().url("Must be a valid URL"),
+    transport: z.enum(["http", "sse"]),
+    token: z.string().min(1, "Token is required"),
+    name: z.string().optional(),
+    // HighLevel needs a Sub-Account (Location) ID alongside the token —
+    // sent as a `locationId` header. Required only for the `highlevel`
+    // preset; other presets ignore this field.
+    locationId: z.string().optional(),
+  })
+  .refine((v) => v.preset !== "highlevel" || (v.locationId && v.locationId.trim().length > 0), {
+    message: "Sub-Account (Location) ID is required for HighLevel",
+    path: ["locationId"],
+  });
+
+type McpFormValues = z.infer<typeof mcpFormSchema>;
 
 // --- Step indicator ---
 
@@ -369,6 +390,366 @@ function GoogleConnectStep({
   );
 }
 
+// --- MCP setup guidance ---
+
+// Renders a preset's structured setup guidance with visual hierarchy instead
+// of one markdown blob: a primary "create a token" CTA, an always-visible note
+// for prerequisites/region limits, and the step-by-step walkthrough collapsed
+// by default so the token field stays in view.
+function McpSetupGuide({ preset }: { preset: McpPreset }) {
+  const hasGuidance =
+    preset.tokenUrl || preset.setupNote || preset.setupSteps || preset.tokenUrlHint;
+  if (!hasGuidance) return null;
+
+  const noteClass =
+    preset.setupNote?.variant === "warning"
+      ? "border-amber-200 bg-amber-50 text-amber-800 dark:border-amber-900 dark:bg-amber-950 dark:text-amber-200"
+      : "border-border bg-muted/50 text-muted-foreground";
+
+  // Shared markdown styling for note + steps: bold, inline code, ordered and
+  // nested lists. Links open in a new tab so the dialog isn't navigated away.
+  const markdownClass = cn(
+    "text-sm space-y-2",
+    "[&_a]:underline [&_a]:underline-offset-4 [&_a]:text-foreground [&_a:hover]:text-primary",
+    "[&_strong]:font-medium [&_strong]:text-foreground",
+    "[&_code]:rounded [&_code]:bg-muted [&_code]:px-1 [&_code]:py-0.5 [&_code]:font-mono [&_code]:text-xs",
+    "[&_ol]:list-decimal [&_ol]:pl-5 [&_ol]:space-y-1",
+    "[&_ul]:list-disc [&_ul]:pl-5 [&_ul]:space-y-1"
+  );
+  const mdComponents = {
+    a: ({ href, children }: { href?: string; children?: React.ReactNode }) => (
+      <a href={href} target="_blank" rel="noopener noreferrer">
+        {children}
+      </a>
+    ),
+  };
+
+  return (
+    <div>
+      {/* Prerequisites/region note FIRST — it's "read this before clicking". */}
+      {preset.setupNote && (
+        <div className={cn("mb-3 rounded-md border p-3 text-sm", noteClass, markdownClass)}>
+          <ReactMarkdown remarkPlugins={[remarkGfm]} components={mdComponents}>
+            {preset.setupNote.text}
+          </ReactMarkdown>
+        </div>
+      )}
+
+      {/* CTA + its hint + the guide disclosure form one tight "get a token"
+          group; left-aligned to the dialog content edge. */}
+      {preset.tokenUrl && (
+        <a
+          href={preset.tokenUrl}
+          target="_blank"
+          rel="noopener noreferrer"
+          className="flex h-9 items-center justify-center gap-2 rounded-md border text-sm font-medium hover:bg-muted"
+        >
+          {preset.tokenUrlLabel ?? "Create a token"}
+          <ExternalLink className="h-3.5 w-3.5 text-muted-foreground" />
+        </a>
+      )}
+      {preset.tokenUrlHint && (
+        <p className="mt-2 text-xs leading-relaxed text-muted-foreground">{preset.tokenUrlHint}</p>
+      )}
+
+      {preset.setupSteps && (
+        <Collapsible className={cn(preset.tokenUrl || preset.setupNote ? "mt-2" : "")}>
+          <CollapsibleTrigger asChild>
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              className="-ml-2 h-7 gap-1 px-2 text-xs text-muted-foreground"
+            >
+              <ChevronRight className="h-3.5 w-3.5 transition-transform [[data-state=open]_&]:rotate-90" />
+              Step-by-step guide
+            </Button>
+          </CollapsibleTrigger>
+          <CollapsibleContent>
+            <div className={cn("pt-2 text-muted-foreground", markdownClass)}>
+              <ReactMarkdown remarkPlugins={[remarkGfm]} components={mdComponents}>
+                {preset.setupSteps}
+              </ReactMarkdown>
+            </div>
+          </CollapsibleContent>
+        </Collapsible>
+      )}
+    </div>
+  );
+}
+
+// --- MCP Connect Step ---
+
+interface McpConnectStepProps {
+  form: ReturnType<typeof useForm<McpFormValues>>;
+  // `isCustom` controls which UI variant renders: the named-preset flow (just
+  // token + tool-list preview) or the custom-server flow (URL + transport +
+  // token, with a preset switcher in case the user picked the wrong card).
+  isCustom: boolean;
+  connecting: boolean;
+  testing: boolean;
+  testTools: McpTool[] | null;
+  testError: McpErrorDisplay | null;
+  submitError: McpErrorDisplay | null;
+  onBack: () => void;
+  onCancel: () => void;
+  onSubmit: (values: McpFormValues) => void;
+  onTestConnection: () => void;
+}
+
+function McpConnectStep({
+  form,
+  isCustom,
+  connecting,
+  testing,
+  testTools,
+  testError,
+  submitError,
+  onBack,
+  onCancel,
+  onSubmit,
+  onTestConnection,
+}: McpConnectStepProps) {
+  const preset = useWatch({ control: form.control, name: "preset" });
+  const token = useWatch({ control: form.control, name: "token" });
+  const url = useWatch({ control: form.control, name: "url" });
+  const mcpPreset = getMcpPreset(preset);
+  // The token-and-URL gate stays in both flows so we never submit empty values.
+  // Named presets always have a URL prefilled — only the token can be empty.
+  const isSubmitDisabled = connecting || !token?.trim() || !url?.trim();
+
+  function handlePresetChange(value: string) {
+    const newPreset = getMcpPreset(value);
+    form.setValue("preset", value as McpFormValues["preset"]);
+    form.setValue("url", newPreset.defaultUrl ?? "");
+    form.setValue("transport", newPreset.defaultTransport);
+  }
+
+  return (
+    <>
+      <DialogHeader>
+        <DialogTitle>
+          {isCustom ? "Connect MCP server" : `Connect ${mcpPreset.displayName}`}
+        </DialogTitle>
+        <DialogDescription>
+          {isCustom
+            ? "Enter the URL of an MCP-compatible server and a token to authenticate."
+            : `Connect your ${mcpPreset.displayName} workspace to expose tools to your agents.`}
+        </DialogDescription>
+      </DialogHeader>
+
+      <Form {...form}>
+        <form onSubmit={form.handleSubmit(onSubmit)} className="space-y-5">
+          {/* Preset selector — custom flow only (a named-preset card already picked the preset) */}
+          {isCustom && (
+            <FormField
+              control={form.control}
+              name="preset"
+              render={({ field }) => (
+                <FormItem>
+                  <FormLabel>Preset</FormLabel>
+                  <FormControl>
+                    <Select
+                      value={field.value}
+                      onValueChange={(value) => {
+                        field.onChange(value);
+                        handlePresetChange(value);
+                      }}
+                    >
+                      <SelectTrigger className="w-full">
+                        <SelectValue placeholder="Select a preset" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {MCP_PRESETS.map((p) => (
+                          <SelectItem key={p.id} value={p.id}>
+                            {p.displayName}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  </FormControl>
+                  <FormMessage />
+                </FormItem>
+              )}
+            />
+          )}
+
+          {/* Structured setup guidance — replaces the old wall-of-markdown.
+              Primary CTA to the token page, an always-visible note for
+              prerequisites/region limits, and the step-by-step walkthrough
+              collapsed by default so the token field stays in view. */}
+          <McpSetupGuide preset={mcpPreset} />
+
+          {/* URL field — custom flow only. Named presets ship a fixed URL. */}
+          {isCustom && (
+            <FormField
+              control={form.control}
+              name="url"
+              render={({ field }) => (
+                <FormItem>
+                  <FormLabel>URL</FormLabel>
+                  <FormControl>
+                    <Input placeholder="https://mcp.example.com/" {...field} />
+                  </FormControl>
+                  <FormMessage />
+                </FormItem>
+              )}
+            />
+          )}
+
+          {/* Token field — always visible */}
+          <FormField
+            control={form.control}
+            name="token"
+            render={({ field }) => (
+              <FormItem>
+                <FormLabel>Token</FormLabel>
+                <FormControl>
+                  <PasswordInput placeholder="Your authentication token" {...field} />
+                </FormControl>
+                {mcpPreset.tokenHint && (
+                  <div className="text-xs text-muted-foreground [&_p]:m-0 [&_code]:rounded [&_code]:bg-muted [&_code]:px-1 [&_code]:py-0.5 [&_code]:font-mono [&_code]:text-[11px]">
+                    <ReactMarkdown>{mcpPreset.tokenHint}</ReactMarkdown>
+                  </div>
+                )}
+                <FormMessage />
+              </FormItem>
+            )}
+          />
+
+          {/* HighLevel-only: Sub-Account (Location) ID. The MCP server requires
+              this as a separate `locationId` header — token alone isn't enough. */}
+          {preset === "highlevel" && (
+            <FormField
+              control={form.control}
+              name="locationId"
+              render={({ field }) => (
+                <FormItem>
+                  <FormLabel>Sub-Account (Location) ID</FormLabel>
+                  <FormControl>
+                    <Input placeholder="e.g. 110411007T" {...field} />
+                  </FormControl>
+                  <p className="text-xs text-muted-foreground">
+                    Find this in HighLevel under Settings → Business Info, or in the URL of your
+                    Sub-Account.
+                  </p>
+                  <FormMessage />
+                </FormItem>
+              )}
+            />
+          )}
+
+          {submitError && (
+            <div className="space-y-0.5">
+              <p className="text-sm text-destructive">{submitError.message}</p>
+              {submitError.detail && (
+                <p className="text-xs text-muted-foreground font-mono">{submitError.detail}</p>
+              )}
+            </div>
+          )}
+
+          {/* Test connection — always available so the admin can verify the token
+              and preview tool discovery before committing to a connection. */}
+          <div className="space-y-2">
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              disabled={testing || !url?.trim() || !token?.trim()}
+              onClick={onTestConnection}
+            >
+              {testing ? (
+                <>
+                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                  Testing...
+                </>
+              ) : (
+                "Test connection"
+              )}
+            </Button>
+
+            {testError && (
+              <div className="space-y-0.5">
+                <p className="text-sm text-destructive">{testError.message}</p>
+                {testError.detail && (
+                  <p className="text-xs text-muted-foreground font-mono">{testError.detail}</p>
+                )}
+              </div>
+            )}
+
+            {testTools !== null && (
+              <div className="rounded-md border p-3 space-y-1">
+                {/* Success is one compact line. The full tool list is collapsed
+                    by default: picking tools happens later in the agent's
+                    permission UI — here it would just be a wall of text (GitHub
+                    exposes ~50 tools). It stays one click away for debugging,
+                    which matters most for the Custom MCP preset. */}
+                <p className="flex items-center gap-2 text-sm">
+                  <CheckCircle2 className="h-4 w-4 shrink-0 text-green-600 dark:text-green-400" />
+                  {testTools.length === 0
+                    ? "Connected — no tools exposed."
+                    : `Connected — ${testTools.length} tool${testTools.length === 1 ? "" : "s"} available.`}
+                </p>
+                {testTools.length > 0 && (
+                  <Collapsible>
+                    <CollapsibleTrigger asChild>
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="sm"
+                        className="h-7 px-2 text-xs text-muted-foreground"
+                      >
+                        Show tools
+                      </Button>
+                    </CollapsibleTrigger>
+                    <CollapsibleContent>
+                      {/* Cap the list height — large MCP servers would otherwise
+                          blow out the dialog vertically even when expanded. */}
+                      <ul className="mt-1 space-y-0.5 max-h-48 overflow-y-auto">
+                        {testTools.map((tool) => (
+                          <li key={tool.name} className="text-sm font-mono">
+                            {tool.name}
+                            {tool.description && (
+                              <span className="font-sans text-xs text-muted-foreground ml-2">
+                                — {tool.description}
+                              </span>
+                            )}
+                          </li>
+                        ))}
+                      </ul>
+                    </CollapsibleContent>
+                  </Collapsible>
+                )}
+              </div>
+            )}
+          </div>
+
+          <div className="flex items-center justify-between border-t pt-4">
+            <Button type="button" variant="ghost" onClick={onBack}>
+              Back
+            </Button>
+            <div className="flex gap-2">
+              <Button type="button" variant="outline" onClick={onCancel}>
+                Cancel
+              </Button>
+              <Button type="submit" disabled={isSubmitDisabled}>
+                {connecting ? (
+                  <>
+                    <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                    Connecting...
+                  </>
+                ) : (
+                  "Connect"
+                )}
+              </Button>
+            </div>
+          </div>
+        </form>
+      </Form>
+    </>
+  );
+}
+
 // --- Dialog component ---
 
 interface AddIntegrationDialogProps {
@@ -376,7 +757,13 @@ interface AddIntegrationDialogProps {
   onOpenChange: (open: boolean) => void;
   onSuccess: () => void;
   existingTypes?: string[];
-  initialType?: "google";
+  /**
+   * Pre-selects a type and skips the in-dialog type picker. The dialog still
+   * renders its own picker step when this is undefined (used by the legacy
+   * full-modal flow). New callers (e.g. the /settings/integrations/new page)
+   * should always supply this so the dialog only ever shows the connect step.
+   */
+  initialType?: IntegrationTypeId;
 }
 
 export function AddIntegrationDialog({
@@ -388,8 +775,21 @@ export function AddIntegrationDialog({
 }: AddIntegrationDialogProps) {
   // Types that only allow one connection (singletons)
   const singletonTypes = new Set(["web-search"]);
+
+  // Hide all MCP-backed integrations when the feature flag is off
+  const visibleIntegrationTypes = isMcpEnabledClient()
+    ? INTEGRATION_TYPES
+    : INTEGRATION_TYPES.filter((t) => !isMcpType(t.id));
   const [step, setStep] = useState<WizardStep>(initialType ? "connect" : "type");
   const [selectedType, setSelectedType] = useState<string | null>(initialType ?? null);
+
+  // When initialType is an MCP type, seed the mcp form with the preset's
+  // fixed URL/transport so the connect step renders the right named-preset
+  // shape from the first render. Without this the form would briefly show
+  // the empty "generic" defaults until the user touched the dropdown.
+  const mcpInitialPreset =
+    initialType && isMcpType(initialType) ? MCP_TYPE_TO_PRESET[initialType] : "generic";
+  const mcpInitialPresetCfg = getMcpPreset(mcpInitialPreset);
 
   // Connect step results
   const [connectionResult, setConnectionResult] = useState<{
@@ -438,6 +838,26 @@ export function AddIntegrationDialog({
     },
   });
 
+  const mcpForm = useForm<McpFormValues>({
+    resolver: zodResolver(mcpFormSchema),
+    defaultValues: {
+      preset: mcpInitialPreset,
+      url: mcpInitialPresetCfg.defaultUrl ?? "",
+      transport: mcpInitialPresetCfg.defaultTransport,
+      token: "",
+      name: "",
+      locationId: "",
+    },
+  });
+
+  // MCP test connection state
+  const [mcpTesting, setMcpTesting] = useState(false);
+  const [mcpTestTools, setMcpTestTools] = useState<McpTool[] | null>(null);
+  const [mcpTestError, setMcpTestError] = useState<McpErrorDisplay | null>(null);
+  // Submit (Connect) failures use the same human-friendly shape as test
+  // failures — one translation path for both (mcp-error-messages.ts).
+  const [mcpSubmitError, setMcpSubmitError] = useState<McpErrorDisplay | null>(null);
+
   function resetAll() {
     setStep(initialType ? "connect" : "type");
     setSelectedType(initialType ?? null);
@@ -450,8 +870,20 @@ export function AddIntegrationDialog({
     setConnectionName("");
     setDbFetchState("idle");
     setFetchedDatabases([]);
+    setMcpTesting(false);
+    setMcpTestTools(null);
+    setMcpTestError(null);
+    setMcpSubmitError(null);
     form.reset();
     webSearchForm.reset();
+    mcpForm.reset({
+      preset: mcpInitialPreset,
+      url: mcpInitialPresetCfg.defaultUrl ?? "",
+      transport: mcpInitialPresetCfg.defaultTransport,
+      token: "",
+      name: "",
+      locationId: "",
+    });
   }
 
   function handleClose(isOpen: boolean) {
@@ -697,6 +1129,133 @@ export function AddIntegrationDialog({
     }
   }
 
+  // --- MCP: Test connection ---
+
+  async function handleMcpTestConnection() {
+    const values = mcpForm.getValues();
+    setMcpTesting(true);
+    setMcpTestTools(null);
+    setMcpTestError(null);
+
+    // Translate per-preset form fields into the generic `extraHeaders` map
+    // that the MCP client + plugin both speak. Today only HighLevel adds
+    // one (`locationId`); future presets can extend this without changing
+    // the wire format.
+    const extraHeaders =
+      values.preset === "highlevel" && values.locationId?.trim()
+        ? { locationId: values.locationId.trim() }
+        : undefined;
+
+    try {
+      const res = await fetch("/api/integrations/test", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          url: values.url,
+          transport: values.transport,
+          token: values.token,
+          ...(extraHeaders ? { extraHeaders } : {}),
+        }),
+      });
+      const data = await res.json();
+
+      if (!res.ok) {
+        const preset = getMcpPreset(values.preset);
+        setMcpTestError(
+          mcpErrorMessage({
+            code: data.code,
+            providerName: preset.displayName,
+            isCustom: values.preset === "generic",
+            rawMessage: data.error,
+          })
+        );
+      } else {
+        setMcpTestTools(data.tools ?? []);
+      }
+    } catch {
+      const preset = getMcpPreset(values.preset);
+      // fetch itself failed — Pinchy was unreachable, not the MCP server.
+      setMcpTestError(
+        mcpErrorMessage({
+          code: "network",
+          providerName: preset.displayName,
+          isCustom: values.preset === "generic",
+        })
+      );
+    } finally {
+      setMcpTesting(false);
+    }
+  }
+
+  // --- MCP: Submit (create integration) ---
+
+  async function onMcpConnect(values: McpFormValues) {
+    setMcpSubmitError(null);
+    setConnecting(true);
+
+    const preset = getMcpPreset(values.preset);
+    // Default to the plain brand name ("GitHub"). MCP is the transport — an
+    // implementation detail that must not leak onto the integrations card.
+    // The generic preset's displayName is "Generic MCP", which is accurate
+    // there: whoever picks Custom MCP knows what MCP is.
+    const autoName = values.name?.trim() || preset.displayName;
+
+    // Same per-preset → extraHeaders translation as the Test-Connection path
+    // — both endpoints accept the same generic shape.
+    const extraHeaders =
+      values.preset === "highlevel" && values.locationId?.trim()
+        ? { locationId: values.locationId.trim() }
+        : undefined;
+
+    try {
+      const res = await fetch("/api/integrations", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          type: "mcp",
+          name: autoName,
+          description: "",
+          preset: values.preset,
+          transport: values.transport,
+          url: values.url,
+          token: values.token,
+          ...(extraHeaders ? { extraHeaders } : {}),
+        }),
+      });
+
+      const data = await res.json();
+
+      if (!res.ok) {
+        setMcpSubmitError(
+          mcpErrorMessage({
+            code: data.code,
+            providerName: preset.displayName,
+            isCustom: values.preset === "generic",
+            // The create route puts the raw client error in `detail` (its
+            // `error` field is the generic "MCP discovery failed").
+            rawMessage: data.detail || data.error,
+          })
+        );
+        setConnecting(false);
+        return;
+      }
+
+      toast.success(`${preset.displayName} connected`);
+      handleClose(false);
+      onSuccess();
+    } catch {
+      // fetch itself failed — Pinchy was unreachable, not the MCP server.
+      setMcpSubmitError(
+        mcpErrorMessage({
+          code: "network",
+          providerName: preset.displayName,
+          isCustom: values.preset === "generic",
+        })
+      );
+      setConnecting(false);
+    }
+  }
+
   // --- Permission error detection ---
   const isPermissionError =
     syncError &&
@@ -706,7 +1265,7 @@ export function AddIntegrationDialog({
 
   return (
     <Dialog open={open} onOpenChange={handleClose}>
-      <DialogContent className="sm:max-w-md">
+      <DialogContent className="sm:max-w-md max-h-[85vh] overflow-y-auto">
         {/* Step 0: Type Selection */}
         {step === "type" && (
           <>
@@ -718,7 +1277,7 @@ export function AddIntegrationDialog({
             </DialogHeader>
 
             <div className="grid gap-3 pt-2">
-              {INTEGRATION_TYPES.map((type) => {
+              {visibleIntegrationTypes.map((type) => {
                 const Icon = type.icon;
                 const alreadyExists =
                   singletonTypes.has(type.id) && existingTypes.includes(type.id);
@@ -728,6 +1287,20 @@ export function AddIntegrationDialog({
                     disabled={alreadyExists}
                     onClick={() => {
                       setSelectedType(type.id);
+                      // For MCP type cards, prefill preset/URL/transport so
+                      // the connect step renders the right fields immediately.
+                      if (isMcpType(type.id)) {
+                        const preset = MCP_TYPE_TO_PRESET[type.id];
+                        const presetCfg = getMcpPreset(preset);
+                        mcpForm.reset({
+                          preset,
+                          url: presetCfg.defaultUrl ?? "",
+                          transport: presetCfg.defaultTransport,
+                          token: "",
+                          name: "",
+                          locationId: "",
+                        });
+                      }
                       setStep("connect");
                     }}
                     className="flex items-center gap-4 rounded-lg border p-4 text-left transition-colors hover:bg-accent disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:bg-transparent"
@@ -816,6 +1389,23 @@ export function AddIntegrationDialog({
               </form>
             </Form>
           </>
+        )}
+
+        {/* Step 1: Connect (MCP) — hidden when MCP feature flag is off */}
+        {step === "connect" && isMcpType(selectedType) && isMcpEnabledClient() && (
+          <McpConnectStep
+            form={mcpForm}
+            isCustom={selectedType === "mcp-custom"}
+            connecting={connecting}
+            testing={mcpTesting}
+            testTools={mcpTestTools}
+            testError={mcpTestError}
+            submitError={mcpSubmitError}
+            onBack={handleBack}
+            onCancel={() => handleClose(false)}
+            onSubmit={onMcpConnect}
+            onTestConnection={handleMcpTestConnection}
+          />
         )}
 
         {/* Step 1: Connect (Odoo) */}

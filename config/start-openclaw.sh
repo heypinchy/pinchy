@@ -55,27 +55,37 @@ ensure_secrets_root_owned() {
     echo "[secrets-fix] $SECRETS_FILE: $before -> $after"
 }
 
-# Install pinchy-files plugin dependencies from the container image.
-# In dev mode, source files are volume-mounted from the host, but host
-# node_modules contain macOS native bindings that won't work in Linux.
-# This runs before every gateway start (including restarts after config changes).
+# Install pinchy plugin dependencies from the container image's baked bundles.
+# Host node_modules contain macOS-native bindings that won't run on Linux, so we
+# always replace them with the Linux deps baked at /opt/<plugin>-deps.
+# Runs before every gateway start (including restarts after config changes).
+#
+# We copy the CONTENTS into the node_modules dir (`cp -r src/.` after `mkdir`),
+# not the dir itself. In dev, docker-compose.dev.yml masks each plugin's
+# node_modules with an anonymous volume — so this never writes through the
+# source bind-mount onto the host repo (a bare bind-mount turned this rm+cp into
+# a destructive write that wiped the developer's pnpm node_modules). That mount
+# also makes the node_modules path already exist as an empty dir, where a plain
+# `cp -r src dst` would nest into dst/node_modules. Copying contents is correct
+# whether dst is a fresh path (prod named volume) or a pre-mounted empty dir
+# (dev anonymous volume); the `|| true` tolerates rm failing to unlink a mount
+# point (its contents are still cleared).
+install_one_plugin_deps() {
+    plugin="$1"
+    src="/opt/${plugin}-deps/node_modules"
+    ext="/root/.openclaw/extensions/${plugin}"
+    if [ -d "$src" ] && [ -d "$ext" ]; then
+        rm -rf "${ext}/node_modules" 2>/dev/null || true
+        mkdir -p "${ext}/node_modules"
+        cp -r "${src}/." "${ext}/node_modules/"
+    fi
+}
+
 install_plugin_deps() {
-    if [ -d /opt/pinchy-files-deps/node_modules ] && [ -d /root/.openclaw/extensions/pinchy-files ]; then
-        rm -rf /root/.openclaw/extensions/pinchy-files/node_modules
-        cp -r /opt/pinchy-files-deps/node_modules /root/.openclaw/extensions/pinchy-files/node_modules
-    fi
-    if [ -d /opt/pinchy-odoo-deps/node_modules ] && [ -d /root/.openclaw/extensions/pinchy-odoo ]; then
-        rm -rf /root/.openclaw/extensions/pinchy-odoo/node_modules
-        cp -r /opt/pinchy-odoo-deps/node_modules /root/.openclaw/extensions/pinchy-odoo/node_modules
-    fi
-    if [ -d /opt/pinchy-web-deps/node_modules ] && [ -d /root/.openclaw/extensions/pinchy-web ]; then
-        rm -rf /root/.openclaw/extensions/pinchy-web/node_modules
-        cp -r /opt/pinchy-web-deps/node_modules /root/.openclaw/extensions/pinchy-web/node_modules
-    fi
-    if [ -d /opt/pinchy-email-deps/node_modules ] && [ -d /root/.openclaw/extensions/pinchy-email ]; then
-        rm -rf /root/.openclaw/extensions/pinchy-email/node_modules
-        cp -r /opt/pinchy-email-deps/node_modules /root/.openclaw/extensions/pinchy-email/node_modules
-    fi
+    install_one_plugin_deps pinchy-files
+    install_one_plugin_deps pinchy-odoo
+    install_one_plugin_deps pinchy-web
+    install_one_plugin_deps pinchy-email
 }
 
 # Fix plugin ownership — bind-mounted plugin files from the host may have

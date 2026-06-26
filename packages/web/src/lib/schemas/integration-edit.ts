@@ -12,3 +12,10 @@ export const odooEditSchema = z.object({
 export const webSearchEditSchema = z.object({
   apiKey: z.string().optional(),
 });
+
+// MCP credential edit = token rotation. extraHeaders (e.g. HighLevel's
+// locationId) lives on connection.data and is reused during re-discovery,
+// so the edit form only rotates the token.
+export const mcpEditSchema = z.object({
+  token: z.string().optional(),
+});

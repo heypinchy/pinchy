@@ -10,6 +10,35 @@ import { odooCredentialsSchema, odooConnectionDataSchema } from "@/lib/integrati
 import { validateExternalUrl } from "@/lib/integrations/url-validation";
 import { maskConnectionCredentials } from "@/lib/integrations/mask-credentials";
 import { parseRequestBody } from "@/lib/api-validation";
+import { listMcpTools, mcpErrorCodeFromError } from "@/lib/integrations/mcp-client";
+import { regenerateOpenClawConfig } from "@/lib/openclaw-config";
+import { isMcpEnabled } from "@/lib/feature-flags";
+
+const mcpBodySchema = z.object({
+  type: z.literal("mcp"),
+  name: z.string().min(1),
+  description: z.string().optional(),
+  // Notion and GitLab deliberately absent — both are OAuth-only on their
+  // hosted MCP servers. See issues #339 and #340.
+  preset: z.enum([
+    "github",
+    "linear",
+    "atlassian",
+    "stripe",
+    "cloudflare",
+    "intercom",
+    "highlevel",
+    "generic",
+  ]),
+  transport: z.enum(["http", "sse"]),
+  url: z.string().url(),
+  token: z.string().min(1),
+  // Per-connection metadata the MCP credential proxy injects as HTTP headers
+  // alongside Authorization: Bearer <token> when forwarding to the upstream.
+  // Today only HighLevel needs this (locationId Sub-Account ID); other presets
+  // ignore it. Values are non-secret and stay in Pinchy's DB (never openclaw.json).
+  extraHeaders: z.record(z.string(), z.string()).optional(),
+});
 
 const createIntegrationSchema = z.discriminatedUnion("type", [
   z.object({
@@ -25,6 +54,7 @@ const createIntegrationSchema = z.discriminatedUnion("type", [
     description: z.string().max(500).default(""),
     credentials: z.object({ apiKey: z.string().min(1) }),
   }),
+  mcpBodySchema,
 ]);
 
 export const GET = withAdmin(async () => {
@@ -68,6 +98,94 @@ export const GET = withAdmin(async () => {
 export const POST = withAdmin(async (request, _ctx, session) => {
   const parsed = await parseRequestBody(createIntegrationSchema, request);
   if ("error" in parsed) return parsed.error;
+
+  // ── MCP branch ─────────────────────────────────────────────────────────────
+  if (parsed.data.type === "mcp") {
+    if (!isMcpEnabled()) return NextResponse.json({ error: "Not found" }, { status: 404 });
+    const { name, description, preset, transport, url, token, extraHeaders } = parsed.data;
+
+    // HighLevel needs `locationId` alongside the token; without it tools/list
+    // returns 400. Catch the typo before we even try the upstream call.
+    if (preset === "highlevel" && !extraHeaders?.locationId) {
+      return NextResponse.json(
+        { error: "HighLevel requires a locationId (Sub-Account ID)" },
+        { status: 400 }
+      );
+    }
+
+    // Discover tools synchronously — on failure, do NOT save and return 502
+    let tools: Awaited<ReturnType<typeof listMcpTools>>;
+    try {
+      tools = await listMcpTools({ url, transport, token, extraHeaders });
+    } catch (err) {
+      const errorMessage = err instanceof Error ? err.message : String(err);
+      deferAuditLog({
+        actorType: "user",
+        actorId: session.user.id!,
+        eventType: "config.changed",
+        resource: `integration:new`,
+        detail: {
+          action: "integration_created",
+          type: "mcp",
+          name,
+          mcp: { preset, transport, url },
+          error: errorMessage,
+        },
+        outcome: "failure",
+      });
+      return NextResponse.json(
+        // `code` lets the dialog render a human-friendly, preset-aware
+        // message (mcp-error-messages.ts); `detail` keeps the raw error for
+        // custom-server debugging and the audit trail.
+        { error: "MCP discovery failed", detail: errorMessage, code: mcpErrorCodeFromError(err) },
+        { status: 502 }
+      );
+    }
+
+    const encryptedCredentials = encrypt(JSON.stringify({ token }));
+    const data = {
+      type: "mcp" as const,
+      preset,
+      transport,
+      url,
+      tools,
+      lastSyncAt: new Date().toISOString(),
+      // Only persist extraHeaders when non-empty so the JSON column stays
+      // lean and the config-emit path can `??=` cleanly.
+      ...(extraHeaders && Object.keys(extraHeaders).length > 0 ? { extraHeaders } : {}),
+    };
+
+    const [connection] = await db
+      .insert(integrationConnections)
+      .values({
+        type: "mcp",
+        name,
+        description: description ?? "",
+        credentials: encryptedCredentials,
+        data,
+      })
+      .returning();
+
+    deferAuditLog({
+      actorType: "user",
+      actorId: session.user.id!,
+      eventType: "config.changed",
+      resource: `integration:${connection.id}`,
+      detail: {
+        action: "integration_created",
+        type: "mcp",
+        name,
+        mcp: { preset, transport, url, toolCount: tools.length },
+      },
+      outcome: "success",
+    });
+
+    await regenerateOpenClawConfig();
+
+    return NextResponse.json(connection, { status: 201 });
+  }
+
+  // ── Odoo / web-search branch ───────────────────────────────────────────────
   const { type, name, description, credentials } = parsed.data;
 
   // Singleton types: only one connection of this type allowed

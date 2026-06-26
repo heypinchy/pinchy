@@ -2,10 +2,21 @@ import { NextResponse, after } from "next/server";
 import { revalidatePath } from "next/cache";
 import { z } from "zod";
 import { withAuth, withAdmin } from "@/lib/api-auth";
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import { db } from "@/db";
-import { agents, agentConnectionPermissions, integrationConnections } from "@/db/schema";
+import {
+  agents,
+  agentConnectionPermissions,
+  agentMcpToolPermissions,
+  integrationConnections,
+} from "@/db/schema";
 import { getTemplate, generateAgentsMd } from "@/lib/agent-templates";
+import {
+  applyRecommendedTools,
+  type McpConnectionInfo,
+} from "@/lib/agent-templates/recommended-tools";
+import type { McpIntegrationData } from "@/lib/integrations/types";
+import { isMcpEnabled } from "@/lib/feature-flags";
 import { getPersonalityPreset, resolveGreetingMessage } from "@/lib/personality-presets";
 import { generateAvatarSeed } from "@/lib/avatar";
 import { AGENT_NAME_MAX_LENGTH } from "@/lib/agents";
@@ -282,6 +293,74 @@ export const POST = withAdmin(async (request, _ctx, session) => {
     }
   }
 
+  // Non-blocking warnings surfaced to the client (shown as a toast). Today the
+  // only producer is the MCP auto-grant below.
+  const warnings: string[] = [];
+
+  // Auto-grant recommended MCP tools when the template declares them.
+  // Mirrors the Odoo/email auto-config above: the chosen template IS the
+  // deliberate selection, so we grant only the wish-listed tools that an
+  // active matching connection actually advertises — `applyRecommendedTools`
+  // silently skips the rest, so this never grants the whole catalogue
+  // (least-privilege; the admin tunes it later in the Permissions tab).
+  //
+  // Without this an MCP agent (e.g. GitHub PR Reviewer) was created with zero
+  // tool permissions: the model saw no tools and improvised "no MCP connected".
+  if (isMcpEnabled() && template.recommendedTools && template.recommendedTools.length > 0) {
+    const mcpConnRows = await db
+      .select({ id: integrationConnections.id, data: integrationConnections.data })
+      .from(integrationConnections)
+      .where(
+        and(eq(integrationConnections.type, "mcp"), eq(integrationConnections.status, "active"))
+      );
+
+    const mcpConnections: McpConnectionInfo[] = mcpConnRows.flatMap((row) => {
+      const data = row.data as McpIntegrationData | null;
+      if (!data?.preset) return [];
+      return [{ id: row.id, preset: data.preset, tools: (data.tools ?? []).map((t) => t.name) }];
+    });
+
+    const { grants, skipped } = applyRecommendedTools(template.recommendedTools, mcpConnections);
+
+    // Surface skipped tools. `applyRecommendedTools` skips silently by design
+    // (§4.3 — never crash on a renamed provider tool), but a silent skip means
+    // the agent ships unable to do its job with no signal. That is exactly the
+    // 2026-06 GitHub-rename breakage. Turn the silent skip into a visible,
+    // actionable warning so a stale template name can never again look like a
+    // working agent.
+    if (skipped.length > 0) {
+      const names = skipped.map((s) => s.tool).join(", ");
+      warnings.push(
+        grants.length === 0
+          ? `None of this template's recommended tools (${names}) could be connected from your integration — they may have been renamed on the MCP server. Open the agent's Permissions tab to grant tools manually.`
+          : `Some recommended tools couldn't be connected from your integration (${names}); the rest were granted. Review the agent's Permissions tab.`
+      );
+    }
+
+    if (grants.length > 0) {
+      await db.insert(agentMcpToolPermissions).values(
+        grants.map((g) => ({
+          agentId: agent.id,
+          connectionId: g.connectionId,
+          toolName: g.toolName,
+        }))
+      );
+
+      deferAuditLog({
+        actorType: "user",
+        actorId: session.user.id!,
+        eventType: "config.changed",
+        resource: `agent:${agent.id}`,
+        detail: {
+          action: "agent_integration_permissions_auto_configured",
+          agentId: agent.id,
+          mcpTools: grants.map((g) => ({ connectionId: g.connectionId, tool: g.toolName })),
+        },
+        outcome: "success",
+      });
+    }
+  }
+
   // Create workspace with personality preset's SOUL.md
   ensureWorkspace(agent.id);
   writeWorkspaceFile(agent.id, "SOUL.md", preset?.soulMd ?? "");
@@ -317,5 +396,5 @@ export const POST = withAdmin(async (request, _ctx, session) => {
 
   revalidatePath("/", "layout");
 
-  return NextResponse.json(agent, { status: 201 });
+  return NextResponse.json(warnings.length > 0 ? { ...agent, warnings } : agent, { status: 201 });
 });

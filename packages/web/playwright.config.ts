@@ -12,6 +12,7 @@ export default defineConfig({
     "**/e2e/web/**",
     "**/e2e/email/**",
     "**/e2e/setup-wizard/**",
+    "**/e2e/mcp/**",
   ],
   fullyParallel: false,
   retries: 0,

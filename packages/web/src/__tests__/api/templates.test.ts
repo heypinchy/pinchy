@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { NextRequest } from "next/server";
 
 vi.mock("next/headers", () => ({
@@ -44,6 +44,11 @@ vi.mock("@/lib/integrations/odoo-connection-models", () => ({
   getConnectionModels: (...args: unknown[]) => mockGetConnectionModels(...args),
 }));
 
+const mockGetActiveMcpPresets = vi.fn();
+vi.mock("@/lib/integrations/mcp-connections", () => ({
+  getActiveMcpPresets: (...args: unknown[]) => mockGetActiveMcpPresets(...args),
+}));
+
 vi.mock("@/lib/settings", () => ({
   getSetting: vi.fn().mockResolvedValue("anthropic"),
 }));
@@ -78,6 +83,8 @@ describe("GET /api/templates", () => {
     // Default: no Odoo connections
     mockLimit.mockResolvedValue([]);
     mockGetConnectionModels.mockResolvedValue(null);
+    // Default: no MCP connections of any preset.
+    mockGetActiveMcpPresets.mockResolvedValue(new Set<string>());
   });
 
   it("should return available templates", async () => {
@@ -334,5 +341,60 @@ describe("GET /api/templates", () => {
       expect(t, `${id} should be in response`).toBeDefined();
       expect(t.requiresDirectories, `${id} requiresDirectories`).toBe(false);
     }
+  });
+});
+
+describe("GET /api/templates — MCP template gating", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockLimit.mockResolvedValue([]);
+    mockGetConnectionModels.mockResolvedValue(null);
+    vi.stubEnv("PINCHY_MCP_ENABLED", "1");
+  });
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  it("marks an MCP template unavailable when its preset has no active connection", async () => {
+    mockGetActiveMcpPresets.mockResolvedValue(new Set<string>()); // nothing connected
+
+    const response = await GET(new NextRequest("http://localhost:7777/api/templates"));
+    const body = await response.json();
+
+    const ghReviewer = body.templates.find((t: { id: string }) => t.id === "github-pr-reviewer");
+    expect(ghReviewer).toBeDefined();
+    expect(ghReviewer.available).toBe(false);
+    expect(ghReviewer.unavailableReason).toBe("no-connection");
+
+    // Linear Triage must NOT look available just because the flag is on —
+    // this is the exact "Triage talks about Linear with no Linear connected"
+    // confusion the gating fixes.
+    const linear = body.templates.find((t: { id: string }) => t.id === "linear-triage");
+    expect(linear.available).toBe(false);
+  });
+
+  it("marks an MCP template available once its preset is connected", async () => {
+    mockGetActiveMcpPresets.mockResolvedValue(new Set(["github"]));
+
+    const response = await GET(new NextRequest("http://localhost:7777/api/templates"));
+    const body = await response.json();
+
+    const ghReviewer = body.templates.find((t: { id: string }) => t.id === "github-pr-reviewer");
+    expect(ghReviewer.available).toBe(true);
+    // A different preset stays gated.
+    const linear = body.templates.find((t: { id: string }) => t.id === "linear-triage");
+    expect(linear.available).toBe(false);
+  });
+
+  it("does not expose the Notion template (Phase 2, no connectable preset)", async () => {
+    mockGetActiveMcpPresets.mockResolvedValue(new Set(["github", "linear"]));
+
+    const response = await GET(new NextRequest("http://localhost:7777/api/templates"));
+    const body = await response.json();
+
+    expect(
+      body.templates.find((t: { id: string }) => t.id === "notion-knowledge-keeper")
+    ).toBeUndefined();
   });
 });

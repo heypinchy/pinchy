@@ -3,6 +3,7 @@ import {
   SILENT_REPLY_TOKEN,
   safeEmitLength,
   stripFinalEnvelope,
+  stripControlTokens,
 } from "@/server/silent-reply-buffer";
 
 describe("SILENT_REPLY_TOKEN", () => {
@@ -70,6 +71,41 @@ describe("safeEmitLength", () => {
     expect(safeEmitLength("Hello <fin")).toBe(6);
     // "Hello NO" — `NO` (2) is a NO_REPLY-prefix, no <final>-prefix.
     expect(safeEmitLength("Hello NO")).toBe(6);
+  });
+
+  it("holds back a partial control token so split harmony markers never leak", () => {
+    // `<chan` is a prefix of the control token `<channel|>` — hold it until the
+    // next chunk completes (and strips) the token, instead of emitting `<chan`.
+    expect(safeEmitLength("Hello <chan")).toBe(6);
+    expect(safeEmitLength("Hello <|chan")).toBe(6);
+    expect(safeEmitLength("Hello <|message")).toBe(6);
+  });
+});
+
+describe("stripControlTokens", () => {
+  it("removes the single-pipe channel marker that leaked into chat (2026-06)", () => {
+    expect(stripControlTokens("<channel|>")).toBe("");
+    expect(stripControlTokens("Here is the result<channel|> done")).toBe("Here is the result done");
+  });
+
+  it("removes harmony-style double-pipe control tokens", () => {
+    expect(stripControlTokens("<|channel|>")).toBe("");
+    expect(stripControlTokens("<|message|>hi<|end|>")).toBe("hi");
+    expect(stripControlTokens("<|start|>x<|return|>")).toBe("x");
+  });
+
+  it("strips a token assembled across chunk boundaries (operates on the buffer)", () => {
+    expect(stripControlTokens("ok <|chan" + "nel|> more")).toBe("ok  more");
+  });
+
+  it("leaves normal prose and comparisons untouched", () => {
+    expect(stripControlTokens("Use a < b and c > d here")).toBe("Use a < b and c > d here");
+    expect(stripControlTokens("the F# pipe x |> f")).toBe("the F# pipe x |> f");
+    expect(stripControlTokens("no tokens here")).toBe("no tokens here");
+  });
+
+  it("returns empty string for an empty buffer", () => {
+    expect(stripControlTokens("")).toBe("");
   });
 });
 

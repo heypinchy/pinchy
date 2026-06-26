@@ -48,6 +48,17 @@ vi.mock("@/lib/integrations/probe", () => ({
   probeIntegrationCredentials: (...args: unknown[]) => mockProbeIntegrationCredentials(...args),
 }));
 
+const mockListMcpTools = vi.fn();
+vi.mock("@/lib/integrations/mcp-client", () => ({
+  listMcpTools: (...args: unknown[]) => mockListMcpTools(...args),
+  McpAuthError: class McpAuthError extends Error {
+    constructor(message = "MCP server returned 401 Unauthorized") {
+      super(message);
+      this.name = "McpAuthError";
+    }
+  },
+}));
+
 const mockClearIntegrationAuthError = vi.fn();
 const mockSetIntegrationAuthFailed = vi.fn();
 vi.mock("@/lib/integrations/auth-state", () => ({
@@ -153,6 +164,84 @@ describe("POST /api/integrations/[connectionId]/test — auth state flipping", (
       reason: "Authentication failed",
       actor: { type: "user", id: "user-1" },
     });
+    expect(mockClearIntegrationAuthError).not.toHaveBeenCalled();
+  });
+});
+
+describe("POST /api/integrations/[connectionId]/test — MCP connections", () => {
+  const mcpConnection = {
+    id: "conn-mcp-1",
+    type: "mcp",
+    name: "GitHub",
+    credentials: "encrypted-creds",
+    data: {
+      type: "mcp",
+      preset: "github",
+      transport: "http",
+      url: "https://api.githubcopilot.com/mcp/",
+      tools: [{ name: "list_repos", inputSchema: {} }],
+      lastSyncAt: "2026-01-01T00:00:00.000Z",
+    },
+    status: "active",
+    createdAt: new Date("2026-01-01"),
+    updatedAt: new Date("2026-01-01"),
+  };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockGetSession.mockResolvedValue(adminSession);
+    mockDecrypt.mockReturnValue(JSON.stringify({ token: "ghp_secret" }));
+    mockSelectWhere.mockResolvedValue([mcpConnection]);
+    mockClearIntegrationAuthError.mockResolvedValue(undefined);
+    mockSetIntegrationAuthFailed.mockResolvedValue(undefined);
+  });
+
+  it("verifies an MCP connection via listMcpTools — never the Odoo probe", async () => {
+    mockListMcpTools.mockResolvedValue([{ name: "list_repos", inputSchema: {} }]);
+
+    const { POST } = await import("@/app/api/integrations/[connectionId]/test/route");
+    const response = await POST(
+      makeRequest("/api/integrations/conn-mcp-1/test", { method: "POST" }),
+      { params: Promise.resolve({ connectionId: "conn-mcp-1" }) }
+    );
+    const body = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(body.success).toBe(true);
+    // Probe registry doesn't know mcp — must not be consulted.
+    expect(mockProbeIntegrationCredentials).not.toHaveBeenCalled();
+    // Verifies against the upstream server using the connection's stored
+    // url/transport + the decrypted token.
+    expect(mockListMcpTools).toHaveBeenCalledWith(
+      expect.objectContaining({
+        url: "https://api.githubcopilot.com/mcp/",
+        transport: "http",
+        token: "ghp_secret",
+      })
+    );
+    expect(mockClearIntegrationAuthError).toHaveBeenCalledWith({
+      connectionId: "conn-mcp-1",
+      actor: { type: "user", id: "user-1" },
+    });
+    expect(mockSetIntegrationAuthFailed).not.toHaveBeenCalled();
+  });
+
+  it("flips an MCP connection to auth_failed when the server rejects the token", async () => {
+    const { McpAuthError } = await import("@/lib/integrations/mcp-client");
+    mockListMcpTools.mockRejectedValue(new McpAuthError());
+
+    const { POST } = await import("@/app/api/integrations/[connectionId]/test/route");
+    const response = await POST(
+      makeRequest("/api/integrations/conn-mcp-1/test", { method: "POST" }),
+      { params: Promise.resolve({ connectionId: "conn-mcp-1" }) }
+    );
+    const body = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(body.success).toBe(false);
+    expect(mockSetIntegrationAuthFailed).toHaveBeenCalledWith(
+      expect.objectContaining({ connectionId: "conn-mcp-1", actor: { type: "user", id: "user-1" } })
+    );
     expect(mockClearIntegrationAuthError).not.toHaveBeenCalled();
   });
 });

@@ -10,9 +10,11 @@ import { validateExternalUrl } from "@/lib/integrations/url-validation";
 import { maskConnectionCredentials } from "@/lib/integrations/mask-credentials";
 import { deleteOAuthSettings } from "@/lib/integrations/oauth-settings";
 import { probeIntegrationCredentials } from "@/lib/integrations/probe";
+import { listMcpTools, mcpErrorCodeFromError } from "@/lib/integrations/mcp-client";
 import { clearIntegrationAuthError } from "@/lib/integrations/auth-state";
 import { z } from "zod";
 import { parseRequestBody, formatValidationError } from "@/lib/api-validation";
+import type { McpIntegrationData } from "@/lib/integrations/types";
 
 const updateConnectionSchema = z
   .object({
@@ -26,6 +28,12 @@ const credentialSchemas: Record<string, z.ZodType> = {
   odoo: odooCredentialsSchema.partial(),
   "web-search": z
     .object({ apiKey: z.string().min(1) })
+    .strict()
+    .partial(),
+  // MCP credential edit = token rotation. extraHeaders (e.g. HighLevel's
+  // locationId) stays on connection.data and is reused during re-discovery.
+  mcp: z
+    .object({ token: z.string().min(1) })
     .strict()
     .partial(),
 };
@@ -109,30 +117,59 @@ export const PATCH = withAdmin<RouteContext>(async (request, { params }, session
     }
   }
   if (parsedCredentials !== undefined) {
-    if (existing.type === "odoo" && "url" in parsedCredentials) {
-      const urlCheck = validateExternalUrl(parsedCredentials.url as string);
-      if (!urlCheck.valid) {
-        return NextResponse.json({ error: urlCheck.error }, { status: 400 });
-      }
-    }
-
     // Merge with existing stored credentials so callers can omit unchanged fields
     // ("leave empty to keep current" pattern).
     const existingDecoded = JSON.parse(decrypt(existing.credentials)) as Record<string, unknown>;
     const merged = { ...existingDecoded, ...parsedCredentials };
 
-    // Probe before persisting.
-    const probe = await probeIntegrationCredentials(existing.type, merged);
-    if (!probe.success) {
-      return NextResponse.json({ error: probe.reason }, { status: 400 });
+    if (existing.type === "mcp") {
+      // MCP can't go through the Odoo/web-search probe registry. Validate the
+      // (rotated) token by re-discovering tools against the upstream server
+      // using the connection's stored url/transport/extraHeaders, then persist
+      // both the new token and the refreshed tool list.
+      const data = existing.data as unknown as McpIntegrationData;
+      let tools: Awaited<ReturnType<typeof listMcpTools>>;
+      try {
+        tools = await listMcpTools({
+          url: data.url,
+          transport: data.transport,
+          token: merged.token as string,
+          extraHeaders: data.extraHeaders,
+        });
+      } catch (err) {
+        const detail = err instanceof Error ? err.message : String(err);
+        return NextResponse.json(
+          {
+            error: "Couldn't verify the token with the MCP server.",
+            detail,
+            code: mcpErrorCodeFromError(err),
+          },
+          { status: 400 }
+        );
+      }
+      updateData.credentials = encrypt(JSON.stringify(merged));
+      updateData.data = { ...data, tools, lastSyncAt: new Date().toISOString() };
+    } else {
+      if (existing.type === "odoo" && "url" in parsedCredentials) {
+        const urlCheck = validateExternalUrl(parsedCredentials.url as string);
+        if (!urlCheck.valid) {
+          return NextResponse.json({ error: urlCheck.error }, { status: 400 });
+        }
+      }
+
+      // Probe before persisting.
+      const probe = await probeIntegrationCredentials(existing.type, merged);
+      if (!probe.success) {
+        return NextResponse.json({ error: probe.reason }, { status: 400 });
+      }
+
+      // Apply fields the probe resolved (e.g. fresh `uid` after a login change).
+      const finalCredentials = probe.freshCredentials
+        ? { ...merged, ...probe.freshCredentials }
+        : merged;
+
+      updateData.credentials = encrypt(JSON.stringify(finalCredentials));
     }
-
-    // Apply fields the probe resolved (e.g. fresh `uid` after a login change).
-    const finalCredentials = probe.freshCredentials
-      ? { ...merged, ...probe.freshCredentials }
-      : merged;
-
-    updateData.credentials = encrypt(JSON.stringify(finalCredentials));
     // NOTE: credential changes intentionally do NOT go into `changes` — they
     // get their own dedicated `integration.credentials_updated` event below,
     // which gives CISOs a clean filter for "all credential touches" without
@@ -227,12 +264,26 @@ export const DELETE = withAdmin<RouteContext>(async (_req, { params }, session) 
     }
   }
 
+  const deletedDetail: { id: string; name: string; type: string; mcp?: unknown } = {
+    id: connectionId,
+    name: existing.name,
+    type: existing.type,
+  };
+  if (existing.type === "mcp" && existing.data) {
+    const mcpData = existing.data as unknown as McpIntegrationData;
+    deletedDetail.mcp = {
+      preset: mcpData.preset,
+      transport: mcpData.transport,
+      url: mcpData.url,
+    };
+  }
+
   await appendAuditLog({
     actorType: "user",
     actorId: session.user.id!,
     eventType: "integration.deleted",
     resource: `integration:${connectionId}`,
-    detail: { id: connectionId, name: existing.name, type: existing.type },
+    detail: deletedDetail,
     outcome: "success",
   });
 

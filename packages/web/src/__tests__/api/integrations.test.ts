@@ -1636,6 +1636,16 @@ describe("POST /api/integrations/[connectionId]/sync", () => {
     mockFields.mockResolvedValue([
       { name: "name", string: "Name", type: "char", required: true, readonly: false },
     ]);
+    // Restore the default mock implementation so tests in this block
+    // always start with the Odoo mockConnection, regardless of what
+    // preceding describe blocks may have set on mockSelectFrom.
+    mockSelectFrom.mockImplementation(() => {
+      const result = Promise.resolve([mockConnection]) as Promise<(typeof mockConnection)[]> & {
+        where: ReturnType<typeof vi.fn>;
+      };
+      result.where = vi.fn().mockResolvedValue([mockConnection]);
+      return result;
+    });
   });
 
   it("should return 401 when not authenticated", async () => {
