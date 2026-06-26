@@ -660,6 +660,37 @@ describe("POST /api/internal/audit/tool-use", () => {
       expect((call.detail.params as Record<string, unknown>).path).toBe("/data/kb/report.md");
     });
 
+    it("keeps params on failure when details carries only an error (no curated fields to suppress)", async () => {
+      // Param-suppression exists to hide CURATED sensitive data (e.g.
+      // pinchy_write replaces content). An error-only `details: { error }` —
+      // which every failed tool now emits so OpenClaw's isError-stripping
+      // (#404) can't mask the failure — must NOT trigger suppression; forensics
+      // need to know what the failed call attempted (the 2026-06-25 incident
+      // hinged on those params).
+      await POST(
+        makeRequest({
+          phase: "end",
+          toolName: "odoo_create",
+          agentId: "agent-1",
+          params: { model: "account.move", values: { move_type: "in_invoice" } },
+          result: {
+            // No isError (OC strips it); only details.error signals failure.
+            content: [{ type: "text", text: "Error: Could not resolve partner_id" }],
+            details: { error: "Error: Could not resolve partner_id" },
+          },
+        })
+      );
+
+      const call = vi.mocked(appendAuditLog).mock.calls[0]?.[0];
+      expect(call?.outcome).toBe("failure");
+      const detail = call?.detail as Record<string, unknown>;
+      expect(detail.success).toBe(false);
+      expect(detail.error).toMatch(/Could not resolve partner_id/);
+      // params retained for forensics
+      expect(detail).toHaveProperty("params");
+      expect((detail.params as Record<string, unknown>).model).toBe("account.move");
+    });
+
     it("keeps params when result.details is not a plain object", async () => {
       await POST(
         makeRequest({
