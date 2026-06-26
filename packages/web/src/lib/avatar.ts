@@ -9,7 +9,7 @@ const SMITHERS_AVATAR_PATH = "/images/smithers-avatar.png";
 // faces are black-and-white line art with white fills, so we recolor those
 // white fills to the skin tint — a duotone that lets the colour read through
 // the face instead of leaving it plain black-and-white.
-const PALETTE = [
+export const PALETTE = [
   { bg: "ef4444", skin: "f8cfc7" }, // red
   { bg: "f97316", skin: "fbdcbb" }, // orange
   { bg: "c2410c", skin: "e9bda7" }, // terracotta
@@ -23,6 +23,10 @@ const PALETTE = [
 ] as const;
 
 export const BACKGROUND_COLORS = PALETTE.map((p) => p.bg);
+
+// bg hex -> matching light skin tint, so the tint step can reuse the background
+// the seed already landed on instead of hashing a second time.
+const SKIN_BY_BG = new Map(PALETTE.map((p) => [p.bg, p.skin]));
 
 // Deterministically pick a palette entry from the seed, so the chosen
 // background and its matching skin tint are known to us (DiceBear's own random
@@ -147,10 +151,13 @@ export function getAgentAvatarSvg(agent: { avatarSeed: string | null; name: stri
     return SMITHERS_AVATAR_PATH;
   }
 
-  const { skin } = pickPalette(seed);
-  const svg = createAvatar(notionists, buildNotionistsOptions(seed, agent.name)).toString();
-  // Tint the white fills (face/collar) to a light shade of the background hue,
-  // so the face carries colour instead of staying plain black-and-white.
+  // buildNotionistsOptions already ran pickPalette to choose the background;
+  // reuse that choice for the matching skin tint instead of hashing twice.
+  const options = buildNotionistsOptions(seed, agent.name);
+  const skin = SKIN_BY_BG.get(options.backgroundColor[0]) ?? PALETTE[0].skin;
+  const svg = createAvatar(notionists, options).toString();
+  // notionists faces are b/w line art with white fills; tint those whites to a
+  // light shade of the background hue so the face carries colour.
   const tinted = svg.replace(/#ffffff/gi, `#${skin}`).replace(/#fff\b/gi, `#${skin}`);
   return `data:image/svg+xml,${encodeURIComponent(tinted)}`;
 }

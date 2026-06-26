@@ -184,7 +184,8 @@ personalityPresetId: text("personality_preset_id"), // Which preset was used (fo
 
 **On-brand by construction (`packages/web/src/lib/avatar.ts`):**
 
-- **Background** is locked to the warm Pinchy brand ramp; DiceBear picks one tone per seed, so every agent stays on-brand.
+- **Background** is a single tone deterministically picked from the seed (warm-led brand palette plus a few accents), so every agent stays on-brand while the roster still has colour variety.
+- **Coloured faces** — notionists are black-and-white line art with white fills, so we recolour those whites to a light tint of the chosen background hue (a duotone), so each face carries colour instead of staying plain black-and-white.
 - **Head-focused framing** (`scale` + `translateY`) zooms onto the face so the head fills the circle instead of wasting space on the torso.
 - **Curated hairstyles** deliberately exclude culturally specific headwear (turban/headscarf) and props (hat, headphones). The masculine and feminine sets are disjoint; the mixed pool is the default.
 - **Presentation** (feminine / masculine / mixed) is pinned only for an explicit, curated allow-list of clearly-gendered names we ship (e.g. Ada, Maya → feminine; Sherlock → masculine). We never *infer* gender from an arbitrary user-provided name — everything else uses the mixed pool.
@@ -194,7 +195,10 @@ personalityPresetId: text("personality_preset_id"), // Which preset was used (fo
 export function getAgentAvatarSvg(agent: { avatarSeed: string | null; name: string }): string {
   const seed = agent.avatarSeed ?? agent.name;
   if (seed === "__smithers__") return SMITHERS_AVATAR_PATH; // reserved crab mascot
-  return createAvatar(notionists, buildNotionistsOptions(seed, agent.name)).toDataUri();
+  const options = buildNotionistsOptions(seed, agent.name); // picks one brand background
+  const skin = SKIN_BY_BG.get(options.backgroundColor[0]); // matching light skin tint
+  const svg = createAvatar(notionists, options).toString().replaceAll("#ffffff", `#${skin}`);
+  return `data:image/svg+xml,${encodeURIComponent(svg)}`;
 }
 ```
 

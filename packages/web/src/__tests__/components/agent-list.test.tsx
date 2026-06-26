@@ -63,6 +63,7 @@ describe("AgentList", () => {
 
     const zaraAvatar = container.querySelector('img[src="data:image/svg+xml;utf8,mock-zara-seed"]');
     expect(zaraAvatar).toBeInTheDocument();
+    expect(zaraAvatar).toHaveClass("size-9");
   });
 
   it("should render taglines when present", () => {

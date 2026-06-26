@@ -225,6 +225,7 @@ describe("Chat", () => {
     );
     const avatar = container.querySelector('img[src="data:image/svg+xml;utf8,test"]');
     expect(avatar).toBeInTheDocument();
+    expect(avatar).toHaveClass("size-10");
   });
 
   it("should not render avatar image in header when avatarUrl is not provided", () => {
