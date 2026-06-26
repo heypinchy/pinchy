@@ -11,7 +11,9 @@ import { integrationConnections } from "@/db/schema";
 import { decrypt, encrypt } from "@/lib/encryption";
 import { odooCredentialsSchema } from "@/lib/integrations/odoo-schema";
 import { probeIntegrationCredentials } from "@/lib/integrations/probe";
+import { listMcpTools } from "@/lib/integrations/mcp-client";
 import { clearIntegrationAuthError, setIntegrationAuthFailed } from "@/lib/integrations/auth-state";
+import type { McpIntegrationData } from "@/lib/integrations/types";
 
 type RouteContext = { params: Promise<{ connectionId: string }> };
 
@@ -30,6 +32,30 @@ export const POST = withAdmin<RouteContext>(async (_req, { params }, session) =>
 
   try {
     const decrypted = JSON.parse(decrypt(connection.credentials));
+
+    // MCP connections can't be probed through the Odoo/web-search probe
+    // registry (it returns "unknown type: mcp", which used to flip the
+    // connection to auth_failed). Verify by re-discovering tools against the
+    // upstream server with the connection's stored url/transport + token,
+    // mirroring the sync route. Read-only: we don't persist tools here.
+    if (connection.type === "mcp") {
+      const data = connection.data as unknown as McpIntegrationData;
+      const { token } = decrypted as { token: string };
+      try {
+        await listMcpTools({
+          url: data.url,
+          transport: data.transport,
+          token,
+          extraHeaders: data.extraHeaders,
+        });
+        await clearIntegrationAuthError({ connectionId, actor });
+        return NextResponse.json({ success: true });
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        await setIntegrationAuthFailed({ connectionId, reason: message, actor });
+        return NextResponse.json({ success: false, error: message }, { status: 200 });
+      }
+    }
 
     // Odoo uid self-heal: if the authenticate call returns a different uid than
     // what is stored (e.g. first connection with a placeholder), update the stored

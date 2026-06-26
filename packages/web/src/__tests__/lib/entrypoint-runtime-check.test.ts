@@ -7,10 +7,16 @@ const REPO_ROOT = resolve(__dirname, "../../../../..");
 const ENTRYPOINT = readFileSync(resolve(REPO_ROOT, "entrypoint.sh"), "utf8");
 
 describe("entrypoint.sh plugin runtime check", () => {
-  it("hardcodes the expected-plugin list", () => {
-    for (const plugin of KNOWN_PINCHY_PLUGINS) {
-      expect(ENTRYPOINT).toContain(plugin);
-    }
+  it("hardcodes EXACTLY the KNOWN_PINCHY_PLUGINS list (no missing, no stale extras)", () => {
+    const match = ENTRYPOINT.match(/EXPECTED_PLUGINS="([^"]*)"/);
+    expect(match, "EXPECTED_PLUGINS assignment not found in entrypoint.sh").not.toBeNull();
+    const listed = match![1].trim().split(/\s+/).filter(Boolean).sort();
+    const known = [...KNOWN_PINCHY_PLUGINS].sort();
+    // Bidirectional, not just KNOWN ⊆ entrypoint: a MISSING plugin breaks tool
+    // loading, but a STALE EXTRA (a removed plugin still listed here) makes the
+    // `set -e` guard below FATAL on a directory the image no longer ships — the
+    // whole stack then fails to boot (the pinchy-mcp removal incident, 2026-06).
+    expect(listed).toEqual(known);
   });
 
   it("fails fast (exit 1) if a plugin directory is missing", () => {

@@ -175,6 +175,11 @@ const TEMPLATE_CATEGORY_MAP: Record<string, CategoryId> = {
   "email-assistant": "email",
   "email-sales-assistant": "email",
   "email-support-assistant": "email",
+  // MCP starter templates — engineering-flavoured tools land under operations.
+  // notion-knowledge-keeper (knowledge-compliance) returns with #339 when the
+  // Notion preset becomes connectable; it's unregistered until then.
+  "github-pr-reviewer": "operations",
+  "linear-triage": "operations",
 };
 
 export interface TemplateCategory {

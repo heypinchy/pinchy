@@ -160,6 +160,20 @@ export default defineConfig({
           ],
         },
         {
+          label: 'Integrations',
+          items: [
+            { label: 'Overview', slug: 'integrations' },
+            {
+              label: 'MCP',
+              items: [
+                { label: 'Connect GitHub MCP', slug: 'integrations/mcp/connect-github' },
+                { label: 'Connect a Generic MCP Server', slug: 'integrations/mcp/connect-generic' },
+                { label: 'MCP Reference', slug: 'integrations/mcp/reference' },
+              ],
+            },
+          ],
+        },
+        {
           label: 'Concepts',
           items: [
             { label: 'Architecture', slug: 'architecture' },

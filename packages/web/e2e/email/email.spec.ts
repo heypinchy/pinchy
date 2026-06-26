@@ -76,7 +76,9 @@ test.describe("pinchy-email — Gmail E2E", () => {
     connectionId = conn.id;
     expect(conn.type).toBe("google");
 
-    // Grant email read permissions to Smithers via the integrations API
+    // Grant email read permissions to Smithers via the integrations API.
+    // Email/Google connections share the agentConnectionPermissions table with
+    // Odoo, so they use kind: "odoo" in the unified discriminated-union shape.
     const permRes = await fetch(
       (process.env.PINCHY_URL || "http://localhost:7777") + `/api/agents/${agentId}/integrations`,
       {
@@ -86,13 +88,16 @@ test.describe("pinchy-email — Gmail E2E", () => {
           Cookie: cookie,
           Origin: process.env.PINCHY_URL || "http://localhost:7777",
         },
-        body: JSON.stringify({
-          connectionId,
-          permissions: [
-            { model: "email", operation: "read" },
-            { model: "email", operation: "search" },
-          ],
-        }),
+        body: JSON.stringify([
+          {
+            kind: "odoo",
+            connectionId,
+            entries: [
+              { model: "email", operation: "read" },
+              { model: "email", operation: "search" },
+            ],
+          },
+        ]),
       }
     );
     expect(permRes.status).toBe(200);
@@ -129,17 +134,26 @@ test.describe("pinchy-email — Gmail E2E", () => {
     const integrationsRes = await pinchyGet(`/api/agents/${agentId}/integrations`, cookie);
     expect(integrationsRes.status).toBe(200);
 
-    const integrations = (await integrationsRes.json()) as Array<{
-      connectionId: string;
-      connectionType: string;
-      permissions: Array<{ model: string; operation: string }>;
-    }>;
+    const body = (await integrationsRes.json()) as {
+      permissions: Array<{
+        kind: string;
+        connectionId: string;
+        entries?: Array<{ model: string; operation: string }>;
+      }>;
+    };
 
-    const emailIntegration = integrations.find((i) => i.connectionId === connectionId);
+    const emailIntegration = body.permissions.find((i) => i.connectionId === connectionId);
     expect(emailIntegration).toBeDefined();
-    expect(emailIntegration!.connectionType).toBe("google");
+    expect(emailIntegration!.kind).toBe("odoo");
 
-    const ops = emailIntegration!.permissions.map((p) => p.operation);
+    // The connection type ("google") isn't surfaced by the unified endpoint —
+    // verify via /api/integrations instead.
+    const integrationsList = await pinchyGet("/api/integrations", cookie);
+    const list = (await integrationsList.json()) as Array<{ id: string; type: string }>;
+    const conn = list.find((c) => c.id === connectionId);
+    expect(conn?.type).toBe("google");
+
+    const ops = emailIntegration!.entries!.map((p) => p.operation);
     expect(ops).toContain("read");
     expect(ops).toContain("search");
     expect(ops).not.toContain("send");
@@ -189,20 +203,26 @@ test.describe("Email dispatch probe (pinchy-email plugin coverage)", () => {
       throw new Error(`Agent creation failed: ${String(createRes.status)}`);
     dispatchAgentId = ((await createRes.json()) as { id: string }).id;
 
-    // 6. Grant email read + send permissions → triggers regenerateOpenClawConfig()
-    //    which now reads default_provider=ollama-local and emits the Ollama
-    //    provider block. We grant `send` here too so the send round-trip test
-    //    below doesn't have to do a second permissions edit (each edit triggers
-    //    its own config-apply rate-limit cost on OC).
+    // 6. Grant email read + send permissions in one PUT.
+    //
+    // Main expanded the test in #355 to grant `send` here too so the send
+    // round-trip below doesn't pay a second config-apply rate-limit cost
+    // (each edit triggers its own regen on OC). PR #298 changed the PUT body
+    // to the discriminated-union shape — email/Google connections share the
+    // agentConnectionPermissions table with Odoo, so both entries ride the
+    // `kind: "odoo"` discriminator.
     const permRes = await pinchyPut(
       `/api/agents/${dispatchAgentId}/integrations`,
-      {
-        connectionId: dispatchConnectionId,
-        permissions: [
-          { model: "email", operation: "read" },
-          { model: "email", operation: "send" },
-        ],
-      },
+      [
+        {
+          kind: "odoo",
+          connectionId: dispatchConnectionId,
+          entries: [
+            { model: "email", operation: "read" },
+            { model: "email", operation: "send" },
+          ],
+        },
+      ],
       dispatchCookie
     );
     if (permRes.status !== 200)

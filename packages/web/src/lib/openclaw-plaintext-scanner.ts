@@ -10,6 +10,31 @@ const PATTERNS: Array<{ name: string; regex: RegExp }> = [
   { name: "brave", regex: /^BSA[a-zA-Z0-9]{16,}/ },
   // Ollama Cloud: 32-hex prefix + "." + ≥16 base62 chars (observed format).
   { name: "ollama-cloud", regex: /^[a-f0-9]{32}\.[a-zA-Z0-9]{16,}/ },
+  // MCP token prefixes for Phase-1 presets — these must never appear in
+  // openclaw.json (credentials are fetched at runtime via /api/internal/integrations).
+  // GitHub fine-grained PAT must be checked before classic PAT and OAuth token
+  // because "github_pat_" starts with "ghp" which could false-match if order reversed.
+  { name: "github-pat-fine-grained", regex: /^github_pat_[a-zA-Z0-9_]{10,}/ },
+  { name: "github-pat-classic", regex: /^ghp_[a-zA-Z0-9]{10,}/ },
+  { name: "github-oauth", regex: /^gho_[a-zA-Z0-9]{10,}/ },
+  // Notion internal integration tokens start with "secret_" followed by ≥32 chars.
+  { name: "notion-integration", regex: /^secret_[a-zA-Z0-9]{32,}/ },
+  // Linear personal API keys start with "lin_api_".
+  { name: "linear-api-key", regex: /^lin_api_[a-zA-Z0-9]{8,}/ },
+  // GitLab personal access tokens start with "glpat-"; project tokens with "glptt-".
+  { name: "gitlab-pat", regex: /^glpat-[a-zA-Z0-9_-]{16,}/ },
+  { name: "gitlab-project-token", regex: /^glptt-[a-zA-Z0-9_-]{16,}/ },
+  // Stripe restricted keys (rk_live_/rk_test_) and secret keys (sk_live_/sk_test_).
+  // "sk-" anthropic-style is already covered above; here we match "sk_" Stripe-style.
+  { name: "stripe-restricted-key", regex: /^rk_(live|test)_[a-zA-Z0-9]{16,}/ },
+  { name: "stripe-secret-key", regex: /^sk_(live|test)_[a-zA-Z0-9]{16,}/ },
+  // HighLevel Private Integration Tokens start with "pit-".
+  { name: "highlevel-pit", regex: /^pit-[a-f0-9]{8,}/ },
+  // Atlassian, Cloudflare, Intercom tokens are opaque strings with no fixed
+  // prefix — there's nothing to match defensively. The Pattern-B fetch contract
+  // is the primary guarantee; the manifest's `additionalProperties: false` is
+  // the secondary one. Reach for the audit trail if either of those slips.
+  //
   // telegram-bot tokens omitted: OpenClaw 2026.4.26 does not resolve SecretRef
   // in channels.telegram.accounts.*.botToken — tokens stay as plain strings.
 ];

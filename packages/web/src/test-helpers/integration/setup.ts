@@ -20,6 +20,7 @@ const APPLICATION_TABLES = [
   "uploaded_files",
   "usage_records",
   "agent_connection_permissions",
+  "agent_mcp_tool_permissions",
   "integration_connections",
   "channel_links",
   "channel_messages",

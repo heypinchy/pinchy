@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useCallback, useRef } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
+import { toast } from "sonner";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
@@ -365,6 +366,15 @@ export function NewAgentForm() {
       }
 
       const agent = await res.json();
+      // Non-blocking creation warnings (e.g. recommended MCP tools that
+      // couldn't be connected because the server renamed them). The flow
+      // navigates straight to the chat, so a toast — which survives the
+      // navigation — is the right surface, not an inline error.
+      if (Array.isArray(agent.warnings)) {
+        for (const warning of agent.warnings) {
+          toast.warning(warning);
+        }
+      }
       triggerRestart();
       router.push(`/chat/${agent.id}`);
       router.refresh();

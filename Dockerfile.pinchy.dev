@@ -3,6 +3,14 @@
 # pull-through cache for `library/*` images on Docker Hub.
 FROM mirror.gcr.io/library/node:22-slim
 
+# better-sqlite3 ships no linux-arm64 prebuild on npm — pnpm falls back to
+# node-gyp rebuild, which needs python3 + make + g++. CI runs on amd64 where
+# prebuilds exist, so this only bites on Apple-Silicon dev hosts. Keep it in
+# the dev image only; production assumes amd64.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      python3 make g++ \
+    && rm -rf /var/lib/apt/lists/*
+
 RUN corepack enable
 
 WORKDIR /app

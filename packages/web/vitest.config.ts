@@ -22,7 +22,15 @@ export default defineConfig({
     // vitest.integration.config.ts (`pnpm test:db`). Excluded here so
     // `pnpm test` stays fast and Docker-free. Convention: any file named
     // *.integration.test.ts opts into the DB-backed runner.
-    exclude: ["node_modules", "e2e", "**/*.integration.test.{ts,tsx,js,jsx}"],
+    //
+    // `**/node_modules/**` (not a bare `node_modules`) is load-bearing: the
+    // plugin include glob above (`../plugins/pinchy-*/**`) traverses into a
+    // plugin's own nested `node_modules` when pnpm doesn't hoist a transitive
+    // dep (e.g. mammoth's `lop`/`option` under pinchy-files), and a bare
+    // `node_modules` only anchors the top level — so their bundled `*.test.js`
+    // files would get collected and fail with "No test suite found". Anchoring
+    // with `**/` makes collection independent of pnpm's hoisting layout.
+    exclude: ["**/node_modules/**", "e2e", "**/*.integration.test.{ts,tsx,js,jsx}"],
   },
   resolve: {
     alias: {

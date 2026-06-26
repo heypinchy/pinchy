@@ -29,14 +29,31 @@ services:
       # packages/web/src/lib/openclaw-local-url.ts.
       - "ollama.local:host-gateway"
     volumes:
+      # Plugin SOURCE is bind-mounted for live editing, but each node_modules is
+      # masked by an anonymous volume — the SAME pattern the pinchy service uses
+      # for /app/packages/web/node_modules above. This is load-bearing: the
+      # OpenClaw container's start-openclaw.sh runs `rm -rf <ext>/node_modules &&
+      # cp -r /opt/<plugin>-deps/node_modules` to swap in Linux-native deps. With
+      # a bare bind-mount that rm+cp writes THROUGH to the host repo, deleting the
+      # developer's pnpm-symlinked node_modules and leaving broken symlinks
+      # (mammoth/@mozilla/readability/odoo-node fail to load). Masking node_modules
+      # keeps the container's deps in the anonymous volume and the host untouched.
       - ./packages/plugins/pinchy-files:/root/.openclaw/extensions/pinchy-files
+      - /root/.openclaw/extensions/pinchy-files/node_modules
       - ./packages/plugins/pinchy-context:/root/.openclaw/extensions/pinchy-context
+      - /root/.openclaw/extensions/pinchy-context/node_modules
       - ./packages/plugins/pinchy-audit:/root/.openclaw/extensions/pinchy-audit
+      - /root/.openclaw/extensions/pinchy-audit/node_modules
       - ./packages/plugins/pinchy-transcript:/root/.openclaw/extensions/pinchy-transcript
+      - /root/.openclaw/extensions/pinchy-transcript/node_modules
       - ./packages/plugins/pinchy-odoo:/root/.openclaw/extensions/pinchy-odoo
+      - /root/.openclaw/extensions/pinchy-odoo/node_modules
       - ./packages/plugins/pinchy-web:/root/.openclaw/extensions/pinchy-web
+      - /root/.openclaw/extensions/pinchy-web/node_modules
       - ./packages/plugins/pinchy-email:/root/.openclaw/extensions/pinchy-email
+      - /root/.openclaw/extensions/pinchy-email/node_modules
       - ./packages/plugins/pinchy-docs:/root/.openclaw/extensions/pinchy-docs
+      - /root/.openclaw/extensions/pinchy-docs/node_modules
       - ./sample-data:/data/sample-docs
   db:
     environment:

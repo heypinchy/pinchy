@@ -434,6 +434,11 @@ export type AuditLogEntry =
         reason?: string;
         fields?: string[];
         modelCount?: number;
+        tools?: {
+          added: { name: string }[];
+          removed: { name: string }[];
+          total: number;
+        };
       };
     })
   | (AuditLogBase & {

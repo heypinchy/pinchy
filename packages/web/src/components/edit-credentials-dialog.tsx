@@ -25,7 +25,7 @@ import { Button } from "@/components/ui/button";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { AlertTriangle, Loader2 } from "lucide-react";
 import { apiPatch, apiPost, ApiError } from "@/lib/api-client";
-import { odooEditSchema, webSearchEditSchema } from "@/lib/schemas/integration-edit";
+import { odooEditSchema, webSearchEditSchema, mcpEditSchema } from "@/lib/schemas/integration-edit";
 import type { IntegrationConnection } from "@/lib/integrations/types";
 import type { z } from "zod";
 
@@ -38,6 +38,7 @@ interface EditCredentialsDialogProps {
 
 type OdooFormValues = z.infer<typeof odooEditSchema>;
 type WebSearchFormValues = z.infer<typeof webSearchEditSchema>;
+type McpFormValues = z.infer<typeof mcpEditSchema>;
 
 function OdooForm({
   connection,
@@ -280,6 +281,98 @@ function WebSearchForm({
   );
 }
 
+function McpForm({
+  connection,
+  onSuccess,
+  onOpenChange,
+}: {
+  connection: IntegrationConnection;
+  onSuccess: () => void;
+  onOpenChange: (open: boolean) => void;
+}) {
+  const [serverError, setServerError] = useState("");
+  const [saving, setSaving] = useState(false);
+
+  const form = useForm<McpFormValues>({
+    resolver: zodResolver(mcpEditSchema),
+    defaultValues: { token: "" },
+  });
+
+  useEffect(() => {
+    form.reset({ token: "" });
+    setServerError("");
+  }, [connection.id]);
+
+  async function onSubmit(values: McpFormValues) {
+    setSaving(true);
+    setServerError("");
+    const credentials: Record<string, string> = {};
+    if (values.token) credentials.token = values.token;
+
+    try {
+      await apiPatch(`/api/integrations/${connection.id}`, { credentials });
+      toast.success("Token updated");
+      onSuccess();
+      onOpenChange(false);
+    } catch (err) {
+      if (err instanceof ApiError) {
+        setServerError(err.message);
+      } else {
+        setServerError("Something went wrong. Please try again.");
+      }
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <Form {...form}>
+      <form onSubmit={form.handleSubmit(onSubmit)} className="space-y-4">
+        {connection.status === "auth_failed" && (
+          <Alert variant="destructive">
+            <AlertTriangle className="h-4 w-4" />
+            <AlertDescription>
+              The current token failed authentication — paste a fresh one below.
+            </AlertDescription>
+          </Alert>
+        )}
+
+        <FormField
+          control={form.control}
+          name="token"
+          render={({ field }) => (
+            <FormItem>
+              <FormLabel>Token</FormLabel>
+              <FormControl>
+                <Input type="password" placeholder="Leave empty to keep current" {...field} />
+              </FormControl>
+              <FormMessage />
+            </FormItem>
+          )}
+        />
+
+        {serverError && <p className="text-sm text-destructive">{serverError}</p>}
+
+        <div className="flex justify-end gap-2">
+          <Button type="button" variant="outline" onClick={() => onOpenChange(false)}>
+            Cancel
+          </Button>
+          <Button type="submit" disabled={saving}>
+            {saving ? (
+              <>
+                <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                Saving...
+              </>
+            ) : (
+              "Save"
+            )}
+          </Button>
+        </div>
+      </form>
+    </Form>
+  );
+}
+
 function GoogleReconnect({
   connection,
   onOpenChange,
@@ -363,6 +456,8 @@ export function EditCredentialsDialog({
             onSuccess={onSuccess}
             onOpenChange={onOpenChange}
           />
+        ) : connection?.type === "mcp" ? (
+          <McpForm connection={connection} onSuccess={onSuccess} onOpenChange={onOpenChange} />
         ) : null}
       </DialogContent>
     </Dialog>

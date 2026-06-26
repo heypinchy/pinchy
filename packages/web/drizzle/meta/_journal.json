@@ -309,6 +309,13 @@
       "when": 1782273139874,
       "tag": "0043_familiar_layla_miller",
       "breakpoints": true
+    },
+    {
+      "idx": 44,
+      "version": "7",
+      "when": 1782458740209,
+      "tag": "0044_mcp_tool_permissions",
+      "breakpoints": true
     }
   ]
 }

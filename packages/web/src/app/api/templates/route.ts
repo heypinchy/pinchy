@@ -4,11 +4,14 @@ import { withAuth } from "@/lib/api-auth";
 import { db } from "@/db";
 import { integrationConnections } from "@/db/schema";
 import { AGENT_TEMPLATES } from "@/lib/agent-templates";
+import { MCP_TEMPLATES } from "@/lib/agent-templates/data/mcp-agents";
 import { validateOdooTemplate } from "@/lib/integrations/odoo-template-validation";
 import { getConnectionModels } from "@/lib/integrations/odoo-connection-models";
+import { getActiveMcpPresets } from "@/lib/integrations/mcp-connections";
 import { getSetting } from "@/lib/settings";
 import { type ProviderName } from "@/lib/providers";
 import { resolveModelForTemplate, TemplateCapabilityUnavailableError } from "@/lib/model-resolver";
+import { isMcpEnabled } from "@/lib/feature-flags";
 
 export const GET = withAuth(async () => {
   const odooConnections = await db
@@ -33,9 +36,23 @@ export const GET = withAuth(async () => {
   // Determine active provider for capability-based template filtering
   const defaultProvider = (await getSetting("default_provider")) as ProviderName | null;
 
+  // Filter out MCP templates when the feature flag is off
+  const mcpEnabled = isMcpEnabled();
+  const mcpTemplateIds = new Set(Object.keys(MCP_TEMPLATES));
+  const visibleTemplates = mcpEnabled
+    ? Object.entries(AGENT_TEMPLATES)
+    : Object.entries(AGENT_TEMPLATES).filter(([id]) => !mcpTemplateIds.has(id));
+
+  // MCP templates are gated like Odoo/email ones: a template that needs the
+  // `linear` preset is only creatable when a Linear connection is active.
+  // Without this an MCP template looked available with nothing connected (the
+  // "Triage talks about Linear" confusion). Required presets are derived from
+  // the template's recommendedTools — the single source of truth.
+  const connectedMcpPresets = mcpEnabled ? await getActiveMcpPresets() : new Set<string>();
+
   // Build templates with both Odoo and capability availability
   const templates = await Promise.all(
-    Object.entries(AGENT_TEMPLATES).map(async ([id, template]) => {
+    visibleTemplates.map(async ([id, template]) => {
       let available = true;
       let unavailableReason: "no-connection" | "missing-modules" | null = null;
 
@@ -49,6 +66,14 @@ export const GET = withAuth(async () => {
         const validation = validateOdooTemplate(template.odooConfig, connectionModels);
         available = validation.valid;
         if (!validation.valid) unavailableReason = "missing-modules";
+      } else if (mcpTemplateIds.has(id) && template.recommendedTools?.length) {
+        // Available only when every preset the template recommends is connected.
+        const requiredPresets = new Set(template.recommendedTools.map((t) => t.preset));
+        const allConnected = [...requiredPresets].every((p) => connectedMcpPresets.has(p));
+        if (!allConnected) {
+          available = false;
+          unavailableReason = "no-connection";
+        }
       }
 
       // Check model capability availability

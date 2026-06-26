@@ -109,13 +109,23 @@ export function useOdooPermissions(
         const permsRes = await fetch(`/api/agents/${agentId}/integrations`);
 
         if (permsRes.ok) {
-          const data = await permsRes.json();
+          const raw = await permsRes.json();
+          // Handle { permissions, drift } shape — permissions is an array of discriminated-union entries.
+          // Older responses may be plain arrays; handle both for safety.
+          type OdooPermEntry = {
+            kind?: string;
+            connectionId: string;
+            // New shape: entries; legacy shape: permissions
+            entries?: Array<{ model: string; operation: string }>;
+            permissions?: Array<{ model: string; operation: string }>;
+          };
+          const data: OdooPermEntry[] = Array.isArray(raw) ? raw : (raw.permissions ?? []);
           // Only adopt permissions for the odoo connections we were given.
           // Without this filter, the hook would pick up non-odoo entries
           // (e.g. email) and cause the parent to send duplicate PUTs.
           const odooConnectionIds = new Set(connections.map((c) => c.id));
-          const odooEntry = data.find((entry: { connectionId: string }) =>
-            odooConnectionIds.has(entry.connectionId)
+          const odooEntry = data.find(
+            (entry) => odooConnectionIds.has(entry.connectionId) && entry.kind !== "mcp"
           );
           if (odooEntry) {
             const connId = odooEntry.connectionId;
@@ -123,10 +133,12 @@ export function useOdooPermissions(
             setInitialConnectionId(connId);
 
             // Build models map from existing permissions
+            // Support both new (entries) and legacy (permissions) field names
+            const permsList = odooEntry.entries ?? odooEntry.permissions ?? [];
             const models = new Map<string, OperationFlags>();
             const permSet = new Set<string>();
 
-            for (const perm of odooEntry.permissions) {
+            for (const perm of permsList) {
               permSet.add(`${perm.model}:${perm.operation}`);
               if (!models.has(perm.model)) {
                 models.set(perm.model, {
