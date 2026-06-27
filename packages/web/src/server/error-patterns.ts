@@ -63,3 +63,15 @@ export const HTTP_5XX_PATTERN = /HTTP\s+(5\d\d)\b/i;
  */
 export const PROVIDER_REJECTED_GENERIC_PATTERN =
   /provider rejected the request schema or tool payload/i;
+
+/**
+ * Matches a context-window overflow: the conversation/prompt no longer fits the
+ * model's context window. A model-capability/length issue, NOT a provider-config
+ * one (see PROVIDER_CONFIG_PATTERN's note on deliberately excluding bare
+ * `exceeded`). OpenClaw surfaces this with advice to use its `/reset` or `/new`
+ * slash commands — which Pinchy's web composer doesn't support — so
+ * `error-hints.ts` replaces that advice with a hint pointing at the Compact
+ * action instead (#611).
+ */
+export const CONTEXT_OVERFLOW_PATTERN =
+  /context (overflow|window|length)|prompt (is )?too large|larger[- ]context|maximum context|too many (input )?tokens/i;

@@ -1,5 +1,11 @@
 import { describe, it, expect } from "vitest";
-import { getErrorHint, PROVIDER_SETTINGS_HINT } from "@/server/error-hints";
+import {
+  getErrorHint,
+  presentProviderError,
+  PROVIDER_SETTINGS_HINT,
+  CONTEXT_OVERFLOW_HINT,
+  CONTEXT_OVERFLOW_MESSAGE,
+} from "@/server/error-hints";
 
 describe("getErrorHint", () => {
   describe("provider/config errors → role-based hint", () => {
@@ -96,14 +102,45 @@ describe("getErrorHint", () => {
       expect(getErrorHint("You exceeded your current quota", "admin")).toBe(PROVIDER_SETTINGS_HINT);
     });
 
-    it("should return null for 'context window exceeded' (model capability, not config)", () => {
-      // Context-window overflow is a model-capability issue: the user should
-      // swap to a larger-context model or trim the input. Telling them to
-      // "check your API configuration" would be misleading. Keeping bare
-      // `exceeded` out of PROVIDER_CONFIG_PATTERN is what makes this fall
-      // through to `null` (no hint) instead.
-      expect(getErrorHint("context window exceeded for this prompt", "admin")).toBeNull();
-      expect(getErrorHint("context window exceeded for this prompt", "member")).toBeNull();
+    it("should NOT misroute 'context window exceeded' to the provider-config hint", () => {
+      // Context-window overflow is a model-capability/length issue, not a
+      // provider-config one — keeping bare `exceeded` out of
+      // PROVIDER_CONFIG_PATTERN is what stops the misleading "check your API
+      // configuration" hint. It now gets its own actionable hint (#611) instead
+      // of falling through to null.
+      expect(getErrorHint("context window exceeded for this prompt", "admin")).toBe(
+        CONTEXT_OVERFLOW_HINT
+      );
+      expect(getErrorHint("context window exceeded for this prompt", "member")).toBe(
+        CONTEXT_OVERFLOW_HINT
+      );
+    });
+  });
+
+  describe("context-overflow → compact/new-chat hint, not OpenClaw's /reset advice (#611)", () => {
+    const overflowTexts = [
+      "Context overflow: prompt too large for the model. Try /reset (or /new) to start a fresh session, or use a larger-context model.",
+      "context window exceeded for this prompt",
+      "The prompt is too large for the model's context length.",
+      "Please use a larger-context model.",
+    ];
+
+    it.each(overflowTexts)("returns the compact hint (role-independent): %s", (text) => {
+      expect(getErrorHint(text, "admin")).toBe(CONTEXT_OVERFLOW_HINT);
+      expect(getErrorHint(text, "member")).toBe(CONTEXT_OVERFLOW_HINT);
+    });
+
+    it("presentProviderError replaces OpenClaw's /reset advice with a clean message", () => {
+      const raw =
+        "Context overflow: prompt too large for the model. Try /reset (or /new) to start a fresh session, or use a larger-context model.";
+      const shown = presentProviderError(raw);
+      expect(shown).toBe(CONTEXT_OVERFLOW_MESSAGE);
+      expect(shown).not.toMatch(/\/reset|\/new/);
+    });
+
+    it("presentProviderError leaves non-overflow errors unchanged", () => {
+      expect(presentProviderError("Invalid API key provided")).toBe("Invalid API key provided");
+      expect(presentProviderError("Rate limit exceeded")).toBe("Rate limit exceeded");
     });
   });
 });
