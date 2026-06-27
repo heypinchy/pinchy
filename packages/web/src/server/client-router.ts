@@ -27,7 +27,7 @@ import {
 } from "@/server/model-unavailable-throttle";
 import { SessionCache } from "@/server/session-cache";
 import { resolveUserPlaceholder } from "@/server/user-placeholder";
-import { getErrorHint } from "@/server/error-hints";
+import { getErrorHint, presentProviderError } from "@/server/error-hints";
 import { classifyModelError, classifyUpstreamFormatError } from "@/server/model-error-classifier";
 import {
   classifyAgentError,
@@ -1330,7 +1330,9 @@ export class ClientRouter {
             this.broadcastForRun(sessionKey, clientWs, {
               type: "error",
               agentName: agent.name,
-              providerError: chunk.text,
+              // Banner display only — rewrites OpenClaw's context-overflow /reset
+              // advice (#611). The audit + durable-persist keep the raw text.
+              providerError: presentProviderError(chunk.text),
               hint: getErrorHint(chunk.text, this.userRole),
               messageId,
               ...(modelUnavailable ? { modelUnavailable } : {}),
