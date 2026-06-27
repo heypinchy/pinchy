@@ -16,6 +16,26 @@
  */
 const KEY_PREFIX = "pinchy:lastChat:";
 
+// localStorage emits no same-tab change event (`storage` only fires in OTHER
+// tabs), so a component reading this store via useSyncExternalStore — the sidebar
+// (#508) — would never see a write made in its own tab. Its resolved agent link
+// would then lag one render behind `recordLastChat` (which runs in a post-render
+// effect) and reopen an OLDER chat. Keep an in-module listener set and notify it
+// on every write so same-tab subscribers re-read immediately.
+const listeners = new Set<() => void>();
+
+/**
+ * Subscribe to same-tab changes of the last-chat store. Returns an unsubscribe
+ * function. Pair this with the cross-tab `storage` event in the consumer's
+ * `useSyncExternalStore` subscribe so both same-tab and cross-tab writes refresh.
+ */
+export function subscribeLastChat(listener: () => void): () => void {
+  listeners.add(listener);
+  return () => {
+    listeners.delete(listener);
+  };
+}
+
 export function recordLastChat(agentId: string, chatId: string | null | undefined): void {
   if (typeof localStorage === "undefined") return;
   const key = KEY_PREFIX + agentId;
@@ -24,6 +44,7 @@ export function recordLastChat(agentId: string, chatId: string | null | undefine
   } else {
     localStorage.removeItem(key);
   }
+  for (const listener of listeners) listener();
 }
 
 export function getLastChat(agentId: string): string | null {

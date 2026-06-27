@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen, waitFor, act } from "@testing-library/react";
+import { recordLastChat } from "@/lib/last-chat-store";
 import userEvent from "@testing-library/user-event";
 import "@testing-library/jest-dom";
 import { AppSidebar } from "@/components/sidebar";
@@ -360,6 +361,28 @@ describe("AppSidebar", () => {
       renderSidebar(false);
       // No localStorage entry → the default route resolves the most-recent chat.
       expect(screen.getByRole("link", { name: /alpha/i })).toHaveAttribute("href", "/chat/agent-1");
+    });
+
+    it("refreshes the link on a same-tab write without navigating (#508 staleness regression)", async () => {
+      setAgents(agents);
+      renderSidebar(false);
+      // No record yet → bare link.
+      expect(screen.getByRole("link", { name: /alpha/i })).toHaveAttribute("href", "/chat/agent-1");
+
+      // The open chat records itself in THIS tab — localStorage fires no `storage`
+      // event and the pathname does not change. The store's same-tab notifier must
+      // still refresh the resolved link; otherwise the sidebar stays one render
+      // behind and reopens an older chat.
+      act(() => {
+        recordLastChat("agent-1", "chat-new");
+      });
+
+      await waitFor(() => {
+        expect(screen.getByRole("link", { name: /alpha/i })).toHaveAttribute(
+          "href",
+          "/chat/agent-1/chat-new"
+        );
+      });
     });
   });
 

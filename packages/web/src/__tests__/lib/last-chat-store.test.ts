@@ -1,5 +1,5 @@
-import { describe, it, expect, beforeEach } from "vitest";
-import { recordLastChat, getLastChat } from "@/lib/last-chat-store";
+import { describe, it, expect, beforeEach, vi } from "vitest";
+import { recordLastChat, getLastChat, subscribeLastChat } from "@/lib/last-chat-store";
 
 describe("last-chat-store", () => {
   beforeEach(() => localStorage.clear());
@@ -38,5 +38,24 @@ describe("last-chat-store", () => {
     recordLastChat("agent-1", "chat-a");
     recordLastChat("agent-1", undefined);
     expect(getLastChat("agent-1")).toBeNull();
+  });
+
+  // Regression: the sidebar resolves agent links via useSyncExternalStore, which
+  // only re-reads when a subscriber is notified. localStorage fires no same-tab
+  // `storage` event, so without an in-module notifier the sidebar link goes stale
+  // (one render behind recordLastChat's effect) and reopens an OLDER chat.
+  it("notifies same-tab subscribers on record and on clear", () => {
+    const listener = vi.fn();
+    const unsubscribe = subscribeLastChat(listener);
+
+    recordLastChat("agent-1", "chat-a");
+    expect(listener).toHaveBeenCalledTimes(1);
+
+    recordLastChat("agent-1", null);
+    expect(listener).toHaveBeenCalledTimes(2);
+
+    unsubscribe();
+    recordLastChat("agent-1", "chat-b");
+    expect(listener).toHaveBeenCalledTimes(2);
   });
 });

@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useMemo, useSyncExternalStore } from "react";
-import { getLastChat } from "@/lib/last-chat-store";
+import { getLastChat, subscribeLastChat } from "@/lib/last-chat-store";
 import { BarChart3, Bug, ClipboardList, Plus, Settings } from "lucide-react";
 import { LogoutButton } from "@/components/logout-button";
 import { useAgentsContext } from "@/components/agents-provider";
@@ -28,13 +28,19 @@ interface AppSidebarProps {
   isAdmin: boolean;
 }
 
-// localStorage has no same-tab change event; a cross-tab write fires "storage".
-// Same-tab updates are picked up because navigating re-renders the sidebar
-// (usePathname), which re-runs the snapshot read below.
+// Refresh the resolved agent links on BOTH change sources: a cross-tab write
+// fires the `storage` event, while a same-tab write (the common case — the open
+// chat recording itself) fires no `storage` event and is delivered via the
+// store's own in-module notifier. Relying on navigation re-renders alone left
+// the link one render behind the write, so it reopened an older chat (#508).
 function subscribeLastChats(callback: () => void) {
   if (typeof window === "undefined") return () => {};
   window.addEventListener("storage", callback);
-  return () => window.removeEventListener("storage", callback);
+  const unsubscribeSameTab = subscribeLastChat(callback);
+  return () => {
+    window.removeEventListener("storage", callback);
+    unsubscribeSameTab();
+  };
 }
 
 export function AppSidebar({ isAdmin }: AppSidebarProps) {
