@@ -8,6 +8,10 @@ vi.mock("sonner", () => ({
   toast: { success: vi.fn(), error: vi.fn() },
 }));
 
+vi.mock("next/navigation", () => ({
+  useRouter: () => ({ replace: vi.fn() }),
+}));
+
 vi.mock("@/lib/integrations/odoo-sync", () => ({
   getAccessibleCategoryLabels: () => [],
 }));
@@ -140,5 +144,31 @@ describe("SettingsIntegrations — auth_failed state", () => {
     expect(screen.queryByText("Reconnect")).not.toBeInTheDocument();
 
     fetchSpy.mockRestore();
+  });
+});
+
+describe("SettingsIntegrations — OAuth callback errors", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("shows a toast with human-readable error when oauthError='profile_fetch_failed'", async () => {
+    mockFetchConnections([]);
+    const { toast } = await import("sonner");
+    render(<SettingsIntegrations oauthError="profile_fetch_failed" />);
+    await waitFor(() => {
+      expect(toast.error).toHaveBeenCalledWith(
+        "Could not fetch your Microsoft profile. Check that your Azure App has User.Read permission."
+      );
+    });
+  });
+
+  it("shows generic error toast for unknown error codes", async () => {
+    mockFetchConnections([]);
+    const { toast } = await import("sonner");
+    render(<SettingsIntegrations oauthError="unknown_code" />);
+    await waitFor(() => {
+      expect(toast.error).toHaveBeenCalledWith("OAuth connection failed.");
+    });
   });
 });

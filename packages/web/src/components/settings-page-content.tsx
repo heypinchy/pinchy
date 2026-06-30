@@ -37,10 +37,12 @@ export function SettingsPageContent({
   initialTab,
   isAdmin,
   initialLicense,
+  oauthError,
 }: {
   initialTab?: string;
   isAdmin: boolean;
   initialLicense?: LicenseInfo;
+  oauthError?: string;
 }) {
   const { data: session } = authClient.useSession();
   const visibleTabs: SettingsTab[] = isAdmin
@@ -213,7 +215,7 @@ export function SettingsPageContent({
 
           {isAdmin && (
             <TabsContent value="integrations" keepMounted>
-              <SettingsIntegrations />
+              <SettingsIntegrations oauthError={oauthError} />
             </TabsContent>
           )}
 

@@ -1,6 +1,8 @@
 "use client";
 
 import { useState, useEffect, useCallback } from "react";
+import { useRouter } from "next/navigation";
+import { toast } from "sonner";
 import { useIntegrationActions } from "@/hooks/use-integration-actions";
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -32,7 +34,6 @@ import {
   AlertTriangle,
 } from "lucide-react";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
-// toast is now handled by useIntegrationActions hook
 import { AddIntegrationDialog } from "./add-integration-dialog";
 import { EditCredentialsDialog } from "./edit-credentials-dialog";
 import { EditOAuthDialog } from "./edit-oauth-dialog";
@@ -58,7 +59,19 @@ function formatRelativeTime(dateString: string): string {
   return date.toLocaleDateString();
 }
 
-export function SettingsIntegrations() {
+const OAUTH_ERROR_MESSAGES: Record<string, string> = {
+  profile_fetch_failed:
+    "Could not fetch your Microsoft profile. Check that your Azure App has User.Read permission.",
+  token_exchange_failed: "Microsoft authorization failed. Please try connecting again.",
+  state_mismatch: "OAuth session expired. Please try again.",
+  not_configured: "Microsoft OAuth is not configured.",
+  connection_not_found: "Connection not found. Please try again.",
+  unauthorized: "OAuth authorization failed. Please try again.",
+  missing_params: "OAuth authorization failed. Please try again.",
+};
+
+export function SettingsIntegrations({ oauthError }: { oauthError?: string } = {}) {
+  const router = useRouter();
   const [connections, setConnections] = useState<IntegrationConnection[]>([]);
   const [loading, setLoading] = useState(true);
   const [showAddDialog, setShowAddDialog] = useState(false);
@@ -68,6 +81,12 @@ export function SettingsIntegrations() {
   const [showOAuthEdit, setShowOAuthEdit] = useState(false);
   const [resumeGoogleSetup, setResumeGoogleSetup] = useState(false);
   const [editCredConn, setEditCredConn] = useState<IntegrationConnection | null>(null);
+
+  useEffect(() => {
+    if (!oauthError) return;
+    toast.error(OAUTH_ERROR_MESSAGES[oauthError] ?? "OAuth connection failed.");
+    router.replace("/settings?tab=integrations", { scroll: false });
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps -- intentionally mount-only
 
   const fetchConnections = useCallback(async () => {
     try {
