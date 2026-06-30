@@ -309,6 +309,13 @@
       "when": 1782273139874,
       "tag": "0043_familiar_layla_miller",
       "breakpoints": true
+    },
+    {
+      "idx": 44,
+      "version": "7",
+      "when": 1782840600485,
+      "tag": "0044_aromatic_gamora",
+      "breakpoints": true
     }
   ]
 }
