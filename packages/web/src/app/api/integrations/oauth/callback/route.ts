@@ -86,7 +86,14 @@ export async function GET(request: Request) {
       .limit(1);
     if (pendingRows.length > 0) {
       pendingType = pendingRows[0].type;
+    } else {
+      // Pending record gone (expired/cleaned up) — fall back to the provider
+      // cookie set by oauth/start so we still know which provider was used.
+      pendingType = cookies["oauth_provider"] ?? "google";
     }
+  } else {
+    // No pending ID at all — fall back to the provider cookie.
+    pendingType = cookies["oauth_provider"] ?? "google";
   }
 
   const isMicrosoft = pendingType === "microsoft";
@@ -335,7 +342,7 @@ export async function GET(request: Request) {
         [connection] = await db
           .insert(integrationConnections)
           .values({
-            type: "google",
+            type: connectionType,
             name: emailAddress,
             credentials: encryptedCredentials,
             data: connectionData,
@@ -403,6 +410,13 @@ export async function GET(request: Request) {
     maxAge: 0,
   });
   response.cookies.set("oauth_pending_id", "", {
+    httpOnly: true,
+    secure: isSecure,
+    sameSite: "lax",
+    path: "/",
+    maxAge: 0,
+  });
+  response.cookies.set("oauth_provider", "", {
     httpOnly: true,
     secure: isSecure,
     sameSite: "lax",

@@ -125,6 +125,13 @@ export async function GET(request: Request) {
       maxAge: 600,
       path: "/",
     });
+    response.cookies.set("oauth_provider", "microsoft", {
+      httpOnly: true,
+      secure: isSecure,
+      sameSite: "lax",
+      maxAge: 600,
+      path: "/",
+    });
 
     return response;
   }
@@ -159,6 +166,13 @@ export async function GET(request: Request) {
     path: "/",
   });
   response.cookies.set("oauth_pending_id", pending.id, {
+    httpOnly: true,
+    secure: isSecure,
+    sameSite: "lax",
+    maxAge: 600,
+    path: "/",
+  });
+  response.cookies.set("oauth_provider", "google", {
     httpOnly: true,
     secure: isSecure,
     sameSite: "lax",

@@ -857,6 +857,69 @@ describe("GET /api/integrations/oauth/callback", () => {
     });
   });
 
+  describe("Microsoft — oauth_pending_id points to non-existent record (INSERT fallback with oauth_provider cookie)", () => {
+    const mockMsConnection = {
+      id: "ms-conn-fallback-123",
+      type: "microsoft",
+      name: "user@contoso.com",
+      description: "",
+      credentials: "encrypted-creds",
+      data: { emailAddress: "user@contoso.com", provider: "outlook" },
+      status: "active",
+      createdAt: new Date("2026-04-09"),
+      updatedAt: new Date("2026-04-09"),
+    };
+
+    beforeEach(() => {
+      mockGetSession.mockResolvedValue(adminSession());
+      mockGetOAuthSettings.mockResolvedValue({
+        clientId: "ms-client-id",
+        clientSecret: "ms-client-secret",
+        tenantId: "my-tenant",
+      });
+      // Pending record is gone — select returns nothing
+      mockSelectLimit.mockResolvedValue([]);
+      mockValues.mockReturnValue({
+        returning: vi.fn().mockResolvedValue([mockMsConnection]),
+      });
+      // Microsoft token exchange + profile fetch
+      mockFetch
+        .mockResolvedValueOnce({
+          ok: true,
+          json: vi.fn().mockResolvedValue({
+            access_token: "ms-access-token",
+            refresh_token: "ms-refresh-token",
+            expires_in: 3600,
+            scope: "offline_access User.Read Mail.ReadWrite Mail.Send",
+          }),
+        })
+        .mockResolvedValueOnce({
+          ok: true,
+          json: vi.fn().mockResolvedValue({
+            mail: "user@contoso.com",
+            userPrincipalName: "user@contoso.com",
+          }),
+        });
+    });
+
+    it("inserts with type='microsoft' when oauth_provider=microsoft cookie is set and pending record is gone", async () => {
+      await GET(
+        makeRequest(
+          { code: "ms-auth-code", state: VALID_STATE },
+          `oauth_state=${VALID_STATE}; oauth_pending_id=stale-ms-id; oauth_provider=microsoft`
+        )
+      );
+
+      expect(mockValues).toHaveBeenCalledWith(
+        expect.objectContaining({
+          type: "microsoft",
+          name: "user@contoso.com",
+        })
+      );
+      expect(mockUpdateSet).not.toHaveBeenCalled();
+    });
+  });
+
   describe("reconnect flow — state.reconnectConnectionId is set", () => {
     // Build a state param that encodes reconnectConnectionId (as POST /oauth/start would)
     function buildReconnectState(reconnectConnectionId: string) {

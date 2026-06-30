@@ -154,6 +154,15 @@ describe("GET /api/integrations/oauth/start", () => {
     expect(cookieHeader).toContain("oauth_state=");
   });
 
+  it("sets oauth_provider=google cookie so callback can identify provider even when pending record is gone", async () => {
+    const { GET } = await import("@/app/api/integrations/oauth/start/route");
+    const res = await GET(makeRequest());
+    const setCookies = res.headers.getSetCookie
+      ? res.headers.getSetCookie().join("; ")
+      : (res.headers.get("set-cookie") ?? "");
+    expect(setCookies).toContain("oauth_provider=google");
+  });
+
   it("redirects to Google OAuth URL", async () => {
     const { GET } = await import("@/app/api/integrations/oauth/start/route");
     const res = await GET(makeRequest());
@@ -245,6 +254,15 @@ describe("GET /api/integrations/oauth/start", () => {
           status: "pending",
         })
       );
+    });
+
+    it("sets oauth_provider=microsoft cookie so callback can identify provider even when pending record is gone", async () => {
+      const { GET } = await import("@/app/api/integrations/oauth/start/route");
+      const res = await GET(makeMicrosoftRequest("my-tenant"));
+      const setCookies = res.headers.getSetCookie
+        ? res.headers.getSetCookie().join("; ")
+        : (res.headers.get("set-cookie") ?? "");
+      expect(setCookies).toContain("oauth_provider=microsoft");
     });
   });
 
