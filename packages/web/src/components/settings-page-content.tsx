@@ -140,26 +140,72 @@ export function SettingsPageContent({
 
   return (
     <div className="overflow-y-auto">
-      <div className="p-4 md:p-8 max-w-3xl">
+      <div className="p-4 md:p-8 max-w-5xl">
         <h1 className="text-2xl font-bold mb-6">Settings</h1>
 
-        <Tabs value={activeTab} onValueChange={setActiveTab}>
-          <div className="overflow-x-auto">
-            <TabsList>
-              <TabsTrigger value="context">Context {contextDirty && <DirtyDot />}</TabsTrigger>
-              <TabsTrigger value="profile">Profile {profileDirty && <DirtyDot />}</TabsTrigger>
-              <TabsTrigger value="telegram">Telegram</TabsTrigger>
-              <TabsTrigger value="support">Support</TabsTrigger>
-              {isAdmin && (
-                <TabsTrigger value="provider">Provider {providerDirty && <DirtyDot />}</TabsTrigger>
-              )}
-              {isAdmin && <TabsTrigger value="users">Users</TabsTrigger>}
-              {isAdmin && <TabsTrigger value="groups">Groups</TabsTrigger>}
-              {isAdmin && <TabsTrigger value="integrations">Integrations</TabsTrigger>}
-              {isAdmin && <TabsTrigger value="license">License</TabsTrigger>}
-              {isAdmin && <TabsTrigger value="security">Security</TabsTrigger>}
-            </TabsList>
-          </div>
+        <Tabs
+          value={activeTab}
+          onValueChange={setActiveTab}
+          orientation="vertical"
+          className="flex-col md:flex-row"
+        >
+          <TabsList
+            variant="line"
+            className="h-fit w-full shrink-0 flex-col items-stretch gap-0.5 md:w-56 md:border-r md:pr-2"
+          >
+            <div
+              role="presentation"
+              className="px-2 pt-1 pb-1 text-xs font-semibold uppercase tracking-wide text-muted-foreground"
+            >
+              Personal
+            </div>
+            <TabsTrigger value="context" className="w-full justify-start">
+              Context {contextDirty && <DirtyDot />}
+            </TabsTrigger>
+            <TabsTrigger value="profile" className="w-full justify-start">
+              Profile {profileDirty && <DirtyDot />}
+            </TabsTrigger>
+            <TabsTrigger value="telegram" className="w-full justify-start">
+              Telegram
+            </TabsTrigger>
+            <TabsTrigger value="support" className="w-full justify-start">
+              Support
+            </TabsTrigger>
+            {isAdmin && (
+              <>
+                <div
+                  role="presentation"
+                  className="px-2 pt-3 pb-1 text-xs font-semibold uppercase tracking-wide text-muted-foreground"
+                >
+                  Administration
+                </div>
+                <TabsTrigger value="provider" className="w-full justify-start">
+                  Provider {providerDirty && <DirtyDot />}
+                </TabsTrigger>
+                <TabsTrigger value="users" className="w-full justify-start">
+                  Users
+                </TabsTrigger>
+                <TabsTrigger value="groups" className="w-full justify-start">
+                  Groups
+                </TabsTrigger>
+                <TabsTrigger value="integrations" className="w-full justify-start">
+                  Integrations
+                </TabsTrigger>
+                <div
+                  role="presentation"
+                  className="px-2 pt-3 pb-1 text-xs font-semibold uppercase tracking-wide text-muted-foreground"
+                >
+                  Security &amp; Compliance
+                </div>
+                <TabsTrigger value="security" className="w-full justify-start">
+                  Security
+                </TabsTrigger>
+                <TabsTrigger value="license" className="w-full justify-start">
+                  License
+                </TabsTrigger>
+              </>
+            )}
+          </TabsList>
 
           {isAdmin && (
             <TabsContent value="security">
