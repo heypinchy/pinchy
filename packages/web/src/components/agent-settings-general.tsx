@@ -1,10 +1,11 @@
 "use client";
 
-import { useEffect, useMemo } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useForm, useWatch } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
 import { Input } from "@/components/ui/input";
+import { Button } from "@/components/ui/button";
 import {
   Form,
   FormControl,
@@ -13,7 +14,7 @@ import {
   FormLabel,
   FormMessage,
 } from "@/components/ui/form";
-import { AlertTriangle } from "lucide-react";
+import { AlertTriangle, Plus, X } from "lucide-react";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { DeleteAgentDialog } from "@/components/delete-agent-dialog";
 import { ModelPicker } from "@/components/model-picker";
@@ -34,8 +35,18 @@ const agentSettingsSchema = z.object({
 
 type AgentSettingsValues = z.infer<typeof agentSettingsSchema>;
 
+/** Values emitted to the parent on change. Adds starterPrompts (local state) to the form fields. */
+export type GeneralChangeValues = AgentSettingsValues & { starterPrompts: string[] };
+
 interface AgentSettingsGeneralProps {
-  agent: { id: string; name: string; model: string; isPersonal?: boolean; tagline?: string | null };
+  agent: {
+    id: string;
+    name: string;
+    model: string;
+    isPersonal?: boolean;
+    tagline?: string | null;
+    starterPrompts?: string[];
+  };
   providers: Array<{
     id: string;
     name: string;
@@ -47,7 +58,7 @@ interface AgentSettingsGeneralProps {
     }>;
   }>;
   canDelete?: boolean;
-  onChange: (values: AgentSettingsValues, isDirty: boolean) => void;
+  onChange: (values: GeneralChangeValues, isDirty: boolean) => void;
 }
 
 export function AgentSettingsGeneral({
@@ -64,6 +75,15 @@ export function AgentSettingsGeneral({
       model: agent.model,
     },
   });
+
+  // Starter prompts are managed as local state (a repeatable text list) rather
+  // than a react-hook-form field array — keeps the form schema focused on the
+  // validated scalars and avoids a FieldArray typing mismatch with the
+  // zodResolver generic. The onChange effect below merges them into the values
+  // the parent saves.
+  const initialPrompts = agent.starterPrompts ?? [];
+  const [starterPrompts, setStarterPrompts] = useState<string[]>(initialPrompts);
+  const initialPromptsRef = useRef(initialPrompts);
 
   const values = useWatch({ control: form.control });
 
@@ -93,12 +113,14 @@ export function AgentSettingsGeneral({
         name: values.name ?? "",
         tagline: values.tagline ?? "",
         model: values.model ?? "",
+        starterPrompts,
       },
-      form.formState.isDirty
+      form.formState.isDirty ||
+        JSON.stringify(starterPrompts) !== JSON.stringify(initialPromptsRef.current)
     );
     // onChange must be stable (useCallback in parent) to avoid loops
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [values, form.formState.isDirty]);
+  }, [values, form.formState.isDirty, starterPrompts]);
 
   useEffect(() => {
     if (typeof window !== "undefined" && window.location.hash === "#model") {
@@ -165,6 +187,50 @@ export function AgentSettingsGeneral({
               </FormItem>
             )}
           />
+
+          {/* Starter prompts (#570) — clickable chips in the empty chat. */}
+          <FormItem>
+            <FormLabel>Starter prompts</FormLabel>
+            <p className="text-sm text-muted-foreground">
+              Shown as clickable suggestions in an empty chat to help users start a conversation
+              with this agent.
+            </p>
+            <div className="space-y-2">
+              {starterPrompts.map((prompt, index) => (
+                <div key={index} className="flex items-center gap-2">
+                  <Input
+                    value={prompt}
+                    onChange={(e) =>
+                      setStarterPrompts((prev) =>
+                        prev.map((p, i) => (i === index ? e.target.value : p))
+                      )
+                    }
+                    placeholder="e.g. Summarize my latest HR tickets"
+                    maxLength={500}
+                  />
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="icon"
+                    className="shrink-0"
+                    onClick={() => setStarterPrompts((prev) => prev.filter((_, i) => i !== index))}
+                    aria-label={`Remove starter prompt ${index + 1}`}
+                  >
+                    <X className="size-4" />
+                  </Button>
+                </div>
+              ))}
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                onClick={() => setStarterPrompts((prev) => [...prev, ""])}
+              >
+                <Plus className="mr-1 size-4" />
+                Add prompt
+              </Button>
+            </div>
+          </FormItem>
         </form>
       </Form>
 

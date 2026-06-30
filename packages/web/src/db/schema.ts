@@ -139,6 +139,10 @@ export const agents = pgTable(
     visibility: text("visibility").notNull().default("restricted"),
     greetingMessage: text("greeting_message").notNull(),
     tagline: text("tagline"),
+    // Per-agent starter prompts (#570): clickable suggestion chips shown in
+    // the empty chat to lower the entry barrier for role-specific agents.
+    // Empty array = no chips (the default).
+    starterPrompts: jsonb("starter_prompts").$type<string[]>().notNull().default([]),
     avatarSeed: text("avatar_seed"),
     personalityPresetId: text("personality_preset_id"),
     createdAt: timestamp("created_at").defaultNow(),

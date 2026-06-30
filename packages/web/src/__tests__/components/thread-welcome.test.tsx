@@ -10,6 +10,11 @@ vi.mock("@assistant-ui/react", () => ({
     ViewportFooter: ({ children, ...props }: any) => <div {...props}>{children}</div>,
     ScrollToBottom: ({ children }: any) => <div>{children}</div>,
     Suggestions: () => null,
+    Suggestion: ({ children, prompt }: any) => (
+      <button data-testid="starter-prompt" data-prompt={prompt}>
+        {children}
+      </button>
+    ),
   },
   AuiIf: ({ children }: any) => <>{children}</>,
   ComposerPrimitive: {
@@ -85,8 +90,20 @@ vi.mock("@/components/chat", async () => {
   };
 });
 
+// ThreadWelcome reads the agent's starterPrompts via useAgentsContext (#570).
+// Mock it per-test via the returned object's getAgent.
+let mockAgent: { starterPrompts?: string[] } | undefined = undefined;
+vi.mock("@/components/agents-provider", () => ({
+  useAgentsContext: () => ({ getAgent: () => mockAgent }),
+}));
+
 import { ThreadWelcome, STARTUP_MESSAGES } from "@/components/assistant-ui/thread";
 import { ChatStatusContext } from "@/components/chat";
+import { AgentIdContext } from "@/components/chat";
+
+beforeEach(() => {
+  mockAgent = undefined;
+});
 
 describe("ThreadWelcome — loading state (kind=starting)", () => {
   beforeEach(() => {
@@ -164,6 +181,33 @@ describe("ThreadWelcome — ready state (kind=ready)", () => {
       </ChatStatusContext.Provider>
     );
     expect(container).toBeEmptyDOMElement();
+  });
+
+  it("renders starter-prompt chips when the agent has starterPrompts (#570)", () => {
+    mockAgent = { starterPrompts: ["Summarize my latest HR tickets", "Draft a quote for deal X"] };
+    render(
+      <AgentIdContext.Provider value="agent-1">
+        <ChatStatusContext.Provider value={{ kind: "ready" }}>
+          <ThreadWelcome />
+        </ChatStatusContext.Provider>
+      </AgentIdContext.Provider>
+    );
+    const chips = screen.getAllByTestId("starter-prompt");
+    expect(chips).toHaveLength(2);
+    expect(chips[0]).toHaveTextContent("Summarize my latest HR tickets");
+    expect(chips[1]).toHaveTextContent("Draft a quote for deal X");
+  });
+
+  it("ignores blank starter prompts (#570)", () => {
+    mockAgent = { starterPrompts: ["Summarize my latest HR tickets", "   ", ""] };
+    render(
+      <AgentIdContext.Provider value="agent-1">
+        <ChatStatusContext.Provider value={{ kind: "ready" }}>
+          <ThreadWelcome />
+        </ChatStatusContext.Provider>
+      </AgentIdContext.Provider>
+    );
+    expect(screen.getAllByTestId("starter-prompt")).toHaveLength(1);
   });
 });
 
