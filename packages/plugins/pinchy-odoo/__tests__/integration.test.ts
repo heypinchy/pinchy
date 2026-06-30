@@ -610,3 +610,153 @@ describe("pinchy-odoo record-action tools against real mock-odoo", () => {
     expect(JSON.parse(result.content[0].text).completed).toBe(true);
   });
 });
+
+// Production regression: the Penny agent (Helmcraft bookkeeping) could not
+// create an opening-balance account.move because `journal_id` would not
+// resolve — two companies share a "Miscellaneous Operations" / SONST journal,
+// the name/code lookup collided, and the bare `_pinchy_ref` the agent copied
+// from odoo_read fell through to a name lookup that never matches. These
+// tests exercise the full chain plugin → Pinchy credentials → odoo-node →
+// mock-odoo against the seeded multi-company journals.
+describe("pinchy-odoo multi-company journal resolution (bare ref + scoped lookup)", () => {
+  const accountingAgentId = "agent-accounting";
+  const accountingConnectionId = "conn-accounting";
+  const accountingConfig = {
+    connectionId: accountingConnectionId,
+    permissions: {
+      "res.company": ["read"],
+      "account.journal": ["read"],
+      "account.move": ["read", "create"],
+    },
+  };
+
+  beforeAll(async () => {
+    await fetch(`http://127.0.0.1:${mockOdoo.controlPort}/control/reset`, {
+      method: "POST",
+    });
+    credentialsByConnectionId.set(accountingConnectionId, {
+      url: `http://127.0.0.1:${mockOdoo.jsonRpcPort}`,
+      db: "testdb",
+      uid: 2,
+      apiKey: "test-api-key",
+    });
+  });
+
+  function ref(model: string, id: number, label: string, companyId?: number, companyLabel?: string): string {
+    return encodeRef({
+      integrationType: "odoo",
+      connectionId: accountingConnectionId,
+      model,
+      id,
+      label,
+      ...(companyId !== undefined && companyLabel !== undefined
+        ? { companyId, companyLabel }
+        : {}),
+    });
+  }
+
+  it("creates an account.move with a bare _pinchy_ref journal_id (the form odoo_read emits)", async () => {
+    const tools = createApi({ [accountingAgentId]: accountingConfig });
+    const readTool = findTool(tools, "odoo_read", accountingAgentId);
+    const createTool = findTool(tools, "odoo_create", accountingAgentId);
+
+    // 1. Read the Helmcraft SONST journal to obtain its `_pinchy_ref` — the
+    //    bare-string form the agent copies verbatim into the next call.
+    const readResult = await readTool.execute("read-journal", {
+      model: "account.journal",
+      filters: [["id", "=", 17]],
+      fields: ["name", "company_id"],
+    });
+    expect(readResult.isError).toBeFalsy();
+    const readData = JSON.parse(readResult.content[0].text);
+    const journal = readData.records[0];
+    expect(journal._pinchy_ref).toMatch(/^pinchy_ref:v1:/);
+
+    // 2. Create the move with the bare ref as journal_id (Layer 1) and a
+    //    res.company ref as company_id.
+    const companyRef = ref("res.company", 1, "Helmcraft GmbH", 1, "Helmcraft GmbH");
+    const createResult = await createTool.execute("create-move-bare-ref", {
+      model: "account.move",
+      values: {
+        ref: "Eröffnung 3530 per 01.01.2026",
+        date: "2026-01-01",
+        move_type: "entry",
+        company_id: { ref: companyRef },
+        journal_id: journal._pinchy_ref, // bare string — the production form
+      },
+    });
+
+    expect(createResult.isError).toBeFalsy();
+    const { id } = JSON.parse(createResult.content[0].text) as { id: number };
+    const moves = (await fetch(
+      `http://127.0.0.1:${mockOdoo.controlPort}/control/records?model=account.move`,
+    ).then((res) => res.json())) as Array<Record<string, unknown>>;
+    expect(moves.find((m) => m.id === id)).toMatchObject({
+      journal_id: 17,
+      company_id: 1,
+      ref: "Eröffnung 3530 per 01.01.2026",
+    });
+  });
+
+  it("scopes a journal name lookup by company_id, resolving the multi-company collision (Layer 2)", async () => {
+    const tools = createApi({ [accountingAgentId]: accountingConfig });
+    const createTool = findTool(tools, "odoo_create", accountingAgentId);
+
+    const companyRef = ref("res.company", 1, "Helmcraft GmbH", 1, "Helmcraft GmbH");
+    // journal_id passed as a display NAME (not a ref) — ambiguous across the
+    // two companies without the company_id scope. With Layer 2 the lookup is
+    // constrained to company 1 and resolves to journal 17.
+    const createResult = await createTool.execute("create-move-scoped-name", {
+      model: "account.move",
+      values: {
+        ref: "Sonstbuchung per 01.01.2026",
+        date: "2026-01-01",
+        move_type: "entry",
+        company_id: { ref: companyRef },
+        journal_id: "Miscellaneous Operations",
+      },
+    });
+
+    expect(createResult.isError).toBeFalsy();
+    const { id } = JSON.parse(createResult.content[0].text) as { id: number };
+    const moves = (await fetch(
+      `http://127.0.0.1:${mockOdoo.controlPort}/control/records?model=account.move`,
+    ).then((res) => res.json())) as Array<Record<string, unknown>>;
+    expect(moves.find((m) => m.id === id)).toMatchObject({
+      journal_id: 17,
+      company_id: 1,
+    });
+  });
+
+  it("still rejects a bare ref pointing at the wrong company's journal (cross-company guard)", async () => {
+    const tools = createApi({ [accountingAgentId]: accountingConfig });
+    const createTool = findTool(tools, "odoo_create", accountingAgentId);
+
+    const companyRefA = ref("res.company", 1, "Helmcraft GmbH", 1, "Helmcraft GmbH");
+    // Bare ref for company 2's journal while company_id points at company 1.
+    const journalRefB = ref(
+      "account.journal",
+      24,
+      "Miscellaneous Operations [Clemens Helm]",
+      2,
+      "Clemens Helm",
+    );
+    const createResult = await createTool.execute("create-move-xc", {
+      model: "account.move",
+      values: {
+        ref: "should be rejected",
+        date: "2026-01-01",
+        move_type: "entry",
+        company_id: { ref: companyRefA },
+        journal_id: journalRefB,
+      },
+    });
+
+    expect(createResult.isError).toBe(true);
+    expect(createResult.content[0].text).toMatch(/cross-company/i);
+    const moves = (await fetch(
+      `http://127.0.0.1:${mockOdoo.controlPort}/control/records?model=account.move`,
+    ).then((res) => res.json())) as Array<Record<string, unknown>>;
+    expect(moves.some((m) => m.ref === "should be rejected")).toBe(false);
+  });
+});

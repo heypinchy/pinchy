@@ -3740,6 +3740,438 @@ describe("cross-company write guard", () => {
   });
 });
 
+// The agent-facing output (odoo_read / odoo_create) emits `_pinchy_ref` as a
+// BARE string, and the prose tells the model to "pass the `_pinchy_ref`
+// verbatim". For dedicated ref params (odoo_attach_file.targetRef,
+// resolveAssigneeUserId) the bare string is already decoded. The general
+// many2one resolver must do the same — otherwise the agent copies the bare
+// ref into `journal_id` and it falls through to a name lookup that never
+// matches. This is the root cause of the production "Journal-Auflösung"
+// blocker, where a multi-company collision made the name/code path
+// ambiguous AND the bare-ref escape hatch was silently broken.
+describe("bare _pinchy_ref string for many2one fields (Layer 1)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.stubEnv("PINCHY_REF_TOKEN_KEY", "a".repeat(64));
+  });
+
+  it("resolves a bare _pinchy_ref string to the decoded record id (no name lookup)", async () => {
+    const journalRef = encodeRef({
+      integrationType: "odoo",
+      connectionId: "conn-test-1",
+      model: "account.journal",
+      id: 17,
+      label: "Miscellaneous Operations [Helmcraft GmbH]",
+      companyId: 1,
+      companyLabel: "Helmcraft GmbH",
+    });
+    const companyRef = encodeRef({
+      integrationType: "odoo",
+      connectionId: "conn-test-1",
+      model: "res.company",
+      id: 1,
+      label: "Helmcraft GmbH",
+      companyId: 1,
+      companyLabel: "Helmcraft GmbH",
+    });
+
+    mockFields.mockImplementation(async (model: string) => {
+      if (model === "account.move") {
+        return [
+          { name: "id", type: "integer", required: false, readonly: true },
+          {
+            name: "company_id",
+            type: "many2one",
+            relation: "res.company",
+            required: false,
+            readonly: false,
+          },
+          {
+            name: "journal_id",
+            type: "many2one",
+            relation: "account.journal",
+            required: true,
+            readonly: false,
+          },
+        ];
+      }
+      return [];
+    });
+    mockCreate.mockResolvedValue(555);
+
+    const tools = createApi({
+      [agentId]: { ...agentConfig, permissions: { "account.move": ["create"] } },
+    });
+    const tool = findTool(tools, "odoo_create", agentId)!;
+    const result = await tool.execute("bare-ref", {
+      model: "account.move",
+      // journal_id is a BARE string — the form odoo_read emits.
+      values: { company_id: { ref: companyRef }, journal_id: journalRef },
+    });
+
+    expect(result.isError).toBeFalsy();
+    expect(mockCreate).toHaveBeenCalledWith(
+      "account.move",
+      expect.objectContaining({ journal_id: 17, company_id: 1 }),
+    );
+    // The bare ref must short-circuit the name lookup — no searchRead on
+    // account.journal should happen.
+    const journalLookup = mockSearchRead.mock.calls.find(
+      ([model]) => model === "account.journal",
+    );
+    expect(journalLookup).toBeUndefined();
+  });
+
+  it("rejects a bare _pinchy_ref whose model does not match the field relation", async () => {
+    const partnerRef = encodeRef({
+      integrationType: "odoo",
+      connectionId: "conn-test-1",
+      model: "res.partner",
+      id: 99,
+      label: "Some Partner",
+    });
+
+    mockFields.mockImplementation(async (model: string) => {
+      if (model === "account.move") {
+        return [
+          { name: "id", type: "integer", required: false, readonly: true },
+          {
+            name: "journal_id",
+            type: "many2one",
+            relation: "account.journal",
+            required: true,
+            readonly: false,
+          },
+        ];
+      }
+      return [];
+    });
+
+    const tools = createApi({
+      [agentId]: { ...agentConfig, permissions: { "account.move": ["create"] } },
+    });
+    const tool = findTool(tools, "odoo_create", agentId)!;
+    const result = await tool.execute("wrong-model", {
+      model: "account.move",
+      values: { journal_id: partnerRef },
+    });
+
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toMatch(/expected account\.journal, got res\.partner/);
+    expect(mockCreate).not.toHaveBeenCalled();
+  });
+
+  it("rejects a bare _pinchy_ref from a different connection", async () => {
+    const otherConnRef = encodeRef({
+      integrationType: "odoo",
+      connectionId: "other-conn",
+      model: "account.journal",
+      id: 17,
+      label: "J",
+    });
+
+    mockFields.mockImplementation(async (model: string) => {
+      if (model === "account.move") {
+        return [
+          { name: "id", type: "integer", required: false, readonly: true },
+          {
+            name: "journal_id",
+            type: "many2one",
+            relation: "account.journal",
+            required: true,
+            readonly: false,
+          },
+        ];
+      }
+      return [];
+    });
+
+    const tools = createApi({
+      [agentId]: { ...agentConfig, permissions: { "account.move": ["create"] } },
+    });
+    const tool = findTool(tools, "odoo_create", agentId)!;
+    const result = await tool.execute("wrong-conn", {
+      model: "account.move",
+      values: { journal_id: otherConnRef },
+    });
+
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toMatch(/connection does not match/);
+    expect(mockCreate).not.toHaveBeenCalled();
+  });
+
+  it("cross-company guard also catches bare-string refs whose company tags disagree", async () => {
+    // Without extending readRefCompanyTag to bare strings, Layer 1 would let a
+    // bare company-2 journal ref slip past the cross-company guard while
+    // company_id points at company 1.
+    const companyRefA = encodeRef({
+      integrationType: "odoo",
+      connectionId: "conn-test-1",
+      model: "res.company",
+      id: 1,
+      label: "Helmcraft GmbH",
+      companyId: 1,
+      companyLabel: "Helmcraft GmbH",
+    });
+    const journalRefB = encodeRef({
+      integrationType: "odoo",
+      connectionId: "conn-test-1",
+      model: "account.journal",
+      id: 24,
+      label: "Miscellaneous Operations [Clemens Helm]",
+      companyId: 2,
+      companyLabel: "Clemens Helm",
+    });
+
+    mockFields.mockImplementation(async (model: string) => {
+      if (model === "account.move") {
+        return [
+          { name: "id", type: "integer", required: false, readonly: true },
+          {
+            name: "company_id",
+            type: "many2one",
+            relation: "res.company",
+            required: false,
+            readonly: false,
+          },
+          {
+            name: "journal_id",
+            type: "many2one",
+            relation: "account.journal",
+            required: true,
+            readonly: false,
+          },
+        ];
+      }
+      return [];
+    });
+
+    const tools = createApi({
+      [agentId]: { ...agentConfig, permissions: { "account.move": ["create"] } },
+    });
+    const tool = findTool(tools, "odoo_create", agentId)!;
+    const result = await tool.execute("xc-bare", {
+      model: "account.move",
+      values: { company_id: { ref: companyRefA }, journal_id: journalRefB },
+    });
+
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toMatch(/cross-company/i);
+    expect(mockCreate).not.toHaveBeenCalled();
+  });
+});
+
+// Odoo journal codes/names are unique per-company, not globally. When two
+// companies share a journal name/code, a free-floating name lookup is
+// ambiguous by construction. Odoo's own fix (PR #269835 / commit 3fcd8a9) is
+// to scope the search to the record's company. When `values.company_id` is
+// resolvable, the m2o name lookup for a company-scoped relation must add a
+// `("company_id", "=", <resolved>)` domain so the collision resolves.
+describe("company-scoped m2o name lookup (Layer 2)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.stubEnv("PINCHY_REF_TOKEN_KEY", "a".repeat(64));
+  });
+
+  it("scopes a journal name lookup by values.company_id, resolving a multi-company collision", async () => {
+    const companyRef = encodeRef({
+      integrationType: "odoo",
+      connectionId: "conn-test-1",
+      model: "res.company",
+      id: 1,
+      label: "Helmcraft GmbH",
+      companyId: 1,
+      companyLabel: "Helmcraft GmbH",
+    });
+
+    mockFields.mockImplementation(async (model: string) => {
+      if (model === "account.move") {
+        return [
+          { name: "id", type: "integer", required: false, readonly: true },
+          {
+            name: "company_id",
+            type: "many2one",
+            relation: "res.company",
+            required: false,
+            readonly: false,
+          },
+          {
+            name: "journal_id",
+            type: "many2one",
+            relation: "account.journal",
+            required: true,
+            readonly: false,
+          },
+        ];
+      }
+      if (model === "account.journal") {
+        return [
+          { name: "id", type: "integer", required: false, readonly: true },
+          { name: "name", type: "char", required: false, readonly: false },
+          {
+            name: "display_name",
+            type: "char",
+            required: false,
+            readonly: false,
+          },
+          {
+            name: "company_id",
+            type: "many2one",
+            relation: "res.company",
+            required: false,
+            readonly: false,
+          },
+        ];
+      }
+      return [];
+    });
+
+    mockSearchRead.mockImplementation(async (model: string, domain: unknown) => {
+      if (model === "account.journal") {
+        const hasCompanyScope =
+          Array.isArray(domain) &&
+          domain.some(
+            (c) => Array.isArray(c) && c[0] === "company_id" && c[2] === 1,
+          );
+        return hasCompanyScope
+          ? {
+              records: [
+                {
+                  id: 17,
+                  name: "Miscellaneous Operations",
+                  display_name: "Miscellaneous Operations",
+                  company_id: [1, "Helmcraft GmbH"],
+                },
+              ],
+              total: 1,
+              limit: 20,
+              offset: 0,
+            }
+          : {
+              records: [
+                {
+                  id: 17,
+                  name: "Miscellaneous Operations",
+                  display_name: "Miscellaneous Operations",
+                  company_id: [1, "Helmcraft GmbH"],
+                },
+                {
+                  id: 24,
+                  name: "Miscellaneous Operations",
+                  display_name: "Miscellaneous Operations",
+                  company_id: [2, "Clemens Helm"],
+                },
+              ],
+              total: 2,
+              limit: 20,
+              offset: 0,
+            };
+      }
+      return { records: [], total: 0, limit: 20, offset: 0 };
+    });
+    mockCreate.mockResolvedValue(777);
+
+    const tools = createApi({
+      [agentId]: { ...agentConfig, permissions: { "account.move": ["create"] } },
+    });
+    const tool = findTool(tools, "odoo_create", agentId)!;
+    const result = await tool.execute("scope", {
+      model: "account.move",
+      values: {
+        company_id: { ref: companyRef },
+        journal_id: "Miscellaneous Operations",
+      },
+    });
+
+    expect(result.isError).toBeFalsy();
+    const journalLookup = mockSearchRead.mock.calls.find(
+      ([model]) => model === "account.journal",
+    );
+    expect(journalLookup).toBeDefined();
+    const domain = journalLookup![1];
+    expect(domain).toEqual(
+      expect.arrayContaining([["company_id", "=", 1]]),
+    );
+    expect(mockCreate).toHaveBeenCalledWith(
+      "account.move",
+      expect.objectContaining({ journal_id: 17 }),
+    );
+  });
+
+  it("does NOT scope the lookup when the relation has no company_id field (e.g. res.currency)", async () => {
+    const companyRef = encodeRef({
+      integrationType: "odoo",
+      connectionId: "conn-test-1",
+      model: "res.company",
+      id: 1,
+      label: "Helmcraft GmbH",
+      companyId: 1,
+      companyLabel: "Helmcraft GmbH",
+    });
+
+    mockFields.mockImplementation(async (model: string) => {
+      if (model === "account.move") {
+        return [
+          { name: "id", type: "integer", required: false, readonly: true },
+          {
+            name: "company_id",
+            type: "many2one",
+            relation: "res.company",
+            required: false,
+            readonly: false,
+          },
+          {
+            name: "currency_id",
+            type: "many2one",
+            relation: "res.currency",
+            required: true,
+            readonly: false,
+          },
+        ];
+      }
+      if (model === "res.currency") {
+        return [
+          { name: "id", type: "integer", required: false, readonly: true },
+          { name: "name", type: "char", required: false, readonly: false },
+          {
+            name: "display_name",
+            type: "char",
+            required: false,
+            readonly: false,
+          },
+        ];
+      }
+      return [];
+    });
+    mockSearchRead.mockResolvedValue({
+      records: [{ id: 3, name: "USD", display_name: "USD" }],
+      total: 1,
+      limit: 20,
+      offset: 0,
+    });
+    mockCreate.mockResolvedValue(888);
+
+    const tools = createApi({
+      [agentId]: { ...agentConfig, permissions: { "account.move": ["create"] } },
+    });
+    const tool = findTool(tools, "odoo_create", agentId)!;
+    const result = await tool.execute("no-scope", {
+      model: "account.move",
+      values: { company_id: { ref: companyRef }, currency_id: "USD" },
+    });
+
+    expect(result.isError).toBeFalsy();
+    const currencyLookup = mockSearchRead.mock.calls.find(
+      ([model]) => model === "res.currency",
+    );
+    expect(currencyLookup).toBeDefined();
+    const domain = currencyLookup![1];
+    // res.currency has no company_id — adding a company_id domain would make
+    // Odoo throw "Invalid field 'company_id' on model".
+    expect(domain).toEqual([["name", "ilike", "USD"]]);
+  });
+});
+
 describe("odoo_schedule_activity", () => {
   beforeEach(() => {
     vi.clearAllMocks();

@@ -298,6 +298,73 @@ const MODEL_FIELDS = {
       ],
     },
   },
+  // Multi-company accounting models — seeded so the plugin's m2o resolution
+  // and the cross-company guard can be exercised end-to-end. Two companies
+  // each carry a "Miscellaneous Operations" journal (code SONST), mirroring
+  // the production collision that blocked the Penny agent's opening-balance
+  // booking: journal codes/names are unique per-company in Odoo, not globally.
+  "res.company": {
+    id: { string: "ID", type: "integer", required: false, readonly: true },
+    name: {
+      string: "Name",
+      type: "char",
+      required: true,
+      readonly: false,
+    },
+  },
+  "account.journal": {
+    id: { string: "ID", type: "integer", required: false, readonly: true },
+    name: {
+      string: "Name",
+      type: "char",
+      required: true,
+      readonly: false,
+    },
+    code: {
+      string: "Short Code",
+      type: "char",
+      required: true,
+      readonly: false,
+    },
+    company_id: {
+      string: "Company",
+      type: "many2one",
+      required: true,
+      readonly: false,
+      relation: "res.company",
+    },
+  },
+  "account.move": {
+    id: { string: "ID", type: "integer", required: false, readonly: true },
+    name: { string: "Name", type: "char", required: false, readonly: false },
+    ref: { string: "Reference", type: "char", required: false, readonly: false },
+    date: { string: "Date", type: "char", required: false, readonly: false },
+    move_type: {
+      string: "Move Type",
+      type: "selection",
+      required: false,
+      readonly: false,
+      selection: [
+        ["entry", "Journal Entry"],
+        ["out_invoice", "Customer Invoice"],
+        ["in_invoice", "Vendor Bill"],
+      ],
+    },
+    journal_id: {
+      string: "Journal",
+      type: "many2one",
+      required: true,
+      readonly: false,
+      relation: "account.journal",
+    },
+    company_id: {
+      string: "Company",
+      type: "many2one",
+      required: true,
+      readonly: false,
+      relation: "res.company",
+    },
+  },
 };
 
 // ---------------------------------------------------------------------------
@@ -428,6 +495,9 @@ function getDefaultRecords() {
       { id: 6, model: "mail.activity", name: "Activity" },
       { id: 7, model: "mail.activity.type", name: "Activity Type" },
       { id: 8, model: "res.users", name: "User" },
+      { id: 9, model: "res.company", name: "Company" },
+      { id: 10, model: "account.journal", name: "Journal" },
+      { id: 11, model: "account.move", name: "Journal Entry" },
     ],
     "res.users": [
       { id: 2, name: "Mitch Admin", login: "admin" },
@@ -466,6 +536,28 @@ function getDefaultRecords() {
       },
     ],
     "mail.activity": [],
+    "res.company": [
+      { id: 1, name: "Helmcraft GmbH" },
+      { id: 2, name: "Clemens Helm" },
+    ],
+    // Two journals share name "Miscellaneous Operations" / code "SONST" — one
+    // per company. A free-floating name/code lookup is ambiguous across
+    // these; the plugin must scope by company or resolve via the opaque ref.
+    "account.journal": [
+      {
+        id: 17,
+        name: "Miscellaneous Operations",
+        code: "SONST",
+        company_id: [1, "Helmcraft GmbH"],
+      },
+      {
+        id: 24,
+        name: "Miscellaneous Operations",
+        code: "SONST",
+        company_id: [2, "Clemens Helm"],
+      },
+    ],
+    "account.move": [],
   };
 }
 

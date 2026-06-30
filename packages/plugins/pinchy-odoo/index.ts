@@ -2,7 +2,7 @@ import { readFile, stat } from "./io";
 import { basename, extname } from "path";
 import { OdooClient, type OdooDomain } from "odoo-node";
 import { checkPermission, type Permissions } from "./permissions";
-import { decodeRef, encodeRef } from "./integration-ref";
+import { decodeRef, encodeRef, isIntegrationRef } from "./integration-ref";
 
 const WORKSPACE_ROOT = "/root/.openclaw/workspaces";
 
@@ -737,13 +737,26 @@ function resolveReferenceFromRecords(
   );
 }
 
-function refToId(
+/**
+ * Decode an opaque integration ref string and validate it against the field
+ * being written: the integration must be `odoo`, the connection must match the
+ * current tenant (prevents cross-connection ref injection), and the encoded
+ * model must equal the field's relation (prevents a `res.partner` ref from
+ * being written into a `journal_id` / `account.journal` field). Returns the
+ * decoded record id on success, throws a descriptive error otherwise.
+ *
+ * Shared by the two ref entry points: the `{ ref: "…" }` object form
+ * (`refToId`) and the bare `_pinchy_ref` string form accepted by
+ * `resolveRelationValue`. Both forms carry the same encoded payload, so
+ * both get the same validation — accepting the bare string loses no safety
+ * versus the object form.
+ */
+function decodeAndValidateRef(
   connectionId: string,
   field: OdooField,
-  value: Record<string, unknown>,
-): number | null {
-  if (typeof value.ref !== "string") return null;
-  const ref = decodeRef(value.ref);
+  refString: string,
+): number {
+  const ref = decodeRef(refString);
   if (ref.integrationType !== "odoo") {
     throw new Error(`Invalid ref for ${field.name}: expected odoo.`);
   }
@@ -758,6 +771,15 @@ function refToId(
     );
   }
   return ref.id;
+}
+
+function refToId(
+  connectionId: string,
+  field: OdooField,
+  value: Record<string, unknown>,
+): number | null {
+  if (typeof value.ref !== "string") return null;
+  return decodeAndValidateRef(connectionId, field, value.ref);
 }
 
 /**
@@ -817,9 +839,20 @@ export function assertNoCrossCompanyRefs(
 function readRefCompanyTag(
   value: unknown,
 ): { id: number; label: string | null } | null {
-  if (!isRecord(value) || typeof value.ref !== "string") return null;
+  // Accept the ref in either wire form the agent may pass: the structured
+  // `{ ref: "…" }` object OR a bare `_pinchy_ref` string (the form odoo_read
+  // emits and the prose tells the agent to copy verbatim). Without the
+  // bare-string branch, Layer 1's bare-ref support would let a bare ref slip
+  // past the cross-company guard entirely.
+  const refString =
+    isRecord(value) && typeof value.ref === "string"
+      ? value.ref
+      : isIntegrationRef(value)
+        ? value
+        : null;
+  if (refString === null) return null;
   try {
-    const payload = decodeRef(value.ref);
+    const payload = decodeRef(refString);
     if (payload.companyId === undefined) return null;
     return { id: payload.companyId, label: payload.companyLabel ?? null };
   } catch {
@@ -836,19 +869,38 @@ function readRefCompanyTag(
  * The gating mirrors `augmentFieldsWithCompanyId`, which is also used by
  * `odoo_read` to keep multi-company UX consistent. One extra `client.fields`
  * call per non-country lookup is the cost.
+ *
+ * When `scopeCompanyId` is set (because the parent record's `company_id` was
+ * resolvable), constrain the search to that company. Odoo journal codes/names
+ * are unique per-company, not globally — without this scope, a name/code that
+ * exists in two companies returns multiple matches and the create fails with
+ * a multi-company collision. Scoping to the record's company is Odoo's own
+ * fix pattern (PR #269835 / commit 3fcd8a9). Only applied when the relation
+ * actually has a `company_id` field, so company-shared models (res.currency,
+ * res.partner, res.country) are never scoped.
  */
 async function searchRelationByName(
   client: OdooClient,
   field: OdooField,
   lookup: RelationLookup,
+  scopeCompanyId: number | null = null,
 ): Promise<unknown> {
   const relation = field.relation as string;
   const relationFields = normalizeFields(await client.fields(relation));
+  const hasCompanyField = relationFields.some(
+    (f) => f.name === "company_id" && f.type === "many2one",
+  );
   const lookupFields = augmentFieldsWithCompanyId(
     ["id", "name", "display_name"],
     relationFields,
   ) ?? ["id", "name", "display_name"];
-  return client.searchRead(relation, [["name", "ilike", lookup.name ?? ""]], {
+  const domain: Array<[string, string, unknown]> = [
+    ["name", "ilike", lookup.name ?? ""],
+  ];
+  if (scopeCompanyId !== null && hasCompanyField) {
+    domain.push(["company_id", "=", scopeCompanyId]);
+  }
+  return client.searchRead(relation, domain, {
     fields: lookupFields,
     limit: 20,
   });
@@ -859,6 +911,7 @@ async function resolveRelationValue(
   connectionId: string,
   field: OdooField,
   value: unknown,
+  scopeCompanyId: number | null = null,
 ): Promise<unknown> {
   if (value == null || value === false) return value;
   if (typeof value === "number") {
@@ -881,6 +934,19 @@ async function resolveRelationValue(
     }
   }
 
+  // Bare `_pinchy_ref` string — the exact form `odoo_read` / `odoo_create`
+  // emit and the tool prose tells the agent to "pass verbatim". Without this
+  // branch the string would fall through to `parseLookup` and be treated as a
+  // display-name search, which never matches a `pinchy_ref:v1:…` token and
+  // reports a misleading "Could not resolve". Decoding here gives the agent
+  // the unambiguous escape hatch the design promises — and, because the ref
+  // encodes the exact record (incl. company tag), it sidesteps multi-company
+  // name/code collisions entirely. Validation is shared with the `{ref}`
+  // object form via `decodeAndValidateRef`, so no safety is lost.
+  if (isIntegrationRef(value)) {
+    return decodeAndValidateRef(connectionId, field, value);
+  }
+
   const lookup = parseLookup(field, value);
   if (!lookup) return value;
   if (lookup.name === "") return false;
@@ -897,7 +963,7 @@ async function resolveRelationValue(
           fields: ["id", "name", "display_name", "code"],
           limit: 1000,
         })
-      : await searchRelationByName(client, field, lookup);
+      : await searchRelationByName(client, field, lookup, scopeCompanyId);
 
   return resolveReferenceFromRecords(
     field,
@@ -916,13 +982,44 @@ async function normalizeMany2OneValues(
   if (fields.length === 0) return values;
 
   const normalized = { ...values };
+
+  // Resolve `company_id` first so that company-scoped m2o lookups later in the
+  // loop (e.g. `journal_id`, where two companies can share a journal name/code)
+  // can be constrained to the target company — Odoo's own fix pattern for
+  // multi-company collisions (PR #269835 / commit 3fcd8a9). `res.company`
+  // itself has no `company_id` field, so this never recurses. When company_id
+  // is absent, false, or doesn't resolve to a positive integer, no scoping is
+  // applied and subsequent lookups behave exactly as before.
+  let scopeCompanyId: number | null = null;
+  const companyField = fields.find(
+    (f) => f.name === "company_id" && f.type === "many2one",
+  );
+  if (companyField && "company_id" in normalized) {
+    const resolved = await resolveRelationValue(
+      client,
+      connectionId,
+      companyField,
+      normalized.company_id,
+    );
+    normalized.company_id = resolved;
+    if (
+      typeof resolved === "number" &&
+      Number.isInteger(resolved) &&
+      resolved > 0
+    ) {
+      scopeCompanyId = resolved;
+    }
+  }
+
   for (const field of fields) {
     if (field.type !== "many2one" || !(field.name in normalized)) continue;
+    if (field.name === "company_id") continue; // already resolved above
     normalized[field.name] = await resolveRelationValue(
       client,
       connectionId,
       field,
       normalized[field.name],
+      scopeCompanyId,
     );
   }
   return normalized;
