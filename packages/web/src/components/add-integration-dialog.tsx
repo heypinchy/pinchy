@@ -276,7 +276,7 @@ function GoogleConnectStep({
             , create a <span className="font-medium">Web application</span> OAuth client, and add
             this URI under <span className="font-medium">Authorized redirect URIs</span>.{" "}
             <a
-              href={docsUrl("guides/connect-email")}
+              href={docsUrl("guides/connect-email-google")}
               target="_blank"
               rel="noopener noreferrer"
               className="underline"
@@ -502,7 +502,7 @@ function MicrosoftConnectStep({
             , register a new application, and add this URI under{" "}
             <span className="font-medium">Redirect URIs</span>.{" "}
             <a
-              href={docsUrl("guides/connect-email")}
+              href={docsUrl("guides/connect-email-microsoft")}
               target="_blank"
               rel="noopener noreferrer"
               className="underline"
