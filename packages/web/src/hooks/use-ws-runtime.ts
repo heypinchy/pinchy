@@ -38,6 +38,7 @@ import {
 } from "@/lib/limits";
 import { MAX_ATTACHMENTS_PER_MESSAGE } from "@/lib/schemas/uploads";
 import { compressImageForChat } from "@/lib/image-compression";
+import { parseSlashCommand, type SlashCommand } from "@/lib/slash-commands";
 
 /** Lightweight metadata for binary file attachments shown next to user messages. */
 export interface WsFileMeta {
@@ -379,7 +380,14 @@ export function useWsRuntime(
    * OpenClaw session within this (user, agent) pair. Omitted → the legacy
    * per-user session key (current/default chat).
    */
-  chatId?: string
+  chatId?: string,
+  /**
+   * Slash-command handler (#611). Invoked when the composer message is a
+   * leading `/<command>` (parsed by `parseSlashCommand`) with no attachments.
+   * The runtime consumes the command and does NOT dispatch it to the model.
+   * Optional so callers that don't care about slash commands keep working.
+   */
+  onSlashCommand?: (command: SlashCommand) => void
 ): {
   runtime: AssistantRuntime;
   isRunning: boolean;
@@ -467,6 +475,12 @@ export function useWsRuntime(
   const shouldRecoverFromHistoryRef = useRef(false);
   const lifecycleSuspendedRef = useRef(false);
   const pendingMessageRef = useRef<string | null>(null);
+  // Latest slash-command handler (#611). Kept in a ref so `onNew` (memoized
+  // without it in its deps) always calls the freshest version.
+  const onSlashCommandRef = useRef<((command: SlashCommand) => void) | undefined>(onSlashCommand);
+  useEffect(() => {
+    onSlashCommandRef.current = onSlashCommand;
+  }, [onSlashCommand]);
   const isRunningRef = useRef(false);
   /**
    * Tier 2b (#310): between sending a history request and receiving the
@@ -1454,6 +1468,20 @@ export function useWsRuntime(
       const attachmentIds = readyUploads
         .map((u) => u.uploadId)
         .filter((id): id is string => Boolean(id));
+
+      // Slash-command intercept (#611): a leading `/<command>` runs a handler
+      // against capabilities Pinchy already has instead of dispatching to the
+      // model. Only intercept standalone commands (no attachments) — a command
+      // alongside a file is treated as a captioned message. Unknown
+      // leading-slash text falls through (parseSlashCommand returns null) and
+      // is sent normally.
+      if (attachmentIds.length === 0) {
+        const slash = parseSlashCommand(text);
+        if (slash) {
+          onSlashCommandRef.current?.(slash);
+          return;
+        }
+      }
 
       if (!text.trim() && attachmentIds.length === 0) return;
       setPayloadRejected(false);

@@ -1,14 +1,18 @@
 "use client";
 
-import { useContext, useEffect, useRef } from "react";
-import { usePathname } from "next/navigation";
+import { useContext, useEffect, useRef, useCallback } from "react";
+import { usePathname, useRouter } from "next/navigation";
+import { toast } from "sonner";
 import { useWsRuntime } from "@/hooks/use-ws-runtime";
 import {
   useVisitedSessions,
   chatSessionKey,
   ChatSessionStoreContext,
 } from "@/components/chat-session-provider";
-import { apiPost } from "@/lib/api-client";
+import { apiPost, ApiError } from "@/lib/api-client";
+import { generateChatId } from "@/lib/chats/generate-chat-id";
+import { SLASH_COMMANDS, type SlashCommand } from "@/lib/slash-commands";
+import type { CompactSessionRequest } from "@/lib/schemas/sessions";
 
 export function ChatSessionMounts() {
   const visitedSessions = useVisitedSessions();
@@ -25,7 +29,51 @@ export function ChatSessionMounts() {
 }
 
 function ChatSessionInstance({ agentId, chatId }: { agentId: string; chatId?: string }) {
-  const bundle = useWsRuntime(agentId, chatId);
+  const router = useRouter();
+
+  // Slash-command handler (#611). `/compact` hits the existing compact route
+  // (audited there). `/new` and `/reset` start a fresh chat (reset is an alias
+  // for new in v1 — a fresh chat has empty context). `/help` lists commands.
+  // All confirmations are toasts per the error/notification policy (success →
+  // toast). The handler is stable across renders so `useWsRuntime` doesn't
+  // churn.
+  const onSlashCommand = useCallback(
+    (command: SlashCommand) => {
+      switch (command.name) {
+        case "compact": {
+          void (async () => {
+            try {
+              await apiPost<{ ok: boolean }, CompactSessionRequest>(
+                `/api/agents/${agentId}/sessions/compact`,
+                { chatId }
+              );
+              toast.success("Conversation compacted. It takes effect on your next message.");
+            } catch (e) {
+              toast.error(
+                e instanceof ApiError
+                  ? e.message
+                  : "Couldn't compact the conversation. Please try again."
+              );
+            }
+          })();
+          break;
+        }
+        case "new":
+        case "reset": {
+          router.push(`/chat/${agentId}/${generateChatId()}`);
+          break;
+        }
+        case "help": {
+          const lines = SLASH_COMMANDS.map((c) => `/${c.name} — ${c.description}`);
+          toast.success("Slash commands", { description: lines.join("\n") });
+          break;
+        }
+      }
+    },
+    [agentId, chatId, router]
+  );
+
+  const bundle = useWsRuntime(agentId, chatId, onSlashCommand);
 
   // Access the store directly (not via useStore) so we can call publish
   // without subscribing to the bundle in the store. Subscribing to our own
