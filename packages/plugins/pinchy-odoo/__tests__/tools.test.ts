@@ -45,6 +45,7 @@ import plugin, {
   extractCompanyId,
   formatMultiMatchError,
   assertNoCrossCompanyRefs,
+  relationHasCompanyId,
   PRODUCT_REF_DISAMBIGUATION_HINT,
 } from "../index";
 
@@ -4169,6 +4170,202 @@ describe("company-scoped m2o name lookup (Layer 2)", () => {
     // res.currency has no company_id — adding a company_id domain would make
     // Odoo throw "Invalid field 'company_id' on model".
     expect(domain).toEqual([["name", "ilike", "USD"]]);
+  });
+});
+
+// Odoo's _check_company_domain includes SHARED records (company_id = false),
+// so a company scope must be `(company_id = false OR company_id = <scope>)`,
+// not a strict equality — otherwise shared partners/products (company_id
+// false, visible across companies) get excluded and a name lookup that
+// resolved before now fails with "Could not resolve". res.partner and
+// product.product both carry an OPTIONAL company_id where false means shared.
+describe("company scope includes shared records (company_id = false)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.stubEnv("PINCHY_REF_TOKEN_KEY", "a".repeat(64));
+  });
+
+  it("scopes a company-optional relation with (company_id = false OR company_id = <scope>)", async () => {
+    const companyRef = encodeRef({
+      integrationType: "odoo",
+      connectionId: "conn-test-1",
+      model: "res.company",
+      id: 1,
+      label: "Helmcraft GmbH",
+      companyId: 1,
+      companyLabel: "Helmcraft GmbH",
+    });
+
+    mockFields.mockImplementation(async (model: string) => {
+      if (model === "account.move") {
+        return [
+          { name: "id", type: "integer", required: false, readonly: true },
+          {
+            name: "company_id",
+            type: "many2one",
+            relation: "res.company",
+            required: false,
+            readonly: false,
+          },
+          {
+            name: "partner_id",
+            type: "many2one",
+            relation: "res.partner",
+            required: false,
+            readonly: false,
+          },
+        ];
+      }
+      if (model === "res.partner") {
+        // res.partner has an OPTIONAL company_id (false = shared). The
+        // scoping gate must not treat "has a company_id field" as
+        // "company-exclusive" the way account.journal is.
+        return [
+          { name: "id", type: "integer", required: false, readonly: true },
+          { name: "name", type: "char", required: false, readonly: false },
+          {
+            name: "display_name",
+            type: "char",
+            required: false,
+            readonly: false,
+          },
+          {
+            name: "company_id",
+            type: "many2one",
+            relation: "res.company",
+            required: false,
+            readonly: false,
+          },
+        ];
+      }
+      return [];
+    });
+
+    // A shared partner (company_id = false) plus a company-1 partner plus a
+    // company-2 partner, all distinct names so the resolution is unambiguous.
+    mockSearchRead.mockImplementation(async (model: string, domain: unknown) => {
+      if (model === "res.partner") {
+        const hasSharedBranch =
+          Array.isArray(domain) &&
+          domain.some(
+            (c) => Array.isArray(c) && c[0] === "company_id" && c[2] === false,
+          );
+        return hasSharedBranch
+          ? {
+              records: [
+                {
+                  id: 5,
+                  name: "Shared Vendor",
+                  display_name: "Shared Vendor",
+                  company_id: false,
+                },
+              ],
+              total: 1,
+              limit: 20,
+              offset: 0,
+            }
+          : {
+              records: [
+                {
+                  id: 6,
+                  name: "Shared Vendor",
+                  display_name: "Shared Vendor",
+                  company_id: [1, "Helmcraft GmbH"],
+                },
+              ],
+              total: 1,
+              limit: 20,
+              offset: 0,
+            };
+      }
+      return { records: [], total: 0, limit: 20, offset: 0 };
+    });
+    mockCreate.mockResolvedValue(999);
+
+    const tools = createApi({
+      [agentId]: { ...agentConfig, permissions: { "account.move": ["create"] } },
+    });
+    const tool = findTool(tools, "odoo_create", agentId)!;
+    const result = await tool.execute("shared-partner", {
+      model: "account.move",
+      values: {
+        company_id: { ref: companyRef },
+        partner_id: "Shared Vendor",
+      },
+    });
+
+    expect(result.isError).toBeFalsy();
+    const partnerLookup = mockSearchRead.mock.calls.find(
+      ([model]) => model === "res.partner",
+    );
+    expect(partnerLookup).toBeDefined();
+    const domain = partnerLookup![1];
+    // The scope must be the OR-with-false pattern, not a strict equality.
+    expect(domain).toEqual(
+      expect.arrayContaining([
+        "|",
+        ["company_id", "=", false],
+        ["company_id", "=", 1],
+      ]),
+    );
+    // … and NOT the strict-only form that would exclude shared records.
+    expect(domain).not.toEqual([
+      ["name", "ilike", "Shared Vendor"],
+      ["company_id", "=", 1],
+    ]);
+    // The shared partner (id 5, company_id false) resolves, not the
+    // company-1-only partner that a strict filter would have returned.
+    expect(mockCreate).toHaveBeenCalledWith(
+      "account.move",
+      expect.objectContaining({ partner_id: 5, company_id: 1 }),
+    );
+  });
+});
+
+describe("formatMultiMatchError multi-company hint", () => {
+  it("points at adding company_id to the create values, not a broken odoo_read domain with a _pinchy_ref", () => {
+    const field = {
+      name: "journal_id",
+      string: "Journal",
+      type: "many2one",
+      relation: "account.journal",
+    } as unknown as Parameters<typeof formatMultiMatchError>[0];
+    const matches = [
+      { id: 17, company_id: [1, "Helmcraft GmbH"] },
+      { id: 24, company_id: [2, "Clemens Helm"] },
+    ] as unknown as Parameters<typeof formatMultiMatchError>[2];
+    const msg = formatMultiMatchError(field, { name: "Miscellaneous Operations" }, matches);
+    // The old hint told the agent to put a _pinchy_ref token as a domain
+    // value in odoo_read (`[["company_id", "=", <company _pinchy_ref>]]`) —
+    // Odoo does not decode pinchy_ref tokens in domains, so that recipe
+    // returns zero results and misroutes the agent.
+    expect(msg).not.toContain("<company _pinchy_ref>");
+    expect(msg).not.toMatch(/"company_id"\s*,\s*"="\s*,\s*[^[\]]*_pinchy_ref/);
+    // The actionable, cheap path: add company_id to the create/write values
+    // (the plugin scopes the lookup automatically).
+    expect(msg).toMatch(/company_id/);
+    expect(msg).toMatch(/create|write/);
+    expect(msg.length).toBeLessThan(600);
+  });
+});
+
+describe("relationHasCompanyId / findCompanyIdField helper", () => {
+  it("detects a many2one company_id field", () => {
+    const fields = normalizeFields([
+      { name: "id", type: "integer" },
+      { name: "company_id", type: "many2one", relation: "res.company" },
+    ]);
+    expect(relationHasCompanyId(fields)).toBe(true);
+  });
+  it("returns false when company_id is absent or not many2one", () => {
+    expect(
+      relationHasCompanyId(normalizeFields([{ name: "id", type: "integer" }])),
+    ).toBe(false);
+    expect(
+      relationHasCompanyId(
+        normalizeFields([{ name: "company_id", type: "char" }]),
+      ),
+    ).toBe(false);
   });
 });
 

@@ -759,4 +759,39 @@ describe("pinchy-odoo multi-company journal resolution (bare ref + scoped lookup
     ).then((res) => res.json())) as Array<Record<string, unknown>>;
     expect(moves.some((m) => m.ref === "should be rejected")).toBe(false);
   });
+
+  it("resolves a SHARED partner (company_id=false) even when company_id is set on the create", async () => {
+    // Regression guard for the OR-with-false scoping: res.partner has an
+    // OPTIONAL company_id (false = shared across companies). A strict
+    // `["company_id","=",1]` filter would exclude the shared partner; the
+    // OR-with-false domain must keep it reachable.
+    const tools = createApi({ [accountingAgentId]: accountingConfig });
+    const createTool = findTool(tools, "odoo_create", accountingAgentId);
+
+    const companyRef = ref("res.company", 1, "Helmcraft GmbH", 1, "Helmcraft GmbH");
+    const createResult = await createTool.execute("create-move-shared-partner", {
+      model: "account.move",
+      values: {
+        ref: "Bill for shared vendor",
+        date: "2026-01-01",
+        move_type: "entry",
+        company_id: { ref: companyRef },
+        journal_id: "Miscellaneous Operations",
+        partner_id: "Shared Vendor",
+      },
+    });
+
+    expect(createResult.isError).toBeFalsy();
+    const { id } = JSON.parse(createResult.content[0].text) as { id: number };
+    const moves = (await fetch(
+      `http://127.0.0.1:${mockOdoo.controlPort}/control/records?model=account.move`,
+    ).then((res) => res.json())) as Array<Record<string, unknown>>;
+    // The shared partner (id 5, company_id false) resolves despite the
+    // company-1 scope; journal_id resolves to the company-1 journal (17).
+    expect(moves.find((m) => m.id === id)).toMatchObject({
+      partner_id: 5,
+      journal_id: 17,
+      company_id: 1,
+    });
+  });
 });

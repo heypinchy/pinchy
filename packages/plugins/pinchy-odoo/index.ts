@@ -2,7 +2,12 @@ import { readFile, stat } from "./io";
 import { basename, extname } from "path";
 import { OdooClient, type OdooDomain } from "odoo-node";
 import { checkPermission, type Permissions } from "./permissions";
-import { decodeRef, encodeRef, isIntegrationRef } from "./integration-ref";
+import {
+  decodeRef,
+  encodeRef,
+  isIntegrationRef,
+  type IntegrationRefPayload,
+} from "./integration-ref";
 
 const WORKSPACE_ROOT = "/root/.openclaw/workspaces";
 
@@ -495,15 +500,36 @@ export function compactSchema(
  * appended `company_id` to `[]` we'd silently flip the request into "only
  * company_id, please", changing behaviour vs. pre-Task-1.
  */
+/**
+ * Find the `company_id` many2one field on a model's field list, or undefined.
+ * Single source of truth for "does this relation carry a company_id?" — used
+ * by the read-side augmentation (`augmentFieldsWithCompanyId`) and the
+ * write-side scoping (`searchRelationByName`, `normalizeMany2OneValues`).
+ * Keeping the predicate in one place stops the write-side scoping gate from
+ * drifting from the read-side notion of "has a company_id".
+ */
+export function findCompanyIdField(fields: OdooField[]): OdooField | undefined {
+  return fields.find((f) => f.name === "company_id" && f.type === "many2one");
+}
+
+/**
+ * Boolean form of {@link findCompanyIdField}: true when the model has a
+ * `company_id` many2one field. Note this says nothing about whether the
+ * field is REQUIRED — `res.partner` and `product.product` have an OPTIONAL
+ * company_id (false = shared across companies), so "has a company_id field"
+ * is NOT "company-exclusive". Scoping code must use the OR-with-false domain
+ * pattern, not a strict equality, to keep shared records reachable.
+ */
+export function relationHasCompanyId(fields: OdooField[]): boolean {
+  return findCompanyIdField(fields) !== undefined;
+}
+
 export function augmentFieldsWithCompanyId(
   requested: string[] | undefined,
   modelFields: OdooField[],
 ): string[] | undefined {
   if (!requested || requested.length === 0) return requested;
-  const hasCompany = modelFields.some(
-    (f) => f.name === "company_id" && f.type === "many2one",
-  );
-  if (!hasCompany) return requested;
+  if (!relationHasCompanyId(modelFields)) return requested;
   if (requested.includes("company_id")) return requested;
   return [...requested, "company_id"];
 }
@@ -645,10 +671,11 @@ export function formatMultiMatchError(
     const list = shown.map((c) => `"${c}"`).join(", ") + overflow;
     return (
       `Could not resolve ${field.name}: multiple ${label} records match "${input}" ` +
-      `across companies (${list}). This is a multi-company collision — add a ` +
-      `\`company_id\` filter to your odoo_read first (e.g. ` +
-      `[["company_id", "=", <company _pinchy_ref>]]), then pass the exact ` +
-      `\`_pinchy_ref\` of the right record.`
+      `across companies (${list}). This is a multi-company collision. The ` +
+      `simplest fix is to add \`company_id\` to the values of this create/write ` +
+      `— the lookup is then scoped to that company automatically. Otherwise ` +
+      `re-read the relation filtered by company and pass the exact \`_pinchy_ref\` ` +
+      `of the right record (a bare \`_pinchy_ref\` string works for many2one fields).`
     );
   }
   return `Could not resolve ${field.name}: multiple ${label} records match "${input}".`;
@@ -738,14 +765,63 @@ function resolveReferenceFromRecords(
 }
 
 /**
- * Decode an opaque integration ref string and validate it against the field
- * being written: the integration must be `odoo`, the connection must match the
- * current tenant (prevents cross-connection ref injection), and the encoded
- * model must equal the field's relation (prevents a `res.partner` ref from
- * being written into a `journal_id` / `account.journal` field). Returns the
- * decoded record id on success, throws a descriptive error otherwise.
+ * Decode an opaque integration ref and enforce per-connection isolation: the
+ * integration must be `odoo` and the encoded `connectionId` must match the
+ * current tenant. A ref minted for a different connection decodes validly
+ * under a deployment's single ref key, so this gate is what stops a
+ * cross-connection ref from being acted on. Returns the decoded payload
+ * (model + id + optional company tag) so the caller can apply its own
+ * model-specific checks.
  *
- * Shared by the two ref entry points: the `{ ref: "…" }` object form
+ * Single source of truth for the connection gate — shared by every
+ * ref-consuming site: the many2one field resolver (`decodeAndValidateRef`),
+ * the assignee resolver, and every `target`/`targetRef` consumer
+ * (`decodeTargetRef`). A future tightening (key rotation, v2 prefix,
+ * deployment scoping) lands here and reaches all of them at once.
+ */
+function decodeOdooRefForConnection(
+  connectionId: string,
+  refString: string,
+): IntegrationRefPayload {
+  const ref = decodeRef(refString);
+  if (ref.integrationType !== "odoo") {
+    throw new Error("Invalid ref: expected odoo integration.");
+  }
+  if (ref.connectionId !== connectionId) {
+    throw new Error("Invalid ref: connection does not match.");
+  }
+  return ref;
+}
+
+/**
+ * Decode a `target`/`targetRef` for a tool that acts on an arbitrary target
+ * model (schedule/complete/reschedule activity, record-action tools,
+ * attach_file). Returns the payload on success, or null when the ref is
+ * malformed or belongs to a different connection — the caller surfaces a
+ * consistent "does not belong to this Odoo connection" error. No model
+ * check: these tools accept any target model and gate it through the
+ * permissions map instead.
+ */
+function decodeTargetRef(
+  connectionId: string,
+  refString: string,
+): IntegrationRefPayload | null {
+  try {
+    return decodeOdooRefForConnection(connectionId, refString);
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Decode an opaque integration ref string and validate it against the field
+ * being written: the connection gate runs via {@link decodeOdooRefForConnection},
+ * and the encoded model must equal the field's relation (prevents a
+ * `res.partner` ref from being written into a `journal_id` / `account.journal`
+ * field). Returns the decoded record id on success, throws a descriptive
+ * error otherwise.
+ *
+ * Shared by the two many2one ref entry points: the `{ ref: "…" }` object form
  * (`refToId`) and the bare `_pinchy_ref` string form accepted by
  * `resolveRelationValue`. Both forms carry the same encoded payload, so
  * both get the same validation — accepting the bare string loses no safety
@@ -756,15 +832,7 @@ function decodeAndValidateRef(
   field: OdooField,
   refString: string,
 ): number {
-  const ref = decodeRef(refString);
-  if (ref.integrationType !== "odoo") {
-    throw new Error(`Invalid ref for ${field.name}: expected odoo.`);
-  }
-  if (ref.connectionId !== connectionId) {
-    throw new Error(
-      `Invalid ref for ${field.name}: connection does not match.`,
-    );
-  }
+  const ref = decodeOdooRefForConnection(connectionId, refString);
   if (ref.model !== field.relation) {
     throw new Error(
       `Invalid ref for ${field.name}: expected ${field.relation}, got ${ref.model}.`,
@@ -887,18 +955,20 @@ async function searchRelationByName(
 ): Promise<unknown> {
   const relation = field.relation as string;
   const relationFields = normalizeFields(await client.fields(relation));
-  const hasCompanyField = relationFields.some(
-    (f) => f.name === "company_id" && f.type === "many2one",
-  );
   const lookupFields = augmentFieldsWithCompanyId(
     ["id", "name", "display_name"],
     relationFields,
   ) ?? ["id", "name", "display_name"];
-  const domain: Array<[string, string, unknown]> = [
-    ["name", "ilike", lookup.name ?? ""],
-  ];
-  if (scopeCompanyId !== null && hasCompanyField) {
-    domain.push(["company_id", "=", scopeCompanyId]);
+  const domain: OdooDomain = [["name", "ilike", lookup.name ?? ""]];
+  if (scopeCompanyId !== null && relationHasCompanyId(relationFields)) {
+    // Mirror Odoo's `_check_company_domain`: include SHARED records
+    // (company_id = false), not just the target company. A strict
+    // `("company_id", "=", scope)` filter would exclude shared partners and
+    // products (company_id false, visible across companies) and break name
+    // lookups that resolved before. For company-EXCLUSIVE relations
+    // (account.journal, where company_id is required) the false branch
+    // never matches, so this is equivalent to the strict filter there.
+    domain.push("|", ["company_id", "=", false], ["company_id", "=", scopeCompanyId]);
   }
   return client.searchRead(relation, domain, {
     fields: lookupFields,
@@ -991,9 +1061,7 @@ async function normalizeMany2OneValues(
   // is absent, false, or doesn't resolve to a positive integer, no scoping is
   // applied and subsequent lookups behave exactly as before.
   let scopeCompanyId: number | null = null;
-  const companyField = fields.find(
-    (f) => f.name === "company_id" && f.type === "many2one",
-  );
+  const companyField = findCompanyIdField(fields);
   if (companyField && "company_id" in normalized) {
     const resolved = await resolveRelationValue(
       client,
@@ -1014,6 +1082,10 @@ async function normalizeMany2OneValues(
   for (const field of fields) {
     if (field.type !== "many2one" || !(field.name in normalized)) continue;
     if (field.name === "company_id") continue; // already resolved above
+    // Only top-level m2o fields are resolved here. Nested one2many command
+    // tuples (e.g. account.move `line_ids: [[0, 0, { account_id: "…" }]]`) are
+    // passed through to Odoo verbatim — their m2o values get no ref decoding
+    // and no company scoping. Tracked separately in #615.
     normalized[field.name] = await resolveRelationValue(
       client,
       connectionId,
@@ -1113,13 +1185,9 @@ async function resolveAssigneeUserId(
   connectionId: string,
   assignee: string,
 ): Promise<number> {
-  if (assignee.startsWith("pinchy_ref:")) {
-    const ref = decodeRef(assignee);
-    if (
-      ref.integrationType !== "odoo" ||
-      ref.connectionId !== connectionId ||
-      ref.model !== "res.users"
-    ) {
+  if (isIntegrationRef(assignee)) {
+    const ref = decodeOdooRefForConnection(connectionId, assignee);
+    if (ref.model !== "res.users") {
       throw new Error("`assignee` ref must point to a res.users record.");
     }
     return ref.id;
@@ -2141,11 +2209,8 @@ const plugin = {
                 );
               }
 
-              const decoded = decodeRef(target);
-              if (
-                decoded.integrationType !== "odoo" ||
-                decoded.connectionId !== config.connectionId
-              ) {
+              const decoded = decodeTargetRef(config.connectionId, target);
+              if (decoded === null) {
                 return errorResult(
                   new Error(
                     "`target` ref does not belong to this Odoo connection.",
@@ -2293,11 +2358,8 @@ const plugin = {
                   ),
                 );
               }
-              const decoded = decodeRef(target);
-              if (
-                decoded.integrationType !== "odoo" ||
-                decoded.connectionId !== config.connectionId
-              ) {
+              const decoded = decodeTargetRef(config.connectionId, target);
+              if (decoded === null) {
                 return errorResult(
                   new Error(
                     "`target` ref does not belong to this Odoo connection.",
@@ -2420,11 +2482,8 @@ const plugin = {
                 );
               }
 
-              const decoded = decodeRef(target);
-              if (
-                decoded.integrationType !== "odoo" ||
-                decoded.connectionId !== config.connectionId
-              ) {
+              const decoded = decodeTargetRef(config.connectionId, target);
+              if (decoded === null) {
                 return errorResult(
                   new Error(
                     "`target` ref does not belong to this Odoo connection.",
@@ -2523,11 +2582,8 @@ const plugin = {
                   ),
                 );
               }
-              const decoded = decodeRef(target);
-              if (
-                decoded.integrationType !== "odoo" ||
-                decoded.connectionId !== config.connectionId
-              ) {
+              const decoded = decodeTargetRef(config.connectionId, target);
+              if (decoded === null) {
                 return errorResult(
                   new Error(
                     "`target` ref does not belong to this Odoo connection.",
@@ -2686,11 +2742,8 @@ const plugin = {
                   new Error('`decision` must be "approve" or "refuse".'),
                 );
               }
-              const decoded = decodeRef(target);
-              if (
-                decoded.integrationType !== "odoo" ||
-                decoded.connectionId !== config.connectionId
-              ) {
+              const decoded = decodeTargetRef(config.connectionId, target);
+              if (decoded === null) {
                 return errorResult(
                   new Error(
                     "`target` ref does not belong to this Odoo connection.",
@@ -2935,16 +2988,12 @@ const plugin = {
               }
 
               const targetRef = params.targetRef as string;
-              const decoded = decodeRef(targetRef);
-
-              // Enforce per-connection isolation: a ref minted for a DIFFERENT
+              // Per-connection isolation: a ref minted for a DIFFERENT
               // connection decodes validly under this deployment's single ref
-              // key, so reject it before acting — same guard every other
-              // ref-consuming Odoo tool applies.
-              if (
-                decoded.integrationType !== "odoo" ||
-                decoded.connectionId !== config.connectionId
-              ) {
+              // key, so reject it before acting — same gate every other
+              // ref-consuming Odoo tool applies (decodeTargetRef).
+              const decoded = decodeTargetRef(config.connectionId, targetRef);
+              if (decoded === null) {
                 return errorResult(
                   new Error(
                     "`targetRef` ref does not belong to this Odoo connection.",
