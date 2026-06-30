@@ -5,6 +5,7 @@ import "@testing-library/jest-dom";
 import { ChatSwitcher } from "@/components/chat-switcher";
 import { chatIdSchema } from "@/lib/schemas/sessions";
 import type { ChatListItem } from "@/lib/schemas/sessions";
+import { setChatList, __resetChatListCacheForTests } from "@/lib/chat-list-cache";
 
 // --- mocks ----------------------------------------------------------------
 
@@ -99,6 +100,7 @@ function mockChats(chats: ChatListItem[]) {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  __resetChatListCacheForTests();
 });
 
 // --- tests ----------------------------------------------------------------
@@ -422,5 +424,70 @@ describe("ChatSwitcher", () => {
     // Re-opening fetches again.
     await user.click(screen.getByTestId("open-dropdown"));
     await waitFor(() => expect(apiGet).toHaveBeenCalledTimes(3));
+  });
+
+  describe("per-agent chat-list cache (#610)", () => {
+    it("seeds the list from the cache so the dropdown isn't empty on reopen", async () => {
+      const user = userEvent.setup();
+      // Pre-seed the cache as if a previous mount had fetched this list.
+      setChatList("agent-1", [webChat]);
+      // A slow/never-resolving fetch so the cached seed is the only data source
+      // for the initial render — proves the cache, not the fetch, drives it.
+      (apiGet as ReturnType<typeof vi.fn>).mockReturnValue(new Promise(() => {}));
+
+      render(<ChatSwitcher agentId="agent-1" chatId="chat-abc" agentName="Smithers" />);
+
+      // The cached chat is rendered immediately, before the fetch settles.
+      const menu = await screen.findByRole("menu");
+      expect(within(menu).getByText("Quarterly report")).toBeInTheDocument();
+      // No loading state when the cache has data.
+      expect(screen.queryByText(/Loading your chats/i)).not.toBeInTheDocument();
+    });
+
+    it("still revalidates in the background after seeding from the cache", async () => {
+      setChatList("agent-1", [webChat]);
+      const refreshed: ChatListItem[] = [
+        { ...webChat, title: "Quarterly report (refreshed)" },
+        {
+          chatId: "chat-2",
+          sessionId: "s-2",
+          origin: "web",
+          writable: true,
+          title: "Another chat",
+          lastInteractionAt: 6_000,
+        },
+      ];
+      mockChats(refreshed);
+
+      render(<ChatSwitcher agentId="agent-1" chatId="chat-abc" agentName="Smithers" />);
+
+      // The background revalidation replaces the seeded list with the fresh
+      // list — the new chat from the refresh appears, proving the fetch ran
+      // and overwrote the cache seed.
+      await waitFor(() => {
+        expect(within(screen.getByRole("menu")).getByText("Another chat")).toBeInTheDocument();
+      });
+      expect(apiGet).toHaveBeenCalledWith("/api/agents/agent-1/chats");
+    });
+
+    it("caches per agent — a second agent's cache doesn't bleed into the first", async () => {
+      setChatList("agent-2", [
+        {
+          chatId: "other",
+          sessionId: "s-other",
+          origin: "web",
+          writable: true,
+          title: "Other agent chat",
+          lastInteractionAt: 7_000,
+        },
+      ]);
+      (apiGet as ReturnType<typeof vi.fn>).mockReturnValue(new Promise(() => {}));
+
+      render(<ChatSwitcher agentId="agent-1" chatId="chat-abc" agentName="Smithers" />);
+
+      const menu = await screen.findByRole("menu");
+      // agent-1's cache is empty, so the only row is the optimistic current chat.
+      expect(within(menu).queryByText("Other agent chat")).not.toBeInTheDocument();
+    });
   });
 });
