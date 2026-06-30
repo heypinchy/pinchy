@@ -88,6 +88,34 @@ describe("classifyAgentError", () => {
     expect(classifyAgentError("")).toBe("unknown");
   });
 
+  it("classifies OpenClaw's generic provider-rejection envelope as provider_rejected_generic (#584)", () => {
+    // When a provider rejects a run for an account-side reason OpenClaw
+    // collapses (e.g. depleted credit), the error chunk carries exactly this
+    // wording and nothing cause-specific. The real cause is unknowable from
+    // this text, so it gets its own honest audit class — not `unknown` (which
+    // buckets it with truly unrecognised strings) and not `provider_config`
+    // (which would assert an unproven cause in the append-only audit trail).
+    const text = "LLM request failed: provider rejected the request schema or tool payload.";
+    expect(classifyAgentError(text)).toBe("provider_rejected_generic");
+  });
+
+  it("still classifies the thought_signature payload as schema_rejection, not provider_rejected_generic (#584)", () => {
+    // The Gemini-3 schema-rejection payload carries the generic envelope text
+    // AND a thought_signature — the specific schema signal must win so the
+    // audit class stays schema_rejection.
+    const text =
+      "LLM request failed: provider rejected the request schema or tool payload. " +
+      'rawError=400 "Function call is missing a thought_signature in functionCall parts."';
+    expect(classifyAgentError(text)).toBe("schema_rejection");
+  });
+
+  it("still classifies a credit/balance wording as provider_config, not provider_rejected_generic (#584)", () => {
+    // If the cause-specific wording DOES reach the chunk (credit/balance), it
+    // must classify as provider_config — the generic class is only for the
+    // cause-unknowable envelope.
+    expect(classifyAgentError("Your credit balance is too low")).toBe("provider_config");
+  });
+
   it("classifies transient before provider_config when text mentions 'exceeded'", () => {
     // Defensive: `rate limit exceeded` contains "exceeded" which would also
     // match the provider-config family. Mirrors the same precedence rule

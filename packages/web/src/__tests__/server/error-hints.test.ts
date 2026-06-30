@@ -3,6 +3,7 @@ import {
   getErrorHint,
   presentProviderError,
   PROVIDER_SETTINGS_HINT,
+  PROVIDER_REJECTED_GENERIC_MESSAGE,
   CONTEXT_OVERFLOW_HINT,
   CONTEXT_OVERFLOW_MESSAGE,
 } from "@/server/error-hints";
@@ -141,6 +142,29 @@ describe("getErrorHint", () => {
     it("presentProviderError leaves non-overflow errors unchanged", () => {
       expect(presentProviderError("Invalid API key provided")).toBe("Invalid API key provided");
       expect(presentProviderError("Rate limit exceeded")).toBe("Rate limit exceeded");
+    });
+
+    it("presentProviderError rewrites the generic provider-rejection envelope so the banner doesn't read like a malformed-request bug (#584)", () => {
+      const raw = "LLM request failed: provider rejected the request schema or tool payload.";
+      const shown = presentProviderError(raw);
+      expect(shown).toBe(PROVIDER_REJECTED_GENERIC_MESSAGE);
+      // The misleading "schema or tool payload" framing must not reach the user.
+      expect(shown).not.toMatch(/schema or tool payload/i);
+      // It should point at the provider-account cause family.
+      expect(shown).toMatch(/billing|quota|api key|provider/i);
+    });
+
+    it("presentProviderError does NOT rewrite the thought_signature payload's envelope (schema_rejection keeps its own wording) (#584)", () => {
+      // The Gemini-3 schema-rejection text carries the generic envelope plus a
+      // thought_signature. Its own branch (classifyUpstreamFormatError) handles
+      // the user-facing wording; presentProviderError must not collapse it into
+      // the generic-account message. The raw envelope text passes through here.
+      const raw =
+        "LLM request failed: provider rejected the request schema or tool payload. " +
+        'rawError=400 "Function call is missing a thought_signature in functionCall parts."';
+      // The thought_signature payload is not context-overflow and not the bare
+      // generic envelope (it has extra content), so it passes through unchanged.
+      expect(presentProviderError(raw)).toBe(raw);
     });
   });
 });

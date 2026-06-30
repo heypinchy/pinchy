@@ -28,6 +28,8 @@
 import {
   TRANSIENT_PATTERN,
   PROVIDER_CONFIG_PATTERN,
+  PROVIDER_REJECTED_GENERIC_PATTERN,
+  isThoughtSignatureRejection,
   HTTP_5XX_PATTERN,
 } from "@/server/error-patterns";
 import type { TransientReason } from "@/lib/schemas/chat-frames";
@@ -48,17 +50,11 @@ export type AgentErrorClass =
   | "model_unavailable"
   | "transient"
   | "provider_config"
+  | "provider_rejected_generic"
   | "silent_stream_timeout"
   | "unknown";
 
 const FAILOVER_INCOMPLETE_STREAM_PATTERN = /FailoverError[\s\S]*incomplete terminal response/i;
-
-// Mirrors the narrower regex anchoring in model-error-classifier.ts: both
-// real OpenClaw variants carry a separator (snake_case `_` or camelCase `S`),
-// so a future provider error mentioning a bare-word `thoughtsignature` in
-// unrelated text cannot hijack this branch.
-const THOUGHT_SIGNATURE_SNAKE = /thought_signature/i;
-const THOUGHT_SIGNATURE_CAMEL = /thoughtSignature/;
 
 /**
  * Reasons Pinchy itself synthesises an error frame (no upstream provider
@@ -110,7 +106,7 @@ export function classifyAgentError(errorText: string): AgentErrorClass {
   if (FAILOVER_INCOMPLETE_STREAM_PATTERN.test(errorText)) {
     return "failover_incomplete_stream";
   }
-  if (THOUGHT_SIGNATURE_SNAKE.test(errorText) || THOUGHT_SIGNATURE_CAMEL.test(errorText)) {
+  if (isThoughtSignatureRejection(errorText)) {
     return "schema_rejection";
   }
   // `transient` is checked before `model_unavailable` so HTTP 529 — Anthropic's
@@ -125,6 +121,20 @@ export function classifyAgentError(errorText: string): AgentErrorClass {
   }
   if (PROVIDER_CONFIG_PATTERN.test(errorText)) {
     return "provider_config";
+  }
+  // OpenClaw's generic provider-rejection catch-all (#584). When a provider
+  // rejects a run for an account-side reason it collapses (verified on staging:
+  // depleted credit surfaces as exactly this string), the real cause never
+  // reaches Pinchy in the chunk text. Honest own audit class — NOT
+  // `provider_config` (that would assert an unproven cause in the append-only
+  // audit trail) and NOT `unknown` (that buckets it with truly unrecognised
+  // strings). Cause-specific wording (credit/balance) is caught above as
+  // `provider_config`; a thought_signature schema rejection is caught above as
+  // `schema_rejection`. Checked AFTER provider_config so a chunk that carries
+  // both the generic envelope AND cause-specific wording still classifies by
+  // the cause.
+  if (PROVIDER_REJECTED_GENERIC_PATTERN.test(errorText)) {
+    return "provider_rejected_generic";
   }
   return "unknown";
 }
