@@ -103,6 +103,9 @@ jobs:
       - name: Format check (docs & workflows)
         run: pnpm -C packages/web exec prettier --check "../../docs/src/**/*.{mdx,md}" "../../.github/**/*.yml"
 
+      - name: Docs build
+        run: cd docs && pnpm install --frozen-lockfile && pnpm build
+
       - name: Squawk migration lint (changed files only)
         if: github.event_name == 'pull_request'
         run: |
