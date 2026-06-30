@@ -381,6 +381,76 @@ const MODEL_FIELDS = {
       readonly: false,
       relation: "res.partner",
     },
+    line_ids: {
+      string: "Journal Items",
+      type: "one2many",
+      required: false,
+      readonly: false,
+      relation: "account.move.line",
+    },
+    invoice_line_ids: {
+      string: "Invoice Lines",
+      type: "one2many",
+      required: false,
+      readonly: false,
+      relation: "account.move.line",
+    },
+  },
+  // Chart of accounts — company-scoped (optional company_id; false = shared).
+  // Seeded with a multi-company name collision mirroring account.journal, so
+  // nested account_id name lookups can exercise the OR-with-false scope.
+  "account.account": {
+    id: { string: "ID", type: "integer", required: false, readonly: true },
+    code: { string: "Code", type: "char", required: false, readonly: false },
+    name: { string: "Name", type: "char", required: false, readonly: false },
+    display_name: {
+      string: "Display Name",
+      type: "char",
+      required: false,
+      readonly: false,
+    },
+    account_type: {
+      string: "Type",
+      type: "char",
+      required: false,
+      readonly: false,
+    },
+    company_id: {
+      string: "Company",
+      type: "many2one",
+      required: false,
+      readonly: false,
+      relation: "res.company",
+    },
+  },
+  // Journal items (the lines of a move). account_id is the m2o whose nested
+  // resolution (#615) this model exists to test.
+  "account.move.line": {
+    id: { string: "ID", type: "integer", required: false, readonly: true },
+    name: { string: "Label", type: "char", required: false, readonly: false },
+    debit: { string: "Debit", type: "float", required: false, readonly: false },
+    credit: { string: "Credit", type: "float", required: false, readonly: false },
+    account_id: {
+      string: "Account",
+      type: "many2one",
+      required: true,
+      readonly: false,
+      relation: "account.account",
+    },
+    move_id: {
+      string: "Move",
+      type: "many2one",
+      required: true,
+      readonly: false,
+      relation: "account.move",
+    },
+    company_id: {
+      string: "Company",
+      type: "many2one",
+      required: false,
+      readonly: false,
+      relation: "res.company",
+    },
   },
 };
 
@@ -534,6 +604,8 @@ function getDefaultRecords() {
       { id: 9, model: "res.company", name: "Company" },
       { id: 10, model: "account.journal", name: "Journal" },
       { id: 11, model: "account.move", name: "Journal Entry" },
+      { id: 12, model: "account.account", name: "Account" },
+      { id: 13, model: "account.move.line", name: "Journal Item" },
     ],
     "res.users": [
       { id: 2, name: "Mitch Admin", login: "admin" },
@@ -594,6 +666,36 @@ function getDefaultRecords() {
       },
     ],
     "account.move": [],
+    // Multi-company account collision: "Bank" exists in both companies with
+    // the same code, plus a shared account (company_id = false). Lets nested
+    // account_id name lookups exercise the OR-with-false scope.
+    "account.account": [
+      {
+        id: 42,
+        code: "1000",
+        name: "Bank",
+        display_name: "1000 Bank",
+        account_type: "asset_cash",
+        company_id: [1, "Helmcraft GmbH"],
+      },
+      {
+        id: 77,
+        code: "1000",
+        name: "Bank",
+        display_name: "1000 Bank",
+        account_type: "asset_cash",
+        company_id: [2, "Clemens Helm"],
+      },
+      {
+        id: 88,
+        code: "9999",
+        name: "Opening Balance",
+        display_name: "9999 Opening Balance",
+        account_type: "equity",
+        company_id: false,
+      },
+    ],
+    "account.move.line": [],
   };
 }
 
@@ -757,6 +859,88 @@ function sortRecords(records, orderStr) {
     }
     return 0;
   });
+}
+
+// ---------------------------------------------------------------------------
+// one2many command-tuple processing + m2o type validation (issue #615)
+// ---------------------------------------------------------------------------
+
+// Validate that m2o field values are Odoo-legal: false/null, a positive
+// integer id, or [int, name]. A bare string (e.g. an undecoded
+// `pinchy_ref:v1:…` token the agent copied into `line_ids[].account_id`) is
+// rejected the way real Odoo rejects it — reproducing the #615 audit-mystery:
+// without the plugin's nested ref-decoding, the create fails at the Odoo
+// layer (the plugin's audit `success` flag reflects Odoo acceptance, so a
+// rejection surfaces as `failure`). Returns a __jsonrpc_error object on
+// violation, else null.
+function validateM2oFields(model, values) {
+  const fields = MODEL_FIELDS[model] || {};
+  for (const [name, def] of Object.entries(fields)) {
+    if (def.type !== "many2one") continue;
+    if (!(name in values)) continue;
+    const v = values[name];
+    if (v === false || v == null) continue;
+    if (typeof v === "number" && Number.isInteger(v) && v > 0) continue;
+    if (
+      Array.isArray(v) &&
+      v.length === 2 &&
+      typeof v[0] === "number" &&
+      typeof v[1] === "string"
+    ) {
+      continue;
+    }
+    return {
+      __jsonrpc_error: true,
+      message: `Invalid value for many2one field "${name}" on ${model}: expected a positive integer id, [id, name], or false (got ${JSON.stringify(v)}).`,
+    };
+  }
+  return null;
+}
+
+// Find the inverse many2one field on a line model that points back at the
+// parent model (e.g. account.move.line.move_id → account.move), so created
+// child records carry the back-link the way Odoo sets it.
+function findInverseField(lineModel, parentModel) {
+  const fields = MODEL_FIELDS[lineModel] || {};
+  for (const [name, def] of Object.entries(fields)) {
+    if (def.type === "many2one" && def.relation === parentModel) return name;
+  }
+  return null;
+}
+
+// Materialize one2many command tuples into child records, mirroring Odoo's
+// create-with-lines semantics. Returns the resolved list of child ids for the
+// parent's field, OR a __jsonrpc_error object if a nested m2o value is
+// invalid. Codes: 0 create, 1 update, 2 delete, 3 unlink, 4 link, 5 clear,
+// 6 replace. Only 0/1 carry a values dict.
+function processOne2ManyTuples(model, fieldName, relation, tuples, parentId) {
+  const ids = [];
+  for (const tuple of tuples) {
+    if (!Array.isArray(tuple) || typeof tuple[0] !== "number") continue;
+    const code = tuple[0];
+    if (code === 0) {
+      const lineValues = { ...(tuple[2] || {}) };
+      const inverse = findInverseField(relation, model);
+      if (inverse) lineValues[inverse] = [parentId, ""];
+      const err = validateM2oFields(relation, lineValues);
+      if (err) return err;
+      const lineId = nextIds.get(relation) || 1;
+      nextIds.set(relation, lineId + 1);
+      store.get(relation).push({ id: lineId, ...lineValues });
+      ids.push(lineId);
+    } else if (code === 1) {
+      const lineId = tuple[1];
+      const rec = (store.get(relation) || []).find((r) => r.id === lineId);
+      if (rec) Object.assign(rec, tuple[2] || {});
+      ids.push(lineId);
+    } else if (code === 4) {
+      ids.push(tuple[1]);
+    } else if (code === 6) {
+      ids.push(...(tuple[2] || []));
+    }
+    // 2 (delete), 3 (unlink), 5 (clear) — no ids added on a fresh create.
+  }
+  return ids;
 }
 
 // ---------------------------------------------------------------------------
@@ -939,6 +1123,31 @@ function handleJsonRpc(body) {
 
         const newId = nextIds.get(model) || 1;
         nextIds.set(model, newId + 1);
+
+        // Validate top-level m2o values (Odoo rejects bare-string m2o ids;
+        // the plugin resolves refs/names to ints before reaching here).
+        const topErr = validateM2oFields(model, values);
+        if (topErr) return topErr;
+
+        // Materialize one2many command tuples into child records (e.g.
+        // account.move `line_ids: [[0, 0, { account_id, debit, credit }]]`
+        // → account.move.line rows with a move_id back-link), and validate
+        // their nested m2o values.
+        const modelFieldDefs = MODEL_FIELDS[model] || {};
+        for (const [name, def] of Object.entries(modelFieldDefs)) {
+          if (def.type !== "one2many" || !def.relation) continue;
+          if (!Array.isArray(values[name])) continue;
+          const result = processOne2ManyTuples(
+            model,
+            name,
+            def.relation,
+            values[name],
+            newId,
+          );
+          if (result && result.__jsonrpc_error) return result;
+          values[name] = result;
+        }
+
         const newRecord = { id: newId, ...values };
         store.get(model).push(newRecord);
         return newId;
