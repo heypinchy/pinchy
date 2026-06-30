@@ -162,6 +162,7 @@ export default defineConfig({
             { label: 'Install as an App', slug: 'guides/install-as-app' },
             { label: 'Set Up Web Search', slug: 'guides/web-search-setup' },
             { label: 'Message Delivery & Retry', slug: 'guides/retry-messages' },
+            { label: 'Slash Commands in Chat', slug: 'guides/slash-commands' },
             { label: 'Image Attachments', slug: 'guides/image-attachments' },
             { label: 'Reporting Issues', slug: 'guides/reporting-issues' },
           ],
