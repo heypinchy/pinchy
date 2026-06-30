@@ -30,3 +30,20 @@ export async function deleteSetting(key: string): Promise<void> {
 export async function getAllSettings() {
   return db.select().from(settings);
 }
+
+/**
+ * Fetch every setting whose key starts with `prefix` in a single query and
+ * return them as a Map (key → decrypted value). Replaces the N+1 pattern of
+ * looping `getSetting(key)` per agent — the settings table is small enough
+ * that one round-trip beats N (#261). Mirrors `getSetting`'s decrypt rule.
+ */
+export async function getSettingsByPrefix(prefix: string): Promise<Map<string, string>> {
+  const rows = await getAllSettings();
+  const out = new Map<string, string>();
+  for (const r of rows) {
+    if (r.key.startsWith(prefix)) {
+      out.set(r.key, r.encrypted ? decrypt(r.value) : r.value);
+    }
+  }
+  return out;
+}

@@ -105,10 +105,19 @@ export async function GET(request: NextRequest) {
     error: e.error,
   }));
 
-  return NextResponse.json({
-    entries: processedEntries,
-    total: totalResult[0]?.count ?? 0,
-    page,
-    limit,
-  });
+  return NextResponse.json(
+    {
+      entries: processedEntries,
+      total: totalResult[0]?.count ?? 0,
+      page,
+      limit,
+    },
+    {
+      // Short private cache absorbs audit-page navigation/refreshes without
+      // re-running the (potentially heavy) filtered count + scan on every
+      // request; the trail is admin-only (private) and 5 s keeps it fresh
+      // for newly-appended rows (#261).
+      headers: { "Cache-Control": "private, max-age=5, must-revalidate" },
+    }
+  );
 }

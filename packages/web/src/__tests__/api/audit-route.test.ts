@@ -176,6 +176,16 @@ describe("GET /api/audit", () => {
     expect(mockEntriesOffset).toHaveBeenCalledWith(0);
   });
 
+  it("sets a short private Cache-Control header to absorb navigation (#261)", async () => {
+    setupMocks();
+
+    const request = new NextRequest("http://localhost:7777/api/audit");
+    const response = await GET(request);
+
+    expect(response.status).toBe(200);
+    expect(response.headers.get("Cache-Control")).toBe("private, max-age=5, must-revalidate");
+  });
+
   it("supports custom page and limit parameters", async () => {
     setupMocks([], 100);
 

@@ -32,7 +32,13 @@ vi.mock("@/lib/encryption", () => ({
 
 import { db } from "@/db";
 import { encrypt, decrypt } from "@/lib/encryption";
-import { getSetting, setSetting, deleteSetting, getAllSettings } from "@/lib/settings";
+import {
+  getSetting,
+  setSetting,
+  deleteSetting,
+  getAllSettings,
+  getSettingsByPrefix,
+} from "@/lib/settings";
 
 describe("getSetting", () => {
   beforeEach(() => vi.clearAllMocks());
@@ -128,5 +134,37 @@ describe("getAllSettings", () => {
     fromMock.mockResolvedValueOnce(rows);
     const result = await getAllSettings();
     expect(result).toEqual(rows);
+  });
+});
+
+describe("getSettingsByPrefix", () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  it("returns only the settings whose key starts with the prefix, decrypted, in one query (#261)", async () => {
+    fromMock.mockResolvedValueOnce([
+      { key: "telegram_bot_token:agent-1", value: "tok-1", encrypted: false },
+      { key: "telegram_bot_token:agent-2", value: "encrypted:tok-2", encrypted: true },
+      { key: "telegram_bot_username:agent-1", value: "botone", encrypted: false },
+      { key: "default_provider", value: "anthropic", encrypted: false },
+    ]);
+    const map = await getSettingsByPrefix("telegram_bot_token:");
+    // Single select — no N+1 findFirst calls.
+    expect(db.select).toHaveBeenCalledTimes(1);
+    expect(map.size).toBe(2);
+    expect(map.get("telegram_bot_token:agent-1")).toBe("tok-1");
+    // Encrypted row is decrypted.
+    expect(map.get("telegram_bot_token:agent-2")).toBe("tok-2");
+    expect(decrypt).toHaveBeenCalledWith("encrypted:tok-2");
+    // Non-matching keys are excluded.
+    expect(map.has("telegram_bot_username:agent-1")).toBe(false);
+    expect(map.has("default_provider")).toBe(false);
+  });
+
+  it("returns an empty map when nothing matches", async () => {
+    fromMock.mockResolvedValueOnce([
+      { key: "default_provider", value: "anthropic", encrypted: false },
+    ]);
+    const map = await getSettingsByPrefix("telegram_bot_token:");
+    expect(map.size).toBe(0);
   });
 });

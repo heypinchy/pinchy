@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { withAuth } from "@/lib/api-auth";
-import { getSetting } from "@/lib/settings";
+import { getSettingsByPrefix } from "@/lib/settings";
 import { getVisibleAgents } from "@/lib/visible-agents";
 import { getOrgPairingSmithers, type PairingCandidate } from "@/lib/pairing-candidates";
 
@@ -19,15 +19,13 @@ export const GET = withAuth(async (_req, _ctx, session) => {
     ...orgPairing,
   ];
 
-  const resolved = await Promise.all(
-    candidates.map(async (c) => ({
-      candidate: c,
-      botUsername: await getSetting(`telegram_bot_username:${c.realId}`),
-    }))
-  );
+  // Batched: one `telegram_bot_username:` prefix query instead of a
+  // `getSetting` round-trip per candidate (#261 N+1).
+  const botUsernameByKey = await getSettingsByPrefix("telegram_bot_username:");
 
-  const bots = resolved.flatMap(({ candidate, botUsername }) =>
-    botUsername
+  const bots = candidates.flatMap((candidate) => {
+    const botUsername = botUsernameByKey.get(`telegram_bot_username:${candidate.realId}`);
+    return botUsername
       ? [
           {
             agentId: candidate.publicId,
@@ -36,8 +34,8 @@ export const GET = withAuth(async (_req, _ctx, session) => {
             isPersonal: candidate.isPersonal,
           },
         ]
-      : []
-  );
+      : [];
+  });
 
   // Sort personal agents (Smithers) first — the pairing UI uses bots[0] as
   // the primary bot for the QR code. Users should always pair via Smithers
