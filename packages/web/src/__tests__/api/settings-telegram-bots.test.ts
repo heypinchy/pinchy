@@ -9,9 +9,18 @@ vi.mock("@/lib/auth", () => ({
   getSession: (...args: unknown[]) => mockGetSession(...args),
 }));
 
-const mockGetSetting = vi.fn();
+// Map-based settings mock: tests populate `mockSettings` with the keys they
+// want present. `getSetting` reads it; `getSettingsByPrefix` filters it in one
+// call (the production code is batched now — #261).
+const mockSettings = new Map<string, string>();
+const { mockGetSettingsByPrefix } = vi.hoisted(() => ({
+  mockGetSettingsByPrefix: vi.fn((prefix: string, map: Map<string, string>) =>
+    Promise.resolve(new Map(Array.from(map.entries()).filter(([k]) => k.startsWith(prefix))))
+  ),
+}));
 vi.mock("@/lib/settings", () => ({
-  getSetting: (...args: unknown[]) => mockGetSetting(...args),
+  getSetting: (key: string) => Promise.resolve(mockSettings.get(key) ?? null),
+  getSettingsByPrefix: (prefix: string) => mockGetSettingsByPrefix(prefix, mockSettings),
 }));
 
 const mockGetVisibleAgents = vi.fn();
@@ -40,7 +49,13 @@ describe("GET /api/settings/telegram/bots", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockGetSession.mockResolvedValue(adminSession);
-    mockGetSetting.mockResolvedValue(null);
+    mockSettings.clear();
+    // Re-wire the prefix spy after clearAllMocks (its impl reads mockSettings).
+    mockGetSettingsByPrefix.mockImplementation((prefix: string) =>
+      Promise.resolve(
+        new Map(Array.from(mockSettings.entries()).filter(([k]) => k.startsWith(prefix)))
+      )
+    );
     mockGetVisibleAgents.mockResolvedValue([]);
     mockGetOrgPairingSmithers.mockResolvedValue([]);
   });
@@ -69,10 +84,7 @@ describe("GET /api/settings/telegram/bots", () => {
       { id: "a1", name: "Smithers", isPersonal: false, visibility: "all" },
       { id: "a2", name: "Support", isPersonal: false, visibility: "all" },
     ]);
-    mockGetSetting.mockImplementation(async (key: string) => {
-      if (key === "telegram_bot_username:a1") return "acme_smithers_bot";
-      return null;
-    });
+    mockSettings.set("telegram_bot_username:a1", "acme_smithers_bot");
 
     const response = await GET();
     const data = await response.json();
@@ -88,11 +100,8 @@ describe("GET /api/settings/telegram/bots", () => {
       { id: "a1", name: "Silvia", isPersonal: false, visibility: "all" },
       { id: "a2", name: "Smithers", isPersonal: true, ownerId: "user-1" },
     ]);
-    mockGetSetting.mockImplementation(async (key: string) => {
-      if (key === "telegram_bot_username:a1") return "silvia_bot";
-      if (key === "telegram_bot_username:a2") return "smithers_bot";
-      return null;
-    });
+    mockSettings.set("telegram_bot_username:a1", "silvia_bot");
+    mockSettings.set("telegram_bot_username:a2", "smithers_bot");
 
     const response = await GET();
     const data = await response.json();
@@ -114,11 +123,8 @@ describe("GET /api/settings/telegram/bots", () => {
     mockGetVisibleAgents.mockResolvedValueOnce([
       { id: "a1", name: "Smithers", isPersonal: false, visibility: "all" },
     ]);
-    mockGetSetting.mockImplementation(async (key: string) => {
-      if (key === "telegram_bot_username:a1") return "acme_smithers_bot";
-      if (key === "telegram_bot_username:a2") return "hr_bot";
-      return null;
-    });
+    mockSettings.set("telegram_bot_username:a1", "acme_smithers_bot");
+    mockSettings.set("telegram_bot_username:a2", "hr_bot");
 
     const response = await GET();
     const data = await response.json();
@@ -132,11 +138,8 @@ describe("GET /api/settings/telegram/bots", () => {
     mockGetVisibleAgents.mockResolvedValueOnce([
       { id: "a-self", name: "Smithers", isPersonal: true, ownerId: "user-2" },
     ]);
-    mockGetSetting.mockImplementation(async (key: string) => {
-      if (key === "telegram_bot_username:a-self") return "self_smithers_bot";
-      if (key === "telegram_bot_username:a-admin") return "admin_smithers_bot";
-      return null;
-    });
+    mockSettings.set("telegram_bot_username:a-self", "self_smithers_bot");
+    mockSettings.set("telegram_bot_username:a-admin", "admin_smithers_bot");
 
     const response = await GET();
     const data = await response.json();
@@ -159,12 +162,9 @@ describe("GET /api/settings/telegram/bots", () => {
       { id: "a2", name: "Support", isPersonal: false, visibility: "all" },
       { id: "a3", name: "HR", isPersonal: false, visibility: "restricted" },
     ]);
-    mockGetSetting.mockImplementation(async (key: string) => {
-      if (key === "telegram_bot_username:a1") return "smithers_bot";
-      if (key === "telegram_bot_username:a2") return "support_bot";
-      if (key === "telegram_bot_username:a3") return "hr_bot";
-      return null;
-    });
+    mockSettings.set("telegram_bot_username:a1", "smithers_bot");
+    mockSettings.set("telegram_bot_username:a2", "support_bot");
+    mockSettings.set("telegram_bot_username:a3", "hr_bot");
 
     const response = await GET();
     const data = await response.json();
@@ -193,10 +193,7 @@ describe("GET /api/settings/telegram/bots", () => {
         isPersonal: true,
       },
     ]);
-    mockGetSetting.mockImplementation(async (key: string) => {
-      if (key === "telegram_bot_username:admin-smithers-real-uuid") return "acme_smithers_bot";
-      return null;
-    });
+    mockSettings.set("telegram_bot_username:admin-smithers-real-uuid", "acme_smithers_bot");
 
     const response = await GET();
     const data = await response.json();
@@ -222,25 +219,26 @@ describe("GET /api/settings/telegram/bots", () => {
     expect(mockGetOrgPairingSmithers).toHaveBeenCalledWith(new Set(["a1", "a2"]));
   });
 
-  it("fetches bot usernames in parallel (single Promise.all, not sequential)", async () => {
+  it("fetches bot usernames in a single batched prefix query, not per-candidate (#261)", async () => {
     mockGetVisibleAgents.mockResolvedValueOnce([
       { id: "a1", name: "A", isPersonal: false, visibility: "all" },
       { id: "a2", name: "B", isPersonal: false, visibility: "all" },
       { id: "a3", name: "C", isPersonal: false, visibility: "all" },
     ]);
+    mockSettings.set("telegram_bot_username:a1", "a_bot");
+    mockSettings.set("telegram_bot_username:a2", "b_bot");
+    mockSettings.set("telegram_bot_username:a3", "c_bot");
 
-    const callOrder: string[] = [];
-    mockGetSetting.mockImplementation(async (key: string) => {
-      callOrder.push(`start:${key}`);
-      await new Promise((r) => setTimeout(r, 5));
-      callOrder.push(`end:${key}`);
-      return null;
-    });
+    const response = await GET();
+    const data = await response.json();
 
-    await GET();
-
-    // All three should start before any ends — proves parallel execution
-    const firstThree = callOrder.slice(0, 3);
-    expect(firstThree.every((c) => c.startsWith("start:"))).toBe(true);
+    // One batched call — not one per candidate.
+    expect(mockGetSettingsByPrefix).toHaveBeenCalledTimes(1);
+    expect(mockGetSettingsByPrefix).toHaveBeenCalledWith("telegram_bot_username:", mockSettings);
+    expect(data.bots.map((b: { botUsername: string }) => b.botUsername).sort()).toEqual([
+      "a_bot",
+      "b_bot",
+      "c_bot",
+    ]);
   });
 });

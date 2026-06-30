@@ -47,7 +47,12 @@ const createAgentSchema = z.object({
 
 export const GET = withAuth(async (_req, _ctx, session) => {
   const visibleAgents = await getVisibleAgents(session.user.id!, session.user.role ?? "member");
-  return NextResponse.json(visibleAgents);
+  // Short private cache absorbs back-and-forth agent-switch navigation
+  // without re-querying on every mount; the list is per-user (private) and
+  // 5 s keeps it fresh for operational changes (#261).
+  return NextResponse.json(visibleAgents, {
+    headers: { "Cache-Control": "private, max-age=5, must-revalidate" },
+  });
 });
 
 export const POST = withAdmin(async (request, _ctx, session) => {
