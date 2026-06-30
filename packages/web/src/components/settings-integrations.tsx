@@ -36,7 +36,7 @@ import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/comp
 import { AddIntegrationDialog } from "./add-integration-dialog";
 import { EditCredentialsDialog } from "./edit-credentials-dialog";
 import { EditOAuthDialog } from "./edit-oauth-dialog";
-import { BraveIcon, GoogleIcon, OdooIcon } from "./integration-icons";
+import { BraveIcon, GoogleIcon, MicrosoftIcon, OdooIcon } from "./integration-icons";
 import type { IntegrationConnection } from "@/lib/integrations/types";
 import { getAccessibleCategoryLabels } from "@/lib/integrations/odoo-sync";
 
@@ -168,6 +168,8 @@ export function SettingsIntegrations() {
                       <div className="flex items-center gap-3">
                         {conn.type === "google" ? (
                           <GoogleIcon className="h-6 w-6 shrink-0" />
+                        ) : conn.type === "microsoft" ? (
+                          <MicrosoftIcon className="h-6 w-6 shrink-0" />
                         ) : conn.type === "web-search" ? (
                           <BraveIcon className="h-6 w-6 shrink-0" />
                         ) : (
@@ -212,6 +214,13 @@ export function SettingsIntegrations() {
                               {conn.type === "google" ? (
                                 <DropdownMenuItem onClick={() => setShowOAuthEdit(true)}>
                                   Edit OAuth Credentials
+                                </DropdownMenuItem>
+                              ) : conn.type === "microsoft" ? (
+                                <DropdownMenuItem
+                                  onClick={() => testConnection(conn.id)}
+                                  disabled={testing === conn.id}
+                                >
+                                  {testing === conn.id ? "Testing..." : "Test Connection"}
                                 </DropdownMenuItem>
                               ) : (
                                 <>
