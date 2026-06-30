@@ -14,6 +14,7 @@ import {
 import { Button } from "@/components/ui/button";
 import { apiGet } from "@/lib/api-client";
 import type { ChatListItem } from "@/lib/schemas/sessions";
+import { getChatList, hasChatList, setChatList } from "@/lib/chat-list-cache";
 import { generateChatId } from "@/lib/chats/generate-chat-id";
 import { useChatSessionIsRunning } from "@/components/chat-session-provider";
 import { useRunCompletionEffect } from "@/hooks/use-run-completion-effect";
@@ -132,18 +133,24 @@ export function ChatSwitcher({
   activeTelegram = false,
 }: ChatSwitcherProps) {
   const router = useRouter();
-  const [chats, setChats] = useState<ChatListItem[]>([]);
-  const [isLoading, setIsLoading] = useState(true);
+  // Seed from the per-agent cache (#610) so reopening the switcher for an
+  // agent whose list was just loaded isn't briefly empty. Revalidation happens
+  // in the background via the same fetch below; the cache is the seed only.
+  const [chats, setChats] = useState<ChatListItem[]>(() => getChatList(agentId) ?? []);
+  const [isLoading, setIsLoading] = useState(() => !hasChatList(agentId));
 
   // Re-fetch the chat list on each load. Returns a cleanup-aware fetch so both
   // the mount effect and the open handler can ignore a settled result after the
   // component unmounts. A failed fetch degrades quietly to the empty state
-  // rather than blocking the header.
+  // rather than blocking the header. A successful fetch updates the cache so
+  // the next mount seeds from it.
   const loadChats = useCallback(() => {
     let cancelled = false;
     apiGet<{ chats: ChatListItem[] }>(`/api/agents/${agentId}/chats`)
       .then((res) => {
-        if (!cancelled) setChats(res.chats ?? []);
+        const list = res.chats ?? [];
+        setChatList(agentId, list);
+        if (!cancelled) setChats(list);
       })
       .catch(() => {
         if (!cancelled) setChats([]);
