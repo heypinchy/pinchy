@@ -65,6 +65,35 @@ export const PROVIDER_REJECTED_GENERIC_PATTERN =
   /provider rejected the request schema or tool payload/i;
 
 /**
+ * Matches OpenClaw's upstream schema/format rejection (verified on staging:
+ * Gemini 3 missing `thought_signature` on tool-call replay). Both the snake_case
+ * (`thought_signature`) and camelCase (`thoughtSignature`) variants reach Pinchy
+ * — the OpenAI-compat replay path used by ollama-cloud emits camelCase, the
+ * native Google path emits snake_case. Shared here so the audit classifier
+ * (`agent-error-classifier.ts`) and the user-facing rewriter (`error-hints.ts`)
+ * agree on what counts as a schema rejection: the generic provider-rejection
+ * envelope is rewritten to a clearer account-issue message ONLY when it is NOT
+ * carrying a thought_signature (otherwise the schema-rejection wording would be
+ * collapsed into the generic-account message — issue #584).
+ *
+ * Two patterns, mirroring the original narrower anchoring in
+ * `model-error-classifier.ts`: the snake_case form carries a `_` separator and
+ * is matched case-insensitively; the camelCase form requires the capital `S`
+ * (NO `i` flag) so a bare-word `thoughtsignature` in unrelated text cannot
+ * hijack the schema_rejection branch.
+ */
+export const THOUGHT_SIGNATURE_SNAKE_PATTERN = /thought_signature/i;
+export const THOUGHT_SIGNATURE_CAMEL_PATTERN = /thoughtSignature/;
+
+/** True if the text carries either thought_signature variant (a schema rejection). */
+export function isThoughtSignatureRejection(errorText: string): boolean {
+  return (
+    THOUGHT_SIGNATURE_SNAKE_PATTERN.test(errorText) ||
+    THOUGHT_SIGNATURE_CAMEL_PATTERN.test(errorText)
+  );
+}
+
+/**
  * Matches a context-window overflow: the conversation/prompt no longer fits the
  * model's context window. A model-capability/length issue, NOT a provider-config
  * one (see PROVIDER_CONFIG_PATTERN's note on deliberately excluding bare
