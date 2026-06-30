@@ -5,8 +5,17 @@ vi.mock("next/headers", () => ({
 }));
 
 const mockRequireAdmin = vi.fn();
-vi.mock("@/lib/api-auth", () => ({
-  requireAdmin: (...args: unknown[]) => mockRequireAdmin(...args),
+vi.mock("@/lib/api-auth", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/lib/api-auth")>();
+  return {
+    ...actual,
+    requireAdmin: (...args: unknown[]) => mockRequireAdmin(...args),
+  };
+});
+
+const mockGetSession = vi.fn();
+vi.mock("@/lib/auth", () => ({
+  getSession: (...args: unknown[]) => mockGetSession(...args),
 }));
 
 const mockValidateTelegramBotToken = vi.fn();
@@ -50,6 +59,9 @@ vi.mock("@/db", () => ({
       from: vi.fn().mockReturnValue({
         where: vi.fn().mockResolvedValue([]),
       }),
+    }),
+    delete: vi.fn().mockReturnValue({
+      where: vi.fn().mockResolvedValue(undefined),
     }),
   },
 }));
@@ -365,6 +377,7 @@ describe("DELETE /api/agents/[agentId]/channels/telegram", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockRequireAdmin.mockResolvedValue(adminSession);
+    mockGetSession.mockResolvedValue(adminSession);
     vi.mocked(db.query.agents.findFirst).mockResolvedValue(mockAgent as any);
   });
 
@@ -393,23 +406,91 @@ describe("DELETE /api/agents/[agentId]/channels/telegram", () => {
     );
   });
 
-  it("returns 400 when trying to disconnect a personal agent's bot (and does not mutate channels.telegram)", async () => {
-    // updateTelegramChannelConfig must NOT be called — any write triggers an OC
-    // restart for nothing (see openclaw-config restart-state integration tests).
-    vi.mocked(db.query.agents.findFirst).mockResolvedValueOnce({
-      ...mockAgent,
-      isPersonal: true,
+  it("clears stale channel_links when the last Telegram bot is removed (#476 gap 3)", async () => {
+    // db.select().from().where() is mocked to resolve [] → no bot remains.
+    const response = await DELETE(new Request("http://localhost"), {
+      params: mockParams,
+    });
+    expect(response.status).toBe(200);
+    expect(db.delete).toHaveBeenCalled();
+  });
+
+  it("does not clear channel_links when other Telegram bots remain (#476 gap 3)", async () => {
+    vi.mocked(db.select).mockReturnValueOnce({
+      from: vi.fn().mockReturnValue({
+        where: vi.fn().mockResolvedValue([{ key: "telegram_bot_token:other" }]),
+      }),
     } as any);
 
     const response = await DELETE(new Request("http://localhost"), {
       params: mockParams,
     });
-    const data = await response.json();
+    expect(response.status).toBe(200);
+    expect(db.delete).not.toHaveBeenCalled();
+  });
 
-    expect(response.status).toBe(400);
-    expect(data.error).toContain("Remove Telegram for everyone");
+  it("allows an admin to disconnect a personal agent's bot (#476 gap 2)", async () => {
+    vi.mocked(db.query.agents.findFirst).mockResolvedValueOnce({
+      ...mockAgent,
+      isPersonal: true,
+      ownerId: "someone-else",
+    } as any);
+
+    const response = await DELETE(new Request("http://localhost"), {
+      params: mockParams,
+    });
+    expect(response.status).toBe(200);
+    expect(deleteSetting).toHaveBeenCalledWith("telegram_bot_token:agent-1");
+  });
+
+  it("allows a personal agent's owner (non-admin) to disconnect their own bot (#476 gap 2)", async () => {
+    vi.mocked(db.query.agents.findFirst).mockResolvedValueOnce({
+      ...mockAgent,
+      isPersonal: true,
+      ownerId: "user-2",
+    } as any);
+    mockGetSession.mockResolvedValueOnce({
+      user: { id: "user-2", role: "member" },
+    });
+
+    const response = await DELETE(new Request("http://localhost"), {
+      params: mockParams,
+    });
+    expect(response.status).toBe(200);
+    expect(deleteSetting).toHaveBeenCalledWith("telegram_bot_token:agent-1");
+  });
+
+  it("forbids a non-admin who is not the personal agent's owner (#476 gap 2)", async () => {
+    vi.mocked(db.query.agents.findFirst).mockResolvedValueOnce({
+      ...mockAgent,
+      isPersonal: true,
+      ownerId: "user-2",
+    } as any);
+    mockGetSession.mockResolvedValueOnce({
+      user: { id: "user-3", role: "member" },
+    });
+
+    const response = await DELETE(new Request("http://localhost"), {
+      params: mockParams,
+    });
+    expect(response.status).toBe(403);
     expect(deleteSetting).not.toHaveBeenCalled();
-    expect(mockUpdateTelegramChannelConfig).not.toHaveBeenCalled();
+  });
+
+  it("forbids a non-admin from disconnecting a shared agent's bot (#476 gap 2)", async () => {
+    vi.mocked(db.query.agents.findFirst).mockResolvedValueOnce({
+      ...mockAgent,
+      isPersonal: false,
+    } as any);
+    mockGetSession.mockResolvedValueOnce({
+      user: { id: "user-3", role: "member" },
+    });
+
+    const response = await DELETE(new Request("http://localhost"), {
+      params: mockParams,
+    });
+    expect(response.status).toBe(403);
+    expect(deleteSetting).not.toHaveBeenCalled();
   });
 
   it("returns 404 for non-existent agent", async () => {
@@ -425,9 +506,7 @@ describe("DELETE /api/agents/[agentId]/channels/telegram", () => {
   });
 
   it("returns 401 when not authenticated", async () => {
-    mockRequireAdmin.mockResolvedValueOnce(
-      NextResponse.json({ error: "Unauthorized" }, { status: 401 })
-    );
+    mockGetSession.mockResolvedValueOnce(null);
 
     const response = await DELETE(new Request("http://localhost"), {
       params: mockParams,

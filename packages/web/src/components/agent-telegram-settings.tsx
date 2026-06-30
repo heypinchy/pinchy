@@ -244,39 +244,33 @@ export function AgentTelegramSettings({
               Token ending in ····{config.hint}
             </p>
           )}
-          {isSmithers ? (
-            <p className="text-xs text-muted-foreground">
-              To disconnect this bot, use &quot;Remove Telegram for everyone&quot; in Settings.
-            </p>
-          ) : (
-            <AlertDialog>
-              <AlertDialogTrigger asChild>
-                <Button
-                  type="button"
-                  variant="ghost"
-                  className="text-destructive hover:text-destructive"
-                  disabled={removing}
-                >
-                  {removing ? "Disconnecting..." : "Disconnect"}
-                </Button>
-              </AlertDialogTrigger>
-              <AlertDialogContent>
-                <AlertDialogHeader>
-                  <AlertDialogTitle>Disconnect Telegram bot?</AlertDialogTitle>
-                  <AlertDialogDescription>
-                    This will remove the Telegram bot connection for this agent. Users will no
-                    longer be able to chat with the agent via Telegram.
-                  </AlertDialogDescription>
-                </AlertDialogHeader>
-                <AlertDialogFooter>
-                  <AlertDialogCancel>Cancel</AlertDialogCancel>
-                  <AlertDialogAction variant="destructive" onClick={handleDisconnect}>
-                    Disconnect
-                  </AlertDialogAction>
-                </AlertDialogFooter>
-              </AlertDialogContent>
-            </AlertDialog>
-          )}
+          <AlertDialog>
+            <AlertDialogTrigger asChild>
+              <Button
+                type="button"
+                variant="ghost"
+                className="text-destructive hover:text-destructive"
+                disabled={removing}
+              >
+                {removing ? "Disconnecting..." : "Disconnect"}
+              </Button>
+            </AlertDialogTrigger>
+            <AlertDialogContent>
+              <AlertDialogHeader>
+                <AlertDialogTitle>Disconnect Telegram bot?</AlertDialogTitle>
+                <AlertDialogDescription>
+                  This will remove the Telegram bot connection for this agent. Users will no longer
+                  be able to chat with the agent via Telegram.
+                </AlertDialogDescription>
+              </AlertDialogHeader>
+              <AlertDialogFooter>
+                <AlertDialogCancel>Cancel</AlertDialogCancel>
+                <AlertDialogAction variant="destructive" onClick={handleDisconnect}>
+                  Disconnect
+                </AlertDialogAction>
+              </AlertDialogFooter>
+            </AlertDialogContent>
+          </AlertDialog>
         </>
       ) : (
         <>
