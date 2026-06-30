@@ -12,14 +12,23 @@ let mockPathname = "/agents";
 
 vi.mock("next/navigation", () => ({
   usePathname: () => mockPathname,
+  useRouter: () => ({ push: vi.fn(), replace: vi.fn() }),
+}));
+
+const toastSuccessSpy = vi.fn();
+vi.mock("sonner", () => ({
+  toast: {
+    success: (...args: unknown[]) => toastSuccessSpy(...args),
+    error: vi.fn(),
+  },
 }));
 
 // Mock useWsRuntime to avoid opening real WebSockets in unit tests.
 const useWsRuntimeSpy = vi.fn();
 
 vi.mock("@/hooks/use-ws-runtime", () => ({
-  useWsRuntime: (agentId: string, chatId?: string) => {
-    useWsRuntimeSpy(agentId, chatId);
+  useWsRuntime: (agentId: string, chatId?: string, onSlashCommand?: (c: unknown) => void) => {
+    useWsRuntimeSpy(agentId, chatId, onSlashCommand);
     return {
       runtime: { __id: `rt-${agentId}` } as never,
       isRunning: mockIsRunning,
@@ -84,8 +93,8 @@ describe("ChatSessionMounts", () => {
     );
 
     // chatId is undefined for legacy (no-chatId) sessions (#508).
-    expect(useWsRuntimeSpy).toHaveBeenCalledWith("agent-A", undefined);
-    expect(useWsRuntimeSpy).toHaveBeenCalledWith("agent-B", undefined);
+    expect(useWsRuntimeSpy).toHaveBeenCalledWith("agent-A", undefined, expect.any(Function));
+    expect(useWsRuntimeSpy).toHaveBeenCalledWith("agent-B", undefined, expect.any(Function));
   });
 
   it("passes the chatId to useWsRuntime for a chat-scoped session (#508)", () => {
@@ -123,7 +132,56 @@ describe("ChatSessionMounts", () => {
       </ChatSessionProvider>
     );
 
-    expect(useWsRuntimeSpy).toHaveBeenCalledWith("agent-A", "chat-x");
+    expect(useWsRuntimeSpy).toHaveBeenCalledWith("agent-A", "chat-x", expect.any(Function));
+  });
+
+  it("wires a slash-command handler that surfaces /help via toast (#611)", () => {
+    function Visitor() {
+      const session = useChatSession("agent-A", "chat-x");
+      if (!session.bundle) {
+        session.publish({
+          agentId: "agent-A",
+          chatId: "chat-x",
+          runtime: { __id: "seed" } as never,
+          isRunning: false,
+          isConnected: false,
+          isHistoryLoaded: false,
+          isReconcilingMessages: false,
+          hasInitialContent: false,
+          isOpenClawConnected: false,
+          isDelayed: false,
+          reconnectExhausted: false,
+          payloadRejected: false,
+          isOrphaned: false,
+          onRetryContinue: vi.fn(),
+          onRetryResend: vi.fn(),
+          lastError: null,
+        } as any);
+      }
+      return null;
+    }
+
+    useWsRuntimeSpy.mockClear();
+    toastSuccessSpy.mockClear();
+
+    render(
+      <ChatSessionProvider>
+        <Visitor />
+        <ChatSessionMounts />
+      </ChatSessionProvider>
+    );
+
+    // The third arg passed to useWsRuntime is the slash-command handler.
+    const lastCall = useWsRuntimeSpy.mock.calls.at(-1);
+    expect(lastCall).toBeDefined();
+    const onSlashCommand = lastCall![2] as (c: { name: string }) => void;
+    expect(typeof onSlashCommand).toBe("function");
+
+    act(() => onSlashCommand({ name: "help" }));
+    expect(toastSuccessSpy).toHaveBeenCalledWith(
+      "Slash commands",
+      expect.objectContaining({ description: expect.stringContaining("/compact") })
+    );
   });
 
   it("keeps a mount alive when an unrelated child remounts", () => {
