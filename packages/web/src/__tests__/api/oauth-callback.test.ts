@@ -918,6 +918,28 @@ describe("GET /api/integrations/oauth/callback", () => {
       );
       expect(mockUpdateSet).not.toHaveBeenCalled();
     });
+
+    it("inserts with type='microsoft' when no oauth_pending_id cookie but oauth_provider=microsoft is set", async () => {
+      // No oauth_pending_id cookie at all — exercises the else branch that falls
+      // back to the oauth_provider cookie directly without doing a DB lookup.
+      await GET(
+        makeRequest(
+          { code: "ms-auth-code", state: VALID_STATE },
+          `oauth_state=${VALID_STATE}; oauth_provider=microsoft`
+        )
+      );
+
+      // No pending-record lookup should have happened
+      expect(mockSelectLimit).not.toHaveBeenCalled();
+
+      expect(mockValues).toHaveBeenCalledWith(
+        expect.objectContaining({
+          type: "microsoft",
+          name: "user@contoso.com",
+        })
+      );
+      expect(mockUpdateSet).not.toHaveBeenCalled();
+    });
   });
 
   describe("reconnect flow — state.reconnectConnectionId is set", () => {
