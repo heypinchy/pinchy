@@ -53,57 +53,69 @@ export type AuditDetail = Record<string, unknown>;
 
 // ── Better Auth tables ──────────────────────────────────────────────────
 
-export const users = pgTable("user", {
-  id: text("id")
-    .primaryKey()
-    .$defaultFn(() => crypto.randomUUID()),
-  name: text("name").notNull(),
-  email: text("email").notNull().unique(),
-  emailVerified: boolean("email_verified").notNull().default(false),
-  image: text("image"),
-  role: text("role").notNull().default("member"),
-  banned: boolean("banned").default(false),
-  banReason: text("ban_reason"),
-  banExpires: timestamp("ban_expires"),
-  context: text("context"),
-  createdAt: timestamp("created_at").notNull().defaultNow(),
-  updatedAt: timestamp("updated_at").notNull().defaultNow(),
-});
+export const users = pgTable(
+  "user",
+  {
+    id: text("id")
+      .primaryKey()
+      .$defaultFn(() => crypto.randomUUID()),
+    name: text("name").notNull(),
+    email: text("email").notNull().unique(),
+    emailVerified: boolean("email_verified").notNull().default(false),
+    image: text("image"),
+    role: text("role").notNull().default("member"),
+    banned: boolean("banned").default(false),
+    banReason: text("ban_reason"),
+    banExpires: timestamp("ban_expires"),
+    context: text("context"),
+    createdAt: timestamp("created_at").notNull().defaultNow(),
+    updatedAt: timestamp("updated_at").notNull().defaultNow(),
+  },
+  (table) => [check("users_role_check", sql`${table.role} IN ('admin', 'member')`)]
+);
 
-export const sessions = pgTable("session", {
-  id: text("id")
-    .primaryKey()
-    .$defaultFn(() => crypto.randomUUID()),
-  userId: text("user_id")
-    .notNull()
-    .references(() => users.id, { onDelete: "cascade" }),
-  token: text("token").notNull().unique(),
-  expiresAt: timestamp("expires_at").notNull(),
-  ipAddress: text("ip_address"),
-  userAgent: text("user_agent"),
-  createdAt: timestamp("created_at").notNull().defaultNow(),
-  updatedAt: timestamp("updated_at").notNull().defaultNow(),
-});
+export const sessions = pgTable(
+  "session",
+  {
+    id: text("id")
+      .primaryKey()
+      .$defaultFn(() => crypto.randomUUID()),
+    userId: text("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    token: text("token").notNull().unique(),
+    expiresAt: timestamp("expires_at").notNull(),
+    ipAddress: text("ip_address"),
+    userAgent: text("user_agent"),
+    createdAt: timestamp("created_at").notNull().defaultNow(),
+    updatedAt: timestamp("updated_at").notNull().defaultNow(),
+  },
+  (table) => [index("sessions_user_id_idx").on(table.userId)]
+);
 
-export const accounts = pgTable("account", {
-  id: text("id")
-    .primaryKey()
-    .$defaultFn(() => crypto.randomUUID()),
-  userId: text("user_id")
-    .notNull()
-    .references(() => users.id, { onDelete: "cascade" }),
-  accountId: text("account_id").notNull(),
-  providerId: text("provider_id").notNull(),
-  accessToken: text("access_token"),
-  refreshToken: text("refresh_token"),
-  accessTokenExpiresAt: timestamp("access_token_expires_at"),
-  refreshTokenExpiresAt: timestamp("refresh_token_expires_at"),
-  scope: text("scope"),
-  idToken: text("id_token"),
-  password: text("password"),
-  createdAt: timestamp("created_at").notNull().defaultNow(),
-  updatedAt: timestamp("updated_at").notNull().defaultNow(),
-});
+export const accounts = pgTable(
+  "account",
+  {
+    id: text("id")
+      .primaryKey()
+      .$defaultFn(() => crypto.randomUUID()),
+    userId: text("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    accountId: text("account_id").notNull(),
+    providerId: text("provider_id").notNull(),
+    accessToken: text("access_token"),
+    refreshToken: text("refresh_token"),
+    accessTokenExpiresAt: timestamp("access_token_expires_at"),
+    refreshTokenExpiresAt: timestamp("refresh_token_expires_at"),
+    scope: text("scope"),
+    idToken: text("id_token"),
+    password: text("password"),
+    createdAt: timestamp("created_at").notNull().defaultNow(),
+    updatedAt: timestamp("updated_at").notNull().defaultNow(),
+  },
+  (table) => [index("accounts_user_id_idx").on(table.userId)]
+);
 
 export const verification = pgTable("verification", {
   id: text("id")
@@ -141,10 +153,13 @@ export const agents = pgTable(
     tagline: text("tagline"),
     avatarSeed: text("avatar_seed"),
     personalityPresetId: text("personality_preset_id"),
-    createdAt: timestamp("created_at").defaultNow(),
+    createdAt: timestamp("created_at").notNull().defaultNow(),
     deletedAt: timestamp("deleted_at"),
   },
-  (table) => [index("agents_owner_id_idx").on(table.ownerId)]
+  (table) => [
+    index("agents_owner_id_idx").on(table.ownerId),
+    check("agents_visibility_check", sql`${table.visibility} IN ('restricted', 'all')`),
+  ]
 );
 
 export const groups = pgTable("groups", {
@@ -167,7 +182,10 @@ export const userGroups = pgTable(
       .notNull()
       .references(() => groups.id, { onDelete: "cascade" }),
   },
-  (table) => [primaryKey({ columns: [table.userId, table.groupId] })]
+  (table) => [
+    primaryKey({ columns: [table.userId, table.groupId] }),
+    index("user_groups_group_id_idx").on(table.groupId),
+  ]
 );
 
 export const agentGroups = pgTable(
@@ -180,25 +198,44 @@ export const agentGroups = pgTable(
       .notNull()
       .references(() => groups.id, { onDelete: "cascade" }),
   },
-  (table) => [primaryKey({ columns: [table.agentId, table.groupId] })]
+  (table) => [
+    primaryKey({ columns: [table.agentId, table.groupId] }),
+    index("agent_groups_group_id_idx").on(table.groupId),
+  ]
 );
 
-export const invites = pgTable("invites", {
-  id: text("id")
-    .primaryKey()
-    .$defaultFn(() => crypto.randomUUID()),
-  tokenHash: text("token_hash").notNull().unique(),
-  email: text("email"),
-  role: text("role").notNull().default("member"),
-  type: text("type").notNull().default("invite"),
-  createdBy: text("created_by")
-    .notNull()
-    .references(() => users.id, { onDelete: "cascade" }),
-  createdAt: timestamp("created_at").defaultNow(),
-  expiresAt: timestamp("expires_at").notNull(),
-  claimedAt: timestamp("claimed_at"),
-  claimedByUserId: text("claimed_by_user_id").references(() => users.id),
-});
+export const invites = pgTable(
+  "invites",
+  {
+    id: text("id")
+      .primaryKey()
+      .$defaultFn(() => crypto.randomUUID()),
+    tokenHash: text("token_hash").notNull().unique(),
+    email: text("email"),
+    role: text("role").notNull().default("member"),
+    type: text("type").notNull().default("invite"),
+    createdBy: text("created_by")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    createdAt: timestamp("created_at").notNull().defaultNow(),
+    expiresAt: timestamp("expires_at").notNull(),
+    claimedAt: timestamp("claimed_at"),
+    // `set null` (not cascade): deleting a user who claimed an invite keeps
+    // the historical invite record (who was invited, by whom, when claimed)
+    // and only nulls the claimer reference. Every other user-FK cascades, but
+    // invites are audit-relevant history — cascading would lose the trail.
+    claimedByUserId: text("claimed_by_user_id").references(() => users.id, {
+      onDelete: "set null",
+    }),
+  },
+  (table) => [
+    check("invites_role_check", sql`${table.role} IN ('admin', 'member')`),
+    check("invites_type_check", sql`${table.type} IN ('invite', 'reset')`),
+    index("invites_created_by_idx").on(table.createdBy),
+    index("invites_claimed_by_user_id_idx").on(table.claimedByUserId),
+    index("invites_email_expires_at_idx").on(table.email, table.expiresAt),
+  ]
+);
 
 export const inviteGroups = pgTable(
   "invite_groups",
@@ -351,6 +388,9 @@ export const auditLog = pgTable(
     index("idx_audit_actor").on(table.actorId),
     index("idx_audit_event").on(table.eventType),
     index("idx_audit_outcome").on(table.outcome),
+    // Typical audit query: filter by resource, order by time descending. A
+    // backward scan of this composite index serves it without a sort.
+    index("idx_audit_resource_timestamp").on(table.resource, table.timestamp),
     check(
       "audit_log_v2_outcome_required",
       sql`${table.version} = 1 OR ${table.outcome} IS NOT NULL`
@@ -360,21 +400,34 @@ export const auditLog = pgTable(
 
 // ── Integration Connections ──────────────────────────────────────────
 
-export const integrationConnections = pgTable("integration_connections", {
-  id: text("id")
-    .primaryKey()
-    .$defaultFn(() => crypto.randomUUID()),
-  type: text("type").notNull(), // 'odoo', future: 'shopify', 'datev'
-  name: text("name").notNull(),
-  description: text("description").notNull().default(""),
-  credentials: text("credentials").notNull(), // AES-256-GCM encrypted JSON
-  data: jsonb("data"), // Type-specific, Zod-validated (schema cache)
-  status: text("status").notNull().default("active"), // 'active' | 'pending' | 'auth_failed'
-  lastError: text("last_error"),
-  lastErrorAt: timestamp("last_error_at"),
-  createdAt: timestamp("created_at").defaultNow(),
-  updatedAt: timestamp("updated_at").defaultNow(),
-});
+export const integrationConnections = pgTable(
+  "integration_connections",
+  {
+    id: text("id")
+      .primaryKey()
+      .$defaultFn(() => crypto.randomUUID()),
+    type: text("type").notNull(), // 'odoo', 'web-search', 'google', 'microsoft', 'imap'
+    name: text("name").notNull(),
+    description: text("description").notNull().default(""),
+    credentials: text("credentials").notNull(), // AES-256-GCM encrypted JSON
+    data: jsonb("data"), // Type-specific, Zod-validated (schema cache)
+    status: text("status").notNull().default("active"), // 'active' | 'pending' | 'auth_failed'
+    lastError: text("last_error"),
+    lastErrorAt: timestamp("last_error_at"),
+    createdAt: timestamp("created_at").notNull().defaultNow(),
+    updatedAt: timestamp("updated_at").notNull().defaultNow(),
+  },
+  (table) => [
+    check(
+      "integration_connections_type_check",
+      sql`${table.type} IN ('odoo', 'web-search', 'google', 'microsoft', 'imap')`
+    ),
+    check(
+      "integration_connections_status_check",
+      sql`${table.status} IN ('active', 'pending', 'auth_failed')`
+    ),
+  ]
+);
 
 export const agentConnectionPermissions = pgTable(
   "agent_connection_permissions",
@@ -435,6 +488,11 @@ export const usageRecords = pgTable(
     index("idx_usage_user").on(table.userId),
     index("idx_usage_agent").on(table.agentId),
     index("idx_usage_session_key").on(table.sessionKey),
+    // "Usage for this user/agent over the last 30 days" is the hot query —
+    // composite (entity, timestamp) indexes serve it via a backward scan
+    // without a sort, supplementing the single-column indexes above.
+    index("idx_usage_user_timestamp").on(table.userId, table.timestamp),
+    index("idx_usage_agent_timestamp").on(table.agentId, table.timestamp),
     // Idempotent per-turn inserts: one row per (session, run). A plain unique
     // index suffices — Postgres treats NULLs as distinct (default NULLS
     // DISTINCT), so per-turn rows (run_id NOT NULL) dedup while the gauge poller
