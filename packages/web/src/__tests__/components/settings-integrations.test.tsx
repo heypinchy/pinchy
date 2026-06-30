@@ -147,6 +147,62 @@ describe("SettingsIntegrations — auth_failed state", () => {
   });
 });
 
+describe("SettingsIntegrations — pending OAuth connections", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("shows 'Setup in progress' for Microsoft pending connection", async () => {
+    const fetchSpy = mockFetchConnections([
+      {
+        id: "ms-pending-1",
+        type: "microsoft",
+        name: "Microsoft (connecting...)",
+        description: "",
+        credentials: "{}",
+        status: "pending",
+        lastError: null,
+        lastErrorAt: null,
+        data: null,
+        createdAt: "2026-06-30T10:00:00Z",
+        updatedAt: "2026-06-30T10:00:00Z",
+        cannotDecrypt: false,
+      },
+    ]);
+    render(<SettingsIntegrations />);
+    await waitFor(() => {
+      expect(screen.getByText("Setup in progress")).toBeInTheDocument();
+    });
+    expect(screen.queryByText("Connected")).not.toBeInTheDocument();
+    fetchSpy.mockRestore();
+  });
+
+  it("shows 'Setup in progress' for Google pending connection (existing behavior preserved)", async () => {
+    const fetchSpy = mockFetchConnections([
+      {
+        id: "goog-pending-1",
+        type: "google",
+        name: "Google (connecting...)",
+        description: "",
+        credentials: "{}",
+        status: "pending",
+        lastError: null,
+        lastErrorAt: null,
+        data: null,
+        createdAt: "2026-06-30T10:00:00Z",
+        updatedAt: "2026-06-30T10:00:00Z",
+        cannotDecrypt: false,
+      },
+    ]);
+    render(<SettingsIntegrations />);
+    await waitFor(() => {
+      expect(screen.getByText("Setup in progress")).toBeInTheDocument();
+    });
+    expect(screen.queryByText("Connected")).not.toBeInTheDocument();
+    fetchSpy.mockRestore();
+  });
+});
+
 describe("SettingsIntegrations — OAuth callback errors", () => {
   beforeEach(() => {
     vi.clearAllMocks();
