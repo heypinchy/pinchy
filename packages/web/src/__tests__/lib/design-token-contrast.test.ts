@@ -93,6 +93,13 @@ describe("design token contrast invariants (globals.css)", () => {
         expect(contrastRatio(fg, bg)).toBeGreaterThanOrEqual(AA_NORMAL);
       });
 
+      it("destructive-foreground on destructive meets WCAG AA (! badge on error red)", () => {
+        const tokens = tokensIn(re, selector);
+        const fg = token(tokens, "destructive-foreground");
+        const bg = token(tokens, "destructive");
+        expect(contrastRatio(fg, bg)).toBeGreaterThanOrEqual(AA_NORMAL);
+      });
+
       // Orange link/body text + the radio-group indicator sit on these solid
       // surfaces. (Tinted backgrounds like bg-primary/10 only nudge the surface
       // toward orange — they keep more headroom than the solid case, so the
