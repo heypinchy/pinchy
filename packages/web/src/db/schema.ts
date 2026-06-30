@@ -136,6 +136,11 @@ export const agents = pgTable(
     skills: jsonb("skills").$type<string[]>().notNull().default([]),
     ownerId: text("owner_id").references(() => users.id, { onDelete: "cascade" }),
     isPersonal: boolean("is_personal").notNull().default(false),
+    // Read-only mode (issue #571): when true, the config build drops every
+    // powerful tool from this agent's allowlist — a one-switch "look, don't
+    // touch" guarantee that overrides per-integration write grants. Enforced
+    // in regenerateOpenClawConfig via filterReadOnlyToolIds.
+    readOnly: boolean("read_only").notNull().default(false),
     visibility: text("visibility").notNull().default("restricted"),
     greetingMessage: text("greeting_message").notNull(),
     tagline: text("tagline"),

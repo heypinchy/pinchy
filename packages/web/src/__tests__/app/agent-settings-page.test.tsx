@@ -69,6 +69,7 @@ const agentData = {
   model: "anthropic/claude-sonnet-4-6",
   isPersonal: false,
   allowedTools: [],
+  readOnly: false,
   pluginConfig: null,
   tagline: "A test agent",
   avatarSeed: "seed-1",
@@ -308,7 +309,7 @@ describe("AgentSettingsPage", () => {
     // Simulate permissions tab dirty with empty integrations (no connections configured)
     act(() => {
       _capturedOnChangePermissions?.(
-        { allowedTools: [], allowedPaths: [], integrations: [] },
+        { allowedTools: [], allowedPaths: [], readOnly: false, integrations: [] },
         true
       );
     });
@@ -347,6 +348,7 @@ describe("AgentSettingsPage", () => {
         {
           allowedTools: [],
           allowedPaths: [],
+          readOnly: false,
           integrations: [
             {
               connectionId: "conn-1",
@@ -395,6 +397,7 @@ describe("AgentSettingsPage", () => {
         {
           allowedTools: ["email_draft"],
           allowedPaths: [],
+          readOnly: false,
           integrations: [
             {
               connectionId: "conn-1",

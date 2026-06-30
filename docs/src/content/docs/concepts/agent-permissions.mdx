@@ -74,6 +74,14 @@ The Permissions tab shows all available tools grouped by category. Check or unch
 The Permissions tab is only visible to admins and only for shared agents. Personal agents (the auto-created Smithers each user gets) don't have this tab — they run with default tools only.
 :::
 
+### Read-only mode
+
+At the top of the Permissions tab there is a **Read-only mode** switch. Turning it on restricts the agent to read-only tools in one step — a crisp "this agent can look, but not touch" guarantee that is easy to reason about and to audit.
+
+When read-only mode is on, every powerful tool is dropped from the agent's OpenClaw allow-list at config-build time, regardless of what the per-integration sections below grant: file writes (`pinchy_write`), web search and fetch, Odoo create/write/delete and the governed action tools, and email draft/send. The read-only tools (file listing/reading, Odoo read/count/aggregate/list/describe, email list/read/search) and the read-only built-ins (memory, PDF/image reading, session status) stay available.
+
+This is a layer on top of the per-tool checkboxes, not a replacement for them. It overrides them: even if an admin has granted `pinchy_write` or Odoo write access in the sections below, a read-only agent cannot use those tools. Turn the switch off to configure write access again. The per-integration sections are disabled while read-only mode is on so the UI reflects what the agent can actually do.
+
 For the full list of tabs in Agent Settings and who sees which, see [Agent Settings](/concepts/agent-settings/).
 
 ### Configuring directory access

@@ -13,7 +13,7 @@ import {
   channelLinks,
 } from "@/db/schema";
 import { getSetting } from "@/lib/settings";
-import { computeAllowedTools } from "@/lib/tool-registry";
+import { computeAllowedTools, filterReadOnlyToolIds } from "@/lib/tool-registry";
 import type { AgentPluginConfig } from "@/db/schema";
 import { TOOL_CAPABLE_OLLAMA_CLOUD_MODELS, OLLAMA_CLOUD_COST } from "@/lib/ollama-cloud-models";
 import { getModelCatalogForProvider } from "@/lib/openclaw-builtin-models";
@@ -316,9 +316,21 @@ export async function regenerateOpenClawConfig() {
     // `tools.fs.workspaceOnly` confines the built-in `pdf`/`image` tools to the
     // agent's own workspace; without it they would have unrestricted
     // host-filesystem access (CISO-review note, PR #316).
-    const allowedTools = (agent.allowedTools as string[]) || [];
+    //
+    // Read-only mode (issue #571): when `agent.readOnly` is set, drop every
+    // powerful tool from both the per-agent allowlist and the downstream
+    // conditional logic. The allowlist is the outer boundary (full ∩ allow),
+    // so filtering it here denies write/web/odoo-write/email-send tools
+    // regardless of what the per-integration plugin config grants — a crisp
+    // "this agent can look but not touch" guarantee. Safe tools and the
+    // read-only built-ins (memory/pdf/image/session_status) survive.
+    const isReadOnly = !!agent.readOnly;
+    const allowedTools = isReadOnly
+      ? filterReadOnlyToolIds((agent.allowedTools as string[]) || [])
+      : (agent.allowedTools as string[]) || [];
+    const allow = isReadOnly ? filterReadOnlyToolIds(computeAllowedTools()) : computeAllowedTools();
     agentEntry.tools = {
-      allow: computeAllowedTools(),
+      allow,
       fs: { workspaceOnly: true },
     };
 
@@ -759,7 +771,12 @@ export async function regenerateOpenClawConfig() {
     const webAgentConfigs: Record<string, Record<string, unknown>> = {};
 
     for (const agent of liveAgents) {
-      const allowedTools = (agent.allowedTools as string[]) || [];
+      // Read-only agents never get web tools (pinchy_web_search/fetch are
+      // powerful — see issue #571). Filter before detecting so a read-only
+      // flag flip doesn't leave a stale web plugin config wired up.
+      const allowedTools = agent.readOnly
+        ? filterReadOnlyToolIds((agent.allowedTools as string[]) || [])
+        : (agent.allowedTools as string[]) || [];
       const hasWebSearch = allowedTools.includes("pinchy_web_search");
       const hasWebFetch = allowedTools.includes("pinchy_web_fetch");
 

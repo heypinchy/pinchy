@@ -6,6 +6,7 @@ import { Label } from "@/components/ui/label";
 import { DirectoryPicker } from "@/components/directory-picker";
 import {
   getToolsByCategory,
+  filterReadOnlyToolIds,
   getOdooToolsForAccessLevel,
   getEmailToolsForOperations,
 } from "@/lib/tool-registry";
@@ -18,6 +19,7 @@ import type { AgentPluginConfig } from "@/db/schema";
 export interface PermissionsValues {
   allowedTools: string[];
   allowedPaths: string[];
+  readOnly: boolean;
   integrations: Array<{
     connectionId: string;
     permissions: Array<{ model: string; operation: string }>;
@@ -39,6 +41,7 @@ interface AgentSettingsPermissionsProps {
   agent: {
     id: string;
     allowedTools: string[];
+    readOnly: boolean;
     pluginConfig: AgentPluginConfig | null;
   };
   directories: Array<{ path: string; name: string }>;
@@ -85,10 +88,12 @@ export function AgentSettingsPermissions({
   const [webSearchConfig, setWebSearchConfig] = useState<AgentPluginConfig["pinchy-web"]>(
     agent.pluginConfig?.["pinchy-web"] ?? {}
   );
+  const [readOnly, setReadOnly] = useState<boolean>(!!agent.readOnly);
 
   const initialKbToolsRef = useRef(initialKbTools);
   const initialAllowedPaths = useRef(agent.pluginConfig?.["pinchy-files"]?.allowed_paths ?? []);
   const initialWebSearchConfig = useRef(agent.pluginConfig?.["pinchy-web"] ?? {});
+  const initialReadOnly = useRef(!!agent.readOnly);
 
   // Re-sync the "initial" snapshot when the agent prop changes (the parent
   // refetches the agent after a successful save, so the prop now reflects the
@@ -103,7 +108,8 @@ export function AgentSettingsPermissions({
     );
     initialAllowedPaths.current = agent.pluginConfig?.["pinchy-files"]?.allowed_paths ?? [];
     initialWebSearchConfig.current = agent.pluginConfig?.["pinchy-web"] ?? {};
-  }, [agent.allowedTools, agent.pluginConfig]);
+    initialReadOnly.current = !!agent.readOnly;
+  }, [agent.allowedTools, agent.pluginConfig, agent.readOnly]);
 
   const hasWebToolChecked = webTools.some((tool) => allowedKbTools.includes(tool.id));
 
@@ -168,9 +174,14 @@ export function AgentSettingsPermissions({
         emailToolIds = getEmailToolsForOperations(email.permissions.map((p) => p.operation));
       }
 
-      return [...currentKbTools, ...odooToolIds, ...emailToolIds];
+      const combined = [...currentKbTools, ...odooToolIds, ...emailToolIds];
+      // Read-only mode drops every powerful tool from the saved allowlist, so
+      // the persisted value already reflects what the build will emit. The
+      // build layer (filterReadOnlyToolIds) is the real guarantee; this keeps
+      // the stored value honest and the dirty-state comparison stable.
+      return readOnly ? filterReadOnlyToolIds(combined) : combined;
     },
-    []
+    [readOnly]
   );
 
   // Notify parent after every state change (and on mount)
@@ -183,7 +194,8 @@ export function AgentSettingsPermissions({
         JSON.stringify([...initialAllowedPaths.current].sort());
     const webConfigDirty =
       JSON.stringify(webSearchConfig) !== JSON.stringify(initialWebSearchConfig.current);
-    const isDirty = kbDirty || odooIsDirty || emailIsDirty || webConfigDirty;
+    const readOnlyDirty = readOnly !== initialReadOnly.current;
+    const isDirty = kbDirty || odooIsDirty || emailIsDirty || webConfigDirty || readOnlyDirty;
     // Collect all active integrations
     const integrations: Array<{
       connectionId: string;
@@ -195,6 +207,7 @@ export function AgentSettingsPermissions({
       {
         allowedTools: allAllowedTools,
         allowedPaths,
+        readOnly,
         integrations,
         webSearchConfig,
       },
@@ -203,6 +216,7 @@ export function AgentSettingsPermissions({
   }, [
     allowedKbTools,
     allowedPaths,
+    readOnly,
     odooIntegration,
     odooIsDirty,
     emailIntegration,
@@ -250,6 +264,36 @@ export function AgentSettingsPermissions({
 
   return (
     <div className="space-y-8">
+      {/* Read-only mode — single switch that restricts this agent to read-only
+          tools. Enforced at config-build time (filterReadOnlyToolIds drops
+          every powerful tool from the allowlist regardless of per-integration
+          grants). See issue #571. */}
+      {isAdmin && (
+        <section className="space-y-3 rounded-md border p-4">
+          <div className="flex items-start space-x-3">
+            <Checkbox
+              id="agent-read-only"
+              checked={readOnly}
+              onCheckedChange={(checked) => setReadOnly(checked === true)}
+              aria-label="Read-only mode"
+            />
+            <Label htmlFor="agent-read-only" className="cursor-pointer">
+              <span className="font-medium">Read-only mode</span>
+              <span className="block text-sm text-muted-foreground">
+                Restrict this agent to read-only tools. All write, web, and integration write tools
+                are disabled — even if granted below.
+              </span>
+            </Label>
+          </div>
+          {readOnly && (
+            <p className="text-sm text-muted-foreground">
+              Read-only mode is on. Write tools below are disabled; turn it off to configure write
+              access.
+            </p>
+          )}
+        </section>
+      )}
+
       {/* Knowledge Base section */}
       <section className="space-y-4">
         <h3 className="text-lg font-semibold">Knowledge Base</h3>
@@ -293,9 +337,13 @@ export function AgentSettingsPermissions({
               id={`tool-${tool.id}`}
               checked={allowedKbTools.includes(tool.id)}
               onCheckedChange={() => handleToolToggle(tool.id)}
+              disabled={readOnly}
               aria-label={tool.label}
             />
-            <Label htmlFor={`tool-${tool.id}`} className="cursor-pointer">
+            <Label
+              htmlFor={`tool-${tool.id}`}
+              className={readOnly ? "cursor-not-allowed opacity-60" : "cursor-pointer"}
+            >
               <span className="font-medium">{tool.label}</span>
               <span className="text-sm text-muted-foreground ml-2">{tool.description}</span>
             </Label>
@@ -314,9 +362,13 @@ export function AgentSettingsPermissions({
                   id={`tool-${tool.id}`}
                   checked={allowedKbTools.includes(tool.id)}
                   onCheckedChange={() => handleToolToggle(tool.id)}
+                  disabled={readOnly}
                   aria-label={tool.label}
                 />
-                <Label htmlFor={`tool-${tool.id}`} className="cursor-pointer">
+                <Label
+                  htmlFor={`tool-${tool.id}`}
+                  className={readOnly ? "cursor-not-allowed opacity-60" : "cursor-pointer"}
+                >
                   <span className="font-medium">{tool.label}</span>
                   <span className="text-sm text-muted-foreground ml-2">{tool.description}</span>
                 </Label>
@@ -324,7 +376,7 @@ export function AgentSettingsPermissions({
             ))}
           </div>
 
-          {hasWebToolChecked && (
+          {hasWebToolChecked && !readOnly && (
             <WebSearchPermissionSection
               config={webSearchConfig ?? {}}
               onChange={handleWebSearchConfigChange}
@@ -338,11 +390,13 @@ export function AgentSettingsPermissions({
       {showOdoo && (
         <section className="space-y-4">
           <h3 className="text-lg font-semibold">Odoo</h3>
-          <OdooPermissionSection
-            agentId={agent.id}
-            connections={odooConnections}
-            onChange={handleOdooChange}
-          />
+          <fieldset disabled={readOnly}>
+            <OdooPermissionSection
+              agentId={agent.id}
+              connections={odooConnections}
+              onChange={handleOdooChange}
+            />
+          </fieldset>
         </section>
       )}
 
@@ -350,11 +404,13 @@ export function AgentSettingsPermissions({
       {showEmail && (
         <section className="space-y-4">
           <h3 className="text-lg font-semibold">Email</h3>
-          <EmailPermissionSection
-            agentId={agent.id}
-            connections={emailConnections}
-            onChange={handleEmailChange}
-          />
+          <fieldset disabled={readOnly}>
+            <EmailPermissionSection
+              agentId={agent.id}
+              connections={emailConnections}
+              onChange={handleEmailChange}
+            />
+          </fieldset>
         </section>
       )}
 

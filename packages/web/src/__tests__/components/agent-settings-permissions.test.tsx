@@ -113,6 +113,7 @@ describe("AgentSettingsPermissions", () => {
     model: "anthropic/claude-sonnet-4-6",
     isPersonal: false,
     allowedTools: [] as string[],
+    readOnly: false,
     pluginConfig: null as import("@/db/schema").AgentPluginConfig | null,
   };
 
@@ -539,7 +540,13 @@ describe("AgentSettingsPermissions", () => {
       );
 
       expect(onChange).toHaveBeenCalledWith(
-        { allowedTools: [], allowedPaths: [], integrations: [], webSearchConfig: {} },
+        {
+          allowedTools: [],
+          allowedPaths: [],
+          readOnly: false,
+          integrations: [],
+          webSearchConfig: {},
+        },
         false
       );
     });
@@ -599,6 +606,56 @@ describe("AgentSettingsPermissions", () => {
       />
     );
     expect(screen.getByLabelText("Write files")).toBeInTheDocument();
+  });
+
+  describe("read-only mode", () => {
+    it("disables powerful tool checkboxes when readOnly is on", () => {
+      render(
+        <AgentSettingsPermissions
+          agent={{ ...defaultAgent, readOnly: true }}
+          directories={[]}
+          connections={[]}
+          isAdmin={true}
+          onChange={vi.fn()}
+        />
+      );
+      // pinchy_write is a powerful KB tool — must be disabled in read-only mode.
+      const writeCheckbox = screen.getByLabelText("Write files");
+      expect(writeCheckbox).toBeDisabled();
+    });
+
+    it("drops powerful tools from the emitted allowedTools when readOnly is on", () => {
+      const onChange = vi.fn();
+      render(
+        <AgentSettingsPermissions
+          // Agent has pinchy_write granted, but read-only mode is on.
+          agent={{ ...defaultAgent, readOnly: true, allowedTools: ["pinchy_write"] }}
+          directories={[]}
+          connections={[]}
+          isAdmin={true}
+          onChange={onChange}
+        />
+      );
+
+      const lastCall = onChange.mock.calls.at(-1);
+      expect(lastCall).toBeDefined();
+      const [values] = lastCall!;
+      expect(values.allowedTools).not.toContain("pinchy_write");
+      expect(values.readOnly).toBe(true);
+    });
+
+    it("renders the read-only mode toggle for admins", () => {
+      render(
+        <AgentSettingsPermissions
+          agent={defaultAgent}
+          directories={[]}
+          connections={[]}
+          isAdmin={true}
+          onChange={vi.fn()}
+        />
+      );
+      expect(screen.getByLabelText("Read-only mode")).toBeInTheDocument();
+    });
   });
 
   it("does not render pinchy_ls or pinchy_read toggles", () => {

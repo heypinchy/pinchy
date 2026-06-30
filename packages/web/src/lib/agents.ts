@@ -21,6 +21,7 @@ export interface UpdateAgentInput {
   avatarSeed?: string | null;
   personalityPresetId?: string | null;
   visibility?: string;
+  readOnly?: boolean;
 }
 
 export async function deleteAgent(id: string) {
@@ -52,6 +53,7 @@ const OPENCLAW_CONFIG_FIELDS: (keyof UpdateAgentInput)[] = [
   "model",
   "allowedTools",
   "pluginConfig",
+  "readOnly",
 ];
 
 export async function updateAgent(id: string, data: UpdateAgentInput) {
