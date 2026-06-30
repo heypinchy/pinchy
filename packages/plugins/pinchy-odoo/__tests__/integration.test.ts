@@ -795,3 +795,214 @@ describe("pinchy-odoo multi-company journal resolution (bare ref + scoped lookup
     });
   });
 });
+
+// Nested many2one resolution inside one2many command tuples (issue #615):
+// account.move created with `line_ids: [[0, 0, { account_id, debit, credit }]]`
+// must decode bare _pinchy_ref strings and company-scope nested name lookups,
+// enforce the cross-company guard on line-level refs, and require a
+// account.move.line grant. End-to-end through the real mock-odoo (which now
+// materializes [0,0,{…}] tuples into account.move.line rows and validates m2o
+// field types the way Odoo does).
+describe("pinchy-odoo nested line_ids resolution (#615)", () => {
+  const nestedAgentId = "agent-nested";
+  const nestedConnectionId = "conn-nested";
+  const nestedConfig = {
+    connectionId: nestedConnectionId,
+    permissions: {
+      "res.company": ["read"],
+      "account.journal": ["read"],
+      "account.account": ["read"],
+      "account.move": ["read", "create"],
+      "account.move.line": ["read", "create", "write", "delete"],
+    },
+  };
+
+  beforeAll(async () => {
+    credentialsByConnectionId.set(nestedConnectionId, {
+      url: `http://127.0.0.1:${mockOdoo.jsonRpcPort}`,
+      db: "testdb",
+      uid: 2,
+      apiKey: "test-api-key",
+    });
+  });
+
+  beforeEach(async () => {
+    // Reset per test so line-count assertions are isolated (the mock
+    // otherwise accumulates account.move.line rows across tests).
+    await fetch(`http://127.0.0.1:${mockOdoo.controlPort}/control/reset`, {
+      method: "POST",
+    });
+  });
+
+  function ref(
+    model: string,
+    id: number,
+    label: string,
+    companyId?: number,
+    companyLabel?: string,
+  ): string {
+    return encodeRef({
+      integrationType: "odoo",
+      connectionId: nestedConnectionId,
+      model,
+      id,
+      label,
+      ...(companyId !== undefined && companyLabel !== undefined
+        ? { companyId, companyLabel }
+        : {}),
+    });
+  }
+
+  async function readBack(model: string): Promise<Array<Record<string, unknown>>> {
+    return (await fetch(
+      `http://127.0.0.1:${mockOdoo.controlPort}/control/records?model=${model}`,
+    ).then((res) => res.json())) as Array<Record<string, unknown>>;
+  }
+
+  it("decodes a bare _pinchy_ref nested in line_ids[].account_id and materializes the line", async () => {
+    const companyRef = ref("res.company", 1, "Helmcraft GmbH", 1, "Helmcraft GmbH");
+    const accountRef = ref("account.account", 42, "1000 Bank [Helmcraft GmbH]", 1, "Helmcraft GmbH");
+
+    const tools = createApi({ [nestedAgentId]: nestedConfig });
+    const tool = findTool(tools, "odoo_create", nestedAgentId);
+    const result = await tool.execute("nested-bare", {
+      model: "account.move",
+      values: {
+        ref: "Eröffnung per 01.01.2026",
+        date: "2026-01-01",
+        move_type: "entry",
+        company_id: { ref: companyRef },
+        journal_id: "Miscellaneous Operations",
+        line_ids: [[0, 0, { account_id: accountRef, debit: 466.65, credit: 0, name: "Eröffnung" }]],
+      },
+    });
+
+    expect(result.isError).toBeFalsy();
+    const { id } = JSON.parse(result.content[0].text) as { id: number };
+    const lines = await readBack("account.move.line");
+    const line = lines.find((l) => l.move_id && (l.move_id as [number, string])[0] === id);
+    expect(line).toBeDefined();
+    expect(line!.account_id).toBe(42); // decoded bare ref → numeric id
+  });
+
+  it("scopes a nested account_id name lookup by the move's company", async () => {
+    const companyRef = ref("res.company", 1, "Helmcraft GmbH", 1, "Helmcraft GmbH");
+
+    const tools = createApi({ [nestedAgentId]: nestedConfig });
+    const tool = findTool(tools, "odoo_create", nestedAgentId);
+    const result = await tool.execute("nested-scoped", {
+      model: "account.move",
+      values: {
+        ref: "Bank booking",
+        date: "2026-01-01",
+        move_type: "entry",
+        company_id: { ref: companyRef },
+        journal_id: "Miscellaneous Operations",
+        // "Bank" exists in both companies (account 42 in co 1, 77 in co 2);
+        // the scope must pick 42.
+        line_ids: [[0, 0, { account_id: "Bank", debit: 100, credit: 0 }]],
+      },
+    });
+
+    expect(result.isError).toBeFalsy();
+    const lines = await readBack("account.move.line");
+    const created = lines.filter((l) => (l.account_id as number) === 42 || (l.account_id as number) === 77);
+    expect(created.every((l) => l.account_id === 42)).toBe(true);
+  });
+
+  it("rejects a cross-company bare ref nested in line_ids end-to-end", async () => {
+    const companyRefA = ref("res.company", 1, "Helmcraft GmbH", 1, "Helmcraft GmbH");
+    const accountRefB = ref("account.account", 77, "1000 Bank [Clemens Helm]", 2, "Clemens Helm");
+
+    const tools = createApi({ [nestedAgentId]: nestedConfig });
+    const tool = findTool(tools, "odoo_create", nestedAgentId);
+    const result = await tool.execute("nested-xc", {
+      model: "account.move",
+      values: {
+        ref: "should be rejected",
+        date: "2026-01-01",
+        move_type: "entry",
+        company_id: { ref: companyRefA },
+        journal_id: "Miscellaneous Operations",
+        line_ids: [[0, 0, { account_id: accountRefB, debit: 100, credit: 0 }]],
+      },
+    });
+
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toMatch(/cross-company/i);
+    expect(result.content[0].text).toMatch(/line_ids|account_id/);
+    const lines = await readBack("account.move.line");
+    expect(lines.some((l) => l.account_id === 77)).toBe(false);
+  });
+
+  it("requires account.move.line:write for a [1,id,{…}] line update (inline [0] create needs no line grant)", async () => {
+    // Inline [0,0,{…}] create is part of the parent's atomic create and needs
+    // no account.move.line grant. But editing an existing line via [1,id,{…}]
+    // is a write on account.move.line and must require the grant.
+    const noLineWriteConfig = {
+      ...nestedConfig,
+      permissions: {
+        "res.company": ["read"],
+        "account.journal": ["read"],
+        "account.account": ["read"],
+        "account.move": ["read", "create"],
+        "account.move.line": ["read", "create"], // write deliberately omitted
+      },
+    };
+    const companyRef = ref("res.company", 1, "Helmcraft GmbH", 1, "Helmcraft GmbH");
+
+    const tools = createApi({ [nestedAgentId]: noLineWriteConfig });
+    const tool = findTool(tools, "odoo_create", nestedAgentId);
+    const result = await tool.execute("nested-perm-write", {
+      model: "account.move",
+      values: {
+        company_id: { ref: companyRef },
+        journal_id: "Miscellaneous Operations",
+        line_ids: [[1, 42, { debit: 50 }]],
+      },
+    });
+
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toMatch(/account\.move\.line/);
+    expect(result.content[0].text).toMatch(/write/);
+  });
+
+  // Audit-mystery verification (#615): a bare-string m2o value reaching Odoo
+  // is rejected (Odoo-faithful). The plugin decodes bare refs before they
+  // reach Odoo, so this is only reachable by bypassing the plugin — it
+  // documents the contract that makes the nested fix necessary.
+  it("mock (Odoo-faithful) rejects a bare-string account_id inside line_ids", async () => {
+    const body = {
+      jsonrpc: "2.0",
+      method: "call",
+      id: 1,
+      params: {
+        service: "object",
+        method: "execute_kw",
+        args: [
+          "testdb",
+          2,
+          "test-api-key",
+          "account.move",
+          "create",
+          [
+            {
+              company_id: 1,
+              journal_id: 17,
+              line_ids: [[0, 0, { account_id: "pinchy_ref:v1:not-a-real-token", debit: 1, credit: 0 }]],
+            },
+          ],
+          {},
+        ],
+      },
+    };
+    const res = await fetch(`http://127.0.0.1:${mockOdoo.jsonRpcPort}/jsonrpc`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    const json = (await res.json()) as { error?: { data?: { message?: string } } };
+    expect(json.error).toBeDefined();
+    expect(json.error?.data?.message ?? json.error?.data).toMatch(/account_id|many2one/i);
+  });
+});

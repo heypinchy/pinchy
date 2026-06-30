@@ -869,11 +869,12 @@ function refToId(
  * prefix in `detail`. Admins can grep / filter for that string — no separate
  * audit pipeline is needed here.
  *
- * Scope: only top-level fields of `values` are inspected. Nested 2many/o2m
- * command tuples (e.g. `invoice_line_ids: [[0, 0, { account_id: ... }]]`)
- * are not walked — that broader check would require following Odoo's
- * Command structure, which is out of scope for this guard. Odoo's
- * server-side `company_id` constraint remains the ultimate authority.
+ * Scope: top-level fields of `values` AND nested one2many command tuples
+ * (e.g. `line_ids: [[0, 0, { account_id: <ref> }]]`) are inspected. A line-
+ * level ref whose company tag disagrees with the parent's `company_id` is
+ * rejected with the same "Cross-company write rejected" prefix and a path
+ * like `line_ids[0].account_id`. Odoo's server-side `company_id` constraint
+ * remains the ultimate authority.
  */
 export function assertNoCrossCompanyRefs(
   values: Record<string, unknown>,
@@ -884,16 +885,49 @@ export function assertNoCrossCompanyRefs(
 
   for (const [field, value] of Object.entries(values)) {
     if (field === "company_id") continue;
-    const sibling = readRefCompanyTag(value);
-    if (sibling === null) continue;
+    assertNoCrossCompanyValue(value, intended, intendedLabel, field);
+  }
+}
+
+/**
+ * Recursive companion to {@link assertNoCrossCompanyRefs}. Checks a single
+ * value: if it carries a company-tagged ref, compare against `intended`;
+ * if it is a one2many command-tuple array, descend into the create (0) and
+ * update (1) tuples' values dicts and check each field. `path` is threaded
+ * for actionable error messages (e.g. `line_ids[0].account_id`).
+ */
+function assertNoCrossCompanyValue(
+  value: unknown,
+  intended: { id: number; label: string | null },
+  intendedLabel: string,
+  path: string,
+): void {
+  const sibling = readRefCompanyTag(value);
+  if (sibling !== null) {
     if (sibling.id !== intended.id) {
       const otherLabel = sibling.label ?? `id=${sibling.id}`;
       throw new Error(
         `Cross-company write rejected: values.company_id points to "${intendedLabel}" ` +
-          `but values.${field} points to a record in "${otherLabel}". ` +
-          `Re-resolve ${field} in the right company first.`,
+          `but values.${path} points to a record in "${otherLabel}". ` +
+          `Re-resolve ${path} in the right company first.`,
       );
     }
+    return;
+  }
+  if (Array.isArray(value)) {
+    value.forEach((tuple, i) => {
+      // Odoo Command tuple: [code, ...]. Only 0 (create) and 1 (update)
+      // carry a values dict at index 2 with refs to check.
+      if (
+        Array.isArray(tuple) &&
+        (tuple[0] === 0 || tuple[0] === 1) &&
+        isRecord(tuple[2])
+      ) {
+        for (const [k, v] of Object.entries(tuple[2] as Record<string, unknown>)) {
+          assertNoCrossCompanyValue(v, intended, intendedLabel, `${path}[${i}].${k}`);
+        }
+      }
+    });
   }
 }
 
@@ -1047,20 +1081,69 @@ async function normalizeMany2OneValues(
   connectionId: string,
   model: string,
   values: Record<string, unknown>,
+  permissions: Permissions,
 ): Promise<Record<string, unknown>> {
   const fields = normalizeFields(await client.fields(model));
   if (fields.length === 0) return values;
+  return normalizeValuesRecord(
+    client,
+    connectionId,
+    model,
+    fields,
+    values,
+    null,
+    permissions,
+    0,
+  );
+}
 
+// Cap recursion into nested one2many command tuples. Pathological schemas
+// could nest deeply; beyond this the walker leaves tuples verbatim (the
+// pre-#615 behaviour) rather than risking unbounded descent.
+const MAX_NORMALIZE_DEPTH = 8;
+
+// Odoo Command codes that modify EXISTING nested records and therefore
+// require a grant on the line model. Inline create (0) is part of the
+// parent's atomic create — already gated by the top-level `create` check —
+// so it needs no separate line-model grant (this preserves the bookkeeper's
+// "lines only inline via invoice_line_ids, never standalone" atomicity
+// design: account.move.line:create stays ungranted while inline line creation
+// still works). Link (4), clear (5), replace (6) only rewire the parent's
+// relation set, not the nested records, so no nested permission is required.
+const NESTED_OP_BY_CODE: Record<number, "write" | "delete"> = {
+  1: "write",
+  2: "delete",
+  3: "delete",
+};
+
+/**
+ * Resolve the m2o fields of a single values dict and walk its one2many
+ * command tuples recursively. `scopeCompanyId` is derived from this dict's
+ * own `company_id` (overriding the parent's for this record's siblings) and
+ * threaded into both the m2o lookups (OR-with-`false` company scope) and the
+ * nested tuple walk. Reuses `resolveRelationValue` unchanged for every m2o
+ * value — bare `_pinchy_ref`, `{ref}` object, name/code lookup, country code
+ * are all covered. Nested create/write/delete Command codes are permission
+ * checked against the line model before any ref work for that tuple.
+ */
+async function normalizeValuesRecord(
+  client: OdooClient,
+  connectionId: string,
+  model: string,
+  fields: OdooField[],
+  values: Record<string, unknown>,
+  scopeCompanyId: number | null,
+  permissions: Permissions,
+  depth: number,
+): Promise<Record<string, unknown>> {
   const normalized = { ...values };
 
-  // Resolve `company_id` first so that company-scoped m2o lookups later in the
-  // loop (e.g. `journal_id`, where two companies can share a journal name/code)
+  // Resolve `company_id` first so company-scoped m2o lookups for this record
   // can be constrained to the target company — Odoo's own fix pattern for
-  // multi-company collisions (PR #269835 / commit 3fcd8a9). `res.company`
-  // itself has no `company_id` field, so this never recurses. When company_id
-  // is absent, false, or doesn't resolve to a positive integer, no scoping is
-  // applied and subsequent lookups behave exactly as before.
-  let scopeCompanyId: number | null = null;
+  // multi-company collisions (PR #269835 / commit 3fcd8a9). At top level this
+  // is the parent move's company; inside a line tuple it's the line's own
+  // company (which the cross-company guard has already checked agrees with
+  // the parent's, or the parent had none).
   const companyField = findCompanyIdField(fields);
   if (companyField && "company_id" in normalized) {
     const resolved = await resolveRelationValue(
@@ -1068,6 +1151,7 @@ async function normalizeMany2OneValues(
       connectionId,
       companyField,
       normalized.company_id,
+      scopeCompanyId,
     );
     normalized.company_id = resolved;
     if (
@@ -1082,10 +1166,6 @@ async function normalizeMany2OneValues(
   for (const field of fields) {
     if (field.type !== "many2one" || !(field.name in normalized)) continue;
     if (field.name === "company_id") continue; // already resolved above
-    // Only top-level m2o fields are resolved here. Nested one2many command
-    // tuples (e.g. account.move `line_ids: [[0, 0, { account_id: "…" }]]`) are
-    // passed through to Odoo verbatim — their m2o values get no ref decoding
-    // and no company scoping. Tracked separately in #615.
     normalized[field.name] = await resolveRelationValue(
       client,
       connectionId,
@@ -1094,7 +1174,84 @@ async function normalizeMany2OneValues(
       scopeCompanyId,
     );
   }
+
+  // Walk one2many command tuples (depth-capped). Codes 0 (create) and 1
+  // (update) carry a values dict at index 2 whose m2o fields are resolved
+  // recursively; 2/3/4/5/6 carry no resolvable m2o values. (issue #615)
+  if (depth < MAX_NORMALIZE_DEPTH) {
+    for (const field of fields) {
+      if (field.type !== "one2many" || !field.relation) continue;
+      if (!(field.name in normalized)) continue;
+      const tuples = normalized[field.name];
+      if (!Array.isArray(tuples)) continue;
+      const lineFields = normalizeFields(await client.fields(field.relation));
+      normalized[field.name] = await normalizeCommandTuples(
+        client,
+        connectionId,
+        field.relation,
+        lineFields,
+        tuples,
+        scopeCompanyId,
+        permissions,
+        depth,
+        field.name,
+      );
+    }
+  }
+
   return normalized;
+}
+
+async function normalizeCommandTuples(
+  client: OdooClient,
+  connectionId: string,
+  lineModel: string,
+  lineFields: OdooField[],
+  tuples: unknown[],
+  scopeCompanyId: number | null,
+  permissions: Permissions,
+  depth: number,
+  parentField: string,
+): Promise<unknown[]> {
+  const out: unknown[] = [];
+  for (const tuple of tuples) {
+    if (!Array.isArray(tuple) || typeof tuple[0] !== "number") {
+      out.push(tuple); // not a Command tuple — pass through unchanged
+      continue;
+    }
+    const code = tuple[0];
+    const op = NESTED_OP_BY_CODE[code];
+    if (op !== undefined && !checkPermission(permissions, lineModel, op)) {
+      // Pinchy-allowlist rejection (not an Odoo server AccessError): phrase so
+      // it bypasses errorResult's Odoo-re-sync mapping, which would otherwise
+      // mask the real missing grant with a misleading "re-sync the connection"
+      // hint aimed at Odoo-user permissions.
+      throw new Error(
+        `Agent missing ${op} grant on ${lineModel} ` +
+          `(nested via ${parentField} command ${code}). ` +
+          `Add ${op} on ${lineModel} to this agent's permissions.`,
+      );
+    }
+    // Only create (0) and update (1) carry a values dict at index 2 that may
+    // hold m2o fields to resolve. delete (2/3), link (4), clear (5), replace
+    // (6) carry no resolvable m2o values — pass through verbatim.
+    if ((code === 0 || code === 1) && isRecord(tuple[2])) {
+      const resolvedValues = await normalizeValuesRecord(
+        client,
+        connectionId,
+        lineModel,
+        lineFields,
+        tuple[2],
+        scopeCompanyId,
+        permissions,
+        depth + 1,
+      );
+      out.push([code, tuple[1], resolvedValues]);
+    } else {
+      out.push(tuple);
+    }
+  }
+  return out;
 }
 
 // The canonical Odoo external id for the built-in "To-Do" activity type.
@@ -2083,6 +2240,7 @@ const plugin = {
                       config.connectionId,
                       model,
                       cleaned,
+                      config.permissions,
                     );
                     values = await ensureActivityResModelId(
                       client,
@@ -2865,6 +3023,7 @@ const plugin = {
                       config.connectionId,
                       model,
                       cleaned,
+                      config.permissions,
                     );
                     values = await ensureActivityResModelId(
                       client,

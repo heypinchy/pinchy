@@ -4369,6 +4369,400 @@ describe("relationHasCompanyId / findCompanyIdField helper", () => {
   });
 });
 
+// Nested many2one fields inside one2many command tuples (issue #615):
+// `account.move` created with `line_ids: [[0, 0, { account_id: "…", debit,
+// credit }]]` must get the same bare-ref decoding, company scoping (OR-with
+// false), cross-company guard, and nested-relation permission enforcement as
+// top-level m2o fields. Only Command codes 0 (create) and 1 (update) carry a
+// values dict; 2/3/4/5/6 are passed through untouched.
+describe("nested m2o resolution in one2many command tuples (#615)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.stubEnv("PINCHY_REF_TOKEN_KEY", "a".repeat(64));
+  });
+
+  // Shared field defs for the account.move → account.move.line → account.account
+  // chain. account.account is company-scoped (optional company_id, like res.partner).
+  function mockAccountMoveChain() {
+    mockFields.mockImplementation(async (model: string) => {
+      if (model === "account.move") {
+        return [
+          { name: "id", type: "integer", required: false, readonly: true },
+          {
+            name: "company_id",
+            type: "many2one",
+            relation: "res.company",
+            required: false,
+            readonly: false,
+          },
+          {
+            name: "line_ids",
+            type: "one2many",
+            relation: "account.move.line",
+          },
+        ];
+      }
+      if (model === "account.move.line") {
+        return [
+          { name: "id", type: "integer", required: false, readonly: true },
+          {
+            name: "account_id",
+            type: "many2one",
+            relation: "account.account",
+            required: true,
+            readonly: false,
+          },
+          { name: "debit", type: "float", required: false, readonly: false },
+          { name: "credit", type: "float", required: false, readonly: false },
+          { name: "name", type: "char", required: false, readonly: false },
+          {
+            name: "company_id",
+            type: "many2one",
+            relation: "res.company",
+            required: false,
+            readonly: false,
+          },
+        ];
+      }
+      if (model === "account.account") {
+        return [
+          { name: "id", type: "integer", required: false, readonly: true },
+          { name: "code", type: "char", required: false, readonly: false },
+          { name: "name", type: "char", required: false, readonly: false },
+          {
+            name: "display_name",
+            type: "char",
+            required: false,
+            readonly: false,
+          },
+          {
+            name: "company_id",
+            type: "many2one",
+            relation: "res.company",
+            required: false,
+            readonly: false,
+          },
+        ];
+      }
+      return [];
+    });
+  }
+
+  it("decodes a bare _pinchy_ref nested in line_ids[].account_id to a numeric id", async () => {
+    const companyRef = encodeRef({
+      integrationType: "odoo",
+      connectionId: "conn-test-1",
+      model: "res.company",
+      id: 1,
+      label: "Helmcraft GmbH",
+      companyId: 1,
+      companyLabel: "Helmcraft GmbH",
+    });
+    const accountRef = encodeRef({
+      integrationType: "odoo",
+      connectionId: "conn-test-1",
+      model: "account.account",
+      id: 42,
+      label: "1000 Bank [Helmcraft GmbH]",
+      companyId: 1,
+      companyLabel: "Helmcraft GmbH",
+    });
+
+    mockAccountMoveChain();
+    mockCreate.mockResolvedValue(555);
+
+    const tools = createApi({
+      [agentId]: {
+        ...agentConfig,
+        permissions: {
+          "account.move": ["create"],
+          "account.move.line": ["create"],
+        },
+      },
+    });
+    const tool = findTool(tools, "odoo_create", agentId)!;
+    const result = await tool.execute("nested-bare-ref", {
+      model: "account.move",
+      values: {
+        company_id: { ref: companyRef },
+        line_ids: [
+          [0, 0, { account_id: accountRef, debit: 466.65, credit: 0, name: "Eröffnung" }],
+        ],
+      },
+    });
+
+    expect(result.isError).toBeFalsy();
+    const [, written] = mockCreate.mock.calls[0] as [string, Record<string, unknown>];
+    expect(written.company_id).toBe(1);
+    const line = (written.line_ids as Array<[number, number, Record<string, unknown>]>)[0];
+    expect(line[0]).toBe(0);
+    expect(line[2].account_id).toBe(42); // decoded bare ref → numeric id
+    // The bare ref short-circuits the name lookup — no searchRead on account.account.
+    expect(
+      mockSearchRead.mock.calls.some(([m]) => m === "account.account"),
+    ).toBe(false);
+  });
+
+  it("scopes a nested account_id name lookup by the move's company (OR-with-false)", async () => {
+    const companyRef = encodeRef({
+      integrationType: "odoo",
+      connectionId: "conn-test-1",
+      model: "res.company",
+      id: 1,
+      label: "Helmcraft GmbH",
+      companyId: 1,
+      companyLabel: "Helmcraft GmbH",
+    });
+
+    mockAccountMoveChain();
+    mockSearchRead.mockImplementation(async (model: string, domain: unknown) => {
+      if (model === "account.account") {
+        const scoped = Array.isArray(domain) && domain.includes("|");
+        return scoped
+          ? {
+              records: [
+                { id: 42, name: "Bank", display_name: "Bank", company_id: [1, "Helmcraft GmbH"] },
+              ],
+              total: 1,
+              limit: 20,
+              offset: 0,
+            }
+          : {
+              records: [
+                { id: 42, name: "Bank", display_name: "Bank", company_id: [1, "Helmcraft GmbH"] },
+                { id: 77, name: "Bank", display_name: "Bank", company_id: [2, "Clemens Helm"] },
+              ],
+              total: 2,
+              limit: 20,
+              offset: 0,
+            };
+      }
+      return { records: [], total: 0, limit: 20, offset: 0 };
+    });
+    mockCreate.mockResolvedValue(556);
+
+    const tools = createApi({
+      [agentId]: {
+        ...agentConfig,
+        permissions: {
+          "account.move": ["create"],
+          "account.move.line": ["create"],
+        },
+      },
+    });
+    const tool = findTool(tools, "odoo_create", agentId)!;
+    const result = await tool.execute("nested-scoped-name", {
+      model: "account.move",
+      values: {
+        company_id: { ref: companyRef },
+        line_ids: [[0, 0, { account_id: "Bank", debit: 100, credit: 0 }]],
+      },
+    });
+
+    expect(result.isError).toBeFalsy();
+    const acctLookup = mockSearchRead.mock.calls.find(([m]) => m === "account.account");
+    expect(acctLookup).toBeDefined();
+    expect(acctLookup![1]).toEqual(
+      expect.arrayContaining(["|", ["company_id", "=", false], ["company_id", "=", 1]]),
+    );
+    const [, written] = mockCreate.mock.calls[0] as [string, Record<string, unknown>];
+    const line = (written.line_ids as Array<[number, number, Record<string, unknown>]>)[0];
+    expect(line[2].account_id).toBe(42); // company-1 account, not the ambiguous 77
+  });
+
+  it("rejects a cross-company bare ref nested in line_ids against the move's company_id", async () => {
+    const companyRefA = encodeRef({
+      integrationType: "odoo",
+      connectionId: "conn-test-1",
+      model: "res.company",
+      id: 1,
+      label: "Helmcraft GmbH",
+      companyId: 1,
+      companyLabel: "Helmcraft GmbH",
+    });
+    const accountRefB = encodeRef({
+      integrationType: "odoo",
+      connectionId: "conn-test-1",
+      model: "account.account",
+      id: 77,
+      label: "Bank [Clemens Helm]",
+      companyId: 2,
+      companyLabel: "Clemens Helm",
+    });
+
+    mockAccountMoveChain();
+
+    const tools = createApi({
+      [agentId]: {
+        ...agentConfig,
+        permissions: {
+          "account.move": ["create"],
+          "account.move.line": ["create"],
+        },
+      },
+    });
+    const tool = findTool(tools, "odoo_create", agentId)!;
+    const result = await tool.execute("nested-xc", {
+      model: "account.move",
+      values: {
+        company_id: { ref: companyRefA },
+        line_ids: [[0, 0, { account_id: accountRefB, debit: 100, credit: 0 }]],
+      },
+    });
+
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toMatch(/cross-company/i);
+    expect(result.content[0].text).toMatch(/line_ids|account_id/);
+    expect(mockCreate).not.toHaveBeenCalled();
+  });
+
+  it("passes non-0/1 command codes (4 link, 5 clear, 6 replace) through untouched", async () => {
+    mockAccountMoveChain();
+    mockCreate.mockResolvedValue(557);
+
+    const tools = createApi({
+      [agentId]: {
+        ...agentConfig,
+        permissions: { "account.move": ["create"] },
+      },
+    });
+    const tool = findTool(tools, "odoo_create", agentId)!;
+    const result = await tool.execute("nested-codes", {
+      model: "account.move",
+      values: {
+        line_ids: [[4, 55], [5], [6, false, [55, 56]]],
+      },
+    });
+
+    expect(result.isError).toBeFalsy();
+    const [, written] = mockCreate.mock.calls[0] as [string, Record<string, unknown>];
+    expect(written.line_ids).toEqual([[4, 55], [5], [6, false, [55, 56]]]);
+    expect(
+      mockSearchRead.mock.calls.some(([m]) => m === "account.account"),
+    ).toBe(false);
+  });
+
+  it("inline [0,0,{…}] line-create needs NO line grant (covered by the parent account.move:create)", async () => {
+    const accountRef = encodeRef({
+      integrationType: "odoo",
+      connectionId: "conn-test-1",
+      model: "account.account",
+      id: 42,
+      label: "1000 Bank",
+    });
+    mockAccountMoveChain();
+    mockCreate.mockResolvedValue(558);
+
+    // No account.move.line grant at all — inline create must still work.
+    const tools = createApi({
+      [agentId]: { ...agentConfig, permissions: { "account.move": ["create"] } },
+    });
+    const tool = findTool(tools, "odoo_create", agentId)!;
+    const result = await tool.execute("nested-perm-inline-create", {
+      model: "account.move",
+      values: {
+        line_ids: [[0, 0, { account_id: accountRef, debit: 100, credit: 0 }]],
+      },
+    });
+
+    expect(result.isError).toBeFalsy();
+    expect(mockCreate).toHaveBeenCalled();
+  });
+
+  it("enforces nested-relation permission: [1,id,{…}] needs account.move.line:write, [2,id] needs delete", async () => {
+    mockAccountMoveChain();
+    mockCreate.mockResolvedValue(559);
+
+    // account.move:create + account.move.line:create, but NO line:write →
+    // [1, ...] update must be denied.
+    const tools = createApi({
+      [agentId]: {
+        ...agentConfig,
+        permissions: { "account.move": ["create"], "account.move.line": ["create"] },
+      },
+    });
+    const tool = findTool(tools, "odoo_create", agentId)!;
+    const updateRes = await tool.execute("nested-perm-write", {
+      model: "account.move",
+      values: { line_ids: [[1, 9, { debit: 50 }]] },
+    });
+    expect(updateRes.isError).toBe(true);
+    expect(updateRes.content[0].text).toMatch(/account\.move\.line/);
+    expect(updateRes.content[0].text).toMatch(/write/);
+    expect(mockCreate).not.toHaveBeenCalled();
+
+    const deleteRes = await tool.execute("nested-perm-delete", {
+      model: "account.move",
+      values: { line_ids: [[2, 9]] },
+    });
+    expect(deleteRes.isError).toBe(true);
+    expect(deleteRes.content[0].text).toMatch(/account\.move\.line/);
+    expect(deleteRes.content[0].text).toMatch(/delete/);
+  });
+
+  it("scopes a nested lookup by the line's own company_id when the move has none", async () => {
+    // Move with no company_id; the line carries company_id. The line's
+    // account_id lookup must be scoped to the line's company.
+    const lineCompanyRef = encodeRef({
+      integrationType: "odoo",
+      connectionId: "conn-test-1",
+      model: "res.company",
+      id: 2,
+      label: "Clemens Helm",
+      companyId: 2,
+      companyLabel: "Clemens Helm",
+    });
+
+    mockAccountMoveChain();
+    mockSearchRead.mockImplementation(async (model: string, domain: unknown) => {
+      if (model === "account.account") {
+        const scoped =
+          Array.isArray(domain) &&
+          domain.some(
+            (c) => Array.isArray(c) && c[0] === "company_id" && c[2] === 2,
+          );
+        return scoped
+          ? {
+              records: [
+                { id: 77, name: "Bank", display_name: "Bank", company_id: [2, "Clemens Helm"] },
+              ],
+              total: 1,
+              limit: 20,
+              offset: 0,
+            }
+          : { records: [], total: 0, limit: 20, offset: 0 };
+      }
+      return { records: [], total: 0, limit: 20, offset: 0 };
+    });
+    mockCreate.mockResolvedValue(560);
+
+    const tools = createApi({
+      [agentId]: {
+        ...agentConfig,
+        permissions: {
+          "account.move": ["create"],
+          "account.move.line": ["create"],
+        },
+      },
+    });
+    const tool = findTool(tools, "odoo_create", agentId)!;
+    const result = await tool.execute("nested-line-company", {
+      model: "account.move",
+      values: {
+        line_ids: [
+          [0, 0, { company_id: { ref: lineCompanyRef }, account_id: "Bank", debit: 10, credit: 0 }],
+        ],
+      },
+    });
+
+    expect(result.isError).toBeFalsy();
+    const acctLookup = mockSearchRead.mock.calls.find(([m]) => m === "account.account");
+    expect(acctLookup![1]).toEqual(
+      expect.arrayContaining(["|", ["company_id", "=", false], ["company_id", "=", 2]]),
+    );
+  });
+});
+
 describe("odoo_schedule_activity", () => {
   beforeEach(() => {
     vi.clearAllMocks();
