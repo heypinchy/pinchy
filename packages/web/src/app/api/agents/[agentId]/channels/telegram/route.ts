@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
-import { requireAdmin } from "@/lib/api-auth";
+import { requireAdmin, withAuth } from "@/lib/api-auth";
 import { validateTelegramBotToken, hasMainTelegramBot } from "@/lib/telegram";
 import { getSetting, setSetting, deleteSetting } from "@/lib/settings";
 import { appendAuditLog } from "@/lib/audit";
@@ -10,7 +10,7 @@ import {
   recalculateTelegramAllowStores,
 } from "@/lib/telegram-allow-store";
 import { db } from "@/db";
-import { agents, settings } from "@/db/schema";
+import { agents, channelLinks, settings } from "@/db/schema";
 import { eq, like } from "drizzle-orm";
 import { parseRequestBody } from "@/lib/api-validation";
 
@@ -125,51 +125,61 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ age
   });
 }
 
-export async function DELETE(req: Request, { params }: { params: Promise<{ agentId: string }> }) {
-  const admin = await requireAdmin();
-  if (admin instanceof NextResponse) return admin;
-  const { agentId } = await params;
+export const DELETE = withAuth<{ params: Promise<{ agentId: string }> }>(
+  async (_req, { params }, session) => {
+    const { agentId } = await params;
 
-  const agent = await db.query.agents.findFirst({
-    where: eq(agents.id, agentId),
-  });
-  if (!agent) {
-    return NextResponse.json({ error: "Agent not found" }, { status: 404 });
-  }
+    const agent = await db.query.agents.findFirst({
+      where: eq(agents.id, agentId),
+    });
+    if (!agent) {
+      return NextResponse.json({ error: "Agent not found" }, { status: 404 });
+    }
 
-  // Personal agents (Smithers) can only be disconnected via "Remove Telegram for everyone"
-  // in Settings. Uses isPersonal flag (not avatarSeed which is user-editable).
-  if (agent.isPersonal) {
-    return NextResponse.json(
-      {
-        error:
-          "Smithers' bot cannot be disconnected individually. Use 'Remove Telegram for everyone' in Settings.",
+    // Gap 2 (#476): a personal agent's owner may disconnect its own bot without
+    // an admin — the org-wide "Remove Telegram for everyone" was the only prior
+    // path and is too blunt for a single user's Smithers. Admins can disconnect
+    // any agent (shared or personal). The connect path stays admin-only.
+    const isOwner = agent.isPersonal && agent.ownerId === session.user.id;
+    if (session.user.role !== "admin" && !isOwner) {
+      return NextResponse.json({ error: "Forbidden" }, { status: 403 });
+    }
+
+    await deleteSetting(`telegram_bot_token:${agentId}`);
+    await deleteSetting(`telegram_bot_username:${agentId}`);
+
+    // Clear only this account's allow-from store (other agents' bots are unaffected)
+    clearAllowStoreForAccount(agentId);
+    // Remove this account from config (other accounts preserved).
+    // updateTelegramChannelConfig() notifies restart-state on actual write.
+    updateTelegramChannelConfig(agentId, null);
+
+    // Gap 3 (#476): if this was the last Telegram bot, clear the user↔telegram-user
+    // channel_links so a later re-registered bot can't re-grant access to stale
+    // pairings without re-pairing. The org-wide "Remove Telegram for everyone"
+    // already clears channel_links; this closes the per-agent-removal path where
+    // every bot is gone individually but the links persisted.
+    const remainingBotTokens = await db
+      .select()
+      .from(settings)
+      .where(like(settings.key, "telegram_bot_token:%"));
+    if (remainingBotTokens.length === 0) {
+      await db.delete(channelLinks).where(eq(channelLinks.channel, "telegram"));
+    }
+
+    await appendAuditLog({
+      actorType: "user",
+      actorId: session.user.id,
+      eventType: "channel.deleted",
+      resource: `agent:${agentId}`,
+      detail: {
+        name: `telegram:${agent.name}`,
+        agent: { id: agentId, name: agent.name },
+        channel: "telegram",
       },
-      { status: 400 }
-    );
+      outcome: "success",
+    });
+
+    return NextResponse.json({ success: true });
   }
-
-  await deleteSetting(`telegram_bot_token:${agentId}`);
-  await deleteSetting(`telegram_bot_username:${agentId}`);
-
-  // Clear only this account's allow-from store (other agents' bots are unaffected)
-  clearAllowStoreForAccount(agentId);
-  // Remove this account from config (other accounts preserved).
-  // updateTelegramChannelConfig() notifies restart-state on actual write.
-  updateTelegramChannelConfig(agentId, null);
-
-  await appendAuditLog({
-    actorType: "user",
-    actorId: admin.user.id,
-    eventType: "channel.deleted",
-    resource: `agent:${agentId}`,
-    detail: {
-      name: `telegram:${agent.name}`,
-      agent: { id: agentId, name: agent.name },
-      channel: "telegram",
-    },
-    outcome: "success",
-  });
-
-  return NextResponse.json({ success: true });
-}
+);
