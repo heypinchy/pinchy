@@ -257,6 +257,19 @@ export function getToolsByCategory(category: "safe" | "powerful"): ToolDefinitio
 }
 
 /**
+ * Return only the tool ids a read-only agent may use: drop everything
+ * categorized as `powerful` (write operations, web search/fetch, odoo
+ * create/write/delete, email draft/send, workspace writes). Tools with no
+ * registry entry — OpenClaw built-ins (`memory_search`, `pdf`, `image`,
+ * `session_status`) and unclassified plugin tools — are kept; they are
+ * read-only by construction. This is the per-agent read-only guarantee
+ * layered on top of the fail-closed `tools.allow` boundary. See issue #571.
+ */
+export function filterReadOnlyToolIds(toolIds: string[]): string[] {
+  return toolIds.filter((id) => getToolById(id)?.category !== "powerful");
+}
+
+/**
  * Compute the fail-closed tool allowlist emitted per agent as `tools.allow`.
  *
  * With no `tools.profile` set, OpenClaw treats `allow` as an absolute allowlist

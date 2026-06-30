@@ -4,6 +4,7 @@ import {
   getToolById,
   getToolsByCategory,
   computeAllowedTools,
+  filterReadOnlyToolIds,
   getOdooTools,
   getOdooToolsForAccessLevel,
   detectOdooAccessLevel,
@@ -194,6 +195,69 @@ describe("computeAllowedTools", () => {
     for (const tool of mustNeverAllow) {
       expect(allowed.has(tool), `built-in "${tool}" must NOT be in the allowlist`).toBe(false);
     }
+  });
+});
+
+describe("filterReadOnlyToolIds", () => {
+  it("drops every tool categorized as powerful (write/web/odoo-write/email-write)", () => {
+    const input = [
+      "pinchy_read",
+      "pinchy_write",
+      "pinchy_web_search",
+      "pinchy_web_fetch",
+      "odoo_read",
+      "odoo_create",
+      "odoo_write",
+      "odoo_delete",
+      "email_read",
+      "email_send",
+    ];
+    const filtered = filterReadOnlyToolIds(input);
+    expect(filtered).not.toContain("pinchy_write");
+    expect(filtered).not.toContain("pinchy_web_search");
+    expect(filtered).not.toContain("pinchy_web_fetch");
+    expect(filtered).not.toContain("odoo_create");
+    expect(filtered).not.toContain("odoo_write");
+    expect(filtered).not.toContain("odoo_delete");
+    expect(filtered).not.toContain("email_send");
+  });
+
+  it("keeps every safe-category tool (read-only operations)", () => {
+    const input = ["odoo_read", "odoo_count", "odoo_list_models", "email_read", "email_search"];
+    const filtered = filterReadOnlyToolIds(input);
+    expect(filtered).toEqual(input);
+  });
+
+  it("keeps tools with no registry entry (built-ins + unclassified plugin tools are read-only by construction)", () => {
+    const input = [
+      "memory_search",
+      "memory_get",
+      "pdf",
+      "image",
+      "session_status",
+      "pinchy_save_context",
+    ];
+    const filtered = filterReadOnlyToolIds(input);
+    expect(filtered).toEqual(input);
+  });
+
+  it("applied to the full allowlist, leaves only safe + unclassified tools (the read-only guarantee)", () => {
+    const filtered = filterReadOnlyToolIds(computeAllowedTools());
+    // Every powerful registry tool is gone...
+    for (const tool of getToolsByCategory("powerful")) {
+      expect(
+        filtered,
+        `powerful tool "${tool.id}" must be dropped in read-only mode`
+      ).not.toContain(tool.id);
+    }
+    // ...and every safe registry tool survives.
+    for (const tool of getToolsByCategory("safe")) {
+      expect(filtered, `safe tool "${tool.id}" must survive in read-only mode`).toContain(tool.id);
+    }
+    // Built-in read-only tools survive too.
+    expect(filtered).toContain("memory_search");
+    expect(filtered).toContain("pdf");
+    expect(filtered).toContain("session_status");
   });
 });
 

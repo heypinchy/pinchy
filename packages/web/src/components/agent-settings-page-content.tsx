@@ -33,6 +33,7 @@ interface Agent {
   model: string;
   isPersonal: boolean;
   allowedTools: string[];
+  readOnly: boolean;
   pluginConfig: AgentPluginConfig | null;
   tagline: string | null;
   avatarSeed: string | null;
@@ -75,6 +76,7 @@ interface PersonalityValues {
 interface PermissionsValues {
   allowedTools: string[];
   allowedPaths: string[];
+  readOnly: boolean;
   integrations: Array<{
     connectionId: string;
     permissions: Array<{ model: string; operation: string }>;
@@ -266,6 +268,7 @@ export function AgentSettingsPageContent({ initialTab }: { initialTab?: string }
       }
       if (dirtyTabs.has("permissions") && permissionsDraft.current) {
         agentPatch.allowedTools = permissionsDraft.current.allowedTools;
+        agentPatch.readOnly = permissionsDraft.current.readOnly;
         agentPatch.pluginConfig = {
           ...agent?.pluginConfig,
           "pinchy-files": { allowed_paths: permissionsDraft.current.allowedPaths },

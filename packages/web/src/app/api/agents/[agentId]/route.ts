@@ -33,6 +33,7 @@ const updateAgentSchema = z.object({
   avatarSeed: z.string().nullable().optional(),
   personalityPresetId: z.string().nullable().optional(),
   visibility: z.enum(["all", "restricted"]).optional(),
+  readOnly: z.boolean().optional(),
   groupIds: z.array(z.string()).optional(),
 });
 
@@ -76,6 +77,21 @@ export const PATCH = withAuth<RouteContext>(async (request, { params }, session)
 
   // Only admins can change permissions on shared agents
   if (body.allowedTools !== undefined) {
+    if (session.user.role !== "admin") {
+      return NextResponse.json({ error: "Only admins can change permissions" }, { status: 403 });
+    }
+    if (existingAgent.isPersonal) {
+      return NextResponse.json(
+        { error: "Cannot change permissions for personal agents" },
+        { status: 400 }
+      );
+    }
+  }
+
+  // Read-only mode is a permissions-level restriction (it rewrites the agent's
+  // tool allowlist at config-build time — see filterReadOnlyToolIds). Gate it
+  // the same way as allowedTools: admin-only, not for personal agents.
+  if (body.readOnly !== undefined) {
     if (session.user.role !== "admin") {
       return NextResponse.json({ error: "Only admins can change permissions" }, { status: 403 });
     }
@@ -135,6 +151,7 @@ export const PATCH = withAuth<RouteContext>(async (request, { params }, session)
     avatarSeed?: string | null;
     personalityPresetId?: string | null;
     visibility?: string;
+    readOnly?: boolean;
   } = {};
   if (body.name !== undefined) data.name = body.name;
   if (body.model !== undefined) data.model = body.model;
@@ -145,6 +162,7 @@ export const PATCH = withAuth<RouteContext>(async (request, { params }, session)
   if (body.avatarSeed !== undefined) data.avatarSeed = body.avatarSeed;
   if (body.personalityPresetId !== undefined) data.personalityPresetId = body.personalityPresetId;
   if (body.visibility !== undefined) data.visibility = body.visibility;
+  if (body.readOnly !== undefined) data.readOnly = body.readOnly;
 
   const agent = Object.keys(data).length > 0 ? await updateAgent(agentId, data) : existingAgent;
 
@@ -154,6 +172,7 @@ export const PATCH = withAuth<RouteContext>(async (request, { params }, session)
     "name",
     "model",
     "visibility",
+    "readOnly",
     "greetingMessage",
     "tagline",
     "avatarSeed",
@@ -250,7 +269,11 @@ export const PATCH = withAuth<RouteContext>(async (request, { params }, session)
 
   // Rebuild OpenClaw config when tool permissions or plugin config change — these
   // fields affect the generated openclaw.json (e.g. write_paths for pinchy_write).
-  if (data.allowedTools !== undefined || data.pluginConfig !== undefined) {
+  if (
+    data.allowedTools !== undefined ||
+    data.pluginConfig !== undefined ||
+    data.readOnly !== undefined
+  ) {
     await regenerateOpenClawConfig();
   }
 
