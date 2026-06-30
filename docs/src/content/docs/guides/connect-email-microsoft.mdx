@@ -50,13 +50,10 @@ Permissions (scopes) define what data your app can access.
 
 1. In the left sidebar, click **API permissions** → **Add a permission** → **Microsoft Graph** → **Delegated permissions**
 2. Search for and add these permissions:
-
-   | Permission       | Required for                                                               |
-   | ---------------- | -------------------------------------------------------------------------- |
-   | `Mail.ReadWrite` | Read and search emails, create drafts                                      |
-   | `Mail.Send`      | Send emails                                                                |
-   | `offline_access` | Receive refresh tokens so Pinchy stays connected without repeated sign-ins |
-   | `User.Read`      | Identify the connected account                                             |
+   - **`Mail.ReadWrite`** — read and search emails, create drafts
+   - **`Mail.Send`** — send emails
+   - **`offline_access`** — receive refresh tokens so Pinchy stays connected without repeated sign-ins
+   - **`User.Read`** — identify the connected account
 
 3. Click **Add permissions**
 4. Click **Grant admin consent for [your tenant]** and confirm
@@ -133,12 +130,9 @@ A connection alone doesn't give any agent access. You must explicitly grant perm
 2.  Click the gear icon to open **Agent Settings**
 3.  Select the **Permissions** tab
 4.  In the **Email** section, select the connected account and check the operations this agent may perform:
-
-    | Permission        | What it enables                            |
-    | ----------------- | ------------------------------------------ |
-    | **Read messages** | List, read, and search emails              |
-    | **Create drafts** | Create draft emails (saved but not sent)   |
-    | **Send messages** | Send emails immediately — cannot be undone |
+    - **Read messages** — list, read, and search emails
+    - **Create drafts** — create draft emails (saved but not sent)
+    - **Send messages** — send emails immediately (cannot be undone)
 
 5.  Click **Save**
 

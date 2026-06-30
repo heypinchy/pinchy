@@ -5,7 +5,9 @@
   "scripts": {
     "dev": "sh scripts/inject-version.sh && astro dev; sh scripts/restore-placeholders.sh",
     "build": "sh scripts/inject-version.sh && astro build && sh scripts/restore-placeholders.sh",
-    "preview": "astro preview"
+    "preview": "astro preview",
+    "check:tables": "node scripts/check-no-tables-in-lists.mjs",
+    "test": "node --test scripts/check-no-tables-in-lists.test.mjs"
   },
   "dependencies": {
     "@astrojs/starlight": "^0.38.3",

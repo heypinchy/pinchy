@@ -49,11 +49,8 @@ Google Cloud uses the **Auth Platform** to manage OAuth consent screens and app 
    - Click **Save**
 
 3. Under **Audience**, choose who can use this OAuth app:
-
-   | Audience     | When to choose                                   | Notes                                                                                  |
-   | ------------ | ------------------------------------------------ | -------------------------------------------------------------------------------------- |
-   | **Internal** | Your company uses **Google Workspace** (G Suite) | Only people in your organization can connect — no Google review required. Recommended. |
-   | **External** | Personal Gmail accounts, or no Google Workspace  | Anyone with a Google account can connect. Read the note below before choosing this.    |
+   - **Internal** — your company uses **Google Workspace** (G Suite). Only people in your organization can connect — no Google review required. Recommended.
+   - **External** — personal Gmail accounts, or no Google Workspace. Anyone with a Google account can connect. Read the note below before choosing this.
 
    <Aside type="caution">
      **External + Testing mode**: Google automatically puts new External apps
@@ -71,12 +68,9 @@ Scopes define what data your OAuth app can access. You need to add the Gmail sco
 1. In the Auth Platform sidebar, click **Data Access**
 2. Click **Add or remove scopes**
 3. In the filter, search for `gmail` and add these scopes:
-
-   | Scope                                            | Required for                   |
-   | ------------------------------------------------ | ------------------------------ |
-   | `https://www.googleapis.com/auth/gmail.readonly` | Read and search emails         |
-   | `https://www.googleapis.com/auth/gmail.compose`  | Create drafts and send emails  |
-   | `https://www.googleapis.com/auth/userinfo.email` | Identify the connected account |
+   - **`https://www.googleapis.com/auth/gmail.readonly`** — read and search emails
+   - **`https://www.googleapis.com/auth/gmail.compose`** — create drafts and send emails
+   - **`https://www.googleapis.com/auth/userinfo.email`** — identify the connected account
 
 4. Click **Update** and then **Save**
 
@@ -158,12 +152,9 @@ A connection alone doesn't give any agent access. You must explicitly grant perm
 2.  Click the gear icon to open **Agent Settings**
 3.  Select the **Permissions** tab
 4.  In the **Email** section, select the connected account and check the operations this agent may perform:
-
-    | Permission        | What it enables                            |
-    | ----------------- | ------------------------------------------ |
-    | **Read messages** | List, read, and search emails              |
-    | **Create drafts** | Create draft emails (saved but not sent)   |
-    | **Send messages** | Send emails immediately — cannot be undone |
+    - **Read messages** — list, read, and search emails
+    - **Create drafts** — create draft emails (saved but not sent)
+    - **Send messages** — send emails immediately (cannot be undone)
 
 5.  Click **Save**
 

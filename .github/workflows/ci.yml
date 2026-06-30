@@ -103,8 +103,11 @@ jobs:
       - name: Format check (docs & workflows)
         run: pnpm -C packages/web exec prettier --check "../../docs/src/**/*.{mdx,md}" "../../.github/**/*.yml"
 
+      - name: Docs lint (no indented tables)
+        run: cd docs && pnpm install --frozen-lockfile && pnpm check:tables
+
       - name: Docs build
-        run: cd docs && pnpm install --frozen-lockfile && pnpm build
+        run: cd docs && pnpm build
 
       - name: Squawk migration lint (changed files only)
         if: github.event_name == 'pull_request'
