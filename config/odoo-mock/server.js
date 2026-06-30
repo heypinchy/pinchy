@@ -102,6 +102,16 @@ const MODEL_FIELDS = {
       readonly: false,
       relation: "res.country",
     },
+    // Optional company_id: false means the partner is shared across companies
+    // (the Odoo multi-company convention). Present so the plugin's
+    // company-scoping (OR-with-false) can be exercised against res.partner.
+    company_id: {
+      string: "Company",
+      type: "many2one",
+      required: false,
+      readonly: false,
+      relation: "res.company",
+    },
   },
   "res.country": {
     id: { string: "ID", type: "integer", required: false, readonly: true },
@@ -364,6 +374,13 @@ const MODEL_FIELDS = {
       readonly: false,
       relation: "res.company",
     },
+    partner_id: {
+      string: "Partner",
+      type: "many2one",
+      required: false,
+      readonly: false,
+      relation: "res.partner",
+    },
   },
 };
 
@@ -454,6 +471,25 @@ function getDefaultRecords() {
         zip: "5020",
         state_id: [4, "Salzburg"],
         country_id: [14, "Austria"],
+      },
+      // A SHARED partner (company_id = false) — visible across companies per
+      // Odoo's multi-company convention. Used to exercise the OR-with-false
+      // scoping: a create with company_id set must still resolve this partner.
+      {
+        id: 5,
+        name: "Shared Vendor",
+        email: "shared@vendor.at",
+        is_company: true,
+        country_id: [14, "Austria"],
+        company_id: false,
+      },
+      {
+        id: 6,
+        name: "Helmcraft Vendor",
+        email: "vendor@helmcraft.at",
+        is_company: true,
+        country_id: [14, "Austria"],
+        company_id: [1, "Helmcraft GmbH"],
       },
     ],
     "res.country": [
