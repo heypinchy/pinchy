@@ -7,6 +7,7 @@ export interface Agent {
   model: string;
   isPersonal: boolean;
   tagline: string | null;
+  starterPrompts: string[];
   avatarSeed: string | null;
 }
 

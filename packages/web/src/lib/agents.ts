@@ -19,6 +19,7 @@ export interface UpdateAgentInput {
   pluginConfig?: AgentPluginConfig | null;
   greetingMessage?: string;
   tagline?: string | null;
+  starterPrompts?: string[];
   avatarSeed?: string | null;
   personalityPresetId?: string | null;
   visibility?: AgentVisibility;

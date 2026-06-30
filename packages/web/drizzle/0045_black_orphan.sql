@@ -1,0 +1,3 @@
+DROP VIEW "public"."active_agents";--> statement-breakpoint
+ALTER TABLE "agents" ADD COLUMN "starter_prompts" jsonb DEFAULT '[]'::jsonb NOT NULL;--> statement-breakpoint
+CREATE VIEW "public"."active_agents" AS (select "id", "name", "model", "template_id", "plugin_config", "allowed_tools", "skills", "owner_id", "is_personal", "visibility", "greeting_message", "tagline", "starter_prompts", "avatar_seed", "personality_preset_id", "created_at", "deleted_at" from "agents" where "agents"."deleted_at" is null);
