@@ -158,7 +158,12 @@ describe("AgentSettingsPage", () => {
     // Simulate general tab reporting dirty
     act(() => {
       capturedOnChangeGeneral?.(
-        { name: "New Name", tagline: "tagline", model: "anthropic/claude-sonnet-4-6" },
+        {
+          name: "New Name",
+          tagline: "tagline",
+          model: "anthropic/claude-sonnet-4-6",
+          starterPrompts: [],
+        },
         true
       );
     });
@@ -222,7 +227,7 @@ describe("AgentSettingsPage", () => {
 
     act(() => {
       capturedOnChangeGeneral?.(
-        { name: "New Name", tagline: "", model: "anthropic/claude-sonnet-4-6" },
+        { name: "New Name", tagline: "", model: "anthropic/claude-sonnet-4-6", starterPrompts: [] },
         true
       );
     });
@@ -241,7 +246,7 @@ describe("AgentSettingsPage", () => {
 
     act(() => {
       capturedOnChangeGeneral?.(
-        { name: "New Name", tagline: "", model: "anthropic/claude-sonnet-4-6" },
+        { name: "New Name", tagline: "", model: "anthropic/claude-sonnet-4-6", starterPrompts: [] },
         true
       );
     });
@@ -270,7 +275,7 @@ describe("AgentSettingsPage", () => {
 
     act(() => {
       capturedOnChangeGeneral?.(
-        { name: "Changed", tagline: "", model: "anthropic/claude-sonnet-4-6" },
+        { name: "Changed", tagline: "", model: "anthropic/claude-sonnet-4-6", starterPrompts: [] },
         true
       );
     });

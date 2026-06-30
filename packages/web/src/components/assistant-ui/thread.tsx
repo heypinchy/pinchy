@@ -48,6 +48,7 @@ import {
   RetryPendingUploadContext,
 } from "@/components/chat";
 import { DiagnosticsExportDialog } from "@/components/diagnostics-export-dialog";
+import { useAgentsContext } from "@/components/agents-provider";
 import { Progress } from "@/components/ui/progress";
 import type { PendingUpload } from "@/hooks/use-ws-runtime";
 import { RetryButton } from "@/components/chat/retry-button";
@@ -152,6 +153,10 @@ const ROTATION_INTERVAL_MS = 3000;
 
 export const ThreadWelcome: FC = () => {
   const chatStatus = useContext(ChatStatusContext);
+  const agentId = useContext(AgentIdContext);
+  const { getAgent } = useAgentsContext();
+  const agent = agentId ? getAgent(agentId) : undefined;
+  const starterPrompts = (agent?.starterPrompts ?? []).filter((p) => p.trim().length > 0);
   const [messageIndex, setMessageIndex] = useState(0);
   const indexRef = useRef(0);
 
@@ -176,12 +181,29 @@ export const ThreadWelcome: FC = () => {
   }, [isStarting]);
 
   if (chatStatus.kind === "ready" || chatStatus.kind === "responding") {
-    // Render nothing in the ready/responding empty-thread state. Every agent
-    // has a greetingMessage at the schema level, so the server always sends
-    // an opening assistant bubble — that's the welcome. A second hardcoded
-    // "How can I help you today?" would be redundant and, worse, would flash
-    // briefly during the React-state ↔ assistant-ui store sync window.
-    return null;
+    // Every agent has a greetingMessage at the schema level, so the server
+    // always sends an opening assistant bubble — that's the welcome. A second
+    // hardcoded "How can I help you today?" would be redundant and would flash
+    // briefly during the React-state ↔ assistant-ui store sync window. So we
+    // only render the per-agent starter prompts (#570) as clickable chips when
+    // configured; with none set, this stays null as before.
+    if (starterPrompts.length === 0) return null;
+    return (
+      <div className="aui-thread-welcome-root mx-auto my-auto flex w-full max-w-(--thread-max-width) grow flex-col items-center justify-center gap-4">
+        <div className="flex flex-wrap items-center justify-center gap-2 px-4">
+          {starterPrompts.map((prompt) => (
+            <ThreadPrimitive.Suggestion
+              key={prompt}
+              prompt={prompt}
+              send
+              className="rounded-full border px-4 py-1.5 text-sm text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+            >
+              {prompt}
+            </ThreadPrimitive.Suggestion>
+          ))}
+        </div>
+      </div>
+    );
   }
 
   if (chatStatus.kind === "payloadRejected") {

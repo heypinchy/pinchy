@@ -30,6 +30,7 @@ const updateAgentSchema = z.object({
   pluginConfig: pluginConfigSchema.nullable().optional(),
   greetingMessage: z.string().min(1, "Greeting message cannot be empty").optional(),
   tagline: z.string().nullable().optional(),
+  starterPrompts: z.array(z.string()).optional(),
   avatarSeed: z.string().nullable().optional(),
   personalityPresetId: z.string().nullable().optional(),
   visibility: z.enum(["all", "restricted"]).optional(),
@@ -132,6 +133,7 @@ export const PATCH = withAuth<RouteContext>(async (request, { params }, session)
     pluginConfig?: AgentPluginConfig | null;
     greetingMessage?: string;
     tagline?: string | null;
+    starterPrompts?: string[];
     avatarSeed?: string | null;
     personalityPresetId?: string | null;
     visibility?: string;
@@ -142,6 +144,7 @@ export const PATCH = withAuth<RouteContext>(async (request, { params }, session)
   if (body.pluginConfig !== undefined) data.pluginConfig = body.pluginConfig;
   if (body.greetingMessage !== undefined) data.greetingMessage = body.greetingMessage;
   if (body.tagline !== undefined) data.tagline = body.tagline;
+  if (body.starterPrompts !== undefined) data.starterPrompts = body.starterPrompts;
   if (body.avatarSeed !== undefined) data.avatarSeed = body.avatarSeed;
   if (body.personalityPresetId !== undefined) data.personalityPresetId = body.personalityPresetId;
   if (body.visibility !== undefined) data.visibility = body.visibility;
@@ -156,6 +159,7 @@ export const PATCH = withAuth<RouteContext>(async (request, { params }, session)
     "visibility",
     "greetingMessage",
     "tagline",
+    "starterPrompts",
     "avatarSeed",
     "personalityPresetId",
   ] as const;

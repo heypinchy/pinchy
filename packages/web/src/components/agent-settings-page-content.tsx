@@ -35,6 +35,7 @@ interface Agent {
   allowedTools: string[];
   pluginConfig: AgentPluginConfig | null;
   tagline: string | null;
+  starterPrompts: string[];
   avatarSeed: string | null;
   personalityPresetId: string | null;
   visibility: string;
@@ -64,6 +65,7 @@ interface GeneralValues {
   name: string;
   tagline: string;
   model: string;
+  starterPrompts: string[];
 }
 
 interface PersonalityValues {
@@ -259,6 +261,10 @@ export function AgentSettingsPageContent({ initialTab }: { initialTab?: string }
         agentPatch.name = generalDraft.current.name;
         agentPatch.tagline = generalDraft.current.tagline;
         agentPatch.model = generalDraft.current.model;
+        // Drop blank entries so empty "Add prompt" rows don't persist.
+        agentPatch.starterPrompts = (generalDraft.current.starterPrompts ?? [])
+          .map((p) => p.trim())
+          .filter((p) => p.length > 0);
       }
       if (dirtyTabs.has("personality") && personalityDraft.current) {
         agentPatch.avatarSeed = personalityDraft.current.avatarSeed;
