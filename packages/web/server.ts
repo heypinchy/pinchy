@@ -23,6 +23,7 @@ import { setChannelHealthMonitor } from "./src/server/channel-health-singleton";
 import { appendAuditLog } from "./src/lib/audit";
 import { recordAuditFailure } from "./src/lib/audit-deferred";
 import { db } from "./src/db";
+import { closeDb } from "./src/db";
 import { agents } from "./src/db/schema";
 import { eq } from "drizzle-orm";
 import { WsRateLimiter } from "./src/server/ws-rate-limit";
@@ -345,10 +346,28 @@ ${domain ? `<p><a href="https://${domain}">Go to ${domain} →</a></p>` : ""}
     () => stopChatErrorGc(),
     () => stopUsagePoller(),
     () => (stopMemoryAuditWatcher ? stopMemoryAuditWatcher() : Promise.resolve()),
+    // Disconnect from the OpenClaw Gateway cleanly so the WS + its in-flight
+    // RPCs don't dangle past the HTTP server close (#263). `openclawClient` is
+    // assigned later in boot; the closure reads it at shutdown time.
+    () => openclawClient?.disconnect() ?? Promise.resolve(),
+    // Drain browser WebSockets: close each client (1001 = going away) then
+    // close the WS server. Without this `docker compose down` hits the 30s
+    // SIGKILL timeout because idle WS clients keep the event loop alive past
+    // `server.close()` (#263).
+    () =>
+      new Promise<void>((resolve) => {
+        for (const ws of wss.clients) {
+          if (ws.readyState === WebSocket.OPEN) ws.close(1001, "server shutting down");
+        }
+        wss.close(() => resolve());
+      }),
     () =>
       new Promise<void>((resolve) => {
         server.close(() => resolve());
       }),
+    // Close the DB pool last, after in-flight requests (drained by
+    // server.close) have settled. `timeout: 5` lets running queries finish.
+    () => closeDb(),
   ]);
 
   // Connect to OpenClaw AFTER bootInits so the gateway token and config are

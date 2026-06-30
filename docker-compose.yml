@@ -23,12 +23,15 @@ services:
       test:
         [
           "CMD-SHELL",
-          "node -e \"require('http').get('http://localhost:7777/api/internal/openclaw-config-ready', r => process.exit(r.statusCode === 200 ? 0 : 1))\"",
+          'node -e "require(''http'').get(''http://localhost:7777/api/internal/openclaw-config-ready'', r => process.exit(r.statusCode === 200 ? 0 : 1))"',
         ]
       interval: 2s
       timeout: 3s
       retries: 30
       start_period: 5s
+    # Resource limits (#263) — overridable via env for larger deployments.
+    mem_limit: ${PINCHY_MEM_LIMIT:-1g}
+    cpus: ${PINCHY_CPUS:-1.5}
 
   openclaw:
     image: ghcr.io/heypinchy/pinchy-openclaw:${PINCHY_VERSION:?set PINCHY_VERSION in .env (e.g. PINCHY_VERSION=v0.5.0)}
@@ -54,6 +57,22 @@ services:
     depends_on:
       pinchy:
         condition: service_healthy
+    # Liveness check: the gateway listens on 18789. A TCP connect succeeds once
+    # the WS server is up (the OpenClaw start script's own health loop respawns
+    # the gateway process if it dies; this surfaces that to Docker so a stuck
+    # container restarts instead of staying unhealthy-but-running). #263
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          'node -e "const s=require(''net'').connect(18789,''localhost'');s.on(''connect'',()=>process.exit(0));s.on(''error'',()=>process.exit(1));setTimeout(()=>process.exit(1),2000)"',
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+    mem_limit: ${OPENCLAW_MEM_LIMIT:-2g}
+    cpus: ${OPENCLAW_CPUS:-2}
 
   db:
     image: postgres:17
@@ -69,6 +88,8 @@ services:
       interval: 5s
       timeout: 5s
       retries: 5
+    mem_limit: ${DB_MEM_LIMIT:-1g}
+    cpus: ${DB_CPUS:-1}
 
 volumes:
   pgdata:
