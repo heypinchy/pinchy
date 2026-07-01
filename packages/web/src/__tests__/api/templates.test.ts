@@ -116,7 +116,7 @@ import { inArray } from "drizzle-orm";
 import { GET } from "@/app/api/templates/route";
 import { auth } from "@/lib/auth";
 import { TemplateCapabilityUnavailableError } from "@/lib/model-resolver";
-import { EMAIL_CONNECTION_TYPES } from "@/lib/integrations/oauth-providers";
+import { OAUTH_EMAIL_CONNECTION_TYPES } from "@/lib/integrations/oauth-providers";
 import { integrationConnections } from "@/db/schema";
 
 describe("GET /api/templates", () => {
@@ -396,7 +396,7 @@ describe("GET /api/templates", () => {
     // The second where() call is the email-availability check (the first is Odoo).
     const emailWhereCall = mockWhere.mock.calls[1][0];
     expect(emailWhereCall).toEqual(
-      inArray(integrationConnections.type, [...EMAIL_CONNECTION_TYPES])
+      inArray(integrationConnections.type, [...OAUTH_EMAIL_CONNECTION_TYPES])
     );
   });
 

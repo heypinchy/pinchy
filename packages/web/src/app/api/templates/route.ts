@@ -9,7 +9,7 @@ import { getConnectionModels } from "@/lib/integrations/odoo-connection-models";
 import { getSetting } from "@/lib/settings";
 import { type ProviderName } from "@/lib/providers";
 import { resolveModelForTemplate, TemplateCapabilityUnavailableError } from "@/lib/model-resolver";
-import { EMAIL_CONNECTION_TYPES } from "@/lib/integrations/oauth-providers";
+import { OAUTH_EMAIL_CONNECTION_TYPES } from "@/lib/integrations/oauth-providers";
 
 export const GET = withAuth(async () => {
   const odooConnections = await db
@@ -23,7 +23,7 @@ export const GET = withAuth(async () => {
   const emailConnections = await db
     .select({ id: integrationConnections.id })
     .from(integrationConnections)
-    .where(inArray(integrationConnections.type, [...EMAIL_CONNECTION_TYPES]))
+    .where(inArray(integrationConnections.type, [...OAUTH_EMAIL_CONNECTION_TYPES]))
     .limit(1);
 
   const hasEmailConnection = emailConnections.length > 0;

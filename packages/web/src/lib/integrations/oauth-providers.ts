@@ -39,12 +39,18 @@ export const MICROSOFT_OAUTH_SCOPES = "offline_access User.Read Mail.ReadWrite M
 export type OAuthProviderId = "google" | "microsoft";
 
 /**
- * `integrationConnections.type` values that satisfy an email-requiring agent
- * template. Derived from the OAuth provider ids below so the email-capable
- * provider list never drifts from the connect-flow descriptors — do not
- * hardcode a second copy of `["google", "microsoft"]` elsewhere.
+ * `integrationConnections.type` values for the OAuth-connected email
+ * providers this templates route recognizes when deciding whether an
+ * email-requiring agent template is available. Derived from the OAuth
+ * provider ids above so it can't drift from the connect-flow descriptors.
+ *
+ * Note: other, differently-scoped lists of email-ish connection types exist
+ * elsewhere (e.g. the permission UI, config build) for broader purposes and
+ * may include additional speculative types. Reconciling those is out of
+ * scope here — this constant only covers the OAuth providers this module
+ * describes.
  */
-export const EMAIL_CONNECTION_TYPES = [
+export const OAUTH_EMAIL_CONNECTION_TYPES = [
   "google",
   "microsoft",
 ] as const satisfies readonly OAuthProviderId[];
