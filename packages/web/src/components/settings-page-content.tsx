@@ -52,7 +52,6 @@ export function SettingsPageContent({
   const [loading, setLoading] = useState(true);
   const [userContext, setUserContext] = useState("");
   const [orgContext, setOrgContext] = useState("");
-  const [supportAgents, setSupportAgents] = useState<Array<{ id: string; name: string }>>([]);
 
   const [providerDirty, setProviderDirty] = useState(false);
   const [contextDirty, setContextDirty] = useState(false);
@@ -91,25 +90,6 @@ export function SettingsPageContent({
     }
   }, []);
 
-  const fetchSupportAgents = useCallback(async () => {
-    try {
-      const res = await fetch("/api/agents");
-      if (!res.ok) return;
-      const data = await res.json();
-      const list = Array.isArray(data) ? data : [];
-      setSupportAgents(
-        list
-          .filter(
-            (a: { id?: unknown; name?: unknown }) =>
-              typeof a?.id === "string" && typeof a?.name === "string"
-          )
-          .map((a: { id: string; name: string }) => ({ id: a.id, name: a.name }))
-      );
-    } catch {
-      // Best-effort: the Support tab degrades to an empty state.
-    }
-  }, []);
-
   useEffect(() => {
     let cancelled = false;
     void Promise.resolve().then(() => {
@@ -119,12 +99,11 @@ export function SettingsPageContent({
         void fetchOrgContext();
       }
       void fetchContext();
-      void fetchSupportAgents();
     });
     return () => {
       cancelled = true;
     };
-  }, [isAdmin, fetchStatus, fetchContext, fetchOrgContext, fetchSupportAgents]);
+  }, [isAdmin, fetchStatus, fetchContext, fetchOrgContext]);
 
   const handleProviderDirtyChange = useCallback((isDirty: boolean) => {
     setProviderDirty(isDirty);
@@ -191,7 +170,7 @@ export function SettingsPageContent({
           </TabsContent>
 
           <TabsContent value="support">
-            <SettingsSupport agents={supportAgents} />
+            <SettingsSupport />
           </TabsContent>
 
           {isAdmin && (

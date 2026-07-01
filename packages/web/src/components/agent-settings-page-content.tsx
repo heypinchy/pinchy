@@ -23,6 +23,7 @@ import { AgentSettingsFile } from "@/components/agent-settings-file";
 import { AgentSettingsPersonality } from "@/components/agent-settings-personality";
 import { AgentSettingsPermissions } from "@/components/agent-settings-permissions";
 import { AgentSettingsAccess } from "@/components/agent-settings-access";
+import { AgentSettingsDiagnostics } from "@/components/agent-settings-diagnostics";
 import { AgentTelegramSettings } from "@/components/agent-telegram-settings";
 import { useRestart } from "@/components/restart-provider";
 import type { AgentPluginConfig } from "@/db/schema";
@@ -106,7 +107,9 @@ export function AgentSettingsPageContent({ initialTab }: { initialTab?: string }
   const { triggerRestart } = useRestart();
   const isAdmin = session?.user?.role === "admin";
   const visibleTabs: AgentSettingsTab[] =
-    isPending || isAdmin ? [...AGENT_SETTINGS_TABS] : ["general", "personality", "instructions"];
+    isPending || isAdmin
+      ? [...AGENT_SETTINGS_TABS]
+      : ["general", "personality", "instructions", "diagnostics"];
   const [activeTab, setActiveTab] = useTabParam("general", visibleTabs, initialTab);
 
   const [agent, setAgent] = useState<Agent | null>(null);
@@ -422,6 +425,7 @@ export function AgentSettingsPageContent({ initialTab }: { initialTab?: string }
               </TabsTrigger>
             )}
             {isAdmin && <TabsTrigger value="telegram">Telegram</TabsTrigger>}
+            <TabsTrigger value="diagnostics">Diagnostics</TabsTrigger>
           </TabsList>
 
           <TabsContent value="general" keepMounted>
@@ -483,6 +487,10 @@ export function AgentSettingsPageContent({ initialTab }: { initialTab?: string }
               <AgentTelegramSettings agentId={agentId} isSmithers={agent.isPersonal} />
             </TabsContent>
           )}
+
+          <TabsContent value="diagnostics" keepMounted>
+            <AgentSettingsDiagnostics agentId={agentId} agentName={agent.name} />
+          </TabsContent>
         </Tabs>
       </div>
 

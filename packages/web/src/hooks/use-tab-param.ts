@@ -23,6 +23,7 @@ export const AGENT_SETTINGS_TABS = [
   "permissions",
   "access",
   "telegram",
+  "diagnostics",
 ] as const;
 
 export type SettingsTab = (typeof SETTINGS_TABS)[number];

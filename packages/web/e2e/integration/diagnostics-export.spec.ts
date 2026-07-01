@@ -3,7 +3,7 @@
 // E2E coverage for the self-service diagnostics export flow.
 //
 // Two entry points share one dialog:
-//   1. Settings → Support → Generate (no anchor)
+//   1. Agent Settings → Diagnostics → Generate (no anchor)
 //   2. Per-message action bar → "Report issue to support" → Generate (anchor present)
 //
 // Architecture note — why one chat-turn for both tests:
@@ -89,13 +89,16 @@ test.describe.serial("Self-service diagnostics export", () => {
     }
   });
 
-  test("Settings → Support → Generate produces a downloadable JSON file", async ({ page }) => {
+  test("Agent Settings → Diagnostics → Generate produces a downloadable JSON file", async ({
+    page,
+  }) => {
     await login(page);
     await waitForOpenClawConnected(page);
 
-    // Open Settings → Support. No chat-turn here — the beforeAll already
-    // primed the session.
-    await page.goto("/settings?tab=support");
+    // Open the agent's Settings → Diagnostics tab. The export is per-agent and
+    // the agent is already in context here — no agent picker. No chat-turn
+    // either; the beforeAll already primed the session.
+    await page.goto(`/chat/${smithersAgentId}/settings?tab=diagnostics`);
     const openDialogButton = page.getByRole("button", { name: /generate diagnostics export/i });
     await expect(openDialogButton).toBeVisible({ timeout: 10000 });
     await openDialogButton.click();
