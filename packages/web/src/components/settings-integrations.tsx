@@ -431,7 +431,7 @@ export function SettingsIntegrations({ oauthError }: { oauthError?: string } = {
         </AlertDialogContent>
       </AlertDialog>
 
-      <EditOAuthDialog open={showOAuthEdit} onOpenChange={setShowOAuthEdit} />
+      <EditOAuthDialog provider="google" open={showOAuthEdit} onOpenChange={setShowOAuthEdit} />
 
       <EditCredentialsDialog
         connection={editCredConn}

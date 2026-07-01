@@ -40,6 +40,20 @@ export async function GET(request: NextRequest) {
     return NextResponse.json({ error: "Invalid or missing provider" }, { status: 400 });
   }
 
+  // Tenant-scoped providers (Microsoft) also surface the stored tenantId so
+  // the edit dialog can prefill it. The client secret is never returned.
+  if (provider === "microsoft") {
+    const settings = await getOAuthSettings("microsoft");
+    if (!settings) {
+      return NextResponse.json({ configured: false, clientId: "" });
+    }
+    return NextResponse.json({
+      configured: true,
+      clientId: settings.clientId,
+      tenantId: settings.tenantId ?? "",
+    });
+  }
+
   const settings = await getOAuthSettings(provider);
   if (!settings) {
     return NextResponse.json({ configured: false, clientId: "" });

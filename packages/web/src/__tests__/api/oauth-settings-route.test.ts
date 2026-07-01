@@ -144,6 +144,36 @@ describe("GET /api/settings/oauth — microsoft provider", () => {
     expect(body.clientSecret).toBeUndefined();
   });
 
+  it("returns the stored tenantId for microsoft (without the secret)", async () => {
+    vi.mocked(auth.api.getSession).mockResolvedValueOnce(adminSession);
+    vi.mocked(getOAuthSettings).mockResolvedValueOnce({
+      clientId: "ms-client",
+      clientSecret: "ms-secret",
+      tenantId: "my-tenant",
+    });
+
+    const req = new NextRequest("http://localhost/api/settings/oauth?provider=microsoft");
+    const response = await GET(req);
+    const body = await response.json();
+
+    expect(body.tenantId).toBe("my-tenant");
+    expect(body.clientSecret).toBeUndefined();
+  });
+
+  it("returns an empty tenantId for microsoft when none is stored", async () => {
+    vi.mocked(auth.api.getSession).mockResolvedValueOnce(adminSession);
+    vi.mocked(getOAuthSettings).mockResolvedValueOnce({
+      clientId: "ms-client",
+      clientSecret: "ms-secret",
+    });
+
+    const req = new NextRequest("http://localhost/api/settings/oauth?provider=microsoft");
+    const response = await GET(req);
+    const body = await response.json();
+
+    expect(body.tenantId).toBe("");
+  });
+
   it("returns configured: false when microsoft settings do not exist", async () => {
     vi.mocked(auth.api.getSession).mockResolvedValueOnce(adminSession);
     vi.mocked(getOAuthSettings).mockResolvedValueOnce(null);

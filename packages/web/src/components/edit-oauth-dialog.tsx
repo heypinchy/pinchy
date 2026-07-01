@@ -13,15 +13,22 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Loader2 } from "lucide-react";
 import { toast } from "sonner";
+import { getOAuthProvider, type OAuthProviderId } from "@/lib/integrations/oauth-providers";
 
 interface EditOAuthDialogProps {
+  provider: OAuthProviderId;
   open: boolean;
   onOpenChange: (open: boolean) => void;
 }
 
-export function EditOAuthDialog({ open, onOpenChange }: EditOAuthDialogProps) {
+export function EditOAuthDialog({ provider, open, onOpenChange }: EditOAuthDialogProps) {
+  const descriptor = getOAuthProvider(provider);
+  const label = descriptor?.label ?? provider;
+  const hasTenant = descriptor?.hasTenant ?? false;
+
   const [clientId, setClientId] = useState("");
   const [clientSecret, setClientSecret] = useState("");
+  const [tenantId, setTenantId] = useState("");
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(true);
@@ -41,10 +48,12 @@ export function EditOAuthDialog({ open, onOpenChange }: EditOAuthDialogProps) {
   useEffect(() => {
     if (!open) return;
     let cancelled = false;
-    fetch("/api/settings/oauth?provider=google")
+    fetch(`/api/settings/oauth?provider=${provider}`)
       .then((res) => res.json())
       .then((data) => {
-        if (!cancelled) setClientId(data.clientId || "");
+        if (cancelled) return;
+        setClientId(data.clientId || "");
+        setTenantId(data.tenantId || "");
       })
       .catch(() => {})
       .finally(() => {
@@ -53,27 +62,37 @@ export function EditOAuthDialog({ open, onOpenChange }: EditOAuthDialogProps) {
     return () => {
       cancelled = true;
     };
-  }, [open]);
+  }, [open, provider]);
 
   async function handleSave() {
     setSaving(true);
     setError("");
     try {
+      const trimmedTenant = tenantId.trim();
+      const body =
+        hasTenant && trimmedTenant.length > 0
+          ? {
+              provider,
+              clientId: clientId.trim(),
+              clientSecret: clientSecret.trim(),
+              tenantId: trimmedTenant,
+            }
+          : {
+              provider,
+              clientId: clientId.trim(),
+              clientSecret: clientSecret.trim(),
+            };
       const res = await fetch("/api/settings/oauth", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          provider: "google",
-          clientId: clientId.trim(),
-          clientSecret: clientSecret.trim(),
-        }),
+        body: JSON.stringify(body),
       });
       if (!res.ok) {
         const data = await res.json().catch(() => ({}));
         setError(data.error || "Failed to save");
         return;
       }
-      toast.success("Google OAuth settings saved");
+      toast.success(`${label} OAuth settings saved`);
       onOpenChange(false);
     } catch {
       setError("Failed to save");
@@ -89,7 +108,7 @@ export function EditOAuthDialog({ open, onOpenChange }: EditOAuthDialogProps) {
       <DialogContent className="sm:max-w-md">
         <DialogHeader>
           <DialogTitle>Edit OAuth Credentials</DialogTitle>
-          <DialogDescription>Update your Google OAuth Client ID and Secret.</DialogDescription>
+          <DialogDescription>Update your {label} OAuth Client ID and Secret.</DialogDescription>
         </DialogHeader>
 
         {loading ? (
@@ -116,9 +135,20 @@ export function EditOAuthDialog({ open, onOpenChange }: EditOAuthDialogProps) {
                 placeholder="Enter new secret to update"
               />
             </div>
+            {hasTenant && (
+              <div className="space-y-1.5">
+                <Label htmlFor="edit-tenant-id">Tenant ID (optional)</Label>
+                <Input
+                  id="edit-tenant-id"
+                  value={tenantId}
+                  onChange={(e) => setTenantId(e.target.value)}
+                  placeholder="Leave blank for common (multi-tenant)"
+                />
+              </div>
+            )}
 
             <p className="text-xs text-muted-foreground">
-              Changes apply to all Google connections.
+              Changes apply to all {label} connections.
             </p>
 
             {error && <p className="text-sm text-destructive">{error}</p>}
