@@ -33,6 +33,7 @@ import {
   classifyAgentError,
   classifySynthesisedError,
   classifyTransientReason,
+  shouldPersistDurableError,
   type AgentErrorClass,
 } from "@/server/agent-error-classifier";
 import {
@@ -1746,22 +1747,31 @@ export class ClientRouter {
     try {
       // Derive sideEffects from the audit trail: OpenClaw doesn't signal tool
       // execution as a chat chunk, so a `tool.*` audit row since this run began
-      // is the reliable "the agent already acted" signal.
+      // is the reliable "the agent already acted" signal. Computed for EVERY
+      // class — the live inline retry's duplicate-write gate needs it even when
+      // we skip the durable row below.
       const sideEffects = await agentRanToolSince(args.agent.id, args.runStartedAt);
-      await recordChatSessionError({
-        userId: this.userId,
-        agentId: args.agent.id,
-        sessionKey: args.sessionKey,
-        clientMessageId: args.clientMessageId ?? null,
-        runId: args.runId ?? null,
-        agentName: args.agent.name,
-        model: args.agent.model ?? null,
-        errorClass: args.errorClass,
-        transientReason:
-          args.errorClass === "transient" ? classifyTransientReason(args.providerError) : null,
-        providerError: safeProviderError(args.providerError),
-        sideEffects,
-      });
+      // Only persist a durable "paused" banner for retryable/intermittent
+      // classes. A persistent problem (retired model, over-large prompt, bad
+      // provider config → `unknown`/`provider_config`) recurs every attempt, so
+      // a sticky banner that reappears on every navigation is annoyance, not
+      // help — the inline turn-failure is enough. See shouldPersistDurableError.
+      if (shouldPersistDurableError(args.errorClass)) {
+        await recordChatSessionError({
+          userId: this.userId,
+          agentId: args.agent.id,
+          sessionKey: args.sessionKey,
+          clientMessageId: args.clientMessageId ?? null,
+          runId: args.runId ?? null,
+          agentName: args.agent.name,
+          model: args.agent.model ?? null,
+          errorClass: args.errorClass,
+          transientReason:
+            args.errorClass === "transient" ? classifyTransientReason(args.providerError) : null,
+          providerError: safeProviderError(args.providerError),
+          sideEffects,
+        });
+      }
       return sideEffects;
     } catch (err) {
       console.error("Failed to persist durable chat error:", err);

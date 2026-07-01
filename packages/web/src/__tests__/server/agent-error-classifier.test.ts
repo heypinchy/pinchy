@@ -3,6 +3,8 @@ import {
   classifyAgentError,
   classifySynthesisedError,
   classifyTransientReason,
+  shouldPersistDurableError,
+  type AgentErrorClass,
 } from "@/server/agent-error-classifier";
 
 describe("classifyTransientReason", () => {
@@ -124,6 +126,43 @@ describe("classifyAgentError", () => {
     expect(classifyAgentError("You exceeded your current quota for the month")).toBe(
       "provider_config"
     );
+  });
+});
+
+describe("shouldPersistDurableError", () => {
+  // The durable "paused" banner (chat_session_errors) exists to re-surface an
+  // error a user might have MISSED — a one-off/intermittent failure whose live
+  // bubble died on a reload/reconnect. For a PERSISTENT problem (a retired
+  // model, an over-large prompt, a bad provider config) the next attempt fails
+  // the same way, so the error can't be missed and a sticky, reappearing banner
+  // is pure annoyance. So we only persist the retryable/intermittent classes.
+
+  const durableClasses: AgentErrorClass[] = [
+    "transient",
+    "silent_stream_timeout",
+    "model_unavailable",
+    "schema_rejection",
+    "failover_incomplete_stream",
+  ];
+  const nonDurableClasses: AgentErrorClass[] = ["provider_config", "unknown"];
+
+  it.each(durableClasses)("persists a durable banner for retryable class: %s", (cls) => {
+    expect(shouldPersistDurableError(cls)).toBe(true);
+  });
+
+  it.each(nonDurableClasses)(
+    "does NOT persist a durable banner for persistent class: %s (shows inline only)",
+    (cls) => {
+      expect(shouldPersistDurableError(cls)).toBe(false);
+    }
+  );
+
+  it("keeps a retired model (unknown class) OUT of the durable banner", () => {
+    // The reported staging bug: an agent pinned to a retired model 410s every
+    // turn; its providerError collapses to the bare "LLM request failed." which
+    // classifies as `unknown`. Retry can't help until an admin changes the
+    // model, so it must not create a sticky durable banner.
+    expect(shouldPersistDurableError(classifyAgentError("LLM request failed."))).toBe(false);
   });
 });
 

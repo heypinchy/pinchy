@@ -88,6 +88,41 @@ export function classifySynthesisedError(reason: SynthesisedErrorReason): AgentE
   }
 }
 
+/**
+ * Whether an agent error of this class should persist a durable "paused" banner
+ * (chat_session_errors), versus showing inline only.
+ *
+ * The banner exists to re-surface an error a user might have MISSED — a one-off
+ * or intermittent failure whose ephemeral live bubble died on a reload/reconnect
+ * (see chat-error-banner.tsx / chat-states.mdx). For a PERSISTENT problem the
+ * next attempt fails identically, so the error can't be missed and a sticky,
+ * reappearing banner is pure annoyance — the exact staging complaint for a
+ * retired model (bare "LLM request failed." → `unknown`) and for a bad provider
+ * config. Those show inline only; everything retryable keeps the banner.
+ *
+ * Exhaustive over `AgentErrorClass` (no `default`) so adding a future class is a
+ * compile error until its durability is explicitly decided — same discipline as
+ * `classifySynthesisedError` below.
+ */
+export function shouldPersistDurableError(errorClass: AgentErrorClass): boolean {
+  switch (errorClass) {
+    // Retryable / intermittent — a reload could have lost the live bubble and a
+    // fresh attempt may well succeed, so re-surface it on return.
+    case "transient":
+    case "silent_stream_timeout":
+    case "model_unavailable":
+    case "schema_rejection":
+    case "failover_incomplete_stream":
+      return true;
+    // Persistent — recurs every attempt until an admin changes something
+    // (model, provider config). The inline turn-failure is enough; a durable
+    // banner would just stick around and reappear on every navigation.
+    case "provider_config":
+    case "unknown":
+      return false;
+  }
+}
+
 // Sub-partition of TRANSIENT_PATTERN so the chat bubble can be honest about the
 // specific cause. `transient` (the audit class) spans rate-limit, overloaded,
 // timeout and HTTP 529 — calling all of them "rate limit" in the UI would be a

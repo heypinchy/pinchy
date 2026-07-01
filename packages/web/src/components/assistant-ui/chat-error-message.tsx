@@ -260,6 +260,16 @@ export const ChatErrorMessage: FC<{
           <div className="flex items-center gap-2 font-medium text-destructive dark:text-red-200">
             <AlertTriangle className="size-4 shrink-0" data-testid="error-warning-icon" />
             <span className="flex-1">{`${agentLabel} couldn't respond`}</span>
+            {onDismiss && (
+              <button
+                type="button"
+                onClick={onDismiss}
+                aria-label="Dismiss"
+                className="shrink-0 rounded-xs opacity-70 transition-opacity hover:opacity-100"
+              >
+                <X className="size-4" />
+              </button>
+            )}
             {actionSlot}
           </div>
           <p className="mt-1.5 text-destructive/90 dark:text-red-300/90">{error.providerError}</p>
