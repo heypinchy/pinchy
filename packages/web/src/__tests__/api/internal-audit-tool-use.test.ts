@@ -149,11 +149,51 @@ describe("POST /api/internal/audit/tool-use", () => {
       detail: {
         toolName: "browser",
         success: true,
+        toolCallId: "tool-2",
         durationMs: 123,
       },
       outcome: "success",
       error: null,
     });
+  });
+
+  // #640: diagnostics export matches a depth-truncated trajectory argument back
+  // to its fuller audit `params` by tool call id, so the id must be persisted.
+  it("records toolCallId in detail when the payload carries one", async () => {
+    const res = await POST(
+      makeRequest({
+        phase: "end",
+        toolName: "odoo_create",
+        agentId: "agent-9",
+        toolCallId: "call-xyz",
+        sessionKey: "agent:agent-9:direct:user-1",
+        params: { model: "res.partner", values: { name: "Acme" } },
+        result: { ok: true },
+      })
+    );
+
+    expect(res.status).toBe(200);
+    expect(appendAuditLog).toHaveBeenCalledWith(
+      expect.objectContaining({
+        eventType: "tool.odoo_create",
+        detail: expect.objectContaining({ toolCallId: "call-xyz" }),
+      })
+    );
+  });
+
+  it("omits toolCallId from detail when the payload has none", async () => {
+    const res = await POST(
+      makeRequest({
+        phase: "end",
+        toolName: "docs_list",
+        agentId: "agent-9",
+        result: "ok",
+      })
+    );
+
+    expect(res.status).toBe(200);
+    const call = vi.mocked(appendAuditLog).mock.calls.at(-1)?.[0];
+    expect(call?.detail).not.toHaveProperty("toolCallId");
   });
 
   it("falls back to agent actorType when sessionKey has no user portion", async () => {

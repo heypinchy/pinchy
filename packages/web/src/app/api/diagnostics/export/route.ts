@@ -35,6 +35,7 @@ import {
 } from "@/lib/diagnostics/jsonl-reader";
 import { parseJsonlLines } from "@/lib/diagnostics/jsonl-parser";
 import { buildOtelSpans } from "@/lib/diagnostics/otel-builder";
+import { enrichToolCallArgs } from "@/lib/diagnostics/enrich-tool-args";
 import { sanitizeBundle } from "@/lib/diagnostics/sanitize-bundle";
 import { computeScope } from "@/lib/diagnostics/scope-resolver";
 import { enforceSizeCap } from "@/lib/diagnostics/size-guard";
@@ -116,8 +117,14 @@ export const POST = withAuth(async (request, _ctx, session) => {
   // from model choice. Never embeds the raw prompt — only its hash (#642).
   const agentConfig = await collectAgentConfig(agent);
 
+  // Recover tool-call arguments that OpenClaw's trajectory capped at depth 6
+  // from the audit log's fuller (depth-10) `params`. Runs BEFORE sanitize +
+  // size cap so injected params still get secret-redacted and counted toward
+  // the 5 MB cap. Each argument is stamped argsSource: "audit" | "trajectory".
+  const enrichedSpans = enrichToolCallArgs(spans, auditEntries);
+
   const bundle = buildBundle({
-    spans,
+    spans: enrichedSpans,
     versions: getDiagnosticsVersions(),
     agentConfig,
     scope: {

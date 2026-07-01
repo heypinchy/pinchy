@@ -166,12 +166,16 @@ export async function POST(request: NextRequest) {
   const detailError = rawDetailError !== undefined ? safeProviderError(rawDetailError) : undefined;
 
   // Audit entries should answer: who, what, when, on what, outcome.
-  // No full result payloads (contain business data), no OpenClaw-internal IDs.
+  // No full result payloads (contain business data). We do keep the tool call's
+  // `toolCallId` when present: it's an opaque per-call correlation id (not a
+  // secret), and the diagnostics export uses it to match a depth-truncated
+  // trajectory argument back to this row's fuller `params` (#640).
   const detail: Record<string, unknown> = {
     toolName: payload.toolName,
     success: outcome === "success",
   };
 
+  if (payload.toolCallId !== undefined) detail.toolCallId = payload.toolCallId;
   if (payload.params !== undefined) detail.params = payload.params;
   if (detailError !== undefined) detail.error = detailError;
   if (payload.durationMs !== undefined) detail.durationMs = payload.durationMs;
@@ -190,6 +194,7 @@ export async function POST(request: NextRequest) {
     // Plugins must not override these system fields. Re-apply after merge.
     detail.toolName = payload.toolName;
     detail.success = outcome === "success";
+    if (payload.toolCallId !== undefined) detail.toolCallId = payload.toolCallId;
     if (detailError !== undefined) detail.error = detailError;
     else delete detail.error;
   }

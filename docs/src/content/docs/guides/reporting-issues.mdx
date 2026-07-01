@@ -11,7 +11,7 @@ The diagnostics export is a single JSON file that captures:
 
 - Up to your last 10 conversation turns with the reported agent
 - The model and provider name plus token usage for each turn
-- Tool calls (name and arguments) along with their sanitized results
+- Tool calls (name and arguments) along with their sanitized results. When a tool's arguments were too deeply nested for the trajectory to capture in full, we recover the complete values from the audit log and tag each call with an `argsSource` of `"audit"` or `"trajectory"` so you can see which were enriched. Very large payloads that exceed the audit-log size limit may still be shortened.
 - Finish reasons for each turn (`stop`, `tool_use`, `aborted`, `timeout`, etc.)
 - Pinchy, OpenClaw, and openclaw-node version strings
 - A snapshot of the agent's configuration at export time: its configured model and provider (plus the default vision model, if one is set), the tools it's allowed to use, its template and personality preset, and a SHA-256 hash of each instruction file (`SOUL.md`, `AGENTS.md`). This tells us whether a problem came from the model you chose or from drifted instructions — without us ever seeing the instructions themselves.
