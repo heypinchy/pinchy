@@ -1,7 +1,11 @@
 import { NextRequest, NextResponse, after } from "next/server";
 import { z } from "zod";
 import { requireAdmin } from "@/lib/api-auth";
-import { getOAuthSettings, saveOAuthSettings } from "@/lib/integrations/oauth-settings";
+import {
+  getOAuthSettings,
+  saveOAuthSettings,
+  deleteOAuthSettings,
+} from "@/lib/integrations/oauth-settings";
 import { getOAuthProvider } from "@/lib/integrations/oauth-providers";
 import { appendAuditLog } from "@/lib/audit";
 import { parseRequestBody } from "@/lib/api-validation";
@@ -99,6 +103,33 @@ export async function POST(request: NextRequest) {
       resource: `integration:${provider}-oauth`,
       eventType: "config.changed",
       detail: { key: settingsKey, provider },
+      outcome: "success",
+    })
+  );
+
+  return NextResponse.json({ success: true });
+}
+
+export async function DELETE(request: NextRequest) {
+  const sessionOrError = await requireAdmin();
+  if (sessionOrError instanceof NextResponse) return sessionOrError;
+
+  const provider = request.nextUrl.searchParams.get("provider");
+  if (!provider || !isSupportedProvider(provider)) {
+    return NextResponse.json({ error: "Invalid or missing provider" }, { status: 400 });
+  }
+
+  // Reset the provider's OAuth app credentials. Existing mailbox connections
+  // are left untouched but will need to be reconnected once a new app is set.
+  await deleteOAuthSettings(provider);
+
+  after(() =>
+    appendAuditLog({
+      actorType: "user",
+      actorId: sessionOrError.user.id!,
+      resource: `integration:${provider}-oauth`,
+      eventType: "config.changed",
+      detail: { action: "oauth_app_reset", provider },
       outcome: "success",
     })
   );

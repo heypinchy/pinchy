@@ -23,6 +23,7 @@ vi.mock("@/lib/integrations/oauth-settings", async (importOriginal) => {
     ...actual,
     getOAuthSettings: vi.fn(),
     saveOAuthSettings: vi.fn(),
+    deleteOAuthSettings: vi.fn(),
   };
 });
 
@@ -31,7 +32,11 @@ vi.mock("@/lib/audit", () => ({
 }));
 
 import { auth } from "@/lib/auth";
-import { getOAuthSettings, saveOAuthSettings } from "@/lib/integrations/oauth-settings";
+import {
+  getOAuthSettings,
+  saveOAuthSettings,
+  deleteOAuthSettings,
+} from "@/lib/integrations/oauth-settings";
 import { appendAuditLog } from "@/lib/audit";
 import { after } from "next/server";
 
@@ -398,6 +403,99 @@ describe("POST /api/settings/oauth", () => {
     expect(saveOAuthSettings).toHaveBeenCalledWith("google", {
       clientId: "g-client",
       clientSecret: "g-secret",
+    });
+  });
+});
+
+describe("DELETE /api/settings/oauth", () => {
+  let DELETE: typeof import("@/app/api/settings/oauth/route").DELETE;
+
+  beforeEach(async () => {
+    vi.clearAllMocks();
+    const mod = await import("@/app/api/settings/oauth/route");
+    DELETE = mod.DELETE;
+  });
+
+  it("returns 401 when not authenticated", async () => {
+    vi.mocked(auth.api.getSession).mockResolvedValueOnce(null);
+
+    const req = new NextRequest("http://localhost/api/settings/oauth?provider=microsoft", {
+      method: "DELETE",
+    });
+    const response = await DELETE(req);
+    expect(response.status).toBe(401);
+    expect(deleteOAuthSettings).not.toHaveBeenCalled();
+  });
+
+  it("returns 403 when not admin", async () => {
+    vi.mocked(auth.api.getSession).mockResolvedValueOnce(userSession);
+
+    const req = new NextRequest("http://localhost/api/settings/oauth?provider=microsoft", {
+      method: "DELETE",
+    });
+    const response = await DELETE(req);
+    expect(response.status).toBe(403);
+    expect(deleteOAuthSettings).not.toHaveBeenCalled();
+  });
+
+  it("returns 400 when provider query param is missing", async () => {
+    vi.mocked(auth.api.getSession).mockResolvedValueOnce(adminSession);
+
+    const req = new NextRequest("http://localhost/api/settings/oauth", {
+      method: "DELETE",
+    });
+    const response = await DELETE(req);
+    expect(response.status).toBe(400);
+    expect(deleteOAuthSettings).not.toHaveBeenCalled();
+  });
+
+  it("returns 400 when provider is not supported", async () => {
+    vi.mocked(auth.api.getSession).mockResolvedValueOnce(adminSession);
+
+    const req = new NextRequest("http://localhost/api/settings/oauth?provider=github", {
+      method: "DELETE",
+    });
+    const response = await DELETE(req);
+    expect(response.status).toBe(400);
+    expect(deleteOAuthSettings).not.toHaveBeenCalled();
+  });
+
+  it("deletes the provider's OAuth app settings and returns success", async () => {
+    vi.mocked(auth.api.getSession).mockResolvedValueOnce(adminSession);
+    vi.mocked(deleteOAuthSettings).mockResolvedValueOnce(undefined);
+
+    const req = new NextRequest("http://localhost/api/settings/oauth?provider=microsoft", {
+      method: "DELETE",
+    });
+    const response = await DELETE(req);
+    expect(response.status).toBe(200);
+
+    const body = await response.json();
+    expect(body).toEqual({ success: true });
+
+    expect(deleteOAuthSettings).toHaveBeenCalledWith("microsoft");
+  });
+
+  it("logs an audit event after resetting", async () => {
+    vi.mocked(auth.api.getSession).mockResolvedValueOnce(adminSession);
+    vi.mocked(deleteOAuthSettings).mockResolvedValueOnce(undefined);
+
+    const req = new NextRequest("http://localhost/api/settings/oauth?provider=microsoft", {
+      method: "DELETE",
+    });
+    await DELETE(req);
+
+    // Flush after() callbacks
+    const afterCb = vi.mocked(after).mock.calls[0]?.[0];
+    if (typeof afterCb === "function") await afterCb();
+
+    expect(appendAuditLog).toHaveBeenCalledWith({
+      actorType: "user",
+      actorId: "admin-1",
+      resource: "integration:microsoft-oauth",
+      eventType: "config.changed",
+      detail: { action: "oauth_app_reset", provider: "microsoft" },
+      outcome: "success",
     });
   });
 });
