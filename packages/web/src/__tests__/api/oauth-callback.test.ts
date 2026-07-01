@@ -44,6 +44,11 @@ vi.mock("@/lib/auth", () => ({
 
 vi.mock("@/lib/integrations/oauth-settings", () => ({
   getOAuthSettings: (...args: unknown[]) => mockGetOAuthSettings(...args),
+  // The route now transitively imports oauth-providers.ts, which reads these
+  // settings-key constants at module load. The mock must expose them or the
+  // descriptor build throws "No <KEY> export is defined".
+  GOOGLE_OAUTH_SETTINGS_KEY: "google_oauth_credentials",
+  MICROSOFT_OAUTH_SETTINGS_KEY: "microsoft_oauth_credentials",
 }));
 
 vi.mock("@/lib/encryption", () => ({

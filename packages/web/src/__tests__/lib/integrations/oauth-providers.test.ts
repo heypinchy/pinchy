@@ -1,4 +1,4 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, afterEach, vi } from "vitest";
 import {
   OAUTH_PROVIDERS,
   getOAuthProvider,
@@ -103,6 +103,66 @@ describe("OAUTH_PROVIDERS descriptor", () => {
       expect(OAUTH_PROVIDERS.microsoft.authorizeUrl({ tenantId: "   " })).toContain(
         "/organizations/"
       );
+    });
+  });
+
+  describe("tokenUrl", () => {
+    afterEach(() => {
+      vi.unstubAllEnvs();
+    });
+
+    it("builds the static Google token endpoint", () => {
+      expect(OAUTH_PROVIDERS.google.tokenUrl({})).toBe("https://oauth2.googleapis.com/token");
+    });
+
+    it("ignores tenantId for Google", () => {
+      expect(OAUTH_PROVIDERS.google.tokenUrl({ tenantId: "t1" })).toBe(
+        "https://oauth2.googleapis.com/token"
+      );
+    });
+
+    it("embeds the tenant id for Microsoft", () => {
+      expect(OAUTH_PROVIDERS.microsoft.tokenUrl({ tenantId: "t1" })).toBe(
+        "https://login.microsoftonline.com/t1/oauth2/v2.0/token"
+      );
+    });
+
+    it("falls back to the organizations tenant for Microsoft when tenant is absent/blank", () => {
+      expect(OAUTH_PROVIDERS.microsoft.tokenUrl({})).toBe(
+        "https://login.microsoftonline.com/organizations/oauth2/v2.0/token"
+      );
+      expect(OAUTH_PROVIDERS.microsoft.tokenUrl({ tenantId: "   " })).toBe(
+        "https://login.microsoftonline.com/organizations/oauth2/v2.0/token"
+      );
+    });
+
+    it("honours MICROSOFT_OAUTH_BASE_URL env override for the token host", () => {
+      vi.stubEnv("MICROSOFT_OAUTH_BASE_URL", "https://mock-ms-auth.local");
+      expect(OAUTH_PROVIDERS.microsoft.tokenUrl({ tenantId: "t1" })).toBe(
+        "https://mock-ms-auth.local/t1/oauth2/v2.0/token"
+      );
+    });
+  });
+
+  describe("profileUrl", () => {
+    afterEach(() => {
+      vi.unstubAllEnvs();
+    });
+
+    it("reads the Gmail v1 profile endpoint for Google", () => {
+      expect(OAUTH_PROVIDERS.google.profileUrl).toBe(
+        "https://www.googleapis.com/gmail/v1/users/me/profile"
+      );
+    });
+
+    it("reads the Microsoft Graph /v1.0/me endpoint", () => {
+      expect(OAUTH_PROVIDERS.microsoft.profileUrl).toBe("https://graph.microsoft.com/v1.0/me");
+    });
+
+    it("honours GRAPH_API_BASE_URL env override for the Microsoft profile host", () => {
+      vi.stubEnv("GRAPH_API_BASE_URL", "https://mock-graph.local");
+      // profileUrl must be a getter so env overrides are read lazily.
+      expect(OAUTH_PROVIDERS.microsoft.profileUrl).toBe("https://mock-graph.local/v1.0/me");
     });
   });
 

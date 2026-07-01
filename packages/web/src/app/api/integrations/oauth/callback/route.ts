@@ -6,6 +6,7 @@ import { NextResponse } from "next/server";
 import { headers } from "next/headers";
 import { getSession } from "@/lib/auth";
 import { getOAuthSettings, type MicrosoftOAuthSettings } from "@/lib/integrations/oauth-settings";
+import { getOAuthProvider, OAUTH_PROVIDERS } from "@/lib/integrations/oauth-providers";
 import { encrypt } from "@/lib/encryption";
 import { db } from "@/db";
 import { integrationConnections } from "@/db/schema";
@@ -96,10 +97,13 @@ export async function GET(request: Request) {
     pendingType = cookies["oauth_provider"] ?? "google";
   }
 
-  const isMicrosoft = pendingType === "microsoft";
+  // Resolve the descriptor; fail-safe to Google (matches the pendingType
+  // default). getOAuthProvider avoids object-injection on pendingType.
+  const oauthProvider = getOAuthProvider(pendingType) ?? OAUTH_PROVIDERS.google;
+  const isMicrosoft = oauthProvider.id === "microsoft";
 
   // 5. Read OAuth settings for the determined provider
-  const settings = await getOAuthSettings(isMicrosoft ? "microsoft" : "google");
+  const settings = await getOAuthSettings(oauthProvider.id);
   if (!settings) {
     return errorRedirect(origin, "not_configured");
   }
@@ -116,8 +120,7 @@ export async function GET(request: Request) {
   if (isMicrosoft) {
     // ── Microsoft authorization-code exchange ────────────────────────────
     const msSettings = settings as MicrosoftOAuthSettings;
-    const tenantId = msSettings.tenantId?.trim() || "organizations";
-    const tokenHost = process.env.MICROSOFT_OAUTH_BASE_URL ?? "https://login.microsoftonline.com";
+    const tenantId = msSettings.tenantId;
 
     const tokenBody = new URLSearchParams({
       grant_type: "authorization_code",
@@ -125,10 +128,10 @@ export async function GET(request: Request) {
       client_id: settings.clientId,
       client_secret: settings.clientSecret,
       redirect_uri: redirectUri,
-      scope: "offline_access User.Read Mail.ReadWrite Mail.Send",
+      scope: oauthProvider.scopes,
     });
 
-    const tokenResponse = await fetch(`${tokenHost}/${tenantId}/oauth2/v2.0/token`, {
+    const tokenResponse = await fetch(oauthProvider.tokenUrl({ tenantId }), {
       method: "POST",
       headers: { "Content-Type": "application/x-www-form-urlencoded" },
       body: tokenBody.toString(),
@@ -154,11 +157,10 @@ export async function GET(request: Request) {
     access_token = tokenData.access_token;
     refresh_token = tokenData.refresh_token;
     expires_in = tokenData.expires_in;
-    scope = "offline_access User.Read Mail.ReadWrite Mail.Send";
+    scope = oauthProvider.scopes;
 
     // Fetch profile from Microsoft Graph
-    const graphBase = process.env.GRAPH_API_BASE_URL ?? "https://graph.microsoft.com";
-    const profileResponse = await fetch(`${graphBase}/v1.0/me`, {
+    const profileResponse = await fetch(oauthProvider.profileUrl, {
       headers: { Authorization: `Bearer ${access_token}` },
     });
 
@@ -179,7 +181,7 @@ export async function GET(request: Request) {
     }
 
     const profileData = await profileResponse.json();
-    emailAddress = profileData.mail ?? profileData.userPrincipalName;
+    emailAddress = oauthProvider.extractEmail(profileData) ?? "";
   } else {
     // ── Google authorization-code exchange ───────────────────────────────
     const tokenBody = new URLSearchParams({
@@ -190,7 +192,7 @@ export async function GET(request: Request) {
       grant_type: "authorization_code",
     });
 
-    const tokenResponse = await fetch("https://oauth2.googleapis.com/token", {
+    const tokenResponse = await fetch(oauthProvider.tokenUrl({}), {
       method: "POST",
       headers: { "Content-Type": "application/x-www-form-urlencoded" },
       body: tokenBody.toString(),
@@ -219,7 +221,7 @@ export async function GET(request: Request) {
     scope = tokenData.scope;
 
     // Fetch email address from Gmail profile
-    const profileResponse = await fetch("https://www.googleapis.com/gmail/v1/users/me/profile", {
+    const profileResponse = await fetch(oauthProvider.profileUrl, {
       headers: { Authorization: `Bearer ${access_token}` },
     });
 
@@ -240,7 +242,7 @@ export async function GET(request: Request) {
     }
 
     const profileData = await profileResponse.json();
-    emailAddress = profileData.emailAddress;
+    emailAddress = oauthProvider.extractEmail(profileData) ?? "";
   }
 
   // 7. Persist integration — UPDATE pending record if possible, otherwise INSERT
@@ -254,12 +256,11 @@ export async function GET(request: Request) {
     })
   );
 
-  const provider = isMicrosoft ? "outlook" : "gmail";
-  const connectionType = isMicrosoft ? "microsoft" : "google";
+  const connectionType = oauthProvider.connectionType;
 
   const connectionData = {
     emailAddress,
-    provider,
+    provider: oauthProvider.auditProvider,
     connectedAt: new Date().toISOString(),
   };
 

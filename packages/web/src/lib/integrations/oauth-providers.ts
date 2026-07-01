@@ -49,6 +49,17 @@ export interface OAuthProviderDescriptor {
   /** Build the provider's authorization endpoint URL. */
   authorizeUrl(opts: { tenantId?: string }): string;
   /**
+   * Build the provider's token-exchange endpoint URL. Microsoft is
+   * tenant-scoped (same host/tenant logic as authorizeUrl); Google is static.
+   */
+  tokenUrl(opts: { tenantId?: string }): string;
+  /**
+   * The provider's profile endpoint URL, used to look up the mailbox email
+   * after the token exchange. Implemented as a getter for Microsoft so the
+   * `GRAPH_API_BASE_URL` env override is read lazily (tests stub it).
+   */
+  readonly profileUrl: string;
+  /**
    * Defensively extract the mailbox email from a fetched profile payload.
    * `profile` is unknown because it comes from a third-party API response.
    */
@@ -66,6 +77,19 @@ function asRecord(value: unknown): Record<string, unknown> | null {
 }
 
 const MICROSOFT_LOGIN_DEFAULT = "https://login.microsoftonline.com";
+const MICROSOFT_GRAPH_DEFAULT = "https://graph.microsoft.com";
+
+/**
+ * Resolve the Microsoft login host + effective tenant used by both the
+ * authorize and token endpoints, so the two can never drift. The host honours
+ * the `MICROSOFT_OAUTH_BASE_URL` env override (staging/mock); the tenant falls
+ * back to "organizations" when absent or blank.
+ */
+function microsoftHostAndTenant(tenantId?: string): { host: string; tenant: string } {
+  const tenant = tenantId?.trim() || "organizations";
+  const host = process.env.MICROSOFT_OAUTH_BASE_URL ?? MICROSOFT_LOGIN_DEFAULT;
+  return { host, tenant };
+}
 
 export const OAUTH_PROVIDERS: Record<OAuthProviderId, OAuthProviderDescriptor> = {
   google: {
@@ -80,6 +104,11 @@ export const OAUTH_PROVIDERS: Record<OAuthProviderId, OAuthProviderDescriptor> =
     authorizeUrl() {
       return "https://accounts.google.com/o/oauth2/v2/auth";
     },
+    tokenUrl() {
+      return "https://oauth2.googleapis.com/token";
+    },
+    // The Google connect flow reads the mailbox from the Gmail v1 profile.
+    profileUrl: "https://www.googleapis.com/gmail/v1/users/me/profile",
     extractEmail(profile) {
       // The Gmail v1 profile endpoint returns the mailbox under `emailAddress`.
       const record = asRecord(profile);
@@ -96,9 +125,17 @@ export const OAUTH_PROVIDERS: Record<OAuthProviderId, OAuthProviderDescriptor> =
     auditProvider: "outlook",
     docsPath: "/guides/connect-email-microsoft",
     authorizeUrl({ tenantId } = {}) {
-      const tenant = tenantId?.trim() || "organizations";
-      const tokenHost = process.env.MICROSOFT_OAUTH_BASE_URL ?? MICROSOFT_LOGIN_DEFAULT;
-      return `${tokenHost}/${tenant}/oauth2/v2.0/authorize`;
+      const { host, tenant } = microsoftHostAndTenant(tenantId);
+      return `${host}/${tenant}/oauth2/v2.0/authorize`;
+    },
+    tokenUrl({ tenantId } = {}) {
+      const { host, tenant } = microsoftHostAndTenant(tenantId);
+      return `${host}/${tenant}/oauth2/v2.0/token`;
+    },
+    // Getter so the GRAPH_API_BASE_URL env override is read lazily (staging/mock).
+    get profileUrl() {
+      const graphBase = process.env.GRAPH_API_BASE_URL ?? MICROSOFT_GRAPH_DEFAULT;
+      return `${graphBase}/v1.0/me`;
     },
     extractEmail(profile) {
       // Microsoft Graph returns `mail` for work/school accounts, but personal
