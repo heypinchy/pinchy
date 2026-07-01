@@ -52,7 +52,17 @@ version between current and target first.
    provider `baseUrl` handling — the areas that have bitten us before (see
    `reference_oc_*` / `reference_openclaw_*` memory entries). Look at
    sections titled "Sessions", "Gateway, Security, and Trust", "Plugins and
-   Packaging", and any breaking/migration language anywhere else.
+   Packaging", and any breaking/migration language anywhere else. **Watch
+   especially for new gateway-startup / config self-healing behavior** — these
+   don't show up in `pnpm test`/`tsc` at all and only fail in the docker E2Es.
+   Real example the 2026.6.11 bump tripped: OpenClaw 2026.6.x added startup
+   config auto-restore — on a size-drop / missing-meta vs last-known-good it
+   restores `openclaw.json.last-good` over `openclaw.json` at gateway start
+   (`recoverConfigFromLastKnownGood`). This broke the setup-wizard reset (it
+   deleted `openclaw.json` but not the backups, so OC restored the prior test's
+   config referencing wiped secrets → crash-loop). If notes mention config
+   backup / last-known-good / recovery / restore, expect the setup-wizard +
+   integration E2Es to need reset-choreography updates.
 
    **b. Resolved issues we have workarounds for.** Grep our own code for
    the upstream issue/PR numbers and version-guard comments before reading
