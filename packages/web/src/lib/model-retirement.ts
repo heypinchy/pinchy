@@ -18,13 +18,18 @@
  * model" — re-resolving doesn't fix a model that exists but lacks a capability;
  * that's the curated-list's job, not self-heal's.
  */
-// Patterns are intentionally broad. The only consumer is the self-heal path,
-// where a false positive is cheap (one debounced, idempotent config
+// Patterns are intentionally broad. The primary consumer is the self-heal
+// path, where a false positive is cheap (one debounced, idempotent config
 // regeneration) but a false negative is costly (a genuinely retired model
 // keeps 410ing with no heal). So we bias toward catching retirements — e.g.
 // bare `410` matches even when the body doesn't say "retired". `\b410\b`
 // won't fire on substrings like "410ms" (no word boundary before "ms").
-const RETIREMENT_PATTERNS: readonly RegExp[] = [
+//
+// Exported so error-patterns.ts (the user-facing message/hint layer, #611
+// follow-up) classifies off the SAME source of truth instead of a hand-rolled
+// duplicate — two independent copies of "what counts as a retirement" would
+// drift the moment one changes.
+export const RETIREMENT_PATTERNS: readonly RegExp[] = [
   /\b410\b/,
   /\bretired\b/i,
   /\bunknown model\b/i,

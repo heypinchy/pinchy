@@ -1,3 +1,5 @@
+import { RETIREMENT_PATTERNS } from "@/lib/model-retirement";
+
 /**
  * Shared error-text classification patterns used by both the user-facing
  * hint generator (`error-hints.ts`) and the audit umbrella classifier
@@ -75,3 +77,26 @@ export const PROVIDER_REJECTED_GENERIC_PATTERN =
  */
 export const CONTEXT_OVERFLOW_PATTERN =
   /context (overflow|window|length)|prompt (is )?too large|larger[- ]context|maximum context|too many (input )?tokens/i;
+
+/**
+ * Whether `text` indicates the dispatched model is no longer available
+ * upstream (retired/unknown/not-found) — reuses `model-retirement.ts`'s
+ * `RETIREMENT_PATTERNS`, the self-heal path's own classifier, so "what counts
+ * as a retirement" has one source of truth instead of two independent copies
+ * that could drift. The bare `410` entry is deliberately broad (see that
+ * file's reasoning) but doesn't collide with the patterns above: transient is
+ * `529`/rate-limit/timeout wording, provider-config is credit/key/quota,
+ * overflow is context/tokens wording — none of them mention 410.
+ *
+ * Known limitation (#611 follow-up): OpenClaw's gateway RPC only forwards a
+ * collapsed generic string for a chat-dispatch failure (verified against a
+ * real staging incident, 2026-07-01 — the stored providerError was the bare
+ * `"LLM request failed."`, with no retirement token at all). This matches
+ * PROVIDER_REJECTED_GENERIC_PATTERN's note: the distinguishing detail lives in
+ * OpenClaw's own container log and never reaches Pinchy over the wire. This
+ * function can only fire when a token happens to survive in the text Pinchy
+ * actually receives.
+ */
+export function matchesRetirement(text: string): boolean {
+  return RETIREMENT_PATTERNS.some((re) => re.test(text));
+}

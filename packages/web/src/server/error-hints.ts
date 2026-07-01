@@ -3,9 +3,31 @@ import {
   PROVIDER_CONFIG_PATTERN,
   PROVIDER_REJECTED_GENERIC_PATTERN,
   CONTEXT_OVERFLOW_PATTERN,
+  matchesRetirement,
 } from "@/server/error-patterns";
 
 export const PROVIDER_SETTINGS_HINT = "Go to Settings > Providers to check your API configuration.";
+
+// A retired model can't be retried as-is — an admin needs to pick a different
+// one for this agent. Deliberately NOT an automatic swap: an admin pinned this
+// model for a reason (cost, compliance, data residency, capability), and a
+// silent background change would undermine that governance decision the same
+// way the removed old "recovery dialog" did (see resolveImageTurnModel's
+// comment in client-router.ts). If this becomes a one-click suggested-swap
+// affordance later, it must go through the existing audited
+// `PATCH /api/agents/[agentId]` path, never a new silent one.
+export const MODEL_RETIRED_HINT_ADMIN = "Choose a different model for this agent in its settings.";
+export const MODEL_RETIRED_HINT_MEMBER = "Please contact your administrator.";
+
+// Pinchy already knows which model it dispatched to (it's the one that made
+// the request), so it can name it even though the retirement DATE never
+// reaches us (see matchesRetirement's doc comment — that's an upstream
+// OpenClaw limitation, not something we can parse around).
+export function MODEL_RETIRED_MESSAGE(modelName?: string): string {
+  return modelName
+    ? `The model "${modelName}" is no longer available — the provider has retired it.`
+    : "The agent's model is no longer available — the provider has retired it.";
+}
 
 // A context-window overflow can't be retried as-is. OpenClaw's own error text
 // advises its `/reset` / `/new` slash commands, but Pinchy's web composer sends
@@ -21,7 +43,13 @@ export const CONTEXT_OVERFLOW_MESSAGE =
   "This conversation is too long for the model's context window.";
 
 export function getErrorHint(errorText: string, userRole: string): string | null {
-  // Context-overflow first: it's specific, role-independent, and must not fall
+  // Retirement first, same reasoning as context-overflow: specific, and must
+  // not fall through to the generic/provider branches.
+  if (matchesRetirement(errorText)) {
+    return userRole === "admin" ? MODEL_RETIRED_HINT_ADMIN : MODEL_RETIRED_HINT_MEMBER;
+  }
+
+  // Context-overflow next: it's specific, role-independent, and must not fall
   // through to the generic/provider branches (or to null, the pre-#611 behavior).
   if (CONTEXT_OVERFLOW_PATTERN.test(errorText)) {
     return CONTEXT_OVERFLOW_HINT;
@@ -51,15 +79,29 @@ export function getErrorHint(errorText: string, userRole: string): string | null
 }
 
 /**
- * Map a raw provider-error string to the user-facing banner text. Currently this
- * only rewrites context-overflow errors — OpenClaw's text embeds `/reset`/`/new`
- * advice that doesn't work in Pinchy's composer (#611) — and passes everything
- * else through untouched. Apply it where the error is shown to the user (the live
- * error frame and the durable-banner route); the audit trail keeps the raw text.
+ * Map a raw provider-error string to the user-facing banner text. `modelName`
+ * is the model Pinchy dispatched to (`agent.model`/the durable row's stored
+ * model) — data Pinchy already has independent of the error text, since it's
+ * the one that made the request. Apply this where the error is shown to the
+ * user (the live error frame and the durable-banner route); the audit trail
+ * and the stored row always keep the raw, unmodified text.
  */
-export function presentProviderError(errorText: string): string {
+export function presentProviderError(errorText: string, modelName?: string): string {
+  if (matchesRetirement(errorText)) {
+    return MODEL_RETIRED_MESSAGE(modelName);
+  }
   if (CONTEXT_OVERFLOW_PATTERN.test(errorText)) {
     return CONTEXT_OVERFLOW_MESSAGE;
   }
-  return errorText;
+  // Final fallback: everything else (rate-limit, provider-config, the #584
+  // generic provider-rejection envelope, and any truly unclassified text) is
+  // shown as-is EXCEPT we still append which model was involved, when known.
+  // This is what actually fixes the reported bug: the real staging incident's
+  // stored providerError was the bare `"LLM request failed."` fallback with NO
+  // retirement token to match above, so `matchesRetirement` never fires for
+  // it — but Pinchy still knows which model it dispatched to regardless of
+  // WHY the dispatch failed, and naming it turns a fully opaque message into
+  // something actionable without asserting an unproven cause (the same
+  // honesty constraint that already shapes PROVIDER_REJECTED_GENERIC_PATTERN).
+  return modelName ? `${errorText} (model: ${modelName})` : errorText;
 }

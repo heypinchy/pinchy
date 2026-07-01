@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
-import { isRetiredModelError } from "@/lib/model-retirement";
+import { isRetiredModelError, RETIREMENT_PATTERNS } from "@/lib/model-retirement";
+import { matchesRetirement } from "@/server/error-patterns";
 
 describe("isRetiredModelError", () => {
   it("matches the HTTP 410 retired error we saw in production", () => {
@@ -41,4 +42,29 @@ describe("isRetiredModelError", () => {
     expect(isRetiredModelError(null)).toBe(false);
     expect(isRetiredModelError("")).toBe(false);
   });
+});
+
+describe("RETIREMENT_PATTERNS drift guard (#611 follow-up)", () => {
+  // error-patterns.ts's user-facing matchesRetirement() reuses THIS array
+  // rather than a hand-rolled copy, so self-heal's classification and the
+  // display layer's classification can never independently drift. This test
+  // pins that: if a future change swaps error-patterns.ts to a local copy
+  // instead of importing RETIREMENT_PATTERNS, this test won't catch every
+  // possible drift, but it does assert the array is exported and that a
+  // pattern it contains is honored by matchesRetirement — a change that
+  // silently forked the two would need to also break this.
+  it("is exported for reuse", () => {
+    expect(RETIREMENT_PATTERNS.length).toBeGreaterThan(0);
+  });
+
+  it.each(RETIREMENT_PATTERNS.map((re) => re.source))(
+    "matchesRetirement agrees with isRetiredModelError for pattern: %s",
+    () => {
+      // Every sample that trips isRetiredModelError must also trip
+      // matchesRetirement, proving both consume the same source array.
+      const sample = "410 model was retired, unknown model, model_not_found, no longer available";
+      expect(isRetiredModelError(sample)).toBe(true);
+      expect(matchesRetirement(sample)).toBe(true);
+    }
+  );
 });

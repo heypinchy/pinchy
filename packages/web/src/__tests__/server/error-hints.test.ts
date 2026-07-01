@@ -5,6 +5,9 @@ import {
   PROVIDER_SETTINGS_HINT,
   CONTEXT_OVERFLOW_HINT,
   CONTEXT_OVERFLOW_MESSAGE,
+  MODEL_RETIRED_MESSAGE,
+  MODEL_RETIRED_HINT_ADMIN,
+  MODEL_RETIRED_HINT_MEMBER,
 } from "@/server/error-hints";
 
 describe("getErrorHint", () => {
@@ -141,6 +144,88 @@ describe("getErrorHint", () => {
     it("presentProviderError leaves non-overflow errors unchanged", () => {
       expect(presentProviderError("Invalid API key provided")).toBe("Invalid API key provided");
       expect(presentProviderError("Rate limit exceeded")).toBe("Rate limit exceeded");
+    });
+  });
+
+  describe("retired model → names the model, admin/member hint, no unproven cause elsewhere", () => {
+    // Real staging incident (2026-07-01): an agent pinned to
+    // ollama-cloud/qwen3-vl:235b-instruct (retired by Ollama Cloud on 2026-06-16)
+    // failed every turn. OpenClaw's OWN container log split the detail cleanly
+    // (`error=LLM request failed. rawError=410 {"error":"...was retired..."}`),
+    // but only the generic `error` half crosses the gateway RPC to Pinchy — the
+    // `rawError` detail never reaches `chunk.text` (see error-patterns.ts's
+    // PROVIDER_REJECTED_GENERIC_PATTERN note for the same upstream-collapsing
+    // limitation, #584/openclaw#93741). A retirement text WITH a surviving
+    // token (410/retired/unknown model/etc.) still gets the specific message
+    // below when one happens to survive (e.g. a different error source, per
+    // model-retirement.test.ts's PDF-model-resolution example, which DOES get
+    // the full body via a direct HTTP call rather than the collapsed WS RPC).
+    const retirementTexts = [
+      '410 "qwen3-vl:235b-instruct was retired at 2026-06-16 00:00:00 -0700 PDT"',
+      "Unknown model: ollama-cloud/gemini-2-preview-0514",
+      "model_not_found",
+      "the model was retired",
+    ];
+
+    it.each(retirementTexts)("presentProviderError names the model: %s", (text) => {
+      const shown = presentProviderError(text, "ollama-cloud/qwen3-vl:235b-instruct");
+      expect(shown).toBe(MODEL_RETIRED_MESSAGE("ollama-cloud/qwen3-vl:235b-instruct"));
+      expect(shown).toContain("ollama-cloud/qwen3-vl:235b-instruct");
+      expect(shown).not.toBe(text);
+    });
+
+    it("presentProviderError falls back to a generic (no-name) message when no model name is known", () => {
+      expect(presentProviderError(retirementTexts[0]!)).toBe(MODEL_RETIRED_MESSAGE(undefined));
+      expect(presentProviderError(retirementTexts[0]!)).not.toContain("qwen3-vl");
+    });
+
+    it.each(retirementTexts)("getErrorHint returns the admin/member hint: %s", (text) => {
+      expect(getErrorHint(text, "admin")).toBe(MODEL_RETIRED_HINT_ADMIN);
+      expect(getErrorHint(text, "member")).toBe(MODEL_RETIRED_HINT_MEMBER);
+    });
+
+    it("does not misroute a bare '410' into transient/provider-config/overflow", () => {
+      // A bare 410 is deliberately broad (mirrors model-retirement.ts's own
+      // RETIREMENT_PATTERNS reasoning) but must not collide with the other
+      // specific patterns (529/rate-limit for transient, credit/key/quota for
+      // provider-config, context/tokens for overflow) — none of them mention 410.
+      expect(getErrorHint("410", "admin")).toBe(MODEL_RETIRED_HINT_ADMIN);
+    });
+  });
+
+  describe("generic unclassified error → names the model without asserting a cause (#611 follow-up)", () => {
+    // The ACTUAL staging incident's stored providerError was the bare OpenClaw
+    // fallback string with ZERO retirement signal — ground truth, verified via
+    // `select provider_error from chat_session_errors` on staging (2026-07-01):
+    // `"LLM request failed."`. matchesRetirement (and every other pattern) can't
+    // fire on this — there is nothing to pattern-match. This is the actual fix
+    // for the reported bug: Pinchy already knows WHICH model it dispatched to
+    // regardless of why the dispatch failed, so naming it turns a fully opaque
+    // message into something actionable without asserting an unproven cause
+    // (the honest constraint that already shapes PROVIDER_REJECTED_GENERIC_PATTERN).
+    const bareFallback = "LLM request failed.";
+
+    it("appends the model name to an otherwise-unclassified error", () => {
+      expect(presentProviderError(bareFallback, "ollama-cloud/qwen3-vl:235b-instruct")).toBe(
+        "LLM request failed. (model: ollama-cloud/qwen3-vl:235b-instruct)"
+      );
+    });
+
+    it("leaves the text unchanged when no model name is known", () => {
+      expect(presentProviderError(bareFallback)).toBe(bareFallback);
+    });
+
+    it("does not append a model name to a fully-replaced message (overflow/retirement)", () => {
+      const overflow = presentProviderError(
+        "context window exceeded for this prompt",
+        "some-model"
+      );
+      expect(overflow).toBe(CONTEXT_OVERFLOW_MESSAGE);
+      expect(overflow).not.toContain("some-model");
+    });
+
+    it("getErrorHint stays null for the unclassified bucket (unchanged pre-existing behavior)", () => {
+      expect(getErrorHint(bareFallback, "admin")).toBeNull();
     });
   });
 });

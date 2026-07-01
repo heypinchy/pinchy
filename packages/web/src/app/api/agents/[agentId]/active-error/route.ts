@@ -35,9 +35,10 @@ export const GET = withAuth<RouteContext>(async (request, { params }, session) =
           errorClass: row.errorClass,
           transientReason: row.transientReason,
           // Banner display only — rewrites OpenClaw's context-overflow /reset
-          // advice (#611), matching the live error frame. The stored row keeps
-          // the raw text, so the hint below still classifies off it.
-          providerError: presentProviderError(row.providerError),
+          // advice (#611) and names the model (#611 follow-up), matching the
+          // live error frame. The stored row keeps the raw text, so the hint
+          // below still classifies off it.
+          providerError: presentProviderError(row.providerError, row.model ?? undefined),
           // The banner renders no hint of its own; derive the same role-gated
           // guidance the live error frame gets (client-router) so a durable
           // provider-rejection points an admin at their provider config (#584).

@@ -1331,8 +1331,10 @@ export class ClientRouter {
               type: "error",
               agentName: agent.name,
               // Banner display only — rewrites OpenClaw's context-overflow /reset
-              // advice (#611). The audit + durable-persist keep the raw text.
-              providerError: presentProviderError(chunk.text),
+              // advice (#611) and names the dispatched model for a retired/
+              // unclassified error (#611 follow-up). The audit + durable-persist
+              // keep the raw text.
+              providerError: presentProviderError(chunk.text, agent.model ?? undefined),
               hint: getErrorHint(chunk.text, this.userRole),
               messageId,
               ...(modelUnavailable ? { modelUnavailable } : {}),
