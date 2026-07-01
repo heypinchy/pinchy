@@ -168,6 +168,37 @@ export function useChatSessionHasInlineError(agentId: string, chatId?: string): 
   return useStore(store, (s) => s.bundles[key]?.hasInlineError ?? false);
 }
 
+/**
+ * Aggregate run/error activity across ALL of an agent's live sessions (#508),
+ * for the sidebar indicator. `useChatSession(agentId)` reads only the DEFAULT
+ * session's bundle — so a run started in a non-default chat lit nothing. This
+ * scans every bundle whose `agentId` matches (matched by the bundle's own
+ * `agentId` field, NOT a store-key prefix — "agent-A" is a prefix of
+ * "agent-A2") and reports running if any is running, plus the first non-null
+ * `lastError`. Non-throwing (fallback store) like the sibling hooks. Each
+ * selector returns a primitive so the useSyncExternalStore snapshot stays
+ * referentially stable between renders.
+ */
+export function useAgentActivity(agentId: string): {
+  isRunning: boolean;
+  lastError: string | null;
+} {
+  const store = useContext(ChatSessionStoreContext) ?? fallbackStore;
+  const isRunning = useStore(store, (s) => {
+    for (const b of Object.values(s.bundles)) {
+      if (b?.agentId === agentId && b.isRunning) return true;
+    }
+    return false;
+  });
+  const lastError = useStore(store, (s) => {
+    for (const b of Object.values(s.bundles)) {
+      if (b?.agentId === agentId && b.lastError) return b.lastError;
+    }
+    return null;
+  });
+  return useMemo(() => ({ isRunning, lastError }), [isRunning, lastError]);
+}
+
 export function useVisitedAgentIds(): string[] {
   const store = useStoreOrThrow();
   // Serialize to a stable string so useSyncExternalStore snapshot is referentially

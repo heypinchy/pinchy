@@ -3,6 +3,7 @@ import { renderHook, act } from "@testing-library/react";
 import {
   ChatSessionProvider,
   MAX_LIVE_BUNDLES,
+  useAgentActivity,
   useChatSession,
   useChatSessionHasInlineError,
   useVisitedAgentIds,
@@ -145,6 +146,76 @@ describe("ChatSessionProvider", () => {
     it("does not throw outside a ChatSessionProvider (non-throwing fallback)", () => {
       const { result } = renderHook(() => useChatSessionHasInlineError("agent-1"));
       expect(result.current).toBe(false);
+    });
+  });
+
+  describe("useAgentActivity (sidebar indicator — ANY session, not just the first)", () => {
+    it("returns not-running / no-error when the agent has no sessions", () => {
+      const { result } = renderHook(() => useAgentActivity("agent-1"), { wrapper });
+      expect(result.current).toEqual({ isRunning: false, lastError: null });
+    });
+
+    it("reports running when a NON-default (chat-scoped) session is running", () => {
+      // The reported bug: the sidebar indicator read only the default session's
+      // bundle, so writing in another chat of the same agent lit nothing. It
+      // must reflect a run in ANY of the agent's sessions.
+      const { result } = renderHook(
+        () => ({
+          activity: useAgentActivity("agent-A"),
+          legacy: useChatSession("agent-A"),
+          chatX: useChatSession("agent-A", "chat-x"),
+        }),
+        { wrapper }
+      );
+
+      // Default session idle, a different chat's session running.
+      act(() =>
+        result.current.legacy.publish(fakeBundle({ agentId: "agent-A", isRunning: false }))
+      );
+      act(() =>
+        result.current.chatX.publish(
+          fakeBundle({ agentId: "agent-A", chatId: "chat-x", isRunning: true })
+        )
+      );
+
+      expect(result.current.activity.isRunning).toBe(true);
+    });
+
+    it("does not leak activity across agents (matches by agentId, not key prefix)", () => {
+      // Guard against a naive key-prefix match: "agent-A" is a prefix of
+      // "agent-A2", so matching on the store key would false-positive.
+      const { result } = renderHook(
+        () => ({
+          activityA: useAgentActivity("agent-A"),
+          publishA2: useChatSession("agent-A2").publish,
+        }),
+        { wrapper }
+      );
+
+      act(() => result.current.publishA2(fakeBundle({ agentId: "agent-A2", isRunning: true })));
+      expect(result.current.activityA.isRunning).toBe(false);
+    });
+
+    it("surfaces lastError from any of the agent's sessions", () => {
+      const { result } = renderHook(
+        () => ({
+          activity: useAgentActivity("agent-A"),
+          chatX: useChatSession("agent-A", "chat-x"),
+        }),
+        { wrapper }
+      );
+
+      act(() =>
+        result.current.chatX.publish(
+          fakeBundle({ agentId: "agent-A", chatId: "chat-x", lastError: "Reconnect exhausted" })
+        )
+      );
+      expect(result.current.activity.lastError).toBe("Reconnect exhausted");
+    });
+
+    it("does not throw outside a ChatSessionProvider (non-throwing fallback)", () => {
+      const { result } = renderHook(() => useAgentActivity("agent-1"));
+      expect(result.current).toEqual({ isRunning: false, lastError: null });
     });
   });
 
