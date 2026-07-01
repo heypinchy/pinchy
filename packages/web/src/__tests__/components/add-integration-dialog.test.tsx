@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import "@testing-library/jest-dom";
@@ -368,6 +368,65 @@ describe("AddIntegrationDialog", () => {
       // Should show the Microsoft connect dialog header
       expect(screen.getByText("Connect Microsoft")).toBeInTheDocument();
     });
+  });
+
+  // Both Google and Microsoft OAuth connect steps are rendered by the single,
+  // descriptor-driven ProviderConnectStep. These cases pin that shared step so a
+  // future change cannot quietly diverge the two providers' setup forms.
+  describe("shared ProviderConnectStep (Google + Microsoft)", () => {
+    let sharedFetchSpy: ReturnType<typeof vi.spyOn>;
+    let originalProtocol: string;
+
+    beforeEach(() => {
+      sharedFetchSpy = vi.spyOn(global, "fetch").mockResolvedValue({
+        ok: true,
+        json: async () => ({ configured: false }),
+      } as Response);
+      // Google's step gates on HTTPS; run both providers under https.
+      originalProtocol = window.location.protocol;
+      Object.defineProperty(window, "location", {
+        writable: true,
+        value: { ...window.location, protocol: "https:" },
+      });
+    });
+
+    afterEach(() => {
+      sharedFetchSpy.mockRestore();
+      Object.defineProperty(window, "location", {
+        writable: true,
+        value: { ...window.location, protocol: originalProtocol },
+      });
+    });
+
+    it.each([
+      { label: "Google", heading: "Set up Google OAuth", hasTenant: false },
+      { label: "Microsoft", heading: "Set up Microsoft OAuth", hasTenant: true },
+    ])(
+      "renders the same setup form scaffold for $label (heading, redirect URI, credential fields)",
+      async ({ label, heading, hasTenant }) => {
+        const user = userEvent.setup();
+        render(<AddIntegrationDialog {...defaultProps} />);
+        await user.click(screen.getByText(label).closest("button")!);
+
+        // Same step indicator, per-provider label.
+        await waitFor(() => {
+          expect(screen.getByText(heading)).toBeInTheDocument();
+        });
+        expect(screen.getByText(/Step 1 of 2/)).toBeInTheDocument();
+
+        // Same shared scaffold: redirect URI + Client ID/Secret fields.
+        expect(screen.getByText(/\/api\/integrations\/oauth\/callback/)).toBeInTheDocument();
+        expect(screen.getByLabelText("Client ID")).toBeInTheDocument();
+        expect(screen.getByLabelText("Client Secret")).toBeInTheDocument();
+
+        // Tenant ID is descriptor-driven: Microsoft only.
+        if (hasTenant) {
+          expect(screen.getByLabelText("Tenant ID")).toBeInTheDocument();
+        } else {
+          expect(screen.queryByLabelText("Tenant ID")).not.toBeInTheDocument();
+        }
+      }
+    );
   });
 
   describe("initialType prop", () => {

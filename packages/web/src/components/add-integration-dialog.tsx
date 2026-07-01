@@ -37,7 +37,12 @@ import { normalizeUrl } from "@/lib/url";
 import { Loader2, CheckCircle2, AlertTriangle, Copy, Check } from "lucide-react";
 import { useCopyToClipboard } from "@/hooks/use-copy-to-clipboard";
 import { OdooIcon, GoogleIcon, BraveIcon, MicrosoftIcon } from "./integration-icons";
-import { docsUrl } from "./docs-link";
+import { docsUrl, type DocsPath } from "./docs-link";
+import {
+  getOAuthProvider,
+  type OAuthProviderDescriptor,
+  type OAuthProviderId,
+} from "@/lib/integrations/oauth-providers";
 
 interface IntegrationType {
   id: string;
@@ -116,33 +121,115 @@ function StepIndicator({
   );
 }
 
-// --- Google Connect Step ---
+// --- Provider Connect Step (Google / Microsoft OAuth) ---
+//
+// One descriptor-driven step for both providers. The ~90% overlap (status
+// fetch, inline setup form, connect button) lives here; the provider-specific
+// copy that the wizard tests pin lives in PROVIDER_CONNECT_COPY below, keyed by
+// the two static provider ids (never an untrusted key, avoiding object
+// injection). The rendered output stays byte-identical to the two former
+// GoogleConnectStep / MicrosoftConnectStep components.
 
-type GoogleOAuthStatus = "loading" | "not-configured" | "configured";
+type ProviderOAuthStatus = "loading" | "not-configured" | "configured";
 
-function GoogleConnectStep({
+interface ProviderConnectCopy {
+  /** Console the redirect URI is copied into ("Google Cloud Console" | "the Azure Portal"). */
+  redirectTarget: string;
+  /** External console link. */
+  consoleUrl: string;
+  consoleLinkText: string;
+  /** Sentence completing "…and add this URI under X." */
+  addUriInstruction: React.ReactNode;
+  /** Section-2 heading ("Paste your credentials from Google" | "…from Azure"). */
+  pasteHeading: string;
+  clientIdPlaceholder: string;
+  clientSecretPlaceholder: string;
+  /**
+   * Docs path for the "Full guide" link. Typed as DocsPath (not derived from
+   * descriptor.docsPath) so docsUrl() stays type-checked against the generated
+   * union.
+   */
+  fullGuidePath: DocsPath;
+  /** Connect-button label ("Connect Google Account" | "Connect Microsoft Account"). */
+  connectLabel: string;
+  /**
+   * OAuth start endpoint. Google historically omits the provider query param,
+   * so this is spelled out per provider rather than derived, to keep the exact
+   * links the wizard tests assert.
+   */
+  startUrl: string;
+  /** Whether an HTTPS-secure context is required before the flow renders (Google only). */
+  requiresSecure: boolean;
+}
+
+const PROVIDER_CONNECT_COPY: Record<OAuthProviderId, ProviderConnectCopy> = {
+  google: {
+    redirectTarget: "Google Cloud Console",
+    consoleUrl: "https://console.cloud.google.com/apis/credentials",
+    consoleLinkText: "Google Cloud Console → Credentials",
+    addUriInstruction: (
+      <>
+        , create a <span className="font-medium">Web application</span> OAuth client, and add this
+        URI under <span className="font-medium">Authorized redirect URIs</span>.
+      </>
+    ),
+    pasteHeading: "Paste your credentials from Google",
+    clientIdPlaceholder: "xxxx.apps.googleusercontent.com",
+    clientSecretPlaceholder: "GOCSPX-...",
+    fullGuidePath: "guides/connect-email-google",
+    connectLabel: "Connect Google Account",
+    startUrl: "/api/integrations/oauth/start",
+    requiresSecure: true,
+  },
+  microsoft: {
+    redirectTarget: "the Azure Portal",
+    consoleUrl: "https://portal.azure.com/#view/Microsoft_AAD_RegisteredApps/ApplicationsListBlade",
+    consoleLinkText: "Azure Portal → App registrations",
+    addUriInstruction: (
+      <>
+        , register a new application, and add this URI under{" "}
+        <span className="font-medium">Redirect URIs</span>.
+      </>
+    ),
+    pasteHeading: "Paste your credentials from Azure",
+    clientIdPlaceholder: "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx",
+    clientSecretPlaceholder: "Your client secret value",
+    fullGuidePath: "guides/connect-email-microsoft",
+    connectLabel: "Connect Microsoft Account",
+    startUrl: "/api/integrations/oauth/start?provider=microsoft",
+    requiresSecure: false,
+  },
+};
+
+function ProviderConnectStep({
+  descriptor,
   isSecure,
   onBack,
   onCancel,
 }: {
+  descriptor: OAuthProviderDescriptor;
   isSecure: boolean;
   onBack: () => void;
   onCancel: () => void;
 }) {
-  const [oauthStatus, setOauthStatus] = useState<GoogleOAuthStatus>("loading");
+  const copy_ = PROVIDER_CONNECT_COPY[descriptor.id];
+  const [oauthStatus, setOauthStatus] = useState<ProviderOAuthStatus>("loading");
   const [justConfigured, setJustConfigured] = useState(false);
   const [clientId, setClientId] = useState("");
   const [clientSecret, setClientSecret] = useState("");
+  const [tenantId, setTenantId] = useState("");
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
   const { isCopied, copy } = useCopyToClipboard();
 
+  const blockedByInsecure = copy_.requiresSecure && !isSecure;
+
   useEffect(() => {
-    if (!isSecure) return;
+    if (blockedByInsecure) return;
     let cancelled = false;
     async function check() {
       try {
-        const res = await fetch("/api/settings/oauth?provider=google");
+        const res = await fetch(`/api/settings/oauth?provider=${descriptor.id}`);
         const data = await res.json();
         if (!cancelled) setOauthStatus(data.configured ? "configured" : "not-configured");
       } catch {
@@ -153,20 +240,24 @@ function GoogleConnectStep({
     return () => {
       cancelled = true;
     };
-  }, [isSecure]);
+  }, [descriptor.id, blockedByInsecure]);
 
   async function handleSaveOAuth() {
     setSaving(true);
     setSaveError(null);
     try {
+      const body: Record<string, string> = {
+        provider: descriptor.id,
+        clientId: clientId.trim(),
+        clientSecret: clientSecret.trim(),
+      };
+      if (descriptor.hasTenant && tenantId.trim()) {
+        body.tenantId = tenantId.trim();
+      }
       const res = await fetch("/api/settings/oauth", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          provider: "google",
-          clientId: clientId.trim(),
-          clientSecret: clientSecret.trim(),
-        }),
+        body: JSON.stringify(body),
       });
       const data = await res.json();
       if (!res.ok || !data.success) {
@@ -188,8 +279,10 @@ function GoogleConnectStep({
       ? `${window.location.origin}/api/integrations/oauth/callback`
       : "/api/integrations/oauth/callback";
 
-  // Not HTTPS — show warning
-  if (!isSecure) {
+  const idPrefix = descriptor.id;
+
+  // Not HTTPS — show warning (Google only)
+  if (blockedByInsecure) {
     return (
       <div className="space-y-4">
         <div className="flex items-start gap-3 rounded-lg border border-amber-200 bg-amber-50 p-4 dark:border-amber-900 dark:bg-amber-950">
@@ -197,7 +290,7 @@ function GoogleConnectStep({
           <div className="space-y-1">
             <p className="font-medium text-amber-800 dark:text-amber-200">HTTPS is required</p>
             <p className="text-sm text-amber-700 dark:text-amber-300">
-              Google OAuth requires a secure HTTPS connection. See{" "}
+              {descriptor.label} OAuth requires a secure HTTPS connection. See{" "}
               <a
                 href={docsUrl("guides/domain-lock")}
                 target="_blank"
@@ -237,11 +330,11 @@ function GoogleConnectStep({
   if (oauthStatus === "not-configured") {
     return (
       <div className="space-y-5">
-        <StepIndicator current={1} total={2} label="Set up Google OAuth" />
+        <StepIndicator current={1} total={2} label={`Set up ${descriptor.label} OAuth`} />
 
-        {/* Section 1: Copy redirect URI TO Google */}
+        {/* Section 1: Copy redirect URI TO the provider console */}
         <div className="space-y-2">
-          <p className="text-sm font-medium">1. Copy this redirect URI to Google Cloud Console</p>
+          <p className="text-sm font-medium">1. Copy this redirect URI to {copy_.redirectTarget}</p>
           <div className="flex items-center gap-2">
             <code className="flex-1 rounded bg-muted px-3 py-2 text-xs break-all">
               {redirectUrl}
@@ -266,17 +359,16 @@ function GoogleConnectStep({
           <p className="text-xs text-muted-foreground">
             Open{" "}
             <a
-              href="https://console.cloud.google.com/apis/credentials"
+              href={copy_.consoleUrl}
               target="_blank"
               rel="noopener noreferrer"
               className="underline"
             >
-              Google Cloud Console → Credentials
+              {copy_.consoleLinkText}
             </a>
-            , create a <span className="font-medium">Web application</span> OAuth client, and add
-            this URI under <span className="font-medium">Authorized redirect URIs</span>.{" "}
+            {copy_.addUriInstruction}{" "}
             <a
-              href={docsUrl("guides/connect-email-google")}
+              href={docsUrl(copy_.fullGuidePath)}
               target="_blank"
               rel="noopener noreferrer"
               className="underline"
@@ -289,28 +381,42 @@ function GoogleConnectStep({
           </p>
         </div>
 
-        {/* Section 2: Paste credentials FROM Google */}
+        {/* Section 2: Paste credentials FROM the provider */}
         <div className="space-y-3">
-          <p className="text-sm font-medium">2. Paste your credentials from Google</p>
+          <p className="text-sm font-medium">2. {copy_.pasteHeading}</p>
           <div className="space-y-2">
-            <Label htmlFor="google-client-id">Client ID</Label>
+            <Label htmlFor={`${idPrefix}-client-id`}>Client ID</Label>
             <Input
-              id="google-client-id"
+              id={`${idPrefix}-client-id`}
               value={clientId}
               onChange={(e) => setClientId(e.target.value)}
-              placeholder="xxxx.apps.googleusercontent.com"
+              placeholder={copy_.clientIdPlaceholder}
             />
           </div>
           <div className="space-y-2">
-            <Label htmlFor="google-client-secret">Client Secret</Label>
+            <Label htmlFor={`${idPrefix}-client-secret`}>Client Secret</Label>
             <Input
-              id="google-client-secret"
+              id={`${idPrefix}-client-secret`}
               type="password"
               value={clientSecret}
               onChange={(e) => setClientSecret(e.target.value)}
-              placeholder="GOCSPX-..."
+              placeholder={copy_.clientSecretPlaceholder}
             />
           </div>
+          {descriptor.hasTenant && (
+            <div className="space-y-2">
+              <Label htmlFor={`${idPrefix}-tenant-id`}>Tenant ID</Label>
+              <Input
+                id={`${idPrefix}-tenant-id`}
+                value={tenantId}
+                onChange={(e) => setTenantId(e.target.value)}
+                placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
+              />
+              <p className="text-xs text-muted-foreground">
+                Optional — leave blank to allow any work/school account
+              </p>
+            </div>
+          )}
         </div>
 
         {saveError && <p className="text-sm text-destructive">{saveError}</p>}
@@ -352,260 +458,21 @@ function GoogleConnectStep({
         label="Connect"
       />
 
-      {/* eslint-disable @next/next/no-html-link-for-pages -- OAuth requires full page redirect */}
+      {/* Plain anchor: OAuth requires a full-page redirect, not client-side nav. */}
       <div className="flex flex-col items-center gap-4 py-4">
         <a
-          href="/api/integrations/oauth/start"
+          href={copy_.startUrl}
           className="inline-flex h-10 items-center justify-center gap-2 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground ring-offset-background transition-colors hover:bg-primary/90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
         >
-          Connect Google Account
+          {copy_.connectLabel}
         </a>
       </div>
-      {/* eslint-enable @next/next/no-html-link-for-pages */}
 
       <div className="flex justify-between pt-2">
         <Button type="button" variant="ghost" onClick={onBack}>
           Back
         </Button>
         <Button type="button" variant="outline" onClick={onCancel}>
-          Cancel
-        </Button>
-      </div>
-    </div>
-  );
-}
-
-// --- Microsoft Connect Step ---
-
-type MicrosoftOAuthStatus = "loading" | "not-configured" | "configured";
-
-function MicrosoftConnectStep({
-  onBack,
-  onConnect,
-}: {
-  onBack: () => void;
-  onConnect: () => void;
-}) {
-  const [oauthStatus, setOauthStatus] = useState<MicrosoftOAuthStatus>("loading");
-  const [justConfigured, setJustConfigured] = useState(false);
-  const [clientId, setClientId] = useState("");
-  const [clientSecret, setClientSecret] = useState("");
-  const [tenantId, setTenantId] = useState("");
-  const [saving, setSaving] = useState(false);
-  const [saveError, setSaveError] = useState<string | null>(null);
-  const { isCopied, copy } = useCopyToClipboard();
-
-  useEffect(() => {
-    let cancelled = false;
-    async function check() {
-      try {
-        const res = await fetch("/api/settings/oauth?provider=microsoft");
-        const data = await res.json();
-        if (!cancelled) setOauthStatus(data.configured ? "configured" : "not-configured");
-      } catch {
-        if (!cancelled) setOauthStatus("not-configured");
-      }
-    }
-    check();
-    return () => {
-      cancelled = true;
-    };
-  }, []);
-
-  async function handleSaveOAuth() {
-    setSaving(true);
-    setSaveError(null);
-    try {
-      const body: Record<string, string> = {
-        provider: "microsoft",
-        clientId: clientId.trim(),
-        clientSecret: clientSecret.trim(),
-      };
-      if (tenantId.trim()) {
-        body.tenantId = tenantId.trim();
-      }
-      const res = await fetch("/api/settings/oauth", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(body),
-      });
-      const data = await res.json();
-      if (!res.ok || !data.success) {
-        setSaveError(data.error || "Failed to save OAuth credentials");
-        setSaving(false);
-        return;
-      }
-      setJustConfigured(true);
-      setOauthStatus("configured");
-      setSaving(false);
-    } catch {
-      setSaveError("Failed to save OAuth credentials");
-      setSaving(false);
-    }
-  }
-
-  const redirectUrl =
-    typeof window !== "undefined"
-      ? `${window.location.origin}/api/integrations/oauth/callback`
-      : "/api/integrations/oauth/callback";
-
-  // Loading
-  if (oauthStatus === "loading") {
-    return (
-      <div className="flex flex-col items-center gap-3 py-6">
-        <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
-        <p className="text-sm text-muted-foreground">Checking OAuth configuration...</p>
-      </div>
-    );
-  }
-
-  // Not configured — show inline setup form
-  if (oauthStatus === "not-configured") {
-    return (
-      <div className="space-y-5">
-        <StepIndicator current={1} total={2} label="Set up Microsoft OAuth" />
-
-        {/* Section 1: Copy redirect URI to Azure Portal */}
-        <div className="space-y-2">
-          <p className="text-sm font-medium">1. Copy this redirect URI to the Azure Portal</p>
-          <div className="flex items-center gap-2">
-            <code className="flex-1 rounded bg-muted px-3 py-2 text-xs break-all">
-              {redirectUrl}
-            </code>
-            <Button
-              type="button"
-              variant="outline"
-              size="icon"
-              className="shrink-0"
-              onClick={() => {
-                copy(redirectUrl);
-                toast.success("Copied to clipboard");
-              }}
-            >
-              {isCopied ? (
-                <Check className="h-4 w-4 text-green-600" />
-              ) : (
-                <Copy className="h-4 w-4" />
-              )}
-            </Button>
-          </div>
-          <p className="text-xs text-muted-foreground">
-            Open{" "}
-            <a
-              href="https://portal.azure.com/#view/Microsoft_AAD_RegisteredApps/ApplicationsListBlade"
-              target="_blank"
-              rel="noopener noreferrer"
-              className="underline"
-            >
-              Azure Portal → App registrations
-            </a>
-            , register a new application, and add this URI under{" "}
-            <span className="font-medium">Redirect URIs</span>.{" "}
-            <a
-              href={docsUrl("guides/connect-email-microsoft")}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="underline"
-            >
-              Full guide
-            </a>
-          </p>
-          <p className="text-xs text-muted-foreground italic">
-            Keep this page open — you&apos;ll need to come back.
-          </p>
-        </div>
-
-        {/* Section 2: Paste credentials from Azure */}
-        <div className="space-y-3">
-          <p className="text-sm font-medium">2. Paste your credentials from Azure</p>
-          <div className="space-y-2">
-            <Label htmlFor="microsoft-client-id">Client ID</Label>
-            <Input
-              id="microsoft-client-id"
-              value={clientId}
-              onChange={(e) => setClientId(e.target.value)}
-              placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
-            />
-          </div>
-          <div className="space-y-2">
-            <Label htmlFor="microsoft-client-secret">Client Secret</Label>
-            <Input
-              id="microsoft-client-secret"
-              type="password"
-              value={clientSecret}
-              onChange={(e) => setClientSecret(e.target.value)}
-              placeholder="Your client secret value"
-            />
-          </div>
-          <div className="space-y-2">
-            <Label htmlFor="microsoft-tenant-id">Tenant ID</Label>
-            <Input
-              id="microsoft-tenant-id"
-              value={tenantId}
-              onChange={(e) => setTenantId(e.target.value)}
-              placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
-            />
-            <p className="text-xs text-muted-foreground">
-              Optional — leave blank to allow any work/school account
-            </p>
-          </div>
-        </div>
-
-        {saveError && <p className="text-sm text-destructive">{saveError}</p>}
-
-        <div className="flex justify-between pt-2">
-          <Button type="button" variant="ghost" onClick={onBack}>
-            Back
-          </Button>
-          <div className="flex gap-2">
-            <Button type="button" variant="outline" onClick={onConnect}>
-              Cancel
-            </Button>
-            <Button
-              type="button"
-              disabled={!clientId.trim() || !clientSecret.trim() || saving}
-              onClick={handleSaveOAuth}
-            >
-              {saving ? (
-                <>
-                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                  Saving...
-                </>
-              ) : (
-                "Save & Continue"
-              )}
-            </Button>
-          </div>
-        </div>
-      </div>
-    );
-  }
-
-  // Configured — show connect button
-  return (
-    <div className="space-y-4">
-      <StepIndicator
-        current={justConfigured ? 2 : 1}
-        total={justConfigured ? 2 : 1}
-        label="Connect"
-      />
-
-      {/* eslint-disable @next/next/no-html-link-for-pages -- OAuth requires full page redirect */}
-      <div className="flex flex-col items-center gap-4 py-4">
-        <a
-          href="/api/integrations/oauth/start?provider=microsoft"
-          className="inline-flex h-10 items-center justify-center gap-2 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground ring-offset-background transition-colors hover:bg-primary/90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
-        >
-          Connect Microsoft Account
-        </a>
-      </div>
-      {/* eslint-enable @next/next/no-html-link-for-pages */}
-
-      <div className="flex justify-between pt-2">
-        <Button type="button" variant="ghost" onClick={onBack}>
-          Back
-        </Button>
-        <Button type="button" variant="outline" onClick={onConnect}>
           Cancel
         </Button>
       </div>
@@ -1215,7 +1082,8 @@ export function AddIntegrationDialog({
               </DialogDescription>
             </DialogHeader>
 
-            <GoogleConnectStep
+            <ProviderConnectStep
+              descriptor={getOAuthProvider("google")!}
               isSecure={isSecure}
               onBack={handleBack}
               onCancel={() => handleClose(false)}
@@ -1233,7 +1101,12 @@ export function AddIntegrationDialog({
               </DialogDescription>
             </DialogHeader>
 
-            <MicrosoftConnectStep onBack={handleBack} onConnect={() => handleClose(false)} />
+            <ProviderConnectStep
+              descriptor={getOAuthProvider("microsoft")!}
+              isSecure={isSecure}
+              onBack={handleBack}
+              onCancel={() => handleClose(false)}
+            />
           </>
         )}
 

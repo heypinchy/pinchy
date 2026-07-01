@@ -1,12 +1,8 @@
 import { NextRequest, NextResponse, after } from "next/server";
 import { z } from "zod";
 import { requireAdmin } from "@/lib/api-auth";
-import {
-  getOAuthSettings,
-  saveOAuthSettings,
-  GOOGLE_OAUTH_SETTINGS_KEY,
-  MICROSOFT_OAUTH_SETTINGS_KEY,
-} from "@/lib/integrations/oauth-settings";
+import { getOAuthSettings, saveOAuthSettings } from "@/lib/integrations/oauth-settings";
+import { getOAuthProvider } from "@/lib/integrations/oauth-providers";
 import { appendAuditLog } from "@/lib/audit";
 import { parseRequestBody } from "@/lib/api-validation";
 
@@ -34,11 +30,6 @@ const saveOAuthSchema = z.discriminatedUnion("provider", [
   saveGoogleOAuthSchema,
   saveMicrosoftOAuthSchema,
 ]);
-
-const SETTINGS_KEY_MAP: Record<SupportedProvider, string> = {
-  google: GOOGLE_OAUTH_SETTINGS_KEY,
-  microsoft: MICROSOFT_OAUTH_SETTINGS_KEY,
-};
 
 export async function GET(request: NextRequest) {
   const sessionOrError = await requireAdmin();
@@ -68,38 +59,35 @@ export async function POST(request: NextRequest) {
   if ("error" in parsed) return parsed.error;
   const data = parsed.data;
 
+  // Persist per-provider settings (Microsoft carries an optional tenantId). The
+  // save stays branch-narrowed so saveOAuthSettings' generic gets the exact
+  // ProviderSettings[P] shape it expects; the audit write below is shared.
   if (data.provider === "microsoft") {
     const { clientId, clientSecret, tenantId } = data;
-    const settingsToSave = tenantId
-      ? { clientId, clientSecret, tenantId }
-      : { clientId, clientSecret };
-    await saveOAuthSettings("microsoft", settingsToSave);
-
-    after(() =>
-      appendAuditLog({
-        actorType: "user",
-        actorId: sessionOrError.user.id!,
-        resource: "integration:microsoft-oauth",
-        eventType: "config.changed",
-        detail: { key: SETTINGS_KEY_MAP["microsoft"], provider: "microsoft" },
-        outcome: "success",
-      })
+    await saveOAuthSettings(
+      "microsoft",
+      tenantId ? { clientId, clientSecret, tenantId } : { clientId, clientSecret }
     );
   } else {
     const { clientId, clientSecret } = data;
     await saveOAuthSettings("google", { clientId, clientSecret });
-
-    after(() =>
-      appendAuditLog({
-        actorType: "user",
-        actorId: sessionOrError.user.id!,
-        resource: "integration:google-oauth",
-        eventType: "config.changed",
-        detail: { key: SETTINGS_KEY_MAP["google"], provider: "google" },
-        outcome: "success",
-      })
-    );
   }
+
+  const provider = data.provider;
+  // getOAuthProvider is non-null for the discriminated-union providers; its
+  // settingsKey is the same value as the audit rows recorded before this
+  // refactor (google_oauth_credentials / microsoft_oauth_credentials).
+  const settingsKey = getOAuthProvider(provider)!.settingsKey;
+  after(() =>
+    appendAuditLog({
+      actorType: "user",
+      actorId: sessionOrError.user.id!,
+      resource: `integration:${provider}-oauth`,
+      eventType: "config.changed",
+      detail: { key: settingsKey, provider },
+      outcome: "success",
+    })
+  );
 
   return NextResponse.json({ success: true });
 }
