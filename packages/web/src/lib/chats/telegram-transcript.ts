@@ -1,5 +1,7 @@
 import { parseAttachmentBlock } from "@/server/attachment-pipeline";
 import type { TelegramTranscriptMessage } from "@/lib/schemas/sessions";
+// Shared with client-router.ts and their tests — see @/lib/openclaw-history.
+import { QUEUED_RETRY_PREFIX } from "@/lib/openclaw-history";
 
 /**
  * One raw entry from OpenClaw's `sessions.history` wire output. `content` is
@@ -11,13 +13,6 @@ export type RawHistoryMessage = {
   content?: unknown;
   timestamp?: number;
 };
-
-// OpenClaw marks user messages that arrived while another turn was still active
-// with this prefix and aggregates them. They are duplicates of the original
-// user turn already in history, so the live chat filters them out — we mirror
-// that here. (Kept verbatim in sync with `client-router.ts`.)
-const QUEUED_RETRY_PREFIX =
-  "[Queued user message that arrived while the previous turn was still active]";
 
 /**
  * Extract the rendered text from one OpenClaw history entry: join the text
