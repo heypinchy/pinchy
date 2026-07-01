@@ -160,6 +160,7 @@ vi.mock("@/server/attachment-pipeline", async (importOriginal) => {
 
 import { ClientRouter } from "@/server/client-router";
 import { SessionCache } from "@/server/session-cache";
+import { CHAT_HISTORY_OVERSIZED_PLACEHOLDER } from "@/lib/openclaw-history";
 
 function createMockClientWs() {
   const sent: string[] = [];
@@ -1590,7 +1591,7 @@ describe("ClientRouter", () => {
       messages: [
         {
           role: "user",
-          content: [{ type: "text", text: "[chat.history omitted: message too large]" }],
+          content: [{ type: "text", text: CHAT_HISTORY_OVERSIZED_PLACEHOLDER }],
           timestamp: 1708460000000,
         },
         {
@@ -1613,6 +1614,35 @@ describe("ClientRouter", () => {
     expect(userMsg.content).not.toContain("chat.history");
     // The client's reconcile logic (use-ws-runtime.ts) needs this flag to
     // prefer a richer LOCAL copy of the same message over this placeholder.
+    expect(userMsg.oversized).toBe(true);
+  });
+
+  it("detects an oversized placeholder even when OpenClaw prepends a timestamp", async () => {
+    // OpenClaw stamps user messages with a leading `[timestamp]` prefix (see
+    // "should strip timestamp prefix from user messages in history"). If it
+    // ever also stamps an oversized user turn, an exact-equality check would
+    // miss it: the timestamp-strip would then leave the RAW internal string
+    // "[chat.history omitted: message too large]" visible to the user, and the
+    // row would not be flagged oversized (so the client can't prefer the local
+    // copy). Detection must survive the prefix.
+    const clientWs = createMockClientWs();
+    mockSessionsHistory.mockResolvedValue({
+      messages: [
+        {
+          role: "user",
+          content: `[Fri 2026-02-20 21:30 UTC] ${CHAT_HISTORY_OVERSIZED_PLACEHOLDER}`,
+          timestamp: 1708460000000,
+        },
+        { role: "assistant", content: "reply", timestamp: 1708460001000 },
+      ],
+    });
+
+    await router.handleMessage(clientWs as any, { type: "history", agentId: "agent-1" });
+
+    const sent = clientWs.sent.map((s) => JSON.parse(s));
+    const userMsg = sent[0].messages[0];
+    expect(userMsg.role).toBe("user");
+    expect(userMsg.content).not.toContain("chat.history");
     expect(userMsg.oversized).toBe(true);
   });
 

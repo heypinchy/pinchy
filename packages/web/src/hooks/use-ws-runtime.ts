@@ -392,10 +392,22 @@ export function shouldReplaceLocalWithServerHistory(
  * degraded placeholder — the vanishing/degraded-message bug found in v0.8.0
  * staging.
  *
+ * Alignment is TAIL-anchored (`offset = prev.length - history.length`), not
+ * head-anchored: the local list carries client-only messages the server never
+ * persists — most commonly the agent GREETING (an assistant message at index 0)
+ * — which make it longer than the server history and would shift a head-indexed
+ * pairing by one, pairing the oversized user turn with the greeting (role
+ * mismatch → the rich message silently lost). The persisted turns line up at
+ * the TAIL, so anchoring there pairs them correctly regardless of a leading
+ * greeting. When the server history is instead LONGER than the local list, the
+ * offset goes negative and the leading server messages simply keep their
+ * placeholder (nothing local to prefer).
+ *
  * Only ever substitutes at a position the SERVER explicitly flagged
- * `oversized`, and only when the local message there is a like-for-like role
- * with actual content — so a genuine shrink (real deletion/compaction, never
- * flagged `oversized`) is untouched and still reconciles normally.
+ * `oversized`, and only with a like-for-like local message that has real
+ * content and is NOT a synthetic error bubble — so a genuine shrink (real
+ * deletion/compaction, never flagged `oversized`) is untouched, and a
+ * disconnect-error bubble can never masquerade as the user's lost message.
  */
 export function preserveRicherLocalOverOversizedHistory(
   historyMessages: WsMessage[],
@@ -405,13 +417,14 @@ export function preserveRicherLocalOverOversizedHistory(
 
   // Same rationale as shouldReplaceLocalWithServerHistory: the trailing
   // in-flight placeholder is a client-only artifact the server never knows
-  // about, and must not shift the positional alignment used below.
+  // about, and must not shift the tail-anchored alignment used below.
   const prev = stripTrailingPlaceholder(prevMessages);
+  const offset = prev.length - historyMessages.length;
 
   return historyMessages.map((serverMsg, i) => {
     if (!serverMsg.oversized) return serverMsg;
-    const local = prev[i];
-    if (!local || local.role !== serverMsg.role) return serverMsg;
+    const local = prev[i + offset];
+    if (!local || local.role !== serverMsg.role || local.error) return serverMsg;
     const localHasContent = local.content.length > 0 || (local.files?.length ?? 0) > 0;
     return localHasContent ? local : serverMsg;
   });

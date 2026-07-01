@@ -21,6 +21,11 @@ import { iterateUntilAborted } from "@/server/abortable-stream";
 import { NEVER_DISCONNECTS, type DisconnectSignal } from "@/server/openclaw-disconnect-signal";
 import { recordSessionTurnsUsage } from "@/lib/usage-per-turn";
 import {
+  QUEUED_RETRY_PREFIX,
+  CHAT_HISTORY_OVERSIZED_PLACEHOLDER,
+  OVERSIZED_HISTORY_MESSAGE_TEXT,
+} from "@/lib/openclaw-history";
+import {
   shouldEmitModelUnavailableAudit,
   shouldEmitSilentStreamAudit,
   shouldEmitUpstreamFormatErrorAudit,
@@ -738,24 +743,15 @@ export class ClientRouter {
       };
       const rawMessages = result?.messages ?? [];
 
-      // OpenClaw marks user messages that arrived while another turn was still
-      // active with this prefix and aggregates them with timestamp annotations.
-      // For our retry flow these are duplicates of the original user turn that
-      // is already in history, so they're filtered out before reaching the UI.
-      const QUEUED_RETRY_PREFIX =
-        "[Queued user message that arrived while the previous turn was still active]";
-
-      // OpenClaw's `chat.history` RPC replaces ANY message over its internal
-      // CHAT_HISTORY_MAX_SINGLE_MESSAGE_BYTES cap (128 KB — an inline image
-      // routinely trips this) with this exact placeholder, discarding the
-      // original content and, for a user turn, the <pinchy:attachments> block
-      // embedded in it. Detected BEFORE the timestamp-strip regex below, which
-      // would otherwise reduce it to "" (there's no other `]` in the string)
-      // and let the content-or-files filter silently drop the whole row —
-      // the vanishing-user-message bug found in v0.8.0 staging. Verified
-      // against real OpenClaw 2026.6.8 output.
-      const OVERSIZED_HISTORY_PLACEHOLDER = "[chat.history omitted: message too large]";
-      const OVERSIZED_HISTORY_MESSAGE_TEXT = "This message was too large to reload from history.";
+      // QUEUED_RETRY_PREFIX, CHAT_HISTORY_OVERSIZED_PLACEHOLDER, and
+      // OVERSIZED_HISTORY_MESSAGE_TEXT are shared with the Telegram mirror and
+      // the tests via @/lib/openclaw-history so an OpenClaw-side string change
+      // can't diverge between production and fixtures. See that module's docs
+      // for what each one is. The oversized placeholder is detected BEFORE the
+      // timestamp-strip regex below, which would otherwise reduce it to ""
+      // (there's no other `]` in the string) and let the content-or-files
+      // filter silently drop the whole row — the vanishing-user-message bug
+      // found in v0.8.0 staging.
 
       return (
         rawMessages
@@ -782,7 +778,14 @@ export class ClientRouter {
             // Strip protocol tags from assistant responses
             content = content.replace(/<\/?final>/g, "");
 
-            const isOversizedPlaceholder = content === OVERSIZED_HISTORY_PLACEHOLDER;
+            // Match the placeholder both bare and behind OpenClaw's optional
+            // leading `[timestamp]` prefix (which it stamps on user messages —
+            // see the timestamp-strip below). Without the second form, a
+            // timestamped oversized turn would slip past this check and its
+            // raw internal string would leak to the user, unflagged.
+            const isOversizedPlaceholder =
+              content === CHAT_HISTORY_OVERSIZED_PLACEHOLDER ||
+              content.replace(/^\[.*?\]\s*/, "") === CHAT_HISTORY_OVERSIZED_PLACEHOLDER;
 
             // For user messages: strip OpenClaw's timestamp prefix AND extract
             // the per-message <pinchy:attachments> block (see buildAttachmentBlock

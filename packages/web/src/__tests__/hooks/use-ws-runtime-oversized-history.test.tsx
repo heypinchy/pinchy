@@ -30,6 +30,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { renderHook, act } from "@testing-library/react";
 import { useWsRuntime } from "@/hooks/use-ws-runtime";
+import { OVERSIZED_HISTORY_MESSAGE_TEXT } from "@/lib/openclaw-history";
 
 vi.mock("@/lib/image-compression", () => ({
   compressImageForChat: vi.fn(async (file: File) => ({ ok: true, file, skipped: true })),
@@ -103,7 +104,7 @@ function sendText(result: { current: { runtime: unknown } }, text: string) {
   ).onNew({ content: [{ type: "text", text }], parentId: "root" });
 }
 
-const OVERSIZED_PLACEHOLDER_TEXT = "This message was too large to reload from history.";
+const OVERSIZED_PLACEHOLDER_TEXT = OVERSIZED_HISTORY_MESSAGE_TEXT;
 
 describe("useWsRuntime — refocus reconcile must not clobber a richer local message with an oversized-history placeholder", () => {
   beforeEach(() => {
@@ -162,5 +163,54 @@ describe("useWsRuntime — refocus reconcile must not clobber a richer local mes
     // The rich local text must survive — NOT be replaced by the degraded
     // server placeholder, and NOT vanish entirely.
     expect(after).toEqual(before);
+  });
+
+  it("keeps the original user text even when a client-only greeting offsets the local list", () => {
+    // The common case: the agent has a greeting, so the local list starts with
+    // a client-only assistant message OpenClaw never persists — making it one
+    // longer than the server history. A head-indexed merge pairs the oversized
+    // user turn with the greeting (role mismatch → the rich message is lost and
+    // the destructive reconcile then shows the degraded placeholder). This pins
+    // that the tail-anchored alignment preserves the user's original text.
+    const { result } = renderHook(() => useWsRuntime("agent-1"));
+    const ws1 = wsInstances[0]!;
+    act(() => ws1.simulateOpen());
+
+    // Fresh session: the server delivers the greeting as a synthetic assistant
+    // frame — it lives ONLY in local state, never in OpenClaw's session store.
+    act(() =>
+      ws1.simulateMessage({
+        type: "history",
+        messages: [{ role: "assistant", content: "Hi, I am Texti!" }],
+      })
+    );
+
+    const originalText = "Was hältst du von dem Bild?";
+    act(() => sendText(result, originalText));
+    act(() => ws1.simulateMessage({ type: "chunk", messageId: "srv-1", content: "Schönes Bild!" }));
+    act(() => ws1.simulateMessage({ type: "complete" }));
+
+    // Tab backgrounded → reconnect → refocus history. Server history has NO
+    // greeting and reports the user turn as oversized.
+    act(() => {
+      ws1.simulateClose();
+      vi.advanceTimersByTime(1000);
+    });
+    const ws2 = wsInstances[1]!;
+    act(() => ws2.simulateOpen());
+    act(() =>
+      ws2.simulateMessage({
+        type: "history",
+        messages: [
+          { role: "user", content: OVERSIZED_PLACEHOLDER_TEXT, oversized: true },
+          { role: "assistant", content: "Schönes Bild!" },
+        ],
+      })
+    );
+    // Let the deferred destructive reconcile (setTimeout-staged) apply.
+    act(() => vi.advanceTimersByTime(100));
+
+    const userText = textsOf(result.current.runtime).find((m) => m.role === "user")?.text;
+    expect(userText).toBe(originalText);
   });
 });
