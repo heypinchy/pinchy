@@ -194,7 +194,11 @@ describe("AttachmentPreview — amber capability warning", () => {
     );
   }
 
-  it("shows amber warning when image attached and model has no vision", async () => {
+  it("notes the vision-model offload when an image is attached to a text-only model", async () => {
+    // A text-only agent model can't read images directly, but Pinchy offloads
+    // to the configured vision model — so the note must reflect that (and NOT
+    // flatly claim "doesn't support image input", which contradicted the correct
+    // description a text-only model returned on staging).
     mockUseMessagePartFile.mockReturnValue({
       mimeType: "image/png",
       filename: "screenshot.png",
@@ -212,7 +216,8 @@ describe("AttachmentPreview — amber capability warning", () => {
       refetch: vi.fn(),
     });
     await renderWithModel(TEXT_ONLY_MODEL);
-    expect(await screen.findByText(/doesn't support image input/i)).toBeInTheDocument();
+    expect(await screen.findByText(/a vision model will describe it/i)).toBeInTheDocument();
+    expect(screen.queryByText(/doesn't support image input/i)).not.toBeInTheDocument();
   });
 
   it("shows no warning for PDFs regardless of model capabilities — PDFs route via the pdf tool, not the agent model", async () => {

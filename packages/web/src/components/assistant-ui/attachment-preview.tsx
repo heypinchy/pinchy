@@ -5,7 +5,7 @@ import { useMessagePartFile } from "@assistant-ui/react";
 import { FileText, Loader2 } from "lucide-react";
 import { AgentIdContext, AgentModelContext } from "@/components/chat";
 import { Dialog, DialogContent, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
-import { requiredCapabilityForFile } from "@/lib/attachment-capability";
+import { imageInputNote } from "@/lib/attachment-capability";
 
 import { useModelCapabilities } from "@/hooks/use-model-capabilities";
 
@@ -91,13 +91,7 @@ export const AttachmentPreview: FC = () => {
   const url = isPreviewable ? buildUploadUrl(agentId!, filename!) : null;
   const readiness = useUploadReadiness(url);
 
-  const requiredCapability = requiredCapabilityForFile(mimeType);
-  const capabilityWarning =
-    modelCapabilities && requiredCapability && !modelCapabilities[requiredCapability]
-      ? requiredCapability === "vision"
-        ? "This model doesn't support image input."
-        : "This model doesn't support document input."
-      : null;
+  const capabilityWarning = imageInputNote(mimeType, modelCapabilities?.vision);
 
   // Falls back to a chip when we don't have everything we need to build a URL.
   if (!agentId || !filename) {
