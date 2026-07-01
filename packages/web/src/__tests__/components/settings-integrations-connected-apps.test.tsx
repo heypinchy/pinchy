@@ -210,6 +210,117 @@ describe("SettingsIntegrations — Connected apps section", () => {
     spy.mockRestore();
   });
 
+  it("refetches the connection count when the Reset confirm dialog opens", async () => {
+    const user = userEvent.setup();
+
+    // The mount fetch reports 2 connected mailboxes. Between mount and the Reset
+    // click a mailbox is added server-side, so a fresh GET reports 3. Opening the
+    // confirm must show the fresh count (3), not the stale mount count (2).
+    let googleGetCount = 0;
+    const spy = vi.spyOn(global, "fetch").mockImplementation((input, init) => {
+      const url = typeof input === "string" ? input : (input as Request).url;
+      const method = (init?.method ?? "GET").toUpperCase();
+
+      if (url.startsWith("/api/settings/oauth")) {
+        if (url.includes("provider=google") && method === "GET") {
+          googleGetCount += 1;
+          const connectionCount = googleGetCount === 1 ? 2 : 3;
+          const state = { configured: true, clientId: "goog-client-id", connectionCount };
+          return Promise.resolve({
+            ok: true,
+            text: async () => JSON.stringify(state),
+            json: async () => state,
+          } as unknown as Response);
+        }
+        const state = NOT_CONFIGURED;
+        return Promise.resolve({
+          ok: true,
+          text: async () => JSON.stringify(state),
+          json: async () => state,
+        } as unknown as Response);
+      }
+      return Promise.resolve({
+        ok: true,
+        text: async () => "[]",
+        json: async () => [],
+      } as unknown as Response);
+    });
+
+    render(<SettingsIntegrations />);
+
+    const googleRow = await findProviderRow("Google");
+    // Mount count is 2.
+    await waitFor(() => {
+      expect(within(googleRow).getByText(/2 mailbox(es)? connected/i)).toBeInTheDocument();
+    });
+    const getsBeforeReset = googleGetCount;
+
+    await user.click(within(googleRow).getByRole("button", { name: /^Reset$/i }));
+
+    // Opening the confirm triggers a fresh GET and the warning names the fresh
+    // count (3), not the stale mount count (2).
+    await waitFor(() => {
+      expect(screen.getByText(/disconnect 3 connected mailbox/i)).toBeInTheDocument();
+    });
+    expect(googleGetCount).toBeGreaterThan(getsBeforeReset);
+    expect(screen.queryByText(/disconnect 2 connected mailbox/i)).not.toBeInTheDocument();
+
+    spy.mockRestore();
+  });
+
+  it("falls back to the mount count if the refetch fails when opening Reset", async () => {
+    const user = userEvent.setup();
+
+    // Mount GET succeeds with 2; the refetch on open fails. The dialog must still
+    // open and show the last-known count (2) rather than crashing.
+    let googleGetCount = 0;
+    const spy = vi.spyOn(global, "fetch").mockImplementation((input, init) => {
+      const url = typeof input === "string" ? input : (input as Request).url;
+      const method = (init?.method ?? "GET").toUpperCase();
+
+      if (url.startsWith("/api/settings/oauth")) {
+        if (url.includes("provider=google") && method === "GET") {
+          googleGetCount += 1;
+          if (googleGetCount > 1) {
+            return Promise.reject(new Error("network down"));
+          }
+          const state = { configured: true, clientId: "goog-client-id", connectionCount: 2 };
+          return Promise.resolve({
+            ok: true,
+            text: async () => JSON.stringify(state),
+            json: async () => state,
+          } as unknown as Response);
+        }
+        const state = NOT_CONFIGURED;
+        return Promise.resolve({
+          ok: true,
+          text: async () => JSON.stringify(state),
+          json: async () => state,
+        } as unknown as Response);
+      }
+      return Promise.resolve({
+        ok: true,
+        text: async () => "[]",
+        json: async () => [],
+      } as unknown as Response);
+    });
+
+    render(<SettingsIntegrations />);
+
+    const googleRow = await findProviderRow("Google");
+    await waitFor(() => {
+      expect(within(googleRow).getByText(/2 mailbox(es)? connected/i)).toBeInTheDocument();
+    });
+
+    await user.click(within(googleRow).getByRole("button", { name: /^Reset$/i }));
+
+    await waitFor(() => {
+      expect(screen.getByText(/disconnect 2 connected mailbox/i)).toBeInTheDocument();
+    });
+
+    spy.mockRestore();
+  });
+
   it("mentions that changing only the Client Secret does not disconnect mailboxes", async () => {
     const spy = mockFetch({
       oauth: { google: { configured: true, clientId: "goog-client-id", connectionCount: 1 } },

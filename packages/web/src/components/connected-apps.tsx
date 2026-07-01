@@ -86,6 +86,26 @@ export function ConnectedApps({ onConnectionsChanged }: { onConnectionsChanged?:
     fetchStates();
   }, [fetchStates]);
 
+  // Opening the reset confirm refreshes the connection count for that provider so
+  // the blast-radius warning reflects mailboxes added/removed since mount (a minor
+  // TOCTOU otherwise). If the refetch fails we keep the last-known state as a
+  // fallback rather than blocking or crashing the dialog.
+  async function openReset(row: ProviderRowData) {
+    setResetTarget(row);
+    try {
+      const fresh = await apiGet<OAuthAppState>(
+        `/api/settings/oauth?provider=${row.descriptor.id}`
+      );
+      setResetTarget((current) =>
+        current && current.descriptor.id === row.descriptor.id
+          ? { ...current, state: fresh }
+          : current
+      );
+    } catch {
+      /* keep the mount-time count as fallback */
+    }
+  }
+
   async function handleReset() {
     if (!resetTarget) return;
     const { descriptor } = resetTarget;
@@ -123,7 +143,7 @@ export function ConnectedApps({ onConnectionsChanged }: { onConnectionsChanged?:
             state={row.state}
             onSetUp={() => setEditProvider(row.descriptor.id)}
             onEdit={() => setEditProvider(row.descriptor.id)}
-            onReset={() => setResetTarget(row)}
+            onReset={() => openReset(row)}
           />
         ))}
 
