@@ -59,16 +59,22 @@ function formatRelativeTime(dateString: string): string {
   return date.toLocaleDateString();
 }
 
-const OAUTH_ERROR_MESSAGES: Record<string, string> = {
-  profile_fetch_failed:
+// A Map (not a plain object) so the lookup key — which comes from the
+// user-controlled ?error= query param — can't reach a prototype property.
+// Map.get() is also recognized as a barrier by CodeQL's remote-property-injection
+// analysis, keeping the sink clean.
+const OAUTH_ERROR_MESSAGES = new Map<string, string>([
+  [
+    "profile_fetch_failed",
     "Could not fetch your Microsoft profile. Check that your Azure App has User.Read permission.",
-  token_exchange_failed: "Microsoft authorization failed. Please try connecting again.",
-  state_mismatch: "OAuth session expired. Please try again.",
-  not_configured: "Microsoft OAuth is not configured.",
-  connection_not_found: "Connection not found. Please try again.",
-  unauthorized: "OAuth authorization failed. Please try again.",
-  missing_params: "OAuth authorization failed. Please try again.",
-};
+  ],
+  ["token_exchange_failed", "Microsoft authorization failed. Please try connecting again."],
+  ["state_mismatch", "OAuth session expired. Please try again."],
+  ["not_configured", "Microsoft OAuth is not configured."],
+  ["connection_not_found", "Connection not found. Please try again."],
+  ["unauthorized", "OAuth authorization failed. Please try again."],
+  ["missing_params", "OAuth authorization failed. Please try again."],
+]);
 
 export function SettingsIntegrations({ oauthError }: { oauthError?: string } = {}) {
   const router = useRouter();
@@ -84,7 +90,7 @@ export function SettingsIntegrations({ oauthError }: { oauthError?: string } = {
 
   useEffect(() => {
     if (!oauthError) return;
-    toast.error(OAUTH_ERROR_MESSAGES[oauthError] ?? "OAuth connection failed.");
+    toast.error(OAUTH_ERROR_MESSAGES.get(oauthError) ?? "OAuth connection failed.");
     router.replace("/settings?tab=integrations", { scroll: false });
   }, []); // eslint-disable-line react-hooks/exhaustive-deps -- intentionally mount-only
 
