@@ -1,6 +1,5 @@
 export type RejectionReason =
-  | { kind: "upgrade"; ip: string }
-  | { kind: "connection"; userId: string };
+  { kind: "upgrade"; ip: string } | { kind: "connection"; userId: string };
 
 interface WsRateLimiterOptions {
   maxConnectionsPerUser?: number;

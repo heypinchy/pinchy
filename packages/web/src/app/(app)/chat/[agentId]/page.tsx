@@ -72,8 +72,7 @@ export default async function ChatPage({
   if (sp.keep === undefined) {
     try {
       const raw = (await getOpenClawClient().sessions.list({})) as
-        | { sessions?: RawSession[] }
-        | undefined;
+        { sessions?: RawSession[] } | undefined;
       const sessionsArr = Array.isArray(raw?.sessions) ? raw.sessions : [];
       const scoped = sessionsArr.filter(
         (s) => typeof s?.key === "string" && s.key.split(":")[1] === agentId

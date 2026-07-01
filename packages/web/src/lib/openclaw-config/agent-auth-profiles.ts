@@ -2,11 +2,7 @@ import * as fs from "fs";
 import * as path from "path";
 
 export type AuthProfilesProvider =
-  | "anthropic"
-  | "openai"
-  | "gemini"
-  | "ollama-local"
-  | "ollama-cloud";
+  "anthropic" | "openai" | "gemini" | "ollama-local" | "ollama-cloud";
 
 export type WriteAgentAuthProfilesParams = {
   /** Filesystem root that will be mounted as /root/.openclaw inside OpenClaw container */

@@ -20,9 +20,7 @@ import type { ModelCapability } from "@/lib/model-resolver/types";
  * it into the chat options, audit log, and UI indicator.
  */
 export type TurnModelDecision =
-  | { kind: "agent-model" }
-  | { kind: "fallback"; model: string }
-  | { kind: "blocked" };
+  { kind: "agent-model" } | { kind: "fallback"; model: string } | { kind: "blocked" };
 
 export function decideTurnModel(params: {
   /** True when any attachment on this turn requires the vision capability. */

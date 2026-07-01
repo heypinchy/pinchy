@@ -22,7 +22,7 @@
   "packageManager": "pnpm@10.33.0",
   "devDependencies": {
     "husky": "^9.1.7",
-    "lint-staged": "^17.0.5"
+    "lint-staged": "^17.0.8"
   },
   "pnpm": {
     "packageExtensions": {
@@ -70,7 +70,7 @@
       "better-sqlite3"
     ],
     "patchedDependencies": {
-      "@assistant-ui/react@0.14.11": "patches/@assistant-ui__react@0.14.11.patch"
+      "@assistant-ui/react@0.14.24": "patches/@assistant-ui__react@0.14.24.patch"
     }
   },
   "lint-staged": {

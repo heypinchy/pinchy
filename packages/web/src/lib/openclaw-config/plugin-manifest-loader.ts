@@ -38,8 +38,7 @@ export const INTERNAL_PLUGINS = [
 // one of the two buckets above. If a new plugin is added to KNOWN_PINCHY_PLUGINS
 // without a classification, this assignment fails to type-check.
 type _ExhaustiveCheck =
-  | (typeof EXTERNAL_INTEGRATION_PLUGINS)[number]
-  | (typeof INTERNAL_PLUGINS)[number];
+  (typeof EXTERNAL_INTEGRATION_PLUGINS)[number] | (typeof INTERNAL_PLUGINS)[number];
 const _assertCovers: KnownPinchyPlugin extends _ExhaustiveCheck
   ? _ExhaustiveCheck extends KnownPinchyPlugin
     ? true

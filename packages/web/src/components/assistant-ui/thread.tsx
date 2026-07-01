@@ -513,10 +513,8 @@ export const AssistantMessage: FC = () => {
   const retryReason = useMessage(
     (s) =>
       (s.metadata?.custom?.retryReason as
-        | "orphan"
-        | "partial_stream_failure"
-        | "send_failure"
-        | undefined) ?? "partial_stream_failure"
+        "orphan" | "partial_stream_failure" | "send_failure" | undefined) ??
+      "partial_stream_failure"
   );
   const isLast = useMessage((s) => s.isLast);
   // The failed run already ran a tool → gate retry behind a duplicate-write

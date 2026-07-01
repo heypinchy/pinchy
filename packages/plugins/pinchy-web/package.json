@@ -8,9 +8,9 @@
     "test:watch": "vitest"
   },
   "devDependencies": {
-    "@types/node": "^25.9.1",
+    "@types/node": "^26.1.0",
     "typescript": "^6.0.3",
-    "vitest": "^4.1.7"
+    "vitest": "^4.1.9"
   },
   "dependencies": {
     "@mozilla/readability": "^0.6.0",

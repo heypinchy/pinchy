@@ -26,12 +26,7 @@ export type UtmMedium =
 
 /** In-app UTM campaigns (§ 6 vocabulary — feature cliffs and the one SKU). */
 export type UtmCampaign =
-  | "groups"
-  | "visibility"
-  | "analytics"
-  | "csv-export"
-  | "seat-limit"
-  | "pro-10";
+  "groups" | "visibility" | "analytics" | "csv-export" | "seat-limit" | "pro-10";
 
 /**
  * Append the static UTM triple to a target URL, keeping any #fragment

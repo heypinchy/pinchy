@@ -1,9 +1,9 @@
 diff --git a/dist/primitives/composer/ComposerInput.js b/dist/primitives/composer/ComposerInput.js
-index fbd17d750fcb580328131c4daccc451e5e70fb23..1efca2824357df82346027d5473f2ead5f3146ca 100644
+index d63c960d7b26d7a7d13b2001238361e427bfabf2..ae977125c069fda165b4fa5615604020cf08143a 100644
 --- a/dist/primitives/composer/ComposerInput.js
 +++ b/dist/primitives/composer/ComposerInput.js
-@@ -156,10 +156,22 @@ const ComposerPrimitiveInput = forwardRef(({ autoFocus = false, asChild, render,
- 			const nativeIsComposing = e.nativeEvent.isComposing === true;
+@@ -147,10 +147,22 @@ const ComposerPrimitiveInput = forwardRef(({ autoFocus = false, asChild, render,
+ 			const nativeIsComposing = e_2.nativeEvent.isComposing === true;
  			if (compositionRef.current && !nativeIsComposing) compositionRef.current = false;
  			const isComposing = nativeIsComposing || compositionRef.current;
 +			// Pinchy patch: the isComposing guard MUST precede setText. The
@@ -19,10 +19,10 @@ index fbd17d750fcb580328131c4daccc451e5e70fb23..1efca2824357df82346027d5473f2ead
 +			// renders this real primitive and asserts text is not mutated mid
 +			// composition.
 +			if (isComposing) return;
- 			flushResourcesSync(() => {
- 				aui.composer().setText(e.target.value);
+ 			flushTapSync(() => {
+ 				aui.composer().setText(e_2.target.value);
  			});
 -			if (isComposing) return;
- 			const pos = e.target.selectionStart ?? e.target.value.length;
- 			if (pluginRegistry) for (const plugin of pluginRegistry.getPlugins()) plugin.setCursorPosition(pos);
+ 			const pos = e_2.target.selectionStart ?? e_2.target.value.length;
+ 			if (pluginRegistry) for (const plugin_1 of pluginRegistry.getPlugins()) plugin_1.setCursorPosition(pos);
  		}),

@@ -28,14 +28,7 @@ export type MembershipDetail = {
 };
 
 export type AuditResource =
-  | "agent"
-  | "group"
-  | "user"
-  | "settings"
-  | "config"
-  | "channel"
-  | "chat"
-  | "integration";
+  "agent" | "group" | "user" | "settings" | "config" | "channel" | "chat" | "integration";
 
 export type AuditEventType =
   | `tool.${string}`

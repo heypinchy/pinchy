@@ -1888,8 +1888,7 @@ function getConfiguredImageModel(): string | null {
   try {
     const cfg = readExistingConfig();
     const agentsCfg = cfg.agents as
-      | { defaults?: { imageModel?: { primary?: unknown } } }
-      | undefined;
+      { defaults?: { imageModel?: { primary?: unknown } } } | undefined;
     const primary = agentsCfg?.defaults?.imageModel?.primary;
     return typeof primary === "string" && primary.length > 0 ? primary : null;
   } catch {

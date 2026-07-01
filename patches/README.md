@@ -5,7 +5,7 @@
 build). Patches are a last resort for upstream bugs we cannot wait on; each one
 must be minimal, commented in-place, and tracked for removal.
 
-## `@assistant-ui__react@0.14.11.patch`
+## `@assistant-ui__react@0.14.24.patch`
 
 **What:** moves the `if (isComposing) return;` guard **before** the
 `setText(e.target.value)` call in `ComposerPrimitive.Input`'s `onChange`.
@@ -19,9 +19,12 @@ input**: typing an accented character via a dead-key sequence (e.g. `´` then `e
 → `é`) leaves the field stuck, refusing further input and deletion.
 
 0.12.x returned before `setText` and was safe. The regression rode in with the
-0.12.26 → 0.14.11 bump (commit `f7823d907`) and is still present in 0.14.13
-(latest at time of writing). The patch keeps 0.14's stale-ref recovery line
-intact, so dead keys that never emit `compositionend` still sync.
+0.12.26 → 0.14.11 bump (commit `f7823d907`) and is still present in 0.14.24
+(reconfirmed during the 2026-06-30 dependency sweep — the `setText` call still
+precedes the guard, just under minifier-renamed locals). The patch keeps
+0.14's stale-ref recovery line intact, so dead keys that never emit
+`compositionend` still sync. Re-patched from `0.14.11` to `0.14.24` in that
+sweep; no other changes were needed beyond following the renamed locals.
 
 **Regression guard:** `packages/web/src/components/assistant-ui/__tests__/composer-ime-composition.test.tsx`
 renders the real (un-mocked) primitive and asserts the runtime text is not

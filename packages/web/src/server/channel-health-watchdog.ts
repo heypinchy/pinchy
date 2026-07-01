@@ -35,9 +35,7 @@ export const CHANNEL_HEALTH_INTERVAL_MS = 30_000;
 export const DEFAULT_TERMINAL_AFTER_CONSECUTIVE_DEGRADED = 4;
 
 export type ChannelHealthEventType =
-  | "channel.degraded"
-  | "channel.polling_failed"
-  | "channel.recovered";
+  "channel.degraded" | "channel.polling_failed" | "channel.recovered";
 
 export interface ChannelHealthAuditPayload {
   actorType: "system";

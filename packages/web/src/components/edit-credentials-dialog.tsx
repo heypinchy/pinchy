@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { toast } from "sonner";
@@ -65,16 +65,6 @@ function OdooForm({
       apiKey: "",
     },
   });
-
-  useEffect(() => {
-    form.reset({
-      url: maskedCreds.url ?? "",
-      db: maskedCreds.db ?? "",
-      login: maskedCreds.login ?? "",
-      apiKey: "",
-    });
-    setServerError("");
-  }, [connection.id, maskedCreds.url, maskedCreds.db, maskedCreds.login]);
 
   async function onSubmit(values: OdooFormValues) {
     setSaving(true);
@@ -204,11 +194,6 @@ function WebSearchForm({
     resolver: zodResolver(webSearchEditSchema),
     defaultValues: { apiKey: "" },
   });
-
-  useEffect(() => {
-    form.reset({ apiKey: "" });
-    setServerError("");
-  }, [connection.id]);
 
   async function onSubmit(values: WebSearchFormValues) {
     setSaving(true);
@@ -356,9 +341,15 @@ export function EditCredentialsDialog({
         {connection?.type === "google" ? (
           <GoogleReconnect connection={connection} onOpenChange={onOpenChange} />
         ) : connection?.type === "odoo" ? (
-          <OdooForm connection={connection} onSuccess={onSuccess} onOpenChange={onOpenChange} />
+          <OdooForm
+            key={connection.id}
+            connection={connection}
+            onSuccess={onSuccess}
+            onOpenChange={onOpenChange}
+          />
         ) : connection?.type === "web-search" ? (
           <WebSearchForm
+            key={connection.id}
             connection={connection}
             onSuccess={onSuccess}
             onOpenChange={onOpenChange}

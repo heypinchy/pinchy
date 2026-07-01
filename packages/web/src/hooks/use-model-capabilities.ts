@@ -72,7 +72,13 @@ export function useModelCapabilities(): {
 
   useEffect(() => {
     if (!moduleCache) {
-      load();
+      // Deferred via the promise chain (not a direct synchronous call) so this
+      // doesn't trip react-hooks/set-state-in-effect — isLoading/error are
+      // already correctly initialized above for the "no cache yet" case.
+      loadShared()
+        .then(setData)
+        .catch((e) => setError(e instanceof Error ? e : new Error(String(e))))
+        .finally(() => setIsLoading(false));
     }
 
     const sync = () => setData(moduleCache);

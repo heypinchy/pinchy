@@ -112,9 +112,7 @@ Every line in this fixture is one of these. Each event carries the same
   "provider": "ollama-cloud",
   "modelId": "qwen3-next:80b",
   "modelApi": "openai-completions",
-  "data": {
-    /* event-specific payload */
-  },
+  "data": {/* event-specific payload */},
 }
 ```
 

@@ -97,8 +97,7 @@ export function validateBuiltConfig(
 ): BuiltConfigValidationResult {
   if (!config || typeof config !== "object") return { ok: true };
   const plugins = (config as Record<string, unknown>).plugins as
-    | { entries?: Record<string, unknown> }
-    | undefined;
+    { entries?: Record<string, unknown> } | undefined;
   const entries = plugins?.entries ?? {};
 
   const errors: string[] = [];
