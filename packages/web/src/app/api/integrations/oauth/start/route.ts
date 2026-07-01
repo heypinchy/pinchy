@@ -19,19 +19,12 @@ import { randomBytes } from "crypto";
 import { z } from "zod";
 import { getSession } from "@/lib/auth";
 import { getOAuthSettings, type MicrosoftOAuthSettings } from "@/lib/integrations/oauth-settings";
+import { GOOGLE_OAUTH_SCOPES, MICROSOFT_OAUTH_SCOPES } from "@/lib/integrations/oauth-providers";
 import { parseRequestBody } from "@/lib/api-validation";
 import { db } from "@/db";
 import { integrationConnections } from "@/db/schema";
 import { encrypt } from "@/lib/encryption";
 import { eq, and } from "drizzle-orm";
-
-const GOOGLE_OAUTH_SCOPES = [
-  "https://www.googleapis.com/auth/gmail.readonly",
-  "https://www.googleapis.com/auth/gmail.compose",
-  "https://www.googleapis.com/auth/userinfo.email",
-].join(" ");
-
-const MICROSOFT_OAUTH_SCOPES = "offline_access User.Read Mail.ReadWrite Mail.Send";
 
 function errorRedirect(origin: string, error: string) {
   const url = new URL("/settings", origin);
