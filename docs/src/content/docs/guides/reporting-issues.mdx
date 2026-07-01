@@ -26,6 +26,8 @@ If you have more than one conversation with an agent, the dialog lets you pick w
 
 When you open the dialog from a specific conversation, that chat is preselected; from Settings, the agent's default chat is preselected. If a chat's transcript is no longer on disk, we still produce a valid file from the audit-log entries alone and flag it (`scope.trajectoryMissing`), so support can tell an absent transcript apart from an empty one.
 
+For Telegram chats the export includes the conversation transcript, but the audit-log section is currently limited — audit entries are attributed to your web account, so a Telegram chat's file may ship without them. The transcript is still the primary signal for debugging.
+
 ## Two ways to start
 
 ### From an agent reply

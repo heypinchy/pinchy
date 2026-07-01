@@ -11,9 +11,9 @@
 // Everything else (Drizzle agent lookup, agent-access enforcement, audit
 // writes via appendAuditLog -> auditLog table) runs for real.
 
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { NextRequest } from "next/server";
-import { and, eq, desc } from "drizzle-orm";
+import { eq, desc } from "drizzle-orm";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
@@ -154,6 +154,14 @@ describe("POST /api/diagnostics/export (integration)", () => {
     vi.clearAllMocks();
     vi.mocked(resolveSessionId).mockResolvedValue("ses_FIXTURE_SESSION_0001");
     vi.mocked(readTrajectoryJsonl).mockResolvedValue(FIXTURE);
+  });
+
+  // Drain every test's deferred audit writes (deferAuditLog -> after()) before
+  // the next test's beforeEach truncate, so an un-awaited write from one test
+  // can't race into another's table state. Without this, audit-row assertions
+  // would need per-test actorId scoping to stay deterministic.
+  afterEach(async () => {
+    await flushAfter();
   });
 
   it("returns 401 when there is no session", async () => {
@@ -475,14 +483,10 @@ describe("POST /api/diagnostics/export (integration)", () => {
       expect(response.status).toBe(200);
       await flushAfter();
 
-      // Scope to THIS test's actor: prior successful exports in this block
-      // schedule their audit writes via after() without flushing, and those
-      // can land after this test's beforeEach truncate. Each test seeds a fresh
-      // user, so filtering by actorId isolates the row we asserted on.
       const rows = await db
         .select()
         .from(auditLog)
-        .where(and(eq(auditLog.eventType, "diagnostics.exported"), eq(auditLog.actorId, owner.id)))
+        .where(eq(auditLog.eventType, "diagnostics.exported"))
         .orderBy(desc(auditLog.timestamp));
       expect(rows).toHaveLength(1);
       const detail = rows[0].detail as Record<string, unknown>;

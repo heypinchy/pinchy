@@ -24,6 +24,7 @@ import {
 import { Textarea } from "@/components/ui/textarea";
 
 import { apiGet, apiPost, ApiError } from "@/lib/api-client";
+import { chatTitle } from "@/lib/chats/chat-title";
 import { buildBundleFilename, downloadBundle } from "@/lib/diagnostics/download";
 import type { DiagnosticsExportRequest } from "@/lib/schemas/diagnostics";
 import type { ChatListItem } from "@/lib/schemas/sessions";
@@ -32,22 +33,20 @@ import { DiagnosticsWhatsIncluded } from "./diagnostics-whats-included";
 
 const USER_DESCRIPTION_MAX = 500;
 
-/** Title to show for a chat — the saved label, or a date-stamped fallback. */
-function chatTitle(item: ChatListItem): string {
-  if (item.title && item.title.trim().length > 0) return item.title;
-  return `Chat from ${new Date(item.lastInteractionAt).toLocaleDateString()}`;
-}
-
 /**
  * Which listed chat should be selected by default. From chat context we match
  * the active chat by `chatId` (`null` = the default/legacy chat); from Settings
- * (`chatId` undefined) we fall back to the default chat too. Returns the chat's
- * sessionId, or `null` when no web chat matches (→ the export route's default
- * path). Telegram chats are never a default target — they're opt-in via the picker.
+ * (`chatId` undefined) we prefer the default chat. When neither is present —
+ * e.g. a user with only named chats, or an active chat not yet in the list — we
+ * fall back to the most-recent listed chat (the server returns them newest
+ * first) rather than leaving the picker unselected, which would silently export
+ * the default chat (or 404) despite a populated dropdown. Returns `null` only
+ * for an empty list. Telegram chats are never the auto-match but can be the
+ * newest-first fallback and are always opt-in via the picker.
  */
 function initialSessionId(chats: ChatListItem[], chatId: string | null): string | null {
   const match = chats.find((c) => c.origin === "web" && c.chatId === chatId);
-  return match?.sessionId ?? null;
+  return match?.sessionId ?? chats[0]?.sessionId ?? null;
 }
 
 export interface DiagnosticsExportDialogProps {

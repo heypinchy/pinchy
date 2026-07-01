@@ -232,6 +232,43 @@ describe("DiagnosticsExportDialog", () => {
     );
   });
 
+  it("falls back to the most-recent chat when no chat matches the active/default (avoids a silent wrong-chat/404 export)", async () => {
+    const { apiGet, apiPost } = await import("@/lib/api-client");
+    // Settings launch (no chatId) but the user has NO default web chat — only a
+    // named chat and a Telegram chat. Server returns most-recent first.
+    vi.mocked(apiGet).mockResolvedValue({
+      chats: [
+        {
+          chatId: "chat-x",
+          sessionId: "s-x",
+          origin: "web" as const,
+          writable: true,
+          title: "Quarterly report",
+          lastInteractionAt: 5000,
+        },
+        {
+          chatId: null,
+          sessionId: "s-tg",
+          origin: "telegram" as const,
+          writable: false,
+          title: "Telegram chat",
+          lastInteractionAt: 3000,
+        },
+      ],
+    });
+    render(
+      <DiagnosticsExportDialog open agentId="agt_1" agentName="Smithers" onClose={() => {}} />
+    );
+    await screen.findByRole("combobox", { name: /chat/i });
+    fireEvent.click(screen.getByRole("button", { name: /generate/i }));
+    await waitFor(() =>
+      expect(apiPost).toHaveBeenCalledWith("/api/diagnostics/export", {
+        agentId: "agt_1",
+        sessionId: "s-x",
+      })
+    );
+  });
+
   it("falls back to a default export (no sessionId) when the chats list fails to load", async () => {
     const { apiGet, apiPost } = await import("@/lib/api-client");
     vi.mocked(apiGet).mockRejectedValue(new Error("chats unreachable"));

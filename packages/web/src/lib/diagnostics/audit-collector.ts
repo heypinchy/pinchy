@@ -16,7 +16,7 @@
 // into a downloadable bundle — they're useless outside the audit DB context
 // and we want fewer secret-shaped bytes flying around in support archives.
 
-import { and, asc, eq, gte, lte, type SQL } from "drizzle-orm";
+import { and, asc, desc, eq, gte, lte, type SQL } from "drizzle-orm";
 import { db } from "@/db";
 import { auditLog } from "@/db/schema";
 
@@ -39,7 +39,13 @@ export interface AuditQueryRange {
 export async function fetchAuditEntriesForSession(
   agentId: string,
   userId: string,
-  range?: AuditQueryRange
+  range?: AuditQueryRange,
+  // Hard cap on rows. When set, the NEWEST `limit` rows are kept (a busy agent
+  // with an unbounded range — e.g. the trajectory-missing degrade path — must
+  // not stream its entire audit history into a size-capped bundle, since the
+  // size guard only trims spans, not audit rows). The result stays oldest→
+  // newest so it reads chronologically alongside the turns.
+  limit?: number
 ): Promise<CollectedAuditEntry[]> {
   const conditions: SQL[] = [
     eq(auditLog.resource, `agent:${agentId}`),
@@ -49,17 +55,31 @@ export async function fetchAuditEntriesForSession(
     conditions.push(gte(auditLog.timestamp, range.from));
     conditions.push(lte(auditLog.timestamp, range.to));
   }
+  const columns = {
+    timestamp: auditLog.timestamp,
+    eventType: auditLog.eventType,
+    actorType: auditLog.actorType,
+    actorId: auditLog.actorId,
+    resource: auditLog.resource,
+    detail: auditLog.detail,
+    outcome: auditLog.outcome,
+    error: auditLog.error,
+  };
+
+  if (limit !== undefined) {
+    // Take the newest `limit` rows (desc + limit), then restore chronological
+    // order for the bundle.
+    const newest = await db
+      .select(columns)
+      .from(auditLog)
+      .where(and(...conditions))
+      .orderBy(desc(auditLog.timestamp))
+      .limit(limit);
+    return newest.reverse();
+  }
+
   const rows = await db
-    .select({
-      timestamp: auditLog.timestamp,
-      eventType: auditLog.eventType,
-      actorType: auditLog.actorType,
-      actorId: auditLog.actorId,
-      resource: auditLog.resource,
-      detail: auditLog.detail,
-      outcome: auditLog.outcome,
-      error: auditLog.error,
-    })
+    .select(columns)
     .from(auditLog)
     .where(and(...conditions))
     .orderBy(asc(auditLog.timestamp));

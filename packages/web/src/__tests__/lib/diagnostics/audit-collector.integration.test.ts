@@ -167,4 +167,32 @@ describe("fetchAuditEntriesForSession (integration)", () => {
     const rows = await fetchAuditEntriesForSession(agentId, userId);
     expect(rows).toHaveLength(2);
   });
+
+  it("caps to the NEWEST `limit` rows, still returned chronologically", async () => {
+    const agentId = "agt_limit";
+    const userId = "user_limit";
+    await insertAuditAt({
+      agentId,
+      userId,
+      eventType: "tool.oldest",
+      timestamp: new Date("2026-01-01T10:00:00Z"),
+    });
+    await insertAuditAt({
+      agentId,
+      userId,
+      eventType: "tool.middle",
+      timestamp: new Date("2026-01-01T11:00:00Z"),
+    });
+    await insertAuditAt({
+      agentId,
+      userId,
+      eventType: "tool.newest",
+      timestamp: new Date("2026-01-01T12:00:00Z"),
+    });
+
+    // limit=2 keeps the two most recent rows and drops the oldest, but the
+    // result stays oldest→newest so it reads like a transcript window.
+    const rows = await fetchAuditEntriesForSession(agentId, userId, undefined, 2);
+    expect(rows.map((r) => r.eventType)).toEqual(["tool.middle", "tool.newest"]);
+  });
 });

@@ -46,6 +46,10 @@ import { diagnosticsExportRequestSchema } from "@/lib/schemas/diagnostics";
 
 const DEFAULT_TURN_WINDOW = 10;
 const AUDIT_RANGE_PADDING_MS = 5_000;
+// Backstop on audit rows in a bundle. Normal exports are already time-scoped to
+// the selected turns; this bounds the degrade/empty-session paths where the
+// range is unbounded, since the size guard only trims spans (not audit rows).
+const MAX_AUDIT_ROWS = 1_000;
 
 /**
  * Build the [from, to] window for audit-row scoping from the turns the bundle
@@ -131,35 +135,35 @@ export const POST = withAuth(async (request, _ctx, session) => {
     }
   }
 
-  let spans: ReturnType<typeof buildOtelSpans>;
-  let anchorTurnIndex: number | null;
-  let sessionTurnCount: number;
-  let includedTurnRange: [number, number];
-  let auditEntries: Awaited<ReturnType<typeof fetchAuditEntriesForSession>>;
-  if (trajectoryMissing) {
-    // No trajectory: empty spans, and pull the whole audit window for this
-    // user+agent (no turns to scope by). The size-cap still trims.
-    spans = [];
-    anchorTurnIndex = null;
-    sessionTurnCount = 0;
-    includedTurnRange = [0, -1];
-    auditEntries = await fetchAuditEntriesForSession(agentId, session.user.id, undefined);
-  } else {
-    const events = parseJsonlLines(raw ?? "");
-    const turns = extractTurns(events);
-    const scope = computeScope(turns, anchorMessageId, DEFAULT_TURN_WINDOW);
-    const selectedTurns = turns.slice(scope.includedTurnRange[0], scope.includedTurnRange[1] + 1);
-    spans = buildOtelSpans(selectedTurns);
-    // Scope audit rows to the same time window as the selected turns so a busy
-    // agent doesn't drown the bundle in unrelated history. Pad by 5s on each
-    // side to catch tool audit rows written just before/after the model.completed
-    // event (chat.* and tool.* are written from independent code paths).
-    const auditRange = computeAuditRange(selectedTurns);
-    auditEntries = await fetchAuditEntriesForSession(agentId, session.user.id, auditRange);
-    anchorTurnIndex = scope.anchorTurnIndex;
-    sessionTurnCount = turns.length;
-    includedTurnRange = scope.includedTurnRange;
-  }
+  // One pipeline for both cases: on a missing trajectory `raw` is null, which
+  // parses to zero events → zero turns, and every downstream step
+  // (computeScope, buildOtelSpans, computeAuditRange) already handles the empty
+  // case — computeScope returns the canonical empty slice `[0, -1]`, spans is
+  // `[]`, and the audit range is unbounded. No separate degrade branch needed.
+  const events = parseJsonlLines(raw ?? "");
+  const turns = extractTurns(events);
+  const scope = computeScope(turns, anchorMessageId, DEFAULT_TURN_WINDOW);
+  const selectedTurns = turns.slice(scope.includedTurnRange[0], scope.includedTurnRange[1] + 1);
+  const spans = buildOtelSpans(selectedTurns);
+  // Scope audit rows to the same time window as the selected turns so a busy
+  // agent doesn't drown the bundle in unrelated history. Pad by 5s on each
+  // side to catch tool audit rows written just before/after the model.completed
+  // event (chat.* and tool.* are written from independent code paths). With no
+  // turns (empty/missing trajectory) the range is undefined, so MAX_AUDIT_ROWS
+  // caps the otherwise-unbounded fetch.
+  //
+  // Known limitation: audit rows are scoped to `actorId = this web user`. For a
+  // selected Telegram chat the trajectory still exports, but its audit rows are
+  // stamped with the Telegram principal, so the bundle's audit section is empty
+  // for Telegram exports. Documented in reporting-issues.mdx; a cross-principal
+  // fetch is deferred to the admin/cross-user export work.
+  const auditRange = computeAuditRange(selectedTurns);
+  const auditEntries = await fetchAuditEntriesForSession(
+    agentId,
+    session.user.id,
+    auditRange,
+    MAX_AUDIT_ROWS
+  );
 
   // Snapshot the agent's configuration at export time (model/provider, allowed
   // tools, instruction hashes) so a support reader can tell config drift apart
@@ -173,9 +177,9 @@ export const POST = withAuth(async (request, _ctx, session) => {
     scope: {
       agentId,
       sessionKey,
-      anchorTurnIndex,
-      sessionTurnCount,
-      includedTurnRange,
+      anchorTurnIndex: scope.anchorTurnIndex,
+      sessionTurnCount: turns.length,
+      includedTurnRange: scope.includedTurnRange,
       trajectoryMissing,
     },
     auditEntries,
@@ -207,7 +211,9 @@ export const POST = withAuth(async (request, _ctx, session) => {
       byteSize: Buffer.byteLength(JSON.stringify(capped), "utf8"),
       droppedTurns: dropped,
       truncated,
-      trajectoryMissing: capped.scope.trajectoryMissing,
+      // Source from the local truth, not the round-tripped bundle, so a future
+      // change to how the bundle represents this can't silently skew the audit.
+      trajectoryMissing,
     },
     outcome: "success",
   };

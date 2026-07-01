@@ -14,6 +14,7 @@ import {
 import { Button } from "@/components/ui/button";
 import { apiGet } from "@/lib/api-client";
 import type { ChatListItem } from "@/lib/schemas/sessions";
+import { chatTitle } from "@/lib/chats/chat-title";
 import { generateChatId } from "@/lib/chats/generate-chat-id";
 import { useChatSessionIsRunning } from "@/components/chat-session-provider";
 import { useRunCompletionEffect } from "@/hooks/use-run-completion-effect";
@@ -43,12 +44,6 @@ interface ChatSwitcherProps {
 function isActive(item: ChatListItem, chatId: string | null, activeTelegram: boolean): boolean {
   if (item.origin === "telegram") return activeTelegram;
   return item.chatId === chatId && !activeTelegram;
-}
-
-/** Title to show for a chat — the saved label, or a date-stamped fallback. */
-function chatTitle(item: ChatListItem): string {
-  if (item.title && item.title.trim().length > 0) return item.title;
-  return `Chat from ${new Date(item.lastInteractionAt).toLocaleDateString()}`;
 }
 
 /** sessionId we tag the optimistic current-chat row with (it has no real OpenClaw session yet). */
