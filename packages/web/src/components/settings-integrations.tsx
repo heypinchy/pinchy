@@ -36,7 +36,7 @@ import {
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { AddIntegrationDialog } from "./add-integration-dialog";
 import { EditCredentialsDialog } from "./edit-credentials-dialog";
-import { EditOAuthDialog } from "./edit-oauth-dialog";
+import { ConnectedApps } from "./connected-apps";
 import { BraveIcon, GoogleIcon, MicrosoftIcon, OdooIcon } from "./integration-icons";
 import type { IntegrationConnection } from "@/lib/integrations/types";
 import { getAccessibleCategoryLabels } from "@/lib/integrations/odoo-sync";
@@ -86,7 +86,6 @@ export function SettingsIntegrations({ oauthError }: { oauthError?: string } = {
   const [deleteTarget, setDeleteTarget] = useState<IntegrationConnection | null>(null);
   const [renameTarget, setRenameTarget] = useState<IntegrationConnection | null>(null);
   const [renameName, setRenameName] = useState("");
-  const [showOAuthEdit, setShowOAuthEdit] = useState(false);
   const [resumeGoogleSetup, setResumeGoogleSetup] = useState(false);
   const [editCredConn, setEditCredConn] = useState<IntegrationConnection | null>(null);
 
@@ -132,6 +131,8 @@ export function SettingsIntegrations({ oauthError }: { oauthError?: string } = {
 
   return (
     <div className="space-y-6">
+      <ConnectedApps onConnectionsChanged={fetchConnections} />
+
       <Card>
         <CardHeader className="flex flex-row items-center justify-between">
           <CardTitle>Integrations</CardTitle>
@@ -238,11 +239,7 @@ export function SettingsIntegrations({ oauthError }: { oauthError?: string } = {
                               >
                                 Rename
                               </DropdownMenuItem>
-                              {conn.type === "google" ? (
-                                <DropdownMenuItem onClick={() => setShowOAuthEdit(true)}>
-                                  Edit OAuth Credentials
-                                </DropdownMenuItem>
-                              ) : conn.type === "microsoft" ? (
+                              {conn.type === "google" ? null : conn.type === "microsoft" ? (
                                 <DropdownMenuItem
                                   onClick={() => testConnection(conn.id)}
                                   disabled={testing === conn.id}
@@ -430,8 +427,6 @@ export function SettingsIntegrations({ oauthError }: { oauthError?: string } = {
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
-
-      <EditOAuthDialog provider="google" open={showOAuthEdit} onOpenChange={setShowOAuthEdit} />
 
       <EditCredentialsDialog
         connection={editCredConn}

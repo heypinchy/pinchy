@@ -62,12 +62,25 @@ const authFailedMicrosoftConnection = {
 };
 
 function mockFetchConnections(connections: unknown[]) {
-  return vi.spyOn(global, "fetch").mockImplementation(() =>
-    Promise.resolve({
+  return vi.spyOn(global, "fetch").mockImplementation((input) => {
+    const url = typeof input === "string" ? input : (input as Request).url;
+    // The Connected apps section fetches per-provider OAuth app state on mount.
+    // These tests only assert connection-list behaviour, so report both
+    // providers as unconfigured and route everything else to the connections.
+    if (url.startsWith("/api/settings/oauth")) {
+      const state = { configured: false, clientId: "", connectionCount: 0 };
+      return Promise.resolve({
+        ok: true,
+        text: async () => JSON.stringify(state),
+        json: async () => state,
+      } as unknown as Response);
+    }
+    return Promise.resolve({
       ok: true,
+      text: async () => JSON.stringify(connections),
       json: async () => connections,
-    } as Response)
-  );
+    } as unknown as Response);
+  });
 }
 
 describe("SettingsIntegrations — auth_failed state", () => {
@@ -115,7 +128,10 @@ describe("SettingsIntegrations — auth_failed state", () => {
       expect(screen.getByText("Production ERP")).toBeInTheDocument();
     });
 
-    expect(screen.getByText(/Connected/i)).toBeInTheDocument();
+    // Exact match: the "Connected apps" section title also contains "Connected",
+    // so the loose /Connected/i regex would match two nodes. The connection
+    // status label is exactly "Connected".
+    expect(screen.getByText("Connected")).toBeInTheDocument();
     expect(screen.queryByText(/Authentication failed/i)).not.toBeInTheDocument();
 
     fetchSpy.mockRestore();
