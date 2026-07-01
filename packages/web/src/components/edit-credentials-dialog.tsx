@@ -265,12 +265,18 @@ function WebSearchForm({
   );
 }
 
-function GoogleReconnect({
+// Google and Microsoft both reconnect through the same OAuth start endpoint —
+// the server branches on connection.type. The only client-side difference is
+// the provider name shown in the copy, so a single parameterized component
+// covers both.
+function OAuthReconnect({
   connection,
   onOpenChange,
+  providerLabel,
 }: {
   connection: IntegrationConnection;
   onOpenChange: (open: boolean) => void;
+  providerLabel: string;
 }) {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
@@ -296,7 +302,8 @@ function GoogleReconnect({
   return (
     <div className="space-y-4">
       <p className="text-sm text-muted-foreground">
-        Google credentials are managed via OAuth. Click below to start a new authorization flow.
+        {providerLabel} credentials are managed via OAuth. Click below to start a new authorization
+        flow.
       </p>
 
       {error && <p className="text-sm text-destructive">{error}</p>}
@@ -312,62 +319,7 @@ function GoogleReconnect({
               Redirecting...
             </>
           ) : (
-            "Reconnect via Google"
-          )}
-        </Button>
-      </div>
-    </div>
-  );
-}
-
-function MicrosoftReconnect({
-  connection,
-  onOpenChange,
-}: {
-  connection: IntegrationConnection;
-  onOpenChange: (open: boolean) => void;
-}) {
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState("");
-
-  async function handleReconnect() {
-    setLoading(true);
-    setError("");
-    try {
-      const result = await apiPost<{ url: string }>("/api/integrations/oauth/start", {
-        reconnectConnectionId: connection.id,
-      });
-      window.location.assign(result.url);
-    } catch (err) {
-      if (err instanceof ApiError) {
-        setError(err.message);
-      } else {
-        setError("Something went wrong. Please try again.");
-      }
-      setLoading(false);
-    }
-  }
-
-  return (
-    <div className="space-y-4">
-      <p className="text-sm text-muted-foreground">
-        Microsoft credentials are managed via OAuth. Click below to start a new authorization flow.
-      </p>
-
-      {error && <p className="text-sm text-destructive">{error}</p>}
-
-      <div className="flex justify-end gap-2">
-        <Button type="button" variant="outline" onClick={() => onOpenChange(false)}>
-          Cancel
-        </Button>
-        <Button onClick={handleReconnect} disabled={loading}>
-          {loading ? (
-            <>
-              <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-              Redirecting...
-            </>
-          ) : (
-            "Reconnect via Microsoft"
+            `Reconnect via ${providerLabel}`
           )}
         </Button>
       </div>
@@ -394,9 +346,17 @@ export function EditCredentialsDialog({
         </DialogHeader>
 
         {connection?.type === "google" ? (
-          <GoogleReconnect connection={connection} onOpenChange={onOpenChange} />
+          <OAuthReconnect
+            connection={connection}
+            onOpenChange={onOpenChange}
+            providerLabel="Google"
+          />
         ) : connection?.type === "microsoft" ? (
-          <MicrosoftReconnect connection={connection} onOpenChange={onOpenChange} />
+          <OAuthReconnect
+            connection={connection}
+            onOpenChange={onOpenChange}
+            providerLabel="Microsoft"
+          />
         ) : connection?.type === "odoo" ? (
           <OdooForm
             key={connection.id}
