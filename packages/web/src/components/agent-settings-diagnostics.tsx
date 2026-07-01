@@ -10,10 +10,6 @@ interface AgentSettingsDiagnosticsProps {
   agentName: string;
 }
 
-const HELPER_TEXT =
-  "Generates a file with your recent conversation, model and tool activity, and version info. " +
-  "Secrets and emails are automatically removed. You decide if and how to share it with Pinchy support.";
-
 /**
  * Agent Settings → Diagnostics tab.
  *
@@ -37,12 +33,9 @@ export function AgentSettingsDiagnostics({ agentId, agentName }: AgentSettingsDi
         </p>
       </div>
 
-      <div className="space-y-2">
-        <Button type="button" onClick={() => setDialogOpen(true)}>
-          Generate diagnostics export
-        </Button>
-        <p className="max-w-prose text-xs text-muted-foreground">{HELPER_TEXT}</p>
-      </div>
+      <Button type="button" onClick={() => setDialogOpen(true)}>
+        Generate diagnostics export
+      </Button>
 
       <DiagnosticsExportDialog
         open={dialogOpen}

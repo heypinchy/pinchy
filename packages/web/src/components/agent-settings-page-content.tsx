@@ -90,6 +90,11 @@ interface AccessValues {
 
 type DirtyTabs = Set<"general" | "personality" | "instructions" | "permissions" | "access">;
 
+// Single source of truth for which agent-settings tabs require admin (or
+// personal-agent-owner) access. Non-admin visibility is derived from this
+// instead of being a second, hand-maintained tab list that could drift.
+const ADMIN_ONLY_TABS = new Set<AgentSettingsTab>(["permissions", "access", "telegram"]);
+
 function DirtyDot() {
   return (
     <span
@@ -109,7 +114,7 @@ export function AgentSettingsPageContent({ initialTab }: { initialTab?: string }
   const visibleTabs: AgentSettingsTab[] =
     isPending || isAdmin
       ? [...AGENT_SETTINGS_TABS]
-      : ["general", "personality", "instructions", "diagnostics"];
+      : AGENT_SETTINGS_TABS.filter((tab) => !ADMIN_ONLY_TABS.has(tab));
   const [activeTab, setActiveTab] = useTabParam("general", visibleTabs, initialTab);
 
   const [agent, setAgent] = useState<Agent | null>(null);
