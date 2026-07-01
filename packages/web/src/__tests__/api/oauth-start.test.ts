@@ -383,6 +383,17 @@ describe("POST /api/integrations/oauth/start (reconnect)", () => {
     expect(setCookie).toContain(`oauth_state=${stateParam}`);
   });
 
+  it("does NOT set oauth_provider cookie for Google reconnect (state carries the connection id)", async () => {
+    // Asymmetry with Microsoft: Google's reconnect callback path is driven
+    // purely by reconnectConnectionId in the state, so it does not need the
+    // provider cookie. Microsoft does (its callback falls back to it). Pin the
+    // difference so a future refactor can't silently make them diverge.
+    const { POST } = await import("@/app/api/integrations/oauth/start/route");
+    const res = await POST(makePostRequest({ reconnectConnectionId: "c1" }));
+    const setCookie = res.headers.get("set-cookie") ?? "";
+    expect(setCookie).not.toContain("oauth_provider=");
+  });
+
   it("returns 400 when OAuth is not configured", async () => {
     mockGetOAuthSettings.mockResolvedValueOnce(null);
     const { POST } = await import("@/app/api/integrations/oauth/start/route");

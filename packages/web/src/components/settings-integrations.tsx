@@ -63,14 +63,16 @@ function formatRelativeTime(dateString: string): string {
 // user-controlled ?error= query param — can't reach a prototype property.
 // Map.get() is also recognized as a barrier by CodeQL's remote-property-injection
 // analysis, keeping the sink clean.
+// Provider-agnostic: the OAuth callback emits these same codes for both Google
+// and Microsoft flows, so the copy must not name a single provider.
 const OAUTH_ERROR_MESSAGES = new Map<string, string>([
   [
     "profile_fetch_failed",
-    "Could not fetch your Microsoft profile. Check that your Azure App has User.Read permission.",
+    "Could not fetch your account profile. Check that your OAuth app grants the required profile permission.",
   ],
-  ["token_exchange_failed", "Microsoft authorization failed. Please try connecting again."],
+  ["token_exchange_failed", "OAuth authorization failed. Please try connecting again."],
   ["state_mismatch", "OAuth session expired. Please try again."],
-  ["not_configured", "Microsoft OAuth is not configured."],
+  ["not_configured", "OAuth is not configured."],
   ["connection_not_found", "Connection not found. Please try again."],
   ["unauthorized", "OAuth authorization failed. Please try again."],
   ["missing_params", "OAuth authorization failed. Please try again."],

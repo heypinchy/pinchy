@@ -249,7 +249,7 @@ describe("SettingsIntegrations — OAuth callback errors", () => {
     render(<SettingsIntegrations oauthError="profile_fetch_failed" />);
     await waitFor(() => {
       expect(toast.error).toHaveBeenCalledWith(
-        "Could not fetch your Microsoft profile. Check that your Azure App has User.Read permission."
+        "Could not fetch your account profile. Check that your OAuth app grants the required profile permission."
       );
     });
   });
