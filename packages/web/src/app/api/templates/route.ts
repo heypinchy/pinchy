@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { eq } from "drizzle-orm";
+import { eq, inArray } from "drizzle-orm";
 import { withAuth } from "@/lib/api-auth";
 import { db } from "@/db";
 import { integrationConnections } from "@/db/schema";
@@ -9,6 +9,7 @@ import { getConnectionModels } from "@/lib/integrations/odoo-connection-models";
 import { getSetting } from "@/lib/settings";
 import { type ProviderName } from "@/lib/providers";
 import { resolveModelForTemplate, TemplateCapabilityUnavailableError } from "@/lib/model-resolver";
+import { EMAIL_CONNECTION_TYPES } from "@/lib/integrations/oauth-providers";
 
 export const GET = withAuth(async () => {
   const odooConnections = await db
@@ -22,7 +23,7 @@ export const GET = withAuth(async () => {
   const emailConnections = await db
     .select({ id: integrationConnections.id })
     .from(integrationConnections)
-    .where(eq(integrationConnections.type, "google"))
+    .where(inArray(integrationConnections.type, [...EMAIL_CONNECTION_TYPES]))
     .limit(1);
 
   const hasEmailConnection = emailConnections.length > 0;
