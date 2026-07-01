@@ -46,7 +46,10 @@ function subscribeLastChats(callback: () => void) {
 export function AppSidebar({ isAdmin }: AppSidebarProps) {
   const pathname = usePathname();
   const { sortedAgents } = useAgentsContext();
-  const { authFailedCount } = useIntegrationHealth(isAdmin);
+  const { needsAttentionCount } = useIntegrationHealth(isAdmin);
+  // Land the click directly on the failing integration instead of the default
+  // Context tab when something needs attention, so the error trail doesn't break.
+  const settingsHref = needsAttentionCount > 0 ? "/settings?tab=integrations" : "/settings";
 
   // Resolve each agent's link to the chat last viewed on THIS device (#508), so
   // clicking an agent returns the user where they left off instead of the oldest
@@ -151,12 +154,12 @@ export function AppSidebar({ isAdmin }: AppSidebarProps) {
         <SidebarMenu>
           <SidebarMenuItem>
             <SidebarMenuButton asChild>
-              <Link href="/settings">
+              <Link href={settingsHref}>
                 <Settings className="size-4" />
                 <span>Settings</span>
-                {authFailedCount > 0 && (
+                {needsAttentionCount > 0 && (
                   <span
-                    aria-label={`${authFailedCount} integration${authFailedCount === 1 ? "" : "s"} need${authFailedCount === 1 ? "s" : ""} attention`}
+                    aria-label={`${needsAttentionCount} integration${needsAttentionCount === 1 ? "" : "s"} need${needsAttentionCount === 1 ? "s" : ""} attention`}
                     className="ml-auto flex items-center justify-center size-4 rounded-full bg-destructive text-destructive-foreground text-[10px] font-bold"
                   >
                     !

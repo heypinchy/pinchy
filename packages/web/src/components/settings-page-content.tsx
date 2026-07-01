@@ -17,6 +17,7 @@ import { TelegramLinkSettings } from "@/components/telegram-link-settings";
 import { SettingsSecurity } from "@/components/settings-security";
 import { SecretsProvenanceCard } from "@/components/secrets-provenance-card";
 import { SettingsSupport } from "@/components/settings-support";
+import { useIntegrationHealth } from "@/hooks/use-integration-health";
 import type { LicenseInfo } from "@/lib/enterprise";
 
 interface ProviderStatus {
@@ -29,6 +30,15 @@ function DirtyDot() {
     <span
       className="ml-1 size-1.5 rounded-full bg-amber-500 inline-block"
       aria-label="unsaved changes"
+    />
+  );
+}
+
+function ErrorDot() {
+  return (
+    <span
+      className="ml-1 size-1.5 rounded-full bg-destructive inline-block"
+      aria-label="needs attention"
     />
   );
 }
@@ -49,6 +59,9 @@ export function SettingsPageContent({
     ? [...SETTINGS_TABS]
     : ["context", "profile", "telegram", "support"];
   const [activeTab, setActiveTab] = useTabParam("context", visibleTabs, initialTab);
+  // Mark the (admin-only) Integrations tab when a connection needs attention, so
+  // the error trail continues from the sidebar badge down to the exact tab.
+  const { needsAttentionCount } = useIntegrationHealth(isAdmin);
 
   const [status, setStatus] = useState<ProviderStatus | null>(null);
   const [loading, setLoading] = useState(true);
@@ -138,7 +151,11 @@ export function SettingsPageContent({
               )}
               {isAdmin && <TabsTrigger value="users">Users</TabsTrigger>}
               {isAdmin && <TabsTrigger value="groups">Groups</TabsTrigger>}
-              {isAdmin && <TabsTrigger value="integrations">Integrations</TabsTrigger>}
+              {isAdmin && (
+                <TabsTrigger value="integrations">
+                  Integrations {needsAttentionCount > 0 && <ErrorDot />}
+                </TabsTrigger>
+              )}
               {isAdmin && <TabsTrigger value="license">License</TabsTrigger>}
               {isAdmin && <TabsTrigger value="security">Security</TabsTrigger>}
             </TabsList>
