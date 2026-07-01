@@ -397,7 +397,12 @@ describe("pinchy-email config generation", () => {
     expect(config.plugins?.entries?.["pinchy-email"]).toBeUndefined();
   });
 
-  it("should handle IMAP connection type for email", async () => {
+  it("should ignore a non-OAuth 'imap' connection type for email (no IMAP flow exists)", async () => {
+    // There is no IMAP OAuth flow, no IMAP adapter, and no write path that ever
+    // persists `type: "imap"` into integration_connections (see
+    // EMAIL_CONNECTION_TYPES in @/lib/integrations/oauth-providers.ts). This
+    // test pins the intentional behavior: an "imap"-typed row — however it
+    // got there — must NOT be treated as an email connection.
     const agentsData = [
       {
         id: "imap-agent",
@@ -481,13 +486,10 @@ describe("pinchy-email config generation", () => {
     const written = mockedWriteFileSync.mock.calls[0][1] as string;
     const config = JSON.parse(written);
 
+    // No email-capable connection types matched, so the plugin entry is
+    // never created — mirrors the "no email connections" case above.
     const emailPlugin = config.plugins?.entries?.["pinchy-email"];
-    expect(emailPlugin).toBeDefined();
-    expect(emailPlugin.enabled).toBe(true);
-
-    const agentConfig = emailPlugin.config.agents["imap-agent"];
-    expect(agentConfig.connectionId).toBe("conn-imap-1");
-    expect(agentConfig.permissions).toEqual({ email: ["read", "search"] });
+    expect(emailPlugin).toBeUndefined();
 
     // No credentials leaked
     expect(written).not.toContain("secret-password");

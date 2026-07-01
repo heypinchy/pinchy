@@ -14,6 +14,7 @@ import { EmailPermissionSection } from "@/components/email-permission-section";
 import { WebSearchPermissionSection } from "@/components/web-search-permission-section";
 import type { Connection as OdooConnection } from "@/hooks/use-odoo-permissions";
 import type { AgentPluginConfig } from "@/db/schema";
+import { EMAIL_CONNECTION_TYPES } from "@/lib/integrations/oauth-providers";
 
 export interface PermissionsValues {
   allowedTools: string[];
@@ -33,7 +34,7 @@ interface Connection {
   data?: unknown;
 }
 
-const EMAIL_CONNECTION_TYPES = new Set(["google", "microsoft", "imap"]);
+const EMAIL_CONNECTION_TYPE_SET = new Set<string>(EMAIL_CONNECTION_TYPES);
 
 interface AgentSettingsPermissionsProps {
   agent: {
@@ -118,7 +119,7 @@ export function AgentSettingsPermissions({
     const active = connections.filter((c) => c.status !== "pending");
     return {
       odooConnections: active.filter((c) => c.type === "odoo") as OdooConnection[],
-      emailConnections: active.filter((c) => EMAIL_CONNECTION_TYPES.has(c.type)),
+      emailConnections: active.filter((c) => EMAIL_CONNECTION_TYPE_SET.has(c.type)),
       webSearchConnections: active.filter((c) => c.type === "web-search"),
     };
   }, [connections]);

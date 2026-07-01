@@ -39,18 +39,22 @@ export const MICROSOFT_OAUTH_SCOPES = "offline_access User.Read Mail.ReadWrite M
 export type OAuthProviderId = "google" | "microsoft";
 
 /**
- * `integrationConnections.type` values for the OAuth-connected email
- * providers this templates route recognizes when deciding whether an
- * email-requiring agent template is available. Derived from the OAuth
- * provider ids above so it can't drift from the connect-flow descriptors.
+ * Single source of truth for the `integrationConnections.type` values that
+ * count as "email" across the web package: the templates-availability route,
+ * the agent-settings email permission section, and the OpenClaw config
+ * builder all import this instead of declaring their own local copy.
  *
- * Note: other, differently-scoped lists of email-ish connection types exist
- * elsewhere (e.g. the permission UI, config build) for broader purposes and
- * may include additional speculative types. Reconciling those is out of
- * scope here — this constant only covers the OAuth providers this module
- * describes.
+ * Historically this list also included "imap", but there has never been an
+ * IMAP OAuth flow, an IMAP adapter (see `packages/plugins/pinchy-email/`),
+ * or any code path that writes `type: "imap"` into `integration_connections`
+ * — the only write paths are the OAuth callback route (google/microsoft) and
+ * the generic integrations POST route (odoo/web-search only). "imap" was
+ * unreachable dead weight, so it was dropped when this constant was
+ * consolidated. If an IMAP connect flow is ever built, add "imap" here (and
+ * widen `OAuthProviderId`/`getOAuthProvider` as needed) rather than
+ * resurrecting a separate local list.
  */
-export const OAUTH_EMAIL_CONNECTION_TYPES = [
+export const EMAIL_CONNECTION_TYPES = [
   "google",
   "microsoft",
 ] as const satisfies readonly OAuthProviderId[];

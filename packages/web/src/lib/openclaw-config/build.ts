@@ -47,6 +47,7 @@ import {
 import { resolveDefaultPdfModel, resolveDefaultImageModel } from "./default-media-models";
 import { deepMerge } from "./deep-merge";
 import { buildGatewayBlock } from "./gateway";
+import { EMAIL_CONNECTION_TYPES } from "@/lib/integrations/oauth-providers";
 
 /**
  * Public docs URL configuration for the bundled `pinchy-docs` plugin.
@@ -794,7 +795,7 @@ export async function regenerateOpenClawConfig() {
   // Unlike Odoo, email config does NOT include decrypted credentials — only
   // connectionId + permissions. The plugin fetches credentials at runtime via
   // the internal API (API-callback pattern).
-  const EMAIL_PROVIDER_TYPES = new Set(["google", "microsoft", "imap"]);
+  const EMAIL_PROVIDER_TYPES = new Set<string>(EMAIL_CONNECTION_TYPES);
   const emailPermsByAgent = new Map<string, { connectionId: string; ops: Map<string, string[]> }>();
 
   for (const row of allPermissions) {
