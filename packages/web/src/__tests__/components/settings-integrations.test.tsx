@@ -252,6 +252,65 @@ describe("SettingsIntegrations — pending OAuth connections", () => {
     expect(screen.queryByText("Connected")).not.toBeInTheDocument();
     fetchSpy.mockRestore();
   });
+
+  it("shows 'Cancel setup' (not 'Delete') in the dropdown for a Microsoft pending connection", async () => {
+    // A half-finished OAuth setup is aborted, not a working integration deleted —
+    // the teardown action must read "Cancel setup" for any pending connection.
+    const user = userEvent.setup();
+    const fetchSpy = mockFetchConnections([
+      {
+        id: "ms-pending-cancel",
+        type: "microsoft",
+        name: "Microsoft (connecting…)",
+        description: "",
+        credentials: "{}",
+        status: "pending",
+        lastError: null,
+        lastErrorAt: null,
+        data: null,
+        createdAt: "2026-06-30T10:00:00Z",
+        updatedAt: "2026-06-30T10:00:00Z",
+        cannotDecrypt: false,
+      },
+    ]);
+    render(<SettingsIntegrations />);
+    await waitFor(() => {
+      expect(screen.getByText("Microsoft (connecting…)")).toBeInTheDocument();
+    });
+
+    const row = screen.getByText("Microsoft (connecting…)").closest("[class*='rounded-lg']")!;
+    const buttons = row.querySelectorAll("button");
+    const menuButton = buttons[buttons.length - 1];
+    await user.click(menuButton);
+
+    expect(screen.getByText("Cancel setup")).toBeInTheDocument();
+    // Pending connections have no meaningful other actions — no destructive
+    // "Delete" label, and no Rename/Test for a connection that isn't live yet.
+    expect(screen.queryByText("Delete")).not.toBeInTheDocument();
+    expect(screen.queryByText("Rename")).not.toBeInTheDocument();
+
+    fetchSpy.mockRestore();
+  });
+
+  it("shows 'Delete' (not 'Cancel setup') for an active connection", async () => {
+    const user = userEvent.setup();
+    const fetchSpy = mockFetchConnections([activeOdooConnection]);
+
+    render(<SettingsIntegrations />);
+    await waitFor(() => {
+      expect(screen.getByText("Production ERP")).toBeInTheDocument();
+    });
+
+    const row = screen.getByText("Production ERP").closest("[class*='rounded-lg']")!;
+    const buttons = row.querySelectorAll("button");
+    const menuButton = buttons[buttons.length - 1];
+    await user.click(menuButton);
+
+    expect(screen.getByText("Delete")).toBeInTheDocument();
+    expect(screen.queryByText("Cancel setup")).not.toBeInTheDocument();
+
+    fetchSpy.mockRestore();
+  });
 });
 
 describe("SettingsIntegrations — live-update polling for pending connections", () => {

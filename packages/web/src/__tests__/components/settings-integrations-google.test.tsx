@@ -199,7 +199,7 @@ describe("SettingsIntegrations — pending Google connection", () => {
     fetchSpy.mockRestore();
   });
 
-  it("shows 'Continue setup' and 'Remove' in dropdown for pending Google connection", async () => {
+  it("shows 'Continue setup' and 'Cancel setup' in dropdown for pending Google connection", async () => {
     const user = userEvent.setup();
     const fetchSpy = mockFetchConnections([pendingGoogleConnection]);
 
@@ -215,7 +215,9 @@ describe("SettingsIntegrations — pending Google connection", () => {
     await user.click(menuButton);
 
     expect(screen.getByText("Continue setup")).toBeInTheDocument();
-    expect(screen.getByText("Remove")).toBeInTheDocument();
+    // Aborting a half-finished OAuth setup is "Cancel setup", not "Remove"/"Delete".
+    expect(screen.getByText("Cancel setup")).toBeInTheDocument();
+    expect(screen.queryByText("Remove")).not.toBeInTheDocument();
 
     // Should NOT show Rename or Edit OAuth Credentials
     expect(screen.queryByText("Rename")).not.toBeInTheDocument();

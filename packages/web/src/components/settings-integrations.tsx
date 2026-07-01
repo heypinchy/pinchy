@@ -230,16 +230,23 @@ export function SettingsIntegrations({ oauthError }: { oauthError?: string } = {
                           </Button>
                         </DropdownMenuTrigger>
                         <DropdownMenuContent align="end">
-                          {conn.type === "google" && conn.status === "pending" ? (
+                          {conn.status === "pending" ? (
+                            // A pending connection is a half-finished OAuth setup, not
+                            // a live integration. It has no meaningful Rename/Test/etc.
+                            // actions — only "Continue setup" (Google resumes via the
+                            // AddIntegrationDialog) and "Cancel setup" (aborts the flow
+                            // through the same delete path as a real teardown).
                             <>
-                              <DropdownMenuItem onClick={() => setResumeGoogleSetup(true)}>
-                                Continue setup
-                              </DropdownMenuItem>
+                              {conn.type === "google" && (
+                                <DropdownMenuItem onClick={() => setResumeGoogleSetup(true)}>
+                                  Continue setup
+                                </DropdownMenuItem>
+                              )}
                               <DropdownMenuItem
                                 className="text-destructive"
                                 onClick={() => setDeleteTarget(conn)}
                               >
-                                Remove
+                                Cancel setup
                               </DropdownMenuItem>
                             </>
                           ) : (
@@ -431,16 +438,31 @@ export function SettingsIntegrations({ oauthError }: { oauthError?: string } = {
       <AlertDialog open={!!deleteTarget} onOpenChange={(open) => !open && setDeleteTarget(null)}>
         <AlertDialogContent>
           <AlertDialogHeader>
-            <AlertDialogTitle>Delete Integration</AlertDialogTitle>
-            <AlertDialogDescription>
-              This will permanently delete the &ldquo;{deleteTarget?.name}&rdquo; integration and
-              remove all associated agent permissions. This action cannot be undone.
-            </AlertDialogDescription>
+            {deleteTarget?.status === "pending" ? (
+              <>
+                <AlertDialogTitle>Cancel setup</AlertDialogTitle>
+                <AlertDialogDescription>
+                  This will cancel the setup of &ldquo;{deleteTarget?.name}&rdquo;. The connection
+                  was never activated, so nothing that&apos;s in use will be affected. You can start
+                  the setup again anytime.
+                </AlertDialogDescription>
+              </>
+            ) : (
+              <>
+                <AlertDialogTitle>Delete Integration</AlertDialogTitle>
+                <AlertDialogDescription>
+                  This will permanently delete the &ldquo;{deleteTarget?.name}&rdquo; integration
+                  and remove all associated agent permissions. This action cannot be undone.
+                </AlertDialogDescription>
+              </>
+            )}
           </AlertDialogHeader>
           <AlertDialogFooter>
-            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogCancel>
+              {deleteTarget?.status === "pending" ? "Keep setup" : "Cancel"}
+            </AlertDialogCancel>
             <AlertDialogAction variant="destructive" onClick={handleDelete}>
-              Delete
+              {deleteTarget?.status === "pending" ? "Cancel setup" : "Delete"}
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>
