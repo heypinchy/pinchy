@@ -52,7 +52,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # `npm install -g openclaw@<version>` line to keep the runtime version in
 # lockstep with packages/web/package.json (which feeds /api/version). Keep the
 # literal form unchanged.
-RUN npm install -g openclaw@2026.6.8
+RUN npm install -g openclaw@2026.6.11
 
 # Install pinchy-files plugin dependencies (native modules must be built here).
 # Each bundle's node_modules is copied into /opt/<plugin>-deps so the runtime

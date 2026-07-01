@@ -365,8 +365,8 @@ importers:
         specifier: ^29.1.1
         version: 29.1.1(@noble/hashes@2.0.1)
       openclaw:
-        specifier: 2026.6.8
-        version: 2026.6.8
+        specifier: 2026.6.11
+        version: 2026.6.11
       prettier:
         specifier: ^3.8.3
         version: 3.8.3
@@ -5329,8 +5329,8 @@ packages:
     resolution: {integrity: sha512-hEU3kO3G2do36IrfFqEENoXsmcMzWbm5cDtzRZTV4CFRe7qG4nvFJSy57IejGcHEL7xNoyUmyb+rGChOxbcnFg==}
     engines: {node: '>=20.0.0'}
 
-  openclaw@2026.6.8:
-    resolution: {integrity: sha512-iziR8fi69+ojrtX7FYYvTpkGcVnmyLpIhvchgt5LFkkdHVWw973XAAekKVZ3/xQJ5FG4NwgHkXL0LLTrgsNOSQ==}
+  openclaw@2026.6.11:
+    resolution: {integrity: sha512-T+P/g19IheeT1ckXMoPN61dYuE8vBF4MderI+kWkvpuFYxPkJxn8AXLpu9IXCnN9g36Acpm9+mMD/V+lsvOkyA==}
     engines: {node: '>=22.19.0'}
     hasBin: true
 
@@ -11949,7 +11949,7 @@ snapshots:
       - bufferutil
       - utf-8-validate
 
-  openclaw@2026.6.8:
+  openclaw@2026.6.11:
     dependencies:
       '@agentclientprotocol/sdk': 0.22.1(zod@4.4.3)
       '@anthropic-ai/sdk': 0.100.1(zod@4.4.3)
@@ -11971,7 +11971,6 @@ snapshots:
       clawpdf: 0.3.0
       commander: 14.0.3
       croner: 10.0.1
-      cross-spawn: 7.0.6
       diff: 9.0.0
       dotenv: 17.4.2
       express: 5.2.1
