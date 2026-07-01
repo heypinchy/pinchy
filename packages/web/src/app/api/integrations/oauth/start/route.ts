@@ -19,7 +19,7 @@ import { randomBytes } from "crypto";
 import { z } from "zod";
 import { getSession } from "@/lib/auth";
 import { getOAuthSettings, type MicrosoftOAuthSettings } from "@/lib/integrations/oauth-settings";
-import { GOOGLE_OAUTH_SCOPES, MICROSOFT_OAUTH_SCOPES } from "@/lib/integrations/oauth-providers";
+import { getOAuthProvider, OAUTH_PROVIDERS } from "@/lib/integrations/oauth-providers";
 import { parseRequestBody } from "@/lib/api-validation";
 import { db } from "@/db";
 import { integrationConnections } from "@/db/schema";
@@ -75,80 +75,44 @@ export async function GET(request: Request) {
       );
   }
 
+  // Resolve the provider descriptor (defaults to Google, matching the
+  // `?provider` default above). getOAuthProvider avoids object-injection.
+  const oauthProvider = getOAuthProvider(provider) ?? OAUTH_PROVIDERS.google;
+
   const state = randomBytes(32).toString("hex");
   const redirectUri = `${origin}/api/integrations/oauth/callback`;
-  let authUrl: URL;
 
-  if (provider === "microsoft") {
-    const msSettings = settings as MicrosoftOAuthSettings;
-    const tenantId = msSettings.tenantId?.trim() || "organizations";
-    const tokenHost = process.env.MICROSOFT_OAUTH_BASE_URL ?? "https://login.microsoftonline.com";
-    authUrl = new URL(`${tokenHost}/${tenantId}/oauth2/v2.0/authorize`);
-    authUrl.searchParams.set("client_id", settings.clientId);
-    authUrl.searchParams.set("redirect_uri", redirectUri);
-    authUrl.searchParams.set("response_type", "code");
+  // For tenant-scoped providers (Microsoft) derive the tenant from settings so
+  // authorizeUrl embeds it; Google ignores tenantId.
+  const tenantId = oauthProvider.hasTenant
+    ? (settings as MicrosoftOAuthSettings).tenantId
+    : undefined;
+
+  const authUrl = new URL(oauthProvider.authorizeUrl({ tenantId }));
+  authUrl.searchParams.set("client_id", settings.clientId);
+  authUrl.searchParams.set("redirect_uri", redirectUri);
+  authUrl.searchParams.set("response_type", "code");
+  authUrl.searchParams.set("scope", oauthProvider.scopes);
+  if (oauthProvider.id === "microsoft") {
+    // Microsoft-specific: force the code to come back as a query param.
     authUrl.searchParams.set("response_mode", "query");
-    authUrl.searchParams.set("scope", MICROSOFT_OAUTH_SCOPES);
-    authUrl.searchParams.set("prompt", "consent");
-    authUrl.searchParams.set("state", state);
-
-    // Create a pending record so the connection is visible during the OAuth flow
-    const [pending] = await db
-      .insert(integrationConnections)
-      .values({
-        type: "microsoft",
-        name: "Microsoft (connecting…)",
-        status: "pending",
-        credentials: encrypt(JSON.stringify({})),
-      })
-      .returning({ id: integrationConnections.id });
-
-    const response = NextResponse.redirect(authUrl.toString(), 302);
-    response.cookies.set("oauth_state", state, {
-      httpOnly: true,
-      secure: isSecure,
-      sameSite: "lax",
-      maxAge: 600,
-      path: "/",
-    });
-    response.cookies.set("oauth_pending_id", pending.id, {
-      httpOnly: true,
-      secure: isSecure,
-      sameSite: "lax",
-      maxAge: 600,
-      path: "/",
-    });
-    response.cookies.set("oauth_provider", "microsoft", {
-      httpOnly: true,
-      secure: isSecure,
-      sameSite: "lax",
-      maxAge: 600,
-      path: "/",
-    });
-
-    return response;
+  } else {
+    // Google-specific: request a refresh token.
+    authUrl.searchParams.set("access_type", "offline");
   }
+  authUrl.searchParams.set("prompt", "consent");
+  authUrl.searchParams.set("state", state);
 
-  // Default: Google flow
   // Create a pending record so the connection is visible during the OAuth flow
   const [pending] = await db
     .insert(integrationConnections)
     .values({
-      type: "google",
-      name: "Google (connecting…)",
+      type: oauthProvider.connectionType,
+      name: `${oauthProvider.label} (connecting…)`,
       status: "pending",
       credentials: encrypt(JSON.stringify({})),
     })
     .returning({ id: integrationConnections.id });
-
-  authUrl = new URL("https://accounts.google.com/o/oauth2/v2/auth");
-  authUrl.searchParams.set("client_id", settings.clientId);
-  authUrl.searchParams.set("redirect_uri", redirectUri);
-  authUrl.searchParams.set("response_type", "code");
-  authUrl.searchParams.set("scope", GOOGLE_OAUTH_SCOPES);
-  authUrl.searchParams.set("access_type", "offline");
-  authUrl.searchParams.set("prompt", "consent");
-  authUrl.searchParams.set("state", state);
 
   const response = NextResponse.redirect(authUrl.toString(), 302);
   response.cookies.set("oauth_state", state, {
@@ -165,7 +129,7 @@ export async function GET(request: Request) {
     maxAge: 600,
     path: "/",
   });
-  response.cookies.set("oauth_provider", "google", {
+  response.cookies.set("oauth_provider", oauthProvider.id, {
     httpOnly: true,
     secure: isSecure,
     sameSite: "lax",
@@ -236,56 +200,32 @@ export async function POST(request: NextRequest) {
   const redirectUri = `${origin}/api/integrations/oauth/callback`;
   const isSecure = (forwardedProto ?? requestUrl.protocol.replace(":", "")) === "https";
 
-  if (connection.type === "microsoft") {
-    const settings = await getOAuthSettings("microsoft");
-    if (!settings) {
-      return NextResponse.json({ error: "Microsoft OAuth is not configured" }, { status: 400 });
-    }
-    const msSettings = settings as MicrosoftOAuthSettings;
-    const tenantId = msSettings.tenantId?.trim() || "organizations";
-    const tokenHost = process.env.MICROSOFT_OAUTH_BASE_URL ?? "https://login.microsoftonline.com";
-    const authUrl = new URL(`${tokenHost}/${tenantId}/oauth2/v2.0/authorize`);
-    authUrl.searchParams.set("client_id", settings.clientId);
-    authUrl.searchParams.set("redirect_uri", redirectUri);
-    authUrl.searchParams.set("response_type", "code");
-    authUrl.searchParams.set("response_mode", "query");
-    authUrl.searchParams.set("scope", MICROSOFT_OAUTH_SCOPES);
-    authUrl.searchParams.set("prompt", "consent");
-    authUrl.searchParams.set("state", state);
+  // connection.type is "google" | "microsoft" here (guarded above), so the
+  // descriptor always resolves; keep a Google fallback for type-safety.
+  const oauthProvider = getOAuthProvider(connection.type) ?? OAUTH_PROVIDERS.google;
 
-    const response = NextResponse.json({ url: authUrl.toString() }, { status: 200 });
-    response.cookies.set("oauth_state", state, {
-      httpOnly: true,
-      secure: isSecure,
-      sameSite: "lax",
-      maxAge: 600,
-      path: "/",
-    });
-    // CRITICAL: reconnect has no pending record and no oauth_pending_id cookie,
-    // so the callback identifies the provider from this cookie. Without it the
-    // callback defaults to Google and exchanges the code against the wrong host.
-    response.cookies.set("oauth_provider", "microsoft", {
-      httpOnly: true,
-      secure: isSecure,
-      sameSite: "lax",
-      maxAge: 600,
-      path: "/",
-    });
-    return response;
-  }
-
-  // Default: Google flow
-  const settings = await getOAuthSettings("google");
+  const settings = await getOAuthSettings(oauthProvider.id);
   if (!settings) {
-    return NextResponse.json({ error: "Google OAuth is not configured" }, { status: 400 });
+    return NextResponse.json(
+      { error: `${oauthProvider.label} OAuth is not configured` },
+      { status: 400 }
+    );
   }
 
-  const authUrl = new URL("https://accounts.google.com/o/oauth2/v2/auth");
+  const tenantId = oauthProvider.hasTenant
+    ? (settings as MicrosoftOAuthSettings).tenantId
+    : undefined;
+
+  const authUrl = new URL(oauthProvider.authorizeUrl({ tenantId }));
   authUrl.searchParams.set("client_id", settings.clientId);
   authUrl.searchParams.set("redirect_uri", redirectUri);
   authUrl.searchParams.set("response_type", "code");
-  authUrl.searchParams.set("scope", GOOGLE_OAUTH_SCOPES);
-  authUrl.searchParams.set("access_type", "offline");
+  authUrl.searchParams.set("scope", oauthProvider.scopes);
+  if (oauthProvider.id === "microsoft") {
+    authUrl.searchParams.set("response_mode", "query");
+  } else {
+    authUrl.searchParams.set("access_type", "offline");
+  }
   authUrl.searchParams.set("prompt", "consent");
   authUrl.searchParams.set("state", state);
 
@@ -297,6 +237,20 @@ export async function POST(request: NextRequest) {
     maxAge: 600,
     path: "/",
   });
+  // CRITICAL: reconnect has no pending record and no oauth_pending_id cookie,
+  // so the callback identifies the provider from this cookie. Without it the
+  // callback defaults to Google and exchanges the code against the wrong host.
+  // Google reconnect deliberately omits this — its callback path is driven
+  // purely by reconnectConnectionId in the state (see oauth-start.test.ts).
+  if (oauthProvider.id === "microsoft") {
+    response.cookies.set("oauth_provider", "microsoft", {
+      httpOnly: true,
+      secure: isSecure,
+      sameSite: "lax",
+      maxAge: 600,
+      path: "/",
+    });
+  }
 
   return response;
 }
