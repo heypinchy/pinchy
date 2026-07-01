@@ -5,6 +5,7 @@ import { AssistantRuntimeProvider } from "@assistant-ui/react";
 import type { AssistantRuntime } from "@assistant-ui/react";
 import type { PendingUpload } from "@/hooks/use-ws-runtime";
 import { Thread } from "@/components/assistant-ui/thread";
+import { ChatCrashBoundary } from "@/components/chat-crash-boundary";
 import { ChatErrorBanner } from "@/components/chat-error-banner";
 import { useChatSession } from "@/components/chat-session-provider";
 import { useAgentsContext } from "@/components/agents-provider";
@@ -314,7 +315,9 @@ export function Chat({
                                   onRetry={() => onRetryContinue("partial_stream_failure")}
                                 />
                                 <div className="flex-1 min-h-0 animate-in fade-in duration-300">
-                                  <Thread isReconcilingMessages={isReconcilingMessages} />
+                                  <ChatCrashBoundary>
+                                    <Thread isReconcilingMessages={isReconcilingMessages} />
+                                  </ChatCrashBoundary>
                                 </div>
                                 {!displayIsPersonal && (
                                   <p className="text-xs text-muted-foreground px-3 py-1">
