@@ -69,7 +69,7 @@ describe("getAccessBadgeProps", () => {
     expect(result).toBeNull();
   });
 
-  it("returns green 'Gmail · Read & Draft' for email template", () => {
+  it("returns green 'Email · Read & Draft' for email template", () => {
     const result = getAccessBadgeProps({
       id: "email-assistant",
       name: "Email Assistant",
@@ -78,7 +78,7 @@ describe("getAccessBadgeProps", () => {
       requiresEmailConnection: true,
       defaultTagline: null,
     });
-    expect(result).toEqual({ label: "Gmail · Read & Draft", variant: "green" });
+    expect(result).toEqual({ label: "Email · Read & Draft", variant: "green" });
   });
 });
 
@@ -143,7 +143,7 @@ describe("getPermissionPreviewItems", () => {
       requiresEmailConnection: true,
     });
     expect(result).toEqual([
-      { icon: "check", text: "Read emails from connected Gmail account" },
+      { icon: "check", text: "Read emails from the connected mailbox" },
       { icon: "check", text: "Create draft emails" },
       { icon: "cross", text: "Cannot send emails directly" },
     ]);
