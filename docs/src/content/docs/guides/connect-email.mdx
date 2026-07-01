@@ -26,3 +26,7 @@ You set up and manage the app and the mailboxes in different places:
 The app keeps existing even after you remove its last mailbox — it has an independent lifecycle, so it stays visible in **Connected apps** with zero mailboxes attached. To clear the credentials, reset the app explicitly.
 
 For the full picture of how connections, apps, and per-agent permissions fit together, see [Integrations](/concepts/integrations/).
+
+## Email agent templates use the `email` skill
+
+The **Email Assistant**, **Sales Email Assistant**, and **Support Email Assistant** templates attach the `email` skill — a workflow guide that teaches the agent when to list, search, or read messages, and how to draft a reply instead of assuming it can send. Sending stays gated behind the separate `email.send` permission regardless of the skill. This works the same way as the `web-search` skill used by the [Market & News Monitor](/guides/create-market-monitor-agent/) template.
