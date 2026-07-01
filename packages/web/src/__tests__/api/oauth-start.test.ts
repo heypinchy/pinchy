@@ -56,12 +56,18 @@ vi.mock("@/db", () => ({
 }));
 
 vi.mock("@/db/schema", () => ({
-  integrationConnections: { id: "id", type: "type", status: "status" },
+  integrationConnections: {
+    id: "id",
+    type: "type",
+    status: "status",
+    createdAt: "createdAt",
+  },
 }));
 
 vi.mock("drizzle-orm", () => ({
-  eq: vi.fn((col: unknown, val: unknown) => ({ col, val })),
+  eq: vi.fn((col: unknown, val: unknown) => ({ eq: { col, val } })),
   and: vi.fn((...args: unknown[]) => ({ and: args })),
+  lt: vi.fn((col: unknown, val: unknown) => ({ lt: { col, val } })),
 }));
 
 import { NextRequest } from "next/server";
@@ -127,10 +133,34 @@ describe("GET /api/integrations/oauth/start", () => {
     expect(mockDeleteWhere).toHaveBeenCalled();
   });
 
-  it("does not delete any records when no previous oauth_pending_id cookie is present", async () => {
+  it("sweeps abandoned pending records older than 15 minutes on every start", async () => {
+    // Even without the caller's own oauth_pending_id cookie, GET must GC stale
+    // pending rows so abandoned OAuth flows (closed tab / error) don't pile up
+    // forever, regardless of which admin created them.
+    const { lt, eq } = await import("drizzle-orm");
+    const before = Date.now();
     const { GET } = await import("@/app/api/integrations/oauth/start/route");
     await GET(makeRequest());
-    expect(mockDeleteWhere).not.toHaveBeenCalled();
+    const after = Date.now();
+
+    // A createdAt < cutoff bound was applied, where cutoff is ~15 minutes ago.
+    expect(lt).toHaveBeenCalledWith("createdAt", expect.any(Date) as unknown as Date);
+    const cutoff = (lt as unknown as ReturnType<typeof vi.fn>).mock.calls.at(-1)![1] as Date;
+    const fifteenMin = 15 * 60 * 1000;
+    expect(cutoff.getTime()).toBeGreaterThanOrEqual(before - fifteenMin - 5_000);
+    expect(cutoff.getTime()).toBeLessThanOrEqual(after - fifteenMin + 5_000);
+
+    // The sweep is scoped to status = "pending" so it never touches live rows.
+    expect(eq).toHaveBeenCalledWith("status", "pending");
+    expect(mockDeleteWhere).toHaveBeenCalled();
+  });
+
+  it("sweeps stale pending records even when no oauth_pending_id cookie is present", async () => {
+    // Previously GET only deleted the caller's own pending row via the cookie,
+    // so with no cookie it deleted nothing. The sweep must still run.
+    const { GET } = await import("@/app/api/integrations/oauth/start/route");
+    await GET(makeRequest());
+    expect(mockDeleteWhere).toHaveBeenCalled();
   });
 
   it("creates a pending integration_connections record", async () => {

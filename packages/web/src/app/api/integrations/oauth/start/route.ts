@@ -24,7 +24,7 @@ import { parseRequestBody } from "@/lib/api-validation";
 import { db } from "@/db";
 import { integrationConnections } from "@/db/schema";
 import { encrypt } from "@/lib/encryption";
-import { eq, and } from "drizzle-orm";
+import { eq, and, lt } from "drizzle-orm";
 
 function errorRedirect(origin: string, error: string) {
   const url = new URL("/settings", origin);
@@ -54,6 +54,25 @@ export async function GET(request: Request) {
   if (!settings) {
     return errorRedirect(origin, "not_configured");
   }
+
+  // Sweep abandoned pending records that are older than 15 minutes. An OAuth
+  // flow that's closed mid-way (tab closed, provider error) leaves its pending
+  // placeholder behind forever, and the own-pending cleanup below only touches
+  // the caller's own record via cookie. This GC keeps stale rows from piling up
+  // regardless of which admin started them. 15 min comfortably outlives the
+  // 10-minute oauth_state cookie, so an in-flight flow is never swept.
+  //
+  // audit-exempt: GC of abandoned pending OAuth records, no user-facing state —
+  // these placeholders were never activated and hold no real integration.
+  const cutoff = new Date(Date.now() - 15 * 60 * 1000);
+  await db
+    .delete(integrationConnections)
+    .where(
+      and(
+        eq(integrationConnections.status, "pending"),
+        lt(integrationConnections.createdAt, cutoff)
+      )
+    );
 
   // Clean up the user's own previous pending record (if any) before starting a new flow.
   // Only delete the specific record from a previous attempt — avoid touching other admins' pending records.
