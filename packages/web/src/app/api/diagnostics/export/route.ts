@@ -25,6 +25,7 @@ import { type AuditLogEntry } from "@/lib/audit";
 import { deferAuditLog } from "@/lib/audit-deferred";
 import { getAgentWithAccess } from "@/lib/agent-access";
 import { parseRequestBody } from "@/lib/api-validation";
+import { listUserAgentChats } from "@/lib/chats/list-user-agent-chats";
 import { collectAgentConfig } from "@/lib/diagnostics/agent-config-collector";
 import { buildBundle } from "@/lib/diagnostics/bundle-builder";
 import { fetchAuditEntriesForSession } from "@/lib/diagnostics/audit-collector";
@@ -40,6 +41,7 @@ import { computeScope } from "@/lib/diagnostics/scope-resolver";
 import { enforceSizeCap } from "@/lib/diagnostics/size-guard";
 import { extractTurns } from "@/lib/diagnostics/turn-extractor";
 import { getDiagnosticsVersions } from "@/lib/diagnostics/versions";
+import { directSessionKey } from "@/lib/session-key";
 import { diagnosticsExportRequestSchema } from "@/lib/schemas/diagnostics";
 
 const DEFAULT_TURN_WINDOW = 10;
@@ -71,45 +73,93 @@ function computeAuditRange(
 export const POST = withAuth(async (request, _ctx, session) => {
   const parsed = await parseRequestBody(diagnosticsExportRequestSchema, request);
   if ("error" in parsed) return parsed.error;
-  const { agentId, anchorMessageId, userDescription } = parsed.data;
+  const { agentId, anchorMessageId, userDescription, sessionId: selectedSessionId } = parsed.data;
 
   const agentOrResp = await getAgentWithAccess(agentId, session.user.id, session.user.role);
   if (agentOrResp instanceof NextResponse) return agentOrResp;
   const agent = agentOrResp;
 
-  const sessionKey = `agent:${agentId}:direct:${session.user.id}`;
-  const sessionId = await resolveSessionId(agentId, sessionKey);
-  if (!sessionId) {
-    return NextResponse.json(
-      { error: "No chat session recorded for this user and agent yet" },
-      { status: 404 }
-    );
+  // Resolve which chat to export. Two paths:
+  //   - selector (#639): the client picked a specific chat by its opaque
+  //     sessionId. Re-authorize it by enumerating the user's OWN chats and
+  //     matching — this reaches named per-chat sessions (#508) and read-only
+  //     Telegram peers, which `directSessionKey` structurally can't. An
+  //     unmatched id is an unknown/inaccessible chat → 404.
+  //   - default (no selector): today's behaviour — the user's default chat.
+  let sessionKey: string;
+  let sessionId: string;
+  let exportedChatId: string | null;
+  if (selectedSessionId) {
+    let chats: Awaited<ReturnType<typeof listUserAgentChats>>["chats"];
+    try {
+      ({ chats } = await listUserAgentChats(agentId, session.user.id));
+    } catch {
+      return NextResponse.json({ error: "Failed to load chats" }, { status: 502 });
+    }
+    const match = chats.find((c) => c.sessionId === selectedSessionId);
+    if (!match) {
+      return NextResponse.json({ error: "No such chat for this user and agent" }, { status: 404 });
+    }
+    sessionKey = match.key;
+    sessionId = match.sessionId;
+    exportedChatId = match.chatId;
+  } else {
+    sessionKey = directSessionKey(agentId, session.user.id);
+    const resolved = await resolveSessionId(agentId, sessionKey);
+    if (!resolved) {
+      return NextResponse.json(
+        { error: "No chat session recorded for this user and agent yet" },
+        { status: 404 }
+      );
+    }
+    sessionId = resolved;
+    exportedChatId = null;
   }
 
-  let raw: string;
+  // Read the trajectory. When the chat is authorized but its trajectory file is
+  // gone (#639), don't 404 — degrade to an audit-only bundle so support still
+  // gets the audit trail, flagged with `trajectoryMissing`.
+  let raw: string | null = null;
+  let trajectoryMissing = false;
   try {
     raw = await readTrajectoryJsonl(agentId, sessionId);
   } catch (err) {
     if (err instanceof TrajectoryFileNotFoundError) {
-      return NextResponse.json(
-        { error: "Trajectory file missing for the recorded session" },
-        { status: 404 }
-      );
+      trajectoryMissing = true;
+    } else {
+      throw err;
     }
-    throw err;
   }
 
-  const events = parseJsonlLines(raw);
-  const turns = extractTurns(events);
-  const scope = computeScope(turns, anchorMessageId, DEFAULT_TURN_WINDOW);
-  const selectedTurns = turns.slice(scope.includedTurnRange[0], scope.includedTurnRange[1] + 1);
-  const spans = buildOtelSpans(selectedTurns);
-  // Scope audit rows to the same time window as the selected turns so a busy
-  // agent doesn't drown the bundle in unrelated history. Pad by 5s on each
-  // side to catch tool audit rows written just before/after the model.completed
-  // event (chat.* and tool.* are written from independent code paths).
-  const auditRange = computeAuditRange(selectedTurns);
-  const auditEntries = await fetchAuditEntriesForSession(agentId, session.user.id, auditRange);
+  let spans: ReturnType<typeof buildOtelSpans>;
+  let anchorTurnIndex: number | null;
+  let sessionTurnCount: number;
+  let includedTurnRange: [number, number];
+  let auditEntries: Awaited<ReturnType<typeof fetchAuditEntriesForSession>>;
+  if (trajectoryMissing) {
+    // No trajectory: empty spans, and pull the whole audit window for this
+    // user+agent (no turns to scope by). The size-cap still trims.
+    spans = [];
+    anchorTurnIndex = null;
+    sessionTurnCount = 0;
+    includedTurnRange = [0, -1];
+    auditEntries = await fetchAuditEntriesForSession(agentId, session.user.id, undefined);
+  } else {
+    const events = parseJsonlLines(raw ?? "");
+    const turns = extractTurns(events);
+    const scope = computeScope(turns, anchorMessageId, DEFAULT_TURN_WINDOW);
+    const selectedTurns = turns.slice(scope.includedTurnRange[0], scope.includedTurnRange[1] + 1);
+    spans = buildOtelSpans(selectedTurns);
+    // Scope audit rows to the same time window as the selected turns so a busy
+    // agent doesn't drown the bundle in unrelated history. Pad by 5s on each
+    // side to catch tool audit rows written just before/after the model.completed
+    // event (chat.* and tool.* are written from independent code paths).
+    const auditRange = computeAuditRange(selectedTurns);
+    auditEntries = await fetchAuditEntriesForSession(agentId, session.user.id, auditRange);
+    anchorTurnIndex = scope.anchorTurnIndex;
+    sessionTurnCount = turns.length;
+    includedTurnRange = scope.includedTurnRange;
+  }
 
   // Snapshot the agent's configuration at export time (model/provider, allowed
   // tools, instruction hashes) so a support reader can tell config drift apart
@@ -123,9 +173,10 @@ export const POST = withAuth(async (request, _ctx, session) => {
     scope: {
       agentId,
       sessionKey,
-      anchorTurnIndex: scope.anchorTurnIndex,
-      sessionTurnCount: turns.length,
-      includedTurnRange: scope.includedTurnRange,
+      anchorTurnIndex,
+      sessionTurnCount,
+      includedTurnRange,
+      trajectoryMissing,
     },
     auditEntries,
     userDescription,
@@ -146,6 +197,9 @@ export const POST = withAuth(async (request, _ctx, session) => {
     resource: `diagnostics:${agentId}`,
     detail: {
       agent: { id: agent.id, name: agent.name },
+      // Which chat was exported (#639): null = the default/legacy chat or a
+      // Telegram peer (both carry chatId: null).
+      chatId: exportedChatId,
       scope: {
         anchorTurnIndex: capped.scope.anchorTurnIndex,
         includedTurnRange: capped.scope.includedTurnRange,
@@ -153,6 +207,7 @@ export const POST = withAuth(async (request, _ctx, session) => {
       byteSize: Buffer.byteLength(JSON.stringify(capped), "utf8"),
       droppedTurns: dropped,
       truncated,
+      trajectoryMissing: capped.scope.trajectoryMissing,
     },
     outcome: "success",
   };

@@ -100,6 +100,13 @@ test.describe.serial("Self-service diagnostics export", () => {
     await expect(openDialogButton).toBeVisible({ timeout: 10000 });
     await openDialogButton.click();
 
+    // The chat picker (#639) renders once the user's chats load — at minimum the
+    // default chat the seed turn created. Waiting for it also makes the export
+    // deterministic (the default chat is preselected and its sessionId sent).
+    await expect(page.getByRole("combobox", { name: /chat to export/i })).toBeVisible({
+      timeout: 10000,
+    });
+
     const download = await clickDialogGenerateAndAwaitDownload(page);
     expect(download.suggestedFilename()).toMatch(/^pinchy-bugreport-.+\.json$/);
 

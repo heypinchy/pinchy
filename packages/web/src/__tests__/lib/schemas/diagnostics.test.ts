@@ -28,4 +28,28 @@ describe("diagnosticsExportRequestSchema", () => {
     const r = diagnosticsExportRequestSchema.safeParse({});
     expect(r.success).toBe(false);
   });
+
+  it("accepts a sessionId selector for a specific chat", () => {
+    const r = diagnosticsExportRequestSchema.safeParse({
+      agentId: "agt_1",
+      sessionId: "ses_FIXTURE_SESSION_0001",
+    });
+    expect(r.success).toBe(true);
+  });
+
+  it("rejects a malformed sessionId (contains a colon)", () => {
+    const r = diagnosticsExportRequestSchema.safeParse({
+      agentId: "agt_1",
+      sessionId: "agent:agt_1:direct:usr_1",
+    });
+    expect(r.success).toBe(false);
+  });
+
+  it("rejects a sessionId with a path separator", () => {
+    const r = diagnosticsExportRequestSchema.safeParse({
+      agentId: "agt_1",
+      sessionId: "../../etc/passwd",
+    });
+    expect(r.success).toBe(false);
+  });
 });

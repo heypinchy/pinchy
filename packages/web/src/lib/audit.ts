@@ -413,6 +413,9 @@ export type AuditLogEntry =
       eventType: "diagnostics.exported";
       detail: {
         agent: { id: string; name: string };
+        // Which chat was exported (#639): null for the default/legacy chat or a
+        // Telegram peer (both carry chatId: null).
+        chatId: string | null;
         scope: {
           anchorTurnIndex: number | null;
           includedTurnRange: [number, number];
@@ -420,6 +423,9 @@ export type AuditLogEntry =
         byteSize: number;
         droppedTurns: number;
         truncated: boolean;
+        // True when the chat was authorized but its trajectory file was absent
+        // and the bundle fell back to audit rows only (#639).
+        trajectoryMissing: boolean;
       };
     })
   | (AuditLogBase & {

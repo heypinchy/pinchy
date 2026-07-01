@@ -13,7 +13,7 @@
 
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { NextRequest } from "next/server";
-import { eq, desc } from "drizzle-orm";
+import { and, eq, desc } from "drizzle-orm";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
@@ -79,12 +79,26 @@ vi.mock("@/lib/diagnostics/jsonl-reader", async () => {
   };
 });
 
+// The chat enumeration (#639 selector path) hits OpenClaw's sessions.list;
+// mock it so tests can hand the route a deterministic, already-authorized set
+// of the user's own chats. The default (no-selector) path never calls it.
+vi.mock("@/lib/chats/list-user-agent-chats", () => ({
+  listUserAgentChats: vi.fn(),
+}));
+
+import { createHash } from "node:crypto";
 import { db } from "@/db";
 import { agents, auditLog, users } from "@/db/schema";
 import { auth } from "@/lib/auth";
 import { getSession } from "@/lib/auth";
 import { resolveSessionId, readTrajectoryJsonl } from "@/lib/diagnostics/jsonl-reader";
+import { listUserAgentChats } from "@/lib/chats/list-user-agent-chats";
+import { TrajectoryFileNotFoundError } from "@/lib/diagnostics/jsonl-reader";
 import { POST } from "@/app/api/diagnostics/export/route";
+
+function sessionKeyHash(key: string) {
+  return "sha256:" + createHash("sha256").update(key).digest("hex");
+}
 
 async function seedUser(email = "user@test.local", role = "member") {
   const result = await auth.api.signUpEmail({
@@ -291,5 +305,229 @@ describe("POST /api/diagnostics/export (integration)", () => {
     const bundle = await response.json();
     expect(bundle.spans).toEqual([]);
     expect(bundle.scope.includedTurnRange).toEqual([0, -1]);
+  });
+
+  // ── #639: per-chat + Telegram selector, graceful degrade ─────────────────
+
+  describe("sessionId selector (#639)", () => {
+    it("resolves the SELECTED named chat's trajectory, not the default", async () => {
+      const owner = await seedUser();
+      mockSession(owner);
+      const agent = await seedPersonalAgent(owner.id);
+
+      const namedKey = `agent:${agent.id}:direct:${owner.id}:chat-new`;
+      vi.mocked(listUserAgentChats).mockResolvedValue({
+        chats: [
+          {
+            sessionId: "s-legacy",
+            key: `agent:${agent.id}:direct:${owner.id}`,
+            origin: "web",
+            writable: true,
+            chatId: null,
+            lastInteractionAt: 1000,
+          },
+          {
+            sessionId: "s-named",
+            key: namedKey,
+            origin: "web",
+            writable: true,
+            chatId: "chat-new",
+            lastInteractionAt: 5000,
+          },
+        ],
+        labelByKey: new Map(),
+      });
+      // Fail loudly if the route ever falls back to resolveSessionId here.
+      vi.mocked(resolveSessionId).mockResolvedValue("s-legacy");
+      vi.mocked(readTrajectoryJsonl).mockResolvedValue(FIXTURE);
+
+      const response = await POST(makeRequest({ agentId: agent.id, sessionId: "s-named" }));
+      expect(response.status).toBe(200);
+      const bundle = await response.json();
+
+      // The trajectory was read for the NAMED session, and the bundle's
+      // hashed key is the named chat's key — not the default.
+      expect(vi.mocked(readTrajectoryJsonl)).toHaveBeenCalledWith(agent.id, "s-named");
+      expect(bundle.scope.sessionKeyHash).toBe(sessionKeyHash(namedKey));
+      expect(vi.mocked(resolveSessionId)).not.toHaveBeenCalled();
+    });
+
+    it("exports a linked Telegram chat selected by sessionId", async () => {
+      const owner = await seedUser();
+      mockSession(owner);
+      const agent = await seedPersonalAgent(owner.id);
+
+      const tgKey = `agent:${agent.id}:direct:tg-peer-1`;
+      vi.mocked(listUserAgentChats).mockResolvedValue({
+        chats: [
+          {
+            sessionId: "s-tg",
+            key: tgKey,
+            origin: "telegram",
+            writable: false,
+            chatId: null,
+            lastInteractionAt: 3000,
+          },
+        ],
+        labelByKey: new Map(),
+      });
+      vi.mocked(readTrajectoryJsonl).mockResolvedValue(FIXTURE);
+
+      const response = await POST(makeRequest({ agentId: agent.id, sessionId: "s-tg" }));
+      expect(response.status).toBe(200);
+      const bundle = await response.json();
+      expect(vi.mocked(readTrajectoryJsonl)).toHaveBeenCalledWith(agent.id, "s-tg");
+      expect(bundle.scope.sessionKeyHash).toBe(sessionKeyHash(tgKey));
+    });
+
+    it("returns 404 when the selected sessionId is not one of the user's chats", async () => {
+      const owner = await seedUser();
+      mockSession(owner);
+      const agent = await seedPersonalAgent(owner.id);
+      vi.mocked(listUserAgentChats).mockResolvedValue({ chats: [], labelByKey: new Map() });
+
+      const response = await POST(makeRequest({ agentId: agent.id, sessionId: "s-someone-else" }));
+      expect(response.status).toBe(404);
+      expect(vi.mocked(readTrajectoryJsonl)).not.toHaveBeenCalled();
+    });
+
+    it("degrades to trajectoryMissing=true (not 404) when the selected chat's trajectory file is gone", async () => {
+      const owner = await seedUser();
+      mockSession(owner);
+      const agent = await seedPersonalAgent(owner.id);
+
+      vi.mocked(listUserAgentChats).mockResolvedValue({
+        chats: [
+          {
+            sessionId: "s-named",
+            key: `agent:${agent.id}:direct:${owner.id}:chat-new`,
+            origin: "web",
+            writable: true,
+            chatId: "chat-new",
+            lastInteractionAt: 5000,
+          },
+        ],
+        labelByKey: new Map(),
+      });
+      vi.mocked(readTrajectoryJsonl).mockRejectedValue(
+        new TrajectoryFileNotFoundError("/gone.jsonl")
+      );
+
+      // An audit row for this user+agent must still make it into the bundle.
+      await db.insert(auditLog).values({
+        actorType: "user",
+        actorId: owner.id,
+        eventType: "tool.pinchy_ls",
+        resource: `agent:${agent.id}`,
+        detail: { agentId: agent.id },
+        outcome: "success",
+        rowHmac: "test-placeholder-hmac",
+        timestamp: new Date("2026-05-19T12:15:00Z"),
+      });
+
+      const response = await POST(makeRequest({ agentId: agent.id, sessionId: "s-named" }));
+      expect(response.status).toBe(200);
+      const bundle = await response.json();
+      expect(bundle.scope.trajectoryMissing).toBe(true);
+      expect(bundle.spans).toEqual([]);
+      const toolEntries = (bundle.auditEntries as Array<{ eventType: string }>).filter((e) =>
+        e.eventType.startsWith("tool.")
+      );
+      expect(toolEntries).toHaveLength(1);
+    });
+
+    it("degrades the DEFAULT chat too when its trajectory file is gone (was 404)", async () => {
+      const owner = await seedUser();
+      mockSession(owner);
+      const agent = await seedPersonalAgent(owner.id);
+      vi.mocked(resolveSessionId).mockResolvedValue("ses_default");
+      vi.mocked(readTrajectoryJsonl).mockRejectedValue(
+        new TrajectoryFileNotFoundError("/gone.jsonl")
+      );
+
+      const response = await POST(makeRequest({ agentId: agent.id }));
+      expect(response.status).toBe(200);
+      const bundle = await response.json();
+      expect(bundle.scope.trajectoryMissing).toBe(true);
+    });
+
+    it("records the exported chatId and trajectoryMissing in the audit entry", async () => {
+      const owner = await seedUser();
+      mockSession(owner);
+      const agent = await seedPersonalAgent(owner.id);
+
+      vi.mocked(listUserAgentChats).mockResolvedValue({
+        chats: [
+          {
+            sessionId: "s-named",
+            key: `agent:${agent.id}:direct:${owner.id}:chat-new`,
+            origin: "web",
+            writable: true,
+            chatId: "chat-new",
+            lastInteractionAt: 5000,
+          },
+        ],
+        labelByKey: new Map(),
+      });
+      vi.mocked(readTrajectoryJsonl).mockResolvedValue(FIXTURE);
+
+      const response = await POST(makeRequest({ agentId: agent.id, sessionId: "s-named" }));
+      expect(response.status).toBe(200);
+      await flushAfter();
+
+      // Scope to THIS test's actor: prior successful exports in this block
+      // schedule their audit writes via after() without flushing, and those
+      // can land after this test's beforeEach truncate. Each test seeds a fresh
+      // user, so filtering by actorId isolates the row we asserted on.
+      const rows = await db
+        .select()
+        .from(auditLog)
+        .where(and(eq(auditLog.eventType, "diagnostics.exported"), eq(auditLog.actorId, owner.id)))
+        .orderBy(desc(auditLog.timestamp));
+      expect(rows).toHaveLength(1);
+      const detail = rows[0].detail as Record<string, unknown>;
+      expect(detail.chatId).toBe("chat-new");
+      expect(detail.trajectoryMissing).toBe(false);
+    });
+
+    it("exports BOTH a pre-#508 default-only session AND a new per-chat session (migration)", async () => {
+      const owner = await seedUser();
+      mockSession(owner);
+      const agent = await seedPersonalAgent(owner.id);
+
+      const legacyKey = `agent:${agent.id}:direct:${owner.id}`;
+      const namedKey = `agent:${agent.id}:direct:${owner.id}:chat-new`;
+      // Same index carries the OLD default-only chat and the NEW per-chat one.
+      vi.mocked(listUserAgentChats).mockResolvedValue({
+        chats: [
+          {
+            sessionId: "s-legacy",
+            key: legacyKey,
+            origin: "web",
+            writable: true,
+            chatId: null,
+            lastInteractionAt: 1000,
+          },
+          {
+            sessionId: "s-named",
+            key: namedKey,
+            origin: "web",
+            writable: true,
+            chatId: "chat-new",
+            lastInteractionAt: 5000,
+          },
+        ],
+        labelByKey: new Map(),
+      });
+      vi.mocked(readTrajectoryJsonl).mockResolvedValue(FIXTURE);
+
+      const legacyRes = await POST(makeRequest({ agentId: agent.id, sessionId: "s-legacy" }));
+      expect(legacyRes.status).toBe(200);
+      expect((await legacyRes.json()).scope.sessionKeyHash).toBe(sessionKeyHash(legacyKey));
+
+      const namedRes = await POST(makeRequest({ agentId: agent.id, sessionId: "s-named" }));
+      expect(namedRes.status).toBe(200);
+      expect((await namedRes.json()).scope.sessionKeyHash).toBe(sessionKeyHash(namedKey));
+    });
   });
 });

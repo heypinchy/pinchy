@@ -564,6 +564,9 @@ const AssistantActionBar: FC = () => {
   const messageId = useMessage((s) => s.id);
   const agentId = useContext(AgentIdContext) ?? "";
   const agentName = useContext(AgentNameContext) ?? "Unknown";
+  // The active chat (null = default/legacy) so the export dialog preselects the
+  // chat the user is actually looking at, not the default one (#639).
+  const chatId = useContext(ChatIdContext);
   const [reportIssueOpen, setReportIssueOpen] = useState(false);
 
   return (
@@ -619,6 +622,7 @@ const AssistantActionBar: FC = () => {
         agentId={agentId}
         agentName={agentName}
         anchorMessageId={messageId}
+        chatId={chatId}
         onClose={() => setReportIssueOpen(false)}
       />
     </ActionBarPrimitive.Root>

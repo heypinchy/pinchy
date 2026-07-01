@@ -68,4 +68,16 @@ describe("buildBundle", () => {
     const b = buildBundle(baseInput);
     expect(b.agentConfig).toEqual(agentConfig);
   });
+
+  it("defaults trajectoryMissing to false", () => {
+    expect(buildBundle(baseInput).scope.trajectoryMissing).toBe(false);
+  });
+
+  it("carries trajectoryMissing=true through when the trajectory file was absent", () => {
+    const b = buildBundle({
+      ...baseInput,
+      scope: { ...baseInput.scope, trajectoryMissing: true },
+    });
+    expect(b.scope.trajectoryMissing).toBe(true);
+  });
 });

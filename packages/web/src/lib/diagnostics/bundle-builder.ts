@@ -20,6 +20,13 @@ export interface BundleInput {
     anchorTurnIndex: number | null;
     sessionTurnCount: number;
     includedTurnRange: [number, number];
+    /**
+     * `true` when the chat was resolved and authorized but its trajectory file
+     * was absent on disk (#639). The bundle then carries only audit rows and
+     * empty spans — support can tell "trajectory was gone" from "chat was empty".
+     * Omitted → `false`.
+     */
+    trajectoryMissing?: boolean;
   };
   auditEntries: unknown[];
   userDescription?: string;
@@ -38,6 +45,7 @@ export interface Bundle {
     sessionTurnCount: number;
     includedTurnRange: [number, number];
     skippedTurnsAfterAnchor: number;
+    trajectoryMissing: boolean;
   };
   userDescription?: string;
   agentConfig: AgentConfigSnapshot;
@@ -62,6 +70,7 @@ export function buildBundle(input: BundleInput): Bundle {
       sessionTurnCount: input.scope.sessionTurnCount,
       includedTurnRange: input.scope.includedTurnRange,
       skippedTurnsAfterAnchor: skipped,
+      trajectoryMissing: input.scope.trajectoryMissing ?? false,
     },
     ...(input.userDescription ? { userDescription: input.userDescription } : {}),
     agentConfig: input.agentConfig,

@@ -5,6 +5,9 @@ import { DiagnosticsExportDialog } from "@/components/diagnostics-export-dialog"
 
 vi.mock("@/lib/api-client", () => ({
   apiPost: vi.fn(async () => ({ schemaVersion: "pinchy.bugreport.v1" })),
+  // The chat picker (#639) fetches the user's chats on open. Default to an
+  // empty list so the legacy tests below export the default chat (no sessionId).
+  apiGet: vi.fn(async () => ({ chats: [] })),
   ApiError: class ApiError extends Error {
     constructor(
       public readonly status: number,
@@ -31,11 +34,13 @@ vi.mock("sonner", () => ({
 
 describe("DiagnosticsExportDialog", () => {
   beforeEach(async () => {
-    const { apiPost } = await import("@/lib/api-client");
+    const { apiPost, apiGet } = await import("@/lib/api-client");
     const { downloadBundle, buildBundleFilename } = await import("@/lib/diagnostics/download");
     const { toast } = await import("sonner");
     vi.mocked(apiPost).mockClear();
     vi.mocked(apiPost).mockResolvedValue({ schemaVersion: "pinchy.bugreport.v1" });
+    vi.mocked(apiGet).mockReset();
+    vi.mocked(apiGet).mockResolvedValue({ chats: [] });
     vi.mocked(downloadBundle).mockClear();
     vi.mocked(buildBundleFilename).mockClear();
     vi.mocked(buildBundleFilename).mockReturnValue("pinchy-bugreport-smithers-19700101-0000.json");
@@ -148,5 +153,95 @@ describe("DiagnosticsExportDialog", () => {
       "pinchy-bugreport-smithers-19700101-0000.json"
     );
     await waitFor(() => expect(onClose).toHaveBeenCalled());
+  });
+
+  // ── #639: chat picker + context-aware default selection ──────────────────
+
+  const CHATS = [
+    {
+      chatId: null,
+      sessionId: "s-default",
+      origin: "web" as const,
+      writable: true,
+      title: "Default chat",
+      lastInteractionAt: 1000,
+    },
+    {
+      chatId: "chat-x",
+      sessionId: "s-x",
+      origin: "web" as const,
+      writable: true,
+      title: "Quarterly report",
+      lastInteractionAt: 5000,
+    },
+    {
+      chatId: null,
+      sessionId: "s-tg",
+      origin: "telegram" as const,
+      writable: false,
+      title: "Telegram chat",
+      lastInteractionAt: 3000,
+    },
+  ];
+
+  it("renders a chat selector populated from the chats API", async () => {
+    const { apiGet } = await import("@/lib/api-client");
+    vi.mocked(apiGet).mockResolvedValue({ chats: CHATS });
+    render(
+      <DiagnosticsExportDialog open agentId="agt_1" agentName="Smithers" onClose={() => {}} />
+    );
+    expect(await screen.findByRole("combobox", { name: /chat/i })).toBeInTheDocument();
+    expect(apiGet).toHaveBeenCalledWith("/api/agents/agt_1/chats");
+  });
+
+  it("exports the default chat's sessionId when launched from Settings (no chat context)", async () => {
+    const { apiGet, apiPost } = await import("@/lib/api-client");
+    vi.mocked(apiGet).mockResolvedValue({ chats: CHATS });
+    render(
+      <DiagnosticsExportDialog open agentId="agt_1" agentName="Smithers" onClose={() => {}} />
+    );
+    await screen.findByRole("combobox", { name: /chat/i });
+    fireEvent.click(screen.getByRole("button", { name: /generate/i }));
+    await waitFor(() =>
+      expect(apiPost).toHaveBeenCalledWith("/api/diagnostics/export", {
+        agentId: "agt_1",
+        sessionId: "s-default",
+      })
+    );
+  });
+
+  it("preselects and exports the active chat's sessionId from chat context", async () => {
+    const { apiGet, apiPost } = await import("@/lib/api-client");
+    vi.mocked(apiGet).mockResolvedValue({ chats: CHATS });
+    render(
+      <DiagnosticsExportDialog
+        open
+        agentId="agt_1"
+        agentName="Smithers"
+        chatId="chat-x"
+        onClose={() => {}}
+      />
+    );
+    await screen.findByRole("combobox", { name: /chat/i });
+    fireEvent.click(screen.getByRole("button", { name: /generate/i }));
+    await waitFor(() =>
+      expect(apiPost).toHaveBeenCalledWith("/api/diagnostics/export", {
+        agentId: "agt_1",
+        sessionId: "s-x",
+      })
+    );
+  });
+
+  it("falls back to a default export (no sessionId) when the chats list fails to load", async () => {
+    const { apiGet, apiPost } = await import("@/lib/api-client");
+    vi.mocked(apiGet).mockRejectedValue(new Error("chats unreachable"));
+    render(
+      <DiagnosticsExportDialog open agentId="agt_1" agentName="Smithers" onClose={() => {}} />
+    );
+    // No selector renders when the list is empty/unavailable; Generate still works.
+    fireEvent.click(screen.getByRole("button", { name: /generate/i }));
+    await waitFor(() =>
+      expect(apiPost).toHaveBeenCalledWith("/api/diagnostics/export", { agentId: "agt_1" })
+    );
   });
 });
