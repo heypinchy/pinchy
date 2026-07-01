@@ -62,7 +62,12 @@ export async function fetchAuditEntriesForSession(
     })
     .from(auditLog)
     .where(and(...conditions))
-    .orderBy(asc(auditLog.timestamp));
+    // Secondary sort by the serial row id: it's assigned at insert time under
+    // the audit hash-chain advisory lock, so it strictly reflects write order.
+    // This breaks equal-timestamp ties into execution order, which the
+    // diagnostics enrichment's positional matching relies on for legacy rows
+    // that predate the per-call `toolCallId`.
+    .orderBy(asc(auditLog.timestamp), asc(auditLog.id));
 
   return rows;
 }

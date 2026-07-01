@@ -257,6 +257,58 @@ describe("enrichToolCallArgs", () => {
     expect(args[1].arguments).toEqual({ seq: 2, ok: "two" });
   });
 
+  it("does not fall back to positional when id-bearing candidates don't cover the call", () => {
+    // Cross-session safety: the exported call's own audit row is missing, but a
+    // concurrent same-agent chat left a same-tool, in-window row that carries an
+    // id. Counts coincide (1 === 1), so the legacy positional path would inject
+    // the wrong chat's params. Because the candidate carries an id, we take the
+    // id path only — and tc1 has no matching id, so the marker is kept.
+    const span = buildSpan({
+      start: 1000,
+      end: 2000,
+      calls: [{ id: "tc1", name: "odoo_create", arguments: { values: MARKER } }],
+    });
+    const audit = [
+      auditRow({
+        name: "odoo_create",
+        at: 1500,
+        detail: { toolCallId: "other-session-call", params: { values: { fromOtherChat: true } } },
+      }),
+    ];
+
+    const [out] = enrichToolCallArgs([span], audit);
+    const arg = toolArgs(out)[0];
+    expect(arg.argsSource).toBe("trajectory");
+    expect(arg.arguments).toEqual({ values: MARKER });
+  });
+
+  it("enriches id-matched calls and keeps markers for the rest under partial id coverage", () => {
+    const span = buildSpan({
+      start: 1000,
+      end: 2000,
+      calls: [
+        { id: "tc1", name: "odoo_create", arguments: { values: MARKER } },
+        { id: "tc2", name: "odoo_create", arguments: { values: MARKER } },
+      ],
+    });
+    // Only tc1's row is present (tc2's audit write was lost). tc1 matches by id;
+    // tc2 keeps its marker rather than being positionally mis-paired to tc1's row.
+    const audit = [
+      auditRow({
+        name: "odoo_create",
+        at: 1500,
+        detail: { toolCallId: "tc1", params: { values: { real: 1 } } },
+      }),
+    ];
+
+    const [out] = enrichToolCallArgs([span], audit);
+    const args = toolArgs(out);
+    expect(args[0].argsSource).toBe("audit");
+    expect(args[0].arguments).toEqual({ values: { real: 1 } });
+    expect(args[1].argsSource).toBe("trajectory");
+    expect(args[1].arguments).toEqual({ values: MARKER });
+  });
+
   it("keeps markers for spans without timestamps (cannot scope audit rows)", () => {
     const span = buildSpan({
       calls: [{ id: "tc1", name: "odoo_create", arguments: { values: MARKER } }],

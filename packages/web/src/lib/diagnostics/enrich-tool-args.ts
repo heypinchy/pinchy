@@ -144,6 +144,10 @@ function collectCandidates(
     if (list) list.push(entry);
     else byName.set(name, [entry]);
   }
+  // Stable sort by timestamp. Entries arrive already ordered by (timestamp,
+  // row id) from the collector query, and Array.prototype.sort is stable, so
+  // equal-timestamp rows keep their insertion-order (= execution-order)
+  // sequence rather than being reshuffled.
   for (const list of byName.values()) {
     list.sort((a, b) => a.timestamp.getTime() - b.timestamp.getTime());
   }
@@ -163,16 +167,19 @@ function applyAuditParams(call: ToolCallArg, detail: unknown): void {
 
 // For a single tool name:
 //   - Preferred (audit rows written since #640 carry `toolCallId`): match each
-//     truncated call to its row by id. Order-independent and session-safe — ids
-//     are unique per call, so a concurrent chat's row can't be mismatched in.
+//     truncated call to its row strictly by id. This is the ONLY path taken once
+//     any usable candidate carries an id — a marker call whose id isn't present
+//     keeps its marker rather than falling back to positional guessing. That
+//     matters because `fetchAuditEntriesForSession` scopes rows by agent + user
+//     + time only (no chat discriminator), so a positional guess could pull in a
+//     concurrent same-agent chat's same-tool row. Ids are unique per call, so
+//     the id path can never mismatch across sessions.
 //   - Legacy fallback (rows predating the id, e.g. an already-captured bundle):
 //     positional alignment within the span's time window, guarded by a strict
-//     count check. This is a heuristic, not a guarantee: `fetchAuditEntriesForSession`
-//     scopes rows by agent + user + time only (no chat/session discriminator),
-//     so with two concurrent same-agent chats a coincidental count match could
-//     misalign. The window is one narrow turn, so the collision needs a double
-//     coincidence; we accept it for legacy rows rather than fabricate. New rows
-//     take the id path and avoid it entirely.
+//     count check. Candidates are ordered by (timestamp, audit-row id), so nth
+//     call ↔ nth row holds even for equal-timestamp calls. This remains a
+//     heuristic for the narrow concurrent-chat case, but only legacy id-less
+//     rows can reach it; anything captured since #640 takes the id path above.
 function matchToolCalls(callsOfName: ToolCallArg[], candidates: CollectedAuditEntry[]): void {
   const markerCalls = callsOfName.filter((c) => containsDepthLimitMarker(c.arguments));
   if (markerCalls.length === 0) return;
@@ -182,24 +189,22 @@ function matchToolCalls(callsOfName: ToolCallArg[], candidates: CollectedAuditEn
   if (candidatesHaveIds) {
     const byId = new Map<string, CollectedAuditEntry>();
     for (const c of candidates) byId.set(detailToolCallId(c)!, c);
-    const everyMarkerHasId = markerCalls.every(
-      (call) => typeof call.id === "string" && byId.has(call.id)
-    );
-    if (everyMarkerHasId) {
-      for (const call of markerCalls) {
-        applyAuditParams(call, byId.get(call.id as string)!.detail);
-      }
-      return;
+    for (const call of markerCalls) {
+      const id = typeof call.id === "string" ? call.id : undefined;
+      const match = id !== undefined ? byId.get(id) : undefined;
+      // No id match ⇒ this call's own row is absent. Keep the marker; do NOT
+      // guess positionally, which could inject a concurrent chat's params.
+      if (match) applyAuditParams(call, match.detail);
     }
-    // Ids present but not a full cover — fall through to positional.
+    return;
   }
 
   // Positional: the audit log records every call, so the number of usable
   // candidates must equal the total number of same-tool calls in the span for
   // the alignment to be unambiguous. Otherwise we keep the markers. Candidates
-  // are timestamp-ordered and calls execute sequentially, so nth call ↔ nth
-  // row; consume them as a queue so each call maps to its positional peer
-  // without index arithmetic.
+  // are (timestamp, row-id) ordered — insertion order under the audit chain lock
+  // is execution order — so nth call ↔ nth row; consume them as a queue so each
+  // call maps to its positional peer without index arithmetic.
   if (callsOfName.length !== candidates.length) return;
   const queue = [...candidates];
   for (const call of callsOfName) {
