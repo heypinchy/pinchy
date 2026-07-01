@@ -107,7 +107,7 @@ describe("/api/agents/[agentId]/active-error", () => {
       });
       const res = await GET(getRequest(), ctx as never);
       const body = await res.json();
-      expect(body.error.hint).toBe("Go to Settings > Providers to check your API configuration.");
+      expect(body.error.hint).toBe("Go to Settings > AI Provider to check your API configuration.");
     });
 
     it("computes the member hint from the caller's role", async () => {

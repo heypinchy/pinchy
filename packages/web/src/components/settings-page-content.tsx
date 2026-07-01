@@ -132,7 +132,9 @@ export function SettingsPageContent({
               <TabsTrigger value="telegram">Telegram</TabsTrigger>
               <TabsTrigger value="support">Support</TabsTrigger>
               {isAdmin && (
-                <TabsTrigger value="provider">Provider {providerDirty && <DirtyDot />}</TabsTrigger>
+                <TabsTrigger value="provider">
+                  AI Provider {providerDirty && <DirtyDot />}
+                </TabsTrigger>
               )}
               {isAdmin && <TabsTrigger value="users">Users</TabsTrigger>}
               {isAdmin && <TabsTrigger value="groups">Groups</TabsTrigger>}

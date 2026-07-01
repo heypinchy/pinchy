@@ -6,7 +6,8 @@ import {
   matchesRetirement,
 } from "@/server/error-patterns";
 
-export const PROVIDER_SETTINGS_HINT = "Go to Settings > Providers to check your API configuration.";
+export const PROVIDER_SETTINGS_HINT =
+  "Go to Settings > AI Provider to check your API configuration.";
 
 // A retired model can't be retried as-is — an admin needs to pick a different
 // one for this agent. Deliberately NOT an automatic swap: an admin pinned this

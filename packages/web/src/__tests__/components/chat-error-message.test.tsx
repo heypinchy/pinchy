@@ -150,7 +150,7 @@ describe("ChatErrorMessage", () => {
         error={{
           agentName: "Smithers",
           providerError: "Your credit balance is too low.",
-          hint: "Go to Settings > Providers to check your API configuration.",
+          hint: "Go to Settings > AI Provider to check your API configuration.",
         }}
         agentId="agent-1"
       />
@@ -159,9 +159,9 @@ describe("ChatErrorMessage", () => {
     expect(screen.getByText("Smithers couldn't respond")).toBeInTheDocument();
     expect(screen.getByText("Your credit balance is too low.")).toBeInTheDocument();
     expect(screen.getByTestId("error-hint")).toHaveTextContent(
-      "Go to Settings > Providers to check your API configuration."
+      "Go to Settings > AI Provider to check your API configuration."
     );
-    expect(screen.getByRole("link", { name: "Settings > Providers" })).toHaveAttribute(
+    expect(screen.getByRole("link", { name: "Settings > AI Provider" })).toHaveAttribute(
       "href",
       "/settings?tab=provider"
     );
