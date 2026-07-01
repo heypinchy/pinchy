@@ -6,7 +6,7 @@ import { join } from "path";
 // non-empty `description`. The drift-guard test in
 // __tests__/lib/skills.test.ts enforces the const list ↔ on-disk truth
 // invariant. See master issue #543 for the broader rationale.
-export const KNOWN_SKILLS = ["web-search"] as const;
+export const KNOWN_SKILLS = ["web-search", "email"] as const;
 
 export type SkillId = (typeof KNOWN_SKILLS)[number];
 
