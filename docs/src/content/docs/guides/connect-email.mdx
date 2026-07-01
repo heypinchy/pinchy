@@ -1,11 +1,27 @@
 ---
 title: Connect Email
-description: Connect your email account to Pinchy to let agents read, search, and send email on your behalf.
+description: Connect email accounts to Pinchy to let agents read, search, and send email on your behalf.
 ---
 
 Pinchy supports two email providers. Choose your provider to get started:
 
-- **[Google (Gmail)](/guides/connect-email-google/)** — Connect a Google Workspace or personal Gmail account using OAuth.
-- **[Microsoft (Outlook / Microsoft 365)](/guides/connect-email-microsoft/)** — Connect a Microsoft 365 work or school account using OAuth.
+- **[Google (Gmail)](/guides/connect-email-google/)** — Connect Google Workspace or personal Gmail accounts using OAuth.
+- **[Microsoft (Outlook / Microsoft 365)](/guides/connect-email-microsoft/)** — Connect Microsoft 365 work or school accounts using OAuth.
 
-Both providers give Pinchy permission to read, search, and send email on behalf of the connected account.
+Both providers give Pinchy permission to read, search, and send email on behalf of the connected mailboxes.
+
+## The app and the mailboxes are two different things
+
+Before you start, it helps to know that email setup has two layers with separate lifecycles:
+
+- **The OAuth app** — the Client ID, Client Secret (and, for Microsoft, an optional Tenant ID) you register with Google or Microsoft. You set this up **once per provider**. It's the credential that lets Pinchy talk to that provider at all.
+- **The mailboxes** — the individual Gmail or Microsoft 365 accounts you connect. **One app can carry many mailboxes.** After the app is set up once, connecting the second, third, or tenth mailbox skips the credentials step entirely.
+
+You manage the app and the mailboxes in different places:
+
+- The app lives in the **Connected apps** section of **Settings → Integrations**. From there you can **Edit** its credentials or **Reset** it at any time.
+- Each connected mailbox appears in the **Integrations** list below, where you can rename, reconnect, or remove it.
+
+The app keeps existing even after you remove its last mailbox — it has an independent lifecycle. To clear the credentials, reset the app explicitly.
+
+For the full picture of how connections, apps, and per-agent permissions fit together, see [Integrations](/concepts/integrations/).

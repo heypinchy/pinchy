@@ -9,6 +9,16 @@ This guide walks you through connecting a Gmail account to Pinchy so your agents
 
 The setup has two parts: creating an OAuth app in Google Cloud (one-time), then connecting the account in Pinchy.
 
+<Aside type="note">
+  **One app, many mailboxes.** You register the Google OAuth app (Client ID and
+  Secret) **once**, then connect as many Gmail mailboxes as you like through it.
+  The app and the mailboxes have separate lifecycles — you manage the app in the
+  **Connected apps** section and each mailbox in the **Integrations** list below
+  it. See [Connect
+  Email](/guides/connect-email/#the-app-and-the-mailboxes-are-two-different-things)
+  for the overview.
+</Aside>
+
 ## Prerequisites
 
 - Pinchy is running with HTTPS enabled (see [Lock Pinchy to a Domain](/guides/domain-lock/))
@@ -138,7 +148,42 @@ A dialog appears with your **Client ID** and **Client Secret**. **Copy both valu
 
 </Steps>
 
-For subsequent Google connections (a second Gmail account), the OAuth credentials step is skipped — you go straight to "Connect Google Account".
+For subsequent Google connections (a second Gmail mailbox), the OAuth credentials step is skipped — you go straight to "Connect Google Account". The app you set up in Part 1 is reused for every Gmail mailbox on this Pinchy instance.
+
+---
+
+## Managing the app later
+
+The Google OAuth app you set up in Part 1 lives in the **Connected apps** section at the top of **Settings → Integrations**. You can update or reset it at any time — the app and the connected mailboxes are managed separately.
+
+### Edit the app credentials
+
+Click **Edit** on the Google row to update the Client ID or Client Secret. The Client ID stays pre-filled; the Client Secret field is empty and left unchanged unless you type a new one. Changes apply to every Gmail mailbox connected through this app.
+
+### Rotate the client secret
+
+Google client secrets don't expire on a fixed schedule, but you may still want to rotate one — for example after a staff change or if you suspect it leaked. Rotating **only the client secret keeps every mailbox connected**: the existing refresh tokens stay valid, so agents keep working without interruption.
+
+Changing the **Client ID**, on the other hand, points Pinchy at what is effectively a different app. The old refresh tokens no longer apply, so **every mailbox must be reconnected** afterward.
+
+<Aside type="tip">
+  Keep the app on **Published** or **Internal** status. In Google's **Testing**
+  mode, refresh tokens expire after 7 days and every mailbox disconnects weekly.
+  Unused refresh tokens also expire after 6 months of inactivity even for a
+  published app — a mailbox no agent has touched in half a year needs
+  reconnecting.
+</Aside>
+
+### Reset the app
+
+Click **Reset** on the Google row to clear the stored credentials entirely. This is the deliberate way to remove an app — it stays configured until you reset it, even after you've removed its last mailbox.
+
+<Aside type="caution">
+  Resetting the app **disconnects every Gmail mailbox** connected through it.
+  The confirmation dialog tells you exactly how many mailboxes will be affected
+  before you commit. Each one must be reconnected afterward. This can't be
+  undone.
+</Aside>
 
 ---
 
@@ -211,7 +256,9 @@ When email permissions are granted, the agent gets access to these tools:
 
 Google access tokens expire after about one hour. Pinchy automatically refreshes expired tokens in the background — no action required.
 
-If a refresh fails (e.g. the Google account revoked access, or the refresh token expired after 7 days in Testing mode), remove the connection in **Settings → Integrations** and reconnect the Google account.
+If a refresh fails permanently — the Google account revoked access, the refresh token expired after 7 days in Testing mode, or an unused token lapsed after 6 months — the mailbox's card in **Settings → Integrations** switches to a red **"Authentication failed"** state.
+
+To recover, open the mailbox's `…` menu and click **Reconnect**. This restarts the Google sign-in flow for that mailbox and keeps its existing agent permissions attached — you don't have to re-grant anything.
 
 ---
 

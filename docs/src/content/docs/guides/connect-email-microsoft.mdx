@@ -9,6 +9,16 @@ This guide walks you through connecting a Microsoft 365 account to Pinchy so you
 
 The setup has two parts: registering an app in Azure (one-time), then connecting the account in Pinchy.
 
+<Aside type="note">
+  **One app, many mailboxes.** You register the Azure app (Client ID, Secret,
+  and optional Tenant ID) **once**, then connect as many Microsoft 365 mailboxes
+  as you like through it. The app and the mailboxes have separate lifecycles —
+  you manage the app in the **Connected apps** section and each mailbox in the
+  **Integrations** list below it. See [Connect
+  Email](/guides/connect-email/#the-app-and-the-mailboxes-are-two-different-things)
+  for the overview.
+</Aside>
+
 ## Prerequisites
 
 - Pinchy is running with HTTPS enabled (see [Lock Pinchy to a Domain](/guides/domain-lock/))
@@ -116,7 +126,46 @@ You'll need both in the next part.
 
 </Steps>
 
-For subsequent Microsoft connections (a second account), the credentials step is skipped — you go straight to "Connect Microsoft Account".
+For subsequent Microsoft connections (a second mailbox), the credentials step is skipped — you go straight to "Connect Microsoft Account". The app you registered in Part 1 is reused for every Microsoft 365 mailbox on this Pinchy instance.
+
+---
+
+## Managing the app later
+
+The Azure app you registered in Part 1 lives in the **Connected apps** section at the top of **Settings → Integrations**. You can update or reset it at any time — the app and the connected mailboxes are managed separately.
+
+<Aside type="note">
+  Earlier versions of Pinchy had no way to change the Microsoft app details
+  after you first entered them. That's no longer the case — **Edit** and
+  **Reset** in the **Connected apps** section let you update or clear the
+  credentials whenever you need to.
+</Aside>
+
+### Edit the app credentials
+
+Click **Edit** on the Microsoft row to update the Client ID, Client Secret, or Tenant ID. The Client ID and Tenant ID stay pre-filled; the Client Secret field is empty and left unchanged unless you type a new one. Changes apply to every Microsoft 365 mailbox connected through this app.
+
+### Rotate the client secret before it expires
+
+Azure client secrets have a **hard maximum lifetime of 24 months** — Microsoft won't let you create a longer-lived one. When a secret expires, Pinchy can no longer refresh tokens and every mailbox stops working. Plan the rotation ahead of the expiry date:
+
+1. In Azure, create a new client secret under **Certificates & secrets** (see [Part 1, step 1.3](#13-create-a-client-secret)).
+2. In Pinchy, click **Edit** on the Microsoft row and paste the new secret's **Value**.
+
+Rotating **only the client secret keeps every mailbox connected**: the existing refresh tokens stay valid, so agents keep working without interruption.
+
+Changing the **Client ID** points Pinchy at a different app registration. The old refresh tokens no longer apply, so **every mailbox must be reconnected** afterward.
+
+### Reset the app
+
+Click **Reset** on the Microsoft row to clear the stored credentials entirely. This is the deliberate way to remove an app — it stays configured until you reset it, even after you've removed its last mailbox.
+
+<Aside type="caution">
+  Resetting the app **disconnects every Microsoft 365 mailbox** connected
+  through it. The confirmation dialog tells you exactly how many mailboxes will
+  be affected before you commit. Each one must be reconnected afterward. This
+  can't be undone.
+</Aside>
 
 ---
 
@@ -177,7 +226,9 @@ Microsoft access tokens expire after about one hour. Pinchy automatically refres
 
 Microsoft rotates refresh tokens on every use. Pinchy handles this automatically. If you see repeated sign-in prompts, verify that your app registration has `offline_access` granted and that admin consent was given.
 
-If a refresh fails (e.g. the account revoked access or the client secret expired), remove the connection in **Settings → Integrations** and reconnect the Microsoft account.
+If a refresh fails permanently — the account revoked access, or the client secret expired — the mailbox's card in **Settings → Integrations** switches to a red **"Authentication failed"** state. Open the mailbox's `…` menu and click **Reconnect** to restart the Microsoft sign-in flow. The mailbox keeps its existing agent permissions.
+
+If the failure was caused by an **expired client secret**, fix the app first: rotate the secret in the **Connected apps** section (see [Rotate the client secret before it expires](#rotate-the-client-secret-before-it-expires)), then reconnect the affected mailboxes.
 
 ---
 
@@ -197,7 +248,7 @@ The Client ID is incorrect or belongs to a different tenant. Double-check that y
 
 **Client secret expired**
 
-Azure client secrets have a finite lifetime. When a secret expires, Pinchy can no longer refresh tokens. Create a new client secret in Azure, update the credentials in **Settings → Integrations**, and reconnect the account.
+Azure client secrets have a finite lifetime (24 months maximum). When a secret expires, Pinchy can no longer refresh tokens. Create a new client secret in Azure, then click **Edit** on the Microsoft row in the **Connected apps** section to paste the new **Value**. Because you're only rotating the secret, connected mailboxes stay attached and resume working. See [Rotate the client secret before it expires](#rotate-the-client-secret-before-it-expires).
 
 ---
 

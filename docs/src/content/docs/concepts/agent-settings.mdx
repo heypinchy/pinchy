@@ -154,6 +154,8 @@ The generic starting points are:
 
 Domain-specific templates (e.g., Sales Analyst, HR Analyst, Contract Analyzer) appear in the template picker when the corresponding integration is connected or their required capabilities are available. See [Connect Odoo](/guides/connect-odoo/#agent-templates) for the Odoo template list.
 
+Every agent you create is a **shared agent** — the only personal agent is the Smithers that Pinchy auto-creates for each user. This is why the **Permissions** and **Access** tabs, and therefore integrations like email or Odoo, are always available on agents you create but never on a personal Smithers. See [Integrations](/concepts/integrations/#integrations-are-admin-managed-and-attach-to-shared-agents) for what this means for connecting a private mailbox (short version: private per-user mailboxes aren't supported).
+
 After creation, all settings can be changed at any time through the settings page described above. The runtime restarts automatically after creation to activate the new agent's config.
 
 ## Save behavior
