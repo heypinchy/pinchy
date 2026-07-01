@@ -17,11 +17,12 @@ Before you start, it helps to know that email setup has two layers with separate
 - **The OAuth app** — the Client ID, Client Secret (and, for Microsoft, an optional Tenant ID) you register with Google or Microsoft. You set this up **once per provider**. It's the credential that lets Pinchy talk to that provider at all.
 - **The mailboxes** — the individual Gmail or Microsoft 365 accounts you connect. **One app can carry many mailboxes.** After the app is set up once, connecting the second, third, or tenth mailbox skips the credentials step entirely.
 
-You manage the app and the mailboxes in different places:
+You set up and manage the app and the mailboxes in different places:
 
-- The app lives in the **Connected apps** section of **Settings → Integrations**. From there you can **Edit** its credentials or **Reset** it at any time.
-- Each connected mailbox appears in the **Integrations** list below, where you can rename, reconnect, or remove it.
+- You set up the app through **Add Integration** in **Settings → Integrations**: pick your provider and enter its credentials once. The wizard is the only place you create a provider app.
+- Once an app is configured, it appears in the **Connected apps** section below the Integrations list, where you can **Edit** its credentials or **Reset** it. This section is management-only — it stays hidden until you've set up at least one app, and it never asks you to set one up.
+- Each connected mailbox appears in the **Integrations** list, where you can rename, reconnect, or remove it.
 
-The app keeps existing even after you remove its last mailbox — it has an independent lifecycle. To clear the credentials, reset the app explicitly.
+The app keeps existing even after you remove its last mailbox — it has an independent lifecycle, so it stays visible in **Connected apps** with zero mailboxes attached. To clear the credentials, reset the app explicitly.
 
 For the full picture of how connections, apps, and per-agent permissions fit together, see [Integrations](/concepts/integrations/).

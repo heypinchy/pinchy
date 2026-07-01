@@ -52,7 +52,7 @@ Pinchy connects to email over OAuth 2.0 for both Google (Gmail) and Microsoft (O
 
 Email setup has two layers with separate lifecycles:
 
-- **The OAuth app** — the Client ID, Client Secret, and (for Microsoft) optional Tenant ID registered with the provider. Set up **once per provider**, it's what lets Pinchy talk to Google or Microsoft at all. It lives in the **Connected apps** section of **Settings → Integrations**, where an admin can **Edit** or **Reset** it.
+- **The OAuth app** — the Client ID, Client Secret, and (for Microsoft) optional Tenant ID registered with the provider. Set up **once per provider** through the **Add Integration** wizard, it's what lets Pinchy talk to Google or Microsoft at all. Once configured, it appears in the **Connected apps** section of **Settings → Integrations**, where an admin can **Edit** or **Reset** it. That section is management-only: it stays hidden until at least one app is configured and never offers setup itself.
 - **The mailboxes** — the individual accounts connected through that app. **One app carries many mailboxes.** After the app exists, connecting another mailbox skips the credentials step.
 
 Rotating just the app's client secret keeps every mailbox connected. Changing the client ID is effectively a new app, so every mailbox has to be reconnected. Resetting an app disconnects all of its mailboxes — the UI warns with the exact count first. The app persists even after its last mailbox is removed; it's cleared only by an explicit reset.
