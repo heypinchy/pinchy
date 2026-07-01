@@ -80,11 +80,21 @@ export async function resetStack(): Promise<void> {
   // secrets.json bootstrap pkill) keeps the freshly-created Smithers agent out
   // of OC's runtime `agents.list` for >90 s → the wizard's first chat times out
   // with `unknown agent id` (the google.spec.ts flake; CI run 26840320245).
+  //
+  // We also delete OpenClaw's config-recovery backups (`openclaw.json.last-good`
+  // and the rotating `openclaw.json.bak*` ring). OpenClaw 2026.6.x added
+  // startup self-healing: when the on-disk config is a size-drop / missing-meta
+  // vs the last-known-good, `recoverConfigFromLastKnownGood` restores
+  // `openclaw.json.last-good` over openclaw.json BEFORE Pinchy's regenerate can
+  // land. In a reset that stale last-good is the PREVIOUS test's ~20 KB config,
+  // which still references provider secrets we just wiped — so OpenClaw would
+  // crash-loop on "secrets.providers.pinchy.path is not readable" forever
+  // (2026.6.11 upgrade; recovery reads `${configPath}.last-good` and no-ops if
+  // the file is absent, so deleting it makes this a true fresh install).
+  // `sh -c` gives us glob expansion for the `.bak*` ring.
   execSync(
-    `docker compose ${COMPOSE_ARGS} exec -T openclaw rm -f ` +
-      `/root/.openclaw/openclaw.json ` +
-      `/openclaw-secrets/secrets.json ` +
-      `/openclaw-secrets/.bootstrap-applied`,
+    `docker compose ${COMPOSE_ARGS} exec -T openclaw sh -c ` +
+      `'rm -f /root/.openclaw/openclaw.json /root/.openclaw/openclaw.json.last-good /root/.openclaw/openclaw.json.bak* /openclaw-secrets/secrets.json /openclaw-secrets/.bootstrap-applied'`,
     { stdio: "pipe", cwd: REPO_ROOT }
   );
 
