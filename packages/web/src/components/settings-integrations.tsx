@@ -113,6 +113,24 @@ export function SettingsIntegrations({ oauthError }: { oauthError?: string } = {
     fetchConnections();
   }, [fetchConnections]);
 
+  // Live-update the list while a connection is still being set up. A pending
+  // connection (e.g. an OAuth flow finishing in another tab) flips to
+  // active/auth_failed server-side, but the mount-only fetch above would leave
+  // the UI stuck on "Setup in progress" until a manual reload. Poll every 10s
+  // for as long as at least one connection is pending, then stop.
+  const hasPending = connections.some((conn) => conn.status === "pending");
+  useEffect(() => {
+    if (!hasPending) return;
+    let cancelled = false;
+    const id = setInterval(() => {
+      if (!cancelled) void fetchConnections();
+    }, 10_000);
+    return () => {
+      cancelled = true;
+      clearInterval(id);
+    };
+  }, [hasPending, fetchConnections]);
+
   async function handleRename() {
     if (!renameTarget) return;
     await renameConnection(renameTarget.id, renameName);

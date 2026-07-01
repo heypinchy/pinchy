@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import "@testing-library/jest-dom";
@@ -250,6 +250,131 @@ describe("SettingsIntegrations — pending OAuth connections", () => {
       expect(screen.getByText("Setup in progress")).toBeInTheDocument();
     });
     expect(screen.queryByText("Connected")).not.toBeInTheDocument();
+    fetchSpy.mockRestore();
+  });
+});
+
+describe("SettingsIntegrations — live-update polling for pending connections", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  afterEach(() => {
+    // Always hand real timers back to any test that runs after us, otherwise a
+    // leaked fake-timer clock destabilises unrelated suites.
+    vi.useRealTimers();
+  });
+
+  it("re-fetches while a connection is pending and updates the UI when it resolves", async () => {
+    vi.useFakeTimers();
+
+    const pendingConnection = {
+      id: "ms-pending-poll",
+      type: "microsoft",
+      name: "user@outlook.com",
+      description: "",
+      credentials: "{}",
+      status: "pending",
+      lastError: null,
+      lastErrorAt: null,
+      data: null,
+      createdAt: "2026-06-30T10:00:00Z",
+      updatedAt: "2026-06-30T10:00:00Z",
+      cannotDecrypt: false,
+    };
+    const activeConnection = { ...pendingConnection, status: "active" };
+
+    // First connection-list fetch returns pending; every subsequent one returns
+    // active — simulating the server-side transition after the OAuth flow finishes.
+    let connectionsFetches = 0;
+    const fetchSpy = vi.spyOn(global, "fetch").mockImplementation((input) => {
+      const url = typeof input === "string" ? input : (input as Request).url;
+      if (url.startsWith("/api/settings/oauth")) {
+        const state = { configured: false, clientId: "", connectionCount: 0 };
+        return Promise.resolve({
+          ok: true,
+          text: async () => JSON.stringify(state),
+          json: async () => state,
+        } as unknown as Response);
+      }
+      // /api/integrations
+      connectionsFetches += 1;
+      const body = connectionsFetches === 1 ? [pendingConnection] : [activeConnection];
+      return Promise.resolve({
+        ok: true,
+        text: async () => JSON.stringify(body),
+        json: async () => body,
+      } as unknown as Response);
+    });
+
+    render(<SettingsIntegrations />);
+
+    // Initial render shows the pending state.
+    await vi.waitFor(() => {
+      expect(screen.getByText("Setup in progress")).toBeInTheDocument();
+    });
+    expect(screen.queryByText("Connected")).not.toBeInTheDocument();
+
+    // Advance past the poll interval — the component should re-fetch and pick up
+    // the now-active connection without a manual reload.
+    await vi.advanceTimersByTimeAsync(10_000);
+
+    await vi.waitFor(() => {
+      expect(screen.queryByText("Setup in progress")).not.toBeInTheDocument();
+    });
+    expect(screen.getByText("Connected")).toBeInTheDocument();
+
+    fetchSpy.mockRestore();
+  });
+
+  it("does not keep polling once no connection is pending", async () => {
+    vi.useFakeTimers();
+
+    const activeConnection = {
+      id: "ms-active-poll",
+      type: "microsoft",
+      name: "user@outlook.com",
+      description: "",
+      credentials: "{}",
+      status: "active",
+      lastError: null,
+      lastErrorAt: null,
+      data: null,
+      createdAt: "2026-06-30T10:00:00Z",
+      updatedAt: "2026-06-30T10:00:00Z",
+      cannotDecrypt: false,
+    };
+
+    let connectionsFetches = 0;
+    const fetchSpy = vi.spyOn(global, "fetch").mockImplementation((input) => {
+      const url = typeof input === "string" ? input : (input as Request).url;
+      if (url.startsWith("/api/settings/oauth")) {
+        const state = { configured: false, clientId: "", connectionCount: 0 };
+        return Promise.resolve({
+          ok: true,
+          text: async () => JSON.stringify(state),
+          json: async () => state,
+        } as unknown as Response);
+      }
+      connectionsFetches += 1;
+      return Promise.resolve({
+        ok: true,
+        text: async () => JSON.stringify([activeConnection]),
+        json: async () => [activeConnection],
+      } as unknown as Response);
+    });
+
+    render(<SettingsIntegrations />);
+
+    await vi.waitFor(() => {
+      expect(screen.getByText("Connected")).toBeInTheDocument();
+    });
+
+    const fetchesAfterMount = connectionsFetches;
+    await vi.advanceTimersByTimeAsync(30_000);
+    // No pending connection => no additional connection-list fetches beyond mount.
+    expect(connectionsFetches).toBe(fetchesAfterMount);
+
     fetchSpy.mockRestore();
   });
 });
