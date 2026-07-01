@@ -116,3 +116,50 @@ describe("TemplateSelector disabled state", () => {
     expect(screen.queryByRole("tooltip")).toBeNull();
   });
 });
+
+describe("TemplateSelector unavailable trigger wording", () => {
+  it("shows email-specific wording for an unavailable email template, not Odoo", () => {
+    const onSelect = vi.fn();
+
+    render(
+      <TemplateSelector
+        templates={[
+          knowledgeBaseTemplate({
+            id: "email-assistant",
+            name: "Email Assistant",
+            requiresDirectories: false,
+            requiresEmailConnection: true,
+            available: false,
+            unavailableReason: "no-connection",
+          }),
+        ]}
+        onSelect={onSelect}
+      />
+    );
+
+    const trigger = screen.getByText(/templates available with an email connection/i);
+    expect(trigger.closest("button")).not.toHaveTextContent("Odoo");
+  });
+
+  it("still shows Odoo-specific wording for an unavailable Odoo template (regression guard)", () => {
+    const onSelect = vi.fn();
+
+    render(
+      <TemplateSelector
+        templates={[
+          knowledgeBaseTemplate({
+            id: "odoo-sales-analyst",
+            name: "Sales Analyst",
+            requiresDirectories: false,
+            requiresOdooConnection: true,
+            available: false,
+            unavailableReason: "no-connection",
+          }),
+        ]}
+        onSelect={onSelect}
+      />
+    );
+
+    expect(screen.getByText(/templates available with Odoo/i)).toBeInTheDocument();
+  });
+});

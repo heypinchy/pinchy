@@ -74,9 +74,19 @@ function TemplateCard({
 function UnavailableTriggerText({ templates }: { templates: TemplateItem[] }) {
   const hasNoConnection = templates.some((t) => t.unavailableReason === "no-connection");
   if (hasNoConnection) {
+    let phrase: string;
+    if (templates.some((t) => t.requiresEmailConnection)) {
+      phrase = "templates available with an email connection";
+    } else if (templates.some((t) => t.requiresOdooConnection)) {
+      phrase = "templates available with Odoo";
+    } else if (templates.some((t) => t.requiresWeb)) {
+      phrase = "templates available with web access";
+    } else {
+      phrase = "templates available";
+    }
     return (
       <>
-        {templates.length} templates available with Odoo ·{" "}
+        {templates.length} {phrase} ·{" "}
         <Link href="/settings?tab=integrations" className="underline hover:text-foreground">
           Set up connection →
         </Link>
