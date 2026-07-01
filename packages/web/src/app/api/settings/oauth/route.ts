@@ -9,6 +9,9 @@ import {
 import { getOAuthProvider } from "@/lib/integrations/oauth-providers";
 import { appendAuditLog } from "@/lib/audit";
 import { parseRequestBody } from "@/lib/api-validation";
+import { db } from "@/db";
+import { integrationConnections } from "@/db/schema";
+import { count, eq } from "drizzle-orm";
 
 const SUPPORTED_PROVIDERS = ["google", "microsoft"] as const;
 type SupportedProvider = (typeof SUPPORTED_PROVIDERS)[number];
@@ -35,6 +38,21 @@ const saveOAuthSchema = z.discriminatedUnion("provider", [
   saveMicrosoftOAuthSchema,
 ]);
 
+/**
+ * Count the mailbox connections that depend on a provider's OAuth app. Used to
+ * warn the admin how many connections will need to reconnect before they edit
+ * or reset the app credentials. `connectionType` equals the id but is read from
+ * the descriptor so the type value stays a single source of truth.
+ */
+async function countProviderConnections(provider: SupportedProvider): Promise<number> {
+  const connectionType = getOAuthProvider(provider)!.connectionType;
+  const rows = await db
+    .select({ value: count() })
+    .from(integrationConnections)
+    .where(eq(integrationConnections.type, connectionType));
+  return rows[0]?.value ?? 0;
+}
+
 export async function GET(request: NextRequest) {
   const sessionOrError = await requireAdmin();
   if (sessionOrError instanceof NextResponse) return sessionOrError;
@@ -44,28 +62,32 @@ export async function GET(request: NextRequest) {
     return NextResponse.json({ error: "Invalid or missing provider" }, { status: 400 });
   }
 
+  const connectionCount = await countProviderConnections(provider);
+
   // Tenant-scoped providers (Microsoft) also surface the stored tenantId so
   // the edit dialog can prefill it. The client secret is never returned.
   if (provider === "microsoft") {
     const settings = await getOAuthSettings("microsoft");
     if (!settings) {
-      return NextResponse.json({ configured: false, clientId: "" });
+      return NextResponse.json({ configured: false, clientId: "", connectionCount });
     }
     return NextResponse.json({
       configured: true,
       clientId: settings.clientId,
       tenantId: settings.tenantId ?? "",
+      connectionCount,
     });
   }
 
   const settings = await getOAuthSettings(provider);
   if (!settings) {
-    return NextResponse.json({ configured: false, clientId: "" });
+    return NextResponse.json({ configured: false, clientId: "", connectionCount });
   }
 
   return NextResponse.json({
     configured: true,
     clientId: settings.clientId,
+    connectionCount,
   });
 }
 

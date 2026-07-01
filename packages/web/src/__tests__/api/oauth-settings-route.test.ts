@@ -31,6 +31,18 @@ vi.mock("@/lib/audit", () => ({
   appendAuditLog: vi.fn().mockResolvedValue(undefined),
 }));
 
+// The GET route counts integrationConnections of the provider's type for the
+// blast-radius warning. Mock the select().from().where() chain to resolve to a
+// single `[{ value: N }]` count row, mirroring drizzle's `count()` result.
+const { mockCountWhere } = vi.hoisted(() => ({ mockCountWhere: vi.fn() }));
+vi.mock("@/db", () => ({
+  db: {
+    select: vi.fn().mockReturnValue({
+      from: vi.fn().mockReturnValue({ where: mockCountWhere }),
+    }),
+  },
+}));
+
 import { auth } from "@/lib/auth";
 import {
   getOAuthSettings,
@@ -53,6 +65,7 @@ describe("GET /api/settings/oauth", () => {
 
   beforeEach(async () => {
     vi.clearAllMocks();
+    mockCountWhere.mockResolvedValue([{ value: 0 }]);
     const mod = await import("@/app/api/settings/oauth/route");
     GET = mod.GET;
   });
@@ -98,7 +111,7 @@ describe("GET /api/settings/oauth", () => {
     expect(response.status).toBe(200);
 
     const body = await response.json();
-    expect(body).toEqual({ configured: false, clientId: "" });
+    expect(body).toEqual({ configured: false, clientId: "", connectionCount: 0 });
   });
 
   it("returns configured: true with clientId when settings exist", async () => {
@@ -116,9 +129,39 @@ describe("GET /api/settings/oauth", () => {
     expect(body).toEqual({
       configured: true,
       clientId: "my-client-id.apps.googleusercontent.com",
+      connectionCount: 0,
     });
     // Secret should NOT be returned
     expect(body.clientSecret).toBeUndefined();
+  });
+
+  it("returns the connection count for the provider's type", async () => {
+    vi.mocked(auth.api.getSession).mockResolvedValueOnce(adminSession);
+    vi.mocked(getOAuthSettings).mockResolvedValueOnce({
+      clientId: "my-client-id.apps.googleusercontent.com",
+      clientSecret: "GOCSPX-secret123",
+    });
+    mockCountWhere.mockResolvedValueOnce([{ value: 3 }]);
+
+    const req = new NextRequest("http://localhost/api/settings/oauth?provider=google");
+    const response = await GET(req);
+    expect(response.status).toBe(200);
+
+    const body = await response.json();
+    expect(body.connectionCount).toBe(3);
+  });
+
+  it("returns connectionCount 0 when no connections exist and not configured", async () => {
+    vi.mocked(auth.api.getSession).mockResolvedValueOnce(adminSession);
+    vi.mocked(getOAuthSettings).mockResolvedValueOnce(null);
+    mockCountWhere.mockResolvedValueOnce([{ value: 0 }]);
+
+    const req = new NextRequest("http://localhost/api/settings/oauth?provider=google");
+    const response = await GET(req);
+    const body = await response.json();
+
+    expect(body.configured).toBe(false);
+    expect(body.connectionCount).toBe(0);
   });
 });
 
@@ -127,6 +170,7 @@ describe("GET /api/settings/oauth — microsoft provider", () => {
 
   beforeEach(async () => {
     vi.clearAllMocks();
+    mockCountWhere.mockResolvedValue([{ value: 0 }]);
     const mod = await import("@/app/api/settings/oauth/route");
     GET = mod.GET;
   });
@@ -188,7 +232,7 @@ describe("GET /api/settings/oauth — microsoft provider", () => {
     expect(response.status).toBe(200);
 
     const body = await response.json();
-    expect(body).toEqual({ configured: false, clientId: "" });
+    expect(body).toEqual({ configured: false, clientId: "", connectionCount: 0 });
   });
 });
 
