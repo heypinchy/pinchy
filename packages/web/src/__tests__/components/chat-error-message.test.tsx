@@ -106,6 +106,43 @@ describe("ChatErrorMessage — transient (rate limit / overloaded) branch", () =
   });
 });
 
+describe("ChatErrorMessage — dismiss on the generic provider-error variant", () => {
+  // The durable banner now shows for non-transient retryable classes too
+  // (model_unavailable, silent_stream_timeout, schema_rejection,
+  // failover_incomplete_stream), which render via the GENERIC provider-error
+  // branch — not the transient one. That branch previously ignored onDismiss,
+  // so the banner had only a Retry button and no way to clear it. It must now
+  // honor onDismiss like the transient variant does.
+  it("renders a dismiss control and calls onDismiss when clicked", () => {
+    const onDismiss = vi.fn();
+    render(
+      <ChatErrorMessage
+        error={{
+          agentName: "Sterling Ollama",
+          providerError: "LLM request failed. (model: ollama-cloud/some-model)",
+        }}
+        agentId="agent-1"
+        onDismiss={onDismiss}
+      />
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: /dismiss/i }));
+    expect(onDismiss).toHaveBeenCalledTimes(1);
+  });
+
+  it("renders NO dismiss control when onDismiss is absent (inline thread usage)", () => {
+    // Inline errors in the thread pass no onDismiss — you don't 'dismiss' a
+    // conversation turn. The X must only appear when a caller (the banner) asks.
+    render(
+      <ChatErrorMessage
+        error={{ agentName: "Sterling Ollama", providerError: "LLM request failed." }}
+        agentId="agent-1"
+      />
+    );
+    expect(screen.queryByRole("button", { name: /dismiss/i })).not.toBeInTheDocument();
+  });
+});
+
 describe("ChatErrorMessage", () => {
   it("should render provider error with agent name and hint", () => {
     render(
