@@ -1,7 +1,14 @@
 import { getSetting, setSetting, deleteSetting } from "@/lib/settings";
+import {
+  GOOGLE_OAUTH_SETTINGS_KEY,
+  MICROSOFT_OAUTH_SETTINGS_KEY,
+} from "@/lib/integrations/oauth-providers";
 
-export const GOOGLE_OAUTH_SETTINGS_KEY = "google_oauth_credentials";
-export const MICROSOFT_OAUTH_SETTINGS_KEY = "microsoft_oauth_credentials";
+// The keys' single source of truth is the client-safe oauth-providers module
+// (so Client Components importing the descriptor don't pull in this server-only
+// file's db dependency). Re-export them here so existing consumers that import
+// from oauth-settings.ts keep working unchanged.
+export { GOOGLE_OAUTH_SETTINGS_KEY, MICROSOFT_OAUTH_SETTINGS_KEY };
 
 const SETTINGS_KEYS = {
   google: GOOGLE_OAUTH_SETTINGS_KEY,

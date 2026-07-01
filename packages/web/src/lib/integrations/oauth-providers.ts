@@ -1,17 +1,25 @@
-import {
-  GOOGLE_OAUTH_SETTINGS_KEY,
-  MICROSOFT_OAUTH_SETTINGS_KEY,
-} from "@/lib/integrations/oauth-settings";
-
 /**
  * Single source of truth for the ~90% overlap between the Google and Microsoft
  * OAuth flows. This module captures the *differences* between providers as
  * data so the start/callback routes (and future UI) can branch on a descriptor
  * lookup instead of duplicating `if (provider === "microsoft")` ladders.
  *
- * This file only defines the registry — consumers are migrated onto it in
- * follow-up changes, so behaviour is unchanged for now.
+ * IMPORTANT: this module must stay client-safe. It is imported by Client
+ * Components (the Connected apps section, the connect-step wizard, the edit
+ * dialog), so it must NOT pull in the server-only settings/db layer. That is
+ * why the settings-storage keys below are defined HERE and re-exported by
+ * oauth-settings.ts (server-only) — not the other way around. Importing them
+ * from oauth-settings.ts would drag `@/lib/settings` → `db` → `postgres` into
+ * the client bundle and break the build.
  */
+
+/**
+ * Settings-storage keys for the per-provider OAuth app credentials. The
+ * single source of truth lives in this client-safe module; oauth-settings.ts
+ * re-exports them for its own (server-side) consumers.
+ */
+export const GOOGLE_OAUTH_SETTINGS_KEY = "google_oauth_credentials";
+export const MICROSOFT_OAUTH_SETTINGS_KEY = "microsoft_oauth_credentials";
 
 /**
  * Google OAuth scopes for the Gmail connect flow. Kept here as the single
