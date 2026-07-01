@@ -9,6 +9,13 @@ vi.mock("sonner", () => ({
   toast: { success: vi.fn(), error: vi.fn() },
 }));
 
+// SettingsIntegrations calls useRouter() to clean up the ?error= param after
+// surfacing an OAuth error toast. Provide a router stub so the component renders
+// outside an App Router context.
+vi.mock("next/navigation", () => ({
+  useRouter: () => ({ replace: vi.fn() }),
+}));
+
 // Mock odoo-sync — getAccessibleCategoryLabels is called for Odoo connections
 vi.mock("@/lib/integrations/odoo-sync", () => ({
   getAccessibleCategoryLabels: () => [],
