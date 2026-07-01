@@ -74,6 +74,14 @@ export interface WsMessage {
   retryable?: boolean;
   /** Which retry action to invoke — only set when retryable is true */
   retryReason?: "orphan" | "partial_stream_failure" | "send_failure";
+  /**
+   * Server-flagged: OpenClaw's `chat.history` RPC replaced this message with
+   * its oversized-message placeholder (its 128 KB single-message cap — an
+   * inline image routinely trips this) because the original content exceeded
+   * OpenClaw's internal size cap. See client-router.ts's fetchAndParseHistory
+   * and `preserveRicherLocalOverOversizedHistory` below.
+   */
+  oversized?: boolean;
 }
 
 const DELAY_HINT_MS = 15_000;
@@ -369,6 +377,44 @@ export function shouldReplaceLocalWithServerHistory(
 
   // lastNonError.role === "user"
   return lastNonError.status === "sent" && historyMessages.length > prev.length;
+}
+
+/**
+ * Positional merge applied to every history frame BEFORE it's used for the
+ * shrink-length comparisons and (potential) destructive replace below.
+ *
+ * OpenClaw's `chat.history` RPC caps single-message size (128 KB — an inline
+ * image routinely trips this) and replaces an oversized message with a
+ * placeholder; client-router.ts's fetchAndParseHistory translates that into a
+ * friendly, non-empty message flagged `oversized: true`. Without this merge, a
+ * tab refocus after such a turn would replace the rich local bubble (the
+ * user's own text + file chip, already rendered in THIS tab) with that
+ * degraded placeholder — the vanishing/degraded-message bug found in v0.8.0
+ * staging.
+ *
+ * Only ever substitutes at a position the SERVER explicitly flagged
+ * `oversized`, and only when the local message there is a like-for-like role
+ * with actual content — so a genuine shrink (real deletion/compaction, never
+ * flagged `oversized`) is untouched and still reconciles normally.
+ */
+export function preserveRicherLocalOverOversizedHistory(
+  historyMessages: WsMessage[],
+  prevMessages: WsMessage[]
+): WsMessage[] {
+  if (!historyMessages.some((m) => m.oversized)) return historyMessages;
+
+  // Same rationale as shouldReplaceLocalWithServerHistory: the trailing
+  // in-flight placeholder is a client-only artifact the server never knows
+  // about, and must not shift the positional alignment used below.
+  const prev = stripTrailingPlaceholder(prevMessages);
+
+  return historyMessages.map((serverMsg, i) => {
+    if (!serverMsg.oversized) return serverMsg;
+    const local = prev[i];
+    if (!local || local.role !== serverMsg.role) return serverMsg;
+    const localHasContent = local.content.length > 0 || (local.files?.length ?? 0) > 0;
+    return localHasContent ? local : serverMsg;
+  });
 }
 
 export function useWsRuntime(
@@ -890,6 +936,7 @@ export function useWsRuntime(
             content: string;
             timestamp?: string;
             files?: WsFileMeta[];
+            oversized?: boolean;
           }> = data.messages ?? [];
           const sessionKnown: boolean = data.sessionKnown === true;
           // Server tells us the session exists but its history is currently
@@ -906,7 +953,28 @@ export function useWsRuntime(
             // strips the in-message markup and surfaces the file metadata
             // here so the file chip renders on reload.
             ...(msg.files && msg.files.length > 0 ? { files: msg.files } : {}),
+            ...(msg.oversized ? { oversized: true } : {}),
           }));
+
+          // Prefer a richer LOCAL copy over an oversized-history placeholder
+          // (see preserveRicherLocalOverOversizedHistory's doc). Applied
+          // before the shrink-length comparisons below so a turn that would
+          // otherwise look like a shrink (the row is still present, just
+          // degraded) doesn't trigger the destructive-reconcile path at all.
+          //
+          // The common case (no oversized message) returns the SAME array
+          // reference for zero-allocation — guard the in-place mutation on
+          // reference inequality, or `.length = 0` would wipe `preserved` too
+          // (same object) before the push reads from it, silently emptying
+          // history on every normal reconnect.
+          const preserved = preserveRicherLocalOverOversizedHistory(
+            historyMessages,
+            messagesRef.current
+          );
+          if (preserved !== historyMessages) {
+            historyMessages.length = 0;
+            historyMessages.push(...preserved);
+          }
 
           // Tier 2b: if the server reports an in-flight run for this
           // session, anchor the last assistant message in the reconciled

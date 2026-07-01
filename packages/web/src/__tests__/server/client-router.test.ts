@@ -1571,6 +1571,51 @@ describe("ClientRouter", () => {
     expect(userMsg.files).toEqual([{ filename: "silent-pdf.pdf", mimeType: "application/pdf" }]);
   });
 
+  it("preserves an oversized-omitted user message instead of silently dropping it", async () => {
+    // Root cause of the vanishing-user-message bug (image sent to a
+    // text-only-model agent, discovered in v0.8.0 staging): OpenClaw's
+    // `chat.history` RPC replaces ANY message over its internal
+    // CHAT_HISTORY_MAX_SINGLE_MESSAGE_BYTES cap (128 KB — an inline image
+    // trips this on nearly every image-bearing turn) with the literal
+    // placeholder below, discarding the original text AND the
+    // <pinchy:attachments> block embedded in it.
+    //
+    // Without this fix, the timestamp-strip regex (`/^\[.*?\]\s*/`) matches
+    // the WHOLE bracketed placeholder (there's no other `]` in it) and
+    // reduces content to "" — then the content-or-files filter drops the row
+    // entirely. The assistant's reply survives; the user's own message does
+    // not. Verified against real OpenClaw 2026.6.8 output on staging.
+    const clientWs = createMockClientWs();
+    mockSessionsHistory.mockResolvedValue({
+      messages: [
+        {
+          role: "user",
+          content: [{ type: "text", text: "[chat.history omitted: message too large]" }],
+          timestamp: 1708460000000,
+        },
+        {
+          role: "assistant",
+          content: "Ein richtig schönes Bild! Es zeigt einen Jungen …",
+          timestamp: 1708460001000,
+        },
+      ],
+    });
+
+    await router.handleMessage(clientWs as any, { type: "history", agentId: "agent-1" });
+
+    const sent = clientWs.sent.map((s) => JSON.parse(s));
+    expect(sent[0].messages).toHaveLength(2);
+    const userMsg = sent[0].messages[0];
+    expect(userMsg.role).toBe("user");
+    // Non-empty so it survives the content-or-files filter, and distinct from
+    // OpenClaw's raw placeholder so the user never sees the internal RPC name.
+    expect(userMsg.content.length).toBeGreaterThan(0);
+    expect(userMsg.content).not.toContain("chat.history");
+    // The client's reconcile logic (use-ws-runtime.ts) needs this flag to
+    // prefer a richer LOCAL copy of the same message over this placeholder.
+    expect(userMsg.oversized).toBe(true);
+  });
+
   it("should omit attachments when content has no images", async () => {
     async function* fakeStream() {
       yield { type: "text" as const, text: "Hello!" };

@@ -745,6 +745,18 @@ export class ClientRouter {
       const QUEUED_RETRY_PREFIX =
         "[Queued user message that arrived while the previous turn was still active]";
 
+      // OpenClaw's `chat.history` RPC replaces ANY message over its internal
+      // CHAT_HISTORY_MAX_SINGLE_MESSAGE_BYTES cap (128 KB — an inline image
+      // routinely trips this) with this exact placeholder, discarding the
+      // original content and, for a user turn, the <pinchy:attachments> block
+      // embedded in it. Detected BEFORE the timestamp-strip regex below, which
+      // would otherwise reduce it to "" (there's no other `]` in the string)
+      // and let the content-or-files filter silently drop the whole row —
+      // the vanishing-user-message bug found in v0.8.0 staging. Verified
+      // against real OpenClaw 2026.6.8 output.
+      const OVERSIZED_HISTORY_PLACEHOLDER = "[chat.history omitted: message too large]";
+      const OVERSIZED_HISTORY_MESSAGE_TEXT = "This message was too large to reload from history.";
+
       return (
         rawMessages
           .filter((msg) => msg.role === "user" || msg.role === "assistant")
@@ -770,6 +782,8 @@ export class ClientRouter {
             // Strip protocol tags from assistant responses
             content = content.replace(/<\/?final>/g, "");
 
+            const isOversizedPlaceholder = content === OVERSIZED_HISTORY_PLACEHOLDER;
+
             // For user messages: strip OpenClaw's timestamp prefix AND extract
             // the per-message <pinchy:attachments> block (see buildAttachmentBlock
             // in attachment-pipeline.ts). The block lives in the message text in
@@ -777,7 +791,15 @@ export class ClientRouter {
             // wire-level `files` field so the browser can render the chip
             // without ever seeing the markup.
             let files: Array<{ filename: string; mimeType: string }> | undefined;
-            if (msg.role === "user") {
+            if (isOversizedPlaceholder) {
+              // The original content (and any attachment block it carried) is
+              // gone for good — OpenClaw already discarded it server-side.
+              // Surface a friendly, non-empty placeholder instead of dropping
+              // the row, and flag it so the client's history-reconcile can
+              // prefer a richer LOCAL copy of this same message when one
+              // exists (use-ws-runtime.ts).
+              content = OVERSIZED_HISTORY_MESSAGE_TEXT;
+            } else if (msg.role === "user") {
               content = content.replace(/^\[.*?\]\s*/, "");
               const parsed = parseAttachmentBlock(content);
               content = parsed.cleanText;
@@ -793,6 +815,7 @@ export class ClientRouter {
               role: msg.role as "user" | "assistant",
               content,
               files,
+              oversized: isOversizedPlaceholder,
               rawContent:
                 typeof msg.content === "string"
                   ? msg.content
@@ -816,7 +839,13 @@ export class ClientRouter {
           // of meaning in that case, so it must be enough on its own.
           .filter((msg) => msg.content || (msg.files && msg.files.length > 0))
           .filter((msg) => !(msg.role === "user" && msg.rawContent.startsWith(QUEUED_RETRY_PREFIX)))
-          .map(({ role, content, files, timestamp }) => ({ role, content, files, timestamp }))
+          .map(({ role, content, files, timestamp, oversized }) => ({
+            role,
+            content,
+            files,
+            timestamp,
+            ...(oversized ? { oversized: true as const } : {}),
+          }))
       );
     };
 
