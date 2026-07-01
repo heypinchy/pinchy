@@ -71,31 +71,74 @@ describe("SettingsIntegrations — Connected apps section", () => {
     vi.clearAllMocks();
   });
 
-  it("renders a Google card and a Microsoft card", async () => {
-    const spy = mockFetch({});
+  it("does not render the Connected apps section when no provider is configured", async () => {
+    // Both providers unconfigured -> the whole section (title + card) stays out
+    // of the DOM. Connected apps is management-only now; with nothing to manage
+    // there's no empty state and no setup affordance here.
+    const spy = mockFetch({
+      oauth: { google: NOT_CONFIGURED, microsoft: NOT_CONFIGURED },
+    });
 
     render(<SettingsIntegrations />);
 
+    // The Integrations card still renders, so wait on it to know the page settled.
     await waitFor(() => {
-      expect(screen.getByText("Connected apps")).toBeInTheDocument();
+      expect(screen.getByText("Integrations")).toBeInTheDocument();
     });
 
-    const section = screen.getByText("Connected apps").closest("[data-slot='card']")!;
-    expect(within(section as HTMLElement).getByText("Google")).toBeInTheDocument();
-    expect(within(section as HTMLElement).getByText("Microsoft")).toBeInTheDocument();
+    expect(screen.queryByText("Connected apps")).not.toBeInTheDocument();
+    // No stray "Set up" affordance anywhere.
+    expect(screen.queryByRole("button", { name: /Set up/i })).not.toBeInTheDocument();
 
     spy.mockRestore();
   });
 
-  it("shows 'Not set up' + a Set up button for an unconfigured provider", async () => {
-    const spy = mockFetch({ oauth: { google: NOT_CONFIGURED } });
+  it("shows only the configured provider's row — no unconfigured row, no Set up button", async () => {
+    // Google configured, Microsoft not. Only the Google row appears (with Edit +
+    // Reset). Microsoft has no row here — it's set up through the Add Integration
+    // wizard, not this section.
+    const spy = mockFetch({
+      oauth: {
+        google: { configured: true, clientId: "goog-client-id", connectionCount: 2 },
+        microsoft: NOT_CONFIGURED,
+      },
+    });
 
     render(<SettingsIntegrations />);
 
     const googleRow = await findProviderRow("Google");
-    expect(within(googleRow).getByText(/Not set up/i)).toBeInTheDocument();
-    expect(within(googleRow).getByRole("button", { name: /Set up/i })).toBeInTheDocument();
-    expect(within(googleRow).queryByRole("button", { name: /^Reset$/i })).not.toBeInTheDocument();
+    expect(within(googleRow).getByText(/Configured/i)).toBeInTheDocument();
+    expect(within(googleRow).getByRole("button", { name: /Edit/i })).toBeInTheDocument();
+    expect(within(googleRow).getByRole("button", { name: /^Reset$/i })).toBeInTheDocument();
+
+    // The section exists, but there's no Microsoft row and no Set up button.
+    const section = screen.getByText("Connected apps").closest("[data-slot='card']") as HTMLElement;
+    expect(within(section).queryByText("Microsoft")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /Set up/i })).not.toBeInTheDocument();
+
+    spy.mockRestore();
+  });
+
+  it("renders a configured provider with zero connections so Reset stays reachable", async () => {
+    // Independent-lifecycle invariant (read-against-old-data): a provider app can
+    // be configured with 0 connected mailboxes (e.g. after removing its last
+    // mailbox — the app persists). The visibility predicate is `configured`, NOT
+    // `connectionCount`, so the row must still render with Edit + Reset.
+    const spy = mockFetch({
+      oauth: {
+        google: { configured: true, clientId: "goog-client-id", connectionCount: 0 },
+        microsoft: NOT_CONFIGURED,
+      },
+    });
+
+    render(<SettingsIntegrations />);
+
+    const googleRow = await findProviderRow("Google");
+    expect(within(googleRow).getByText(/Configured/i)).toBeInTheDocument();
+    expect(within(googleRow).getByRole("button", { name: /Edit/i })).toBeInTheDocument();
+    expect(within(googleRow).getByRole("button", { name: /^Reset$/i })).toBeInTheDocument();
+    // No mailbox-count copy when there are zero connections.
+    expect(within(googleRow).queryByText(/mailbox(es)? connected/i)).not.toBeInTheDocument();
 
     spy.mockRestore();
   });
@@ -142,14 +185,18 @@ describe("SettingsIntegrations — Connected apps section", () => {
     spy.mockRestore();
   });
 
-  it("clicking Set up opens the EditOAuthDialog for that provider", async () => {
+  it("clicking Edit opens the EditOAuthDialog for a configured Microsoft app", async () => {
     const user = userEvent.setup();
-    const spy = mockFetch({ oauth: { microsoft: NOT_CONFIGURED } });
+    const spy = mockFetch({
+      oauth: {
+        microsoft: { configured: true, clientId: "ms-client-id", connectionCount: 1 },
+      },
+    });
 
     render(<SettingsIntegrations />);
 
     const msRow = await findProviderRow("Microsoft");
-    await user.click(within(msRow).getByRole("button", { name: /Set up/i }));
+    await user.click(within(msRow).getByRole("button", { name: /Edit/i }));
 
     await waitFor(() => {
       expect(

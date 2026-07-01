@@ -149,8 +149,6 @@ export function SettingsIntegrations({ oauthError }: { oauthError?: string } = {
 
   return (
     <div className="space-y-6">
-      <ConnectedApps onConnectionsChanged={fetchConnections} />
-
       <Card>
         <CardHeader className="flex flex-row items-center justify-between">
           <CardTitle>Integrations</CardTitle>
@@ -388,6 +386,8 @@ export function SettingsIntegrations({ oauthError }: { oauthError?: string } = {
           )}
         </CardContent>
       </Card>
+
+      <ConnectedApps onConnectionsChanged={fetchConnections} />
 
       <AddIntegrationDialog
         open={showAddDialog}

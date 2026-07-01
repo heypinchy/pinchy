@@ -59,6 +59,7 @@ export function ConnectedApps({ onConnectionsChanged }: { onConnectionsChanged?:
   const [rows, setRows] = useState<ProviderRowData[]>(
     PROVIDER_DESCRIPTORS.map((descriptor) => ({ descriptor, state: undefined }))
   );
+  const [loaded, setLoaded] = useState(false);
   const [editProvider, setEditProvider] = useState<OAuthProviderId | null>(null);
   const [resetTarget, setResetTarget] = useState<ProviderRowData | null>(null);
   const [resetting, setResetting] = useState(false);
@@ -80,6 +81,7 @@ export function ConnectedApps({ onConnectionsChanged }: { onConnectionsChanged?:
       })
     );
     setRows(next);
+    setLoaded(true);
   }, []);
 
   useEffect(() => {
@@ -126,22 +128,31 @@ export function ConnectedApps({ onConnectionsChanged }: { onConnectionsChanged?:
   const resetLabel = resetTarget?.descriptor.label ?? "";
   const resetCount = resetTarget?.state?.connectionCount ?? 0;
 
+  // Management-only: show a row per already-configured provider app. An app can
+  // be configured with zero connected mailboxes (it has an independent
+  // lifecycle), so the predicate is `configured`, not the connection count.
+  const configuredRows = rows.filter((row) => row.state?.configured === true);
+
+  // Nothing configured yet -> render nothing at all. Apps are set up through the
+  // Add Integration wizard; this section only appears once there's an app to
+  // manage. Wait for the first load so we don't flash the section out.
+  if (!loaded || configuredRows.length === 0) return null;
+
   return (
     <Card>
       <CardHeader>
         <CardTitle>Connected apps</CardTitle>
         <CardDescription>
-          Set up the Google and Microsoft OAuth apps your team uses to connect mailboxes. These
-          credentials are shared across every connection for that provider.
+          Manage the Google and Microsoft OAuth apps your team has set up. These credentials are
+          shared across every connection for that provider.
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-3">
-        {rows.map((row) => (
+        {configuredRows.map((row) => (
           <ProviderRow
             key={row.descriptor.id}
             descriptor={row.descriptor}
             state={row.state}
-            onSetUp={() => setEditProvider(row.descriptor.id)}
             onEdit={() => setEditProvider(row.descriptor.id)}
             onReset={() => openReset(row)}
           />
@@ -197,20 +208,21 @@ export function ConnectedApps({ onConnectionsChanged }: { onConnectionsChanged?:
   );
 }
 
+// Rendered only for configured provider apps (the caller filters on
+// `state.configured`), so this row always shows the Configured status plus the
+// Edit / Reset management actions — there's no not-configured or loading branch.
 function ProviderRow({
   descriptor,
   state,
-  onSetUp,
   onEdit,
   onReset,
 }: {
   descriptor: OAuthProviderDescriptor;
   state: OAuthAppState | undefined;
-  onSetUp: () => void;
   onEdit: () => void;
   onReset: () => void;
 }) {
-  const configured = state?.configured ?? false;
+  const clientId = state?.clientId ?? "";
   const connectionCount = state?.connectionCount ?? 0;
 
   return (
@@ -222,57 +234,37 @@ function ProviderRow({
         <ProviderIcon provider={descriptor.id} />
         <div className="min-w-0">
           <div className="text-sm font-medium">{descriptor.label}</div>
-          {state === undefined ? (
-            <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
-              <Loader2 className="h-3 w-3 animate-spin" />
-              Loading...
-            </div>
-          ) : configured ? (
-            <div className="flex flex-wrap items-center gap-x-1.5 gap-y-0.5 text-xs text-muted-foreground">
-              <CheckCircle2 className="h-3.5 w-3.5 text-green-600 dark:text-green-400" />
-              <span>Configured</span>
-              <span aria-hidden>&middot;</span>
-              <code
-                className="rounded bg-muted px-1 py-0.5 font-mono"
-                title="Client ID (shortened)"
-              >
-                {maskClientId(state.clientId)}
-              </code>
-              {connectionCount > 0 && (
-                <>
-                  <span aria-hidden>&middot;</span>
-                  <span>
-                    {connectionCount} mailbox{connectionCount === 1 ? "" : "es"} connected
-                  </span>
-                </>
-              )}
-            </div>
-          ) : (
-            <div className="text-xs text-muted-foreground">Not set up</div>
-          )}
+          <div className="flex flex-wrap items-center gap-x-1.5 gap-y-0.5 text-xs text-muted-foreground">
+            <CheckCircle2 className="h-3.5 w-3.5 text-green-600 dark:text-green-400" />
+            <span>Configured</span>
+            <span aria-hidden>&middot;</span>
+            <code className="rounded bg-muted px-1 py-0.5 font-mono" title="Client ID (shortened)">
+              {maskClientId(clientId)}
+            </code>
+            {connectionCount > 0 && (
+              <>
+                <span aria-hidden>&middot;</span>
+                <span>
+                  {connectionCount} mailbox{connectionCount === 1 ? "" : "es"} connected
+                </span>
+              </>
+            )}
+          </div>
         </div>
       </div>
 
       <div className="flex shrink-0 items-center gap-2">
-        {state === undefined ? null : configured ? (
-          <>
-            <Button variant="outline" size="sm" onClick={onEdit}>
-              Edit
-            </Button>
-            <Button
-              variant="outline"
-              size="sm"
-              className="text-destructive border-destructive/50 hover:bg-destructive/10"
-              onClick={onReset}
-            >
-              Reset
-            </Button>
-          </>
-        ) : (
-          <Button variant="outline" size="sm" onClick={onSetUp}>
-            Set up
-          </Button>
-        )}
+        <Button variant="outline" size="sm" onClick={onEdit}>
+          Edit
+        </Button>
+        <Button
+          variant="outline"
+          size="sm"
+          className="text-destructive border-destructive/50 hover:bg-destructive/10"
+          onClick={onReset}
+        >
+          Reset
+        </Button>
       </div>
     </div>
   );
