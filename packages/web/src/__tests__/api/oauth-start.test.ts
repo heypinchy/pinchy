@@ -305,6 +305,13 @@ describe("POST /api/integrations/oauth/start (reconnect)", () => {
     status: "auth_failed",
   };
 
+  const mockMicrosoftConnection = {
+    id: "c1",
+    type: "microsoft",
+    name: "user@outlook.com",
+    status: "auth_failed",
+  };
+
   beforeEach(() => {
     vi.clearAllMocks();
     mockGetSession.mockResolvedValue(adminSession);
@@ -340,13 +347,13 @@ describe("POST /api/integrations/oauth/start (reconnect)", () => {
     expect(res.status).toBe(404);
   });
 
-  it("returns 400 when connection is not google type", async () => {
+  it("returns 400 when connection type does not support OAuth re-auth (e.g. odoo)", async () => {
     mockSelectLimit.mockResolvedValueOnce([mockOdooConnection]);
     const { POST } = await import("@/app/api/integrations/oauth/start/route");
     const res = await POST(makePostRequest({ reconnectConnectionId: "c1" }));
     expect(res.status).toBe(400);
     const body = await res.json();
-    expect(body.error).toMatch(/google/i);
+    expect(body.error).toMatch(/does not support/i);
   });
 
   it("encodes reconnectConnectionId into state when connection exists and is google type", async () => {
@@ -381,5 +388,59 @@ describe("POST /api/integrations/oauth/start (reconnect)", () => {
     const { POST } = await import("@/app/api/integrations/oauth/start/route");
     const res = await POST(makePostRequest({ reconnectConnectionId: "c1" }));
     expect(res.status).toBe(400);
+  });
+
+  describe("Microsoft reconnect", () => {
+    const microsoftSettings = {
+      clientId: "ms-client-id",
+      clientSecret: "ms-client-secret",
+      tenantId: "tenant-123",
+    };
+
+    beforeEach(() => {
+      mockSelectLimit.mockResolvedValue([mockMicrosoftConnection]);
+      mockGetOAuthSettings.mockImplementation((provider: string) =>
+        provider === "microsoft" ? Promise.resolve(microsoftSettings) : Promise.resolve(null)
+      );
+    });
+
+    it("returns 200 with Microsoft OAuth URL when connection is microsoft type", async () => {
+      const { POST } = await import("@/app/api/integrations/oauth/start/route");
+      const res = await POST(makePostRequest({ reconnectConnectionId: "c1" }));
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.url).toContain("login.microsoftonline.com");
+      expect(body.url).toContain("tenant-123");
+    });
+
+    it("encodes reconnectConnectionId into state for Microsoft reconnect", async () => {
+      const { POST } = await import("@/app/api/integrations/oauth/start/route");
+      const res = await POST(makePostRequest({ reconnectConnectionId: "c1" }));
+      const body = await res.json();
+      const stateParam = new URL(body.url).searchParams.get("state");
+      expect(stateParam).toBeTruthy();
+      const decoded = JSON.parse(Buffer.from(stateParam!, "base64url").toString("utf-8"));
+      expect(decoded).toMatchObject({ reconnectConnectionId: "c1" });
+    });
+
+    it("sets oauth_provider=microsoft cookie for Microsoft reconnect so callback identifies provider", async () => {
+      const { POST } = await import("@/app/api/integrations/oauth/start/route");
+      const res = await POST(makePostRequest({ reconnectConnectionId: "c1" }));
+      const setCookies = res.headers.getSetCookie
+        ? res.headers.getSetCookie().join("; ")
+        : (res.headers.get("set-cookie") ?? "");
+      expect(setCookies).toContain("oauth_provider=microsoft");
+    });
+
+    it("sets oauth_state cookie for Microsoft reconnect", async () => {
+      const { POST } = await import("@/app/api/integrations/oauth/start/route");
+      const res = await POST(makePostRequest({ reconnectConnectionId: "c1" }));
+      const body = await res.json();
+      const stateParam = new URL(body.url).searchParams.get("state")!;
+      const setCookies = res.headers.getSetCookie
+        ? res.headers.getSetCookie().join("; ")
+        : (res.headers.get("set-cookie") ?? "");
+      expect(setCookies).toContain(`oauth_state=${stateParam}`);
+    });
   });
 });

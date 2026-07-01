@@ -320,6 +320,61 @@ function GoogleReconnect({
   );
 }
 
+function MicrosoftReconnect({
+  connection,
+  onOpenChange,
+}: {
+  connection: IntegrationConnection;
+  onOpenChange: (open: boolean) => void;
+}) {
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
+
+  async function handleReconnect() {
+    setLoading(true);
+    setError("");
+    try {
+      const result = await apiPost<{ url: string }>("/api/integrations/oauth/start", {
+        reconnectConnectionId: connection.id,
+      });
+      window.location.assign(result.url);
+    } catch (err) {
+      if (err instanceof ApiError) {
+        setError(err.message);
+      } else {
+        setError("Something went wrong. Please try again.");
+      }
+      setLoading(false);
+    }
+  }
+
+  return (
+    <div className="space-y-4">
+      <p className="text-sm text-muted-foreground">
+        Microsoft credentials are managed via OAuth. Click below to start a new authorization flow.
+      </p>
+
+      {error && <p className="text-sm text-destructive">{error}</p>}
+
+      <div className="flex justify-end gap-2">
+        <Button type="button" variant="outline" onClick={() => onOpenChange(false)}>
+          Cancel
+        </Button>
+        <Button onClick={handleReconnect} disabled={loading}>
+          {loading ? (
+            <>
+              <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+              Redirecting...
+            </>
+          ) : (
+            "Reconnect via Microsoft"
+          )}
+        </Button>
+      </div>
+    </div>
+  );
+}
+
 export function EditCredentialsDialog({
   connection,
   open,
@@ -340,6 +395,8 @@ export function EditCredentialsDialog({
 
         {connection?.type === "google" ? (
           <GoogleReconnect connection={connection} onOpenChange={onOpenChange} />
+        ) : connection?.type === "microsoft" ? (
+          <MicrosoftReconnect connection={connection} onOpenChange={onOpenChange} />
         ) : connection?.type === "odoo" ? (
           <OdooForm
             key={connection.id}

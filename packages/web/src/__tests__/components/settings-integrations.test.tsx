@@ -46,6 +46,21 @@ const authFailedOdooConnection = {
   cannotDecrypt: false,
 };
 
+const authFailedMicrosoftConnection = {
+  id: "conn-ms-2",
+  type: "microsoft",
+  name: "user@outlook.com",
+  description: "",
+  credentials: "encrypted",
+  status: "auth_failed",
+  lastError: "401 from Microsoft",
+  lastErrorAt: "2026-05-10T10:00:00Z",
+  data: null,
+  createdAt: "2026-04-13T12:00:00Z",
+  updatedAt: "2026-05-10T10:00:00Z",
+  cannotDecrypt: false,
+};
+
 function mockFetchConnections(connections: unknown[]) {
   return vi.spyOn(global, "fetch").mockImplementation(() =>
     Promise.resolve({
@@ -117,6 +132,26 @@ describe("SettingsIntegrations — auth_failed state", () => {
     });
 
     const row = screen.getByText("Staging ERP").closest("[class*='rounded-lg']")!;
+    const buttons = row.querySelectorAll("button");
+    const menuButton = buttons[buttons.length - 1];
+    await user.click(menuButton);
+
+    expect(screen.getByText("Reconnect")).toBeInTheDocument();
+
+    fetchSpy.mockRestore();
+  });
+
+  it("shows a 'Reconnect' menu item in the dropdown for auth_failed Microsoft cards", async () => {
+    const user = userEvent.setup();
+    const fetchSpy = mockFetchConnections([authFailedMicrosoftConnection]);
+
+    render(<SettingsIntegrations />);
+
+    await waitFor(() => {
+      expect(screen.getByText("user@outlook.com")).toBeInTheDocument();
+    });
+
+    const row = screen.getByText("user@outlook.com").closest("[class*='rounded-lg']")!;
     const buttons = row.querySelectorAll("button");
     const menuButton = buttons[buttons.length - 1];
     await user.click(menuButton);

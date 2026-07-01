@@ -190,8 +190,8 @@ const reconnectSchema = z.object({
 /**
  * POST /api/integrations/oauth/start
  *
- * Programmatic reconnect entry point for google connections that have entered
- * auth_failed state. Accepts { reconnectConnectionId } and returns { url }
+ * Programmatic reconnect entry point for google and microsoft connections that
+ * have entered auth_failed state. Accepts { reconnectConnectionId } and returns { url }
  * for the client to navigate to. The state parameter is a base64url-encoded
  * JSON payload containing a CSRF nonce and the connection ID to update.
  *
@@ -215,7 +215,7 @@ export async function POST(request: NextRequest) {
   if ("error" in parsed) return parsed.error;
   const { reconnectConnectionId } = parsed.data;
 
-  // Verify the connection exists and is a google-type connection
+  // Verify the connection exists and supports OAuth re-auth (google or microsoft)
   const [connection] = await db
     .select()
     .from(integrationConnections)
@@ -226,25 +226,66 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: "Connection not found" }, { status: 404 });
   }
 
-  if (connection.type !== "google") {
+  if (connection.type !== "google" && connection.type !== "microsoft") {
     return NextResponse.json(
-      { error: "Only google connections support OAuth re-auth" },
+      { error: "This connection type does not support OAuth re-auth" },
       { status: 400 }
     );
   }
 
+  // Build the state as base64url-encoded JSON so the callback can extract
+  // both the CSRF nonce and the reconnectConnectionId. The reconnect callback
+  // path is provider-agnostic — it updates the existing connection in place —
+  // so the state shape is identical for both providers.
+  const nonce = randomBytes(32).toString("hex");
+  const stateObj = { nonce, reconnectConnectionId };
+  const state = Buffer.from(JSON.stringify(stateObj)).toString("base64url");
+  const redirectUri = `${origin}/api/integrations/oauth/callback`;
+  const isSecure = (forwardedProto ?? requestUrl.protocol.replace(":", "")) === "https";
+
+  if (connection.type === "microsoft") {
+    const settings = await getOAuthSettings("microsoft");
+    if (!settings) {
+      return NextResponse.json({ error: "Microsoft OAuth is not configured" }, { status: 400 });
+    }
+    const msSettings = settings as MicrosoftOAuthSettings;
+    const tenantId = msSettings.tenantId?.trim() || "organizations";
+    const tokenHost = process.env.MICROSOFT_OAUTH_BASE_URL ?? "https://login.microsoftonline.com";
+    const authUrl = new URL(`${tokenHost}/${tenantId}/oauth2/v2.0/authorize`);
+    authUrl.searchParams.set("client_id", settings.clientId);
+    authUrl.searchParams.set("redirect_uri", redirectUri);
+    authUrl.searchParams.set("response_type", "code");
+    authUrl.searchParams.set("response_mode", "query");
+    authUrl.searchParams.set("scope", MICROSOFT_OAUTH_SCOPES);
+    authUrl.searchParams.set("prompt", "consent");
+    authUrl.searchParams.set("state", state);
+
+    const response = NextResponse.json({ url: authUrl.toString() }, { status: 200 });
+    response.cookies.set("oauth_state", state, {
+      httpOnly: true,
+      secure: isSecure,
+      sameSite: "lax",
+      maxAge: 600,
+      path: "/",
+    });
+    // CRITICAL: reconnect has no pending record and no oauth_pending_id cookie,
+    // so the callback identifies the provider from this cookie. Without it the
+    // callback defaults to Google and exchanges the code against the wrong host.
+    response.cookies.set("oauth_provider", "microsoft", {
+      httpOnly: true,
+      secure: isSecure,
+      sameSite: "lax",
+      maxAge: 600,
+      path: "/",
+    });
+    return response;
+  }
+
+  // Default: Google flow
   const settings = await getOAuthSettings("google");
   if (!settings) {
     return NextResponse.json({ error: "Google OAuth is not configured" }, { status: 400 });
   }
-
-  // Build the state as base64url-encoded JSON so the callback can extract
-  // both the CSRF nonce and the reconnectConnectionId.
-  const nonce = randomBytes(32).toString("hex");
-  const stateObj = { nonce, reconnectConnectionId };
-  const state = Buffer.from(JSON.stringify(stateObj)).toString("base64url");
-
-  const redirectUri = `${origin}/api/integrations/oauth/callback`;
 
   const authUrl = new URL("https://accounts.google.com/o/oauth2/v2/auth");
   authUrl.searchParams.set("client_id", settings.clientId);
@@ -255,7 +296,6 @@ export async function POST(request: NextRequest) {
   authUrl.searchParams.set("prompt", "consent");
   authUrl.searchParams.set("state", state);
 
-  const isSecure = (forwardedProto ?? requestUrl.protocol.replace(":", "")) === "https";
   const response = NextResponse.json({ url: authUrl.toString() }, { status: 200 });
   response.cookies.set("oauth_state", state, {
     httpOnly: true,

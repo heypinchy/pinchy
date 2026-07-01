@@ -73,6 +73,21 @@ const googleConnection: IntegrationConnection = {
   cannotDecrypt: false,
 };
 
+const microsoftConnection: IntegrationConnection = {
+  id: "conn-microsoft-1",
+  type: "microsoft",
+  name: "user@outlook.com",
+  description: "",
+  credentials: null,
+  data: { provider: "microsoft" },
+  status: "auth_failed",
+  lastError: "401 from Microsoft",
+  lastErrorAt: null,
+  createdAt: "2026-04-13T12:00:00Z",
+  updatedAt: "2026-04-13T12:00:00Z",
+  cannotDecrypt: false,
+};
+
 describe("EditCredentialsDialog", () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -290,6 +305,58 @@ describe("EditCredentialsDialog", () => {
 
       await waitFor(() => {
         expect(assignMock).toHaveBeenCalledWith("https://accounts.google.com/oauth?code=xxx");
+      });
+    });
+  });
+
+  describe("Microsoft integration", () => {
+    it("shows 'Reconnect via Microsoft' button instead of credential fields", () => {
+      render(
+        <EditCredentialsDialog
+          connection={microsoftConnection}
+          open={true}
+          onOpenChange={vi.fn()}
+          onSuccess={vi.fn()}
+        />
+      );
+
+      expect(screen.getByRole("button", { name: "Reconnect via Microsoft" })).toBeInTheDocument();
+      expect(screen.queryByLabelText("API Key")).not.toBeInTheDocument();
+      expect(screen.queryByLabelText("URL")).not.toBeInTheDocument();
+    });
+
+    it("calls apiPost with reconnectConnectionId when 'Reconnect via Microsoft' is clicked", async () => {
+      const user = userEvent.setup();
+      const assignMock = vi.fn();
+      Object.defineProperty(window, "location", {
+        value: { ...window.location, assign: assignMock },
+        writable: true,
+      });
+      vi.mocked(apiPost).mockResolvedValue({
+        url: "https://login.microsoftonline.com/tenant-123/oauth2/v2.0/authorize?code=xxx",
+      });
+
+      render(
+        <EditCredentialsDialog
+          connection={microsoftConnection}
+          open={true}
+          onOpenChange={vi.fn()}
+          onSuccess={vi.fn()}
+        />
+      );
+
+      await user.click(screen.getByRole("button", { name: "Reconnect via Microsoft" }));
+
+      await waitFor(() => {
+        expect(apiPost).toHaveBeenCalledWith("/api/integrations/oauth/start", {
+          reconnectConnectionId: "conn-microsoft-1",
+        });
+      });
+
+      await waitFor(() => {
+        expect(assignMock).toHaveBeenCalledWith(
+          "https://login.microsoftonline.com/tenant-123/oauth2/v2.0/authorize?code=xxx"
+        );
       });
     });
   });
