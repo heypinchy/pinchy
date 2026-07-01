@@ -1,9 +1,11 @@
 import { createHash } from "node:crypto";
+import type { AgentConfigSnapshot } from "./agent-config-collector";
 import type { OtelSpan } from "./otel-builder";
 
 export interface BundleInput {
   spans: OtelSpan[];
   versions: { pinchy: string; openclaw: string; openclawNode: string };
+  agentConfig: AgentConfigSnapshot;
   scope: {
     agentId: string;
     sessionKey: string;
@@ -38,6 +40,7 @@ export interface Bundle {
     skippedTurnsAfterAnchor: number;
   };
   userDescription?: string;
+  agentConfig: AgentConfigSnapshot;
   spans: OtelSpan[];
   auditEntries: unknown[];
 }
@@ -61,6 +64,7 @@ export function buildBundle(input: BundleInput): Bundle {
       skippedTurnsAfterAnchor: skipped,
     },
     ...(input.userDescription ? { userDescription: input.userDescription } : {}),
+    agentConfig: input.agentConfig,
     spans: input.spans,
     auditEntries: input.auditEntries,
   };

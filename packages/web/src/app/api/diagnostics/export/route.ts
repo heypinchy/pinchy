@@ -25,6 +25,7 @@ import { type AuditLogEntry } from "@/lib/audit";
 import { deferAuditLog } from "@/lib/audit-deferred";
 import { getAgentWithAccess } from "@/lib/agent-access";
 import { parseRequestBody } from "@/lib/api-validation";
+import { collectAgentConfig } from "@/lib/diagnostics/agent-config-collector";
 import { buildBundle } from "@/lib/diagnostics/bundle-builder";
 import { fetchAuditEntriesForSession } from "@/lib/diagnostics/audit-collector";
 import {
@@ -110,9 +111,15 @@ export const POST = withAuth(async (request, _ctx, session) => {
   const auditRange = computeAuditRange(selectedTurns);
   const auditEntries = await fetchAuditEntriesForSession(agentId, session.user.id, auditRange);
 
+  // Snapshot the agent's configuration at export time (model/provider, allowed
+  // tools, instruction hashes) so a support reader can tell config drift apart
+  // from model choice. Never embeds the raw prompt — only its hash (#642).
+  const agentConfig = await collectAgentConfig(agent);
+
   const bundle = buildBundle({
     spans,
     versions: getDiagnosticsVersions(),
+    agentConfig,
     scope: {
       agentId,
       sessionKey,

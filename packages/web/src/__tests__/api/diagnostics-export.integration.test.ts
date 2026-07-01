@@ -171,6 +171,15 @@ describe("POST /api/diagnostics/export (integration)", () => {
     expect(bundle.scope.sessionKeyHash).toMatch(/^sha256:/);
     expect(Array.isArray(bundle.spans)).toBe(true);
     expect(Array.isArray(bundle.auditEntries)).toBe(true);
+    // agentConfig snapshot (#642): configured model/provider, per-agent tool
+    // allow-list, and an instructions HASH — never the raw prompt. The enriched
+    // bundle still passes through sanitize + the 5 MB cap (it returned 200).
+    expect(bundle.agentConfig.agent).toEqual({ id: agent.id, name: agent.name });
+    expect(bundle.agentConfig.model).toBe("ollama/qwen3");
+    expect(bundle.agentConfig.provider).toBe("ollama");
+    expect(Array.isArray(bundle.agentConfig.allowedTools)).toBe(true);
+    expect(bundle.agentConfig.instructionsHash["SOUL.md"]).toMatch(/^sha256:[a-f0-9]{64}$/);
+    expect(bundle.agentConfig.instructionsHash["AGENTS.md"]).toMatch(/^sha256:[a-f0-9]{64}$/);
   });
 
   it("denies access when the caller does not own the agent and is not admin", async () => {

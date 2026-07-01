@@ -14,10 +14,11 @@ The diagnostics export is a single JSON file that captures:
 - Tool calls (name and arguments) along with their sanitized results
 - Finish reasons for each turn (`stop`, `tool_use`, `aborted`, `timeout`, etc.)
 - Pinchy, OpenClaw, and openclaw-node version strings
+- A snapshot of the agent's configuration at export time: its configured model and provider (plus the default vision model, if one is set), the tools it's allowed to use, its template and personality preset, and a SHA-256 hash of each instruction file (`SOUL.md`, `AGENTS.md`). This tells us whether a problem came from the model you chose or from drifted instructions — without us ever seeing the instructions themselves.
 - Recent audit-log entries scoped to your interactions with the agent
 - A free-form description you write before exporting (up to 500 characters)
 
-Secrets are filtered out before the file is generated. API keys, Bearer tokens, and any values under sensitive keys (`password`, `apikey`, `authorization`, and friends) are automatically redacted, and the OpenClaw `sessionKey` is hashed with SHA-256 so it can't be replayed.
+Secrets are filtered out before the file is generated. API keys, Bearer tokens, and any values under sensitive keys (`password`, `apikey`, `authorization`, and friends) are automatically redacted, and the OpenClaw `sessionKey` is hashed with SHA-256 so it can't be replayed. Your agent's instructions are never written into the file — only a hash of them, so we can spot when they've changed without reading your custom prompt.
 
 ## Two ways to start
 
