@@ -149,9 +149,14 @@ version between current and target first.
 5. **Check `openclaw-node`** (`packages/web/package.json` →
    `dependencies["openclaw-node"]`, our own client library in
    `~/projects/openclaw-node/`) for a matching newer release too —
-   `npm view openclaw-node version`. If it needs a bump and we own it, bump
-   and release it via `pnpm release X.Y.Z` in that repo first, not a manual
-   `gh release create`.
+   `npm view openclaw-node version`. If it needs a release and we own it:
+   openclaw-node has NO `pnpm release` script (that's Pinchy's mechanism).
+   Its actual release flow (v0.13.0/v0.13.1 precedent): add a CHANGELOG
+   entry, bump `package.json`, commit `chore: release vX.Y.Z` on main, wait
+   for CI on that commit, then `gh release create vX.Y.Z` — the GitHub
+   release triggers `publish.yml`, which re-verifies CI and publishes to
+   npm. Verify with `npm view openclaw-node version` before bumping the
+   Pinchy pin.
 
 6. **Install and verify:**
    ```bash
