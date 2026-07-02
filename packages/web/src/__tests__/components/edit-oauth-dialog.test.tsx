@@ -47,7 +47,7 @@ describe("EditOAuthDialog", () => {
     });
   });
 
-  it("shows note that changes apply to all Google connections", async () => {
+  it("shows note that changes apply to all connected Google mailboxes", async () => {
     fetchSpy.mockResolvedValue({
       ok: true,
       json: async () => ({ configured: true, clientId: "id" }),
@@ -56,7 +56,10 @@ describe("EditOAuthDialog", () => {
     render(<EditOAuthDialog provider="google" open={true} onOpenChange={vi.fn()} />);
 
     await waitFor(() => {
-      expect(screen.getByText(/all Google connections/i)).toBeInTheDocument();
+      // "mailboxes" matches the Connected-apps vocabulary (app vs. mailboxes),
+      // not "connections"/"integrations" — the Integrations list also holds
+      // Odoo/web-search entries this change does not touch.
+      expect(screen.getByText(/all connected Google mailboxes/i)).toBeInTheDocument();
     });
   });
 
