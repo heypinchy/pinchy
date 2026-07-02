@@ -27,6 +27,10 @@ The app keeps existing even after you remove its last mailbox — it has an inde
 
 For the full picture of how connections, apps, and per-agent permissions fit together, see [Integrations](/concepts/integrations/).
 
+## Agents know their own mailbox
+
+An agent with email permissions automatically knows which mailbox it works with: the connected email address, the connection's name in Pinchy, and the operations you granted. Ask your agent which address it sends from and it can just answer — no extra setup needed. On shared agents, that identity is always the connected mailbox itself, not the personal address of whoever is chatting.
+
 ## Email agent templates use the `email` skill
 
 The **Email Assistant**, **Sales Email Assistant**, and **Support Email Assistant** templates attach the `email` skill — a workflow guide that teaches the agent when to list, search, or read messages, and how to draft a reply instead of assuming it can send. Sending stays gated behind the separate `email_send` permission regardless of the skill. This works the same way as the `web-search` skill used by the [Market & News Monitor](/guides/create-market-monitor-agent/) template.

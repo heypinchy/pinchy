@@ -93,6 +93,17 @@ const mockedExistsSync = vi.mocked(existsSync);
 const mockedDb = vi.mocked(db);
 const mockedGetSetting = vi.mocked(getSetting);
 
+// The regenerate writes more than one file (TOOLS.md mailbox context precedes
+// the config write for email agents), so locate the openclaw.json write by
+// path instead of assuming it is the first writeFileSync call.
+function getWrittenConfigString(): string {
+  const call = mockedWriteFileSync.mock.calls.find(
+    (c) => typeof c[0] === "string" && (c[0] as string).includes("openclaw.json")
+  );
+  if (!call) throw new Error("openclaw.json was never written");
+  return call[1] as string;
+}
+
 describe("pinchy-email config generation", () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -161,7 +172,7 @@ describe("pinchy-email config generation", () => {
 
     await regenerateOpenClawConfig();
 
-    const written = mockedWriteFileSync.mock.calls[0][1] as string;
+    const written = getWrittenConfigString();
     const config = JSON.parse(written);
 
     const emailPlugin = config.plugins?.entries?.["pinchy-email"];
@@ -246,7 +257,7 @@ describe("pinchy-email config generation", () => {
 
     await regenerateOpenClawConfig();
 
-    const written = mockedWriteFileSync.mock.calls[0][1] as string;
+    const written = getWrittenConfigString();
     const config = JSON.parse(written);
 
     const emailConfig = config.plugins.entries["pinchy-email"].config;
@@ -319,7 +330,7 @@ describe("pinchy-email config generation", () => {
 
     await regenerateOpenClawConfig();
 
-    const written = mockedWriteFileSync.mock.calls[0][1] as string;
+    const written = getWrittenConfigString();
 
     // The entire serialized config must not contain any credential values
     expect(written).not.toContain("super-secret-access");
@@ -391,7 +402,7 @@ describe("pinchy-email config generation", () => {
 
     await regenerateOpenClawConfig();
 
-    const written = mockedWriteFileSync.mock.calls[0][1] as string;
+    const written = getWrittenConfigString();
     const config = JSON.parse(written);
 
     expect(config.plugins?.entries?.["pinchy-email"]).toBeUndefined();
@@ -483,7 +494,7 @@ describe("pinchy-email config generation", () => {
 
     await regenerateOpenClawConfig();
 
-    const written = mockedWriteFileSync.mock.calls[0][1] as string;
+    const written = getWrittenConfigString();
     const config = JSON.parse(written);
 
     // No email-capable connection types matched, so the plugin entry is

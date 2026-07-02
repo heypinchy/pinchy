@@ -213,8 +213,9 @@ export function removeWorkspaceSkill(agentId: string, skillId: string): void {
 // The files OpenClaw loads as prompt-bootstrap context for an agent
 // (loadWorkspaceBootstrapFiles in openclaw@2026.5.x). Each is subject to the
 // per-file `bootstrapMaxChars` cap and the shared `bootstrapTotalMaxChars`
-// budget. Pinchy writes AGENTS.md/SOUL.md/IDENTITY.md/USER.md; the rest are
-// included so the sizing stays correct if a fork or future feature adds them.
+// budget. Pinchy writes AGENTS.md/SOUL.md/TOOLS.md/IDENTITY.md/USER.md; the
+// rest are included so the sizing stays correct if a fork or future feature
+// adds them.
 const BOOTSTRAP_FILENAMES = [
   "AGENTS.md",
   "SOUL.md",
@@ -254,6 +255,82 @@ export function getAgentBootstrapSizes(agentId: string): number[] {
   }
 
   return sizes;
+}
+
+/**
+ * A mailbox connected to an agent, rendered into the agent's TOOLS.md
+ * bootstrap file so the agent knows the identity of the account it operates
+ * on. `operations` are the granted email operations (subset of
+ * read/search/draft/send).
+ */
+export interface MailboxContext {
+  address: string;
+  /** The connection's name in Pinchy. Defaults to the address on connect. */
+  label: string;
+  operations: string[];
+}
+
+/** Human-readable rendering of the granted email operations. */
+const EMAIL_OPERATION_LABELS: Record<string, string> = {
+  read: "read messages",
+  search: "search the mailbox",
+  draft: "create drafts",
+  send: "send email",
+};
+
+/**
+ * Renders TOOLS.md content from the agent's connected mailboxes. Returns ""
+ * for an empty list so callers (writeToolsFile) remove the file instead of
+ * leaving stale mailbox context behind. Loops over ALL entries — correct for
+ * one and for N mailboxes, no single-entry assumption.
+ */
+export function generateToolsContent(mailboxes: MailboxContext[]): string {
+  if (mailboxes.length === 0) return "";
+
+  const lines = [
+    "## Connected Email",
+    "",
+    "Each mailbox below is the identity of an email account this agent " +
+      "operates on. It is not necessarily the personal address of the user " +
+      "you are currently talking to — shared agents serve multiple users.",
+  ];
+
+  for (const mailbox of mailboxes) {
+    lines.push("", `### ${mailbox.address}`, "");
+    // The connection name defaults to the address; only show it when a user
+    // renamed the connection, so the block never repeats the address.
+    if (mailbox.label && mailbox.label !== mailbox.address) {
+      lines.push(`- Pinchy connection label: ${mailbox.label}`);
+    }
+    const operations = mailbox.operations.map((op) => EMAIL_OPERATION_LABELS[op] ?? op);
+    lines.push(`- Granted operations: ${operations.length > 0 ? operations.join(", ") : "none"}`);
+  }
+
+  return lines.join("\n") + "\n";
+}
+
+/**
+ * Materializes the generated TOOLS.md into the agent workspace, or removes it
+ * when there is nothing to say. Deleting (rather than writing an empty file)
+ * is the simpler no-stale-content guarantee: both getAgentBootstrapSizes and
+ * OpenClaw's loadWorkspaceBootstrapFiles skip missing files, and a file that
+ * does not exist can never inject a revoked mailbox identity.
+ */
+export function writeToolsFile(agentId: string, mailboxes: MailboxContext[]): void {
+  assertValidAgentId(agentId);
+  const workspacePath = getWorkspacePath(agentId);
+  const filePath = join(workspacePath, "TOOLS.md");
+
+  const content = generateToolsContent(mailboxes);
+  if (!content) {
+    rmSync(filePath, { force: true });
+    return;
+  }
+
+  if (!existsSync(workspacePath)) {
+    mkdirSync(workspacePath, { recursive: true });
+  }
+  writeFileSync(filePath, content, "utf-8");
 }
 
 export function generateIdentityContent(agent: { name: string; tagline: string | null }): string {
