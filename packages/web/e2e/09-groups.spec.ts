@@ -41,6 +41,13 @@ test.describe.serial("Groups CRUD", () => {
       data: { name: "__warmup__", description: null },
     });
     await page.request.delete(`/api/groups/${MISSING_GROUP_ID}`);
+    // /api/groups/[groupId]/members is a SEPARATE route module that compiles
+    // independently — creating a group with a member fires its first PUT (seen
+    // at next.js: 4.8s / application-code: 53ms), blowing the same 5s
+    // dialog-close assertion. Warm it too; the 404 creates no membership.
+    await page.request.put(`/api/groups/${MISSING_GROUP_ID}/members`, {
+      data: { userIds: [] },
+    });
 
     await page.close();
   });
