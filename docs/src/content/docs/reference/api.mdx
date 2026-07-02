@@ -17,7 +17,22 @@ Agent chat is handled over WebSocket at `/api/ws`, not via REST. The browser sen
 
 Service health check. **Public — no authentication required.** Suitable for load-balancer probes and uptime monitoring.
 
-**Response:** `200 OK` when Pinchy is running. `503 Service Unavailable` when upstream dependencies (database, OpenClaw) are unreachable.
+**Response:** `200 OK` whenever the Pinchy web process is running.
+
+```json
+{
+  "status": "ok",
+  "secrets": {
+    "encryption_key": "envvar",
+    "auth_secret": "envvar",
+    "audit_hmac_secret": "envvar",
+    "db_password": "default"
+  },
+  "openclaw": { "connected": true }
+}
+```
+
+`openclaw.connected` reflects whether the web process currently has a live WebSocket connection to the OpenClaw gateway — the dependency chat relies on. Top-level `status` deliberately stays `"ok"` even when `openclaw.connected` is `false`: brief disconnects during OpenClaw restarts (for example while applying a config change) are expected and self-heal, and flipping `status` would make the Docker healthcheck restart-loop the container during normal operation. Monitor `openclaw.connected` directly (or poll `/api/health/openclaw`) if you need alerting on gateway reachability specifically.
 
 ### `GET /api/health/openclaw`
 
