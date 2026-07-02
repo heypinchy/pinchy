@@ -968,7 +968,11 @@ async function searchRelationByName(
     // lookups that resolved before. For company-EXCLUSIVE relations
     // (account.journal, where company_id is required) the false branch
     // never matches, so this is equivalent to the strict filter there.
-    domain.push("|", ["company_id", "=", false], ["company_id", "=", scopeCompanyId]);
+    domain.push(
+      "|",
+      ["company_id", "=", false],
+      ["company_id", "=", scopeCompanyId],
+    );
   }
   return client.searchRead(relation, domain, {
     fields: lookupFields,
@@ -1042,11 +1046,13 @@ async function resolveRelationValue(
   );
 }
 
-async function normalizeMany2OneValues(
+export async function normalizeMany2OneValues(
   client: OdooClient,
   connectionId: string,
   model: string,
   values: Record<string, unknown>,
+  depth = 0,
+  inheritedScope: number | null = null,
 ): Promise<Record<string, unknown>> {
   const fields = normalizeFields(await client.fields(model));
   if (fields.length === 0) return values;
@@ -1058,9 +1064,12 @@ async function normalizeMany2OneValues(
   // can be constrained to the target company — Odoo's own fix pattern for
   // multi-company collisions (PR #269835 / commit 3fcd8a9). `res.company`
   // itself has no `company_id` field, so this never recurses. When company_id
-  // is absent, false, or doesn't resolve to a positive integer, no scoping is
-  // applied and subsequent lookups behave exactly as before.
-  let scopeCompanyId: number | null = null;
+  // is absent, false, or doesn't resolve to a positive integer, fall back to
+  // the `inheritedScope` (the parent record's company, for nested one2many
+  // command tuples whose lines belong to the same company but don't restate
+  // company_id — #615); when that is also null, no scoping is applied and
+  // subsequent lookups behave exactly as before.
+  let scopeCompanyId: number | null = inheritedScope;
   const companyField = findCompanyIdField(fields);
   if (companyField && "company_id" in normalized) {
     const resolved = await resolveRelationValue(
@@ -1082,10 +1091,6 @@ async function normalizeMany2OneValues(
   for (const field of fields) {
     if (field.type !== "many2one" || !(field.name in normalized)) continue;
     if (field.name === "company_id") continue; // already resolved above
-    // Only top-level m2o fields are resolved here. Nested one2many command
-    // tuples (e.g. account.move `line_ids: [[0, 0, { account_id: "…" }]]`) are
-    // passed through to Odoo verbatim — their m2o values get no ref decoding
-    // and no company scoping. Tracked separately in #615.
     normalized[field.name] = await resolveRelationValue(
       client,
       connectionId,
@@ -1094,7 +1099,75 @@ async function normalizeMany2OneValues(
       scopeCompanyId,
     );
   }
+
+  // One nesting level down (#615): resolve m2o fields inside one2many command
+  // tuples (e.g. account.move `line_ids: [[0, 0, { account_id: "…" }]]`). The
+  // nested m2o values get the same ref decoding + company scoping as top-level
+  // fields, inheriting the parent's `scopeCompanyId` (the lines belong to the
+  // same company). Bounded to depth 1 — Odoo's command tuples can nest
+  // arbitrarily, but one level covers the account.move line_ids case; deeper
+  // nesting is left to a future change to avoid unbounded recursion through
+  // self-referential models.
+  if (depth < 1) {
+    for (const field of fields) {
+      if (field.type !== "one2many" || !field.relation) continue;
+      if (!(field.name in normalized)) continue;
+      const commands = normalized[field.name];
+      if (!Array.isArray(commands)) continue;
+      normalized[field.name] = await normalizeOne2ManyCommands(
+        client,
+        connectionId,
+        field.relation,
+        commands,
+        scopeCompanyId,
+        depth,
+      );
+    }
+  }
+
   return normalized;
+}
+
+/**
+ * Resolve m2o fields inside the value dicts of one2many command tuples.
+ * Only the create (`[0, 0, {values}]`) and update (`[1, id, {values}]`)
+ * commands carry a value dict; every other command (`[2,id]` delete, `[3,id]`
+ * unlink, `[4,id]` link, `[5]` clear, `[6,0,[ids]]` set) passes through
+ * unchanged. Recurses via `normalizeMany2OneValues` at depth+1, passing the
+ * parent's `scopeCompanyId` as the inherited scope so the nested m2o lookups
+ * are company-scoped even when the line doesn't restate company_id.
+ */
+async function normalizeOne2ManyCommands(
+  client: OdooClient,
+  connectionId: string,
+  relationModel: string,
+  commands: unknown[],
+  scopeCompanyId: number | null,
+  depth: number,
+): Promise<unknown[]> {
+  const out: unknown[] = [];
+  for (const cmd of commands) {
+    if (!Array.isArray(cmd)) {
+      out.push(cmd);
+      continue;
+    }
+    const op = cmd[0];
+    const values = cmd[2];
+    if ((op === 0 || op === 1) && isRecord(values)) {
+      const resolved = await normalizeMany2OneValues(
+        client,
+        connectionId,
+        relationModel,
+        values,
+        depth + 1,
+        scopeCompanyId,
+      );
+      out.push([op, cmd[1], resolved]);
+    } else {
+      out.push(cmd);
+    }
+  }
+  return out;
 }
 
 // The canonical Odoo external id for the built-in "To-Do" activity type.
