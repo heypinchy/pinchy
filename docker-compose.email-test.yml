@@ -20,6 +20,9 @@ services:
       # Emit a dummy API-key SecretRef for the local Ollama provider so OpenClaw
       # authenticates when routing to host.docker.internal (not treated as local).
       - PINCHY_E2E_OLLAMA_LOCAL_API_KEY=1
+      # The web app performs the OAuth token refresh (credentials route), so it
+      # is the container that must talk to the mock's /token endpoint.
+      - GMAIL_OAUTH_BASE_URL=http://gmail-mock:9004
     extra_hosts:
       # Allows Pinchy (Docker) to fetch the Ollama model list from fake-Ollama on
       # the host during regenerateOpenClawConfig(). OpenClaw already has this
@@ -28,5 +31,5 @@ services:
 
   openclaw:
     environment:
+      # The pinchy-email plugin (running inside OpenClaw) calls the Gmail API.
       - GMAIL_API_BASE_URL=http://gmail-mock:9004
-      - GMAIL_OAUTH_BASE_URL=http://gmail-mock:9004

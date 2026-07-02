@@ -113,6 +113,20 @@ export async function createGoogleConnectionInDb(
     scope: "https://www.googleapis.com/auth/gmail.modify",
   };
 
+  // The Google OAuth app settings are a prerequisite for that refresh: with an
+  // expired token and no settings, the credentials route fails loudly with 503
+  // instead of leaking the expired token to the plugin (OAuthSettingsMissingError).
+  // gmail-mock's /token endpoint accepts any client credentials.
+  const oauthSettings = JSON.stringify({
+    clientId: "mock-google-client-id",
+    clientSecret: "mock-google-client-secret",
+  });
+  await sql`
+    INSERT INTO settings (key, value, encrypted)
+    VALUES ('google_oauth_credentials', ${oauthSettings}, false)
+    ON CONFLICT (key) DO UPDATE SET value = ${oauthSettings}, encrypted = false
+  `;
+
   const encryptedCredentials = encryptCredentials(JSON.stringify(credentials));
 
   const id = randomUUID();
