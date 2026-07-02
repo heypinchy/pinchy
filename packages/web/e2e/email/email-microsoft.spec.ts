@@ -19,6 +19,7 @@ import {
 } from "./helpers";
 import {
   FAKE_OLLAMA_EMAIL_LIST_TOOL_TRIGGER,
+  FAKE_OLLAMA_EMAIL_SEARCH_TOOL_TRIGGER,
   FAKE_OLLAMA_EMAIL_SEND_TOOL_TRIGGER,
   FAKE_OLLAMA_PORT,
   startFakeOllama,
@@ -111,10 +112,13 @@ test.describe("pinchy-email — Microsoft E2E", () => {
         },
         body: JSON.stringify({
           connectionId,
-          permissions: [
-            { model: "email", operation: "read" },
-            { model: "email", operation: "search" },
-          ],
+          // Exactly the shape the permission UI writes: read/draft/send only.
+          // "search" is NOT an operation of its own (it is part of "read" —
+          // see EMAIL_OPERATIONS in tool-registry.ts). Seeding a phantom
+          // "search" row here previously masked a real bug where build.ts
+          // required it and silently stripped email_search from every
+          // UI-configured agent.
+          permissions: [{ model: "email", operation: "read" }],
         }),
       }
     );
@@ -136,8 +140,8 @@ test.describe("pinchy-email — Microsoft E2E", () => {
   });
 
   test("agent permissions model — read-only agent does not have send or draft operations", async () => {
-    // Verify that the permissions set in test 1 (read + search only) are
-    // correctly reflected in the integrations API.
+    // Verify that the permissions set in test 1 (read only — the exact shape
+    // the UI writes) are correctly reflected in the integrations API.
     //
     // The connectionId is set by test 1 above.
     if (!connectionId) {
@@ -158,8 +162,7 @@ test.describe("pinchy-email — Microsoft E2E", () => {
     expect(emailIntegration!.connectionType).toBe("microsoft");
 
     const ops = emailIntegration!.permissions.map((p) => p.operation);
-    expect(ops).toContain("read");
-    expect(ops).toContain("search");
+    expect(ops).toEqual(["read"]);
     expect(ops).not.toContain("send");
     expect(ops).not.toContain("draft");
   });
@@ -221,11 +224,14 @@ test.describe("Microsoft email dispatch probe (pinchy-email plugin coverage)", (
     if (permRes.status !== 200)
       throw new Error(`Permissions grant failed: ${String(permRes.status)}`);
 
-    // 7. Allow email_list + email_send — second config regen with the tools in
-    //    the allow-list.
+    // 7. Allow email_list + email_search + email_send — second config regen
+    //    with the tools in the allow-list. email_search is deliberately backed
+    //    ONLY by the "read" permission granted above (no "search" row exists in
+    //    UI-written data) — the search dispatch test below proves that grant
+    //    shape is sufficient end-to-end.
     const patchRes = await pinchyPatch(
       `/api/agents/${dispatchAgentId}`,
-      { allowedTools: ["email_list", "email_send"] },
+      { allowedTools: ["email_list", "email_search", "email_send"] },
       dispatchCookie
     );
     if (patchRes.status !== 200) throw new Error(`Agent patch failed: ${String(patchRes.status)}`);
@@ -308,6 +314,53 @@ test.describe("Microsoft email dispatch probe (pinchy-email plugin coverage)", (
         (r) => r.endpoint === "/v1.0/me/messages" || r.endpoint?.startsWith("/v1.0/me/mailFolders/")
       ),
       `graph-mock received no messages request; saw: ${JSON.stringify(reqs)}`
+    ).toBe(true);
+  });
+
+  // Regression guard for the bug fixed in f62f50045: the agent above holds
+  // ONLY the read/send permission rows the UI actually writes — no "search"
+  // row exists. email_search must still dispatch, because search is part of
+  // "read" (build.ts derives the plugin tools via getEmailToolsForOperations,
+  // and the plugin gates email_search behind the "read" permission). Before
+  // the fix this dispatch was impossible for every UI-configured agent, and
+  // the old seeds masked it by writing a phantom "search" row.
+  test("email_search dispatches with only a read grant (no 'search' permission row)", async ({
+    page,
+  }) => {
+    await resetGraphMock();
+    await seedGraphMockMessages([
+      {
+        subject: "Searchable message",
+        from: "sender@example.com",
+        body: "Findable by the search probe",
+        isRead: true,
+      },
+    ]);
+
+    await loginViaUI(page, getAdminEmail(), getAdminPassword());
+    await page.goto(`/chat/${dispatchAgentId}`);
+    await expect(page).toHaveURL(`/chat/${dispatchAgentId}`, { timeout: 10_000 });
+
+    const input = page.getByPlaceholder(/send a message/i);
+    await expect(input).toBeVisible({ timeout: 10_000 });
+    const since = new Date().toISOString();
+    await input.fill(`${FAKE_OLLAMA_EMAIL_SEARCH_TOOL_TRIGGER}: find mail from sender`);
+    await input.press("Enter");
+
+    const dispatched = await pollAuditForTool(page, {
+      toolName: "email_search",
+      agentId: dispatchAgentId,
+      since,
+    });
+    expect(dispatched).toBe(true);
+
+    // The plugin must have queried the Graph messages endpoint for the search.
+    const reqs = (await getGraphMockRequests()) as Array<{ endpoint: string }>;
+    expect(
+      reqs.some(
+        (r) => r.endpoint === "/v1.0/me/messages" || r.endpoint?.startsWith("/v1.0/me/mailFolders/")
+      ),
+      `graph-mock received no search request; saw: ${JSON.stringify(reqs)}`
     ).toBe(true);
   });
 

@@ -94,10 +94,13 @@ test.describe("pinchy-email — Gmail E2E", () => {
         },
         body: JSON.stringify({
           connectionId,
-          permissions: [
-            { model: "email", operation: "read" },
-            { model: "email", operation: "search" },
-          ],
+          // Exactly the shape the permission UI writes: read/draft/send only.
+          // "search" is NOT an operation of its own (it is part of "read" —
+          // see EMAIL_OPERATIONS in tool-registry.ts). Seeding a phantom
+          // "search" row here previously masked a real bug where build.ts
+          // required it and silently stripped email_search from every
+          // UI-configured agent.
+          permissions: [{ model: "email", operation: "read" }],
         }),
       }
     );
@@ -128,8 +131,8 @@ test.describe("pinchy-email — Gmail E2E", () => {
   });
 
   test("agent permissions model — read-only agent does not have send or draft operations", async () => {
-    // Verify that the permissions set in test 1 (read + search only) are
-    // correctly reflected in the integrations API.
+    // Verify that the permissions set in test 1 (read only — the exact shape
+    // the UI writes) are correctly reflected in the integrations API.
     //
     // The connectionId is set by test 1 above.
     if (!connectionId) {
@@ -150,8 +153,7 @@ test.describe("pinchy-email — Gmail E2E", () => {
     expect(emailIntegration!.connectionType).toBe("google");
 
     const ops = emailIntegration!.permissions.map((p) => p.operation);
-    expect(ops).toContain("read");
-    expect(ops).toContain("search");
+    expect(ops).toEqual(["read"]);
     expect(ops).not.toContain("send");
     expect(ops).not.toContain("draft");
   });
