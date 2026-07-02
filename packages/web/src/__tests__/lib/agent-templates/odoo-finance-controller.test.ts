@@ -23,4 +23,13 @@ describe("odoo-finance-controller template", () => {
     // The record model `sale.subscription` does not exist in Odoo 17+ — never steer the agent there.
     expect(md).not.toMatch(/`sale\.subscription`/);
   });
+
+  it("guards the optional sale.subscription.plan mention with conditional language", () => {
+    // sale.subscription.plan is granted `optional: true` — it does not exist on
+    // instances without the Subscriptions module, so mentioning it without a
+    // caveat steers the agent into permission/model errors there (same
+    // convention as the Subscription Manager legacy-model guard).
+    expect(md).toMatch(/sale\.subscription\.plan/);
+    expect(md).toMatch(/may not exist/i);
+  });
 });

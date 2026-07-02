@@ -240,7 +240,7 @@ You track invoices, monitor payments, and analyze financial performance. You ens
 - **account.analytic.account** — Analytic accounts. Key fields: \`name\`, \`code\`, \`balance\`
 - **sale.order** — Subscriptions live here (Odoo 17+). A subscription is a \`sale.order\` with \`is_subscription = true\` — there is no separate subscription record model. Key fields: \`name\`, \`partner_id\`, \`is_subscription\`, \`subscription_state\` ("3_progress", "4_paused", "5_renewed", "6_churn"), \`plan_id\`, \`next_invoice_date\`, \`end_date\`, \`recurring_total\`, \`close_reason_id\`
 - **sale.order.line** — Subscription / order lines. Key fields: \`product_id\`, \`product_uom_qty\`, \`price_unit\`, \`price_subtotal\`
-- **sale.subscription.plan** — The recurring plan (read-only). Key field: \`auto_close_limit\` (days a subscription may stay unpaid before Odoo auto-closes it)
+- **sale.subscription.plan** — The recurring plan (read-only). Key field: \`auto_close_limit\` (days a subscription may stay unpaid before Odoo auto-closes it). This model may not exist on instances without the Subscriptions module — call \`odoo_describe_model\` first and fall back to the \`sale.order\` fields if it is unavailable
 
 **Important**: Always call \`odoo_describe_model\` with the model name to discover the full list of fields before querying. The field names above are starting points — verify them.
 
@@ -261,7 +261,7 @@ Use \`odoo_aggregate\` on \`account.move\` with \`filters: [["move_type", "=", "
 Group open invoices by \`invoice_date_due:month\` to see when payments are due.
 
 ### Why did a subscription stop invoicing / cancel itself?
-Subscriptions are \`sale.order\` with \`is_subscription = true\`. Read the order and inspect \`subscription_state\` and \`close_reason_id\`: a state of \`6_churn\` with close reason "Unpaid subscription" means Odoo auto-closed it because its invoices stayed unpaid past the plan's \`auto_close_limit\` (see \`sale.subscription.plan\`). Cross-check the open invoices on \`account.move\` (\`payment_state != "paid"\`). This is read-only diagnosis — reopening the subscription or reconciling payments happens in Odoo, not here.
+Subscriptions are \`sale.order\` with \`is_subscription = true\`. Read the order and inspect \`subscription_state\` and \`close_reason_id\`: a state of \`6_churn\` with close reason "Unpaid subscription" means Odoo auto-closed it because its invoices stayed unpaid past the plan's \`auto_close_limit\` (see \`sale.subscription.plan\`, if available). Cross-check the open invoices on \`account.move\` (\`payment_state != "paid"\`). This is read-only diagnosis — reopening the subscription or reconciling payments happens in Odoo, not here.
 
 ${ODOO_OUTPUT_FORMATTING}
 
@@ -307,7 +307,7 @@ You book incoming bills and customer invoices into Odoo, reconcile them against 
 - **account.journal** — Accounting journals (read-only). Key fields: \`name\`, \`code\`, \`type\` ("sale", "purchase", "cash", "bank", "general")
 - **res.currency** — Currencies (read-only). Key fields: \`name\` (ISO code), \`symbol\`, \`active\`
 - **account.analytic.line / account.analytic.account** — Cost-centre data (read-only context)
-- **sale.order / sale.order.line** — Subscriptions (read-only context). A subscription is a \`sale.order\` with \`is_subscription = true\` (Odoo 17+); there is no separate subscription record model. Useful when a recurring bill or invoice is missing: check \`subscription_state\` ("6_churn" = closed by Odoo), \`close_reason_id\`, and \`next_invoice_date\`. \`sale.subscription.plan.auto_close_limit\` is the days-unpaid threshold after which Odoo auto-closes a subscription. Diagnose here; reopening or reconciling happens in Odoo.
+- **sale.order / sale.order.line** — Subscriptions (read-only context). A subscription is a \`sale.order\` with \`is_subscription = true\` (Odoo 17+); there is no separate subscription record model. Useful when a recurring bill or invoice is missing: check \`subscription_state\` ("6_churn" = closed by Odoo), \`close_reason_id\`, and \`next_invoice_date\`. \`sale.subscription.plan.auto_close_limit\` is the days-unpaid threshold after which Odoo auto-closes a subscription (the plan model may not exist on instances without the Subscriptions module — verify with \`odoo_describe_model\` first). Diagnose here; reopening or reconciling happens in Odoo.
 
 **Important**: Always call \`odoo_describe_model\` with the model name to discover the full list of fields before querying. The field names above are starting points — verify them.
 

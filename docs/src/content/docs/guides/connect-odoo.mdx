@@ -113,8 +113,8 @@ Each template auto-configures the agent's permissions, tools, and system instruc
 
 ### Finance
 
-- **Finance Controller** _(read-only)_ — Invoice tracking, payment status, aging analysis and margin reporting.
-- **Bookkeeper** _(read-write)_ — Books bills and invoices, reconciles payments and manages suppliers, drafting every entry first and posting only after explicit confirmation.
+- **Finance Controller** _(read-only)_ — Invoice tracking, payment status, aging analysis and margin reporting, plus read-only subscription diagnosis: why a subscription stopped invoicing or closed itself after unpaid invoices.
+- **Bookkeeper** _(read-write)_ — Books bills and invoices, reconciles payments and manages suppliers, drafting every entry first and posting only after explicit confirmation. Reads subscriptions to trace missing recurring invoices.
 - **Expense Auditor** _(read-only)_ — Reviews expense claims, flags policy violations, detects duplicates and unusual spending patterns.
 - **Approval Manager** _(read-write)_ — Reviews and approves expenses, leave and purchase orders against your policies, escalating anything above its authority.
 
