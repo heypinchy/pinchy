@@ -61,7 +61,7 @@ describe("generateToolsContent", () => {
     // The Pinchy connection label is shown because it differs from the address.
     expect(content).toContain("Pinchy connection label: Work Gmail");
     // Operations are rendered human-readable, in canonical order.
-    expect(content).toContain("Granted operations: read messages, search the mailbox");
+    expect(content).toContain("Granted operations: read and search messages, search the mailbox");
   });
 
   it("states that the mailbox identity is not necessarily the chatting user's address", () => {
@@ -95,6 +95,17 @@ describe("generateToolsContent", () => {
     expect(content).toContain("Granted operations: create drafts, send email");
     // Exactly one section heading — entries are blocks inside it.
     expect(content.match(/## Connected Email/g)).toHaveLength(1);
+  });
+
+  it("renders unknown operations literally (no prototype-key lookup)", () => {
+    // A label lookup via OBJ[op] would resolve "constructor" to a function on
+    // Object.prototype and render its source. The Map-based lookup must fall
+    // back to the raw operation string for anything it does not know.
+    const content = generateToolsContent([
+      { address: "edge@example.com", label: "edge@example.com", operations: ["constructor"] },
+    ]);
+    expect(content).toContain("Granted operations: constructor");
+    expect(content).not.toContain("function");
   });
 
   it("renders 'none' when a mailbox has no granted operations", () => {

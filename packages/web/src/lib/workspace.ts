@@ -270,13 +270,19 @@ export interface MailboxContext {
   operations: string[];
 }
 
-/** Human-readable rendering of the granted email operations. */
-const EMAIL_OPERATION_LABELS: Record<string, string> = {
-  read: "read messages",
-  search: "search the mailbox",
-  draft: "create drafts",
-  send: "send email",
-};
+/**
+ * Human-readable rendering of the granted email operations. A Map (not a
+ * Record indexed with a dynamic key) so an unknown operation can never hit a
+ * prototype property — it falls back to the raw operation string instead.
+ * "read" includes search (see EMAIL_OPERATIONS in tool-registry.ts); the
+ * standalone "search" label only renders for legacy permission rows.
+ */
+const EMAIL_OPERATION_LABELS = new Map<string, string>([
+  ["read", "read and search messages"],
+  ["search", "search the mailbox"],
+  ["draft", "create drafts"],
+  ["send", "send email"],
+]);
 
 /**
  * Renders TOOLS.md content from the agent's connected mailboxes. Returns ""
@@ -302,7 +308,7 @@ export function generateToolsContent(mailboxes: MailboxContext[]): string {
     if (mailbox.label && mailbox.label !== mailbox.address) {
       lines.push(`- Pinchy connection label: ${mailbox.label}`);
     }
-    const operations = mailbox.operations.map((op) => EMAIL_OPERATION_LABELS[op] ?? op);
+    const operations = mailbox.operations.map((op) => EMAIL_OPERATION_LABELS.get(op) ?? op);
     lines.push(`- Granted operations: ${operations.length > 0 ? operations.join(", ") : "none"}`);
   }
 

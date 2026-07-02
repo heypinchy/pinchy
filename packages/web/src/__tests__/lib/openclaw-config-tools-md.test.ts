@@ -4,9 +4,9 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 //
 // The fs mock here is STATEFUL (fileStore): writes land in an in-memory map
 // and reads consult it first. That is load-bearing for two scenarios:
-//   - the ordering guarantee (R4): getAgentBootstrapSizes must see the
+//   - the ordering guarantee: getAgentBootstrapSizes must see the
 //     TOOLS.md written earlier in the SAME regeneration, and
-//   - the stale-content transition (R2): a second regeneration against the
+//   - the stale-content transition: a second regeneration against the
 //     state the first one left behind — the "pre-existing data" test class
 //     required by AGENTS.md ("Test Migrations Against Pre-Existing Data").
 
@@ -251,7 +251,7 @@ describe("regenerateOpenClawConfig TOOLS.md mailbox context", () => {
     expect(toolsMd).toContain("## Connected Email");
     expect(toolsMd).toContain("conn-ms-1@example.com");
     expect(toolsMd).toContain("Support Inbox");
-    expect(toolsMd).toContain("read messages");
+    expect(toolsMd).toContain("read and search messages");
     expect(toolsMd).toContain("send email");
     // The mailbox identity disclaimer (shared agents serve multiple users).
     expect(toolsMd).toContain("not necessarily the personal address of the user");
@@ -377,7 +377,9 @@ describe("regenerateOpenClawConfig TOOLS.md mailbox context", () => {
       multi: {
         connectionId: "conn-mail",
         permissions: { email: ["read"] },
-        tools: ["email_list", "email_read"],
+        // "read" includes email_search — the UI never writes a separate
+        // "search" operation row (see getEmailToolsForOperations).
+        tools: ["email_list", "email_read", "email_search"],
       },
     });
   });

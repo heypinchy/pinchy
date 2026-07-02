@@ -272,6 +272,92 @@ describe("pinchy-email config generation", () => {
     expect(agentConfig.permissions).toEqual({ email: ["read", "draft"] });
   });
 
+  it("grants email_search from the 'read' operation (the UI never writes a 'search' row)", async () => {
+    // Real write-path shape: email-permission-section.tsx stores exactly
+    // read/draft/send — search has no checkbox of its own; it is part of
+    // "read" (EMAIL_READ_TOOLS in tool-registry.ts includes email_search, and
+    // the pinchy-email plugin gates email_search behind the "read"
+    // permission). The tools derivation must therefore include email_search
+    // whenever read is granted; requiring a separate "search" row silently
+    // strips search from every UI-configured agent.
+    const agentsData = [
+      {
+        id: "email-agent",
+        name: "Email Agent",
+        model: "anthropic/claude-haiku-4-5-20251001",
+        allowedTools: ["email_list", "email_read", "email_search", "email_draft"],
+        createdAt: new Date(),
+      },
+    ];
+
+    const permissionsData = [
+      {
+        agent_connection_permissions: {
+          agentId: "email-agent",
+          connectionId: "conn-google-1",
+          model: "email",
+          operation: "read",
+        },
+        integration_connections: {
+          id: "conn-google-1",
+          type: "google",
+          name: "Work Gmail",
+          description: "",
+          credentials: JSON.stringify({ accessToken: "secret-token" }),
+          data: null,
+          createdAt: new Date(),
+          updatedAt: new Date(),
+        },
+      },
+      {
+        agent_connection_permissions: {
+          agentId: "email-agent",
+          connectionId: "conn-google-1",
+          model: "email",
+          operation: "draft",
+        },
+        integration_connections: {
+          id: "conn-google-1",
+          type: "google",
+          name: "Work Gmail",
+          description: "",
+          credentials: JSON.stringify({ accessToken: "secret-token" }),
+          data: null,
+          createdAt: new Date(),
+          updatedAt: new Date(),
+        },
+      },
+    ];
+
+    mockedDb.select.mockReturnValue({
+      from: vi.fn().mockImplementation(() =>
+        Object.assign(Promise.resolve(agentsData), {
+          innerJoin: vi.fn().mockReturnValue(
+            Object.assign(Promise.resolve(permissionsData), {
+              where: vi.fn().mockResolvedValue(permissionsData),
+            })
+          ),
+          where: vi.fn().mockResolvedValue([]),
+        })
+      ),
+    } as never);
+
+    mockedReadFileSync.mockReturnValue(
+      JSON.stringify({
+        gateway: { mode: "local", bind: "lan", auth: { token: "gw-token-123" } },
+      })
+    );
+
+    await regenerateOpenClawConfig();
+
+    const config = JSON.parse(getWrittenConfigString());
+    const agentConfig = config.plugins.entries["pinchy-email"].config.agents["email-agent"];
+    expect(agentConfig.tools).toContain("email_search");
+    expect(agentConfig.tools).toEqual(
+      expect.arrayContaining(["email_list", "email_read", "email_search", "email_draft"])
+    );
+  });
+
   it("should NOT include any credentials in email config", async () => {
     const agentsData = [
       {

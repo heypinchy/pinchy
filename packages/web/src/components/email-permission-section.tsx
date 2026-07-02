@@ -12,6 +12,7 @@ import {
 import { Checkbox } from "@/components/ui/checkbox";
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
+import { EMAIL_OPERATIONS, type EmailOperation } from "@/lib/tool-registry";
 
 // ── Email-specific display names ─────────────────────────────────────────
 
@@ -27,10 +28,6 @@ const EMAIL_OPERATION_NAMES: Record<string, string> = {
   draft: "Create drafts",
   send: "Send messages",
 };
-
-/** The email operations in display order. */
-const EMAIL_OPERATIONS = ["read", "draft", "send"] as const;
-type EmailOperation = (typeof EMAIL_OPERATIONS)[number];
 
 interface Connection {
   id: string;

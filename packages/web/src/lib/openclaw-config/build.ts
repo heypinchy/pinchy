@@ -13,7 +13,11 @@ import {
   channelLinks,
 } from "@/db/schema";
 import { getSetting } from "@/lib/settings";
-import { computeAllowedTools } from "@/lib/tool-registry";
+import {
+  computeAllowedTools,
+  getEmailToolsForOperations,
+  EMAIL_OPERATION_DISPLAY_ORDER,
+} from "@/lib/tool-registry";
 import type { AgentPluginConfig } from "@/db/schema";
 import { TOOL_CAPABLE_OLLAMA_CLOUD_MODELS, OLLAMA_CLOUD_COST } from "@/lib/ollama-cloud-models";
 import { getModelCatalogForProvider } from "@/lib/openclaw-builtin-models";
@@ -278,13 +282,14 @@ export async function regenerateOpenClawConfig() {
     // Derive tool names from granted email operations. OpenClaw uses this
     // array to know which plugin-registered tool factories to call for this
     // agent — without it, no factory is called and no tools are available.
-    // Mirrors the tools-array pattern used by pinchy-web.
+    // Delegated to tool-registry's getEmailToolsForOperations — the same
+    // ops→tools mapping the permission UI uses, where "read" includes
+    // email_search (matching the plugin's own gate: email_search checks the
+    // "read" permission). A hand-rolled mapping here previously required a
+    // separate "search" operation the UI never writes, silently stripping
+    // email_search from every UI-configured agent.
     const emailOps = data.ops.get("email") ?? [];
-    const tools: string[] = [];
-    if (emailOps.includes("read")) tools.push("email_list", "email_read");
-    if (emailOps.includes("search")) tools.push("email_search");
-    if (emailOps.includes("draft")) tools.push("email_draft");
-    if (emailOps.includes("send")) tools.push("email_send");
+    const tools = getEmailToolsForOperations(emailOps);
     emailAgentConfigs[agentId] = {
       connectionId: data.connectionId,
       permissions,
@@ -297,8 +302,7 @@ export async function regenerateOpenClawConfig() {
   // bootstrap context can never disagree with what the runtime serves.
   // Agents without email connections get their TOOLS.md actively removed so
   // no stale mailbox identity survives a permission revocation.
-  // Canonical order also dedupes ops merged across multiple permission rows.
-  const EMAIL_OPERATION_ORDER = ["read", "search", "draft", "send"];
+  // The shared display order also dedupes ops merged across permission rows.
   for (const agent of liveAgents) {
     const emailData = emailPermsByAgent.get(agent.id);
     if (!emailData) {
@@ -322,7 +326,7 @@ export async function regenerateOpenClawConfig() {
       {
         address: connData.emailAddress || conn.name,
         label: conn.name,
-        operations: EMAIL_OPERATION_ORDER.filter((op) => grantedOps.includes(op)),
+        operations: EMAIL_OPERATION_DISPLAY_ORDER.filter((op) => grantedOps.includes(op)),
       },
     ]);
   }
