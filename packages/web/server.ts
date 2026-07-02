@@ -44,6 +44,7 @@ import { readGatewayToken } from "./src/lib/gateway-token-reader";
 import { regenerateOpenClawConfig } from "./src/lib/openclaw-config";
 import { SERVER_WS_MAX_PAYLOAD_BYTES } from "./src/lib/limits";
 import { evaluateDbPasswordPolicy } from "./src/lib/secret-source";
+import { exitOnStartupFailure } from "./src/server/startup-failure";
 
 logCapture.install();
 
@@ -87,7 +88,7 @@ if (dbPasswordPolicy.action === "warn") {
   console.warn(dbPasswordPolicy.message);
 }
 
-app.prepare().then(async () => {
+const startup = app.prepare().then(async () => {
   // Import request-handling modules before the server starts — these don't
   // depend on bootInits having run (domain cache starts empty and fills lazily).
   const { isHostAllowed } = await import("./src/server/host-check");
@@ -575,3 +576,10 @@ ${domain ? `<p><a href="https://${domain}">Go to ${domain} →</a></p>` : ""}
     console.log("OPENCLAW_WS_URL not set — skipping OpenClaw connection");
   }
 });
+
+// Terminal catch for the whole startup chain. Next.js registers an
+// unhandledRejection handler that only logs, so without this a startup throw
+// (e.g. the OpenClawClient constructor failing on an unreadable
+// device-identity file) leaves a zombie server: HTTP up, health "ok", but no
+// OpenClaw wiring — every chat stuck on "Reconnecting to the agent…".
+startup.catch(exitOnStartupFailure);
