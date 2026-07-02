@@ -15,10 +15,8 @@ interface AgentSettingsDiagnosticsProps {
  *
  * The export is per-agent, and here the agent is already in context, so there's
  * no agent picker — unlike the old general Settings → Support flow this replaces.
- *
- * TODO(#641/#639): once the chat-scope work lands (a real chatId in the export
- * request), add a chat picker so a specific chat of this agent can be exported.
- * Until then this exports the agent's default direct chat.
+ * Chat selection (#639) is handled entirely inside DiagnosticsExportDialog: we
+ * don't pass a `chatId`, so it preselects the agent's default chat.
  */
 export function AgentSettingsDiagnostics({ agentId, agentName }: AgentSettingsDiagnosticsProps) {
   const [dialogOpen, setDialogOpen] = useState(false);
