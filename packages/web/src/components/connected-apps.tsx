@@ -85,7 +85,16 @@ export function ConnectedApps({ onConnectionsChanged }: { onConnectionsChanged?:
   }, []);
 
   useEffect(() => {
-    fetchStates();
+    // Deferred past the effect body so the initial setRows/setLoaded happen in
+    // a microtask, not synchronously inside the effect (react-hooks/
+    // set-state-in-effect) — same pattern as new-agent-form.tsx.
+    let cancelled = false;
+    void Promise.resolve().then(() => {
+      if (!cancelled) void fetchStates();
+    });
+    return () => {
+      cancelled = true;
+    };
   }, [fetchStates]);
 
   // Opening the reset confirm refreshes the connection count for that provider so

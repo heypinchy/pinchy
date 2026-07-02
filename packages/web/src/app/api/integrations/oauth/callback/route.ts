@@ -76,7 +76,9 @@ export async function GET(request: Request) {
 
   // 4. Determine provider from pending connection (set during oauth/start)
   const pendingId = cookies["oauth_pending_id"];
-  let pendingType: string = "google";
+  // Assigned on every path below; no initializer so TS definite-assignment
+  // analysis (and CodeQL) verify that instead of masking a missed branch.
+  let pendingType: string;
   if (pendingId) {
     const pendingRows = await db
       .select()
