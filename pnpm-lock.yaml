@@ -53,6 +53,9 @@ importers:
 
   packages/plugins/pinchy-audit:
     devDependencies:
+      '@types/node':
+        specifier: ^26.1.0
+        version: 26.1.0
       typescript:
         specifier: ^6.0.3
         version: 6.0.3
@@ -62,6 +65,9 @@ importers:
 
   packages/plugins/pinchy-context:
     devDependencies:
+      '@types/node':
+        specifier: ^26.1.0
+        version: 26.1.0
       typescript:
         specifier: ^6.0.3
         version: 6.0.3
@@ -71,6 +77,9 @@ importers:
 
   packages/plugins/pinchy-docs:
     devDependencies:
+      '@types/node':
+        specifier: ^26.1.0
+        version: 26.1.0
       typescript:
         specifier: ^6.0.3
         version: 6.0.3
@@ -84,6 +93,9 @@ importers:
         specifier: ^173.0.0
         version: 173.0.0
     devDependencies:
+      '@types/node':
+        specifier: ^26.1.0
+        version: 26.1.0
       typescript:
         specifier: ^6.0.3
         version: 6.0.3
@@ -115,6 +127,9 @@ importers:
       '@types/better-sqlite3':
         specifier: ^7.6.13
         version: 7.6.13
+      '@types/node':
+        specifier: ^26.1.0
+        version: 26.1.0
       '@types/turndown':
         specifier: ^5.0.5
         version: 5.0.6
@@ -137,6 +152,9 @@ importers:
         specifier: ^0.3.0
         version: 0.3.0
     devDependencies:
+      '@types/node':
+        specifier: ^26.1.0
+        version: 26.1.0
       typescript:
         specifier: ^6.0.3
         version: 6.0.3
@@ -146,6 +164,9 @@ importers:
 
   packages/plugins/pinchy-transcript:
     devDependencies:
+      '@types/node':
+        specifier: ^26.1.0
+        version: 26.1.0
       typescript:
         specifier: ^6.0.3
         version: 6.0.3

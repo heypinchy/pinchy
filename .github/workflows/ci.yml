@@ -103,6 +103,15 @@ jobs:
       - name: Format check (docs & workflows)
         run: pnpm -C packages/web exec prettier --check "../../docs/src/**/*.{mdx,md}" "../../.github/**/*.yml"
 
+      - name: Typecheck plugins
+        # The pinchy-* plugins run via tsx with no ahead-of-time type checking
+        # elsewhere (root `pnpm build` is `next build`, which only typechecks
+        # packages/web; Dockerfile.openclaw only installs plugin deps). This runs
+        # `tsc --noEmit` against each plugin's own tsconfig, covering production
+        # AND test files. The drift guard in scripts/lib/plugin-typecheck.test.mjs
+        # (run by `pnpm test:scripts`) keeps every plugin wired for this gate.
+        run: pnpm typecheck:plugins
+
       - name: Squawk migration lint (changed files only)
         if: github.event_name == 'pull_request'
         run: |

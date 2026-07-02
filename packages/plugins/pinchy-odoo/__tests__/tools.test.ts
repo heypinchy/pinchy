@@ -80,7 +80,7 @@ const testPermissions = {
   "res.partner": ["read", "write", "create"],
 };
 
-const fetchMock = vi.fn(async () => ({
+const fetchMock = vi.fn(async (_input: string | URL, _init?: RequestInit) => ({
   ok: true,
   status: 200,
   statusText: "OK",
@@ -109,7 +109,10 @@ function createApi(agentConfigs: Record<string, unknown> = {}) {
     },
   };
 
-  plugin.register(api);
+  // `api` is a hand-rolled PluginApi mock; the only structural gap is that the
+  // helper keeps `agentConfigs` loosely typed (Record<string, unknown>), so
+  // assert it against the real register() parameter type.
+  plugin.register(api as Parameters<typeof plugin.register>[0]);
   return tools;
 }
 

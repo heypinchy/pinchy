@@ -259,7 +259,8 @@ describe("integration refs", () => {
           model: "account.account",
           id: 42,
           label: "x",
-          // @ts-expect-error: deliberate mis-shape for the validator
+          // companyId/companyLabel are both optional in the type; the runtime
+          // validator rejects exactly-one-present, which is what we assert here.
           companyLabel: "Orphan",
         }),
       ).toThrow(/Invalid integration reference payload/);
@@ -273,7 +274,8 @@ describe("integration refs", () => {
           model: "account.account",
           id: 42,
           label: "x",
-          // @ts-expect-error: deliberate mis-shape for the validator
+          // companyId/companyLabel are both optional in the type; the runtime
+          // validator rejects exactly-one-present, which is what we assert here.
           companyId: 1,
         }),
       ).toThrow(/Invalid integration reference payload/);

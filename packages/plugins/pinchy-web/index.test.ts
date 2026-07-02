@@ -59,7 +59,7 @@ function credentialsPluginConfig(agents: Record<string, unknown>) {
 }
 
 function stubCredentialsFetch(apiKey: string) {
-  const fetchMock = vi.fn(async () => ({
+  const fetchMock = vi.fn(async (_input: string | URL, _init?: RequestInit) => ({
     ok: true,
     status: 200,
     statusText: "OK",
@@ -288,7 +288,7 @@ describe("pinchy-web plugin", () => {
         .mockRejectedValueOnce(new Error("401 Unauthorized"))
         .mockRejectedValueOnce(new Error("401 Unauthorized"));
 
-      const fetchMock = vi.fn(async () => ({
+      const fetchMock = vi.fn(async (_input: string | URL, _init?: RequestInit) => ({
         ok: true,
         status: 200,
         statusText: "OK",

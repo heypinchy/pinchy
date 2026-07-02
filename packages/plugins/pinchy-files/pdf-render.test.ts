@@ -17,7 +17,7 @@ describe("renderPageToImage", () => {
       disableAutoFetch: true,
       disableFontFace: true,
       useSystemFonts: false,
-    }).promise;
+    } as Record<string, unknown>).promise;
 
     const page = await doc.getPage(1);
     const pngBuffer = await renderPageToImage(page);
