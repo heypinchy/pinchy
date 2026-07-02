@@ -174,9 +174,15 @@ jobs:
         run: pnpm test:scripts
 
       - name: Test (plugins)
-        # Plugin vitest unit suites are not part of `pnpm test` (web only),
-        # and the E2E stacks exercise plugins at runtime, not these unit
-        # files — without this step they never run in CI and silently rot.
+        # The plugin test FILES already run inside `pnpm test` via the
+        # `../plugins/pinchy-*` include in packages/web/vitest.config.ts —
+        # but under the web package's config (jsdom, web setup files, web
+        # node_modules). This step additionally runs each plugin package's
+        # own `test` script under its own config and dependencies, exactly
+        # as plugin developers run it locally, catching phantom-dependency
+        # and environment drift the web-config run would mask.
+        # `--fail-if-no-match` keeps the step from going vacuously green if
+        # the workspace glob ever stops matching.
         run: pnpm test:plugins
 
       - name: Cache Next.js build

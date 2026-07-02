@@ -9,7 +9,7 @@ Status: early development. The core is working: setup wizard, authentication, pr
 ## Repository Map
 
 - `packages/web/` - Next.js app, API routes, WebSocket bridge, Drizzle schema/migrations, tests.
-- `packages/plugins/` - OpenClaw plugins. Current Pinchy plugins: `pinchy-files`, `pinchy-context`, `pinchy-docs`, `pinchy-audit`, `pinchy-email`, `pinchy-odoo`, `pinchy-web`.
+- `packages/plugins/` - OpenClaw plugins. Current Pinchy plugins: `pinchy-files`, `pinchy-context`, `pinchy-docs`, `pinchy-audit`, `pinchy-email`, `pinchy-odoo`, `pinchy-transcript`, `pinchy-web`.
 - `config/` - OpenClaw config support, startup scripts, mock services for integration/E2E tests.
 - `docs/` - Astro Starlight documentation. It is standalone and has its own `package.json` and lockfile.
 - `sample-data/` - Sample knowledge-base data mounted into Docker at `/data/`.
@@ -265,6 +265,10 @@ Each plugin's `tsconfig.json` must be uniform so the gate is meaningful:
 - `"compilerOptions"`: `skipLibCheck: true` (third-party `.d.ts` files otherwise break the gate) and `types: ["node", "vitest"]`, backed by an `@types/node` devDependency (`types: ["node"]` throws TS2688 without it).
 
 The drift guard `scripts/lib/plugin-typecheck.test.mjs` (pure logic in `scripts/lib/plugin-typecheck.mjs`, run by `pnpm test:scripts`) fails fast if any plugin isn't wired this way, so a new plugin can't silently escape the gate — the read-side sibling of the no-untracked-skips / no-test-deletion guards.
+
+### Unit test gate
+
+Every plugin package must ship vitest unit tests and declare `"test": "vitest run"` in its package.json. The test files run twice in the CI quality job, deliberately: once inside `pnpm test` via the `../plugins/pinchy-*` include in `packages/web/vitest.config.ts` (web config), and once per package via `pnpm test:plugins` (each plugin's own config and dependencies, as run locally). Two drift guards in `packages/web/src/__tests__/lib/plugin-test-coverage.test.ts` enforce this: every plugin test file must match the include globs, and every plugin package must declare a `test` script (pnpm recursive runs silently skip packages without one).
 
 ### Tool dispatch coverage
 

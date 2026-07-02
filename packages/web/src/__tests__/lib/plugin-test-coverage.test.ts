@@ -21,7 +21,17 @@
 // of being picked up by the include glob. See AGENTS.md § "Plugin
 // Integration Contract" for the broader plugin-coverage contract.
 import { describe, it, expect } from "vitest";
-import { readdirSync, statSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
+import { tmpdir } from "node:os";
 import { join, relative, resolve } from "node:path";
 import vitestConfig from "../../../vitest.config";
 
@@ -228,5 +238,81 @@ describe("plugin-test-coverage", () => {
         "Either widen the include glob, or remove the test file.",
       ].join("\n")
     ).toEqual([]);
+  });
+});
+
+/**
+ * List package directories under `pluginsRoot` whose package.json lacks a
+ * `test` script. `pnpm --filter "./packages/plugins/*" test` (the root
+ * `test:plugins` script, run by the CI quality job) silently skips such
+ * packages — pnpm only errors when *zero* matched packages have the script —
+ * so without this check a new plugin's own suite could drop out of the
+ * per-package gate unnoticed. Directories without a package.json are not
+ * workspace packages and are ignored.
+ */
+function pluginPackagesMissingTestScript(pluginsRoot: string): string[] {
+  const missing: string[] = [];
+  for (const entry of readdirSync(pluginsRoot)) {
+    const packageJsonPath = join(pluginsRoot, entry, "package.json");
+    if (!statSync(join(pluginsRoot, entry)).isDirectory()) continue;
+    if (!existsSync(packageJsonPath)) continue;
+    const manifest = JSON.parse(readFileSync(packageJsonPath, "utf8")) as {
+      scripts?: Record<string, string>;
+    };
+    if (!manifest.scripts?.test) {
+      missing.push(entry);
+    }
+  }
+  return missing.sort();
+}
+
+describe("pluginPackagesMissingTestScript", () => {
+  it("flags a package without a test script and passes one with it", () => {
+    const root = mkdtempSync(join(tmpdir(), "plugin-test-scripts-"));
+    try {
+      mkdirSync(join(root, "pinchy-good"));
+      writeFileSync(
+        join(root, "pinchy-good", "package.json"),
+        JSON.stringify({ name: "good", scripts: { test: "vitest run" } })
+      );
+      mkdirSync(join(root, "pinchy-bad"));
+      writeFileSync(
+        join(root, "pinchy-bad", "package.json"),
+        JSON.stringify({ name: "bad", scripts: { build: "tsc" } })
+      );
+      // Not a workspace package (no package.json) — must be ignored.
+      mkdirSync(join(root, "shared-fixtures"));
+
+      expect(pluginPackagesMissingTestScript(root)).toEqual(["pinchy-bad"]);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("plugin test scripts (drift guard)", () => {
+  it("every package under packages/plugins declares a test script", () => {
+    const missing = pluginPackagesMissingTestScript(PLUGINS_ROOT);
+    expect(
+      missing,
+      [
+        "The following plugin packages have no `test` script, so",
+        "`pnpm test:plugins` silently skips their suite in CI:",
+        "",
+        ...missing.map((name) => `  packages/plugins/${name}`),
+        "",
+        'Add `"test": "vitest run"` to each package.json.',
+      ].join("\n")
+    ).toEqual([]);
+  });
+
+  it("finds at least one plugin package (guards the test:plugins glob)", () => {
+    // If packages/plugins is ever moved or emptied, `--fail-if-no-match`
+    // catches it in CI, and this assertion catches it in every local
+    // `pnpm test` run.
+    const packages = readdirSync(PLUGINS_ROOT).filter((entry) =>
+      existsSync(join(PLUGINS_ROOT, entry, "package.json"))
+    );
+    expect(packages.length).toBeGreaterThan(0);
   });
 });
