@@ -98,7 +98,11 @@ jobs:
         run: pnpm --filter @pinchy/web lint
 
       - name: Format check (web)
-        run: pnpm --filter @pinchy/web format:check
+        run: |
+          pnpm -C packages/web exec prettier --write src/lib/chats/list-user-agent-chats.ts
+          git diff --no-color -- packages/web/src/lib/chats/list-user-agent-chats.ts
+          git checkout -- packages/web/src/lib/chats/list-user-agent-chats.ts
+          pnpm --filter @pinchy/web format:check
 
       - name: Format check (docs & workflows)
         run: pnpm -C packages/web exec prettier --check "../../docs/src/**/*.{mdx,md}" "../../.github/**/*.yml"
