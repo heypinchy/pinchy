@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { ArrowLeft, Settings } from "lucide-react";
 import { ChatSwitcher } from "@/components/chat-switcher";
+import { AiDisclosureBadge } from "@/components/ai-disclosure-badge";
 
 interface MobileChatHeaderProps {
   agentId: string;
@@ -30,6 +31,7 @@ export function MobileChatHeader({
           <img src={avatarUrl} alt={agentName} className="size-8 rounded-full shrink-0" />
         )}
         <ChatSwitcher agentId={agentId} chatId={chatId} agentName={agentName} />
+        <AiDisclosureBadge />
       </div>
 
       {canEdit ? (

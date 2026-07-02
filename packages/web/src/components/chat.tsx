@@ -15,6 +15,7 @@ import { Settings } from "lucide-react";
 import { MobileChatHeader } from "@/components/mobile-chat-header";
 import { SessionActionsMenu } from "@/components/session-actions-menu";
 import { ChatSwitcher } from "@/components/chat-switcher";
+import { AiDisclosureBadge } from "@/components/ai-disclosure-badge";
 import { Badge } from "@/components/ui/badge";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { type ChatStatus, useChatStatus } from "@/hooks/use-chat-status";
@@ -277,6 +278,7 @@ export function Chat({
                                         </TooltipContent>
                                       </Tooltip>
                                     </TooltipProvider>
+                                    <AiDisclosureBadge />
                                   </div>
                                   <div className="flex items-center gap-3 shrink-0">
                                     {hasInitialContent && (
