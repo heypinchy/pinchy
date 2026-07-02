@@ -266,6 +266,7 @@ export async function regenerateOpenClawConfig() {
   // Build agents list with OpenClaw-side workspace paths, tools.allow, and plugin configs
   const pluginConfigs: Record<string, Record<string, Record<string, unknown>>> = {};
   let contextPluginAgents: Record<string, { tools: string[]; userId: string }> | undefined;
+  let imagePluginAgents: Record<string, { tools: string[] }> | undefined;
 
   const agentsList = liveAgents.map((agent) => {
     const agentEntry: Record<string, unknown> = {
@@ -402,6 +403,15 @@ export async function regenerateOpenClawConfig() {
       skills.push(id);
     }
     agentEntry.skills = skills;
+
+    // Collect plugin config for agents that have image tools (image_crop, image_resize, ...)
+    const imageTools = allowedTools.filter((t: string) => t.startsWith("image_"));
+    if (imageTools.length > 0) {
+      if (!imagePluginAgents) {
+        imagePluginAgents = {};
+      }
+      imagePluginAgents[agent.id] = { tools: imageTools };
+    }
 
     return agentEntry;
   });
@@ -622,6 +632,14 @@ export async function regenerateOpenClawConfig() {
         gatewayToken: gatewayTokenString,
         agents: contextPluginAgents,
       },
+    };
+  }
+
+  // Only include pinchy-image when at least one agent has image_* tools.
+  if (imagePluginAgents) {
+    entries["pinchy-image"] = {
+      enabled: true,
+      config: { agents: imagePluginAgents },
     };
   }
 

@@ -85,6 +85,13 @@ RUN cd /tmp/pinchy-email && npm install --omit=dev && \
     cp -r /tmp/pinchy-email/node_modules /opt/pinchy-email-deps/ && \
     rm -rf /tmp/pinchy-email
 
+# Install pinchy-image plugin dependencies (sharp ships prebuilt libvips binaries)
+COPY packages/plugins/pinchy-image/package.json /tmp/pinchy-image/package.json
+RUN cd /tmp/pinchy-image && npm install --omit=dev && \
+    mkdir -p /opt/pinchy-image-deps && \
+    cp -r /tmp/pinchy-image/node_modules /opt/pinchy-image-deps/ && \
+    rm -rf /tmp/pinchy-image
+
 # ---------------------------------------------------------------------------
 # Stage: runtime — slim image with only what the gateway runs.
 # ---------------------------------------------------------------------------
@@ -140,6 +147,7 @@ COPY --from=builder /opt/pinchy-files-deps /opt/pinchy-files-deps
 COPY --from=builder /opt/pinchy-odoo-deps /opt/pinchy-odoo-deps
 COPY --from=builder /opt/pinchy-web-deps /opt/pinchy-web-deps
 COPY --from=builder /opt/pinchy-email-deps /opt/pinchy-email-deps
+COPY --from=builder /opt/pinchy-image-deps /opt/pinchy-image-deps
 
 # Pre-warm the bundled-plugin runtime-deps cache. Rationale and full
 # behaviour live in config/prewarm-openclaw.sh; in short: boot the

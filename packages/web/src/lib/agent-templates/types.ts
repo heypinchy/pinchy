@@ -73,5 +73,12 @@ export interface OdooAgentTemplateSpec {
     operations: ReadonlyArray<OdooOperation>;
     optional?: boolean;
   }>;
+  /**
+   * Extra non-Odoo tool IDs to grant in addition to the access-level-derived
+   * Odoo tools. Use for cross-plugin capabilities a workflow needs alongside
+   * the Odoo data flow — e.g. `image_crop` for receipt pre-processing in the
+   * Bookkeeper template before `odoo_attach_file`.
+   */
+  additionalAllowedTools?: ReadonlyArray<string>;
   modelHint?: ModelHint;
 }

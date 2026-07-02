@@ -178,6 +178,32 @@ export const TOOL_REGISTRY: readonly ToolDefinition[] = [
     integration: "odoo",
   },
 
+  // Image transform tools (pinchy-image plugin — internal, no external creds)
+  {
+    id: "image_crop",
+    label: "Image: Crop",
+    description: "Crop an uploaded image to a rectangle and write a new file",
+    category: "safe",
+  },
+  {
+    id: "image_resize",
+    label: "Image: Resize",
+    description: "Resize an uploaded image and write a new file",
+    category: "safe",
+  },
+  {
+    id: "image_rotate",
+    label: "Image: Rotate",
+    description: "Rotate an uploaded image and write a new file",
+    category: "safe",
+  },
+  {
+    id: "image_convert",
+    label: "Image: Convert format",
+    description: "Convert an uploaded image to png/jpeg/webp and write a new file",
+    category: "safe",
+  },
+
   // Email integration tools
   {
     id: "email_list",

@@ -75,6 +75,7 @@ COPY packages/plugins/pinchy-audit/openclaw.plugin.json packages/plugins/pinchy-
 COPY packages/plugins/pinchy-transcript/openclaw.plugin.json packages/plugins/pinchy-transcript/
 COPY packages/plugins/pinchy-docs/openclaw.plugin.json packages/plugins/pinchy-docs/
 COPY packages/plugins/pinchy-email/openclaw.plugin.json packages/plugins/pinchy-email/
+COPY packages/plugins/pinchy-image/openclaw.plugin.json packages/plugins/pinchy-image/
 COPY packages/plugins/pinchy-odoo/openclaw.plugin.json packages/plugins/pinchy-odoo/
 COPY packages/plugins/pinchy-web/openclaw.plugin.json packages/plugins/pinchy-web/
 
@@ -175,6 +176,7 @@ COPY packages/plugins/pinchy-docs /app/pinchy-plugins/pinchy-docs
 COPY packages/plugins/pinchy-odoo /app/pinchy-plugins/pinchy-odoo
 COPY packages/plugins/pinchy-web /app/pinchy-plugins/pinchy-web
 COPY packages/plugins/pinchy-email /app/pinchy-plugins/pinchy-email
+COPY packages/plugins/pinchy-image /app/pinchy-plugins/pinchy-image
 
 WORKDIR /app/packages/web
 
