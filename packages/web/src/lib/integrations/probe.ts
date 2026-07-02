@@ -55,5 +55,25 @@ export async function probeIntegrationCredentials(
     return probeBraveApiKey(apiKey);
   }
 
+  if (type === "microsoft") {
+    const accessToken = credentials.accessToken;
+    if (typeof accessToken !== "string" || !accessToken) {
+      return { success: false, reason: "No access token stored. Please reconnect to Microsoft." };
+    }
+    const graphBase = process.env.GRAPH_API_BASE_URL ?? "https://graph.microsoft.com";
+    try {
+      const res = await fetch(`${graphBase}/v1.0/me`, {
+        headers: { Authorization: `Bearer ${accessToken}` },
+      });
+      if (res.ok) return { success: true };
+      return {
+        success: false,
+        reason: "Access token expired or revoked. Please reconnect to Microsoft.",
+      };
+    } catch {
+      return { success: false, reason: "Could not reach Microsoft. Please check your connection." };
+    }
+  }
+
   return { success: false, reason: `Cannot probe credentials for unknown type: ${type}` };
 }

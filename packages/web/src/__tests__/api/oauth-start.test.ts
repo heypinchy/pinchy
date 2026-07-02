@@ -12,6 +12,11 @@ vi.mock("@/lib/auth", () => ({
 const mockGetOAuthSettings = vi.fn();
 vi.mock("@/lib/integrations/oauth-settings", () => ({
   getOAuthSettings: (...args: unknown[]) => mockGetOAuthSettings(...args),
+  // The route now transitively imports oauth-providers.ts, which reads these
+  // settings-key constants at module load. The mock must expose them or the
+  // descriptor build throws "No <KEY> export is defined".
+  GOOGLE_OAUTH_SETTINGS_KEY: "google_oauth_credentials",
+  MICROSOFT_OAUTH_SETTINGS_KEY: "microsoft_oauth_credentials",
 }));
 
 const mockEncrypt = vi.fn().mockReturnValue("encrypted-placeholder");
@@ -51,12 +56,18 @@ vi.mock("@/db", () => ({
 }));
 
 vi.mock("@/db/schema", () => ({
-  integrationConnections: { id: "id", type: "type", status: "status" },
+  integrationConnections: {
+    id: "id",
+    type: "type",
+    status: "status",
+    createdAt: "createdAt",
+  },
 }));
 
 vi.mock("drizzle-orm", () => ({
-  eq: vi.fn((col: unknown, val: unknown) => ({ col, val })),
+  eq: vi.fn((col: unknown, val: unknown) => ({ eq: { col, val } })),
   and: vi.fn((...args: unknown[]) => ({ and: args })),
+  lt: vi.fn((col: unknown, val: unknown) => ({ lt: { col, val } })),
 }));
 
 import { NextRequest } from "next/server";
@@ -122,10 +133,34 @@ describe("GET /api/integrations/oauth/start", () => {
     expect(mockDeleteWhere).toHaveBeenCalled();
   });
 
-  it("does not delete any records when no previous oauth_pending_id cookie is present", async () => {
+  it("sweeps abandoned pending records older than 15 minutes on every start", async () => {
+    // Even without the caller's own oauth_pending_id cookie, GET must GC stale
+    // pending rows so abandoned OAuth flows (closed tab / error) don't pile up
+    // forever, regardless of which admin created them.
+    const { lt, eq } = await import("drizzle-orm");
+    const before = Date.now();
     const { GET } = await import("@/app/api/integrations/oauth/start/route");
     await GET(makeRequest());
-    expect(mockDeleteWhere).not.toHaveBeenCalled();
+    const after = Date.now();
+
+    // A createdAt < cutoff bound was applied, where cutoff is ~15 minutes ago.
+    expect(lt).toHaveBeenCalledWith("createdAt", expect.any(Date) as unknown as Date);
+    const cutoff = (lt as unknown as ReturnType<typeof vi.fn>).mock.calls.at(-1)![1] as Date;
+    const fifteenMin = 15 * 60 * 1000;
+    expect(cutoff.getTime()).toBeGreaterThanOrEqual(before - fifteenMin - 5_000);
+    expect(cutoff.getTime()).toBeLessThanOrEqual(after - fifteenMin + 5_000);
+
+    // The sweep is scoped to status = "pending" so it never touches live rows.
+    expect(eq).toHaveBeenCalledWith("status", "pending");
+    expect(mockDeleteWhere).toHaveBeenCalled();
+  });
+
+  it("sweeps stale pending records even when no oauth_pending_id cookie is present", async () => {
+    // Previously GET only deleted the caller's own pending row via the cookie,
+    // so with no cookie it deleted nothing. The sweep must still run.
+    const { GET } = await import("@/app/api/integrations/oauth/start/route");
+    await GET(makeRequest());
+    expect(mockDeleteWhere).toHaveBeenCalled();
   });
 
   it("creates a pending integration_connections record", async () => {
@@ -152,6 +187,15 @@ describe("GET /api/integrations/oauth/start", () => {
     const res = await GET(makeRequest());
     const cookieHeader = res.headers.get("set-cookie") ?? "";
     expect(cookieHeader).toContain("oauth_state=");
+  });
+
+  it("sets oauth_provider=google cookie so callback can identify provider even when pending record is gone", async () => {
+    const { GET } = await import("@/app/api/integrations/oauth/start/route");
+    const res = await GET(makeRequest());
+    const setCookies = res.headers.getSetCookie
+      ? res.headers.getSetCookie().join("; ")
+      : (res.headers.get("set-cookie") ?? "");
+    expect(setCookies).toContain("oauth_provider=google");
   });
 
   it("redirects to Google OAuth URL", async () => {
@@ -186,6 +230,85 @@ describe("GET /api/integrations/oauth/start", () => {
     const redirectUri = new URL(location).searchParams.get("redirect_uri");
     expect(redirectUri).toBe("https://pinchy.example.com/api/integrations/oauth/callback");
   });
+
+  describe("Microsoft provider (?provider=microsoft)", () => {
+    const microsoftSettings = {
+      clientId: "ms-client-id",
+      clientSecret: "ms-client-secret",
+      tenantId: "my-tenant",
+    };
+
+    function makeMicrosoftRequest(tenantId?: string) {
+      const settings = tenantId
+        ? { ...microsoftSettings, tenantId }
+        : { clientId: microsoftSettings.clientId, clientSecret: microsoftSettings.clientSecret };
+      mockGetOAuthSettings.mockImplementation((provider: string) => {
+        if (provider === "microsoft") return Promise.resolve(settings);
+        return Promise.resolve(null);
+      });
+      return new NextRequest(
+        "https://local.heypinchy.com:8443/api/integrations/oauth/start?provider=microsoft"
+      );
+    }
+
+    it("redirects to login.microsoftonline.com with tenant from settings", async () => {
+      const { GET } = await import("@/app/api/integrations/oauth/start/route");
+      const res = await GET(makeMicrosoftRequest("my-tenant"));
+      expect(res.status).toBe(302);
+      const location = res.headers.get("location") ?? "";
+      const locationUrl = new URL(location);
+      expect(locationUrl.host).toBe("login.microsoftonline.com");
+      expect(locationUrl.pathname).toBe("/my-tenant/oauth2/v2.0/authorize");
+    });
+
+    it("tenant defaults to 'organizations' when tenantId is omitted", async () => {
+      const { GET } = await import("@/app/api/integrations/oauth/start/route");
+      const res = await GET(makeMicrosoftRequest(undefined));
+      expect(res.status).toBe(302);
+      const location = res.headers.get("location") ?? "";
+      const locationUrl = new URL(location);
+      expect(locationUrl.host).toBe("login.microsoftonline.com");
+      expect(locationUrl.pathname).toBe("/organizations/oauth2/v2.0/authorize");
+    });
+
+    it("scope contains Mail.ReadWrite and offline_access", async () => {
+      const { GET } = await import("@/app/api/integrations/oauth/start/route");
+      const res = await GET(makeMicrosoftRequest("my-tenant"));
+      const location = res.headers.get("location") ?? "";
+      const scope = new URL(location).searchParams.get("scope") ?? "";
+      expect(scope).toContain("Mail.ReadWrite");
+      expect(scope).toContain("offline_access");
+    });
+
+    it("pending connection row is created with type='microsoft'", async () => {
+      const { GET } = await import("@/app/api/integrations/oauth/start/route");
+      await GET(makeMicrosoftRequest("my-tenant"));
+      expect(mockInsertValues).toHaveBeenCalledWith(
+        expect.objectContaining({
+          type: "microsoft",
+          status: "pending",
+        })
+      );
+    });
+
+    it("sets oauth_provider=microsoft cookie so callback can identify provider even when pending record is gone", async () => {
+      const { GET } = await import("@/app/api/integrations/oauth/start/route");
+      const res = await GET(makeMicrosoftRequest("my-tenant"));
+      const setCookies = res.headers.getSetCookie
+        ? res.headers.getSetCookie().join("; ")
+        : (res.headers.get("set-cookie") ?? "");
+      expect(setCookies).toContain("oauth_provider=microsoft");
+    });
+  });
+
+  it("default behaviour (no provider param) still produces a Google flow", async () => {
+    mockGetOAuthSettings.mockResolvedValue(oauthSettings);
+    const { GET } = await import("@/app/api/integrations/oauth/start/route");
+    const res = await GET(makeRequest());
+    expect(res.status).toBe(302);
+    const location = res.headers.get("location") ?? "";
+    expect(new URL(location).host).toBe("accounts.google.com");
+  });
 });
 
 describe("POST /api/integrations/oauth/start (reconnect)", () => {
@@ -214,6 +337,13 @@ describe("POST /api/integrations/oauth/start (reconnect)", () => {
     id: "c1",
     type: "odoo",
     name: "Odoo connection",
+    status: "auth_failed",
+  };
+
+  const mockMicrosoftConnection = {
+    id: "c1",
+    type: "microsoft",
+    name: "user@outlook.com",
     status: "auth_failed",
   };
 
@@ -252,13 +382,13 @@ describe("POST /api/integrations/oauth/start (reconnect)", () => {
     expect(res.status).toBe(404);
   });
 
-  it("returns 400 when connection is not google type", async () => {
+  it("returns 400 when connection type does not support OAuth re-auth (e.g. odoo)", async () => {
     mockSelectLimit.mockResolvedValueOnce([mockOdooConnection]);
     const { POST } = await import("@/app/api/integrations/oauth/start/route");
     const res = await POST(makePostRequest({ reconnectConnectionId: "c1" }));
     expect(res.status).toBe(400);
     const body = await res.json();
-    expect(body.error).toMatch(/google/i);
+    expect(body.error).toMatch(/does not support/i);
   });
 
   it("encodes reconnectConnectionId into state when connection exists and is google type", async () => {
@@ -288,10 +418,75 @@ describe("POST /api/integrations/oauth/start (reconnect)", () => {
     expect(setCookie).toContain(`oauth_state=${stateParam}`);
   });
 
+  it("does NOT set oauth_provider cookie for Google reconnect (state carries the connection id)", async () => {
+    // Asymmetry with Microsoft: Google's reconnect callback path is driven
+    // purely by reconnectConnectionId in the state, so it does not need the
+    // provider cookie. Microsoft does (its callback falls back to it). Pin the
+    // difference so a future refactor can't silently make them diverge.
+    const { POST } = await import("@/app/api/integrations/oauth/start/route");
+    const res = await POST(makePostRequest({ reconnectConnectionId: "c1" }));
+    const setCookie = res.headers.get("set-cookie") ?? "";
+    expect(setCookie).not.toContain("oauth_provider=");
+  });
+
   it("returns 400 when OAuth is not configured", async () => {
     mockGetOAuthSettings.mockResolvedValueOnce(null);
     const { POST } = await import("@/app/api/integrations/oauth/start/route");
     const res = await POST(makePostRequest({ reconnectConnectionId: "c1" }));
     expect(res.status).toBe(400);
+  });
+
+  describe("Microsoft reconnect", () => {
+    const microsoftSettings = {
+      clientId: "ms-client-id",
+      clientSecret: "ms-client-secret",
+      tenantId: "tenant-123",
+    };
+
+    beforeEach(() => {
+      mockSelectLimit.mockResolvedValue([mockMicrosoftConnection]);
+      mockGetOAuthSettings.mockImplementation((provider: string) =>
+        provider === "microsoft" ? Promise.resolve(microsoftSettings) : Promise.resolve(null)
+      );
+    });
+
+    it("returns 200 with Microsoft OAuth URL when connection is microsoft type", async () => {
+      const { POST } = await import("@/app/api/integrations/oauth/start/route");
+      const res = await POST(makePostRequest({ reconnectConnectionId: "c1" }));
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.url).toContain("login.microsoftonline.com");
+      expect(body.url).toContain("tenant-123");
+    });
+
+    it("encodes reconnectConnectionId into state for Microsoft reconnect", async () => {
+      const { POST } = await import("@/app/api/integrations/oauth/start/route");
+      const res = await POST(makePostRequest({ reconnectConnectionId: "c1" }));
+      const body = await res.json();
+      const stateParam = new URL(body.url).searchParams.get("state");
+      expect(stateParam).toBeTruthy();
+      const decoded = JSON.parse(Buffer.from(stateParam!, "base64url").toString("utf-8"));
+      expect(decoded).toMatchObject({ reconnectConnectionId: "c1" });
+    });
+
+    it("sets oauth_provider=microsoft cookie for Microsoft reconnect so callback identifies provider", async () => {
+      const { POST } = await import("@/app/api/integrations/oauth/start/route");
+      const res = await POST(makePostRequest({ reconnectConnectionId: "c1" }));
+      const setCookies = res.headers.getSetCookie
+        ? res.headers.getSetCookie().join("; ")
+        : (res.headers.get("set-cookie") ?? "");
+      expect(setCookies).toContain("oauth_provider=microsoft");
+    });
+
+    it("sets oauth_state cookie for Microsoft reconnect", async () => {
+      const { POST } = await import("@/app/api/integrations/oauth/start/route");
+      const res = await POST(makePostRequest({ reconnectConnectionId: "c1" }));
+      const body = await res.json();
+      const stateParam = new URL(body.url).searchParams.get("state")!;
+      const setCookies = res.headers.getSetCookie
+        ? res.headers.getSetCookie().join("; ")
+        : (res.headers.get("set-cookie") ?? "");
+      expect(setCookies).toContain(`oauth_state=${stateParam}`);
+    });
   });
 });

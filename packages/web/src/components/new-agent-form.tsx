@@ -33,8 +33,11 @@ import { useRestart } from "@/components/restart-provider";
 import { validateOdooTemplate } from "@/lib/integrations/odoo-template-validation";
 import { getTemplate, pickSuggestedName, type OdooTemplateConfig } from "@/lib/agent-templates";
 import { autoSelectConnection, type OdooConnection } from "@/lib/odoo-connection-selection";
+import { EMAIL_CONNECTION_TYPES } from "@/lib/integrations/oauth-providers";
 import { getPermissionPreviewItems } from "@/lib/template-grouping";
 import Link from "next/link";
+
+const EMAIL_CONNECTION_TYPE_SET = new Set<string>(EMAIL_CONNECTION_TYPES);
 
 interface Template {
   id: string;
@@ -139,6 +142,8 @@ export function NewAgentForm() {
 
   // Odoo connection state
   const [odooConnections, setOdooConnections] = useState<OdooConnection[]>([]);
+  // Email connection state (same /api/integrations row shape as Odoo)
+  const [emailConnections, setEmailConnections] = useState<OdooConnection[]>([]);
   const [selectedConnectionId, setSelectedConnectionId] = useState<string | null>(null);
   const [validationResult, setValidationResult] = useState<ValidationResult | null>(null);
   const [loadingConnections, setLoadingConnections] = useState(false);
@@ -201,6 +206,17 @@ export function NewAgentForm() {
     }
   }
 
+  // Same pattern for email templates — hide the mailbox picker and drop the
+  // stale selection in the same commit as the template change.
+  const [prevRequiresEmail, setPrevRequiresEmail] = useState(requiresEmailConnection);
+  if (prevRequiresEmail !== requiresEmailConnection) {
+    setPrevRequiresEmail(requiresEmailConnection);
+    if (!requiresEmailConnection) {
+      setEmailConnections([]);
+      setSelectedConnectionId(null);
+    }
+  }
+
   // Fetch Odoo connections when an Odoo template is selected
   useEffect(() => {
     if (!requiresOdooConnection) return;
@@ -238,26 +254,35 @@ export function NewAgentForm() {
   // Fetch email connections when an email template is selected
   useEffect(() => {
     if (!requiresEmailConnection) return;
-
-    async function fetchEmailConnections() {
+    let cancelled = false;
+    (async () => {
       setLoadingConnections(true);
       try {
         const res = await fetch("/api/integrations");
+        if (cancelled) return;
         if (res.ok) {
           const data = await res.json();
+          // Count every email provider (Google and Microsoft alike) and hide
+          // unreadable rows — same reasoning as the Odoo filter above.
           const email = (data as OdooConnection[]).filter(
-            (c: OdooConnection) => c.type === "google" && !c.cannotDecrypt
+            (c: OdooConnection) => EMAIL_CONNECTION_TYPE_SET.has(c.type) && !c.cannotDecrypt
           );
-          if (email.length === 1) {
-            setSelectedConnectionId(email[0].id);
+          if (!cancelled) {
+            setEmailConnections(email);
+            // Auto-select if only one mailbox
+            const autoSelected = autoSelectConnection(email);
+            if (autoSelected) {
+              setSelectedConnectionId(autoSelected);
+            }
           }
         }
       } finally {
-        setLoadingConnections(false);
+        if (!cancelled) setLoadingConnections(false);
       }
-    }
-
-    fetchEmailConnections();
+    })();
+    return () => {
+      cancelled = true;
+    };
   }, [requiresEmailConnection]);
 
   // Validate template against selected connection
@@ -290,6 +315,7 @@ export function NewAgentForm() {
       setSelectedPaths([]);
       setDirectories([]);
       setOdooConnections([]);
+      setEmailConnections([]);
       setSelectedConnectionId(null);
       setValidationResult(null);
       if (selectedTemplate) {
@@ -506,6 +532,48 @@ export function NewAgentForm() {
                           </AlertDescription>
                         </Alert>
                       )}
+                    </div>
+                  )}
+
+                  {requiresEmailConnection && (
+                    <div className="space-y-3">
+                      <div>
+                        <label className="text-sm font-medium">Mailbox</label>
+                        {loadingConnections ? (
+                          <p className="text-sm text-muted-foreground mt-1">
+                            Loading connections...
+                          </p>
+                        ) : emailConnections.length === 0 ? (
+                          // Normally unreachable — email templates are only
+                          // offered when a mailbox exists — but kept as a
+                          // defensive fallback.
+                          <p className="text-sm text-muted-foreground mt-1">
+                            No email connections yet.{" "}
+                            <Link
+                              href="/settings?tab=integrations"
+                              className="underline hover:text-foreground"
+                            >
+                              Set up connection →
+                            </Link>
+                          </p>
+                        ) : (
+                          <Select
+                            value={selectedConnectionId ?? undefined}
+                            onValueChange={setSelectedConnectionId}
+                          >
+                            <SelectTrigger className="mt-1">
+                              <SelectValue placeholder="Select a mailbox" />
+                            </SelectTrigger>
+                            <SelectContent>
+                              {emailConnections.map((conn) => (
+                                <SelectItem key={conn.id} value={conn.id}>
+                                  {conn.name}
+                                </SelectItem>
+                              ))}
+                            </SelectContent>
+                          </Select>
+                        )}
+                      </div>
                     </div>
                   )}
 

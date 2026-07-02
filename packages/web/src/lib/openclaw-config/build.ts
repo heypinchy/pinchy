@@ -13,7 +13,11 @@ import {
   channelLinks,
 } from "@/db/schema";
 import { getSetting } from "@/lib/settings";
-import { computeAllowedTools } from "@/lib/tool-registry";
+import {
+  computeAllowedTools,
+  getEmailToolsForOperations,
+  EMAIL_OPERATION_DISPLAY_ORDER,
+} from "@/lib/tool-registry";
 import type { AgentPluginConfig } from "@/db/schema";
 import { TOOL_CAPABLE_OLLAMA_CLOUD_MODELS, OLLAMA_CLOUD_COST } from "@/lib/ollama-cloud-models";
 import { getModelCatalogForProvider } from "@/lib/openclaw-builtin-models";
@@ -21,6 +25,7 @@ import {
   getOpenClawWorkspacePath,
   getAgentBootstrapSizes,
   writeWorkspaceSkill,
+  writeToolsFile,
 } from "@/lib/workspace";
 import { getSkillBody, isKnownSkill } from "@/lib/skills";
 import { resolveBootstrapCaps } from "./bootstrap-caps";
@@ -47,6 +52,7 @@ import {
 import { resolveDefaultPdfModel, resolveDefaultImageModel } from "./default-media-models";
 import { deepMerge } from "./deep-merge";
 import { buildGatewayBlock } from "./gateway";
+import { EMAIL_CONNECTION_TYPES } from "@/lib/integrations/oauth-providers";
 
 /**
  * Public docs URL configuration for the bundled `pinchy-docs` plugin.
@@ -202,6 +208,128 @@ export async function regenerateOpenClawConfig() {
   // Prefer `liveAgents` everywhere an agent is emitted; `allAgents` is only for
   // cases that legitimately need tombstones (e.g. id-stability bookkeeping).
   const liveAgents = allAgents.filter((a) => !a.deletedAt);
+
+  // Integration permissions joined with their connections, shared by the
+  // Odoo and email config sections below. Queried BEFORE the agents list is
+  // built because the email aggregation writes each email agent's TOOLS.md
+  // bootstrap file, and the agents-list map sizes the per-agent bootstrap
+  // caps from the files on disk (getAgentBootstrapSizes) — TOOLS.md must be
+  // on disk before that measurement, or its size would only be reflected one
+  // regeneration behind.
+  // Only include active connections — pending ones have no usable credentials.
+  const allPermissions = await db
+    .select()
+    .from(agentConnectionPermissions)
+    .innerJoin(
+      integrationConnections,
+      eq(agentConnectionPermissions.connectionId, integrationConnections.id)
+    )
+    .where(ne(integrationConnections.status, "pending"));
+
+  // Aggregate email permissions per agent. LATENT FIRST-WINS BEHAVIOR: the
+  // pinchy-email plugin config supports exactly ONE connectionId per agent
+  // (additionalProperties: false in its manifest) and the UI offers a single
+  // Select, so `connectionId`/`connection` stick to the FIRST email-type
+  // connection seen while `ops` merge across ALL of them. `connectionIds`
+  // exists purely to detect and warn about the multi-connection case.
+  const EMAIL_PROVIDER_TYPES = new Set<string>(EMAIL_CONNECTION_TYPES);
+  const emailPermsByAgent = new Map<
+    string,
+    {
+      connectionId: string;
+      connection: typeof integrationConnections.$inferSelect;
+      connectionIds: Set<string>;
+      ops: Map<string, string[]>;
+    }
+  >();
+
+  for (const row of allPermissions) {
+    const perm = row.agent_connection_permissions;
+    const conn = row.integration_connections;
+
+    if (!EMAIL_PROVIDER_TYPES.has(conn.type)) continue;
+
+    if (!emailPermsByAgent.has(perm.agentId)) {
+      emailPermsByAgent.set(perm.agentId, {
+        connectionId: perm.connectionId,
+        connection: conn,
+        connectionIds: new Set(),
+        ops: new Map(),
+      });
+    }
+    const agentPerms = emailPermsByAgent.get(perm.agentId)!;
+    agentPerms.connectionIds.add(perm.connectionId);
+
+    if (!agentPerms.ops.has(perm.model)) {
+      agentPerms.ops.set(perm.model, []);
+    }
+    agentPerms.ops.get(perm.model)!.push(perm.operation);
+  }
+
+  // Per-agent pinchy-email plugin config (emitted into plugins.entries further
+  // down). Unlike Odoo, email config does NOT include decrypted credentials —
+  // only connectionId + permissions. The plugin fetches credentials at runtime
+  // via the internal API (API-callback pattern).
+  const emailAgentConfigs: Record<
+    string,
+    { connectionId: string; permissions: Record<string, string[]>; tools: string[] }
+  > = {};
+  for (const [agentId, data] of emailPermsByAgent) {
+    const permissions: Record<string, string[]> = {};
+    for (const [model, ops] of data.ops) {
+      permissions[model] = ops;
+    }
+    // Derive tool names from granted email operations. OpenClaw uses this
+    // array to know which plugin-registered tool factories to call for this
+    // agent — without it, no factory is called and no tools are available.
+    // Delegated to tool-registry's getEmailToolsForOperations — the same
+    // ops→tools mapping the permission UI uses, where "read" includes
+    // email_search (matching the plugin's own gate: email_search checks the
+    // "read" permission). A hand-rolled mapping here previously required a
+    // separate "search" operation the UI never writes, silently stripping
+    // email_search from every UI-configured agent.
+    const emailOps = data.ops.get("email") ?? [];
+    const tools = getEmailToolsForOperations(emailOps);
+    emailAgentConfigs[agentId] = {
+      connectionId: data.connectionId,
+      permissions,
+      tools,
+    };
+  }
+
+  // Materialize each agent's TOOLS.md mailbox context from the SAME
+  // aggregation that feeds the pinchy-email plugin config above, so the
+  // bootstrap context can never disagree with what the runtime serves.
+  // Agents without email connections get their TOOLS.md actively removed so
+  // no stale mailbox identity survives a permission revocation.
+  // The shared display order also dedupes ops merged across permission rows.
+  for (const agent of liveAgents) {
+    const emailData = emailPermsByAgent.get(agent.id);
+    if (!emailData) {
+      writeToolsFile(agent.id, []);
+      continue;
+    }
+    if (emailData.connectionIds.size > 1) {
+      // Surface the silent first-wins pick (see the aggregation note above)
+      // so operators notice when an agent carries more than one email
+      // connection in the DB — the UI prevents this today, but the data
+      // model does not.
+      console.warn(
+        `[openclaw-config] Agent ${agent.name} (${agent.id}) has ${String(emailData.connectionIds.size)} email connections; pinchy-email serves only the first one (${emailData.connectionId}), and TOOLS.md lists exactly that connection.`
+      );
+    }
+    const conn = emailData.connection;
+    const connData =
+      conn.data && typeof conn.data === "object" ? (conn.data as { emailAddress?: string }) : {};
+    const grantedOps = emailData.ops.get("email") ?? [];
+    writeToolsFile(agent.id, [
+      {
+        address: connData.emailAddress || conn.name,
+        label: conn.name,
+        operations: EMAIL_OPERATION_DISPLAY_ORDER.filter((op) => grantedOps.includes(op)),
+      },
+    ]);
+  }
 
   // Pattern A from CLAUDE.md "Secrets Handling": secret pair for each LLM
   // provider with a configured apiKey. Helper returns a fresh mutable map;
@@ -649,17 +777,9 @@ export async function regenerateOpenClawConfig() {
 
   // Note: pinchy-files is always included (workspace uploads) — per-agent paths are built above.
 
-  // Collect Odoo integration configs for agents with integration permissions
-  // Only include active connections — pending ones have no usable credentials
-  const allPermissions = await db
-    .select()
-    .from(agentConnectionPermissions)
-    .innerJoin(
-      integrationConnections,
-      eq(agentConnectionPermissions.connectionId, integrationConnections.id)
-    )
-    .where(ne(integrationConnections.status, "pending"));
-
+  // Collect Odoo integration configs for agents with integration permissions.
+  // Uses `allPermissions` queried above (before the agents-list map — see the
+  // TOOLS.md ordering note there).
   const odooAgentConfigs: Record<string, Record<string, unknown>> = {};
   const integrationSecrets: SecretsBundle["integrations"] = {};
   const permsByAgent = new Map<
@@ -790,48 +910,9 @@ export async function regenerateOpenClawConfig() {
     }
   }
 
-  // Collect email integration configs for agents with email provider permissions.
-  // Unlike Odoo, email config does NOT include decrypted credentials — only
-  // connectionId + permissions. The plugin fetches credentials at runtime via
-  // the internal API (API-callback pattern).
-  const EMAIL_PROVIDER_TYPES = new Set(["google", "microsoft", "imap"]);
-  const emailPermsByAgent = new Map<string, { connectionId: string; ops: Map<string, string[]> }>();
-
-  for (const row of allPermissions) {
-    const perm = row.agent_connection_permissions;
-    const conn = row.integration_connections;
-
-    if (!EMAIL_PROVIDER_TYPES.has(conn.type)) continue;
-
-    if (!emailPermsByAgent.has(perm.agentId)) {
-      emailPermsByAgent.set(perm.agentId, {
-        connectionId: perm.connectionId,
-        ops: new Map(),
-      });
-    }
-    const agentPerms = emailPermsByAgent.get(perm.agentId)!;
-
-    if (!agentPerms.ops.has(perm.model)) {
-      agentPerms.ops.set(perm.model, []);
-    }
-    agentPerms.ops.get(perm.model)!.push(perm.operation);
-  }
-
-  const emailAgentConfigs: Record<
-    string,
-    { connectionId: string; permissions: Record<string, string[]> }
-  > = {};
-  for (const [agentId, data] of emailPermsByAgent) {
-    const permissions: Record<string, string[]> = {};
-    for (const [model, ops] of data.ops) {
-      permissions[model] = ops;
-    }
-    emailAgentConfigs[agentId] = {
-      connectionId: data.connectionId,
-      permissions,
-    };
-  }
-
+  // Emit the pinchy-email plugin entry from the per-agent email configs
+  // aggregated above (before the agents-list map — see the TOOLS.md ordering
+  // note there).
   if (Object.keys(emailAgentConfigs).length > 0) {
     entries["pinchy-email"] = {
       enabled: true,

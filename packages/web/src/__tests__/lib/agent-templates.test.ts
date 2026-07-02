@@ -240,6 +240,42 @@ describe("agent-templates", () => {
         });
       }
     });
+
+    it("all email templates declare defaultSkills with exactly 'email'", () => {
+      // Workflow guidance for email_list/email_read/email_search/email_draft
+      // now lives in the email SKILL.md, not duplicated per-template.
+      for (const id of emailTemplateIds) {
+        expect(AGENT_TEMPLATES[id].defaultSkills, `${id} defaultSkills`).toEqual(["email"]);
+      }
+    });
+
+    it("no email template mentions Gmail (provider-neutral copy)", () => {
+      for (const id of emailTemplateIds) {
+        const tpl = AGENT_TEMPLATES[id];
+        for (const field of [
+          "description",
+          "defaultTagline",
+          "defaultGreetingMessage",
+          "defaultAgentsMd",
+        ] as const) {
+          expect(tpl[field], `${id}.${field} should not mention Gmail`).not.toMatch(/gmail/i);
+        }
+      }
+    });
+
+    it("no email template duplicates tool-capability prose in defaultAgentsMd (skill owns that)", () => {
+      // Persona-only AGENTS.md: Capabilities/Workflow Guidelines sections that
+      // just re-describe the shared tools belong in the email skill now.
+      for (const id of emailTemplateIds) {
+        const md = AGENT_TEMPLATES[id].defaultAgentsMd.toLowerCase();
+        expect(md, `${id} should not have a Capabilities section`).not.toMatch(/## capabilities/);
+        expect(md, `${id} should not have a Workflow Guidelines section`).not.toMatch(
+          /## workflow guidelines/
+        );
+        expect(md, `${id} should not reference email_list`).not.toMatch(/email_list/);
+        expect(md, `${id} should not reference email_search`).not.toMatch(/email_search/);
+      }
+    });
   });
 });
 

@@ -1,7 +1,13 @@
 "use client";
 import { useEffect, useState } from "react";
+import type { IntegrationHealthCounts } from "@/lib/integrations/connection-health";
 
-export function useIntegrationHealth(enabled: boolean): { authFailedCount: number } {
+/**
+ * Polls the health endpoint and returns how many connections "need attention"
+ * (auth_failed OR cannotDecrypt). Drives the sidebar Settings badge and the
+ * Integrations-tab error dot. Best-effort: failures leave the count at 0.
+ */
+export function useIntegrationHealth(enabled: boolean): { needsAttentionCount: number } {
   const [count, setCount] = useState(0);
   useEffect(() => {
     if (!enabled) return;
@@ -10,8 +16,8 @@ export function useIntegrationHealth(enabled: boolean): { authFailedCount: numbe
       try {
         const res = await fetch("/api/integrations/health");
         if (!res.ok) return;
-        const data = (await res.json()) as { authFailedCount: number };
-        if (!cancelled) setCount(data.authFailedCount);
+        const data = (await res.json()) as Partial<IntegrationHealthCounts>;
+        if (!cancelled) setCount(data.needsAttentionCount ?? 0);
       } catch {
         /* badge is best-effort */
       }
@@ -23,5 +29,5 @@ export function useIntegrationHealth(enabled: boolean): { authFailedCount: numbe
       clearInterval(id);
     };
   }, [enabled]);
-  return { authFailedCount: count };
+  return { needsAttentionCount: count };
 }

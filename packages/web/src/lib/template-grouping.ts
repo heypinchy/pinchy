@@ -41,7 +41,7 @@ export function getAccessBadgeProps(
   >
 ): AccessBadgeProps | null {
   if (template.requiresEmailConnection) {
-    return { label: "Gmail · Read & Draft", variant: "green" };
+    return { label: "Email · Read & Draft", variant: "green" };
   }
   if (template.requiresOdooConnection) {
     switch (template.odooAccessLevel) {
@@ -81,7 +81,7 @@ export function getPermissionPreviewItems(
 ): PermissionItem[] {
   if (template.requiresEmailConnection) {
     return [
-      { icon: "check", text: "Read emails from connected Gmail account" },
+      { icon: "check", text: "Read emails from the connected mailbox" },
       { icon: "check", text: "Create draft emails" },
       { icon: "cross", text: "Cannot send emails directly" },
     ];

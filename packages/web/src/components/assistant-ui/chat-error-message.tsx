@@ -282,7 +282,7 @@ export const ChatErrorMessage: FC<{
                     href="/settings?tab=provider"
                     className="underline underline-offset-2 hover:opacity-80"
                   >
-                    Settings &gt; Providers
+                    Settings &gt; AI Provider
                   </Link>{" "}
                   to check your API configuration.
                 </>

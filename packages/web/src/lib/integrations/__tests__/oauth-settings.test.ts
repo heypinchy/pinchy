@@ -10,6 +10,8 @@ import {
   getOAuthSettings,
   saveOAuthSettings,
   GOOGLE_OAUTH_SETTINGS_KEY,
+  MICROSOFT_OAUTH_SETTINGS_KEY,
+  type MicrosoftOAuthSettings,
 } from "../oauth-settings.js";
 
 describe("oauth-settings", () => {
@@ -67,6 +69,63 @@ describe("oauth-settings", () => {
 
       const result = await getOAuthSettings("google");
       expect(result).toBeNull();
+    });
+  });
+
+  describe("Microsoft OAuth settings", () => {
+    it("stores and retrieves Microsoft OAuth settings with optional tenantId", async () => {
+      const stored: MicrosoftOAuthSettings = {
+        clientId: "ms-client",
+        clientSecret: "ms-secret",
+        tenantId: "11111111-1111-1111-1111-111111111111",
+      };
+      vi.mocked(setSetting).mockResolvedValue(undefined);
+      vi.mocked(getSetting).mockResolvedValue(JSON.stringify(stored));
+
+      await saveOAuthSettings("microsoft", stored);
+      expect(setSetting).toHaveBeenCalledWith(
+        MICROSOFT_OAUTH_SETTINGS_KEY,
+        JSON.stringify(stored),
+        true
+      );
+
+      const got = await getOAuthSettings("microsoft");
+      expect(got).toEqual({
+        clientId: "ms-client",
+        clientSecret: "ms-secret",
+        tenantId: "11111111-1111-1111-1111-111111111111",
+      });
+    });
+
+    it("Microsoft settings round-trip without tenantId", async () => {
+      const stored: MicrosoftOAuthSettings = {
+        clientId: "ms-client",
+        clientSecret: "ms-secret",
+      };
+      vi.mocked(setSetting).mockResolvedValue(undefined);
+      vi.mocked(getSetting).mockResolvedValue(JSON.stringify(stored));
+
+      await saveOAuthSettings("microsoft", stored);
+      expect(setSetting).toHaveBeenCalledWith(
+        MICROSOFT_OAUTH_SETTINGS_KEY,
+        JSON.stringify(stored),
+        true
+      );
+
+      const got = await getOAuthSettings("microsoft");
+      expect(got).toEqual({ clientId: "ms-client", clientSecret: "ms-secret" });
+      expect(got).not.toHaveProperty("tenantId");
+    });
+
+    it("returns null when Microsoft settings are missing", async () => {
+      vi.mocked(getSetting).mockResolvedValue(null);
+      const result = await getOAuthSettings("microsoft");
+      expect(result).toBeNull();
+      expect(getSetting).toHaveBeenCalledWith(MICROSOFT_OAUTH_SETTINGS_KEY);
+    });
+
+    it("MICROSOFT_OAUTH_SETTINGS_KEY equals 'microsoft_oauth_credentials'", () => {
+      expect(MICROSOFT_OAUTH_SETTINGS_KEY).toBe("microsoft_oauth_credentials");
     });
   });
 

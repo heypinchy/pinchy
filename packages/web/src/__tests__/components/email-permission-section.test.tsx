@@ -8,11 +8,7 @@ import { EmailPermissionSection } from "@/components/email-permission-section";
 const mockFetch = vi.fn();
 vi.stubGlobal("fetch", mockFetch);
 
-function makeEmailConnection(
-  id: string,
-  name: string,
-  type: "google" | "microsoft" | "imap" = "google"
-) {
+function makeEmailConnection(id: string, name: string, type: "google" | "microsoft" = "google") {
   return { id, name, type, status: "active" as const, data: null };
 }
 

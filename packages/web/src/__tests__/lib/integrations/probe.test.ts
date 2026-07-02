@@ -1,6 +1,11 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 
-const { mockAuthenticate } = vi.hoisted(() => ({ mockAuthenticate: vi.fn() }));
+const { mockAuthenticate, mockFetch } = vi.hoisted(() => ({
+  mockAuthenticate: vi.fn(),
+  mockFetch: vi.fn(),
+}));
+
+vi.stubGlobal("fetch", mockFetch);
 
 vi.mock("odoo-node", () => ({
   OdooClient: Object.assign(class {}, { authenticate: mockAuthenticate }),
@@ -78,6 +83,48 @@ describe("probeIntegrationCredentials", () => {
     expect(res).toEqual({
       success: false,
       reason: "Cannot probe credentials for unknown type: unknown-type",
+    });
+  });
+
+  describe("microsoft", () => {
+    const validCreds = {
+      accessToken: "valid-access-token",
+      refreshToken: "valid-refresh-token",
+      expiresAt: new Date(Date.now() + 3_600_000).toISOString(),
+    };
+
+    it("returns success when Graph /me returns 200", async () => {
+      mockFetch.mockResolvedValue({ ok: true, status: 200 });
+      const res = await probeIntegrationCredentials("microsoft", validCreds);
+      expect(res).toEqual({ success: true });
+      expect(mockFetch).toHaveBeenCalledWith(
+        expect.stringContaining("/v1.0/me"),
+        expect.objectContaining({
+          headers: { Authorization: "Bearer valid-access-token" },
+        })
+      );
+    });
+
+    it("returns failure when Graph /me returns 401", async () => {
+      mockFetch.mockResolvedValue({ ok: false, status: 401 });
+      const res = await probeIntegrationCredentials("microsoft", validCreds);
+      expect(res.success).toBe(false);
+      if (res.success) return;
+      expect(res.reason).toMatch(/reconnect.*Microsoft/i);
+    });
+
+    it("returns failure when accessToken is missing", async () => {
+      const res = await probeIntegrationCredentials("microsoft", {});
+      expect(res.success).toBe(false);
+      if (res.success) return;
+      expect(res.reason).toMatch(/reconnect/i);
+      expect(mockFetch).not.toHaveBeenCalled();
+    });
+
+    it("returns failure on network error", async () => {
+      mockFetch.mockRejectedValue(new Error("network error"));
+      const res = await probeIntegrationCredentials("microsoft", validCreds);
+      expect(res.success).toBe(false);
     });
   });
 

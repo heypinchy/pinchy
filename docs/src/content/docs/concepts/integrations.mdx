@@ -9,11 +9,12 @@ Integrations connect Pinchy to external systems — ERPs, email accounts, CRMs, 
 
 ## Supported integrations
 
-| Integration            | Connection method | Guide                                          |
-| ---------------------- | ----------------- | ---------------------------------------------- |
-| **Google (Gmail)**     | OAuth 2.0         | [Connect Email](/guides/connect-email/)        |
-| **Odoo**               | API key           | [Connect Odoo](/guides/connect-odoo/)          |
-| **Web Search (Brave)** | API key           | [Set Up Web Search](/guides/web-search-setup/) |
+| Integration                   | Connection method | Guide                                                         |
+| ----------------------------- | ----------------- | ------------------------------------------------------------- |
+| **Google (Gmail)**            | OAuth 2.0         | [Connect Email (Gmail)](/guides/connect-email-google/)        |
+| **Microsoft (Outlook / 365)** | OAuth 2.0         | [Connect Email (Microsoft)](/guides/connect-email-microsoft/) |
+| **Odoo**                      | API key           | [Connect Odoo](/guides/connect-odoo/)                         |
+| **Web Search (Brave)**        | API key           | [Set Up Web Search](/guides/web-search-setup/)                |
 
 :::note
 **Integrations vs. Channels.** This page is about _data integrations_ — how agents access external business systems. If you're looking for _communication channels_ (how users reach their agents from outside the Pinchy web UI), see [Set Up Telegram](/guides/telegram-setup/). LLM providers like OpenAI, Anthropic, Google, and Ollama (local and cloud) are configured separately via [Manage LLM Providers](/guides/llm-providers/).
@@ -28,13 +29,37 @@ These are two separate concepts:
 
 Creating a connection doesn't give any agent access. You must explicitly grant access in each agent's Permissions tab.
 
-## Gmail (Google)
+## Integrations are admin-managed and attach to shared agents
 
-Gmail is the first email integration. An admin connects a Google account via OAuth 2.0, then grants specific permissions per agent.
+Integrations are an **admin-level** feature, and they only attach to **shared agents**. Two facts about how Pinchy creates agents explain why:
+
+- **Every agent you create is a shared agent.** New agents are shared by default — the only personal agent is the Smithers that Pinchy auto-creates for each user.
+- **Only shared agents have a Permissions tab.** Personal agents (like Smithers) don't show Permissions or Access, because there's nothing to share and nothing to govern. See [Agent Settings](/concepts/agent-settings/) for the full tab breakdown.
+
+Since a connection is granted through the Permissions tab, and that tab exists only on shared agents managed by an admin, integrations always live on shared, team-visible agents.
+
+### Can I connect my own private mailbox?
+
+Not today. There's no per-user, private email connection: an admin sets up the email app and connects the mailboxes, then grants specific agents access to them. A mailbox connected this way is reachable by any agent an admin points at it — it isn't scoped to a single person's private Smithers.
+
+If you need an agent to work with a mailbox, ask an admin to connect it and grant a shared agent the appropriate email permissions. Keep in mind that shared agents are team resources: anyone with access to that agent can ask it to read or send mail from the connected mailbox, within the permissions it's been granted.
+
+## Email (Gmail and Microsoft 365)
+
+Pinchy connects to email over OAuth 2.0 for both Google (Gmail) and Microsoft (Outlook / Microsoft 365). An admin sets up the provider's OAuth app once, connects one or more mailboxes, then grants specific permissions per agent.
+
+### The app and the mailboxes
+
+Email setup has two layers with separate lifecycles:
+
+- **The OAuth app** — the Client ID, Client Secret, and (for Microsoft) optional Tenant ID registered with the provider. Set up **once per provider** through the **Add Integration** wizard, it's what lets Pinchy talk to Google or Microsoft at all. Once configured, it appears in the **Connected apps** section of **Settings → Integrations**, where an admin can **Edit** or **Reset** it. That section is management-only: it stays hidden until at least one app is configured and never offers setup itself.
+- **The mailboxes** — the individual accounts connected through that app. **One app carries many mailboxes.** After the app exists, connecting another mailbox skips the credentials step.
+
+Rotating just the app's client secret keeps every mailbox connected. Changing the client ID is effectively a new app, so every mailbox has to be reconnected. Resetting an app disconnects all of its mailboxes — the UI warns with the exact count first. The app persists even after its last mailbox is removed; it's cleared only by an explicit reset.
 
 ### Setup flow
 
-Gmail requires a Google Cloud OAuth app (one-time, per Pinchy installation). Once created, admins connect one or more Google accounts through the Add Integration wizard. Google requires HTTPS — the wizard shows a warning and blocks the OAuth flow when Pinchy is running without HTTPS.
+Email requires a provider OAuth app (one-time, per Pinchy installation): a Google Cloud OAuth app for Gmail, or an Azure app registration for Microsoft. Once created, admins connect one or more mailboxes through the Add Integration wizard. Both providers require HTTPS — the wizard shows a warning and blocks the OAuth flow when Pinchy is running without HTTPS.
 
 ### Permissions model
 
@@ -48,7 +73,7 @@ Each agent gets email permissions independently. Permissions are additive: grant
 
 ### Token handling
 
-OAuth access tokens expire after about one hour. Pinchy refreshes them in the background using the stored refresh token. If a refresh fails (the user revoked access, or the refresh token expired in Google's Testing mode), the integration surfaces the error and prompts the admin to reconnect.
+OAuth access tokens expire after about one hour. Pinchy refreshes them in the background using the stored refresh token. If a refresh fails permanently — the user revoked access, a Google refresh token expired in Testing mode, or a Microsoft client secret expired — the mailbox surfaces an **"Authentication failed"** state and the admin reconnects it via the mailbox's **Reconnect** action, which keeps its agent permissions attached.
 
 ### Security
 

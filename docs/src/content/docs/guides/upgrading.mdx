@@ -153,7 +153,25 @@ If you need to roll back after an upgrade:
 
 ### Breaking changes
 
-None. The tighter agent tool boundary described below changes runtime behaviour for existing agents, but it only removes built-ins that were never meant to be reachable — see the note under Upgrade notes.
+#### `email_search` now uses a structured DSL instead of a raw Gmail query string
+
+The `email_search` tool previously accepted a raw Gmail query string via a `query` parameter. It now requires a structured filter object. If your agents called `email_search` with a `query` field, update them to use the new fields.
+
+**Before (no longer supported):**
+
+```
+email_search({ query: "from:alice@example.com is:unread" })
+```
+
+**After (structured DSL):**
+
+```
+email_search({ from: "alice@example.com", unread: true })
+```
+
+Available filter fields: `from`, `to`, `subject`, `unread`, `sinceDays`, `folder`, `limit`. See the `email_search` tool description in your agent's tool list for the full field reference. The structured DSL is provider-agnostic — the same filters work for both Gmail and the new Microsoft 365 backend.
+
+The tighter agent tool boundary described below also changes runtime behaviour for existing agents, but it only removes built-ins that were never meant to be reachable — see the note under Upgrade notes.
 
 ### Upgrade notes
 
@@ -164,6 +182,10 @@ cd /opt/pinchy
 sed -i 's/PINCHY_VERSION=v0.7.0/PINCHY_VERSION=%%PINCHY_VERSION%%/' .env
 docker compose pull && docker compose up -d && docker image prune -f
 ```
+
+#### Microsoft 365 (Outlook) email
+
+%%PINCHY_VERSION%% adds **Microsoft 365 (Outlook) email** support alongside Gmail. Connect a Microsoft work/school account under **Settings → Integrations**, and agents get the same `email_list`, `email_read`, `email_search`, `email_draft`, and `email_send` tools — backed by the Microsoft Graph API and governed by the same per-agent email permissions. Existing Gmail connections are unaffected.
 
 #### Tamper-evident audit log (hash-chained)
 

@@ -53,10 +53,12 @@ The agent will return a short answer followed by cited bullet points and a one-l
 
 ## How it works under the hood
 
-Market & News Monitor is the first template built on Pinchy's skill layer (master tracking issue #543). When you create an agent from this template:
+Market & News Monitor was the first template built on Pinchy's skill layer (master tracking issue #543). When you create an agent from this template:
 
 - The `web-search` skill body is materialized to the agent's workspace as `skills/web-search/SKILL.md`
 - OpenClaw 2026.6.x loads that file automatically into the agent's system prompt
 - The agent's `openclaw.json` entry lists `skills: ["web-search"]`, which also excludes OpenClaw's bundled desktop skills (1Password, Apple Notes, ...) that are irrelevant for enterprise agents
+
+The [Email Assistant templates](/guides/connect-email/#email-agent-templates-use-the-email-skill) work the same way, attaching an `email` skill instead of `web-search`.
 
 You can read more about how skills work in [Skills, Templates, and Capabilities](/explanation/skills-and-templates/) (forthcoming).

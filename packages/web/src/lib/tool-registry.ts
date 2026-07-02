@@ -276,6 +276,25 @@ export function computeAllowedTools(): string[] {
 
 // --- Email operation helpers ---
 
+/**
+ * The canonical email operations as stored in agent_connection_permissions
+ * (model "email"). This is the ONLY vocabulary the UI writes
+ * (email-permission-section.tsx) and the pinchy-email plugin checks at
+ * runtime. Search is deliberately NOT an operation of its own: it is part of
+ * "read" (see EMAIL_READ_TOOLS below, and the plugin's email_search handler,
+ * which gates on the "read" permission). A legacy "search" row in old data is
+ * tolerated for display but grants nothing by itself.
+ */
+export const EMAIL_OPERATIONS = ["read", "draft", "send"] as const;
+export type EmailOperation = (typeof EMAIL_OPERATIONS)[number];
+
+/**
+ * Display order for rendering granted operations (TOOLS.md mailbox context).
+ * Superset of EMAIL_OPERATIONS: includes the legacy "search" slot so old
+ * permission rows still render in a stable position.
+ */
+export const EMAIL_OPERATION_DISPLAY_ORDER = ["read", "search", "draft", "send"] as const;
+
 const EMAIL_READ_TOOLS = ["email_list", "email_read", "email_search"] as const;
 const EMAIL_DRAFT_TOOLS = ["email_draft"] as const;
 const EMAIL_SEND_TOOLS = ["email_send"] as const;

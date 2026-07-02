@@ -17,6 +17,7 @@ import { TelegramLinkSettings } from "@/components/telegram-link-settings";
 import { SettingsSecurity } from "@/components/settings-security";
 import { SecretsProvenanceCard } from "@/components/secrets-provenance-card";
 import { SettingsSupport } from "@/components/settings-support";
+import { useIntegrationHealth } from "@/hooks/use-integration-health";
 import type { LicenseInfo } from "@/lib/enterprise";
 
 interface ProviderStatus {
@@ -33,20 +34,34 @@ function DirtyDot() {
   );
 }
 
+function ErrorDot() {
+  return (
+    <span
+      className="ml-1 size-1.5 rounded-full bg-destructive inline-block"
+      aria-label="needs attention"
+    />
+  );
+}
+
 export function SettingsPageContent({
   initialTab,
   isAdmin,
   initialLicense,
+  oauthError,
 }: {
   initialTab?: string;
   isAdmin: boolean;
   initialLicense?: LicenseInfo;
+  oauthError?: string;
 }) {
   const { data: session } = authClient.useSession();
   const visibleTabs: SettingsTab[] = isAdmin
     ? [...SETTINGS_TABS]
     : ["context", "profile", "telegram", "support"];
   const [activeTab, setActiveTab] = useTabParam("context", visibleTabs, initialTab);
+  // Mark the (admin-only) Integrations tab when a connection needs attention, so
+  // the error trail continues from the sidebar badge down to the exact tab.
+  const { needsAttentionCount } = useIntegrationHealth(isAdmin);
 
   const [status, setStatus] = useState<ProviderStatus | null>(null);
   const [loading, setLoading] = useState(true);
@@ -130,11 +145,17 @@ export function SettingsPageContent({
               <TabsTrigger value="telegram">Telegram</TabsTrigger>
               <TabsTrigger value="support">Support</TabsTrigger>
               {isAdmin && (
-                <TabsTrigger value="provider">Provider {providerDirty && <DirtyDot />}</TabsTrigger>
+                <TabsTrigger value="provider">
+                  AI Provider {providerDirty && <DirtyDot />}
+                </TabsTrigger>
               )}
               {isAdmin && <TabsTrigger value="users">Users</TabsTrigger>}
               {isAdmin && <TabsTrigger value="groups">Groups</TabsTrigger>}
-              {isAdmin && <TabsTrigger value="integrations">Integrations</TabsTrigger>}
+              {isAdmin && (
+                <TabsTrigger value="integrations">
+                  Integrations {needsAttentionCount > 0 && <ErrorDot />}
+                </TabsTrigger>
+              )}
               {isAdmin && <TabsTrigger value="license">License</TabsTrigger>}
               {isAdmin && <TabsTrigger value="security">Security</TabsTrigger>}
             </TabsList>
@@ -213,7 +234,7 @@ export function SettingsPageContent({
 
           {isAdmin && (
             <TabsContent value="integrations" keepMounted>
-              <SettingsIntegrations />
+              <SettingsIntegrations oauthError={oauthError} />
             </TabsContent>
           )}
 

@@ -20,10 +20,10 @@ const { mockSignOut, mockRouterPush, mockUsePathname, mockAgentsContextValue } =
   },
 }));
 
-function mockHealthFetch(authFailedCount: number) {
+function mockHealthFetch(needsAttentionCount: number) {
   vi.spyOn(globalThis, "fetch").mockResolvedValue({
     ok: true,
-    json: async () => ({ authFailedCount }),
+    json: async () => ({ needsAttentionCount }),
   } as Response);
 }
 
@@ -404,8 +404,8 @@ describe("AppSidebar", () => {
     openSpy.mockRestore();
   });
 
-  describe("Settings badge for auth-failed integrations", () => {
-    it("renders a badge on the Settings link when authFailedCount > 0", async () => {
+  describe("Settings badge for integrations needing attention", () => {
+    it("renders a badge on the Settings link when needsAttentionCount > 0", async () => {
       mockHealthFetch(1);
       renderSidebar(true);
       const badge = await screen.findByLabelText(/integration.*needs attention/i);
@@ -413,14 +413,14 @@ describe("AppSidebar", () => {
       expect(badge).toHaveTextContent("!");
     });
 
-    it("renders badge with correct plural label when authFailedCount > 1", async () => {
+    it("renders badge with correct plural label when needsAttentionCount > 1", async () => {
       mockHealthFetch(3);
       renderSidebar(true);
       const badge = await screen.findByLabelText(/3 integrations need attention/i);
       expect(badge).toBeInTheDocument();
     });
 
-    it("does not render a badge when authFailedCount is 0", async () => {
+    it("does not render a badge when needsAttentionCount is 0", async () => {
       mockHealthFetch(0);
       renderSidebar(true);
       await waitFor(() => {
@@ -435,6 +435,29 @@ describe("AppSidebar", () => {
         expect.stringContaining("/api/integrations/health"),
         expect.anything()
       );
+    });
+  });
+
+  describe("Settings deeplink to the integrations tab (error trail)", () => {
+    function settingsLink() {
+      return screen.getByRole("link", { name: /settings/i });
+    }
+
+    it("points Settings at ?tab=integrations when needsAttentionCount > 0", async () => {
+      mockHealthFetch(2);
+      renderSidebar(true);
+      await waitFor(() => {
+        expect(settingsLink()).toHaveAttribute("href", "/settings?tab=integrations");
+      });
+    });
+
+    it("points Settings at /settings when needsAttentionCount is 0", async () => {
+      mockHealthFetch(0);
+      renderSidebar(true);
+      // Wait a tick so the health fetch has resolved; the href must stay /settings.
+      await waitFor(() => {
+        expect(settingsLink()).toHaveAttribute("href", "/settings");
+      });
     });
   });
 

@@ -1,11 +1,12 @@
 // auth-direct: browser-flow callback. The user has just bounced through
-// Google's OAuth consent screen; on auth failure we render a redirect to
-// /settings, not a JSON 401, so they don't dead-end on raw JSON. The
-// withAuth/withAdmin wrappers always return JSON, which doesn't fit here.
+// Google's or Microsoft's OAuth consent screen; on auth failure we render a
+// redirect to /settings, not a JSON 401, so they don't dead-end on raw JSON.
+// The withAuth/withAdmin wrappers always return JSON, which doesn't fit here.
 import { NextResponse } from "next/server";
 import { headers } from "next/headers";
 import { getSession } from "@/lib/auth";
-import { getOAuthSettings } from "@/lib/integrations/oauth-settings";
+import { getOAuthSettings, type MicrosoftOAuthSettings } from "@/lib/integrations/oauth-settings";
+import { getOAuthProvider, OAUTH_PROVIDERS } from "@/lib/integrations/oauth-providers";
 import { encrypt } from "@/lib/encryption";
 import { db } from "@/db";
 import { integrationConnections } from "@/db/schema";
@@ -73,72 +74,180 @@ export async function GET(request: Request) {
     return errorRedirect(origin, "state_mismatch");
   }
 
-  // 4. Read Google OAuth settings
-  const settings = await getOAuthSettings("google");
+  // 4. Determine provider from pending connection (set during oauth/start)
+  const pendingId = cookies["oauth_pending_id"];
+  // Assigned on every path below; no initializer so TS definite-assignment
+  // analysis (and CodeQL) verify that instead of masking a missed branch.
+  let pendingType: string;
+  if (pendingId) {
+    const pendingRows = await db
+      .select()
+      .from(integrationConnections)
+      .where(
+        and(eq(integrationConnections.id, pendingId), eq(integrationConnections.status, "pending"))
+      )
+      .limit(1);
+    if (pendingRows.length > 0) {
+      pendingType = pendingRows[0].type;
+    } else {
+      // Pending record gone (expired/cleaned up) — fall back to the provider
+      // cookie set by oauth/start so we still know which provider was used.
+      pendingType = cookies["oauth_provider"] ?? "google";
+    }
+  } else {
+    // No pending ID at all — fall back to the provider cookie.
+    pendingType = cookies["oauth_provider"] ?? "google";
+  }
+
+  // Resolve the descriptor; fail-safe to Google (matches the pendingType
+  // default). getOAuthProvider avoids object-injection on pendingType.
+  const oauthProvider = getOAuthProvider(pendingType) ?? OAUTH_PROVIDERS.google;
+  const isMicrosoft = oauthProvider.id === "microsoft";
+
+  // 5. Read OAuth settings for the determined provider
+  const settings = await getOAuthSettings(oauthProvider.id);
   if (!settings) {
     return errorRedirect(origin, "not_configured");
   }
 
-  // 5. Build redirect_uri
+  // 6. Build redirect_uri
   const redirectUri = `${origin}/api/integrations/oauth/callback`;
 
-  // 6. Exchange code for tokens
-  const tokenBody = new URLSearchParams({
-    code,
-    client_id: settings.clientId,
-    client_secret: settings.clientSecret,
-    redirect_uri: redirectUri,
-    grant_type: "authorization_code",
-  });
+  let access_token: string;
+  let refresh_token: string;
+  let expires_in: number;
+  let scope: string;
+  let emailAddress: string;
 
-  const tokenResponse = await fetch("https://oauth2.googleapis.com/token", {
-    method: "POST",
-    headers: { "Content-Type": "application/x-www-form-urlencoded" },
-    body: tokenBody.toString(),
-  });
+  if (isMicrosoft) {
+    // ── Microsoft authorization-code exchange ────────────────────────────
+    const msSettings = settings as MicrosoftOAuthSettings;
+    const tenantId = msSettings.tenantId;
 
-  if (!tokenResponse.ok) {
-    deferAuditLog({
-      actorType: "user",
-      actorId: session.user.id!,
-      eventType: "integration.created",
-      resource: "integration:google",
-      detail: {
-        type: "google",
-        reason: "token_exchange_failed",
-      },
-      outcome: "failure",
+    const tokenBody = new URLSearchParams({
+      grant_type: "authorization_code",
+      code,
+      client_id: settings.clientId,
+      client_secret: settings.clientSecret,
+      redirect_uri: redirectUri,
+      scope: oauthProvider.scopes,
     });
-    return errorRedirect(origin, "token_exchange_failed");
+
+    const tokenResponse = await fetch(oauthProvider.tokenUrl({ tenantId }), {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body: tokenBody.toString(),
+    });
+
+    if (!tokenResponse.ok) {
+      deferAuditLog({
+        actorType: "user",
+        actorId: session.user.id!,
+        eventType: "config.changed",
+        resource: "integration:microsoft",
+        detail: {
+          action: "integration_oauth_failed",
+          type: "microsoft",
+          error: { message: "token_exchange_failed" },
+        },
+        outcome: "failure",
+      });
+      return errorRedirect(origin, "token_exchange_failed");
+    }
+
+    const tokenData = await tokenResponse.json();
+    access_token = tokenData.access_token;
+    refresh_token = tokenData.refresh_token;
+    expires_in = tokenData.expires_in;
+    scope = oauthProvider.scopes;
+
+    // Fetch profile from Microsoft Graph
+    const profileResponse = await fetch(oauthProvider.profileUrl, {
+      headers: { Authorization: `Bearer ${access_token}` },
+    });
+
+    if (!profileResponse.ok) {
+      deferAuditLog({
+        actorType: "user",
+        actorId: session.user.id!,
+        eventType: "config.changed",
+        resource: "integration:microsoft",
+        detail: {
+          action: "integration_oauth_failed",
+          type: "microsoft",
+          error: { message: "profile_fetch_failed" },
+        },
+        outcome: "failure",
+      });
+      return errorRedirect(origin, "profile_fetch_failed");
+    }
+
+    const profileData = await profileResponse.json();
+    emailAddress = oauthProvider.extractEmail(profileData) ?? "";
+  } else {
+    // ── Google authorization-code exchange ───────────────────────────────
+    const tokenBody = new URLSearchParams({
+      code,
+      client_id: settings.clientId,
+      client_secret: settings.clientSecret,
+      redirect_uri: redirectUri,
+      grant_type: "authorization_code",
+    });
+
+    const tokenResponse = await fetch(oauthProvider.tokenUrl({}), {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body: tokenBody.toString(),
+    });
+
+    if (!tokenResponse.ok) {
+      deferAuditLog({
+        actorType: "user",
+        actorId: session.user.id!,
+        eventType: "config.changed",
+        resource: "integration:google",
+        detail: {
+          action: "integration_oauth_failed",
+          type: "google",
+          error: { message: "token_exchange_failed" },
+        },
+        outcome: "failure",
+      });
+      return errorRedirect(origin, "token_exchange_failed");
+    }
+
+    const tokenData = await tokenResponse.json();
+    access_token = tokenData.access_token;
+    refresh_token = tokenData.refresh_token;
+    expires_in = tokenData.expires_in;
+    scope = tokenData.scope;
+
+    // Fetch email address from Gmail profile
+    const profileResponse = await fetch(oauthProvider.profileUrl, {
+      headers: { Authorization: `Bearer ${access_token}` },
+    });
+
+    if (!profileResponse.ok) {
+      deferAuditLog({
+        actorType: "user",
+        actorId: session.user.id!,
+        eventType: "config.changed",
+        resource: "integration:google",
+        detail: {
+          action: "integration_oauth_failed",
+          type: "google",
+          error: { message: "profile_fetch_failed" },
+        },
+        outcome: "failure",
+      });
+      return errorRedirect(origin, "profile_fetch_failed");
+    }
+
+    const profileData = await profileResponse.json();
+    emailAddress = oauthProvider.extractEmail(profileData) ?? "";
   }
 
-  const tokenData = await tokenResponse.json();
-  const { access_token, refresh_token, expires_in, scope } = tokenData;
-
-  // 7. Fetch email address
-  const profileResponse = await fetch("https://www.googleapis.com/gmail/v1/users/me/profile", {
-    headers: { Authorization: `Bearer ${access_token}` },
-  });
-
-  if (!profileResponse.ok) {
-    deferAuditLog({
-      actorType: "user",
-      actorId: session.user.id!,
-      eventType: "integration.created",
-      resource: "integration:google",
-      detail: {
-        type: "google",
-        reason: "profile_fetch_failed",
-      },
-      outcome: "failure",
-    });
-    return errorRedirect(origin, "profile_fetch_failed");
-  }
-
-  const profileData = await profileResponse.json();
-  const { emailAddress } = profileData;
-
-  // 8. Persist integration
+  // 7. Persist integration — UPDATE pending record if possible, otherwise INSERT
   const expiresAt = new Date(Date.now() + expires_in * 1000).toISOString();
   const encryptedCredentials = encrypt(
     JSON.stringify({
@@ -149,9 +258,11 @@ export async function GET(request: Request) {
     })
   );
 
+  const connectionType = oauthProvider.connectionType;
+
   const connectionData = {
     emailAddress,
-    provider: "gmail",
+    provider: oauthProvider.auditProvider,
     connectedAt: new Date().toISOString(),
   };
 
@@ -234,7 +345,7 @@ export async function GET(request: Request) {
         [connection] = await db
           .insert(integrationConnections)
           .values({
-            type: "google",
+            type: connectionType,
             name: emailAddress,
             credentials: encryptedCredentials,
             data: connectionData,
@@ -245,34 +356,50 @@ export async function GET(request: Request) {
       [connection] = await db
         .insert(integrationConnections)
         .values({
-          type: "google",
+          type: connectionType,
           name: emailAddress,
           credentials: encryptedCredentials,
           data: connectionData,
         })
         .returning();
     }
-
     // 9b. Audit log for new connection
-    // GDPR Art. 17: never record the plaintext Gmail address. The audit row
+    // GDPR Art. 17: never record the plaintext email address. The audit row
     // is HMAC-signed, so we cannot redact later. redactEmail() gives us a
     // keyed hash + masked preview; the connectionId in `resource` is enough
     // to look up the live mailbox name from the integrations table while it
-    // exists.
-    deferAuditLog({
-      actorType: "user",
-      actorId: session.user.id!,
-      eventType: "integration.created",
-      resource: `integration:${connection.id}`,
-      detail: {
-        type: "google",
-        ...redactEmail(emailAddress),
-      },
-      outcome: "success",
-    });
+    // exists. Google and Microsoft use different audit conventions: Google
+    // emits the dedicated `integration.created` event; Microsoft (added later)
+    // uses the generic `config.changed` event with an `action` discriminator.
+    if (isMicrosoft) {
+      deferAuditLog({
+        actorType: "user",
+        actorId: session.user.id!,
+        eventType: "config.changed",
+        resource: `integration:${connection.id}`,
+        detail: {
+          action: "integration_created",
+          type: connectionType,
+          ...redactEmail(emailAddress),
+        },
+        outcome: "success",
+      });
+    } else {
+      deferAuditLog({
+        actorType: "user",
+        actorId: session.user.id!,
+        eventType: "integration.created",
+        resource: `integration:${connection.id}`,
+        detail: {
+          type: "google",
+          ...redactEmail(emailAddress),
+        },
+        outcome: "success",
+      });
+    }
   }
 
-  // 10. Clean up cookies and redirect
+  // 9. Clean up cookies and redirect
   const successUrl = new URL("/settings", origin);
   successUrl.searchParams.set("tab", "integrations");
   successUrl.searchParams.set("created", connection.id);
@@ -286,6 +413,13 @@ export async function GET(request: Request) {
     maxAge: 0,
   });
   response.cookies.set("oauth_pending_id", "", {
+    httpOnly: true,
+    secure: isSecure,
+    sameSite: "lax",
+    path: "/",
+    maxAge: 0,
+  });
+  response.cookies.set("oauth_provider", "", {
     httpOnly: true,
     secure: isSecure,
     sameSite: "lax",

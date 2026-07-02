@@ -93,6 +93,17 @@ const mockedExistsSync = vi.mocked(existsSync);
 const mockedDb = vi.mocked(db);
 const mockedGetSetting = vi.mocked(getSetting);
 
+// The regenerate writes more than one file (TOOLS.md mailbox context precedes
+// the config write for email agents), so locate the openclaw.json write by
+// path instead of assuming it is the first writeFileSync call.
+function getWrittenConfigString(): string {
+  const call = mockedWriteFileSync.mock.calls.find(
+    (c) => typeof c[0] === "string" && (c[0] as string).includes("openclaw.json")
+  );
+  if (!call) throw new Error("openclaw.json was never written");
+  return call[1] as string;
+}
+
 describe("pinchy-email config generation", () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -161,7 +172,7 @@ describe("pinchy-email config generation", () => {
 
     await regenerateOpenClawConfig();
 
-    const written = mockedWriteFileSync.mock.calls[0][1] as string;
+    const written = getWrittenConfigString();
     const config = JSON.parse(written);
 
     const emailPlugin = config.plugins?.entries?.["pinchy-email"];
@@ -246,7 +257,7 @@ describe("pinchy-email config generation", () => {
 
     await regenerateOpenClawConfig();
 
-    const written = mockedWriteFileSync.mock.calls[0][1] as string;
+    const written = getWrittenConfigString();
     const config = JSON.parse(written);
 
     const emailConfig = config.plugins.entries["pinchy-email"].config;
@@ -259,6 +270,92 @@ describe("pinchy-email config generation", () => {
     const agentConfig = emailConfig.agents["email-agent"];
     expect(agentConfig.connectionId).toBe("conn-google-1");
     expect(agentConfig.permissions).toEqual({ email: ["read", "draft"] });
+  });
+
+  it("grants email_search from the 'read' operation (the UI never writes a 'search' row)", async () => {
+    // Real write-path shape: email-permission-section.tsx stores exactly
+    // read/draft/send — search has no checkbox of its own; it is part of
+    // "read" (EMAIL_READ_TOOLS in tool-registry.ts includes email_search, and
+    // the pinchy-email plugin gates email_search behind the "read"
+    // permission). The tools derivation must therefore include email_search
+    // whenever read is granted; requiring a separate "search" row silently
+    // strips search from every UI-configured agent.
+    const agentsData = [
+      {
+        id: "email-agent",
+        name: "Email Agent",
+        model: "anthropic/claude-haiku-4-5-20251001",
+        allowedTools: ["email_list", "email_read", "email_search", "email_draft"],
+        createdAt: new Date(),
+      },
+    ];
+
+    const permissionsData = [
+      {
+        agent_connection_permissions: {
+          agentId: "email-agent",
+          connectionId: "conn-google-1",
+          model: "email",
+          operation: "read",
+        },
+        integration_connections: {
+          id: "conn-google-1",
+          type: "google",
+          name: "Work Gmail",
+          description: "",
+          credentials: JSON.stringify({ accessToken: "secret-token" }),
+          data: null,
+          createdAt: new Date(),
+          updatedAt: new Date(),
+        },
+      },
+      {
+        agent_connection_permissions: {
+          agentId: "email-agent",
+          connectionId: "conn-google-1",
+          model: "email",
+          operation: "draft",
+        },
+        integration_connections: {
+          id: "conn-google-1",
+          type: "google",
+          name: "Work Gmail",
+          description: "",
+          credentials: JSON.stringify({ accessToken: "secret-token" }),
+          data: null,
+          createdAt: new Date(),
+          updatedAt: new Date(),
+        },
+      },
+    ];
+
+    mockedDb.select.mockReturnValue({
+      from: vi.fn().mockImplementation(() =>
+        Object.assign(Promise.resolve(agentsData), {
+          innerJoin: vi.fn().mockReturnValue(
+            Object.assign(Promise.resolve(permissionsData), {
+              where: vi.fn().mockResolvedValue(permissionsData),
+            })
+          ),
+          where: vi.fn().mockResolvedValue([]),
+        })
+      ),
+    } as never);
+
+    mockedReadFileSync.mockReturnValue(
+      JSON.stringify({
+        gateway: { mode: "local", bind: "lan", auth: { token: "gw-token-123" } },
+      })
+    );
+
+    await regenerateOpenClawConfig();
+
+    const config = JSON.parse(getWrittenConfigString());
+    const agentConfig = config.plugins.entries["pinchy-email"].config.agents["email-agent"];
+    expect(agentConfig.tools).toContain("email_search");
+    expect(agentConfig.tools).toEqual(
+      expect.arrayContaining(["email_list", "email_read", "email_search", "email_draft"])
+    );
   });
 
   it("should NOT include any credentials in email config", async () => {
@@ -319,7 +416,7 @@ describe("pinchy-email config generation", () => {
 
     await regenerateOpenClawConfig();
 
-    const written = mockedWriteFileSync.mock.calls[0][1] as string;
+    const written = getWrittenConfigString();
 
     // The entire serialized config must not contain any credential values
     expect(written).not.toContain("super-secret-access");
@@ -391,13 +488,18 @@ describe("pinchy-email config generation", () => {
 
     await regenerateOpenClawConfig();
 
-    const written = mockedWriteFileSync.mock.calls[0][1] as string;
+    const written = getWrittenConfigString();
     const config = JSON.parse(written);
 
     expect(config.plugins?.entries?.["pinchy-email"]).toBeUndefined();
   });
 
-  it("should handle IMAP connection type for email", async () => {
+  it("should ignore a non-OAuth 'imap' connection type for email (no IMAP flow exists)", async () => {
+    // There is no IMAP OAuth flow, no IMAP adapter, and no write path that ever
+    // persists `type: "imap"` into integration_connections (see
+    // EMAIL_CONNECTION_TYPES in @/lib/integrations/oauth-providers.ts). This
+    // test pins the intentional behavior: an "imap"-typed row — however it
+    // got there — must NOT be treated as an email connection.
     const agentsData = [
       {
         id: "imap-agent",
@@ -478,16 +580,13 @@ describe("pinchy-email config generation", () => {
 
     await regenerateOpenClawConfig();
 
-    const written = mockedWriteFileSync.mock.calls[0][1] as string;
+    const written = getWrittenConfigString();
     const config = JSON.parse(written);
 
+    // No email-capable connection types matched, so the plugin entry is
+    // never created — mirrors the "no email connections" case above.
     const emailPlugin = config.plugins?.entries?.["pinchy-email"];
-    expect(emailPlugin).toBeDefined();
-    expect(emailPlugin.enabled).toBe(true);
-
-    const agentConfig = emailPlugin.config.agents["imap-agent"];
-    expect(agentConfig.connectionId).toBe("conn-imap-1");
-    expect(agentConfig.permissions).toEqual({ email: ["read", "search"] });
+    expect(emailPlugin).toBeUndefined();
 
     // No credentials leaked
     expect(written).not.toContain("secret-password");

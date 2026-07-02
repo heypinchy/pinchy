@@ -9,6 +9,13 @@ vi.mock("sonner", () => ({
   toast: { success: vi.fn(), error: vi.fn() },
 }));
 
+// SettingsIntegrations calls useRouter() to clean up the ?error= param after
+// surfacing an OAuth error toast. Provide a router stub so the component renders
+// outside an App Router context.
+vi.mock("next/navigation", () => ({
+  useRouter: () => ({ replace: vi.fn() }),
+}));
+
 // Mock odoo-sync — getAccessibleCategoryLabels is called for Odoo connections
 vi.mock("@/lib/integrations/odoo-sync", () => ({
   getAccessibleCategoryLabels: () => [],
@@ -55,12 +62,25 @@ const odooConnection = {
 };
 
 function mockFetchConnections(connections: unknown[]) {
-  return vi.spyOn(global, "fetch").mockImplementation(() =>
-    Promise.resolve({
+  return vi.spyOn(global, "fetch").mockImplementation((input) => {
+    const url = typeof input === "string" ? input : (input as Request).url;
+    // The Connected apps section fetches per-provider OAuth app state on mount.
+    // These tests only assert connection-list behaviour, so report both
+    // providers as unconfigured and route everything else to the connections.
+    if (url.startsWith("/api/settings/oauth")) {
+      const state = { configured: false, clientId: "", connectionCount: 0 };
+      return Promise.resolve({
+        ok: true,
+        text: async () => JSON.stringify(state),
+        json: async () => state,
+      } as unknown as Response);
+    }
+    return Promise.resolve({
       ok: true,
+      text: async () => JSON.stringify(connections),
       json: async () => connections,
-    } as Response)
-  );
+    } as unknown as Response);
+  });
 }
 
 describe("SettingsIntegrations — type-aware rendering", () => {
@@ -127,7 +147,7 @@ describe("SettingsIntegrations — type-aware rendering", () => {
     fetchSpy.mockRestore();
   });
 
-  it("shows 'Edit OAuth Credentials' in dropdown for Google connections, NOT Test/Sync", async () => {
+  it("shows Rename/Delete but NOT Edit OAuth Credentials, Test, or Sync for Google connections", async () => {
     const user = userEvent.setup();
     const fetchSpy = mockFetchConnections([googleConnection]);
 
@@ -143,12 +163,13 @@ describe("SettingsIntegrations — type-aware rendering", () => {
     const menuButton = buttons[buttons.length - 1];
     await user.click(menuButton);
 
-    // Google connections should have Edit OAuth Credentials
-    expect(screen.getByText("Edit OAuth Credentials")).toBeInTheDocument();
-
     // Google connections should have Rename and Delete
     expect(screen.getByText("Rename")).toBeInTheDocument();
     expect(screen.getByText("Delete")).toBeInTheDocument();
+
+    // OAuth app credentials are now managed in the Connected apps section, so the
+    // per-connection dropdown must NOT offer "Edit OAuth Credentials" anymore.
+    expect(screen.queryByText("Edit OAuth Credentials")).not.toBeInTheDocument();
 
     // Google connections should NOT have Test Connection or Sync Schema
     expect(screen.queryByText("Test Connection")).not.toBeInTheDocument();
@@ -178,7 +199,7 @@ describe("SettingsIntegrations — pending Google connection", () => {
     fetchSpy.mockRestore();
   });
 
-  it("shows 'Continue setup' and 'Remove' in dropdown for pending Google connection", async () => {
+  it("shows 'Continue setup' and 'Cancel setup' in dropdown for pending Google connection", async () => {
     const user = userEvent.setup();
     const fetchSpy = mockFetchConnections([pendingGoogleConnection]);
 
@@ -194,7 +215,9 @@ describe("SettingsIntegrations — pending Google connection", () => {
     await user.click(menuButton);
 
     expect(screen.getByText("Continue setup")).toBeInTheDocument();
-    expect(screen.getByText("Remove")).toBeInTheDocument();
+    // Aborting a half-finished OAuth setup is "Cancel setup", not "Remove"/"Delete".
+    expect(screen.getByText("Cancel setup")).toBeInTheDocument();
+    expect(screen.queryByText("Remove")).not.toBeInTheDocument();
 
     // Should NOT show Rename or Edit OAuth Credentials
     expect(screen.queryByText("Rename")).not.toBeInTheDocument();

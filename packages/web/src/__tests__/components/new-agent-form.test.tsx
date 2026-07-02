@@ -381,6 +381,143 @@ describe("NewAgentForm — tagline field", () => {
   });
 });
 
+describe("NewAgentForm — email mailbox picker", () => {
+  let fetchSpy: ReturnType<typeof vi.spyOn>;
+
+  const emailTemplates = [
+    ...mockTemplates,
+    {
+      id: "email-assistant",
+      name: "Email Assistant",
+      description: "Read, search, and draft emails",
+      requiresDirectories: false,
+      requiresEmailConnection: true,
+      defaultTagline: "Read, search, and draft emails from your inbox",
+    },
+  ];
+
+  function mockApis(connections: Array<{ id: string; name: string; type: string }>) {
+    fetchSpy.mockImplementation(async (url, init) => {
+      if (String(url) === "/api/templates") {
+        return {
+          ok: true,
+          json: async () => ({ templates: emailTemplates }),
+        } as Response;
+      }
+      if (String(url) === "/api/integrations") {
+        return {
+          ok: true,
+          json: async () => connections,
+        } as Response;
+      }
+      if (String(url) === "/api/agents" && init?.method === "POST") {
+        return {
+          ok: true,
+          json: async () => ({ id: "new-agent-id" }),
+        } as Response;
+      }
+      return { ok: false, json: async () => ({}) } as Response;
+    });
+  }
+
+  beforeEach(() => {
+    mockSearchParams.current = new URLSearchParams();
+    fetchSpy = vi.spyOn(global, "fetch");
+    mockApis([]);
+  });
+
+  afterEach(() => {
+    fetchSpy.mockRestore();
+  });
+
+  it("auto-selects a Microsoft mailbox and includes its connectionId in the POST", async () => {
+    mockApis([{ id: "ms-conn-1", name: "Work Mailbox", type: "microsoft" }]);
+
+    render(<NewAgentForm />);
+
+    await waitFor(() => {
+      expect(screen.getByText("Email Assistant")).toBeInTheDocument();
+    });
+
+    await userEvent.click(screen.getByText("Email Assistant"));
+
+    await waitFor(() => {
+      expect(screen.getByLabelText(/name/i)).toBeInTheDocument();
+    });
+
+    const nameInput = screen.getByLabelText(/name/i);
+    await userEvent.clear(nameInput);
+    await userEvent.type(nameInput, "Hermes");
+
+    const createButton = screen.getByRole("button", { name: /create/i });
+    await waitFor(() => {
+      expect(createButton).not.toBeDisabled();
+    });
+
+    await userEvent.click(createButton);
+
+    await waitFor(() => {
+      const postCall = fetchSpy.mock.calls.find(
+        ([u, i]) => String(u) === "/api/agents" && i?.method === "POST"
+      );
+      expect(postCall).toBeDefined();
+      const body = JSON.parse(postCall![1]!.body as string);
+      expect(body.connectionId).toBe("ms-conn-1");
+      expect(body.templateId).toBe("email-assistant");
+    });
+  });
+
+  it("renders a mailbox picker for multiple email connections and posts the chosen one", async () => {
+    mockApis([
+      { id: "email-conn-1", name: "Gmail Work", type: "google" },
+      { id: "ms-conn-1", name: "Outlook Work", type: "microsoft" },
+    ]);
+
+    render(<NewAgentForm />);
+
+    await waitFor(() => {
+      expect(screen.getByText("Email Assistant")).toBeInTheDocument();
+    });
+
+    await userEvent.click(screen.getByText("Email Assistant"));
+
+    // The mailbox picker renders once both connections are loaded
+    await waitFor(() => {
+      expect(screen.getByText("Mailbox")).toBeInTheDocument();
+      expect(screen.getByRole("combobox")).toBeInTheDocument();
+    });
+
+    const nameInput = screen.getByLabelText(/name/i);
+    await userEvent.clear(nameInput);
+    await userEvent.type(nameInput, "Hermes");
+
+    // Create stays disabled until a mailbox is chosen
+    expect(screen.getByRole("button", { name: /create/i })).toBeDisabled();
+
+    await userEvent.click(screen.getByRole("combobox"));
+    // Both mailboxes are listed by name
+    expect(screen.getByRole("option", { name: "Gmail Work" })).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("option", { name: "Outlook Work" }));
+
+    const createButton = screen.getByRole("button", { name: /create/i });
+    await waitFor(() => {
+      expect(createButton).not.toBeDisabled();
+    });
+
+    await userEvent.click(createButton);
+
+    await waitFor(() => {
+      const postCall = fetchSpy.mock.calls.find(
+        ([u, i]) => String(u) === "/api/agents" && i?.method === "POST"
+      );
+      expect(postCall).toBeDefined();
+      const body = JSON.parse(postCall![1]!.body as string);
+      expect(body.connectionId).toBe("ms-conn-1");
+      expect(body.templateId).toBe("email-assistant");
+    });
+  });
+});
+
 describe("NewAgentForm — intro text", () => {
   let fetchSpy: ReturnType<typeof vi.spyOn>;
 

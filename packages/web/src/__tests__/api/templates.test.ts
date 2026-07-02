@@ -17,13 +17,57 @@ vi.mock("@/lib/auth", () => {
   };
 });
 
-const { mockLimit } = vi.hoisted(() => {
+const { mockLimit, mockWhere, matchSeededConnections } = vi.hoisted(() => {
   const mockLimit = vi.fn();
-  return { mockLimit };
+
+  /**
+   * Extracts the comparison value(s) from a drizzle-orm SQL condition's
+   * `queryChunks` — works for both `eq(col, "x")` (value chunk is a string)
+   * and `inArray(col, [...])` (value chunk is an array). Locates the " = " /
+   * " in " operator chunk by its actual text (not just "first chunk with an
+   * array value" — the leading empty-prefix chunk `{value: [""]}` also has
+   * an array value and would otherwise be matched first) and reads the
+   * chunk immediately after it. Returns null if the shape is unrecognized.
+   */
+  function readConditionValues(condition: unknown): string[] | null {
+    const chunks = (condition as { queryChunks?: unknown[] } | undefined)?.queryChunks;
+    if (!Array.isArray(chunks)) return null;
+    const operatorIndex = chunks.findIndex(
+      (c) =>
+        typeof c === "object" &&
+        c !== null &&
+        Array.isArray((c as { value?: unknown[] }).value) &&
+        ((c as { value: unknown[] }).value[0] === " = " ||
+          (c as { value: unknown[] }).value[0] === " in ")
+    );
+    if (operatorIndex === -1) return null;
+    const rawValue = chunks[operatorIndex + 1];
+    const values = Array.isArray(rawValue) ? rawValue : [rawValue];
+    return values.filter((v): v is string => typeof v === "string");
+  }
+
+  /**
+   * Given a fake "table" of connection rows (by type) and the condition
+   * passed to `.where()`, returns the rows that would actually match — so
+   * `eq(type, "google")` and `inArray(type, [...])` produce genuinely
+   * different results for the same seeded data. Used by tests that need the
+   * assertion to be causally tied to the real query shape, rather than a
+   * hardcoded call-order queue on `mockLimit`.
+   */
+  function matchSeededConnections(
+    seeded: { type: string; id: string }[],
+    condition: unknown
+  ): { id: string }[] {
+    const values = readConditionValues(condition);
+    if (!values) return [];
+    return seeded.filter((row) => values.includes(row.type)).map((row) => ({ id: row.id }));
+  }
+
+  const mockWhere = vi.fn().mockReturnValue({ limit: mockLimit });
+  return { mockLimit, mockWhere, matchSeededConnections };
 });
 
 vi.mock("@/db", () => {
-  const mockWhere = vi.fn().mockReturnValue({ limit: mockLimit });
   const mockFrom = vi.fn().mockReturnValue({ where: mockWhere });
   const mockSelect = vi.fn().mockReturnValue({ from: mockFrom });
   return {
@@ -68,9 +112,12 @@ vi.mock("@/lib/model-resolver", async (importOriginal) => {
   };
 });
 
+import { inArray } from "drizzle-orm";
 import { GET } from "@/app/api/templates/route";
 import { auth } from "@/lib/auth";
 import { TemplateCapabilityUnavailableError } from "@/lib/model-resolver";
+import { EMAIL_CONNECTION_TYPES } from "@/lib/integrations/oauth-providers";
+import { integrationConnections } from "@/db/schema";
 
 describe("GET /api/templates", () => {
   beforeEach(() => {
@@ -308,6 +355,49 @@ describe("GET /api/templates", () => {
     expect(emailAssistant).toBeDefined();
     expect(emailAssistant.available).toBe(true);
     expect(emailAssistant.unavailableReason).toBeNull();
+  });
+
+  it("marks email templates as available when a microsoft-only connection exists", async () => {
+    // Seed a fake table with ONLY a microsoft-type connection (no google). The
+    // mockLimit implementation below evaluates the actual condition passed to
+    // `.where()` against this seeded row, so this assertion is causally tied
+    // to the real query shape: if the route reverted to
+    // `eq(type, "google")`, the microsoft row would not match and this test
+    // would go red — unlike a hardcoded mockResolvedValueOnce queue, which
+    // would stay green regardless of the query.
+    const seededConnections = [{ type: "microsoft", id: "ms-conn-1" }];
+    const resolveFromSeed = (n: number) => {
+      const condition = mockWhere.mock.calls.at(-1)?.[0];
+      return Promise.resolve(matchSeededConnections(seededConnections, condition).slice(0, n));
+    };
+    // Scoped with `Once` (twice, one per query the route makes: Odoo, then
+    // email) so this test's condition-aware behavior does not leak into
+    // later tests via mockLimit's persistent base implementation.
+    mockLimit.mockImplementationOnce(resolveFromSeed).mockImplementationOnce(resolveFromSeed);
+    // First where()/limit() call is the Odoo check — no odoo-type rows seeded,
+    // so it naturally resolves to [] via the same condition-matching logic.
+
+    const request = new NextRequest("http://localhost:7777/api/templates");
+    const response = await GET(request);
+    const body = await response.json();
+
+    const emailAssistant = body.templates.find((t: { id: string }) => t.id === "email-assistant");
+    expect(emailAssistant).toBeDefined();
+    expect(emailAssistant.available).toBe(true);
+    expect(emailAssistant.unavailableReason).toBeNull();
+  });
+
+  it("queries the email-connection existence check for every email-capable connection type", async () => {
+    mockLimit.mockResolvedValueOnce([]).mockResolvedValueOnce([]);
+
+    const request = new NextRequest("http://localhost:7777/api/templates");
+    await GET(request);
+
+    // The second where() call is the email-availability check (the first is Odoo).
+    const emailWhereCall = mockWhere.mock.calls[1][0];
+    expect(emailWhereCall).toEqual(
+      inArray(integrationConnections.type, [...EMAIL_CONNECTION_TYPES])
+    );
   });
 
   it("includes requiresEmailConnection flag in email template response", async () => {

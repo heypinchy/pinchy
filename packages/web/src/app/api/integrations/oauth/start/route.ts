@@ -18,18 +18,13 @@ import { headers } from "next/headers";
 import { randomBytes } from "crypto";
 import { z } from "zod";
 import { getSession } from "@/lib/auth";
-import { getOAuthSettings } from "@/lib/integrations/oauth-settings";
+import { getOAuthSettings, type MicrosoftOAuthSettings } from "@/lib/integrations/oauth-settings";
+import { getOAuthProvider, OAUTH_PROVIDERS } from "@/lib/integrations/oauth-providers";
 import { parseRequestBody } from "@/lib/api-validation";
 import { db } from "@/db";
 import { integrationConnections } from "@/db/schema";
 import { encrypt } from "@/lib/encryption";
-import { eq, and } from "drizzle-orm";
-
-const GOOGLE_OAUTH_SCOPES = [
-  "https://www.googleapis.com/auth/gmail.readonly",
-  "https://www.googleapis.com/auth/gmail.compose",
-  "https://www.googleapis.com/auth/userinfo.email",
-].join(" ");
+import { eq, and, lt } from "drizzle-orm";
 
 function errorRedirect(origin: string, error: string) {
   const url = new URL("/settings", origin);
@@ -44,6 +39,7 @@ export async function GET(request: Request) {
   const forwardedHost = request.headers.get("x-forwarded-host") || request.headers.get("host");
   const origin =
     forwardedProto && forwardedHost ? `${forwardedProto}://${forwardedHost}` : requestUrl.origin;
+  const isSecure = (forwardedProto ?? requestUrl.protocol.replace(":", "")) === "https";
 
   // Validate admin session — render failures as redirects, not JSON, because
   // this is reached via browser navigation.
@@ -52,10 +48,31 @@ export async function GET(request: Request) {
     return errorRedirect(origin, "unauthorized");
   }
 
-  const settings = await getOAuthSettings("google");
+  const provider = requestUrl.searchParams.get("provider") ?? "google";
+
+  const settings = await getOAuthSettings(provider as "google" | "microsoft");
   if (!settings) {
     return errorRedirect(origin, "not_configured");
   }
+
+  // Sweep abandoned pending records that are older than 15 minutes. An OAuth
+  // flow that's closed mid-way (tab closed, provider error) leaves its pending
+  // placeholder behind forever, and the own-pending cleanup below only touches
+  // the caller's own record via cookie. This GC keeps stale rows from piling up
+  // regardless of which admin started them. 15 min comfortably outlives the
+  // 10-minute oauth_state cookie, so an in-flight flow is never swept.
+  //
+  // audit-exempt: GC of abandoned pending OAuth records, no user-facing state —
+  // these placeholders were never activated and hold no real integration.
+  const cutoff = new Date(Date.now() - 15 * 60 * 1000);
+  await db
+    .delete(integrationConnections)
+    .where(
+      and(
+        eq(integrationConnections.status, "pending"),
+        lt(integrationConnections.createdAt, cutoff)
+      )
+    );
 
   // Clean up the user's own previous pending record (if any) before starting a new flow.
   // Only delete the specific record from a previous attempt — avoid touching other admins' pending records.
@@ -77,32 +94,46 @@ export async function GET(request: Request) {
       );
   }
 
+  // Resolve the provider descriptor (defaults to Google, matching the
+  // `?provider` default above). getOAuthProvider avoids object-injection.
+  const oauthProvider = getOAuthProvider(provider) ?? OAUTH_PROVIDERS.google;
+
+  const state = randomBytes(32).toString("hex");
+  const redirectUri = `${origin}/api/integrations/oauth/callback`;
+
+  // For tenant-scoped providers (Microsoft) derive the tenant from settings so
+  // authorizeUrl embeds it; Google ignores tenantId.
+  const tenantId = oauthProvider.hasTenant
+    ? (settings as MicrosoftOAuthSettings).tenantId
+    : undefined;
+
+  const authUrl = new URL(oauthProvider.authorizeUrl({ tenantId }));
+  authUrl.searchParams.set("client_id", settings.clientId);
+  authUrl.searchParams.set("redirect_uri", redirectUri);
+  authUrl.searchParams.set("response_type", "code");
+  authUrl.searchParams.set("scope", oauthProvider.scopes);
+  if (oauthProvider.id === "microsoft") {
+    // Microsoft-specific: force the code to come back as a query param.
+    authUrl.searchParams.set("response_mode", "query");
+  } else {
+    // Google-specific: request a refresh token.
+    authUrl.searchParams.set("access_type", "offline");
+  }
+  authUrl.searchParams.set("prompt", "consent");
+  authUrl.searchParams.set("state", state);
+
   // Create a pending record so the connection is visible during the OAuth flow
   const [pending] = await db
     .insert(integrationConnections)
     .values({
-      type: "google",
-      name: "Google (connecting…)",
+      type: oauthProvider.connectionType,
+      name: `${oauthProvider.label} (connecting…)`,
       status: "pending",
       credentials: encrypt(JSON.stringify({})),
     })
     .returning({ id: integrationConnections.id });
 
-  const state = randomBytes(32).toString("hex");
-
-  const redirectUri = `${origin}/api/integrations/oauth/callback`;
-
-  const authUrl = new URL("https://accounts.google.com/o/oauth2/v2/auth");
-  authUrl.searchParams.set("client_id", settings.clientId);
-  authUrl.searchParams.set("redirect_uri", redirectUri);
-  authUrl.searchParams.set("response_type", "code");
-  authUrl.searchParams.set("scope", GOOGLE_OAUTH_SCOPES);
-  authUrl.searchParams.set("access_type", "offline");
-  authUrl.searchParams.set("prompt", "consent");
-  authUrl.searchParams.set("state", state);
-
   const response = NextResponse.redirect(authUrl.toString(), 302);
-  const isSecure = requestUrl.protocol === "https:";
   response.cookies.set("oauth_state", state, {
     httpOnly: true,
     secure: isSecure,
@@ -111,6 +142,13 @@ export async function GET(request: Request) {
     path: "/",
   });
   response.cookies.set("oauth_pending_id", pending.id, {
+    httpOnly: true,
+    secure: isSecure,
+    sameSite: "lax",
+    maxAge: 600,
+    path: "/",
+  });
+  response.cookies.set("oauth_provider", oauthProvider.id, {
     httpOnly: true,
     secure: isSecure,
     sameSite: "lax",
@@ -128,8 +166,8 @@ const reconnectSchema = z.object({
 /**
  * POST /api/integrations/oauth/start
  *
- * Programmatic reconnect entry point for google connections that have entered
- * auth_failed state. Accepts { reconnectConnectionId } and returns { url }
+ * Programmatic reconnect entry point for google and microsoft connections that
+ * have entered auth_failed state. Accepts { reconnectConnectionId } and returns { url }
  * for the client to navigate to. The state parameter is a base64url-encoded
  * JSON payload containing a CSRF nonce and the connection ID to update.
  *
@@ -153,7 +191,7 @@ export async function POST(request: NextRequest) {
   if ("error" in parsed) return parsed.error;
   const { reconnectConnectionId } = parsed.data;
 
-  // Verify the connection exists and is a google-type connection
+  // Verify the connection exists and supports OAuth re-auth (google or microsoft)
   const [connection] = await db
     .select()
     .from(integrationConnections)
@@ -164,36 +202,52 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: "Connection not found" }, { status: 404 });
   }
 
-  if (connection.type !== "google") {
+  if (connection.type !== "google" && connection.type !== "microsoft") {
     return NextResponse.json(
-      { error: "Only google connections support OAuth re-auth" },
+      { error: "This connection type does not support OAuth re-auth" },
       { status: 400 }
     );
   }
 
-  const settings = await getOAuthSettings("google");
-  if (!settings) {
-    return NextResponse.json({ error: "Google OAuth is not configured" }, { status: 400 });
-  }
-
   // Build the state as base64url-encoded JSON so the callback can extract
-  // both the CSRF nonce and the reconnectConnectionId.
+  // both the CSRF nonce and the reconnectConnectionId. The reconnect callback
+  // path is provider-agnostic — it updates the existing connection in place —
+  // so the state shape is identical for both providers.
   const nonce = randomBytes(32).toString("hex");
   const stateObj = { nonce, reconnectConnectionId };
   const state = Buffer.from(JSON.stringify(stateObj)).toString("base64url");
-
   const redirectUri = `${origin}/api/integrations/oauth/callback`;
+  const isSecure = (forwardedProto ?? requestUrl.protocol.replace(":", "")) === "https";
 
-  const authUrl = new URL("https://accounts.google.com/o/oauth2/v2/auth");
+  // connection.type is "google" | "microsoft" here (guarded above), so the
+  // descriptor always resolves; keep a Google fallback for type-safety.
+  const oauthProvider = getOAuthProvider(connection.type) ?? OAUTH_PROVIDERS.google;
+
+  const settings = await getOAuthSettings(oauthProvider.id);
+  if (!settings) {
+    return NextResponse.json(
+      { error: `${oauthProvider.label} OAuth is not configured` },
+      { status: 400 }
+    );
+  }
+
+  const tenantId = oauthProvider.hasTenant
+    ? (settings as MicrosoftOAuthSettings).tenantId
+    : undefined;
+
+  const authUrl = new URL(oauthProvider.authorizeUrl({ tenantId }));
   authUrl.searchParams.set("client_id", settings.clientId);
   authUrl.searchParams.set("redirect_uri", redirectUri);
   authUrl.searchParams.set("response_type", "code");
-  authUrl.searchParams.set("scope", GOOGLE_OAUTH_SCOPES);
-  authUrl.searchParams.set("access_type", "offline");
+  authUrl.searchParams.set("scope", oauthProvider.scopes);
+  if (oauthProvider.id === "microsoft") {
+    authUrl.searchParams.set("response_mode", "query");
+  } else {
+    authUrl.searchParams.set("access_type", "offline");
+  }
   authUrl.searchParams.set("prompt", "consent");
   authUrl.searchParams.set("state", state);
 
-  const isSecure = (forwardedProto ?? requestUrl.protocol.replace(":", "")) === "https";
   const response = NextResponse.json({ url: authUrl.toString() }, { status: 200 });
   response.cookies.set("oauth_state", state, {
     httpOnly: true,
@@ -202,6 +256,20 @@ export async function POST(request: NextRequest) {
     maxAge: 600,
     path: "/",
   });
+  // CRITICAL: reconnect has no pending record and no oauth_pending_id cookie,
+  // so the callback identifies the provider from this cookie. Without it the
+  // callback defaults to Google and exchanges the code against the wrong host.
+  // Google reconnect deliberately omits this — its callback path is driven
+  // purely by reconnectConnectionId in the state (see oauth-start.test.ts).
+  if (oauthProvider.id === "microsoft") {
+    response.cookies.set("oauth_provider", "microsoft", {
+      httpOnly: true,
+      secure: isSecure,
+      sameSite: "lax",
+      maxAge: 600,
+      path: "/",
+    });
+  }
 
   return response;
 }

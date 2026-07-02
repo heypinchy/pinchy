@@ -29,6 +29,13 @@ export default defineConfig({
       // e.g. packages/plugins/pinchy-files/node_modules/*/test/*.test.js and
       // reports third-party suites as "No test suite found".
       "**/node_modules/**",
+      // picomatch (vitest's real glob matcher) does not let a leading `**`
+      // span a `../` path segment, so the broad glob above alone does NOT
+      // exclude nested node_modules reached via the plugin include glob's
+      // relative `../plugins/pinchy-*/**` prefix (verified directly against
+      // picomatch — see src/__tests__/lib/vitest-exclude-node-modules.test.ts).
+      // This mirrors that prefix explicitly so it matches.
+      "../plugins/pinchy-*/**/node_modules/**",
       "e2e",
       "**/*.integration.test.{ts,tsx,js,jsx}",
     ],

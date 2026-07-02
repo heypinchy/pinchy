@@ -193,13 +193,17 @@ describe("Settings Page", () => {
       mockUseSession.mockReturnValue(adminSession);
     });
 
-    it("should render Provider, Users, Context, and Profile tabs", async () => {
+    it("should render AI Provider, Users, Context, and Profile tabs", async () => {
       setupAdminFetchMocks();
 
       render(<SettingsPage isAdmin={isCurrentTestAdmin} />);
 
       await waitFor(() => {
-        expect(screen.getByRole("tab", { name: "Provider" })).toBeInTheDocument();
+        // The LLM provider tab is labelled "AI Provider" to disambiguate it from
+        // OAuth "providers" (Google/Microsoft). The underlying tab value stays
+        // "provider" (asserted below via the tab= link check) so no links break.
+        expect(screen.getByRole("tab", { name: "AI Provider" })).toBeInTheDocument();
+        expect(screen.queryByRole("tab", { name: "Provider" })).not.toBeInTheDocument();
         expect(screen.getByRole("tab", { name: "Users" })).toBeInTheDocument();
         expect(screen.getByRole("tab", { name: "Context" })).toBeInTheDocument();
         expect(screen.getByRole("tab", { name: "Profile" })).toBeInTheDocument();

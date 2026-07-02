@@ -41,6 +41,15 @@ vi.mock("@/lib/integrations/google-oauth", () => ({
   }),
 }));
 
+vi.mock("@/lib/integrations/microsoft-oauth", () => ({
+  isTokenExpired: vi.fn().mockReturnValue(false),
+  refreshAccessToken: vi.fn().mockResolvedValue({
+    accessToken: "ms-refreshed-access-token",
+    refreshToken: "ms-new-refresh-token",
+    expiresAt: new Date(Date.now() + 3600_000).toISOString(),
+  }),
+}));
+
 vi.mock("@/lib/integrations/oauth-settings", () => ({
   getOAuthSettings: vi.fn().mockResolvedValue(null),
 }));
@@ -49,6 +58,10 @@ import { validateGatewayToken } from "@/lib/gateway-auth";
 import { db } from "@/db";
 import { decrypt, encrypt } from "@/lib/encryption";
 import { isTokenExpired, refreshAccessToken } from "@/lib/integrations/google-oauth";
+import {
+  isTokenExpired as isMsTokenExpired,
+  refreshAccessToken as refreshMsAccessToken,
+} from "@/lib/integrations/microsoft-oauth";
 import { getOAuthSettings } from "@/lib/integrations/oauth-settings";
 import { GET } from "@/app/api/internal/integrations/[connectionId]/credentials/route";
 
@@ -353,6 +366,165 @@ describe("GET /api/internal/integrations/:connectionId/credentials", () => {
 
         expect(refreshAccessToken).toHaveBeenCalledTimes(2);
       });
+    });
+  });
+
+  describe("Microsoft credentials refresh", () => {
+    beforeEach(() => {
+      mockDbSelectResult([
+        {
+          id: "conn-ms",
+          type: "microsoft",
+          status: "active",
+          credentials: "encrypted-ms-blob",
+        },
+      ]);
+      vi.mocked(isMsTokenExpired).mockReturnValue(false);
+      vi.mocked(decrypt).mockReturnValue(
+        JSON.stringify({
+          accessToken: "ms-old-access-token",
+          refreshToken: "ms-old-refresh-token",
+          expiresAt: new Date(Date.now() + 30 * 60_000).toISOString(),
+          scope: "offline_access Mail.ReadWrite",
+        })
+      );
+    });
+
+    it("refreshes when expiresAt is in the buffer and writes BOTH new accessToken AND new refreshToken back", async () => {
+      const expiredAt = new Date(Date.now() - 60_000).toISOString();
+      vi.mocked(decrypt).mockReturnValue(
+        JSON.stringify({
+          accessToken: "ms-old-access-token",
+          refreshToken: "ms-old-refresh-token",
+          expiresAt: expiredAt,
+          scope: "offline_access Mail.ReadWrite",
+        })
+      );
+      vi.mocked(isMsTokenExpired).mockReturnValue(true);
+
+      const newExpiresAt = new Date(Date.now() + 3600_000).toISOString();
+      vi.mocked(refreshMsAccessToken).mockResolvedValue({
+        accessToken: "ms-new-access-token",
+        refreshToken: "ms-rotated-refresh-token",
+        expiresAt: newExpiresAt,
+      });
+
+      vi.mocked(getOAuthSettings).mockResolvedValue({
+        clientId: "ms-client-id",
+        clientSecret: "ms-client-secret",
+        tenantId: "ms-tenant-id",
+      });
+
+      const res = await GET(makeRequest("conn-ms"), makeParams("conn-ms"));
+      expect(res.status).toBe(200);
+
+      const data = await res.json();
+      expect(data.type).toBe("microsoft");
+      expect(data.credentials.accessToken).toBe("ms-new-access-token");
+      expect(data.credentials.refreshToken).toBe("ms-rotated-refresh-token");
+      expect(data.credentials.expiresAt).toBe(newExpiresAt);
+
+      expect(refreshMsAccessToken).toHaveBeenCalledWith({
+        tenantId: "ms-tenant-id",
+        refreshToken: "ms-old-refresh-token",
+        clientId: "ms-client-id",
+        clientSecret: "ms-client-secret",
+      });
+
+      // Must persist BOTH the new accessToken AND new refreshToken (Microsoft rotates refresh tokens)
+      expect(encrypt).toHaveBeenCalled();
+      const encryptedArg = vi.mocked(encrypt).mock.calls[0][0];
+      const persisted = JSON.parse(encryptedArg);
+      expect(persisted.accessToken).toBe("ms-new-access-token");
+      expect(persisted.refreshToken).toBe("ms-rotated-refresh-token");
+      expect(db.update).toHaveBeenCalled();
+    });
+
+    it("concurrent requests for the same connectionId share a single refresh (in-flight dedup)", async () => {
+      vi.mocked(isMsTokenExpired).mockReturnValue(true);
+      const expiredAt = new Date(Date.now() - 60_000).toISOString();
+      vi.mocked(decrypt).mockReturnValue(
+        JSON.stringify({
+          accessToken: "ms-old-access-token",
+          refreshToken: "ms-old-refresh-token",
+          expiresAt: expiredAt,
+        })
+      );
+      vi.mocked(getOAuthSettings).mockResolvedValue({
+        clientId: "ms-client-id",
+        clientSecret: "ms-client-secret",
+        tenantId: "ms-tenant-id",
+      });
+
+      let releaseRefresh!: () => void;
+      const refreshGate = new Promise<void>((res) => {
+        releaseRefresh = res;
+      });
+      const newExpiresAt = new Date(Date.now() + 3600_000).toISOString();
+      vi.mocked(refreshMsAccessToken).mockImplementation(async () => {
+        await refreshGate;
+        return {
+          accessToken: "ms-fresh-token",
+          refreshToken: "ms-fresh-refresh-token",
+          expiresAt: newExpiresAt,
+        };
+      });
+
+      const requests = Array.from({ length: 10 }, () =>
+        GET(makeRequest("conn-ms"), makeParams("conn-ms"))
+      );
+
+      // Yield repeatedly so every request reaches the refresh path.
+      for (let i = 0; i < 5; i++) {
+        await new Promise((r) => setImmediate(r));
+      }
+
+      expect(refreshMsAccessToken).toHaveBeenCalledTimes(1);
+
+      releaseRefresh();
+      const responses = await Promise.all(requests);
+
+      for (const res of responses) {
+        expect(res.status).toBe(200);
+        const data = await res.json();
+        expect(data.credentials.accessToken).toBe("ms-fresh-token");
+        expect(data.credentials.refreshToken).toBe("ms-fresh-refresh-token");
+      }
+
+      expect(refreshMsAccessToken).toHaveBeenCalledTimes(1);
+      // The shared refresh result is persisted exactly once.
+      expect(db.update).toHaveBeenCalledTimes(1);
+    });
+
+    it("refresh failure returns the stale credentials (graceful degradation)", async () => {
+      vi.mocked(isMsTokenExpired).mockReturnValue(true);
+      const expiredAt = new Date(Date.now() - 60_000).toISOString();
+      const staleCredentials = {
+        accessToken: "ms-stale-access-token",
+        refreshToken: "ms-stale-refresh-token",
+        expiresAt: expiredAt,
+      };
+      vi.mocked(decrypt).mockReturnValue(JSON.stringify(staleCredentials));
+      vi.mocked(getOAuthSettings).mockResolvedValue({
+        clientId: "ms-client-id",
+        clientSecret: "ms-client-secret",
+        tenantId: "ms-tenant-id",
+      });
+      vi.mocked(refreshMsAccessToken).mockRejectedValue(
+        new Error("Microsoft token refresh failed: invalid_grant")
+      );
+
+      const res = await GET(makeRequest("conn-ms"), makeParams("conn-ms"));
+      expect(res.status).toBe(200);
+
+      const data = await res.json();
+      expect(data.type).toBe("microsoft");
+      expect(data.credentials.accessToken).toBe("ms-stale-access-token");
+      expect(data.credentials.refreshToken).toBe("ms-stale-refresh-token");
+      expect(data.credentials.expiresAt).toBe(expiredAt);
+
+      // DB should NOT be updated when refresh fails
+      expect(db.update).not.toHaveBeenCalled();
     });
   });
 });

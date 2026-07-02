@@ -8,7 +8,6 @@ import { appendAuditLog } from "@/lib/audit";
 import { odooCredentialsSchema } from "@/lib/integrations/odoo-schema";
 import { validateExternalUrl } from "@/lib/integrations/url-validation";
 import { maskConnectionCredentials } from "@/lib/integrations/mask-credentials";
-import { deleteOAuthSettings } from "@/lib/integrations/oauth-settings";
 import { probeIntegrationCredentials } from "@/lib/integrations/probe";
 import { clearIntegrationAuthError } from "@/lib/integrations/auth-state";
 import { z } from "zod";
@@ -216,16 +215,9 @@ export const DELETE = withAdmin<RouteContext>(async (_req, { params }, session) 
 
   await db.delete(integrationConnections).where(eq(integrationConnections.id, connectionId));
 
-  // Clear OAuth settings when the last Google connection is removed
-  if (existing.type === "google") {
-    const remainingGoogle = await db
-      .select()
-      .from(integrationConnections)
-      .where(eq(integrationConnections.type, "google"));
-    if (remainingGoogle.length === 0) {
-      await deleteOAuthSettings("google");
-    }
-  }
+  // The OAuth app has an independent lifecycle: removing the last connection of a
+  // provider intentionally leaves the stored app credentials in place. Admins manage
+  // the app explicitly via the "Connected apps" section (Edit/Reset).
 
   await appendAuditLog({
     actorType: "user",

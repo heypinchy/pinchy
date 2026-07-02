@@ -52,6 +52,12 @@ test.describe("pinchy-email — Gmail E2E", () => {
     const settled = await waitForOpenClawConnected(cookie, 120000);
     if (!settled) throw new Error("OpenClaw did not reconnect after setup wizard");
 
+    // Allow the config.apply rate-limit window from seedSetup to clear (~25s).
+    // seedSetup fires 3 rapid config.apply calls; the next call from test 1's
+    // permission grant may hit the rate limit and fall back to 60s inotify —
+    // too slow for the chat tests. 35s clears the window with a small buffer.
+    await new Promise((r) => setTimeout(r, 35000));
+
     // Get Smithers agent
     const agents = await pinchyGet("/api/agents", cookie);
     expect(agents.status).toBe(200);
@@ -88,25 +94,32 @@ test.describe("pinchy-email — Gmail E2E", () => {
         },
         body: JSON.stringify({
           connectionId,
-          permissions: [
-            { model: "email", operation: "read" },
-            { model: "email", operation: "search" },
-          ],
+          // Exactly the shape the permission UI writes: read/draft/send only.
+          // "search" is NOT an operation of its own (it is part of "read" —
+          // see EMAIL_OPERATIONS in tool-registry.ts). Seeding a phantom
+          // "search" row here previously masked a real bug where build.ts
+          // required it and silently stripped email_search from every
+          // UI-configured agent.
+          permissions: [{ model: "email", operation: "read" }],
         }),
       }
     );
     expect(permRes.status).toBe(200);
-
-    // Trigger config regeneration by PATCHing the agent
-    // (the integrations PUT does NOT regenerate config on its own)
-    const patchRes = await pinchyPatch(`/api/agents/${agentId}`, {}, cookie);
-    expect(patchRes.status).toBe(200);
 
     // Poll OpenClaw until connected (config was hot-reloaded and accepted).
     // Granting pinchy-email adds a new plugin entry — OpenClaw does a full
     // restart. Give 120s to cover the restart + reconnect window.
     const connected = await waitForOpenClawConnected(cookie, 120000);
     expect(connected).toBe(true);
+
+    // Hot-reload buffer: two purposes.
+    // 1. config.apply takes ~2s and hot-reload ~0.5s; without this wait test 3
+    //    sends its message before pinchy-email is registered in OpenClaw.
+    // 2. Rate-limit: config.apply is rate-limited to one call per ~25s. If
+    //    test 4 fires its grant within 25s of this grant, OC falls back to a
+    //    60s inotify debounce — far too slow. 30s here guarantees test 3 pushes
+    //    the test-4 grant past the 25s window even if test 3 runs in < 5s.
+    await new Promise((r) => setTimeout(r, 30000));
 
     // The Google connection is visible in the integrations list
     const integrations = await pinchyGet("/api/integrations", cookie);
@@ -118,8 +131,8 @@ test.describe("pinchy-email — Gmail E2E", () => {
   });
 
   test("agent permissions model — read-only agent does not have send or draft operations", async () => {
-    // Verify that the permissions set in test 1 (read + search only) are
-    // correctly reflected in the integrations API.
+    // Verify that the permissions set in test 1 (read only — the exact shape
+    // the UI writes) are correctly reflected in the integrations API.
     //
     // The connectionId is set by test 1 above.
     if (!connectionId) {
@@ -140,8 +153,7 @@ test.describe("pinchy-email — Gmail E2E", () => {
     expect(emailIntegration!.connectionType).toBe("google");
 
     const ops = emailIntegration!.permissions.map((p) => p.operation);
-    expect(ops).toContain("read");
-    expect(ops).toContain("search");
+    expect(ops).toEqual(["read"]);
     expect(ops).not.toContain("send");
     expect(ops).not.toContain("draft");
   });

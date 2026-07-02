@@ -41,7 +41,7 @@ const providerRejectionRow = {
   sideEffects: false,
   clientMessageId: "cm-2",
   createdAt: "2026-06-24T09:21:00Z",
-  hint: "Go to Settings > Providers to check your API configuration.",
+  hint: "Go to Settings > AI Provider to check your API configuration.",
 };
 
 beforeEach(() => {
@@ -71,12 +71,12 @@ describe("ChatErrorBanner", () => {
   it("surfaces the server hint for a durable provider-rejection (#584)", async () => {
     // Without a hint the banner shows the bare "...schema or tool payload"
     // wording, which reads like a malformed-request bug. The server-computed
-    // admin hint must render the actionable "Settings > Providers" link.
+    // admin hint must render the actionable "Settings > AI Provider" link.
     mockApiGet.mockResolvedValue({ error: providerRejectionRow });
     render(<ChatErrorBanner agentId="agent-1" onRetry={vi.fn()} />);
 
     await waitFor(() => expect(screen.getByText("Smithers couldn't respond")).toBeInTheDocument());
-    expect(screen.getByRole("link", { name: /settings > providers/i })).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: /settings > ai provider/i })).toBeInTheDocument();
   });
 
   it("suppresses itself when the thread already shows the inline error for this run (#583)", async () => {

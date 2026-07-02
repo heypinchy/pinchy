@@ -1,6 +1,8 @@
 "use client";
 
 import { useState, useEffect, useCallback } from "react";
+import { useRouter } from "next/navigation";
+import { toast } from "sonner";
 import { useIntegrationActions } from "@/hooks/use-integration-actions";
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -32,11 +34,10 @@ import {
   AlertTriangle,
 } from "lucide-react";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
-// toast is now handled by useIntegrationActions hook
 import { AddIntegrationDialog } from "./add-integration-dialog";
 import { EditCredentialsDialog } from "./edit-credentials-dialog";
-import { EditOAuthDialog } from "./edit-oauth-dialog";
-import { BraveIcon, GoogleIcon, OdooIcon } from "./integration-icons";
+import { ConnectedApps } from "./connected-apps";
+import { BraveIcon, GoogleIcon, MicrosoftIcon, OdooIcon } from "./integration-icons";
 import type { IntegrationConnection } from "@/lib/integrations/types";
 import { getAccessibleCategoryLabels } from "@/lib/integrations/odoo-sync";
 
@@ -58,16 +59,41 @@ function formatRelativeTime(dateString: string): string {
   return date.toLocaleDateString();
 }
 
-export function SettingsIntegrations() {
+// A Map (not a plain object) so the lookup key — which comes from the
+// user-controlled ?error= query param — can't reach a prototype property.
+// Map.get() is also recognized as a barrier by CodeQL's remote-property-injection
+// analysis, keeping the sink clean.
+// Provider-agnostic: the OAuth callback emits these same codes for both Google
+// and Microsoft flows, so the copy must not name a single provider.
+const OAUTH_ERROR_MESSAGES = new Map<string, string>([
+  [
+    "profile_fetch_failed",
+    "Could not fetch your account profile. Check that your OAuth app grants the required profile permission.",
+  ],
+  ["token_exchange_failed", "OAuth authorization failed. Please try connecting again."],
+  ["state_mismatch", "OAuth session expired. Please try again."],
+  ["not_configured", "OAuth is not configured."],
+  ["connection_not_found", "Connection not found. Please try again."],
+  ["unauthorized", "OAuth authorization failed. Please try again."],
+  ["missing_params", "OAuth authorization failed. Please try again."],
+]);
+
+export function SettingsIntegrations({ oauthError }: { oauthError?: string } = {}) {
+  const router = useRouter();
   const [connections, setConnections] = useState<IntegrationConnection[]>([]);
   const [loading, setLoading] = useState(true);
   const [showAddDialog, setShowAddDialog] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState<IntegrationConnection | null>(null);
   const [renameTarget, setRenameTarget] = useState<IntegrationConnection | null>(null);
   const [renameName, setRenameName] = useState("");
-  const [showOAuthEdit, setShowOAuthEdit] = useState(false);
   const [resumeGoogleSetup, setResumeGoogleSetup] = useState(false);
   const [editCredConn, setEditCredConn] = useState<IntegrationConnection | null>(null);
+
+  useEffect(() => {
+    if (!oauthError) return;
+    toast.error(OAUTH_ERROR_MESSAGES.get(oauthError) ?? "OAuth connection failed.");
+    router.replace("/settings?tab=integrations", { scroll: false });
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps -- intentionally mount-only
 
   const fetchConnections = useCallback(async () => {
     try {
@@ -86,6 +112,24 @@ export function SettingsIntegrations() {
   useEffect(() => {
     fetchConnections();
   }, [fetchConnections]);
+
+  // Live-update the list while a connection is still being set up. A pending
+  // connection (e.g. an OAuth flow finishing in another tab) flips to
+  // active/auth_failed server-side, but the mount-only fetch above would leave
+  // the UI stuck on "Setup in progress" until a manual reload. Poll every 10s
+  // for as long as at least one connection is pending, then stop.
+  const hasPending = connections.some((conn) => conn.status === "pending");
+  useEffect(() => {
+    if (!hasPending) return;
+    let cancelled = false;
+    const id = setInterval(() => {
+      if (!cancelled) void fetchConnections();
+    }, 10_000);
+    return () => {
+      cancelled = true;
+      clearInterval(id);
+    };
+  }, [hasPending, fetchConnections]);
 
   async function handleRename() {
     if (!renameTarget) return;
@@ -168,6 +212,8 @@ export function SettingsIntegrations() {
                       <div className="flex items-center gap-3">
                         {conn.type === "google" ? (
                           <GoogleIcon className="h-6 w-6 shrink-0" />
+                        ) : conn.type === "microsoft" ? (
+                          <MicrosoftIcon className="h-6 w-6 shrink-0" />
                         ) : conn.type === "web-search" ? (
                           <BraveIcon className="h-6 w-6 shrink-0" />
                         ) : (
@@ -182,16 +228,23 @@ export function SettingsIntegrations() {
                           </Button>
                         </DropdownMenuTrigger>
                         <DropdownMenuContent align="end">
-                          {conn.type === "google" && conn.status === "pending" ? (
+                          {conn.status === "pending" ? (
+                            // A pending connection is a half-finished OAuth setup, not
+                            // a live integration. It has no meaningful Rename/Test/etc.
+                            // actions — only "Continue setup" (Google resumes via the
+                            // AddIntegrationDialog) and "Cancel setup" (aborts the flow
+                            // through the same delete path as a real teardown).
                             <>
-                              <DropdownMenuItem onClick={() => setResumeGoogleSetup(true)}>
-                                Continue setup
-                              </DropdownMenuItem>
+                              {conn.type === "google" && (
+                                <DropdownMenuItem onClick={() => setResumeGoogleSetup(true)}>
+                                  Continue setup
+                                </DropdownMenuItem>
+                              )}
                               <DropdownMenuItem
                                 className="text-destructive"
                                 onClick={() => setDeleteTarget(conn)}
                               >
-                                Remove
+                                Cancel setup
                               </DropdownMenuItem>
                             </>
                           ) : (
@@ -209,9 +262,12 @@ export function SettingsIntegrations() {
                               >
                                 Rename
                               </DropdownMenuItem>
-                              {conn.type === "google" ? (
-                                <DropdownMenuItem onClick={() => setShowOAuthEdit(true)}>
-                                  Edit OAuth Credentials
+                              {conn.type === "google" ? null : conn.type === "microsoft" ? (
+                                <DropdownMenuItem
+                                  onClick={() => testConnection(conn.id)}
+                                  disabled={testing === conn.id}
+                                >
+                                  {testing === conn.id ? "Testing..." : "Test Connection"}
                                 </DropdownMenuItem>
                               ) : (
                                 <>
@@ -247,7 +303,7 @@ export function SettingsIntegrations() {
                     </div>
                     <TooltipProvider>
                       <div className="flex items-center gap-1.5 text-sm text-muted-foreground">
-                        {conn.type === "google" && conn.status === "pending" ? (
+                        {conn.status === "pending" ? (
                           <span className="inline-flex items-center gap-1 rounded-full border border-amber-300 bg-amber-50 px-2 py-0.5 text-xs font-medium text-amber-700 dark:border-amber-700 dark:bg-amber-950 dark:text-amber-300">
                             <Clock className="h-3 w-3" />
                             Setup in progress
@@ -331,6 +387,8 @@ export function SettingsIntegrations() {
         </CardContent>
       </Card>
 
+      <ConnectedApps onConnectionsChanged={fetchConnections} />
+
       <AddIntegrationDialog
         open={showAddDialog}
         onOpenChange={setShowAddDialog}
@@ -380,22 +438,35 @@ export function SettingsIntegrations() {
       <AlertDialog open={!!deleteTarget} onOpenChange={(open) => !open && setDeleteTarget(null)}>
         <AlertDialogContent>
           <AlertDialogHeader>
-            <AlertDialogTitle>Delete Integration</AlertDialogTitle>
-            <AlertDialogDescription>
-              This will permanently delete the &ldquo;{deleteTarget?.name}&rdquo; integration and
-              remove all associated agent permissions. This action cannot be undone.
-            </AlertDialogDescription>
+            {deleteTarget?.status === "pending" ? (
+              <>
+                <AlertDialogTitle>Cancel setup</AlertDialogTitle>
+                <AlertDialogDescription>
+                  This will cancel the setup of &ldquo;{deleteTarget?.name}&rdquo;. The connection
+                  was never activated, so nothing that&apos;s in use will be affected. You can start
+                  the setup again anytime.
+                </AlertDialogDescription>
+              </>
+            ) : (
+              <>
+                <AlertDialogTitle>Delete Integration</AlertDialogTitle>
+                <AlertDialogDescription>
+                  This will permanently delete the &ldquo;{deleteTarget?.name}&rdquo; integration
+                  and remove all associated agent permissions. This action cannot be undone.
+                </AlertDialogDescription>
+              </>
+            )}
           </AlertDialogHeader>
           <AlertDialogFooter>
-            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogCancel>
+              {deleteTarget?.status === "pending" ? "Keep setup" : "Cancel"}
+            </AlertDialogCancel>
             <AlertDialogAction variant="destructive" onClick={handleDelete}>
-              Delete
+              {deleteTarget?.status === "pending" ? "Cancel setup" : "Delete"}
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
-
-      <EditOAuthDialog open={showOAuthEdit} onOpenChange={setShowOAuthEdit} />
 
       <EditCredentialsDialog
         connection={editCredConn}

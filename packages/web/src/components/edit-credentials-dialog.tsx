@@ -265,12 +265,18 @@ function WebSearchForm({
   );
 }
 
-function GoogleReconnect({
+// Google and Microsoft both reconnect through the same OAuth start endpoint —
+// the server branches on connection.type. The only client-side difference is
+// the provider name shown in the copy, so a single parameterized component
+// covers both.
+function OAuthReconnect({
   connection,
   onOpenChange,
+  providerLabel,
 }: {
   connection: IntegrationConnection;
   onOpenChange: (open: boolean) => void;
+  providerLabel: string;
 }) {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
@@ -296,7 +302,8 @@ function GoogleReconnect({
   return (
     <div className="space-y-4">
       <p className="text-sm text-muted-foreground">
-        Google credentials are managed via OAuth. Click below to start a new authorization flow.
+        {providerLabel} credentials are managed via OAuth. Click below to start a new authorization
+        flow.
       </p>
 
       {error && <p className="text-sm text-destructive">{error}</p>}
@@ -312,7 +319,7 @@ function GoogleReconnect({
               Redirecting...
             </>
           ) : (
-            "Reconnect via Google"
+            `Reconnect via ${providerLabel}`
           )}
         </Button>
       </div>
@@ -339,7 +346,17 @@ export function EditCredentialsDialog({
         </DialogHeader>
 
         {connection?.type === "google" ? (
-          <GoogleReconnect connection={connection} onOpenChange={onOpenChange} />
+          <OAuthReconnect
+            connection={connection}
+            onOpenChange={onOpenChange}
+            providerLabel="Google"
+          />
+        ) : connection?.type === "microsoft" ? (
+          <OAuthReconnect
+            connection={connection}
+            onOpenChange={onOpenChange}
+            providerLabel="Microsoft"
+          />
         ) : connection?.type === "odoo" ? (
           <OdooForm
             key={connection.id}

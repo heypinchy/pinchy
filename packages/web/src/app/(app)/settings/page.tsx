@@ -14,10 +14,10 @@ export const metadata: Metadata = {
 export default async function SettingsPage({
   searchParams,
 }: {
-  searchParams: Promise<{ tab?: string }>;
+  searchParams: Promise<{ tab?: string; error?: string }>;
 }) {
   const hdrs = await headers();
-  const [{ tab }, session, licenseStatus] = await Promise.all([
+  const [{ tab, error }, session, licenseStatus] = await Promise.all([
     searchParams,
     getSession({ headers: hdrs }),
     getLicenseStatus(),
@@ -29,6 +29,7 @@ export default async function SettingsPage({
   return (
     <SettingsPageContent
       initialTab={tab}
+      oauthError={error}
       isAdmin={isAdmin}
       initialLicense={
         isAdmin
