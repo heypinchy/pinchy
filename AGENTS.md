@@ -123,6 +123,7 @@ pnpm format
 pnpm db:generate
 pnpm test:scripts
 pnpm typecheck:plugins
+pnpm test:plugins
 ```
 
 Useful web package commands:

@@ -173,6 +173,12 @@ jobs:
       - name: Test (root scripts)
         run: pnpm test:scripts
 
+      - name: Test (plugins)
+        # Plugin vitest unit suites are not part of `pnpm test` (web only),
+        # and the E2E stacks exercise plugins at runtime, not these unit
+        # files — without this step they never run in CI and silently rot.
+        run: pnpm test:plugins
+
       - name: Cache Next.js build
         uses: actions/cache@v5
         with:
