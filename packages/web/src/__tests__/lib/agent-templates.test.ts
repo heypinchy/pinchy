@@ -729,16 +729,17 @@ describe("Additional Odoo templates (10 new)", () => {
   });
 
   it("Subscription Manager only references models that are in requiredModels (or guards them)", () => {
-    // The legacy sale.subscription / sale.subscription.plan models are NOT in
+    // The legacy sale.subscription record model (Odoo ≤16) is NOT in
     // requiredModels — modern Odoo (17+) uses sale.order with is_subscription
     // instead. The AGENTS.md must not tell the agent to confidently query
     // sale.subscription, otherwise it will get permission errors on every
     // query in modern Odoo. Any mention must be guarded with conditional
     // language ("if available", "may not exist", "check via odoo_schema first").
+    // Note: sale.subscription.plan is NOT legacy — it exists in modern Odoo
+    // as the target of sale.order.plan_id and is granted (optional) below.
     const t = getTemplate("odoo-subscription-manager")!;
     const grantedModels = t.odooConfig!.requiredModels.map((m) => m.model);
     expect(grantedModels).not.toContain("sale.subscription");
-    expect(grantedModels).not.toContain("sale.subscription.plan");
 
     // If sale.subscription is mentioned at all, it must be guarded
     if (/sale\.subscription/.test(t.defaultAgentsMd)) {
@@ -746,6 +747,31 @@ describe("Additional Odoo templates (10 new)", () => {
         /may not exist|if available|if (the )?model exists|check.*odoo_schema|not granted|legacy.*may/i
       );
     }
+  });
+
+  it("Subscription Manager gets optional read access to sale.subscription.plan", () => {
+    // sale.order.plan_id points at sale.subscription.plan in modern Odoo
+    // (Enterprise Subscriptions module, 17+). Without a read grant the agent
+    // cannot resolve a subscription's plan or read auto_close_limit — the
+    // days-unpaid threshold after which Odoo auto-closes (churns) a
+    // subscription, which is core context for a churn-tracking agent.
+    // Optional because the model only exists when the Subscriptions module
+    // is installed (same convention as finance-controller / bookkeeper).
+    const t = getTemplate("odoo-subscription-manager")!;
+    const plan = t.odooConfig!.requiredModels.find((m) => m.model === "sale.subscription.plan");
+    expect(plan).toBeDefined();
+    expect(plan!.operations).toEqual(["read"]);
+    expect(plan!.optional).toBe(true);
+  });
+
+  it("Subscription Manager documents sale.subscription.plan with auto_close_limit and guards it", () => {
+    // Optional models must be mentioned with "may not exist" language so the
+    // agent probes with odoo_describe_model instead of failing hard on
+    // instances without the Subscriptions module.
+    const t = getTemplate("odoo-subscription-manager")!;
+    expect(t.defaultAgentsMd).toContain("sale.subscription.plan");
+    expect(t.defaultAgentsMd).toContain("auto_close_limit");
+    expect(t.defaultAgentsMd).toMatch(/may not exist/i);
   });
 
   it("POS Analyst mentions pos.order and pos.session", () => {

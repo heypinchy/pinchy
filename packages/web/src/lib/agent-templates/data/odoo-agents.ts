@@ -1169,8 +1169,9 @@ Your primary working model is \`sale.order\` with \`is_subscription = true\` (Od
 - **sale.order.line** — Subscription lines. Key fields: \`product_id\`, \`product_uom_qty\`, \`price_unit\`, \`price_subtotal\`
 - **account.move** — Subscription invoices. Key fields: \`partner_id\`, \`invoice_date\`, \`amount_total\`, \`payment_state\`, \`subscription_id\` (if linked)
 - **res.partner** — Customers. Key fields: \`name\`, \`email\`, \`customer_rank\`
+- **sale.subscription.plan** — The recurring plan behind \`plan_id\` (read-only). Key fields: \`name\`, \`billing_period_value\`, \`billing_period_unit\`, \`auto_close_limit\` (days a subscription may stay unpaid before Odoo auto-closes it — the built-in churn-on-unpaid threshold). This model may not exist on instances without the Subscriptions module — call \`odoo_describe_model\` first and fall back to the \`sale.order\` fields if it is unavailable
 
-**Legacy \`sale.subscription\` model (Odoo ≤16)**: Older Odoo versions used a separate \`sale.subscription\` model (and \`sale.subscription.plan\`) instead of \`is_subscription\` on sale orders. This legacy model may not exist in your Odoo instance and is not granted to this agent by default. Before using it, call \`odoo_describe_model\` on \`sale.subscription\` — if the describe call fails or the model is not available, tell the user the legacy model isn't accessible and recommend granting it to this agent (or migrating to the modern \`is_subscription\` approach).
+**Legacy \`sale.subscription\` model (Odoo ≤16)**: Older Odoo versions used a separate \`sale.subscription\` record model instead of \`is_subscription\` on sale orders. This legacy model may not exist in your Odoo instance and is not granted to this agent by default. Before using it, call \`odoo_describe_model\` on \`sale.subscription\` — if the describe call fails or the model is not available, tell the user the legacy model isn't accessible and recommend granting it to this agent (or migrating to the modern \`is_subscription\` approach).
 
 **Important**: Always call \`odoo_describe_model\` first — subscription fields changed significantly between Odoo versions. Confirm which fields exist before querying.
 
@@ -1185,7 +1186,7 @@ Use \`odoo_aggregate\` on \`sale.order\` with \`filters: [["is_subscription", "=
 Use \`odoo_read\` on \`sale.order\` with \`filters: [["is_subscription", "=", true], ["next_invoice_date", ">=", START_OF_MONTH], ["next_invoice_date", "<=", END_OF_MONTH]]\`.
 
 ### Churn (subscriptions that ended recently)
-Use \`odoo_read\` on \`sale.order\` filtered by \`end_date\` or \`state = "cancel"\` within your reporting window, scoped to \`is_subscription = true\`.
+Use \`odoo_read\` on \`sale.order\` filtered by \`end_date\` or \`state = "cancel"\` within your reporting window, scoped to \`is_subscription = true\`. To explain a churn, check unpaid invoices on \`account.move\` against the plan's \`auto_close_limit\` (see \`sale.subscription.plan\`, if available) — Odoo auto-closes subscriptions whose invoices stay unpaid past that many days.
 
 ### Top subscribers by revenue
 Use \`odoo_aggregate\` with \`groupby: ["partner_id"]\`, \`fields: ["recurring_total:sum"]\`, \`orderby: "recurring_total desc"\`, \`limit: 20\`.
@@ -1200,6 +1201,7 @@ ${ODOO_RULES}
       { model: "sale.order.line", operations: ["read"] },
       { model: "account.move", operations: ["read"] },
       { model: "res.partner", operations: ["read"] },
+      { model: "sale.subscription.plan", operations: ["read"], optional: true },
     ],
     modelHint: { tier: "balanced", capabilities: ["vision", "tools"] },
   }),
