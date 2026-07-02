@@ -1,33 +1,20 @@
 import { describe, it, expect } from "vitest";
 import { AGENT_TEMPLATES } from "@/lib/agent-templates";
 
-describe("odoo-bookkeeper template", () => {
-  const template = AGENT_TEMPLATES["odoo-bookkeeper"];
+describe("odoo-finance-controller template", () => {
+  const template = AGENT_TEMPLATES["odoo-finance-controller"];
   const md = template.defaultAgentsMd;
   const required = template.odooConfig?.requiredModels ?? [];
   const modelOps = (m: string) => required.find((r) => r.model === m)?.operations ?? [];
 
-  it("documents that price_unit is tax-exclusive (net)", () => {
-    expect(md).toMatch(/price_unit`[^.]{0,80}tax-exclusive/i);
-  });
-
-  it("mandates post-create verification against amount_total within tolerance", () => {
-    expect(md).toMatch(/verify the draft|amount_total.*receipt/i);
-    expect(md).toMatch(/0\.02 EUR/);
+  it("stays read-only", () => {
+    expect(template.odooConfig?.accessLevel).toBe("read-only");
   });
 
   it("grants read access to the subscription view (sale.order + line + plan)", () => {
     expect(modelOps("sale.order")).toContain("read");
     expect(modelOps("sale.order.line")).toContain("read");
     expect(modelOps("sale.subscription.plan")).toContain("read");
-  });
-
-  it("keeps the subscription models read-only (reference context, not managed here)", () => {
-    for (const m of ["sale.order", "sale.order.line", "sale.subscription.plan"]) {
-      expect(modelOps(m)).not.toContain("create");
-      expect(modelOps(m)).not.toContain("write");
-      expect(modelOps(m)).not.toContain("delete");
-    }
   });
 
   it("documents the modern is_subscription model, not the nonexistent legacy sale.subscription", () => {

@@ -20,6 +20,7 @@ export const MODEL_CATEGORIES: ModelCategory[] = [
       { model: "sale.order", name: "Orders" },
       { model: "sale.order.line", name: "Order Lines" },
       { model: "sale.order.template", name: "Quotation Templates" },
+      { model: "sale.subscription.plan", name: "Subscription Plans" },
     ],
   },
   {
