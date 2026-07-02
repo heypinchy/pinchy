@@ -47,7 +47,7 @@ describe("EditOAuthDialog", () => {
     });
   });
 
-  it("shows note that changes apply to all connected Google mailboxes", async () => {
+  it("shows note that changes apply to all Google integrations", async () => {
     fetchSpy.mockResolvedValue({
       ok: true,
       json: async () => ({ configured: true, clientId: "id" }),
@@ -56,10 +56,11 @@ describe("EditOAuthDialog", () => {
     render(<EditOAuthDialog provider="google" open={true} onOpenChange={vi.fn()} />);
 
     await waitFor(() => {
-      // "mailboxes" matches the Connected-apps vocabulary (app vs. mailboxes),
-      // not "connections"/"integrations" — the Integrations list also holds
-      // Odoo/web-search entries this change does not touch.
-      expect(screen.getByText(/all connected Google mailboxes/i)).toBeInTheDocument();
+      // Provider-level copy says "integrations", not "mailboxes": the OAuth app
+      // will soon back more than mail (calendar, drive, ...), so app-level
+      // wording must not name a single service. "Mailbox" stays reserved for
+      // email-domain copy (email templates, the mailbox picker).
+      expect(screen.getByText(/all Google integrations/i)).toBeInTheDocument();
     });
   });
 

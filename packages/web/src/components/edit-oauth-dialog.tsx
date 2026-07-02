@@ -148,7 +148,7 @@ export function EditOAuthDialog({ provider, open, onOpenChange }: EditOAuthDialo
             )}
 
             <p className="text-xs text-muted-foreground">
-              Changes apply to all connected {label} mailboxes.
+              Changes apply to all {label} integrations.
             </p>
 
             {error && <p className="text-sm text-destructive">{error}</p>}

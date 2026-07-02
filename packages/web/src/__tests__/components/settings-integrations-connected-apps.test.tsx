@@ -121,8 +121,8 @@ describe("SettingsIntegrations — Connected apps section", () => {
 
   it("renders a configured provider with zero connections so Reset stays reachable", async () => {
     // Independent-lifecycle invariant (read-against-old-data): a provider app can
-    // be configured with 0 connected mailboxes (e.g. after removing its last
-    // mailbox — the app persists). The visibility predicate is `configured`, NOT
+    // be configured with 0 connected integrations (e.g. after removing its last
+    // one — the app persists). The visibility predicate is `configured`, NOT
     // `connectionCount`, so the row must still render with Edit + Reset.
     const spy = mockFetch({
       oauth: {
@@ -137,8 +137,8 @@ describe("SettingsIntegrations — Connected apps section", () => {
     expect(within(googleRow).getByText(/Configured/i)).toBeInTheDocument();
     expect(within(googleRow).getByRole("button", { name: /Edit/i })).toBeInTheDocument();
     expect(within(googleRow).getByRole("button", { name: /^Reset$/i })).toBeInTheDocument();
-    // No mailbox-count copy when there are zero connections.
-    expect(within(googleRow).queryByText(/mailbox(es)? connected/i)).not.toBeInTheDocument();
+    // No integration-count copy when there are zero connections.
+    expect(within(googleRow).queryByText(/integrations? connected/i)).not.toBeInTheDocument();
 
     spy.mockRestore();
   });
@@ -170,7 +170,7 @@ describe("SettingsIntegrations — Connected apps section", () => {
     spy.mockRestore();
   });
 
-  it("shows the connected-mailbox count when > 0", async () => {
+  it("shows the connected-integration count when > 0", async () => {
     const spy = mockFetch({
       oauth: {
         microsoft: { configured: true, clientId: "abcdef-ms-client", connectionCount: 3 },
@@ -180,7 +180,7 @@ describe("SettingsIntegrations — Connected apps section", () => {
     render(<SettingsIntegrations />);
 
     const msRow = await findProviderRow("Microsoft");
-    expect(within(msRow).getByText(/3 mailbox(es)? connected/i)).toBeInTheDocument();
+    expect(within(msRow).getByText(/3 integrations? connected/i)).toBeInTheDocument();
 
     spy.mockRestore();
   });
@@ -244,7 +244,7 @@ describe("SettingsIntegrations — Connected apps section", () => {
 
     // Blast-radius warning names the count.
     await waitFor(() => {
-      expect(screen.getByText(/disconnect 4 connected mailbox/i)).toBeInTheDocument();
+      expect(screen.getByText(/disconnect 4 connected integration/i)).toBeInTheDocument();
     });
 
     const dialog = screen.getByRole("alertdialog");
@@ -260,8 +260,8 @@ describe("SettingsIntegrations — Connected apps section", () => {
   it("refetches the connection count when the Reset confirm dialog opens", async () => {
     const user = userEvent.setup();
 
-    // The mount fetch reports 2 connected mailboxes. Between mount and the Reset
-    // click a mailbox is added server-side, so a fresh GET reports 3. Opening the
+    // The mount fetch reports 2 connected integrations. Between mount and the Reset
+    // click an integration is added server-side, so a fresh GET reports 3. Opening the
     // confirm must show the fresh count (3), not the stale mount count (2).
     let googleGetCount = 0;
     const spy = vi.spyOn(global, "fetch").mockImplementation((input, init) => {
@@ -298,7 +298,7 @@ describe("SettingsIntegrations — Connected apps section", () => {
     const googleRow = await findProviderRow("Google");
     // Mount count is 2.
     await waitFor(() => {
-      expect(within(googleRow).getByText(/2 mailbox(es)? connected/i)).toBeInTheDocument();
+      expect(within(googleRow).getByText(/2 integrations? connected/i)).toBeInTheDocument();
     });
     const getsBeforeReset = googleGetCount;
 
@@ -307,10 +307,10 @@ describe("SettingsIntegrations — Connected apps section", () => {
     // Opening the confirm triggers a fresh GET and the warning names the fresh
     // count (3), not the stale mount count (2).
     await waitFor(() => {
-      expect(screen.getByText(/disconnect 3 connected mailbox/i)).toBeInTheDocument();
+      expect(screen.getByText(/disconnect 3 connected integration/i)).toBeInTheDocument();
     });
     expect(googleGetCount).toBeGreaterThan(getsBeforeReset);
-    expect(screen.queryByText(/disconnect 2 connected mailbox/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/disconnect 2 connected integration/i)).not.toBeInTheDocument();
 
     spy.mockRestore();
   });
@@ -356,19 +356,19 @@ describe("SettingsIntegrations — Connected apps section", () => {
 
     const googleRow = await findProviderRow("Google");
     await waitFor(() => {
-      expect(within(googleRow).getByText(/2 mailbox(es)? connected/i)).toBeInTheDocument();
+      expect(within(googleRow).getByText(/2 integrations? connected/i)).toBeInTheDocument();
     });
 
     await user.click(within(googleRow).getByRole("button", { name: /^Reset$/i }));
 
     await waitFor(() => {
-      expect(screen.getByText(/disconnect 2 connected mailbox/i)).toBeInTheDocument();
+      expect(screen.getByText(/disconnect 2 connected integration/i)).toBeInTheDocument();
     });
 
     spy.mockRestore();
   });
 
-  it("mentions that changing only the Client Secret does not disconnect mailboxes", async () => {
+  it("mentions that changing only the Client Secret does not disconnect integrations", async () => {
     const spy = mockFetch({
       oauth: { google: { configured: true, clientId: "goog-client-id", connectionCount: 1 } },
     });

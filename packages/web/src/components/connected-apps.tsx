@@ -89,9 +89,9 @@ export function ConnectedApps({ onConnectionsChanged }: { onConnectionsChanged?:
   }, [fetchStates]);
 
   // Opening the reset confirm refreshes the connection count for that provider so
-  // the blast-radius warning reflects mailboxes added/removed since mount (a minor
-  // TOCTOU otherwise). If the refetch fails we keep the last-known state as a
-  // fallback rather than blocking or crashing the dialog.
+  // the blast-radius warning reflects integrations added/removed since mount (a
+  // minor TOCTOU otherwise). If the refetch fails we keep the last-known state as
+  // a fallback rather than blocking or crashing the dialog.
   async function openReset(row: ProviderRowData) {
     setResetTarget(row);
     try {
@@ -129,7 +129,7 @@ export function ConnectedApps({ onConnectionsChanged }: { onConnectionsChanged?:
   const resetCount = resetTarget?.state?.connectionCount ?? 0;
 
   // Management-only: show a row per already-configured provider app. An app can
-  // be configured with zero connected mailboxes (it has an independent
+  // be configured with zero connected integrations (it has an independent
   // lifecycle), so the predicate is `configured`, not the connection count.
   const configuredRows = rows.filter((row) => row.state?.configured === true);
 
@@ -159,8 +159,8 @@ export function ConnectedApps({ onConnectionsChanged }: { onConnectionsChanged?:
         ))}
 
         <p className="text-xs text-muted-foreground">
-          Rotating just the client secret keeps every mailbox connected. Changing the client ID
-          requires reconnecting all mailboxes for that provider.
+          Rotating just the client secret keeps every integration connected. Changing the client ID
+          requires reconnecting all integrations for that provider.
         </p>
       </CardContent>
 
@@ -184,9 +184,9 @@ export function ConnectedApps({ onConnectionsChanged }: { onConnectionsChanged?:
           <AlertDialogHeader>
             <AlertDialogTitle>Reset the {resetLabel} app?</AlertDialogTitle>
             <AlertDialogDescription>
-              Resetting the {resetLabel} app will disconnect {resetCount} connected mailbox
-              {resetCount === 1 ? "" : "es"}. They must be reconnected afterwards. This can&apos;t
-              be undone.
+              Resetting the {resetLabel} app will disconnect {resetCount} connected integration
+              {resetCount === 1 ? "" : "s"}. They must be reconnected afterwards. This can&apos;t be
+              undone.
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
@@ -245,7 +245,7 @@ function ProviderRow({
               <>
                 <span aria-hidden>&middot;</span>
                 <span>
-                  {connectionCount} mailbox{connectionCount === 1 ? "" : "es"} connected
+                  {connectionCount} integration{connectionCount === 1 ? "" : "s"} connected
                 </span>
               </>
             )}
