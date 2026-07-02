@@ -24,6 +24,22 @@ interface GoogleCredentials {
 // See issue #237.
 const inFlightGoogleRefreshes = new Map<string, Promise<GoogleCredentials>>();
 
+// Thrown when a token refresh is actually required (the access token is
+// expired) but the OAuth app settings needed to perform that refresh are
+// missing — reachable since OAuth app settings have a lifecycle independent
+// of connections (an admin can reset the OAuth app while connections still
+// exist). Unlike a failed refresh attempt (network/provider error, where the
+// stale credentials are a reasonable fallback), there is no credential to
+// fall back to here that will actually work — the plugin would cache a token
+// doomed to fail on first use. The route surfaces this as a loud 5xx rather
+// than silently returning expired credentials with a 200.
+class OAuthSettingsMissingError extends Error {
+  constructor(readonly provider: string) {
+    super(`${provider} OAuth settings not configured`);
+    this.name = "OAuthSettingsMissingError";
+  }
+}
+
 async function refreshGoogleCredentials(
   connectionId: string,
   current: GoogleCredentials
@@ -36,7 +52,7 @@ async function refreshGoogleCredentials(
       const oauthSettings = await getOAuthSettings("google");
       if (!oauthSettings) {
         console.error("Google OAuth token refresh failed: OAuth settings not configured");
-        return current;
+        throw new OAuthSettingsMissingError("Google");
       }
 
       const refreshed = await refreshAccessToken({
@@ -62,6 +78,11 @@ async function refreshGoogleCredentials(
       console.log("Refreshed Google OAuth token for connection", connectionId);
       return updated;
     } catch (err) {
+      if (err instanceof OAuthSettingsMissingError) {
+        // Re-throw: there is no safe stale fallback when settings are missing
+        // and a refresh is required (see class comment above).
+        throw err;
+      }
       console.error("Google OAuth token refresh failed:", err);
       return current;
     }
@@ -106,14 +127,31 @@ export async function GET(
     return NextResponse.json({ error: "Failed to decrypt credentials" }, { status: 500 });
   }
 
-  // Auto-refresh expired Google OAuth tokens (graceful degradation: return old credentials on failure).
-  // Concurrent callers for the same connectionId share a single refresh via inFlightGoogleRefreshes.
+  // Auto-refresh expired Google OAuth tokens. A failed refresh attempt degrades
+  // gracefully to the current credentials; missing OAuth settings fail loudly
+  // (see OAuthSettingsMissingError). Concurrent callers for the same
+  // connectionId share a single refresh via inFlightGoogleRefreshes.
   if (
     connection.type === "google" &&
     credentials.expiresAt &&
     isTokenExpired(credentials.expiresAt)
   ) {
-    credentials = await refreshGoogleCredentials(connectionId, credentials as GoogleCredentials);
+    try {
+      credentials = await refreshGoogleCredentials(connectionId, credentials as GoogleCredentials);
+    } catch (err) {
+      if (err instanceof OAuthSettingsMissingError) {
+        // The access token is expired and there is no way to refresh it —
+        // fail loudly instead of returning a 200 with stale/expired tokens
+        // that the plugin would cache for another 5 minutes and fail on.
+        return NextResponse.json(
+          {
+            error: `${err.provider} OAuth settings missing — reconnect the mailbox or restore the OAuth app`,
+          },
+          { status: 503 }
+        );
+      }
+      throw err;
+    }
   }
 
   return NextResponse.json({ type: connection.type, credentials });

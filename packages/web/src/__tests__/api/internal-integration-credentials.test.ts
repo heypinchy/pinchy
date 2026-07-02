@@ -221,26 +221,35 @@ describe("GET /api/internal/integrations/:connectionId/credentials", () => {
       expect(refreshAccessToken).not.toHaveBeenCalled();
     });
 
-    it("returns existing credentials when Google OAuth settings are missing (graceful degradation)", async () => {
+    it("returns 503 with a structured error when Google OAuth settings are missing for an expired token (no stale credentials leaked)", async () => {
       vi.mocked(isTokenExpired).mockReturnValue(true);
       vi.mocked(getOAuthSettings).mockResolvedValue(null);
 
       const expiredAt = new Date(Date.now() - 60_000).toISOString();
       vi.mocked(decrypt).mockReturnValue(
         JSON.stringify({
-          accessToken: "old-token",
-          refreshToken: "refresh-token",
+          accessToken: "google-stale-access-token",
+          refreshToken: "google-stale-refresh-token",
           expiresAt: expiredAt,
         })
       );
 
       const res = await GET(makeRequest("conn-google"), makeParams("conn-google"));
-      expect(res.status).toBe(200);
+      expect(res.status).toBe(503);
+
       const data = await res.json();
-      expect(data.type).toBe("google");
-      expect(data.credentials.accessToken).toBe("old-token");
-      expect(data.credentials.expiresAt).toBe(expiredAt);
+      expect(data.error).toBe(
+        "Google OAuth settings missing — reconnect the mailbox or restore the OAuth app"
+      );
+      // Must NOT leak the stale/expired credentials in the response body.
+      expect(data.credentials).toBeUndefined();
+      expect(JSON.stringify(data)).not.toContain("google-stale-access-token");
+      expect(JSON.stringify(data)).not.toContain("google-stale-refresh-token");
+
+      // Refresh must not have been attempted (no client credentials available)
+      // and the DB must not be touched.
       expect(refreshAccessToken).not.toHaveBeenCalled();
+      expect(db.update).not.toHaveBeenCalled();
     });
 
     it("returns existing credentials when token refresh fails (graceful degradation)", async () => {
