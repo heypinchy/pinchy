@@ -5,6 +5,9 @@ import { channelLinks } from "@/db/schema";
 import { getOpenClawClient } from "@/server/openclaw-client";
 import { classifyUserSessions, type ClassifiedChat, type RawSession } from "./classify-sessions";
 
+// `sessions.list` is untyped wire output.
+type SessionsListResult = { sessions?: RawSession[] } | undefined;
+
 /**
  * Enumerate the requesting user's OWN chats with one agent — web (default +
  * named #508) and read-only Telegram peers linked to them. This is the shared,
@@ -35,10 +38,7 @@ export async function listUserAgentChats(
     .where(and(eq(channelLinks.channel, "telegram"), eq(channelLinks.userId, userId)));
   const linkedTelegramPeerIds = new Set(links.map((l) => l.channelUserId.toLowerCase()));
 
-  // `sessions.list` is untyped wire output: `{ sessions?: RawSession[] }`.
-  const raw = (await getOpenClawClient().sessions.list({})) as
-    | { sessions?: RawSession[] }
-    | undefined;
+  const raw = (await getOpenClawClient().sessions.list({})) as SessionsListResult;
   const sessionsArr = Array.isArray(raw?.sessions) ? raw.sessions : [];
 
   // Scope to THIS agent before classifying — the classifier checks identity and
