@@ -1828,7 +1828,7 @@ const plugin = {
                     "A [field, operator, value] tuple, e.g. ['state', '=', 'sale']",
                 },
                 description:
-                  "Odoo domain filter. Array of [field, operator, value] tuples. Operators: =, !=, >, >=, <, <=, in, not in, like, ilike. Use [] for no filter.",
+                  "Odoo domain filter. Array of [field, operator, value] tuples. Operators: =, !=, >, >=, <, <=, in, not in, like, ilike. Optional — omit or pass [] to match all records.",
               },
               fields: {
                 type: "array",
@@ -1848,7 +1848,7 @@ const plugin = {
                 description: "Sort order, e.g. 'date_order desc'",
               },
             },
-            required: ["model", "filters"],
+            required: ["model"],
           },
           async execute(_toolCallId: string, params: Record<string, unknown>) {
             try {
@@ -1925,10 +1925,11 @@ const plugin = {
                   items: {},
                   description: "A [field, operator, value] tuple",
                 },
-                description: "Odoo domain filter. Use [] for no filter.",
+                description:
+                  "Odoo domain filter. Optional — omit or pass [] to match all records.",
               },
             },
-            required: ["model", "filters"],
+            required: ["model"],
           },
           async execute(_toolCallId: string, params: Record<string, unknown>) {
             try {
@@ -1979,7 +1980,8 @@ const plugin = {
                   items: {},
                   description: "A [field, operator, value] tuple",
                 },
-                description: "Odoo domain filter. Use [] for no filter.",
+                description:
+                  "Odoo domain filter. Optional — omit or pass [] to match all records.",
               },
               fields: {
                 type: "array",
@@ -2000,7 +2002,7 @@ const plugin = {
               },
               orderby: { type: "string", description: "Sort order for groups" },
             },
-            required: ["model", "filters", "fields", "groupby"],
+            required: ["model", "fields", "groupby"],
           },
           async execute(_toolCallId: string, params: Record<string, unknown>) {
             try {

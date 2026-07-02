@@ -1115,6 +1115,45 @@ describe("odoo_read", () => {
     expect(tool.description).toContain(PRODUCT_REF_DISAMBIGUATION_HINT);
   });
 
+  // `filters` must be OPTIONAL in the schema. OpenClaw validates tool-call
+  // arguments against this schema BEFORE the plugin's execute() runs, so a
+  // `required: ["model", "filters"]` rejects a perfectly reasonable "read all
+  // sale orders" call with "filters: must have required properties filters" —
+  // exactly the failure seen in the field with weaker tool-calling models
+  // (minimax-m3), which omit `filters` constantly. asDomain(undefined) already
+  // maps to [] (match all), so the required constraint only ever contradicts
+  // the tool's own documented behaviour.
+  it("does not require `filters` in the schema (only `model`)", () => {
+    const tools = createApi({ [agentId]: agentConfig });
+    const tool = findTool(tools, "odoo_read", agentId)!;
+    const required = (tool.parameters as { required: string[] }).required;
+    expect(required).toContain("model");
+    expect(required).not.toContain("filters");
+  });
+
+  it("treats omitted `filters` as an empty domain (match all), not an error", async () => {
+    mockSearchRead.mockResolvedValue({
+      records: [{ id: 1, name: "SO001" }],
+      total: 1,
+      limit: 100,
+      offset: 0,
+    });
+
+    const tools = createApi({ [agentId]: agentConfig });
+    const tool = findTool(tools, "odoo_read", agentId)!;
+
+    const result = await tool.execute("call-no-filters", {
+      model: "sale.order",
+    });
+
+    expect(result.isError).toBeFalsy();
+    expect(mockSearchRead).toHaveBeenCalledWith(
+      "sale.order",
+      [],
+      expect.any(Object),
+    );
+  });
+
   it("reads records with correct parameters", async () => {
     mockSearchRead.mockResolvedValue({
       records: [{ id: 1, name: "SO001" }],
@@ -1341,6 +1380,14 @@ describe("odoo_count", () => {
     expect(tool.description).toContain(PRODUCT_REF_DISAMBIGUATION_HINT);
   });
 
+  it("does not require `filters` in the schema (only `model`)", () => {
+    const tools = createApi({ [agentId]: agentConfig });
+    const tool = findTool(tools, "odoo_count", agentId)!;
+    const required = (tool.parameters as { required: string[] }).required;
+    expect(required).toContain("model");
+    expect(required).not.toContain("filters");
+  });
+
   it("counts records for a permitted model", async () => {
     mockSearchCount.mockResolvedValue(42);
 
@@ -1403,6 +1450,16 @@ describe("odoo_aggregate", () => {
     const tools = createApi({ [agentId]: agentConfig });
     const tool = findTool(tools, "odoo_aggregate", agentId)!;
     expect(tool.description).toContain(PRODUCT_REF_DISAMBIGUATION_HINT);
+  });
+
+  it("does not require `filters` in the schema (model/fields/groupby stay required)", () => {
+    const tools = createApi({ [agentId]: agentConfig });
+    const tool = findTool(tools, "odoo_aggregate", agentId)!;
+    const required = (tool.parameters as { required: string[] }).required;
+    expect(required).toContain("model");
+    expect(required).toContain("fields");
+    expect(required).toContain("groupby");
+    expect(required).not.toContain("filters");
   });
 
   it("aggregates data for a permitted model", async () => {
