@@ -36,10 +36,6 @@ export function discoverPluginDirs(pluginsRoot) {
     .sort();
 }
 
-// An exclude entry drops test files if it targets *.test.ts / *.spec.ts or a
-// __tests__ directory. Root-only `*.ts` includes are handled separately.
-const TEST_EXCLUDE_RE = /(test|spec)\.|__tests__/;
-
 /**
  * Validate a parsed tsconfig object against the rules the typecheck gate needs.
  * Pure — takes the already-parsed JSON, returns a list of human-readable
@@ -62,18 +58,26 @@ export function validateTsconfigShape(cfg) {
     );
   }
 
-  const exclude = Array.isArray(cfg?.exclude) ? cfg.exclude : [];
-  const testExcludes = exclude.filter(
-    (entry) => typeof entry === "string" && TEST_EXCLUDE_RE.test(entry),
-  );
-  if (testExcludes.length > 0) {
+  // Any `exclude` key silently drops files from the typecheck, even one that
+  // only names non-test-looking paths (e.g. "dist" or "helpers") — so its
+  // mere presence is the problem, not whether an entry looks test-related.
+  // (`in` throws on primitives, so guard for non-object configs first.)
+  if (cfg && typeof cfg === "object" && "exclude" in cfg) {
     problems.push(
-      `exclude must not drop test files (found ${JSON.stringify(testExcludes)})`,
+      `tsconfig must not use "exclude" (found ${JSON.stringify(cfg.exclude)})`,
     );
   }
 
-  const compilerOptions =
-    cfg && typeof cfg.compilerOptions === "object" ? cfg.compilerOptions : {};
+  const isPlainObject =
+    cfg?.compilerOptions !== null &&
+    typeof cfg?.compilerOptions === "object" &&
+    !Array.isArray(cfg.compilerOptions);
+  if (cfg && typeof cfg === "object" && "compilerOptions" in cfg && !isPlainObject) {
+    problems.push(
+      `compilerOptions must be an object (got ${JSON.stringify(cfg.compilerOptions)})`,
+    );
+  }
+  const compilerOptions = isPlainObject ? cfg.compilerOptions : {};
   const types = Array.isArray(compilerOptions.types) ? compilerOptions.types : [];
   // Plugins import node builtins (fs, path, node:dns, ...). Without an explicit
   // "node" type (backed by an @types/node devDep) tsc cannot resolve them.

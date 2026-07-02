@@ -46,6 +46,19 @@ test("validateTsconfigShape flags __tests__ in exclude", () => {
   assert.ok(problems.some((p) => /exclude/.test(p)));
 });
 
+test("validateTsconfigShape flags any exclude key, even one that only names non-test paths", () => {
+  // AGENTS.md's "Typecheck gate" section requires `include: ["**/*.ts"]` with
+  // NO `exclude` at all. An exclude that only names a non-test-looking path
+  // (e.g. "dist" or "helpers") still silently drops those files from the
+  // typecheck, so the presence of the key itself is the problem — not just
+  // whether the entry happens to look like a test path.
+  const problems = validateTsconfigShape({ ...GOOD, exclude: ["dist"] });
+  assert.ok(
+    problems.some((p) => /exclude/.test(p) && /dist/.test(p)),
+    `expected an exclude problem naming "dist", got ${JSON.stringify(problems)}`,
+  );
+});
+
 test("validateTsconfigShape requires compilerOptions.types to include node", () => {
   const problems = validateTsconfigShape({ ...GOOD, compilerOptions: { skipLibCheck: true, types: ["vitest"] } });
   assert.ok(problems.some((p) => /node/.test(p)));
@@ -57,6 +70,33 @@ test("validateTsconfigShape requires skipLibCheck (third-party .d.ts otherwise b
     compilerOptions: { types: ["node", "vitest"] },
   });
   assert.ok(problems.some((p) => /skipLibCheck/.test(p)));
+});
+
+test("validateTsconfigShape reports a problem (not a throw) when compilerOptions is null", () => {
+  const problems = validateTsconfigShape({ include: ["**/*.ts"], compilerOptions: null });
+  assert.ok(
+    problems.some((p) => /compilerOptions/.test(p)),
+    `expected a compilerOptions problem, got ${JSON.stringify(problems)}`,
+  );
+});
+
+test("validateTsconfigShape reports a problem (not a throw) when compilerOptions is an array", () => {
+  const problems = validateTsconfigShape({ include: ["**/*.ts"], compilerOptions: [] });
+  assert.ok(
+    problems.some((p) => /compilerOptions must be an object/.test(p)),
+    `expected a "compilerOptions must be an object" problem, got ${JSON.stringify(problems)}`,
+  );
+});
+
+test("validateTsconfigShape reports problems (not a throw) when the config is not an object", () => {
+  // A tsconfig.json containing e.g. `"oops"` is valid JSON but not a config
+  // object. The `in` operator throws on primitives, so the validator must
+  // guard for that and report problems instead of crashing.
+  const problems = validateTsconfigShape("oops");
+  assert.ok(
+    problems.some((p) => /include/.test(p)),
+    `expected an include problem, got ${JSON.stringify(problems)}`,
+  );
 });
 
 test("validatePackageShape accepts an @types/node devDependency", () => {

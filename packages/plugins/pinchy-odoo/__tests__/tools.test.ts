@@ -1,6 +1,6 @@
 // @vitest-environment node
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import type { OdooField } from "../index";
+import type { OdooField, AgentOdooConfig } from "../index";
 
 // Mock odoo-node before importing the plugin
 const mockSearchRead = vi.fn();
@@ -89,7 +89,7 @@ const fetchMock = vi.fn(async (_input: string | URL, _init?: RequestInit) => ({
 // Vitest typing dance: cast through unknown for mock fetch
 globalThis.fetch = fetchMock as unknown as typeof fetch;
 
-function createApi(agentConfigs: Record<string, unknown> = {}) {
+function createApi(agentConfigs: Record<string, AgentOdooConfig> = {}) {
   const tools: Array<{
     factory: (ctx: { agentId?: string }) => AgentTool | null;
     name: string;
@@ -109,10 +109,7 @@ function createApi(agentConfigs: Record<string, unknown> = {}) {
     },
   };
 
-  // `api` is a hand-rolled PluginApi mock; the only structural gap is that the
-  // helper keeps `agentConfigs` loosely typed (Record<string, unknown>), so
-  // assert it against the real register() parameter type.
-  plugin.register(api as Parameters<typeof plugin.register>[0]);
+  plugin.register(api);
   return tools;
 }
 

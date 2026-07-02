@@ -89,7 +89,7 @@ interface PluginConfig {
   agents: Record<string, AgentOdooConfig>;
 }
 
-interface AgentOdooConfig {
+export interface AgentOdooConfig {
   connectionId: string;
   permissions: Permissions;
   modelNames?: Record<string, string>;

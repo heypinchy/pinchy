@@ -15,11 +15,17 @@
  * `pnpm test:scripts`) fails fast if a plugin's tsconfig/package.json isn't
  * wired correctly, before this slower, install-dependent gate ever runs.
  *
+ * The `tsc` runs themselves are launched concurrently (each plugin is an
+ * independent compiler process) so overall wall time is roughly the slowest
+ * single plugin rather than the sum of all of them. Output is still printed
+ * per plugin, in the same sorted order as discovery, so the log stays
+ * deterministic regardless of which process finishes first.
+ *
  * Exit code 0 = all plugins typecheck; 1 = at least one failed or is
  * misconfigured.
  */
 
-import { spawnSync } from "node:child_process";
+import { spawn } from "node:child_process";
 import { existsSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join, relative, resolve } from "node:path";
@@ -40,11 +46,14 @@ if (dirs.length === 0) {
 
 const failed = [];
 
+// Fail fast on misconfiguration (the drift guard's rules) for every plugin
+// BEFORE spawning any tsc process, so a wiring problem is reported as a clear
+// "wire the tsconfig" message rather than getting lost among concurrent tsc
+// output.
+const runnable = [];
 for (const dir of dirs) {
   const rel = relative(REPO_ROOT, dir);
 
-  // Fail fast on misconfiguration (the drift guard's rules) so the error is a
-  // clear "wire the tsconfig" message rather than a cryptic tsc failure.
   const problems = validatePluginDir(dir);
   if (problems.length > 0) {
     console.error(`✖ ${rel}: ${problems.join("; ")}`);
@@ -69,13 +78,47 @@ for (const dir of dirs) {
     continue;
   }
 
-  console.log(`• typechecking ${rel} …`);
-  const result = spawnSync(tscBin, ["--noEmit", "-p", "tsconfig.json"], {
-    cwd: dir,
-    stdio: "inherit",
-    shell: IS_WINDOWS,
+  runnable.push({ dir, rel, tscBin });
+}
+
+/**
+ * Run `tsc --noEmit` for one plugin, buffering stdout/stderr instead of
+ * inheriting them, so concurrent runs don't interleave their output.
+ * @param {{ dir: string, rel: string, tscBin: string }} entry
+ * @returns {Promise<{ rel: string, status: number|null, output: string }>}
+ */
+function runTsc({ dir, rel, tscBin }) {
+  return new Promise((resolvePromise) => {
+    const child = spawn(tscBin, ["--noEmit", "-p", "tsconfig.json"], {
+      cwd: dir,
+      stdio: ["ignore", "pipe", "pipe"],
+      shell: IS_WINDOWS,
+    });
+
+    let output = "";
+    child.stdout.on("data", (chunk) => {
+      output += chunk;
+    });
+    child.stderr.on("data", (chunk) => {
+      output += chunk;
+    });
+
+    child.on("close", (status) => {
+      resolvePromise({ rel, status, output });
+    });
   });
-  if (result.status !== 0) {
+}
+
+const results = await Promise.all(runnable.map(runTsc));
+
+// Print in the original sorted (discovery) order so the log is deterministic
+// no matter which tsc process finished first.
+for (const { rel, status, output } of results) {
+  console.log(`• typechecking ${rel} …`);
+  if (output) {
+    process.stdout.write(output.endsWith("\n") ? output : `${output}\n`);
+  }
+  if (status !== 0) {
     failed.push(rel);
   }
 }
