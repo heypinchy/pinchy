@@ -46,11 +46,7 @@ You'll also need your IMAP and SMTP server hostnames and ports — but Pinchy tr
     - **SMTP host** and **SMTP port** — defaults to port `587`
     - **Security** — `TLS`, `STARTTLS`, or `None`, applied to both connections; defaults to `TLS`. Most providers pair port 993 (IMAP) and 465 (SMTP) with `TLS`, and port 587 (SMTP) with `STARTTLS` — check your provider's settings if the connection test fails.
 
-    <Aside type="tip">
-  Your provider's help pages usually list these under "IMAP/SMTP settings"
-  or "set up a mail client." Search for `<your provider> IMAP settings` if
-  you're not sure.
-</Aside>
+    Your provider's help pages usually list these under "IMAP/SMTP settings" or "set up a mail client." Search for `<your provider> IMAP settings` if you're not sure.
 
 4.  **Enter your username and password**
 
@@ -60,11 +56,7 @@ You'll also need your IMAP and SMTP server hostnames and ports — but Pinchy tr
 
     Click **Test connection**. Pinchy tries to log in to both the IMAP and SMTP servers with the settings you entered and reports success or a specific failure reason — wrong credentials, unreachable host, or a TLS mismatch.
 
-    <Aside type="note">
-      Pinchy always tests the connection before saving. **Save** stays disabled
-      until the test succeeds, so a broken connection can't end up saved and
-      silently unusable.
-    </Aside>
+    Pinchy always tests the connection before saving. **Save** stays disabled until the test succeeds, so a broken connection can't end up saved and silently unusable.
 
 6.  **Save**
 
