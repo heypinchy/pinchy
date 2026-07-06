@@ -832,7 +832,44 @@ describe("SettingsIntegrations — OAuth callback errors (persistent banner)", (
     mockFetchConnections([]);
     render(<SettingsIntegrations />);
     await waitFor(() => {
+      // No alert region at all when there's no error — not just the specific
+      // message string. Guards against an empty/generic banner regressing in.
+      expect(screen.queryByRole("alert")).not.toBeInTheDocument();
       expect(screen.queryByText(/couldn't finish connecting/i)).not.toBeInTheDocument();
     });
+  });
+
+  // The banner replaced the toast for EVERY OAuth error code — assert no code
+  // re-introduces a toast (double-signal, AGENTS.md "don't mix inline + toast").
+  // Broadens the single token_exchange_failed guard above to the whole set.
+  it.each([
+    "token_exchange_failed",
+    "profile_fetch_failed",
+    "invalid_token_response",
+    "missing_refresh_token",
+    "consent_declined",
+    "provider_error",
+    "unknown_code",
+  ])("shows the banner but fires no toast for oauthError=%s", async (code) => {
+    mockFetchConnections([]);
+    const { toast } = await import("sonner");
+    render(<SettingsIntegrations oauthError={code} />);
+    expect(await screen.findByRole("alert")).toBeInTheDocument();
+    expect(toast.error).not.toHaveBeenCalled();
+  });
+
+  // A ~4s toast that fired after the redirect could at least be announced by a
+  // screen reader's toast live region. A statically-rendered role="alert" that
+  // is already in the DOM at first paint is NOT reliably announced (SRs announce
+  // an alert region on mutation, not on initial render). So for a permanent,
+  // actionable error that lands after a full-page redirect we move focus to the
+  // banner — the GOV.UK / WCAG error-summary pattern — which guarantees the SR
+  // reads it, independent of live-region timing. This is a justified departure
+  // from the ambient insecure/enterprise info banners (which never grab focus).
+  it("moves focus to the error banner on mount so screen readers announce it after the redirect", async () => {
+    mockFetchConnections([]);
+    render(<SettingsIntegrations oauthError="token_exchange_failed" />);
+    const banner = await screen.findByRole("alert");
+    await waitFor(() => expect(banner).toHaveFocus());
   });
 });

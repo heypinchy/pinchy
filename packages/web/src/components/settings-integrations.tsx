@@ -122,12 +122,30 @@ export function SettingsIntegrations({ oauthError }: { oauthError?: string } = {
   // UI". Seed local state from the prop ONCE so stripping the URL below doesn't
   // also clear the banner; the dismiss button clears it.
   const [oauthErrorState, setOauthErrorState] = useState<string | undefined>(oauthError);
+  const oauthErrorBannerRef = useRef<HTMLDivElement>(null);
+  const hasFocusedOauthBanner = useRef(false);
 
   useEffect(() => {
     if (!oauthError) return;
     // Strip the ?error= param so a manual refresh doesn't resurrect the banner.
     router.replace("/settings?tab=integrations", { scroll: false });
   }, []); // eslint-disable-line react-hooks/exhaustive-deps -- intentionally mount-only
+
+  // Move focus to the banner so a screen reader announces the error after the
+  // full-page OAuth redirect. A statically-rendered role="alert" is NOT reliably
+  // announced by SRs (they fire on mutation of a live region, not on presence),
+  // and the toast this replaced at least had its own announcing live region.
+  // Focusing the error — the GOV.UK / WCAG error-summary pattern — guarantees the
+  // SR reads it, independent of live-region timing. Justified departure from the
+  // ambient insecure/enterprise info banners, which never grab focus: this is a
+  // permanent, actionable error. Runs once the banner is actually in the DOM
+  // (past the `loading` gate below), and only once so it never steals focus on a
+  // later re-render.
+  useEffect(() => {
+    if (loading || !oauthErrorState || hasFocusedOauthBanner.current) return;
+    hasFocusedOauthBanner.current = true;
+    oauthErrorBannerRef.current?.focus();
+  }, [loading, oauthErrorState]);
 
   const fetchConnections = useCallback(async () => {
     try {
@@ -234,7 +252,12 @@ export function SettingsIntegrations({ oauthError }: { oauthError?: string } = {
   return (
     <div className="space-y-6">
       {oauthErrorState && (
-        <div role="alert" className="rounded-lg border border-destructive/30 bg-destructive/5 p-4">
+        <div
+          ref={oauthErrorBannerRef}
+          role="alert"
+          tabIndex={-1}
+          className="rounded-lg border border-destructive/30 bg-destructive/5 p-4 focus:outline-none"
+        >
           <div className="flex items-start justify-between gap-3">
             <div className="flex items-start gap-3">
               <AlertTriangle className="h-5 w-5 shrink-0 text-destructive" />
