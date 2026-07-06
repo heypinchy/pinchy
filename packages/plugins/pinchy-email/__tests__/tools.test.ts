@@ -33,6 +33,18 @@ vi.mock("../graph-adapter", () => {
   return { GraphAdapter: MockGraphAdapter };
 });
 
+vi.mock("../imap-adapter", () => {
+  const MockImapAdapter = vi.fn(function (this: Record<string, unknown>) {
+    this.list = mockList;
+    this.read = mockRead;
+    this.search = mockSearch;
+    this.draft = mockDraft;
+    this.send = mockSend;
+    this.getAttachment = mockGetAttachment;
+  });
+  return { ImapAdapter: MockImapAdapter };
+});
+
 // Mock node:fs/promises so attachment writes never touch the real filesystem.
 // vi.mock(...) is hoisted above these const declarations, so the mock fns
 // themselves must be created via vi.hoisted() to avoid a TDZ error.
@@ -50,6 +62,7 @@ vi.mock("node:fs/promises", () => ({
 
 import { GmailAdapter } from "../gmail-adapter";
 import { GraphAdapter } from "../graph-adapter";
+import { ImapAdapter } from "../imap-adapter";
 import plugin from "../index";
 import {
   MAX_ENTRIES_PER_AGENT,
@@ -461,39 +474,39 @@ describe("credential fetching", () => {
     expect(mockList).toHaveBeenCalledTimes(1);
   });
 
-  it("validates imap-shaped credentials without throwing a shape error (adapter selection is a later task)", async () => {
-    // fetchCredentials must accept the full imap credentials shape and
-    // dispatch validation to assertImapCredentialsShape rather than the
-    // oauth assertion (which would reject this payload for lacking
-    // accessToken). Constructing an ImapAdapter is out of scope here (T8) —
-    // getOrCreateClient still throws "unsupported email provider: imap" for
-    // an unrecognised type, which is expected and proves the credentials
-    // shape itself was accepted rather than rejected.
+  it("dispatches to ImapAdapter when credentials.type is 'imap'", async () => {
+    // fetchCredentials accepts the full imap credentials shape (validated by
+    // assertImapCredentialsShape, not the oauth assertion), and
+    // getOrCreateClient now builds a real ImapAdapter from it instead of
+    // throwing "unsupported email provider: imap".
+    const imapCredentials = {
+      imapHost: "imap.example.com",
+      imapPort: 993,
+      smtpHost: "smtp.example.com",
+      smtpPort: 587,
+      username: "user@example.com",
+      password: "app-password",
+      security: "tls" as const,
+    };
     mockFetch.mockResolvedValue({
       ok: true,
       json: async () => ({
         type: "imap",
-        credentials: {
-          imapHost: "imap.example.com",
-          imapPort: 993,
-          smtpHost: "smtp.example.com",
-          smtpPort: 587,
-          username: "user@example.com",
-          password: "app-password",
-          security: "tls",
-        },
+        credentials: imapCredentials,
       }),
     });
+    mockList.mockResolvedValue([]);
 
     const tools = createApi();
     const tool = findTool(tools, "email_list", agentId)!;
 
     const result = await tool.execute("call-1", {});
 
-    expect(result.isError).toBe(true);
-    expect(result.content[0].text).toContain("unsupported email provider");
-    expect(result.content[0].text).not.toContain("credentials.");
-    expect(mockList).not.toHaveBeenCalled();
+    expect(result.isError).toBeFalsy();
+    expect(ImapAdapter).toHaveBeenCalledWith(imapCredentials);
+    expect(GmailAdapter).not.toHaveBeenCalled();
+    expect(GraphAdapter).not.toHaveBeenCalled();
+    expect(mockList).toHaveBeenCalledTimes(1);
   });
 
   it("rejects an imap credentials payload missing imapHost with a field-naming error", async () => {

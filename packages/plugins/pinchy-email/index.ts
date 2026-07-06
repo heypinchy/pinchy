@@ -2,6 +2,7 @@ import { mkdir, writeFile, access } from "node:fs/promises";
 import { basename } from "node:path";
 import { GmailAdapter } from "./gmail-adapter.js";
 import { GraphAdapter } from "./graph-adapter.js";
+import { ImapAdapter } from "./imap-adapter.js";
 import type { EmailAdapter, EmailSummary, Folder } from "./email-adapter.js";
 import { checkPermission, type Permissions } from "./permissions.js";
 import {
@@ -509,7 +510,7 @@ const plugin = {
   id: "pinchy-email",
   name: "Pinchy Email",
   description:
-    "Email integration (Gmail and Microsoft 365) with per-agent permissions.",
+    "Email integration (Gmail, Microsoft 365, and IMAP) with per-agent permissions.",
 
   register(api: PluginApi) {
     // Capture agentConfigs at register() time. OpenClaw calls register() with a
@@ -580,20 +581,25 @@ const plugin = {
         gatewayToken,
         config.connectionId,
       );
-      // google/microsoft are the only oauth-shaped providers this branch
-      // handles today (imap's ImapAdapter is wired up in a later task), so
-      // narrowing to OAuthEmailCredentials here is safe: fetchCredentials
-      // already ran assertOAuthCredentialsShape for any type other than
-      // "imap" before returning.
-      const oauthCreds = creds as OAuthEmailCredentials;
+      // google/microsoft are oauth-shaped; imap carries its own
+      // host/port/username/password shape (ImapEmailCredentials).
+      // fetchCredentials already ran the matching assertion
+      // (assertOAuthCredentialsShape or assertImapCredentialsShape) for
+      // `type` before returning, so narrowing here is safe.
       const adapter: EmailAdapter =
         type === "microsoft"
-          ? new GraphAdapter({ accessToken: oauthCreds.accessToken })
+          ? new GraphAdapter({
+              accessToken: (creds as OAuthEmailCredentials).accessToken,
+            })
           : type === "google"
-            ? new GmailAdapter({ accessToken: oauthCreds.accessToken })
-            : (() => {
-                throw new Error(`unsupported email provider: ${type}`);
-              })();
+            ? new GmailAdapter({
+                accessToken: (creds as OAuthEmailCredentials).accessToken,
+              })
+            : type === "imap"
+              ? new ImapAdapter(creds as ImapEmailCredentials)
+              : (() => {
+                  throw new Error(`unsupported email provider: ${type}`);
+                })();
       cache.set(cacheKey, {
         adapter,
         expiresAt: Date.now() + CREDENTIALS_TTL_MS,
