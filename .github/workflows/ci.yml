@@ -2050,7 +2050,15 @@ jobs:
           # PRIVATE repo: the job's GITHUB_TOKEN is scoped to this repo only, so
           # lychee gets a 404 even though the link is valid for maintainers. The
           # release docs intentionally cross-reference it.
-          args: "--no-progress --max-retries 3 --retry-wait-time 5 --accept '200..=299,429,500..=599' '**/*.md' '**/*.mdx' --exclude-path node_modules --exclude-path .git --exclude-path docs --exclude 'localhost' --exclude 'github\\.com/heypinchy/website' --exclude 'linkedin\\.com' --exclude 'sonner\\.emilkowal\\.dev' --exclude 'squawkhq\\.com' --exclude 'contributor-covenant\\.org' --exclude 'star-history\\.com'"
+          # github.com/heypinchy/pinchy/stargazers is excluded because GitHub
+          # gates the stargazers LIST sub-page behind abuse/rate-limit protection
+          # and intermittently 404s it to lychee's crawler even though the repo
+          # is public and the link resolves in a browser (verified 2026-07-06:
+          # the repo root and /issues, /releases, /discussions all return 200,
+          # only /stargazers 404s). It's a decorative stars-badge click-through,
+          # not documentation, so its false-positive 404 must not red-light every
+          # PR — the badge IMAGE (img.shields.io/github/stars) is checked normally.
+          args: "--no-progress --max-retries 3 --retry-wait-time 5 --accept '200..=299,429,500..=599' '**/*.md' '**/*.mdx' --exclude-path node_modules --exclude-path .git --exclude-path docs --exclude 'localhost' --exclude 'github\\.com/heypinchy/website' --exclude 'github\\.com/heypinchy/pinchy/stargazers' --exclude 'linkedin\\.com' --exclude 'sonner\\.emilkowal\\.dev' --exclude 'squawkhq\\.com' --exclude 'contributor-covenant\\.org' --exclude 'star-history\\.com'"
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
