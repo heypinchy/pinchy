@@ -31,6 +31,50 @@ export interface ImapMailbox {
   flags: Set<string>;
 }
 
+// A single stored `security` field can't be simultaneously correct for IMAP
+// (implicit-TLS 993) and SMTP (STARTTLS submission 587), so encryption mode is
+// keyed off the standard port instead:
+//   security === "none"        → no encryption          (secure:false, requireTLS:false)
+//   implicit-TLS ports 993/465 → implicit TLS           (secure:true,  requireTLS:false)
+//   any other port (143/587/25)→ STARTTLS opportunistic (secure:false, requireTLS:true)
+const IMPLICIT_TLS_PORTS = new Set([993, 465]);
+export function tlsModeForPort(
+  port: number,
+  security: string,
+): { secure: boolean; requireTLS: boolean } {
+  if (security === "none") return { secure: false, requireTLS: false };
+  const implicit = IMPLICIT_TLS_PORTS.has(port);
+  return { secure: implicit, requireTLS: !implicit };
+}
+
+// IMAP UIDs are only unique within a single mailbox, so a message id must carry
+// the mailbox path it belongs to — otherwise a UID from SENT looked up in INBOX
+// resolves to the wrong message (or none). The mailbox path is base64url-encoded
+// because real paths contain '.', '/', and spaces; the uid is a plain integer
+// prefix so ids stay roughly human-readable.
+export function encodeMessageId(mailboxPath: string, uid: number): string {
+  return `${uid}@${Buffer.from(mailboxPath, "utf8").toString("base64url")}`;
+}
+
+// Inverse of encodeMessageId. BACKWARD-COMPAT: a bare integer string (no '@')
+// is a legacy id from before folder-encoding (or a canned E2E id) and is
+// treated as an INBOX uid. Splits on the FIRST '@' so the base64url tail is
+// decoded intact.
+export function decodeMessageId(id: string): {
+  mailboxPath: string;
+  uid: number;
+} {
+  const at = id.indexOf("@");
+  if (at === -1) {
+    return { mailboxPath: "INBOX", uid: Number(id) };
+  }
+  const uid = Number(id.slice(0, at));
+  const mailboxPath = Buffer.from(id.slice(at + 1), "base64url").toString(
+    "utf8",
+  );
+  return { mailboxPath, uid };
+}
+
 // RFC 6154 SPECIAL-USE attributes, mapped to our canonical folders. There is
 // no \Inbox SPECIAL-USE flag — INBOX is always the literal mailbox path
 // "INBOX", so it is handled separately below rather than through this table.
@@ -76,11 +120,17 @@ export function resolveFolders(
   for (const box of mailboxes) {
     if (box.path.toUpperCase() === "INBOX") continue;
 
+    // Match the LAST path segment, not the full path, so hierarchical/prefixed
+    // mailboxes like Dovecot's "INBOX.Sent" or "INBOX/Sent Items" still match
+    // the anchored heuristics. ImapMailbox carries only `path`, so split on
+    // both common hierarchy delimiters ('.' and '/').
+    const leaf = box.path.split(/[./]/).pop() ?? box.path;
+
     for (const folder of Object.keys(NAME_HEURISTICS) as Array<
       Exclude<Folder, "INBOX">
     >) {
       if (result[folder]) continue;
-      if (NAME_HEURISTICS[folder].test(box.path)) {
+      if (NAME_HEURISTICS[folder].test(leaf)) {
         result[folder] = box.path;
       }
     }
@@ -184,10 +234,10 @@ function assertComposeOptionsSafe(opts: ComposeOptions): void {
   assertNoHeaderInjection("subject", opts.subject);
 }
 
-function toSummary(m: FetchMessageObject): EmailSummary {
+function toSummary(m: FetchMessageObject, path: string): EmailSummary {
   const envelope = m.envelope;
   return {
-    id: String(m.uid),
+    id: encodeMessageId(path, m.uid),
     from: envelope?.from?.[0]?.address ?? "",
     to: envelope?.to?.map((a) => a.address ?? "").join(", ") ?? "",
     subject: envelope?.subject ?? "",
@@ -204,9 +254,10 @@ const DEFAULT_SMTP_MOCK_PORT = 3025;
 
 // Resolved connection settings for a single protocol (IMAP or SMTP): host,
 // port, and TLS mode, after applying an env-based mock override on top of
-// this.opts. OFF by default — production always uses the stored host/port/
-// security from opts; the override only fires when the matching *_MOCK_HOST
-// env var is set (e.g. by the E2E GreenMail compose overlay).
+// this.opts. OFF by default — production always uses the stored host/port with
+// port-derived TLS; the override only fires when the matching *_MOCK_HOST env
+// var AND the explicit PINCHY_INSECURE_MAIL_MOCK opt-in flag are both set
+// (e.g. by the E2E GreenMail compose overlay).
 interface ResolvedConnection {
   host: string;
   port: number;
@@ -222,13 +273,17 @@ interface ResolvedSmtpConnection extends ResolvedConnection {
 export class ImapAdapter implements EmailAdapter {
   constructor(private opts: ImapAdapterOptions) {}
 
-  // Resolves the effective IMAP connection: this.opts, unless IMAP_MOCK_HOST
-  // is set, in which case host/port come from IMAP_MOCK_HOST/IMAP_MOCK_PORT
-  // (defaulting the port to GreenMail's 3143) and secure is forced to false —
-  // GreenMail's plain IMAP listener has no TLS.
+  // Resolves the effective IMAP connection: this.opts, unless the insecure mock
+  // seam is explicitly opted into. The seam fires ONLY when BOTH IMAP_MOCK_HOST
+  // AND PINCHY_INSECURE_MAIL_MOCK==="1" are set — then host/port come from
+  // IMAP_MOCK_HOST/IMAP_MOCK_PORT (defaulting to GreenMail's 3143) and secure is
+  // forced to false (GreenMail's plain IMAP listener has no TLS). The explicit
+  // flag prevents a stray *_MOCK_HOST in production from silently downgrading
+  // TLS and redirecting credentials to an attacker-controlled host; a mock host
+  // WITHOUT the flag is ignored and the real stored connection is used.
   private resolveImapConnection(): ResolvedConnection {
     const mockHost = process.env.IMAP_MOCK_HOST;
-    if (mockHost) {
+    if (mockHost && process.env.PINCHY_INSECURE_MAIL_MOCK === "1") {
       return {
         host: mockHost,
         port: Number(process.env.IMAP_MOCK_PORT ?? DEFAULT_IMAP_MOCK_PORT),
@@ -238,17 +293,21 @@ export class ImapAdapter implements EmailAdapter {
     return {
       host: this.opts.imapHost,
       port: this.opts.imapPort,
-      secure: this.opts.security === "tls",
+      secure: tlsModeForPort(this.opts.imapPort, this.opts.security).secure,
     };
   }
 
-  // Resolves the effective SMTP connection: this.opts, unless SMTP_MOCK_HOST
-  // is set, in which case host/port come from SMTP_MOCK_HOST/SMTP_MOCK_PORT
-  // (defaulting the port to GreenMail's 3025) and secure/requireTLS are both
-  // forced to false — GreenMail's plain SMTP listener has no TLS/STARTTLS.
+  // Resolves the effective SMTP connection: this.opts, unless the insecure mock
+  // seam is explicitly opted into. The seam fires ONLY when BOTH SMTP_MOCK_HOST
+  // AND PINCHY_INSECURE_MAIL_MOCK==="1" are set — then host/port come from
+  // SMTP_MOCK_HOST/SMTP_MOCK_PORT (defaulting to GreenMail's 3025) and
+  // secure/requireTLS are both forced off (GreenMail's plain SMTP listener has
+  // no TLS/STARTTLS). The explicit flag prevents a stray *_MOCK_HOST in
+  // production from silently downgrading TLS and redirecting credentials; a
+  // mock host WITHOUT the flag is ignored and the real stored connection used.
   private resolveSmtpConnection(): ResolvedSmtpConnection {
     const mockHost = process.env.SMTP_MOCK_HOST;
-    if (mockHost) {
+    if (mockHost && process.env.PINCHY_INSECURE_MAIL_MOCK === "1") {
       return {
         host: mockHost,
         port: Number(process.env.SMTP_MOCK_PORT ?? DEFAULT_SMTP_MOCK_PORT),
@@ -259,8 +318,7 @@ export class ImapAdapter implements EmailAdapter {
     return {
       host: this.opts.smtpHost,
       port: this.opts.smtpPort,
-      secure: this.opts.security === "tls",
-      requireTLS: this.opts.security === "starttls",
+      ...tlsModeForPort(this.opts.smtpPort, this.opts.security),
     };
   }
 
@@ -328,9 +386,13 @@ export class ImapAdapter implements EmailAdapter {
       { envelope: true, flags: true },
       { uid: true },
     )) {
-      summaries.push(toSummary(msg));
+      summaries.push(toSummary(msg, path));
     }
-    summaries.sort((a, b) => Number(b.id) - Number(a.id));
+    // Ids are now folder-encoded, so sort on the decoded uid (newest first)
+    // rather than the raw id string.
+    summaries.sort(
+      (a, b) => decodeMessageId(b.id).uid - decodeMessageId(a.id).uid,
+    );
     return summaries.slice(0, limit);
   }
 
@@ -346,19 +408,19 @@ export class ImapAdapter implements EmailAdapter {
     });
   }
 
-  // Fetches and parses a message by UID from INBOX. IMAP UIDs are only
-  // unique within a mailbox, and read()/getAttachment() receive just an id —
-  // no folder — so this (like the sibling adapters, which use provider-global
-  // message ids) treats INBOX as the operating mailbox for by-id lookups.
-  // Messages filed elsewhere are out of scope for v1; encoding the folder
-  // into the id would be a bigger design change than this task calls for.
+  // Fetches and parses a message by its folder-encoded id. The id carries the
+  // mailbox path (IMAP UIDs are only unique within a mailbox), so this opens
+  // the message's own mailbox rather than hardcoding INBOX — a UID from SENT
+  // must be looked up in SENT, not INBOX. Legacy bare-integer ids decode to
+  // INBOX for backward compatibility (see decodeMessageId).
   private async fetchParsed(
     client: ImapFlow,
     id: string,
   ): Promise<{ parsed: ParsedMail; unread: boolean }> {
-    await client.mailboxOpen("INBOX");
+    const decoded = decodeMessageId(id);
+    await client.mailboxOpen(decoded.mailboxPath);
     const msg = await client.fetchOne(
-      Number(id),
+      decoded.uid,
       { source: true, flags: true },
       { uid: true },
     );
@@ -446,6 +508,7 @@ export class ImapAdapter implements EmailAdapter {
         pass: this.opts.password,
       },
     });
+    let messageId: string | null;
     try {
       const info = await transport.sendMail({
         from: this.opts.username,
@@ -454,10 +517,37 @@ export class ImapAdapter implements EmailAdapter {
         text: opts.body,
         ...(opts.replyTo ? { inReplyTo: opts.replyTo } : {}),
       });
-      return { messageId: info.messageId ?? null };
+      messageId = info.messageId ?? null;
     } finally {
       transport.close?.();
     }
+
+    // Best-effort: file a copy of the sent message into the Sent mailbox so
+    // agent-sent mail appears in Sent and in search({folder:"SENT"}) — IMAP
+    // APPEND is the standard way clients do this (there is no server-side "save
+    // to Sent" hook on the SMTP path). Wrapped in try/catch because it must
+    // never fail or alter the send: an unresolvable Sent folder or a rejected
+    // APPEND leaves the already-delivered message untouched.
+    try {
+      const raw = await new MailComposer({
+        from: this.opts.username,
+        to: opts.to,
+        subject: opts.subject,
+        text: opts.body,
+        ...(opts.replyTo ? { inReplyTo: opts.replyTo } : {}),
+      })
+        .compile()
+        .build();
+
+      await this.withClient(async (client) => {
+        const sentPath = await this.resolveMailboxPath(client, "SENT");
+        await client.append(sentPath, raw, ["\\Seen"]);
+      });
+    } catch {
+      // Swallow: archiving to Sent is best-effort and must not fail the send.
+    }
+
+    return { messageId };
   }
 
   async getAttachment(

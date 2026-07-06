@@ -3,6 +3,9 @@ import {
   ImapAdapter,
   resolveFolders,
   buildImapSearch,
+  tlsModeForPort,
+  encodeMessageId,
+  decodeMessageId,
   type ImapAdapterOptions,
 } from "../imap-adapter.js";
 
@@ -277,6 +280,42 @@ describe("ImapAdapter#read", () => {
   });
 });
 
+describe("ImapAdapter#read folder-encoded ids", () => {
+  it("opens the mailbox encoded in the id, not INBOX, for a SENT message", async () => {
+    mockClient.fetchOne.mockResolvedValue({
+      source: Buffer.from(buildMultipartFixture()),
+      flags: new Set(["\\Seen"]),
+    });
+
+    const adapter = new ImapAdapter(opts);
+    const encodedSentId = encodeMessageId("Sent Items", 42);
+    const result = await adapter.read(encodedSentId);
+
+    expect(mockClient.mailboxOpen).toHaveBeenCalledWith("Sent Items");
+    expect(mockClient.mailboxOpen).not.toHaveBeenCalledWith("INBOX");
+    expect(mockClient.fetchOne).toHaveBeenCalledWith(
+      42,
+      { source: true, flags: true },
+      { uid: true },
+    );
+    // read() returns the encoded id unchanged so the caller can re-address it.
+    expect(result.id).toBe(encodedSentId);
+  });
+
+  it("opens INBOX for a legacy bare-integer id (backward compat)", async () => {
+    mockClient.fetchOne.mockResolvedValue({
+      source: Buffer.from(buildMultipartFixture()),
+      flags: new Set(["\\Seen"]),
+    });
+
+    const adapter = new ImapAdapter(opts);
+    const result = await adapter.read("42");
+
+    expect(mockClient.mailboxOpen).toHaveBeenCalledWith("INBOX");
+    expect(result.id).toBe("42");
+  });
+});
+
 describe("ImapAdapter#getAttachment", () => {
   it("returns filename, mimeType, and Buffer data for a matching attachment id", async () => {
     mockClient.fetchOne.mockResolvedValue({
@@ -361,9 +400,10 @@ describe("ImapAdapter mock env overrides", () => {
     );
   });
 
-  it("overrides IMAP host/port and forces secure:false when IMAP_MOCK_HOST/PORT are set", async () => {
+  it("overrides IMAP host/port and forces secure:false when IMAP_MOCK_HOST/PORT and the insecure flag are set", async () => {
     vi.stubEnv("IMAP_MOCK_HOST", "greenmail");
     vi.stubEnv("IMAP_MOCK_PORT", "3143");
+    vi.stubEnv("PINCHY_INSECURE_MAIL_MOCK", "1");
 
     const adapter = new ImapAdapter(opts);
     await adapter.list({});
@@ -378,8 +418,9 @@ describe("ImapAdapter mock env overrides", () => {
     );
   });
 
-  it("defaults IMAP_MOCK_PORT to 3143 when IMAP_MOCK_HOST is set but the port is not", async () => {
+  it("defaults IMAP_MOCK_PORT to 3143 when IMAP_MOCK_HOST and the insecure flag are set but the port is not", async () => {
     vi.stubEnv("IMAP_MOCK_HOST", "greenmail");
+    vi.stubEnv("PINCHY_INSECURE_MAIL_MOCK", "1");
 
     const adapter = new ImapAdapter(opts);
     await adapter.list({});
@@ -394,23 +435,43 @@ describe("ImapAdapter mock env overrides", () => {
     );
   });
 
-  it("uses this.opts host/port/security for SMTP when no mock env vars are set", async () => {
+  it("ignores IMAP_MOCK_HOST and uses the stored host/port when the insecure flag is absent", async () => {
+    vi.stubEnv("IMAP_MOCK_HOST", "greenmail");
+    vi.stubEnv("IMAP_MOCK_PORT", "3143");
+    // No PINCHY_INSECURE_MAIL_MOCK: the mock seam must NOT fire, so no TLS
+    // downgrade or credential redirect happens in a production-like env.
+
+    const adapter = new ImapAdapter(opts);
+    await adapter.list({});
+
+    const { ImapFlow } = await import("imapflow");
+    expect(ImapFlow).toHaveBeenCalledWith(
+      expect.objectContaining({
+        host: opts.imapHost,
+        port: opts.imapPort,
+        secure: true, // port 993 → implicit TLS
+      }),
+    );
+  });
+
+  it("uses this.opts host/port with port-derived TLS for SMTP when no mock env vars are set", async () => {
     const adapter = new ImapAdapter(opts);
     await adapter.send({ to: "bob@example.com", subject: "Hi", body: "Hi" });
 
     expect(createTransportMock).toHaveBeenCalledWith(
       expect.objectContaining({
         host: opts.smtpHost,
-        port: opts.smtpPort,
-        secure: true,
-        requireTLS: false,
+        port: opts.smtpPort, // 587 → STARTTLS submission
+        secure: false,
+        requireTLS: true,
       }),
     );
   });
 
-  it("overrides SMTP host/port and forces secure:false/no requireTLS when SMTP_MOCK_HOST/PORT are set", async () => {
+  it("overrides SMTP host/port and forces secure:false/no requireTLS when SMTP_MOCK_HOST/PORT and the insecure flag are set", async () => {
     vi.stubEnv("SMTP_MOCK_HOST", "greenmail");
     vi.stubEnv("SMTP_MOCK_PORT", "3025");
+    vi.stubEnv("PINCHY_INSECURE_MAIL_MOCK", "1");
 
     const starttlsOpts: ImapAdapterOptions = { ...opts, security: "starttls" };
     const adapter = new ImapAdapter(starttlsOpts);
@@ -426,8 +487,9 @@ describe("ImapAdapter mock env overrides", () => {
     );
   });
 
-  it("defaults SMTP_MOCK_PORT to 3025 when SMTP_MOCK_HOST is set but the port is not", async () => {
+  it("defaults SMTP_MOCK_PORT to 3025 when SMTP_MOCK_HOST and the insecure flag are set but the port is not", async () => {
     vi.stubEnv("SMTP_MOCK_HOST", "greenmail");
+    vi.stubEnv("PINCHY_INSECURE_MAIL_MOCK", "1");
 
     const adapter = new ImapAdapter(opts);
     await adapter.send({ to: "bob@example.com", subject: "Hi", body: "Hi" });
@@ -441,8 +503,27 @@ describe("ImapAdapter mock env overrides", () => {
     );
   });
 
-  it("does not affect IMAP host/port when only SMTP_MOCK_HOST is set", async () => {
+  it("ignores SMTP_MOCK_HOST and uses the stored host/port when the insecure flag is absent", async () => {
     vi.stubEnv("SMTP_MOCK_HOST", "greenmail");
+    vi.stubEnv("SMTP_MOCK_PORT", "3025");
+    // No PINCHY_INSECURE_MAIL_MOCK: the mock seam must NOT fire.
+
+    const adapter = new ImapAdapter(opts);
+    await adapter.send({ to: "bob@example.com", subject: "Hi", body: "Hi" });
+
+    expect(createTransportMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        host: opts.smtpHost,
+        port: opts.smtpPort,
+        secure: false, // port 587 → STARTTLS, not implicit TLS
+        requireTLS: true,
+      }),
+    );
+  });
+
+  it("does not affect IMAP host/port when only SMTP_MOCK_HOST and the insecure flag are set", async () => {
+    vi.stubEnv("SMTP_MOCK_HOST", "greenmail");
+    vi.stubEnv("PINCHY_INSECURE_MAIL_MOCK", "1");
 
     const adapter = new ImapAdapter(opts);
     await adapter.list({});
@@ -511,6 +592,77 @@ describe("buildImapSearch", () => {
       seen: false,
       since: new Date("2026-07-05T12:00:00.000Z"),
     });
+  });
+});
+
+describe("tlsModeForPort", () => {
+  it("uses implicit TLS for IMAPS port 993", () => {
+    expect(tlsModeForPort(993, "tls")).toEqual({
+      secure: true,
+      requireTLS: false,
+    });
+  });
+
+  it("uses implicit TLS for SMTPS port 465", () => {
+    expect(tlsModeForPort(465, "tls")).toEqual({
+      secure: true,
+      requireTLS: false,
+    });
+  });
+
+  it("uses STARTTLS for submission port 587", () => {
+    expect(tlsModeForPort(587, "starttls")).toEqual({
+      secure: false,
+      requireTLS: true,
+    });
+  });
+
+  it("uses STARTTLS for the plain IMAP port 143", () => {
+    expect(tlsModeForPort(143, "tls")).toEqual({
+      secure: false,
+      requireTLS: true,
+    });
+  });
+
+  it("disables all encryption for security 'none' on any port", () => {
+    expect(tlsModeForPort(993, "none")).toEqual({
+      secure: false,
+      requireTLS: false,
+    });
+    expect(tlsModeForPort(587, "none")).toEqual({
+      secure: false,
+      requireTLS: false,
+    });
+    expect(tlsModeForPort(143, "none")).toEqual({
+      secure: false,
+      requireTLS: false,
+    });
+  });
+});
+
+describe("encodeMessageId / decodeMessageId", () => {
+  it("round-trips a mailbox path and uid", () => {
+    const id = encodeMessageId("INBOX.Sent", 42);
+    expect(decodeMessageId(id)).toEqual({ mailboxPath: "INBOX.Sent", uid: 42 });
+  });
+
+  it("survives mailbox paths containing '.', '/', and spaces", () => {
+    for (const path of ["INBOX/Sent Items", "Archive.2026.Q1", "a b/c.d"]) {
+      const id = encodeMessageId(path, 7);
+      expect(decodeMessageId(id)).toEqual({ mailboxPath: path, uid: 7 });
+    }
+  });
+
+  it("splits on the FIRST '@' so encoded ids with '@' in the tail decode correctly", () => {
+    // base64url never contains '@', but the decoder must still split on the
+    // first '@' rather than the last to be robust.
+    const id = encodeMessageId("INBOX", 99);
+    expect(id.split("@")).toHaveLength(2);
+    expect(decodeMessageId(id)).toEqual({ mailboxPath: "INBOX", uid: 99 });
+  });
+
+  it("treats a bare integer id as a legacy INBOX uid (backward compat)", () => {
+    expect(decodeMessageId("42")).toEqual({ mailboxPath: "INBOX", uid: 42 });
   });
 });
 
@@ -621,6 +773,35 @@ describe("resolveFolders", () => {
     expect(r.SPAM).toBeUndefined();
   });
 
+  it("resolves hierarchical Dovecot-style 'INBOX.Sent' folders via the leaf segment", () => {
+    const boxes = [
+      { path: "INBOX", specialUse: undefined, flags: new Set<string>() },
+      { path: "INBOX.Sent", specialUse: undefined, flags: new Set<string>() },
+      { path: "INBOX.Drafts", specialUse: undefined, flags: new Set<string>() },
+      { path: "INBOX.Trash", specialUse: undefined, flags: new Set<string>() },
+      { path: "INBOX.Junk", specialUse: undefined, flags: new Set<string>() },
+    ];
+    expect(resolveFolders(boxes)).toEqual({
+      INBOX: "INBOX",
+      SENT: "INBOX.Sent",
+      DRAFTS: "INBOX.Drafts",
+      TRASH: "INBOX.Trash",
+      SPAM: "INBOX.Junk",
+    });
+  });
+
+  it("resolves slash-delimited hierarchical folders with spaced leaf names", () => {
+    const boxes = [
+      { path: "INBOX", specialUse: undefined, flags: new Set<string>() },
+      {
+        path: "INBOX/Sent Items",
+        specialUse: undefined,
+        flags: new Set<string>(),
+      },
+    ];
+    expect(resolveFolders(boxes).SENT).toBe("INBOX/Sent Items");
+  });
+
   it("resolves plural 'Sent Mail' and 'Deleted Messages' variants", () => {
     const boxes = [
       { path: "INBOX", specialUse: undefined, flags: new Set<string>() },
@@ -656,9 +837,15 @@ describe("ImapAdapter#list", () => {
       { uid: true },
     );
     expect(result).toHaveLength(2);
-    // newest UID first
-    expect(result[0].id).toBe("2");
-    expect(result[1].id).toBe("1");
+    // newest UID first — ids are folder-encoded, so decode to compare uids
+    expect(decodeMessageId(result[0].id)).toEqual({
+      mailboxPath: "INBOX",
+      uid: 2,
+    });
+    expect(decodeMessageId(result[1].id)).toEqual({
+      mailboxPath: "INBOX",
+      uid: 1,
+    });
     expect(mockClient.connect).toHaveBeenCalledTimes(1);
     expect(mockClient.logout).toHaveBeenCalledTimes(1);
   });
@@ -697,8 +884,8 @@ describe("ImapAdapter#list", () => {
     const adapter = new ImapAdapter(opts);
     const result = await adapter.list({});
 
-    const read = result.find((m) => m.id === "1")!;
-    const unread = result.find((m) => m.id === "2")!;
+    const read = result.find((m) => decodeMessageId(m.id).uid === 1)!;
+    const unread = result.find((m) => decodeMessageId(m.id).uid === 2)!;
     expect(read.unread).toBe(false);
     expect(unread.unread).toBe(true);
     expect(read.from).toBe("a@example.com");
@@ -735,7 +922,7 @@ describe("ImapAdapter#list", () => {
     const result = await adapter.list({ limit: 3 });
 
     expect(result).toHaveLength(3);
-    expect(result.map((m) => m.id)).toEqual(["5", "4", "3"]);
+    expect(result.map((m) => decodeMessageId(m.id).uid)).toEqual([5, 4, 3]);
   });
 
   it("defaults to a limit of 20 when omitted", async () => {
@@ -790,6 +977,24 @@ describe("ImapAdapter#search", () => {
     expect(mockClient.mailboxOpen).toHaveBeenCalledWith("Sent Items");
   });
 
+  it("encodes result ids with the opened SENT mailbox path", async () => {
+    mockClient.search.mockResolvedValue([9]);
+    mockClient.fetch.mockReturnValue(
+      asyncIterableOf([envelopeMessage({ uid: 9, subject: "Reply" })]),
+    );
+
+    const adapter = new ImapAdapter(opts);
+    const result = await adapter.search({ folder: "SENT", subject: "x" });
+
+    expect(result).toHaveLength(1);
+    // The id must carry the SENT mailbox so a later read() opens SENT, not
+    // INBOX — otherwise a SENT uid would collide with an INBOX message.
+    expect(decodeMessageId(result[0].id)).toEqual({
+      mailboxPath: "Sent Items",
+      uid: 9,
+    });
+  });
+
   it("maps results to EmailSummary with correct unread flag", async () => {
     mockClient.search.mockResolvedValue([9]);
     mockClient.fetch.mockReturnValue(
@@ -806,17 +1011,20 @@ describe("ImapAdapter#search", () => {
     const adapter = new ImapAdapter(opts);
     const result = await adapter.search({ text: "match" });
 
-    expect(result).toEqual([
-      {
-        id: "9",
-        from: "x@example.com",
-        to: "",
-        subject: "Match",
-        date: "2026-01-01T00:00:00.000Z",
-        snippet: "",
-        unread: true,
-      },
-    ]);
+    expect(result).toHaveLength(1);
+    // id is now a folder-encoded message id, not the bare uid string.
+    expect(decodeMessageId(result[0].id)).toEqual({
+      mailboxPath: "INBOX",
+      uid: 9,
+    });
+    expect(result[0]).toMatchObject({
+      from: "x@example.com",
+      to: "",
+      subject: "Match",
+      date: "2026-01-01T00:00:00.000Z",
+      snippet: "",
+      unread: true,
+    });
   });
 
   it("caps results at limit", async () => {
@@ -966,7 +1174,7 @@ describe("ImapAdapter#draft", () => {
 });
 
 describe("ImapAdapter#send", () => {
-  it("creates a transport with secure: true for security 'tls' and calls sendMail", async () => {
+  it("creates a STARTTLS transport for the submission port 587 and calls sendMail", async () => {
     const adapter = new ImapAdapter(opts);
     const result = await adapter.send({
       to: "bob@example.com",
@@ -977,9 +1185,9 @@ describe("ImapAdapter#send", () => {
     expect(createTransportMock).toHaveBeenCalledWith(
       expect.objectContaining({
         host: opts.smtpHost,
-        port: opts.smtpPort,
-        secure: true,
-        requireTLS: false,
+        port: opts.smtpPort, // 587 → STARTTLS submission, not implicit TLS
+        secure: false,
+        requireTLS: true,
         auth: { user: opts.username, pass: opts.password },
       }),
     );
@@ -995,7 +1203,17 @@ describe("ImapAdapter#send", () => {
     expect(mockTransport.close).toHaveBeenCalledTimes(1);
   });
 
-  it("creates a transport with requireTLS: true for security 'starttls'", async () => {
+  it("creates an implicit-TLS transport for the SMTPS port 465", async () => {
+    const smtpsOpts: ImapAdapterOptions = { ...opts, smtpPort: 465 };
+    const adapter = new ImapAdapter(smtpsOpts);
+    await adapter.send({ to: "bob@example.com", subject: "Hi", body: "Hi" });
+
+    expect(createTransportMock).toHaveBeenCalledWith(
+      expect.objectContaining({ port: 465, secure: true, requireTLS: false }),
+    );
+  });
+
+  it("creates a STARTTLS transport for the submission port 587 regardless of stored security", async () => {
     const starttlsOpts: ImapAdapterOptions = { ...opts, security: "starttls" };
     const adapter = new ImapAdapter(starttlsOpts);
     await adapter.send({ to: "bob@example.com", subject: "Hi", body: "Hi" });
@@ -1079,5 +1297,56 @@ describe("ImapAdapter#send", () => {
     ).rejects.toThrow();
     expect(createTransportMock).not.toHaveBeenCalled();
     expect(mockTransport.sendMail).not.toHaveBeenCalled();
+  });
+
+  it("best-effort APPENDs a copy of the sent message to the Sent folder with \\Seen", async () => {
+    // Default SERVER_MAILBOXES has a "Sent Items" folder via SPECIAL-USE.
+    const adapter = new ImapAdapter(opts);
+    const result = await adapter.send({
+      to: "bob@example.com",
+      subject: "Archived please",
+      body: "keep a copy",
+    });
+
+    expect(result.messageId).toBe("<generated@smtp.example.com>");
+    expect(mockClient.append).toHaveBeenCalledTimes(1);
+    const [path, raw, flags] = mockClient.append.mock.calls[0];
+    expect(path).toBe("Sent Items");
+    expect(flags).toEqual(["\\Seen"]);
+    const rawStr = Buffer.isBuffer(raw) ? raw.toString("utf-8") : String(raw);
+    expect(rawStr).toContain("Archived please");
+    expect(rawStr).toContain("keep a copy");
+    expect(rawStr).toContain("bob@example.com");
+  });
+
+  it("still resolves send() normally when the Sent folder can't be resolved (archive is best-effort)", async () => {
+    // A server with no Sent folder: resolveMailboxPath("SENT") throws inside
+    // the archive step, but that must NOT fail the send.
+    mockClient.list.mockResolvedValue([
+      { path: "INBOX", specialUse: undefined, flags: new Set<string>() },
+    ]);
+
+    const adapter = new ImapAdapter(opts);
+    const result = await adapter.send({
+      to: "bob@example.com",
+      subject: "No sent folder",
+      body: "body",
+    });
+
+    expect(result.messageId).toBe("<generated@smtp.example.com>");
+    expect(mockClient.append).not.toHaveBeenCalled();
+  });
+
+  it("still resolves send() normally when the Sent APPEND itself throws", async () => {
+    mockClient.append.mockRejectedValue(new Error("append failed"));
+
+    const adapter = new ImapAdapter(opts);
+    const result = await adapter.send({
+      to: "bob@example.com",
+      subject: "Append boom",
+      body: "body",
+    });
+
+    expect(result.messageId).toBe("<generated@smtp.example.com>");
   });
 });
