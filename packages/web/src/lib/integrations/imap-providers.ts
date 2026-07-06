@@ -32,7 +32,7 @@ export interface ProviderConfig {
 // endpoints, not loopback addresses. Users with Proton must enter Bridge's
 // host/port manually.
 
-const PROVIDER_TABLE: Record<string, ProviderConfig> = {
+const PROVIDER_TABLE_ENTRIES: Record<string, ProviderConfig> = {
   "gmail.com": {
     imapHost: "imap.gmail.com",
     imapPort: 993,
@@ -245,12 +245,23 @@ const PROVIDER_TABLE: Record<string, ProviderConfig> = {
   },
 };
 
+// A `Map` (rather than a plain object) so lookups by an attacker-controlled
+// key can never resolve to a prototype-chain value (e.g. `Object.prototype`
+// via "__proto__", or the `Object` constructor via "constructor") and can
+// never trip a `security/detect-object-injection` sink — `Map#get` is not a
+// dynamic property access.
+const PROVIDER_TABLE: ReadonlyMap<string, ProviderConfig> = new Map(
+  Object.entries(PROVIDER_TABLE_ENTRIES)
+);
+
 /**
  * Look up the bundled provider config for a mailbox domain. Case-insensitive.
  * Returns null for domains not in the table (custom/business domains, which
- * fall through to DNS-SRV discovery and finally a best-effort guess).
+ * fall through to DNS-SRV discovery and finally a best-effort guess), and for
+ * prototype-chain lookalikes like "__proto__" or "constructor" — `Map` has no
+ * prototype-chain fallback, so those simply miss like any other unknown key.
  */
 export function lookupProviderTable(domain: string): ProviderConfig | null {
   const key = domain.trim().toLowerCase();
-  return PROVIDER_TABLE[key] ?? null;
+  return PROVIDER_TABLE.get(key) ?? null;
 }

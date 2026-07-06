@@ -98,7 +98,12 @@ export function isSafeAutodiscoverUrl(rawUrl: string): boolean {
 
   if (url.protocol !== "https:") return false;
 
-  const hostname = url.hostname.toLowerCase();
+  // WHATWG URL does not strip a trailing FQDN dot (e.g. "localhost." parses
+  // as hostname "localhost."), but a trailing-dot hostname resolves to the
+  // exact same destination as its non-dotted form. Normalize it away before
+  // any blocklist/suffix comparison so "localhost." can't bypass the guard
+  // that "localhost" is subject to.
+  const hostname = url.hostname.toLowerCase().replace(/\.$/, "");
   if (hostname.length === 0) return false;
 
   if (BLOCKED_HOSTNAMES.has(hostname)) return false;

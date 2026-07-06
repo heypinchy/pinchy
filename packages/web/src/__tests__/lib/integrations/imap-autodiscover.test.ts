@@ -18,6 +18,11 @@ describe("isSafeAutodiscoverUrl", () => {
     ["https://10.0.0.5/x", "RFC1918 10.x"],
     ["https://192.168.1.1/x", "RFC1918 192.168.x"],
     ["not a url", "malformed URL"],
+    ["https://localhost./x", "localhost with trailing FQDN dot"],
+    ["https://metadata.google.internal./x", "metadata hostname with trailing FQDN dot"],
+    ["https://foo.internal./x", ".internal suffix with trailing FQDN dot"],
+    ["https://foo.local./x", ".local suffix with trailing FQDN dot"],
+    ["https://LOCALHOST./x", "uppercase localhost with trailing FQDN dot"],
   ])("rejects %s (%s)", (url) => {
     expect(isSafeAutodiscoverUrl(url)).toBe(false);
   });
@@ -60,6 +65,13 @@ describe("lookupProviderTable", () => {
     const upper = lookupProviderTable("GMAIL.COM");
     expect(upper).toEqual(lower);
   });
+
+  it.each(["__proto__", "constructor", "toString", "hasOwnProperty"])(
+    "returns null for prototype-chain key %s instead of a truthy prototype value",
+    (key) => {
+      expect(lookupProviderTable(key)).toBeNull();
+    }
+  );
 });
 
 function makeResolver(impl: SrvResolver["resolveSrv"]): SrvResolver {
