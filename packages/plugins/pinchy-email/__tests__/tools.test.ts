@@ -461,6 +461,67 @@ describe("credential fetching", () => {
     expect(mockList).toHaveBeenCalledTimes(1);
   });
 
+  it("validates imap-shaped credentials without throwing a shape error (adapter selection is a later task)", async () => {
+    // fetchCredentials must accept the full imap credentials shape and
+    // dispatch validation to assertImapCredentialsShape rather than the
+    // oauth assertion (which would reject this payload for lacking
+    // accessToken). Constructing an ImapAdapter is out of scope here (T8) —
+    // getOrCreateClient still throws "unsupported email provider: imap" for
+    // an unrecognised type, which is expected and proves the credentials
+    // shape itself was accepted rather than rejected.
+    mockFetch.mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        type: "imap",
+        credentials: {
+          imapHost: "imap.example.com",
+          imapPort: 993,
+          smtpHost: "smtp.example.com",
+          smtpPort: 587,
+          username: "user@example.com",
+          password: "app-password",
+          security: "tls",
+        },
+      }),
+    });
+
+    const tools = createApi();
+    const tool = findTool(tools, "email_list", agentId)!;
+
+    const result = await tool.execute("call-1", {});
+
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain("unsupported email provider");
+    expect(result.content[0].text).not.toContain("credentials.");
+    expect(mockList).not.toHaveBeenCalled();
+  });
+
+  it("rejects an imap credentials payload missing imapHost with a field-naming error", async () => {
+    mockFetch.mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        type: "imap",
+        credentials: {
+          imapPort: 993,
+          smtpHost: "smtp.example.com",
+          smtpPort: 587,
+          username: "user@example.com",
+          password: "app-password",
+          security: "tls",
+        },
+      }),
+    });
+
+    const tools = createApi();
+    const tool = findTool(tools, "email_list", agentId)!;
+
+    const result = await tool.execute("call-1", {});
+
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain("credentials.imapHost");
+    expect(mockList).not.toHaveBeenCalled();
+  });
+
   it("returns error when credential fetch fails", async () => {
     mockCredentialFailure(401, "Unauthorized");
 

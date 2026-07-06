@@ -325,9 +325,21 @@ function clampListLimit(limit: unknown): number | undefined {
   return Math.min(limit, MAX_ENTRIES_PER_AGENT);
 }
 
-interface EmailCredentials {
+export interface OAuthEmailCredentials {
   accessToken: string;
 }
+
+export interface ImapEmailCredentials {
+  imapHost: string;
+  imapPort: number;
+  smtpHost: string;
+  smtpPort: number;
+  username: string;
+  password: string;
+  security: "tls" | "starttls" | "none";
+}
+
+export type EmailCredentials = OAuthEmailCredentials | ImapEmailCredentials;
 
 /**
  * Defense-in-depth: fail fast with a clear error if the credentials API
@@ -337,9 +349,9 @@ interface EmailCredentials {
  * as `accessToken: undefined`, producing a confusing 401 that masks the
  * real cause.
  */
-function assertCredentialsShape(
+export function assertOAuthCredentialsShape(
   creds: unknown,
-): asserts creds is EmailCredentials {
+): asserts creds is OAuthEmailCredentials {
   if (!creds || typeof creds !== "object") {
     throw new Error(
       `pinchy-email: credentials must be an object, got ${typeof creds}`,
@@ -359,6 +371,65 @@ function assertCredentialsShape(
         : "";
     throw new Error(
       `pinchy-email: credentials.accessToken must be a string, got ${actual}${hint}`,
+    );
+  }
+}
+
+/**
+ * Validates IMAP/SMTP credentials fetched from Pinchy's credentials API.
+ * Unlike OAuth credentials (a single accessToken string), IMAP credentials
+ * carry connection settings for two separate protocols plus a plaintext
+ * password, so every field is checked and the FIRST offending field is
+ * named in the error — an agent-facing "credentials.imapHost ..." error is
+ * far more actionable than a generic shape mismatch.
+ */
+export function assertImapCredentialsShape(
+  creds: unknown,
+): asserts creds is ImapEmailCredentials {
+  if (!creds || typeof creds !== "object") {
+    throw new Error(
+      `pinchy-email: credentials must be an object, got ${typeof creds}`,
+    );
+  }
+  const obj = creds as Record<string, unknown>;
+
+  if (typeof obj.imapHost !== "string" || obj.imapHost.length === 0) {
+    throw new Error(
+      `pinchy-email: credentials.imapHost must be a non-empty string, got ${typeof obj.imapHost}`,
+    );
+  }
+  if (typeof obj.imapPort !== "number") {
+    throw new Error(
+      `pinchy-email: credentials.imapPort must be a number, got ${typeof obj.imapPort}`,
+    );
+  }
+  if (typeof obj.smtpHost !== "string" || obj.smtpHost.length === 0) {
+    throw new Error(
+      `pinchy-email: credentials.smtpHost must be a non-empty string, got ${typeof obj.smtpHost}`,
+    );
+  }
+  if (typeof obj.smtpPort !== "number") {
+    throw new Error(
+      `pinchy-email: credentials.smtpPort must be a number, got ${typeof obj.smtpPort}`,
+    );
+  }
+  if (typeof obj.username !== "string" || obj.username.length === 0) {
+    throw new Error(
+      `pinchy-email: credentials.username must be a non-empty string, got ${typeof obj.username}`,
+    );
+  }
+  if (typeof obj.password !== "string" || obj.password.length === 0) {
+    throw new Error(
+      `pinchy-email: credentials.password must be a non-empty string, got ${typeof obj.password}`,
+    );
+  }
+  if (
+    obj.security !== "tls" &&
+    obj.security !== "starttls" &&
+    obj.security !== "none"
+  ) {
+    throw new Error(
+      `pinchy-email: credentials.security must be one of "tls", "starttls", "none", got ${JSON.stringify(obj.security)}`,
     );
   }
 }
@@ -421,7 +492,16 @@ async function fetchCredentials(
       `pinchy-email: credentials API returned no type field (got ${JSON.stringify((data as { type?: unknown }).type)})`,
     );
   }
-  assertCredentialsShape(data.credentials);
+  // IMAP connections carry host/port/username/password credentials with no
+  // accessToken; every other provider (google, microsoft, and anything else
+  // we haven't seen yet) is OAuth-shaped. Dispatching on type keeps the
+  // #209 SecretRef guard intact for oauth providers while giving IMAP its
+  // own field-naming validation instead of failing on a missing accessToken.
+  if (data.type === "imap") {
+    assertImapCredentialsShape(data.credentials);
+  } else {
+    assertOAuthCredentialsShape(data.credentials);
+  }
   return { type: data.type, credentials: data.credentials };
 }
 
@@ -500,11 +580,17 @@ const plugin = {
         gatewayToken,
         config.connectionId,
       );
+      // google/microsoft are the only oauth-shaped providers this branch
+      // handles today (imap's ImapAdapter is wired up in a later task), so
+      // narrowing to OAuthEmailCredentials here is safe: fetchCredentials
+      // already ran assertOAuthCredentialsShape for any type other than
+      // "imap" before returning.
+      const oauthCreds = creds as OAuthEmailCredentials;
       const adapter: EmailAdapter =
         type === "microsoft"
-          ? new GraphAdapter({ accessToken: creds.accessToken })
+          ? new GraphAdapter({ accessToken: oauthCreds.accessToken })
           : type === "google"
-            ? new GmailAdapter({ accessToken: creds.accessToken })
+            ? new GmailAdapter({ accessToken: oauthCreds.accessToken })
             : (() => {
                 throw new Error(`unsupported email provider: ${type}`);
               })();
