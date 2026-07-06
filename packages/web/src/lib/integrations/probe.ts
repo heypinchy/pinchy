@@ -2,6 +2,8 @@ import { OdooClient } from "odoo-node";
 import { fetchOdooSchema } from "@/lib/integrations/odoo-sync";
 import { probeBraveApiKey } from "@/lib/integrations/brave-probe";
 import { odooCredentialsSchema } from "@/lib/integrations/odoo-schema";
+import { testImapLogin, testSmtpVerify, friendlyError } from "@/lib/integrations/imap-probe";
+import { imapTestSchema } from "@/lib/schemas/imap";
 
 /**
  * Verify that credentials work for the given integration type.
@@ -92,6 +94,28 @@ export async function probeIntegrationCredentials(
         transient: true,
         reason: "Could not reach Microsoft. Please check your connection.",
       };
+    }
+  }
+
+  if (type === "imap") {
+    const parsed = imapTestSchema.safeParse(credentials);
+    if (!parsed.success) return { success: false, reason: "Invalid credentials format" };
+
+    try {
+      await testImapLogin(parsed.data);
+      await testSmtpVerify(parsed.data);
+      return { success: true };
+    } catch (err) {
+      const reason = friendlyError(err);
+      // Mirror the microsoft branch: an auth-shaped failure means the
+      // credentials are genuinely bad and the connection should be flipped
+      // to auth_failed. A connection/timeout error is a temporary network
+      // hiccup — the credentials are still fine, so the caller must NOT
+      // flip the connection's status on this result.
+      const isTransient =
+        /timed out|could not connect|secure connection/i.test(reason) &&
+        !/authentication failed/i.test(reason);
+      return isTransient ? { success: false, transient: true, reason } : { success: false, reason };
     }
   }
 

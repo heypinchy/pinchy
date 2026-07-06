@@ -17,6 +17,27 @@ vi.mock("@/lib/integrations/brave-probe", () => ({
   probeBraveApiKey: vi.fn(),
 }));
 
+const mockTestImapLogin = vi.fn();
+const mockTestSmtpVerify = vi.fn();
+vi.mock("@/lib/integrations/imap-probe", () => ({
+  testImapLogin: (...args: unknown[]) => mockTestImapLogin(...args),
+  testSmtpVerify: (...args: unknown[]) => mockTestSmtpVerify(...args),
+  friendlyError: (error: unknown) => {
+    const message = error instanceof Error ? error.message : String(error);
+    const lower = message.toLowerCase();
+    if (lower.includes("auth") || lower.includes("535")) {
+      return "Authentication failed — check the username and password";
+    }
+    if (lower.includes("timed out") || lower.includes("timeout")) {
+      return "Connection timed out — check the host and port";
+    }
+    if (lower.includes("econnrefused") || lower.includes("enotfound")) {
+      return "Could not connect to the server — check the host and port";
+    }
+    return "Connection failed — check your settings and try again";
+  },
+}));
+
 import { fetchOdooSchema } from "@/lib/integrations/odoo-sync";
 import { probeBraveApiKey } from "@/lib/integrations/brave-probe";
 import { probeIntegrationCredentials } from "@/lib/integrations/probe";
@@ -206,6 +227,99 @@ describe("probeIntegrationCredentials", () => {
       mockAuthenticate.mockRejectedValue(new Error("AccessDenied"));
       await probeIntegrationCredentials("odoo", validOdooCreds);
       expect(fetchOdooSchema).not.toHaveBeenCalled();
+    });
+  });
+
+  describe("imap", () => {
+    const validImapCreds = {
+      imapHost: "imap.example.com",
+      imapPort: 993,
+      smtpHost: "smtp.example.com",
+      smtpPort: 587,
+      username: "mailbox@example.com",
+      password: "super-secret-app-password",
+      security: "tls" as const,
+    };
+
+    beforeEach(() => {
+      mockTestImapLogin.mockResolvedValue(undefined);
+      mockTestSmtpVerify.mockResolvedValue(undefined);
+    });
+
+    it("returns success when both IMAP login and SMTP verify succeed", async () => {
+      const res = await probeIntegrationCredentials("imap", validImapCreds);
+
+      expect(res).toEqual({ success: true });
+      expect(mockTestImapLogin).toHaveBeenCalledWith(validImapCreds);
+      expect(mockTestSmtpVerify).toHaveBeenCalledWith(validImapCreds);
+    });
+
+    it("returns non-transient failure with a friendly reason on IMAP auth failure", async () => {
+      mockTestImapLogin.mockRejectedValue(new Error("Invalid credentials (535)"));
+
+      const res = await probeIntegrationCredentials("imap", validImapCreds);
+
+      expect(res.success).toBe(false);
+      if (res.success) return;
+      expect(res.reason).toMatch(/authentication failed/i);
+      expect(res.transient).toBeFalsy();
+      // SMTP should not even be attempted once IMAP has already failed.
+      expect(mockTestSmtpVerify).not.toHaveBeenCalled();
+    });
+
+    it("returns non-transient failure with a friendly reason on SMTP auth failure", async () => {
+      mockTestSmtpVerify.mockRejectedValue(new Error("535 Authentication failed"));
+
+      const res = await probeIntegrationCredentials("imap", validImapCreds);
+
+      expect(res.success).toBe(false);
+      if (res.success) return;
+      expect(res.reason).toMatch(/authentication failed/i);
+      expect(res.transient).toBeFalsy();
+    });
+
+    it("returns transient:true for a connection/timeout error so callers do not flip to auth_failed", async () => {
+      mockTestImapLogin.mockRejectedValue(new Error("connect ECONNREFUSED 127.0.0.1:993"));
+
+      const res = await probeIntegrationCredentials("imap", validImapCreds);
+
+      expect(res.success).toBe(false);
+      if (res.success) return;
+      expect(res.transient).toBe(true);
+      expect(res.reason).toMatch(/could not connect/i);
+    });
+
+    it("returns transient:true for a timeout error", async () => {
+      mockTestImapLogin.mockRejectedValue(new Error("Connection timed out"));
+
+      const res = await probeIntegrationCredentials("imap", validImapCreds);
+
+      expect(res.success).toBe(false);
+      if (res.success) return;
+      expect(res.transient).toBe(true);
+      expect(res.reason).toMatch(/timed out/i);
+    });
+
+    it("returns failure for invalid credentials shape without probing", async () => {
+      const res = await probeIntegrationCredentials("imap", { imapHost: "only-host" });
+
+      expect(res.success).toBe(false);
+      if (res.success) return;
+      expect(res.transient).toBeFalsy();
+      expect(mockTestImapLogin).not.toHaveBeenCalled();
+      expect(mockTestSmtpVerify).not.toHaveBeenCalled();
+    });
+
+    it("never includes the plaintext password in the returned reason", async () => {
+      mockTestImapLogin.mockRejectedValue(
+        new Error(`Authentication failed for password ${validImapCreds.password}`)
+      );
+
+      const res = await probeIntegrationCredentials("imap", validImapCreds);
+
+      expect(res.success).toBe(false);
+      if (res.success) return;
+      expect(res.reason).not.toContain(validImapCreds.password);
     });
   });
 });

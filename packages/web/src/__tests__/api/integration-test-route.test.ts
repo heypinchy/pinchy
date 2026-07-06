@@ -302,4 +302,102 @@ describe("POST /api/integrations/[connectionId]/test — auth state flipping", (
       expect(mockProbeIntegrationCredentials).not.toHaveBeenCalled();
     });
   });
+
+  describe("imap: Test Connection on an existing connection", () => {
+    const mockImapConnection = {
+      id: "conn-imap",
+      type: "imap",
+      name: "Company Mailbox",
+      credentials: "encrypted-imap-creds",
+      status: "active",
+      createdAt: new Date("2026-01-01"),
+      updatedAt: new Date("2026-01-01"),
+    };
+
+    const storedImapCreds = {
+      imapHost: "imap.example.com",
+      imapPort: 993,
+      smtpHost: "smtp.example.com",
+      smtpPort: 587,
+      username: "mailbox@example.com",
+      password: "super-secret-app-password",
+      security: "tls",
+    };
+
+    beforeEach(() => {
+      mockSelectWhere.mockResolvedValue([mockImapConnection]);
+      mockDecrypt.mockReturnValue(JSON.stringify(storedImapCreds));
+    });
+
+    it("clears auth error and does NOT flip to auth_failed when the imap probe succeeds (regression: healthy connection stayed marked auth_failed)", async () => {
+      mockProbeIntegrationCredentials.mockResolvedValue({ success: true });
+
+      const { POST } = await import("@/app/api/integrations/[connectionId]/test/route");
+
+      const response = await POST(
+        makeRequest("/api/integrations/conn-imap/test", { method: "POST" }),
+        { params: Promise.resolve({ connectionId: "conn-imap" }) }
+      );
+      const body = await response.json();
+
+      expect(mockProbeIntegrationCredentials).toHaveBeenCalledWith(
+        "imap",
+        expect.objectContaining(storedImapCreds)
+      );
+      expect(response.status).toBe(200);
+      expect(body.success).toBe(true);
+      expect(mockClearIntegrationAuthError).toHaveBeenCalledWith({
+        connectionId: "conn-imap",
+        actor: { type: "user", id: "user-1" },
+      });
+      expect(mockSetIntegrationAuthFailed).not.toHaveBeenCalled();
+    });
+
+    it("flips to auth_failed with a sensible reason on a genuine imap auth failure", async () => {
+      mockProbeIntegrationCredentials.mockResolvedValue({
+        success: false,
+        reason: "Authentication failed — check the username and password",
+      });
+
+      const { POST } = await import("@/app/api/integrations/[connectionId]/test/route");
+
+      const response = await POST(
+        makeRequest("/api/integrations/conn-imap/test", { method: "POST" }),
+        { params: Promise.resolve({ connectionId: "conn-imap" }) }
+      );
+      const body = await response.json();
+
+      expect(response.status).toBe(200);
+      expect(body.success).toBe(false);
+      expect(body.error).toMatch(/authentication failed/i);
+      expect(mockSetIntegrationAuthFailed).toHaveBeenCalledWith({
+        connectionId: "conn-imap",
+        reason: "Authentication failed — check the username and password",
+        actor: { type: "user", id: "user-1" },
+      });
+      expect(mockClearIntegrationAuthError).not.toHaveBeenCalled();
+    });
+
+    it("does not flip to auth_failed when the imap probe reports a transient/connection error", async () => {
+      mockProbeIntegrationCredentials.mockResolvedValue({
+        success: false,
+        transient: true,
+        reason: "Could not connect to the server — check the host and port",
+      });
+
+      const { POST } = await import("@/app/api/integrations/[connectionId]/test/route");
+
+      const response = await POST(
+        makeRequest("/api/integrations/conn-imap/test", { method: "POST" }),
+        { params: Promise.resolve({ connectionId: "conn-imap" }) }
+      );
+      const body = await response.json();
+
+      expect(response.status).toBe(200);
+      expect(body.success).toBe(false);
+      expect(body.error).toMatch(/could not connect/i);
+      expect(mockSetIntegrationAuthFailed).not.toHaveBeenCalled();
+      expect(mockClearIntegrationAuthError).not.toHaveBeenCalled();
+    });
+  });
 });
