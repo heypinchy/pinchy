@@ -142,4 +142,21 @@ describe("shouldReplaceLocalWithServerHistory", () => {
       false
     );
   });
+
+  // Greeting-offset regression (staging 2026-07-05): a fresh session's local
+  // list carries the client-only agent greeting (assistant at index 0) that the
+  // server omits from history once real turns exist. After a tab-refocus during
+  // the first turn — local ends in the acked user message, server history is
+  // [user, assistant] — the greeting pads prev.length to EQUAL the server
+  // history length, so the #310 strictly-longer guard alone wrongly drops the
+  // completed reply and the agent looks silent though it answered.
+  it("adopts server history when a leading greeting makes it look equal-length but the reply landed", () => {
+    expect(
+      shouldReplaceLocalWithServerHistory(
+        [assistant("Good day. How may I help?"), user("what time is it?", "sent")],
+        [user("what time is it?"), assistant("It's 07:12 UTC.")],
+        true
+      )
+    ).toBe(true);
+  });
 });

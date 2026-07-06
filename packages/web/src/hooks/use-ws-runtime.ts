@@ -376,7 +376,21 @@ export function shouldReplaceLocalWithServerHistory(
   if (lastNonError.role === "assistant") return true;
 
   // lastNonError.role === "user"
-  return lastNonError.status === "sent" && historyMessages.length > prev.length;
+  // Adopt the server history when our acked user turn's reply has landed there.
+  // The strictly-longer check (#310) alone is defeated by the client-only
+  // leading GREETING (an assistant message at index 0 that the server omits
+  // once the session has real turns): it pads prev.length to EQUAL the server
+  // history even though the server holds one more REAL turn — the completed
+  // reply. So ALSO adopt when the server history ends in an assistant turn.
+  // This mirrors the greeting-offset handling in
+  // preserveRicherLocalOverOversizedHistory. The status === "sent" guard still
+  // protects a queued ("sending") message from being wiped. Purely additive: no
+  // input that returned true before returns false now.
+  const serverEndsInAssistant = historyMessages[historyMessages.length - 1]?.role === "assistant";
+  return (
+    lastNonError.status === "sent" &&
+    (historyMessages.length > prev.length || serverEndsInAssistant)
+  );
 }
 
 /**
