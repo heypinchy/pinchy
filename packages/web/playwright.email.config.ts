@@ -7,6 +7,12 @@ import { defineConfig } from "@playwright/test";
  */
 export default defineConfig({
   testDir: "./e2e/email",
+  // Run only the OAuth-provider specs here. email-imap.spec.ts needs the
+  // GreenMail + imap-mock stack (docker-compose.imap-test.yml) which this
+  // job does NOT bring up — it runs under playwright.imap.config.ts /
+  // test:e2e:imap instead. Without this, the imap spec would run here against
+  // a stack with no imap mock and fail with "IMAP mock not ready".
+  testIgnore: "email-imap.spec.ts",
   fullyParallel: false,
   retries: 0,
   workers: 1,
