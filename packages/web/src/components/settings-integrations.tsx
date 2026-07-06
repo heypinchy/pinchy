@@ -38,6 +38,7 @@ import { AddIntegrationDialog } from "./add-integration-dialog";
 import { EditCredentialsDialog } from "./edit-credentials-dialog";
 import { ConnectedApps } from "./connected-apps";
 import { BraveIcon, GoogleIcon, MicrosoftIcon, OdooIcon } from "./integration-icons";
+import { ImapIcon } from "./imap-icon";
 import type { IntegrationConnection } from "@/lib/integrations/types";
 import { getAccessibleCategoryLabels } from "@/lib/integrations/odoo-sync";
 import { getOAuthProvider, type OAuthProviderId } from "@/lib/integrations/oauth-providers";
@@ -354,6 +355,8 @@ export function SettingsIntegrations({ oauthError }: { oauthError?: string } = {
                           <MicrosoftIcon className="h-6 w-6 shrink-0" />
                         ) : conn.type === "web-search" ? (
                           <BraveIcon className="h-6 w-6 shrink-0" />
+                        ) : conn.type === "imap" ? (
+                          <ImapIcon className="h-6 w-6 shrink-0" />
                         ) : (
                           <OdooIcon className="h-6 w-12 shrink-0" />
                         )}
@@ -400,7 +403,8 @@ export function SettingsIntegrations({ oauthError }: { oauthError?: string } = {
                               >
                                 Rename
                               </DropdownMenuItem>
-                              {conn.type === "google" ? null : conn.type === "microsoft" ? (
+                              {conn.type === "google" ? null : conn.type === "microsoft" ||
+                                conn.type === "imap" ? (
                                 <DropdownMenuItem
                                   onClick={() => testConnection(conn.id)}
                                   disabled={testing === conn.id}

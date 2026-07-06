@@ -442,6 +442,95 @@ describe("AddIntegrationDialog", () => {
     );
   });
 
+  describe("IMAP / Other email type", () => {
+    async function selectImapType(user: ReturnType<typeof userEvent.setup>) {
+      const imapButton = screen.getByText("IMAP / Other email").closest("button")!;
+      await user.click(imapButton);
+    }
+
+    it("shows IMAP / Other email as a type option in the dialog", () => {
+      render(<AddIntegrationDialog {...defaultProps} />);
+      expect(screen.getByText("IMAP / Other email")).toBeInTheDocument();
+    });
+
+    it("renders the ImapConnectStep when IMAP / Other email is clicked", async () => {
+      const user = userEvent.setup();
+      render(<AddIntegrationDialog {...defaultProps} />);
+      await selectImapType(user);
+
+      // Should no longer be on the type-selection step
+      expect(screen.queryByText("Add Integration")).not.toBeInTheDocument();
+      // A distinctive field from ImapConnectStep confirms it rendered.
+      expect(screen.getByLabelText("IMAP host")).toBeInTheDocument();
+      expect(screen.getByLabelText("SMTP host")).toBeInTheDocument();
+    });
+
+    it("closes the dialog and refreshes the connection list when ImapConnectStep succeeds", async () => {
+      const onOpenChange = vi.fn();
+      const onSuccess = vi.fn();
+      const user = userEvent.setup();
+      render(
+        <AddIntegrationDialog open={true} onOpenChange={onOpenChange} onSuccess={onSuccess} />
+      );
+      await selectImapType(user);
+
+      await user.type(screen.getByLabelText("Name"), "Work email (IMAP)");
+      await user.type(screen.getByLabelText("IMAP host"), "imap.example.com");
+      await user.type(screen.getByLabelText("SMTP host"), "smtp.example.com");
+      await user.type(screen.getByLabelText("Username"), "me@example.com");
+      await user.type(screen.getByLabelText("Password"), "secret");
+
+      const fetchSpy = vi.spyOn(global, "fetch").mockImplementation((input) => {
+        const urlStr = resolveUrl(input as string | URL | Request);
+        if (urlStr.includes("/api/integrations/imap/test")) {
+          return Promise.resolve({
+            ok: true,
+            text: async () => JSON.stringify({ ok: true }),
+            json: async () => ({ ok: true }),
+          } as Response);
+        }
+        if (urlStr.includes("/api/integrations/imap")) {
+          const body = { id: "conn-imap-1", name: "Work email (IMAP)" };
+          return Promise.resolve({
+            ok: true,
+            text: async () => JSON.stringify(body),
+            json: async () => body,
+          } as Response);
+        }
+        return Promise.resolve({
+          ok: true,
+          text: async () => "{}",
+          json: async () => ({}),
+        } as Response);
+      });
+
+      await user.click(screen.getByRole("button", { name: /test connection/i }));
+      await waitFor(() => {
+        expect(screen.getByText(/connection successful/i)).toBeInTheDocument();
+      });
+
+      await user.click(screen.getByRole("button", { name: /^save$/i }));
+
+      await waitFor(() => {
+        expect(onOpenChange).toHaveBeenCalledWith(false);
+      });
+      expect(onSuccess).toHaveBeenCalled();
+
+      fetchSpy.mockRestore();
+    });
+
+    it("closes the dialog when Cancel is clicked from the IMAP connect step", async () => {
+      const onOpenChange = vi.fn();
+      const user = userEvent.setup();
+      render(<AddIntegrationDialog open={true} onOpenChange={onOpenChange} onSuccess={vi.fn()} />);
+      await selectImapType(user);
+
+      await user.click(screen.getByRole("button", { name: /cancel/i }));
+
+      expect(onOpenChange).toHaveBeenCalledWith(false);
+    });
+  });
+
   describe("initialType prop", () => {
     it("opens directly at Google connect step when initialType='google'", () => {
       render(<AddIntegrationDialog {...defaultProps} initialType="google" />);

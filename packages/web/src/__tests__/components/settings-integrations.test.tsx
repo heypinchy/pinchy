@@ -106,6 +106,21 @@ const activeGoogleConnection = {
   cannotDecrypt: false,
 };
 
+const activeImapConnection = {
+  id: "conn-imap-1",
+  type: "imap",
+  name: "Work email (IMAP)",
+  description: "",
+  credentials: "encrypted",
+  status: "active",
+  lastError: null,
+  lastErrorAt: null,
+  data: null,
+  createdAt: "2026-04-13T12:00:00Z",
+  updatedAt: "2026-04-13T12:00:00Z",
+  cannotDecrypt: false,
+};
+
 const pendingMicrosoftConnection = {
   id: "conn-ms-pending-appcheck",
   type: "microsoft",
@@ -280,6 +295,72 @@ describe("SettingsIntegrations — auth_failed state", () => {
     await user.click(menuButton);
 
     expect(screen.queryByText("Reconnect")).not.toBeInTheDocument();
+
+    fetchSpy.mockRestore();
+  });
+});
+
+describe("SettingsIntegrations — IMAP connections", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("renders the IMAP label and mail icon for an imap connection", async () => {
+    const fetchSpy = mockFetchConnections([activeImapConnection]);
+
+    render(<SettingsIntegrations />);
+
+    await waitFor(() => {
+      expect(screen.getByText("Work email (IMAP)")).toBeInTheDocument();
+    });
+
+    const row = screen.getByText("Work email (IMAP)").closest("[class*='rounded-lg']")!;
+    expect(row.querySelector("svg.lucide-mail")).toBeInTheDocument();
+
+    fetchSpy.mockRestore();
+  });
+
+  it("does not show the OAuth 'Reconnect' action for an imap connection", async () => {
+    const user = userEvent.setup();
+    const fetchSpy = mockFetchConnections([activeImapConnection]);
+
+    render(<SettingsIntegrations />);
+
+    await waitFor(() => {
+      expect(screen.getByText("Work email (IMAP)")).toBeInTheDocument();
+    });
+
+    const row = screen.getByText("Work email (IMAP)").closest("[class*='rounded-lg']")!;
+    const buttons = row.querySelectorAll("button");
+    const menuButton = buttons[buttons.length - 1];
+    await user.click(menuButton);
+
+    expect(screen.queryByText("Reconnect")).not.toBeInTheDocument();
+
+    fetchSpy.mockRestore();
+  });
+
+  it("shows Rename, Test Connection, and Delete actions for an imap connection (no Edit credentials dialog yet)", async () => {
+    const user = userEvent.setup();
+    const fetchSpy = mockFetchConnections([activeImapConnection]);
+
+    render(<SettingsIntegrations />);
+
+    await waitFor(() => {
+      expect(screen.getByText("Work email (IMAP)")).toBeInTheDocument();
+    });
+
+    const row = screen.getByText("Work email (IMAP)").closest("[class*='rounded-lg']")!;
+    const buttons = row.querySelectorAll("button");
+    const menuButton = buttons[buttons.length - 1];
+    await user.click(menuButton);
+
+    expect(screen.getByText("Rename")).toBeInTheDocument();
+    expect(screen.getByText("Test Connection")).toBeInTheDocument();
+    expect(screen.getByText("Delete")).toBeInTheDocument();
+    // Edit credentials would open a dead-end dialog (mask-credentials.ts and the
+    // PATCH route don't know the imap shape yet) — deliberately not offered.
+    expect(screen.queryByText("Edit credentials")).not.toBeInTheDocument();
 
     fetchSpy.mockRestore();
   });

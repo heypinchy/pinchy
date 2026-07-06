@@ -37,6 +37,8 @@ import { normalizeUrl } from "@/lib/url";
 import { Loader2, CheckCircle2, AlertTriangle, Copy, Check } from "lucide-react";
 import { useCopyToClipboard } from "@/hooks/use-copy-to-clipboard";
 import { OdooIcon, GoogleIcon, BraveIcon, MicrosoftIcon } from "./integration-icons";
+import { ImapIcon } from "./imap-icon";
+import { ImapConnectStep } from "./imap-connect-step";
 import { docsUrl, type DocsPath } from "./docs-link";
 import {
   getOAuthProvider,
@@ -78,6 +80,12 @@ const INTEGRATION_TYPES: IntegrationType[] = [
     name: "Microsoft",
     description: "Connect your Microsoft 365 account to sync email via Outlook.",
     icon: MicrosoftIcon,
+  },
+  {
+    id: "imap",
+    name: "IMAP / Other email",
+    description: "Connect any mailbox via IMAP and SMTP.",
+    icon: ImapIcon,
   },
   {
     id: "web-search",
@@ -1122,6 +1130,26 @@ export function AddIntegrationDialog({
               descriptor={getOAuthProvider("microsoft")!}
               isSecure={isSecure}
               onBack={handleBack}
+              onCancel={() => handleClose(false)}
+            />
+          </>
+        )}
+
+        {/* Step 1: Connect (IMAP / Other email) */}
+        {step === "connect" && selectedType === "imap" && (
+          <>
+            <DialogHeader>
+              <DialogTitle>Connect IMAP / Other email</DialogTitle>
+              <DialogDescription>
+                Enter your mailbox&apos;s IMAP and SMTP server details.
+              </DialogDescription>
+            </DialogHeader>
+
+            <ImapConnectStep
+              onSuccess={() => {
+                handleClose(false);
+                onSuccess();
+              }}
               onCancel={() => handleClose(false)}
             />
           </>
