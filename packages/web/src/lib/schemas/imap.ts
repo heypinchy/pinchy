@@ -11,3 +11,9 @@ export const imapTestSchema = z.object({
 });
 
 export type ImapTestInput = z.infer<typeof imapTestSchema>;
+
+export const imapCreateSchema = imapTestSchema.extend({
+  name: z.string().min(1),
+});
+
+export type ImapCreateInput = z.infer<typeof imapCreateSchema>;
