@@ -13,6 +13,7 @@ Integrations connect Pinchy to external systems — ERPs, email accounts, CRMs, 
 | ----------------------------- | ----------------- | ------------------------------------------------------------- |
 | **Google (Gmail)**            | OAuth 2.0         | [Connect Email (Gmail)](/guides/connect-email-google/)        |
 | **Microsoft (Outlook / 365)** | OAuth 2.0         | [Connect Email (Microsoft)](/guides/connect-email-microsoft/) |
+| **IMAP / Other email**        | IMAP + SMTP       | [Connect Email (IMAP)](/guides/connect-email-imap/)           |
 | **Odoo**                      | API key           | [Connect Odoo](/guides/connect-odoo/)                         |
 | **Web Search (Brave)**        | API key           | [Set Up Web Search](/guides/web-search-setup/)                |
 
@@ -44,11 +45,21 @@ Not today. There's no per-user, private email connection: an admin sets up the e
 
 If you need an agent to work with a mailbox, ask an admin to connect it and grant a shared agent the appropriate email permissions. Keep in mind that shared agents are team resources: anyone with access to that agent can ask it to read or send mail from the connected mailbox, within the permissions it's been granted.
 
-## Email (Gmail and Microsoft 365)
+## Email (Gmail, Microsoft 365, and IMAP)
 
-Pinchy connects to email over OAuth 2.0 for both Google (Gmail) and Microsoft (Outlook / Microsoft 365). An admin sets up the provider's OAuth app once, connects one or more mailboxes, then grants specific permissions per agent.
+Pinchy connects to email in three ways: OAuth 2.0 for Google (Gmail) and Microsoft (Outlook / Microsoft 365), or standard IMAP/SMTP for any other provider — Fastmail, iCloud, a company mail server, or anything self-hosted. An admin sets up the connection, then grants specific permissions per agent.
 
-### The app and the mailboxes
+### IMAP / Other email
+
+IMAP connections skip the OAuth app entirely — there's no shared app to register first. An admin enters the mailbox's IMAP host/port (defaults to `993`), SMTP host/port (defaults to `587`), a security mode (`TLS`, `STARTTLS`, or `None`), a username, and a password. Pinchy tries to prefill the server settings from an offline table of common providers plus a DNS-SRV lookup, keyed off the email address. Many providers require an app-specific password instead of the account password once two-factor authentication is on.
+
+Pinchy tests both the IMAP and SMTP login before the connection can be saved. Each IMAP connection is independent — there's no "one app, many mailboxes" relationship the way there is for Google and Microsoft.
+
+Listing (`email_list`) and searching (`email_search`) work across folders. Reading a specific message (`email_read`) and downloading its attachments (`email_get_attachment`) currently only operate against the INBOX folder — a v1 limitation of the IMAP connector, since IMAP message IDs are only unique within a single mailbox. This doesn't apply to Gmail or Microsoft 365, which use provider-global message IDs.
+
+For the full setup walkthrough, see [Connect Email (IMAP / Other email)](/guides/connect-email-imap/).
+
+### The OAuth app and the mailboxes (Gmail and Microsoft 365)
 
 Email setup has two layers with separate lifecycles:
 
@@ -63,7 +74,7 @@ Email requires a provider OAuth app (one-time, per Pinchy installation): a Googl
 
 ### Permissions model
 
-Each agent gets email permissions independently, and each operation is its own checkbox — granting **Send** does **not** also grant **Read** or **Draft**. Check every operation the agent needs.
+This model is the same across Gmail, Microsoft 365, and IMAP connections. Each agent gets email permissions independently, and each operation is its own checkbox — granting **Send** does **not** also grant **Read** or **Draft**. Check every operation the agent needs.
 
 | Permission        | Tools enabled                                                      |
 | ----------------- | ------------------------------------------------------------------ |
@@ -81,6 +92,7 @@ OAuth access tokens expire after about one hour. Pinchy refreshes them in the ba
 - Access and refresh tokens are encrypted per-connection
 - Tokens are decrypted on-demand when the agent makes an API call — they never end up in the OpenClaw config file
 - The `pinchy-email` plugin fetches tokens via Pinchy's internal API, authenticated by the shared gateway token
+- IMAP connections follow the same pattern: the username and password are encrypted with AES-256-GCM before storage and fetched by the plugin on-demand, never written to the OpenClaw config file
 
 For the full setup walkthrough, see [Connect Email](/guides/connect-email/).
 

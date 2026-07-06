@@ -1,0 +1,169 @@
+---
+title: Connect Email (IMAP / Other email)
+description: Connect any mailbox to Pinchy over standard IMAP and SMTP so agents can read, search, draft, and send email.
+---
+
+import { Aside, Steps } from "@astrojs/starlight/components";
+
+This guide walks you through connecting a mailbox to Pinchy using standard **IMAP** (for reading) and **SMTP** (for sending) — the protocol almost every email provider supports. Use this when your provider isn't Gmail or Microsoft 365: Fastmail, iCloud, GMX, Zoho, a company mail server, or anything you self-host.
+
+Unlike Google and Microsoft, there's no OAuth app to register first. You connect a mailbox directly with its server settings and a password — one step, no separate "app" to manage.
+
+## Prerequisites
+
+- You're logged in as an admin in Pinchy
+- Your email address
+- An **app-specific password**, if your provider supports one
+
+<Aside type="caution">
+  **Use an app-specific password if your provider offers one.** Many providers —
+  Fastmail, iCloud, GMX, Yahoo, and others — require a separate app password
+  instead of your regular account password once two-factor authentication is
+  turned on. Using your regular password will fail the connection test. Look for
+  "app passwords" or "app-specific passwords" in your provider's account
+  security settings and generate one for Pinchy.
+</Aside>
+
+You'll also need your IMAP and SMTP server hostnames and ports — but Pinchy tries to fill these in for you automatically, so you often don't need to look them up.
+
+## Connect the account in Pinchy
+
+<Steps>
+
+1.  **Open the Add Integration wizard**
+
+    In Pinchy, go to **Settings → Integrations**, click **Add Integration**, then select **IMAP / Other email**.
+
+2.  **Enter a name and your email address**
+
+    Give the connection a name (e.g. "Support inbox") and enter your email address. When you tab away from the email field, Pinchy looks up the server settings for known providers and fills in the fields below automatically.
+
+3.  **Confirm or adjust the server settings**
+
+    Check the pre-filled values, or enter them yourself if your provider wasn't recognized:
+
+    - **IMAP host** and **IMAP port** — defaults to port `993`
+    - **SMTP host** and **SMTP port** — defaults to port `587`
+    - **Security** — `TLS`, `STARTTLS`, or `None`, applied to both connections; defaults to `TLS`. Most providers pair port 993 (IMAP) and 465 (SMTP) with `TLS`, and port 587 (SMTP) with `STARTTLS` — check your provider's settings if the connection test fails.
+
+    <Aside type="tip">
+  Your provider's help pages usually list these under "IMAP/SMTP settings"
+  or "set up a mail client." Search for `<your provider> IMAP settings` if
+  you're not sure.
+</Aside>
+
+4.  **Enter your username and password**
+
+    Username is usually your full email address. For the password, use an app-specific password if your provider requires one (see the caution above).
+
+5.  **Test the connection**
+
+    Click **Test connection**. Pinchy tries to log in to both the IMAP and SMTP servers with the settings you entered and reports success or a specific failure reason — wrong credentials, unreachable host, or a TLS mismatch.
+
+    <Aside type="note">
+      Pinchy always tests the connection before saving. **Save** stays disabled
+      until the test succeeds, so a broken connection can't end up saved and
+      silently unusable.
+    </Aside>
+
+6.  **Save**
+
+    Once the test succeeds, click **Save**. The mailbox now appears in the **Integrations** list, ready to grant to agents.
+
+</Steps>
+
+## Known limitation: reading a message is INBOX-only
+
+<Aside type="note">
+  **Listing and searching work across folders. Opening a specific message or
+  downloading its attachments currently only works for messages in the INBOX.**
+  `email_list` and `email_search` accept any folder (INBOX, SENT, DRAFTS, TRASH,
+  SPAM). But `email_read` and `email_get_attachment` take just a message ID, and
+  IMAP message IDs are only unique within a single mailbox — so today they
+  always look in INBOX. If an agent finds a message in another folder and tries
+  to open it, it won't find it. This is a v1 limitation of the IMAP connector
+  specifically; it doesn't affect Gmail or Microsoft 365 connections.
+</Aside>
+
+## Grant agent email permissions
+
+A connection alone doesn't give any agent access. You must explicitly grant permissions per agent — the same model used for Gmail and Microsoft 365.
+
+<Aside type="note">
+  Only **shared** agents have a **Permissions** tab. Personal agents can't be
+  granted integration access — email permissions are a shared-agent feature.
+</Aside>
+
+<Steps>
+
+1.  Open the agent you want to connect to email
+2.  Click the gear icon to open **Agent Settings**
+3.  Select the **Permissions** tab
+4.  In the **Email** section, select the connected account and check the operations this agent may perform:
+    - **Read messages** — list, read, and search emails
+    - **Create drafts** — create draft emails (saved but not sent)
+    - **Send messages** — send emails immediately (cannot be undone)
+
+5.  Click **Save & Restart** and confirm. Permission changes restart the agent runtime, so active chats are briefly disconnected.
+
+</Steps>
+
+<Aside type="caution">
+  **Send messages** is a powerful permission. The agent can send email from the
+  connected account without human review. Consider using **Create drafts**
+  instead — a human reviews and sends drafts manually.
+</Aside>
+
+---
+
+## Test it
+
+Open the agent's chat and try a few queries:
+
+- "Show me my latest unread emails"
+- "Search for emails from max@example.com about invoices"
+- "Draft a reply to the last email saying we'll process it today"
+- "How many unread emails do I have?"
+
+---
+
+## Available tools
+
+When email permissions are granted, the agent gets access to these tools — the same set used for Gmail and Microsoft 365:
+
+| Tool                   | Permission required | Description                                                                                                                                                                               |
+| ---------------------- | ------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `email_list`           | Read                | List emails from a folder (INBOX, SENT, DRAFTS, TRASH, SPAM; defaults to INBOX). Supports filtering by read status.                                                                       |
+| `email_read`           | Read                | Read the full content of a specific email by ID. Lists any attachments with their IDs. Looks up the message in INBOX (see the limitation above).                                          |
+| `email_get_attachment` | Read                | Download an email attachment into the agent's workspace. Looks up the message in INBOX (see the limitation above).                                                                        |
+| `email_search`         | Read                | Search emails using structured fields: `from`, `to`, `subject`, `text`, `unread`, `sinceDays`, `folder`, `limit` (e.g. `{ from: "user@example.com", subject: "invoice", sinceDays: 7 }`). |
+| `email_draft`          | Draft               | Create a draft email. Saved directly to the mailbox's Drafts folder over IMAP.                                                                                                            |
+| `email_send`           | Send                | Send an email immediately over SMTP. Can also send replies with `replyTo`.                                                                                                                |
+
+---
+
+## Troubleshooting
+
+**"Authentication failed — check the username and password"**
+
+The most common cause is using your regular account password instead of an app-specific password on a provider that requires one. Generate an app password in your provider's account settings and use that instead.
+
+**"Could not connect to the server — check the host and port"**
+
+The IMAP or SMTP host is unreachable — a typo in the hostname, a firewall blocking the port, or a provider that uses non-standard ports. Double-check the values against your provider's documented IMAP/SMTP settings.
+
+**"Could not establish a secure connection — check the security setting"**
+
+The **Security** setting doesn't match what the server expects. Try `TLS` for port 993 (IMAP) or 465 (SMTP submission), and `STARTTLS` for port 587.
+
+**"Connection timed out — check the host and port"**
+
+The server didn't respond in time — usually a network issue or an incorrect host/port combination.
+
+---
+
+## What's next
+
+- [Connect Email](/guides/connect-email/) — overview and comparing Gmail, Microsoft 365, and IMAP
+- [Integrations](/concepts/integrations/) — how connections and permissions work
+- [Agent Permissions](/concepts/agent-permissions/) — the full allow-list model

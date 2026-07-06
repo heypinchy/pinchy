@@ -3,16 +3,19 @@ title: Connect Email
 description: Connect email accounts to Pinchy to let agents read, search, and send email on your behalf.
 ---
 
-Pinchy supports two email providers. Choose your provider to get started:
+Pinchy supports three ways to connect email. Choose your provider to get started:
 
 - **[Google (Gmail)](/guides/connect-email-google/)** — Connect Google Workspace or personal Gmail accounts using OAuth.
 - **[Microsoft (Outlook / Microsoft 365)](/guides/connect-email-microsoft/)** — Connect Microsoft 365 work or school accounts using OAuth.
+- **[IMAP / Other email](/guides/connect-email-imap/)** — Connect any other mailbox — Fastmail, iCloud, a company mail server, or anything self-hosted — using standard IMAP and SMTP.
 
-Both providers give Pinchy permission to read, search, and send email on behalf of the connected mailboxes.
+All three give Pinchy permission to read, search, and send email on behalf of the connected mailboxes.
 
 ## The app and the mailboxes are two different things
 
-Before you start, it helps to know that email setup has two layers with separate lifecycles:
+This section applies to **Google and Microsoft**, which connect over OAuth. **IMAP connections skip this entirely** — there's no app to register; you connect a mailbox directly with its server settings and a password. See [Connect Email (IMAP / Other email)](/guides/connect-email-imap/).
+
+Before you start with Google or Microsoft, it helps to know that email setup has two layers with separate lifecycles:
 
 - **The OAuth app** — the Client ID, Client Secret (and, for Microsoft, an optional Tenant ID) you register with Google or Microsoft. You set this up **once per provider**. It's the credential that lets Pinchy talk to that provider at all.
 - **The mailboxes** — the individual Gmail or Microsoft 365 accounts you connect. **One app can carry many mailboxes.** After the app is set up once, connecting the second, third, or tenth mailbox skips the credentials step entirely.
