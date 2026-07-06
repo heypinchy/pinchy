@@ -8,6 +8,7 @@ import type {
   ComposeOptions,
   Folder,
 } from "../email-adapter.js";
+import { ImapAdapter, type ImapAdapterOptions } from "../imap-adapter.js";
 
 describe("EmailAdapter contract", () => {
   it("Folder is the five canonical values", () => {
@@ -55,5 +56,23 @@ describe("EmailAdapter contract", () => {
       mimeType: string;
       data: Buffer;
     }>();
+  });
+
+  it("ImapAdapter conforms to the EmailAdapter contract (compile-time)", () => {
+    const opts: ImapAdapterOptions = {
+      imapHost: "imap.example.com",
+      imapPort: 993,
+      smtpHost: "smtp.example.com",
+      smtpPort: 587,
+      username: "user@example.com",
+      password: "app-pw",
+      security: "tls",
+    };
+    // This assignment fails to compile if ImapAdapter drops or mistypes any
+    // EmailAdapter method — the same guard tsc applies to `implements
+    // EmailAdapter`, made explicit here so a regression surfaces as a failing
+    // contract test rather than a silent interface drift.
+    const adapter: EmailAdapter = new ImapAdapter(opts);
+    expectTypeOf(adapter).toEqualTypeOf<EmailAdapter>();
   });
 });
