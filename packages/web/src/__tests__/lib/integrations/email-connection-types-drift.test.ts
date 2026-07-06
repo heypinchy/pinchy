@@ -44,17 +44,19 @@ describe("email connection types stay single-sourced", () => {
     });
   }
 
-  it("the shared module exports EMAIL_CONNECTION_TYPES without 'imap'", () => {
+  it("the shared module exports EMAIL_CONNECTION_TYPES including 'imap'", () => {
     const src = readFileSync(
       resolve(__dirname, "../../../lib/integrations/oauth-providers.ts"),
       "utf8"
     );
 
     expect(src).toMatch(/export const EMAIL_CONNECTION_TYPES\s*=\s*\[/);
-    // "imap" is unreachable dead weight today (no adapter, no OAuth flow, no
-    // write path). If IMAP ever becomes real, this assertion — and its
-    // explanatory comment in oauth-providers.ts — should be updated together.
-    expect(src).not.toMatch(
+    // "imap" is real now: packages/plugins/pinchy-email/imap-adapter.ts
+    // implements the full EmailAdapter contract and the internal credentials
+    // route dispatches on type === "imap". Every "is this connection type
+    // email-capable" consumer must recognize it, even though the connection
+    // *creation* route doesn't accept type: "imap" yet.
+    expect(src).toMatch(
       /EMAIL_CONNECTION_TYPES\s*=\s*\[\s*["']google["']\s*,\s*["']microsoft["']\s*,\s*["']imap["']/
     );
   });

@@ -495,18 +495,21 @@ describe("pinchy-email config generation", () => {
     expect(config.plugins?.entries?.["pinchy-email"]).toBeUndefined();
   });
 
-  it("should ignore a non-OAuth 'imap' connection type for email (no IMAP flow exists)", async () => {
-    // There is no IMAP OAuth flow, no IMAP adapter, and no write path that ever
-    // persists `type: "imap"` into integration_connections (see
-    // EMAIL_CONNECTION_TYPES in @/lib/integrations/oauth-providers.ts). This
-    // test pins the intentional behavior: an "imap"-typed row — however it
-    // got there — must NOT be treated as an email connection.
+  it("should include pinchy-email plugin when agent has email permissions (type=imap)", async () => {
+    // packages/plugins/pinchy-email/imap-adapter.ts now implements the full
+    // EmailAdapter contract, and EMAIL_CONNECTION_TYPES (the shared list
+    // build.ts's EMAIL_PROVIDER_TYPES is built from) includes "imap" — so an
+    // imap-typed connection must flow through config emission exactly like
+    // google/microsoft: provider-neutral connectionId + permissions (+
+    // tools), never credentials. The plugin fetches credentials at runtime
+    // via the internal API. This locks that behavior and guards against a
+    // regression back to the old (pre-adapter) "imap is ignored" state.
     const agentsData = [
       {
         id: "imap-agent",
         name: "IMAP Agent",
         model: "anthropic/claude-haiku-4-5-20251001",
-        allowedTools: ["email_list", "email_read", "email_search"],
+        allowedTools: ["email_list", "email_read", "email_search", "email_send"],
         createdAt: new Date(),
       },
     ];
@@ -525,12 +528,14 @@ describe("pinchy-email config generation", () => {
           name: "Company IMAP",
           description: "",
           credentials: JSON.stringify({
-            host: "mail.example.com",
-            port: 993,
-            user: "user@example.com",
+            imapHost: "mail.example.com",
+            imapPort: 993,
+            smtpHost: "smtp.example.com",
+            smtpPort: 587,
+            username: "user@example.com",
             password: "secret-password",
           }),
-          data: null,
+          data: { emailAddress: "user@example.com", provider: "imap" },
           createdAt: new Date(),
           updatedAt: new Date(),
         },
@@ -540,7 +545,7 @@ describe("pinchy-email config generation", () => {
           agentId: "imap-agent",
           connectionId: "conn-imap-1",
           model: "email",
-          operation: "search",
+          operation: "send",
         },
         integration_connections: {
           id: "conn-imap-1",
@@ -548,12 +553,14 @@ describe("pinchy-email config generation", () => {
           name: "Company IMAP",
           description: "",
           credentials: JSON.stringify({
-            host: "mail.example.com",
-            port: 993,
-            user: "user@example.com",
+            imapHost: "mail.example.com",
+            imapPort: 993,
+            smtpHost: "smtp.example.com",
+            smtpPort: 587,
+            username: "user@example.com",
             password: "secret-password",
           }),
-          data: null,
+          data: { emailAddress: "user@example.com", provider: "imap" },
           createdAt: new Date(),
           updatedAt: new Date(),
         },
@@ -584,14 +591,30 @@ describe("pinchy-email config generation", () => {
     const written = getWrittenConfigString();
     const config = JSON.parse(written);
 
-    // No email-capable connection types matched, so the plugin entry is
-    // never created — mirrors the "no email connections" case above.
     const emailPlugin = config.plugins?.entries?.["pinchy-email"];
-    expect(emailPlugin).toBeUndefined();
+    expect(emailPlugin).toBeDefined();
+    expect(emailPlugin.enabled).toBe(true);
 
-    // No credentials leaked
+    const agentConfig = emailPlugin.config.agents["imap-agent"];
+    expect(agentConfig.connectionId).toBe("conn-imap-1");
+    expect(agentConfig.permissions).toEqual({ email: ["read", "send"] });
+
+    // Provider-neutral emission only: connectionId + permissions + tools.
+    // No imap-specific or credential fields on the agent config itself.
+    expect(Object.keys(agentConfig).sort()).toEqual(["connectionId", "permissions", "tools"]);
+
+    // CRUCIAL: the emitted pinchy-email entry must not carry the imap
+    // credentials anywhere — the plugin fetches them at runtime via
+    // GET /api/internal/integrations/:connectionId/credentials.
+    const serializedEntry = JSON.stringify(emailPlugin);
+    expect(serializedEntry).not.toContain("secret-password");
+    expect(serializedEntry).not.toContain("mail.example.com");
+    expect(serializedEntry).not.toContain("smtp.example.com");
+    expect(serializedEntry).not.toContain("imapHost");
+    expect(serializedEntry).not.toContain("password");
+
+    // Belt-and-suspenders: not present anywhere in the whole serialized config.
     expect(written).not.toContain("secret-password");
-    expect(written).not.toContain("mail.example.com");
   });
 
   // MIGRATION TEST (AGENTS.md § "Test Migrations Against Pre-Existing Data"):

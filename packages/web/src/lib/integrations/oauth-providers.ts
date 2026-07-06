@@ -54,20 +54,26 @@ export type OAuthProviderId = "google" | "microsoft";
  * the agent-settings email permission section, and the OpenClaw config
  * builder all import this instead of declaring their own local copy.
  *
- * Historically this list also included "imap", but there has never been an
- * IMAP OAuth flow, an IMAP adapter (see `packages/plugins/pinchy-email/`),
- * or any code path that writes `type: "imap"` into `integration_connections`
- * — the only write paths are the OAuth callback route (google/microsoft) and
- * the generic integrations POST route (odoo/web-search only). "imap" was
- * unreachable dead weight, so it was dropped when this constant was
- * consolidated. If an IMAP connect flow is ever built, add "imap" here (and
- * widen `OAuthProviderId`/`getOAuthProvider` as needed) rather than
- * resurrecting a separate local list.
+ * This is deliberately NOT typed as `readonly OAuthProviderId[]` — "imap" is
+ * an email-capable connection type but not an OAuth flow (no descriptor, no
+ * authorize/token endpoints, `getOAuthProvider("imap")` correctly returns
+ * `null`). The two concepts overlap for google/microsoft but are not the
+ * same axis; conflating them is what previously made "imap" look unsafe to
+ * add here.
+ *
+ * "imap" was dropped in a prior consolidation because at the time there was
+ * no IMAP adapter and no write path that ever persisted `type: "imap"` into
+ * `integration_connections`. Both are now real:
+ * `packages/plugins/pinchy-email/imap-adapter.ts` implements the full
+ * `EmailAdapter` contract, and the internal credentials route already
+ * dispatches on `type === "imap"` without OAuth refresh. The connection
+ * *creation* route (`POST /api/integrations`) does not accept `type: "imap"`
+ * yet — that is separate, still-open work — but every consumer that gates on
+ * "is this connection type email-capable" (permissions UI, template
+ * availability, OpenClaw config emission) must already recognize "imap" so
+ * those paths work the moment a row exists.
  */
-export const EMAIL_CONNECTION_TYPES = [
-  "google",
-  "microsoft",
-] as const satisfies readonly OAuthProviderId[];
+export const EMAIL_CONNECTION_TYPES = ["google", "microsoft", "imap"] as const;
 
 export interface OAuthProviderDescriptor {
   id: OAuthProviderId;
