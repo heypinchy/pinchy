@@ -64,17 +64,22 @@ You'll also need your IMAP and SMTP server hostnames and ports — but Pinchy tr
 
 </Steps>
 
-## Known limitation: reading a message is INBOX-only
+## Reading messages across folders
 
 <Aside type="note">
-  **Listing and searching work across folders. Opening a specific message or
-  downloading its attachments currently only works for messages in the INBOX.**
-  `email_list` and `email_search` accept any folder (INBOX, SENT, DRAFTS, TRASH,
-  SPAM). But `email_read` and `email_get_attachment` take just a message ID, and
-  IMAP message IDs are only unique within a single mailbox — so today they
-  always look in INBOX. If an agent finds a message in another folder and tries
-  to open it, it won't find it. This is a v1 limitation of the IMAP connector
-  specifically; it doesn't affect Gmail or Microsoft 365 connections.
+  **Listing, searching, reading, and downloading attachments all work across
+  folders** (INBOX, SENT, DRAFTS, TRASH, SPAM). IMAP message IDs are only unique
+  within a single mailbox, so the ID that `email_list` and `email_search` return
+  carries its source folder with it — `email_read` and `email_get_attachment`
+  then open the right mailbox automatically. An agent can find a message in any
+  folder and open it directly.
+</Aside>
+
+<Aside type="note">
+  **Sent mail is filed to your Sent folder.** When an agent sends email over
+  SMTP, Pinchy also files a copy into the mailbox's Sent folder over IMAP (a
+  best-effort archive), so sent messages show up in your mail client and in
+  `email_search({ folder: "SENT" })`.
 </Aside>
 
 ## Grant agent email permissions
