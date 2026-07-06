@@ -1,0 +1,11 @@
+{
+  "name": "imap-mock",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "express": "^5.1.0",
+    "imapflow": "^1.4.6",
+    "nodemailer": "^9.0.3"
+  }
+}

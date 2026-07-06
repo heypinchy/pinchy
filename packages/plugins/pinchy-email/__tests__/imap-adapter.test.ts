@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import {
   ImapAdapter,
   resolveFolders,
@@ -339,6 +339,122 @@ describe("ImapAdapter", () => {
   it("constructs with connection options", () => {
     const a = new ImapAdapter(opts);
     expect(a).toBeInstanceOf(ImapAdapter);
+  });
+});
+
+describe("ImapAdapter mock env overrides", () => {
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  it("uses this.opts host/port/secure for IMAP when no mock env vars are set", async () => {
+    const adapter = new ImapAdapter(opts);
+    await adapter.list({});
+
+    const { ImapFlow } = await import("imapflow");
+    expect(ImapFlow).toHaveBeenCalledWith(
+      expect.objectContaining({
+        host: opts.imapHost,
+        port: opts.imapPort,
+        secure: true, // security: "tls"
+      }),
+    );
+  });
+
+  it("overrides IMAP host/port and forces secure:false when IMAP_MOCK_HOST/PORT are set", async () => {
+    vi.stubEnv("IMAP_MOCK_HOST", "greenmail");
+    vi.stubEnv("IMAP_MOCK_PORT", "3143");
+
+    const adapter = new ImapAdapter(opts);
+    await adapter.list({});
+
+    const { ImapFlow } = await import("imapflow");
+    expect(ImapFlow).toHaveBeenCalledWith(
+      expect.objectContaining({
+        host: "greenmail",
+        port: 3143,
+        secure: false,
+      }),
+    );
+  });
+
+  it("defaults IMAP_MOCK_PORT to 3143 when IMAP_MOCK_HOST is set but the port is not", async () => {
+    vi.stubEnv("IMAP_MOCK_HOST", "greenmail");
+
+    const adapter = new ImapAdapter(opts);
+    await adapter.list({});
+
+    const { ImapFlow } = await import("imapflow");
+    expect(ImapFlow).toHaveBeenCalledWith(
+      expect.objectContaining({
+        host: "greenmail",
+        port: 3143,
+        secure: false,
+      }),
+    );
+  });
+
+  it("uses this.opts host/port/security for SMTP when no mock env vars are set", async () => {
+    const adapter = new ImapAdapter(opts);
+    await adapter.send({ to: "bob@example.com", subject: "Hi", body: "Hi" });
+
+    expect(createTransportMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        host: opts.smtpHost,
+        port: opts.smtpPort,
+        secure: true,
+        requireTLS: false,
+      }),
+    );
+  });
+
+  it("overrides SMTP host/port and forces secure:false/no requireTLS when SMTP_MOCK_HOST/PORT are set", async () => {
+    vi.stubEnv("SMTP_MOCK_HOST", "greenmail");
+    vi.stubEnv("SMTP_MOCK_PORT", "3025");
+
+    const starttlsOpts: ImapAdapterOptions = { ...opts, security: "starttls" };
+    const adapter = new ImapAdapter(starttlsOpts);
+    await adapter.send({ to: "bob@example.com", subject: "Hi", body: "Hi" });
+
+    expect(createTransportMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        host: "greenmail",
+        port: 3025,
+        secure: false,
+        requireTLS: false,
+      }),
+    );
+  });
+
+  it("defaults SMTP_MOCK_PORT to 3025 when SMTP_MOCK_HOST is set but the port is not", async () => {
+    vi.stubEnv("SMTP_MOCK_HOST", "greenmail");
+
+    const adapter = new ImapAdapter(opts);
+    await adapter.send({ to: "bob@example.com", subject: "Hi", body: "Hi" });
+
+    expect(createTransportMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        host: "greenmail",
+        port: 3025,
+        secure: false,
+      }),
+    );
+  });
+
+  it("does not affect IMAP host/port when only SMTP_MOCK_HOST is set", async () => {
+    vi.stubEnv("SMTP_MOCK_HOST", "greenmail");
+
+    const adapter = new ImapAdapter(opts);
+    await adapter.list({});
+
+    const { ImapFlow } = await import("imapflow");
+    expect(ImapFlow).toHaveBeenCalledWith(
+      expect.objectContaining({
+        host: opts.imapHost,
+        port: opts.imapPort,
+        secure: true,
+      }),
+    );
   });
 });
 

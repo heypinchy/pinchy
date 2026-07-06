@@ -197,16 +197,81 @@ function toSummary(m: FetchMessageObject): EmailSummary {
   };
 }
 
+// Default IMAP/SMTP ports for the GreenMail E2E mock, used only when the
+// corresponding _MOCK_HOST env var is set but its _MOCK_PORT sibling isn't.
+const DEFAULT_IMAP_MOCK_PORT = 3143;
+const DEFAULT_SMTP_MOCK_PORT = 3025;
+
+// Resolved connection settings for a single protocol (IMAP or SMTP): host,
+// port, and TLS mode, after applying an env-based mock override on top of
+// this.opts. OFF by default — production always uses the stored host/port/
+// security from opts; the override only fires when the matching *_MOCK_HOST
+// env var is set (e.g. by the E2E GreenMail compose overlay).
+interface ResolvedConnection {
+  host: string;
+  port: number;
+  secure: boolean;
+}
+
+// SMTP-specific resolved connection: adds requireTLS (STARTTLS), which has
+// no IMAP equivalent.
+interface ResolvedSmtpConnection extends ResolvedConnection {
+  requireTLS: boolean;
+}
+
 export class ImapAdapter implements EmailAdapter {
   constructor(private opts: ImapAdapterOptions) {}
+
+  // Resolves the effective IMAP connection: this.opts, unless IMAP_MOCK_HOST
+  // is set, in which case host/port come from IMAP_MOCK_HOST/IMAP_MOCK_PORT
+  // (defaulting the port to GreenMail's 3143) and secure is forced to false —
+  // GreenMail's plain IMAP listener has no TLS.
+  private resolveImapConnection(): ResolvedConnection {
+    const mockHost = process.env.IMAP_MOCK_HOST;
+    if (mockHost) {
+      return {
+        host: mockHost,
+        port: Number(process.env.IMAP_MOCK_PORT ?? DEFAULT_IMAP_MOCK_PORT),
+        secure: false,
+      };
+    }
+    return {
+      host: this.opts.imapHost,
+      port: this.opts.imapPort,
+      secure: this.opts.security === "tls",
+    };
+  }
+
+  // Resolves the effective SMTP connection: this.opts, unless SMTP_MOCK_HOST
+  // is set, in which case host/port come from SMTP_MOCK_HOST/SMTP_MOCK_PORT
+  // (defaulting the port to GreenMail's 3025) and secure/requireTLS are both
+  // forced to false — GreenMail's plain SMTP listener has no TLS/STARTTLS.
+  private resolveSmtpConnection(): ResolvedSmtpConnection {
+    const mockHost = process.env.SMTP_MOCK_HOST;
+    if (mockHost) {
+      return {
+        host: mockHost,
+        port: Number(process.env.SMTP_MOCK_PORT ?? DEFAULT_SMTP_MOCK_PORT),
+        secure: false,
+        requireTLS: false,
+      };
+    }
+    return {
+      host: this.opts.smtpHost,
+      port: this.opts.smtpPort,
+      secure: this.opts.security === "tls",
+      requireTLS: this.opts.security === "starttls",
+    };
+  }
 
   private async withClient<T>(
     fn: (client: ImapFlow) => Promise<T>,
   ): Promise<T> {
+    const conn = this.resolveImapConnection();
     const client = new ImapFlow({
-      host: this.opts.imapHost,
-      port: this.opts.imapPort,
-      secure: this.opts.security === "tls",
+      host: conn.host,
+      port: conn.port,
+      secure: conn.secure,
       auth: {
         user: this.opts.username,
         pass: this.opts.password,
@@ -370,11 +435,12 @@ export class ImapAdapter implements EmailAdapter {
   async send(opts: ComposeOptions): Promise<{ messageId: string | null }> {
     assertComposeOptionsSafe(opts);
 
+    const conn = this.resolveSmtpConnection();
     const transport = nodemailer.createTransport({
-      host: this.opts.smtpHost,
-      port: this.opts.smtpPort,
-      secure: this.opts.security === "tls",
-      requireTLS: this.opts.security === "starttls",
+      host: conn.host,
+      port: conn.port,
+      secure: conn.secure,
+      requireTLS: conn.requireTLS,
       auth: {
         user: this.opts.username,
         pass: this.opts.password,

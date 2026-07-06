@@ -1,0 +1,58 @@
+# docker-compose.imap-test.yml
+# Test overlay: adds a REAL GreenMail mail server (SMTP+IMAP) plus a thin
+# control sidecar for pinchy-email IMAP/SMTP E2E tests. Unlike the gmail-mock
+# and graph-mock overlay (docker-compose.email-test.yml), IMAP/SMTP are raw
+# TCP protocols rather than HTTP APIs, so we run the real greenmail/standalone
+# image instead of faking the wire protocol, and put a small Express sidecar
+# in front for /control/{health,reset,seed,requests,messages}.
+#
+# Usage:
+#   docker compose -f docker-compose.yml -f docker-compose.e2e.yml -f docker-compose.imap-test.yml up --build -d
+
+services:
+  greenmail:
+    image: greenmail/standalone:latest
+    environment:
+      # -Dgreenmail.auth.disabled: any username/password authenticates and
+      # mailboxes are created on demand — the mock sidecar and adapter env
+      # override both rely on this so no user provisioning step is needed.
+      - GREENMAIL_OPTS=-Dgreenmail.setup.test.all -Dgreenmail.hostname=0.0.0.0 -Dgreenmail.auth.disabled
+    ports:
+      - "3025:3025"
+      - "3143:3143"
+      - "8080:8080"
+
+  imap-mock:
+    build:
+      context: config/imap-mock
+    depends_on:
+      - greenmail
+    environment:
+      - GREENMAIL_HOST=greenmail
+      - GREENMAIL_SMTP_PORT=3025
+      - GREENMAIL_IMAP_PORT=3143
+    ports:
+      - "9006:9006"
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://localhost:9006/control/health').then(r=>r.ok?process.exit(0):process.exit(1)).catch(()=>process.exit(1))"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  pinchy:
+    environment:
+      # The web app doesn't speak IMAP/SMTP directly, but tests may probe the
+      # mock host/port through the same env override the plugin uses.
+      - IMAP_MOCK_HOST=greenmail
+      - IMAP_MOCK_PORT=3143
+      - SMTP_MOCK_HOST=greenmail
+      - SMTP_MOCK_PORT=3025
+
+  openclaw:
+    environment:
+      # The pinchy-email plugin (running inside OpenClaw) uses the ImapAdapter
+      # env override to target GreenMail instead of a real IMAP/SMTP server.
+      - IMAP_MOCK_HOST=greenmail
+      - IMAP_MOCK_PORT=3143
+      - SMTP_MOCK_HOST=greenmail
+      - SMTP_MOCK_PORT=3025
