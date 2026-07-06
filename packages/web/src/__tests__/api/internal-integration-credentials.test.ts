@@ -209,6 +209,66 @@ describe("GET /api/internal/integrations/:connectionId/credentials", () => {
     expect(db.update).not.toHaveBeenCalled();
   });
 
+  describe("IMAP credentials (no OAuth involved)", () => {
+    // IMAP connections store static host/port/username/app-password
+    // credentials -- no accessToken, no refreshToken, no expiresAt. The type
+    // dispatch table (REFRESH_BY_TYPE) has no "imap" entry, so this pins that
+    // the route decrypts and returns the credentials as-is without ever
+    // consulting the OAuth refresh machinery or OAuth settings.
+    const imapCredentials = {
+      imapHost: "imap.example.com",
+      imapPort: 993,
+      smtpHost: "smtp.example.com",
+      smtpPort: 587,
+      username: "mailbox@example.com",
+      password: "app-password-secret",
+      security: "tls",
+    };
+
+    beforeEach(() => {
+      mockDbSelectResult([
+        {
+          id: "conn-imap",
+          type: "imap",
+          status: "active",
+          credentials: encrypt(JSON.stringify(imapCredentials)),
+        },
+      ]);
+      vi.mocked(decrypt).mockReturnValue(JSON.stringify(imapCredentials));
+    });
+
+    it("returns the full decrypted IMAP credential shape without running OAuth refresh", async () => {
+      const res = await GET(makeRequest("conn-imap"), makeParams("conn-imap"));
+
+      expect(res.status).toBe(200);
+      const data = await res.json();
+      expect(data.type).toBe("imap");
+      expect(data.credentials).toEqual(imapCredentials);
+
+      // No OAuth refresh path should ever be consulted for an imap connection.
+      expect(getOAuthSettings).not.toHaveBeenCalled();
+      expect(refreshAccessToken).not.toHaveBeenCalled();
+      expect(refreshMsAccessToken).not.toHaveBeenCalled();
+      expect(db.update).not.toHaveBeenCalled();
+    });
+
+    it("returns IMAP credentials unchanged even without an expiresAt field (dispatch lookup miss)", async () => {
+      // isTokenExpired would throw/misbehave on undefined input if it were
+      // ever invoked -- proving it's never called even when there's nothing
+      // resembling OAuth expiry data on the credentials at all.
+      vi.mocked(isTokenExpired).mockReturnValue(true);
+
+      const res = await GET(makeRequest("conn-imap"), makeParams("conn-imap"));
+
+      expect(res.status).toBe(200);
+      const data = await res.json();
+      expect(data.type).toBe("imap");
+      expect(data.credentials).toEqual(imapCredentials);
+      expect(getOAuthSettings).not.toHaveBeenCalled();
+      expect(db.update).not.toHaveBeenCalled();
+    });
+  });
+
   describe("Google OAuth token refresh", () => {
     beforeEach(() => {
       mockDbSelectResult([
