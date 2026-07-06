@@ -2,6 +2,8 @@ import { ImapFlow } from "imapflow";
 import type { FetchMessageObject, ListResponse } from "imapflow";
 import { simpleParser } from "mailparser";
 import type { AddressObject, ParsedMail } from "mailparser";
+import nodemailer from "nodemailer";
+import MailComposer from "nodemailer/lib/mail-composer/index.js";
 import type {
   EmailAdapter,
   EmailAttachment,
@@ -163,6 +165,25 @@ function toAttachments(parsed: ParsedMail): EmailAttachment[] {
   }));
 }
 
+// Guards against MIME/SMTP header injection via CR/LF in a header value —
+// e.g. `to: "victim@example.com\r\nBcc: attacker@evil.com"` could otherwise
+// inject an extra header line. The Gmail adapter's buildRawMessage() strips
+// CR/LF/NUL silently before composing its raw message; IMAP instead throws a
+// clear error so a caller passing attacker-controlled input finds out rather
+// than having it silently rewritten out from under it.
+function assertNoHeaderInjection(field: string, value: string): void {
+  if (/[\r\n]/.test(value)) {
+    throw new Error(
+      `${field} contains a line break, which is not allowed (possible header injection attempt)`,
+    );
+  }
+}
+
+function assertComposeOptionsSafe(opts: ComposeOptions): void {
+  assertNoHeaderInjection("to", opts.to);
+  assertNoHeaderInjection("subject", opts.subject);
+}
+
 function toSummary(m: FetchMessageObject): EmailSummary {
   const envelope = m.envelope;
   return {
@@ -176,8 +197,6 @@ function toSummary(m: FetchMessageObject): EmailSummary {
   };
 }
 
-// draft/send are filled in by a later task. See the pinchy-email IMAP/SMTP
-// implementation plan.
 export class ImapAdapter implements EmailAdapter {
   constructor(private opts: ImapAdapterOptions) {}
 
@@ -315,12 +334,64 @@ export class ImapAdapter implements EmailAdapter {
     });
   }
 
-  async draft(_opts: ComposeOptions): Promise<{ draftId: string }> {
-    throw new Error("not implemented");
+  // Builds a draft as a raw RFC822 message and APPENDs it directly to the
+  // server's DRAFTS mailbox with the \Draft flag — there is no IMAP "create
+  // draft" verb, APPEND is how every IMAP client does this. Unlike Gmail/
+  // Graph, an unresolvable DRAFTS folder is a hard error (v1 behavior): we
+  // don't guess at a fallback mailbox to file a draft into.
+  async draft(opts: ComposeOptions): Promise<{ draftId: string }> {
+    assertComposeOptionsSafe(opts);
+
+    const raw = await new MailComposer({
+      from: this.opts.username,
+      to: opts.to,
+      subject: opts.subject,
+      text: opts.body,
+      ...(opts.replyTo ? { inReplyTo: opts.replyTo } : {}),
+    })
+      .compile()
+      .build();
+
+    return this.withClient(async (client) => {
+      const draftsPath = await this.resolveMailboxPath(client, "DRAFTS");
+      const res = await client.append(draftsPath, raw, ["\\Draft"]);
+      // imapflow's append() resolves to `AppendResponseObject | false`; `uid`
+      // is only present when the server advertises the UIDPLUS extension. Fall
+      // back to a stable non-empty id (the destination path) rather than
+      // fabricating a fake numeric uid when the server doesn't report one.
+      const uid = res && typeof res === "object" ? res.uid : undefined;
+      return { draftId: uid != null ? String(uid) : draftsPath };
+    });
   }
 
-  async send(_opts: ComposeOptions): Promise<{ messageId: string | null }> {
-    throw new Error("not implemented");
+  // Sends via SMTP using nodemailer, independent of the IMAP connection used
+  // by the other methods (IMAP has no "send" verb — SMTP is the wire protocol
+  // that actually delivers mail).
+  async send(opts: ComposeOptions): Promise<{ messageId: string | null }> {
+    assertComposeOptionsSafe(opts);
+
+    const transport = nodemailer.createTransport({
+      host: this.opts.smtpHost,
+      port: this.opts.smtpPort,
+      secure: this.opts.security === "tls",
+      requireTLS: this.opts.security === "starttls",
+      auth: {
+        user: this.opts.username,
+        pass: this.opts.password,
+      },
+    });
+    try {
+      const info = await transport.sendMail({
+        from: this.opts.username,
+        to: opts.to,
+        subject: opts.subject,
+        text: opts.body,
+        ...(opts.replyTo ? { inReplyTo: opts.replyTo } : {}),
+      });
+      return { messageId: info.messageId ?? null };
+    } finally {
+      transport.close?.();
+    }
   }
 
   async getAttachment(

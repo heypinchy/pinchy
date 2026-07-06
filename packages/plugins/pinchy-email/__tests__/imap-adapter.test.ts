@@ -6,6 +6,23 @@ import {
   type ImapAdapterOptions,
 } from "../imap-adapter.js";
 
+// Shared mock SMTP transport for send() tests. Created inside vi.hoisted() so
+// it's visible to the vi.mock("nodemailer", ...) factory below, which vitest
+// hoists above these imports/consts.
+const { mockTransport, createTransportMock } = vi.hoisted(() => {
+  const mockTransport = {
+    sendMail: vi.fn(),
+    close: vi.fn(),
+  };
+  const createTransportMock = vi.fn().mockReturnValue(mockTransport);
+  return { mockTransport, createTransportMock };
+});
+
+vi.mock("nodemailer", () => ({
+  default: { createTransport: createTransportMock },
+  createTransport: createTransportMock,
+}));
+
 const opts: ImapAdapterOptions = {
   imapHost: "imap.example.com",
   imapPort: 993,
@@ -30,6 +47,7 @@ const { mockClient } = vi.hoisted(() => ({
     search: vi.fn(),
     fetch: vi.fn(),
     fetchOne: vi.fn(),
+    append: vi.fn(),
   },
 }));
 
@@ -87,6 +105,15 @@ beforeEach(() => {
   mockClient.search.mockReset().mockResolvedValue([]);
   mockClient.fetch.mockReset().mockReturnValue(asyncIterableOf([]));
   mockClient.fetchOne.mockReset().mockResolvedValue(false);
+  mockClient.append.mockReset().mockResolvedValue({
+    destination: "Drafts",
+    uid: 123,
+  });
+  mockTransport.sendMail.mockReset().mockResolvedValue({
+    messageId: "<generated@smtp.example.com>",
+  });
+  mockTransport.close.mockReset();
+  createTransportMock.mockClear();
 });
 
 // Builds a real RFC822 multipart/mixed message: a multipart/alternative body
@@ -712,5 +739,229 @@ describe("ImapAdapter#search", () => {
     await adapter.search({});
 
     expect(mockClient.search).toHaveBeenCalledWith({}, { uid: true });
+  });
+});
+
+// Server mailbox list that includes a DRAFTS folder, for draft() tests.
+const SERVER_MAILBOXES_WITH_DRAFTS = [
+  { path: "INBOX", specialUse: undefined, flags: new Set<string>() },
+  { path: "Sent Items", specialUse: "\\Sent", flags: new Set(["\\Sent"]) },
+  { path: "Drafts", specialUse: "\\Drafts", flags: new Set(["\\Drafts"]) },
+];
+
+describe("ImapAdapter#draft", () => {
+  it("appends a raw RFC822 message to the resolved DRAFTS path with the \\Draft flag", async () => {
+    mockClient.list.mockResolvedValue(SERVER_MAILBOXES_WITH_DRAFTS);
+
+    const adapter = new ImapAdapter(opts);
+    const result = await adapter.draft({
+      to: "bob@example.com",
+      subject: "Quarterly report",
+      body: "Please find it attached.",
+    });
+
+    expect(mockClient.append).toHaveBeenCalledTimes(1);
+    const [path, raw, flags] = mockClient.append.mock.calls[0];
+    expect(path).toBe("Drafts");
+    expect(flags).toEqual(["\\Draft"]);
+    const rawStr = Buffer.isBuffer(raw) ? raw.toString("utf-8") : String(raw);
+    expect(rawStr).toContain("Quarterly report");
+    expect(rawStr).toContain("Please find it attached.");
+    expect(rawStr).toContain("bob@example.com");
+    expect(result.draftId).toBe("123");
+    expect(mockClient.connect).toHaveBeenCalledTimes(1);
+    expect(mockClient.logout).toHaveBeenCalledTimes(1);
+  });
+
+  it("includes In-Reply-To when replyTo is provided", async () => {
+    mockClient.list.mockResolvedValue(SERVER_MAILBOXES_WITH_DRAFTS);
+
+    const adapter = new ImapAdapter(opts);
+    await adapter.draft({
+      to: "bob@example.com",
+      subject: "Re: Quarterly report",
+      body: "Thanks!",
+      replyTo: "<original-msg-id@example.com>",
+    });
+
+    const raw = mockClient.append.mock.calls[0][1];
+    const rawStr = Buffer.isBuffer(raw) ? raw.toString("utf-8") : String(raw);
+    expect(rawStr).toContain("In-Reply-To: <original-msg-id@example.com>");
+  });
+
+  it("returns a stable non-empty draftId even when append returns no uid", async () => {
+    mockClient.list.mockResolvedValue(SERVER_MAILBOXES_WITH_DRAFTS);
+    mockClient.append.mockResolvedValue({ destination: "Drafts" });
+
+    const adapter = new ImapAdapter(opts);
+    const result = await adapter.draft({
+      to: "bob@example.com",
+      subject: "No uid",
+      body: "body",
+    });
+
+    expect(result.draftId).toBeTruthy();
+    expect(typeof result.draftId).toBe("string");
+  });
+
+  it("throws when the server has no resolvable DRAFTS folder", async () => {
+    mockClient.list.mockResolvedValue(SERVER_MAILBOXES); // no Drafts folder
+
+    const adapter = new ImapAdapter(opts);
+    await expect(
+      adapter.draft({
+        to: "bob@example.com",
+        subject: "hi",
+        body: "hi",
+      }),
+    ).rejects.toThrow("folder DRAFTS not found on server");
+    expect(mockClient.append).not.toHaveBeenCalled();
+    expect(mockClient.connect).toHaveBeenCalledTimes(1);
+    expect(mockClient.logout).toHaveBeenCalledTimes(1);
+  });
+
+  it("throws on CR/LF header injection in `to` and does not call append", async () => {
+    mockClient.list.mockResolvedValue(SERVER_MAILBOXES_WITH_DRAFTS);
+    const adapter = new ImapAdapter(opts);
+
+    await expect(
+      adapter.draft({
+        to: "victim@example.com\r\nBcc: attacker@evil.com",
+        subject: "hi",
+        body: "hi",
+      }),
+    ).rejects.toThrow();
+    expect(mockClient.append).not.toHaveBeenCalled();
+  });
+
+  it("throws on CR/LF header injection in `subject` and does not call append", async () => {
+    mockClient.list.mockResolvedValue(SERVER_MAILBOXES_WITH_DRAFTS);
+    const adapter = new ImapAdapter(opts);
+
+    await expect(
+      adapter.draft({
+        to: "bob@example.com",
+        subject: "Innocent\r\nBcc: attacker@evil.com",
+        body: "hi",
+      }),
+    ).rejects.toThrow();
+    expect(mockClient.append).not.toHaveBeenCalled();
+  });
+});
+
+describe("ImapAdapter#send", () => {
+  it("creates a transport with secure: true for security 'tls' and calls sendMail", async () => {
+    const adapter = new ImapAdapter(opts);
+    const result = await adapter.send({
+      to: "bob@example.com",
+      subject: "Hello",
+      body: "World",
+    });
+
+    expect(createTransportMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        host: opts.smtpHost,
+        port: opts.smtpPort,
+        secure: true,
+        requireTLS: false,
+        auth: { user: opts.username, pass: opts.password },
+      }),
+    );
+    expect(mockTransport.sendMail).toHaveBeenCalledWith(
+      expect.objectContaining({
+        from: opts.username,
+        to: "bob@example.com",
+        subject: "Hello",
+        text: "World",
+      }),
+    );
+    expect(result.messageId).toBe("<generated@smtp.example.com>");
+    expect(mockTransport.close).toHaveBeenCalledTimes(1);
+  });
+
+  it("creates a transport with requireTLS: true for security 'starttls'", async () => {
+    const starttlsOpts: ImapAdapterOptions = { ...opts, security: "starttls" };
+    const adapter = new ImapAdapter(starttlsOpts);
+    await adapter.send({ to: "bob@example.com", subject: "Hi", body: "Hi" });
+
+    expect(createTransportMock).toHaveBeenCalledWith(
+      expect.objectContaining({ secure: false, requireTLS: true }),
+    );
+  });
+
+  it("creates a transport with neither secure nor requireTLS for security 'none'", async () => {
+    const noneOpts: ImapAdapterOptions = { ...opts, security: "none" };
+    const adapter = new ImapAdapter(noneOpts);
+    await adapter.send({ to: "bob@example.com", subject: "Hi", body: "Hi" });
+
+    expect(createTransportMock).toHaveBeenCalledWith(
+      expect.objectContaining({ secure: false, requireTLS: false }),
+    );
+  });
+
+  it("passes inReplyTo through when replyTo is provided", async () => {
+    const adapter = new ImapAdapter(opts);
+    await adapter.send({
+      to: "bob@example.com",
+      subject: "Re: Hello",
+      body: "Thanks",
+      replyTo: "<original-msg-id@example.com>",
+    });
+
+    expect(mockTransport.sendMail).toHaveBeenCalledWith(
+      expect.objectContaining({
+        inReplyTo: "<original-msg-id@example.com>",
+      }),
+    );
+  });
+
+  it("returns { messageId: null } when the transport reports no messageId", async () => {
+    mockTransport.sendMail.mockResolvedValue({});
+    const adapter = new ImapAdapter(opts);
+    const result = await adapter.send({
+      to: "bob@example.com",
+      subject: "Hi",
+      body: "Hi",
+    });
+
+    expect(result.messageId).toBeNull();
+  });
+
+  it("closes the transport even when sendMail throws", async () => {
+    mockTransport.sendMail.mockRejectedValue(new Error("smtp down"));
+    const adapter = new ImapAdapter(opts);
+
+    await expect(
+      adapter.send({ to: "bob@example.com", subject: "Hi", body: "Hi" }),
+    ).rejects.toThrow("smtp down");
+    expect(mockTransport.close).toHaveBeenCalledTimes(1);
+  });
+
+  it("throws on CR/LF header injection in `to` and does not create a transport", async () => {
+    const adapter = new ImapAdapter(opts);
+
+    await expect(
+      adapter.send({
+        to: "victim@example.com\r\nBcc: attacker@evil.com",
+        subject: "hi",
+        body: "hi",
+      }),
+    ).rejects.toThrow();
+    expect(createTransportMock).not.toHaveBeenCalled();
+    expect(mockTransport.sendMail).not.toHaveBeenCalled();
+  });
+
+  it("throws on CR/LF header injection in `subject` and does not create a transport", async () => {
+    const adapter = new ImapAdapter(opts);
+
+    await expect(
+      adapter.send({
+        to: "bob@example.com",
+        subject: "Innocent\r\nBcc: attacker@evil.com",
+        body: "hi",
+      }),
+    ).rejects.toThrow();
+    expect(createTransportMock).not.toHaveBeenCalled();
+    expect(mockTransport.sendMail).not.toHaveBeenCalled();
   });
 });
