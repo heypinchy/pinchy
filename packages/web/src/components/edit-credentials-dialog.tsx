@@ -22,10 +22,21 @@ import {
 import { Input } from "@/components/ui/input";
 import { UrlInput } from "@/components/ui/url-input";
 import { Button } from "@/components/ui/button";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { AlertTriangle, Loader2 } from "lucide-react";
 import { apiPatch, apiPost, ApiError } from "@/lib/api-client";
-import { odooEditSchema, webSearchEditSchema } from "@/lib/schemas/integration-edit";
+import {
+  odooEditSchema,
+  webSearchEditSchema,
+  imapEditSchema,
+} from "@/lib/schemas/integration-edit";
 import type { IntegrationConnection } from "@/lib/integrations/types";
 import type { z } from "zod";
 
@@ -38,6 +49,22 @@ interface EditCredentialsDialogProps {
 
 type OdooFormValues = z.infer<typeof odooEditSchema>;
 type WebSearchFormValues = z.infer<typeof webSearchEditSchema>;
+
+// The IMAP form carries every field as a string (ports included) because the
+// inputs are text. We do NOT use imapEditSchema as the react-hook-form resolver:
+// its port coercion would fight the string input values. Instead the submit
+// handler mirrors OdooForm's "build only the non-empty fields" pattern and runs
+// the edited subset through imapEditSchema to coerce ports to numbers and reject
+// out-of-range values before the PATCH.
+type ImapFormValues = {
+  imapHost: string;
+  imapPort: string;
+  smtpHost: string;
+  smtpPort: string;
+  username: string;
+  password: string;
+  security: "tls" | "starttls" | "none";
+};
 
 function OdooForm({
   connection,

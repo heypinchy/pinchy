@@ -361,6 +361,107 @@ describe("EditCredentialsDialog", () => {
     });
   });
 
+  describe("IMAP integration", () => {
+    const authFailedImapConnection: IntegrationConnection = {
+      id: "conn-imap-1",
+      type: "imap",
+      name: "Team Mailbox",
+      description: "",
+      credentials: {
+        imapHost: "imap.example.com",
+        imapPort: "993",
+        smtpHost: "smtp.example.com",
+        smtpPort: "587",
+        username: "team@example.com",
+        security: "tls",
+      },
+      data: null,
+      status: "auth_failed",
+      lastError: "IMAP authentication failed",
+      lastErrorAt: null,
+      createdAt: "2026-04-13T12:00:00Z",
+      updatedAt: "2026-04-13T12:00:00Z",
+      cannotDecrypt: false,
+    };
+
+    it("renders IMAP fields prefilled (not a blank dialog) and the auth_failed alert", () => {
+      render(
+        <EditCredentialsDialog
+          connection={authFailedImapConnection}
+          open={true}
+          onOpenChange={vi.fn()}
+          onSuccess={vi.fn()}
+        />
+      );
+
+      expect(screen.getByLabelText("IMAP Host")).toHaveValue("imap.example.com");
+      expect(screen.getByLabelText("IMAP Port")).toHaveValue("993");
+      expect(screen.getByLabelText("SMTP Host")).toHaveValue("smtp.example.com");
+      expect(screen.getByLabelText("SMTP Port")).toHaveValue("587");
+      expect(screen.getByLabelText("Username")).toHaveValue("team@example.com");
+      // Password starts empty, "leave empty to keep current"
+      expect(screen.getByLabelText("Password")).toHaveValue("");
+      expect(screen.getByText(/Current credentials failed authentication/i)).toBeInTheDocument();
+    });
+
+    it("submits a PATCH with only the edited credentials (numeric ports)", async () => {
+      const user = userEvent.setup();
+      const onSuccess = vi.fn();
+      vi.mocked(apiPatch).mockResolvedValue({ id: "conn-imap-1" });
+
+      render(
+        <EditCredentialsDialog
+          connection={authFailedImapConnection}
+          open={true}
+          onOpenChange={vi.fn()}
+          onSuccess={onSuccess}
+        />
+      );
+
+      await user.type(screen.getByLabelText("Password"), "new-app-password");
+      await user.click(screen.getByRole("button", { name: "Save" }));
+
+      await waitFor(() => {
+        expect(apiPatch).toHaveBeenCalled();
+      });
+
+      const [url, payload] = vi.mocked(apiPatch).mock.calls[0] as [
+        string,
+        { credentials: Record<string, unknown> },
+      ];
+      expect(url).toBe("/api/integrations/conn-imap-1");
+      expect(payload.credentials.password).toBe("new-app-password");
+      // Prefilled ports are carried through as numbers.
+      expect(payload.credentials.imapPort).toBe(993);
+      expect(payload.credentials.smtpPort).toBe(587);
+      expect(payload.credentials.imapHost).toBe("imap.example.com");
+      expect(toast.success).toHaveBeenCalledWith("Credentials updated");
+      expect(onSuccess).toHaveBeenCalled();
+    });
+
+    it("shows an inline server error and keeps the dialog open on ApiError", async () => {
+      const user = userEvent.setup();
+      vi.mocked(apiPatch).mockRejectedValue(new ApiError(400, "IMAP login rejected"));
+
+      render(
+        <EditCredentialsDialog
+          connection={authFailedImapConnection}
+          open={true}
+          onOpenChange={vi.fn()}
+          onSuccess={vi.fn()}
+        />
+      );
+
+      await user.type(screen.getByLabelText("Password"), "still-wrong");
+      await user.click(screen.getByRole("button", { name: "Save" }));
+
+      await waitFor(() => {
+        expect(screen.getByText("IMAP login rejected")).toBeInTheDocument();
+      });
+      expect(toast.success).not.toHaveBeenCalled();
+    });
+  });
+
   it("does not render form content when connection is null (open=true)", () => {
     render(
       <EditCredentialsDialog

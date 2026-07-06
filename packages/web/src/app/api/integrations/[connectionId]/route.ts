@@ -28,6 +28,21 @@ const credentialSchemas: Record<string, z.ZodType> = {
     .object({ apiKey: z.string().min(1) })
     .strict()
     .partial(),
+  // IMAP reconnect/edit: all fields optional ("leave empty to keep current").
+  // Ports are coerced to number so the merged blob keeps numeric ports — the
+  // pinchy-email plugin asserts a strict `typeof number` shape.
+  imap: z
+    .object({
+      imapHost: z.string().min(1).optional(),
+      imapPort: z.coerce.number().int().min(1).max(65535).optional(),
+      smtpHost: z.string().min(1).optional(),
+      smtpPort: z.coerce.number().int().min(1).max(65535).optional(),
+      username: z.string().min(1).optional(),
+      password: z.string().min(1).optional(),
+      security: z.enum(["tls", "starttls", "none"]).optional(),
+    })
+    .strict()
+    .partial(),
 };
 
 type RouteContext = { params: Promise<{ connectionId: string }> };

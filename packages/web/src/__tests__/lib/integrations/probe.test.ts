@@ -22,17 +22,34 @@ const mockTestSmtpVerify = vi.fn();
 vi.mock("@/lib/integrations/imap-probe", () => ({
   testImapLogin: (...args: unknown[]) => mockTestImapLogin(...args),
   testSmtpVerify: (...args: unknown[]) => mockTestSmtpVerify(...args),
+  // Mirrors the real friendlyError mapping so the transient classification in
+  // the imap branch is exercised against realistic friendly strings — in
+  // particular that unmapped errors (socket hang up, EPIPE, …) fall through to
+  // the generic "Connection failed" fallback and are still treated as transient.
   friendlyError: (error: unknown) => {
     const message = error instanceof Error ? error.message : String(error);
     const lower = message.toLowerCase();
-    if (lower.includes("auth") || lower.includes("535")) {
+    if (
+      lower.includes("auth") ||
+      lower.includes("invalid login") ||
+      lower.includes("invalid credentials") ||
+      lower.includes("535")
+    ) {
       return "Authentication failed — check the username and password";
     }
-    if (lower.includes("timed out") || lower.includes("timeout")) {
+    if (lower.includes("timed out") || lower.includes("timeout") || lower.includes("etimedout")) {
       return "Connection timed out — check the host and port";
     }
-    if (lower.includes("econnrefused") || lower.includes("enotfound")) {
+    if (
+      lower.includes("econnrefused") ||
+      lower.includes("enotfound") ||
+      lower.includes("ehostunreach") ||
+      lower.includes("could not connect")
+    ) {
       return "Could not connect to the server — check the host and port";
+    }
+    if (lower.includes("certificate") || lower.includes("self signed") || lower.includes("ssl")) {
+      return "Could not establish a secure connection — check the security setting";
     }
     return "Connection failed — check your settings and try again";
   },
@@ -298,6 +315,53 @@ describe("probeIntegrationCredentials", () => {
       if (res.success) return;
       expect(res.transient).toBe(true);
       expect(res.reason).toMatch(/timed out/i);
+    });
+
+    it("returns transient:true for a 'could not connect' error", async () => {
+      mockTestImapLogin.mockRejectedValue(new Error("getaddrinfo ENOTFOUND imap.example.com"));
+
+      const res = await probeIntegrationCredentials("imap", validImapCreds);
+
+      expect(res.success).toBe(false);
+      if (res.success) return;
+      expect(res.transient).toBe(true);
+      expect(res.reason).toMatch(/could not connect/i);
+    });
+
+    it("returns transient:true for a TLS/certificate error (secure-connection failure)", async () => {
+      mockTestImapLogin.mockRejectedValue(new Error("self signed certificate in chain"));
+
+      const res = await probeIntegrationCredentials("imap", validImapCreds);
+
+      expect(res.success).toBe(false);
+      if (res.success) return;
+      expect(res.transient).toBe(true);
+      expect(res.reason).toMatch(/secure connection/i);
+    });
+
+    it("returns transient:true for a socket-hang-up error that maps to the generic fallback", async () => {
+      // "socket hang up" / ECONNRESET are genuinely transient but map to
+      // friendlyError's generic "Connection failed" fallback, matching none of
+      // an allowlist. The fail-safe default must still classify this transient
+      // so a healthy connection is never flipped to auth_failed on a blip.
+      mockTestSmtpVerify.mockRejectedValue(new Error("socket hang up"));
+
+      const res = await probeIntegrationCredentials("imap", validImapCreds);
+
+      expect(res.success).toBe(false);
+      if (res.success) return;
+      expect(res.transient).toBe(true);
+      expect(res.reason).toMatch(/connection failed/i);
+    });
+
+    it("returns transient:true for any unmapped error (fail-safe default)", async () => {
+      mockTestImapLogin.mockRejectedValue(new Error("some totally unmapped runtime error"));
+
+      const res = await probeIntegrationCredentials("imap", validImapCreds);
+
+      expect(res.success).toBe(false);
+      if (res.success) return;
+      expect(res.transient).toBe(true);
     });
 
     it("returns failure for invalid credentials shape without probing", async () => {

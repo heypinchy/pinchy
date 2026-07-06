@@ -23,6 +23,10 @@ describe("isSafeAutodiscoverUrl", () => {
     ["https://foo.internal./x", ".internal suffix with trailing FQDN dot"],
     ["https://foo.local./x", ".local suffix with trailing FQDN dot"],
     ["https://LOCALHOST./x", "uppercase localhost with trailing FQDN dot"],
+    ["https://2130706433/", "decimal integer literal for 127.0.0.1"],
+    ["https://0x7f000001/", "hex integer literal for 127.0.0.1"],
+    ["https://0177.0.0.1/", "octal dotted literal for 127.0.0.1"],
+    ["https://[::1]/", "bracketed IPv6 loopback literal"],
   ])("rejects %s (%s)", (url) => {
     expect(isSafeAutodiscoverUrl(url)).toBe(false);
   });
@@ -41,6 +45,10 @@ describe("isSafeAutodiscoverUrl", () => {
 
   it("accepts a well-formed public https autoconfig URL", () => {
     expect(isSafeAutodiscoverUrl("https://autoconfig.example.com/mail/config-v1.1.xml")).toBe(true);
+  });
+
+  it("accepts a bare public https autoconfig host", () => {
+    expect(isSafeAutodiscoverUrl("https://autoconfig.example.com/")).toBe(true);
   });
 });
 

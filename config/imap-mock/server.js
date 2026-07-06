@@ -32,7 +32,7 @@ function logRequest(entry) {
   requestLog.push({ at: new Date().toISOString(), ...entry });
 }
 
-// Checks that GreenMail's IMAP port is accepting TCP connections. A full
+// Checks that a GreenMail port is accepting TCP connections. A full
 // login round-trip isn't necessary for a liveness check and would be slower;
 // this mirrors the shallow-but-sufficient health checks in gmail-mock/
 // graph-mock (`GET /control/health` -> `{ ok: true }` if reachable).
@@ -69,9 +69,19 @@ async function withImapClient(fn) {
 
 // ---- Control plane ----
 
+// Reports ready only when BOTH GreenMail listeners are bound: IMAP (used by
+// /control/{reset,messages}) AND SMTP (used by /control/seed to deliver mail).
+// GreenMail binds these ports independently, so gating on IMAP alone lets the
+// readiness poll go green before the SMTP listener is up — the first
+// seedImapMessage() then intermittently fails. Require both to be reachable.
 app.get("/control/health", async (_req, res) => {
-  const ok = await checkTcpReachable(GREENMAIL_HOST, GREENMAIL_IMAP_PORT);
-  if (!ok) return res.status(503).json({ ok: false });
+  const [imapOk, smtpOk] = await Promise.all([
+    checkTcpReachable(GREENMAIL_HOST, GREENMAIL_IMAP_PORT),
+    checkTcpReachable(GREENMAIL_HOST, GREENMAIL_SMTP_PORT),
+  ]);
+  if (!imapOk || !smtpOk) {
+    return res.status(503).json({ ok: false, imap: imapOk, smtp: smtpOk });
+  }
   res.json({ ok: true });
 });
 

@@ -32,6 +32,7 @@ import {
   type ProviderConfig,
   type MailSecurity,
 } from "@/lib/integrations/imap-providers";
+import { isPrivateUrl } from "@/lib/integrations/url-validation";
 
 export type { ProviderConfig, MailSecurity };
 
@@ -64,23 +65,39 @@ export interface SrvResolver {
 const BLOCKED_HOSTNAMES = new Set(["localhost", "metadata.google.internal"]);
 const BLOCKED_HOSTNAME_SUFFIXES = [".local", ".internal", ".localhost"];
 
-/** True if `hostname` is an IPv4 dotted-quad literal (any range, private or public). */
-function isIPv4Literal(hostname: string): boolean {
-  const parts = hostname.split(".");
-  if (parts.length !== 4) return false;
-  return parts.every((part) => {
-    if (!/^\d{1,3}$/.test(part)) return false;
-    const n = Number(part);
-    return n >= 0 && n <= 255;
-  });
-}
-
-/** True if `hostname` (as returned by `new URL().hostname`, brackets stripped) is an IPv6 literal. */
-function isIPv6Literal(hostname: string): boolean {
-  // `URL.hostname` keeps the brackets for IPv6 (e.g. "[::1]"); strip them.
+/**
+ * True if `hostname` is ANY IP-literal encoding — not just a dotted-quad. A DNS
+ * name resolved by autodiscovery must never be a raw address, so this also
+ * catches the alternate encodings a naive dotted-quad check misses and that
+ * `URL`/`fetch` happily normalize back to a private address:
+ *
+ *   - bracketed/colon IPv6            → https://[::1]/
+ *   - a bare decimal integer literal  → https://2130706433/   (== 127.0.0.1)
+ *   - a hex integer literal           → https://0x7f000001/   (== 127.0.0.1)
+ *   - octal / hex dotted octets       → https://0177.0.0.1/   (== 127.0.0.1)
+ *
+ * The private/loopback/metadata *range* detection is delegated to
+ * `isPrivateUrl` in url-validation.ts (the single SSRF source of truth); this
+ * helper only decides "is it an address literal at all".
+ */
+function isIpLiteral(hostname: string): boolean {
+  // `URL.hostname` keeps the brackets for IPv6 (e.g. "[::1]"); strip them. Any
+  // colon means IPv6.
   const addr = hostname.replace(/^\[|\]$/g, "");
-  // A conservative check: IPv6 literals contain a colon; hostnames never do.
-  return addr.includes(":");
+  if (addr.includes(":")) return true;
+
+  // Split on dots and reject if EVERY label parses as a number in any base
+  // (decimal, 0x-hex, or 0-prefixed octal). A real DNS label can never be a
+  // bare integer, so an all-numeric-label hostname is an IPv4 literal in one of
+  // its legacy encodings.
+  const labels = addr.split(".");
+  return labels.every((label) => {
+    if (label.length === 0) return false;
+    if (/^0x[0-9a-f]+$/i.test(label)) return true; // hex
+    if (/^0[0-7]+$/.test(label)) return true; // octal
+    if (/^[0-9]+$/.test(label)) return true; // decimal
+    return false;
+  });
 }
 
 /**
@@ -111,11 +128,15 @@ export function isSafeAutodiscoverUrl(rawUrl: string): boolean {
 
   // Reject ALL IP literals, public or private — a discovered autodiscovery
   // host must be a DNS name. This is intentionally broader than "just block
-  // private ranges": it's simpler to reason about, and it still catches
-  // metadata/loopback/link-local addresses (169.254.169.254, 127.0.0.1, ...)
-  // without needing to enumerate every reserved range.
-  if (isIPv6Literal(hostname)) return false;
-  if (isIPv4Literal(hostname)) return false;
+  // private ranges": it's simpler to reason about, and it catches
+  // metadata/loopback/link-local addresses in every encoding (dotted-quad,
+  // decimal/hex/octal integer literals, IPv6) without enumerating ranges.
+  if (isIpLiteral(hostname)) return false;
+
+  // Belt-and-suspenders: delegate private/loopback/metadata *range* detection
+  // to the shared SSRF source of truth so this guard never drifts from the
+  // rest of the app's URL validation.
+  if (isPrivateUrl(rawUrl)) return false;
 
   return true;
 }

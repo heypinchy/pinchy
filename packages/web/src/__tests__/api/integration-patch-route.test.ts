@@ -372,6 +372,114 @@ describe("PATCH /api/integrations/[connectionId] — credential probe", () => {
     expect(persistedCreds.apiKey).toBe("new-key");
   });
 
+  describe("imap connections", () => {
+    const mockImapConnection = {
+      ...mockOdooConnection,
+      id: "conn-imap-1",
+      type: "imap",
+      name: "Team Mailbox",
+    };
+    const existingImapCredentials = {
+      imapHost: "imap.example.com",
+      imapPort: 993,
+      smtpHost: "smtp.example.com",
+      smtpPort: 587,
+      username: "team@example.com",
+      password: "old-app-password",
+      security: "tls",
+    };
+
+    beforeEach(() => {
+      mockSelectWhere.mockResolvedValue([mockImapConnection]);
+      mockDecrypt.mockReturnValue(JSON.stringify(existingImapCredentials));
+      mockUpdateSet.mockReturnValue({
+        where: vi.fn().mockReturnValue({
+          returning: vi.fn().mockResolvedValue([mockImapConnection]),
+        }),
+      });
+    });
+
+    it("PATCH with a valid partial merges, probes, clears the auth error, and returns 200", async () => {
+      const { PATCH } = await import("@/app/api/integrations/[connectionId]/route");
+
+      const response = await PATCH(
+        makeRequest("/api/integrations/conn-imap-1", {
+          method: "PATCH",
+          body: JSON.stringify({ credentials: { password: "new-app-password" } }),
+        }),
+        { params: Promise.resolve({ connectionId: "conn-imap-1" }) }
+      );
+
+      expect(response.status).toBe(200);
+      // Probe was called with the merged blob (existing fields + new password),
+      // and ports stay numeric so the plugin's strict typeof-number shape holds.
+      expect(mockProbeIntegrationCredentials).toHaveBeenCalledWith(
+        "imap",
+        expect.objectContaining({
+          imapHost: "imap.example.com",
+          imapPort: 993,
+          smtpPort: 587,
+          username: "team@example.com",
+          password: "new-app-password",
+        })
+      );
+      // Persisted blob keeps numeric ports.
+      const encryptedPayload = mockEncrypt.mock.calls[0]?.[0] as string;
+      const persisted = JSON.parse(encryptedPayload);
+      expect(persisted.imapPort).toBe(993);
+      expect(persisted.smtpPort).toBe(587);
+      expect(persisted.password).toBe("new-app-password");
+      // Auth error cleared + dedicated credentials_updated audit row with key NAMES only.
+      expect(mockClearIntegrationAuthError).toHaveBeenCalledWith(
+        expect.objectContaining({ connectionId: "conn-imap-1" })
+      );
+      expect(mockAppendAuditLog).toHaveBeenCalledWith(
+        expect.objectContaining({
+          eventType: "integration.credentials_updated",
+          detail: expect.objectContaining({ fields: ["password"] }),
+          outcome: "success",
+        })
+      );
+    });
+
+    it("PATCH omitting password keeps the existing password via merge", async () => {
+      const { PATCH } = await import("@/app/api/integrations/[connectionId]/route");
+
+      await PATCH(
+        makeRequest("/api/integrations/conn-imap-1", {
+          method: "PATCH",
+          body: JSON.stringify({ credentials: { imapHost: "imap2.example.com" } }),
+        }),
+        { params: Promise.resolve({ connectionId: "conn-imap-1" }) }
+      );
+
+      const encryptedPayload = mockEncrypt.mock.calls[0]?.[0] as string;
+      const persisted = JSON.parse(encryptedPayload);
+      expect(persisted.imapHost).toBe("imap2.example.com");
+      // Untouched password preserved from the decrypted existing blob.
+      expect(persisted.password).toBe("old-app-password");
+    });
+
+    it("PATCH with an out-of-range port returns 400 structured validation and writes nothing", async () => {
+      const { PATCH } = await import("@/app/api/integrations/[connectionId]/route");
+
+      const response = await PATCH(
+        makeRequest("/api/integrations/conn-imap-1", {
+          method: "PATCH",
+          body: JSON.stringify({ credentials: { imapPort: 999999 } }),
+        }),
+        { params: Promise.resolve({ connectionId: "conn-imap-1" }) }
+      );
+
+      expect(response.status).toBe(400);
+      // Must not fall through to the "Unknown connection type: imap" branch.
+      const body = await response.json();
+      expect(JSON.stringify(body)).not.toMatch(/Unknown connection type/i);
+      expect(mockProbeIntegrationCredentials).not.toHaveBeenCalled();
+      expect(mockUpdateSet).not.toHaveBeenCalled();
+    });
+  });
+
   it("returns 409 when credentials were updated concurrently (optimistic lock)", async () => {
     // Simulate concurrent update: db.update returns 0 rows
     mockUpdateSet.mockReturnValueOnce({

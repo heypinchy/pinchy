@@ -33,7 +33,12 @@ vi.mock("nodemailer", () => ({
   createTransport: createTransportMock,
 }));
 
-import { testImapLogin, testSmtpVerify, friendlyError } from "@/lib/integrations/imap-probe";
+import {
+  testImapLogin,
+  testSmtpVerify,
+  friendlyError,
+  tlsModeForPort,
+} from "@/lib/integrations/imap-probe";
 
 const input = {
   imapHost: "imap.example.com",
@@ -72,10 +77,66 @@ describe("imap-probe", () => {
       expect(mockImapClient.logout).toHaveBeenCalled();
     });
 
+    it("uses implicit TLS (secure:true) for the implicit-TLS IMAP port 993", async () => {
+      await testImapLogin({ ...input, imapPort: 993 });
+
+      expect(ImapFlowMock).toHaveBeenCalledWith(
+        expect.objectContaining({ port: 993, secure: true })
+      );
+    });
+
+    it("uses STARTTLS (secure:false) for the STARTTLS IMAP port 143", async () => {
+      await testImapLogin({ ...input, imapPort: 143 });
+
+      expect(ImapFlowMock).toHaveBeenCalledWith(
+        expect.objectContaining({ port: 143, secure: false })
+      );
+    });
+
+    it("disables encryption for security 'none'", async () => {
+      await testImapLogin({ ...input, security: "none", imapPort: 143 });
+
+      expect(ImapFlowMock).toHaveBeenCalledWith(
+        expect.objectContaining({ port: 143, secure: false })
+      );
+    });
+
     it("propagates a connection failure", async () => {
       mockImapClient.connect.mockRejectedValue(new Error("Authentication failed"));
 
       await expect(testImapLogin(input)).rejects.toThrow("Authentication failed");
+    });
+  });
+
+  describe("tlsModeForPort", () => {
+    it("disables all encryption for security 'none' regardless of port", () => {
+      expect(tlsModeForPort(993, "none")).toEqual({ secure: false, requireTLS: false });
+      expect(tlsModeForPort(587, "none")).toEqual({ secure: false, requireTLS: false });
+      expect(tlsModeForPort(465, "none")).toEqual({ secure: false, requireTLS: false });
+    });
+
+    it.each([993, 465])(
+      "uses implicit TLS (secure:true, requireTLS:false) for implicit-TLS port %i",
+      (port) => {
+        expect(tlsModeForPort(port, "tls")).toEqual({ secure: true, requireTLS: false });
+      }
+    );
+
+    it.each([143, 587, 25])(
+      "uses STARTTLS (secure:false, requireTLS:true) for non-implicit port %i",
+      (port) => {
+        expect(tlsModeForPort(port, "tls")).toEqual({ secure: false, requireTLS: true });
+        expect(tlsModeForPort(port, "starttls")).toEqual({ secure: false, requireTLS: true });
+      }
+    );
+
+    it("derives gmail defaults: imap 993 implicit, smtp 587 STARTTLS", () => {
+      expect(tlsModeForPort(993, "tls")).toEqual({ secure: true, requireTLS: false });
+      expect(tlsModeForPort(587, "tls")).toEqual({ secure: false, requireTLS: true });
+    });
+
+    it("derives yahoo smtp 465 as implicit TLS", () => {
+      expect(tlsModeForPort(465, "tls")).toEqual({ secure: true, requireTLS: false });
     });
   });
 
@@ -87,7 +148,11 @@ describe("imap-probe", () => {
         expect.objectContaining({
           host: input.smtpHost,
           port: input.smtpPort,
-          secure: true,
+          // SMTP submission port 587 is STARTTLS, not implicit TLS: TLS mode is
+          // keyed off the port, so even with security "tls" this is
+          // secure:false + requireTLS:true.
+          secure: false,
+          requireTLS: true,
           auth: { user: input.username, pass: input.password },
           connectionTimeout: expect.any(Number),
           greetingTimeout: expect.any(Number),
@@ -96,6 +161,30 @@ describe("imap-probe", () => {
       );
       expect(mockTransport.verify).toHaveBeenCalled();
       expect(mockTransport.close).toHaveBeenCalled();
+    });
+
+    it("uses implicit TLS (secure:true) for the implicit-TLS SMTP port 465", async () => {
+      await testSmtpVerify({ ...input, smtpPort: 465 });
+
+      expect(createTransportMock).toHaveBeenCalledWith(
+        expect.objectContaining({
+          port: 465,
+          secure: true,
+          requireTLS: false,
+        })
+      );
+    });
+
+    it("disables encryption for security 'none'", async () => {
+      await testSmtpVerify({ ...input, security: "none", smtpPort: 25 });
+
+      expect(createTransportMock).toHaveBeenCalledWith(
+        expect.objectContaining({
+          port: 25,
+          secure: false,
+          requireTLS: false,
+        })
+      );
     });
 
     it("propagates a verify failure and still closes the transport", async () => {

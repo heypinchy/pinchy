@@ -21,12 +21,26 @@ services:
       - "3025:3025"
       - "3143:3143"
       - "8080:8080"
+    healthcheck:
+      # Both listeners must be bound before dependents start: SMTP (3025) for
+      # seeding and IMAP (3143) for listing/purging. Plain start-order isn't
+      # enough — GreenMail's ports come up after the container is running.
+      test:
+        [
+          "CMD-SHELL",
+          "timeout 2 bash -c '</dev/tcp/localhost/3025 && </dev/tcp/localhost/3143' || exit 1",
+        ]
+      interval: 5s
+      timeout: 3s
+      retries: 15
+      start_period: 10s
 
   imap-mock:
     build:
       context: config/imap-mock
     depends_on:
-      - greenmail
+      greenmail:
+        condition: service_healthy
     environment:
       - GREENMAIL_HOST=greenmail
       - GREENMAIL_SMTP_PORT=3025
@@ -53,6 +67,11 @@ services:
       - IMAP_MOCK_PORT=3143
       - SMTP_MOCK_HOST=greenmail
       - SMTP_MOCK_PORT=3025
+      # Opt this test container into the insecure GreenMail redirect. The
+      # adapter's *_MOCK_HOST override forces plaintext (secure:false); it only
+      # takes effect with this explicit flag, so the TLS downgrade can never
+      # happen silently in production.
+      - PINCHY_INSECURE_MAIL_MOCK=1
       # Emit a dummy API-key SecretRef for the local Ollama provider so
       # OpenClaw authenticates when the dispatch probe (email-imap.spec.ts)
       # swaps default_provider to ollama-local and routes to host fake-Ollama
@@ -69,3 +88,8 @@ services:
       - IMAP_MOCK_PORT=3143
       - SMTP_MOCK_HOST=greenmail
       - SMTP_MOCK_PORT=3025
+      # Opt this test container into the insecure GreenMail redirect. The
+      # adapter's *_MOCK_HOST override forces plaintext (secure:false); it only
+      # takes effect with this explicit flag, so the TLS downgrade can never
+      # happen silently in production.
+      - PINCHY_INSECURE_MAIL_MOCK=1

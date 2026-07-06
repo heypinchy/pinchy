@@ -40,11 +40,27 @@ export function friendlyError(error: unknown): string {
   return "Connection failed — check your settings and try again";
 }
 
+// A single `security` field can't be simultaneously correct for IMAP
+// (implicit-TLS 993) and SMTP (STARTTLS submission 587), so TLS mode is keyed
+// off the standard port:
+//   security === "none"        → no encryption          (secure:false, requireTLS:false)
+//   implicit-TLS ports 993/465 → implicit TLS           (secure:true,  requireTLS:false)
+//   any other port (143/587/25)→ STARTTLS opportunistic (secure:false, requireTLS:true)
+const IMPLICIT_TLS_PORTS = new Set([993, 465]);
+export function tlsModeForPort(
+  port: number,
+  security: string
+): { secure: boolean; requireTLS: boolean } {
+  if (security === "none") return { secure: false, requireTLS: false };
+  const implicit = IMPLICIT_TLS_PORTS.has(port);
+  return { secure: implicit, requireTLS: !implicit };
+}
+
 export async function testImapLogin(input: ImapTestInput): Promise<void> {
   const client = new ImapFlow({
     host: input.imapHost,
     port: input.imapPort,
-    secure: input.security === "tls",
+    secure: tlsModeForPort(input.imapPort, input.security).secure,
     auth: {
       user: input.username,
       pass: input.password,
@@ -61,11 +77,12 @@ export async function testImapLogin(input: ImapTestInput): Promise<void> {
 }
 
 export async function testSmtpVerify(input: ImapTestInput): Promise<void> {
+  const { secure, requireTLS } = tlsModeForPort(input.smtpPort, input.security);
   const transport = nodemailer.createTransport({
     host: input.smtpHost,
     port: input.smtpPort,
-    secure: input.security === "tls",
-    requireTLS: input.security === "starttls",
+    secure,
+    requireTLS,
     auth: {
       user: input.username,
       pass: input.password,

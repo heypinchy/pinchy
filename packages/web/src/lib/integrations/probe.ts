@@ -107,15 +107,15 @@ export async function probeIntegrationCredentials(
       return { success: true };
     } catch (err) {
       const reason = friendlyError(err);
-      // Mirror the microsoft branch: an auth-shaped failure means the
-      // credentials are genuinely bad and the connection should be flipped
-      // to auth_failed. A connection/timeout error is a temporary network
-      // hiccup — the credentials are still fine, so the caller must NOT
-      // flip the connection's status on this result.
-      const isTransient =
-        /timed out|could not connect|secure connection/i.test(reason) &&
-        !/authentication failed/i.test(reason);
-      return isTransient ? { success: false, transient: true, reason } : { success: false, reason };
+      // Mirror the microsoft branch's fail-safe default: only an auth-shaped
+      // failure is evidence the stored credentials are bad and may flip the
+      // connection to auth_failed. Everything else (timeouts, connection refused,
+      // TLS/cert errors, socket hang up, any unmapped error) is a transient hiccup,
+      // so a healthy connection is never falsely flagged.
+      const isAuthFailure = /authentication failed/i.test(reason);
+      return isAuthFailure
+        ? { success: false, reason }
+        : { success: false, transient: true, reason };
     }
   }
 
