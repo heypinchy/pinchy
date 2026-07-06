@@ -54,6 +54,11 @@ async function testImapLogin(input: ImapTestInput): Promise<void> {
       pass: input.password,
     },
     logger: false,
+    // Bound the probe so a firewalled/dead host can't hang the request for
+    // imapflow's ~90s default. This is a user-facing "test connection" button.
+    connectionTimeout: 10_000,
+    greetingTimeout: 10_000,
+    socketTimeout: 20_000,
   });
   await client.connect();
   await client.logout();
@@ -69,6 +74,11 @@ async function testSmtpVerify(input: ImapTestInput): Promise<void> {
       user: input.username,
       pass: input.password,
     },
+    // Bound the probe so a dead SMTP host can't hang the request for
+    // nodemailer's ~2min default.
+    connectionTimeout: 10_000,
+    greetingTimeout: 10_000,
+    socketTimeout: 20_000,
   });
   try {
     await transport.verify();

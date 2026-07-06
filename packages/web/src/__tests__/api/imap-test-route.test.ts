@@ -154,6 +154,15 @@ describe("POST /api/integrations/imap/test", () => {
       expect(mockImapClient.logout).toHaveBeenCalled();
       expect(mockTransport.verify).toHaveBeenCalled();
 
+      // The probe must bound its timeouts so a firewalled/dead host cannot hang
+      // the user-facing request for the libraries' long defaults (~90s / ~2min).
+      expect(ImapFlowMock).toHaveBeenCalledWith(
+        expect.objectContaining({ connectionTimeout: expect.any(Number) })
+      );
+      expect(createTransportMock).toHaveBeenCalledWith(
+        expect.objectContaining({ connectionTimeout: expect.any(Number) })
+      );
+
       expect(mockAppendAuditLog).toHaveBeenCalledTimes(1);
       const entry = mockAppendAuditLog.mock.calls[0][0];
       expect(entry.eventType).toBe("integration.credentials_tested");
