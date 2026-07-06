@@ -34,7 +34,13 @@ services:
     ports:
       - "9006:9006"
     healthcheck:
-      test: ["CMD", "node", "-e", "fetch('http://localhost:9006/control/health').then(r=>r.ok?process.exit(0):process.exit(1)).catch(()=>process.exit(1))"]
+      test:
+        [
+          "CMD",
+          "node",
+          "-e",
+          "fetch('http://localhost:9006/control/health').then(r=>r.ok?process.exit(0):process.exit(1)).catch(()=>process.exit(1))",
+        ]
       interval: 5s
       timeout: 3s
       retries: 10
@@ -47,6 +53,13 @@ services:
       - IMAP_MOCK_PORT=3143
       - SMTP_MOCK_HOST=greenmail
       - SMTP_MOCK_PORT=3025
+      # Emit a dummy API-key SecretRef for the local Ollama provider so
+      # OpenClaw authenticates when the dispatch probe (email-imap.spec.ts)
+      # swaps default_provider to ollama-local and routes to host fake-Ollama
+      # via the `ollama.local` alias — without this, chat dispatch fails with
+      # ProviderAuthError: No API key found for provider "ollama". Mirrors
+      # docker-compose.email-test.yml / .web-test.yml / .odoo-test.yml.
+      - PINCHY_E2E_OLLAMA_LOCAL_API_KEY=1
 
   openclaw:
     environment:

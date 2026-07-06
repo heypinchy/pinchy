@@ -5,6 +5,13 @@ const PINCHY_URL = process.env.PINCHY_URL || "http://localhost:7777";
 const GMAIL_MOCK_URL = process.env.GMAIL_MOCK_URL || "http://localhost:9004";
 const GRAPH_MOCK_URL = process.env.GRAPH_MOCK_URL ?? "http://localhost:9005";
 const IMAP_MOCK_URL = process.env.IMAP_MOCK_URL ?? "http://localhost:9006";
+// docker-compose.imap-test.yml maps GreenMail's IMAP port straight to the
+// host, so the test runner (outside the compose network) can talk to it
+// directly — used to verify mail delivered to a mailbox OTHER than the
+// imap-mock sidecar's own fixed MOCK_USER (e.g. the recipient of an
+// email_send round trip).
+const GREENMAIL_IMAP_HOST = process.env.GREENMAIL_IMAP_HOST ?? "localhost";
+const GREENMAIL_IMAP_PORT = Number(process.env.GREENMAIL_IMAP_PORT ?? 3143);
 
 // Admin credentials — set by seedSetup, used by login
 let _adminEmail = "admin@test.local";
@@ -544,4 +551,61 @@ export async function getImapMockRequests(): Promise<
   const res = await fetch(`${IMAP_MOCK_URL}/control/requests`);
   if (!res.ok) throw new Error(`Failed to get IMAP mock requests: ${res.status}`);
   return res.json();
+}
+
+/**
+ * List messages in an ARBITRARY GreenMail mailbox's INBOX by connecting
+ * directly over IMAP (GreenMail is started with `-Dgreenmail.auth.disabled`,
+ * so any username/password authenticates and mailboxes are created on
+ * demand). Unlike getImapMessages() — which is scoped to the imap-mock
+ * sidecar's fixed MOCK_USER mailbox — this is needed to verify delivery to
+ * whatever recipient an email_send round trip actually used (e.g. the fake
+ * LLM tool-call fixture's `to: probe@example.com`, a different mailbox than
+ * the connection under test).
+ */
+export async function getGreenmailMailboxMessages(address: string): Promise<
+  Array<{
+    uid: number;
+    from: string;
+    to: string;
+    subject: string;
+    date: string | null;
+    seen: boolean;
+  }>
+> {
+  const { ImapFlow } = await import("imapflow");
+  const client = new ImapFlow({
+    host: GREENMAIL_IMAP_HOST,
+    port: GREENMAIL_IMAP_PORT,
+    secure: false,
+    logger: false,
+    auth: { user: address, pass: "mock-password" },
+  });
+  await client.connect();
+  try {
+    await client.mailboxOpen("INBOX");
+    const uids = await client.search({ all: true }, { uid: true });
+    if (!uids || uids.length === 0) return [];
+    const result: Array<{
+      uid: number;
+      from: string;
+      to: string;
+      subject: string;
+      date: string | null;
+      seen: boolean;
+    }> = [];
+    for await (const msg of client.fetch(uids, { envelope: true, flags: true }, { uid: true })) {
+      result.push({
+        uid: msg.uid,
+        from: msg.envelope?.from?.[0]?.address ?? "",
+        to: msg.envelope?.to?.map((a) => a.address).join(", ") ?? "",
+        subject: msg.envelope?.subject ?? "",
+        date: msg.envelope?.date ? new Date(msg.envelope.date).toISOString() : null,
+        seen: msg.flags?.has("\\Seen") ?? false,
+      });
+    }
+    return result;
+  } finally {
+    await client.logout();
+  }
 }
