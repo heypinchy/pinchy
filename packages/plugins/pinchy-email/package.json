@@ -8,10 +8,14 @@
     "test:watch": "vitest"
   },
   "dependencies": {
-    "googleapis": "^173.0.0"
+    "googleapis": "^173.0.0",
+    "imapflow": "^1.4.6",
+    "mailparser": "^3.9.14",
+    "nodemailer": "^9.0.3"
   },
   "devDependencies": {
     "@types/node": "^26.1.1",
+    "@types/nodemailer": "^8.0.1",
     "typescript": "^6.0.3",
     "vitest": "^4.1.10"
   }
