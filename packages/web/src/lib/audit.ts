@@ -82,6 +82,7 @@ export type AuditEventType =
   | "integration.synced"
   | "integration.auth_failed"
   | "integration.auth_recovered"
+  | "integration.credentials_tested"
   | "integration.credentials_updated"
   | "file.upload.staged"
   | "file.upload.attached"
@@ -483,6 +484,22 @@ export type AuditLogEntry =
         // human-readable name is itself PII (an OAuth mailbox address).
         // See redactEmail(): GDPR Art. 17 forbids writing the raw address
         // into this HMAC-signed, append-only log.
+        emailHash?: string;
+        emailPreview?: string;
+      };
+    })
+  | (AuditLogBase & {
+      // Pre-creation IMAP/SMTP credential probe (POST
+      // /api/integrations/imap/test). There is no connectionId yet — the
+      // connection is only created in a later step if this test succeeds —
+      // so this intentionally does NOT reuse the `{ id, name }` shape above.
+      // Never include the password here; the username is redacted via
+      // redactEmail() when it looks like an email address.
+      eventType: "integration.credentials_tested";
+      detail: {
+        imapHost: string;
+        smtpHost: string;
+        reason?: string;
         emailHash?: string;
         emailPreview?: string;
       };
