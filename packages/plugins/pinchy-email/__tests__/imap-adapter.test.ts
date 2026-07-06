@@ -29,6 +29,7 @@ const { mockClient } = vi.hoisted(() => ({
     mailboxOpen: vi.fn(),
     search: vi.fn(),
     fetch: vi.fn(),
+    fetchOne: vi.fn(),
   },
 }));
 
@@ -85,6 +86,226 @@ beforeEach(() => {
   mockClient.mailboxOpen.mockReset().mockResolvedValue({});
   mockClient.search.mockReset().mockResolvedValue([]);
   mockClient.fetch.mockReset().mockReturnValue(asyncIterableOf([]));
+  mockClient.fetchOne.mockReset().mockResolvedValue(false);
+});
+
+// Builds a real RFC822 multipart/mixed message: a multipart/alternative body
+// (text/plain + text/html) plus one inline attachment. Used to exercise
+// mailparser's REAL parsing (not mocked) end-to-end through read()/
+// getAttachment(). CRLF line endings match real IMAP message sources.
+function buildMultipartFixture(): string {
+  const attachmentContent = Buffer.from("quarterly numbers here").toString(
+    "base64",
+  );
+  return [
+    "From: Alice Sender <alice@example.com>",
+    "To: Bob Recipient <bob@example.com>",
+    "Cc: Carol Copy <carol@example.com>",
+    "Subject: Quarterly report attached",
+    "Date: Mon, 6 Jul 2026 12:00:00 +0000",
+    "MIME-Version: 1.0",
+    'Content-Type: multipart/mixed; boundary="BOUNDARY1"',
+    "",
+    "--BOUNDARY1",
+    'Content-Type: multipart/alternative; boundary="BOUNDARY2"',
+    "",
+    "--BOUNDARY2",
+    "Content-Type: text/plain; charset=utf-8",
+    "",
+    "Hello Bob, please find the quarterly report attached. Thanks, Alice",
+    "",
+    "--BOUNDARY2",
+    "Content-Type: text/html; charset=utf-8",
+    "",
+    "<p>Hello Bob, please find the <b>quarterly report</b> attached.</p>",
+    "",
+    "--BOUNDARY2--",
+    "--BOUNDARY1",
+    'Content-Type: text/plain; name="report.txt"',
+    'Content-Disposition: attachment; filename="report.txt"',
+    "Content-Transfer-Encoding: base64",
+    "Content-ID: <report123@example.com>",
+    "",
+    attachmentContent,
+    "",
+    "--BOUNDARY1--",
+    "",
+  ].join("\r\n");
+}
+
+// html-only fixture with skipHtmlToText-style content: no text/plain part at
+// all, so read() must fall back to stripping the html body itself.
+function buildHtmlOnlyFixture(): string {
+  return [
+    "From: Dave <dave@example.com>",
+    "To: Eve <eve@example.com>",
+    "Subject: HTML only",
+    "Date: Tue, 7 Jul 2026 08:30:00 +0000",
+    "MIME-Version: 1.0",
+    "Content-Type: text/html; charset=utf-8",
+    "",
+    "<p>Hello <b>Eve</b>, this is <i>only</i> HTML.</p>",
+    "",
+  ].join("\r\n");
+}
+
+describe("ImapAdapter#read", () => {
+  it("maps a multipart message to EmailFull, preferring text/plain over html", async () => {
+    mockClient.fetchOne.mockResolvedValue({
+      source: Buffer.from(buildMultipartFixture()),
+      flags: new Set(["\\Seen"]),
+    });
+
+    const adapter = new ImapAdapter(opts);
+    const result = await adapter.read("42");
+
+    expect(mockClient.mailboxOpen).toHaveBeenCalledWith("INBOX");
+    expect(mockClient.fetchOne).toHaveBeenCalledWith(
+      42,
+      { source: true, flags: true },
+      { uid: true },
+    );
+    expect(result.id).toBe("42");
+    expect(result.from).toBe('"Alice Sender" <alice@example.com>');
+    expect(result.to).toBe('"Bob Recipient" <bob@example.com>');
+    expect(result.cc).toBe('"Carol Copy" <carol@example.com>');
+    expect(result.subject).toBe("Quarterly report attached");
+    expect(result.date).toBe("2026-07-06T12:00:00.000Z");
+    // Prefers text/plain over text/html
+    expect(result.body).toContain(
+      "Hello Bob, please find the quarterly report attached. Thanks, Alice",
+    );
+    expect(result.body).not.toContain("<b>");
+    expect(result.unread).toBe(false);
+  });
+
+  it("derives a whitespace-collapsed snippet from the body", async () => {
+    mockClient.fetchOne.mockResolvedValue({
+      source: Buffer.from(buildMultipartFixture()),
+      flags: new Set(["\\Seen"]),
+    });
+
+    const adapter = new ImapAdapter(opts);
+    const result = await adapter.read("42");
+
+    expect(result.snippet).toBe(
+      "Hello Bob, please find the quarterly report attached. Thanks, Alice",
+    );
+    expect(result.snippet).not.toMatch(/\n/);
+  });
+
+  it("marks unread true when \\Seen flag is absent", async () => {
+    mockClient.fetchOne.mockResolvedValue({
+      source: Buffer.from(buildMultipartFixture()),
+      flags: new Set<string>(),
+    });
+
+    const adapter = new ImapAdapter(opts);
+    const result = await adapter.read("42");
+
+    expect(result.unread).toBe(true);
+  });
+
+  it("falls back to the stripped html body when there is no text/plain part", async () => {
+    mockClient.fetchOne.mockResolvedValue({
+      source: Buffer.from(buildHtmlOnlyFixture()),
+      flags: new Set(["\\Seen"]),
+    });
+
+    const adapter = new ImapAdapter(opts);
+    const result = await adapter.read("7");
+
+    expect(result.body).toContain("Hello");
+    expect(result.body).toContain("Eve");
+    expect(result.body).not.toContain("<b>");
+    expect(result.body).not.toContain("<p>");
+  });
+
+  it("lists attachment metadata with filename, mimeType, size, and id", async () => {
+    mockClient.fetchOne.mockResolvedValue({
+      source: Buffer.from(buildMultipartFixture()),
+      flags: new Set(["\\Seen"]),
+    });
+
+    const adapter = new ImapAdapter(opts);
+    const result = await adapter.read("42");
+
+    expect(result.attachments).toHaveLength(1);
+    expect(result.attachments[0]).toMatchObject({
+      filename: "report.txt",
+      mimeType: "text/plain",
+      size: 22,
+    });
+    expect(result.attachments[0].id).toBeTruthy();
+  });
+
+  it("throws a clear error when the message uid is not found", async () => {
+    mockClient.fetchOne.mockResolvedValue(false);
+
+    const adapter = new ImapAdapter(opts);
+    await expect(adapter.read("999")).rejects.toThrow("message 999 not found");
+    // Connection must still be closed even though the fetch missed.
+    expect(mockClient.connect).toHaveBeenCalledTimes(1);
+    expect(mockClient.logout).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("ImapAdapter#getAttachment", () => {
+  it("returns filename, mimeType, and Buffer data for a matching attachment id", async () => {
+    mockClient.fetchOne.mockResolvedValue({
+      source: Buffer.from(buildMultipartFixture()),
+      flags: new Set(["\\Seen"]),
+    });
+
+    const adapter = new ImapAdapter(opts);
+    const read = await adapter.read("42");
+    const attachmentId = read.attachments[0].id;
+
+    const attachment = await adapter.getAttachment("42", attachmentId);
+
+    expect(attachment.filename).toBe("report.txt");
+    expect(attachment.mimeType).toBe("text/plain");
+    expect(attachment.data).toBeInstanceOf(Buffer);
+    expect(attachment.data.toString()).toBe("quarterly numbers here");
+  });
+
+  it("opens INBOX and fetches the message by uid", async () => {
+    mockClient.fetchOne.mockResolvedValue({
+      source: Buffer.from(buildMultipartFixture()),
+      flags: new Set(["\\Seen"]),
+    });
+
+    const adapter = new ImapAdapter(opts);
+    await adapter.getAttachment("42", "<report123@example.com>");
+
+    expect(mockClient.mailboxOpen).toHaveBeenCalledWith("INBOX");
+    expect(mockClient.fetchOne).toHaveBeenCalledWith(
+      42,
+      expect.objectContaining({ source: true }),
+      { uid: true },
+    );
+  });
+
+  it("throws a clear error for an unknown attachment id", async () => {
+    mockClient.fetchOne.mockResolvedValue({
+      source: Buffer.from(buildMultipartFixture()),
+      flags: new Set(["\\Seen"]),
+    });
+
+    const adapter = new ImapAdapter(opts);
+    await expect(adapter.getAttachment("42", "does-not-exist")).rejects.toThrow(
+      "attachment does-not-exist not found",
+    );
+  });
+
+  it("throws a clear error when the message uid is not found", async () => {
+    mockClient.fetchOne.mockResolvedValue(false);
+
+    const adapter = new ImapAdapter(opts);
+    await expect(adapter.getAttachment("999", "whatever")).rejects.toThrow(
+      "message 999 not found",
+    );
+  });
 });
 
 describe("ImapAdapter", () => {
@@ -138,7 +359,10 @@ describe("buildImapSearch", () => {
 
   it("combines multiple fields", () => {
     expect(
-      buildImapSearch({ from: "a@example.com", unread: true, sinceDays: 1 }, now),
+      buildImapSearch(
+        { from: "a@example.com", unread: true, sinceDays: 1 },
+        now,
+      ),
     ).toEqual({
       from: "a@example.com",
       seen: false,
@@ -184,8 +408,9 @@ describe("resolveFolders", () => {
 
   it("always resolves INBOX even with no other folders", () => {
     expect(
-      resolveFolders([{ path: "INBOX", specialUse: undefined, flags: new Set() }])
-        .INBOX,
+      resolveFolders([
+        { path: "INBOX", specialUse: undefined, flags: new Set() },
+      ]).INBOX,
     ).toBe("INBOX");
   });
 
@@ -347,9 +572,7 @@ describe("ImapAdapter#list", () => {
 
   it("throws when the requested folder does not resolve on the server", async () => {
     const adapter = new ImapAdapter(opts);
-    await expect(adapter.list({ folder: "DRAFTS" })).rejects.toThrow(
-      /DRAFTS/,
-    );
+    await expect(adapter.list({ folder: "DRAFTS" })).rejects.toThrow(/DRAFTS/);
     // Connection must still be closed even though resolution failed.
     expect(mockClient.connect).toHaveBeenCalledTimes(1);
     expect(mockClient.logout).toHaveBeenCalledTimes(1);
@@ -376,7 +599,12 @@ describe("ImapAdapter#list", () => {
     const many = Array.from({ length: 30 }, (_, i) => i + 1);
     mockClient.search.mockResolvedValue(many);
     mockClient.fetch.mockReturnValue(
-      asyncIterableOf(many.slice(-20).reverse().map((uid) => envelopeMessage({ uid }))),
+      asyncIterableOf(
+        many
+          .slice(-20)
+          .reverse()
+          .map((uid) => envelopeMessage({ uid })),
+      ),
     );
 
     const adapter = new ImapAdapter(opts);
