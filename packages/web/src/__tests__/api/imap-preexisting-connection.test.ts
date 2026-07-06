@@ -73,6 +73,37 @@ const preExistingConnectionRow = {
   updatedAt: new Date("2026-01-01T00:00:00Z"),
 };
 
+// A SECOND pre-existing row written by an even OLDER create path that predates
+// the `security` field (it stored only host/port/username/password). The new
+// reader must surface this row exactly as stored — `security` simply absent —
+// WITHOUT silently fabricating a default. Only then can the plugin edge (which
+// validates every field, see pinchy-email/index.ts) reject it with a clear
+// per-field error instead of the reader guessing "tls"/"none" and, e.g.,
+// downgrading TLS on a mailbox that actually needs it.
+const LEGACY_NO_SECURITY_CONNECTION_ID = "conn-imap-legacy-no-security";
+const legacyNoSecurityCredentials = {
+  imapHost: "imap.legacy.example.com",
+  imapPort: 993,
+  smtpHost: "smtp.legacy.example.com",
+  smtpPort: 587,
+  username: "mailbox@legacy.example.com",
+  password: "legacy-app-password",
+  // NOTE: no `security` key — this is the whole point of the fixture.
+};
+const legacyNoSecurityConnectionRow = {
+  id: LEGACY_NO_SECURITY_CONNECTION_ID,
+  type: "imap",
+  name: "Legacy IMAP (no security field)",
+  description: "",
+  credentials: fakeEncrypt(JSON.stringify(legacyNoSecurityCredentials)),
+  data: { emailAddress: legacyNoSecurityCredentials.username, provider: "imap" },
+  status: "active",
+  lastError: null,
+  lastErrorAt: null,
+  createdAt: new Date("2025-06-01T00:00:00Z"),
+  updatedAt: new Date("2025-06-01T00:00:00Z"),
+};
+
 // Matching pre-existing permission grant: the agent already had email
 // read + send permissions on this connection before the upgrade.
 const preExistingPermissionRows = [
@@ -183,13 +214,36 @@ describe("Pre-existing IMAP connection — cross-route invariant (listed ⟹ rea
       vi.doMock("@/lib/gateway-auth", () => ({
         validateGatewayToken: vi.fn().mockReturnValue(true),
       }));
+      // Resolve the row by the connectionId the route actually filters on, so
+      // each test reads its OWN pre-existing row (the full-shape one and the
+      // legacy no-`security` one) instead of a single hardcoded fixture. The
+      // route calls .where(eq(id, connectionId)); we capture that id and hand
+      // back the matching seeded row (or [] for an unknown id → 404).
+      const rowsById: Record<string, unknown> = {
+        [PRE_EXISTING_CONNECTION_ID]: preExistingConnectionRow,
+        [LEGACY_NO_SECURITY_CONNECTION_ID]: legacyNoSecurityConnectionRow,
+      };
+      vi.doMock("drizzle-orm", async (importOriginal) => {
+        const actual = await importOriginal<typeof import("drizzle-orm")>();
+        return {
+          ...actual,
+          // eq(col, value) — capture the queried id from the second arg so the
+          // mocked db can resolve the matching seeded row. Everything else
+          // (relations, and, etc.) stays real so schema.ts still loads.
+          eq: (_col: unknown, value: unknown) => ({ __eqValue: value }),
+        };
+      });
       vi.doMock("@/db", () => ({
         db: {
           select: vi.fn().mockReturnValue({
             from: vi.fn().mockReturnValue({
-              where: vi.fn().mockReturnValue({
-                limit: vi.fn().mockResolvedValue([preExistingConnectionRow]),
-              }),
+              where: vi.fn().mockImplementation((cond: { __eqValue?: string }) => ({
+                limit: vi.fn().mockImplementation(() => {
+                  const id = cond?.__eqValue;
+                  const row = id ? rowsById[id] : undefined;
+                  return Promise.resolve(row ? [row] : []);
+                }),
+              })),
             }),
           }),
           update: vi.fn().mockReturnValue({
@@ -241,6 +295,35 @@ describe("Pre-existing IMAP connection — cross-route invariant (listed ⟹ rea
       // imap has no OAuth dispatch entry — pin that the pre-existing row
       // never routes through the refresh/OAuth-settings machinery.
       expect(getOAuthSettings).not.toHaveBeenCalled();
+    });
+
+    it("surfaces a legacy pre-`security` row exactly as stored, without fabricating a default", async () => {
+      // Old-data / new-code: a row persisted before the `security` field
+      // existed. The new reader must return the blob verbatim — `security`
+      // absent, every other field intact — so downstream validation can reject
+      // it cleanly. If the reader silently defaulted `security` to "tls"/"none"
+      // it could downgrade or mismatch TLS on a real mailbox; that's the exact
+      // silent mis-read this migration test guards against.
+      const { GET } =
+        await import("@/app/api/internal/integrations/[connectionId]/credentials/route");
+
+      const res = await GET(
+        makeRequest(LEGACY_NO_SECURITY_CONNECTION_ID),
+        makeParams(LEGACY_NO_SECURITY_CONNECTION_ID)
+      );
+
+      expect(res.status).toBe(200);
+      const data = await res.json();
+      expect(data.type).toBe("imap");
+      // Returned exactly as stored: no `security` key was invented.
+      expect(data.credentials).toEqual(legacyNoSecurityCredentials);
+      expect(data.credentials).not.toHaveProperty("security");
+      // The rest of the shape the new code depends on is intact and typed
+      // correctly (ports as numbers), so the plugin edge fails ONLY on the
+      // genuinely-missing field rather than mis-reading the whole blob.
+      expect(typeof data.credentials.imapPort).toBe("number");
+      expect(typeof data.credentials.smtpPort).toBe("number");
+      expect(data.credentials.imapHost).toBe("imap.legacy.example.com");
     });
   });
 
