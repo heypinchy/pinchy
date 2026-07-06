@@ -193,7 +193,9 @@ This makes contract drift between client payload and server schema a compile-tim
 
 Use inline form errors when the error is tied to a field, the user can correct the input, and the form/dialog stays open.
 
-Use toast notifications for completed actions, background/system errors, and actions that navigate away or close the dialog.
+Use toast notifications for completed actions, background/system errors, and transient errors the user can simply retry.
+
+Use a persistent, dismissible inline banner (not an auto-expiring toast) for a permanent, actionable error that lands after a full-page redirect — e.g. an OAuth connect failure surfaced via a `?error=` query param. "The action navigated away" does NOT by itself justify a toast: after a redirect the user's attention is on the provider, so a few-second toast is gone before they read it, and the error needs a configuration fix that outlives a toast. Classify by whether the error is transient-and-retryable (toast) or permanent-and-actionable (persistent inline banner), not by whether the flow navigated.
 
 Do not mix inline errors and toast errors for the same action. Success confirmations should be toasts unless a multi-step flow intentionally shows a success screen.
 

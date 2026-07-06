@@ -2,7 +2,6 @@
 
 import { useState, useEffect, useCallback, useRef } from "react";
 import { useRouter } from "next/navigation";
-import { toast } from "sonner";
 import { useIntegrationActions } from "@/hooks/use-integration-actions";
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -32,6 +31,7 @@ import {
   Loader2,
   Clock,
   AlertTriangle,
+  X,
 } from "lucide-react";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { AddIntegrationDialog } from "./add-integration-dialog";
@@ -114,9 +114,18 @@ export function SettingsIntegrations({ oauthError }: { oauthError?: string } = {
   // key is explicitly `false`.
   const [appConfigured, setAppConfigured] = useState<Partial<Record<OAuthProviderId, boolean>>>({});
 
+  // A failed OAuth connect comes back as a ?error= param after a full-page
+  // redirect. It's a PERMANENT, actionable config error (e.g. a wrong Client
+  // Secret) — so it must persist as an inline banner until dismissed, not a
+  // transient toast that vanishes before the user (whose attention is still on
+  // the provider's redirect) can read it. See AGENTS.md "Error And Notification
+  // UI". Seed local state from the prop ONCE so stripping the URL below doesn't
+  // also clear the banner; the dismiss button clears it.
+  const [oauthErrorState, setOauthErrorState] = useState<string | undefined>(oauthError);
+
   useEffect(() => {
     if (!oauthError) return;
-    toast.error(OAUTH_ERROR_MESSAGES.get(oauthError) ?? "OAuth connection failed.");
+    // Strip the ?error= param so a manual refresh doesn't resurrect the banner.
     router.replace("/settings?tab=integrations", { scroll: false });
   }, []); // eslint-disable-line react-hooks/exhaustive-deps -- intentionally mount-only
 
@@ -224,6 +233,27 @@ export function SettingsIntegrations({ oauthError }: { oauthError?: string } = {
 
   return (
     <div className="space-y-6">
+      {oauthErrorState && (
+        <div role="alert" className="rounded-lg border border-destructive/30 bg-destructive/5 p-4">
+          <div className="flex items-start justify-between gap-3">
+            <div className="flex items-start gap-3">
+              <AlertTriangle className="h-5 w-5 shrink-0 text-destructive" />
+              <p className="text-sm text-destructive/90">
+                {OAUTH_ERROR_MESSAGES.get(oauthErrorState) ?? "OAuth connection failed."}
+              </p>
+            </div>
+            <Button
+              variant="ghost"
+              size="icon-sm"
+              aria-label="Dismiss"
+              className="shrink-0 text-destructive hover:bg-destructive/10"
+              onClick={() => setOauthErrorState(undefined)}
+            >
+              <X className="h-4 w-4" />
+            </Button>
+          </div>
+        </div>
+      )}
       <Card>
         <CardHeader className="flex flex-row items-center justify-between">
           <CardTitle>Integrations</CardTitle>

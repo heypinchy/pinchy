@@ -737,83 +737,102 @@ describe("SettingsIntegrations — derived 'app not configured' state", () => {
   });
 });
 
-describe("SettingsIntegrations — OAuth callback errors", () => {
+describe("SettingsIntegrations — OAuth callback errors (persistent banner)", () => {
   beforeEach(() => {
     vi.clearAllMocks();
   });
 
-  it("shows a toast with human-readable error when oauthError='profile_fetch_failed'", async () => {
-    mockFetchConnections([]);
-    const { toast } = await import("sonner");
-    render(<SettingsIntegrations oauthError="profile_fetch_failed" />);
-    await waitFor(() => {
-      expect(toast.error).toHaveBeenCalledWith(
-        "Could not fetch your account profile. Check that your OAuth app grants the required profile permission."
-      );
-    });
-  });
-
-  it("shows generic error toast for unknown error codes", async () => {
-    mockFetchConnections([]);
-    const { toast } = await import("sonner");
-    render(<SettingsIntegrations oauthError="unknown_code" />);
-    await waitFor(() => {
-      expect(toast.error).toHaveBeenCalledWith("OAuth connection failed.");
-    });
-  });
-
-  it("shows a reassuring toast when the user declined consent (oauthError='consent_declined')", async () => {
-    mockFetchConnections([]);
-    const { toast } = await import("sonner");
-    render(<SettingsIntegrations oauthError="consent_declined" />);
-    await waitFor(() => {
-      expect(toast.error).toHaveBeenCalledWith(
-        "You didn't authorize the connection, so nothing changed. You can try again whenever you're ready."
-      );
-    });
-  });
-
-  it("shows a toast for an unrecognized provider error (oauthError='provider_error')", async () => {
-    mockFetchConnections([]);
-    const { toast } = await import("sonner");
-    render(<SettingsIntegrations oauthError="provider_error" />);
-    await waitFor(() => {
-      expect(toast.error).toHaveBeenCalledWith(
-        "The provider reported a problem during sign-in. Please try again."
-      );
-    });
-  });
-
-  it("shows the sharpened token_exchange_failed message pointing at the Client Secret", async () => {
+  // An OAuth connect failure is a PERMANENT, actionable config error that comes
+  // back after a full-page redirect — it must live in the DOM until the user
+  // dismisses it, not vanish with a ~4-second toast (AGENTS.md "Error And
+  // Notification UI"; the token_exchange_failed toast is exactly what a user
+  // missed on staging 2026-07-06).
+  it("renders a persistent banner (NOT a toast) for token_exchange_failed, pointing at the Client Secret", async () => {
     mockFetchConnections([]);
     const { toast } = await import("sonner");
     render(<SettingsIntegrations oauthError="token_exchange_failed" />);
-    await waitFor(() => {
-      expect(toast.error).toHaveBeenCalledWith(
+    expect(
+      await screen.findByText(
         "Sign-in worked, but Pinchy couldn't finish connecting — double-check the Client Secret under Connected apps, then try again."
-      );
-    });
+      )
+    ).toBeInTheDocument();
+    // Do not ALSO fire a toast for the same action (AGENTS.md: don't mix inline
+    // and toast errors).
+    expect(toast.error).not.toHaveBeenCalled();
   });
 
-  it("shows a specific message when the token response was unreadable (oauthError='invalid_token_response')", async () => {
+  it("renders the profile_fetch_failed message in the banner", async () => {
     mockFetchConnections([]);
-    const { toast } = await import("sonner");
+    render(<SettingsIntegrations oauthError="profile_fetch_failed" />);
+    expect(
+      await screen.findByText(
+        "Could not fetch your account profile. Check that your OAuth app grants the required profile permission."
+      )
+    ).toBeInTheDocument();
+  });
+
+  it("renders the invalid_token_response message in the banner", async () => {
+    mockFetchConnections([]);
     render(<SettingsIntegrations oauthError="invalid_token_response" />);
-    await waitFor(() => {
-      expect(toast.error).toHaveBeenCalledWith(
+    expect(
+      await screen.findByText(
         "Sign-in worked, but the provider sent back a response Pinchy couldn't read. Please try connecting again."
-      );
+      )
+    ).toBeInTheDocument();
+  });
+
+  it("renders the missing_refresh_token message in the banner", async () => {
+    mockFetchConnections([]);
+    render(<SettingsIntegrations oauthError="missing_refresh_token" />);
+    expect(
+      await screen.findByText(
+        "Sign-in worked, but the provider didn't return the long-lived token Pinchy needs to keep the mailbox connected. Please try again and be sure to grant offline access."
+      )
+    ).toBeInTheDocument();
+  });
+
+  it("renders the reassuring consent_declined message in the banner", async () => {
+    mockFetchConnections([]);
+    render(<SettingsIntegrations oauthError="consent_declined" />);
+    expect(
+      await screen.findByText(
+        "You didn't authorize the connection, so nothing changed. You can try again whenever you're ready."
+      )
+    ).toBeInTheDocument();
+  });
+
+  it("renders the provider_error message in the banner", async () => {
+    mockFetchConnections([]);
+    render(<SettingsIntegrations oauthError="provider_error" />);
+    expect(
+      await screen.findByText("The provider reported a problem during sign-in. Please try again.")
+    ).toBeInTheDocument();
+  });
+
+  it("renders a generic banner message for unknown error codes", async () => {
+    mockFetchConnections([]);
+    render(<SettingsIntegrations oauthError="unknown_code" />);
+    expect(await screen.findByText("OAuth connection failed.")).toBeInTheDocument();
+  });
+
+  it("dismisses the banner when the dismiss button is clicked", async () => {
+    const user = userEvent.setup();
+    mockFetchConnections([]);
+    render(<SettingsIntegrations oauthError="token_exchange_failed" />);
+    const message =
+      "Sign-in worked, but Pinchy couldn't finish connecting — double-check the Client Secret under Connected apps, then try again.";
+    expect(await screen.findByText(message)).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: /dismiss/i }));
+    await waitFor(() => {
+      expect(screen.queryByText(message)).not.toBeInTheDocument();
     });
   });
 
-  it("shows a specific message when no refresh token was returned (oauthError='missing_refresh_token')", async () => {
+  it("renders no error banner when there is no oauthError", async () => {
     mockFetchConnections([]);
-    const { toast } = await import("sonner");
-    render(<SettingsIntegrations oauthError="missing_refresh_token" />);
+    render(<SettingsIntegrations />);
     await waitFor(() => {
-      expect(toast.error).toHaveBeenCalledWith(
-        "Sign-in worked, but the provider didn't return the long-lived token Pinchy needs to keep the mailbox connected. Please try again and be sure to grant offline access."
-      );
+      expect(screen.queryByText(/couldn't finish connecting/i)).not.toBeInTheDocument();
     });
   });
 });
