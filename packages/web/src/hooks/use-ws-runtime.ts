@@ -376,20 +376,32 @@ export function shouldReplaceLocalWithServerHistory(
   if (lastNonError.role === "assistant") return true;
 
   // lastNonError.role === "user"
-  // Adopt the server history when our acked user turn's reply has landed there.
-  // The strictly-longer check (#310) alone is defeated by the client-only
-  // leading GREETING (an assistant message at index 0 that the server omits
-  // once the session has real turns): it pads prev.length to EQUAL the server
-  // history even though the server holds one more REAL turn — the completed
-  // reply. So ALSO adopt when the server history ends in an assistant turn.
-  // This mirrors the greeting-offset handling in
+  // Adopt the server history only when it holds MORE real turns than we do —
+  // i.e. our acked user turn's reply has landed there. The bare strictly-longer
+  // check (#310) is defeated by the client-only leading GREETING (an assistant
+  // message at index 0 that the server omits once the session has real turns):
+  // it pads prev.length by one, so an equal-length server history [user,
+  // assistant] fails `> prev.length` even though the completed reply landed and
+  // the agent looks silent.
+  //
+  // Discount that greeting instead of widening the gate to "server ends in an
+  // assistant". A persisted OpenClaw history ALWAYS begins with a user turn
+  // (system turns are filtered out server-side in client-router's
+  // fetchAndParseHistory, and users open every conversation), so a leading
+  // assistant in the LOCAL list can only be the client-only greeting — subtract
+  // it from the comparison. This surfaces the landed reply for the greeting case
+  // WITHOUT adopting a SHORTER server history: a "server ends in assistant" rule
+  // would also fire on the pending-follow-up reload window, where the server
+  // returns the PREVIOUS turn's [user, assistant] (ending in an assistant) with
+  // NO activeRun signal — client-router withholds it until the first chunk
+  // (`firstChunkAt !== null`) — and that shorter frame would route through the
+  // UN-guarded staged reconcile and silently drop the just-sent follow-up.
+  // Mirrors the tail-anchored greeting handling in
   // preserveRicherLocalOverOversizedHistory. The status === "sent" guard still
-  // protects a queued ("sending") message from being wiped. Purely additive: no
-  // input that returned true before returns false now.
-  const serverEndsInAssistant = historyMessages[historyMessages.length - 1]?.role === "assistant";
+  // protects a queued ("sending") message from being wiped.
+  const leadingGreetingOffset = prev[0]?.role === "assistant" ? 1 : 0;
   return (
-    lastNonError.status === "sent" &&
-    (historyMessages.length > prev.length || serverEndsInAssistant)
+    lastNonError.status === "sent" && historyMessages.length > prev.length - leadingGreetingOffset
   );
 }
 

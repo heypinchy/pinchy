@@ -159,4 +159,32 @@ describe("shouldReplaceLocalWithServerHistory", () => {
       )
     ).toBe(true);
   });
+
+  // Data-loss guard (review of the greeting-offset fix): adopting on a
+  // greeting offset must NEVER fire for a SHORTER server history — that would
+  // erase a just-sent local user turn the server hasn't persisted yet. The
+  // trigger is a reload during a PENDING run: the user sends a follow-up in an
+  // EXISTING chat, OpenClaw hasn't streamed the first chunk, so client-router
+  // withholds the activeRun signal (its `firstChunkAt !== null` gate). The
+  // history frame carries the PREVIOUS turn's canonical [user, assistant] with
+  // NO activeRun, while local already holds
+  // [greeting, user, assistant, follow-up(sent)]. That history ends in an
+  // assistant, so a naive "server ends in assistant" rule wrongly returns true
+  // and — with no activeRun — routes through the UN-guarded staged reconcile,
+  // dropping the follow-up. The greeting-adjusted length comparison keeps local
+  // because the server holds FEWER real turns than we do.
+  it("keeps local when the server history is SHORTER than local minus the greeting (pending follow-up must not be dropped)", () => {
+    expect(
+      shouldReplaceLocalWithServerHistory(
+        [
+          assistant("Good day. How may I help?"),
+          user("first question", "sent"),
+          assistant("first answer"),
+          user("second question", "sent"),
+        ],
+        [user("first question"), assistant("first answer")],
+        true
+      )
+    ).toBe(false);
+  });
 });

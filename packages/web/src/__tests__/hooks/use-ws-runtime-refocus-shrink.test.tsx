@@ -306,4 +306,76 @@ describe("useWsRuntime — tab-refocus reconcile must not shrink the message lis
     const replies = after.filter((m) => textOf(m) === "It's 07:12 UTC.");
     expect(replies.length).toBeGreaterThan(0);
   });
+
+  // Data-loss counterpart to the greeting-surface test above (review of the
+  // greeting-offset fix): the same leading greeting must NOT cause a SHORTER
+  // recovery history to be adopted, which would erase a just-sent follow-up.
+  //
+  // Established session that already has one completed turn on top of the
+  // client-only greeting, then a SECOND question sent and acked but still
+  // PENDING (no first chunk yet). On refocus, OpenClaw hasn't persisted the
+  // pending turn and — because the run hasn't streamed its first chunk —
+  // client-router withholds the activeRun signal (its `firstChunkAt !== null`
+  // gate). So the recovery frame is the PREVIOUS turn's [user, assistant] with
+  // NO activeRun, SHORTER than the rich local list. A "server ends in an
+  // assistant" rule would adopt it through the un-guarded staged reconcile and
+  // drop the follow-up; the greeting-adjusted length comparison keeps local.
+  it("no-activeRun shorter recovery history must not drop a just-sent pending follow-up (greeting offset)", () => {
+    const { result } = renderHook(() => useWsRuntime("agent-1"));
+    const ws1 = wsInstances[0]!;
+    act(() => ws1.simulateOpen());
+
+    // Fresh session: only the client-only greeting (assistant at index 0).
+    act(() =>
+      ws1.simulateMessage({
+        type: "history",
+        messages: [{ role: "assistant", content: "Hello there. How can I help today?" }],
+      })
+    );
+
+    // First turn runs to completion: user + its persisted reply.
+    act(() => sendText(result, "first question"));
+    act(() => ws1.simulateMessage({ type: "chunk", messageId: "srv-1", content: "first answer" }));
+    act(() => ws1.simulateMessage({ type: "complete" }));
+    expect(result.current.isRunning).toBe(false);
+
+    // Second question: sent and acked, but NO chunk yet — the pending-run window.
+    act(() => sendText(result, "second question"));
+    const sentPayload = JSON.parse(ws1.send.mock.calls.at(-1)![0] as string) as {
+      clientMessageId: string;
+    };
+    act(() => ws1.simulateMessage({ type: "ack", clientMessageId: sentPayload.clientMessageId }));
+
+    // Tab backgrounded → ws drops → reconnect → recovery history request.
+    act(() => {
+      ws1.simulateClose();
+      vi.advanceTimersByTime(1000);
+    });
+    const ws2 = wsInstances[1]!;
+    act(() => ws2.simulateOpen());
+
+    // Recovery frame: the previous turn only (pending follow-up not persisted),
+    // ending in an assistant, and crucially WITHOUT an activeRun signal.
+    act(() =>
+      ws2.simulateMessage({
+        type: "history",
+        messages: [
+          { role: "user", content: "first question" },
+          { role: "assistant", content: "first answer" },
+        ],
+      })
+    );
+    // Drain any staged-reconcile timers so a wrongful destructive replace would
+    // have fully applied before we assert.
+    act(() => {
+      vi.advanceTimersByTime(0);
+      vi.advanceTimersByTime(16);
+    });
+
+    const after = messagesOf(result.current.runtime);
+    // The just-sent follow-up must survive the refocus.
+    expect(after.some((m) => textOf(m) === "second question")).toBe(true);
+    // And the earlier turn is still there — nothing was lost either way.
+    expect(after.some((m) => textOf(m) === "first answer")).toBe(true);
+  });
 });
