@@ -173,8 +173,13 @@ export function SettingsIntegrations({ oauthError }: { oauthError?: string } = {
   const appConfiguredRequestId = useRef(0);
 
   const fetchAppConfigured = useCallback(async (forConnections: IntegrationConnection[]) => {
-    const providers = EMAIL_CONNECTION_TYPES.filter((provider) =>
-      forConnections.some((conn) => conn.type === provider && conn.status === "active")
+    // IMAP has no OAuth app, so GET /api/settings/oauth?provider=imap 400s (that
+    // route only handles google/microsoft). Exclude it from this OAuth-app-state
+    // probe; imap works everywhere else (icon, actions, list) unaffected.
+    const providers = EMAIL_CONNECTION_TYPES.filter(
+      (provider) =>
+        provider !== "imap" &&
+        forConnections.some((conn) => conn.type === provider && conn.status === "active")
     );
     if (providers.length === 0) return;
     const requestId = ++appConfiguredRequestId.current;

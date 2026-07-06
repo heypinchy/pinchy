@@ -292,6 +292,221 @@ function WebSearchForm({
   );
 }
 
+function ImapForm({
+  connection,
+  onSuccess,
+  onOpenChange,
+}: {
+  connection: IntegrationConnection;
+  onSuccess: () => void;
+  onOpenChange: (open: boolean) => void;
+}) {
+  const [serverError, setServerError] = useState("");
+  const [saving, setSaving] = useState(false);
+
+  // Masked credentials (server strips the password). Ports arrive as strings.
+  const maskedCreds =
+    connection.credentials && typeof connection.credentials === "object"
+      ? (connection.credentials as {
+          imapHost?: string;
+          imapPort?: string;
+          smtpHost?: string;
+          smtpPort?: string;
+          username?: string;
+          security?: string;
+        })
+      : {};
+
+  const maskedSecurity =
+    maskedCreds.security === "starttls" || maskedCreds.security === "none"
+      ? maskedCreds.security
+      : "tls";
+
+  const form = useForm<ImapFormValues>({
+    defaultValues: {
+      imapHost: maskedCreds.imapHost ?? "",
+      imapPort: maskedCreds.imapPort ?? "",
+      smtpHost: maskedCreds.smtpHost ?? "",
+      smtpPort: maskedCreds.smtpPort ?? "",
+      username: maskedCreds.username ?? "",
+      password: "",
+      security: maskedSecurity,
+    },
+  });
+
+  async function onSubmit(values: ImapFormValues) {
+    setSaving(true);
+    setServerError("");
+
+    // Build only the non-empty/edited fields, then coerce ports to numbers and
+    // validate the subset with imapEditSchema before sending.
+    const edited: Record<string, string> = {};
+    if (values.imapHost) edited.imapHost = values.imapHost;
+    if (values.imapPort) edited.imapPort = values.imapPort;
+    if (values.smtpHost) edited.smtpHost = values.smtpHost;
+    if (values.smtpPort) edited.smtpPort = values.smtpPort;
+    if (values.username) edited.username = values.username;
+    if (values.password) edited.password = values.password;
+    if (values.security) edited.security = values.security;
+
+    const parsed = imapEditSchema.safeParse(edited);
+    if (!parsed.success) {
+      setServerError(parsed.error.issues[0]?.message ?? "Please check your input.");
+      setSaving(false);
+      return;
+    }
+
+    try {
+      await apiPatch(`/api/integrations/${connection.id}`, { credentials: parsed.data });
+      toast.success("Credentials updated");
+      onSuccess();
+      onOpenChange(false);
+    } catch (err) {
+      if (err instanceof ApiError) {
+        setServerError(err.message);
+      } else {
+        setServerError("Something went wrong. Please try again.");
+      }
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <Form {...form}>
+      <form onSubmit={form.handleSubmit(onSubmit)} className="space-y-4">
+        {connection.status === "auth_failed" && (
+          <Alert variant="destructive">
+            <AlertTriangle className="h-4 w-4" />
+            <AlertDescription>
+              Current credentials failed authentication — please enter new credentials below.
+            </AlertDescription>
+          </Alert>
+        )}
+
+        <FormField
+          control={form.control}
+          name="imapHost"
+          render={({ field }) => (
+            <FormItem>
+              <FormLabel>IMAP Host</FormLabel>
+              <FormControl>
+                <Input placeholder="Leave empty to keep current" {...field} />
+              </FormControl>
+              <FormMessage />
+            </FormItem>
+          )}
+        />
+        <FormField
+          control={form.control}
+          name="imapPort"
+          render={({ field }) => (
+            <FormItem>
+              <FormLabel>IMAP Port</FormLabel>
+              <FormControl>
+                <Input inputMode="numeric" placeholder="Leave empty to keep current" {...field} />
+              </FormControl>
+              <FormMessage />
+            </FormItem>
+          )}
+        />
+        <FormField
+          control={form.control}
+          name="smtpHost"
+          render={({ field }) => (
+            <FormItem>
+              <FormLabel>SMTP Host</FormLabel>
+              <FormControl>
+                <Input placeholder="Leave empty to keep current" {...field} />
+              </FormControl>
+              <FormMessage />
+            </FormItem>
+          )}
+        />
+        <FormField
+          control={form.control}
+          name="smtpPort"
+          render={({ field }) => (
+            <FormItem>
+              <FormLabel>SMTP Port</FormLabel>
+              <FormControl>
+                <Input inputMode="numeric" placeholder="Leave empty to keep current" {...field} />
+              </FormControl>
+              <FormMessage />
+            </FormItem>
+          )}
+        />
+        <FormField
+          control={form.control}
+          name="username"
+          render={({ field }) => (
+            <FormItem>
+              <FormLabel>Username</FormLabel>
+              <FormControl>
+                <Input placeholder="Leave empty to keep current" {...field} />
+              </FormControl>
+              <FormMessage />
+            </FormItem>
+          )}
+        />
+        <FormField
+          control={form.control}
+          name="password"
+          render={({ field }) => (
+            <FormItem>
+              <FormLabel>Password</FormLabel>
+              <FormControl>
+                <Input type="password" placeholder="Leave empty to keep current" {...field} />
+              </FormControl>
+              <FormMessage />
+            </FormItem>
+          )}
+        />
+        <FormField
+          control={form.control}
+          name="security"
+          render={({ field }) => (
+            <FormItem>
+              <FormLabel>Security</FormLabel>
+              <Select value={field.value} onValueChange={field.onChange}>
+                <FormControl>
+                  <SelectTrigger className="w-full">
+                    <SelectValue />
+                  </SelectTrigger>
+                </FormControl>
+                <SelectContent>
+                  <SelectItem value="tls">TLS</SelectItem>
+                  <SelectItem value="starttls">STARTTLS</SelectItem>
+                  <SelectItem value="none">None</SelectItem>
+                </SelectContent>
+              </Select>
+              <FormMessage />
+            </FormItem>
+          )}
+        />
+
+        {serverError && <p className="text-sm text-destructive">{serverError}</p>}
+
+        <div className="flex justify-end gap-2">
+          <Button type="button" variant="outline" onClick={() => onOpenChange(false)}>
+            Cancel
+          </Button>
+          <Button type="submit" disabled={saving}>
+            {saving ? (
+              <>
+                <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                Saving...
+              </>
+            ) : (
+              "Save"
+            )}
+          </Button>
+        </div>
+      </form>
+    </Form>
+  );
+}
+
 // Google and Microsoft both reconnect through the same OAuth start endpoint —
 // the server branches on connection.type. The only client-side difference is
 // the provider name shown in the copy, so a single parameterized component
@@ -393,6 +608,13 @@ export function EditCredentialsDialog({
           />
         ) : connection?.type === "web-search" ? (
           <WebSearchForm
+            key={connection.id}
+            connection={connection}
+            onSuccess={onSuccess}
+            onOpenChange={onOpenChange}
+          />
+        ) : connection?.type === "imap" ? (
+          <ImapForm
             key={connection.id}
             connection={connection}
             onSuccess={onSuccess}

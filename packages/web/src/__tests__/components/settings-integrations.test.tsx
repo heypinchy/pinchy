@@ -364,6 +364,26 @@ describe("SettingsIntegrations — IMAP connections", () => {
 
     fetchSpy.mockRestore();
   });
+
+  it("does not fetch OAuth app state for an imap connection (no OAuth app exists)", async () => {
+    const fetchSpy = mockFetchConnections([activeImapConnection]);
+
+    render(<SettingsIntegrations />);
+
+    await waitFor(() => {
+      expect(screen.getByText("Work email (IMAP)")).toBeInTheDocument();
+    });
+
+    // imap has no OAuth app; GET /api/settings/oauth?provider=imap would 400.
+    // The connection-list app-state probe must skip imap entirely.
+    const oauthImapCalls = fetchSpy.mock.calls.filter(([input]) => {
+      const url = typeof input === "string" ? input : (input as Request).url;
+      return url.includes("/api/settings/oauth") && url.includes("provider=imap");
+    });
+    expect(oauthImapCalls).toHaveLength(0);
+
+    fetchSpy.mockRestore();
+  });
 });
 
 describe("SettingsIntegrations — pending OAuth connections", () => {
