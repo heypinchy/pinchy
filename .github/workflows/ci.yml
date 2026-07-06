@@ -1530,6 +1530,132 @@ jobs:
         if: always()
         run: docker compose -f docker-compose.yml -f docker-compose.e2e.yml -f docker-compose.email-test.yml down -v
 
+  imap-e2e:
+    # Runs the whole e2e/email testDir: email-imap.spec.ts against a real
+    # GreenMail server (SMTP+IMAP) fronted by the imap-mock control sidecar.
+    name: IMAP E2E Tests
+    runs-on: ubuntu-latest
+    needs: build-image
+    if: >-
+      always() &&
+      (needs.build-image.result == 'success' ||
+       needs.build-image.result == 'skipped')
+    permissions:
+      contents: read
+      packages: read
+
+    env:
+      PINCHY_VERSION: latest
+      DB_PASSWORD: pinchy-ci-smoke-pass
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: ./.github/actions/docker-mirror
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v4
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Log in to GHCR (skip on fork PRs)
+        if: needs.build-image.result == 'success'
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: ./.github/actions/setup-pnpm
+
+      - name: Pull pre-built CI images (skip on fork PRs)
+        if: needs.build-image.result == 'success'
+        uses: ./.github/actions/pull-ci-images
+        with:
+          pinchy-image: ${{ needs.build-image.outputs.pinchy-image }}
+          openclaw-image: ${{ needs.build-image.outputs.openclaw-image }}
+
+      - name: Start test stack with GreenMail (CI — pre-built images)
+        if: needs.build-image.result == 'success'
+        run: docker compose -f docker-compose.yml -f docker-compose.e2e.yml -f docker-compose.imap-test.yml up -d
+        env:
+          PINCHY_IMAGE: ${{ needs.build-image.outputs.pinchy-image }}
+          OPENCLAW_IMAGE: ${{ needs.build-image.outputs.openclaw-image }}
+          BETTER_AUTH_SECRET: ci-test-secret-not-for-production
+          ENCRYPTION_KEY: 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+
+      - name: Start test stack with GreenMail (fork PR fallback — local build)
+        if: needs.build-image.result == 'skipped'
+        run: docker compose -f docker-compose.yml -f docker-compose.e2e.yml -f docker-compose.imap-test.yml up --build -d
+        env:
+          BETTER_AUTH_SECRET: ci-test-secret-not-for-production
+          ENCRYPTION_KEY: 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+
+      - name: Wait for services
+        run: |
+          echo "Waiting for Pinchy..."
+          for i in $(seq 1 60); do
+            if curl -sf http://localhost:7777/api/health >/dev/null 2>&1; then
+              echo "Pinchy healthy (attempt $i)"
+              break
+            fi
+            if [ "$i" -eq 60 ]; then
+              echo "::error::Pinchy not healthy after 120s"
+              docker compose -f docker-compose.yml -f docker-compose.e2e.yml -f docker-compose.imap-test.yml logs pinchy
+              exit 1
+            fi
+            sleep 2
+          done
+          echo "Waiting for imap-mock..."
+          for i in $(seq 1 15); do
+            if curl -sf http://localhost:9006/control/health >/dev/null 2>&1; then
+              echo "imap-mock healthy (attempt $i)"
+              break
+            fi
+            if [ "$i" -eq 15 ]; then
+              echo "::error::imap-mock not healthy after 30s"
+              docker compose -f docker-compose.yml -f docker-compose.e2e.yml -f docker-compose.imap-test.yml logs imap-mock
+              exit 1
+            fi
+            sleep 2
+          done
+          echo "Waiting for OpenClaw connection..."
+          for i in $(seq 1 60); do
+            if docker compose -f docker-compose.yml -f docker-compose.e2e.yml -f docker-compose.imap-test.yml logs pinchy 2>&1 | grep -q "Connected to OpenClaw Gateway"; then
+              echo "OpenClaw connected (attempt $i)"
+              break
+            fi
+            if [ "$i" -eq 60 ]; then
+              echo "::error::Pinchy never connected to OpenClaw"
+              docker compose -f docker-compose.yml -f docker-compose.e2e.yml -f docker-compose.imap-test.yml logs pinchy openclaw
+              exit 1
+            fi
+            sleep 2
+          done
+
+      - uses: ./.github/actions/setup-playwright
+
+      - name: Run IMAP E2E tests
+        run: pnpm -C packages/web test:e2e:imap
+        env:
+          CI: true
+          ENCRYPTION_KEY: 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+
+      - name: Capture diagnostics on failure
+        if: failure()
+        uses: ./.github/actions/capture-e2e-diagnostics
+        with:
+          compose-files: "-f docker-compose.yml -f docker-compose.e2e.yml -f docker-compose.imap-test.yml"
+          # greenmail speaks raw SMTP/IMAP (no HTTP control surface of its own),
+          # so capture both the mock sidecar and the greenmail server logs.
+          mock-service: "imap-mock greenmail"
+          artifact-name: "imap-e2e"
+
+      - name: Tear down
+        if: always()
+        run: docker compose -f docker-compose.yml -f docker-compose.e2e.yml -f docker-compose.imap-test.yml down -v
+
   setup-wizard-e2e:
     name: Setup Wizard E2E Tests
     runs-on: ubuntu-latest
