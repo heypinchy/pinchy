@@ -4,6 +4,7 @@ import { stackDbUrl } from "../shared/stack-db";
 const PINCHY_URL = process.env.PINCHY_URL || "http://localhost:7777";
 const GMAIL_MOCK_URL = process.env.GMAIL_MOCK_URL || "http://localhost:9004";
 const GRAPH_MOCK_URL = process.env.GRAPH_MOCK_URL ?? "http://localhost:9005";
+const IMAP_MOCK_URL = process.env.IMAP_MOCK_URL ?? "http://localhost:9006";
 
 // Admin credentials — set by seedSetup, used by login
 let _adminEmail = "admin@test.local";
@@ -412,4 +413,135 @@ export async function createMicrosoftConnectionInDb(
 
   await sql.end();
   return row as { id: string; type: string; name: string };
+}
+
+// ---------------------------------------------------------------------------
+// IMAP/SMTP (GreenMail) mock helpers
+// ---------------------------------------------------------------------------
+
+/**
+ * Create an IMAP/SMTP connection directly in the DB, bypassing the
+ * create-then-test UI flow (POST /api/integrations/imap/test then
+ * POST /api/integrations/imap).
+ *
+ * Mirrors createGoogleConnectionInDb/createMicrosoftConnectionInDb, but with
+ * type "imap" and the credentials shape POST /api/integrations/imap persists
+ * (see packages/web/src/app/api/integrations/imap/route.ts): host/port/
+ * security alongside username/password, all encrypted as a single blob.
+ *
+ * The actual host/port values don't matter at runtime — the pinchy-email
+ * plugin's ImapAdapter is redirected to GreenMail via the IMAP_MOCK_HOST/
+ * IMAP_MOCK_PORT/SMTP_MOCK_HOST/SMTP_MOCK_PORT env overrides set by
+ * docker-compose.imap-test.yml — but plausible values are stored so the
+ * connection reads naturally in the UI and any host-validation logic still
+ * sees well-formed input.
+ */
+export async function createImapConnectionInDb(
+  name = "Test IMAP",
+  emailAddress = "mock@example.com"
+): Promise<{ id: string; type: string; name: string }> {
+  const dbUrl = process.env.DATABASE_URL || stackDbUrl(5434);
+  const { default: postgres } = await import("postgres");
+  const sql = postgres(dbUrl);
+
+  const credentials = {
+    imapHost: "imap.example.com",
+    imapPort: 993,
+    smtpHost: "smtp.example.com",
+    smtpPort: 465,
+    username: emailAddress,
+    password: "mock-password",
+    security: "tls",
+  };
+
+  const encryptedCredentials = encryptCredentials(JSON.stringify(credentials));
+
+  const id = randomUUID();
+  const data = JSON.stringify({ emailAddress, provider: "imap" });
+  const [row] = await sql`
+    INSERT INTO integration_connections (id, type, name, description, credentials, status, data)
+    VALUES (${id}, 'imap', ${name}, 'Test IMAP connection for E2E', ${encryptedCredentials}, 'active', ${data})
+    RETURNING id, type, name
+  `;
+
+  await sql.end();
+  return row as { id: string; type: string; name: string };
+}
+
+export async function waitForImapMock(timeout = 30000): Promise<void> {
+  const start = Date.now();
+  while (Date.now() - start < timeout) {
+    try {
+      const res = await fetch(`${IMAP_MOCK_URL}/control/health`);
+      if (res.ok) return;
+    } catch {
+      // not ready yet
+    }
+    await new Promise((r) => setTimeout(r, 500));
+  }
+  throw new Error(`IMAP mock not ready after ${timeout}ms`);
+}
+
+/**
+ * Purges all mail from the GreenMail mailbox the imap-mock sidecar manages.
+ * See config/imap-mock/server.js's POST /control/reset — it marks every
+ * message \Deleted and expunges INBOX via IMAP (no bulk purge verb exists).
+ */
+export async function resetImapMailbox(): Promise<void> {
+  const res = await fetch(`${IMAP_MOCK_URL}/control/reset`, { method: "POST" });
+  if (!res.ok) throw new Error(`Failed to reset IMAP mailbox: ${res.status}`);
+}
+
+/**
+ * Deliver a message into the GreenMail mailbox by SMTP-sending it through
+ * the imap-mock sidecar's POST /control/seed — this exercises the real
+ * SMTP-to-mailbox delivery path (same as production) rather than faking a
+ * JSON fixture, since IMAP/SMTP are raw TCP protocols, not HTTP APIs.
+ */
+export async function seedImapMessage(message: {
+  to: string;
+  from?: string;
+  subject: string;
+  body?: string;
+}): Promise<void> {
+  const res = await fetch(`${IMAP_MOCK_URL}/control/seed`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(message),
+  });
+  if (!res.ok) throw new Error(`Failed to seed IMAP message: ${res.status}`);
+}
+
+/**
+ * List messages currently in the GreenMail mailbox (INBOX) via the
+ * imap-mock sidecar's GET /control/messages — used to assert the plugin
+ * actually delivered/read mail through the real IMAP/SMTP protocol.
+ */
+export async function getImapMessages(): Promise<
+  Array<{
+    uid: number;
+    from: string;
+    to: string;
+    subject: string;
+    date: string | null;
+    seen: boolean;
+  }>
+> {
+  const res = await fetch(`${IMAP_MOCK_URL}/control/messages`);
+  if (!res.ok) throw new Error(`Failed to get IMAP messages: ${res.status}`);
+  return res.json();
+}
+
+/**
+ * Raw request/action log recorded by the imap-mock sidecar (reset/seed calls
+ * so far), via GET /control/requests. Mirrors getGmailRequests/
+ * getGraphMockRequests for consistency, though most IMAP assertions will
+ * prefer getImapMessages() to inspect actual mailbox state.
+ */
+export async function getImapMockRequests(): Promise<
+  Array<{ endpoint: string; method: string; to?: string; subject?: string }>
+> {
+  const res = await fetch(`${IMAP_MOCK_URL}/control/requests`);
+  if (!res.ok) throw new Error(`Failed to get IMAP mock requests: ${res.status}`);
+  return res.json();
 }
