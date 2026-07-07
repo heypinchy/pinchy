@@ -42,10 +42,6 @@ const PDF_MODEL_PREFERENCE: readonly ProviderName[] = [
   "ollama-cloud", // vision fallback
 ];
 
-export async function resolveDefaultPdfModel(): Promise<string | null> {
-  return (await resolveDefaultVisionModelChain())[0] ?? null;
-}
-
 /**
  * Ordered chain of vision-capable models for the built-in `pdf` AND `image`
  * tools: the best vision model of every configured provider, in
