@@ -16,6 +16,11 @@ export const ODOO_TEMPLATES: Record<string, AgentTemplate> = {
     defaultPersonality: "the-pilot",
     defaultTagline: "Analyze revenue, track orders, identify trends and top customers",
     suggestedNames: ["Dash", "Sterling", "Margin", "Rex", "Tally", "Victor"],
+    defaultStarterPrompts: [
+      "Show me revenue by month",
+      "Who are our top 10 customers?",
+      "Which products have the best margin?",
+    ],
     defaultGreetingMessage:
       'Hi {user}. I\'m {name}, your sales analyst. I can analyze revenue trends, track orders, and identify your top customers. Try asking: "Show me revenue by month" or "Who are our top 10 customers?"',
     defaultAgentsMd: `## Your Role
@@ -78,6 +83,11 @@ ${ODOO_RULES}`,
     defaultPersonality: "the-pilot",
     defaultTagline: "Monitor stock levels, track movements, measure fulfillment speed",
     suggestedNames: ["Scout", "Tracker", "Depot", "Reese", "Tally", "Sage"],
+    defaultStarterPrompts: [
+      "Which products are low on stock?",
+      "Show me all open deliveries",
+      "What stock do we have by category?",
+    ],
     defaultGreetingMessage:
       'Hey {user}. I\'m {name}. I monitor your stock levels, track inventory movements, and flag anomalies. Try asking: "Which products are low on stock?" or "Show me all open deliveries."',
     defaultAgentsMd: `## Your Role
@@ -133,6 +143,11 @@ ${ODOO_RULES}`,
     defaultPersonality: "the-pilot",
     defaultTagline: "Receive goods, confirm pickings, run inventory adjustments, move stock",
     suggestedNames: ["Boone", "Otis", "Quint", "Marlow", "Wells", "Garrett"],
+    defaultStarterPrompts: [
+      "Show me all open transfers",
+      "Confirm the receipt for this delivery",
+      "Run an inventory adjustment for a location",
+    ],
     defaultGreetingMessage:
       "Hi {user}, I'm {name}. Send me a delivery note or tell me what to do — I can confirm receipts, validate pickings, and run inventory adjustments. I'll always confirm with you before validating, because validating moves real stock.",
     defaultAgentsMd: `## Your Role
@@ -227,6 +242,11 @@ ${ODOO_ATTACHMENT_REF_FLOW}`,
     defaultPersonality: "the-butler",
     defaultTagline: "Track invoices, monitor payments, analyze margins",
     suggestedNames: ["Ledger", "Penny", "Morgan", "Cassius", "Niles", "Finley"],
+    defaultStarterPrompts: [
+      "Show me all overdue invoices",
+      "What's the revenue trend this quarter?",
+      "Which customers owe us the most?",
+    ],
     defaultGreetingMessage:
       'Hello, {user}. I\'m {name}. I track invoices, monitor payments, and analyze your financial data. Try asking: "Show me all overdue invoices" or "What\'s the revenue trend this quarter?"',
     defaultAgentsMd: `## Your Role
@@ -292,6 +312,11 @@ ${ODOO_MULTI_COMPANY_GUIDANCE}`,
     defaultPersonality: "the-butler",
     defaultTagline: "Book bills and invoices, reconcile payments, manage suppliers",
     suggestedNames: ["Quill", "Cosmo", "Mathilda", "Edmund", "Rosa", "Hugo"],
+    defaultStarterPrompts: [
+      "Book this vendor bill as a draft",
+      "Show me unpaid bills",
+      "Check this supplier for duplicate invoices",
+    ],
     defaultGreetingMessage:
       "At your service, {user}. I'm {name}. Send me a receipt or invoice — I'll extract the details, check for duplicates, and prepare it as a draft for your confirmation before posting.",
     defaultAgentsMd: `## Your Role
@@ -436,6 +461,11 @@ ${ODOO_ATTACHMENT_REF_FLOW}`,
     defaultPersonality: "the-coach",
     defaultTagline: "Manage leads, follow up on quotes, maintain customer data",
     suggestedNames: ["Piper", "Chase", "Bridget", "Ace", "Max", "Hunter"],
+    defaultStarterPrompts: [
+      "Show me the current pipeline",
+      "Which follow-ups are overdue?",
+      "Add a follow-up activity to a lead",
+    ],
     defaultGreetingMessage:
       'Hey {user}! I\'m {name}. I manage your sales pipeline — tracking leads, following up on opportunities, and keeping customer data current. Try asking: "Show me the current pipeline" or "Which follow-ups are overdue?"',
     defaultAgentsMd: `## Your Role
@@ -517,6 +547,11 @@ ${ODOO_RULES}
     defaultPersonality: "the-pilot",
     defaultTagline: "Compare suppliers, track purchase prices, suggest reorders",
     suggestedNames: ["Bolt", "Marcy", "Vendor", "Clyde", "Hazel", "Porter"],
+    defaultStarterPrompts: [
+      "Compare supplier prices for a product",
+      "Which products need reordering?",
+      "Show purchase volume by supplier",
+    ],
     defaultGreetingMessage:
       'Hi {user}. I\'m {name}. I compare supplier prices, track purchase orders, and identify reorder needs. Try asking: "Compare prices for product X" or "Which products need reordering?"',
     defaultAgentsMd: `## Your Role
@@ -574,6 +609,11 @@ ${ODOO_RULES}
     defaultPersonality: "the-coach",
     defaultTagline: "Answer order inquiries, check delivery status, draft responses",
     suggestedNames: ["Concierge", "Sam", "Joy", "Kit", "Sunny", "Casey"],
+    defaultStarterPrompts: [
+      "What's the status of order S06628?",
+      "Show me all open high-priority tickets",
+      "Draft a reply to the latest ticket",
+    ],
     defaultGreetingMessage:
       'Hi {user}! I\'m {name}. I can look up order status, track deliveries, and help manage support tickets. Try asking: "What\'s the status of order S06628?" or "Show me all open high-priority tickets."',
     defaultAgentsMd: `## Your Role
@@ -645,6 +685,11 @@ ${ODOO_RULES}
     defaultPersonality: "the-butler",
     defaultTagline: "Track headcount, leave balances, attendance and contracts",
     suggestedNames: ["Mira", "Robin", "Dana", "Juno", "Ellis", "Teagan"],
+    defaultStarterPrompts: [
+      "How many people are on leave next week?",
+      "Show me our headcount by department",
+      "Which contracts end in the next 90 days?",
+    ],
     defaultGreetingMessage:
       'Hello {user}. I\'m {name}, your HR analyst. I can track headcount, leave balances, and attendance. Try asking: "How many people are on leave next week?" or "Show me our headcount by department."',
     defaultAgentsMd: `## Your Role
@@ -706,6 +751,11 @@ ${ODOO_RULES}
     defaultPersonality: "the-butler",
     defaultTagline: "Record leave, log attendance, update employee details, manage HR follow-ups",
     suggestedNames: ["Holly", "Frances", "Mae", "Rolf", "Hannah", "Lina"],
+    defaultStarterPrompts: [
+      "Record sick leave for someone this week",
+      "Who is on leave this week?",
+      "Update an employee's work details",
+    ],
     defaultGreetingMessage:
       'Good day, {user}. I\'m {name}. I can record leave requests, log attendance, and update employee details — confidentially and only after your explicit confirmation. Try: "Record sick leave for Lisa from Monday to Wednesday" or "Who is on leave this week?"',
     defaultAgentsMd: `## Your Role
@@ -801,6 +851,11 @@ ${ODOO_ATTACHMENT_REF_FLOW}`,
     defaultPersonality: "the-pilot",
     defaultTagline: "Monitor project progress, deadlines, task load and timesheets",
     suggestedNames: ["Tracker", "Milo", "Rowan", "Ida", "Beacon", "Pax"],
+    defaultStarterPrompts: [
+      "Which projects are behind schedule?",
+      "Who has the most open tasks?",
+      "Show me tasks due this week",
+    ],
     defaultGreetingMessage:
       'Hi {user}. I\'m {name}, your project tracker. I monitor deliveries, deadlines, and workload. Try asking: "Which projects are behind schedule?" or "Who has the most open tasks?"',
     defaultAgentsMd: `## Your Role
@@ -854,6 +909,11 @@ ${ODOO_RULES}
     defaultPersonality: "the-coach",
     defaultTagline: "Create and assign tasks, plan milestones, log timesheets, manage projects",
     suggestedNames: ["Atlas", "Halsey", "Kai", "Iris", "Avery", "Reggie"],
+    defaultStarterPrompts: [
+      "Add a task to a project",
+      "What's the workload looking like next week?",
+      "Assign open tasks to the team",
+    ],
     defaultGreetingMessage:
       'Hi {user}, I\'m {name}. I can create tasks, assign work, plan milestones, and log timesheets. Try: "Add a task to the Acme project" or "What\'s the workload looking like for next week?"',
     defaultAgentsMd: `## Your Role
@@ -949,6 +1009,11 @@ ${ODOO_ATTACHMENT_REF_FLOW}`,
     defaultPersonality: "the-pilot",
     defaultTagline: "Track production orders, BOMs, work orders and component needs",
     suggestedNames: ["Forge", "Remy", "Pike", "Iron", "Nyx", "Cogsworth"],
+    defaultStarterPrompts: [
+      "Which production orders are behind schedule?",
+      "What components do we need this week?",
+      "Show me BOMs with missing stock",
+    ],
     defaultGreetingMessage:
       'Hello {user}. I\'m {name}, your manufacturing planner. I track production orders, BOMs, and component availability. Try asking: "Which production orders are behind schedule?" or "What components do we need this week?"',
     defaultAgentsMd: `## Your Role
@@ -1006,6 +1071,11 @@ ${ODOO_RULES}
     defaultPersonality: "the-pilot",
     defaultTagline: "Plan and run manufacturing orders, advance workorders, report finished goods",
     suggestedNames: ["Reeve", "Mason", "Rhea", "Anvil", "Pepper", "Hank"],
+    defaultStarterPrompts: [
+      "Show me today's open manufacturing orders",
+      "Advance a workorder to the next stage",
+      "Report finished quantities for an MO",
+    ],
     defaultGreetingMessage:
       "Hi {user}, I'm {name}. I plan and run manufacturing orders — schedule MOs, advance workorders, report finished quantities. I'll always confirm with you before marking an MO done, because that consumes components and decrements stock.",
     defaultAgentsMd: `## Your Role
@@ -1111,6 +1181,11 @@ ${ODOO_ATTACHMENT_REF_FLOW}`,
     defaultPersonality: "the-coach",
     defaultTagline: "Track applicants, manage job pipelines, measure time-to-hire",
     suggestedNames: ["Riley", "Jordan", "Quinn", "Pax", "Sloan", "Marlo"],
+    defaultStarterPrompts: [
+      "Show me open positions",
+      "Who are the top candidates for the engineering role?",
+      "Move a candidate to the next stage",
+    ],
     defaultGreetingMessage:
       'Hi {user}! I\'m {name}, your recruitment coordinator. I can track applicants, move candidates through the pipeline, and measure time-to-hire. Try asking: "Show me open positions" or "Who are the top candidates for the engineering role?"',
     defaultAgentsMd: `## Your Role
@@ -1170,6 +1245,11 @@ ${ODOO_RULES}
     defaultPersonality: "the-pilot",
     defaultTagline: "Track MRR, churn, renewals and recurring revenue",
     suggestedNames: ["Loop", "Renna", "Cyrus", "Echo", "Anya", "Rex"],
+    defaultStarterPrompts: [
+      "What's our MRR this month?",
+      "Which subscriptions expire in the next 30 days?",
+      "Which subscriptions churned recently?",
+    ],
     defaultGreetingMessage:
       'Hi {user}. I\'m {name}, your subscription manager. I track recurring revenue, churn, and upcoming renewals. Try asking: "What\'s our MRR this month?" or "Which subscriptions expire in the next 30 days?"',
     defaultAgentsMd: `## Your Role
@@ -1225,6 +1305,11 @@ ${ODOO_RULES}
     defaultPersonality: "the-pilot",
     defaultTagline: "Analyze store sales, cash sessions and payment methods",
     suggestedNames: ["Till", "Ruby", "Cash", "Ginny", "Beans", "Olive"],
+    defaultStarterPrompts: [
+      "What were yesterday's sales by store?",
+      "Which payment methods are most popular?",
+      "Show me sales by cash session",
+    ],
     defaultGreetingMessage:
       'Hi {user}. I\'m {name}, your POS analyst. I analyze store sales, cash sessions, and payment trends. Try asking: "What were yesterday\'s sales by store?" or "Which payment methods are most popular?"',
     defaultAgentsMd: `## Your Role
@@ -1278,6 +1363,11 @@ ${ODOO_RULES}
     defaultPersonality: "the-pilot",
     defaultTagline: "Measure campaign performance, open rates and conversions",
     suggestedNames: ["Nova", "Flint", "Tessa", "Orbit", "Cleo", "Brio"],
+    defaultStarterPrompts: [
+      "How did last week's newsletter perform?",
+      "Which campaigns have the best open rate?",
+      "Compare click rates across campaigns",
+    ],
     defaultGreetingMessage:
       'Hi {user}. I\'m {name}, your marketing analyst. I measure campaign performance — opens, clicks, bounces, and conversions. Try asking: "How did last week\'s newsletter perform?" or "Which campaigns have the best open rate?"',
     defaultAgentsMd: `## Your Role
@@ -1337,6 +1427,11 @@ ${ODOO_RULES}
     defaultPersonality: "the-butler",
     defaultTagline: "Review expense claims, flag policy violations and unusual patterns",
     suggestedNames: ["Audra", "Monty", "Vera", "Cross", "Prue", "Clement"],
+    defaultStarterPrompts: [
+      "Show me expenses above €500 this month",
+      "Which employees submitted the most expenses last quarter?",
+      "Flag any unusual expense claims",
+    ],
     defaultGreetingMessage:
       'Hello {user}. I\'m {name}, your expense auditor. I review expense claims and flag items that look unusual. Try asking: "Show me expenses above €500 this month" or "Which employees submitted the most expenses last quarter?"',
     defaultAgentsMd: `## Your Role
@@ -1398,6 +1493,11 @@ ${ODOO_RULES}
     defaultTagline:
       "Review and approve expenses, leaves, purchases — with policy checks and clear escalation",
     suggestedNames: ["Verity", "Bennet", "Rosalind", "Olivier", "Magnus", "Cordelia"],
+    defaultStarterPrompts: [
+      "Show me open expense approvals",
+      "Anything pending leave approval this week?",
+      "Which requests are above my approval limit?",
+    ],
     defaultGreetingMessage:
       'At your service, {user}. I\'m {name}. I review and approve expenses, leaves, and purchase orders against your policies — and I escalate anything above your authority instead of guessing. Try: "Show me open expense approvals" or "Anything pending leave for this week?"',
     defaultAgentsMd: `## Your Role
@@ -1511,6 +1611,11 @@ ${ODOO_ATTACHMENT_REF_FLOW}`,
     defaultPersonality: "the-pilot",
     defaultTagline: "Track vehicles, service schedules, fuel and total cost of ownership",
     suggestedNames: ["Axel", "Greta", "Piston", "Ruby", "Tank", "Mika"],
+    defaultStarterPrompts: [
+      "Which vehicles need service soon?",
+      "What's the most expensive car in our fleet this year?",
+      "Show me total cost of ownership by vehicle",
+    ],
     defaultGreetingMessage:
       'Hi {user}. I\'m {name}, your fleet manager. I track vehicles, service schedules, and total cost of ownership. Try asking: "Which vehicles need service soon?" or "What\'s the most expensive car in our fleet this year?"',
     defaultAgentsMd: `## Your Role
@@ -1562,6 +1667,11 @@ ${ODOO_RULES}
     defaultPersonality: "the-pilot",
     defaultTagline: "Analyze online sales, visitors, top products and conversion",
     suggestedNames: ["Pixel", "Hex", "Nova", "Rune", "Wilma", "Taz"],
+    defaultStarterPrompts: [
+      "What are the top-selling products on the website this month?",
+      "How many visitors did we get last week?",
+      "What's our online conversion rate?",
+    ],
     defaultGreetingMessage:
       'Hi {user}. I\'m {name}, your website analyst. I track online sales, visitors, and conversion. Try asking: "What are the top-selling products on the website this month?" or "How many visitors did we get last week?"',
     defaultAgentsMd: `## Your Role

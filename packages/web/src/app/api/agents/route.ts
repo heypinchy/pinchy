@@ -173,6 +173,9 @@ export const POST = withAdmin(async (request, _ctx, session) => {
       ownerId: session.user.id,
       allowedTools: mergedAllowedTools,
       skills: templateSkills,
+      // Seed the empty-chat starter chips from the template (#570). Templates
+      // without a curated set (e.g. custom) fall back to [] — no chips.
+      starterPrompts: template.defaultStarterPrompts ?? [],
       tagline: tagline || template.defaultTagline || null,
       avatarSeed: generateAvatarSeed(),
       personalityPresetId: template.defaultPersonality,

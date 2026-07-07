@@ -22,6 +22,11 @@ export const WEB_TEMPLATES: Record<string, AgentTemplate> = {
     defaultTagline:
       "Track market trends, industry news, and competitor signals from the public web",
     suggestedNames: ["Scout", "Pulse", "Compass", "Vector", "Vista", "Beacon", "Sentry"],
+    defaultStarterPrompts: [
+      "What's the latest news in our industry this week?",
+      "What are our competitors announcing lately?",
+      "Summarize recent regulatory changes in our field",
+    ],
     defaultGreetingMessage:
       "Ready when you are, {user}. I'm {name}. I scan the public web for market trends, industry news, and competitor moves — and I always cite my sources. What would you like me to watch today?",
     // Persona-only AGENTS.md. Workflow guidance for the web tools lives in

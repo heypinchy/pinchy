@@ -179,6 +179,7 @@ vi.mock("@/lib/integrations/odoo-template-validation", () => ({
 import { POST } from "@/app/api/agents/route";
 import { NextRequest } from "next/server";
 import { auth } from "@/lib/auth";
+import { AGENT_TEMPLATES } from "@/lib/agent-templates";
 import { validateAllowedPaths } from "@/lib/path-validation";
 import { getDefaultModel } from "@/lib/provider-models";
 import { TemplateCapabilityUnavailableError } from "@/lib/model-resolver";
@@ -305,6 +306,44 @@ describe("POST /api/agents", () => {
     expect(insertValuesMock).toHaveBeenCalledWith(
       expect.objectContaining({
         allowedTools: [],
+      })
+    );
+  });
+
+  it("should seed starterPrompts from the template's defaultStarterPrompts (#570)", async () => {
+    const request = new NextRequest("http://localhost:7777/api/agents", {
+      method: "POST",
+      body: JSON.stringify({
+        name: "HR Knowledge Base",
+        templateId: "knowledge-base",
+        pluginConfig: {
+          "pinchy-files": { allowed_paths: ["/data/hr-docs/"] },
+        },
+      }),
+    });
+
+    await POST(request);
+
+    const expected = AGENT_TEMPLATES["knowledge-base"].defaultStarterPrompts;
+    expect(expected, "knowledge-base must define defaultStarterPrompts").toBeDefined();
+    expect(insertValuesMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        starterPrompts: expected,
+      })
+    );
+  });
+
+  it("seeds an empty starterPrompts array for a template without defaults (custom)", async () => {
+    const request = new NextRequest("http://localhost:7777/api/agents", {
+      method: "POST",
+      body: JSON.stringify({ name: "Blank", templateId: "custom" }),
+    });
+
+    await POST(request);
+
+    expect(insertValuesMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        starterPrompts: [],
       })
     );
   });

@@ -10,6 +10,11 @@ export const DOCUMENT_TEMPLATES: Record<string, AgentTemplate> = {
     defaultPersonality: "the-professor",
     defaultTagline: "Review contracts, extract key terms, and flag risks",
     suggestedNames: ["Lex", "Clara", "Parker", "Quinn", "Harper", "Atticus"],
+    defaultStarterPrompts: [
+      "What are the termination clauses in this contract?",
+      "Compare the liability terms across these agreements",
+      "Flag any unusual or risky clauses",
+    ],
     defaultGreetingMessage:
       'Hi {user}. I\'m {name}, your contract analyst. I can review contracts, extract key clauses, compare terms across documents, and flag potential risks. Try asking: "What are the termination clauses in this contract?" or "Compare the liability terms across these agreements."',
     defaultAgentsMd: `You are a contract analysis agent. Your job is to review contracts and legal documents, extract key terms, and identify potential risks.
@@ -33,6 +38,11 @@ export const DOCUMENT_TEMPLATES: Record<string, AgentTemplate> = {
     defaultPersonality: "the-pilot",
     defaultTagline: "Screen applications, rank candidates, and summarize qualifications",
     suggestedNames: ["Scout", "Riley", "Piper", "Tara", "Blake", "Jordan"],
+    defaultStarterPrompts: [
+      "Rank these applicants by relevant experience",
+      "Which candidates have Python and cloud experience?",
+      "Summarize each candidate's strengths and gaps",
+    ],
     defaultGreetingMessage:
       'Hi {user}. I\'m {name}, your recruiting assistant. I can screen resumes, compare candidate qualifications, and create shortlists. Try asking: "Rank these applicants by relevant experience" or "Which candidates have Python and cloud experience?"',
     defaultAgentsMd: `You are a resume screening agent. Your job is to review job applications and resumes, evaluate candidate qualifications, and help with hiring decisions.
@@ -57,6 +67,11 @@ export const DOCUMENT_TEMPLATES: Record<string, AgentTemplate> = {
     defaultTagline:
       "Compare vendor proposals, score against requirements, and summarize differences",
     suggestedNames: ["Maven", "Dexter", "Audrey", "Spencer", "Hazel", "Brooks"],
+    defaultStarterPrompts: [
+      "Compare pricing across these three proposals",
+      "Which vendor best meets our technical requirements?",
+      "Summarize the key differences in a table",
+    ],
     defaultGreetingMessage:
       'Hi {user}. I\'m {name}, your proposal analyst. I can compare vendor proposals side by side, score them against your requirements, and highlight key differences. Try asking: "Compare pricing across these three proposals" or "Which vendor best meets our technical requirements?"',
     defaultAgentsMd: `You are a proposal comparison agent. Your job is to analyze vendor proposals, RFP responses, and quotes, then compare them objectively.
@@ -81,6 +96,11 @@ export const DOCUMENT_TEMPLATES: Record<string, AgentTemplate> = {
     defaultPersonality: "the-professor",
     defaultTagline: "Check documents against regulations, flag gaps, and track requirements",
     suggestedNames: ["Marshall", "Vera", "Sentinel", "Audra", "Knox", "Reggie"],
+    defaultStarterPrompts: [
+      "Does our privacy policy meet GDPR requirements?",
+      "What are the gaps in our SOC 2 documentation?",
+      "List the critical findings by severity",
+    ],
     defaultGreetingMessage:
       'Hi {user}. I\'m {name}, your compliance analyst. I can review your documents against regulatory requirements, identify gaps, and track compliance status. Try asking: "Does our privacy policy meet GDPR requirements?" or "What are the gaps in our SOC 2 documentation?"',
     defaultAgentsMd: `You are a compliance checking agent. Your job is to review internal documents against regulatory requirements, standards, and policies to identify gaps and violations.
@@ -104,6 +124,11 @@ export const DOCUMENT_TEMPLATES: Record<string, AgentTemplate> = {
     defaultPersonality: "the-coach",
     defaultTagline: "Guide new team members through internal docs, processes, and procedures",
     suggestedNames: ["Buddy", "Ori", "Compass", "Robin", "Guides", "Sherpa"],
+    defaultStarterPrompts: [
+      "How do I request time off?",
+      "What's the process for submitting expenses?",
+      "Where do I find our internal wiki?",
+    ],
     defaultGreetingMessage:
       'Hi {user}. I\'m {name}, your onboarding assistant. I can help you navigate internal documentation, find processes and procedures, and answer questions about how things work here. Try asking: "How do I request time off?" or "What\'s the process for submitting expenses?"',
     defaultAgentsMd: `You are an onboarding guide agent. Your job is to help new employees and team members navigate internal documentation, understand processes, and find answers to common questions.

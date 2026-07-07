@@ -145,6 +145,9 @@ export function createOdooTemplate(spec: OdooAgentTemplateSpec): AgentTemplate {
     suggestedNames: [...spec.suggestedNames],
     defaultGreetingMessage: spec.defaultGreetingMessage,
     defaultAgentsMd: spec.defaultAgentsMd,
+    ...(spec.defaultStarterPrompts !== undefined
+      ? { defaultStarterPrompts: [...spec.defaultStarterPrompts] }
+      : {}),
     requiresOdooConnection: true,
     odooConfig: {
       accessLevel,

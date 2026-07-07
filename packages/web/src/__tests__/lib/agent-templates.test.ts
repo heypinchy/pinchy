@@ -1657,3 +1657,86 @@ describe("MODEL_CATEGORIES — accounting category covers fiscal positions", () 
     expect(accounting!.models.some((m) => m.model === "account.fiscal.position")).toBe(true);
   });
 });
+
+describe("defaultStarterPrompts (per-agent starter prompts, #570)", () => {
+  // Starter prompts seed the clickable suggestion chips shown in the empty
+  // chat (thread.tsx ThreadWelcome). Every role-specific template ships a
+  // small, curated set so a brand-new user is never staring at an empty
+  // composer — matching how Custom GPTs, Gemini Gems, and Copilot Studio all
+  // ship per-assistant conversation starters. `custom` is the deliberate
+  // exception: a blank agent has no role to suggest prompts for.
+  const MAX_PROMPTS = 4; // hard display ceiling; see research in PR #620
+  const MAX_PROMPT_LENGTH = 100; // chips must stay on one or two short lines
+
+  it("every non-custom template ships 3-4 defaultStarterPrompts", () => {
+    const offenders: Array<{ id: string; count: number }> = [];
+    for (const [id, tpl] of Object.entries(AGENT_TEMPLATES)) {
+      if (id === "custom") continue;
+      const prompts = tpl.defaultStarterPrompts;
+      if (!prompts || prompts.length < 3 || prompts.length > MAX_PROMPTS) {
+        offenders.push({ id, count: prompts?.length ?? 0 });
+      }
+    }
+    expect(offenders).toEqual([]);
+  });
+
+  it("custom template has no defaultStarterPrompts (blank agent, no role to suggest for)", () => {
+    expect(AGENT_TEMPLATES["custom"].defaultStarterPrompts).toBeUndefined();
+  });
+
+  it("every starter prompt is non-empty, trimmed, and short enough for a chip", () => {
+    const offenders: Array<{ id: string; prompt: string; reason: string }> = [];
+    for (const [id, tpl] of Object.entries(AGENT_TEMPLATES)) {
+      for (const prompt of tpl.defaultStarterPrompts ?? []) {
+        if (prompt.trim().length === 0) offenders.push({ id, prompt, reason: "empty" });
+        else if (prompt !== prompt.trim()) offenders.push({ id, prompt, reason: "untrimmed" });
+        else if (prompt.length > MAX_PROMPT_LENGTH)
+          offenders.push({ id, prompt, reason: `over ${MAX_PROMPT_LENGTH} chars` });
+      }
+    }
+    expect(offenders).toEqual([]);
+  });
+
+  it("starter prompts are unique within each template", () => {
+    const offenders: Array<{ id: string }> = [];
+    for (const [id, tpl] of Object.entries(AGENT_TEMPLATES)) {
+      const prompts = tpl.defaultStarterPrompts ?? [];
+      if (new Set(prompts).size !== prompts.length) offenders.push({ id });
+    }
+    expect(offenders).toEqual([]);
+  });
+
+  it("createOdooTemplate passes defaultStarterPrompts through verbatim", () => {
+    const prompts = ["Show me revenue by month", "Who are our top customers?"];
+    const t = createOdooTemplate({
+      iconName: "TrendingUp",
+      name: "Test Analyst",
+      description: "Analyze things",
+      defaultPersonality: "the-pilot",
+      defaultTagline: "Analyze things",
+      suggestedNames: ["Alpha", "Beta", "Gamma", "Delta", "Epsilon"],
+      defaultGreetingMessage: "Hi. Let's analyze.",
+      defaultAgentsMd: "## Your Role\nTest role.",
+      defaultStarterPrompts: prompts,
+      requiredModels: [{ model: "sale.order", operations: ["read"] }],
+    });
+    expect(t.defaultStarterPrompts).toEqual(prompts);
+  });
+
+  it("createOdooTemplate omits defaultStarterPrompts when the spec has none", () => {
+    // Additive field: an Odoo spec that doesn't set starter prompts must not
+    // gain an empty array — keeps the "undefined ⟹ no chips" invariant clean.
+    const t = createOdooTemplate({
+      iconName: "TrendingUp",
+      name: "Test Analyst",
+      description: "Analyze things",
+      defaultPersonality: "the-pilot",
+      defaultTagline: "Analyze things",
+      suggestedNames: ["Alpha", "Beta", "Gamma", "Delta", "Epsilon"],
+      defaultGreetingMessage: "Hi. Let's analyze.",
+      defaultAgentsMd: "## Your Role\nTest role.",
+      requiredModels: [{ model: "sale.order", operations: ["read"] }],
+    });
+    expect(t.defaultStarterPrompts).toBeUndefined();
+  });
+});

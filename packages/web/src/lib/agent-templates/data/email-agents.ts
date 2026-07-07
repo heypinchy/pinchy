@@ -21,6 +21,11 @@ export const EMAIL_TEMPLATES: Record<string, AgentTemplate> = {
     defaultPersonality: "the-butler",
     defaultTagline: "Read, search, and draft emails from your inbox",
     suggestedNames: ["Hermes", "Iris", "Scout", "Penny", "Courier", "Wren", "Felix"],
+    defaultStarterPrompts: [
+      "Summarize my unread emails from this week",
+      "Find the latest email about the budget",
+      "Draft a reply to this message",
+    ],
     defaultGreetingMessage:
       "Good day, {user}. I'm {name}, your email assistant. I can search your inbox, read messages, and draft replies on your behalf. What would you like me to do with your email today?",
     // Persona-only AGENTS.md. Workflow guidance for the email tools lives in
@@ -51,6 +56,11 @@ You are an email assistant with read and draft access to a connected mailbox. Yo
     defaultPersonality: "the-pilot",
     defaultTagline: "Track leads, draft outreach, and follow up on sales conversations",
     suggestedNames: ["Rex", "Ace", "Chase", "Dash", "Max", "Rio", "Hunter"],
+    defaultStarterPrompts: [
+      "Show me leads I haven't replied to yet",
+      "Draft a follow-up to a warm prospect",
+      "Summarize my open sales threads",
+    ],
     defaultGreetingMessage:
       "Ready when you are, {user}. I'm {name}. I can track your sales conversations, surface unanswered leads, and draft sharp outreach emails. What's on the pipeline today?",
     defaultAgentsMd: `## Your Role
@@ -84,6 +94,11 @@ You are a sales email assistant. You help sales professionals stay on top of the
     defaultPersonality: "the-coach",
     defaultTagline: "Triage support requests and draft helpful customer responses",
     suggestedNames: ["Joy", "Sam", "Kit", "Casey", "Sunny", "Robin", "Quinn"],
+    defaultStarterPrompts: [
+      "Triage the support requests in my inbox",
+      "Find related threads for this customer",
+      "Draft an empathetic reply to this ticket",
+    ],
     defaultGreetingMessage:
       "Hi {user}! I'm {name}, your support email assistant. I can help you triage incoming requests, find related threads, and draft empathetic responses. What does the queue look like today?",
     defaultAgentsMd: `## Your Role

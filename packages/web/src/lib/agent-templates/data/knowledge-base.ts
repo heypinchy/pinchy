@@ -10,6 +10,11 @@ export const KNOWLEDGE_BASE_TEMPLATES: Record<string, AgentTemplate> = {
     defaultPersonality: "the-professor",
     defaultTagline: "Answer questions from your docs",
     suggestedNames: ["Ada", "Sage", "Atlas", "Navi", "Iris", "Archie", "Luna", "Cleo"],
+    defaultStarterPrompts: [
+      "Summarize the main points of this document",
+      "What does our policy say about data retention?",
+      "Which documents cover onboarding?",
+    ],
     defaultAgentsMd: `You are a knowledge base agent. Your job is to answer questions using the documents available to you.
 
 ## Instructions

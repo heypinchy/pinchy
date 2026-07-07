@@ -29,6 +29,13 @@ export interface AgentTemplate {
   defaultTagline: string | null;
   defaultAgentsMd: string | null;
   defaultGreetingMessage?: string;
+  /**
+   * Clickable starter-prompt chips shown in the empty chat for agents created
+   * from this template (#570). Seeded into `agents.starterPrompts` at creation
+   * time and editable per agent afterwards. Omit for role-less templates
+   * (`custom`) — an agent with no prompts renders no chips.
+   */
+  defaultStarterPrompts?: string[];
   suggestedNames?: string[];
   requiresOdooConnection?: boolean;
   requiresEmailConnection?: boolean;
@@ -68,6 +75,7 @@ export interface OdooAgentTemplateSpec {
   suggestedNames: string[];
   defaultGreetingMessage: string;
   defaultAgentsMd: string;
+  defaultStarterPrompts?: string[];
   requiredModels: ReadonlyArray<{
     model: string;
     operations: ReadonlyArray<OdooOperation>;
