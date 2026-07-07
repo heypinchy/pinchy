@@ -6,11 +6,6 @@
  * responsible for gathering the raw inputs (audit rows, the scraped final
  * assistant message, the Odoo mock read-back) and calling `buildTrajectory`.
  */
-import {
-  ATT_PREFIX,
-  handleFor,
-  MSG_PREFIX,
-} from "../../../../plugins/pinchy-email/id-handle-store";
 import type { OdooMoveRecord, RunTrajectory, ToolCall } from "./types";
 
 const TOOL_EVENT_PREFIX = "tool.";
@@ -28,10 +23,18 @@ export interface NormalizeInput {
   finalMessage: string;
   /** Raw account.move records from the Odoo mock. */
   odooMoves: OdooMoveRecord[];
-  /** The real Graph message id that was seeded. */
-  seededMessageId: string;
-  /** The real Graph attachment id that was seeded. */
-  seededAttachmentId: string;
+  /**
+   * The handle the pinchy-email plugin issues for the seeded message,
+   * pre-computed by the caller via `handleFor(seededMessageId, MSG_PREFIX)`.
+   * Passed in (rather than computed here) so this module stays inside the
+   * app build graph without importing plugin source — `packages/plugins/*`
+   * `.ts` files are not present in the production `next build` stage, only
+   * their manifests. The orchestrator (`packages/web/eval/run-eval.ts`, test
+   * code with the full monorepo available) computes it.
+   */
+  issuedMessageHandle: string;
+  /** The handle the plugin issues for the seeded attachment (see above). */
+  issuedAttachmentHandle: string;
   latencyMs: number;
   tokens?: { prompt: number; completion: number };
 }
@@ -76,11 +79,10 @@ function attachIssuedId(toolCalls: ToolCall[], names: string[], handle: string):
  *   `"tool."`, sorted by `timestamp` ascending.
  * - `name` prefers `detail.toolName`, falling back to the `tool.` suffix of
  *   `eventType` when detail is sparse/null.
- * - Handles the model was issued are computed deterministically via
- *   `handleFor` (the same function `pinchy-email`'s plugin uses to mint
- *   them), so `gradeIdFidelity` can recognize legitimate handle usage: the
- *   message handle is attached to the earliest `email_list`/`email_search`
- *   call, and the attachment handle to the earliest `email_read` call.
+ * - The caller-supplied issued handles let `gradeIdFidelity` recognize
+ *   legitimate handle usage: the message handle is attached to the earliest
+ *   `email_list`/`email_search` call, and the attachment handle to the
+ *   earliest `email_read` call.
  */
 export function buildTrajectory(input: NormalizeInput): RunTrajectory {
   const toolCalls = input.auditEntries
@@ -89,11 +91,8 @@ export function buildTrajectory(input: NormalizeInput): RunTrajectory {
     .sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime())
     .map(toToolCall);
 
-  const msgHandle = handleFor(input.seededMessageId, MSG_PREFIX);
-  const attHandle = handleFor(input.seededAttachmentId, ATT_PREFIX);
-
-  attachIssuedId(toolCalls, ["email_list", "email_search"], msgHandle);
-  attachIssuedId(toolCalls, ["email_read"], attHandle);
+  attachIssuedId(toolCalls, ["email_list", "email_search"], input.issuedMessageHandle);
+  attachIssuedId(toolCalls, ["email_read"], input.issuedAttachmentHandle);
 
   return {
     model: input.model,

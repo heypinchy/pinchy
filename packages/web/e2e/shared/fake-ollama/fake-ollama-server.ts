@@ -9,13 +9,8 @@
 import * as http from "http";
 import type { AddressInfo } from "net";
 import {
-  handleFor,
-  MSG_PREFIX,
-  ATT_PREFIX,
-} from "../../../../plugins/pinchy-email/id-handle-store";
-import {
-  HETZNER_SEEDED_MESSAGE_ID,
-  HETZNER_SEEDED_ATTACHMENT_ID,
+  HETZNER_ISSUED_MSG_HANDLE,
+  HETZNER_ISSUED_ATT_HANDLE,
 } from "../../../eval/scenarios/hetzner-invoice";
 
 const MODEL_NAME = "llama3.2";
@@ -228,12 +223,12 @@ const HETZNER_FALSE_SUCCESS_TRIGGER = "E2E_HETZNER_FALSE_SUCCESS";
 // The self-test drives the REAL pinchy-email plugin end-to-end (fake-ollama
 // only stands in for the LLM; the tool calls hit the real plugin + graph
 // mock). So the handles the scripted email_read/email_get_attachment steps
-// pass MUST be the exact ones the plugin mints for the seeded ids —
-// `handleFor` is deterministic (sha256 of the real id), so we can compute
-// them here. Hardcoded placeholders would (a) fail to resolve in the plugin
-// and (b) trip gradeIdFidelity as "unissued handle" in the normalizer.
-const HETZNER_MSG_HANDLE = handleFor(HETZNER_SEEDED_MESSAGE_ID, MSG_PREFIX);
-const HETZNER_ATTACHMENT_HANDLE = handleFor(HETZNER_SEEDED_ATTACHMENT_ID, ATT_PREFIX);
+// pass MUST be the exact ones the plugin mints for the seeded ids — the
+// scenario computes these deterministically (see hetzner-invoice.ts). Hardcoded
+// placeholders would (a) fail to resolve in the plugin and (b) trip
+// gradeIdFidelity as "unissued handle" in the normalizer.
+const HETZNER_MSG_HANDLE = HETZNER_ISSUED_MSG_HANDLE;
+const HETZNER_ATTACHMENT_HANDLE = HETZNER_ISSUED_ATT_HANDLE;
 const HETZNER_INVOICE_NUMBER = "R0012345678";
 const HETZNER_INVOICE_DATE = "2026-06-30";
 const HETZNER_INVOICE_AMOUNT = 47.6;

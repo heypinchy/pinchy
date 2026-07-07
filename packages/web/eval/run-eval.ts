@@ -292,8 +292,8 @@ export async function runOnce(params: RunOnceParams): Promise<RunResult> {
     auditEntries,
     finalMessage,
     odooMoves,
-    seededMessageId: hetznerInvoiceScenario.seededMessageId,
-    seededAttachmentId: hetznerInvoiceScenario.seededAttachmentId,
+    issuedMessageHandle: hetznerInvoiceScenario.issuedMessageHandle,
+    issuedAttachmentHandle: hetznerInvoiceScenario.issuedAttachmentHandle,
     latencyMs,
   });
 

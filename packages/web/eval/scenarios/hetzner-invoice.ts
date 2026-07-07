@@ -11,7 +11,21 @@
  * deliberately isolates tool-loop reliability (list -> read -> download ->
  * create) from OCR/PDF-extraction accuracy, which is a separate concern.
  */
+import { createHash } from "node:crypto";
 import type { ExpectedInvoice } from "@/lib/eval/types";
+
+// Build-safe local re-implementation of pinchy-email's `handleFor`
+// (id-handle-store.ts). The production `next build` stage copies plugin
+// MANIFESTS but not plugin `.ts` source, yet next build type-checks all of
+// `packages/web` — so nothing here (scenario, orchestrator, fake-ollama) may
+// import the plugin source. This mirrors the plugin's deterministic handle
+// (sha256 of the real id, first 16 hex, prefixed); `handle-parity.test.ts`
+// (excluded from the build under `src/**/*.test.ts`) asserts they stay equal.
+const EVAL_MSG_PREFIX = "msg";
+const EVAL_ATT_PREFIX = "att";
+function evalHandleFor(realId: string, prefix: string): string {
+  return `${prefix}_${createHash("sha256").update(realId).digest("hex").slice(0, 16)}`;
+}
 
 /**
  * A ~150-char base64url-ish blob mirroring the shape of a real Microsoft
@@ -24,6 +38,18 @@ export const HETZNER_SEEDED_MESSAGE_ID =
 
 export const HETZNER_SEEDED_ATTACHMENT_ID =
   "AAMkAGI1ZDk3ZGI4LTk3NmYtNDNlNC1iOTk3LWQ0ZTE2ZjczYTI4MgBGAAAAAACx3universalHetznerScenarioAttachmentIdFixtureAKAAAAAAA=";
+
+/**
+ * The handles the pinchy-email plugin deterministically mints for the seeded
+ * message/attachment ids. Both the orchestrator's normalizer (id-fidelity
+ * grading) and the fake-ollama self-test's scripted email_read /
+ * email_get_attachment steps use these exact values.
+ */
+export const HETZNER_ISSUED_MSG_HANDLE = evalHandleFor(HETZNER_SEEDED_MESSAGE_ID, EVAL_MSG_PREFIX);
+export const HETZNER_ISSUED_ATT_HANDLE = evalHandleFor(
+  HETZNER_SEEDED_ATTACHMENT_ID,
+  EVAL_ATT_PREFIX
+);
 
 export const HETZNER_INVOICE_SUBJECT = "Rechnung R0012345678";
 export const HETZNER_INVOICE_FROM = "billing@hetzner.com";
@@ -119,6 +145,8 @@ export const HETZNER_EXPECTED_INVOICE: ExpectedInvoice = {
 export interface HetznerInvoiceScenario {
   seededMessageId: string;
   seededAttachmentId: string;
+  issuedMessageHandle: string;
+  issuedAttachmentHandle: string;
   graphSeedMessage: typeof HETZNER_GRAPH_SEED_MESSAGE;
   odooBaseline: typeof HETZNER_ODOO_BASELINE;
   userPrompt: string;
@@ -128,6 +156,8 @@ export interface HetznerInvoiceScenario {
 export const hetznerInvoiceScenario: HetznerInvoiceScenario = {
   seededMessageId: HETZNER_SEEDED_MESSAGE_ID,
   seededAttachmentId: HETZNER_SEEDED_ATTACHMENT_ID,
+  issuedMessageHandle: HETZNER_ISSUED_MSG_HANDLE,
+  issuedAttachmentHandle: HETZNER_ISSUED_ATT_HANDLE,
   graphSeedMessage: HETZNER_GRAPH_SEED_MESSAGE,
   odooBaseline: HETZNER_ODOO_BASELINE,
   userPrompt: HETZNER_USER_PROMPT,

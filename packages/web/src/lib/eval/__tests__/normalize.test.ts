@@ -27,8 +27,8 @@ function baseInput(overrides: Partial<NormalizeInput> = {}): NormalizeInput {
     auditEntries: [],
     finalMessage: "",
     odooMoves: [],
-    seededMessageId: SEEDED_MESSAGE_ID,
-    seededAttachmentId: SEEDED_ATTACHMENT_ID,
+    issuedMessageHandle: handleFor(SEEDED_MESSAGE_ID, MSG_PREFIX),
+    issuedAttachmentHandle: handleFor(SEEDED_ATTACHMENT_ID, ATT_PREFIX),
     latencyMs: 1000,
     ...overrides,
   };
