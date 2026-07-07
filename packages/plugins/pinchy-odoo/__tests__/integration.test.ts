@@ -87,7 +87,14 @@ beforeAll(async () => {
     const credentials = credentialsByConnectionId.get(connectionId);
     if (credentials === undefined) {
       res.writeHead(404, { "Content-Type": "application/json" });
-      res.end(JSON.stringify({ error: "Connection not found" }));
+      // Mirror the real credentials route's actionable body so this test
+      // exercises the production message, not a stale fixture string.
+      res.end(
+        JSON.stringify({
+          error:
+            "This integration is no longer connected — it may have been removed or replaced. An admin can reconnect it under Settings → Integrations.",
+        }),
+      );
       return;
     }
     res.writeHead(200, { "Content-Type": "application/json" });
@@ -330,7 +337,9 @@ describe("pinchy-odoo against real mock-odoo + mock-pinchy (#209 layer 2)", () =
     expect(result.content[0].text).toContain("404");
     // The route's actionable body.error must be passed through, not swallowed —
     // otherwise the agent reports a bare "HTTP 404" with no idea what to do.
-    expect(result.content[0].text).toContain("Connection not found");
+    // Assert the real production message, so a future wording change in the
+    // route is caught here too (same string the endpoint + pinchy-web tests use).
+    expect(result.content[0].text).toMatch(/no longer connected/i);
   });
 });
 
