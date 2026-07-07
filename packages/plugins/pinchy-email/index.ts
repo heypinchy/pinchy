@@ -2,8 +2,15 @@ import { mkdir, writeFile, access } from "node:fs/promises";
 import { basename } from "node:path";
 import { GmailAdapter } from "./gmail-adapter.js";
 import { GraphAdapter } from "./graph-adapter.js";
-import type { EmailAdapter, Folder } from "./email-adapter.js";
+import type { EmailAdapter, EmailSummary, Folder } from "./email-adapter.js";
 import { checkPermission, type Permissions } from "./permissions.js";
+import {
+  putHandle,
+  putAttachmentHandle,
+  resolveHandle,
+  MSG_PREFIX,
+  ATT_PREFIX,
+} from "./id-handle-store.js";
 
 // Filesystem convention shared with pinchy-odoo's odoo_attach_file: every
 // agent's uploads land in the same per-agent directory so a downloaded email
@@ -219,20 +226,29 @@ async function reportAuthFailure(
  * lines ~116-122, issue #404): OpenClaw's tool-use hook strips the MCP
  * `isError` flag before forwarding results to the audit route, so
  * `details.error` is often the only remaining failure signal. Every
- * error-returning path below must set it, mirroring pinchy-odoo's
- * toolError() helper.
+ * error-returning path below must set it (identical string to
+ * content[0].text), mirroring pinchy-odoo's toolError() helper.
  */
-function permissionDenied(operation: string): {
+function toolError(text: string): {
   content: ContentBlock[];
   isError: true;
   details: { error: string };
 } {
-  const text = `Permission denied: email.${operation} is not allowed for this agent.`;
   return {
     isError: true,
     content: [{ type: "text", text }],
     details: { error: text },
   };
+}
+
+function permissionDenied(operation: string): {
+  content: ContentBlock[];
+  isError: true;
+  details: { error: string };
+} {
+  return toolError(
+    `Permission denied: email.${operation} is not allowed for this agent.`,
+  );
 }
 
 function errorResult(error: unknown): {
@@ -241,12 +257,54 @@ function errorResult(error: unknown): {
   details: { error: string };
 } {
   const message = error instanceof Error ? error.message : "Unknown error";
-  const text = `Error: ${message}`;
-  return {
-    isError: true,
-    content: [{ type: "text", text }],
-    details: { error: text },
-  };
+  return toolError(`Error: ${message}`);
+}
+
+/**
+ * Handle-indirection (Bug B, 2026-07-07 debugging session; sibling of PR
+ * #668): resolve a model-supplied value into the real provider id before it
+ * reaches the adapter.
+ *
+ * - If the value starts with our handle prefix (msg_/att_) and resolves,
+ *   return the realId.
+ * - If it starts with our prefix but does NOT resolve (unknown/expired/wrong
+ *   agent), return a failed-tool-result telling the model to re-list.
+ * - If it does not start with our prefix at all, treat it as a raw provider
+ *   id (Gmail compatibility / graceful fallback) and pass it through
+ *   unchanged.
+ */
+function resolveEmailReference(
+  agentId: string,
+  value: string,
+):
+  | { ok: true; realId: string }
+  | { ok: false; result: ReturnType<typeof toolError> } {
+  const isHandle =
+    value.startsWith(`${MSG_PREFIX}_`) || value.startsWith(`${ATT_PREFIX}_`);
+  if (!isHandle) return { ok: true, realId: value };
+
+  const realId = resolveHandle(agentId, value);
+  if (realId == null) {
+    return {
+      ok: false,
+      result: toolError(
+        `The email reference '${value}' is unknown or has expired. ` +
+          `Call email_list or email_search again to get a fresh reference.`,
+      ),
+    };
+  }
+  return { ok: true, realId };
+}
+
+/** Replace each summary's raw id with a per-agent handle, minting one as needed. */
+function handleizeSummaries(
+  agentId: string,
+  summaries: EmailSummary[],
+): EmailSummary[] {
+  return summaries.map((s) => ({
+    ...s,
+    id: putHandle(agentId, s.id),
+  }));
 }
 
 interface EmailCredentials {
@@ -568,9 +626,11 @@ const plugin = {
                 }),
               );
 
+              const handleized = handleizeSummaries(agentId, result);
+
               return {
                 content: [
-                  { type: "text", text: JSON.stringify(result, null, 2) },
+                  { type: "text", text: JSON.stringify(handleized, null, 2) },
                 ],
               };
             } catch (error) {
@@ -611,16 +671,38 @@ const plugin = {
                 return permissionDenied("read");
               }
 
+              const resolved = resolveEmailReference(
+                agentId,
+                params.id as string,
+              );
+              if (!resolved.ok) return resolved.result;
+
               const result = await withAuthRetry(agentId, config, (adapter) =>
-                adapter.read(params.id as string),
+                adapter.read(resolved.realId),
               );
 
+              const msgHandle = putHandle(agentId, result.id);
+              const handleizedAttachments = (result.attachments ?? []).map(
+                (a) => ({
+                  ...a,
+                  id: putAttachmentHandle(agentId, a.id),
+                }),
+              );
+              const handleizedResult = {
+                ...result,
+                id: msgHandle,
+                attachments: handleizedAttachments,
+              };
+
               const content: ContentBlock[] = [
-                { type: "text", text: JSON.stringify(result, null, 2) },
+                {
+                  type: "text",
+                  text: JSON.stringify(handleizedResult, null, 2),
+                },
               ];
 
-              if (result.attachments && result.attachments.length > 0) {
-                const list = result.attachments
+              if (handleizedAttachments.length > 0) {
+                const list = handleizedAttachments
                   .map(
                     (a) =>
                       `- id: ${a.id}, filename: ${a.filename}, mimeType: ${a.mimeType}, size: ${humanReadableSize(a.size)}`,
@@ -629,8 +711,8 @@ const plugin = {
                 content.push({
                   type: "text",
                   text:
-                    `This email has ${result.attachments.length} downloadable attachment(s):\n${list}\n\n` +
-                    `Use email_get_attachment with messageId "${result.id}" and one of the attachment ids above to save it into the workspace.`,
+                    `This email has ${handleizedAttachments.length} downloadable attachment(s):\n${list}\n\n` +
+                    `Use email_get_attachment with messageId "${msgHandle}" and one of the attachment ids above to save it into the workspace.`,
                 });
               }
 
@@ -737,9 +819,11 @@ const plugin = {
                 }),
               );
 
+              const handleized = handleizeSummaries(agentId, result);
+
               return {
                 content: [
-                  { type: "text", text: JSON.stringify(result, null, 2) },
+                  { type: "text", text: JSON.stringify(handleized, null, 2) },
                 ],
               };
             } catch (error) {
@@ -787,12 +871,20 @@ const plugin = {
                 return permissionDenied("draft");
               }
 
+              let replyTo: string | undefined = params.replyTo as
+                string | undefined;
+              if (replyTo != null) {
+                const resolved = resolveEmailReference(agentId, replyTo);
+                if (!resolved.ok) return resolved.result;
+                replyTo = resolved.realId;
+              }
+
               const result = await withAuthRetry(agentId, config, (adapter) =>
                 adapter.draft({
                   to: params.to as string,
                   subject: params.subject as string,
                   body: params.body as string,
-                  replyTo: params.replyTo as string | undefined,
+                  replyTo,
                 }),
               );
 
@@ -846,12 +938,20 @@ const plugin = {
                 return permissionDenied("send");
               }
 
+              let replyTo: string | undefined = params.replyTo as
+                string | undefined;
+              if (replyTo != null) {
+                const resolved = resolveEmailReference(agentId, replyTo);
+                if (!resolved.ok) return resolved.result;
+                replyTo = resolved.realId;
+              }
+
               const result = await withAuthRetry(agentId, config, (adapter) =>
                 adapter.send({
                   to: params.to as string,
                   subject: params.subject as string,
                   body: params.body as string,
-                  replyTo: params.replyTo as string | undefined,
+                  replyTo,
                 }),
               );
 
@@ -914,8 +1014,19 @@ const plugin = {
                 return permissionDenied("read");
               }
 
-              const messageId = params.messageId as string;
-              const attachmentId = params.attachmentId as string;
+              const resolvedMessageId = resolveEmailReference(
+                agentId,
+                params.messageId as string,
+              );
+              if (!resolvedMessageId.ok) return resolvedMessageId.result;
+              const resolvedAttachmentId = resolveEmailReference(
+                agentId,
+                params.attachmentId as string,
+              );
+              if (!resolvedAttachmentId.ok) return resolvedAttachmentId.result;
+
+              const messageId = resolvedMessageId.realId;
+              const attachmentId = resolvedAttachmentId.realId;
 
               // No pre-download size precheck is possible here: the
               // EmailAdapter#getAttachment contract returns { filename,

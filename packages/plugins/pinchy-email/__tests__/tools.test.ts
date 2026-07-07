@@ -744,12 +744,63 @@ describe("email_list", () => {
 
     const data = JSON.parse(result.content[0].text);
     expect(data).toHaveLength(1);
-    expect(data[0].id).toBe("msg-1");
     expect(mockList).toHaveBeenCalledWith({
       folder: "INBOX",
       limit: 10,
       unreadOnly: true,
     });
+  });
+
+  // Handle-indirection (Bug B, 2026-07-07 debugging session; sibling of
+  // PR #668): the model must never see the raw provider id — it must see a
+  // short, stable handle instead, so it can't corrupt a ~150-char Graph blob
+  // reproducing it on a later turn.
+  it("replaces the raw id with a short handle in the model-facing output, never exposing the raw id", async () => {
+    const rawId =
+      "AAMkAGI2TG92AAA=ZjY0LTQ5MGItYjA2NC1kNzk4ZjY0LWE1ZDQtcmVhbGx5LWxvbmctZ3JhcGgtaWQ=";
+    const emails = [
+      {
+        id: rawId,
+        from: "a@test.com",
+        subject: "Hello",
+        snippet: "Hi there",
+      },
+    ];
+    mockList.mockResolvedValue(emails);
+
+    const tools = createApi();
+    const tool = findTool(tools, "email_list", agentId)!;
+
+    const result = await tool.execute("call-1", {});
+
+    const data = JSON.parse(result.content[0].text);
+    expect(data[0].id).not.toBe(rawId);
+    expect(data[0].id).toMatch(/^msg_[0-9a-f]+$/);
+    expect(result.content[0].text).not.toContain(rawId);
+  });
+
+  it("gives the same email the same handle across repeated email_list calls (deterministic)", async () => {
+    const rawId = "stable-graph-id-across-calls";
+    mockList.mockResolvedValue([
+      {
+        id: rawId,
+        from: "a@test.com",
+        subject: "Hello",
+        snippet: "Hi",
+      },
+    ]);
+
+    const tools = createApi();
+    const tool = findTool(tools, "email_list", agentId)!;
+
+    const first = JSON.parse(
+      (await tool.execute("call-1", {})).content[0].text,
+    );
+    const second = JSON.parse(
+      (await tool.execute("call-2", {})).content[0].text,
+    );
+
+    expect(first[0].id).toBe(second[0].id);
   });
 });
 
@@ -774,9 +825,31 @@ describe("email_read", () => {
     const result = await tool.execute("call-1", { id: "msg-1" });
 
     const data = JSON.parse(result.content[0].text);
-    expect(data.id).toBe("msg-1");
     expect(data.body).toBe("Full body");
+    // "msg-1" is a raw (non-prefixed) id, so it is passed through to the
+    // adapter unchanged — Gmail compatibility / graceful fallback.
     expect(mockRead).toHaveBeenCalledWith("msg-1");
+  });
+
+  it("replaces the raw email id with a handle in the model-facing output (not the raw id)", async () => {
+    const rawId = "raw-graph-message-id-should-not-be-echoed";
+    const email = {
+      id: rawId,
+      from: "a@test.com",
+      subject: "Hello",
+      body: "Full body",
+    };
+    mockRead.mockResolvedValue(email);
+
+    const tools = createApi();
+    const tool = findTool(tools, "email_read", agentId)!;
+
+    const result = await tool.execute("call-1", { id: rawId });
+
+    const data = JSON.parse(result.content[0].text);
+    expect(data.id).not.toBe(rawId);
+    expect(data.id).toMatch(/^msg_[0-9a-f]+$/);
+    expect(result.content[0].text).not.toContain(rawId);
   });
 
   it("does not add attachment guidance when the email has no attachments", async () => {
@@ -797,10 +870,10 @@ describe("email_read", () => {
     // Existing behavior preserved: exactly one JSON content block, still parseable.
     expect(result.content).toHaveLength(1);
     const data = JSON.parse(result.content[0].text);
-    expect(data.id).toBe("msg-1");
+    expect(data.id).toMatch(/^msg_[0-9a-f]+$/);
   });
 
-  it("appends attachment guidance pointing to email_get_attachment when attachments are present", async () => {
+  it("appends attachment guidance pointing to email_get_attachment when attachments are present, using handles not raw ids", async () => {
     const email = {
       id: "msg-1",
       from: "a@test.com",
@@ -828,10 +901,14 @@ describe("email_read", () => {
 
     const result = await tool.execute("call-1", { id: "msg-1" });
 
-    // First block remains the untouched JSON payload.
+    // First block remains the untouched JSON payload, but with handles
+    // substituted for the raw message/attachment ids.
     const data = JSON.parse(result.content[0].text);
-    expect(data.id).toBe("msg-1");
+    expect(data.id).toMatch(/^msg_[0-9a-f]+$/);
     expect(data.attachments).toHaveLength(2);
+    expect(data.attachments[0].id).toMatch(/^att_[0-9a-f]+$/);
+    expect(data.attachments[1].id).toMatch(/^att_[0-9a-f]+$/);
+    expect(data.attachments[0].id).not.toBe(data.attachments[1].id);
 
     // Guidance is additive — a second block, not a restructure of the first.
     expect(result.content.length).toBeGreaterThan(1);
@@ -840,12 +917,16 @@ describe("email_read", () => {
       .map((b) => b.text)
       .join("\n");
     expect(guidance).toContain("email_get_attachment");
-    expect(guidance).toContain("msg-1");
-    expect(guidance).toContain("att-1");
+    expect(guidance).toContain(data.id);
+    expect(guidance).toContain(data.attachments[0].id);
     expect(guidance).toContain("invoice.pdf");
     expect(guidance).toContain("application/pdf");
-    expect(guidance).toContain("att-2");
+    expect(guidance).toContain(data.attachments[1].id);
     expect(guidance).toContain("photo.png");
+    // Raw ids must never leak into the guidance text either.
+    expect(guidance).not.toContain("msg-1");
+    expect(guidance).not.toContain("att-1");
+    expect(guidance).not.toContain("att-2");
   });
 });
 
@@ -1474,5 +1555,366 @@ describe("email_get_attachment", () => {
     expect(result.isError).toBe(true);
     expect(result.content[0].text).toContain("attachment not found");
     expect(mockWriteFile).not.toHaveBeenCalled();
+  });
+});
+
+// Handle-indirection (Bug B, 2026-07-07 debugging session; sibling of PR
+// #668): email_list/email_search/email_read hand out short handles instead
+// of raw provider ids. email_read/email_get_attachment/email_draft/email_send
+// must resolve those handles back to the real id before calling the adapter.
+describe("id-handle indirection", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockCredentialResponse();
+  });
+
+  it("list -> read round trip: a handle produced by email_list resolves to the correct realId at the adapter", async () => {
+    const rawId = "AAMkAGI2-real-graph-message-id-that-is-very-long";
+    mockList.mockResolvedValue([
+      {
+        id: rawId,
+        from: "a@test.com",
+        subject: "Hello",
+        snippet: "Hi",
+      },
+    ]);
+
+    const tools = createApi();
+    const listTool = findTool(tools, "email_list", agentId)!;
+    const listResult = await listTool.execute("call-1", {});
+    const [{ id: handle }] = JSON.parse(listResult.content[0].text);
+    expect(handle).not.toBe(rawId);
+
+    mockRead.mockResolvedValue({
+      id: rawId,
+      from: "a@test.com",
+      subject: "Hello",
+      body: "Full body",
+    });
+    const readTool = findTool(tools, "email_read", agentId)!;
+    const readResult = await readTool.execute("call-2", { id: handle });
+
+    expect(readResult.isError).toBeFalsy();
+    expect(mockRead).toHaveBeenCalledWith(rawId);
+  });
+
+  it("search -> read round trip: a handle produced by email_search also resolves correctly", async () => {
+    const rawId = "search-produced-raw-id";
+    mockSearch.mockResolvedValue([
+      {
+        id: rawId,
+        from: "b@test.com",
+        subject: "Invoice",
+        snippet: "Please pay",
+      },
+    ]);
+
+    const tools = createApi();
+    const searchTool = findTool(tools, "email_search", agentId)!;
+    const searchResult = await searchTool.execute("call-1", {
+      subject: "invoice",
+    });
+    const [{ id: handle }] = JSON.parse(searchResult.content[0].text);
+
+    mockRead.mockResolvedValue({
+      id: rawId,
+      from: "b@test.com",
+      subject: "Invoice",
+      body: "body",
+    });
+    const readTool = findTool(tools, "email_read", agentId)!;
+    await readTool.execute("call-2", { id: handle });
+
+    expect(mockRead).toHaveBeenCalledWith(rawId);
+  });
+
+  it("read -> get_attachment round trip: attachment handles from email_read resolve to the correct ids at the adapter", async () => {
+    const rawMsgId = "raw-message-id-for-attachment-flow";
+    const rawAttId = "raw-attachment-id-abcdef";
+    mockRead.mockResolvedValue({
+      id: rawMsgId,
+      from: "a@test.com",
+      subject: "Hello",
+      body: "body",
+      attachments: [
+        {
+          id: rawAttId,
+          filename: "invoice.pdf",
+          mimeType: "application/pdf",
+          size: 100,
+        },
+      ],
+    });
+
+    const tools = createApi();
+    const readTool = findTool(tools, "email_read", agentId)!;
+    const readResult = await readTool.execute("call-1", { id: rawMsgId });
+    const data = JSON.parse(readResult.content[0].text);
+    const msgHandle = data.id;
+    const attHandle = data.attachments[0].id;
+    expect(msgHandle).not.toBe(rawMsgId);
+    expect(attHandle).not.toBe(rawAttId);
+
+    mockGetAttachment.mockResolvedValue({
+      filename: "invoice.pdf",
+      mimeType: "application/pdf",
+      data: Buffer.from("x"),
+    });
+    mockMkdir.mockResolvedValue(undefined);
+    mockAccess.mockRejectedValue(
+      Object.assign(new Error("ENOENT"), { code: "ENOENT" }),
+    );
+    mockWriteFile.mockResolvedValue(undefined);
+
+    const attTool = findTool(tools, "email_get_attachment", agentId)!;
+    const attResult = await attTool.execute("call-2", {
+      messageId: msgHandle,
+      attachmentId: attHandle,
+    });
+
+    expect(attResult.isError).toBeFalsy();
+    expect(mockGetAttachment).toHaveBeenCalledWith(rawMsgId, rawAttId);
+  });
+
+  it("email_read: an unknown/corrupted handle yields a failed result (isError + details.error) with a 're-list' message, without ever reaching the adapter", async () => {
+    const tools = createApi();
+    const readTool = findTool(tools, "email_read", agentId)!;
+
+    const result = await readTool.execute("call-1", {
+      id: "msg_deadbeef",
+    });
+
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain(
+      "The email reference 'msg_deadbeef' is unknown or has expired.",
+    );
+    expect(result.content[0].text).toContain("email_list");
+    expect(result.content[0].text).toContain("email_search");
+    const details = (result as { details?: { error?: string } }).details;
+    expect(details?.error).toBeTruthy();
+    expect(details?.error).toBe(result.content[0].text);
+    expect(mockRead).not.toHaveBeenCalled();
+  });
+
+  it("email_get_attachment: an unknown messageId handle yields a failed result and never reaches the adapter", async () => {
+    const tools = createApi();
+    const tool = findTool(tools, "email_get_attachment", agentId)!;
+
+    const result = await tool.execute("call-1", {
+      messageId: "msg_unknownhandle",
+      attachmentId: "att-1",
+    });
+
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain(
+      "The email reference 'msg_unknownhandle' is unknown or has expired.",
+    );
+    const details = (result as { details?: { error?: string } }).details;
+    expect(details?.error).toBe(result.content[0].text);
+    expect(mockGetAttachment).not.toHaveBeenCalled();
+  });
+
+  it("email_get_attachment: an unknown attachmentId handle yields a failed result and never reaches the adapter", async () => {
+    const tools = createApi();
+    const attTool = findTool(tools, "email_get_attachment", agentId)!;
+
+    const result = await attTool.execute("call-1", {
+      messageId: "msg-1", // raw id, passes through fine
+      attachmentId: "att_unknownhandle",
+    });
+
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain(
+      "The email reference 'att_unknownhandle' is unknown or has expired.",
+    );
+    expect(mockGetAttachment).not.toHaveBeenCalled();
+  });
+
+  it("email_draft: an unknown replyTo handle yields a failed result and never reaches the adapter", async () => {
+    const tools = createApi();
+    const draftTool = findTool(tools, "email_draft", agentId)!;
+
+    const result = await draftTool.execute("call-1", {
+      to: "test@example.com",
+      subject: "Re: Hello",
+      body: "Reply body",
+      replyTo: "msg_unknownhandle",
+    });
+
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain(
+      "The email reference 'msg_unknownhandle' is unknown or has expired.",
+    );
+    expect(mockDraft).not.toHaveBeenCalled();
+  });
+
+  it("email_send: an unknown replyTo handle yields a failed result and never reaches the adapter", async () => {
+    const configWithSend: PluginConfig = {
+      ...testConfig,
+      agents: {
+        "agent-1": {
+          connectionId: "conn-1",
+          permissions: { email: ["read", "draft", "send"] },
+        },
+      },
+    };
+    const tools = createApi(configWithSend);
+    const sendTool = findTool(tools, "email_send", agentId)!;
+
+    const result = await sendTool.execute("call-1", {
+      to: "test@example.com",
+      subject: "Re: Hello",
+      body: "Reply body",
+      replyTo: "msg_unknownhandle",
+    });
+
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain(
+      "The email reference 'msg_unknownhandle' is unknown or has expired.",
+    );
+    expect(mockSend).not.toHaveBeenCalled();
+  });
+
+  it("email_draft: a resolved replyTo handle is passed to the adapter as the realId, not the handle", async () => {
+    const rawId = "raw-message-id-being-replied-to";
+    mockList.mockResolvedValue([
+      { id: rawId, from: "a@test.com", subject: "Hello", snippet: "Hi" },
+    ]);
+    const tools = createApi();
+    const listTool = findTool(tools, "email_list", agentId)!;
+    const listResult = await listTool.execute("call-1", {});
+    const [{ id: handle }] = JSON.parse(listResult.content[0].text);
+
+    mockDraft.mockResolvedValue({ draftId: "draft-1" });
+    const draftTool = findTool(tools, "email_draft", agentId)!;
+    await draftTool.execute("call-2", {
+      to: "test@example.com",
+      subject: "Re: Hello",
+      body: "Reply body",
+      replyTo: handle,
+    });
+
+    expect(mockDraft).toHaveBeenCalledWith({
+      to: "test@example.com",
+      subject: "Re: Hello",
+      body: "Reply body",
+      replyTo: rawId,
+    });
+  });
+
+  it("email_send: a resolved replyTo handle is passed to the adapter as the realId, not the handle", async () => {
+    const rawId = "raw-message-id-being-replied-to-send";
+    mockList.mockResolvedValue([
+      { id: rawId, from: "a@test.com", subject: "Hello", snippet: "Hi" },
+    ]);
+    const configWithSend: PluginConfig = {
+      ...testConfig,
+      agents: {
+        "agent-1": {
+          connectionId: "conn-1",
+          permissions: { email: ["read", "draft", "send"] },
+        },
+      },
+    };
+    const tools = createApi(configWithSend);
+    const listTool = findTool(tools, "email_list", agentId)!;
+    const listResult = await listTool.execute("call-1", {});
+    const [{ id: handle }] = JSON.parse(listResult.content[0].text);
+
+    mockSend.mockResolvedValue({ messageId: "sent-1" });
+    const sendTool = findTool(tools, "email_send", agentId)!;
+    await sendTool.execute("call-2", {
+      to: "test@example.com",
+      subject: "Re: Hello",
+      body: "Reply body",
+      replyTo: handle,
+    });
+
+    expect(mockSend).toHaveBeenCalledWith({
+      to: "test@example.com",
+      subject: "Re: Hello",
+      body: "Reply body",
+      replyTo: rawId,
+    });
+  });
+
+  it("a raw (non-prefixed) id passed as replyTo is passed through to the adapter unchanged (Gmail compatibility)", async () => {
+    mockDraft.mockResolvedValue({ draftId: "draft-1" });
+    const tools = createApi();
+    const draftTool = findTool(tools, "email_draft", agentId)!;
+
+    await draftTool.execute("call-1", {
+      to: "test@example.com",
+      subject: "Re: Hello",
+      body: "Reply body",
+      replyTo: "raw-gmail-style-id",
+    });
+
+    expect(mockDraft).toHaveBeenCalledWith({
+      to: "test@example.com",
+      subject: "Re: Hello",
+      body: "Reply body",
+      replyTo: "raw-gmail-style-id",
+    });
+  });
+
+  it("a raw (non-prefixed) messageId/attachmentId pair is passed through to the adapter unchanged", async () => {
+    mockGetAttachment.mockResolvedValue({
+      filename: "file.txt",
+      mimeType: "text/plain",
+      data: Buffer.from("hello"),
+    });
+    mockMkdir.mockResolvedValue(undefined);
+    mockAccess.mockRejectedValue(
+      Object.assign(new Error("ENOENT"), { code: "ENOENT" }),
+    );
+    mockWriteFile.mockResolvedValue(undefined);
+
+    const tools = createApi();
+    const tool = findTool(tools, "email_get_attachment", agentId)!;
+
+    const result = await tool.execute("call-1", {
+      messageId: "raw-message-id",
+      attachmentId: "raw-attachment-id",
+    });
+
+    expect(result.isError).toBeFalsy();
+    expect(mockGetAttachment).toHaveBeenCalledWith(
+      "raw-message-id",
+      "raw-attachment-id",
+    );
+  });
+
+  it("agent isolation: a handle minted while serving one agent cannot be resolved by a different agent", async () => {
+    const otherAgentConfig: PluginConfig = {
+      apiBaseUrl: "http://pinchy:7777",
+      gatewayToken: "test-gateway-token",
+      agents: {
+        "agent-1": {
+          connectionId: "conn-1",
+          permissions: { email: ["read", "draft"] },
+        },
+        "agent-2": {
+          connectionId: "conn-2",
+          permissions: { email: ["read", "draft"] },
+        },
+      },
+    };
+    const rawId = "agent-1-only-message-id";
+    mockList.mockResolvedValue([
+      { id: rawId, from: "a@test.com", subject: "Hello", snippet: "Hi" },
+    ]);
+
+    const tools = createApi(otherAgentConfig);
+    const listTool = findTool(tools, "email_list", "agent-1")!;
+    const listResult = await listTool.execute("call-1", {});
+    const [{ id: handle }] = JSON.parse(listResult.content[0].text);
+
+    const readToolForAgent2 = findTool(tools, "email_read", "agent-2")!;
+    const result = await readToolForAgent2.execute("call-2", { id: handle });
+
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain("unknown or has expired");
+    expect(mockRead).not.toHaveBeenCalled();
   });
 });
