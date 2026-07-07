@@ -153,18 +153,10 @@ export function SettingsPageContent({
             >
               Personal
             </div>
-            <TabsTrigger value="context" className="w-full justify-start">
-              Context {contextDirty && <DirtyDot />}
-            </TabsTrigger>
-            <TabsTrigger value="profile" className="w-full justify-start">
-              Profile {profileDirty && <DirtyDot />}
-            </TabsTrigger>
-            <TabsTrigger value="telegram" className="w-full justify-start">
-              Telegram
-            </TabsTrigger>
-            <TabsTrigger value="support" className="w-full justify-start">
-              Support
-            </TabsTrigger>
+            <TabsTrigger value="context">Context {contextDirty && <DirtyDot />}</TabsTrigger>
+            <TabsTrigger value="profile">Profile {profileDirty && <DirtyDot />}</TabsTrigger>
+            <TabsTrigger value="telegram">Telegram</TabsTrigger>
+            <TabsTrigger value="support">Support</TabsTrigger>
             {isAdmin && (
               <>
                 <div
@@ -173,16 +165,12 @@ export function SettingsPageContent({
                 >
                   Administration
                 </div>
-                <TabsTrigger value="provider" className="w-full justify-start">
+                <TabsTrigger value="provider">
                   AI Provider {providerDirty && <DirtyDot />}
                 </TabsTrigger>
-                <TabsTrigger value="users" className="w-full justify-start">
-                  Users
-                </TabsTrigger>
-                <TabsTrigger value="groups" className="w-full justify-start">
-                  Groups
-                </TabsTrigger>
-                <TabsTrigger value="integrations" className="w-full justify-start">
+                <TabsTrigger value="users">Users</TabsTrigger>
+                <TabsTrigger value="groups">Groups</TabsTrigger>
+                <TabsTrigger value="integrations">
                   Integrations {needsAttentionCount > 0 && <ErrorDot />}
                 </TabsTrigger>
                 <div
@@ -191,12 +179,8 @@ export function SettingsPageContent({
                 >
                   Security &amp; Compliance
                 </div>
-                <TabsTrigger value="security" className="w-full justify-start">
-                  Security
-                </TabsTrigger>
-                <TabsTrigger value="license" className="w-full justify-start">
-                  License
-                </TabsTrigger>
+                <TabsTrigger value="security">Security</TabsTrigger>
+                <TabsTrigger value="license">License</TabsTrigger>
               </>
             )}
           </TabsList>
