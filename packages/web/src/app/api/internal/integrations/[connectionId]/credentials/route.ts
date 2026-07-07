@@ -116,7 +116,18 @@ export async function GET(
     .limit(1);
 
   if (rows.length === 0) {
-    return NextResponse.json({ error: "Connection not found" }, { status: 404 });
+    // The plugins surface this body.error into the agent's tool error, so a bare
+    // "Connection not found" reaches the user as an opaque "technical problem
+    // (error 404)". Make it actionable and provider-generic: the connection was
+    // removed or replaced (e.g. deleted + re-added, which mints a new id and
+    // orphans this reference), and an admin fixes it under Settings → Integrations.
+    return NextResponse.json(
+      {
+        error:
+          "This integration is no longer connected — it may have been removed or replaced. An admin can reconnect it under Settings → Integrations.",
+      },
+      { status: 404 }
+    );
   }
 
   const connection = rows[0];

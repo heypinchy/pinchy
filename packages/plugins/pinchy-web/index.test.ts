@@ -283,6 +283,34 @@ describe("pinchy-web plugin", () => {
       expect(result.content[0].text).toContain("API rate limit");
     });
 
+    it("surfaces the actionable credentials-endpoint message when the connection was deleted (404)", async () => {
+      // The credentials fetch itself 404s (connection removed/replaced — e.g.
+      // deleted + re-added). The route body carries an actionable message; the
+      // plugin must pass it through, not report a bare "HTTP 404".
+      const fetchMock = vi.fn(async () => ({
+        ok: false,
+        status: 404,
+        statusText: "Not Found",
+        json: async () => ({
+          error:
+            "This integration is no longer connected — it may have been removed or replaced. An admin can reconnect it under Settings → Integrations.",
+        }),
+      }));
+      vi.stubGlobal("fetch", fetchMock);
+
+      const factories = collectFactories(
+        credentialsPluginConfig({
+          "agent-1": { tools: ["pinchy_web_search"] },
+        }),
+      );
+
+      const tool = factories.pinchy_web_search({ agentId: "agent-1" })!;
+      const result = await tool.execute("call-1", { query: "test" });
+
+      expect(result.isError).toBe(true);
+      expect(result.content[0].text).toMatch(/no longer connected/i);
+    });
+
     it("POSTs report-auth-failure when retry-once also returns a 401 from Brave", async () => {
       braveSearchMock
         .mockRejectedValueOnce(new Error("401 Unauthorized"))

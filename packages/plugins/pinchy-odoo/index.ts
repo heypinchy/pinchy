@@ -205,9 +205,22 @@ async function fetchCredentials(
     { headers: { Authorization: `Bearer ${gatewayToken}` } },
   );
   if (!response.ok) {
+    // The credentials route puts an actionable message in the JSON body (e.g. a
+    // 404 "This integration is no longer connected …") — surface it so the agent
+    // reports something a user can act on, not a bare HTTP status. Read the body
+    // tolerantly: a non-JSON body must not mask the original status.
+    const body = await (async () => {
+      try {
+        return (await response.json()) as { error?: unknown };
+      } catch {
+        return null;
+      }
+    })();
+    const detail =
+      body && typeof body.error === "string" ? `: ${body.error}` : "";
     throw new Error(
       `Failed to fetch Odoo credentials for connection ${connectionId}: ` +
-        `HTTP ${response.status} ${response.statusText}`,
+        `HTTP ${response.status} ${response.statusText}${detail}`,
     );
   }
   const data = (await response.json()) as { credentials?: unknown };

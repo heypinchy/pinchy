@@ -124,13 +124,18 @@ describe("GET /api/internal/integrations/:connectionId/credentials", () => {
     expect(data.error).toBe("Unauthorized");
   });
 
-  it("returns 404 for non-existent connection", async () => {
+  it("returns an actionable 404 message when the connection no longer exists", async () => {
     mockDbSelectResult([]);
 
     const res = await GET(makeRequest("non-existent"), makeParams("non-existent"));
     expect(res.status).toBe(404);
     const data = await res.json();
-    expect(data.error).toBe("Connection not found");
+    // This body.error is surfaced (via the plugins) into the agent's tool error,
+    // so a bare "Connection not found" turns into an opaque "technical problem
+    // (error 404)" for the user. Make it actionable and generic across providers:
+    // say what happened and where an admin fixes it.
+    expect(data.error).toMatch(/no longer connected/i);
+    expect(data.error).toMatch(/integrations/i);
   });
 
   it("returns 403 for pending connection", async () => {

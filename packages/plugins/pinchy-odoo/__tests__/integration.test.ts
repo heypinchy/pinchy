@@ -328,6 +328,9 @@ describe("pinchy-odoo against real mock-odoo + mock-pinchy (#209 layer 2)", () =
 
     expect(result.isError).toBe(true);
     expect(result.content[0].text).toContain("404");
+    // The route's actionable body.error must be passed through, not swallowed —
+    // otherwise the agent reports a bare "HTTP 404" with no idea what to do.
+    expect(result.content[0].text).toContain("Connection not found");
   });
 });
 
