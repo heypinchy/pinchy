@@ -60,6 +60,7 @@ export type AuditEventType =
   | "channel.polling_failed"
   | "channel.recovered"
   | "chat.retry_triggered"
+  | "chat.session_reset"
   | "chat.agent_error"
   | "chat.silent_stream"
   | "chat.run_timed_out"

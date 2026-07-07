@@ -5,14 +5,27 @@ description: Type /compact, /new, /reset, or /help in the composer to act on the
 
 The chat composer recognizes a few slash commands. Type one as the first thing in your message and press Send — Pinchy runs the action instead of sending the text to the model. The command is consumed; it does not appear as a message in the thread.
 
+## Discovering commands
+
+Start a message with `/` and a menu opens above the composer listing the available commands with a short description of each. Keep typing to filter (`/c` narrows to `/compact`), use the **up/down arrows** to move, **Enter** to run the highlighted command, **Tab** to complete it into the input, and **Escape** to dismiss the menu. You can also click a command to run it. The composer placeholder hints at this: _"Send a message, or type / for commands."_
+
 ## Available commands
 
-| Command    | What it does                                                                                                                                                                                                        |
-| ---------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `/compact` | Compact the conversation: free up context by summarizing the in-context transcript. The full history stays on disk; compaction takes effect on your next message. Same as the **Compact conversation** menu action. |
-| `/new`     | Start a new conversation with this agent. The current chat stays in your chat list.                                                                                                                                 |
-| `/reset`   | Alias for `/new` — start a fresh conversation (empty context).                                                                                                                                                      |
-| `/help`    | Show the available slash commands.                                                                                                                                                                                  |
+| Command    | What it does                                                                                                                                                      |
+| ---------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `/compact` | Compact the conversation: free up context by summarizing the in-context transcript. The full history stays on disk; compaction takes effect on your next message. |
+| `/new`     | Start a new conversation with this agent. The current chat stays in your chat list.                                                                               |
+| `/reset`   | Reset **this** conversation: clear its context so the agent starts fresh, in the same chat. The thread is cleared to a clean slate.                               |
+| `/help`    | Show the available slash commands.                                                                                                                                |
+
+### `/reset` vs `/new`
+
+Both give you an empty context, but they are not the same:
+
+- **`/reset`** clears the conversation you are in. The agent forgets what came before, and the thread is reset in place. The previous transcript is retained on disk but is no longer shown in this chat.
+- **`/new`** leaves the current conversation untouched — it stays in your chat list — and opens a separate, fresh chat.
+
+Use `/new` when you want to keep a copy of the conversation; use `/reset` when you just want to start over here.
 
 ## How commands are matched
 
@@ -23,7 +36,8 @@ Commands only run when there are **no attachments**. If you attach a file, the m
 ## Confirmations
 
 - `/compact` shows a toast confirming the conversation was compacted (or an error if it couldn't be). Compaction is throttled — if you just compacted, wait a moment before trying again.
-- `/new` and `/reset` navigate you to a fresh chat immediately.
+- `/reset` clears the thread in place and shows a toast; the empty chat is your confirmation.
+- `/new` navigates you to a fresh chat immediately.
 - `/help` lists the commands in a toast.
 
 :::note

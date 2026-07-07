@@ -13,7 +13,6 @@ import { getAgentAvatarSvg } from "@/lib/avatar";
 import Link from "next/link";
 import { Settings } from "lucide-react";
 import { MobileChatHeader } from "@/components/mobile-chat-header";
-import { SessionActionsMenu } from "@/components/session-actions-menu";
 import { ChatSwitcher } from "@/components/chat-switcher";
 import { AiDisclosureLabel } from "@/components/ai-disclosure-label";
 import { Badge } from "@/components/ui/badge";
@@ -281,9 +280,6 @@ export function Chat({
                                     <AiDisclosureLabel />
                                   </div>
                                   <div className="flex items-center gap-3 shrink-0">
-                                    {hasInitialContent && (
-                                      <SessionActionsMenu agentId={agentId} chatId={chatId} />
-                                    )}
                                     {canEdit && (
                                       <Link
                                         href={`/chat/${agentId}/settings`}

@@ -1,6 +1,6 @@
 "use client";
 
-import { useContext, useEffect, useRef, useCallback } from "react";
+import { useContext, useEffect, useRef, useCallback, useState } from "react";
 import { usePathname, useRouter } from "next/navigation";
 import { toast } from "sonner";
 import { useWsRuntime } from "@/hooks/use-ws-runtime";
@@ -12,31 +12,57 @@ import {
 import { apiPost, ApiError } from "@/lib/api-client";
 import { generateChatId } from "@/lib/chats/generate-chat-id";
 import { SLASH_COMMANDS, type SlashCommand } from "@/lib/slash-commands";
-import type { CompactSessionRequest } from "@/lib/schemas/sessions";
+import type { CompactSessionRequest, ResetSessionRequest } from "@/lib/schemas/sessions";
 
 export function ChatSessionMounts() {
   const visitedSessions = useVisitedSessions();
+  // Per-session remount counter (#611). A `/reset` clears the OpenClaw session
+  // in place; bumping this nonce changes the instance's React key so it
+  // remounts — cold-starting useWsRuntime (fresh WS + empty history + greeting)
+  // instead of surgically clearing the runtime's message state machine. Keyed
+  // by the store key (agentId[:chatId]).
+  const [resetNonces, setResetNonces] = useState<Record<string, number>>({});
   return (
     <>
       {visitedSessions.map(({ key, agentId, chatId }) => (
         // `key` is the composite (agentId, chatId) store key (#508). Switching
         // chats yields a new key → React remounts the instance → useWsRuntime
-        // reconnects to the new session, so no stale messages bleed across.
-        <ChatSessionInstance key={key} agentId={agentId} chatId={chatId} />
+        // reconnects to the new session, so no stale messages bleed across. The
+        // `#<nonce>` suffix lets `/reset` force a remount of THIS chat without
+        // changing chatId (see resetNonces above).
+        <ChatSessionInstance
+          key={`${key}#${resetNonces[key] ?? 0}`}
+          agentId={agentId}
+          chatId={chatId}
+          onSessionReset={() => setResetNonces((n) => ({ ...n, [key]: (n[key] ?? 0) + 1 }))}
+        />
       ))}
     </>
   );
 }
 
-function ChatSessionInstance({ agentId, chatId }: { agentId: string; chatId?: string }) {
+function ChatSessionInstance({
+  agentId,
+  chatId,
+  onSessionReset,
+}: {
+  agentId: string;
+  chatId?: string;
+  onSessionReset: () => void;
+}) {
   const router = useRouter();
 
-  // Slash-command handler (#611). `/compact` hits the existing compact route
-  // (audited there). `/new` and `/reset` start a fresh chat (reset is an alias
-  // for new in v1 — a fresh chat has empty context). `/help` lists commands.
-  // All confirmations are toasts per the error/notification policy (success →
-  // toast). The handler is stable across renders so `useWsRuntime` doesn't
-  // churn.
+  // Slash-command handler (#611). Each command maps to a capability Pinchy
+  // already has:
+  //  - /compact → existing audited compact route (summarize, keep history).
+  //  - /reset   → existing reset route (clears THIS session's context in place),
+  //               then remounts the thread so the user sees the clean slate.
+  //  - /new     → navigate to a fresh chat (new chatId); the old one is kept.
+  //  - /help    → toast listing the commands.
+  // Confirmations are toasts per the error/notification policy (success →
+  // toast; the toast survives the reset remount because sonner renders it
+  // outside this subtree). The handler is stable across renders so
+  // `useWsRuntime` doesn't churn.
   const onSlashCommand = useCallback(
     (command: SlashCommand) => {
       switch (command.name) {
@@ -58,8 +84,29 @@ function ChatSessionInstance({ agentId, chatId }: { agentId: string; chatId?: st
           })();
           break;
         }
-        case "new":
         case "reset": {
+          void (async () => {
+            try {
+              await apiPost<{ ok: boolean }, ResetSessionRequest>(
+                `/api/agents/${agentId}/sessions/reset`,
+                { chatId }
+              );
+              // Remount so the now-empty session is shown as a clean slate —
+              // otherwise the visible messages linger while the model's context
+              // is gone. `/new` is the non-destructive alternative (keeps a copy).
+              onSessionReset();
+              toast.success("Conversation reset — context cleared. Use New chat to keep a copy.");
+            } catch (e) {
+              toast.error(
+                e instanceof ApiError
+                  ? e.message
+                  : "Couldn't reset the conversation. Please try again."
+              );
+            }
+          })();
+          break;
+        }
+        case "new": {
           router.push(`/chat/${agentId}/${generateChatId()}`);
           break;
         }
@@ -70,7 +117,7 @@ function ChatSessionInstance({ agentId, chatId }: { agentId: string; chatId?: st
         }
       }
     },
-    [agentId, chatId, router]
+    [agentId, chatId, router, onSessionReset]
   );
 
   const bundle = useWsRuntime(agentId, chatId, onSlashCommand);

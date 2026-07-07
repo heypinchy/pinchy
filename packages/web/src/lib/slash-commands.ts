@@ -3,8 +3,9 @@
  *
  * The chat composer intercepts a leading `/<command>` before dispatching the
  * message to the model: known commands run a handler against capabilities
- * Pinchy already has (compact / start a new chat / list commands); unknown
- * leading-slash text falls through and is sent as a normal message.
+ * Pinchy already has (compact / reset this session / start a new chat / list
+ * commands); unknown leading-slash text falls through and is sent as a normal
+ * message.
  *
  * `parseSlashCommand` is pure and unit-tested; the runtime hook wires it into
  * the send path (see `use-ws-runtime.ts`) and the Chat layer supplies the
@@ -29,7 +30,7 @@ export const SLASH_COMMANDS: ReadonlyArray<{
 }> = [
   { name: "compact", description: "Compact the conversation (free up context, keep history)." },
   { name: "new", description: "Start a new conversation with this agent." },
-  { name: "reset", description: "Alias for /new — start a fresh conversation." },
+  { name: "reset", description: "Reset this conversation — clear its context and start fresh." },
   { name: "help", description: "Show the available slash commands." },
 ];
 

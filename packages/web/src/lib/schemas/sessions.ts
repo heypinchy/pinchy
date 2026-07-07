@@ -30,6 +30,23 @@ export const compactSessionSchema = z.object({
 export type CompactSessionRequest = z.infer<typeof compactSessionSchema>;
 
 /**
+ * Body for `POST /api/agents/[agentId]/sessions/reset`.
+ *
+ * Unlike compaction (which summarizes and keeps the transcript in context),
+ * reset rotates the OpenClaw session in place: the session key stays the same
+ * but its context is cleared, so the next turn starts empty (the old transcript
+ * stays on disk, just unreachable from this key). `chatId` (#611) scopes the
+ * reset to one chat's session; omitted → the default per-user session. Shared
+ * between the route handler (parseRequestBody) and the client slash-command
+ * handler (typed request body via z.infer).
+ */
+export const resetSessionSchema = z.object({
+  chatId: chatIdSchema.optional(),
+});
+
+export type ResetSessionRequest = z.infer<typeof resetSessionSchema>;
+
+/**
  * One row in the response of `GET /api/agents/[agentId]/chats` — the user's
  * chats with an agent (#508). Shared between the route's response mapping and
  * the ChatSwitcher client component so the contract can't silently drift.

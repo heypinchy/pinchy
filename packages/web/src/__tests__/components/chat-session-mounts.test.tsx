@@ -184,6 +184,73 @@ describe("ChatSessionMounts", () => {
     );
   });
 
+  it("runs /reset against the reset route and remounts the thread (#611)", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValue({ ok: true, status: 200, text: async () => JSON.stringify({ ok: true }) });
+    vi.stubGlobal("fetch", fetchMock);
+
+    function Visitor() {
+      const session = useChatSession("agent-A", "chat-x");
+      if (!session.bundle) {
+        session.publish({
+          agentId: "agent-A",
+          chatId: "chat-x",
+          runtime: { __id: "seed" } as never,
+          isRunning: false,
+          isConnected: false,
+          isHistoryLoaded: false,
+          isReconcilingMessages: false,
+          hasInitialContent: false,
+          isOpenClawConnected: false,
+          isDelayed: false,
+          reconnectExhausted: false,
+          payloadRejected: false,
+          onRetryContinue: vi.fn(),
+          onRetryResend: vi.fn(),
+          lastError: null,
+        } as any);
+      }
+      return null;
+    }
+
+    useWsRuntimeSpy.mockClear();
+    toastSuccessSpy.mockClear();
+
+    render(
+      <ChatSessionProvider>
+        <Visitor />
+        <ChatSessionMounts />
+      </ChatSessionProvider>
+    );
+
+    const mountsBefore = useWsRuntimeSpy.mock.calls.filter(
+      (c: string[]) => c[0] === "agent-A"
+    ).length;
+    const onSlashCommand = useWsRuntimeSpy.mock.calls.at(-1)![2] as (c: { name: string }) => void;
+
+    await act(async () => {
+      onSlashCommand({ name: "reset" });
+      // Flush the apiPost microtasks and the subsequent remount setState.
+      await new Promise((r) => setTimeout(r, 0));
+    });
+
+    // Hit the reset route (not /new navigation) for THIS chat's session.
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/api/agents/agent-A/sessions/reset",
+      expect.objectContaining({ method: "POST", body: JSON.stringify({ chatId: "chat-x" }) })
+    );
+    // The bumped nonce changes the instance's React key → remount → a fresh
+    // useWsRuntime call, cold-starting the (now-empty) session.
+    const mountsAfter = useWsRuntimeSpy.mock.calls.filter(
+      (c: string[]) => c[0] === "agent-A"
+    ).length;
+    expect(mountsAfter).toBeGreaterThan(mountsBefore);
+    expect(toastSuccessSpy).toHaveBeenCalledWith(expect.stringContaining("reset"));
+
+    vi.unstubAllGlobals();
+  });
+
   it("keeps a mount alive when an unrelated child remounts", () => {
     useWsRuntimeSpy.mockClear();
 

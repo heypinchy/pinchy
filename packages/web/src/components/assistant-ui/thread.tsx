@@ -1,6 +1,10 @@
 import { UserMessageAttachments, ComposerAttachments } from "@/components/assistant-ui/attachment";
 import { PinchyAttachmentButton } from "@/components/assistant-ui/pinchy-attachment-button";
 import { PinchyDropZone } from "@/components/assistant-ui/pinchy-drop-zone";
+import {
+  useSlashCommandMenu,
+  SlashCommandMenuList,
+} from "@/components/assistant-ui/slash-command-menu";
 import { ChatErrorMessage, type ChatError } from "@/components/assistant-ui/chat-error-message";
 import { AttachmentPreview } from "@/components/assistant-ui/attachment-preview";
 import { ChatImage } from "@/components/assistant-ui/chat-image";
@@ -401,18 +405,28 @@ export const Composer: FC = () => {
   // returns an actionable error when none is configured), so the composer just
   // sends and lets the server decide. Typing is always allowed; only the send
   // button reflects connection state.
+  //
+  // Slash-command menu (#611): the `/` autocomplete popover. Its capture-phase
+  // key handler sits on the Root <form> so it can intercept Enter/↑/↓ before the
+  // form submits when the menu is open.
+  const slashMenu = useSlashCommandMenu();
   return (
-    <ComposerPrimitive.Root className="aui-composer-root relative flex w-full flex-col">
+    <ComposerPrimitive.Root
+      className="aui-composer-root relative flex w-full flex-col"
+      onKeyDownCapture={slashMenu.onKeyDownCapture}
+    >
       <DraftPersistence />
+      <SlashCommandMenuList menu={slashMenu} />
       <PinchyDropZone className="aui-composer-attachment-dropzone flex w-full flex-col rounded-2xl border border-input bg-background px-1 pt-2 outline-none transition-shadow has-[textarea:focus-visible]:border-ring has-[textarea:focus-visible]:ring-2 has-[textarea:focus-visible]:ring-ring/20">
         <PendingUploadChips />
         <ComposerAttachments />
         <ComposerPrimitive.Input
-          placeholder="Send a message..."
+          placeholder="Send a message, or type / for commands"
           className="aui-composer-input mb-0.5 md:mb-1 max-h-32 min-h-10 md:min-h-14 w-full resize-none bg-transparent px-4 pt-2 pb-1 md:pb-3 text-sm outline-none placeholder:text-muted-foreground focus-visible:ring-0"
           rows={1}
           autoFocus
           aria-label="Message input"
+          {...slashMenu.inputAriaProps}
         />
         <ComposerAction />
       </PinchyDropZone>
