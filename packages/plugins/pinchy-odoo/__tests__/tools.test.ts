@@ -46,8 +46,74 @@ import plugin, {
   formatMultiMatchError,
   assertNoCrossCompanyRefs,
   relationHasCompanyId,
+  findInvalidSelectionValues,
+  formatInvalidSelectionError,
   PRODUCT_REF_DISAMBIGUATION_HINT,
 } from "../index";
+
+const MOVE_FIELDS: OdooField[] = [
+  {
+    name: "move_type",
+    type: "selection",
+    selection: [
+      ["entry", "Journal Entry"],
+      ["out_invoice", "Customer Invoice"],
+      ["in_invoice", "Vendor Bill"],
+      ["in_refund", "Vendor Credit Note"],
+    ],
+  },
+  { name: "ref", type: "char" },
+  { name: "partner_id", type: "many2one", relation: "res.partner" },
+];
+
+describe("findInvalidSelectionValues", () => {
+  it("flags an out-of-set selection value and lists the valid options", () => {
+    // The staging duplicate: the agent used move_type "in_bill" (not a real
+    // Odoo move_type) — vendor bills are "in_invoice". On write Odoo errors
+    // opaquely; in a read domain it silently matches nothing.
+    const invalid = findInvalidSelectionValues(MOVE_FIELDS, {
+      move_type: "in_bill",
+      ref: "083000981540",
+    });
+    expect(invalid).toEqual([
+      {
+        field: "move_type",
+        value: "in_bill",
+        validValues: ["entry", "out_invoice", "in_invoice", "in_refund"],
+      },
+    ]);
+  });
+
+  it("accepts a valid selection value", () => {
+    expect(
+      findInvalidSelectionValues(MOVE_FIELDS, { move_type: "in_invoice", ref: "X" }),
+    ).toEqual([]);
+  });
+
+  it("ignores non-selection fields, unknown fields, and non-primitive values", () => {
+    expect(
+      findInvalidSelectionValues(MOVE_FIELDS, {
+        ref: "anything", // char field, not validated
+        unknown_field: "whatever", // not in schema
+        partner_id: { ref: "pinchy_ref:v1:abc" }, // relational, not a scalar
+      }),
+    ).toEqual([]);
+  });
+
+  it("skips selection fields with an empty/dynamic option set (cannot validate)", () => {
+    const fields: OdooField[] = [{ name: "state", type: "selection", selection: [] }];
+    expect(findInvalidSelectionValues(fields, { state: "whatever" })).toEqual([]);
+  });
+
+  it("formats a helpful error naming the field and valid enum values", () => {
+    const msg = formatInvalidSelectionError("account.move", [
+      { field: "move_type", value: "in_bill", validValues: ["in_invoice", "in_refund"] },
+    ]);
+    expect(msg).toContain("account.move.move_type");
+    expect(msg).toContain("in_bill");
+    expect(msg).toContain("in_invoice, in_refund");
+  });
+});
 
 interface AgentTool {
   name: string;

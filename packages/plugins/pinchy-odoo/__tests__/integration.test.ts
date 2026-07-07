@@ -710,6 +710,76 @@ describe("pinchy-odoo multi-company journal resolution (bare ref + scoped lookup
     });
   });
 
+  it("#5: rejects an out-of-set move_type with the valid options, not an opaque Odoo error", async () => {
+    // Staging: the agent guessed move_type "in_bill" (not a real Odoo move_type;
+    // vendor bills are "in_invoice"). Validate against the model's selection and
+    // surface the valid keys so the agent self-corrects without a blind retry.
+    const tools = createApi({ [accountingAgentId]: accountingConfig });
+    const createTool = findTool(tools, "odoo_create", accountingAgentId);
+
+    const result = await createTool.execute("create-bad-move-type", {
+      model: "account.move",
+      values: { move_type: "in_bill", ref: "BAD-MT-001" },
+    });
+
+    expect(result.isError).toBe(true);
+    const text = result.content[0].text;
+    expect(text).toContain("account.move.move_type");
+    expect(text).toContain("in_bill");
+    // The valid options are surfaced (vendor bill = in_invoice) so no guessing.
+    expect(text).toContain("in_invoice");
+
+    // Nothing was written — the guard fires before the create.
+    const moves = (await fetch(
+      `http://127.0.0.1:${mockOdoo.controlPort}/control/records?model=account.move`,
+    ).then((res) => res.json())) as Array<Record<string, unknown>>;
+    expect(moves.some((m) => m.ref === "BAD-MT-001")).toBe(false);
+  });
+
+  it("#3: refuses a second account.move with a ref that already exists (duplicate-invoice guard)", async () => {
+    // Staging: the agent couldn't find the existing bill (searched with the
+    // invalid move_type "in_bill" → empty) and booked a DUPLICATE (move_id 40
+    // duplicated move_id 39, both ref 083000981540). The guard surfaces the
+    // existing move instead of silently double-booking.
+    const tools = createApi({ [accountingAgentId]: accountingConfig });
+    const readTool = findTool(tools, "odoo_read", accountingAgentId);
+    const createTool = findTool(tools, "odoo_create", accountingAgentId);
+
+    const readResult = await readTool.execute("read-journal-dup", {
+      model: "account.journal",
+      filters: [["id", "=", 17]],
+      fields: ["name"],
+    });
+    const journalRef = JSON.parse(readResult.content[0].text).records[0]._pinchy_ref;
+    const companyRef = ref("res.company", 1, "Helmcraft GmbH", 1, "Helmcraft GmbH");
+    const values = {
+      ref: "DUP-INV-777",
+      move_type: "in_invoice",
+      company_id: { ref: companyRef },
+      journal_id: journalRef,
+    };
+
+    const first = await createTool.execute("create-dup-first", {
+      model: "account.move",
+      values,
+    });
+    expect(first.isError).toBeFalsy();
+
+    const second = await createTool.execute("create-dup-second", {
+      model: "account.move",
+      values,
+    });
+    expect(second.isError).toBe(true);
+    expect(second.content[0].text).toContain("already exists");
+    expect(second.content[0].text).toContain("DUP-INV-777");
+
+    // Exactly one move with that ref exists — no duplicate was written.
+    const moves = (await fetch(
+      `http://127.0.0.1:${mockOdoo.controlPort}/control/records?model=account.move`,
+    ).then((res) => res.json())) as Array<Record<string, unknown>>;
+    expect(moves.filter((m) => m.ref === "DUP-INV-777")).toHaveLength(1);
+  });
+
   it("scopes a journal name lookup by company_id, resolving the multi-company collision (Layer 2)", async () => {
     const tools = createApi({ [accountingAgentId]: accountingConfig });
     const createTool = findTool(tools, "odoo_create", accountingAgentId);

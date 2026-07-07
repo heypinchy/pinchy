@@ -911,6 +911,55 @@ export function assertNoCrossCompanyRefs(
 }
 
 /**
+ * Validate `selection`-type field values in `values` against the model's field
+ * schema. An Odoo selection field only accepts its declared option keys; an
+ * out-of-set value is a silent footgun:
+ *   - on create/write Odoo rejects it with an opaque server error;
+ *   - in a read/count DOMAIN it matches nothing, so the agent wrongly concludes
+ *     the record doesn't exist and books a DUPLICATE — the staging incident:
+ *     it searched account.move with move_type="in_bill" (not a valid move_type;
+ *     vendor bills are "in_invoice"), found nothing, then created move_id 40
+ *     duplicating move_id 39.
+ *
+ * Returns the offending entries with the valid option keys so the caller can
+ * throw a helpful error naming the enum instead of forwarding a bad value.
+ * Skips fields with an empty/dynamic selection set (can't validate) and
+ * non-primitive values (relational command tuples, refs).
+ */
+export function findInvalidSelectionValues(
+  fields: OdooField[],
+  values: Record<string, unknown>,
+): Array<{ field: string; value: string; validValues: string[] }> {
+  const byName = new Map(fields.map((f) => [f.name, f]));
+  const invalid: Array<{ field: string; value: string; validValues: string[] }> = [];
+  for (const [name, raw] of Object.entries(values)) {
+    const field = byName.get(name);
+    if (!field || field.type !== "selection") continue;
+    const options = field.selection ?? [];
+    if (options.length === 0) continue;
+    if (typeof raw !== "string" && typeof raw !== "number") continue;
+    const value = String(raw);
+    const validValues = options.map(([optValue]) => optValue);
+    if (!validValues.includes(value)) invalid.push({ field: name, value, validValues });
+  }
+  return invalid;
+}
+
+/** Human-readable error for invalid selection values, listing the valid keys. */
+export function formatInvalidSelectionError(
+  model: string,
+  invalid: Array<{ field: string; value: string; validValues: string[] }>,
+): string {
+  return invalid
+    .map(
+      (e) =>
+        `Invalid value "${e.value}" for ${model}.${e.field}. ` +
+        `Valid values: ${e.validValues.join(", ")}.`,
+    )
+    .join(" ");
+}
+
+/**
  * Decode the company tag (id + label) from a `{ ref }` shape in one pass.
  * Returns null when the value is not a tagged ref, when decoding fails, or
  * when the payload lacks a `companyId` tag (legacy / untagged refs). The
@@ -2107,6 +2156,61 @@ const plugin = {
                   } else {
                     values = params.values as Record<string, unknown>;
                   }
+
+                  // #5: reject out-of-set selection values (e.g. move_type
+                  // "in_bill", which is not a real Odoo move_type) with the valid
+                  // options, instead of forwarding a bad enum to Odoo where it
+                  // surfaces as an opaque server error the agent has to guess at.
+                  const modelFields = normalizeFields(await client.fields(model));
+                  const invalidSelections = findInvalidSelectionValues(modelFields, values);
+                  if (invalidSelections.length > 0) {
+                    throw new Error(formatInvalidSelectionError(model, invalidSelections));
+                  }
+
+                  // #3: duplicate-invoice guard. An account.move (vendor/customer
+                  // invoice) is keyed by its `ref` — the supplier's invoice
+                  // number. Agents that fail to find an existing bill (e.g. a
+                  // search with an invalid move_type returns empty) otherwise book
+                  // a DUPLICATE: on staging the agent created move_id 40 duplicating
+                  // move_id 39, both ref 083000981540. Before creating, surface any
+                  // existing move that already carries the same ref (+ move_type +
+                  // partner) so the agent updates it or confirms a deliberate
+                  // second entry rather than silently double-booking.
+                  if (
+                    model === "account.move" &&
+                    typeof values.ref === "string" &&
+                    values.ref.trim() &&
+                    checkPermission(config.permissions, model, "read")
+                  ) {
+                    const dupDomain: OdooDomain = [["ref", "=", values.ref]];
+                    if (typeof values.move_type === "string") {
+                      dupDomain.push(["move_type", "=", values.move_type]);
+                    }
+                    if (typeof values.partner_id === "number") {
+                      dupDomain.push(["partner_id", "=", values.partner_id]);
+                    }
+                    const existing = getSearchReadRecords(
+                      await client.searchRead("account.move", dupDomain, {
+                        fields: ["id", "name", "state"],
+                        limit: 1,
+                      }),
+                    );
+                    if (existing.length > 0) {
+                      const dup = existing[0] as { id: number; name?: string; state?: string };
+                      throw new Error(
+                        `A record already exists in account.move with ref "${values.ref}"` +
+                          (typeof values.move_type === "string"
+                            ? ` (move_type "${values.move_type}")`
+                            : "") +
+                          `: id ${dup.id}` +
+                          (dup.name ? ` "${dup.name}"` : "") +
+                          (dup.state ? `, state "${dup.state}"` : "") +
+                          `. To avoid a duplicate, update it with odoo_write, or confirm you ` +
+                          `intend a second entry before creating.`,
+                      );
+                    }
+                  }
+
                   return client.create(model, values);
                 },
               );
