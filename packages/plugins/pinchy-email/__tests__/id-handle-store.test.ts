@@ -37,6 +37,18 @@ describe("handleFor", () => {
     const handle = handleFor(graphLikeId, MSG_PREFIX);
     expect(handle.length).toBeLessThan(30);
   });
+
+  // Finding 2 (2026-07-07 review): with only 32 bits of entropy two distinct
+  // realIds could collide within an agent's cap and silently overwrite each
+  // other, so a handle would resolve to the WRONG email. The handle carries 64
+  // bits (16 hex chars) so that a collision is genuinely negligible, not merely
+  // unlikely. This guards against silently shrinking the entropy back.
+  it("carries 64 bits (16 hex chars) of the realId digest", () => {
+    const hex = handleFor("some-real-id", MSG_PREFIX).slice(
+      `${MSG_PREFIX}_`.length,
+    );
+    expect(hex).toMatch(/^[0-9a-f]{16}$/);
+  });
 });
 
 describe("putHandle / resolveHandle", () => {

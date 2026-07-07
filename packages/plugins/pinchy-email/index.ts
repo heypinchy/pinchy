@@ -10,6 +10,7 @@ import {
   resolveHandle,
   MSG_PREFIX,
   ATT_PREFIX,
+  MAX_ENTRIES_PER_AGENT,
 } from "./id-handle-store.js";
 
 // Filesystem convention shared with pinchy-odoo's odoo_attach_file: every
@@ -305,6 +306,21 @@ function handleizeSummaries(
     ...s,
     id: putHandle(agentId, s.id),
   }));
+}
+
+/**
+ * Clamp a model-supplied list/search limit to the handle store's per-agent
+ * cap. Each returned summary mints a handle, and the store evicts oldest-first
+ * once an agent exceeds the cap — so a single result set larger than the cap
+ * would evict its own earliest handles, leaving the top rows the model was just
+ * shown unresolvable and un-re-listable (Finding 1, 2026-07-07 review). Capping
+ * the result set at the store size keeps every handle in a single listing
+ * resolvable. A missing/invalid limit is left undefined so the adapter applies
+ * its own default.
+ */
+function clampListLimit(limit: unknown): number | undefined {
+  if (typeof limit !== "number" || !Number.isFinite(limit)) return undefined;
+  return Math.min(limit, MAX_ENTRIES_PER_AGENT);
 }
 
 interface EmailCredentials {
@@ -621,7 +637,7 @@ const plugin = {
               const result = await withAuthRetry(agentId, config, (adapter) =>
                 adapter.list({
                   folder: params.folder as Folder | undefined,
-                  limit: params.limit as number | undefined,
+                  limit: clampListLimit(params.limit),
                   unreadOnly: params.unreadOnly as boolean | undefined,
                 }),
               );
@@ -815,7 +831,7 @@ const plugin = {
                   sinceDays: params.sinceDays as number | undefined,
                   folder: params.folder as
                     "INBOX" | "SENT" | "DRAFTS" | "TRASH" | "SPAM" | undefined,
-                  limit: params.limit as number | undefined,
+                  limit: clampListLimit(params.limit),
                 }),
               );
 

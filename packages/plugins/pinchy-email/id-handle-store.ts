@@ -26,11 +26,24 @@ export const MSG_PREFIX = "msg";
 export const ATT_PREFIX = "att";
 
 const TTL_MS = 30 * 60 * 1000; // 30 minutes
-const MAX_ENTRIES_PER_AGENT = 500;
-// Short enough that the model can reliably copy it verbatim, long enough
-// (32 bits of a realId's sha256) to make accidental handle collisions within
-// a single agent's 500-entry cap practically impossible.
-const HANDLE_HEX_LENGTH = 8;
+
+/**
+ * Per-agent entry cap. Exported so the tools that mint handles
+ * (email_list/email_search) can clamp their result-set size to it: a single
+ * result set larger than the cap would evict its own earliest handles as the
+ * later ones are minted, leaving the top rows the model was just shown
+ * unresolvable (Finding 1, 2026-07-07 review). Keeping every result set at or
+ * below the cap makes that impossible.
+ */
+export const MAX_ENTRIES_PER_AGENT = 500;
+
+// 16 hex chars = 64 bits of a realId's sha256. Short enough that the model can
+// still copy it verbatim (a Graph id is ~150 chars), but wide enough that a
+// collision between two distinct realIds within an agent's cap is negligible:
+// the birthday bound at 500 entries is ~500^2 / 2^65 ≈ 7e-15. An earlier
+// 32-bit handle sat at ~3e-5, where a collision would silently overwrite one
+// entry and resolve a handle to the WRONG email (Finding 2, 2026-07-07 review).
+const HANDLE_HEX_LENGTH = 16;
 
 interface HandleEntry {
   realId: string;

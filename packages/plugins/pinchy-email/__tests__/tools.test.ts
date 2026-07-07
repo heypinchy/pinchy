@@ -51,6 +51,7 @@ vi.mock("node:fs/promises", () => ({
 import { GmailAdapter } from "../gmail-adapter";
 import { GraphAdapter } from "../graph-adapter";
 import plugin from "../index";
+import { MAX_ENTRIES_PER_AGENT } from "../id-handle-store";
 
 interface AgentTool {
   name: string;
@@ -1916,5 +1917,51 @@ describe("id-handle indirection", () => {
     expect(result.isError).toBe(true);
     expect(result.content[0].text).toContain("unknown or has expired");
     expect(mockRead).not.toHaveBeenCalled();
+  });
+
+  // Finding 1 (2026-07-07 review): the handle store caps entries per agent and
+  // evicts oldest-first. A single result set larger than that cap would evict
+  // its own earliest handles as the later ones are minted, so the top rows the
+  // model was just shown would resolve to "unknown or expired" — and re-listing
+  // reproduces the same eviction, making them permanently unopenable. The tools
+  // therefore clamp an over-large limit down to the store cap so a single
+  // result set can never exceed it.
+  it("email_list clamps an over-large limit to the handle-store cap", async () => {
+    mockList.mockResolvedValue([]);
+    const tools = createApi();
+    const tool = findTool(tools, "email_list", agentId)!;
+
+    await tool.execute("call-1", { limit: MAX_ENTRIES_PER_AGENT + 5000 });
+
+    expect(mockList).toHaveBeenCalledWith(
+      expect.objectContaining({ limit: MAX_ENTRIES_PER_AGENT }),
+    );
+  });
+
+  it("email_search clamps an over-large limit to the handle-store cap", async () => {
+    mockSearch.mockResolvedValue([]);
+    const tools = createApi();
+    const tool = findTool(tools, "email_search", agentId)!;
+
+    await tool.execute("call-1", {
+      subject: "invoice",
+      limit: MAX_ENTRIES_PER_AGENT + 5000,
+    });
+
+    expect(mockSearch).toHaveBeenCalledWith(
+      expect.objectContaining({ limit: MAX_ENTRIES_PER_AGENT }),
+    );
+  });
+
+  it("leaves a within-cap limit untouched", async () => {
+    mockList.mockResolvedValue([]);
+    const tools = createApi();
+    const tool = findTool(tools, "email_list", agentId)!;
+
+    await tool.execute("call-1", { limit: 25 });
+
+    expect(mockList).toHaveBeenCalledWith(
+      expect.objectContaining({ limit: 25 }),
+    );
   });
 });
