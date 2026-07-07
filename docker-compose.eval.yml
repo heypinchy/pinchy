@@ -33,6 +33,13 @@ services:
       - "7781:7777"
     environment:
       - AUDIT_HMAC_SECRET=deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef
+      # Fixed test-only secrets (throwaway eval stack, mock data only — same
+      # rationale as the baked AUDIT_HMAC_SECRET). ENCRYPTION_KEY must match the
+      # value the eval:selftest/eval:models scripts pass: the Playwright setup
+      # encrypts the seeded Microsoft mock credentials host-side and Pinchy
+      # must decrypt them with the same key. 64 hex chars.
+      - ENCRYPTION_KEY=00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff
+      - BETTER_AUTH_SECRET=eval-v1-test-secret-not-for-production
       # Emit a dummy API-key SecretRef for the local Ollama provider so
       # OpenClaw authenticates when routing to host.docker.internal (fake-
       # ollama, selftest mode) — same intent as docker-compose.odoo-test.yml.
@@ -43,8 +50,8 @@ services:
       # The web app performs the Microsoft OAuth token refresh (credentials
       # route), so it is the container that must talk to the mock's /token
       # endpoint.
-      - MICROSOFT_OAUTH_BASE_URL=http://graph-mock:9505
-      - GRAPH_API_BASE_URL=http://graph-mock:9505
+      - MICROSOFT_OAUTH_BASE_URL=http://graph-mock:9005
+      - GRAPH_API_BASE_URL=http://graph-mock:9005
       # Passed through so `models` mode can seed settings.ollama_cloud_api_key
       # without baking a real key into the image or compose file.
       - OLLAMA_CLOUD_API_KEY=${OLLAMA_CLOUD_API_KEY:-}
@@ -62,7 +69,7 @@ services:
     environment:
       # The pinchy-email plugin (running inside OpenClaw) calls the Graph API
       # directly for attachment downloads.
-      - GRAPH_API_BASE_URL=http://graph-mock:9505
+      - GRAPH_API_BASE_URL=http://graph-mock:9005
 
   db:
     ports:

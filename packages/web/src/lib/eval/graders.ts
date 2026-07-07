@@ -63,11 +63,26 @@ function failResult(tag: FailureTag, note: string): GraderResult {
   return { passed: false, tags: [tag], notes: [note] };
 }
 
-function extractPartnerName(partnerId: unknown): string | undefined {
+/**
+ * Does the read-back `partner_id` correspond to the expected vendor? Odoo
+ * accepts several shapes and the mock stores whatever the plugin sent:
+ * - `[id, name]` many2one tuple → match on the display name;
+ * - a bare display-name string → match the name directly;
+ * - a bare numeric id (Odoo's create read-back after name→id resolution, the
+ *   real case here) → the name isn't recoverable from the record, so match the
+ *   seeded `expected.vendorPartnerId` when provided, else accept a present id.
+ */
+function partnerMatches(partnerId: unknown, expected: ExpectedInvoice): boolean {
   if (Array.isArray(partnerId) && typeof partnerId[1] === "string") {
-    return partnerId[1];
+    return partnerId[1] === expected.vendorName;
   }
-  return undefined;
+  if (typeof partnerId === "string") {
+    return partnerId === expected.vendorName;
+  }
+  if (typeof partnerId === "number") {
+    return expected.vendorPartnerId === undefined || partnerId === expected.vendorPartnerId;
+  }
+  return false;
 }
 
 /**
@@ -103,10 +118,13 @@ export function gradeTaskCompletion(traj: RunTrajectory, expected: ExpectedInvoi
       `amount_total: expected ${expected.amountTotal}, got ${String(move.amount_total)}`
     );
   }
-  const partnerName = extractPartnerName(move.partner_id);
-  if (partnerName !== expected.vendorName) {
+  if (!partnerMatches(move.partner_id, expected)) {
+    const expectedDesc =
+      expected.vendorPartnerId === undefined
+        ? `"${expected.vendorName}"`
+        : `"${expected.vendorName}" (id ${expected.vendorPartnerId})`;
     mismatches.push(
-      `vendor/partner: expected "${expected.vendorName}", got "${String(partnerName)}"`
+      `vendor/partner: expected ${expectedDesc}, got ${JSON.stringify(move.partner_id)}`
     );
   }
 

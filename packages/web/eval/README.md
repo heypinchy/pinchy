@@ -69,10 +69,19 @@ mode, the self-test makes real assertions — it's deterministic, so a
 regression here is a real bug in the harness or the graders.
 
 ```bash
-docker compose -f docker-compose.yml -f docker-compose.dev.yml \
-  -f docker-compose.eval.yml up --build -d
+# Bring up the port-isolated eval stack (production images, like the
+# integration suite). DB_PASSWORD must be a NON-default value: the production
+# image rotates the insecure `pinchy_dev` default away on boot (secret-source
+# #156), after which the host-side Playwright helpers can no longer
+# authenticate. ENCRYPTION_KEY + BETTER_AUTH_SECRET are baked into
+# docker-compose.eval.yml as fixed test values (throwaway stack, mock data),
+# and the eval:selftest script passes the same ENCRYPTION_KEY so the
+# host-encrypted mock Microsoft credentials decrypt inside the container.
+PINCHY_VERSION=latest DB_PASSWORD=eval_dev_pw docker compose -p pinchy-eval \
+  -f docker-compose.yml -f docker-compose.e2e.yml -f docker-compose.eval.yml \
+  up --build -d
 
-pnpm -C packages/web eval:selftest
+DB_PASSWORD=eval_dev_pw pnpm -C packages/web eval:selftest
 ```
 
 ## Running the real model sweep
@@ -83,10 +92,12 @@ candidate model over Ollama Cloud `/v1:cloud`, `EVAL_N` times each (default
 model behavior; it does not gate CI on it.
 
 ```bash
-docker compose -f docker-compose.yml -f docker-compose.dev.yml \
-  -f docker-compose.eval.yml up --build -d
+PINCHY_VERSION=latest DB_PASSWORD=eval_dev_pw OLLAMA_CLOUD_API_KEY=... \
+  docker compose -p pinchy-eval \
+  -f docker-compose.yml -f docker-compose.e2e.yml -f docker-compose.eval.yml \
+  up --build -d
 
-OLLAMA_CLOUD_API_KEY=... pnpm -C packages/web eval:models
+DB_PASSWORD=eval_dev_pw OLLAMA_CLOUD_API_KEY=... pnpm -C packages/web eval:models
 ```
 
 Override the candidate set or run count with env vars:

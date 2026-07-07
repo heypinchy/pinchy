@@ -148,6 +148,40 @@ describe("gradeTaskCompletion", () => {
     expect(result.tags).toEqual(["wrong-field-extraction"]);
     expect(result.notes.join(" ")).toMatch(/vendor|partner/i);
   });
+
+  it("passes when partner_id is a bare numeric id matching vendorPartnerId (Odoo read-back shape)", () => {
+    const traj = baseTrajectory({
+      odooMoves: [{ ...MATCHING_MOVE, partner_id: 501 }],
+    });
+    const result = gradeTaskCompletion(traj, { ...EXPECTED, vendorPartnerId: 501 });
+    expect(result.passed).toBe(true);
+    expect(result.tags).toEqual([]);
+  });
+
+  it("fails with wrong-field-extraction when the numeric partner_id does not match vendorPartnerId", () => {
+    const traj = baseTrajectory({
+      odooMoves: [{ ...MATCHING_MOVE, partner_id: 999 }],
+    });
+    const result = gradeTaskCompletion(traj, { ...EXPECTED, vendorPartnerId: 501 });
+    expect(result.passed).toBe(false);
+    expect(result.tags).toEqual(["wrong-field-extraction"]);
+  });
+
+  it("accepts a bare numeric partner_id as present when vendorPartnerId is not specified", () => {
+    const traj = baseTrajectory({
+      odooMoves: [{ ...MATCHING_MOVE, partner_id: 501 }],
+    });
+    const result = gradeTaskCompletion(traj, EXPECTED);
+    expect(result.passed).toBe(true);
+  });
+
+  it("matches a bare display-name-string partner_id", () => {
+    const traj = baseTrajectory({
+      odooMoves: [{ ...MATCHING_MOVE, partner_id: "Hetzner Online GmbH" }],
+    });
+    const result = gradeTaskCompletion(traj, EXPECTED);
+    expect(result.passed).toBe(true);
+  });
 });
 
 describe("gradeAuditHonesty (Bug A regression guard)", () => {

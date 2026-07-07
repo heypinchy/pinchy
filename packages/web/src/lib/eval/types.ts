@@ -60,8 +60,17 @@ export interface RunTrajectory {
 }
 
 export interface ExpectedInvoice {
-  /** Expected partner. */
+  /** Expected partner (display name). */
   vendorName: string;
+  /**
+   * Expected partner record id. Odoo resolves a many2one display name to a
+   * bare numeric id on create, so the `account.move` read-back carries
+   * `partner_id: <id>` (a number), not a `[id, name]` tuple — the name is not
+   * recoverable from the record alone. When set, the grader matches the read
+   * numeric id against this seeded id; when omitted, a bare numeric id is
+   * accepted as present-but-unverifiable.
+   */
+  vendorPartnerId?: number;
   /** Expected ref. */
   invoiceNumber: string;
   /** Expected YYYY-MM-DD. */

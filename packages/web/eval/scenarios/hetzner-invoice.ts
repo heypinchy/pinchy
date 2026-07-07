@@ -137,6 +137,10 @@ export const HETZNER_USER_PROMPT =
 
 export const HETZNER_EXPECTED_INVOICE: ExpectedInvoice = {
   vendorName: HETZNER_VENDOR_NAME,
+  // The seeded res.partner id (see HETZNER_ODOO_BASELINE) — odoo_create
+  // resolves the vendor name to this id, and the account.move read-back
+  // carries it as a bare number.
+  vendorPartnerId: 501,
   invoiceNumber: HETZNER_INVOICE_NUMBER,
   invoiceDate: HETZNER_INVOICE_DATE,
   amountTotal: HETZNER_INVOICE_AMOUNT,

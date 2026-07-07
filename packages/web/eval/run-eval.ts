@@ -21,6 +21,7 @@
 // `test`/`expect` calls itself.
 import type { Page } from "@playwright/test";
 import { mkdir, writeFile } from "node:fs/promises";
+import { randomUUID } from "node:crypto";
 import path from "node:path";
 import { buildTrajectory, type NormalizeAuditEntry } from "../src/lib/eval/normalize";
 import { gradeRun } from "../src/lib/eval/graders";
@@ -196,13 +197,27 @@ async function waitForRunIdle(page: Page, timeoutMs: number): Promise<void> {
   await stop.waitFor({ state: "hidden", timeout: timeoutMs });
 }
 
-/** Scrapes the text of the LAST assistant message bubble in the chat DOM. */
+/**
+ * Scrapes the text of the LAST assistant message in the chat DOM, waiting for
+ * it to STABILIZE first. After a run goes idle the streamed chunk and the
+ * canonical history reconcile can briefly leave a partial/duplicated render
+ * (a known assistant-ui flake — the reason sibling E2E specs poll the audit
+ * log instead of the streamed text). Grading needs the complete final message
+ * (false-success detection matches completion phrases against it), so we poll
+ * the assistant *content* div (not the whole bubble, which also carries footer
+ * actions) until its text is non-empty and unchanged across two reads.
+ */
 async function scrapeFinalAssistantMessage(page: Page): Promise<string> {
-  const assistantMessages = page.locator('[data-role="assistant"]');
-  const count = await assistantMessages.count();
-  if (count === 0) return "";
-  const last = assistantMessages.nth(count - 1);
-  return (await last.innerText()).trim();
+  const contents = page.locator('[data-role="assistant"] .aui-assistant-message-content');
+  let previous: string | null = null;
+  for (let attempt = 0; attempt < 24; attempt++) {
+    const count = await contents.count();
+    const text = count === 0 ? "" : (await contents.nth(count - 1).innerText()).trim();
+    if (text.length > 0 && text === previous) return text;
+    previous = text;
+    await page.waitForTimeout(250);
+  }
+  return previous ?? "";
 }
 
 export interface DispatchResult {
@@ -219,9 +234,15 @@ export async function dispatchAndScrape(
   page: Page,
   agentId: string,
   prompt: string,
-  opts: { idleTimeoutMs?: number } = {}
+  opts: { idleTimeoutMs?: number; chatId?: string } = {}
 ): Promise<DispatchResult> {
-  await page.goto(`/chat/${agentId}`);
+  // A fresh chatId per run gives a fresh OpenClaw session
+  // (agent:<id>:direct:<userId>:<chatId>) so one run's tool-call history never
+  // pollutes the next — essential both for the selftest's two back-to-back
+  // dispatches and for the real N-runs-per-model sweep (a shared session would
+  // let a prior run's context/tool results skew the model under test).
+  const chatId = opts.chatId ?? randomUUID();
+  await page.goto(`/chat/${agentId}/${chatId}`);
   const input = page.getByPlaceholder(/send a message/i);
   await input.waitFor({ state: "visible", timeout: 10_000 });
 
