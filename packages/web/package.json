@@ -23,6 +23,8 @@
     "test:e2e:email": "playwright test --config playwright.email.config.ts",
     "test:e2e:imap": "playwright test --config playwright.imap.config.ts",
     "test:integration": "playwright test --config playwright.integration.config.ts",
+    "eval:selftest": "EVAL_MODE=selftest PINCHY_URL=http://localhost:7781 MOCK_ODOO_URL=http://localhost:9502 GRAPH_MOCK_URL=http://localhost:9505 DATABASE_URL=postgresql://pinchy:${DB_PASSWORD:-pinchy_dev}@localhost:5437/pinchy playwright test --config eval/playwright.eval.config.ts",
+    "eval:models": "EVAL_MODE=models PINCHY_URL=http://localhost:7781 MOCK_ODOO_URL=http://localhost:9502 GRAPH_MOCK_URL=http://localhost:9505 DATABASE_URL=postgresql://pinchy:${DB_PASSWORD:-pinchy_dev}@localhost:5437/pinchy playwright test --config eval/playwright.eval.config.ts",
     "db:generate": "drizzle-kit generate",
     "db:migrate": "drizzle-kit migrate",
     "db:studio": "drizzle-kit studio",

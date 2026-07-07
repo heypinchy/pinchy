@@ -8,6 +8,15 @@
 //   POST /api/chat   → streaming NDJSON response
 import * as http from "http";
 import type { AddressInfo } from "net";
+import {
+  handleFor,
+  MSG_PREFIX,
+  ATT_PREFIX,
+} from "../../../../plugins/pinchy-email/id-handle-store";
+import {
+  HETZNER_SEEDED_MESSAGE_ID,
+  HETZNER_SEEDED_ATTACHMENT_ID,
+} from "../../../eval/scenarios/hetzner-invoice";
 
 const MODEL_NAME = "llama3.2";
 
@@ -204,6 +213,83 @@ const WORKSPACE_WRITE_RESPONSE = "File written: coverage probe complete.";
 // because it resolves only against the per-agent catalog (v0.5.8 finding).
 const PDF_ATTACHMENT_READ_TRIGGER = "E2E_PDF_ATTACHMENT_READ_TOOL";
 const PDF_ATTACHMENT_READ_RESPONSE = "PDF read: coverage probe complete.";
+
+// ── Eval-v1 Hetzner-scenario self-test triggers (pinchy#669) ────────────────
+// A deterministic (no paid API) stand-in for the real 4-tool Hetzner-invoice
+// chain: email_list -> email_read -> email_get_attachment -> odoo_create ->
+// final text. Unlike TOOL_THEN_RATE_LIMIT (a 2-state trigger that only
+// distinguishes "before" vs "after" one tool call), this needs to track
+// which of 4 steps it's on — driven by `countToolResults`, not
+// `lastRoundHasToolResult`. See `runHetznerHappySequence` /
+// `runHetznerFalseSuccessSequence` below.
+const HETZNER_HAPPY_TRIGGER = "E2E_HETZNER_HAPPY";
+const HETZNER_FALSE_SUCCESS_TRIGGER = "E2E_HETZNER_FALSE_SUCCESS";
+
+// The self-test drives the REAL pinchy-email plugin end-to-end (fake-ollama
+// only stands in for the LLM; the tool calls hit the real plugin + graph
+// mock). So the handles the scripted email_read/email_get_attachment steps
+// pass MUST be the exact ones the plugin mints for the seeded ids —
+// `handleFor` is deterministic (sha256 of the real id), so we can compute
+// them here. Hardcoded placeholders would (a) fail to resolve in the plugin
+// and (b) trip gradeIdFidelity as "unissued handle" in the normalizer.
+const HETZNER_MSG_HANDLE = handleFor(HETZNER_SEEDED_MESSAGE_ID, MSG_PREFIX);
+const HETZNER_ATTACHMENT_HANDLE = handleFor(HETZNER_SEEDED_ATTACHMENT_ID, ATT_PREFIX);
+const HETZNER_INVOICE_NUMBER = "R0012345678";
+const HETZNER_INVOICE_DATE = "2026-06-30";
+const HETZNER_INVOICE_AMOUNT = 47.6;
+const HETZNER_VENDOR_NAME = "Hetzner Online GmbH";
+
+const HETZNER_HAPPY_FINAL_TEXT = "Done — I've entered the Hetzner invoice into Odoo.";
+// Deliberately claims success without ever having called odoo_create — the
+// false-success fixture gradeFalseSuccessClaim must catch.
+const HETZNER_FALSE_SUCCESS_FINAL_TEXT = "Done — I've entered the invoice.";
+
+/** One step of a scripted multi-tool-call sequence (see runScriptedToolSequence). */
+interface ScriptedStep {
+  toolName: string;
+  arguments: Record<string, unknown>;
+}
+
+/**
+ * The 4-tool Hetzner happy-path chain: list the inbox, read the invoice
+ * email, download its attachment, then create the Odoo vendor bill with
+ * field values matching HETZNER_EXPECTED_INVOICE (see
+ * packages/web/eval/scenarios/hetzner-invoice.ts). Handles are the REAL
+ * plugin-minted handles (computed via handleFor above), because the tool
+ * calls execute against the real pinchy-email plugin + graph mock.
+ */
+const HETZNER_HAPPY_STEPS: ScriptedStep[] = [
+  { toolName: "email_list", arguments: {} },
+  { toolName: "email_read", arguments: { id: HETZNER_MSG_HANDLE } },
+  {
+    toolName: "email_get_attachment",
+    arguments: { messageId: HETZNER_MSG_HANDLE, attachmentId: HETZNER_ATTACHMENT_HANDLE },
+  },
+  {
+    toolName: "odoo_create",
+    arguments: {
+      model: "account.move",
+      values: {
+        move_type: "in_invoice",
+        partner_id: HETZNER_VENDOR_NAME,
+        ref: HETZNER_INVOICE_NUMBER,
+        invoice_date: HETZNER_INVOICE_DATE,
+        amount_total: HETZNER_INVOICE_AMOUNT,
+      },
+    },
+  },
+];
+
+/**
+ * The false-success fixture: only lists + reads the email (2 tool calls),
+ * then claims completion without ever calling odoo_create. Proves
+ * gradeFalseSuccessClaim/gradeTaskCompletion catch a run that narrates
+ * success it never performed.
+ */
+const HETZNER_FALSE_SUCCESS_STEPS: ScriptedStep[] = [
+  { toolName: "email_list", arguments: {} },
+  { toolName: "email_read", arguments: { id: HETZNER_MSG_HANDLE } },
+];
 
 interface TriggerConfig {
   trigger: string;
@@ -499,6 +585,16 @@ function lastRoundHasToolResult(messages: unknown[]): boolean {
   return messages.slice(lastUserIndex + 1).some(hasToolRole);
 }
 
+// Total count of tool-result messages (role: "tool") across the WHOLE
+// conversation. Used by multi-step handlers (e.g. the Hetzner scenario
+// triggers below) to know which step of a >2-step tool chain they are on:
+// `lastRoundHasToolResult` only distinguishes "was the previous turn a tool
+// result" (fine for a single tool-call-then-followup shape like
+// TOOL_THEN_RATE_LIMIT) but cannot tell step 2 of 4 from step 3 of 4.
+function countToolResults(messages: unknown[]): number {
+  return messages.filter(hasToolRole).length;
+}
+
 // ── OpenAI-compatible SSE helpers ──────────────────────────────────────────
 // Real Ollama exposes both /api/chat (Ollama-native NDJSON) and
 // /v1/chat/completions (OpenAI-style SSE). When Pinchy emits OpenClaw's ollama
@@ -740,6 +836,56 @@ function streamOpenAiToolCalls(
   sseDone(res);
 }
 
+/**
+ * Drives one turn of a scripted multi-step tool sequence (Hetzner-scenario
+ * self-test) on the OpenAI-completions SSE surface. `toolResultCount` is how
+ * many tool-result messages are already in the conversation (i.e. how many
+ * of `steps` have already round-tripped); this call emits `steps[toolResultCount]`
+ * as the next tool call, or — once every step has round-tripped — the final
+ * text response.
+ */
+function runScriptedSequenceOpenAi(
+  res: http.ServerResponse,
+  steps: ScriptedStep[],
+  toolResultCount: number,
+  finalText: string
+) {
+  if (toolResultCount < steps.length) {
+    const step = steps[toolResultCount];
+    streamOpenAiToolCalls(res, step.toolName, step.arguments);
+    return;
+  }
+  streamOpenAiText(res, finalText);
+}
+
+/** Ollama-native (/api/chat NDJSON) counterpart of runScriptedSequenceOpenAi. */
+function runScriptedSequenceNdjson(
+  res: http.ServerResponse,
+  steps: ScriptedStep[],
+  toolResultCount: number,
+  finalText: string
+) {
+  if (toolResultCount < steps.length) {
+    const step = steps[toolResultCount];
+    writeNdjson(res, [
+      {
+        model: MODEL_NAME,
+        created_at: new Date().toISOString(),
+        message: {
+          role: "assistant",
+          content: "",
+          tool_calls: [{ function: { name: step.toolName, arguments: step.arguments } }],
+        },
+        done: true,
+        done_reason: "stop",
+        total_duration: 1000000,
+      },
+    ]);
+    return;
+  }
+  streamTextResponse(res, finalText);
+}
+
 export async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse) {
   const url = req.url ?? "";
   const method = req.method ?? "";
@@ -834,6 +980,28 @@ export async function handleRequest(req: http.IncomingMessage, res: http.ServerR
           eval_count: completionTokens,
         },
       ]);
+      return;
+    }
+
+    // Eval-v1 Hetzner-scenario self-test sequences (pinchy#669) — multi-step,
+    // driven by countToolResults (not lastRoundHasToolResult) since these are
+    // 3-4 step chains, not a single before/after tool call.
+    if (lastContent.includes(HETZNER_HAPPY_TRIGGER)) {
+      runScriptedSequenceNdjson(
+        res,
+        HETZNER_HAPPY_STEPS,
+        countToolResults(messages),
+        HETZNER_HAPPY_FINAL_TEXT
+      );
+      return;
+    }
+    if (lastContent.includes(HETZNER_FALSE_SUCCESS_TRIGGER)) {
+      runScriptedSequenceNdjson(
+        res,
+        HETZNER_FALSE_SUCCESS_STEPS,
+        countToolResults(messages),
+        HETZNER_FALSE_SUCCESS_FINAL_TEXT
+      );
       return;
     }
 
@@ -937,6 +1105,30 @@ export async function handleRequest(req: http.IncomingMessage, res: http.ServerR
 
     if (activeTrigger && !hasToolResult) {
       streamOpenAiToolCalls(res, activeTrigger.toolName, activeTrigger.arguments);
+      return;
+    }
+
+    // Eval-v1 Hetzner-scenario self-test sequences (pinchy#669) — multi-step,
+    // driven by countToolResults (not lastRoundHasToolResult) since these are
+    // 3-4 step chains, not a single before/after tool call. This is the
+    // primary surface: Pinchy emits ollama as api: "openai-completions", so
+    // OC's pi-ai actually dispatches here, not /api/chat.
+    if (lastContent.includes(HETZNER_HAPPY_TRIGGER)) {
+      runScriptedSequenceOpenAi(
+        res,
+        HETZNER_HAPPY_STEPS,
+        countToolResults(messages),
+        HETZNER_HAPPY_FINAL_TEXT
+      );
+      return;
+    }
+    if (lastContent.includes(HETZNER_FALSE_SUCCESS_TRIGGER)) {
+      runScriptedSequenceOpenAi(
+        res,
+        HETZNER_FALSE_SUCCESS_STEPS,
+        countToolResults(messages),
+        HETZNER_FALSE_SUCCESS_FINAL_TEXT
+      );
       return;
     }
 
@@ -1055,6 +1247,16 @@ export const FAKE_OLLAMA_WORKSPACE_WRITE_TOOL_TRIGGER = WORKSPACE_WRITE_TRIGGER;
 export const FAKE_OLLAMA_WORKSPACE_WRITE_TOOL_RESPONSE = WORKSPACE_WRITE_RESPONSE;
 export const FAKE_OLLAMA_PDF_ATTACHMENT_READ_TOOL_TRIGGER = PDF_ATTACHMENT_READ_TRIGGER;
 export const FAKE_OLLAMA_PDF_ATTACHMENT_READ_TOOL_RESPONSE = PDF_ATTACHMENT_READ_RESPONSE;
+// Eval-v1 Hetzner-scenario self-test triggers (pinchy#669) — see
+// packages/web/eval/run-eval.ts (mode "selftest") and
+// packages/web/eval/scenarios/hetzner-invoice.ts for the matching
+// ExpectedInvoice fixture.
+export const FAKE_OLLAMA_HETZNER_HAPPY_TRIGGER = HETZNER_HAPPY_TRIGGER;
+export const FAKE_OLLAMA_HETZNER_HAPPY_FINAL_TEXT = HETZNER_HAPPY_FINAL_TEXT;
+export const FAKE_OLLAMA_HETZNER_FALSE_SUCCESS_TRIGGER = HETZNER_FALSE_SUCCESS_TRIGGER;
+export const FAKE_OLLAMA_HETZNER_FALSE_SUCCESS_FINAL_TEXT = HETZNER_FALSE_SUCCESS_FINAL_TEXT;
+export const FAKE_OLLAMA_HETZNER_MSG_HANDLE = HETZNER_MSG_HANDLE;
+export const FAKE_OLLAMA_HETZNER_ATTACHMENT_HANDLE = HETZNER_ATTACHMENT_HANDLE;
 
 let server: http.Server | null = null;
 

@@ -1,0 +1,108 @@
+# docker-compose.eval.yml
+#
+# Overlay for Eval-v1 (pinchy#669), the model-reliability eval harness. Layers
+# on top of the production compose chain (Dockerfile.pinchy / Dockerfile.openclaw
+# — matching what end users deploy, same rationale as docker-compose.integration.yml)
+# plus the Odoo mock (docker-compose.odoo-test.yml) and Graph mock
+# (docker-compose.email-test.yml) needed for the Hetzner-invoice scenario:
+# list inbox -> read invoice email -> download PDF attachment -> create an
+# Odoo vendor bill.
+#
+# Port-isolated from the integration stack (7779/5435, see
+# docker-compose.integration.yml + reference_local_integration_e2e_stack) and
+# from the odoo-test/email-test overlays' own default ports (9002, 9005) so
+# the eval stack can run standalone or alongside them without collisions.
+#
+# Usage:
+#   docker compose -f docker-compose.yml \
+#                  -f docker-compose.e2e.yml \
+#                  -f docker-compose.eval.yml up --build -d
+#
+# In CI, set PINCHY_IMAGE / OPENCLAW_IMAGE from pre-built images, same as the
+# integration job.
+#
+# Self-test (no key): pnpm -C packages/web eval:selftest
+# Real model sweep:   OLLAMA_CLOUD_API_KEY=... pnpm -C packages/web eval:models
+
+services:
+  pinchy:
+    # Override the default :7777 mapping so the eval stack (port 7781)
+    # doesn't conflict with the integration suite (7779) or other E2E jobs
+    # (7777/7778).
+    ports: !override
+      - "7781:7777"
+    environment:
+      - AUDIT_HMAC_SECRET=deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef
+      # Emit a dummy API-key SecretRef for the local Ollama provider so
+      # OpenClaw authenticates when routing to host.docker.internal (fake-
+      # ollama, selftest mode) — same intent as docker-compose.odoo-test.yml.
+      - PINCHY_E2E_OLLAMA_LOCAL_API_KEY=1
+      # Odoo mock reachability + attachment download round trips both go
+      # through private/container-internal hosts.
+      - ALLOW_PRIVATE_URLS=1
+      # The web app performs the Microsoft OAuth token refresh (credentials
+      # route), so it is the container that must talk to the mock's /token
+      # endpoint.
+      - MICROSOFT_OAUTH_BASE_URL=http://graph-mock:9505
+      - GRAPH_API_BASE_URL=http://graph-mock:9505
+      # Passed through so `models` mode can seed settings.ollama_cloud_api_key
+      # without baking a real key into the image or compose file.
+      - OLLAMA_CLOUD_API_KEY=${OLLAMA_CLOUD_API_KEY:-}
+    extra_hosts:
+      # Pinchy probes ollama_local_url from regenerateOpenClawConfig(); the
+      # selftest's fake-ollama runs on the HOST (started by eval.spec.ts, same
+      # pattern as the email/odoo dispatch-probe specs), reached via the
+      # `ollama.local` alias.
+      - "host.docker.internal:host-gateway"
+      - "ollama.local:host-gateway"
+
+  openclaw:
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    environment:
+      # The pinchy-email plugin (running inside OpenClaw) calls the Graph API
+      # directly for attachment downloads.
+      - GRAPH_API_BASE_URL=http://graph-mock:9505
+
+  db:
+    ports:
+      !override # Playwright/setup helpers read/seed the DB directly from the host.
+      - "5437:5432"
+    tmpfs:
+      - /var/lib/postgresql/data
+    volumes: !reset []
+
+  odoo-mock:
+    build:
+      context: config/odoo-mock
+    ports:
+      - "9502:9002"
+      - "8169:8069"
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "node",
+          "-e",
+          "fetch('http://localhost:9002/control/health').then(r=>r.ok?process.exit(0):process.exit(1)).catch(()=>process.exit(1))",
+        ]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  graph-mock:
+    build:
+      context: config/graph-mock
+    ports:
+      - "9505:9005"
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "node",
+          "-e",
+          "fetch('http://localhost:9005/control/health').then(r=>r.ok?process.exit(0):process.exit(1)).catch(()=>process.exit(1))",
+        ]
+      interval: 5s
+      timeout: 3s
+      retries: 10
