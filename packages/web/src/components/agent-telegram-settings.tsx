@@ -35,8 +35,18 @@ interface AgentTelegramSettingsProps {
   onConnected?: () => void;
   /** Render without Card wrapper (for embedding in an existing Card) */
   bare?: boolean;
-  /** Smithers' bot cannot be individually disconnected */
+  /**
+   * The agent is a personal agent (Smithers). Only used to keep the empty state
+   * from pointing at itself during first-time setup — Smithers IS the main bot.
+   */
   isSmithers?: boolean;
+  /**
+   * Whether the current user may connect a bot. The connect path is admin-only;
+   * a non-admin owner may disconnect their personal bot but cannot connect one,
+   * so when `false` we show an ask-your-admin note instead of the token form
+   * (which would 403 on submit). Defaults to allowing the form. (#476 gap 2)
+   */
+  isAdmin?: boolean;
 }
 
 export function AgentTelegramSettings({
@@ -44,6 +54,7 @@ export function AgentTelegramSettings({
   onConnected,
   bare,
   isSmithers,
+  isAdmin,
 }: AgentTelegramSettingsProps) {
   const { triggerRestart } = useRestart();
   const [config, setConfig] = useState<TelegramConfig | null>(null);
@@ -272,6 +283,10 @@ export function AgentTelegramSettings({
             </AlertDialogContent>
           </AlertDialog>
         </>
+      ) : isAdmin === false ? (
+        <p className="text-sm text-muted-foreground">
+          This agent&apos;s Telegram bot isn&apos;t connected. Ask an administrator to set it up.
+        </p>
       ) : (
         <>
           <p className="text-sm text-muted-foreground">

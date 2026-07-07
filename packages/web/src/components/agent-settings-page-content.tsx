@@ -111,13 +111,19 @@ export function AgentSettingsPageContent({ initialTab }: { initialTab?: string }
   const { data: session, isPending } = authClient.useSession();
   const { triggerRestart } = useRestart();
   const isAdmin = session?.user?.role === "admin";
+  const [agent, setAgent] = useState<Agent | null>(null);
+  // A personal agent's owner may manage its Telegram bot (disconnect) without
+  // being an admin. The page is only viewable by the owner or an admin (see
+  // `canEdit`), so `isPersonal` here implies the viewer owns it. (#476 gap 2)
+  const canManageTelegram = isAdmin || agent?.isPersonal === true;
   const visibleTabs: AgentSettingsTab[] =
     isPending || isAdmin
       ? [...AGENT_SETTINGS_TABS]
-      : AGENT_SETTINGS_TABS.filter((tab) => !ADMIN_ONLY_TABS.has(tab));
+      : AGENT_SETTINGS_TABS.filter(
+          (tab) => !ADMIN_ONLY_TABS.has(tab) || (tab === "telegram" && canManageTelegram)
+        );
   const [activeTab, setActiveTab] = useTabParam("general", visibleTabs, initialTab);
 
-  const [agent, setAgent] = useState<Agent | null>(null);
   const [providers, setProviders] = useState<Provider[]>([]);
   const [soulContent, setSoulContent] = useState("");
   const [agentsContent, setAgentsContent] = useState("");
@@ -429,7 +435,7 @@ export function AgentSettingsPageContent({ initialTab }: { initialTab?: string }
                 Access {dirtyTabs.has("access") && <DirtyDot />}
               </TabsTrigger>
             )}
-            {isAdmin && <TabsTrigger value="telegram">Telegram</TabsTrigger>}
+            {canManageTelegram && <TabsTrigger value="telegram">Telegram</TabsTrigger>}
             <TabsTrigger value="diagnostics">Diagnostics</TabsTrigger>
           </TabsList>
 
@@ -487,9 +493,13 @@ export function AgentSettingsPageContent({ initialTab }: { initialTab?: string }
             </TabsContent>
           )}
 
-          {isAdmin && (
+          {canManageTelegram && (
             <TabsContent value="telegram">
-              <AgentTelegramSettings agentId={agentId} isSmithers={agent.isPersonal} />
+              <AgentTelegramSettings
+                agentId={agentId}
+                isSmithers={agent.isPersonal}
+                isAdmin={isAdmin}
+              />
             </TabsContent>
           )}
 

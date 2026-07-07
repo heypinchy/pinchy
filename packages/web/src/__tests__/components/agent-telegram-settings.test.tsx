@@ -94,4 +94,29 @@ describe("AgentTelegramSettings", () => {
     });
     expect(screen.queryByText(/Telegram isn't set up yet/i)).not.toBeInTheDocument();
   });
+
+  // #476 gap 2: a non-admin owner can DISCONNECT their personal bot, but the
+  // connect path stays admin-only. So a non-admin must not be shown a bot-token
+  // form they cannot submit (POST would 403) — show an ask-your-admin note.
+  it("shows an ask-your-admin note instead of the connect form for non-admins", async () => {
+    global.fetch = mockFetch({ configured: false, mainBotConfigured: true });
+
+    render(<AgentTelegramSettings agentId="smithers-1" isSmithers isAdmin={false} />);
+
+    await waitFor(() => {
+      expect(screen.getByText(/administrator/i)).toBeInTheDocument();
+    });
+    expect(screen.queryByLabelText(/Bot Token/i)).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /^Connect$/i })).not.toBeInTheDocument();
+  });
+
+  it("still renders the connect form when isAdmin is not specified (default)", async () => {
+    global.fetch = mockFetch({ configured: false, mainBotConfigured: true });
+
+    render(<AgentTelegramSettings agentId="agent-1" />);
+
+    await waitFor(() => {
+      expect(screen.getByLabelText(/Bot Token/i)).toBeInTheDocument();
+    });
+  });
 });
