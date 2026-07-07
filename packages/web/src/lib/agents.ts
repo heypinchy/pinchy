@@ -2,6 +2,7 @@ export { AGENT_NAME_MAX_LENGTH } from "@/lib/agent-constants";
 
 import { db } from "@/db";
 import { agents, agentConnectionPermissions, type AgentPluginConfig } from "@/db/schema";
+import type { AgentVisibility } from "@/db/enums";
 import { eq } from "drizzle-orm";
 import { regenerateOpenClawConfig } from "@/lib/openclaw-config";
 import { deleteWorkspace } from "@/lib/workspace";
@@ -20,7 +21,7 @@ export interface UpdateAgentInput {
   tagline?: string | null;
   avatarSeed?: string | null;
   personalityPresetId?: string | null;
-  visibility?: string;
+  visibility?: AgentVisibility;
 }
 
 export async function deleteAgent(id: string) {

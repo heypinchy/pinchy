@@ -1,6 +1,7 @@
 import { randomBytes, createHash } from "crypto";
 import { db } from "@/db";
 import { invites, inviteGroups, users } from "@/db/schema";
+import type { InviteRole, InviteType } from "@/db/enums";
 import { eq, and, isNull, gt } from "drizzle-orm";
 
 type InviteRow = typeof invites.$inferSelect;
@@ -57,8 +58,8 @@ export async function createInvite({
   groupIds,
 }: {
   email?: string;
-  role: string;
-  type?: "invite" | "reset";
+  role: InviteRole;
+  type?: InviteType;
   createdBy: string;
   groupIds?: string[];
 }) {

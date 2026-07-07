@@ -4,8 +4,17 @@
 // migration (0044) adds the CHECKs; this proves they bite.
 
 import { describe, it, expect } from "vitest";
+import { eq, sql } from "drizzle-orm";
 import { db } from "@/db";
 import { users, agents, invites, integrationConnections } from "@/db/schema";
+import {
+  USER_ROLES,
+  AGENT_VISIBILITIES,
+  INVITE_ROLES,
+  INVITE_TYPES,
+  INTEGRATION_CONNECTION_TYPES,
+  INTEGRATION_CONNECTION_STATUSES,
+} from "@/db/enums";
 
 const suffix = Math.random().toString(36).slice(2);
 
@@ -155,5 +164,76 @@ describe("schema-hardening CHECK constraints (#259)", () => {
         expiresAt: new Date(Date.now() + 86400000),
       })
     ).rejects.toSatisfy(constraintViolation(/invites_type_check/));
+  });
+});
+
+// Coverage for sub-task D of #259: invites.claimedByUserId is deliberately
+// `ON DELETE SET NULL` (not cascade) so an invite — audit-relevant history of
+// who was invited, by whom, and when it was claimed — survives the deletion of
+// the user who claimed it, with only the claimer reference nulled. Without this
+// test the semantic FK change would be unguarded: a future refactor could flip
+// it back to cascade (silently dropping the record) or to the pre-migration
+// NO ACTION (which would block the user deletion entirely) with a green suite.
+describe("invites.claimedByUserId ON DELETE SET NULL (#259)", () => {
+  it("keeps the invite and nulls the claimer when the claiming user is deleted", async () => {
+    // Distinct creator so the invite's createdBy FK (which DOES cascade) does
+    // not delete the row out from under the assertion when we delete claimer.
+    const creator = await insertUser("admin");
+    const claimer = await insertUser("member");
+
+    const [invite] = await db
+      .insert(invites)
+      .values({
+        tokenHash: `tok-${suffix}-claimed`,
+        role: "member",
+        type: "invite",
+        createdBy: creator.id,
+        claimedByUserId: claimer.id,
+        claimedAt: new Date(),
+        expiresAt: new Date(Date.now() + 86400000),
+      })
+      .returning();
+    expect(invite.claimedByUserId).toBe(claimer.id);
+
+    await db.delete(users).where(eq(users.id, claimer.id));
+
+    const [survivor] = await db.select().from(invites).where(eq(invites.id, invite.id));
+    expect(survivor).toBeDefined();
+    expect(survivor.claimedByUserId).toBeNull();
+    // The rest of the historical record is untouched.
+    expect(survivor.createdBy).toBe(creator.id);
+    expect(survivor.claimedAt).not.toBeNull();
+  });
+});
+
+// Drift guard for sub-task E of #259. The CHECK constraints in db/schema.ts are
+// derived from the const arrays in db/enums.ts, and the enum-like columns are
+// `.$type<…>()`-typed from the same unions — so schema and app code cannot
+// drift at compile time. This test closes the remaining gap: it reads each
+// constraint back from the live database and asserts the enforced value set
+// equals the const. It fails loudly if someone edits db/enums.ts without
+// generating the widening migration (or edits a migration without the const),
+// which the two compile-time mechanisms cannot catch.
+describe("CHECK constraints match db/enums.ts (drift guard, #259)", () => {
+  async function enforcedValues(constraintName: string): Promise<Set<string>> {
+    const rows = (await db.execute(
+      sql`SELECT pg_get_constraintdef(oid) AS def FROM pg_constraint WHERE conname = ${constraintName}`
+    )) as unknown as Array<{ def: string }>;
+    expect(rows.length, `constraint ${constraintName} should exist`).toBe(1);
+    // Postgres renders `col IN ('a','b')` as `col = ANY (ARRAY['a'::text, …])`.
+    // Every allowed value is the only single-quoted token in the definition.
+    const literals = [...rows[0].def.matchAll(/'([^']*)'/g)].map((m) => m[1]);
+    return new Set(literals);
+  }
+
+  it.each([
+    ["users_role_check", USER_ROLES],
+    ["agents_visibility_check", AGENT_VISIBILITIES],
+    ["invites_role_check", INVITE_ROLES],
+    ["invites_type_check", INVITE_TYPES],
+    ["integration_connections_type_check", INTEGRATION_CONNECTION_TYPES],
+    ["integration_connections_status_check", INTEGRATION_CONNECTION_STATUSES],
+  ] as const)("%s enforces exactly its const's values", async (constraintName, values) => {
+    expect(await enforcedValues(constraintName)).toEqual(new Set(values));
   });
 });

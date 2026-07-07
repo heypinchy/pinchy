@@ -16,6 +16,28 @@ import {
   check,
 } from "drizzle-orm/pg-core";
 import { isNull, sql, relations } from "drizzle-orm";
+import {
+  USER_ROLES,
+  AGENT_VISIBILITIES,
+  INVITE_ROLES,
+  INVITE_TYPES,
+  INTEGRATION_CONNECTION_TYPES,
+  INTEGRATION_CONNECTION_STATUSES,
+  type UserRole,
+  type AgentVisibility,
+  type InviteRole,
+  type InviteType,
+  type IntegrationConnectionType,
+  type IntegrationConnectionStatus,
+} from "./enums";
+
+// Render `IN ('a', 'b')` from an enum const (db/enums.ts) so a CHECK constraint
+// and its TypeScript source of truth can never drift. The values are enum-safe
+// identifiers (no quotes or backslashes), so wrapping each in single quotes is
+// sufficient. The drift guard in schema-hardening.integration.test.ts asserts
+// the generated constraint matches the const against the live database.
+const inEnum = (values: readonly string[]) =>
+  sql.raw(`IN (${values.map((v) => `'${v}'`).join(", ")})`);
 
 // ── JSON Column Types ───────────────────────────────────────────────────
 //
@@ -63,7 +85,7 @@ export const users = pgTable(
     email: text("email").notNull().unique(),
     emailVerified: boolean("email_verified").notNull().default(false),
     image: text("image"),
-    role: text("role").notNull().default("member"),
+    role: text("role").$type<UserRole>().notNull().default("member"),
     banned: boolean("banned").default(false),
     banReason: text("ban_reason"),
     banExpires: timestamp("ban_expires"),
@@ -71,7 +93,7 @@ export const users = pgTable(
     createdAt: timestamp("created_at").notNull().defaultNow(),
     updatedAt: timestamp("updated_at").notNull().defaultNow(),
   },
-  (table) => [check("users_role_check", sql`${table.role} IN ('admin', 'member')`)]
+  (table) => [check("users_role_check", sql`${table.role} ${inEnum(USER_ROLES)}`)]
 );
 
 export const sessions = pgTable(
@@ -148,7 +170,7 @@ export const agents = pgTable(
     skills: jsonb("skills").$type<string[]>().notNull().default([]),
     ownerId: text("owner_id").references(() => users.id, { onDelete: "cascade" }),
     isPersonal: boolean("is_personal").notNull().default(false),
-    visibility: text("visibility").notNull().default("restricted"),
+    visibility: text("visibility").$type<AgentVisibility>().notNull().default("restricted"),
     greetingMessage: text("greeting_message").notNull(),
     tagline: text("tagline"),
     avatarSeed: text("avatar_seed"),
@@ -158,7 +180,7 @@ export const agents = pgTable(
   },
   (table) => [
     index("agents_owner_id_idx").on(table.ownerId),
-    check("agents_visibility_check", sql`${table.visibility} IN ('restricted', 'all')`),
+    check("agents_visibility_check", sql`${table.visibility} ${inEnum(AGENT_VISIBILITIES)}`),
   ]
 );
 
@@ -212,8 +234,8 @@ export const invites = pgTable(
       .$defaultFn(() => crypto.randomUUID()),
     tokenHash: text("token_hash").notNull().unique(),
     email: text("email"),
-    role: text("role").notNull().default("member"),
-    type: text("type").notNull().default("invite"),
+    role: text("role").$type<InviteRole>().notNull().default("member"),
+    type: text("type").$type<InviteType>().notNull().default("invite"),
     createdBy: text("created_by")
       .notNull()
       .references(() => users.id, { onDelete: "cascade" }),
@@ -229,8 +251,8 @@ export const invites = pgTable(
     }),
   },
   (table) => [
-    check("invites_role_check", sql`${table.role} IN ('admin', 'member')`),
-    check("invites_type_check", sql`${table.type} IN ('invite', 'reset')`),
+    check("invites_role_check", sql`${table.role} ${inEnum(INVITE_ROLES)}`),
+    check("invites_type_check", sql`${table.type} ${inEnum(INVITE_TYPES)}`),
     index("invites_created_by_idx").on(table.createdBy),
     index("invites_claimed_by_user_id_idx").on(table.claimedByUserId),
     index("invites_email_expires_at_idx").on(table.email, table.expiresAt),
@@ -406,12 +428,12 @@ export const integrationConnections = pgTable(
     id: text("id")
       .primaryKey()
       .$defaultFn(() => crypto.randomUUID()),
-    type: text("type").notNull(), // 'odoo', 'web-search', 'google', 'microsoft', 'imap'
+    type: text("type").$type<IntegrationConnectionType>().notNull(),
     name: text("name").notNull(),
     description: text("description").notNull().default(""),
     credentials: text("credentials").notNull(), // AES-256-GCM encrypted JSON
     data: jsonb("data"), // Type-specific, Zod-validated (schema cache)
-    status: text("status").notNull().default("active"), // 'active' | 'pending' | 'auth_failed'
+    status: text("status").$type<IntegrationConnectionStatus>().notNull().default("active"),
     lastError: text("last_error"),
     lastErrorAt: timestamp("last_error_at"),
     createdAt: timestamp("created_at").notNull().defaultNow(),
@@ -420,11 +442,11 @@ export const integrationConnections = pgTable(
   (table) => [
     check(
       "integration_connections_type_check",
-      sql`${table.type} IN ('odoo', 'web-search', 'google', 'microsoft', 'imap')`
+      sql`${table.type} ${inEnum(INTEGRATION_CONNECTION_TYPES)}`
     ),
     check(
       "integration_connections_status_check",
-      sql`${table.status} IN ('active', 'pending', 'auth_failed')`
+      sql`${table.status} ${inEnum(INTEGRATION_CONNECTION_STATUSES)}`
     ),
   ]
 );

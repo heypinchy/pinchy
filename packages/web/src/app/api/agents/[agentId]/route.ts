@@ -11,6 +11,7 @@ import { isEnterprise } from "@/lib/enterprise";
 import { writeIdentityFile } from "@/lib/workspace";
 import { db } from "@/db";
 import { agentGroups, groups, type AgentPluginConfig } from "@/db/schema";
+import { AGENT_VISIBILITIES, type AgentVisibility } from "@/db/enums";
 import { getAgentGroupIds } from "@/lib/groups";
 import { recalculateTelegramAllowStores } from "@/lib/telegram-allow-store";
 import { validatePinchyWebConfig, pluginConfigSchema } from "@/lib/domain-validation";
@@ -32,7 +33,7 @@ const updateAgentSchema = z.object({
   tagline: z.string().nullable().optional(),
   avatarSeed: z.string().nullable().optional(),
   personalityPresetId: z.string().nullable().optional(),
-  visibility: z.enum(["all", "restricted"]).optional(),
+  visibility: z.enum(AGENT_VISIBILITIES).optional(),
   groupIds: z.array(z.string()).optional(),
 });
 
@@ -134,7 +135,7 @@ export const PATCH = withAuth<RouteContext>(async (request, { params }, session)
     tagline?: string | null;
     avatarSeed?: string | null;
     personalityPresetId?: string | null;
-    visibility?: string;
+    visibility?: AgentVisibility;
   } = {};
   if (body.name !== undefined) data.name = body.name;
   if (body.model !== undefined) data.model = body.model;

@@ -8,12 +8,13 @@ import { getSeatUsage } from "@/lib/seat-usage";
 import { evaluateSeatPressure } from "@/lib/seat-grace";
 import { db } from "@/db";
 import { groups } from "@/db/schema";
+import { INVITE_ROLES } from "@/db/enums";
 import { inArray } from "drizzle-orm";
 import { parseRequestBody } from "@/lib/api-validation";
 
 const inviteUserSchema = z.object({
   email: z.string().email().optional(),
-  role: z.enum(["admin", "member"]),
+  role: z.enum(INVITE_ROLES),
   groupIds: z.array(z.string()).optional(),
 });
 
