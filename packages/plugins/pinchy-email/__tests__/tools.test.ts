@@ -51,7 +51,11 @@ vi.mock("node:fs/promises", () => ({
 import { GmailAdapter } from "../gmail-adapter";
 import { GraphAdapter } from "../graph-adapter";
 import plugin from "../index";
-import { MAX_ENTRIES_PER_AGENT } from "../id-handle-store";
+import {
+  MAX_ENTRIES_PER_AGENT,
+  MSG_PREFIX,
+  resolveHandle,
+} from "../id-handle-store";
 
 interface AgentTool {
   name: string;
@@ -1076,7 +1080,13 @@ describe("email_draft", () => {
     });
 
     const data = JSON.parse(result.content[0].text);
-    expect(data.draftId).toBe("draft-1");
+    // The model-facing draftId must be a handle, never the raw provider id —
+    // otherwise a weak model echoing a ~150-char Graph id back on a later turn
+    // re-hits the corruption this whole feature exists to prevent (Finding 1,
+    // 2026-07-07 review of PR #673).
+    expect(data.draftId).not.toBe("draft-1");
+    expect(data.draftId.startsWith(`${MSG_PREFIX}_`)).toBe(true);
+    expect(resolveHandle(agentId, data.draftId)).toBe("draft-1");
     expect(mockDraft).toHaveBeenCalledWith({
       to: "recipient@test.com",
       subject: "Draft Subject",
@@ -1135,7 +1145,13 @@ describe("email_send", () => {
     });
 
     const data = JSON.parse(result.content[0].text);
-    expect(data.messageId).toBe("sent-1");
+    // The model-facing messageId must be a handle, never the raw provider id.
+    // If the model later reads the sent message back by copying this id into
+    // email_read, a raw ~150-char Graph id would flow straight to the adapter
+    // and reintroduce ErrorInvalidIdMalformed (Finding 1, 2026-07-07 review).
+    expect(data.messageId).not.toBe("sent-1");
+    expect(data.messageId.startsWith(`${MSG_PREFIX}_`)).toBe(true);
+    expect(resolveHandle(agentId, data.messageId)).toBe("sent-1");
     expect(mockSend).toHaveBeenCalledWith({
       to: "recipient@test.com",
       subject: "Sent Subject",
@@ -1963,5 +1979,101 @@ describe("id-handle indirection", () => {
     expect(mockList).toHaveBeenCalledWith(
       expect.objectContaining({ limit: 25 }),
     );
+  });
+
+  // Finding 2 (2026-07-07 review of PR #673): clampListLimit deckelte nur nach
+  // oben. Ein vom Modell gesendetes limit <= 0 lief unverändert zum Adapter und
+  // damit als $top/maxResults zum Provider — negativ ergibt einen 400, 0 ein
+  // verwirrend leeres Ergebnis. Ein nicht-positives limit wird jetzt wie ein
+  // fehlendes behandelt: undefined, damit der Adapter seinen Default nimmt.
+  it("email_list drops a zero limit so the adapter applies its own default", async () => {
+    mockList.mockResolvedValue([]);
+    const tools = createApi();
+    const tool = findTool(tools, "email_list", agentId)!;
+
+    await tool.execute("call-1", { limit: 0 });
+
+    expect(mockList.mock.calls[0][0].limit).toBeUndefined();
+  });
+
+  it("email_list drops a negative limit so the adapter applies its own default", async () => {
+    mockList.mockResolvedValue([]);
+    const tools = createApi();
+    const tool = findTool(tools, "email_list", agentId)!;
+
+    await tool.execute("call-1", { limit: -5 });
+
+    expect(mockList.mock.calls[0][0].limit).toBeUndefined();
+  });
+
+  it("email_search drops a non-positive limit so the adapter applies its own default", async () => {
+    mockSearch.mockResolvedValue([]);
+    const tools = createApi();
+    const tool = findTool(tools, "email_search", agentId)!;
+
+    await tool.execute("call-1", { subject: "invoice", limit: 0 });
+
+    expect(mockSearch.mock.calls[0][0].limit).toBeUndefined();
+  });
+
+  it("email_send -> read round trip: the handle returned by email_send resolves to the real message id at the adapter", async () => {
+    const rawSentId =
+      "AAMkAGI2-real-graph-id-of-the-just-sent-message-very-long";
+    const configWithSend: PluginConfig = {
+      ...testConfig,
+      agents: {
+        "agent-1": {
+          connectionId: "conn-1",
+          permissions: { email: ["read", "draft", "send"] },
+        },
+      },
+    };
+    const tools = createApi(configWithSend);
+
+    mockSend.mockResolvedValue({ messageId: rawSentId });
+    const sendTool = findTool(tools, "email_send", agentId)!;
+    const sendResult = await sendTool.execute("call-1", {
+      to: "recipient@test.com",
+      subject: "Sent",
+      body: "body",
+    });
+    const { messageId: handle } = JSON.parse(sendResult.content[0].text);
+    expect(handle).not.toBe(rawSentId);
+
+    mockRead.mockResolvedValue({
+      id: rawSentId,
+      from: "me@test.com",
+      subject: "Sent",
+      body: "body",
+    });
+    const readTool = findTool(tools, "email_read", agentId)!;
+    const readResult = await readTool.execute("call-2", { id: handle });
+
+    expect(readResult.isError).toBeFalsy();
+    expect(mockRead).toHaveBeenCalledWith(rawSentId);
+  });
+
+  it("email_send leaves messageId null untouched (does not mint a handle for a non-id)", async () => {
+    const configWithSend: PluginConfig = {
+      ...testConfig,
+      agents: {
+        "agent-1": {
+          connectionId: "conn-1",
+          permissions: { email: ["read", "draft", "send"] },
+        },
+      },
+    };
+    const tools = createApi(configWithSend);
+
+    mockSend.mockResolvedValue({ messageId: null });
+    const sendTool = findTool(tools, "email_send", agentId)!;
+    const result = await sendTool.execute("call-1", {
+      to: "recipient@test.com",
+      subject: "Sent",
+      body: "body",
+    });
+
+    const data = JSON.parse(result.content[0].text);
+    expect(data.messageId).toBeNull();
   });
 });

@@ -315,11 +315,13 @@ function handleizeSummaries(
  * would evict its own earliest handles, leaving the top rows the model was just
  * shown unresolvable and un-re-listable (Finding 1, 2026-07-07 review). Capping
  * the result set at the store size keeps every handle in a single listing
- * resolvable. A missing/invalid limit is left undefined so the adapter applies
- * its own default.
+ * resolvable. A missing or non-positive limit is left undefined so the adapter
+ * applies its own default — a zero or negative $top/maxResults would otherwise
+ * reach the provider and yield a confusing empty result or a 400.
  */
 function clampListLimit(limit: unknown): number | undefined {
-  if (typeof limit !== "number" || !Number.isFinite(limit)) return undefined;
+  if (typeof limit !== "number" || !Number.isFinite(limit) || limit <= 0)
+    return undefined;
   return Math.min(limit, MAX_ENTRIES_PER_AGENT);
 }
 
@@ -904,9 +906,22 @@ const plugin = {
                 }),
               );
 
+              // Never hand the raw provider id back to the model — mint a
+              // handle just like email_list/email_read do, so the invariant
+              // "model-facing id output is always a handle" holds everywhere.
               return {
                 content: [
-                  { type: "text", text: JSON.stringify(result, null, 2) },
+                  {
+                    type: "text",
+                    text: JSON.stringify(
+                      {
+                        ...result,
+                        draftId: putHandle(agentId, result.draftId),
+                      },
+                      null,
+                      2,
+                    ),
+                  },
                 ],
               };
             } catch (error) {
@@ -971,8 +986,19 @@ const plugin = {
                 }),
               );
 
+              // Never hand the raw provider id back to the model — mint a
+              // handle so a later email_read of the just-sent message copies a
+              // short reference, not a corruptible ~150-char Graph id. A null
+              // messageId is a "no id available" signal, not an id: leave it.
+              const messageId =
+                result.messageId == null
+                  ? result.messageId
+                  : putHandle(agentId, result.messageId);
               const content: ContentBlock[] = [
-                { type: "text", text: JSON.stringify(result, null, 2) },
+                {
+                  type: "text",
+                  text: JSON.stringify({ ...result, messageId }, null, 2),
+                },
               ];
               // Some providers (Microsoft Graph, for a direct non-reply send)
               // do not return a real message id for the sent message — the
