@@ -374,11 +374,19 @@ const plugin = {
         label: name,
         description: "",
         parameters: { type: "object", properties: {} },
-        execute: async () => ({
-          content: [{ type: "text", text: "" }],
-          isError: true as const,
-          details: { error: "" },
-        }),
+        execute: async () => {
+          // A real session call (with agentId) supersedes this stub, so an
+          // executed stub means the tool ran without session context. Emit a
+          // non-empty message: the audit route only counts non-empty
+          // details.error as a failure once OpenClaw strips isError (#404),
+          // so an empty string here would be logged outcome=success on staging.
+          const text = `Error: ${name} is not available without an active session.`;
+          return {
+            content: [{ type: "text", text }],
+            isError: true as const,
+            details: { error: text },
+          };
+        },
       };
     }
 

@@ -171,6 +171,12 @@ describe("tool registration", () => {
       // Stub execute() must fail fast rather than call external services
       const result = await stub!.execute("call-probe", {});
       expect(result.isError).toBe(true);
+      // The stub is an error-returning path too, so it must carry a non-empty
+      // details.error — on staging OpenClaw strips isError and the audit route
+      // only counts non-empty details.error strings as a failure (issue #404).
+      const details = result.details as { error?: string } | undefined;
+      expect(details?.error).toBeTruthy();
+      expect(details?.error).toBe(result.content[0].text);
     }
   });
 
