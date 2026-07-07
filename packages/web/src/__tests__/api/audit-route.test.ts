@@ -176,14 +176,17 @@ describe("GET /api/audit", () => {
     expect(mockEntriesOffset).toHaveBeenCalledWith(0);
   });
 
-  it("sets a short private Cache-Control header to absorb navigation (#261)", async () => {
+  it("does not cache the audit trail — it is the security record of admin actions (#261)", async () => {
     setupMocks();
 
     const request = new NextRequest("http://localhost:7777/api/audit");
     const response = await GET(request);
 
     expect(response.status).toBe(200);
-    expect(response.headers.get("Cache-Control")).toBe("private, max-age=5, must-revalidate");
+    // The audit log is sensitive, compliance-relevant, and must always be
+    // fresh — an admin refreshing to confirm an action was logged must never
+    // see a stale (or disk-persisted) copy. no-store, not a short private TTL.
+    expect(response.headers.get("Cache-Control")).toBe("no-store");
   });
 
   it("supports custom page and limit parameters", async () => {

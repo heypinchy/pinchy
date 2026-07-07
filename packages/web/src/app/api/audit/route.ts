@@ -113,11 +113,12 @@ export async function GET(request: NextRequest) {
       limit,
     },
     {
-      // Short private cache absorbs audit-page navigation/refreshes without
-      // re-running the (potentially heavy) filtered count + scan on every
-      // request; the trail is admin-only (private) and 5 s keeps it fresh
-      // for newly-appended rows (#261).
-      headers: { "Cache-Control": "private, max-age=5, must-revalidate" },
+      // The audit trail is the security/compliance record of admin actions,
+      // so it is never cached: an admin refreshing to confirm an action was
+      // logged must always see fresh data, and a sensitive log should not be
+      // persisted to the browser disk cache. (Unlike /api/agents, whose short
+      // private TTL absorbs navigation — the audit log's freshness wins.) #261
+      headers: { "Cache-Control": "no-store" },
     }
   );
 }
