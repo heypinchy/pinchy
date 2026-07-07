@@ -22,8 +22,7 @@ import {
 import { setChannelHealthMonitor } from "./src/server/channel-health-singleton";
 import { appendAuditLog } from "./src/lib/audit";
 import { recordAuditFailure } from "./src/lib/audit-deferred";
-import { db } from "./src/db";
-import { closeDb } from "./src/db";
+import { db, closeDb } from "./src/db";
 import { agents } from "./src/db/schema";
 import { eq } from "drizzle-orm";
 import { WsRateLimiter } from "./src/server/ws-rate-limit";
@@ -40,6 +39,7 @@ import {
 import { logCapture } from "./src/lib/log-capture";
 import { startUsagePoller, stopUsagePoller } from "./src/lib/usage-poller";
 import { registerShutdownHandlers } from "./src/lib/shutdown";
+import { buildShutdownSteps } from "./src/server/shutdown-steps";
 import { seedSessionCache } from "./src/server/session-cache-seeder";
 import { readGatewayToken } from "./src/lib/gateway-token-reader";
 import { regenerateOpenClawConfig } from "./src/lib/openclaw-config";
@@ -331,9 +331,12 @@ ${domain ? `<p><a href="https://${domain}">Go to ${domain} →</a></p>` : ""}
   startChatErrorGc();
 
   // Graceful shutdown: stop the upload GC + usage poller intervals, close the
-  // memory-audit watcher, then close the HTTP server. Without this, a SIGTERM
-  // (e.g. from Docker Compose) leaves the setInterval handles dangling and
-  // the process hangs until the container's kill-grace period expires.
+  // memory-audit watcher, disconnect from OpenClaw, drain browser WebSockets,
+  // then close the HTTP server and DB pool. Without this, a SIGTERM (e.g.
+  // from Docker Compose) leaves the setInterval handles / WS connections
+  // dangling and the process hangs until the container's kill-grace period
+  // expires. Steps are defined in `buildShutdownSteps` (@/server/shutdown-steps)
+  // so they can be unit-tested independently of the real HTTP server (#263).
   //
   // Note: registration happens AFTER bootInits() + watcher boot so the
   // memory-audit stop fn can be included in the array. A SIGTERM arriving
@@ -341,34 +344,22 @@ ${domain ? `<p><a href="https://${domain}">Go to ${domain} →</a></p>` : ""}
   // gracefully; that window is short (a few seconds at most) and the
   // alternative (mutable wrapper / re-registration) adds noise for negligible
   // benefit.
-  registerShutdownHandlers([
-    () => stopUploadGc(),
-    () => stopChatErrorGc(),
-    () => stopUsagePoller(),
-    () => (stopMemoryAuditWatcher ? stopMemoryAuditWatcher() : Promise.resolve()),
-    // Disconnect from the OpenClaw Gateway cleanly so the WS + its in-flight
-    // RPCs don't dangle past the HTTP server close (#263). `openclawClient` is
-    // assigned later in boot; the closure reads it at shutdown time.
-    () => openclawClient?.disconnect() ?? Promise.resolve(),
-    // Drain browser WebSockets: close each client (1001 = going away) then
-    // close the WS server. Without this `docker compose down` hits the 30s
-    // SIGKILL timeout because idle WS clients keep the event loop alive past
-    // `server.close()` (#263).
-    () =>
-      new Promise<void>((resolve) => {
-        for (const ws of wss.clients) {
-          if (ws.readyState === WebSocket.OPEN) ws.close(1001, "server shutting down");
-        }
-        wss.close(() => resolve());
-      }),
-    () =>
-      new Promise<void>((resolve) => {
-        server.close(() => resolve());
-      }),
-    // Close the DB pool last, after in-flight requests (drained by
-    // server.close) have settled. `timeout: 5` lets running queries finish.
-    () => closeDb(),
-  ]);
+  registerShutdownHandlers(
+    buildShutdownSteps({
+      stopUploadGc: () => stopUploadGc(),
+      stopChatErrorGc: () => stopChatErrorGc(),
+      stopUsagePoller: () => stopUsagePoller(),
+      stopMemoryAuditWatcher: () =>
+        stopMemoryAuditWatcher ? stopMemoryAuditWatcher() : Promise.resolve(),
+      getOpenclawClient: () => openclawClient,
+      wss,
+      closeHttpServer: () =>
+        new Promise<void>((resolve) => {
+          server.close(() => resolve());
+        }),
+      closeDb: () => closeDb(),
+    })
+  );
 
   // Connect to OpenClaw AFTER bootInits so the gateway token and config are
   // ready. On a completed install, bootInits() has already run

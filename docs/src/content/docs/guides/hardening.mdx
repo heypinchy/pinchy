@@ -3,6 +3,8 @@ title: Hardening Guide
 description: Security best practices for deploying Pinchy in production environments.
 ---
 
+import { Aside, Steps } from "@astrojs/starlight/components";
+
 This guide covers security hardening measures for production Pinchy deployments. Pinchy is self-hosted — infrastructure security is your responsibility. These recommendations assume a Linux server with Docker, but most apply to any OS.
 
 ## Reverse proxy with TLS
@@ -377,6 +379,76 @@ OpenClaw 2026.5.12+ refuses to bind on a non-loopback interface without a `gatew
 **Failure mode to watch for.** If `boot-inits.ts` cannot reach the database at startup (DB outage, mis-configured `DATABASE_URL`), the seed step logs a FATAL line and Pinchy refuses to start — better to fail fast than to leave OpenClaw stuck. If you see `pinchy-openclaw` restart-looping with `Refusing to bind gateway to lan without auth` _and_ Pinchy itself is healthy, the seed wrote successfully but OpenClaw is reading from a different config path — verify the `openclaw-config` volume mount.
 
 ## Backup & recovery
+
+:::note
+The `openclaw-secrets` volume is a **tmpfs** — it lives in RAM, not on disk. It holds OpenClaw's device identity and per-session secret material, and is deliberately reseeded from scratch on every container restart. There is nothing to back up here: the volume is designed to be lost. If you go looking for it in a backup and don't find it, that's working as intended, not a gap.
+:::
+
+### What to back up beyond `pgdata`
+
+PostgreSQL's `pgdata` volume holds the bulk of Pinchy's state — users, agents, settings, encrypted API keys, and the audit log — and is the backup most guides (including this one) lead with. A full cold restore on a new host also needs three things that don't live in `pgdata`:
+
+| What                                                                                             | Why it matters if lost                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
+| ------------------------------------------------------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Your `.env` secrets (`DB_PASSWORD`, `BETTER_AUTH_SECRET`, `ENCRYPTION_KEY`, `AUDIT_HMAC_SECRET`) | If any of these were auto-generated rather than pinned, they're persisted as files in the `pinchy-secrets` volume, not in `.env` — back up that volume too (see below). Losing `ENCRYPTION_KEY` makes every stored LLM provider API key permanently unreadable. Losing `AUDIT_HMAC_SECRET` breaks integrity verification for every audit row signed under it. Losing `BETTER_AUTH_SECRET` invalidates every active session.                                                                                                                         |
+| The `pinchy-secrets` volume                                                                      | Where Pinchy persists any of the four secrets above that you didn't pin explicitly in `.env` (see [VPS Deployment → Pin your secrets](/guides/vps-deployment/#deploy-pinchy)). Same consequences as losing the `.env` values themselves.                                                                                                                                                                                                                                                                                                            |
+| The `openclaw-config` volume                                                                     | Holds `openclaw.json` — the gateway's bootstrap auth token and the regenerated agent/provider configuration. Pinchy rebuilds most of this from the database on every start, so a lost volume mostly self-heals; the exception is the `gateway.auth.token` bootstrap credential (see [Gateway-auth bootstrap](#gateway-auth-bootstrap)), which regenerates automatically but invalidates the old value — harmless on a full restore where both `pinchy` and `openclaw` come up together, worth knowing if you ever restore this volume in isolation. |
+
+<Aside type="tip">
+  If you always pin `DB_PASSWORD`, `BETTER_AUTH_SECRET`, `ENCRYPTION_KEY`, and
+  `AUDIT_HMAC_SECRET` explicitly in `.env` (recommended for production — see
+  [VPS Deployment](/guides/vps-deployment/#deploy-pinchy)), your `.env` backup
+  already covers them and the `pinchy-secrets` volume backup becomes a
+  belt-and-suspenders step rather than the only copy.
+</Aside>
+
+### Cold-restore walkthrough (fresh host)
+
+This is the sequence for restoring Pinchy onto a brand-new host — a full disaster-recovery scenario, not a routine upgrade rollback (for that, see [Restoring from backup](/guides/upgrading/#restoring-from-backup) in the upgrading guide).
+
+<Steps>
+
+1. **Restore `.env` and `docker-compose.yml`**
+
+   Copy your backed-up `.env` and `docker-compose.yml` onto the new host, into `/opt/pinchy` (or wherever you run Pinchy from):
+
+   ```bash
+   mkdir -p /opt/pinchy && cd /opt/pinchy
+   # copy .env and docker-compose.yml here from your backup
+   chmod 600 .env
+   ```
+
+2. **Restore the database**
+
+   Start only the `db` service, then restore your most recent `pg_dump`:
+
+   ```bash
+   docker compose up db -d
+   gunzip < pinchy-backup-20260222.sql.gz | docker compose exec -T db psql -U pinchy pinchy
+   ```
+
+3. **Restore the `openclaw-config` and `pinchy-secrets` volumes**
+
+   If you backed up these named volumes (rather than relying on `.env` alone), restore them before starting the rest of the stack. Docker volumes live under `/var/lib/docker/volumes/<project>_<volume-name>/_data` — restore your archive into that path, or use a throwaway container to copy the data in:
+
+   ```bash
+   docker run --rm -v pinchy_pinchy-secrets:/target -v "$(pwd)/backup/pinchy-secrets:/source:ro" \
+     alpine sh -c "cp -a /source/. /target/"
+   docker run --rm -v pinchy_openclaw-config:/target -v "$(pwd)/backup/openclaw-config:/source:ro" \
+     alpine sh -c "cp -a /source/. /target/"
+   ```
+
+   If you always pin all four secrets in `.env` (see above), you can skip restoring `pinchy-secrets` — Pinchy reads the values from the environment instead. `openclaw-config` is safe to skip too; Pinchy regenerates it from the restored database on boot, at the cost of a fresh gateway bootstrap token.
+
+4. **Start the rest of the stack**
+
+   ```bash
+   docker compose up -d
+   ```
+
+   Verify with `curl -s http://localhost:7777/api/version` and check `docker compose logs pinchy --tail 50` for warnings, same as after a normal upgrade.
+
+</Steps>
 
 ### PostgreSQL backups
 

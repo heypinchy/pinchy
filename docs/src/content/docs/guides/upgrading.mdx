@@ -19,9 +19,9 @@ Pinchy handles most upgrade steps automatically — database migrations run on s
 
 <Steps>
 
-1. **Back up your database**
+1. **Take a pre-migration backup**
 
-   Before any upgrade, create a database backup. This lets you roll back if anything goes wrong.
+   Step 3 below (`docker compose up -d`) applies any pending database migrations automatically the moment it restarts — that's what makes upgrades a one-command affair, but it also means there's no separate "review the migration first" pause. This backup is your known-good restore point from **before** any schema change, so create it now, before pulling new images or restarting anything:
 
    ```bash
    mkdir -p backups
@@ -29,6 +29,13 @@ Pinchy handles most upgrade steps automatically — database migrations run on s
    ```
 
    Keeping backups under `backups/` instead of loose in `/opt/pinchy/` means they don't sit next to your `docker-compose.yml` / `.env`, and the directory is easy to target with your off-host backup rotation.
+
+   <Aside type="tip">
+     See [Backup & recovery](/guides/hardening/#backup--recovery) in the
+     Hardening Guide for the fuller picture: encrypted off-site backups, what to
+     back up beyond the database, and a cold-restore walkthrough for a brand-new
+     host.
+   </Aside>
 
 2. **Bump the version pin**
 
@@ -126,11 +133,12 @@ If you need to roll back after an upgrade:
    docker compose exec -T db psql -U pinchy pinchy < backups/pinchy-YYYYMMDD-HHMMSS.sql
    ```
 
-3. **Pull the previous version**
+3. **Re-pin the previous version**
 
-   Replace `vX.Y.Z` with the version you want to roll back to (check the [Releases page](https://github.com/heypinchy/pinchy/releases)):
+   Replace `vX.Y.Z` with the version you want to roll back to (check the [Releases page](https://github.com/heypinchy/pinchy/releases)). Update `PINCHY_VERSION` in `.env` to match — `docker compose` refuses to start without it set — and re-fetch `docker-compose.yml` for that tag if the release notes said it changed:
 
    ```bash
+   sed -i 's/PINCHY_VERSION=.*/PINCHY_VERSION=vX.Y.Z/' .env
    curl -fsSL https://raw.githubusercontent.com/heypinchy/pinchy/vX.Y.Z/docker-compose.yml -o docker-compose.yml
    docker compose pull
    ```

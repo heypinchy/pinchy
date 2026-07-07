@@ -176,6 +176,8 @@ Adding the `squawk-ignore` comment is a deliberate act — Reviewers are expecte
 
 [Drizzle does not support down-migrations](https://github.com/drizzle-team/drizzle-orm/discussions/1339), and writing reliable down-SQL by hand for every migration costs more than it saves. Our explicit stance: **rollback = restore from `pg_dump` + re-pin previous image tag.** This is also documented in the upgrading guide so admins aren't surprised.
 
+Forward-only is a stance on migration _tooling_, not on operator safety net: the operational backup step that makes rollback possible in practice lives in the [Upgrading guide → Take a pre-migration backup](https://docs.heypinchy.com/guides/upgrading/#standard-upgrade) (step 1 of every standard upgrade), with the full rollback path in [Restoring from backup](https://docs.heypinchy.com/guides/upgrading/#restoring-from-backup). Point admins there, not at this section, when they ask "how do I undo a migration."
+
 ## UI Conventions
 
 ### Error Messages & Notifications
