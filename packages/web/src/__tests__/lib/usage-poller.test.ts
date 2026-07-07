@@ -57,6 +57,7 @@ import {
   stopUsagePoller,
   getPollIntervalMs,
   _isPollerRunning,
+  _resetSessionActivity,
 } from "@/lib/usage-poller";
 
 function makeOpenClawClient(sessions: unknown[] = []) {
@@ -120,6 +121,7 @@ describe("parseSessionKey", () => {
 describe("pollAllSessions", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    _resetSessionActivity();
     mockRecordUsage.mockResolvedValue(undefined);
     mockFrom._agentResult = [{ id: "agent-1", name: "Smithers" }];
     mockFrom._userResult = [{ id: "user-1" }, { id: "user-2" }];
@@ -401,6 +403,104 @@ describe("pollAllSessions", () => {
   });
 });
 
+describe("pollAllSessions adaptive backoff (#261)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    _resetSessionActivity();
+    mockRecordSessionTurns.mockResolvedValue(undefined);
+    mockRecordUsage.mockResolvedValue(undefined);
+    mockFrom._agentResult = [{ id: "agent-1", name: "Smithers" }];
+    mockFrom._userResult = [{ id: "user-1" }];
+  });
+
+  it("skips the per-turn scan for a chat session whose gauge is unchanged since the last poll", async () => {
+    const client = makeOpenClawClient([
+      { key: "agent:agent-1:direct:user-1", inputTokens: 100, outputTokens: 50 },
+    ]);
+
+    await pollAllSessions(client);
+    await pollAllSessions(client); // identical gauge → idle → skip the scan
+
+    expect(mockRecordSessionTurns).toHaveBeenCalledTimes(1);
+  });
+
+  it("skips the gauge-delta recordUsage for a system session whose gauge is unchanged", async () => {
+    const client = makeOpenClawClient([
+      { key: "agent:agent-1:cron:job-1", inputTokens: 100, outputTokens: 50 },
+    ]);
+
+    await pollAllSessions(client);
+    await pollAllSessions(client); // identical gauge → idle → skip
+
+    expect(mockRecordUsage).toHaveBeenCalledTimes(1);
+  });
+
+  it("re-processes when the gauge changes (a new turn happened)", async () => {
+    const first = makeOpenClawClient([
+      { key: "agent:agent-1:direct:user-1", inputTokens: 100, outputTokens: 50 },
+    ]);
+    const second = makeOpenClawClient([
+      { key: "agent:agent-1:direct:user-1", inputTokens: 140, outputTokens: 70 },
+    ]);
+
+    await pollAllSessions(first);
+    await pollAllSessions(second); // gauge grew → active → scan again
+
+    expect(mockRecordSessionTurns).toHaveBeenCalledTimes(2);
+  });
+
+  it("re-processes when a cache counter changes even if input/output are static", async () => {
+    const first = makeOpenClawClient([
+      { key: "agent:agent-1:direct:user-1", inputTokens: 100, outputTokens: 50, cacheRead: 0 },
+    ]);
+    const second = makeOpenClawClient([
+      { key: "agent:agent-1:direct:user-1", inputTokens: 100, outputTokens: 50, cacheRead: 900 },
+    ]);
+
+    await pollAllSessions(first);
+    await pollAllSessions(second);
+
+    expect(mockRecordSessionTurns).toHaveBeenCalledTimes(2);
+  });
+
+  it("does a periodic catch-up scan for an idle session after IDLE_RESCAN_MS", async () => {
+    vi.useFakeTimers();
+    try {
+      const client = makeOpenClawClient([
+        { key: "agent:agent-1:direct:user-1", inputTokens: 100, outputTokens: 50 },
+      ]);
+
+      await pollAllSessions(client);
+      // Still idle (unchanged gauge) but past the catch-up window.
+      await vi.advanceTimersByTimeAsync(5 * 60_000);
+      await pollAllSessions(client);
+
+      expect(mockRecordSessionTurns).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("processes each session independently — one active session does not un-idle another", async () => {
+    const client = makeOpenClawClient([
+      { key: "agent:agent-1:direct:user-1", inputTokens: 100, outputTokens: 50 },
+      { key: "agent:agent-1:direct:user-2", inputTokens: 200, outputTokens: 80 },
+    ]);
+    mockFrom._userResult = [{ id: "user-1" }, { id: "user-2" }];
+
+    await pollAllSessions(client);
+    // user-1 grows, user-2 stays idle.
+    const next = makeOpenClawClient([
+      { key: "agent:agent-1:direct:user-1", inputTokens: 130, outputTokens: 60 },
+      { key: "agent:agent-1:direct:user-2", inputTokens: 200, outputTokens: 80 },
+    ]);
+    await pollAllSessions(next);
+
+    // 2 (first poll, both) + 1 (second poll, only user-1) = 3 scans.
+    expect(mockRecordSessionTurns).toHaveBeenCalledTimes(3);
+  });
+});
+
 describe("getPollIntervalMs", () => {
   const original = process.env.PINCHY_USAGE_POLL_INTERVAL_MS;
 
@@ -444,6 +544,7 @@ describe("startUsagePoller honors the configured interval", () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    _resetSessionActivity();
     mockRecordUsage.mockResolvedValue(undefined);
     mockFrom._agentResult = [{ id: "agent-1", name: "Smithers" }];
     mockFrom._userResult = [{ id: "user-1" }];
@@ -465,22 +566,26 @@ describe("startUsagePoller honors the configured interval", () => {
     ]);
     startUsagePoller(client);
 
+    // sessions.list() fires once per tick regardless of adaptive backoff (which
+    // only skips per-session recording), so it's the direct signal that the
+    // interval fired — recordSessionTurns would be masked by the idle skip.
     // No poll before the (short) interval elapses.
     await vi.advanceTimersByTimeAsync(1_999);
-    expect(mockRecordSessionTurns).not.toHaveBeenCalled();
+    expect(client.sessions.list).not.toHaveBeenCalled();
 
     // First tick at 2s, not 60s.
     await vi.advanceTimersByTimeAsync(1);
-    expect(mockRecordSessionTurns).toHaveBeenCalledTimes(1);
+    expect(client.sessions.list).toHaveBeenCalledTimes(1);
 
     await vi.advanceTimersByTimeAsync(2_000);
-    expect(mockRecordSessionTurns).toHaveBeenCalledTimes(2);
+    expect(client.sessions.list).toHaveBeenCalledTimes(2);
   });
 });
 
 describe("startUsagePoller / stopUsagePoller", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    _resetSessionActivity();
     mockRecordSessionTurns.mockResolvedValue(undefined);
     mockFrom._agentResult = [{ id: "agent-1", name: "Smithers" }];
     stopUsagePoller();
@@ -528,13 +633,16 @@ describe("startUsagePoller / stopUsagePoller", () => {
     ]);
     startUsagePoller(client);
 
+    // Assert on sessions.list() (one call per pollAllSessions) rather than
+    // recordSessionTurns: adaptive backoff (#261) deliberately skips the scan
+    // for an idle session on the second tick, but the poll itself still runs.
     // First interval tick at 60s
     await vi.advanceTimersByTimeAsync(60_000);
-    expect(mockRecordSessionTurns).toHaveBeenCalledTimes(1);
+    expect(client.sessions.list).toHaveBeenCalledTimes(1);
 
     // Second interval tick at 120s
     await vi.advanceTimersByTimeAsync(60_000);
-    expect(mockRecordSessionTurns).toHaveBeenCalledTimes(2);
+    expect(client.sessions.list).toHaveBeenCalledTimes(2);
   });
 
   it("stops polling on stopUsagePoller", async () => {

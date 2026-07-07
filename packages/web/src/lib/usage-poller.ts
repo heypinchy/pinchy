@@ -79,6 +79,40 @@ interface SessionListEntry {
   model?: string;
 }
 
+// Adaptive backoff (#261 D): the per-turn trajectory scan (chat sessions) runs
+// on every tick regardless of the gauge, and the gauge-delta recordUsage
+// (system sessions) re-reads the DB watermark every tick. Both are no-ops when
+// nothing changed, so re-running them every 60 s for idle sessions is wasted
+// DB/CPU at scale (50 agents × 50 sessions ≈ 2 500 scans/min). We fingerprint
+// each session's gauge counters and skip the expensive processing while the
+// fingerprint is unchanged, with a periodic catch-up scan every IDLE_RESCAN_MS
+// as a backstop (covers the narrow case where two turns carry identical gauge
+// counts AND the lower-latency chat `done` path also missed one).
+const IDLE_RESCAN_MS = 5 * 60_000;
+
+interface SessionActivity {
+  signature: string;
+  lastProcessedAt: number;
+}
+const sessionActivity = new Map<string, SessionActivity>();
+
+/** Exported only for tests — clears the per-session backoff state. */
+export function _resetSessionActivity(): void {
+  sessionActivity.clear();
+}
+
+/**
+ * Fingerprint of a session's gauge counters. OpenClaw overwrites these each
+ * turn, so any change means a turn happened since we last looked; an identical
+ * fingerprint means the session was idle. Includes the cache counters (both OC
+ * spellings) and the model so a mid-session model switch also counts as change.
+ */
+function gaugeSignature(s: SessionListEntry): string {
+  const cacheRead = s.cacheRead ?? s.cacheReadTokens ?? 0;
+  const cacheWrite = s.cacheWrite ?? s.cacheWriteTokens ?? 0;
+  return `${s.inputTokens ?? 0}|${s.outputTokens ?? 0}|${cacheRead}|${cacheWrite}|${s.model ?? ""}`;
+}
+
 /**
  * Polls all OpenClaw sessions once and records usage deltas for each
  * session that has tokens. Unknown agent IDs fall back to the ID itself
@@ -91,7 +125,12 @@ export async function pollAllSessions(openclawClient: OpenClawClient): Promise<v
       sessions?: SessionListEntry[];
     };
     const sessions = listResult?.sessions ?? [];
-    if (sessions.length === 0) return;
+    if (sessions.length === 0) {
+      // No live sessions — drop stale backoff state so a returning session is
+      // treated as fresh (and the map never grows unbounded).
+      sessionActivity.clear();
+      return;
+    }
 
     // Pre-fetch agent names to avoid one DB round-trip per session.
     // Skip soft-deleted agents — a stale session key should fall through
@@ -109,9 +148,24 @@ export async function pollAllSessions(openclawClient: OpenClawClient): Promise<v
     const allUsers = await db.select({ id: users.id }).from(users);
     const userIdMap = new Map(allUsers.map((u) => [u.id.toLowerCase(), u.id]));
 
+    const now = Date.now();
+    const liveKeys = new Set<string>();
+
     for (const session of sessions) {
       const parsed = parseSessionKey(session.key);
       if (!parsed) continue;
+      liveKeys.add(session.key);
+
+      // Adaptive backoff (#261): skip the expensive per-session processing while
+      // the gauge fingerprint is unchanged, except for a periodic catch-up scan
+      // every IDLE_RESCAN_MS. A changed fingerprint means a turn happened, so we
+      // process immediately; DB dedup keeps a catch-up re-scan a no-op.
+      const signature = gaugeSignature(session);
+      const prev = sessionActivity.get(session.key);
+      const changed = !prev || prev.signature !== signature;
+      const dueForRescan = !prev || now - prev.lastProcessedAt >= IDLE_RESCAN_MS;
+      if (!changed && !dueForRescan) continue;
+      sessionActivity.set(session.key, { signature, lastProcessedAt: now });
 
       const agentName = agentNameMap.get(parsed.agentId) ?? parsed.agentId;
 
@@ -120,8 +174,7 @@ export async function pollAllSessions(openclawClient: OpenClawClient): Promise<v
         // trajectory's exact per-turn `model.completed` events, NOT the gauge
         // counters (which OpenClaw overwrites each turn, so sampling drops
         // turns). This poll is a backstop scan; the chat `done` path scans with
-        // lower latency. DB dedup by (sessionKey, runId) makes re-scans no-ops,
-        // so we scan every chat session regardless of the gauge token counts.
+        // lower latency. DB dedup by (sessionKey, runId) makes re-scans no-ops.
         const userId = userIdMap.get(parsed.userId.toLowerCase()) ?? parsed.userId;
         await recordSessionTurnsUsage({
           openclawClient,
@@ -158,6 +211,12 @@ export async function pollAllSessions(openclawClient: OpenClawClient): Promise<v
           model: session.model,
         },
       });
+    }
+
+    // Prune backoff state for sessions that no longer exist so the map stays
+    // bounded to the set of live sessions.
+    for (const key of sessionActivity.keys()) {
+      if (!liveKeys.has(key)) sessionActivity.delete(key);
     }
   } catch (error) {
     console.error("[usage-poller] Poll failed:", error);
