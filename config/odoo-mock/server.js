@@ -381,6 +381,77 @@ const MODEL_FIELDS = {
       readonly: false,
       relation: "res.partner",
     },
+    line_ids: {
+      string: "Journal Items",
+      type: "one2many",
+      required: false,
+      readonly: false,
+      relation: "account.move.line",
+    },
+  },
+  // Chart-of-accounts model, seeded with a cross-company name collision (see
+  // getDefaultRecords) mirroring the account.journal collision above — needed
+  // to exercise nested one2many m2o resolution + company scoping (#615).
+  "account.account": {
+    id: { string: "ID", type: "integer", required: false, readonly: true },
+    name: {
+      string: "Name",
+      type: "char",
+      required: true,
+      readonly: false,
+    },
+    code: {
+      string: "Code",
+      type: "char",
+      required: true,
+      readonly: false,
+    },
+    company_id: {
+      string: "Company",
+      type: "many2one",
+      required: true,
+      readonly: false,
+      relation: "res.company",
+    },
+  },
+  // Journal-entry line model — the one2many relation of account.move#line_ids.
+  // Field metadata drives the mock's generic many2one write-value validation
+  // (#615) so a bare string on account_id is rejected exactly like real Odoo.
+  "account.move.line": {
+    id: { string: "ID", type: "integer", required: false, readonly: true },
+    account_id: {
+      string: "Account",
+      type: "many2one",
+      required: true,
+      readonly: false,
+      relation: "account.account",
+    },
+    debit: {
+      string: "Debit",
+      type: "float",
+      required: false,
+      readonly: false,
+    },
+    credit: {
+      string: "Credit",
+      type: "float",
+      required: false,
+      readonly: false,
+    },
+    move_id: {
+      string: "Journal Entry",
+      type: "many2one",
+      required: false,
+      readonly: false,
+      relation: "account.move",
+    },
+    company_id: {
+      string: "Company",
+      type: "many2one",
+      required: false,
+      readonly: false,
+      relation: "res.company",
+    },
   },
 };
 
@@ -594,6 +665,25 @@ function getDefaultRecords() {
       },
     ],
     "account.move": [],
+    // Two accounts share name "Bank" / code "1800" — one per company, mirroring
+    // the account.journal collision above. A free-floating account_id lookup
+    // inside a nested one2many line (e.g. account.move#line_ids) is ambiguous
+    // across these; only company-scoped resolution (#615) picks the right one.
+    "account.account": [
+      {
+        id: 40,
+        name: "Bank",
+        code: "1800",
+        company_id: [1, "Helmcraft GmbH"],
+      },
+      {
+        id: 41,
+        name: "Bank",
+        code: "1800",
+        company_id: [2, "Clemens Helm"],
+      },
+    ],
+    "account.move.line": [],
   };
 }
 
@@ -719,6 +809,133 @@ function evaluateDomain(records, domain) {
     if (stack.length === 1) return stack[0];
     return stack.every(Boolean);
   });
+}
+
+// ---------------------------------------------------------------------------
+// Many2one write-value validation + one2many command expansion (#615)
+//
+// Real Odoo rejects a bare string on a many2one write — it expects an id
+// (int), `false`, or a `[id, "Name"]` / `[id]` tuple. Pre-#627, the plugin
+// forwarded an unresolved `pinchy_ref:…` token (or a display name) straight
+// into a nested one2many line's many2one field; the mock used to accept it
+// silently by spreading `values` into the new record verbatim. That silent
+// acceptance is exactly why the mock could not answer the #615 open
+// question ("did the create actually fail in Odoo?") — it always said yes.
+// These helpers make the mock reject what real Odoo rejects, so a create
+// that reaches Odoo with an unresolved string now genuinely fails here too.
+// ---------------------------------------------------------------------------
+
+/**
+ * True when `value` is an acceptable many2one write value: a bare integer
+ * id, `false`/null/undefined (clear the field), or an array tuple
+ * (`[id]` or `[id, "Name"]`, matching Odoo's own record-reference tuple).
+ * A plain string — a display name or an unresolved `pinchy_ref:…` token —
+ * is the ONE shape real Odoo rejects on write, and the one shape this mock
+ * must now reject too.
+ */
+function isAcceptableMany2OneValue(value) {
+  if (value === false || value === null || value === undefined) return true;
+  if (typeof value === "number") return true;
+  if (Array.isArray(value)) return true;
+  return false;
+}
+
+/**
+ * Validate every many2one field present in `values` against `model`'s field
+ * metadata. Returns a `{ __jsonrpc_error }` payload (in the same shape the
+ * rest of this file returns for RPC-level errors) on the first offending
+ * field, or `null` when every m2o value is acceptable. Fields absent from
+ * `values`, or not declared as many2one in MODEL_FIELDS, are not inspected —
+ * this is deliberately generic/metadata-driven, not model-specific.
+ */
+function validateMany2OneValues(model, values) {
+  const schema = MODEL_FIELDS[model] || {};
+  for (const [fieldName, value] of Object.entries(values)) {
+    const fieldDef = schema[fieldName];
+    if (!fieldDef || fieldDef.type !== "many2one") continue;
+    if (isAcceptableMany2OneValue(value)) continue;
+    return {
+      __jsonrpc_error: true,
+      message: `Invalid value for many2one field ${model}.${fieldName}: expected id, got ${JSON.stringify(value)}`,
+    };
+  }
+  return null;
+}
+
+/**
+ * Expand one2many command tuples on create, mirroring Odoo's Command
+ * semantics closely enough for E2E purposes:
+ *   [0, 0, {vals}]   create a new line, validating + storing it
+ *   [1, id, {vals}]  update an existing line, validating first
+ *   [2,id]/[3,id]/[4,id]/[5]/[6,0,[ids]]   passed through untouched (no
+ *                    record materializes; faithful-but-minimal per #615 scope)
+ *
+ * New lines inherit the parent's `company_id` when they don't restate one —
+ * Odoo's own multi-company default for accounting line models. `parentId` is
+ * the ALREADY-CREATED parent record's id (create() assigns the parent id
+ * before expanding its one2many fields, matching Odoo's own ordering) and is
+ * written into the line's back-reference field (e.g. account.move.line
+ * #move_id) when the relation model declares one that points back at the
+ * parent model.
+ *
+ * Returns `{ error }` on the first invalid nested many2one value, or
+ * `{ ids }` — the ids to store on the parent's one2many field — on success.
+ */
+function expandOne2ManyCommands(
+  relationModel,
+  commands,
+  parentModel,
+  parentId,
+  parentCompanyId,
+) {
+  const ids = [];
+  const relationSchema = MODEL_FIELDS[relationModel] || {};
+  // Name of the relation's many2one field that points back at the parent
+  // model, if any (e.g. account.move.line#move_id → account.move).
+  const backRefField = Object.entries(relationSchema).find(
+    ([, def]) => def.type === "many2one" && def.relation === parentModel,
+  )?.[0];
+
+  for (const cmd of commands) {
+    if (!Array.isArray(cmd)) continue;
+    const [op, cmdId, cmdValues] = cmd;
+
+    if (op === 0 || op === 1) {
+      const lineValues = { ...(cmdValues || {}) };
+      if (
+        relationSchema.company_id &&
+        lineValues.company_id === undefined &&
+        parentCompanyId !== undefined
+      ) {
+        lineValues.company_id = parentCompanyId;
+      }
+      if (backRefField && lineValues[backRefField] === undefined) {
+        lineValues[backRefField] = parentId;
+      }
+
+      const validationError = validateMany2OneValues(relationModel, lineValues);
+      if (validationError) return { error: validationError };
+
+      if (op === 0) {
+        ensureModel(relationModel);
+        const newId = nextIds.get(relationModel) || 1;
+        nextIds.set(relationModel, newId + 1);
+        const newLine = { id: newId, ...lineValues };
+        store.get(relationModel).push(newLine);
+        ids.push(newId);
+      } else {
+        // op === 1: update existing line
+        ensureModel(relationModel);
+        const existing = store.get(relationModel).find((r) => r.id === cmdId);
+        if (existing) Object.assign(existing, lineValues);
+        ids.push(cmdId);
+      }
+    }
+    // [2,id] delete / [3,id] unlink / [4,id] link / [5] clear / [6,0,[ids]] set:
+    // no record materializes from these — pass through without side effects.
+  }
+
+  return { ids };
 }
 
 // ---------------------------------------------------------------------------
@@ -937,10 +1154,51 @@ function handleJsonRpc(body) {
           if (modelRec) values.res_model = modelRec.model;
         }
 
+        // Validate top-level many2one write values BEFORE storing anything
+        // (#615): a bare string (display name or unresolved `pinchy_ref:…`
+        // token) is what real Odoo rejects on a m2o write. This models that
+        // rejection so the mock can prove whether a create genuinely reaches
+        // and is accepted by "Odoo", not just recorded verbatim.
+        const topLevelError = validateMany2OneValues(model, values);
+        if (topLevelError) return topLevelError;
+
+        // Separate one2many command-tuple fields (e.g. account.move#line_ids)
+        // from plain scalar/m2o values — those need expansion AFTER the
+        // parent record exists, since lines back-reference the parent id.
+        const modelSchema = MODEL_FIELDS[model] || {};
+        const one2manyFields = Object.entries(modelSchema).filter(
+          ([name, def]) =>
+            def.type === "one2many" && Array.isArray(values[name]),
+        );
+
+        const scalarValues = { ...values };
+        for (const [name] of one2manyFields) delete scalarValues[name];
+
         const newId = nextIds.get(model) || 1;
         nextIds.set(model, newId + 1);
-        const newRecord = { id: newId, ...values };
+        const newRecord = { id: newId, ...scalarValues };
         store.get(model).push(newRecord);
+
+        for (const [name, def] of one2manyFields) {
+          const expansion = expandOne2ManyCommands(
+            def.relation,
+            values[name],
+            model,
+            newId,
+            newRecord.company_id,
+          );
+          if (expansion.error) {
+            // Roll back the just-created parent — Odoo creates are atomic;
+            // a failed nested line means the whole create fails.
+            store.set(
+              model,
+              store.get(model).filter((r) => r.id !== newId),
+            );
+            return expansion.error;
+          }
+          newRecord[name] = expansion.ids;
+        }
+
         return newId;
       }
 

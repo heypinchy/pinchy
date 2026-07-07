@@ -164,6 +164,16 @@ const ODOO_LIST_MODELS_RESPONSE = "Models listed: coverage probe complete.";
 // Proves a failed odoo tool is no longer recorded as false-success (#404 path).
 const ODOO_READ_DENIED_TRIGGER = "E2E_ODOO_READ_DENIED_TOOL";
 const ODOO_READ_DENIED_RESPONSE = "Read attempted: coverage probe complete.";
+// Dispatches odoo_create with a nested one2many command tuple (#615): the
+// account.move `line_ids` lines each set `account_id` to the bare display
+// name "Bank", which the odoo-mock seeds as a CROSS-COMPANY collision (ids
+// 40 and 41 — see config/odoo-mock/server.js getDefaultRecords). Only
+// because the plugin resolves nested m2o fields company-scoped to the
+// move's own company (`company_id: "Helmcraft GmbH"` → id 1) does "Bank"
+// resolve unambiguously to id 40, not 41. Proves the #615 fix end-to-end
+// against a mock that now actually validates many2one write values.
+const ODOO_CREATE_NESTED_LINES_TRIGGER = "E2E_ODOO_CREATE_NESTED_LINES_TOOL";
+const ODOO_CREATE_NESTED_LINES_RESPONSE = "Move created: coverage probe complete.";
 const EMAIL_LIST_TRIGGER = "E2E_EMAIL_LIST_TOOL";
 const EMAIL_LIST_RESPONSE = "Emails listed: coverage probe complete.";
 const EMAIL_SEARCH_TRIGGER = "E2E_EMAIL_SEARCH_TOOL";
@@ -229,6 +239,22 @@ const TOOL_TRIGGERS: TriggerConfig[] = [
     response: ODOO_READ_DENIED_RESPONSE,
     toolName: "odoo_read",
     arguments: { model: "res.partner", filters: [] },
+  },
+  {
+    trigger: ODOO_CREATE_NESTED_LINES_TRIGGER,
+    response: ODOO_CREATE_NESTED_LINES_RESPONSE,
+    toolName: "odoo_create",
+    arguments: {
+      model: "account.move",
+      values: {
+        journal_id: "Miscellaneous Operations",
+        company_id: "Helmcraft GmbH",
+        line_ids: [
+          [0, 0, { account_id: "Bank", debit: 100 }],
+          [0, 0, { account_id: "Bank", credit: 100 }],
+        ],
+      },
+    },
   },
   {
     trigger: EMAIL_LIST_TRIGGER,
@@ -988,6 +1014,8 @@ export const FAKE_OLLAMA_CONTEXT_SAVE_USER_TOOL_RESPONSE = CONTEXT_SAVE_USER_RES
 export const FAKE_OLLAMA_ODOO_LIST_MODELS_TOOL_TRIGGER = ODOO_LIST_MODELS_TRIGGER;
 export const FAKE_OLLAMA_ODOO_LIST_MODELS_TOOL_RESPONSE = ODOO_LIST_MODELS_RESPONSE;
 export const FAKE_OLLAMA_ODOO_READ_DENIED_TRIGGER = ODOO_READ_DENIED_TRIGGER;
+export const FAKE_OLLAMA_ODOO_CREATE_NESTED_LINES_TRIGGER = ODOO_CREATE_NESTED_LINES_TRIGGER;
+export const FAKE_OLLAMA_ODOO_CREATE_NESTED_LINES_RESPONSE = ODOO_CREATE_NESTED_LINES_RESPONSE;
 export const FAKE_OLLAMA_EMAIL_LIST_TOOL_TRIGGER = EMAIL_LIST_TRIGGER;
 export const FAKE_OLLAMA_EMAIL_LIST_TOOL_RESPONSE = EMAIL_LIST_RESPONSE;
 export const FAKE_OLLAMA_EMAIL_SEARCH_TOOL_TRIGGER = EMAIL_SEARCH_TRIGGER;
