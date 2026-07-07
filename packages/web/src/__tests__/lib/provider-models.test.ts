@@ -32,7 +32,7 @@ vi.mock("@/lib/providers", () => ({
       name: "Ollama Cloud",
       settingsKey: "ollama_cloud_api_key",
       envVar: "OLLAMA_CLOUD_API_KEY",
-      defaultModel: "ollama-cloud/glm-4.7",
+      defaultModel: "ollama-cloud/kimi-k2.6",
       placeholder: "sk-...",
     },
     "ollama-local": {
@@ -776,7 +776,7 @@ describe("selectDefaultModel", () => {
       { id: "ollama-cloud/gemini-3-flash-preview", name: "Gemini 3 Flash Preview" },
       { id: "ollama-cloud/qwen3.5:397b", name: "Qwen 3.5 397B" },
     ];
-    expect(selectDefaultModel("ollama-cloud", models)).toBe("ollama-cloud/glm-4.7");
+    expect(selectDefaultModel("ollama-cloud", models)).toBe("ollama-cloud/kimi-k2.6");
   });
 
   it("prefers stable versions over preview versions", async () => {

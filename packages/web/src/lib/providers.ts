@@ -41,11 +41,14 @@ export const PROVIDERS: Record<ProviderName, ProviderConfig> = {
     authType: "api-key",
     settingsKey: "ollama_cloud_api_key",
     envVar: "OLLAMA_CLOUD_API_KEY",
-    // glm-4.7 is the balanced-tier general pick in the resolver and emits
-    // working tool calls on Ollama Cloud. qwen3-next:80b (the previous
-    // default) was dropped from the catalog — it cannot tool-call on the
-    // OpenAI-completions endpoint (see ollama-cloud-models.ts).
-    defaultModel: "ollama-cloud/glm-4.7",
+    // kimi-k2.6 is the balanced-tier general pick in the resolver (#669):
+    // gemma4:31b corrupted a Graph message ID, and glm-4.7 is
+    // reasoning-by-default and loops on the /v1 reasoning_content round-trip.
+    // kimi-k2.6 is a strong non-thinking-preferred tool driver, and this
+    // provider default mirrors that resolver pick. qwen3-next:80b (an
+    // earlier default) was dropped from the catalog — it cannot tool-call
+    // on the OpenAI-completions endpoint (see ollama-cloud-models.ts).
+    defaultModel: "ollama-cloud/kimi-k2.6",
     placeholder: "sk-...",
   },
   "ollama-local": {

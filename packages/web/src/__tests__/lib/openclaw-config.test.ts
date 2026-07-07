@@ -7050,14 +7050,17 @@ describe("regenerateOpenClawConfig imageModel.primary (#416)", () => {
   });
 
   it("picks the canonical-vision ollama-cloud model when only ollama-cloud is configured", async () => {
-    // The provider's general balanced default is `glm-4.7` (text-only) and
-    // several other ollama-cloud models are weaker on images: mistral-large-3
-    // and kimi-k2.5/k2.6 accept image input but occasionally misread digits,
-    // and qwen3.5:397b only claims vision (it hallucinates image contents and
-    // is flagged text-only). The image-default picker explicitly prefers the
-    // best empirically vision-verified models — gemini-3-flash > minimax-m3 >
-    // gemma4 (qwen3-vl led this list until Ollama dropped it upstream) — over
-    // those weaker models.
+    // The image-default picker (`resolveDefaultImageModel` /
+    // `pickOllamaCloudImageModel`) never consults the provider's general
+    // balanced default (`kimi-k2.6` as of #669) for ollama-cloud — it always
+    // routes through the curated `OLLAMA_CLOUD_IMAGE_PREFERENCE` list.
+    // Several ollama-cloud models are weaker on images regardless: mistral-
+    // large-3 and kimi-k2.5/k2.6 accept image input but occasionally misread
+    // digits, and qwen3.5:397b only claims vision (it hallucinates image
+    // contents and is flagged text-only). The image-default picker explicitly
+    // prefers the best empirically vision-verified models — gemini-3-flash >
+    // minimax-m3 > gemma4 (qwen3-vl led this list until Ollama dropped it
+    // upstream) — over those weaker models.
     mockedGetSetting.mockImplementation(async (key: string) =>
       key === "ollama_cloud_api_key" ? "test-key" : null
     );

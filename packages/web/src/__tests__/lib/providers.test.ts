@@ -132,7 +132,7 @@ describe("PROVIDERS", () => {
     expect(PROVIDERS.anthropic.defaultModel).toBe("anthropic/claude-sonnet-4-6");
     expect(PROVIDERS.openai.defaultModel).toBe("openai/gpt-5.5");
     expect(PROVIDERS.google.defaultModel).toBe("google/gemini-2.5-pro");
-    expect(PROVIDERS["ollama-cloud"].defaultModel).toBe("ollama-cloud/glm-4.7");
+    expect(PROVIDERS["ollama-cloud"].defaultModel).toBe("ollama-cloud/kimi-k2.6");
   });
 
   it("should have settings keys for all providers", () => {
