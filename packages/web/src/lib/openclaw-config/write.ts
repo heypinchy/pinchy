@@ -170,7 +170,29 @@ const WS_DISCONNECTED_ERROR_FRAGMENT = "Not connected to OpenClaw Gateway";
 const NOT_CONNECTED_MAX_WAIT_MS = 60_000;
 const NOT_CONNECTED_RETRY_DELAY_MS = 2_000;
 
-export function pushConfigInBackground(newContent: string): void {
+/**
+ * Options for {@link pushConfigInBackground}.
+ *
+ * `onChangeApplied` fires exactly once, on the terminal path where the new
+ * config actually reached OpenClaw's runtime or the on-disk file — i.e. a
+ * successful `config.apply`, or any `writeConfigAtomic` fallback (no client,
+ * rate-limit budget exhausted, retries exhausted). It deliberately does NOT
+ * fire when the push is a semantic no-op (skipped because the supplemented
+ * payload already equals OC's runtime) or when a newer push superseded this
+ * one. Callers use it to drive side effects that must only happen when a real
+ * change lands — e.g. `restartState.notifyRestart()` for the Telegram channel
+ * writer, which must not strand the UI overlay on a no-op (#476 Gap 1). The
+ * previous file-content dedup in the caller could not see this: `config.apply`
+ * persists an OC-enriched file that never byte-matches the caller's payload, so
+ * a repeated identical call no longer deduped and fired notifyRestart on a
+ * genuine no-op.
+ */
+export interface PushConfigOptions {
+  onChangeApplied?: () => void;
+}
+
+export function pushConfigInBackground(newContent: string, options: PushConfigOptions = {}): void {
+  const { onChangeApplied } = options;
   const generation = ++_pushGeneration;
 
   // Make the in-flight push observable (health endpoint `configPushesPending`,
@@ -195,6 +217,7 @@ export function pushConfigInBackground(newContent: string): void {
         `[openclaw-config] push gen=${String(generation)}: no WS client → file write (inotify; reload may lag)`
       );
       writeConfigAtomic(newContent);
+      onChangeApplied?.();
       return;
     }
 
@@ -322,6 +345,7 @@ export function pushConfigInBackground(newContent: string): void {
         console.log(
           `[openclaw-config] push gen=${String(generation)}: applied via WS config.apply (in-process, synchronous runtime refresh)${rateLimitAttempts > 0 ? ` after ${String(rateLimitAttempts)} rate-limit wait(s)` : ""}`
         );
+        onChangeApplied?.();
         return;
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
@@ -358,6 +382,7 @@ export function pushConfigInBackground(newContent: string): void {
             message
           );
           writeConfigAtomic(lastSupplemented ?? supplementPayloadWithFileFields(newContent));
+          onChangeApplied?.();
           return;
         }
 
@@ -397,6 +422,7 @@ export function pushConfigInBackground(newContent: string): void {
           // All retries exhausted — fall back to file write so inotify picks up
           // the change. Same meta-preservation logic as the rate-limit path above.
           writeConfigAtomic(lastSupplemented ?? supplementPayloadWithFileFields(newContent));
+          onChangeApplied?.();
           return;
         }
         await new Promise((resolve) => setTimeout(resolve, backoffsMs[i]));

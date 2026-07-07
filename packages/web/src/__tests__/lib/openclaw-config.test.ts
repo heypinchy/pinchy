@@ -5040,6 +5040,213 @@ describe("restart-state integration", () => {
     expect(restartState.notifyRestart).not.toHaveBeenCalled();
   });
 
+  describe("updateTelegramChannelConfig push-path routing (#476 Gap 1)", () => {
+    // Background: updateTelegramChannelConfig previously called
+    // writeConfigAtomic() directly and relied ENTIRELY on OpenClaw's inotify
+    // watcher to notice the change — even when a live WS client was
+    // available. That left a latency gap where a disconnected/removed bot's
+    // poller could keep hitting Telegram's getUpdates for however long
+    // inotify took to notice, which is the root cause of the cross-instance
+    // getUpdates 409 flap #476 was filed for. Routing through
+    // pushConfigInBackground (already used by regenerateOpenClawConfig) gets
+    // the diff to OpenClaw via the synchronous WS config.apply RPC the
+    // instant a client is connected, while preserving the exact same
+    // file+inotify fallback when no client is available (cold start, WS
+    // down) — the file-write behavior asserted by the tests above must be
+    // unaffected in that fallback case.
+
+    it("uses config.apply (not a synchronous writeConfigAtomic) when a WS client is connected", async () => {
+      mockConfigGet.mockResolvedValue({ hash: "abc123" });
+      mockConfigApply.mockResolvedValue(undefined);
+      mockGetClient.mockReturnValue({
+        config: { get: mockConfigGet, apply: mockConfigApply },
+      });
+      mockedReadFileSync.mockReturnValue(
+        JSON.stringify({ gateway: { mode: "local", bind: "lan" } })
+      );
+
+      updateTelegramChannelConfig("agent-99", { botToken: "tg-secret-token" });
+
+      // Unlike the no-client path, the write must NOT be synchronous —
+      // control returns to the caller before config.apply has been awaited.
+      expect(mockedWriteFileSync).not.toHaveBeenCalled();
+
+      await vi.waitFor(() => expect(mockConfigApply).toHaveBeenCalledOnce());
+      await drainBackgroundCoroutine();
+
+      expect(mockConfigApply).toHaveBeenCalledOnce();
+      const appliedPayload = JSON.parse(String(mockConfigApply.mock.calls[0][0])) as {
+        channels?: { telegram?: { accounts?: Record<string, { botToken: string }> } };
+      };
+      expect(appliedPayload.channels?.telegram?.accounts?.["agent-99"]?.botToken).toBe(
+        "tg-secret-token"
+      );
+      // No direct openclaw.json file write — config.apply's inner
+      // writeConfigFile is responsible for persisting to disk.
+      const openclawWrite = mockedWriteFileSync.mock.calls.find(
+        (c) => typeof c[0] === "string" && (c[0] as string).includes("openclaw.json")
+      );
+      expect(openclawWrite).toBeUndefined();
+    });
+
+    it("still calls restartState.notifyRestart when routed through config.apply", async () => {
+      // The UI overlay contract (poll /api/health/openclaw until "restarting"
+      // clears) must hold regardless of which transport delivered the change.
+      // notifyRestart is now driven by the push's onChangeApplied callback, so
+      // on the WS path it fires when config.apply actually lands — after the
+      // background coroutine settles, not synchronously with the call.
+      const { restartState } = await import("@/server/restart-state");
+      mockConfigGet.mockResolvedValue({ hash: "abc123" });
+      mockConfigApply.mockResolvedValue(undefined);
+      mockGetClient.mockReturnValue({
+        config: { get: mockConfigGet, apply: mockConfigApply },
+      });
+      mockedReadFileSync.mockReturnValue(
+        JSON.stringify({ gateway: { mode: "local", bind: "lan" } })
+      );
+
+      updateTelegramChannelConfig("agent-99", { botToken: "tg-secret-token" });
+
+      await vi.waitFor(() => expect(mockConfigApply).toHaveBeenCalledOnce());
+      await drainBackgroundCoroutine();
+      expect(restartState.notifyRestart).toHaveBeenCalledOnce();
+    });
+
+    it("does NOT call restartState.notifyRestart on a no-op repeat via config.apply", async () => {
+      // The plain file-content dedup in updateTelegramChannelConfig cannot catch
+      // this: config.apply persists an OC-enriched file, so the on-disk bytes
+      // never match the raw payload and a repeated identical call slips past the
+      // dedup. The push's own no-op guard (supplemented payload ≡ OC runtime) is
+      // what must suppress the spurious notifyRestart — otherwise the UI overlay
+      // strands on a restart that never happens (#476 Gap 1).
+      const { restartState } = await import("@/server/restart-state");
+
+      // Phase 1: first apply lands the account; capture exactly what OC's
+      // runtime now holds (the payload we sent to config.apply).
+      mockConfigGet.mockResolvedValue({
+        hash: "h1",
+        config: { gateway: { mode: "local", bind: "lan" } },
+      });
+      mockConfigApply.mockResolvedValue(undefined);
+      mockGetClient.mockReturnValue({
+        config: { get: mockConfigGet, apply: mockConfigApply },
+      });
+      mockedReadFileSync.mockReturnValue(
+        JSON.stringify({ gateway: { mode: "local", bind: "lan" } })
+      );
+
+      updateTelegramChannelConfig("agent-99", { botToken: "tg-secret-token" });
+      await vi.waitFor(() => expect(mockConfigApply).toHaveBeenCalledOnce());
+      await drainBackgroundCoroutine();
+      expect(restartState.notifyRestart).toHaveBeenCalledOnce();
+      const ocRuntime = JSON.parse(String(mockConfigApply.mock.calls[0][0])) as Record<
+        string,
+        unknown
+      >;
+
+      // Phase 2: OC's runtime now equals what we applied. Keep the on-disk file
+      // byte-different (just the gateway block) so the caller's file dedup does
+      // NOT fire and the request reaches the push — whose no-op guard must skip
+      // the apply AND therefore never invoke onChangeApplied/notifyRestart.
+      vi.clearAllMocks();
+      mockConfigGet.mockResolvedValue({ hash: "h2", config: ocRuntime });
+      mockConfigApply.mockResolvedValue(undefined);
+      mockGetClient.mockReturnValue({
+        config: { get: mockConfigGet, apply: mockConfigApply },
+      });
+      mockedReadFileSync.mockReturnValue(
+        JSON.stringify({ gateway: { mode: "local", bind: "lan" } })
+      );
+
+      updateTelegramChannelConfig("agent-99", { botToken: "tg-secret-token" });
+      await drainBackgroundCoroutine();
+
+      expect(mockConfigApply).not.toHaveBeenCalled();
+      expect(restartState.notifyRestart).not.toHaveBeenCalled();
+    });
+
+    it("falls back to the synchronous file write (writeConfigAtomic) when no WS client is available", async () => {
+      // beforeEach's top-level guard resets mockGetClient to throw ("no WS
+      // client") — this is the cold-start / WS-down case. Must remain fully
+      // synchronous and unchanged: the file must be on disk before
+      // updateTelegramChannelConfig returns, so a caller that immediately
+      // reads openclaw.json (or a route that returns success right after)
+      // sees the write.
+      mockedReadFileSync.mockReturnValue(
+        JSON.stringify({ gateway: { mode: "local", bind: "lan" } })
+      );
+
+      updateTelegramChannelConfig("agent-99", { botToken: "tg-secret-token" });
+
+      expect(mockedWriteFileSync).toHaveBeenCalled();
+      const written = mockedWriteFileSync.mock.calls[0][1] as string;
+      const config = JSON.parse(written) as {
+        channels?: { telegram?: { accounts?: Record<string, { botToken: string }> } };
+      };
+      expect(config.channels?.telegram?.accounts?.["agent-99"]?.botToken).toBe("tg-secret-token");
+      expect(mockConfigApply).not.toHaveBeenCalled();
+    });
+
+    it("falls back to file write on removal (accountId, null) too, preserving the disconnect path", async () => {
+      mockedReadFileSync.mockReturnValue(
+        JSON.stringify({
+          gateway: { mode: "local", bind: "lan" },
+          channels: {
+            telegram: {
+              enabled: true,
+              dmPolicy: "pairing",
+              accounts: { "agent-99": { botToken: "tg-secret-token" } },
+            },
+          },
+          bindings: [
+            { agentId: "agent-99", match: { channel: "telegram", accountId: "agent-99" } },
+          ],
+        })
+      );
+
+      updateTelegramChannelConfig("agent-99", null);
+
+      expect(mockedWriteFileSync).toHaveBeenCalled();
+      const written = mockedWriteFileSync.mock.calls[0][1] as string;
+      const config = JSON.parse(written) as { channels?: unknown };
+      // Last account removed — entire telegram channel block goes away.
+      expect(config.channels).toBeUndefined();
+    });
+
+    it("uses config.apply on removal (accountId, null) when a WS client is connected", async () => {
+      mockConfigGet.mockResolvedValue({ hash: "abc123" });
+      mockConfigApply.mockResolvedValue(undefined);
+      mockGetClient.mockReturnValue({
+        config: { get: mockConfigGet, apply: mockConfigApply },
+      });
+      mockedReadFileSync.mockReturnValue(
+        JSON.stringify({
+          gateway: { mode: "local", bind: "lan" },
+          channels: {
+            telegram: {
+              enabled: true,
+              dmPolicy: "pairing",
+              accounts: { "agent-99": { botToken: "tg-secret-token" } },
+            },
+          },
+          bindings: [
+            { agentId: "agent-99", match: { channel: "telegram", accountId: "agent-99" } },
+          ],
+        })
+      );
+
+      updateTelegramChannelConfig("agent-99", null);
+
+      await vi.waitFor(() => expect(mockConfigApply).toHaveBeenCalledOnce());
+      await drainBackgroundCoroutine();
+
+      const appliedPayload = JSON.parse(String(mockConfigApply.mock.calls[0][0])) as {
+        channels?: unknown;
+      };
+      expect(appliedPayload.channels).toBeUndefined();
+    });
+  });
+
   it("should include Telegram channel config with accounts format when bot token is configured", async () => {
     mockedDb.select.mockReturnValue({
       from: mockFrom([

@@ -503,6 +503,37 @@ export async function waitForBotPolling(token: string, timeout = 120000): Promis
   throw new Error(`Bot ${token.slice(0, 6)}... did not start polling within ${timeout}ms`);
 }
 
+/**
+ * Wait until a specific bot token has STOPPED polling — the counterpart to
+ * `waitForBotPolling`. Uses `activePollingTokens`, which the mock derives from
+ * whether the token currently has a getUpdates request in flight (plus a short
+ * settle grace), NOT `pollingTokens` (which only ever grows and never forgets a
+ * token once it has polled once — see config/telegram-mock/server.js). Tracking
+ * the live connection is what lets the stop surface within seconds: when
+ * OpenClaw tears the worker down it closes the getUpdates connection, the mock
+ * settles the poll, and the token drops out within the grace — rather than
+ * lingering for a full 30s long-poll timeout. Used by the Issue #476 Gap 1
+ * disconnect-latency regression: after disconnecting a bot, its poller must
+ * actually stop hitting the mock's getUpdates within a bounded time, not linger
+ * until an unrelated inotify-triggered restart eventually catches up.
+ */
+export async function waitForBotStoppedPolling(token: string, timeout = 15000): Promise<void> {
+  const start = Date.now();
+  while (Date.now() - start < timeout) {
+    try {
+      const res = await fetch(`${MOCK_TELEGRAM_URL}/control/health`);
+      const data = await res.json();
+      if (Array.isArray(data.activePollingTokens) && !data.activePollingTokens.includes(token)) {
+        return;
+      }
+    } catch {
+      // Not ready yet — mock momentarily unreachable, keep polling.
+    }
+    await new Promise((r) => setTimeout(r, 500));
+  }
+  throw new Error(`Bot ${token.slice(0, 6)}... did not stop polling within ${timeout}ms`);
+}
+
 // ── Multi-user helpers (Chats E2E #508) ─────────────────────────────────
 //
 // The Chats feature's authorization boundary is "one user can only ever see

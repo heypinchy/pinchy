@@ -1,6 +1,6 @@
 import { readFileSync, existsSync } from "fs";
 import { CONFIG_PATH, OPENCLAW_CONTROL_UI_ALLOWED_ORIGINS } from "./paths";
-import { writeConfigAtomic, readExistingConfig } from "./write";
+import { writeConfigAtomic, readExistingConfig, pushConfigInBackground } from "./write";
 import { restartState } from "@/server/restart-state";
 import { getOrCreateGatewayToken } from "@/lib/gateway-token-source";
 
@@ -153,17 +153,50 @@ export function updateTelegramChannelConfig(
     // File doesn't exist
   }
 
-  writeConfigAtomic(newContent);
-
-  // channels.telegram and bindings sit in OC's restart-trigger set — every
-  // mutation here causes inotify → full Gateway restart. Mark restart-state so
-  // /api/health/openclaw returns "restarting" and the client overlay stays up
-  // until OC's Telegram polling is actually back (server.ts calls notifyReady()
-  // on Gateway reconnect, closing the loop). Co-located with the write so any
-  // future caller inherits the invariant; gated by the dedup above so spurious
-  // no-op writes don't strand the UI until RestartProvider's 30 s client-side
-  // timeout flips it into the "this is taking longer than expected" error state.
-  restartState.notifyRestart();
+  // Issue #476 Gap 1: route through pushConfigInBackground (the same
+  // WS config.apply path regenerateOpenClawConfig uses) instead of an
+  // unconditional writeConfigAtomic. Previously this ALWAYS wrote the file
+  // directly and relied entirely on OpenClaw's inotify watcher to notice the
+  // change — even when a live WS client was connected. That left an
+  // unbounded latency gap between "Pinchy removed/rotated a Telegram
+  // account" and "OpenClaw actually stops polling that token", during which
+  // a disconnected bot's channel worker kept hitting Telegram's getUpdates —
+  // the root cause of the cross-instance getUpdates 409 flap #476 was filed
+  // for. When a WS client is available, pushConfigInBackground delivers the
+  // diff via the synchronous config.apply RPC, so OpenClaw reloads (or, for
+  // a channels diff, restarts) immediately rather than waiting for a
+  // filesystem-watch tick. When no client is available (cold start, WS
+  // down), pushConfigInBackground's own no-client branch falls straight
+  // back to a SYNCHRONOUS writeConfigAtomic — identical to this function's
+  // previous unconditional behavior — so there is no regression for
+  // installs where OpenClaw isn't reachable over the gateway WS yet.
+  //
+  // This does NOT reintroduce the restart cascade agent-create-no-restart.spec.ts
+  // and telegram-flow.spec.ts guard against: `channels` has no entry in OC's
+  // BASE_RELOAD_RULES, so a structural channels diff is restart-class
+  // regardless of transport (file+inotify or WS config.apply) — routing
+  // through config.apply changes WHEN OC learns about the diff, not WHETHER
+  // it restarts for it. See write.ts's pushConfigInBackground for the
+  // no-op/rate-limit/stale-hash handling this delegates to.
+  //
+  // channels.telegram and bindings sit in OC's restart-trigger set, so a real
+  // mutation here causes a Gateway restart (via config.apply, or inotify in the
+  // no-client fallback). Mark restart-state so /api/health/openclaw returns
+  // "restarting" and the client overlay stays up until OC's Telegram polling is
+  // back (server.ts calls notifyReady() on Gateway reconnect, closing the loop).
+  //
+  // notifyRestart is driven by `onChangeApplied` — it fires ONLY when the push
+  // actually applies/writes a change, never on a semantic no-op. The plain
+  // file-content dedup above cannot cover the WS path: config.apply persists an
+  // OC-enriched file that never byte-matches `newContent`, so a repeated
+  // identical connect/disconnect would slip past the dedup and, if we notified
+  // unconditionally here, strand the UI overlay for a restart that never happens
+  // (until RestartProvider's 30 s client-side "taking longer than expected"
+  // timeout). Delegating to the push's own no-op guard (supplemented payload ≡
+  // OC runtime) keeps the overlay honest. (#476 Gap 1)
+  pushConfigInBackground(newContent, {
+    onChangeApplied: () => restartState.notifyRestart(),
+  });
 }
 
 /**

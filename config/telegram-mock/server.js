@@ -43,7 +43,77 @@ const pendingUpdates = new Map(); // token -> update[]
 // have started polling yet, especially during OpenClaw channel restarts
 // when adding a second bot account. Tests use this to wait for a SPECIFIC
 // bot to be live, instead of "any bot is registered".
+//
+// IMPORTANT: this set only ever GROWS (cleared only by /control/reset) — it
+// answers "has this bot EVER polled", not "is it polling RIGHT NOW". It
+// cannot detect a poller that stopped (e.g. after a Telegram channel
+// disconnect); use `activePollingTokens` in the health snapshot for that.
 const pollingTokens = new Set();
+
+// Per-token count of getUpdates requests CURRENTLY in flight (an open long-poll
+// connection). A live OpenClaw poller always keeps exactly one getUpdates
+// request outstanding — it re-issues immediately on return — so `inflightPolls
+// > 0` is a direct, latency-free signal that the bot is polling RIGHT NOW,
+// independent of how long each individual long-poll lasts. When OpenClaw tears
+// down a channel worker on disconnect it aborts the in-flight request; the HTTP
+// layer catches the socket close and settles the poll, dropping the count to 0.
+// Cleared by /control/reset.
+const inflightPolls = new Map();
+
+// Per-token timestamp (ms since epoch) of the most recent getUpdates begin or
+// settle. Only used to bridge the sub-millisecond hand-off between one long-poll
+// returning and OpenClaw re-issuing the next one, so a healthy poller never
+// flickers out of the active set during that gap. Cleared by /control/reset.
+const lastPollAt = new Map();
+
+// After a poll settles and no request is left in flight, a token stays "active"
+// for this grace period — just long enough to cover the re-issue hand-off plus
+// CI scheduling jitter. It is deliberately SHORT and unrelated to the 30s
+// long-poll timeout: that decoupling is the entire point. The previous
+// freshness-only oracle stamped `lastPollAt` on COMPLETION and called a token
+// active for FRESHNESS_MS afterwards, so the window had to exceed the 30s
+// long-poll (else a healthy poller looked "stopped" mid-poll) — which in turn
+// made a genuine stop undetectable for ~40s, far longer than the disconnect
+// test's window. Tracking the in-flight connection instead means a healthy
+// poller reads active via `inflightPolls` (not this grace), so the grace can be
+// short and a real stop surfaces within it once the aborted poll settles.
+const ACTIVE_GRACE_MS = 5000;
+
+/**
+ * Snapshot of poller state for GET /control/health. A token is "actively
+ * polling" if it has a getUpdates request in flight right now, or settled one
+ * within ACTIVE_GRACE_MS. `now` is injectable so unit tests can advance past
+ * the grace window without a real sleep.
+ */
+function getHealthSnapshot(now = Date.now()) {
+  const active = new Set();
+  for (const [token, count] of inflightPolls) {
+    if (count > 0) active.add(token);
+  }
+  for (const [token, ts] of lastPollAt) {
+    if (now - ts < ACTIVE_GRACE_MS) active.add(token);
+  }
+  return {
+    pollingTokens: [...pollingTokens],
+    activePollingTokens: [...active],
+  };
+}
+
+// Mark a getUpdates request as started/settled. `beginPoll` also records the
+// bot in the ever-grew `pollingTokens` set (has this bot EVER polled), while
+// `inflightPolls`/`lastPollAt` answer "is it polling right now".
+function beginPoll(token) {
+  pollingTokens.add(token);
+  inflightPolls.set(token, (inflightPolls.get(token) || 0) + 1);
+  lastPollAt.set(token, Date.now());
+}
+
+function endPoll(token) {
+  const remaining = (inflightPolls.get(token) || 0) - 1;
+  if (remaining > 0) inflightPolls.set(token, remaining);
+  else inflightPolls.delete(token);
+  lastPollAt.set(token, Date.now());
+}
 
 // When true, getUpdates returns HTTP-style 409 "Conflict: terminated by
 // other getUpdates request" — the exact response Telegram sends when a
@@ -71,6 +141,8 @@ function resetState() {
   pendingUpdates.clear();
   bots.clear();
   pollingTokens.clear();
+  inflightPolls.clear();
+  lastPollAt.clear();
   conflict409Tokens.clear();
   conflict409All = false;
   // message_id may safely reset, unlike update_id: nothing filters on it
@@ -160,68 +232,112 @@ function injectMessage({ token, chatId, text, userId, username, firstName, lastN
   return updateId;
 }
 
-// getUpdates is async (long-poll) — handled separately
-async function handleGetUpdates(token, body) {
-  // Mark this bot as actively polling. Tests rely on this to verify a
-  // specific bot's channel has come up, which is more reliable than the
-  // generic getMe-based registration count.
-  pollingTokens.add(token);
-
-  // Simulated duplicate-poller conflict: Telegram returns 409 when a second
-  // instance polls the same token. Return it immediately (no long-poll) so
-  // OpenClaw's channel worker exits and the health-monitor restart loop kicks
-  // in — the exact production failure mode for cross-environment bot sharing.
-  if (conflict409All || conflict409Tokens.has(token)) {
-    return {
-      ok: false,
-      error_code: 409,
-      description:
-        "Conflict: terminated by other getUpdates request; make sure that only one bot instance is running",
-    };
-  }
-
-  const timeout = Math.min(parseInt(body?.timeout || "30", 10), 30);
-  const offset = parseInt(body?.offset || "0", 10);
-
-  // Check for existing updates
-  const updates = pendingUpdates.get(token) || [];
-  if (offset > 0) {
-    // Clear consumed updates
-    pendingUpdates.set(token, updates.filter((u) => u.update_id >= offset));
-  }
-
-  const filtered = (pendingUpdates.get(token) || []).filter(
-    (u) => u.update_id >= offset
-  );
-
-  if (filtered.length > 0) {
-    return { ok: true, result: filtered };
-  }
-
-  // Long-poll: wait for new updates or timeout
-  return new Promise((resolve) => {
-    const timer = setTimeout(() => {
-      // Remove this listener
-      const listeners = updateListeners.get(token) || [];
-      updateListeners.set(
-        token,
-        listeners.filter((cb) => cb !== onUpdate)
-      );
-      resolve({ ok: true, result: [] });
-    }, timeout * 1000);
-
-    const onUpdate = () => {
-      clearTimeout(timer);
-      const current = (pendingUpdates.get(token) || []).filter(
-        (u) => u.update_id >= offset
-      );
-      resolve({ ok: true, result: current });
-    };
-
-    if (!updateListeners.has(token)) {
-      updateListeners.set(token, []);
+// getUpdates is async (long-poll) — handled separately.
+//
+// `options.signal` (optional AbortSignal) lets the HTTP layer cancel an
+// in-flight long-poll when the client closes the connection — e.g. OpenClaw
+// aborting the request as it tears down a disconnected bot's channel worker.
+// Cancelling settles the poll so `inflightPolls` drops to 0 promptly, which is
+// what makes "the poller stopped" observable within ACTIVE_GRACE_MS rather than
+// only after a full 30s long-poll timeout (Issue #476 Gap 1).
+async function handleGetUpdates(token, body, options = {}) {
+  const { signal } = options;
+  // Mark this bot as actively polling (both the ever-grew `pollingTokens` set
+  // and the in-flight counter). `endPoll` in the finally clears the in-flight
+  // count on every exit path — 409, immediate return, timeout, update, abort.
+  beginPoll(token);
+  try {
+    // Simulated duplicate-poller conflict: Telegram returns 409 when a second
+    // instance polls the same token. Return it immediately (no long-poll) so
+    // OpenClaw's channel worker exits and the health-monitor restart loop kicks
+    // in — the exact production failure mode for cross-environment bot sharing.
+    if (conflict409All || conflict409Tokens.has(token)) {
+      return {
+        ok: false,
+        error_code: 409,
+        description:
+          "Conflict: terminated by other getUpdates request; make sure that only one bot instance is running",
+      };
     }
-    updateListeners.get(token).push(onUpdate);
+
+    const timeout = Math.min(parseInt(body?.timeout || "30", 10), 30);
+    const offset = parseInt(body?.offset || "0", 10);
+
+    // Check for existing updates
+    const updates = pendingUpdates.get(token) || [];
+    if (offset > 0) {
+      // Clear consumed updates
+      pendingUpdates.set(token, updates.filter((u) => u.update_id >= offset));
+    }
+
+    const filtered = (pendingUpdates.get(token) || []).filter(
+      (u) => u.update_id >= offset
+    );
+
+    if (filtered.length > 0) {
+      return { ok: true, result: filtered };
+    }
+
+    // Long-poll: wait for new updates, timeout, or client abort.
+    return await new Promise((resolve) => {
+      const cleanup = () => {
+        clearTimeout(timer);
+        const listeners = updateListeners.get(token) || [];
+        updateListeners.set(
+          token,
+          listeners.filter((cb) => cb !== onUpdate)
+        );
+        if (signal) signal.removeEventListener("abort", onAbort);
+      };
+      const timer = setTimeout(() => {
+        cleanup();
+        resolve({ ok: true, result: [] });
+      }, timeout * 1000);
+      const onUpdate = () => {
+        cleanup();
+        const current = (pendingUpdates.get(token) || []).filter(
+          (u) => u.update_id >= offset
+        );
+        resolve({ ok: true, result: current });
+      };
+      // Client (OpenClaw) closed the request — e.g. its channel worker is being
+      // torn down on disconnect. Settle now so the in-flight count drops instead
+      // of lingering until the full long-poll timeout fires (and stamps a
+      // "zombie" completion 30s in the future).
+      const onAbort = () => {
+        cleanup();
+        resolve({ ok: true, result: [] });
+      };
+      if (signal) {
+        if (signal.aborted) {
+          cleanup();
+          resolve({ ok: true, result: [] });
+          return;
+        }
+        signal.addEventListener("abort", onAbort);
+      }
+      if (!updateListeners.has(token)) {
+        updateListeners.set(token, []);
+      }
+      updateListeners.get(token).push(onUpdate);
+    });
+  } finally {
+    endPoll(token);
+  }
+}
+
+// Wire an HTTP request/response to a getUpdates long-poll, cancelling the poll
+// if the client closes the connection before we answer — so a torn-down
+// poller's in-flight count drops promptly (Issue #476 Gap 1) instead of waiting
+// out the 30s long-poll. `res` "close" fires on abort AND on normal completion;
+// aborting an already-settled poll is a harmless no-op.
+function dispatchGetUpdates(req, res, token, body) {
+  const ac = new AbortController();
+  res.on("close", () => ac.abort());
+  handleGetUpdates(token, body, { signal: ac.signal }).then((result) => {
+    if (res.writableEnded) return;
+    res.writeHead(200, { "Content-Type": "application/json" });
+    res.end(JSON.stringify(result));
   });
 }
 
@@ -307,10 +423,7 @@ function startHttpsServer(cert) {
 
       // getUpdates is async (long-poll)
       if (method === "getUpdates") {
-        handleGetUpdates(token, bodyData).then((result) => {
-          res.writeHead(200, { "Content-Type": "application/json" });
-          res.end(JSON.stringify(result));
-        });
+        dispatchGetUpdates(req, res, token, bodyData);
         return;
       }
 
@@ -418,12 +531,14 @@ function startControlServer() {
 
       // GET /control/health
       if (req.method === "GET" && url.pathname === "/control/health") {
+        const { pollingTokens: pollingTokensSnapshot, activePollingTokens } = getHealthSnapshot();
         res.writeHead(200);
         res.end(
           JSON.stringify({
             ok: true,
             bots: [...bots.keys()].length,
-            pollingTokens: [...pollingTokens],
+            pollingTokens: pollingTokensSnapshot,
+            activePollingTokens,
             pendingUpdates: [...pendingUpdates.values()].flat().length,
             responses: botResponses.length,
             conflict409All,
@@ -439,10 +554,7 @@ function startControlServer() {
         const [, token, method] = botMatch;
         const botBody = parsedBody(body);
         if (method === "getUpdates") {
-          handleGetUpdates(token, botBody).then((result) => {
-            res.writeHead(200, { "Content-Type": "application/json" });
-            res.end(JSON.stringify(result));
-          });
+          dispatchGetUpdates(req, res, token, botBody);
           return;
         }
         const result = handleBotRequest(token, method, botBody);
@@ -485,4 +597,10 @@ if (require.main === module) {
   });
 }
 
-module.exports = { resetState, injectMessage, handleGetUpdates };
+module.exports = {
+  resetState,
+  injectMessage,
+  handleGetUpdates,
+  getHealthSnapshot,
+  ACTIVE_GRACE_MS,
+};
