@@ -601,6 +601,31 @@ export function normalizeFields(fields: unknown): OdooField[] {
   });
 }
 
+/**
+ * Request-scoped cache of a model's normalized field schema, keyed by model
+ * name. A single `odoo_create`/`odoo_write` normalization pass resolves the
+ * parent record plus every nested one2many line, and each of those resolves
+ * its own many2one lookups — all of which need `fields_get`. Without a shared
+ * cache, booking an N-line journal entry issued N identical `fields_get` RPCs
+ * for the line model (once per recursive `normalizeMany2OneValues`) and N more
+ * for each relation looked up by name (once per `searchRelationByName`). A
+ * fresh cache is created per top-level normalization, so credential rotation
+ * and schema changes between tool calls still take effect.
+ */
+type FieldsCache = Map<string, OdooField[]>;
+
+async function loadFields(
+  client: OdooClient,
+  model: string,
+  cache: FieldsCache,
+): Promise<OdooField[]> {
+  const cached = cache.get(model);
+  if (cached) return cached;
+  const fields = normalizeFields(await client.fields(model));
+  cache.set(model, fields);
+  return fields;
+}
+
 function normalizeLookupText(value: string): string {
   return value.trim().toLowerCase();
 }
@@ -1014,9 +1039,10 @@ async function searchRelationByName(
   field: OdooField,
   lookup: RelationLookup,
   scopeCompanyId: number | null = null,
+  fieldsCache: FieldsCache = new Map(),
 ): Promise<unknown> {
   const relation = field.relation as string;
-  const relationFields = normalizeFields(await client.fields(relation));
+  const relationFields = await loadFields(client, relation, fieldsCache);
   const lookupFields = augmentFieldsWithCompanyId(
     ["id", "name", "display_name"],
     relationFields,
@@ -1048,6 +1074,7 @@ async function resolveRelationValue(
   field: OdooField,
   value: unknown,
   scopeCompanyId: number | null = null,
+  fieldsCache: FieldsCache = new Map(),
 ): Promise<unknown> {
   if (value == null || value === false) return value;
   if (typeof value === "number") {
@@ -1099,7 +1126,13 @@ async function resolveRelationValue(
           fields: ["id", "name", "display_name", "code"],
           limit: 1000,
         })
-      : await searchRelationByName(client, field, lookup, scopeCompanyId);
+      : await searchRelationByName(
+          client,
+          field,
+          lookup,
+          scopeCompanyId,
+          fieldsCache,
+        );
 
   return resolveReferenceFromRecords(
     field,
@@ -1115,8 +1148,9 @@ export async function normalizeMany2OneValues(
   values: Record<string, unknown>,
   depth = 0,
   inheritedScope: number | null = null,
+  fieldsCache: FieldsCache = new Map(),
 ): Promise<{ values: Record<string, unknown>; fields: OdooField[] }> {
-  const fields = normalizeFields(await client.fields(model));
+  const fields = await loadFields(client, model, fieldsCache);
   if (fields.length === 0) return { values, fields };
 
   const normalized = { ...values };
@@ -1139,6 +1173,8 @@ export async function normalizeMany2OneValues(
       connectionId,
       companyField,
       normalized.company_id,
+      null,
+      fieldsCache,
     );
     normalized.company_id = resolved;
     if (
@@ -1159,6 +1195,7 @@ export async function normalizeMany2OneValues(
       field,
       normalized[field.name],
       scopeCompanyId,
+      fieldsCache,
     );
   }
 
@@ -1183,6 +1220,7 @@ export async function normalizeMany2OneValues(
         commands,
         scopeCompanyId,
         depth,
+        fieldsCache,
       );
     }
   }
@@ -1206,6 +1244,7 @@ async function normalizeOne2ManyCommands(
   commands: unknown[],
   scopeCompanyId: number | null,
   depth: number,
+  fieldsCache: FieldsCache,
 ): Promise<unknown[]> {
   const out: unknown[] = [];
   for (const cmd of commands) {
@@ -1224,6 +1263,7 @@ async function normalizeOne2ManyCommands(
           values,
           depth + 1,
           scopeCompanyId,
+          fieldsCache,
         )
       ).values;
       out.push([op, cmd[1], resolved]);

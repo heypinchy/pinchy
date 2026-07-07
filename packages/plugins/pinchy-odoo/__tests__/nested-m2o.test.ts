@@ -48,8 +48,10 @@ const FIELDS: Record<string, Record<string, unknown>> = {
 
 function makeMockClient() {
   const calls: { relation: string; domain: unknown }[] = [];
+  const fieldsCalls: string[] = [];
   const client = {
     async fields(model: string) {
+      fieldsCalls.push(model);
       return FIELDS[model] ?? {};
     },
     async searchRead(relation: string, domain: unknown) {
@@ -70,7 +72,7 @@ function makeMockClient() {
       return [];
     },
   };
-  return { client: client as unknown as OdooClient, calls };
+  return { client: client as unknown as OdooClient, calls, fieldsCalls };
 }
 
 describe("normalizeMany2OneValues — nested one2many command tuples (#615)", () => {
@@ -160,5 +162,33 @@ describe("normalizeMany2OneValues — nested one2many command tuples (#615)", ()
 
     delete FIELDS["account.move.line"].tax_ids;
     delete FIELDS["account.tax"];
+  });
+
+  it("fetches each model's field schema at most once per create, not once per line", async () => {
+    // A multi-line journal entry: three lines, all resolving account_id by
+    // name against account.account. Without a request-scoped fields cache this
+    // issued a fresh `fields_get` per line — account.move.line ×3 (one per
+    // recursive normalizeMany2OneValues) plus account.account ×3 (one per
+    // name lookup in searchRelationByName) — N redundant identical RPCs that
+    // grow with the line count. The cache collapses each to a single fetch.
+    const { client, fieldsCalls } = makeMockClient();
+    const values = {
+      company_id: "GmbH A",
+      line_ids: [
+        [0, 0, { account_id: "Main Bank", debit: 100 }],
+        [0, 0, { account_id: "Main Bank", credit: 100 }],
+        [0, 0, { account_id: "Main Bank", debit: 50 }],
+      ],
+    };
+
+    await normalizeMany2OneValues(client, "conn-1", "account.move", values);
+
+    const countOf = (model: string) =>
+      fieldsCalls.filter((m) => m === model).length;
+    // Parent schema: once. Line schema: once for all three lines. Account
+    // lookup schema: once for all three name resolutions.
+    expect(countOf("account.move")).toBe(1);
+    expect(countOf("account.move.line")).toBe(1);
+    expect(countOf("account.account")).toBe(1);
   });
 });
