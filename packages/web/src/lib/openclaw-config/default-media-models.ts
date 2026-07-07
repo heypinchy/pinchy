@@ -43,26 +43,62 @@ const PDF_MODEL_PREFERENCE: readonly ProviderName[] = [
 ];
 
 export async function resolveDefaultPdfModel(): Promise<string | null> {
-  // Guard against a regenerate call landing before bootInits has loaded the
-  // cache. `isModelVisionCapable` is sync and would otherwise return false
-  // for every model, silently picking the last (untyped) provider in the
-  // preference order.
+  return (await resolveDefaultVisionModelChain())[0] ?? null;
+}
+
+/**
+ * Ordered chain of vision-capable models for the built-in `pdf` AND `image`
+ * tools: the best vision model of every configured provider, in
+ * `PDF_MODEL_PREFERENCE` order. Both tools share this resolution (their
+ * preferences are identical), so build.ts resolves it ONCE and emits it as
+ * `pdfModel`/`imageModel = { primary: chain[0], fallbacks: rest }`.
+ *
+ * OpenClaw resolves primary+fallbacks into an ordered candidate list and retries
+ * the next one when a model is unreachable (`agents.defaults.pdfModel.fallbacks`,
+ * resolveAgentModelFallbackValues). The old single-model `pdfModel` had NO
+ * fallback, so an invalid/expired primary key silently killed all PDF/vision —
+ * the staging symptom was `pdf failed: PDF model failed (openai/gpt-5.5): 401
+ * Incorrect API key`, with no fall-through to the ollama-cloud vision model the
+ * stack already had.
+ */
+export async function resolveDefaultVisionModelChain(): Promise<string[]> {
+  return resolveVisionModelChain(PDF_MODEL_PREFERENCE);
+}
+
+/**
+ * Collect the best vision model of each configured provider, in the given
+ * preference order (deduped). ollama-cloud resolves to its curated VISION model
+ * (`pickOllamaCloudImageModel` — gemini-3-flash-preview …), NEVER the chat
+ * default: the pdf resolver previously used `getDefaultModel('ollama-cloud')`
+ * (kimi-k2.6, a chat model that is not reliably vision-capable), so ollama-cloud
+ * never qualified as a PDF fallback even when the stack had a real vision model.
+ * Native providers use their default model, gated by `isModelVisionCapable`.
+ */
+async function resolveVisionModelChain(preference: readonly ProviderName[]): Promise<string[]> {
+  // Guard against a regenerate landing before bootInits loaded the capability
+  // cache — `isModelVisionCapable` is sync and would otherwise report false for
+  // every model, silently dropping native providers from the chain.
   await ensureModelCapabilityCacheLoaded();
-  for (const provider of PDF_MODEL_PREFERENCE) {
-    // `provider` is a typed ProviderName from the const tuple above, never
-    // user input — `PROVIDERS[provider]` is safe key access on a finite map.
+  const chain: string[] = [];
+  for (const provider of preference) {
+    // `provider` is a typed ProviderName from a const tuple, never user input —
+    // `PROVIDERS[provider]` is safe key access on a finite map.
     // eslint-disable-next-line security/detect-object-injection
     const key = await getSetting(PROVIDERS[provider].settingsKey);
     if (!key) continue;
+    if (provider === "ollama-cloud") {
+      const picked = await pickOllamaCloudImageModel();
+      if (picked && !chain.includes(picked)) chain.push(picked);
+      continue;
+    }
     const model = await getDefaultModel(provider);
     if (!model) continue;
-    // Native PDF providers (anthropic, google) are always vision-capable,
-    // so the check is a no-op there. For the fallback tier the check
-    // guards against a provider whose default model isn't actually
-    // vision-capable (e.g. a future text-only model winning the slot).
-    if (isModelVisionCapable(model)) return model;
+    // Native PDF/vision providers (anthropic, google) are always vision-capable,
+    // so the check is a no-op there; for the openai fallback tier it guards a
+    // future text-only default from winning the slot.
+    if (isModelVisionCapable(model) && !chain.includes(model)) chain.push(model);
   }
-  return null;
+  return chain;
 }
 
 /**
@@ -161,20 +197,7 @@ async function pickOllamaCloudImageModel(): Promise<string | null> {
 }
 
 export async function resolveDefaultImageModel(): Promise<string | null> {
-  for (const provider of IMAGE_MODEL_PREFERENCE) {
-    // eslint-disable-next-line security/detect-object-injection
-    const key = await getSetting(PROVIDERS[provider].settingsKey);
-    if (!key) continue;
-    if (provider === "ollama-cloud") {
-      const picked = await pickOllamaCloudImageModel();
-      if (picked) return picked;
-      continue;
-    }
-    const model = await getDefaultModel(provider);
-    if (!model) continue;
-    if (isModelVisionCapable(model)) return model;
-  }
-  return null;
+  return (await resolveDefaultVisionModelChain())[0] ?? null;
 }
 
 function providerImageRank(provider: string): number {

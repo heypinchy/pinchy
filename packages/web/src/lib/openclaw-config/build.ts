@@ -49,7 +49,7 @@ import {
   BUILTIN_PROVIDER_BASE_URL_ENV_VARS,
   BUILTIN_PROVIDER_API,
 } from "./provider-defaults";
-import { resolveDefaultPdfModel, resolveDefaultImageModel } from "./default-media-models";
+import { resolveDefaultVisionModelChain } from "./default-media-models";
 import { deepMerge } from "./deep-merge";
 import { buildGatewayBlock } from "./gateway";
 import { EMAIL_CONNECTION_TYPES } from "@/lib/integrations/oauth-providers";
@@ -373,22 +373,27 @@ export async function regenerateOpenClawConfig() {
     pinchyDefaults.model = { primary: await getDefaultModel(defaultProvider) };
   }
 
-  // Auto-set pdfModel to the best vision-capable model available.
-  // The built-in `pdf` tool registers only when this resolves — without it,
-  // agents on text-only models (e.g. deepseek-v4-flash) get no PDF capability.
-  const pdfModel = await resolveDefaultPdfModel();
-  if (pdfModel) {
-    pinchyDefaults.pdfModel = { primary: pdfModel };
-  }
-
-  // Auto-set imageModel for the built-in `image` tool. Without this,
-  // OpenClaw falls through to provider image defaults and may pick a
-  // vision-flagged model whose runtime API rejects images (e.g.
-  // devstral-small-2 on ollama-cloud, #416). The explicit pin removes that
-  // failure mode and lets ops override via settings if needed.
-  const imageModel = await resolveDefaultImageModel();
-  if (imageModel) {
-    pinchyDefaults.imageModel = { primary: imageModel };
+  // Vision-model chain for the built-in `pdf` and `image` tools. Both use the
+  // SAME per-provider resolution (identical preference + logic), so resolve it
+  // ONCE — this also avoids fetching the live ollama-cloud catalog twice per
+  // config-gen. Emitted as { primary, fallbacks } so OpenClaw retries the next
+  // provider when the primary is unreachable (invalid/expired key, retired
+  // model) instead of hard-failing — see resolveDefaultVisionModelChain for the
+  // staging incident (openai/gpt-5.5 → 401, no fall-through to ollama-cloud).
+  const visionChain = await resolveDefaultVisionModelChain();
+  const visionSelector =
+    visionChain.length > 0
+      ? {
+          primary: visionChain[0],
+          ...(visionChain.length > 1 ? { fallbacks: visionChain.slice(1) } : {}),
+        }
+      : undefined;
+  if (visionSelector) {
+    // pdf tool registers only when this resolves — text-only stacks get no PDF.
+    pinchyDefaults.pdfModel = visionSelector;
+    // Without imageModel, OpenClaw falls through to provider image defaults and
+    // may pick a vision-flagged model whose API rejects images (#416).
+    pinchyDefaults.imageModel = visionSelector;
   }
 
   // Build agents list with OpenClaw-side workspace paths, tools.allow, and plugin configs
@@ -691,7 +696,9 @@ export async function regenerateOpenClawConfig() {
     // Haiku), NOT the per-agent chat model — matching the old pdfModel/imageModel
     // behaviour. Omitted when no vision provider is configured; the plugin then
     // falls back to the agent's own model.
-    const visionModel = await resolveDefaultImageModel();
+    // Reuse the already-resolved vision chain's primary so the live ollama-cloud
+    // catalog isn't fetched again for pinchy-files.
+    const visionModel = visionChain[0] ?? null;
     entries["pinchy-files"] = {
       enabled: true,
       config: {

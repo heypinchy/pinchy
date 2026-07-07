@@ -7165,4 +7165,25 @@ describe("regenerateOpenClawConfig imageModel.primary (#416)", () => {
     const config = JSON.parse(mockedWriteFileSync.mock.calls[0][1] as string);
     expect(config.agents?.defaults?.imageModel).toBeUndefined();
   });
+
+  it("emits pdfModel AND imageModel with a { primary, fallbacks } chain across vision providers (#2)", async () => {
+    // Regression guard for the staging PDF break: a single pdfModel had NO
+    // fallback, so an unreachable primary (invalid OpenAI key → 401) silently
+    // killed PDF/vision even though the stack had an ollama-cloud vision model.
+    // With openai + ollama-cloud both configured, the emitted selector must
+    // carry the ollama-cloud model as a fallback so OpenClaw retries it — and
+    // pdf + image share one resolution (identical primary/fallbacks).
+    mockedGetSetting.mockImplementation(async (key: string) =>
+      key === "openai_api_key" || key === "ollama_cloud_api_key" ? "test-key" : null
+    );
+    await regenerateOpenClawConfig();
+
+    const config = JSON.parse(mockedWriteFileSync.mock.calls[0][1] as string);
+    const expected = {
+      primary: "openai/gpt-5.4-mini",
+      fallbacks: ["ollama-cloud/gemini-3-flash-preview"],
+    };
+    expect(config.agents.defaults.pdfModel).toEqual(expected);
+    expect(config.agents.defaults.imageModel).toEqual(expected);
+  });
 });
