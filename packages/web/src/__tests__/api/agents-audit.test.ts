@@ -99,6 +99,9 @@ vi.mock("@/lib/path-validation", () => ({
 
 vi.mock("@/lib/settings", () => ({
   getSetting: vi.fn().mockResolvedValue("anthropic"),
+  // recalculateTelegramAllowStores (triggered as a side effect) batches
+  // bot-token lookups via getSettingsByPrefix now — no bots in this test (#261).
+  getSettingsByPrefix: vi.fn().mockResolvedValue(new Map()),
 }));
 
 vi.mock("@/lib/provider-models", () => ({

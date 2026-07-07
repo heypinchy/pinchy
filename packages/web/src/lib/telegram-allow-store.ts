@@ -26,7 +26,7 @@ import { dirname, join } from "path";
 import { db } from "@/db";
 import { agents, channelLinks, agentGroups, userGroups, users } from "@/db/schema";
 import { eq, and, isNull } from "drizzle-orm";
-import { getSetting } from "@/lib/settings";
+import { getSettingsByPrefix } from "@/lib/settings";
 
 const CONFIG_PATH = process.env.OPENCLAW_CONFIG_PATH || "/openclaw-config/openclaw.json";
 const CREDENTIALS_DIR = join(dirname(CONFIG_PATH), "credentials");
@@ -126,10 +126,12 @@ async function recalculateTelegramAllowStoresImpl(): Promise<void> {
   // which can have Telegram bots connected via Settings → Telegram)
   const allAgents = await db.select().from(agents).where(isNull(agents.deletedAt));
 
-  // 2. Find which agents have bot tokens
+  // 2. Find which agents have bot tokens. Batched: one `telegram_bot_token:`
+  // prefix query instead of a `getSetting` round-trip per agent (#261 N+1).
+  const botTokenByKey = await getSettingsByPrefix("telegram_bot_token:");
   const agentsWithBots: Array<{ id: string; visibility: string; isPersonal: boolean }> = [];
   for (const agent of allAgents) {
-    const botToken = await getSetting(`telegram_bot_token:${agent.id}`);
+    const botToken = botTokenByKey.get(`telegram_bot_token:${agent.id}`);
     if (botToken) {
       agentsWithBots.push({
         id: agent.id,

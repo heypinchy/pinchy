@@ -40,6 +40,13 @@ vi.mock("@/lib/audit", () => ({
   appendAuditLog: vi.fn().mockResolvedValue(undefined),
 }));
 
+// The DELETE route recalculates Telegram allow-stores as a side effect; this
+// suite asserts user-deletion + audit, not allow-store recalculation, so stub
+// it out (it otherwise hits the DB via getSettingsByPrefix — #261).
+vi.mock("@/lib/telegram-allow-store", () => ({
+  recalculateTelegramAllowStores: vi.fn().mockResolvedValue(undefined),
+}));
+
 vi.mock("@/db", () => ({
   db: {
     query: {

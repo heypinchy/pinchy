@@ -74,9 +74,18 @@ vi.mock("drizzle-orm", async (importOriginal) => {
   };
 });
 
-const mockGetSetting = vi.fn();
+// Map-based settings mock: tests populate `mockSettings` with the keys they
+// want present. `getSetting` reads it; `getSettingsByPrefix` filters it in one
+// call (the production code batches bot-token lookups now — #261).
+const mockSettings = new Map<string, string>();
+const { mockGetSettingsByPrefix } = vi.hoisted(() => ({
+  mockGetSettingsByPrefix: vi.fn((prefix: string, map: Map<string, string>) =>
+    Promise.resolve(new Map(Array.from(map.entries()).filter(([k]) => k.startsWith(prefix))))
+  ),
+}));
 vi.mock("@/lib/settings", () => ({
-  getSetting: (...args: unknown[]) => mockGetSetting(...args),
+  getSetting: (key: string) => Promise.resolve(mockSettings.get(key) ?? null),
+  getSettingsByPrefix: (prefix: string) => mockGetSettingsByPrefix(prefix, mockSettings),
 }));
 
 import {
@@ -293,7 +302,14 @@ describe("telegram-allow-store", () => {
     }
 
     beforeEach(() => {
-      mockGetSetting.mockResolvedValue(null);
+      mockSettings.clear();
+      // Re-wire the prefix spy after the outer clearAllMocks (its impl reads
+      // mockSettings, which each test populates via mockSettings.set).
+      mockGetSettingsByPrefix.mockImplementation((prefix: string) =>
+        Promise.resolve(
+          new Map(Array.from(mockSettings.entries()).filter(([k]) => k.startsWith(prefix)))
+        )
+      );
       mockReaddirSync.mockReturnValue([]);
     });
 
@@ -319,9 +335,7 @@ describe("telegram-allow-store", () => {
           { id: "user-2", role: "member", banned: false },
         ],
       });
-      mockGetSetting.mockImplementation((key: string) =>
-        key === "telegram_bot_token:agent-1" ? Promise.resolve("token-1") : Promise.resolve(null)
-      );
+      mockSettings.set("telegram_bot_token:agent-1", "token-1");
 
       await recalculateTelegramAllowStores();
 
@@ -359,9 +373,7 @@ describe("telegram-allow-store", () => {
           { id: "user-2", role: "member", banned: false },
         ],
       });
-      mockGetSetting.mockImplementation((key: string) =>
-        key === "telegram_bot_token:agent-1" ? Promise.resolve("token-1") : Promise.resolve(null)
-      );
+      mockSettings.set("telegram_bot_token:agent-1", "token-1");
 
       await recalculateTelegramAllowStores();
 
@@ -392,9 +404,7 @@ describe("telegram-allow-store", () => {
         userGroups: [], // admin is NOT in group-1
         users: [{ id: "user-admin", role: "admin", banned: false }],
       });
-      mockGetSetting.mockImplementation((key: string) =>
-        key === "telegram_bot_token:agent-1" ? Promise.resolve("token-1") : Promise.resolve(null)
-      );
+      mockSettings.set("telegram_bot_token:agent-1", "token-1");
 
       await recalculateTelegramAllowStores();
 
@@ -430,11 +440,8 @@ describe("telegram-allow-store", () => {
         userGroups: [{ userId: "user-1", groupId: "group-1" }],
         users: [{ id: "user-1", role: "member", banned: false }],
       });
-      mockGetSetting.mockImplementation((key: string) => {
-        if (key === "telegram_bot_token:agent-1") return Promise.resolve("token-1");
-        if (key === "telegram_bot_token:agent-2") return Promise.resolve("token-2");
-        return Promise.resolve(null);
-      });
+      mockSettings.set("telegram_bot_token:agent-1", "token-1");
+      mockSettings.set("telegram_bot_token:agent-2", "token-2");
 
       await recalculateTelegramAllowStores();
 
@@ -479,9 +486,7 @@ describe("telegram-allow-store", () => {
         users: [{ id: "user-1", role: "member", banned: false }],
       });
       // Only agent-1 has a bot token
-      mockGetSetting.mockImplementation((key: string) =>
-        key === "telegram_bot_token:agent-1" ? Promise.resolve("token-1") : Promise.resolve(null)
-      );
+      mockSettings.set("telegram_bot_token:agent-1", "token-1");
 
       await recalculateTelegramAllowStores();
 
@@ -506,9 +511,7 @@ describe("telegram-allow-store", () => {
         userGroups: [],
         users: [],
       });
-      mockGetSetting.mockImplementation((key: string) =>
-        key === "telegram_bot_token:agent-1" ? Promise.resolve("token-1") : Promise.resolve(null)
-      );
+      mockSettings.set("telegram_bot_token:agent-1", "token-1");
       // Orphaned store file for agent that no longer has a bot
       mockReaddirSync.mockReturnValue([
         "telegram-agent-1-allowFrom.json",
@@ -538,9 +541,7 @@ describe("telegram-allow-store", () => {
         userGroups: [],
         users: [],
       });
-      mockGetSetting.mockImplementation((key: string) =>
-        key === "telegram_bot_token:agent-1" ? Promise.resolve("token-1") : Promise.resolve(null)
-      );
+      mockSettings.set("telegram_bot_token:agent-1", "token-1");
       mockReaddirSync.mockReturnValue([
         "telegram-allowFrom.json", // legacy
         "telegram-agent-1-allowFrom.json",
@@ -569,9 +570,7 @@ describe("telegram-allow-store", () => {
         userGroups: [],
         users: [],
       });
-      mockGetSetting.mockImplementation((key: string) =>
-        key === "telegram_bot_token:agent-1" ? Promise.resolve("token-1") : Promise.resolve(null)
-      );
+      mockSettings.set("telegram_bot_token:agent-1", "token-1");
 
       await recalculateTelegramAllowStores();
 
@@ -600,7 +599,7 @@ describe("telegram-allow-store", () => {
         userGroups: [],
         users: [],
       });
-      mockGetSetting.mockResolvedValue(null); // no bot tokens
+      // no bot tokens — mockSettings is empty
 
       await recalculateTelegramAllowStores();
 
@@ -625,9 +624,7 @@ describe("telegram-allow-store", () => {
         userGroups: [],
         users: [{ id: "user-1", role: "member", banned: false }],
       });
-      mockGetSetting.mockImplementation((key: string) =>
-        key === "telegram_bot_token:smithers-1" ? Promise.resolve("token-1") : Promise.resolve(null)
-      );
+      mockSettings.set("telegram_bot_token:smithers-1", "token-1");
 
       await recalculateTelegramAllowStores();
 
@@ -662,9 +659,7 @@ describe("telegram-allow-store", () => {
           { id: "user-banned", role: "member", banned: true },
         ],
       });
-      mockGetSetting.mockImplementation((key: string) =>
-        key === "telegram_bot_token:agent-1" ? Promise.resolve("token-1") : Promise.resolve(null)
-      );
+      mockSettings.set("telegram_bot_token:agent-1", "token-1");
 
       await recalculateTelegramAllowStores();
 
@@ -675,6 +670,53 @@ describe("telegram-allow-store", () => {
       const written = JSON.parse(accountWrite![1] as string);
       expect(written.allowFrom).toContain("111222333");
       expect(written.allowFrom).not.toContain("444555666");
+    });
+
+    it("fetches bot tokens in a single batched prefix query, not one getSetting per agent (#261)", async () => {
+      setupDbMocks({
+        agents: [
+          {
+            id: "agent-1",
+            visibility: "all",
+            isPersonal: false,
+            deletedAt: null,
+            avatarSeed: null,
+          },
+          {
+            id: "agent-2",
+            visibility: "all",
+            isPersonal: false,
+            deletedAt: null,
+            avatarSeed: null,
+          },
+          {
+            id: "agent-3",
+            visibility: "all",
+            isPersonal: false,
+            deletedAt: null,
+            avatarSeed: null,
+          },
+        ],
+        channelLinks: [{ userId: "user-1", channelUserId: "111222333" }],
+        agentGroups: [],
+        userGroups: [],
+        users: [{ id: "user-1", role: "member", banned: false }],
+      });
+      mockSettings.set("telegram_bot_token:agent-1", "token-1");
+      mockSettings.set("telegram_bot_token:agent-2", "token-2");
+      mockSettings.set("telegram_bot_token:agent-3", "token-3");
+
+      await recalculateTelegramAllowStores();
+
+      // One batched prefix query — not one getSetting round-trip per agent.
+      expect(mockGetSettingsByPrefix).toHaveBeenCalledTimes(1);
+      expect(mockGetSettingsByPrefix).toHaveBeenCalledWith("telegram_bot_token:", mockSettings);
+
+      // All three agents' stores were still written from the batched result.
+      const written = mockWriteFileSync.mock.calls.map((c: unknown[]) => c[0] as string);
+      expect(written.some((p) => p.includes("telegram-agent-1-allowFrom.json"))).toBe(true);
+      expect(written.some((p) => p.includes("telegram-agent-2-allowFrom.json"))).toBe(true);
+      expect(written.some((p) => p.includes("telegram-agent-3-allowFrom.json"))).toBe(true);
     });
   });
 });

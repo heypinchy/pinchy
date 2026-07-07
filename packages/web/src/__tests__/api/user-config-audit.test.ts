@@ -23,6 +23,9 @@ vi.mock("@/lib/settings", () => ({
   getAllSettings: vi.fn().mockResolvedValue([]),
   getSetting: vi.fn().mockResolvedValue(null),
   setSetting: vi.fn().mockResolvedValue(undefined),
+  // recalculateTelegramAllowStores (triggered as a side effect) batches
+  // bot-token lookups via getSettingsByPrefix now — no bots in this test (#261).
+  getSettingsByPrefix: vi.fn().mockResolvedValue(new Map()),
 }));
 
 vi.mock("@/lib/provider-models", () => ({
