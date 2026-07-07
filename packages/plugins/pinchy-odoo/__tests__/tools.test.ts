@@ -1326,6 +1326,240 @@ describe("odoo_read", () => {
   });
 });
 
+describe("odoo_read one2many line refs", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.stubEnv("PINCHY_REF_TOKEN_KEY", "a".repeat(64));
+  });
+
+  // testPermissions has no account.move grant; these tests read account.move.
+  const moveReadAgentConfig = {
+    ...agentConfig,
+    permissions: { ...testPermissions, "account.move": ["read"] },
+  };
+
+  // account.move.line_ids (o2m) alongside partner_id (m2o) and tag_ids (m2m)
+  // so a single record exercises all three relation kinds at once.
+  function mockMoveWithLinesAndTags() {
+    mockFields.mockResolvedValue([
+      { name: "id", string: "ID", type: "integer" },
+      { name: "name", string: "Name", type: "char" },
+      {
+        name: "partner_id",
+        string: "Partner",
+        type: "many2one",
+        relation: "res.partner",
+      },
+      {
+        name: "line_ids",
+        string: "Journal Items",
+        type: "one2many",
+        relation: "account.move.line",
+      },
+      {
+        name: "tag_ids",
+        string: "Tags",
+        type: "many2many",
+        relation: "account.move.line.tag",
+      },
+    ]);
+  }
+
+  it("wraps each one2many child id into a { _pinchy_ref, id, model } object", async () => {
+    mockMoveWithLinesAndTags();
+    mockSearchRead.mockResolvedValue({
+      records: [
+        {
+          id: 5,
+          name: "INV/001",
+          partner_id: [3, "Acme Inc"],
+          line_ids: [10, 11],
+          tag_ids: [20, 21],
+        },
+      ],
+      total: 1,
+      limit: 100,
+      offset: 0,
+    });
+
+    const tools = createApi({ [agentId]: moveReadAgentConfig });
+    const tool = findTool(tools, "odoo_read", agentId)!;
+
+    const result = await tool.execute("call-o2m-refs", {
+      model: "account.move",
+      filters: [],
+      fields: ["name", "partner_id", "line_ids", "tag_ids"],
+    });
+
+    expect(result.isError).toBeFalsy();
+    const data = JSON.parse(result.content[0].text);
+    const record = data.records[0];
+
+    // one2many: each child id wrapped into a ref-carrying object that
+    // decodes back to the correct relation model/id (round-trip, not just
+    // string presence).
+    expect(record.line_ids).toHaveLength(2);
+    const [line0, line1] = record.line_ids as Array<{
+      _pinchy_ref: string;
+      id: number;
+      model: string;
+    }>;
+    expect(line0.id).toBe(10);
+    expect(line0.model).toBe("account.move.line");
+    expect(decodeRef(line0._pinchy_ref)).toMatchObject({
+      model: "account.move.line",
+      id: 10,
+    });
+    expect(line1.id).toBe(11);
+    expect(decodeRef(line1._pinchy_ref)).toMatchObject({
+      model: "account.move.line",
+      id: 11,
+    });
+
+    // many2one on the same record: still wrapped as before (regression
+    // guard — our o2m change must not disturb m2o wrapping).
+    expect(record.partner_id).toEqual({
+      ref: expect.stringMatching(/^pinchy_ref:v1:/),
+      label: "Acme Inc",
+      model: "res.partner",
+    });
+
+    // many2many is explicitly OUT of scope for this change — left as the
+    // raw id array Odoo returns.
+    expect(record.tag_ids).toEqual([20, 21]);
+  });
+
+  it("leaves an empty one2many array as []", async () => {
+    mockMoveWithLinesAndTags();
+    mockSearchRead.mockResolvedValue({
+      records: [
+        {
+          id: 6,
+          name: "INV/002",
+          partner_id: false,
+          line_ids: [],
+          tag_ids: [],
+        },
+      ],
+      total: 1,
+      limit: 100,
+      offset: 0,
+    });
+
+    const tools = createApi({ [agentId]: moveReadAgentConfig });
+    const tool = findTool(tools, "odoo_read", agentId)!;
+
+    const result = await tool.execute("call-o2m-empty", {
+      model: "account.move",
+      filters: [],
+      fields: ["name", "line_ids"],
+    });
+
+    const data = JSON.parse(result.content[0].text);
+    expect(data.records[0].line_ids).toEqual([]);
+  });
+
+  it("passes through a non-array-of-numbers one2many value unchanged (defensive)", async () => {
+    mockMoveWithLinesAndTags();
+    // Not realistic for a real Odoo read, but defends against a malformed
+    // or already-wrapped value reaching wrapReadResult twice.
+    mockSearchRead.mockResolvedValue({
+      records: [
+        {
+          id: 7,
+          name: "INV/003",
+          line_ids: [{ already: "wrapped" }],
+        },
+      ],
+      total: 1,
+      limit: 100,
+      offset: 0,
+    });
+
+    const tools = createApi({ [agentId]: moveReadAgentConfig });
+    const tool = findTool(tools, "odoo_read", agentId)!;
+
+    const result = await tool.execute("call-o2m-defensive", {
+      model: "account.move",
+      filters: [],
+      fields: ["name", "line_ids"],
+    });
+
+    const data = JSON.parse(result.content[0].text);
+    expect(data.records[0].line_ids).toEqual([{ already: "wrapped" }]);
+  });
+
+  it("round-trips a read-emitted one2many line ref into an edit command tuple's id position", async () => {
+    // The point of the feature: a ref emitted by wrapReadResult for a child
+    // line must decode back to the right numeric id when pasted into a
+    // [1, <ref>, {...}] update tuple through odoo_create's normalizer.
+    mockFields.mockImplementation(async (model: string) => {
+      if (model === "account.move") {
+        return [
+          { name: "id", type: "integer" },
+          {
+            name: "line_ids",
+            type: "one2many",
+            relation: "account.move.line",
+          },
+        ];
+      }
+      if (model === "account.move.line") {
+        return [
+          { name: "id", type: "integer" },
+          { name: "debit", type: "float" },
+        ];
+      }
+      return [];
+    });
+    mockSearchRead.mockResolvedValue({
+      records: [{ id: 5, line_ids: [88] }],
+      total: 1,
+      limit: 100,
+      offset: 0,
+    });
+    mockCreate.mockResolvedValue(900);
+
+    const tools = createApi({
+      [agentId]: {
+        ...agentConfig,
+        permissions: {
+          "account.move": ["read", "create"],
+          "account.move.line": ["write"],
+        },
+      },
+    });
+    const readTool = findTool(tools, "odoo_read", agentId)!;
+    const createTool = findTool(tools, "odoo_create", agentId)!;
+
+    const readResult = await readTool.execute("call-o2m-roundtrip-read", {
+      model: "account.move",
+      filters: [],
+      fields: ["line_ids"],
+    });
+    const readData = JSON.parse(readResult.content[0].text);
+    const lineRef = readData.records[0].line_ids[0]._pinchy_ref as string;
+    expect(lineRef).toMatch(/^pinchy_ref:v1:/);
+
+    const createResult = await createTool.execute("call-o2m-roundtrip-write", {
+      model: "account.move",
+      values: { line_ids: [[1, lineRef, { debit: 5 }]] },
+    });
+
+    expect(createResult.isError).toBeFalsy();
+    const [, written] = mockCreate.mock.calls[0] as [
+      string,
+      Record<string, unknown>,
+    ];
+    const line = (
+      written.line_ids as Array<[number, unknown, Record<string, unknown>]>
+    )[0];
+    expect(line[0]).toBe(1);
+    expect(line[1]).toBe(88); // decoded from the read-emitted ref to numeric id
+    expect(line[2]).toEqual({ debit: 5 });
+  });
+});
+
 describe("odoo_count", () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -4616,7 +4850,7 @@ describe("nested m2o resolution in one2many command tuples (#615)", () => {
     expect(mockCreate).not.toHaveBeenCalled();
   });
 
-  it("passes non-0/1 command codes (4 link, 5 clear, 6 replace) through untouched", async () => {
+  it("passes link (4) through untouched without requiring a delete grant", async () => {
     mockAccountMoveChain();
     mockCreate.mockResolvedValue(557);
 
@@ -4630,13 +4864,42 @@ describe("nested m2o resolution in one2many command tuples (#615)", () => {
     const result = await tool.execute("nested-codes", {
       model: "account.move",
       values: {
-        line_ids: [[4, 55], [5], [6, false, [55, 56]]],
+        line_ids: [[4, 55]],
       },
     });
 
     expect(result.isError).toBeFalsy();
     const [, written] = mockCreate.mock.calls[0] as [string, Record<string, unknown>];
-    expect(written.line_ids).toEqual([[4, 55], [5], [6, false, [55, 56]]]);
+    expect(written.line_ids).toEqual([[4, 55]]);
+    expect(
+      mockSearchRead.mock.calls.some(([m]) => m === "account.account"),
+    ).toBe(false);
+  });
+
+  it("passes destructive clear (5) and replace (6) through untouched when the agent HAS the delete grant", async () => {
+    mockAccountMoveChain();
+    mockCreate.mockResolvedValue(557);
+
+    const tools = createApi({
+      [agentId]: {
+        ...agentConfig,
+        permissions: {
+          "account.move": ["create"],
+          "account.move.line": ["delete"],
+        },
+      },
+    });
+    const tool = findTool(tools, "odoo_create", agentId)!;
+    const result = await tool.execute("nested-codes-destructive", {
+      model: "account.move",
+      values: {
+        line_ids: [[5], [6, false, [55, 56]]],
+      },
+    });
+
+    expect(result.isError).toBeFalsy();
+    const [, written] = mockCreate.mock.calls[0] as [string, Record<string, unknown>];
+    expect(written.line_ids).toEqual([[5], [6, false, [55, 56]]]);
     expect(
       mockSearchRead.mock.calls.some(([m]) => m === "account.account"),
     ).toBe(false);
@@ -4700,6 +4963,77 @@ describe("nested m2o resolution in one2many command tuples (#615)", () => {
     expect(deleteRes.content[0].text).toMatch(/delete/);
   });
 
+  it("rejects clear [5] on line_ids without account.move.line:delete (Odoo #13082 — clear deletes orphaned children)", async () => {
+    mockAccountMoveChain();
+
+    const tools = createApi({
+      [agentId]: {
+        ...agentConfig,
+        permissions: {
+          "account.move": ["create"],
+          "account.move.line": ["create"],
+        },
+      },
+    });
+    const tool = findTool(tools, "odoo_create", agentId)!;
+    const result = await tool.execute("nested-clear-no-delete", {
+      model: "account.move",
+      values: { line_ids: [[5]] },
+    });
+
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toMatch(/account\.move\.line/);
+    expect(result.content[0].text).toMatch(/delete/);
+    expect(mockCreate).not.toHaveBeenCalled();
+  });
+
+  it("rejects replace [6,0,[...]] on line_ids without account.move.line:delete (Odoo #13082 — replace deletes orphaned children)", async () => {
+    mockAccountMoveChain();
+
+    const tools = createApi({
+      [agentId]: {
+        ...agentConfig,
+        permissions: {
+          "account.move": ["create"],
+          "account.move.line": ["create"],
+        },
+      },
+    });
+    const tool = findTool(tools, "odoo_create", agentId)!;
+    const result = await tool.execute("nested-replace-no-delete", {
+      model: "account.move",
+      values: { line_ids: [[6, 0, [123]]] },
+    });
+
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toMatch(/account\.move\.line/);
+    expect(result.content[0].text).toMatch(/delete/);
+    expect(mockCreate).not.toHaveBeenCalled();
+  });
+
+  it("allows replace [6,0,[...]] on line_ids when the agent HAS account.move.line:delete", async () => {
+    mockAccountMoveChain();
+    mockCreate.mockResolvedValue(561);
+
+    const tools = createApi({
+      [agentId]: {
+        ...agentConfig,
+        permissions: {
+          "account.move": ["create"],
+          "account.move.line": ["create", "write", "delete"],
+        },
+      },
+    });
+    const tool = findTool(tools, "odoo_create", agentId)!;
+    const result = await tool.execute("nested-replace-with-delete", {
+      model: "account.move",
+      values: { line_ids: [[6, 0, [123]]] },
+    });
+
+    expect(result.isError).toBeFalsy();
+    expect(mockCreate).toHaveBeenCalled();
+  });
+
   it("scopes a nested lookup by the line's own company_id when the move has none", async () => {
     // Move with no company_id; the line carries company_id. The line's
     // account_id lookup must be scoped to the line's company.
@@ -4760,6 +5094,483 @@ describe("nested m2o resolution in one2many command tuples (#615)", () => {
     expect(acctLookup![1]).toEqual(
       expect.arrayContaining(["|", ["company_id", "=", false], ["company_id", "=", 2]]),
     );
+  });
+
+  // Self-referential one2many so a single mockFields implementation can
+  // supply schema at every recursion depth: m.node.children -> m.node,
+  // and m.node.owner_id is a many2one carrying a bare ref to resolve.
+  function mockSelfReferentialNode() {
+    mockFields.mockImplementation(async (model: string) => {
+      if (model === "m.node") {
+        return [
+          { name: "id", type: "integer", required: false, readonly: true },
+          {
+            name: "owner_id",
+            type: "many2one",
+            relation: "res.partner",
+            required: false,
+            readonly: false,
+          },
+          {
+            name: "children",
+            type: "one2many",
+            relation: "m.node",
+          },
+        ];
+      }
+      return [];
+    });
+  }
+
+  // Build a [0,0,{children:[...]}] tuple nested `depth` levels deep, with a
+  // bare ref on `owner_id` at the innermost level.
+  function buildDeepNode(depth: number, innerRef: string): unknown {
+    if (depth === 0) {
+      return { owner_id: innerRef };
+    }
+    return { children: [[0, 0, buildDeepNode(depth - 1, innerRef)]] };
+  }
+
+  it("throws a depth-cap error instead of passing unresolved refs beyond MAX_NORMALIZE_DEPTH (#615 regression guard)", async () => {
+    mockSelfReferentialNode();
+    const ownerRef = encodeRef({
+      integrationType: "odoo",
+      connectionId: "conn-test-1",
+      model: "res.partner",
+      id: 9,
+      label: "Deep Owner",
+    });
+
+    const tools = createApi({
+      [agentId]: {
+        ...agentConfig,
+        permissions: { "m.node": ["create"] },
+      },
+    });
+    const tool = findTool(tools, "odoo_create", agentId)!;
+    // MAX_NORMALIZE_DEPTH + 1 levels of nesting — exceeds the cap.
+    const result = await tool.execute("deep-nest", {
+      model: "m.node",
+      values: buildDeepNode(9, ownerRef) as Record<string, unknown>,
+    });
+
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toMatch(/depth/i);
+    expect(mockCreate).not.toHaveBeenCalled();
+  });
+});
+
+// many2many command-tuple resolution (#615 follow-up): m2m fields (e.g.
+// `tax_ids` on account.move) were previously skipped entirely by
+// normalizeValuesRecord's field loop, so a bare _pinchy_ref inside
+// `[[6,0,[ref]]]` reached Odoo unresolved and was rejected. m2m is a join
+// table, not a required-inverse cascade: only codes 0/1/2 touch the target
+// model's rows (create/write/delete), while 3/4/5/6 only rewire the join
+// table and need no target-model grant. Every id position (codes 1-4, and
+// each element of the 6 id-list) must still be ref-decodable so a line ref
+// captured by odoo_read can be pasted back into an edit.
+describe("many2many command-tuple resolution (#615 follow-up)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.stubEnv("PINCHY_REF_TOKEN_KEY", "a".repeat(64));
+  });
+
+  // account.move --(line_ids: o2m)--> account.move.line --(tax_ids: m2m)--> account.tax
+  // account.move also carries a top-level tax_ids m2m directly to account.tax,
+  // so both "top-level m2m" and "nested-inside-o2m m2m" can be exercised from
+  // one schema chain.
+  function mockMoveWithTaxes() {
+    mockFields.mockImplementation(async (model: string) => {
+      if (model === "account.move") {
+        return [
+          { name: "id", type: "integer", required: false, readonly: true },
+          {
+            name: "company_id",
+            type: "many2one",
+            relation: "res.company",
+            required: false,
+            readonly: false,
+          },
+          {
+            name: "tax_ids",
+            type: "many2many",
+            relation: "account.tax",
+          },
+          {
+            name: "line_ids",
+            type: "one2many",
+            relation: "account.move.line",
+          },
+        ];
+      }
+      if (model === "account.move.line") {
+        return [
+          { name: "id", type: "integer", required: false, readonly: true },
+          { name: "debit", type: "float", required: false, readonly: false },
+          { name: "credit", type: "float", required: false, readonly: false },
+          { name: "name", type: "char", required: false, readonly: false },
+          {
+            name: "tax_ids",
+            type: "many2many",
+            relation: "account.tax",
+          },
+          {
+            name: "company_id",
+            type: "many2one",
+            relation: "res.company",
+            required: false,
+            readonly: false,
+          },
+        ];
+      }
+      if (model === "account.tax") {
+        return [
+          { name: "id", type: "integer", required: false, readonly: true },
+          { name: "name", type: "char", required: false, readonly: false },
+          {
+            name: "amount",
+            type: "float",
+            required: false,
+            readonly: false,
+          },
+          {
+            name: "company_id",
+            type: "many2one",
+            relation: "res.company",
+            required: false,
+            readonly: false,
+          },
+        ];
+      }
+      return [];
+    });
+  }
+
+  function taxRef(id: number, opts: Partial<Parameters<typeof encodeRef>[0]> = {}) {
+    return encodeRef({
+      integrationType: "odoo",
+      connectionId: "conn-test-1",
+      model: "account.tax",
+      id,
+      label: `Tax ${id}`,
+      ...opts,
+    });
+  }
+
+  it("decodes a bare ref inside a top-level [6,0,[ref]] replace tuple to a numeric id", async () => {
+    mockMoveWithTaxes();
+    mockCreate.mockResolvedValue(601);
+    const ref = taxRef(9);
+
+    const tools = createApi({
+      [agentId]: { ...agentConfig, permissions: { "account.move": ["create"] } },
+    });
+    const tool = findTool(tools, "odoo_create", agentId)!;
+    const result = await tool.execute("m2m-top-level", {
+      model: "account.move",
+      values: { tax_ids: [[6, 0, [ref]]] },
+    });
+
+    expect(result.isError).toBeFalsy();
+    const [, written] = mockCreate.mock.calls[0] as [string, Record<string, unknown>];
+    expect(written.tax_ids).toEqual([[6, 0, [9]]]);
+  });
+
+  it("decodes a bare ref inside an m2m tuple nested inside an o2m create tuple", async () => {
+    mockMoveWithTaxes();
+    mockCreate.mockResolvedValue(602);
+    const ref = taxRef(11);
+
+    const tools = createApi({
+      [agentId]: {
+        ...agentConfig,
+        permissions: { "account.move": ["create"], "account.move.line": ["create"] },
+      },
+    });
+    const tool = findTool(tools, "odoo_create", agentId)!;
+    const result = await tool.execute("m2m-nested", {
+      model: "account.move",
+      values: {
+        line_ids: [[0, 0, { debit: 100, credit: 0, tax_ids: [[6, 0, [ref]]] }]],
+      },
+    });
+
+    expect(result.isError).toBeFalsy();
+    const [, written] = mockCreate.mock.calls[0] as [string, Record<string, unknown>];
+    const line = (written.line_ids as Array<[number, number, Record<string, unknown>]>)[0];
+    expect(line[2].tax_ids).toEqual([[6, 0, [11]]]);
+  });
+
+  it("decodes a bare ref in a [4, ref] link tuple to a numeric id", async () => {
+    mockMoveWithTaxes();
+    mockCreate.mockResolvedValue(603);
+    const ref = taxRef(13);
+
+    const tools = createApi({
+      [agentId]: { ...agentConfig, permissions: { "account.move": ["create"] } },
+    });
+    const tool = findTool(tools, "odoo_create", agentId)!;
+    const result = await tool.execute("m2m-link", {
+      model: "account.move",
+      values: { tax_ids: [[4, ref]] },
+    });
+
+    expect(result.isError).toBeFalsy();
+    const [, written] = mockCreate.mock.calls[0] as [string, Record<string, unknown>];
+    expect(written.tax_ids).toEqual([[4, 13]]);
+  });
+
+  it("requires account.tax:create for m2m [0,0,{values}] and normalizes the inner values when granted", async () => {
+    mockMoveWithTaxes();
+
+    const noGrantTools = createApi({
+      [agentId]: { ...agentConfig, permissions: { "account.move": ["create"] } },
+    });
+    const noGrantTool = findTool(noGrantTools, "odoo_create", agentId)!;
+    const denied = await noGrantTool.execute("m2m-create-denied", {
+      model: "account.move",
+      values: { tax_ids: [[0, 0, { name: "VAT 19%", amount: 19 }]] },
+    });
+    expect(denied.isError).toBe(true);
+    expect(denied.content[0].text).toMatch(/account\.tax/);
+    expect(denied.content[0].text).toMatch(/create/);
+    expect(mockCreate).not.toHaveBeenCalled();
+
+    mockCreate.mockResolvedValue(604);
+    const grantedTools = createApi({
+      [agentId]: {
+        ...agentConfig,
+        permissions: { "account.move": ["create"], "account.tax": ["create"] },
+      },
+    });
+    const grantedTool = findTool(grantedTools, "odoo_create", agentId)!;
+    const allowed = await grantedTool.execute("m2m-create-allowed", {
+      model: "account.move",
+      values: { tax_ids: [[0, 0, { name: "VAT 19%", amount: 19 }]] },
+    });
+    expect(allowed.isError).toBeFalsy();
+    const [, written] = mockCreate.mock.calls[0] as [string, Record<string, unknown>];
+    const tuple = (written.tax_ids as Array<[number, number, Record<string, unknown>]>)[0];
+    expect(tuple[0]).toBe(0);
+    expect(tuple[2].name).toBe("VAT 19%");
+  });
+
+  it("requires account.tax:write for m2m [1,id,{values}]", async () => {
+    mockMoveWithTaxes();
+
+    const tools = createApi({
+      [agentId]: { ...agentConfig, permissions: { "account.move": ["create"] } },
+    });
+    const tool = findTool(tools, "odoo_create", agentId)!;
+    const denied = await tool.execute("m2m-write-denied", {
+      model: "account.move",
+      values: { tax_ids: [[1, 9, { amount: 20 }]] },
+    });
+    expect(denied.isError).toBe(true);
+    expect(denied.content[0].text).toMatch(/account\.tax/);
+    expect(denied.content[0].text).toMatch(/write/);
+    expect(mockCreate).not.toHaveBeenCalled();
+
+    mockCreate.mockResolvedValue(605);
+    const grantedTools = createApi({
+      [agentId]: {
+        ...agentConfig,
+        permissions: { "account.move": ["create"], "account.tax": ["write"] },
+      },
+    });
+    const grantedTool = findTool(grantedTools, "odoo_create", agentId)!;
+    const allowed = await grantedTool.execute("m2m-write-allowed", {
+      model: "account.move",
+      values: { tax_ids: [[1, 9, { amount: 20 }]] },
+    });
+    expect(allowed.isError).toBeFalsy();
+  });
+
+  it("requires account.tax:delete for m2m [2,id]", async () => {
+    mockMoveWithTaxes();
+
+    const tools = createApi({
+      [agentId]: { ...agentConfig, permissions: { "account.move": ["create"] } },
+    });
+    const tool = findTool(tools, "odoo_create", agentId)!;
+    const denied = await tool.execute("m2m-delete-denied", {
+      model: "account.move",
+      values: { tax_ids: [[2, 9]] },
+    });
+    expect(denied.isError).toBe(true);
+    expect(denied.content[0].text).toMatch(/account\.tax/);
+    expect(denied.content[0].text).toMatch(/delete/);
+    expect(mockCreate).not.toHaveBeenCalled();
+
+    mockCreate.mockResolvedValue(606);
+    const grantedTools = createApi({
+      [agentId]: {
+        ...agentConfig,
+        permissions: { "account.move": ["create"], "account.tax": ["delete"] },
+      },
+    });
+    const grantedTool = findTool(grantedTools, "odoo_create", agentId)!;
+    const allowed = await grantedTool.execute("m2m-delete-allowed", {
+      model: "account.move",
+      values: { tax_ids: [[2, 9]] },
+    });
+    expect(allowed.isError).toBeFalsy();
+  });
+
+  it("needs no target-model grant for m2m unlink [3], link [4], clear [5], replace [6]", async () => {
+    mockMoveWithTaxes();
+    mockCreate.mockResolvedValue(607);
+
+    // Only account.move:create granted — no account.tax grant of any kind.
+    const tools = createApi({
+      [agentId]: { ...agentConfig, permissions: { "account.move": ["create"] } },
+    });
+    const tool = findTool(tools, "odoo_create", agentId)!;
+    const result = await tool.execute("m2m-join-only", {
+      model: "account.move",
+      values: { tax_ids: [[3, 9], [4, 10], [5], [6, 0, [11, 12]]] },
+    });
+
+    expect(result.isError).toBeFalsy();
+    const [, written] = mockCreate.mock.calls[0] as [string, Record<string, unknown>];
+    expect(written.tax_ids).toEqual([[3, 9], [4, 10], [5], [6, 0, [11, 12]]]);
+  });
+
+  it("passes raw numeric ids through unchanged for m2m tuples (backward-compat)", async () => {
+    mockMoveWithTaxes();
+    mockCreate.mockResolvedValue(608);
+
+    const tools = createApi({
+      [agentId]: { ...agentConfig, permissions: { "account.move": ["create"] } },
+    });
+    const tool = findTool(tools, "odoo_create", agentId)!;
+    const result = await tool.execute("m2m-raw-ids", {
+      model: "account.move",
+      values: { tax_ids: [[6, false, [55, 56]]] },
+    });
+
+    expect(result.isError).toBeFalsy();
+    const [, written] = mockCreate.mock.calls[0] as [string, Record<string, unknown>];
+    expect(written.tax_ids).toEqual([[6, false, [55, 56]]]);
+  });
+
+  it("decodes the id position of an o2m [1, ref, {values}] update tuple to a numeric id (read→edit roundtrip)", async () => {
+    mockMoveWithTaxes();
+    mockCreate.mockResolvedValue(609);
+    const lineRef = encodeRef({
+      integrationType: "odoo",
+      connectionId: "conn-test-1",
+      model: "account.move.line",
+      id: 88,
+      label: "Line 88",
+    });
+
+    const tools = createApi({
+      [agentId]: {
+        ...agentConfig,
+        permissions: { "account.move": ["create"], "account.move.line": ["write"] },
+      },
+    });
+    const tool = findTool(tools, "odoo_create", agentId)!;
+    const result = await tool.execute("o2m-id-ref", {
+      model: "account.move",
+      values: { line_ids: [[1, lineRef, { debit: 5 }]] },
+    });
+
+    expect(result.isError).toBeFalsy();
+    const [, written] = mockCreate.mock.calls[0] as [string, Record<string, unknown>];
+    const line = (written.line_ids as Array<[number, unknown, Record<string, unknown>]>)[0];
+    expect(line[1]).toBe(88); // tuple[1] decoded from ref to numeric id
+  });
+
+  it("rejects a cross-company ref nested in tax_ids[6][2] against the move's company_id", async () => {
+    mockMoveWithTaxes();
+    const companyRefA = encodeRef({
+      integrationType: "odoo",
+      connectionId: "conn-test-1",
+      model: "res.company",
+      id: 1,
+      label: "Helmcraft GmbH",
+      companyId: 1,
+      companyLabel: "Helmcraft GmbH",
+    });
+    const taxRefOtherCompany = taxRef(21, {
+      companyId: 2,
+      companyLabel: "Clemens Helm",
+    });
+
+    const tools = createApi({
+      [agentId]: { ...agentConfig, permissions: { "account.move": ["create"] } },
+    });
+    const tool = findTool(tools, "odoo_create", agentId)!;
+    const result = await tool.execute("m2m-xc", {
+      model: "account.move",
+      values: {
+        company_id: { ref: companyRefA },
+        tax_ids: [[6, 0, [taxRefOtherCompany]]],
+      },
+    });
+
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toMatch(/cross-company/i);
+    expect(result.content[0].text).toMatch(/tax_ids/);
+    expect(mockCreate).not.toHaveBeenCalled();
+  });
+});
+
+describe("assertNoCrossCompanyRefs recursion cap (defense-in-depth)", () => {
+  it("still detects a normal-depth cross-company ref", () => {
+    const companyRef = encodeRef({
+      integrationType: "odoo",
+      connectionId: "conn-test-1",
+      model: "res.company",
+      id: 1,
+      label: "Helmcraft GmbH",
+      companyId: 1,
+      companyLabel: "Helmcraft GmbH",
+    });
+    const accountRefB = encodeRef({
+      integrationType: "odoo",
+      connectionId: "conn-test-1",
+      model: "account.account",
+      id: 77,
+      label: "Bank [Clemens Helm]",
+      companyId: 2,
+      companyLabel: "Clemens Helm",
+    });
+
+    expect(() =>
+      assertNoCrossCompanyRefs({
+        company_id: { ref: companyRef },
+        line_ids: [[0, 0, { account_id: { ref: accountRefB } }]],
+      }),
+    ).toThrow(/cross-company/i);
+  });
+
+  it("throws a depth-cap error rather than recursing unbounded on a pathologically deep nested structure", () => {
+    // Build line_ids nested far deeper than any legitimate schema — each
+    // level wraps a [0,0,{...}] tuple with a nested `line_ids` array again.
+    function buildDeepLineIds(depth: number): unknown {
+      if (depth === 0) return { debit: 1 };
+      return { line_ids: [[0, 0, buildDeepLineIds(depth - 1)]] };
+    }
+
+    expect(() =>
+      assertNoCrossCompanyRefs({
+        company_id: {
+          ref: encodeRef({
+            integrationType: "odoo",
+            connectionId: "conn-test-1",
+            model: "res.company",
+            id: 1,
+            label: "Helmcraft GmbH",
+            companyId: 1,
+            companyLabel: "Helmcraft GmbH",
+          }),
+        },
+        line_ids: [[0, 0, buildDeepLineIds(50)]],
+      }),
+    ).toThrow(/depth/i);
   });
 });
 

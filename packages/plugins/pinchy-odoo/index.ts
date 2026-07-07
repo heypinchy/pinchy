@@ -16,6 +16,17 @@ const WORKSPACE_ROOT = "/root/.openclaw/workspaces";
 // roughly triple the file's footprint in memory).
 const MAX_ATTACHMENT_BYTES = 25 * 1024 * 1024;
 
+// Cap recursion into nested one2many command tuples. Pathological schemas
+// could nest deeply; beyond this both `normalizeValuesRecord` (the m2o/ref
+// resolution walk) and `assertNoCrossCompanyValue` (the cross-company guard,
+// which runs BEFORE normalization) refuse to descend further and throw a
+// clear "exceeded the maximum depth" error instead of either silently
+// passing unresolved refs through to Odoo or recursing unbounded. Declared
+// once at module scope, near the top of the file, so both call sites (one
+// above, one below in source order) can reference it without a temporal-
+// dead-zone hazard.
+const MAX_NORMALIZE_DEPTH = 8;
+
 const MIME_BY_EXT: Record<string, string> = {
   ".jpg": "image/jpeg",
   ".jpeg": "image/jpeg",
@@ -885,7 +896,7 @@ export function assertNoCrossCompanyRefs(
 
   for (const [field, value] of Object.entries(values)) {
     if (field === "company_id") continue;
-    assertNoCrossCompanyValue(value, intended, intendedLabel, field);
+    assertNoCrossCompanyValue(value, intended, intendedLabel, field, 0);
   }
 }
 
@@ -895,13 +906,26 @@ export function assertNoCrossCompanyRefs(
  * if it is a one2many command-tuple array, descend into the create (0) and
  * update (1) tuples' values dicts and check each field. `path` is threaded
  * for actionable error messages (e.g. `line_ids[0].account_id`).
+ *
+ * `depth` is threaded and capped at {@link MAX_NORMALIZE_DEPTH} — this guard
+ * runs BEFORE `normalizeValuesRecord`'s own depth cap (Fix B), so a
+ * pathologically deep nested structure must be stopped here too rather than
+ * recursing unbounded and risking a stack overflow before normalization ever
+ * gets a chance to reject it.
  */
 function assertNoCrossCompanyValue(
   value: unknown,
   intended: { id: number; label: string | null },
   intendedLabel: string,
   path: string,
+  depth: number,
 ): void {
+  if (depth > MAX_NORMALIZE_DEPTH) {
+    throw new Error(
+      `Nested relation resolution exceeded the maximum depth of ${MAX_NORMALIZE_DEPTH}; ` +
+        `refusing to pass one2many command tuples to Odoo without reference decoding.`,
+    );
+  }
   const sibling = readRefCompanyTag(value);
   if (sibling !== null) {
     if (sibling.id !== intended.id) {
@@ -916,16 +940,42 @@ function assertNoCrossCompanyValue(
   }
   if (Array.isArray(value)) {
     value.forEach((tuple, i) => {
-      // Odoo Command tuple: [code, ...]. Only 0 (create) and 1 (update)
-      // carry a values dict at index 2 with refs to check.
-      if (
-        Array.isArray(tuple) &&
-        (tuple[0] === 0 || tuple[0] === 1) &&
-        isRecord(tuple[2])
-      ) {
+      if (!Array.isArray(tuple)) return;
+      // Odoo Command tuple: [code, ...]. 0 (create) and 1 (update) carry a
+      // values dict at index 2 with refs to check.
+      if ((tuple[0] === 0 || tuple[0] === 1) && isRecord(tuple[2])) {
         for (const [k, v] of Object.entries(tuple[2] as Record<string, unknown>)) {
-          assertNoCrossCompanyValue(v, intended, intendedLabel, `${path}[${i}].${k}`);
+          assertNoCrossCompanyValue(
+            v,
+            intended,
+            intendedLabel,
+            `${path}[${i}].${k}`,
+            depth + 1,
+          );
         }
+      }
+      // many2many link (4, <ref>) — the id position itself may carry a
+      // company-tagged ref (no values dict to descend into).
+      if (tuple[0] === 4) {
+        assertNoCrossCompanyValue(
+          tuple[1],
+          intended,
+          intendedLabel,
+          `${path}[${i}]`,
+          depth + 1,
+        );
+      }
+      // replace (6, 0, [ids]) — check every id in the replacement list.
+      if (tuple[0] === 6 && Array.isArray(tuple[2])) {
+        (tuple[2] as unknown[]).forEach((id, j) => {
+          assertNoCrossCompanyValue(
+            id,
+            intended,
+            intendedLabel,
+            `${path}[${i}][${j}]`,
+            depth + 1,
+          );
+        });
       }
     });
   }
@@ -1097,24 +1147,78 @@ async function normalizeMany2OneValues(
   );
 }
 
-// Cap recursion into nested one2many command tuples. Pathological schemas
-// could nest deeply; beyond this the walker leaves tuples verbatim (the
-// pre-#615 behaviour) rather than risking unbounded descent.
-const MAX_NORMALIZE_DEPTH = 8;
-
 // Odoo Command codes that modify EXISTING nested records and therefore
 // require a grant on the line model. Inline create (0) is part of the
 // parent's atomic create — already gated by the top-level `create` check —
 // so it needs no separate line-model grant (this preserves the bookkeeper's
 // "lines only inline via invoice_line_ids, never standalone" atomicity
 // design: account.move.line:create stays ungranted while inline line creation
-// still works). Link (4), clear (5), replace (6) only rewire the parent's
-// relation set, not the nested records, so no nested permission is required.
+// still works). Link (4) only rewires the parent's relation set and creates
+// or destroys nothing, so it needs no nested permission. Clear (5) and
+// replace (6), however, are bulk forms of unlink (3): for a one2many with a
+// REQUIRED inverse many2one (e.g. account.move.line.move_id), Odoo deletes
+// every orphaned child record when the relation set is cleared or replaced
+// (Odoo "[FIX] fields: setting a one2many field deletes all its lines" #13082).
+// They are therefore gated exactly like 2/3 — an agent needs the `delete`
+// grant on the line model to clear or replace a one2many, not just `write`
+// on the parent. Templates intentionally withhold `delete` on line models;
+// agents build and edit lines via codes 0/1, and wholesale replace/clear is
+// correctly blocked as the destructive, audit-trail-erasing operation it is.
 const NESTED_OP_BY_CODE: Record<number, "write" | "delete"> = {
   1: "write",
   2: "delete",
   3: "delete",
+  5: "delete",
+  6: "delete",
 };
+
+// many2many Command permission map (#615 follow-up). Unlike one2many, m2m is
+// a join table with no required inverse — clearing or replacing the set
+// never cascade-deletes target rows, it only rewires the join table. So only
+// the codes that actually create/write/delete a TARGET record need a grant:
+//   0 create  → needs `create` on the target (relation) model
+//   1 update  → needs `write` on the target model
+//   2 delete  → needs `delete` on the target model
+//   3 unlink, 4 link, 5 clear, 6 replace → join-table only, no grant
+// (contrast with NESTED_OP_BY_CODE, where o2m codes 2/3/5/6 all need
+// `delete` because Odoo cascade-deletes orphaned children — see the comment
+// above that map).
+const M2M_OP_BY_CODE: Record<number, "create" | "write" | "delete"> = {
+  0: "create",
+  1: "write",
+  2: "delete",
+};
+
+/**
+ * Resolve a Command tuple's id position (tuple[1], or an element of the
+ * code-6 id list). Raw numeric ids — the standard Odoo wire format used by
+ * every pre-existing caller — pass straight through unchanged; `false`/`null`
+ * (code 6's "clear" id slot) also pass through. Only a ref-shaped value
+ * (`_pinchy_ref` bare string, `{ref}` object, or a name/code lookup string)
+ * is resolved via `resolveRelationValue`, so a line ref captured by
+ * `odoo_read` can be pasted back into an edit tuple's id position.
+ *
+ * `resolveRelationValue` itself throws on a raw number (its anti-enumeration
+ * guard) — the `typeof idValue === "number"` short-circuit here is what
+ * keeps raw-id tuples backward-compatible.
+ */
+async function resolveCommandTargetId(
+  client: OdooClient,
+  connectionId: string,
+  relationField: OdooField,
+  idValue: unknown,
+  scopeCompanyId: number | null,
+): Promise<unknown> {
+  if (typeof idValue === "number") return idValue;
+  if (idValue === false || idValue == null) return idValue;
+  return resolveRelationValue(
+    client,
+    connectionId,
+    relationField,
+    idValue,
+    scopeCompanyId,
+  );
+}
 
 /**
  * Resolve the m2o fields of a single values dict and walk its one2many
@@ -1175,33 +1279,70 @@ async function normalizeValuesRecord(
     );
   }
 
-  // Walk one2many command tuples (depth-capped). Codes 0 (create) and 1
-  // (update) carry a values dict at index 2 whose m2o fields are resolved
-  // recursively; 2/3/4/5/6 carry no resolvable m2o values. (issue #615)
-  if (depth < MAX_NORMALIZE_DEPTH) {
-    for (const field of fields) {
-      if (field.type !== "one2many" || !field.relation) continue;
-      if (!(field.name in normalized)) continue;
-      const tuples = normalized[field.name];
-      if (!Array.isArray(tuples)) continue;
-      const lineFields = normalizeFields(await client.fields(field.relation));
-      normalized[field.name] = await normalizeCommandTuples(
-        client,
-        connectionId,
-        field.relation,
-        lineFields,
-        tuples,
-        scopeCompanyId,
-        permissions,
-        depth,
-        field.name,
+  // Walk one2many AND many2many command tuples (depth-capped). Codes 0
+  // (create) and 1 (update) carry a values dict at index 2 whose m2o fields
+  // are resolved recursively; every code's id position(s) are ref-decoded.
+  // (issue #615; many2many follow-up)
+  //
+  // Beyond MAX_NORMALIZE_DEPTH we do NOT silently pass tuples through
+  // verbatim — that would reintroduce the exact undecoded-ref bug this
+  // normalizer exists to fix (a bare `_pinchy_ref` reaching Odoo unresolved).
+  // Instead, fail loud: any o2m/m2m field still carrying a non-empty array
+  // of command tuples at this depth throws, surfacing as a clear tool error
+  // rather than a silent data-corruption risk.
+  for (const field of fields) {
+    const kind =
+      field.type === "one2many"
+        ? "one2many"
+        : field.type === "many2many"
+          ? "many2many"
+          : null;
+    if (kind === null || !field.relation) continue;
+    if (!(field.name in normalized)) continue;
+    const tuples = normalized[field.name];
+    if (!Array.isArray(tuples) || tuples.length === 0) continue;
+    if (depth >= MAX_NORMALIZE_DEPTH) {
+      throw new Error(
+        `Nested relation resolution exceeded the maximum depth of ${MAX_NORMALIZE_DEPTH}; ` +
+          `refusing to pass ${kind} command tuples to Odoo without reference decoding.`,
       );
     }
+    const lineFields = normalizeFields(await client.fields(field.relation));
+    normalized[field.name] = await normalizeCommandTuples(
+      client,
+      connectionId,
+      field.relation,
+      lineFields,
+      tuples,
+      scopeCompanyId,
+      permissions,
+      depth,
+      field.name,
+      kind,
+      field,
+    );
   }
 
   return normalized;
 }
 
+/**
+ * Unified walker for one2many AND many2many Command tuples. The two kinds
+ * share the id-decode + nested-values-recursion + depth-cap machinery but
+ * differ in which codes require a permission grant on the relation
+ * ("target") model:
+ *
+ * - one2many (`NESTED_OP_BY_CODE`): the relation has a REQUIRED inverse
+ *   many2one back to the parent, so clearing/replacing/unlinking deletes
+ *   the child row server-side — codes 1/2/3/5/6 all need `write`/`delete`.
+ * - many2many (`M2M_OP_BY_CODE`): the relation is a join table with no
+ *   required inverse, so only codes that actually create/write/delete a
+ *   TARGET row (0/1/2) need a grant; 3/4/5/6 only rewire the join table.
+ *
+ * Every code's id position is ref-decodable via `resolveCommandTargetId`
+ * (raw numeric ids and `false`/`null` pass straight through, unchanged from
+ * before) so a ref captured by `odoo_read` can be pasted back into an edit.
+ */
 async function normalizeCommandTuples(
   client: OdooClient,
   connectionId: string,
@@ -1212,7 +1353,10 @@ async function normalizeCommandTuples(
   permissions: Permissions,
   depth: number,
   parentField: string,
+  kind: "one2many" | "many2many",
+  relationField: OdooField,
 ): Promise<unknown[]> {
+  const opByCode = kind === "one2many" ? NESTED_OP_BY_CODE : M2M_OP_BY_CODE;
   const out: unknown[] = [];
   for (const tuple of tuples) {
     if (!Array.isArray(tuple) || typeof tuple[0] !== "number") {
@@ -1220,7 +1364,7 @@ async function normalizeCommandTuples(
       continue;
     }
     const code = tuple[0];
-    const op = NESTED_OP_BY_CODE[code];
+    const op = opByCode[code];
     if (op !== undefined && !checkPermission(permissions, lineModel, op)) {
       // Pinchy-allowlist rejection (not an Odoo server AccessError): phrase so
       // it bypasses errorResult's Odoo-re-sync mapping, which would otherwise
@@ -1234,7 +1378,8 @@ async function normalizeCommandTuples(
     }
     // Only create (0) and update (1) carry a values dict at index 2 that may
     // hold m2o fields to resolve. delete (2/3), link (4), clear (5), replace
-    // (6) carry no resolvable m2o values — pass through verbatim.
+    // (6) carry no values dict to resolve m2o fields against. Every code's
+    // id position(s), however, may carry a ref that needs decoding.
     if ((code === 0 || code === 1) && isRecord(tuple[2])) {
       const resolvedValues = await normalizeValuesRecord(
         client,
@@ -1246,7 +1391,42 @@ async function normalizeCommandTuples(
         permissions,
         depth + 1,
       );
-      out.push([code, tuple[1], resolvedValues]);
+      const resolvedId =
+        code === 1
+          ? await resolveCommandTargetId(
+              client,
+              connectionId,
+              relationField,
+              tuple[1],
+              scopeCompanyId,
+            )
+          : tuple[1];
+      out.push([code, resolvedId, resolvedValues]);
+    } else if (
+      (code === 2 || code === 3 || code === 4) &&
+      tuple.length >= 2
+    ) {
+      const resolvedId = await resolveCommandTargetId(
+        client,
+        connectionId,
+        relationField,
+        tuple[1],
+        scopeCompanyId,
+      );
+      out.push([code, resolvedId, ...tuple.slice(2)]);
+    } else if (code === 6 && Array.isArray(tuple[2])) {
+      const resolvedIds = await Promise.all(
+        (tuple[2] as unknown[]).map((id) =>
+          resolveCommandTargetId(
+            client,
+            connectionId,
+            relationField,
+            id,
+            scopeCompanyId,
+          ),
+        ),
+      );
+      out.push([code, tuple[1], resolvedIds]);
     } else {
       out.push(tuple);
     }
@@ -1529,6 +1709,51 @@ function wrapMany2OneValue(
   } satisfies OdooRefValue;
 }
 
+/**
+ * Wrap each child id of a one2many field into a thin ref-carrying object so
+ * the agent can target that specific line (e.g. to edit or remove it) by
+ * pasting the `_pinchy_ref` into a Command tuple's id position — decoded
+ * back to a numeric id by `resolveCommandTargetId`. Odoo's read/search_read
+ * only ever returns o2m fields as a bare array of child ids (no name or
+ * company tag comes back at read time), so the label is the best we can do
+ * without an extra round trip: `<relation>#<id>`.
+ *
+ * Scope is one2many ONLY — many2many fields are left as raw id arrays
+ * (out of scope for this change; see AGENTS.md-tracked follow-up).
+ *
+ * Only transforms a non-empty array whose elements are all numbers. Empty
+ * arrays stay `[]` (nothing to wrap). Anything else (shouldn't happen for
+ * o2m on read, but the field loop is generic) passes through unchanged —
+ * defensive, never throws.
+ */
+function wrapOne2ManyValue(
+  connectionId: string,
+  field: OdooField,
+  value: unknown,
+): unknown {
+  if (
+    field.type !== "one2many" ||
+    !field.relation ||
+    !Array.isArray(value) ||
+    value.length === 0 ||
+    !value.every((item) => typeof item === "number")
+  ) {
+    return value;
+  }
+  const relation = field.relation;
+  return value.map((id) => ({
+    _pinchy_ref: encodeRef({
+      integrationType: "odoo",
+      connectionId,
+      model: relation,
+      id: id as number,
+      label: `${relation}#${id}`,
+    }),
+    id,
+    model: relation,
+  }));
+}
+
 function wrapReadResult(
   connectionId: string,
   model: string,
@@ -1578,6 +1803,7 @@ function wrapReadResult(
       const field = byName.get(name);
       if (field) {
         wrapped[name] = wrapMany2OneValue(connectionId, field, value);
+        wrapped[name] = wrapOne2ManyValue(connectionId, field, wrapped[name]);
       }
     }
     return wrapped;
@@ -1968,7 +2194,7 @@ const plugin = {
         return {
           name: "odoo_read",
           label: "Odoo Read",
-          description: `Query records from Odoo. Returns matching records with field selection and pagination. Always returns { records, total, limit, offset } so you know if there's more data. ${PRODUCT_REF_DISAMBIGUATION_HINT}`,
+          description: `Query records from Odoo. Returns matching records with field selection and pagination. Always returns { records, total, limit, offset } so you know if there's more data. One2many fields (e.g. \`line_ids\`) come back as a list of line references, each \`{ _pinchy_ref, id, model }\` — pass a line's \`_pinchy_ref\` back into an edit command tuple's id position to target that exact line, e.g. \`line_ids: [[1, <_pinchy_ref>, { ... }]]\` to edit it or \`[[2, <_pinchy_ref>]]\` to remove it. ${PRODUCT_REF_DISAMBIGUATION_HINT}`,
           parameters: {
             type: "object",
             properties: {
