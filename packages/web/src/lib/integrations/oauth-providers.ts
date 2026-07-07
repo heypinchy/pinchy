@@ -19,6 +19,9 @@
  * descriptor's `validateConfig`.
  */
 import { validateMicrosoftTenant } from "@/lib/integrations/oauth-preflight";
+// Type-only import (erased at compile time), so it keeps this module client-safe
+// while tying `connectionType` to the enum the DB CHECK constraint enforces.
+import type { IntegrationConnectionType } from "@/db/enums";
 
 /**
  * Settings-storage keys for the per-provider OAuth app credentials. The
@@ -92,7 +95,7 @@ export interface OAuthProviderDescriptor {
    */
   scopeFromResponse: boolean;
   /** integrationConnections.type value ( == id, but explicit for clarity). */
-  connectionType: string;
+  connectionType: IntegrationConnectionType;
   /** Mailbox provider recorded in connection data / audit rows. */
   auditProvider: string;
   /** Path to the per-provider setup guide in the docs. */
