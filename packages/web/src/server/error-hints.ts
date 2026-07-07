@@ -2,12 +2,25 @@ import {
   TRANSIENT_PATTERN,
   PROVIDER_CONFIG_PATTERN,
   PROVIDER_REJECTED_GENERIC_PATTERN,
+  isThoughtSignatureRejection,
   CONTEXT_OVERFLOW_PATTERN,
   matchesRetirement,
 } from "@/server/error-patterns";
 
 export const PROVIDER_SETTINGS_HINT =
   "Go to Settings > AI Provider to check your API configuration.";
+
+// User-facing replacement for OpenClaw's generic provider-rejection envelope
+// (#584). The raw wording — "provider rejected the request schema or tool
+// payload" — reads like a malformed-request bug; the real cause (most often a
+// provider-account issue: billing, API key, quota) is collapsed by OpenClaw and
+// never reaches Pinchy in the chunk text. This honest, hedged message points an
+// admin at the provider-account cause family without asserting a specific cause.
+// getErrorHint already treats this same string as a provider-config pointer, so
+// the banner agrees instead of showing the raw contradiction. Only the banner
+// uses this; the audit trail keeps the raw text.
+export const PROVIDER_REJECTED_GENERIC_MESSAGE =
+  "The AI provider rejected the request. This is often a provider-account issue (billing, API key, or quota) — check Settings > AI Provider.";
 
 // A retired model can't be retried as-is — an admin needs to pick a different
 // one for this agent. Deliberately NOT an automatic swap: an admin pinned this
@@ -68,10 +81,12 @@ export function getErrorHint(errorText: string, userRole: string): string | null
 
   // OpenClaw's generic provider-rejection catch-all (#584). The real cause —
   // most often a provider-account issue like depleted credit or an invalid
-  // key — never reaches Pinchy in the chunk text, so the audit class stays
-  // honest (`unknown`). The bare wording reads like a malformed-request bug;
-  // pointing an admin at their provider configuration is the most actionable
-  // honest guidance we can give without asserting a cause we can't prove.
+  // key — never reaches Pinchy in the chunk text, so it gets its own honest
+  // audit class `provider_rejected_generic` (not `provider_config`, which would
+  // assert an unproven cause). The bare wording reads like a malformed-request
+  // bug; pointing an admin at their provider configuration is the most
+  // actionable honest guidance we can give without asserting a cause we can't
+  // prove.
   if (PROVIDER_REJECTED_GENERIC_PATTERN.test(errorText)) {
     return userRole === "admin" ? PROVIDER_SETTINGS_HINT : "Please contact your administrator.";
   }
@@ -94,15 +109,28 @@ export function presentProviderError(errorText: string, modelName?: string): str
   if (CONTEXT_OVERFLOW_PATTERN.test(errorText)) {
     return CONTEXT_OVERFLOW_MESSAGE;
   }
-  // Final fallback: everything else (rate-limit, provider-config, the #584
-  // generic provider-rejection envelope, and any truly unclassified text) is
-  // shown as-is EXCEPT we still append which model was involved, when known.
-  // This is what actually fixes the reported bug: the real staging incident's
-  // stored providerError was the bare `"LLM request failed."` fallback with NO
-  // retirement token to match above, so `matchesRetirement` never fires for
-  // it — but Pinchy still knows which model it dispatched to regardless of
-  // WHY the dispatch failed, and naming it turns a fully opaque message into
-  // something actionable without asserting an unproven cause (the same
-  // honesty constraint that already shapes PROVIDER_REJECTED_GENERIC_PATTERN).
+  // OpenClaw's generic provider-rejection envelope (#584): the "schema or tool
+  // payload" wording is actively misleading (it reads like a malformed-request
+  // bug when the real cause is an account-side rejection), so — unlike the
+  // neutral bare "LLM request failed." fallback below — it's fully replaced with
+  // an honest account-issue message rather than passed through with a model
+  // name. Guarded by `!isThoughtSignatureRejection`: the Gemini-3 schema
+  // rejection (#338) carries the same envelope text plus a thought_signature and
+  // has its own user-facing handling (`classifyUpstreamFormatError`); without
+  // this guard its wording would be collapsed into the account-issue message.
+  if (
+    PROVIDER_REJECTED_GENERIC_PATTERN.test(errorText) &&
+    !isThoughtSignatureRejection(errorText)
+  ) {
+    return PROVIDER_REJECTED_GENERIC_MESSAGE;
+  }
+  // Final fallback: everything else (rate-limit, provider-config, and any truly
+  // unclassified text like the bare `"LLM request failed."`) is shown as-is
+  // EXCEPT we still append which model was involved, when known. The real
+  // staging incident's stored providerError was that bare fallback with NO
+  // retirement token to match above, so `matchesRetirement` never fires for it —
+  // but Pinchy still knows which model it dispatched to regardless of WHY the
+  // dispatch failed, and naming it turns a fully opaque message into something
+  // actionable without asserting an unproven cause.
   return modelName ? `${errorText} (model: ${modelName})` : errorText;
 }

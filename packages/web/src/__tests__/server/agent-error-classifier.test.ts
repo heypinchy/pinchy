@@ -127,6 +127,36 @@ describe("classifyAgentError", () => {
       "provider_config"
     );
   });
+
+  it("classifies OpenClaw's generic provider-rejection envelope as provider_rejected_generic (#584)", () => {
+    // When a provider rejects a run for an account-side reason OpenClaw
+    // collapses (e.g. depleted credit), the error chunk carries exactly this
+    // wording and nothing cause-specific. The real cause is unknowable from
+    // this text, so it gets its own honest audit class — NOT `unknown` (which
+    // buckets it with truly unrecognised strings) and NOT `provider_config`
+    // (which would assert an unproven cause in the append-only audit trail).
+    const text = "LLM request failed: provider rejected the request schema or tool payload.";
+    expect(classifyAgentError(text)).toBe("provider_rejected_generic");
+  });
+
+  it("classifies the thought_signature payload as schema_rejection, not provider_rejected_generic (#584)", () => {
+    // The Gemini-3 schema-rejection payload carries the generic envelope text
+    // AND a thought_signature — the specific schema signal must win (it's
+    // checked before the generic envelope) so the audit class stays
+    // schema_rejection.
+    const text =
+      "LLM request failed: provider rejected the request schema or tool payload. " +
+      'rawError=400 "Function call is missing a thought_signature in functionCall parts."';
+    expect(classifyAgentError(text)).toBe("schema_rejection");
+  });
+
+  it("classifies cause-specific credit/balance wording as provider_config, not provider_rejected_generic (#584)", () => {
+    // If the cause-specific wording DOES reach the chunk (credit/balance), it
+    // must classify as provider_config — provider_rejected_generic is only for
+    // the cause-unknowable envelope, and is checked AFTER provider_config so a
+    // chunk carrying both still classifies by the concrete cause.
+    expect(classifyAgentError("Your credit balance is too low")).toBe("provider_config");
+  });
 });
 
 describe("shouldPersistDurableError", () => {
@@ -144,7 +174,11 @@ describe("shouldPersistDurableError", () => {
     "schema_rejection",
     "failover_incomplete_stream",
   ];
-  const nonDurableClasses: AgentErrorClass[] = ["provider_config", "unknown"];
+  const nonDurableClasses: AgentErrorClass[] = [
+    "provider_config",
+    "provider_rejected_generic",
+    "unknown",
+  ];
 
   it.each(durableClasses)("persists a durable banner for retryable class: %s", (cls) => {
     expect(shouldPersistDurableError(cls)).toBe(true);

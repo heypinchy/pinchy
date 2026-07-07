@@ -3,6 +3,7 @@ import {
   getErrorHint,
   presentProviderError,
   PROVIDER_SETTINGS_HINT,
+  PROVIDER_REJECTED_GENERIC_MESSAGE,
   CONTEXT_OVERFLOW_HINT,
   CONTEXT_OVERFLOW_MESSAGE,
   MODEL_RETIRED_MESSAGE,
@@ -226,6 +227,46 @@ describe("getErrorHint", () => {
 
     it("getErrorHint stays null for the unclassified bucket (unchanged pre-existing behavior)", () => {
       expect(getErrorHint(bareFallback, "admin")).toBeNull();
+    });
+  });
+
+  describe("generic provider-rejection envelope → honest account-issue banner (#584)", () => {
+    // OpenClaw collapses an account-side rejection (billing/key/quota) to this
+    // exact string; the misleading "schema or tool payload" wording reads like
+    // a malformed-request bug. getErrorHint already treats this string as a
+    // provider-config pointer, so the banner must agree instead of showing the
+    // raw contradiction. It's a full replacement (like overflow/retirement),
+    // NOT the append-model fallback used for the neutral bare "LLM request
+    // failed." string.
+    const envelope = "LLM request failed: provider rejected the request schema or tool payload.";
+
+    it("rewrites the bare envelope so the misleading wording never reaches the user", () => {
+      const shown = presentProviderError(envelope);
+      expect(shown).toBe(PROVIDER_REJECTED_GENERIC_MESSAGE);
+      expect(shown).not.toMatch(/schema or tool payload/i);
+      // Points at the provider-account cause family without asserting one.
+      expect(shown).toMatch(/billing|quota|api key|provider/i);
+    });
+
+    it("still rewrites (does not append-model) when the dispatched model is known", () => {
+      // A full-replacement message doesn't get the trailing "(model: X)" — same
+      // rule the overflow/retirement replacements follow.
+      expect(presentProviderError(envelope, "ollama-cloud/kimi-k2.6")).toBe(
+        PROVIDER_REJECTED_GENERIC_MESSAGE
+      );
+    });
+
+    it("does NOT rewrite the thought_signature payload (schema_rejection keeps its own #338 handling)", () => {
+      // The Gemini-3 schema-rejection text carries the generic envelope plus a
+      // thought_signature. Its own branch (classifyUpstreamFormatError) owns the
+      // user-facing wording; presentProviderError must not collapse it into the
+      // account-issue message.
+      const raw =
+        "LLM request failed: provider rejected the request schema or tool payload. " +
+        'rawError=400 "Function call is missing a thought_signature in functionCall parts."';
+      const shown = presentProviderError(raw);
+      expect(shown).not.toBe(PROVIDER_REJECTED_GENERIC_MESSAGE);
+      expect(shown).toMatch(/thought_signature/);
     });
   });
 });

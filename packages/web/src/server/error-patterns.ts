@@ -59,12 +59,40 @@ export const HTTP_5XX_PATTERN = /HTTP\s+(5\d\d)\b/i;
  * internal failover decision and never reaches Pinchy (issue #584). Because the
  * real cause is unknowable from this text, it must NOT widen
  * `PROVIDER_CONFIG_PATTERN` (that would assert an unproven cause in the
- * append-only audit trail). It is used only by the user-facing hint to stop
- * showing the bare wording — which reads like a malformed-request bug — and
- * instead point an admin at their provider configuration.
+ * append-only audit trail). It gets its own honest audit class
+ * (`provider_rejected_generic`) and the banner rewrites it to an account-issue
+ * message so the bare wording — which reads like a malformed-request bug —
+ * never reaches the user (issue #584).
  */
 export const PROVIDER_REJECTED_GENERIC_PATTERN =
   /provider rejected the request schema or tool payload/i;
+
+/**
+ * OpenClaw's upstream schema/format rejection (verified on staging: Gemini 3
+ * missing `thought_signature` on tool-call replay, issue #338). This payload
+ * carries the SAME generic envelope text as PROVIDER_REJECTED_GENERIC_PATTERN
+ * plus a thought_signature token, but is a genuine schema rejection with its
+ * own user-facing handling (`classifyUpstreamFormatError`). Shared here so the
+ * audit classifier (`agent-error-classifier.ts`) and the banner rewriter
+ * (`error-hints.ts`) agree on what counts as a schema rejection: the generic
+ * envelope is classified/rewritten as an account issue ONLY when it is NOT
+ * carrying a thought_signature (issue #584).
+ *
+ * Two patterns, mirroring the narrower anchoring in `model-error-classifier.ts`:
+ * the snake_case form carries a `_` separator and is matched case-insensitively;
+ * the camelCase form requires the capital `S` (NO `i` flag) so a bare-word
+ * `thoughtsignature` in unrelated text can't hijack the schema_rejection branch.
+ */
+export const THOUGHT_SIGNATURE_SNAKE_PATTERN = /thought_signature/i;
+export const THOUGHT_SIGNATURE_CAMEL_PATTERN = /thoughtSignature/;
+
+/** True if the text carries either thought_signature variant (a schema rejection). */
+export function isThoughtSignatureRejection(errorText: string): boolean {
+  return (
+    THOUGHT_SIGNATURE_SNAKE_PATTERN.test(errorText) ||
+    THOUGHT_SIGNATURE_CAMEL_PATTERN.test(errorText)
+  );
+}
 
 /**
  * Matches a context-window overflow: the conversation/prompt no longer fits the
