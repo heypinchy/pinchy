@@ -61,7 +61,9 @@ vi.mock("@/db", () => ({
       }),
     }),
     delete: vi.fn().mockReturnValue({
-      where: vi.fn().mockResolvedValue(undefined),
+      where: vi.fn().mockReturnValue({
+        returning: vi.fn().mockResolvedValue([]),
+      }),
     }),
   },
 }));
@@ -408,11 +410,30 @@ describe("DELETE /api/agents/[agentId]/channels/telegram", () => {
 
   it("clears stale channel_links when the last Telegram bot is removed (#476 gap 3)", async () => {
     // db.select().from().where() is mocked to resolve [] → no bot remains.
+    vi.mocked(db.delete).mockReturnValueOnce({
+      where: vi.fn().mockReturnValue({
+        returning: vi.fn().mockResolvedValue([{ id: "link-1" }, { id: "link-2" }]),
+      }),
+    } as any);
+
     const response = await DELETE(new Request("http://localhost"), {
       params: mockParams,
     });
     expect(response.status).toBe(200);
     expect(db.delete).toHaveBeenCalled();
+
+    // The org-wide wipe count must be visible on the existing channel.deleted
+    // audit row (#476 gap 3 hardening) — a normal member disconnecting their
+    // own personal bot can trigger this wipe for everyone, so it must be
+    // attributable via the audit trail rather than silent.
+    expect(appendAuditLog).toHaveBeenCalledWith(
+      expect.objectContaining({
+        eventType: "channel.deleted",
+        detail: expect.objectContaining({
+          channelLinksCleared: 2,
+        }),
+      })
+    );
   });
 
   it("does not clear channel_links when other Telegram bots remain (#476 gap 3)", async () => {
@@ -427,6 +448,14 @@ describe("DELETE /api/agents/[agentId]/channels/telegram", () => {
     });
     expect(response.status).toBe(200);
     expect(db.delete).not.toHaveBeenCalled();
+    expect(appendAuditLog).toHaveBeenCalledWith(
+      expect.objectContaining({
+        eventType: "channel.deleted",
+        detail: expect.objectContaining({
+          channelLinksCleared: 0,
+        }),
+      })
+    );
   });
 
   it("allows an admin to disconnect a personal agent's bot (#476 gap 2)", async () => {

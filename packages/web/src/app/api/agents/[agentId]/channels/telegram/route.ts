@@ -163,8 +163,13 @@ export const DELETE = withAuth<{ params: Promise<{ agentId: string }> }>(
       .select()
       .from(settings)
       .where(like(settings.key, "telegram_bot_token:%"));
+    let channelLinksCleared = 0;
     if (remainingBotTokens.length === 0) {
-      await db.delete(channelLinks).where(eq(channelLinks.channel, "telegram"));
+      const clearedLinks = await db
+        .delete(channelLinks)
+        .where(eq(channelLinks.channel, "telegram"))
+        .returning({ id: channelLinks.id });
+      channelLinksCleared = clearedLinks.length;
     }
 
     await appendAuditLog({
@@ -176,6 +181,11 @@ export const DELETE = withAuth<{ params: Promise<{ agentId: string }> }>(
         name: `telegram:${agent.name}`,
         agent: { id: agentId, name: agent.name },
         channel: "telegram",
+        // Gap 3 (#476) hardening: a normal member disconnecting their own
+        // personal bot can trigger an org-wide channel_links wipe if it was
+        // the last Telegram bot. Surface the count here so the sweep is
+        // attributable, not silent — 0 when other bots remain.
+        channelLinksCleared,
       },
       outcome: "success",
     });
