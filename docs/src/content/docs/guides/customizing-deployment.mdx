@@ -131,7 +131,7 @@ DB_CPUS=0.5
 
 ### Health checks
 
-`db` and `pinchy` each have a Docker health check: `db` polls `pg_isready`, and `pinchy` polls its own `/api/internal/openclaw-config-ready` endpoint. `openclaw` has a lightweight **TCP liveness check** — a raw connect to the gateway's WebSocket port (`18789`) that succeeds as soon as the gateway is accepting connections. It doesn't inspect the gateway's internal state, only that something is listening; OpenClaw's own start script already respawns the gateway process if it dies internally, so this check exists to surface a fully stuck container (process alive, port not listening) to Docker so it gets restarted instead of sitting "up" but unreachable.
+`db` and `pinchy` each have a Docker health check: `db` polls `pg_isready`, and `pinchy` polls its own `/api/internal/openclaw-config-ready` endpoint. `openclaw` has a lightweight **TCP liveness check** — a raw connect to the gateway's WebSocket port (`18789`) that succeeds as soon as the gateway is accepting connections. It doesn't inspect the gateway's internal state, only that something is listening; OpenClaw's own start script already respawns the gateway process if it dies internally, so this check exists to surface a fully stuck container (process alive, port not listening). Note that Compose does **not** restart a container just because it is `unhealthy` — `restart:` policies act on container _exit_, not health status. The check is diagnostic: a stuck container shows as `unhealthy` in `docker compose ps` so you can spot it and restart it yourself, rather than it silently sitting "up" but unreachable.
 
 You can watch health status with:
 

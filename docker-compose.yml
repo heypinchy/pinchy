@@ -59,8 +59,10 @@ services:
         condition: service_healthy
     # Liveness check: the gateway listens on 18789. A TCP connect succeeds once
     # the WS server is up (the OpenClaw start script's own health loop respawns
-    # the gateway process if it dies; this surfaces that to Docker so a stuck
-    # container restarts instead of staying unhealthy-but-running). #263
+    # the gateway process if it dies). This is diagnostic only — Compose does
+    # NOT restart an unhealthy-but-running container, so a stuck container
+    # surfaces as `unhealthy` in `docker compose ps` for an operator to act on,
+    # it does not self-heal. #263
     healthcheck:
       test:
         [

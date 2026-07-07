@@ -420,10 +420,11 @@ This is the sequence for restoring Pinchy onto a brand-new host — a full disas
 
 2. **Restore the database**
 
-   Start only the `db` service, then restore your most recent `pg_dump`:
+   Start only the `db` service, wait until PostgreSQL is actually accepting connections (`up -d` returns as soon as the container has _started_, not when the database is ready), then restore your most recent `pg_dump`:
 
    ```bash
    docker compose up db -d
+   until docker compose exec -T db pg_isready -U pinchy -q; do sleep 1; done
    gunzip < pinchy-backup-20260222.sql.gz | docker compose exec -T db psql -U pinchy pinchy
    ```
 
