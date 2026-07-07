@@ -893,6 +893,37 @@ describe("regenerateOpenClawConfig", () => {
     expect(config?.env?.GEMINI_API_KEY).toBeUndefined();
   });
 
+  it("emits cost.cacheRead/cacheWrite on every provider model (OpenClaw catalog schema)", async () => {
+    // Regression guard for the staging PDF-tool break: OpenClaw's per-agent
+    // model-catalog schema requires cost.cacheRead and cost.cacheWrite on every
+    // model. When openai's emitted models omitted them, OpenClaw rejected the
+    // whole openai catalog ("Invalid models.json schema") and the built-in
+    // `pdf`/vision tool (default openai/gpt-5.5) failed with "Unknown model".
+    // This asserts the EMITTED config (not just the source catalog), so a future
+    // build.ts change that strips the cache-cost fields is caught here too.
+    mockedGetSetting.mockImplementation(async (key: string) => {
+      if (key === "anthropic_api_key") return "sk-ant-decrypted";
+      if (key === "openai_api_key") return "sk-openai-decrypted";
+      if (key === "default_provider") return "anthropic";
+      return null;
+    });
+
+    await regenerateOpenClawConfig();
+
+    const written = mockedWriteFileSync.mock.calls[0][1] as string;
+    const config = JSON.parse(written);
+    const providers = config?.models?.providers ?? {};
+
+    for (const providerName of ["anthropic", "openai"]) {
+      const models = providers[providerName]?.models ?? [];
+      expect(models.length, `${providerName} has models`).toBeGreaterThan(0);
+      for (const m of models) {
+        expect(typeof m.cost?.cacheRead, `${providerName}/${m.id} cost.cacheRead`).toBe("number");
+        expect(typeof m.cost?.cacheWrite, `${providerName}/${m.id} cost.cacheWrite`).toBe("number");
+      }
+    }
+  });
+
   it("includes default baseUrl in anthropic provider config when ANTHROPIC_BASE_URL is unset", async () => {
     delete process.env.ANTHROPIC_BASE_URL;
     mockedGetSetting.mockImplementation(async (key: string) => {

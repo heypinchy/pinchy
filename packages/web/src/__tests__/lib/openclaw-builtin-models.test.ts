@@ -90,4 +90,25 @@ describe("getModelCatalogForProvider", () => {
       }
     }
   });
+
+  // OpenClaw's per-agent model-catalog schema (openclaw-plugin-model-catalog-v1)
+  // REQUIRES cost.cacheRead and cost.cacheWrite on every model. A provider whose
+  // catalog omits them fails schema validation, and OpenClaw then drops the WHOLE
+  // provider from that agent's effective catalog — which silently kills any tool
+  // that resolves a model from it (the built-in `pdf`/vision tool defaults to
+  // openai/gpt-5.5). On staging this manifested as `pdf failed: Unknown model:
+  // openai/gpt-5.5`, so invoice PDFs were never read and the agent booked an
+  // unverified lump sum while reporting success. anthropic already declared both
+  // fields; openai/google did not. This guard pins every emitted model to the
+  // schema so the omission can't recur for a new provider or model.
+  it("every built-in model declares numeric cost.cacheRead and cost.cacheWrite (OpenClaw catalog schema)", () => {
+    for (const provider of ["anthropic", "openai", "google"] as const) {
+      const models = getModelCatalogForProvider(provider);
+      expect(models.length).toBeGreaterThan(0);
+      for (const m of models) {
+        expect(typeof m.cost.cacheRead, `${provider}/${m.id} cost.cacheRead`).toBe("number");
+        expect(typeof m.cost.cacheWrite, `${provider}/${m.id} cost.cacheWrite`).toBe("number");
+      }
+    }
+  });
 });
