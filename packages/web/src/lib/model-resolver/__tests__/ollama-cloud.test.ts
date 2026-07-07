@@ -36,6 +36,18 @@ describe("resolveOllamaCloud", () => {
   });
 });
 
+describe("resolveOllamaCloud — balanced tier (#669)", () => {
+  it("resolves balanced/general to kimi-k2.6", () => {
+    const result = resolveOllamaCloud({ tier: "balanced", taskType: "general" });
+    expect(result.model).toBe("ollama-cloud/kimi-k2.6");
+  });
+
+  it("resolves balanced tier with vision capability to kimi-k2.6", () => {
+    const result = resolveOllamaCloud({ tier: "balanced", capabilities: ["vision"] });
+    expect(result.model).toBe("ollama-cloud/kimi-k2.6");
+  });
+});
+
 describe("resolveOllamaCloud — allowlist invariant", () => {
   it("every resolver target is present in TOOL_CAPABLE_OLLAMA_CLOUD_MODEL_IDS", () => {
     const allowlist = new Set<string>(TOOL_CAPABLE_OLLAMA_CLOUD_MODEL_IDS);

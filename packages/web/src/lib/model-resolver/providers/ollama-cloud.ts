@@ -28,13 +28,17 @@ const BY_TIER_FAMILY: Record<
     vision: "ollama-cloud/ministral-3:8b",
   },
   balanced: {
-    general: "ollama-cloud/glm-4.7",
+    // glm-4.7 (general) and gemma4:31b (vision) were replaced 2026-07-07
+    // after production/staging fallout: glm-4.7 is reasoning-by-default and
+    // loops when the `/v1` client drops `reasoning_content` between turns;
+    // gemma4:31b corrupted a ~150-char Microsoft Graph message ID across
+    // turns ("Id is malformed") in a staging email agent. Deep-research
+    // (2026-07-07) plus prior production experience endorse kimi-k2.6 as the
+    // strongest non-thinking-preferred tool-driver: vision:true, 256K
+    // context, already in the curated catalog (issue #669).
+    general: "ollama-cloud/kimi-k2.6",
     coder: "ollama-cloud/qwen3-coder:480b",
-    // qwen3-vl:235b(-instruct) was the pick but Ollama dropped both from the
-    // cloud catalog (2026-06-17 discovery sweep). gemma4:31b is the balanced
-    // vision replacement: vision+reasoning+tools, 262K context, already
-    // empirically verified in ollama-cloud-models.ts.
-    vision: "ollama-cloud/gemma4:31b",
+    vision: "ollama-cloud/kimi-k2.6",
   },
   reasoning: {
     general: "ollama-cloud/deepseek-v4-pro",
