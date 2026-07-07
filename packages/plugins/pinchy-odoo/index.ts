@@ -1109,9 +1109,9 @@ async function normalizeMany2OneValues(
   connectionId: string,
   model: string,
   values: Record<string, unknown>,
-): Promise<Record<string, unknown>> {
+): Promise<{ values: Record<string, unknown>; fields: OdooField[] }> {
   const fields = normalizeFields(await client.fields(model));
-  if (fields.length === 0) return values;
+  if (fields.length === 0) return { values, fields };
 
   const normalized = { ...values };
 
@@ -1156,7 +1156,7 @@ async function normalizeMany2OneValues(
       scopeCompanyId,
     );
   }
-  return normalized;
+  return { values: normalized, fields };
 }
 
 // The canonical Odoo external id for the built-in "To-Do" activity type.
@@ -2139,15 +2139,21 @@ const plugin = {
                 config,
                 async (client) => {
                   let values: Record<string, unknown>;
+                  // The model's field schema, fetched once during many2one
+                  // normalization and reused for #5 selection validation below
+                  // (avoids a second client.fields round-trip on every create).
+                  let modelFields: OdooField[] | null = null;
                   if (isRecord(params.values)) {
                     const cleaned = unquoteFieldKeys(params.values);
                     assertNoCrossCompanyRefs(cleaned);
-                    values = await normalizeMany2OneValues(
+                    const normalized = await normalizeMany2OneValues(
                       client,
                       config.connectionId,
                       model,
                       cleaned,
                     );
+                    values = normalized.values;
+                    modelFields = normalized.fields;
                     values = await ensureActivityResModelId(
                       client,
                       model,
@@ -2161,10 +2167,16 @@ const plugin = {
                   // "in_bill", which is not a real Odoo move_type) with the valid
                   // options, instead of forwarding a bad enum to Odoo where it
                   // surfaces as an opaque server error the agent has to guess at.
-                  const modelFields = normalizeFields(await client.fields(model));
-                  const invalidSelections = findInvalidSelectionValues(modelFields, values);
-                  if (invalidSelections.length > 0) {
-                    throw new Error(formatInvalidSelectionError(model, invalidSelections));
+                  if (modelFields) {
+                    const invalidSelections = findInvalidSelectionValues(
+                      modelFields,
+                      values,
+                    );
+                    if (invalidSelections.length > 0) {
+                      throw new Error(
+                        formatInvalidSelectionError(model, invalidSelections),
+                      );
+                    }
                   }
 
                   // #3: duplicate-invoice guard. An account.move (vendor/customer
@@ -2185,6 +2197,14 @@ const plugin = {
                     const dupDomain: OdooDomain = [["ref", "=", values.ref]];
                     if (typeof values.move_type === "string") {
                       dupDomain.push(["move_type", "=", values.move_type]);
+                    }
+                    // Scope by company: the same supplier invoice number can be
+                    // booked legitimately by two separate companies in one Odoo
+                    // instance, so a global ref match would falsely reject the
+                    // second company's entry. company_id is a resolved integer
+                    // here (normalizeMany2OneValues ran above).
+                    if (typeof values.company_id === "number") {
+                      dupDomain.push(["company_id", "=", values.company_id]);
                     }
                     if (typeof values.partner_id === "number") {
                       dupDomain.push(["partner_id", "=", values.partner_id]);
@@ -2979,12 +2999,14 @@ const plugin = {
                   if (isRecord(params.values)) {
                     const cleaned = unquoteFieldKeys(params.values);
                     assertNoCrossCompanyRefs(cleaned);
-                    values = await normalizeMany2OneValues(
-                      client,
-                      config.connectionId,
-                      model,
-                      cleaned,
-                    );
+                    values = (
+                      await normalizeMany2OneValues(
+                        client,
+                        config.connectionId,
+                        model,
+                        cleaned,
+                      )
+                    ).values;
                     values = await ensureActivityResModelId(
                       client,
                       model,

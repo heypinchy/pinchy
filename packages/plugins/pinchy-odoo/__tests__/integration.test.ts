@@ -780,6 +780,63 @@ describe("pinchy-odoo multi-company journal resolution (bare ref + scoped lookup
     expect(moves.filter((m) => m.ref === "DUP-INV-777")).toHaveLength(1);
   });
 
+  it("#3: allows the same ref in a DIFFERENT company (dedup is company-scoped, not global)", async () => {
+    // The duplicate guard must scope by company_id. Two legally separate
+    // companies (Helmcraft GmbH / Clemens Helm) can each legitimately book a
+    // supplier invoice that carries the same supplier invoice number — the
+    // guard must not reject company 2's booking as a duplicate of company 1's.
+    const tools = createApi({ [accountingAgentId]: accountingConfig });
+    const readTool = findTool(tools, "odoo_read", accountingAgentId);
+    const createTool = findTool(tools, "odoo_create", accountingAgentId);
+
+    const journal1 = JSON.parse(
+      (
+        await readTool.execute("read-journal-xc-1", {
+          model: "account.journal",
+          filters: [["id", "=", 17]],
+          fields: ["name"],
+        })
+      ).content[0].text,
+    ).records[0]._pinchy_ref;
+    const journal2 = JSON.parse(
+      (
+        await readTool.execute("read-journal-xc-2", {
+          model: "account.journal",
+          filters: [["id", "=", 24]],
+          fields: ["name"],
+        })
+      ).content[0].text,
+    ).records[0]._pinchy_ref;
+
+    const first = await createTool.execute("create-xc-first", {
+      model: "account.move",
+      values: {
+        ref: "XCOMPANY-REF-1",
+        move_type: "in_invoice",
+        company_id: { ref: ref("res.company", 1, "Helmcraft GmbH", 1, "Helmcraft GmbH") },
+        journal_id: journal1,
+      },
+    });
+    expect(first.isError).toBeFalsy();
+
+    const second = await createTool.execute("create-xc-second", {
+      model: "account.move",
+      values: {
+        ref: "XCOMPANY-REF-1",
+        move_type: "in_invoice",
+        company_id: { ref: ref("res.company", 2, "Clemens Helm", 2, "Clemens Helm") },
+        journal_id: journal2,
+      },
+    });
+    expect(second.isError).toBeFalsy();
+
+    // Both companies' moves persisted — one per company, same ref.
+    const moves = (await fetch(
+      `http://127.0.0.1:${mockOdoo.controlPort}/control/records?model=account.move`,
+    ).then((res) => res.json())) as Array<Record<string, unknown>>;
+    expect(moves.filter((m) => m.ref === "XCOMPANY-REF-1")).toHaveLength(2);
+  });
+
   it("scopes a journal name lookup by company_id, resolving the multi-company collision (Layer 2)", async () => {
     const tools = createApi({ [accountingAgentId]: accountingConfig });
     const createTool = findTool(tools, "odoo_create", accountingAgentId);
