@@ -146,7 +146,11 @@ interface AgentTool {
     toolCallId: string,
     params: Record<string, unknown>,
     signal?: AbortSignal,
-  ) => Promise<{ content: ContentBlock[]; isError?: boolean }>;
+  ) => Promise<{
+    content: ContentBlock[];
+    isError?: boolean;
+    details?: { error: string };
+  }>;
 }
 
 interface PluginConfig {
@@ -210,29 +214,38 @@ async function reportAuthFailure(
   }
 }
 
+/**
+ * Audit-integrity contract (see packages/web/src/app/api/internal/audit/tool-use/route.ts
+ * lines ~116-122, issue #404): OpenClaw's tool-use hook strips the MCP
+ * `isError` flag before forwarding results to the audit route, so
+ * `details.error` is often the only remaining failure signal. Every
+ * error-returning path below must set it, mirroring pinchy-odoo's
+ * toolError() helper.
+ */
 function permissionDenied(operation: string): {
   content: ContentBlock[];
   isError: true;
+  details: { error: string };
 } {
+  const text = `Permission denied: email.${operation} is not allowed for this agent.`;
   return {
     isError: true,
-    content: [
-      {
-        type: "text",
-        text: `Permission denied: email.${operation} is not allowed for this agent.`,
-      },
-    ],
+    content: [{ type: "text", text }],
+    details: { error: text },
   };
 }
 
 function errorResult(error: unknown): {
   content: ContentBlock[];
   isError: true;
+  details: { error: string };
 } {
   const message = error instanceof Error ? error.message : "Unknown error";
+  const text = `Error: ${message}`;
   return {
     isError: true,
-    content: [{ type: "text", text: `Error: ${message}` }],
+    content: [{ type: "text", text }],
+    details: { error: text },
   };
 }
 
@@ -364,6 +377,7 @@ const plugin = {
         execute: async () => ({
           content: [{ type: "text", text: "" }],
           isError: true as const,
+          details: { error: "" },
         }),
       };
     }

@@ -64,6 +64,7 @@ interface AgentTool {
   ) => Promise<{
     content: Array<{ type: string; text: string }>;
     isError?: boolean;
+    details?: unknown;
   }>;
 }
 
@@ -1115,6 +1116,50 @@ describe("error handling", () => {
 
     expect(result.content[0].text).toContain("Unknown error");
     expect(result.isError).toBe(true);
+  });
+
+  // Audit-integrity contract (see packages/web/src/app/api/internal/audit/tool-use/route.ts
+  // lines ~116-122, issue #404): OpenClaw strips the MCP `isError` flag before
+  // forwarding tool results to /api/internal/audit/tool-use, so the audit
+  // endpoint falls back to `result.details.error` to record a failure.
+  // Without it, a failed email tool call is logged as outcome=success (verified
+  // on staging: tool.email_read and tool.email_get_attachment rows logged
+  // outcome=success despite an "Id is malformed" failure).
+  it("attaches details.error on a client-thrown error so the audit records a failure even when OpenClaw strips isError", async () => {
+    mockList.mockRejectedValue(new Error("Gmail API rate limit exceeded"));
+
+    const tools = createApi();
+    const tool = findTool(tools, "email_list", agentId)!;
+
+    const result = await tool.execute("call-1", {});
+
+    expect(result.isError).toBe(true);
+    expect((result.details as { error?: string } | undefined)?.error).toContain(
+      "Gmail API rate limit exceeded",
+    );
+    // The details.error message must match content[0].text (same human-readable string).
+    expect((result.details as { error?: string } | undefined)?.error).toBe(
+      result.content[0].text,
+    );
+  });
+
+  it("attaches details.error on a permission-denied result", async () => {
+    const tools = createApi();
+    const tool = findTool(tools, "email_send", agentId)!;
+
+    const result = await tool.execute("call-1", {
+      to: "test@example.com",
+      subject: "Hello",
+      body: "World",
+    });
+
+    expect(result.isError).toBe(true);
+    expect((result.details as { error?: string } | undefined)?.error).toContain(
+      "Permission denied",
+    );
+    expect((result.details as { error?: string } | undefined)?.error).toBe(
+      result.content[0].text,
+    );
   });
 });
 
