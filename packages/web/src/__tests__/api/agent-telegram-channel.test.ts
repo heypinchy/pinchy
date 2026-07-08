@@ -415,6 +415,33 @@ describe("POST /api/agents/[agentId]/channels/telegram", () => {
     expect(mockProbeTelegramPollingConflict).not.toHaveBeenCalled();
   });
 
+  it("does not probe for a polling conflict on a self-reconnect of the token this agent already has (#477 layer 1)", async () => {
+    // The agent already has this exact token stored → OpenClaw's own worker for
+    // THIS deployment is the (only) poller. Probing getUpdates here races our
+    // own poller and can false-positive with a 409, wrongly rejecting a
+    // legitimate re-connect as an "another deployment" conflict. So skip it.
+    vi.mocked(db.select).mockReturnValueOnce({
+      from: vi.fn().mockReturnValue({
+        where: vi
+          .fn()
+          .mockResolvedValue([{ key: "telegram_bot_token:agent-1", value: "encrypted" }]),
+      }),
+    } as never);
+    vi.mocked(getSetting).mockImplementation(async (key: string) => {
+      if (key === "telegram_bot_token:agent-1") return "123456:ABC-token";
+      return null;
+    });
+
+    const response = await POST(makeRequest({ botToken: "123456:ABC-token" }), {
+      params: mockParams,
+    });
+
+    expect(response.status).toBe(200);
+    expect(mockProbeTelegramPollingConflict).not.toHaveBeenCalled();
+    // The re-connect still goes through and rewrites config.
+    expect(mockUpdateTelegramChannelConfig).toHaveBeenCalled();
+  });
+
   it("calls recalculateTelegramAllowStores after connecting", async () => {
     const response = await POST(makeRequest({ botToken: "123456:ABC-token" }), {
       params: mockParams,

@@ -134,15 +134,24 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ age
   // for any reason other than a confirmed Telegram getUpdates 409. Runs after
   // getMe validation and the duplicate-token check so it only fires for an
   // otherwise-valid, not-already-connected-here token (issue #477 layer 1).
-  const conflictProbe = await probeTelegramPollingConflict(botToken);
-  if (conflictProbe.conflict) {
-    return NextResponse.json(
-      {
-        error:
-          "This bot is already being polled by another deployment (for example a staging or production stack). Use a separate bot token per environment, or disconnect it there first.",
-      },
-      { status: 409 }
-    );
+  //
+  // Skip the probe on a self-reconnect: if this agent already has this exact
+  // token stored, OpenClaw's own worker for THIS deployment is the (only)
+  // poller. Probing getUpdates would then race our own poller and can
+  // false-positive with a 409, wrongly rejecting a legitimate re-connect as an
+  // "another deployment" conflict. A genuinely new token has no such poller yet.
+  const currentToken = await getSetting(`telegram_bot_token:${agentId}`);
+  if (currentToken !== botToken) {
+    const conflictProbe = await probeTelegramPollingConflict(botToken);
+    if (conflictProbe.conflict) {
+      return NextResponse.json(
+        {
+          error:
+            "This bot is already being polled by another deployment (for example a staging or production stack). Use a separate bot token per environment, or disconnect it there first.",
+        },
+        { status: 409 }
+      );
+    }
   }
 
   // DB first (source of truth)
