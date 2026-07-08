@@ -428,7 +428,6 @@ describe("ChatSwitcher", () => {
 
   describe("per-agent chat-list cache (#610)", () => {
     it("seeds the list from the cache so the dropdown isn't empty on reopen", async () => {
-      const user = userEvent.setup();
       // Pre-seed the cache as if a previous mount had fetched this list.
       setChatList("agent-1", [webChat]);
       // A slow/never-resolving fetch so the cached seed is the only data source
