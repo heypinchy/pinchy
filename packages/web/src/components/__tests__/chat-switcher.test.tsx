@@ -489,5 +489,20 @@ describe("ChatSwitcher", () => {
       // agent-1's cache is empty, so the only row is the optimistic current chat.
       expect(within(menu).queryByText("Other agent chat")).not.toBeInTheDocument();
     });
+
+    it("shows the cached chat's title in the header trigger, not the agent name", async () => {
+      // webChat.title = "Quarterly report", chatId "chat-abc" — the active chat.
+      setChatList("agent-1", [webChat]);
+      // A never-resolving fetch so the seed is the only data source: proves the
+      // trigger label comes from the cache, synchronously, not from a fetch.
+      (apiGet as ReturnType<typeof vi.fn>).mockReturnValue(new Promise(() => {}));
+
+      render(<ChatSwitcher agentId="agent-1" chatId="chat-abc" agentName="Smithers" />);
+
+      // The header trigger button shows the seeded chat title, never the agent
+      // name — proving the cache seed feeds triggerLabel on first render.
+      expect(await screen.findByRole("button", { name: /Quarterly report/i })).toBeInTheDocument();
+      expect(screen.queryByRole("button", { name: /Smithers/i })).not.toBeInTheDocument();
+    });
   });
 });
