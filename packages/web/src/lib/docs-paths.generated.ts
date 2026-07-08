@@ -16,6 +16,7 @@ export const DOCS_PATHS = [
   "explanation/agent-memory",
   "explanation/chat-states",
   "explanation/instructions-vs-memory",
+  "explanation/skills-and-templates",
   "getting-started",
   "glossary/ai-agent-audit-trail",
   "glossary/ai-agent-governance",

@@ -173,6 +173,7 @@ export default defineConfig({
             { label: 'Philosophy', slug: 'concepts/philosophy' },
             { label: 'Agent Memory', slug: 'explanation/agent-memory' },
             { label: 'Instructions vs. Memory', slug: 'explanation/instructions-vs-memory' },
+            { label: 'Skills & Templates', slug: 'explanation/skills-and-templates' },
             { label: 'Chat Connection States', slug: 'explanation/chat-states' },
             { label: 'Agent Settings', slug: 'concepts/agent-settings' },
             { label: 'Agent Permissions', slug: 'concepts/agent-permissions' },

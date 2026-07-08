@@ -151,12 +151,22 @@ To re-sync: go to **Settings → Integrations**, open the connection's `…` men
 Re-syncing may remove models that are no longer accessible. Agents that were configured to use those models will lose access to them.
 :::
 
+## While a connection is being set up
+
+OAuth connections (Gmail, Microsoft 365) have a brief **pending** phase between clicking **Connect** and finishing the provider's sign-in. Pinchy handles that window for you:
+
+- **The list updates itself.** The Integrations list polls while a connection is pending, so it flips to **connected** — or to an error — on its own, without a page reload.
+- **You can cancel a half-finished setup.** A pending row's button reads **Cancel setup** rather than Delete; use it if you started a connection you no longer want.
+- **Abandoned attempts clean themselves up.** A pending record that never completes is swept automatically after 15 minutes, so a closed browser tab or an abandoned sign-in doesn't leave a stray row behind.
+
+If the sign-in itself fails — most often a wrong Client Secret at the token-exchange step — Pinchy shows a **persistent error banner** on the Integrations tab that names the specific cause and the fix (for example, correcting the Client Secret under **Connected apps**). It stays until you dismiss it, rather than vanishing like a toast, because your attention is usually still on the provider's sign-in screen when it lands.
+
 ## When credentials expire or get revoked
 
 Pinchy detects permanent authentication failures — an expired API key, a revoked OAuth grant, a changed password — and surfaces them in two places:
 
 - The integration card on **Settings → Integrations** changes from a green checkmark to a red warning, with the failure reason from the upstream service.
-- The **Settings** entry in the sidebar shows a red `!` badge when one or more integrations need attention.
+- The **Settings** entry in the sidebar shows a red `!` badge when one or more integrations need attention. Opening Settings from that badge takes you straight to the **Integrations** tab — which carries its own error dot — so you land on the failing connection instead of hunting for it.
 
 To recover, open the integration's `…` menu and choose **Edit credentials** (or click **Reconnect** on the failed card). Update the affected field — for example, paste in a new API key. Non-secret fields stay pre-filled; secret fields are empty by default and left unchanged if you leave them blank. Pinchy validates the new credentials against the upstream service before saving, and clears the failed state on success. The connection keeps the same ID, so any agent permissions stay attached automatically.
 
@@ -175,6 +185,12 @@ A full reconnect is only needed if the app was permanently deleted rather than j
 :::note
 "App not configured" is computed on each page load, not stored — Pinchy doesn't persist this state anywhere. It appears the moment the app's credentials are missing and disappears the moment they're restored, with no manual step to clear it.
 :::
+
+### When the ENCRYPTION_KEY changed
+
+Integration credentials are encrypted at rest with the server's `ENCRYPTION_KEY`. If that key changes — an infrastructure migration, a mistaken rotation, a server rebuilt from scratch without the original key — Pinchy can no longer decrypt the connections written under the old key. Each one surfaces a red **"can't be read"** card on **Settings → Integrations**, noting that it was encrypted with a different `ENCRYPTION_KEY` than the one the server uses now.
+
+Unlike **"App not configured"**, this state does **not** clear on its own — there's no way to recover the old ciphertext without the old key. The only path forward is to **delete** the unreadable connection and **re-add** it under the current key. Keep `ENCRYPTION_KEY` stable across restarts and migrations to avoid this in the first place — see [Secrets](/security/secrets/).
 
 ## Security
 

@@ -1,0 +1,42 @@
+---
+title: Skills, Templates, and Capabilities
+description: How a Pinchy skill teaches an agent to use its tools for a specific job — and how templates attach them.
+---
+
+import { Aside } from "@astrojs/starlight/components";
+
+An agent's behaviour comes from three separate layers, and it helps to keep them straight:
+
+- **Tools** are what an agent _can_ do — the operations it's allowed to call (search the web, read email, write an Odoo record). Tools are governed by [permissions](/concepts/agent-permissions/).
+- **Instructions** are who the agent _is_ and the rules it follows — its SOUL.md and AGENTS.md. See [Instructions vs. Memory](/explanation/instructions-vs-memory/).
+- **Skills** are _how_ the agent uses its tools for a particular job — a reusable workflow guide for a capability, like "monitor a market" or "triage a mailbox."
+
+A skill doesn't grant a tool and it isn't a personality. It's a playbook: a `SKILL.md` file that walks the agent through doing one thing well with the tools it already has.
+
+## How a skill reaches an agent
+
+Skills are attached through **templates**. When you create an agent from a template that includes a skill, Pinchy:
+
+1. Materializes the skill body into the agent's workspace at `skills/<skill-id>/SKILL.md`.
+2. Emits `skills: ["<skill-id>"]` in that agent's OpenClaw configuration.
+3. Lets OpenClaw load the `SKILL.md` into the agent's system prompt automatically — the workspace copy takes precedence over any bundled skill of the same name.
+
+Because Pinchy writes the skill files at config-regenerate time — alongside the AGENTS.md and SOUL.md bootstrap files — the skill travels with the agent and stays in sync with its configuration.
+
+<Aside type="note">
+  Skills are **template-driven today**: you get them by choosing a template, not
+  by ticking them individually in an agent's settings. Authoring custom skills
+  and assigning them per agent is on the roadmap — [master issue
+  #543](https://github.com/heypinchy/pinchy/issues/543) tracks the skill layer.
+</Aside>
+
+## The skills that ship today
+
+| Skill        | Attached by                                                                                   | What it teaches                                                                  |
+| ------------ | --------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------- |
+| `web-search` | [Market & News Monitor](/guides/create-market-monitor-agent/)                                 | A workflow for researching a topic with the web-search tools and reporting back. |
+| `email`      | [Email Assistant templates](/guides/connect-email/#email-agent-templates-use-the-email-skill) | A workflow for triaging, reading, and drafting mail with the email tools.        |
+
+## Why an allow-list of skills
+
+OpenClaw ships dozens of bundled "desktop" skills (1Password, Apple Notes, and the like) that make no sense for a governed enterprise agent. Pinchy's `skills: [...]` entry is an **allow-list**: it enables exactly the Pinchy-authored skills an agent's template attached, and nothing else. That's the same fail-closed principle Pinchy applies to [tools](/concepts/agent-permissions/#how-permissions-reach-openclaw) — list only what's trusted, and deny the rest by default.
