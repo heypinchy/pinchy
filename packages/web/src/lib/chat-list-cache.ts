@@ -61,7 +61,8 @@ export function prefetchChatList(agentId: string): Promise<void> {
 
 /**
  * Drops the cached list for an agent so the next read refetches. Dock point for
- * a future chat delete/rename that must not show a stale list.
+ * a future chat delete/rename that must not show a stale list — intentionally
+ * unused until that UI lands, tracked in #689.
  */
 export function invalidateChatList(agentId: string): void {
   cache.delete(agentId);
