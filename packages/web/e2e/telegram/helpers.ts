@@ -508,31 +508,36 @@ export async function waitForTelegramPolling(timeout = 30000): Promise<void> {
  */
 export async function waitForBotPolling(token: string, timeout = 120000): Promise<void> {
   const start = Date.now();
-  // Wait for a SUSTAINED live poll (`inflightPollTokens`), not merely "has ever
-  // polled" (`pollingTokens`). The #477 connect-time conflict probe does a
-  // single ~1s getUpdates at connect, which would satisfy an ever-grew or
-  // grace-based oracle immediately — returning here BEFORE OpenClaw's real
-  // poller starts, letting a subsequent disconnect race the connect (and get
-  // rate-limited away). OpenClaw keeps one long-poll open continuously, so its
-  // token stays in `inflightPollTokens` across the window below; the probe's
-  // single request cannot. Require ~2.5s of continuous presence to distinguish.
-  const SUSTAINED_MS = 2500;
-  let liveSince: number | null = null;
+  // Wait for a SUSTAINED poll, not merely "has ever polled" (`pollingTokens`).
+  // The #477 connect-time conflict probe does a single getUpdates at connect
+  // (timeout=1 → ~1s), which the mock records like any poll. An ever-grew or
+  // instantaneous oracle would return here the moment the PROBE polls — before
+  // OpenClaw's real poller starts — so a subsequent disconnect races the
+  // connect and gets rate-limited away (the #476 Gap 1 disconnect spec then
+  // sees the poller "never stop"). `activePollingTokens` bridges OpenClaw's
+  // rapid re-issue gaps via a 5s settle grace, so a real poller stays present
+  // continuously, whereas the probe's single poll only keeps the token present
+  // for its ~1s request + the 5s grace ≈ 6s and then drops. Require the token
+  // to stay active LONGER than that probe window so we key off OpenClaw's
+  // sustained poll — which also naturally spaces connect and disconnect enough
+  // to avoid the config.apply rate-limit collision.
+  const SUSTAINED_MS = 8000;
+  let activeSince: number | null = null;
   while (Date.now() - start < timeout) {
     try {
       const res = await fetch(`${MOCK_TELEGRAM_URL}/control/health`);
       const data = await res.json();
-      const live =
-        Array.isArray(data.inflightPollTokens) && data.inflightPollTokens.includes(token);
-      if (live) {
-        if (liveSince === null) liveSince = Date.now();
-        else if (Date.now() - liveSince >= SUSTAINED_MS) return;
+      const active =
+        Array.isArray(data.activePollingTokens) && data.activePollingTokens.includes(token);
+      if (active) {
+        if (activeSince === null) activeSince = Date.now();
+        else if (Date.now() - activeSince >= SUSTAINED_MS) return;
       } else {
-        liveSince = null;
+        activeSince = null;
       }
     } catch {
       // Not ready yet
-      liveSince = null;
+      activeSince = null;
     }
     await new Promise((r) => setTimeout(r, 500));
   }

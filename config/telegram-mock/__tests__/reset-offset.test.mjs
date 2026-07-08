@@ -160,44 +160,6 @@ test("an in-flight long-poll keeps a token active indefinitely; aborting it drop
   );
 });
 
-// #477 layer 1 relies on telling OpenClaw's continuous poller apart from the
-// one-shot connect-time conflict probe. `inflightPollTokens` is the RAW
-// in-flight set (no grace): a token is present only while a getUpdates request
-// is open right now. That is what lets `waitForBotPolling` wait for a SUSTAINED
-// poll — the probe's single request drops out of `inflightPollTokens` the
-// instant it settles, even though the grace-based `activePollingTokens` still
-// lists it.
-test("inflightPollTokens tracks the raw in-flight poll and drops immediately on settle (no grace), unlike activePollingTokens", async () => {
-  resetState();
-
-  const ac = new AbortController();
-  const inflight = handleGetUpdates(TOKEN, { offset: "0", timeout: "30" }, { signal: ac.signal });
-
-  // While the request is open, the token is in the raw in-flight set.
-  assert.ok(
-    getHealthSnapshot().inflightPollTokens.includes(TOKEN),
-    "an open getUpdates must appear in inflightPollTokens"
-  );
-
-  // Settle it (a one-shot probe returning, or OpenClaw tearing down).
-  ac.abort();
-  await inflight;
-
-  // Immediately after settle: gone from inflightPollTokens (no grace), even
-  // though activePollingTokens still lists it during the grace window.
-  const settled = getHealthSnapshot();
-  assert.ok(
-    !settled.inflightPollTokens.includes(TOKEN),
-    `a settled poll must leave inflightPollTokens at once, got ${JSON.stringify(
-      settled.inflightPollTokens
-    )}`
-  );
-  assert.ok(
-    settled.activePollingTokens.includes(TOKEN),
-    "activePollingTokens still lists it during the grace window (contrast)"
-  );
-});
-
 test("/control/reset clears in-flight/last-poll state so activePollingTokens is empty", async () => {
   resetState();
   await handleGetUpdates(TOKEN, { offset: "0", timeout: "0" });

@@ -87,12 +87,8 @@ const ACTIVE_GRACE_MS = 5000;
  */
 function getHealthSnapshot(now = Date.now()) {
   const active = new Set();
-  const inflight = new Set();
   for (const [token, count] of inflightPolls) {
-    if (count > 0) {
-      active.add(token);
-      inflight.add(token);
-    }
+    if (count > 0) active.add(token);
   }
   for (const [token, ts] of lastPollAt) {
     if (now - ts < ACTIVE_GRACE_MS) active.add(token);
@@ -100,13 +96,6 @@ function getHealthSnapshot(now = Date.now()) {
   return {
     pollingTokens: [...pollingTokens],
     activePollingTokens: [...active],
-    // `inflightPollTokens` is the RAW in-flight set (no settle grace): a token
-    // is present only while it has a getUpdates request open right now. A
-    // sustained poller (OpenClaw keeps one long-poll open ~30s) stays present
-    // continuously; a one-shot check (the #477 connect-time conflict probe,
-    // ~1s) appears only for that single request. `waitForBotPolling` uses this
-    // to wait for OpenClaw's real poller instead of being fooled by the probe.
-    inflightPollTokens: [...inflight],
   };
 }
 
