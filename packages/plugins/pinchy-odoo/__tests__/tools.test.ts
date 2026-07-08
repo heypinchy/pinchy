@@ -793,6 +793,89 @@ describe("assertNoCrossCompanyRefs", () => {
       }),
     ).not.toThrow();
   });
+
+  // Command codes 1 (update), 2 (delete), 3 (unlink) all carry a
+  // company-taggable id at tuple[1], exactly like code 4 (link) already
+  // checked. The normalizer resolves those ids too, so a company-tagged ref
+  // there must not bypass the guard.
+  it("throws when a code-2 (delete) tuple's id is cross-company tagged", () => {
+    expect(() =>
+      assertNoCrossCompanyRefs({
+        company_id: tagged("res.company", 1, 1, "GmbH A"),
+        line_ids: [[2, tagged("account.move.line", 9, 2, "GmbH B")]],
+      }),
+    ).toThrow(/cross-company/i);
+  });
+
+  it("throws when a code-3 (unlink) tuple's id is cross-company tagged", () => {
+    expect(() =>
+      assertNoCrossCompanyRefs({
+        company_id: tagged("res.company", 1, 1, "GmbH A"),
+        line_ids: [[3, tagged("account.move.line", 9, 2, "GmbH B")]],
+      }),
+    ).toThrow(/cross-company/i);
+  });
+
+  it("throws when a code-1 (update) tuple's id is cross-company tagged", () => {
+    expect(() =>
+      assertNoCrossCompanyRefs({
+        company_id: tagged("res.company", 1, 1, "GmbH A"),
+        line_ids: [[1, tagged("account.move.line", 9, 2, "GmbH B"), {}]],
+      }),
+    ).toThrow(/cross-company/i);
+  });
+
+  // normalizeValuesRecord re-derives scopeCompanyId from a line's OWN
+  // company_id (see the "scopes a nested lookup by the line's own
+  // company_id" normalizer test), so a line legitimately scoped to company B
+  // is accepted by the normalizer. The guard must use the SAME baseline or
+  // it false-rejects a self-consistent line.
+  it("does NOT throw when a line declares its own company_id and every other field in that line agrees with it (self-consistent to B, not the parent A)", () => {
+    expect(() =>
+      assertNoCrossCompanyRefs({
+        company_id: tagged("res.company", 1, 1, "GmbH A"),
+        line_ids: [
+          [
+            0,
+            0,
+            {
+              company_id: tagged("res.company", 2, 2, "GmbH B"),
+              account_id: tagged("account.account", 42, 2, "GmbH B"),
+            },
+          ],
+        ],
+      }),
+    ).not.toThrow();
+  });
+
+  it("throws when a line's own company_id disagrees with another field in that SAME line", () => {
+    expect(() =>
+      assertNoCrossCompanyRefs({
+        company_id: tagged("res.company", 1, 1, "GmbH A"),
+        line_ids: [
+          [
+            0,
+            0,
+            {
+              company_id: tagged("res.company", 2, 2, "GmbH B"),
+              account_id: tagged("account.account", 42, 3, "GmbH C"),
+            },
+          ],
+        ],
+      }),
+    ).toThrow(/cross-company/i);
+  });
+
+  it("still rejects against the PARENT company when the line declares no company_id of its own (preserves existing behavior)", () => {
+    expect(() =>
+      assertNoCrossCompanyRefs({
+        company_id: tagged("res.company", 1, 1, "GmbH A"),
+        line_ids: [
+          [0, 0, { account_id: tagged("account.account", 42, 2, "GmbH B") }],
+        ],
+      }),
+    ).toThrow(/cross-company/i);
+  });
 });
 
 describe("formatMultiMatchError", () => {
@@ -1557,6 +1640,194 @@ describe("odoo_read one2many line refs", () => {
     expect(line[0]).toBe(1);
     expect(line[1]).toBe(88); // decoded from the read-emitted ref to numeric id
     expect(line[2]).toEqual({ debit: 5 });
+  });
+
+  it("round-trips a WHOLE read-emitted one2many line object (not just its _pinchy_ref string) into an edit command tuple's id position", async () => {
+    // wrapOne2ManyValue emits child objects keyed `_pinchy_ref` (not `ref`,
+    // which the m2o wrapper uses). refToId must decode BOTH keys so pasting
+    // the whole `{ _pinchy_ref, id, model }` object — not just the string —
+    // into a Command tuple id position resolves instead of throwing "Raw
+    // numeric IDs are not accepted".
+    mockFields.mockImplementation(async (model: string) => {
+      if (model === "account.move") {
+        return [
+          { name: "id", type: "integer" },
+          {
+            name: "line_ids",
+            type: "one2many",
+            relation: "account.move.line",
+          },
+        ];
+      }
+      if (model === "account.move.line") {
+        return [
+          { name: "id", type: "integer" },
+          { name: "debit", type: "float" },
+        ];
+      }
+      return [];
+    });
+    mockSearchRead.mockResolvedValue({
+      records: [{ id: 5, line_ids: [88] }],
+      total: 1,
+      limit: 100,
+      offset: 0,
+    });
+    mockCreate.mockResolvedValue(901);
+
+    const tools = createApi({
+      [agentId]: {
+        ...agentConfig,
+        permissions: {
+          "account.move": ["read", "create"],
+          "account.move.line": ["write"],
+        },
+      },
+    });
+    const readTool = findTool(tools, "odoo_read", agentId)!;
+    const createTool = findTool(tools, "odoo_create", agentId)!;
+
+    const readResult = await readTool.execute("call-o2m-object-roundtrip-read", {
+      model: "account.move",
+      filters: [],
+      fields: ["line_ids"],
+    });
+    const readData = JSON.parse(readResult.content[0].text);
+    const lineObject = readData.records[0].line_ids[0] as {
+      _pinchy_ref: string;
+      id: number;
+      model: string;
+    };
+
+    const createResult = await createTool.execute(
+      "call-o2m-object-roundtrip-write",
+      {
+        model: "account.move",
+        values: { line_ids: [[1, lineObject, { debit: 5 }]] },
+      },
+    );
+
+    expect(createResult.isError).toBeFalsy();
+    const [, written] = mockCreate.mock.calls[0] as [
+      string,
+      Record<string, unknown>,
+    ];
+    const line = (
+      written.line_ids as Array<[number, unknown, Record<string, unknown>]>
+    )[0];
+    expect(line[0]).toBe(1);
+    expect(line[1]).toBe(88); // decoded from the pasted whole object to numeric id
+    expect(line[2]).toEqual({ debit: 5 });
+  });
+
+  it("round-trips the read-emitted line_ids array VERBATIM into a [6,0,<ids>] replace tuple", async () => {
+    // Pasting the whole read-emitted array of `{ _pinchy_ref, id, model }`
+    // objects back into a replace tuple must resolve every element to its
+    // numeric id.
+    mockFields.mockImplementation(async (model: string) => {
+      if (model === "account.move") {
+        return [
+          { name: "id", type: "integer" },
+          {
+            name: "line_ids",
+            type: "one2many",
+            relation: "account.move.line",
+          },
+        ];
+      }
+      if (model === "account.move.line") {
+        return [{ name: "id", type: "integer" }];
+      }
+      return [];
+    });
+    mockSearchRead.mockResolvedValue({
+      records: [{ id: 5, line_ids: [88, 89] }],
+      total: 1,
+      limit: 100,
+      offset: 0,
+    });
+    mockCreate.mockResolvedValue(902);
+
+    const tools = createApi({
+      [agentId]: {
+        ...agentConfig,
+        permissions: {
+          "account.move": ["read", "create"],
+          "account.move.line": ["create", "write", "delete"],
+        },
+      },
+    });
+    const readTool = findTool(tools, "odoo_read", agentId)!;
+    const createTool = findTool(tools, "odoo_create", agentId)!;
+
+    const readResult = await readTool.execute("call-o2m-array-roundtrip-read", {
+      model: "account.move",
+      filters: [],
+      fields: ["line_ids"],
+    });
+    const readData = JSON.parse(readResult.content[0].text);
+    const lineIdsArray = readData.records[0].line_ids;
+
+    const createResult = await createTool.execute(
+      "call-o2m-array-roundtrip-write",
+      {
+        model: "account.move",
+        values: { line_ids: [[6, 0, lineIdsArray]] },
+      },
+    );
+
+    expect(createResult.isError).toBeFalsy();
+    const [, written] = mockCreate.mock.calls[0] as [
+      string,
+      Record<string, unknown>,
+    ];
+    const tuple = (written.line_ids as Array<[number, unknown, number[]]>)[0];
+    expect(tuple[0]).toBe(6);
+    expect(tuple[2]).toEqual([88, 89]); // every element decoded to its numeric id
+  });
+
+  it("regression: an m2o { ref } object still resolves unchanged", async () => {
+    mockFields.mockImplementation(async (model: string) => {
+      if (model === "account.move") {
+        return [
+          { name: "id", type: "integer" },
+          {
+            name: "partner_id",
+            type: "many2one",
+            relation: "res.partner",
+          },
+        ];
+      }
+      return [];
+    });
+    mockCreate.mockResolvedValue(903);
+
+    const partnerRef = encodeRef({
+      integrationType: "odoo",
+      connectionId: "conn-test-1",
+      model: "res.partner",
+      id: 42,
+      label: "Acme Inc",
+    });
+
+    const tools = createApi({
+      [agentId]: {
+        ...agentConfig,
+        permissions: { "account.move": ["create"] },
+      },
+    });
+    const createTool = findTool(tools, "odoo_create", agentId)!;
+    const result = await createTool.execute("call-m2o-ref-object-regression", {
+      model: "account.move",
+      values: { partner_id: { ref: partnerRef } },
+    });
+
+    expect(result.isError).toBeFalsy();
+    const [, written] = mockCreate.mock.calls[0] as [
+      string,
+      Record<string, unknown>,
+    ];
+    expect(written.partner_id).toBe(42);
   });
 });
 
@@ -5519,6 +5790,10 @@ describe("many2many command-tuple resolution (#615 follow-up)", () => {
 });
 
 describe("assertNoCrossCompanyRefs recursion cap (defense-in-depth)", () => {
+  beforeEach(() => {
+    vi.stubEnv("PINCHY_REF_TOKEN_KEY", "a".repeat(64));
+  });
+
   it("still detects a normal-depth cross-company ref", () => {
     const companyRef = encodeRef({
       integrationType: "odoo",
@@ -5571,6 +5846,385 @@ describe("assertNoCrossCompanyRefs recursion cap (defense-in-depth)", () => {
         line_ids: [[0, 0, buildDeepLineIds(50)]],
       }),
     ).toThrow(/depth/i);
+  });
+
+  // Pins the exact cutoff so the guard's operator (`>=`, unified with the
+  // normalizer's own cap via `assertNormalizeDepth`) is asserted precisely,
+  // not just "eventually throws somewhere past 50 levels".
+  it("uses the exact same depth cutoff as normalizeValuesRecord (>= MAX_NORMALIZE_DEPTH)", () => {
+    // Build line_ids nested exactly `depth` levels deep, with the
+    // cross-company-tagged ref at the innermost leaf.
+    function buildTaggedAtDepth(depth: number, leafRef: unknown): unknown {
+      if (depth === 0) return { account_id: leafRef };
+      return { line_ids: [[0, 0, buildTaggedAtDepth(depth - 1, leafRef)]] };
+    }
+
+    const companyRef = {
+      ref: encodeRef({
+        integrationType: "odoo",
+        connectionId: "conn-test-1",
+        model: "res.company",
+        id: 1,
+        label: "Helmcraft GmbH",
+        companyId: 1,
+        companyLabel: "Helmcraft GmbH",
+      }),
+    };
+    const accountRefB = {
+      ref: encodeRef({
+        integrationType: "odoo",
+        connectionId: "conn-test-1",
+        model: "account.account",
+        id: 77,
+        label: "Bank [Clemens Helm]",
+        companyId: 2,
+        companyLabel: "Clemens Helm",
+      }),
+    };
+
+    // MAX_NORMALIZE_DEPTH is 8. The top-level `line_ids` field call starts at
+    // depth 0; each additional nested `line_ids` level increments depth by 1
+    // when descending into the next tuple's dict. Six additional nested
+    // levels lands the cross-company-tagged leaf's check at depth 7 —
+    // within the cap — so the cross-company check itself must still fire
+    // (not swallowed by a depth-cap throw).
+    expect(() =>
+      assertNoCrossCompanyRefs({
+        company_id: companyRef,
+        line_ids: [[0, 0, buildTaggedAtDepth(6, accountRefB)]],
+      }),
+    ).toThrow(/cross-company/i);
+
+    // One level deeper pushes the leaf's check to depth 8 — exactly
+    // MAX_NORMALIZE_DEPTH — which the unified `>=` cutoff now rejects as a
+    // depth-cap error. Under the OLD `depth > MAX_NORMALIZE_DEPTH` guard
+    // operator this exact depth would NOT have thrown a depth-cap error
+    // (8 > 8 is false), masking the cross-company check with an off-by-one
+    // gap versus normalizeValuesRecord's `>=` cap.
+    expect(() =>
+      assertNoCrossCompanyRefs({
+        company_id: companyRef,
+        line_ids: [[0, 0, buildTaggedAtDepth(7, accountRefB)]],
+      }),
+    ).toThrow(/depth/i);
+  });
+});
+
+// #615 regression guard: if `client.fields(field.relation)` returns an empty
+// schema (Odoo unreachable, model renamed, permission quirk, etc.), the
+// nested m2o resolution loop inside normalizeCommandTuples has nothing to
+// resolve against and silently no-ops — so a bare ref buried in a code-0/1
+// values dict would reach Odoo undecoded, exactly the bug #615 fixed. Pure
+// raw-id tuples (e.g. `[6,0,[1,2,3]]`) need no schema at all and must still
+// pass through unchanged even when the schema fetch comes back empty.
+describe("empty line schema + resolution-needed guard (#615 hardening)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.stubEnv("PINCHY_REF_TOKEN_KEY", "a".repeat(64));
+  });
+
+  function mockMoveWithEmptyLineSchema() {
+    mockFields.mockImplementation(async (model: string) => {
+      if (model === "account.move") {
+        return [
+          { name: "id", type: "integer" },
+          {
+            name: "line_ids",
+            type: "one2many",
+            relation: "account.move.line",
+          },
+        ];
+      }
+      // account.move.line schema fetch comes back empty.
+      if (model === "account.move.line") return [];
+      return [];
+    });
+  }
+
+  it("throws a clear error naming the field and relation when the line schema is empty AND a bare ref needs resolving", async () => {
+    mockMoveWithEmptyLineSchema();
+    const accountRef = encodeRef({
+      integrationType: "odoo",
+      connectionId: "conn-test-1",
+      model: "account.account",
+      id: 42,
+      label: "1000 Bank",
+    });
+
+    const tools = createApi({
+      [agentId]: {
+        ...agentConfig,
+        permissions: {
+          "account.move": ["create"],
+          "account.move.line": ["create"],
+        },
+      },
+    });
+    const tool = findTool(tools, "odoo_create", agentId)!;
+    const result = await tool.execute("empty-schema-bare-ref", {
+      model: "account.move",
+      values: {
+        line_ids: [[0, 0, { account_id: accountRef }]],
+      },
+    });
+
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toMatch(/line_ids/);
+    expect(result.content[0].text).toMatch(/account\.move\.line/);
+    expect(mockCreate).not.toHaveBeenCalled();
+  });
+
+  it("passes pure raw-id tuples through unchanged when the line schema is empty (no resolution needed)", async () => {
+    mockMoveWithEmptyLineSchema();
+    mockCreate.mockResolvedValue(700);
+
+    const tools = createApi({
+      [agentId]: {
+        ...agentConfig,
+        permissions: {
+          "account.move": ["create"],
+          "account.move.line": ["create", "write", "delete"],
+        },
+      },
+    });
+    const tool = findTool(tools, "odoo_create", agentId)!;
+    const result = await tool.execute("empty-schema-raw-ids", {
+      model: "account.move",
+      values: {
+        line_ids: [[6, 0, [1, 2]]],
+      },
+    });
+
+    expect(result.isError).toBeFalsy();
+    const [, written] = mockCreate.mock.calls[0] as [
+      string,
+      Record<string, unknown>,
+    ];
+    expect(written.line_ids).toEqual([[6, 0, [1, 2]]]);
+  });
+});
+
+// Per-invocation memoization of schema fetches and name lookups on the
+// nested-resolution path (issue #616, review finding #8). Before this fix,
+// every relation field at every recursion level issued its own uncached
+// `client.fields(model)` RPC, and every command tuple issued its own
+// `search_read` even when many lines resolve the SAME name in the SAME
+// company. For an N-line journal entry all booking to "Bank", that's ~N
+// identical `client.fields(account.move.line)` calls plus N identical
+// account.account `search_read`s — all redundant. The cache is scoped to a
+// single `normalizeMany2OneValues` call (i.e. one tool invocation), not a
+// module-global, so it must not leak across tool calls or connections.
+describe("nested schema + lookup memoization (#616 perf)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.stubEnv("PINCHY_REF_TOKEN_KEY", "a".repeat(64));
+  });
+
+  function mockAccountMoveChain() {
+    mockFields.mockImplementation(async (model: string) => {
+      if (model === "account.move") {
+        return [
+          { name: "id", type: "integer", required: false, readonly: true },
+          {
+            name: "company_id",
+            type: "many2one",
+            relation: "res.company",
+            required: false,
+            readonly: false,
+          },
+          {
+            name: "line_ids",
+            type: "one2many",
+            relation: "account.move.line",
+          },
+        ];
+      }
+      if (model === "account.move.line") {
+        return [
+          { name: "id", type: "integer", required: false, readonly: true },
+          {
+            name: "account_id",
+            type: "many2one",
+            relation: "account.account",
+            required: true,
+            readonly: false,
+          },
+          { name: "debit", type: "float", required: false, readonly: false },
+          { name: "credit", type: "float", required: false, readonly: false },
+          { name: "name", type: "char", required: false, readonly: false },
+          {
+            name: "company_id",
+            type: "many2one",
+            relation: "res.company",
+            required: false,
+            readonly: false,
+          },
+        ];
+      }
+      if (model === "account.account") {
+        return [
+          { name: "id", type: "integer", required: false, readonly: true },
+          { name: "code", type: "char", required: false, readonly: false },
+          { name: "name", type: "char", required: false, readonly: false },
+          {
+            name: "display_name",
+            type: "char",
+            required: false,
+            readonly: false,
+          },
+          {
+            name: "company_id",
+            type: "many2one",
+            relation: "res.company",
+            required: false,
+            readonly: false,
+          },
+        ];
+      }
+      return [];
+    });
+  }
+
+  function mockBankAccountLookup() {
+    mockSearchRead.mockImplementation(async (model: string) => {
+      if (model === "account.account") {
+        return {
+          records: [
+            {
+              id: 42,
+              name: "Bank",
+              display_name: "1000 Bank",
+              company_id: [1, "Helmcraft GmbH"],
+            },
+          ],
+        };
+      }
+      return { records: [] };
+    });
+  }
+
+  it("fetches account.move.line and account.account schemas only once for a 3-line create", async () => {
+    mockAccountMoveChain();
+    mockBankAccountLookup();
+    mockCreate.mockResolvedValue(555);
+
+    const tools = createApi({
+      [agentId]: {
+        ...agentConfig,
+        permissions: {
+          "account.move": ["create"],
+          "account.move.line": ["create"],
+        },
+      },
+    });
+    const tool = findTool(tools, "odoo_create", agentId)!;
+    const result = await tool.execute("perf-schema-memo", {
+      model: "account.move",
+      values: {
+        line_ids: [
+          [0, 0, { account_id: "Bank", debit: 100, credit: 0 }],
+          [0, 0, { account_id: "Bank", debit: 0, credit: 50 }],
+          [0, 0, { account_id: "Bank", debit: 0, credit: 50 }],
+        ],
+      },
+    });
+
+    expect(result.isError).toBeFalsy();
+    expect(
+      mockFields.mock.calls.filter((c) => c[0] === "account.move.line")
+        .length,
+    ).toBe(1);
+    expect(
+      mockFields.mock.calls.filter((c) => c[0] === "account.account").length,
+    ).toBe(1);
+  });
+
+  it("dedupes the account.account name lookup across 3 lines all booking 'Bank' and resolves them all to the same id", async () => {
+    mockAccountMoveChain();
+    mockBankAccountLookup();
+    mockCreate.mockResolvedValue(555);
+
+    const tools = createApi({
+      [agentId]: {
+        ...agentConfig,
+        permissions: {
+          "account.move": ["create"],
+          "account.move.line": ["create"],
+        },
+      },
+    });
+    const tool = findTool(tools, "odoo_create", agentId)!;
+    const result = await tool.execute("perf-lookup-dedupe", {
+      model: "account.move",
+      values: {
+        line_ids: [
+          [0, 0, { account_id: "Bank", debit: 100, credit: 0 }],
+          [0, 0, { account_id: "Bank", debit: 0, credit: 50 }],
+          [0, 0, { account_id: "Bank", debit: 0, credit: 50 }],
+        ],
+      },
+    });
+
+    expect(result.isError).toBeFalsy();
+    expect(
+      mockSearchRead.mock.calls.filter((c) => c[0] === "account.account")
+        .length,
+    ).toBe(1);
+    const [, written] = mockCreate.mock.calls[0] as [
+      string,
+      Record<string, unknown>,
+    ];
+    const lines = written.line_ids as Array<
+      [number, number, Record<string, unknown>]
+    >;
+    expect(lines).toHaveLength(3);
+    for (const line of lines) {
+      expect(line[2].account_id).toBe(42);
+    }
+  });
+
+  it("does not leak the schema/lookup cache across two separate odoo_create calls", async () => {
+    mockAccountMoveChain();
+    mockBankAccountLookup();
+    mockCreate.mockResolvedValue(555);
+
+    const tools = createApi({
+      [agentId]: {
+        ...agentConfig,
+        permissions: {
+          "account.move": ["create"],
+          "account.move.line": ["create"],
+        },
+      },
+    });
+    const tool = findTool(tools, "odoo_create", agentId)!;
+
+    const firstResult = await tool.execute("perf-isolation-1", {
+      model: "account.move",
+      values: {
+        line_ids: [[0, 0, { account_id: "Bank", debit: 100, credit: 0 }]],
+      },
+    });
+    expect(firstResult.isError).toBeFalsy();
+    const callsAfterFirst = mockFields.mock.calls.filter(
+      (c) => c[0] === "account.move.line",
+    ).length;
+    expect(callsAfterFirst).toBe(1);
+
+    const secondResult = await tool.execute("perf-isolation-2", {
+      model: "account.move",
+      values: {
+        line_ids: [[0, 0, { account_id: "Bank", debit: 100, credit: 0 }]],
+      },
+    });
+    expect(secondResult.isError).toBeFalsy();
+    const callsAfterSecond = mockFields.mock.calls.filter(
+      (c) => c[0] === "account.move.line",
+    ).length;
+    // A second, separate tool invocation must re-fetch — proves the cache
+    // is per-call, not a module-global that would silently serve stale
+    // schema across unrelated tool invocations / connections.
+    expect(callsAfterSecond).toBe(callsAfterFirst + 1);
   });
 });
 

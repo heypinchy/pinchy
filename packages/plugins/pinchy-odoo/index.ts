@@ -27,6 +27,25 @@ const MAX_ATTACHMENT_BYTES = 25 * 1024 * 1024;
 // dead-zone hazard.
 const MAX_NORMALIZE_DEPTH = 8;
 
+/**
+ * Single source of truth for the depth-cap check, shared by
+ * `assertNoCrossCompanyValue` (the cross-company guard, which runs BEFORE
+ * normalization) and `normalizeValuesRecord` (the m2o/ref resolution walk).
+ * Both invariants are the same cap; extracting one helper keeps the
+ * comparison operator (`>=`) from drifting between the two call sites, which
+ * previously let a pathologically deep structure slip past the guard's
+ * `depth > MAX_NORMALIZE_DEPTH` check one level later than the normalizer's
+ * own `depth >= MAX_NORMALIZE_DEPTH` cutoff.
+ */
+function assertNormalizeDepth(depth: number, kind: string): void {
+  if (depth >= MAX_NORMALIZE_DEPTH) {
+    throw new Error(
+      `Nested relation resolution exceeded the maximum depth of ${MAX_NORMALIZE_DEPTH}; ` +
+        `refusing to pass ${kind} command tuples to Odoo without reference decoding.`,
+    );
+  }
+}
+
 const MIME_BY_EXT: Record<string, string> = {
   ".jpg": "image/jpeg",
   ".jpeg": "image/jpeg",
@@ -857,8 +876,20 @@ function refToId(
   field: OdooField,
   value: Record<string, unknown>,
 ): number | null {
-  if (typeof value.ref !== "string") return null;
-  return decodeAndValidateRef(connectionId, field, value.ref);
+  // Accept BOTH wire shapes: the m2o wrapper's `{ ref }` (wrapMany2OneValue)
+  // and the one2many wrapper's `{ _pinchy_ref }` (wrapOne2ManyValue). Without
+  // this an agent pasting a whole read-emitted o2m line object — or the
+  // read `line_ids` array verbatim — into a Command tuple id position would
+  // hit the "Raw numeric IDs are not accepted" guard below, because only the
+  // bare string decoded, not the object carrying it.
+  const refString =
+    typeof value.ref === "string"
+      ? value.ref
+      : typeof value._pinchy_ref === "string"
+        ? value._pinchy_ref
+        : null;
+  if (refString === null) return null;
+  return decodeAndValidateRef(connectionId, field, refString);
 }
 
 /**
@@ -920,12 +951,7 @@ function assertNoCrossCompanyValue(
   path: string,
   depth: number,
 ): void {
-  if (depth > MAX_NORMALIZE_DEPTH) {
-    throw new Error(
-      `Nested relation resolution exceeded the maximum depth of ${MAX_NORMALIZE_DEPTH}; ` +
-        `refusing to pass one2many command tuples to Odoo without reference decoding.`,
-    );
-  }
+  assertNormalizeDepth(depth, "one2many");
   const sibling = readRefCompanyTag(value);
   if (sibling !== null) {
     if (sibling.id !== intended.id) {
@@ -944,19 +970,35 @@ function assertNoCrossCompanyValue(
       // Odoo Command tuple: [code, ...]. 0 (create) and 1 (update) carry a
       // values dict at index 2 with refs to check.
       if ((tuple[0] === 0 || tuple[0] === 1) && isRecord(tuple[2])) {
-        for (const [k, v] of Object.entries(tuple[2] as Record<string, unknown>)) {
+        const lineDict = tuple[2] as Record<string, unknown>;
+        // A line may declare its OWN company_id; normalizeValuesRecord re-scopes
+        // that line's m2o lookups to it, so the guard must use the SAME baseline
+        // or it false-rejects a self-consistent line. Fall back to the parent's
+        // company when the line declares none.
+        const lineTag = readRefCompanyTag(lineDict.company_id);
+        const lineIntended = lineTag ?? intended;
+        const lineIntendedLabel = lineTag
+          ? (lineTag.label ?? `id=${lineTag.id}`)
+          : intendedLabel;
+        for (const [k, v] of Object.entries(lineDict)) {
+          if (k === "company_id") continue; // the scoping anchor itself
           assertNoCrossCompanyValue(
             v,
-            intended,
-            intendedLabel,
+            lineIntended,
+            lineIntendedLabel,
             `${path}[${i}].${k}`,
             depth + 1,
           );
         }
       }
-      // many2many link (4, <ref>) — the id position itself may carry a
-      // company-tagged ref (no values dict to descend into).
-      if (tuple[0] === 4) {
+      // Codes 1 (update), 2 (delete), 3 (unlink), 4 (link) all carry a
+      // company-taggable id at tuple[1]. (0 has no id; 6 is handled below.)
+      if (
+        tuple[0] === 1 ||
+        tuple[0] === 2 ||
+        tuple[0] === 3 ||
+        tuple[0] === 4
+      ) {
         assertNoCrossCompanyValue(
           tuple[1],
           intended,
@@ -991,17 +1033,22 @@ function assertNoCrossCompanyValue(
 function readRefCompanyTag(
   value: unknown,
 ): { id: number; label: string | null } | null {
-  // Accept the ref in either wire form the agent may pass: the structured
-  // `{ ref: "…" }` object OR a bare `_pinchy_ref` string (the form odoo_read
-  // emits and the prose tells the agent to copy verbatim). Without the
-  // bare-string branch, Layer 1's bare-ref support would let a bare ref slip
-  // past the cross-company guard entirely.
-  const refString =
-    isRecord(value) && typeof value.ref === "string"
+  // Accept the ref in any wire form the agent may pass: the m2o wrapper's
+  // `{ ref: "…" }` object, the one2many wrapper's `{ _pinchy_ref: "…" }`
+  // object (so a pasted whole o2m line object is visible to this guard too),
+  // OR a bare `_pinchy_ref` string (the form odoo_read emits and the prose
+  // tells the agent to copy verbatim). Without the bare-string branch,
+  // Layer 1's bare-ref support would let a bare ref slip past the
+  // cross-company guard entirely.
+  const refString = isRecord(value)
+    ? typeof value.ref === "string"
       ? value.ref
-      : isIntegrationRef(value)
-        ? value
-        : null;
+      : typeof value._pinchy_ref === "string"
+        ? value._pinchy_ref
+        : null
+    : isIntegrationRef(value)
+      ? value
+      : null;
   if (refString === null) return null;
   try {
     const payload = decodeRef(refString);
@@ -1013,6 +1060,68 @@ function readRefCompanyTag(
 }
 
 /**
+ * Per-invocation memoization for the nested m2o resolution path (issue #616,
+ * review finding #8). Without this, a recursive normalize walk issues one
+ * uncached `client.fields(model)` RPC per relation field at every recursion
+ * level, and one `search_read` per command tuple even when many lines
+ * resolve the SAME name in the SAME company — e.g. an N-line journal entry
+ * all booking to "Bank" triggers ~N identical `client.fields(account.move.line)`
+ * calls plus N identical `account.account` `search_read`s.
+ *
+ * Deliberately created fresh by `normalizeMany2OneValues` for EACH call and
+ * threaded down as an optional parameter — never a module-global — so it
+ * cannot leak stale schema/lookups across tool calls or connections. Every
+ * function on the nested path defaults this parameter to `undefined` and
+ * falls back to an uncached call when absent, so any other/future caller is
+ * unaffected.
+ *
+ * `lookups` caches the RESOLVED value returned by `searchRelationByName`
+ * (typically the `search_read` payload used to resolve a name/code lookup),
+ * keyed by `${relation} ${name} ${scopeCompanyId}` — the company must be part
+ * of the key because the same name can resolve to a different record in a
+ * different company. `fields` caches the normalized `OdooField[]`, keyed by
+ * model name. Both maps store PROMISES (not resolved values) so concurrent
+ * awaits for the same key dedupe onto the same in-flight request instead of
+ * firing a second RPC before the first resolves.
+ */
+interface NormalizeCaches {
+  fields: Map<string, Promise<OdooField[]>>;
+  lookups: Map<string, Promise<unknown>>;
+}
+
+function lookupCacheKey(
+  relation: string,
+  lookup: RelationLookup,
+  scopeCompanyId: number | null,
+): string {
+  const name = lookup.code ?? lookup.name ?? "";
+  return `${relation} ${name} ${scopeCompanyId}`;
+}
+
+/**
+ * Memoized `client.fields(model)` + `normalizeFields` loader. When `caches`
+ * is provided, the in-flight (or already-resolved) promise for `model` is
+ * stored and reused so repeated calls for the same model within one
+ * `normalizeMany2OneValues` invocation issue a single RPC. Without `caches`
+ * (any caller outside the nested-resolution path) this is exactly the old
+ * uncached `normalizeFields(await client.fields(model))`.
+ */
+function loadFields(
+  client: OdooClient,
+  model: string,
+  caches?: NormalizeCaches,
+): Promise<OdooField[]> {
+  if (!caches) {
+    return client.fields(model).then(normalizeFields);
+  }
+  const cached = caches.fields.get(model);
+  if (cached) return cached;
+  const promise = client.fields(model).then(normalizeFields);
+  caches.fields.set(model, promise);
+  return promise;
+}
+
+/**
  * Run the `name ilike` lookup on `field.relation`, requesting `company_id`
  * only when the relation actually has it. Models like `res.currency`,
  * `res.country`, `res.lang`, or `res.company` itself lack `company_id` —
@@ -1020,7 +1129,8 @@ function readRefCompanyTag(
  *
  * The gating mirrors `augmentFieldsWithCompanyId`, which is also used by
  * `odoo_read` to keep multi-company UX consistent. One extra `client.fields`
- * call per non-country lookup is the cost.
+ * call per non-country lookup is the cost (memoized via `caches.fields` when
+ * a cache is supplied).
  *
  * When `scopeCompanyId` is set (because the parent record's `company_id` was
  * resolvable), constrain the search to that company. Odoo journal codes/names
@@ -1030,34 +1140,53 @@ function readRefCompanyTag(
  * fix pattern (PR #269835 / commit 3fcd8a9). Only applied when the relation
  * actually has a `company_id` field, so company-shared models (res.currency,
  * res.partner, res.country) are never scoped.
+ *
+ * `caches.lookups`, when supplied, memoizes the resolved `search_read` result
+ * by `${relation} ${name} ${scopeCompanyId}` — the same name/code booked
+ * repeatedly against the same relation in the same company scope (e.g. many
+ * journal lines all naming "Bank") issues a single RPC instead of one per
+ * tuple.
  */
 async function searchRelationByName(
   client: OdooClient,
   field: OdooField,
   lookup: RelationLookup,
   scopeCompanyId: number | null = null,
+  caches?: NormalizeCaches,
 ): Promise<unknown> {
   const relation = field.relation as string;
-  const relationFields = normalizeFields(await client.fields(relation));
-  const lookupFields = augmentFieldsWithCompanyId(
-    ["id", "name", "display_name"],
-    relationFields,
-  ) ?? ["id", "name", "display_name"];
-  const domain: OdooDomain = [["name", "ilike", lookup.name ?? ""]];
-  if (scopeCompanyId !== null && relationHasCompanyId(relationFields)) {
-    // Mirror Odoo's `_check_company_domain`: include SHARED records
-    // (company_id = false), not just the target company. A strict
-    // `("company_id", "=", scope)` filter would exclude shared partners and
-    // products (company_id false, visible across companies) and break name
-    // lookups that resolved before. For company-EXCLUSIVE relations
-    // (account.journal, where company_id is required) the false branch
-    // never matches, so this is equivalent to the strict filter there.
-    domain.push("|", ["company_id", "=", false], ["company_id", "=", scopeCompanyId]);
+  const key = caches ? lookupCacheKey(relation, lookup, scopeCompanyId) : null;
+  if (key && caches) {
+    const cached = caches.lookups.get(key);
+    if (cached) return cached;
   }
-  return client.searchRead(relation, domain, {
-    fields: lookupFields,
-    limit: 20,
-  });
+
+  const run = async (): Promise<unknown> => {
+    const relationFields = await loadFields(client, relation, caches);
+    const lookupFields = augmentFieldsWithCompanyId(
+      ["id", "name", "display_name"],
+      relationFields,
+    ) ?? ["id", "name", "display_name"];
+    const domain: OdooDomain = [["name", "ilike", lookup.name ?? ""]];
+    if (scopeCompanyId !== null && relationHasCompanyId(relationFields)) {
+      // Mirror Odoo's `_check_company_domain`: include SHARED records
+      // (company_id = false), not just the target company. A strict
+      // `("company_id", "=", scope)` filter would exclude shared partners and
+      // products (company_id false, visible across companies) and break name
+      // lookups that resolved before. For company-EXCLUSIVE relations
+      // (account.journal, where company_id is required) the false branch
+      // never matches, so this is equivalent to the strict filter there.
+      domain.push("|", ["company_id", "=", false], ["company_id", "=", scopeCompanyId]);
+    }
+    return client.searchRead(relation, domain, {
+      fields: lookupFields,
+      limit: 20,
+    });
+  };
+
+  const promise = run();
+  if (key && caches) caches.lookups.set(key, promise);
+  return promise;
 }
 
 async function resolveRelationValue(
@@ -1066,6 +1195,7 @@ async function resolveRelationValue(
   field: OdooField,
   value: unknown,
   scopeCompanyId: number | null = null,
+  caches?: NormalizeCaches,
 ): Promise<unknown> {
   if (value == null || value === false) return value;
   if (typeof value === "number") {
@@ -1117,7 +1247,13 @@ async function resolveRelationValue(
           fields: ["id", "name", "display_name", "code"],
           limit: 1000,
         })
-      : await searchRelationByName(client, field, lookup, scopeCompanyId);
+      : await searchRelationByName(
+          client,
+          field,
+          lookup,
+          scopeCompanyId,
+          caches,
+        );
 
   return resolveReferenceFromRecords(
     field,
@@ -1133,7 +1269,13 @@ async function normalizeMany2OneValues(
   values: Record<string, unknown>,
   permissions: Permissions,
 ): Promise<Record<string, unknown>> {
-  const fields = normalizeFields(await client.fields(model));
+  // One cache per invocation (i.e. per tool call), never a module-global —
+  // see the `NormalizeCaches` doc comment above `searchRelationByName` for
+  // why. Created fresh here and threaded down through every nested call so
+  // repeated schema fetches / name lookups within THIS create/write are
+  // deduped, but nothing survives past this function's return.
+  const caches: NormalizeCaches = { fields: new Map(), lookups: new Map() };
+  const fields = await loadFields(client, model, caches);
   if (fields.length === 0) return values;
   return normalizeValuesRecord(
     client,
@@ -1144,6 +1286,7 @@ async function normalizeMany2OneValues(
     null,
     permissions,
     0,
+    caches,
   );
 }
 
@@ -1208,6 +1351,7 @@ async function resolveCommandTargetId(
   relationField: OdooField,
   idValue: unknown,
   scopeCompanyId: number | null,
+  caches?: NormalizeCaches,
 ): Promise<unknown> {
   if (typeof idValue === "number") return idValue;
   if (idValue === false || idValue == null) return idValue;
@@ -1217,7 +1361,47 @@ async function resolveCommandTargetId(
     relationField,
     idValue,
     scopeCompanyId,
+    caches,
   );
+}
+
+/**
+ * A single value is "ref-shaped" when it needs decoding before it can reach
+ * Odoo: a bare `_pinchy_ref` string, or a `{ref}`/`{_pinchy_ref}` object.
+ * Used by {@link commandTuplesNeedResolution} to decide whether an empty
+ * line schema is actually a problem for a given set of tuples.
+ */
+function isRefShaped(value: unknown): boolean {
+  if (isIntegrationRef(value)) return true;
+  return (
+    isRecord(value) &&
+    (typeof value.ref === "string" || typeof value._pinchy_ref === "string")
+  );
+}
+
+/**
+ * True when at least one command tuple in `tuples` actually needs relation
+ * resolution: a code-0/1 values dict containing a ref-shaped value, or an id
+ * position (tuple[1], or an element of a code-6 id list) that is neither a
+ * raw number nor `false`/`null` (Odoo's own wire shapes, which never need
+ * resolution). Pure raw-id tuples such as `[6, 0, [1, 2, 3]]` return false
+ * here — they carry nothing for `client.fields(field.relation)` to resolve
+ * against, so an empty/unavailable line schema is harmless for them.
+ */
+function commandTuplesNeedResolution(tuples: unknown[]): boolean {
+  const idNeedsResolution = (id: unknown): boolean =>
+    typeof id !== "number" && id !== false && id != null;
+  return tuples.some((tuple) => {
+    if (!Array.isArray(tuple)) return false;
+    const code = tuple[0];
+    if ((code === 0 || code === 1) && isRecord(tuple[2])) {
+      if (Object.values(tuple[2]).some(isRefShaped)) return true;
+    }
+    if (code === 6 && Array.isArray(tuple[2])) {
+      return (tuple[2] as unknown[]).some(idNeedsResolution);
+    }
+    return idNeedsResolution(tuple[1]);
+  });
 }
 
 /**
@@ -1239,6 +1423,7 @@ async function normalizeValuesRecord(
   scopeCompanyId: number | null,
   permissions: Permissions,
   depth: number,
+  caches?: NormalizeCaches,
 ): Promise<Record<string, unknown>> {
   const normalized = { ...values };
 
@@ -1256,6 +1441,7 @@ async function normalizeValuesRecord(
       companyField,
       normalized.company_id,
       scopeCompanyId,
+      caches,
     );
     normalized.company_id = resolved;
     if (
@@ -1276,6 +1462,7 @@ async function normalizeValuesRecord(
       field,
       normalized[field.name],
       scopeCompanyId,
+      caches,
     );
   }
 
@@ -1301,13 +1488,24 @@ async function normalizeValuesRecord(
     if (!(field.name in normalized)) continue;
     const tuples = normalized[field.name];
     if (!Array.isArray(tuples) || tuples.length === 0) continue;
-    if (depth >= MAX_NORMALIZE_DEPTH) {
-      throw new Error(
-        `Nested relation resolution exceeded the maximum depth of ${MAX_NORMALIZE_DEPTH}; ` +
-          `refusing to pass ${kind} command tuples to Odoo without reference decoding.`,
-      );
+    assertNormalizeDepth(depth, kind);
+    const lineFields = await loadFields(client, field.relation, caches);
+    if (lineFields.length === 0) {
+      // An empty schema means the nested m2o loop below has nothing to
+      // resolve against. When the tuples carry only raw ids (no ref-shaped
+      // value anywhere), that's fine — pass them through unchanged, exactly
+      // as Odoo's own wire format expects. But if resolution IS needed
+      // (issue #615), silently no-op-ing here would let a bare ref reach
+      // Odoo undecoded — fail loud instead.
+      if (commandTuplesNeedResolution(tuples)) {
+        throw new Error(
+          `Cannot resolve references in "${field.name}" (relation "${field.relation}"): ` +
+            `the schema for ${field.relation} came back empty, so many2one refs in its ` +
+            `command tuples cannot be decoded. Re-check the connection to Odoo and try again.`,
+        );
+      }
+      continue;
     }
-    const lineFields = normalizeFields(await client.fields(field.relation));
     normalized[field.name] = await normalizeCommandTuples(
       client,
       connectionId,
@@ -1320,6 +1518,7 @@ async function normalizeValuesRecord(
       field.name,
       kind,
       field,
+      caches,
     );
   }
 
@@ -1355,6 +1554,7 @@ async function normalizeCommandTuples(
   parentField: string,
   kind: "one2many" | "many2many",
   relationField: OdooField,
+  caches?: NormalizeCaches,
 ): Promise<unknown[]> {
   const opByCode = kind === "one2many" ? NESTED_OP_BY_CODE : M2M_OP_BY_CODE;
   const out: unknown[] = [];
@@ -1390,6 +1590,7 @@ async function normalizeCommandTuples(
         scopeCompanyId,
         permissions,
         depth + 1,
+        caches,
       );
       const resolvedId =
         code === 1
@@ -1399,6 +1600,7 @@ async function normalizeCommandTuples(
               relationField,
               tuple[1],
               scopeCompanyId,
+              caches,
             )
           : tuple[1];
       out.push([code, resolvedId, resolvedValues]);
@@ -1412,6 +1614,7 @@ async function normalizeCommandTuples(
         relationField,
         tuple[1],
         scopeCompanyId,
+        caches,
       );
       out.push([code, resolvedId, ...tuple.slice(2)]);
     } else if (code === 6 && Array.isArray(tuple[2])) {
@@ -1423,6 +1626,7 @@ async function normalizeCommandTuples(
             relationField,
             id,
             scopeCompanyId,
+            caches,
           ),
         ),
       );

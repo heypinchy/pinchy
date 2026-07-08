@@ -930,8 +930,11 @@ function processOne2ManyTuples(model, fieldName, relation, tuples, parentId) {
       ids.push(lineId);
     } else if (code === 1) {
       const lineId = tuple[1];
+      const updateValues = tuple[2] || {};
+      const err = validateM2oFields(relation, updateValues);
+      if (err) return err;
       const rec = (store.get(relation) || []).find((r) => r.id === lineId);
-      if (rec) Object.assign(rec, tuple[2] || {});
+      if (rec) Object.assign(rec, updateValues);
       ids.push(lineId);
     } else if (code === 4) {
       ids.push(tuple[1]);

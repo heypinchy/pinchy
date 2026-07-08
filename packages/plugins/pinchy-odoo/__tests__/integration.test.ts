@@ -1005,4 +1005,49 @@ describe("pinchy-odoo nested line_ids resolution (#615)", () => {
     expect(json.error).toBeDefined();
     expect(json.error?.data?.message ?? json.error?.data).toMatch(/account_id|many2one/i);
   });
+
+  // Review finding #6 (#615/#616): the mock only validated nested m2o types
+  // on code-0 (create) line_ids tuples. A code-1 (update) tuple's values
+  // dict went straight to Object.assign with no type check, so a bare-string
+  // account_id inside `[1, <id>, {...}]` was silently accepted — not
+  // Odoo-faithful, and exactly the kind of gap that would hide a regression
+  // where the plugin fails to decode a nested ref inside an update tuple
+  // (the false-success audit trap #615 exists to prevent).
+  it("mock (Odoo-faithful) rejects a bare-string account_id inside a [1,id,{…}] line_ids update tuple", async () => {
+    const body = {
+      jsonrpc: "2.0",
+      method: "call",
+      id: 1,
+      params: {
+        service: "object",
+        method: "execute_kw",
+        args: [
+          "testdb",
+          2,
+          "test-api-key",
+          "account.move",
+          "create",
+          [
+            {
+              company_id: 1,
+              journal_id: 17,
+              line_ids: [
+                [0, 0, { account_id: 42, debit: 1, credit: 0 }],
+                [1, 1, { account_id: "pinchy_ref:v1:not-a-real-token" }],
+              ],
+            },
+          ],
+          {},
+        ],
+      },
+    };
+    const res = await fetch(`http://127.0.0.1:${mockOdoo.jsonRpcPort}/jsonrpc`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    const json = (await res.json()) as { error?: { data?: { message?: string } } };
+    expect(json.error).toBeDefined();
+    expect(json.error?.data?.message ?? json.error?.data).toMatch(/account_id|many2one/i);
+  });
 });
