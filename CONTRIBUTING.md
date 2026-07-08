@@ -268,7 +268,7 @@ The release script and CI enforce image builds, GHCR visibility, end-user instal
 
 **Staging**
 
-- [ ] Staging instance on `:next` was clicked through today: Smithers chat, one live integration, one custom agent. See [Staging instance setup](#staging-instance-setup) for the one-time setup and the refresh command (`docker compose pull && up -d && docker image prune -f`) you run before each click-through.
+- [ ] Staging instance on `:next` ran an **active test-and-fix pass** today (not just a click-through): drive the archetypes through real flows — default agent (Smithers), each live integration (email, Odoo, …), an analytics/data agent, and a knowledge-base agent — hunting for problems, and verify each against **ground truth** (audit log `tool.*` rows, OpenClaw container logs, the regenerated `openclaw.json`), not the chat UI. Any bug found is a release blocker: TDD-fix it, redeploy `:next`, re-verify. See the `cut-pinchy-release` skill § "The staging pass is an active test-and-fix loop" for the full loop, and [Staging instance setup](#staging-instance-setup) for the one-time setup and the refresh command (`docker compose pull && up -d && docker image prune -f`).
 - [ ] PWA install check:
       Open the staging URL in Chrome Desktop — confirm an install icon appears in the address bar and clicking it produces a standalone window.
       Open the same URL in iOS Safari — confirm **Share → Add to Home Screen** produces a launcher icon that opens Pinchy full-screen with a branded splash.
