@@ -516,7 +516,9 @@ describe("POST /api/invite/claim (integration)", () => {
     expect(entries).toHaveLength(1);
     const entry = entries[0];
     expect(entry.actorType).toBe("user");
-    expect(entry.actorId).toBe(targetUser!.id);
+    // appendAuditLog substitutes the user's auditPseudonym for actorId (GDPR
+    // crypto-erasure) — assert against that, not the raw targetUser.id.
+    expect(entry.actorId).toBe(targetUser!.auditPseudonym);
     expect(entry.outcome).toBe("success");
     // PII must NOT appear in detail (audit policy).
     const serializedDetail = JSON.stringify(entry.detail ?? {});

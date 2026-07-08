@@ -90,6 +90,17 @@ export const users = pgTable(
     banReason: text("ban_reason"),
     banExpires: timestamp("ban_expires"),
     context: text("context"),
+    // GDPR crypto-erasure pseudonym (EDPB 01/2025): appendAuditLog() substitutes
+    // this random token for the raw user id when writing audit_log rows for
+    // `actorType: "user"` events. The mapping lives in this mutable row, not in
+    // the immutable, append-only audit_log — so deleting the user erases the
+    // mapping, making all of that user's future-written audit rows
+    // unlinkable, while the audit trail itself stays intact (Art. 17(3)).
+    // Unrelated to `id`: a fresh random UUID, never derived from it.
+    auditPseudonym: text("audit_pseudonym")
+      .$defaultFn(() => crypto.randomUUID())
+      .notNull()
+      .unique(),
     createdAt: timestamp("created_at").notNull().defaultNow(),
     updatedAt: timestamp("updated_at").notNull().defaultNow(),
   },

@@ -9,10 +9,25 @@
 // they can't leak into a downloadable bundle.
 
 import { describe, it, expect } from "vitest";
+import { eq } from "drizzle-orm";
 import { appendAuditLog } from "@/lib/audit";
 import { db } from "@/db";
-import { auditLog } from "@/db/schema";
+import { auditLog, users } from "@/db/schema";
 import { fetchAuditEntriesForSession } from "@/lib/diagnostics/audit-collector";
+
+async function createUser(overrides: Partial<typeof users.$inferInsert> = {}) {
+  const [row] = await db
+    .insert(users)
+    .values({
+      name: "Test User",
+      email: `testuser-${Math.random().toString(36).slice(2)}@example.com`,
+      emailVerified: true,
+      role: "member",
+      ...overrides,
+    })
+    .returning();
+  return row;
+}
 
 // Direct-write helper so we can pin specific timestamps without relying on
 // appendAuditLog's internal `new Date()`. The HMAC column is `notNull` so we
@@ -194,5 +209,87 @@ describe("fetchAuditEntriesForSession (integration)", () => {
     // result stays oldest→newest so it reads like a transcript window.
     const rows = await fetchAuditEntriesForSession(agentId, userId, undefined, 2);
     expect(rows.map((r) => r.eventType)).toEqual(["tool.middle", "tool.newest"]);
+  });
+
+  // ── GDPR pseudonymization: the collector must still find a real user's rows ─
+  //
+  // appendAuditLog() now substitutes users.auditPseudonym for actorId on
+  // actorType:"user" rows (see lib/audit.ts). fetchAuditEntriesForSession is
+  // called with the real `session.user.id` (diagnostics/export/route.ts), so
+  // it must resolve BOTH the pseudonym (new rows) and the raw id (old rows)
+  // or a real user's own diagnostics bundle would silently come back empty.
+
+  it("finds a real user's rows even though appendAuditLog wrote the pseudonym, not the raw id", async () => {
+    const agentId = "agt_pseudo";
+    const user = await createUser();
+
+    await appendAuditLog({
+      actorType: "user",
+      actorId: user.id,
+      eventType: "tool.pinchy_ls",
+      resource: `agent:${agentId}`,
+      detail: {},
+      outcome: "success",
+    });
+
+    // The row actually stored in audit_log carries the pseudonym, not the raw id.
+    const [stored] = await db
+      .select()
+      .from(auditLog)
+      .where(eq(auditLog.resource, `agent:${agentId}`));
+    expect(stored.actorId).toBe(user.auditPseudonym);
+    expect(stored.actorId).not.toBe(user.id);
+
+    // Yet the collector, called with the real user id (as production does),
+    // still finds it.
+    const rows = await fetchAuditEntriesForSession(agentId, user.id);
+    expect(rows).toHaveLength(1);
+    expect(rows[0].eventType).toBe("tool.pinchy_ls");
+  });
+
+  it("MIGRATION: still finds a pre-existing row written with the raw actorId (pre-pseudonymization)", async () => {
+    // Simulates data written by the pre-feature code path: a raw insert with
+    // actorId = users.id directly (bypassing appendAuditLog's substitution),
+    // exactly what production rows looked like before this feature shipped.
+    const agentId = "agt_legacy";
+    const user = await createUser();
+
+    await insertAuditAt({
+      agentId,
+      userId: user.id, // old-style: raw users.id, no pseudonym substitution
+      eventType: "tool.legacy",
+      timestamp: new Date("2026-01-01T00:00:00Z"),
+    });
+
+    const rows = await fetchAuditEntriesForSession(agentId, user.id);
+    expect(rows).toHaveLength(1);
+    expect(rows[0].eventType).toBe("tool.legacy");
+  });
+
+  it("does not leak another user's rows even when matching by pseudonym", async () => {
+    const agentId = "agt_pseudo_isolation";
+    const userA = await createUser();
+    const userB = await createUser();
+
+    await appendAuditLog({
+      actorType: "user",
+      actorId: userA.id,
+      eventType: "tool.a",
+      resource: `agent:${agentId}`,
+      detail: {},
+      outcome: "success",
+    });
+    await appendAuditLog({
+      actorType: "user",
+      actorId: userB.id,
+      eventType: "tool.b",
+      resource: `agent:${agentId}`,
+      detail: {},
+      outcome: "success",
+    });
+
+    const rows = await fetchAuditEntriesForSession(agentId, userA.id);
+    expect(rows).toHaveLength(1);
+    expect(rows[0].eventType).toBe("tool.a");
   });
 });

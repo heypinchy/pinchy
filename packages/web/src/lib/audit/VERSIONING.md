@@ -63,6 +63,16 @@ those versions.
 9. **NEVER modify `computeRowHmacV1`, `computeRowHmacV2`, … or their fixtures.**
    If you do, every historical entry at that version becomes unverifiable.
 
+## actorId is substituted BEFORE hashing (GDPR crypto-erasure)
+
+For `actorType: "user"` rows, `appendAuditLog` substitutes the user's
+`auditPseudonym` for the raw `users.id` before any `computeRowHmacVN` call —
+so every version's hash chain is computed over the pseudonym, consistently at
+write and verify time. This is a value substitution, not a new version: it
+does not change the hash-input shape or add a field, so it applies to the
+current write version (v3) without bumping to v4. See the "GDPR
+crypto-erasure" comment block above `appendAuditLog` in `../audit.ts`.
+
 ## Forbidden operations
 
 - Re-signing historical rows. If you feel you need this, you are wrong —

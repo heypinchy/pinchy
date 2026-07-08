@@ -46,6 +46,7 @@ vi.mock("@/db/schema", () => ({
     id: "id",
     name: "name",
     banned: "banned",
+    auditPseudonym: "audit_pseudonym",
   },
   agents: {
     id: "id",
@@ -58,6 +59,8 @@ vi.mock("drizzle-orm", () => ({
   desc: vi.fn((col) => col),
   eq: vi.fn((col, val) => ({ col, val })),
   and: vi.fn((...args) => args),
+  or: vi.fn((...args) => ({ or: args })),
+  inArray: vi.fn((col, vals) => ({ col, vals, op: "inArray" })),
   gte: vi.fn((col, val) => ({ col, val, op: "gte" })),
   lte: vi.fn((col, val) => ({ col, val, op: "lte" })),
   count: vi.fn(() => "count_fn"),
@@ -68,8 +71,13 @@ vi.mock("drizzle-orm/pg-core", () => ({
   alias: vi.fn((table, _name) => table),
 }));
 
+const mockResolveActorIdMatchSet = vi.fn();
+vi.mock("@/lib/audit", () => ({
+  resolveActorIdMatchSet: (...args: unknown[]) => mockResolveActorIdMatchSet(...args),
+}));
+
 import { requireAdmin } from "@/lib/api-auth";
-import { eq } from "drizzle-orm";
+import { eq, inArray } from "drizzle-orm";
 
 // ── Tests ────────────────────────────────────────────────────────────────
 
@@ -127,6 +135,9 @@ describe("GET /api/audit", () => {
       user: { id: "admin-1", role: "admin" },
       expires: "",
     } as ReturnType<typeof requireAdmin> extends Promise<infer T> ? T : never);
+    // Default: no pseudonym found (simplest case — filter degrades to the
+    // bare id). Individual tests override this to assert the dual-match set.
+    mockResolveActorIdMatchSet.mockResolvedValue(["user-1"]);
 
     const mod = await import("@/app/api/audit/route");
     GET = mod.GET;
@@ -245,14 +256,38 @@ describe("GET /api/audit", () => {
     expect(eq).toHaveBeenCalledWith("event_type", "auth.login");
   });
 
-  it("supports actorId filter parameter", async () => {
+  it("supports actorId filter parameter (matches raw id when no pseudonym found)", async () => {
+    mockResolveActorIdMatchSet.mockResolvedValueOnce(["user-1"]);
     setupMocks([sampleEntries[0]], 1);
 
     const request = new NextRequest("http://localhost:7777/api/audit?actorId=user-1");
     const response = await GET(request);
 
     expect(response.status).toBe(200);
-    expect(eq).toHaveBeenCalledWith("actor_id", "user-1");
+    expect(mockResolveActorIdMatchSet).toHaveBeenCalledWith("user-1");
+    expect(inArray).toHaveBeenCalledWith("actor_id", ["user-1"]);
+  });
+
+  it("actorId filter matches BOTH the raw id and the user's auditPseudonym", async () => {
+    // A user's audit rows may carry either shape depending on whether they
+    // were written before or after pseudonymization shipped — the filter must
+    // match both, or an admin filtering by a known user id would silently
+    // miss half that user's history.
+    mockResolveActorIdMatchSet.mockResolvedValueOnce(["user-1", "pseudo-abc"]);
+    setupMocks([sampleEntries[0]], 1);
+
+    const request = new NextRequest("http://localhost:7777/api/audit?actorId=user-1");
+    const response = await GET(request);
+
+    expect(response.status).toBe(200);
+    expect(inArray).toHaveBeenCalledWith("actor_id", ["user-1", "pseudo-abc"]);
+  });
+
+  it("does not call resolveActorIdMatchSet when no actorId filter is given", async () => {
+    setupMocks();
+    const request = new NextRequest("http://localhost:7777/api/audit");
+    await GET(request);
+    expect(mockResolveActorIdMatchSet).not.toHaveBeenCalled();
   });
 
   it("supports from and to date range filters", async () => {
@@ -326,6 +361,22 @@ describe("GET /api/audit", () => {
     const res = await GET(req);
     const body = await res.json();
     expect(body.entries[0].actorName).toBe("Alice");
+  });
+
+  it("joins the actor's user row on EITHER auditPseudonym OR the raw id (dual-join, alt+neu)", async () => {
+    // Rows written before pseudonymization carry the raw users.id in actorId;
+    // rows written after carry users.auditPseudonym. The actor-name join must
+    // match either shape, or one of the two row generations goes nameless.
+    const { or } = await import("drizzle-orm");
+    setupMocks();
+
+    const req = new NextRequest("http://localhost/api/audit");
+    await GET(req);
+
+    expect(or).toHaveBeenCalledWith(
+      { col: "audit_pseudonym", val: "actor_id" },
+      { col: "id", val: "actor_id" }
+    );
   });
 
   it("resolves resourceName from agents table when resource is agent:<id>", async () => {

@@ -7,8 +7,10 @@ vi.mock("@/lib/api-auth", () => ({
   requireAdmin: vi.fn(),
 }));
 
+const mockResolveActorIdMatchSet = vi.fn();
 vi.mock("@/lib/audit", () => ({
   appendAuditLog: vi.fn().mockResolvedValue(undefined),
+  resolveActorIdMatchSet: (...args: unknown[]) => mockResolveActorIdMatchSet(...args),
 }));
 
 vi.mock("@/lib/audit-sanitize", async () => {
@@ -59,6 +61,7 @@ vi.mock("@/db/schema", () => ({
     id: "id",
     name: "name",
     banned: "banned",
+    auditPseudonym: "audit_pseudonym",
   },
   agents: {
     id: "id",
@@ -71,6 +74,8 @@ vi.mock("drizzle-orm", () => ({
   desc: vi.fn((col) => col),
   eq: vi.fn((col, val) => ({ col, val })),
   and: vi.fn((...args) => args),
+  or: vi.fn((...args) => ({ or: args })),
+  inArray: vi.fn((col, vals) => ({ col, vals, op: "inArray" })),
   gte: vi.fn((col, val) => ({ col, val })),
   lte: vi.fn((col, val) => ({ col, val })),
   sql: vi.fn((strings, ...values) => ({ strings, values })),
@@ -95,6 +100,7 @@ describe("GET /api/audit/export", () => {
       user: { id: "admin-1", role: "admin" },
       expires: "",
     } as ReturnType<typeof requireAdmin> extends Promise<infer T> ? T : never);
+    mockResolveActorIdMatchSet.mockResolvedValue(["user-1"]);
   });
 
   it("returns 403 for non-admin users", async () => {
@@ -313,16 +319,46 @@ describe("GET /api/audit/export", () => {
     expect(eq).toHaveBeenCalledWith("event_type", "auth.login");
   });
 
-  it("applies actorId filter", async () => {
+  it("applies actorId filter (matches raw id when no pseudonym found)", async () => {
     mockOrderBy.mockResolvedValue([]);
+    mockResolveActorIdMatchSet.mockResolvedValueOnce(["user-1"]);
 
     const { GET } = await import("@/app/api/audit/export/route");
-    const { eq } = await import("drizzle-orm");
+    const { inArray } = await import("drizzle-orm");
     const request = new Request("http://localhost/api/audit/export?actorId=user-1");
     const response = await GET(request as unknown as Parameters<typeof GET>[0]);
 
     expect(response.status).toBe(200);
-    expect(eq).toHaveBeenCalledWith("actor_id", "user-1");
+    expect(mockResolveActorIdMatchSet).toHaveBeenCalledWith("user-1");
+    expect(inArray).toHaveBeenCalledWith("actor_id", ["user-1"]);
+  });
+
+  it("actorId filter matches BOTH the raw id and the user's auditPseudonym", async () => {
+    mockOrderBy.mockResolvedValue([]);
+    mockResolveActorIdMatchSet.mockResolvedValueOnce(["user-1", "pseudo-abc"]);
+
+    const { GET } = await import("@/app/api/audit/export/route");
+    const { inArray } = await import("drizzle-orm");
+    const request = new Request("http://localhost/api/audit/export?actorId=user-1");
+    const response = await GET(request as unknown as Parameters<typeof GET>[0]);
+
+    expect(response.status).toBe(200);
+    expect(inArray).toHaveBeenCalledWith("actor_id", ["user-1", "pseudo-abc"]);
+  });
+
+  it("joins the actor's user row on EITHER auditPseudonym OR the raw id (dual-join, alt+neu)", async () => {
+    mockOrderBy.mockResolvedValue([]);
+
+    const { GET } = await import("@/app/api/audit/export/route");
+    const { or } = await import("drizzle-orm");
+    const request = new Request("http://localhost/api/audit/export");
+    const response = await GET(request as unknown as Parameters<typeof GET>[0]);
+
+    expect(response.status).toBe(200);
+    expect(or).toHaveBeenCalledWith(
+      { col: "audit_pseudonym", val: "actor_id" },
+      { col: "id", val: "actor_id" }
+    );
   });
 
   it("applies resource filter (filter by agent)", async () => {

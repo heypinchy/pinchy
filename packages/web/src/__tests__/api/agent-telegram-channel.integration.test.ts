@@ -164,7 +164,9 @@ describe("DELETE /api/agents/[agentId]/channels/telegram (real DB)", () => {
       .from(auditLog)
       .where(eq(auditLog.eventType, "channel.deleted"));
     expect(auditRows).toHaveLength(1);
-    expect(auditRows[0].actorId).toBe(owner.id);
+    // appendAuditLog substitutes the user's auditPseudonym for actorId (GDPR
+    // crypto-erasure) — assert against that, not the raw owner.id.
+    expect(auditRows[0].actorId).toBe(owner.auditPseudonym);
     const detail = auditRows[0].detail as Record<string, unknown>;
     expect(detail.channelLinksCleared).toBe(3);
     expect(detail.channel).toBe("telegram");

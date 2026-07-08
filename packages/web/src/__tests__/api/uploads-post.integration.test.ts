@@ -252,8 +252,10 @@ describe("POST /api/agents/[agentId]/uploads", () => {
 
     expect(resp.status).toBe(413);
 
-    // Audit failure row must exist.
-    const rows = await db.select().from(auditLog).where(eq(auditLog.actorId, user.id));
+    // Audit failure row must exist. appendAuditLog substitutes the user's
+    // auditPseudonym for actorId (GDPR crypto-erasure) — filter by that, not
+    // the raw user.id, which is no longer what gets stored.
+    const rows = await db.select().from(auditLog).where(eq(auditLog.actorId, user.auditPseudonym));
     expect(rows).toHaveLength(1);
     const row = rows[0];
     expect(row.eventType).toBe("file.upload.staged");
@@ -278,7 +280,8 @@ describe("POST /api/agents/[agentId]/uploads", () => {
 
     expect(resp.status).toBe(415);
 
-    const rows = await db.select().from(auditLog).where(eq(auditLog.actorId, user.id));
+    // Filter by the pseudonym appendAuditLog actually writes (see above).
+    const rows = await db.select().from(auditLog).where(eq(auditLog.actorId, user.auditPseudonym));
     expect(rows).toHaveLength(1);
     const detail = rows[0].detail as Record<string, unknown>;
     expect(detail.reason).toBe("mime");
@@ -300,7 +303,8 @@ describe("POST /api/agents/[agentId]/uploads", () => {
 
     expect(resp.status).toBe(400);
 
-    const rows = await db.select().from(auditLog).where(eq(auditLog.actorId, user.id));
+    // Filter by the pseudonym appendAuditLog actually writes (see above).
+    const rows = await db.select().from(auditLog).where(eq(auditLog.actorId, user.auditPseudonym));
     expect(rows).toHaveLength(1);
     const detail = rows[0].detail as Record<string, unknown>;
     expect(detail.reason).toBe("filename");
@@ -353,8 +357,12 @@ describe("POST /api/agents/[agentId]/uploads", () => {
     const stagingFile = join(tmpRoot, agent.id, ".staging", uploadId, "report.pdf");
     expect(existsSync(stagingFile)).toBe(true);
 
-    // Audit row — success
-    const auditRows = await db.select().from(auditLog).where(eq(auditLog.actorId, user.id));
+    // Audit row — success. Filter by the pseudonym appendAuditLog actually
+    // writes (see comment on the 413 case above).
+    const auditRows = await db
+      .select()
+      .from(auditLog)
+      .where(eq(auditLog.actorId, user.auditPseudonym));
     expect(auditRows).toHaveLength(1);
     const auditRow = auditRows[0];
     expect(auditRow.eventType).toBe("file.upload.staged");

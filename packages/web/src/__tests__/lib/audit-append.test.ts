@@ -5,11 +5,22 @@ const mockValues = vi.fn();
 // Returns the "previous row" the chain reads inside the transaction. Default:
 // no prior row (genesis → prevHmac null).
 const mockPrevRow = vi.fn();
+// Returns the users-table lookup row used to resolve actorId → auditPseudonym
+// for actorType:"user" entries. Default: no matching user (defensive fallback
+// path — raw actorId kept, a warning logged).
+const mockPseudonymRow = vi.fn();
 
 // appendAuditLog now runs inside db.transaction with an advisory lock and a
-// "read the latest row's hmac" select; mock the tx surface it uses.
+// "read the latest row's hmac" select; mock the tx surface it uses. The
+// top-level db.select (outside the transaction) is the actorId → pseudonym
+// lookup performed before the transaction starts.
 vi.mock("@/db", () => ({
   db: {
+    select: () => ({
+      from: () => ({
+        where: () => mockPseudonymRow(),
+      }),
+    }),
     transaction: async (cb: (tx: unknown) => unknown) => {
       const tx = {
         execute: vi.fn().mockResolvedValue(undefined),
@@ -41,6 +52,7 @@ import {
   computeRowHmacV1,
   computeRowHmacV2,
   computeRowHmacV3,
+  resetAuditPseudonymCache,
   type AuditLogEntry,
 } from "@/lib/audit";
 import { auditLog } from "@/db/schema";
@@ -53,6 +65,8 @@ describe("appendAuditLog", () => {
     mockGetOrCreateSecret.mockReturnValue(fakeSecret);
     mockValues.mockResolvedValue(undefined);
     mockPrevRow.mockResolvedValue([]); // genesis: no previous row
+    mockPseudonymRow.mockResolvedValue([]); // no matching user by default
+    resetAuditPseudonymCache();
   });
 
   it("should insert a row into the audit_log table", async () => {
@@ -380,5 +394,184 @@ describe("appendAuditLog", () => {
         },
       })
     ).resolves.toBeUndefined();
+  });
+
+  // ── GDPR crypto-erasure: actorId → auditPseudonym substitution ─────────
+  //
+  // For actorType:"user" entries, appendAuditLog looks up the user's
+  // auditPseudonym and writes THAT into actor_id instead of the raw users.id.
+  // The mapping lives in the mutable users row, so deleting the user erases
+  // the mapping and makes all future audit rows for them unlinkable, while
+  // the (immutable) audit trail itself survives. See schema.ts comment on
+  // users.auditPseudonym.
+
+  describe("actorId pseudonym substitution", () => {
+    it("substitutes the user's auditPseudonym for actorId when a match is found", async () => {
+      mockPseudonymRow.mockResolvedValueOnce([{ auditPseudonym: "pseudo-abc-123" }]);
+
+      await appendAuditLog({
+        actorType: "user",
+        actorId: "user-1",
+        eventType: "auth.login",
+        outcome: "success",
+      });
+
+      const inserted = mockValues.mock.calls[0][0];
+      expect(inserted.actorId).toBe("pseudo-abc-123");
+      expect(inserted.actorId).not.toBe("user-1");
+    });
+
+    it("computes the rowHmac over the SUBSTITUTED actorId (pseudonym), not the raw id", async () => {
+      mockPseudonymRow.mockResolvedValueOnce([{ auditPseudonym: "pseudo-xyz" }]);
+
+      await appendAuditLog({
+        actorType: "user",
+        actorId: "user-1",
+        eventType: "auth.login",
+        outcome: "success",
+      });
+
+      const inserted = mockValues.mock.calls[0][0];
+      const expectedHmac = computeRowHmacV3(fakeSecret, {
+        timestamp: inserted.timestamp,
+        eventType: inserted.eventType,
+        actorType: inserted.actorType,
+        actorId: "pseudo-xyz",
+        resource: inserted.resource,
+        detail: inserted.detail,
+        outcome: inserted.outcome,
+        error: inserted.error,
+        prevHmac: inserted.prevHmac,
+      });
+      expect(inserted.rowHmac).toBe(expectedHmac);
+
+      // If the HMAC had instead been computed over the raw actorId, it would
+      // differ from the stored one — this pins substitution to happen BEFORE
+      // hashing, not after.
+      const hmacOverRawId = computeRowHmacV3(fakeSecret, {
+        timestamp: inserted.timestamp,
+        eventType: inserted.eventType,
+        actorType: inserted.actorType,
+        actorId: "user-1",
+        resource: inserted.resource,
+        detail: inserted.detail,
+        outcome: inserted.outcome,
+        error: inserted.error,
+        prevHmac: inserted.prevHmac,
+      });
+      expect(inserted.rowHmac).not.toBe(hmacOverRawId);
+    });
+
+    it("does NOT substitute actorId for actorType:'system' entries", async () => {
+      await appendAuditLog({
+        actorType: "system",
+        actorId: "upload-gc",
+        eventType: "config.changed",
+        outcome: "success",
+      });
+
+      const inserted = mockValues.mock.calls[0][0];
+      expect(inserted.actorId).toBe("upload-gc");
+      // The users-table lookup must never even run for system actors.
+      expect(mockPseudonymRow).not.toHaveBeenCalled();
+    });
+
+    it("does NOT substitute actorId for actorType:'agent' entries", async () => {
+      await appendAuditLog({
+        actorType: "agent",
+        actorId: "agent-42",
+        eventType: "tool.denied",
+        outcome: "failure",
+        error: { message: "not allowed" },
+      });
+
+      const inserted = mockValues.mock.calls[0][0];
+      expect(inserted.actorId).toBe("agent-42");
+      expect(mockPseudonymRow).not.toHaveBeenCalled();
+    });
+
+    it("falls back to the raw actorId (and warns) when no matching user is found", async () => {
+      mockPseudonymRow.mockResolvedValueOnce([]); // no user row
+      const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+      await appendAuditLog({
+        actorType: "user",
+        actorId: "ghost-user",
+        eventType: "auth.login",
+        outcome: "success",
+      });
+
+      const inserted = mockValues.mock.calls[0][0];
+      expect(inserted.actorId).toBe("ghost-user");
+      expect(warnSpy).toHaveBeenCalled();
+
+      warnSpy.mockRestore();
+    });
+
+    it("does not crash when the pseudonym lookup itself throws", async () => {
+      mockPseudonymRow.mockRejectedValueOnce(new Error("connection reset"));
+      const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+      await expect(
+        appendAuditLog({
+          actorType: "user",
+          actorId: "user-1",
+          eventType: "auth.login",
+          outcome: "success",
+        })
+      ).resolves.toBeUndefined();
+
+      const inserted = mockValues.mock.calls[0][0];
+      expect(inserted.actorId).toBe("user-1");
+      expect(warnSpy).toHaveBeenCalled();
+
+      warnSpy.mockRestore();
+    });
+
+    it("caches userId → pseudonym so a second append for the same user skips the lookup", async () => {
+      mockPseudonymRow.mockResolvedValueOnce([{ auditPseudonym: "pseudo-cached" }]);
+
+      await appendAuditLog({
+        actorType: "user",
+        actorId: "user-1",
+        eventType: "auth.login",
+        outcome: "success",
+      });
+      expect(mockPseudonymRow).toHaveBeenCalledTimes(1);
+
+      await appendAuditLog({
+        actorType: "user",
+        actorId: "user-1",
+        eventType: "auth.logout",
+        outcome: "success",
+      });
+
+      // Second call reused the cache — no second DB lookup.
+      expect(mockPseudonymRow).toHaveBeenCalledTimes(1);
+      const secondInsert = mockValues.mock.calls[1][0];
+      expect(secondInsert.actorId).toBe("pseudo-cached");
+    });
+
+    it("does not share cache entries across different userIds", async () => {
+      mockPseudonymRow.mockResolvedValueOnce([{ auditPseudonym: "pseudo-a" }]);
+      await appendAuditLog({
+        actorType: "user",
+        actorId: "user-a",
+        eventType: "auth.login",
+        outcome: "success",
+      });
+
+      mockPseudonymRow.mockResolvedValueOnce([{ auditPseudonym: "pseudo-b" }]);
+      await appendAuditLog({
+        actorType: "user",
+        actorId: "user-b",
+        eventType: "auth.login",
+        outcome: "success",
+      });
+
+      expect(mockPseudonymRow).toHaveBeenCalledTimes(2);
+      expect(mockValues.mock.calls[0][0].actorId).toBe("pseudo-a");
+      expect(mockValues.mock.calls[1][0].actorId).toBe("pseudo-b");
+    });
   });
 });

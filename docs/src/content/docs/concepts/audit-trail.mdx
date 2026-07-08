@@ -229,6 +229,16 @@ Pinchy avoids this by **never recording plaintext email addresses in `detail`**.
 
 Hash determinism depends on every Pinchy instance using the **same** `audit_hmac_secret`. The default behaviour — auto-generate a secret file under `/app/secrets/.audit_hmac_secret` on first start — produces a different secret per instance. If you run more than one Pinchy instance against a shared Postgres (HA, blue/green, multiple replicas), set `AUDIT_HMAC_SECRET` explicitly via env var or mount the same secret file on every instance. Without this, the same email address will hash to different values on different instances, and an admin will not be able to look up its history from one place. The same prerequisite applies to row HMAC verification.
 
+### Actor identity (GDPR Art. 17 crypto-erasure)
+
+Every row logged for a signed-in user carries `actorType: "user"` and an `actorId`. Because that id identifies a person, and the audit log is HMAC-signed and append-only, a raw `users.id` written into `actorId` would — like a raw email address — survive every right-to-erasure request.
+
+Pinchy avoids this with **crypto-erasure**: each user has a random `auditPseudonym` stored on their (mutable) `users` row. When a row is written for that user, Pinchy substitutes the pseudonym for the raw id in `actorId` — before the row is signed, so the hash chain covers the pseudonym consistently. The admin UI and CSV/PDF exports still resolve a human-readable name by joining against `users` (matching either the pseudonym or, for rows written before this feature shipped, the raw id).
+
+Deleting a user deletes the `auditPseudonym` mapping along with the rest of their `users` row. Every audit row already written for them keeps its pseudonym and stays in the log — the trail is never rewritten — but nothing in the database can link that pseudonym back to a person anymore. The admin UI shows the row's raw `actorId` as an opaque token instead of a name, which is the intended erased state, not a display bug.
+
+Rows written **before** this feature shipped still carry the raw `users.id`. They are not retroactively pseudonymized — the append-only log cannot be rewritten — so erasing that user does not by itself make those older rows unlinkable. Reaching them requires retention (deleting rows past a retention window), a separate feature from crypto-erasure.
+
 ## How HMAC signing works
 
 Every audit log entry is signed with **HMAC-SHA256**, and each signature is chained to the one before it, so the log is tamper-evident as a whole — not just row by row:

@@ -5,8 +5,13 @@
 // Filter:
 //   - `resource = "agent:<agentId>"` — every production code path (chat.send,
 //     tool.*, agent.* events) stamps this; canonical link to the agent.
-//   - `actorId = userId` — one user's bundle never leaks another user's
-//     audit rows for the same agent.
+//   - `actorId IN (userId, userId's auditPseudonym)` — one user's bundle never
+//     leaks another user's audit rows for the same agent. The IN-set (not a
+//     bare `actorId = userId`) is required because appendAuditLog() substitutes
+//     the user's auditPseudonym for actorId on write (GDPR crypto-erasure, see
+//     lib/audit.ts): new rows carry the pseudonym, while rows written before
+//     that feature shipped still carry the raw id. Matching only one shape
+//     would silently drop the other from every caller's bundle.
 //   - optional `[from, to]` time range, inclusive — scoped to the selected
 //     turn window so the bundle's audit section reflects the same time
 //     period as the conversation turns it accompanies, rather than the
@@ -16,9 +21,10 @@
 // into a downloadable bundle — they're useless outside the audit DB context
 // and we want fewer secret-shaped bytes flying around in support archives.
 
-import { and, asc, desc, eq, gte, lte, type SQL } from "drizzle-orm";
+import { and, asc, desc, eq, gte, inArray, lte, type SQL } from "drizzle-orm";
 import { db } from "@/db";
 import { auditLog } from "@/db/schema";
+import { resolveActorIdMatchSet } from "@/lib/audit";
 
 export interface CollectedAuditEntry {
   timestamp: Date;
@@ -47,9 +53,10 @@ export async function fetchAuditEntriesForSession(
   // newest so it reads chronologically alongside the turns.
   limit?: number
 ): Promise<CollectedAuditEntry[]> {
+  const actorIdMatchSet = await resolveActorIdMatchSet(userId);
   const conditions: SQL[] = [
     eq(auditLog.resource, `agent:${agentId}`),
-    eq(auditLog.actorId, userId),
+    inArray(auditLog.actorId, actorIdMatchSet),
   ];
   if (range) {
     conditions.push(gte(auditLog.timestamp, range.from));

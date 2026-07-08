@@ -2,8 +2,9 @@ import { NextRequest, NextResponse } from "next/server";
 import { requireAdmin } from "@/lib/api-auth";
 import { db } from "@/db";
 import { auditLog, users, agents } from "@/db/schema";
-import { desc, eq, and, gte, lte, count, sql } from "drizzle-orm";
+import { desc, eq, and, or, inArray, gte, lte, count, sql } from "drizzle-orm";
 import { alias } from "drizzle-orm/pg-core";
+import { resolveActorIdMatchSet } from "@/lib/audit";
 
 export async function GET(request: NextRequest) {
   const sessionOrError = await requireAdmin();
@@ -24,7 +25,16 @@ export async function GET(request: NextRequest) {
 
   const conditions = [];
   if (eventType) conditions.push(eq(auditLog.eventType, eventType));
-  if (actorId) conditions.push(eq(auditLog.actorId, actorId));
+  if (actorId) {
+    // appendAuditLog substitutes the user's auditPseudonym for actorId (GDPR
+    // crypto-erasure, see lib/audit.ts). A caller filtering by a known user id
+    // must match BOTH the raw id (rows written before pseudonymization, or
+    // rows for a since-erased user) and the current pseudonym (rows written
+    // after) — matching only the bare id would silently drop half that
+    // user's history from the filtered view.
+    const actorIdMatchSet = await resolveActorIdMatchSet(actorId);
+    conditions.push(inArray(auditLog.actorId, actorIdMatchSet));
+  }
   if (status === "success" || status === "failure") {
     // Note: this implicitly excludes v1 (legacy) rows, which have outcome=NULL.
     // v1 rows predate status tracking — there's no honest "success" for them.
@@ -77,7 +87,14 @@ export async function GET(request: NextRequest) {
         resourceUserBanned: resourceUser.banned,
       })
       .from(auditLog)
-      .leftJoin(actorUser, eq(actorUser.id, auditLog.actorId))
+      // Dual-join (alt+neu): actorId may hold either the user's auditPseudonym
+      // (rows written after this feature shipped) or the raw users.id (rows
+      // written before, or before the substitution's own fallback path). A
+      // single-shape join would leave one generation of rows nameless.
+      .leftJoin(
+        actorUser,
+        or(eq(actorUser.auditPseudonym, auditLog.actorId), eq(actorUser.id, auditLog.actorId))
+      )
       .leftJoin(resourceAgent, sql`${auditLog.resource} = 'agent:' || ${resourceAgent.id}`)
       .leftJoin(resourceUser, sql`${auditLog.resource} = 'user:' || ${resourceUser.id}`)
       .where(where)

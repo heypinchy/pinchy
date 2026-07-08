@@ -235,7 +235,11 @@ describe("POST /api/diagnostics/export (integration)", () => {
 
     expect(rows).toHaveLength(1);
     const row = rows[0];
-    expect(row.actorId).toBe(owner.id);
+    // appendAuditLog substitutes the user's auditPseudonym for actorId (GDPR
+    // crypto-erasure) — assert against that, not the raw owner.id. seedUser()
+    // here only returns {id, role}, so look the pseudonym up separately.
+    const ownerRow = await db.query.users.findFirst({ where: eq(users.id, owner.id) });
+    expect(row.actorId).toBe(ownerRow!.auditPseudonym);
     expect(row.outcome).toBe("success");
     expect(row.resource).toBe(`diagnostics:${agent.id}`);
     const detail = row.detail as Record<string, unknown>;

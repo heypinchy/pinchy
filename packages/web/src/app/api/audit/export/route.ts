@@ -2,10 +2,10 @@ import { NextRequest, NextResponse } from "next/server";
 import { requireAdmin } from "@/lib/api-auth";
 import { db } from "@/db";
 import { auditLog, users, agents } from "@/db/schema";
-import { desc, eq, and, gte, lte, sql } from "drizzle-orm";
+import { desc, eq, and, or, inArray, gte, lte, sql } from "drizzle-orm";
 import { alias } from "drizzle-orm/pg-core";
 import { sanitizeDetail } from "@/lib/audit-sanitize";
-import { appendAuditLog } from "@/lib/audit";
+import { appendAuditLog, resolveActorIdMatchSet } from "@/lib/audit";
 import { csvField } from "@/lib/csv";
 import { renderAuditPdf, buildFilterSummary, type AuditExportRow } from "@/lib/audit-pdf";
 
@@ -61,7 +61,15 @@ export async function GET(request: NextRequest) {
 
   const conditions = [];
   if (eventType) conditions.push(eq(auditLog.eventType, eventType));
-  if (actorId) conditions.push(eq(auditLog.actorId, actorId));
+  if (actorId) {
+    // Dual match (alt+neu): appendAuditLog substitutes the user's
+    // auditPseudonym for actorId (GDPR crypto-erasure, see lib/audit.ts).
+    // Filtering by a known user id must match both the raw id (pre-feature
+    // rows, or a since-erased user) and the current pseudonym (post-feature
+    // rows) — see the identical comment in /api/audit/route.ts.
+    const actorIdMatchSet = await resolveActorIdMatchSet(actorId);
+    conditions.push(inArray(auditLog.actorId, actorIdMatchSet));
+  }
   if (resource) conditions.push(eq(auditLog.resource, resource));
   if (status === "success" || status === "failure") {
     conditions.push(eq(auditLog.outcome, status));
@@ -111,7 +119,11 @@ export async function GET(request: NextRequest) {
       resourceUserBanned: resourceUser.banned,
     })
     .from(auditLog)
-    .leftJoin(actorUser, eq(actorUser.id, auditLog.actorId))
+    // Dual-join (alt+neu) — see the identical comment in /api/audit/route.ts.
+    .leftJoin(
+      actorUser,
+      or(eq(actorUser.auditPseudonym, auditLog.actorId), eq(actorUser.id, auditLog.actorId))
+    )
     .leftJoin(resourceAgent, sql`${auditLog.resource} = 'agent:' || ${resourceAgent.id}`)
     .leftJoin(resourceUser, sql`${auditLog.resource} = 'user:' || ${resourceUser.id}`)
     .where(where)

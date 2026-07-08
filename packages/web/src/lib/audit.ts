@@ -1,7 +1,7 @@
 import { createHmac } from "crypto";
-import { asc, desc, gt, gte, lte, and, sql } from "drizzle-orm";
+import { asc, desc, eq, gt, gte, lte, and, sql } from "drizzle-orm";
 import { db } from "@/db";
-import { auditLog, type AuditDetail } from "@/db/schema";
+import { auditLog, users, type AuditDetail } from "@/db/schema";
 import { getOrCreateSecret } from "@/lib/encryption";
 
 // Transaction-scoped advisory lock key that serializes audit appends so the
@@ -531,12 +531,102 @@ export type AuditLogEntry =
           };
     });
 
+// ── GDPR crypto-erasure: actorId → auditPseudonym substitution ─────────────
+//
+// audit_log.actorId is a person's identifier (users.id, a random UUID) for
+// every `actorType: "user"` row — that makes each such row personal data
+// under GDPR (EDPB 01/2025), sitting in an immutable, append-only log. To
+// let erasure (Art. 17) reach the audit trail without breaking its
+// append-only/HMAC-signed guarantees, we never write the raw users.id for a
+// user actor. Instead we substitute `users.auditPseudonym` — a random token
+// whose mapping to the real user lives in the (mutable) users row. Deleting
+// the user deletes that mapping: the audit rows survive (the trail is
+// intact) but become unlinkable to the person (crypto-erasure, Art. 17(3) +
+// data minimization).
+//
+// This runs BEFORE the HMAC is computed (see appendAuditLog below), so the
+// chain hashes over the pseudonym consistently at write and verify time.
+//
+// Forward-only: rows written before this feature shipped still carry the raw
+// users.id — the immutable log cannot be rewritten retroactively. Those rows
+// are addressed by retention (a separate feature), not by this substitution.
+// The dual read-side join in /api/audit and /api/audit/export resolves BOTH
+// shapes (pseudonym for new rows, raw id for old ones) so display and
+// filtering keep working across the cutover.
+const auditPseudonymCache = new Map<string, string>();
+
+/** Test-only: clear the in-process actorId → pseudonym cache between tests. */
+export function resetAuditPseudonymCache(): void {
+  auditPseudonymCache.clear();
+}
+
+async function resolveActorId(
+  actorType: "user" | "agent" | "system",
+  actorId: string
+): Promise<string> {
+  if (actorType !== "user") return actorId;
+
+  const cached = auditPseudonymCache.get(actorId);
+  if (cached !== undefined) return cached;
+
+  try {
+    const [row] = await db
+      .select({ auditPseudonym: users.auditPseudonym })
+      .from(users)
+      .where(eq(users.id, actorId));
+
+    if (!row) {
+      // Defensive fallback: no matching user (e.g. a race with deletion, or a
+      // caller passing a non-user id by mistake). Keep the raw actorId rather
+      // than crashing the write — audit availability outweighs pseudonymizing
+      // a row we can't currently resolve. Not cached, so a later retry (once
+      // the user exists) can still pick up the real pseudonym.
+      console.warn(`[audit] no user found for actorId "${actorId}"; writing raw actorId`);
+      return actorId;
+    }
+
+    auditPseudonymCache.set(actorId, row.auditPseudonym);
+    return row.auditPseudonym;
+  } catch (err) {
+    console.warn(
+      `[audit] pseudonym lookup failed for actorId "${actorId}"; writing raw actorId`,
+      err
+    );
+    return actorId;
+  }
+}
+
+/**
+ * Read-side counterpart to the write-path substitution above: given a real
+ * `users.id`, returns every value audit_log.actorId might hold for that
+ * user's rows — the raw id (rows written before this feature, or if the
+ * pseudonym lookup ever falls back) AND the current auditPseudonym (rows
+ * written after). Callers that filter audit_log by a known user id (the
+ * diagnostics collector, `/api/audit`'s `actorId=` filter, `/api/audit/export`)
+ * must match against this whole set instead of the bare id, or pseudonymized
+ * rows silently vanish from their results.
+ *
+ * When the user no longer exists (already erased), only the raw id is
+ * returned — there is no pseudonym left to look up, which is the intended
+ * crypto-erasure outcome for post-erasure queries by the old id.
+ */
+export async function resolveActorIdMatchSet(userId: string): Promise<string[]> {
+  const [row] = await db
+    .select({ auditPseudonym: users.auditPseudonym })
+    .from(users)
+    .where(eq(users.id, userId));
+
+  if (!row) return [userId];
+  return [userId, row.auditPseudonym];
+}
+
 export async function appendAuditLog(entry: AuditLogEntry): Promise<void> {
   const secret = getOrCreateSecret("audit_hmac_secret");
   const timestamp = new Date();
   const detail = truncateDetail(entry.detail ?? null);
   const outcome = entry.outcome;
   const error = entry.error ?? null;
+  const actorId = await resolveActorId(entry.actorType, entry.actorId);
 
   // v3 hash-chain: each row binds the rowHmac of the immediately-preceding row.
   // The write runs inside a transaction holding an advisory lock so concurrent
@@ -557,7 +647,7 @@ export async function appendAuditLog(entry: AuditLogEntry): Promise<void> {
       timestamp,
       eventType: entry.eventType,
       actorType: entry.actorType,
-      actorId: entry.actorId,
+      actorId,
       resource: entry.resource ?? null,
       detail,
       outcome,
@@ -568,7 +658,7 @@ export async function appendAuditLog(entry: AuditLogEntry): Promise<void> {
     await tx.insert(auditLog).values({
       timestamp,
       actorType: entry.actorType,
-      actorId: entry.actorId,
+      actorId,
       eventType: entry.eventType,
       resource: entry.resource ?? null,
       detail,
