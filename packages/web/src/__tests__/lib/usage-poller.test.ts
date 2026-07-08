@@ -499,6 +499,37 @@ describe("pollAllSessions adaptive backoff (#261)", () => {
     // 2 (first poll, both) + 1 (second poll, only user-1) = 3 scans.
     expect(mockRecordSessionTurns).toHaveBeenCalledTimes(3);
   });
+
+  // Review finding: the fingerprint must NOT be recorded until the record call
+  // actually succeeds. Recording it eagerly (before the await) means a
+  // transient recordUsage/recordSessionTurns failure still "poisons" the
+  // session as processed — the next tick sees an unchanged gauge and skips it
+  // for up to IDLE_RESCAN_MS (5 min), even though the record never happened.
+  // Pre-adaptive-backoff behavior retried every tick (60s); this restores
+  // that retry behavior for failed record calls specifically.
+  it("retries a system session every tick after a transient recordUsage failure, instead of treating it as processed", async () => {
+    mockRecordUsage.mockRejectedValueOnce(new Error("db blip"));
+    const client = makeOpenClawClient([
+      { key: "agent:agent-1:cron:job-1", inputTokens: 100, outputTokens: 50 },
+    ]);
+
+    await pollAllSessions(client); // fails — must not mark the session as processed
+    await pollAllSessions(client); // identical gauge — should still retry, not skip
+
+    expect(mockRecordUsage).toHaveBeenCalledTimes(2);
+  });
+
+  it("retries a chat session every tick after a transient recordSessionTurns failure, instead of treating it as processed", async () => {
+    mockRecordSessionTurns.mockRejectedValueOnce(new Error("db blip"));
+    const client = makeOpenClawClient([
+      { key: "agent:agent-1:direct:user-1", inputTokens: 100, outputTokens: 50 },
+    ]);
+
+    await pollAllSessions(client); // fails — must not mark the session as processed
+    await pollAllSessions(client); // identical gauge — should still retry, not skip
+
+    expect(mockRecordSessionTurns).toHaveBeenCalledTimes(2);
+  });
 });
 
 describe("getPollIntervalMs", () => {

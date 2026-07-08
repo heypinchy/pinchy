@@ -102,15 +102,30 @@ export function _resetSessionActivity(): void {
 }
 
 /**
+ * Resolves a session's cache counters from either OC spelling
+ * (`cacheRead`/`cacheWrite` vs. `cacheReadTokens`/`cacheWriteTokens` — see the
+ * SessionListEntry comment). Left as `undefined`, not defaulted to 0, because
+ * callers differ on how they need the "no cache data" case represented.
+ */
+function resolveCacheCounters(s: SessionListEntry): {
+  cacheReadTokens: number | undefined;
+  cacheWriteTokens: number | undefined;
+} {
+  return {
+    cacheReadTokens: s.cacheRead ?? s.cacheReadTokens,
+    cacheWriteTokens: s.cacheWrite ?? s.cacheWriteTokens,
+  };
+}
+
+/**
  * Fingerprint of a session's gauge counters. OpenClaw overwrites these each
  * turn, so any change means a turn happened since we last looked; an identical
  * fingerprint means the session was idle. Includes the cache counters (both OC
  * spellings) and the model so a mid-session model switch also counts as change.
  */
 function gaugeSignature(s: SessionListEntry): string {
-  const cacheRead = s.cacheRead ?? s.cacheReadTokens ?? 0;
-  const cacheWrite = s.cacheWrite ?? s.cacheWriteTokens ?? 0;
-  return `${s.inputTokens ?? 0}|${s.outputTokens ?? 0}|${cacheRead}|${cacheWrite}|${s.model ?? ""}`;
+  const { cacheReadTokens, cacheWriteTokens } = resolveCacheCounters(s);
+  return `${s.inputTokens ?? 0}|${s.outputTokens ?? 0}|${cacheReadTokens ?? 0}|${cacheWriteTokens ?? 0}|${s.model ?? ""}`;
 }
 
 /**
@@ -165,7 +180,6 @@ export async function pollAllSessions(openclawClient: OpenClawClient): Promise<v
       const changed = !prev || prev.signature !== signature;
       const dueForRescan = !prev || now - prev.lastProcessedAt >= IDLE_RESCAN_MS;
       if (!changed && !dueForRescan) continue;
-      sessionActivity.set(session.key, { signature, lastProcessedAt: now });
 
       const agentName = agentNameMap.get(parsed.agentId) ?? parsed.agentId;
 
@@ -183,19 +197,28 @@ export async function pollAllSessions(openclawClient: OpenClawClient): Promise<v
           agentName,
           sessionKey: session.key,
         });
+        // Mark as processed only after the record call succeeds — if it threw,
+        // the catch below aborts the loop, and the fingerprint must stay
+        // unset so the next tick retries this session instead of treating a
+        // failed record as done and skipping it until the catch-up rescan.
+        sessionActivity.set(session.key, { signature, lastProcessedAt: now });
         continue;
       }
 
       // System sessions (main/cron/hook/channel) have no per-user trajectory we
       // scan, so they stay on the gauge delta path.
-      const cacheReadTokens = session.cacheRead ?? session.cacheReadTokens;
-      const cacheWriteTokens = session.cacheWrite ?? session.cacheWriteTokens;
+      const { cacheReadTokens, cacheWriteTokens } = resolveCacheCounters(session);
       const hasTokens =
         (session.inputTokens ?? 0) > 0 ||
         (session.outputTokens ?? 0) > 0 ||
         (cacheReadTokens ?? 0) > 0 ||
         (cacheWriteTokens ?? 0) > 0;
-      if (!hasTokens) continue;
+      if (!hasTokens) {
+        // Nothing to record — this isn't a failure, so it's safe to mark the
+        // session processed and let it ride the idle backoff.
+        sessionActivity.set(session.key, { signature, lastProcessedAt: now });
+        continue;
+      }
 
       await recordUsage({
         openclawClient,
@@ -211,6 +234,9 @@ export async function pollAllSessions(openclawClient: OpenClawClient): Promise<v
           model: session.model,
         },
       });
+      // Mark as processed only after the record call succeeds (see comment
+      // on the chat-session path above for why ordering matters here).
+      sessionActivity.set(session.key, { signature, lastProcessedAt: now });
     }
 
     // Prune backoff state for sessions that no longer exist so the map stays
