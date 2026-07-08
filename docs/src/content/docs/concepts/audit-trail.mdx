@@ -231,14 +231,14 @@ Hash determinism depends on every Pinchy instance using the **same** `audit_hmac
 
 ## How HMAC signing works
 
-Each audit log entry is signed with **HMAC-SHA256** to ensure integrity:
+Every audit log entry is signed with **HMAC-SHA256**, and each signature is chained to the one before it, so the log is tamper-evident as a whole — not just row by row:
 
-1. When an audit event occurs, Pinchy constructs a payload from the entry's fields (event type, actor, timestamp, metadata).
-2. The payload is signed using a server-side HMAC secret.
-3. The resulting signature is stored alongside the entry in the `hmac` column.
+1. When an audit event occurs, Pinchy constructs a canonical payload from the entry's fields (timestamp, event type, actor, resource, detail, outcome, and error).
+2. The payload also folds in the **previous row's signature**, binding each entry to its predecessor. The very first entry — the genesis row — has no predecessor.
+3. The payload is signed with a server-side HMAC secret. The signature is stored in the entry's `row_hmac` column, and the chain link — the predecessor's signature — in `prev_hmac`.
 4. The HMAC secret is auto-generated at startup if the `AUDIT_HMAC_SECRET` environment variable is not set.
 
-If anyone modifies a row directly in the database, the HMAC signature will no longer match — and integrity verification will flag the tampered entry.
+Because each signature covers the previous one, tampering is detectable in every form: editing a field, **deleting a row from the middle, truncating the tail, or reordering history** all break the chain — not just a single-row edit. Integrity verification recomputes each signature and each chain link and flags the first break. Entries written before the chain was introduced keep their original signatures and stay verifiable under them; the chain binds from that point onward.
 
 ## How to verify integrity
 
