@@ -1,5 +1,8 @@
+"use client";
+
 import Link from "next/link";
 import { getAgentAvatarSvg } from "@/lib/avatar";
+import { prefetchChatList } from "@/lib/chat-list-cache";
 
 export interface Agent {
   id: string;
@@ -36,6 +39,8 @@ export function AgentList({ agents, currentPath, onAgentClick }: AgentListProps)
             <Link
               href={`/chat/${agent.id}`}
               onClick={onAgentClick}
+              onMouseEnter={() => prefetchChatList(agent.id)}
+              onFocus={() => prefetchChatList(agent.id)}
               data-active={isActive ? "true" : undefined}
               className={`flex items-center gap-3 rounded-lg px-3 py-2 transition-colors ${
                 isActive
