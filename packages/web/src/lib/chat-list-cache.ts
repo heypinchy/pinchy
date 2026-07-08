@@ -1,4 +1,5 @@
 import type { ChatListItem } from "@/lib/schemas/sessions";
+import { apiGet } from "@/lib/api-client";
 
 /**
  * Module-level per-agent chat-list cache (#610).
@@ -18,6 +19,7 @@ import type { ChatListItem } from "@/lib/schemas/sessions";
  */
 
 const cache = new Map<string, ChatListItem[]>();
+const inFlight = new Set<string>();
 
 /** Whether a cached list for this agent is available (so the UI can skip the loading state). */
 export function hasChatList(agentId: string): boolean {
@@ -35,7 +37,38 @@ export function setChatList(agentId: string, chats: ChatListItem[]): void {
   cache.set(agentId, [...chats]);
 }
 
+/**
+ * Warms the cache for an agent (SWR-style prefetch). Deduplicated: a no-op when
+ * the cache is already warm or a request for this agent is already in flight.
+ * Fire-and-forget for callers; returns a promise so tests can await it. Fetch
+ * failures degrade silently, leaving the cache untouched — the switcher's own
+ * fetch on mount stays the source of truth.
+ */
+export function prefetchChatList(agentId: string): Promise<void> {
+  if (cache.has(agentId) || inFlight.has(agentId)) return Promise.resolve();
+  inFlight.add(agentId);
+  return apiGet<{ chats: ChatListItem[] }>(`/api/agents/${agentId}/chats`)
+    .then((res) => {
+      setChatList(agentId, res.chats ?? []);
+    })
+    .catch(() => {
+      // Silent — a cold cache just means the next open behaves as before.
+    })
+    .finally(() => {
+      inFlight.delete(agentId);
+    });
+}
+
+/**
+ * Drops the cached list for an agent so the next read refetches. Dock point for
+ * a future chat delete/rename that must not show a stale list.
+ */
+export function invalidateChatList(agentId: string): void {
+  cache.delete(agentId);
+}
+
 /** Test-only: clear the cache between unit tests so they don't leak across each other. */
 export function __resetChatListCacheForTests(): void {
   cache.clear();
+  inFlight.clear();
 }
