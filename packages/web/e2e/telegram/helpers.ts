@@ -508,13 +508,31 @@ export async function waitForTelegramPolling(timeout = 30000): Promise<void> {
  */
 export async function waitForBotPolling(token: string, timeout = 120000): Promise<void> {
   const start = Date.now();
+  // Wait for a SUSTAINED live poll (`inflightPollTokens`), not merely "has ever
+  // polled" (`pollingTokens`). The #477 connect-time conflict probe does a
+  // single ~1s getUpdates at connect, which would satisfy an ever-grew or
+  // grace-based oracle immediately — returning here BEFORE OpenClaw's real
+  // poller starts, letting a subsequent disconnect race the connect (and get
+  // rate-limited away). OpenClaw keeps one long-poll open continuously, so its
+  // token stays in `inflightPollTokens` across the window below; the probe's
+  // single request cannot. Require ~2.5s of continuous presence to distinguish.
+  const SUSTAINED_MS = 2500;
+  let liveSince: number | null = null;
   while (Date.now() - start < timeout) {
     try {
       const res = await fetch(`${MOCK_TELEGRAM_URL}/control/health`);
       const data = await res.json();
-      if (Array.isArray(data.pollingTokens) && data.pollingTokens.includes(token)) return;
+      const live =
+        Array.isArray(data.inflightPollTokens) && data.inflightPollTokens.includes(token);
+      if (live) {
+        if (liveSince === null) liveSince = Date.now();
+        else if (Date.now() - liveSince >= SUSTAINED_MS) return;
+      } else {
+        liveSince = null;
+      }
     } catch {
       // Not ready yet
+      liveSince = null;
     }
     await new Promise((r) => setTimeout(r, 500));
   }
