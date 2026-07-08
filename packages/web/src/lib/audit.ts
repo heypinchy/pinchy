@@ -59,6 +59,7 @@ export type AuditEventType =
   | "channel.degraded"
   | "channel.polling_failed"
   | "channel.recovered"
+  | "channel.auto_disabled"
   | "chat.retry_triggered"
   | "chat.agent_error"
   | "chat.silent_stream"
@@ -359,6 +360,19 @@ export type AuditLogEntry =
         lastError: string | null;
         reconnectAttempts: number;
         consecutiveDegradedChecks: number;
+      };
+    })
+  | (AuditLogBase & {
+      // #477 layer 2: a recently-added account whose sustained polling_failed
+      // matches the Telegram getUpdates-409 conflict signal gets auto-disabled
+      // (config removed, allow-store cleared, disabled marker persisted) so the
+      // newcomer backs off instead of both instances fighting forever.
+      eventType: "channel.auto_disabled";
+      detail: {
+        channel: string;
+        account: { id: string; name: string | null };
+        reason: string;
+        lastError: string | null;
       };
     })
   | (AuditLogBase & {

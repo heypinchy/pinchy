@@ -20,3 +20,22 @@ describe("AuditLogEntry agent.memory_changed", () => {
     expectTypeOf(entry.eventType).toEqualTypeOf<AuditEventType>();
   });
 });
+
+describe("AuditLogEntry channel.auto_disabled (#477 layer 2)", () => {
+  it("accepts the expected detail shape", () => {
+    const entry: AuditLogEntry = {
+      actorType: "system",
+      actorId: "channel-watchdog",
+      eventType: "channel.auto_disabled",
+      resource: "agent:agent-123",
+      outcome: "success",
+      detail: {
+        channel: "telegram",
+        account: { id: "agent-123", name: "Support Bot" },
+        reason: "polling_conflict",
+        lastError: "Conflict: terminated by other getUpdates request",
+      },
+    };
+    expectTypeOf(entry.eventType).toEqualTypeOf<AuditEventType>();
+  });
+});

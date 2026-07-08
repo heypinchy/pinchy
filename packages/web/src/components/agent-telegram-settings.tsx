@@ -28,6 +28,13 @@ interface TelegramConfig {
   hint?: string;
   botUsername?: string;
   mainBotConfigured?: boolean;
+  /** #477 layer 2: true when the watchdog auto-disabled this account after a
+   * sustained Telegram getUpdates-409 conflict (another deployment polling
+   * the same bot token). Survives restarts — config regen skips this account
+   * until [Reconnect] clears it. */
+  conflictDisabled?: boolean;
+  conflictDisabledAt?: string;
+  lastError?: string;
 }
 
 interface AgentTelegramSettingsProps {
@@ -69,6 +76,11 @@ export function AgentTelegramSettings({
     degraded: boolean;
     lastError: string | null;
   }>({ degraded: false, lastError: null });
+  // #477 layer 2: once the user clicks [Reconnect] on the auto-disabled
+  // banner, show the normal connect form so they can re-submit a token (their
+  // own or a fresh, environment-specific one) — the POST clears the disabled
+  // marker on success.
+  const [showReconnectForm, setShowReconnectForm] = useState(false);
 
   const fetchConfig = useCallback(async () => {
     try {
@@ -207,10 +219,30 @@ export function AgentTelegramSettings({
   // Smithers (`isSmithers`) is exempt because it IS the main bot being set up —
   // otherwise first-time setup would show an empty state pointing to itself.
   const mainBotMissing = config?.mainBotConfigured === false && !isConfigured && !isSmithers;
+  // #477 layer 2: a persistent, actionable condition — never a toast (the
+  // project's error/notification policy reserves toasts for transient,
+  // retryable errors). Suppressed once the user clicks Reconnect so the
+  // normal connect form takes over.
+  const conflictDisabled = isConfigured && config?.conflictDisabled === true && !showReconnectForm;
 
   const content = (
     <div className="space-y-4">
-      {mainBotMissing ? (
+      {conflictDisabled ? (
+        <div className="space-y-3">
+          <div className="flex items-center gap-2">
+            <TriangleAlert className="size-5 text-destructive shrink-0" />
+            <span className="text-sm font-medium">Disabled</span>
+            {config?.hint && <Badge variant="secondary">····{config.hint}</Badge>}
+          </div>
+          <p className="text-sm text-muted-foreground">
+            This bot token is being polled by another deployment. Reconnect once you&apos;ve stopped
+            it there or switched to a separate token.
+          </p>
+          <Button type="button" onClick={() => setShowReconnectForm(true)}>
+            Reconnect
+          </Button>
+        </div>
+      ) : mainBotMissing ? (
         <div className="space-y-4 text-center py-6">
           <div className="space-y-2">
             <p className="text-sm font-medium">Telegram isn&apos;t set up yet</p>
@@ -226,7 +258,7 @@ export function AgentTelegramSettings({
             </Link>
           </Button>
         </div>
-      ) : isConfigured ? (
+      ) : isConfigured && !showReconnectForm ? (
         <>
           <div className="flex items-center gap-2">
             {channelHealth.degraded ? (

@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import "@testing-library/jest-dom";
 import { render, screen, waitFor } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { AgentTelegramSettings } from "@/components/agent-telegram-settings";
 
 vi.mock("sonner", () => ({ toast: { success: vi.fn(), error: vi.fn() } }));
@@ -117,6 +118,66 @@ describe("AgentTelegramSettings", () => {
 
     await waitFor(() => {
       expect(screen.getByLabelText(/Bot Token/i)).toBeInTheDocument();
+    });
+  });
+
+  // #477 layer 2: an account auto-disabled after a sustained getUpdates-409
+  // conflict must show a PERSISTENT inline actionable state (not a toast —
+  // this is a permanent condition per the project's error/notification
+  // policy), with a way to re-enable it.
+  describe("conflict auto-disabled state (#477 layer 2)", () => {
+    it("renders a persistent disabled message with a Reconnect button when conflictDisabled is true", async () => {
+      global.fetch = mockFetch({
+        configured: true,
+        hint: "xY9z",
+        mainBotConfigured: true,
+        conflictDisabled: true,
+        lastError: "Conflict: terminated by other getUpdates request",
+      });
+
+      render(<AgentTelegramSettings agentId="agent-1" />);
+
+      await waitFor(() => {
+        expect(screen.getByText(/disabled/i)).toBeInTheDocument();
+      });
+      expect(
+        screen.getByText(/another deployment|separate token|stopped it there/i)
+      ).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: /reconnect/i })).toBeInTheDocument();
+    });
+
+    it("does not render the disabled banner when conflictDisabled is false", async () => {
+      global.fetch = mockFetch({
+        configured: true,
+        hint: "xY9z",
+        mainBotConfigured: true,
+        conflictDisabled: false,
+      });
+
+      render(<AgentTelegramSettings agentId="agent-1" />);
+
+      await waitFor(() => {
+        expect(screen.getByText(/Connected/i)).toBeInTheDocument();
+      });
+      expect(screen.queryByRole("button", { name: /reconnect/i })).not.toBeInTheDocument();
+    });
+
+    it("clicking Reconnect reveals the connect flow so the user can re-submit a token", async () => {
+      global.fetch = mockFetch({
+        configured: true,
+        hint: "xY9z",
+        mainBotConfigured: true,
+        conflictDisabled: true,
+        lastError: "Conflict: terminated by other getUpdates request",
+      });
+
+      render(<AgentTelegramSettings agentId="agent-1" />);
+
+      const reconnectButton = await screen.findByRole("button", { name: /reconnect/i });
+      await userEvent.click(reconnectButton);
+
+      expect(screen.getByLabelText(/Bot Token/i)).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: /^Connect$/i })).toBeInTheDocument();
     });
   });
 });

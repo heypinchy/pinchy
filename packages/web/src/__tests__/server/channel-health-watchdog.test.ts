@@ -20,6 +20,8 @@ import {
 describe("ChannelHealthMonitor", () => {
   let writeAudit: ReturnType<typeof vi.fn>;
   let getChannelStatus: ReturnType<typeof vi.fn>;
+  let autoDisableConflictedAccount: ReturnType<typeof vi.fn>;
+  let getConnectionAgeMs: ReturnType<typeof vi.fn>;
   let monitor: ChannelHealthMonitor;
   let clock: number;
   let deps: ChannelHealthDeps;
@@ -27,6 +29,9 @@ describe("ChannelHealthMonitor", () => {
   beforeEach(() => {
     writeAudit = vi.fn().mockResolvedValue(undefined);
     getChannelStatus = vi.fn();
+    autoDisableConflictedAccount = vi.fn().mockResolvedValue(undefined);
+    // Default: recently-added (1 hour old), well inside the 24h window.
+    getConnectionAgeMs = vi.fn().mockResolvedValue(60 * 60 * 1000);
     clock = 1_000_000;
     monitor = new ChannelHealthMonitor();
     deps = {
@@ -35,6 +40,10 @@ describe("ChannelHealthMonitor", () => {
       writeAudit,
       now: () => clock,
       terminalAfterConsecutiveDegraded: 3,
+      autoDisableConflictedAccount,
+      getConnectionAgeMs,
+      autoDisableEnabled: true,
+      recentlyAddedWindowMs: 86_400_000,
     };
   });
 
@@ -164,5 +173,113 @@ describe("ChannelHealthMonitor", () => {
     const degraded = auditsOfType("channel.degraded");
     expect(degraded).toHaveLength(1);
     expect(degraded[0].detail.account.id).toBe("acct-2");
+  });
+
+  // Auto-disable (#477 layer 2): a RECENTLY-ADDED account whose lastError is
+  // the Telegram getUpdates-409 conflict signal gets auto-disabled the moment
+  // it crosses into polling_failed — the newcomer backs off so the incumbent
+  // survives. Long-standing connections, non-conflict failures, and a disabled
+  // feature flag must never trigger it.
+  describe("auto-disable on sustained polling conflict", () => {
+    it("calls autoDisableConflictedAccount exactly once when polling_failed fires for a recently-added conflicted account", async () => {
+      getChannelStatus.mockResolvedValue(degradedTelegramStatus(2));
+      await monitor.tick(deps); // 1 (degraded)
+      await monitor.tick(deps); // 2
+      expect(autoDisableConflictedAccount).not.toHaveBeenCalled();
+      await monitor.tick(deps); // 3 -> terminal, fires auto-disable
+      await monitor.tick(deps); // 4 -> must NOT re-fire
+      expect(autoDisableConflictedAccount).toHaveBeenCalledTimes(1);
+      expect(autoDisableConflictedAccount).toHaveBeenCalledWith(
+        "telegram",
+        "29ea51b1-67af-4fad-8864-f550c7543333",
+        expect.stringContaining("terminated by other getUpdates request")
+      );
+    });
+
+    it("does NOT auto-disable a long-standing connection (age >= window) but still audits channel.polling_failed", async () => {
+      getConnectionAgeMs.mockResolvedValue(86_400_000); // exactly at the window boundary
+      getChannelStatus.mockResolvedValue(degradedTelegramStatus(2));
+      await monitor.tick(deps);
+      await monitor.tick(deps);
+      await monitor.tick(deps); // terminal
+      expect(autoDisableConflictedAccount).not.toHaveBeenCalled();
+      expect(auditsOfType("channel.polling_failed")).toHaveLength(1);
+    });
+
+    it("does NOT auto-disable when connection age is unknown (null)", async () => {
+      getConnectionAgeMs.mockResolvedValue(null);
+      getChannelStatus.mockResolvedValue(degradedTelegramStatus(2));
+      await monitor.tick(deps);
+      await monitor.tick(deps);
+      await monitor.tick(deps); // terminal
+      expect(autoDisableConflictedAccount).not.toHaveBeenCalled();
+      expect(auditsOfType("channel.polling_failed")).toHaveLength(1);
+    });
+
+    it("does NOT auto-disable when lastError doesn't match the conflict signal", async () => {
+      const status = degradedTelegramStatus(2) as Record<string, unknown>;
+      (
+        status.channelAccounts as Record<string, Array<Record<string, unknown>>>
+      ).telegram[0].lastError = "ETIMEDOUT: connection reset";
+      (status.channels as Record<string, Record<string, unknown>>).telegram.lastError =
+        "ETIMEDOUT: connection reset";
+      getChannelStatus.mockResolvedValue(status);
+      await monitor.tick(deps);
+      await monitor.tick(deps);
+      await monitor.tick(deps); // terminal
+      expect(autoDisableConflictedAccount).not.toHaveBeenCalled();
+      expect(auditsOfType("channel.polling_failed")).toHaveLength(1);
+    });
+
+    it("matches the conflict signal case-insensitively", async () => {
+      const status = degradedTelegramStatus(2) as Record<string, unknown>;
+      const upper = "CONFLICT: TERMINATED BY OTHER GETUPDATES REQUEST";
+      (
+        status.channelAccounts as Record<string, Array<Record<string, unknown>>>
+      ).telegram[0].lastError = upper;
+      getChannelStatus.mockResolvedValue(status);
+      await monitor.tick(deps);
+      await monitor.tick(deps);
+      await monitor.tick(deps); // terminal
+      expect(autoDisableConflictedAccount).toHaveBeenCalledTimes(1);
+    });
+
+    it("never calls autoDisableConflictedAccount when autoDisableEnabled is false", async () => {
+      deps.autoDisableEnabled = false;
+      getChannelStatus.mockResolvedValue(degradedTelegramStatus(2));
+      await monitor.tick(deps);
+      await monitor.tick(deps);
+      await monitor.tick(deps); // terminal
+      expect(autoDisableConflictedAccount).not.toHaveBeenCalled();
+      expect(auditsOfType("channel.polling_failed")).toHaveLength(1);
+    });
+
+    it("swallows a rejecting autoDisableConflictedAccount without poisoning the tick", async () => {
+      autoDisableConflictedAccount.mockRejectedValue(new Error("db down"));
+      getChannelStatus.mockResolvedValue(degradedTelegramStatus(2));
+      await monitor.tick(deps);
+      await monitor.tick(deps);
+      await expect(monitor.tick(deps)).resolves.toBeUndefined(); // terminal tick
+      expect(autoDisableConflictedAccount).toHaveBeenCalledTimes(1);
+      // The polling_failed audit still landed despite the auto-disable rejection.
+      expect(auditsOfType("channel.polling_failed")).toHaveLength(1);
+    });
+
+    it("does not re-fire auto-disable on a fresh degradation episode after recovery", async () => {
+      getChannelStatus.mockResolvedValue(degradedTelegramStatus(2));
+      await monitor.tick(deps);
+      await monitor.tick(deps);
+      await monitor.tick(deps); // terminal -> fires once
+      expect(autoDisableConflictedAccount).toHaveBeenCalledTimes(1);
+
+      getChannelStatus.mockResolvedValue(healthyTelegramStatus());
+      await monitor.tick(deps); // recovered
+
+      getChannelStatus.mockResolvedValue(degradedTelegramStatus(2));
+      await monitor.tick(deps);
+      await monitor.tick(deps);
+      await monitor.tick(deps); // terminal again in the new episode
+      expect(autoDisableConflictedAccount).toHaveBeenCalledTimes(2);
+    });
   });
 });

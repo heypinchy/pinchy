@@ -124,7 +124,35 @@ describe("GET /api/agents/[agentId]/channels/telegram", () => {
     const data = await response.json();
 
     expect(response.status).toBe(200);
-    expect(data).toEqual({ configured: true, hint: "xY9z", mainBotConfigured: true });
+    expect(data).toEqual({
+      configured: true,
+      hint: "xY9z",
+      mainBotConfigured: true,
+      conflictDisabled: false,
+    });
+  });
+
+  it("surfaces conflictDisabled: true when the disabled marker is set (#477 layer 2)", async () => {
+    vi.mocked(getSetting).mockImplementation(async (key: string) => {
+      if (key === "telegram_bot_token:agent-1") return "123456:ABC-some-token-xY9z";
+      if (key === "telegram_conflict_disabled:agent-1")
+        return JSON.stringify({
+          reason: "polling_conflict",
+          lastError: "Conflict: terminated by other getUpdates request",
+          disabledAt: "2026-07-08T00:00:00.000Z",
+        });
+      return null;
+    });
+
+    const response = await GET(new Request("http://localhost"), {
+      params: mockParams,
+    });
+    const data = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(data.conflictDisabled).toBe(true);
+    expect(data.conflictDisabledAt).toBe("2026-07-08T00:00:00.000Z");
+    expect(data.lastError).toBe("Conflict: terminated by other getUpdates request");
   });
 
   it("returns mainBotConfigured: true when the main bot exists", async () => {
@@ -155,7 +183,10 @@ describe("GET /api/agents/[agentId]/channels/telegram", () => {
 
   it("still returns hint and mainBotConfigured when agent has its own bot", async () => {
     mockHasMainTelegramBot.mockResolvedValueOnce(true);
-    vi.mocked(getSetting).mockResolvedValueOnce("123456:ABC-some-token-xY9z");
+    vi.mocked(getSetting).mockImplementation(async (key: string) => {
+      if (key === "telegram_bot_token:agent-1") return "123456:ABC-some-token-xY9z";
+      return null;
+    });
 
     const response = await GET(new Request("http://localhost"), {
       params: mockParams,
@@ -163,7 +194,12 @@ describe("GET /api/agents/[agentId]/channels/telegram", () => {
     const data = await response.json();
 
     expect(response.status).toBe(200);
-    expect(data).toEqual({ configured: true, hint: "xY9z", mainBotConfigured: true });
+    expect(data).toEqual({
+      configured: true,
+      hint: "xY9z",
+      mainBotConfigured: true,
+      conflictDisabled: false,
+    });
   });
 
   it("returns 401 when not authenticated", async () => {
@@ -232,6 +268,15 @@ describe("POST /api/agents/[agentId]/channels/telegram", () => {
         }),
       })
     );
+  });
+
+  it("clears the conflict-disabled marker on a successful connect, so [Reconnect] re-enables the account (#477 layer 2)", async () => {
+    const response = await POST(makeRequest({ botToken: "123456:ABC-token" }), {
+      params: mockParams,
+    });
+
+    expect(response.status).toBe(200);
+    expect(deleteSetting).toHaveBeenCalledWith("telegram_conflict_disabled:agent-1");
   });
 
   it("does not mutate channels.telegram on validation failure", async () => {
@@ -394,6 +439,7 @@ describe("DELETE /api/agents/[agentId]/channels/telegram", () => {
 
     expect(deleteSetting).toHaveBeenCalledWith("telegram_bot_token:agent-1");
     expect(deleteSetting).toHaveBeenCalledWith("telegram_bot_username:agent-1");
+    expect(deleteSetting).toHaveBeenCalledWith("telegram_conflict_disabled:agent-1");
     expect(mockClearAllowStoreForAccount).toHaveBeenCalledWith("agent-1");
     expect(mockUpdateTelegramChannelConfig).toHaveBeenCalled();
     expect(appendAuditLog).toHaveBeenCalledWith(

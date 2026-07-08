@@ -26,12 +26,15 @@ import {
   setMockConflict409,
   pollAuditForChannelEvent,
   resetMockTelegram,
+  getTelegramChannelStatus,
 } from "./helpers";
 
-// Distinct bot ids (8101… vs 8102…) so the within-deployment duplicate-token
-// guard is satisfied and these tokens don't collide with other telegram specs.
+// Distinct bot ids (8101… vs 8102… vs 8103…) so the within-deployment
+// duplicate-token guard is satisfied and these tokens don't collide with
+// other telegram specs.
 const MAIN_BOT_TOKEN = "8101000001:AAEchannelHealthMainBot0000000000000";
 const CONFLICT_BOT_TOKEN = "8102000002:AAEchannelHealthConflictBot00000000";
+const AUTO_DISABLE_BOT_TOKEN = "8103000003:AAEchannelHealthAutoDisableBot000000";
 
 test.describe("channel-health watchdog", () => {
   test.beforeAll(async () => {
@@ -97,6 +100,44 @@ test.describe("channel-health watchdog", () => {
       expect(recovered.outcome).toBe("success");
 
       await disconnectBot(agent.id);
+      await disconnectBot(smithers);
+    }
+  );
+
+  // #477 layer 2: a RECENTLY-connected bot (this one — connected seconds ago
+  // by this very test) hitting the getUpdates-409 conflict gets auto-disabled
+  // once the conflict is sustained past the polling_failed threshold — the
+  // newcomer backs off automatically instead of both instances looping
+  // forever. Reuses the same conflict-injection mechanism as the test above;
+  // distinct bot id so the two specs don't collide.
+  test(
+    "auto-disables a recently-connected bot on a sustained getUpdates-409 conflict",
+    { tag: "@channel-restart" },
+    async () => {
+      const smithers = await getAgentId();
+      await connectBot(smithers, MAIN_BOT_TOKEN);
+      await waitForBotPolling(MAIN_BOT_TOKEN);
+
+      const existing = await getAgentByName("ChannelHealthAutoDisableBot");
+      const agent = existing ?? (await createAgent("ChannelHealthAutoDisableBot"));
+      await connectBot(agent.id, AUTO_DISABLE_BOT_TOKEN);
+      await waitForBotPolling(AUTO_DISABLE_BOT_TOKEN);
+
+      // Second deployment polls the same token → sustained 409 for this bot.
+      await setMockConflict409(AUTO_DISABLE_BOT_TOKEN, true);
+
+      const autoDisabled = await pollAuditForChannelEvent("channel.auto_disabled", agent.id);
+      expect(autoDisabled.outcome).toBe("success");
+      expect(autoDisabled.resource).toBe(`agent:${agent.id}`);
+      expect(autoDisabled.detail.channel).toBe("telegram");
+      expect(String(autoDisabled.detail.lastError)).toContain(
+        "terminated by other getUpdates request"
+      );
+
+      const status = await getTelegramChannelStatus(agent.id);
+      expect(status.conflictDisabled).toBe(true);
+
+      await setMockConflict409(AUTO_DISABLE_BOT_TOKEN, false);
       await disconnectBot(smithers);
     }
   );

@@ -20,11 +20,14 @@ import {
   DEFAULT_TERMINAL_AFTER_CONSECUTIVE_DEGRADED,
 } from "./src/server/channel-health-watchdog";
 import { setChannelHealthMonitor } from "./src/server/channel-health-singleton";
-import { appendAuditLog } from "./src/lib/audit";
+import { appendAuditLog, safeProviderError } from "./src/lib/audit";
 import { recordAuditFailure } from "./src/lib/audit-deferred";
 import { db, closeDb } from "./src/db";
-import { agents } from "./src/db/schema";
-import { eq } from "drizzle-orm";
+import { agents, auditLog } from "./src/db/schema";
+import { eq, and, desc } from "drizzle-orm";
+import { getSetting, setSetting } from "./src/lib/settings";
+import { updateTelegramChannelConfig } from "./src/lib/openclaw-config";
+import { clearAllowStoreForAccount } from "./src/lib/telegram-allow-store";
 import { WsRateLimiter } from "./src/server/ws-rate-limit";
 import { setupOpenClawDisconnectHandler } from "./src/server/openclaw-disconnect-handler";
 import {
@@ -458,6 +461,35 @@ ${domain ? `<p><a href="https://${domain}">Go to ${domain} →</a></p>` : ""}
     // healthy→degraded→failed→recovered transitions so operators finally see it.
     const channelHealthMonitor = new ChannelHealthMonitor();
     setChannelHealthMonitor(channelHealthMonitor);
+
+    // Shared with the auto-disable audit below so the {id,name} snapshot is
+    // resolved the same way regardless of which event triggered it.
+    const resolveAccountName = async (
+      _channel: string,
+      accountId: string
+    ): Promise<string | null> => {
+      try {
+        const a = await db.query.agents.findFirst({
+          where: eq(agents.id, accountId),
+          columns: { name: true },
+        });
+        return a?.name ?? null;
+      } catch {
+        return null;
+      }
+    };
+
+    // #477 layer 2: env-flag opt-out for auto-disable (degraded/polling_failed
+    // audits still fire regardless — this only gates the disable action).
+    // "false"/"0"/"no" (case-insensitive) turn it off; anything else, including
+    // unset, defaults to enabled.
+    const autoDisableEnvRaw = (process.env.TELEGRAM_CONFLICT_AUTO_DISABLE ?? "")
+      .trim()
+      .toLowerCase();
+    const autoDisableEnabled = !["false", "0", "no"].includes(autoDisableEnvRaw);
+    const recentlyAddedWindowMs =
+      Number(process.env.TELEGRAM_CONFLICT_RECENT_WINDOW_MS) || 86_400_000;
+
     const stopChannelHealth = startChannelHealthWatchdog(
       channelHealthMonitor,
       {
@@ -468,17 +500,7 @@ ${domain ? `<p><a href="https://${domain}">Go to ${domain} →</a></p>` : ""}
           restartState.isRestarting
             ? Promise.reject(new Error("openclaw restarting"))
             : ocForWatchdog.channels.status(),
-        resolveAccountName: async (_channel, accountId) => {
-          try {
-            const a = await db.query.agents.findFirst({
-              where: eq(agents.id, accountId),
-              columns: { name: true },
-            });
-            return a?.name ?? null;
-          } catch {
-            return null;
-          }
-        },
+        resolveAccountName,
         writeAudit: async (entry) => {
           try {
             await appendAuditLog(entry);
@@ -488,6 +510,73 @@ ${domain ? `<p><a href="https://${domain}">Go to ${domain} →</a></p>` : ""}
         },
         now: () => Date.now(),
         terminalAfterConsecutiveDegraded: DEFAULT_TERMINAL_AFTER_CONSECUTIVE_DEGRADED,
+        autoDisableEnabled,
+        recentlyAddedWindowMs,
+        // Age of the account's connection = time since its `channel.created`
+        // audit row (the most recent one for this resource — a reconnect
+        // after a prior disable resets the clock, which is correct: a fresh
+        // reconnect IS a newcomer again). Null when no such row exists.
+        getConnectionAgeMs: async (_channel, accountId) => {
+          try {
+            const [row] = await db
+              .select({ timestamp: auditLog.timestamp })
+              .from(auditLog)
+              .where(
+                and(
+                  eq(auditLog.eventType, "channel.created"),
+                  eq(auditLog.resource, `agent:${accountId}`)
+                )
+              )
+              .orderBy(desc(auditLog.timestamp))
+              .limit(1);
+            if (!row) return null;
+            return Date.now() - row.timestamp.getTime();
+          } catch {
+            return null;
+          }
+        },
+        // #477 layer 2: disable the account so it survives a restart (build.ts
+        // skips it on regen), stop the poller promptly via the same
+        // config.apply/reload path connect/disconnect already use, and clear
+        // its allow-store. Non-request context — try/catch + recordAuditFailure
+        // per AGENTS.md, not a bare .catch(console.error).
+        autoDisableConflictedAccount: async (channel, accountId, lastError) => {
+          // Defensive: skip if already disabled (e.g. a race with a manual
+          // disconnect, or the monitor somehow re-entering for the same episode).
+          const already = await getSetting(`telegram_conflict_disabled:${accountId}`);
+          if (already) return;
+
+          await setSetting(
+            `telegram_conflict_disabled:${accountId}`,
+            JSON.stringify({
+              reason: "polling_conflict",
+              lastError: safeProviderError(lastError),
+              disabledAt: new Date().toISOString(),
+            })
+          );
+          updateTelegramChannelConfig(accountId, null);
+          clearAllowStoreForAccount(accountId);
+
+          const name = await resolveAccountName(channel, accountId);
+          const entry = {
+            actorType: "system" as const,
+            actorId: "channel-watchdog",
+            eventType: "channel.auto_disabled" as const,
+            resource: `agent:${accountId}`,
+            outcome: "success" as const,
+            detail: {
+              channel,
+              account: { id: accountId, name },
+              reason: "polling_conflict",
+              lastError: safeProviderError(lastError),
+            },
+          };
+          try {
+            await appendAuditLog(entry);
+          } catch (err) {
+            recordAuditFailure(err, entry);
+          }
+        },
       },
       Number(process.env.CHANNEL_HEALTH_INTERVAL_MS) || CHANNEL_HEALTH_INTERVAL_MS
     );

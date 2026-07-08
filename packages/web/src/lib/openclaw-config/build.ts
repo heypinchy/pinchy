@@ -1217,7 +1217,13 @@ export async function regenerateOpenClawConfig() {
 
   for (const agent of liveAgents) {
     const botToken = await getSetting(`telegram_bot_token:${agent.id}`);
-    if (botToken) {
+    // #477 layer 2: an account auto-disabled after a sustained getUpdates-409
+    // conflict must stay excluded across a full config regen (restart, agent
+    // create, etc.) — not just at the moment of the targeted disable write.
+    // The bot token is deliberately left in settings (so [Reconnect] can
+    // re-enable it later); this guard is what makes the disable durable.
+    const conflictDisabled = await getSetting(`telegram_conflict_disabled:${agent.id}`);
+    if (botToken && !conflictDisabled) {
       accounts[agent.id] = { botToken };
       if (agent.isPersonal) {
         // Personal agents: per-user peer bindings will be added below

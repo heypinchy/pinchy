@@ -5359,6 +5359,80 @@ describe("restart-state integration", () => {
     ]);
   });
 
+  // #477 layer 2: config regeneration must skip an auto-disabled account even
+  // though its bot token still exists in settings — this is what makes the
+  // disable survive a Pinchy restart / full config regen (not just the
+  // targeted config write at disable time). "Test Migrations Against
+  // Pre-Existing Data": simulates the pre-existing state (token + disabled
+  // marker both present) that a real restart would encounter.
+  it("should skip a telegram account whose telegram_conflict_disabled marker is set, even though its bot token still exists", async () => {
+    mockedDb.select.mockReturnValue({
+      from: mockFrom([
+        {
+          id: "agent-1",
+          name: "Smithers",
+          model: "anthropic/claude-haiku-4-5-20251001",
+          allowedTools: [],
+          createdAt: new Date(),
+        },
+      ]),
+    } as never);
+
+    mockedGetSetting.mockImplementation(async (key: string) => {
+      if (key === "telegram_bot_token:agent-1") return "123456:ABC-token";
+      if (key === "telegram_bot_username:agent-1") return "acme_smithers_bot";
+      if (key === "telegram_conflict_disabled:agent-1")
+        return JSON.stringify({
+          reason: "polling_conflict",
+          lastError: "Conflict: terminated by other getUpdates request",
+          disabledAt: new Date().toISOString(),
+        });
+      return null;
+    });
+
+    await regenerateOpenClawConfig();
+
+    const written = mockedWriteFileSync.mock.calls[0][1] as string;
+    const config = JSON.parse(written);
+
+    expect(config.channels?.telegram?.accounts?.["agent-1"]).toBeUndefined();
+    expect(
+      (config.bindings ?? []).some(
+        (b: { match?: { accountId?: string } }) => b.match?.accountId === "agent-1"
+      )
+    ).toBe(false);
+  });
+
+  it("should include the telegram account when the token exists and no disabled marker is set (inverse of the auto-disable skip)", async () => {
+    mockedDb.select.mockReturnValue({
+      from: mockFrom([
+        {
+          id: "agent-1",
+          name: "Smithers",
+          model: "anthropic/claude-haiku-4-5-20251001",
+          allowedTools: [],
+          createdAt: new Date(),
+        },
+      ]),
+    } as never);
+
+    mockedGetSetting.mockImplementation(async (key: string) => {
+      if (key === "telegram_bot_token:agent-1") return "123456:ABC-token";
+      if (key === "telegram_bot_username:agent-1") return "acme_smithers_bot";
+      if (key === "telegram_conflict_disabled:agent-1") return null;
+      return null;
+    });
+
+    await regenerateOpenClawConfig();
+
+    const written = mockedWriteFileSync.mock.calls[0][1] as string;
+    const config = JSON.parse(written);
+
+    expect(config.channels.telegram.accounts).toEqual({
+      "agent-1": { botToken: "123456:ABC-token" },
+    });
+  });
+
   it("should generate per-user peer bindings for personal agents (Smithers)", async () => {
     // Personal agent (Smithers) with bot token: each linked user should get
     // a peer-specific binding routing to their OWN personal Smithers agent.

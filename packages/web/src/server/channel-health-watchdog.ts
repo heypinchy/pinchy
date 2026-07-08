@@ -64,6 +64,43 @@ export interface ChannelHealthDeps {
   writeAudit: (entry: ChannelHealthAuditPayload) => Promise<void>;
   now: () => number;
   terminalAfterConsecutiveDegraded: number;
+  /**
+   * Auto-disable (#477 layer 2): persist the disabled marker, remove the
+   * account from config, and clear its allow-store + audit the action. Called
+   * at most once per degradation episode, only when the trigger conditions in
+   * `isAutoDisableConflict` all hold. A rejection is swallowed by the caller
+   * so one bad account can't poison the tick.
+   */
+  autoDisableConflictedAccount: (
+    channel: string,
+    accountId: string,
+    lastError: string
+  ) => Promise<void>;
+  /**
+   * Age of the account's connection in ms (time since it was first
+   * connected/created), or null when unknown. Used to distinguish a
+   * recently-added newcomer (should back off) from a long-standing incumbent
+   * (should not auto-disable itself out of a conflict it didn't cause).
+   */
+  getConnectionAgeMs: (channel: string, accountId: string) => Promise<number | null>;
+  /** Feature flag — when false, auto-disable never fires (degraded/polling_failed audits still do). */
+  autoDisableEnabled: boolean;
+  /** An account younger than this (ms) at the time of the conflict is eligible for auto-disable. */
+  recentlyAddedWindowMs: number;
+}
+
+/**
+ * Telegram's getUpdates 409 conflict text — the ONLY polling_failed reason
+ * that triggers auto-disable. Matched case-insensitively on a substring so
+ * minor upstream wording changes (capitalization, surrounding context) don't
+ * silently break the match. Other polling_failed causes (network errors,
+ * invalid token, etc.) must NOT auto-disable — they aren't multi-instance
+ * conflicts and disabling on them would just make an outage worse.
+ */
+const CONFLICT_SIGNAL = "terminated by other getupdates";
+
+function isConflictSignal(lastError: string | null): boolean {
+  return lastError !== null && lastError.toLowerCase().includes(CONFLICT_SIGNAL);
 }
 
 export interface ChannelHealthSnapshotEntry extends ChannelAccountHealth {
@@ -133,6 +170,7 @@ export class ChannelHealthMonitor {
         if (t.consecutiveDegraded >= deps.terminalAfterConsecutiveDegraded && !t.auditedFailed) {
           t.auditedFailed = true;
           await this.audit(deps, "channel.polling_failed", "failure", h, t.consecutiveDegraded);
+          await this.maybeAutoDisable(deps, h);
         }
       } else {
         if (t.state === "degraded") {
@@ -150,6 +188,36 @@ export class ChannelHealthMonitor {
     // disconnected) — drop their tracker so a future reconnect starts clean.
     for (const key of [...this.trackers.keys()]) {
       if (!seen.has(key)) this.trackers.delete(key);
+    }
+  }
+
+  /**
+   * Fire auto-disable at most once per degradation episode (guarded by the
+   * caller's `!t.auditedFailed` check — this runs exactly at the healthy→
+   * polling_failed edge). All conditions must hold:
+   *   1. autoDisableEnabled
+   *   2. lastError matches the Telegram getUpdates-409 conflict signal
+   *   3. the account is recently-added (age < recentlyAddedWindowMs)
+   * A long-standing connection or an unknown age is left alone — it stays
+   * degraded/polling_failed with the existing audit only, so the newcomer
+   * backs off and the incumbent survives.
+   */
+  private async maybeAutoDisable(deps: ChannelHealthDeps, h: ChannelAccountHealth): Promise<void> {
+    if (!deps.autoDisableEnabled) return;
+    if (!isConflictSignal(h.lastError)) return;
+
+    let ageMs: number | null;
+    try {
+      ageMs = await deps.getConnectionAgeMs(h.channel, h.accountId);
+    } catch {
+      ageMs = null;
+    }
+    if (ageMs === null || ageMs >= deps.recentlyAddedWindowMs) return;
+
+    try {
+      await deps.autoDisableConflictedAccount(h.channel, h.accountId, h.lastError ?? "");
+    } catch (err) {
+      console.error("[channel-health] autoDisableConflictedAccount failed:", err);
     }
   }
 

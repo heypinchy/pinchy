@@ -142,6 +142,24 @@ export async function disconnectBot(agentId: string): Promise<void> {
   }
 }
 
+export interface TelegramChannelStatus {
+  configured: boolean;
+  hint?: string;
+  mainBotConfigured?: boolean;
+  conflictDisabled?: boolean;
+  conflictDisabledAt?: string;
+  lastError?: string;
+}
+
+/** GET an agent's telegram channel status (#477 layer 2: includes conflictDisabled). */
+export async function getTelegramChannelStatus(agentId: string): Promise<TelegramChannelStatus> {
+  const res = await pinchyGet(`/api/agents/${agentId}/channels/telegram`);
+  if (!res.ok) {
+    throw new Error(`getTelegramChannelStatus failed: ${res.status} ${await res.text()}`);
+  }
+  return res.json();
+}
+
 // ── Telegram link helpers ──────────────────────────────────────────────
 
 export async function linkTelegram(pairingCode: string): Promise<Response> {

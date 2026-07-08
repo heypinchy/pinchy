@@ -42,7 +42,38 @@ export async function GET(req: Request, { params }: { params: Promise<{ agentId:
   }
 
   const hint = botToken.slice(-4);
-  return NextResponse.json({ configured: true, hint, mainBotConfigured });
+
+  // #477 layer 2: surface the auto-disable state so the UI can show a
+  // persistent, actionable banner instead of silently looking "connected"
+  // while config regeneration is actually skipping this account.
+  const disabledRaw = await getSetting(`telegram_conflict_disabled:${agentId}`);
+  let conflictDisabled = false;
+  let conflictDisabledAt: string | undefined;
+  let lastError: string | undefined;
+  if (disabledRaw) {
+    try {
+      const parsed = JSON.parse(disabledRaw) as {
+        reason?: string;
+        lastError?: string;
+        disabledAt?: string;
+      };
+      conflictDisabled = true;
+      conflictDisabledAt = parsed.disabledAt;
+      lastError = parsed.lastError;
+    } catch {
+      // Malformed marker — treat as disabled (fail safe) without the extra detail.
+      conflictDisabled = true;
+    }
+  }
+
+  return NextResponse.json({
+    configured: true,
+    hint,
+    mainBotConfigured,
+    conflictDisabled,
+    ...(conflictDisabledAt ? { conflictDisabledAt } : {}),
+    ...(lastError ? { lastError } : {}),
+  });
 }
 
 export async function POST(req: NextRequest, { params }: { params: Promise<{ agentId: string }> }) {
@@ -96,6 +127,10 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ age
   // DB first (source of truth)
   await setSetting(`telegram_bot_token:${agentId}`, botToken, true);
   await setSetting(`telegram_bot_username:${agentId}`, validation.botUsername!, false);
+  // #477 layer 2: a successful (re)connect clears any prior auto-disable, so
+  // the next config regen includes this account again — this is the
+  // [Reconnect] path referenced in the disabled-state UI.
+  await deleteSetting(`telegram_conflict_disabled:${agentId}`);
 
   // Update only Telegram channel config (targeted write — preserves OpenClaw-enriched
   // fields like agents.defaults to avoid hot-reloads that break polling).
@@ -147,6 +182,9 @@ export const DELETE = withAuth<{ params: Promise<{ agentId: string }> }>(
 
     await deleteSetting(`telegram_bot_token:${agentId}`);
     await deleteSetting(`telegram_bot_username:${agentId}`);
+    // #477 layer 2: no orphan disabled-marker left behind for a bot that's
+    // been fully disconnected and may later be reconnected with a fresh token.
+    await deleteSetting(`telegram_conflict_disabled:${agentId}`);
 
     // Clear only this account's allow-from store (other agents' bots are unaffected)
     clearAllowStoreForAccount(agentId);
