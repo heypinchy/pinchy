@@ -26,6 +26,7 @@ import { AgentSettingsAccess } from "@/components/agent-settings-access";
 import { AgentSettingsDiagnostics } from "@/components/agent-settings-diagnostics";
 import { AgentTelegramSettings } from "@/components/agent-telegram-settings";
 import { useRestart } from "@/components/restart-provider";
+import { normalizeStarterPrompts } from "@/lib/schemas/starter-prompts";
 import type { AgentPluginConfig } from "@/db/schema";
 
 interface Agent {
@@ -275,10 +276,10 @@ export function AgentSettingsPageContent({ initialTab }: { initialTab?: string }
         agentPatch.name = generalDraft.current.name;
         agentPatch.tagline = generalDraft.current.tagline;
         agentPatch.model = generalDraft.current.model;
-        // Drop blank entries so empty "Add prompt" rows don't persist.
-        agentPatch.starterPrompts = (generalDraft.current.starterPrompts ?? [])
-          .map((p) => p.trim())
-          .filter((p) => p.length > 0);
+        // Trim, drop blank "Add prompt" rows, and de-duplicate before saving.
+        agentPatch.starterPrompts = normalizeStarterPrompts(
+          generalDraft.current.starterPrompts ?? []
+        );
       }
       if (dirtyTabs.has("personality") && personalityDraft.current) {
         agentPatch.avatarSeed = personalityDraft.current.avatarSeed;

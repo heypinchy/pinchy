@@ -53,6 +53,7 @@ import {
 } from "@/components/chat";
 import { DiagnosticsExportDialog } from "@/components/diagnostics-export-dialog";
 import { useAgentsContext } from "@/components/agents-provider";
+import { normalizeStarterPrompts } from "@/lib/schemas/starter-prompts";
 import { Progress } from "@/components/ui/progress";
 import type { PendingUpload } from "@/hooks/use-ws-runtime";
 import { RetryButton } from "@/components/chat/retry-button";
@@ -160,7 +161,9 @@ export const ThreadWelcome: FC = () => {
   const agentId = useContext(AgentIdContext);
   const { getAgent } = useAgentsContext();
   const agent = agentId ? getAgent(agentId) : undefined;
-  const starterPrompts = (agent?.starterPrompts ?? []).filter((p) => p.trim().length > 0);
+  // Normalize (trim, drop blanks, de-duplicate) so `key={prompt}` chips never
+  // collide — including for agents whose rows predate save-side dedup (#570).
+  const starterPrompts = normalizeStarterPrompts(agent?.starterPrompts ?? []);
   const [messageIndex, setMessageIndex] = useState(0);
   const indexRef = useRef(0);
 
@@ -200,7 +203,7 @@ export const ThreadWelcome: FC = () => {
               key={prompt}
               prompt={prompt}
               send
-              className="rounded-full border px-4 py-1.5 text-sm text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+              className="max-w-full rounded-2xl border px-4 py-1.5 text-sm break-words text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
             >
               {prompt}
             </ThreadPrimitive.Suggestion>

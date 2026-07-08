@@ -209,6 +209,25 @@ describe("ThreadWelcome — ready state (kind=ready)", () => {
     );
     expect(screen.getAllByTestId("starter-prompt")).toHaveLength(1);
   });
+
+  it("de-duplicates identical prompts so React keys stay unique (#570)", () => {
+    // Pre-existing agents may hold duplicate prompts written before dedup
+    // landed; rendering them raw would collide on key={prompt}.
+    mockAgent = {
+      starterPrompts: ["Summarize my inbox", "Summarize my inbox", "  Draft a reply "],
+    };
+    render(
+      <AgentIdContext.Provider value="agent-1">
+        <ChatStatusContext.Provider value={{ kind: "ready" }}>
+          <ThreadWelcome />
+        </ChatStatusContext.Provider>
+      </AgentIdContext.Provider>
+    );
+    const chips = screen.getAllByTestId("starter-prompt");
+    expect(chips).toHaveLength(2);
+    expect(chips[0]).toHaveTextContent("Summarize my inbox");
+    expect(chips[1]).toHaveTextContent("Draft a reply");
+  });
 });
 
 describe("ThreadWelcome — disconnected state (kind=unavailable, reason=disconnected)", () => {

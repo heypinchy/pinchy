@@ -10,6 +10,7 @@ import {
 } from "@/lib/agent-templates";
 import { MODEL_CATEGORIES } from "@/lib/integrations/odoo-sync";
 import { PERSONALITY_PRESETS } from "@/lib/personality-presets";
+import { MAX_STARTER_PROMPT_LENGTH } from "@/lib/schemas/starter-prompts";
 import { TEMPLATE_ICON_COMPONENTS } from "@/lib/template-icons";
 import { getOdooToolsForAccessLevel } from "@/lib/tool-registry";
 
@@ -1666,7 +1667,7 @@ describe("defaultStarterPrompts (per-agent starter prompts, #570)", () => {
   // ship per-assistant conversation starters. `custom` is the deliberate
   // exception: a blank agent has no role to suggest prompts for.
   const MAX_PROMPTS = 4; // hard display ceiling; see research in PR #620
-  const MAX_PROMPT_LENGTH = 100; // chips must stay on one or two short lines
+  const MAX_PROMPT_LENGTH = MAX_STARTER_PROMPT_LENGTH; // chips must stay on one or two short lines
 
   it("every non-custom template ships 3-4 defaultStarterPrompts", () => {
     const offenders: Array<{ id: string; count: number }> = [];

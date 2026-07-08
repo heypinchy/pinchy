@@ -18,6 +18,7 @@ import { validatePinchyWebConfig, pluginConfigSchema } from "@/lib/domain-valida
 import { parseRequestBody } from "@/lib/api-validation";
 import { validateAgentModel } from "@/lib/agent-model-validation";
 import { regenerateOpenClawConfig } from "@/lib/openclaw-config";
+import { starterPromptsSchema } from "@/lib/schemas/starter-prompts";
 
 const updateAgentSchema = z.object({
   name: z
@@ -31,7 +32,7 @@ const updateAgentSchema = z.object({
   pluginConfig: pluginConfigSchema.nullable().optional(),
   greetingMessage: z.string().min(1, "Greeting message cannot be empty").optional(),
   tagline: z.string().nullable().optional(),
-  starterPrompts: z.array(z.string()).optional(),
+  starterPrompts: starterPromptsSchema.optional(),
   avatarSeed: z.string().nullable().optional(),
   personalityPresetId: z.string().nullable().optional(),
   visibility: z.enum(AGENT_VISIBILITIES).optional(),
@@ -160,7 +161,6 @@ export const PATCH = withAuth<RouteContext>(async (request, { params }, session)
     "visibility",
     "greetingMessage",
     "tagline",
-    "starterPrompts",
     "avatarSeed",
     "personalityPresetId",
   ] as const;
@@ -173,6 +173,14 @@ export const PATCH = withAuth<RouteContext>(async (request, { params }, session)
     const oldTools = existingAgent.allowedTools ?? [];
     if (JSON.stringify(oldTools) !== JSON.stringify(data.allowedTools)) {
       changes.allowedTools = { from: oldTools, to: data.allowedTools };
+    }
+  }
+  // starterPrompts is an array — compare by content, not reference, or a
+  // general-tab save would log a spurious "change" every time (#570).
+  if (data.starterPrompts !== undefined) {
+    const oldPrompts = existingAgent.starterPrompts ?? [];
+    if (JSON.stringify(oldPrompts) !== JSON.stringify(data.starterPrompts)) {
+      changes.starterPrompts = { from: oldPrompts, to: data.starterPrompts };
     }
   }
   if (data.pluginConfig !== undefined) {

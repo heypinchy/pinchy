@@ -19,6 +19,7 @@ import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { DeleteAgentDialog } from "@/components/delete-agent-dialog";
 import { ModelPicker } from "@/components/model-picker";
 import { useModelCapabilities } from "@/hooks/use-model-capabilities";
+import { MAX_STARTER_PROMPTS, MAX_STARTER_PROMPT_LENGTH } from "@/lib/schemas/starter-prompts";
 import { attachCapabilities } from "@/lib/model-capabilities/attach-capabilities";
 import { getAgentModelBlockReason, markToolBlockedModels } from "@/lib/model-resolver/blocklist";
 
@@ -206,7 +207,7 @@ export function AgentSettingsGeneral({
                       )
                     }
                     placeholder="e.g. Summarize my latest HR tickets"
-                    maxLength={500}
+                    maxLength={MAX_STARTER_PROMPT_LENGTH}
                   />
                   <Button
                     type="button"
@@ -224,6 +225,7 @@ export function AgentSettingsGeneral({
                 type="button"
                 variant="outline"
                 size="sm"
+                disabled={starterPrompts.length >= MAX_STARTER_PROMPTS}
                 onClick={() => setStarterPrompts((prev) => [...prev, ""])}
               >
                 <Plus className="mr-1 size-4" />

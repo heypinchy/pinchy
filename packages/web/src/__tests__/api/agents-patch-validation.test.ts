@@ -449,3 +449,74 @@ describe("PATCH /api/agents/[agentId] — model validation against configured pr
     expect(vi.mocked(fetchProviderModels)).not.toHaveBeenCalled();
   });
 });
+
+describe("PATCH /api/agents/[agentId] — starterPrompts validation (#570)", () => {
+  let PATCH: typeof import("@/app/api/agents/[agentId]/route").PATCH;
+
+  beforeEach(async () => {
+    vi.clearAllMocks();
+    const mod = await import("@/app/api/agents/[agentId]/route");
+    PATCH = mod.PATCH;
+  });
+
+  function patchRequest(body: Record<string, unknown>) {
+    return new NextRequest("http://localhost/api/agents/agent-1", {
+      method: "PATCH",
+      body: JSON.stringify(body),
+      headers: { "Content-Type": "application/json" },
+    });
+  }
+
+  it("normalizes starterPrompts (trim, drop blanks, de-duplicate) before persisting", async () => {
+    adminSession();
+    mockAgent({
+      id: "agent-1",
+      name: "Test Agent",
+      model: "m",
+      isPersonal: false,
+      ownerId: null,
+      starterPrompts: [],
+    });
+    vi.mocked(updateAgent).mockResolvedValueOnce({ id: "agent-1", name: "Test Agent" } as never);
+
+    const res = await PATCH(patchRequest({ starterPrompts: ["  Hi ", "Hi", "", "   ", "Bye"] }), {
+      params: Promise.resolve({ agentId: "agent-1" }),
+    });
+
+    expect(res.status).toBe(200);
+    expect(vi.mocked(updateAgent)).toHaveBeenCalledWith(
+      "agent-1",
+      expect.objectContaining({ starterPrompts: ["Hi", "Bye"] })
+    );
+  });
+
+  it("rejects a starter prompt longer than the chip limit with a structured 400", async () => {
+    adminSession();
+    mockAgent({ id: "agent-1", name: "Test Agent", model: "m", isPersonal: false, ownerId: null });
+
+    const res = await PATCH(patchRequest({ starterPrompts: ["x".repeat(101)] }), {
+      params: Promise.resolve({ agentId: "agent-1" }),
+    });
+
+    expect(res.status).toBe(400);
+    const body = await res.json();
+    expect(body.error).toBe("Validation failed");
+    expect(body.details.fieldErrors.starterPrompts).toBeDefined();
+    expect(vi.mocked(updateAgent)).not.toHaveBeenCalled();
+  });
+
+  it("rejects more starter prompts than the per-agent cap", async () => {
+    adminSession();
+    mockAgent({ id: "agent-1", name: "Test Agent", model: "m", isPersonal: false, ownerId: null });
+
+    const many = Array.from({ length: 11 }, (_, i) => `Prompt ${i}`);
+    const res = await PATCH(patchRequest({ starterPrompts: many }), {
+      params: Promise.resolve({ agentId: "agent-1" }),
+    });
+
+    expect(res.status).toBe(400);
+    const body = await res.json();
+    expect(body.error).toBe("Validation failed");
+    expect(vi.mocked(updateAgent)).not.toHaveBeenCalled();
+  });
+});

@@ -281,6 +281,90 @@ describe("PATCH /api/agents/[agentId] audit logging", () => {
     expect(appendAuditLog).not.toHaveBeenCalled();
   });
 
+  it("does not log a starterPrompts change when the content is identical (#570)", async () => {
+    // Regression: starterPrompts is an array. A reference-equality (!==) diff
+    // would flag it as changed on every general-tab save even when the content
+    // is unchanged — audit noise that violates "log what changed".
+    vi.mocked(auth.api.getSession).mockResolvedValueOnce({
+      user: { id: "user-1", role: "admin" },
+      expires: "",
+    } as any);
+
+    mockAgent({
+      id: "agent-1",
+      name: "Test Agent",
+      model: "anthropic/claude-sonnet-4-6",
+      isPersonal: false,
+      ownerId: null,
+      starterPrompts: ["Summarize my inbox", "Draft a reply"],
+    });
+
+    vi.mocked(updateAgent).mockResolvedValueOnce({
+      id: "agent-1",
+      name: "Test Agent",
+      starterPrompts: ["Summarize my inbox", "Draft a reply"],
+    } as never);
+
+    const request = new NextRequest("http://localhost:7777/api/agents/agent-1", {
+      method: "PATCH",
+      body: JSON.stringify({ starterPrompts: ["Summarize my inbox", "Draft a reply"] }),
+      headers: { "Content-Type": "application/json" },
+    });
+
+    const response = await PATCH(request, {
+      params: Promise.resolve({ agentId: "agent-1" }),
+    });
+    expect(response.status).toBe(200);
+
+    expect(appendAuditLog).not.toHaveBeenCalled();
+  });
+
+  it("logs a starterPrompts change with before/after content (#570)", async () => {
+    vi.mocked(auth.api.getSession).mockResolvedValueOnce({
+      user: { id: "user-1", role: "admin" },
+      expires: "",
+    } as any);
+
+    mockAgent({
+      id: "agent-1",
+      name: "Test Agent",
+      model: "anthropic/claude-sonnet-4-6",
+      isPersonal: false,
+      ownerId: null,
+      starterPrompts: ["Old prompt"],
+    });
+
+    vi.mocked(updateAgent).mockResolvedValueOnce({
+      id: "agent-1",
+      name: "Test Agent",
+      starterPrompts: ["New prompt"],
+    } as never);
+
+    const request = new NextRequest("http://localhost:7777/api/agents/agent-1", {
+      method: "PATCH",
+      body: JSON.stringify({ starterPrompts: ["New prompt"] }),
+      headers: { "Content-Type": "application/json" },
+    });
+
+    const response = await PATCH(request, {
+      params: Promise.resolve({ agentId: "agent-1" }),
+    });
+    expect(response.status).toBe(200);
+
+    expect(appendAuditLog).toHaveBeenCalledWith({
+      actorType: "user",
+      actorId: "user-1",
+      eventType: "agent.updated",
+      resource: "agent:agent-1",
+      outcome: "success",
+      detail: {
+        changes: {
+          starterPrompts: { from: ["Old prompt"], to: ["New prompt"] },
+        },
+      },
+    });
+  });
+
   it("logs allowedGroups diff when groupIds change", async () => {
     vi.mocked(auth.api.getSession).mockResolvedValueOnce({
       user: { id: "user-1", role: "admin" },
