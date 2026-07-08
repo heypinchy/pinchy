@@ -136,9 +136,12 @@ export function ChatSwitcher({
 
   // Re-fetch the chat list on each load. Returns a cleanup-aware fetch so both
   // the mount effect and the open handler can ignore a settled result after the
-  // component unmounts. A failed fetch degrades quietly to the empty state
-  // rather than blocking the header. A successful fetch updates the cache so
-  // the next mount seeds from it.
+  // component unmounts. A successful fetch updates the cache so the next mount
+  // seeds from it. A failed fetch keeps whatever is already shown (the cache
+  // seed or the last good list) rather than clearing to the empty state —
+  // clearing would reintroduce the empty-flash this cache (#610) exists to
+  // prevent whenever a transient revalidation fails. On a cold cache the seed
+  // is already `[]`, so this quietly degrades to the empty state as before.
   const loadChats = useCallback(() => {
     let cancelled = false;
     apiGet<{ chats: ChatListItem[] }>(`/api/agents/${agentId}/chats`)
@@ -148,7 +151,7 @@ export function ChatSwitcher({
         if (!cancelled) setChats(list);
       })
       .catch(() => {
-        if (!cancelled) setChats([]);
+        // Keep the current list; a failed revalidation must not blank it.
       })
       .finally(() => {
         if (!cancelled) setIsLoading(false);

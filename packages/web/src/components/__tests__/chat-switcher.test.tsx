@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen, waitFor, within } from "@testing-library/react";
+import { render, screen, waitFor, within, act } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import "@testing-library/jest-dom";
 import { ChatSwitcher } from "@/components/chat-switcher";
@@ -502,6 +502,27 @@ describe("ChatSwitcher", () => {
       // name — proving the cache seed feeds triggerLabel on first render.
       expect(await screen.findByRole("button", { name: /Quarterly report/i })).toBeInTheDocument();
       expect(screen.queryByRole("button", { name: /Smithers/i })).not.toBeInTheDocument();
+    });
+
+    it("keeps the seeded list when a background revalidation fails, instead of flashing empty", async () => {
+      // Warm cache as if a previous mount had loaded this agent's list.
+      setChatList("agent-1", [webChat]);
+      // The mount revalidation fails (transient network / server error).
+      (apiGet as ReturnType<typeof vi.fn>).mockRejectedValue(new Error("boom"));
+
+      render(<ChatSwitcher agentId="agent-1" chatId="chat-abc" agentName="Smithers" />);
+
+      // Let the failed revalidation settle and flush the resulting render.
+      await waitFor(() => expect(apiGet).toHaveBeenCalled());
+      await act(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 0));
+      });
+
+      // The seeded chat survives the failed revalidation — clearing to [] would
+      // reintroduce the empty-flash this cache exists to prevent, replacing the
+      // real title with an optimistic "New chat" row and the agent name.
+      expect(within(screen.getByRole("menu")).getByText("Quarterly report")).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: /Quarterly report/i })).toBeInTheDocument();
     });
   });
 });
