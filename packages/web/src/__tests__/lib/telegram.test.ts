@@ -133,8 +133,12 @@ describe("probeTelegramPollingConflict", () => {
     const result = await probeTelegramPollingConflict("123456:ABC-token");
     expect(result).toEqual({ conflict: true });
     expect(fetchMock).toHaveBeenCalledWith(
-      "https://api.telegram.org/bot123456:ABC-token/getUpdates?timeout=1",
-      expect.objectContaining({ signal: expect.any(AbortSignal) })
+      "https://api.telegram.org/bot123456:ABC-token/getUpdates",
+      expect.objectContaining({
+        method: "POST",
+        body: JSON.stringify({ timeout: 1 }),
+        signal: expect.any(AbortSignal),
+      })
     );
   });
 
@@ -197,8 +201,12 @@ describe("probeTelegramPollingConflict", () => {
 
     await probeTelegramPollingConflict("test-token:abc");
     expect(fetchMock).toHaveBeenCalledWith(
-      "http://mock-telegram:9001/bottest-token:abc/getUpdates?timeout=1",
-      expect.objectContaining({ signal: expect.any(AbortSignal) })
+      "http://mock-telegram:9001/bottest-token:abc/getUpdates",
+      expect.objectContaining({
+        method: "POST",
+        body: JSON.stringify({ timeout: 1 }),
+        signal: expect.any(AbortSignal),
+      })
     );
 
     delete process.env.TELEGRAM_API_URL;

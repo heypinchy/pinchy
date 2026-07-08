@@ -68,9 +68,17 @@ export async function validateTelegramBotToken(token: string): Promise<TelegramV
 export async function probeTelegramPollingConflict(token: string): Promise<{ conflict: boolean }> {
   const apiUrl = process.env.TELEGRAM_API_URL || "https://api.telegram.org";
   try {
-    // Short getUpdates timeout (1s) plus a bounded overall request timeout so a
-    // stalled upstream can't stall the connect request either.
-    const response = await fetch(`${apiUrl}/bot${token}/getUpdates?timeout=1`, {
+    // Ask for the SHORTEST possible long-poll (timeout=1s) so the request
+    // returns on its own instead of us aborting an in-flight long-poll — an
+    // aborted poll can leave the upstream getUpdates connection lingering,
+    // which pollutes poll-state that sibling tests observe. Send `timeout` in
+    // the POST body: real Telegram and our E2E mock both read it there, a bare
+    // query param is not honored by the mock. The AbortSignal is only a
+    // stall backstop for a genuinely unresponsive upstream.
+    const response = await fetch(`${apiUrl}/bot${token}/getUpdates`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ timeout: 1 }),
       signal: AbortSignal.timeout(5_000),
     });
     const data = (await response.json()) as { ok?: boolean; error_code?: number };

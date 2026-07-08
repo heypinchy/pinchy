@@ -364,7 +364,11 @@ test.describe("Connect-time Telegram polling-conflict probe", () => {
   });
 
   test("rejects connecting a bot token another deployment is already polling", async () => {
-    const agentId = await getAgentId();
+    // A dedicated, freshly-created agent with NO telegram bot of its own — so
+    // `configured:false` below is a meaningful assertion (the shared default
+    // agent may already have a bot connected by earlier suites on this stack).
+    const existing = await getAgentByName("ConflictProbeTarget");
+    const agent = existing ?? (await createAgent("ConflictProbeTarget"));
 
     // Simulate the target token already being polled by ANOTHER deployment:
     // the mock returns Telegram's real 409 "Conflict: terminated by other
@@ -372,7 +376,7 @@ test.describe("Connect-time Telegram polling-conflict probe", () => {
     // including the probe's own call.
     await setMockConflict409(CONFLICT_PROBE_BOT_TOKEN, true);
 
-    const res = await pinchyPost(`/api/agents/${agentId}/channels/telegram`, {
+    const res = await pinchyPost(`/api/agents/${agent.id}/channels/telegram`, {
       botToken: CONFLICT_PROBE_BOT_TOKEN,
     });
     const data = await res.json();
@@ -382,7 +386,7 @@ test.describe("Connect-time Telegram polling-conflict probe", () => {
 
     // The bot must NOT have ended up connected — the probe rejected it before
     // any config write.
-    const config = await pinchyGet(`/api/agents/${agentId}/channels/telegram`);
+    const config = await pinchyGet(`/api/agents/${agent.id}/channels/telegram`);
     const configData = await config.json();
     expect(configData.configured).toBe(false);
   });
