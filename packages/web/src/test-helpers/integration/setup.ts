@@ -59,9 +59,19 @@ beforeAll(async () => {
 });
 
 beforeEach(async () => {
-  await db.execute(
-    sql.raw(`TRUNCATE TABLE ${APPLICATION_TABLES.join(", ")} RESTART IDENTITY CASCADE`)
-  );
+  // audit_log carries a statement-level `no_truncate` trigger (migration 0045)
+  // so production code can never bulk-wipe it. Test isolation is the one
+  // legitimate exception to that rule, so disable/re-enable it around the
+  // shared reset instead of excluding audit_log (which would leak rows
+  // between test files).
+  await db.execute(sql`ALTER TABLE audit_log DISABLE TRIGGER no_truncate`);
+  try {
+    await db.execute(
+      sql.raw(`TRUNCATE TABLE ${APPLICATION_TABLES.join(", ")} RESTART IDENTITY CASCADE`)
+    );
+  } finally {
+    await db.execute(sql`ALTER TABLE audit_log ENABLE TRIGGER no_truncate`);
+  }
 });
 
 // Drizzle's postgres-js client keeps a connection pool open. Without an

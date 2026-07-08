@@ -75,6 +75,17 @@ describe("v3 audit hash-chain (integration)", () => {
     expect(await allRowsById()).toHaveLength(1);
   });
 
+  it("rejects TRUNCATE via the statement-level immutability trigger", async () => {
+    await appendRow("u1");
+    await appendRow("u2");
+    // Row-level triggers (no_update/no_delete) never fire for TRUNCATE, which
+    // is a statement-level operation — a separate BEFORE TRUNCATE trigger
+    // (migration 0045) is required to close that gap.
+    await expect(db.execute(sql`TRUNCATE audit_log`)).rejects.toThrow();
+    // The rows survived — the truncate never took effect.
+    expect(await allRowsById()).toHaveLength(2);
+  });
+
   it("flags a row deleted past the immutability trigger as a chain break", async () => {
     await appendRow("u1");
     await appendRow("u2");
