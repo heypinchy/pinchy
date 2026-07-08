@@ -138,6 +138,26 @@ describe("probeTelegramPollingConflict", () => {
     );
   });
 
+  it("returns conflict: true when error_code is 409 even if the HTTP status is 200", async () => {
+    // Some Telegram-compatible endpoints (and our E2E mock) return the error
+    // envelope with a 200 HTTP status. The body's error_code is authoritative,
+    // so the probe must still detect the conflict — regression guard for the
+    // #476/#477 E2E where the mock answers getUpdates with HTTP 200 + body 409.
+    fetchMock.mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: async () => ({
+        ok: false,
+        error_code: 409,
+        description:
+          "Conflict: terminated by other getUpdates request; make sure that only one bot instance is running",
+      }),
+    });
+
+    const result = await probeTelegramPollingConflict("123456:ABC-token");
+    expect(result).toEqual({ conflict: true });
+  });
+
   it("returns conflict: false on a 200 getUpdates response", async () => {
     fetchMock.mockResolvedValue({
       ok: true,
