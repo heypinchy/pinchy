@@ -55,8 +55,38 @@ vi.mock("@/db", () => ({
   },
 }));
 
+// getSettingsByPrefix is mocked to resolve against the SAME `getSetting` mock
+// implementation each test already sets up (probing a fixed set of candidate
+// agent IDs used with `telegram_bot_token:` across this file). This keeps
+// every existing telegram-bot-token test working unchanged while letting the
+// production bot-token loop switch from per-agent getSetting calls to one
+// batched prefix query (#261).
+const { mockGetSetting, mockGetSettingsByPrefix } = vi.hoisted(() => {
+  const TELEGRAM_BOT_TOKEN_TEST_AGENT_IDS = [
+    "agent-1",
+    "agent-2",
+    "agent-42",
+    "admin-smithers",
+    "agent-id-with-bot",
+  ];
+  const getSetting = vi.fn().mockResolvedValue(null);
+  return {
+    mockGetSetting: getSetting,
+    mockGetSettingsByPrefix: vi.fn(async (prefix: string) => {
+      const map = new Map<string, string>();
+      for (const id of TELEGRAM_BOT_TOKEN_TEST_AGENT_IDS) {
+        const key = `${prefix}${id}`;
+        const value = await getSetting(key);
+        if (value) map.set(key, value);
+      }
+      return map;
+    }),
+  };
+});
+
 vi.mock("@/lib/settings", () => ({
-  getSetting: vi.fn().mockResolvedValue(null),
+  getSetting: mockGetSetting,
+  getSettingsByPrefix: mockGetSettingsByPrefix,
   setSetting: vi.fn().mockResolvedValue(undefined),
 }));
 
@@ -5430,6 +5460,53 @@ describe("restart-state integration", () => {
 
     expect(config.channels.telegram.accounts).toEqual({
       "agent-1": { botToken: "123456:ABC-token" },
+    });
+  });
+
+  it("resolves telegram bot tokens via a single batched prefix query, not one getSetting per liveAgent (#261)", async () => {
+    let callCount = 0;
+    mockedDb.select.mockReturnValue({
+      from: vi.fn().mockImplementation(() => {
+        callCount++;
+        if (callCount === 1) {
+          return Object.assign(
+            Promise.resolve([
+              { id: "agent-1", name: "Smithers", model: "m", allowedTools: [] },
+              { id: "agent-2", name: "Support", model: "m", allowedTools: [] },
+            ]),
+            { innerJoin: mockInnerJoin([]), where: vi.fn().mockResolvedValue([]) }
+          );
+        }
+        return Object.assign(Promise.resolve([]), {
+          innerJoin: mockInnerJoin([]),
+          where: vi.fn().mockResolvedValue([]),
+        });
+      }),
+    } as never);
+
+    mockedGetSetting.mockImplementation(async (key: string) => {
+      if (key === "telegram_bot_token:agent-1") return "token-1";
+      if (key === "telegram_bot_token:agent-2") return "token-2";
+      return null;
+    });
+
+    await regenerateOpenClawConfig();
+
+    // Batched: exactly one getSettingsByPrefix("telegram_bot_token:") call
+    // resolves both liveAgents' bot tokens, instead of production code calling
+    // getSetting once per agent. (getSettingsByPrefix's own mock implementation
+    // internally probes candidate keys via getSetting — that's test plumbing,
+    // not the production call path under test here.)
+    const telegramPrefixCalls = mockGetSettingsByPrefix.mock.calls.filter(
+      ([prefix]) => prefix === "telegram_bot_token:"
+    );
+    expect(telegramPrefixCalls).toHaveLength(1);
+
+    const written = mockedWriteFileSync.mock.calls[0][1] as string;
+    const config = JSON.parse(written);
+    expect(config.channels.telegram.accounts).toEqual({
+      "agent-1": { botToken: "token-1" },
+      "agent-2": { botToken: "token-2" },
     });
   });
 

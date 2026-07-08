@@ -1,8 +1,18 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 
 const mockGetSetting = vi.fn();
+// Map-based settings mock: tests populate `mockSettings` with the keys they
+// want present. `getSetting` reads it; `getSettingsByPrefix` filters it in one
+// call (the production code batches bot-token lookups now — #261).
+const mockSettings = new Map<string, string>();
+const { mockGetSettingsByPrefix } = vi.hoisted(() => ({
+  mockGetSettingsByPrefix: vi.fn((prefix: string, map: Map<string, string>) =>
+    Promise.resolve(new Map(Array.from(map.entries()).filter(([k]) => k.startsWith(prefix))))
+  ),
+}));
 vi.mock("@/lib/settings", () => ({
   getSetting: (...args: unknown[]) => mockGetSetting(...args),
+  getSettingsByPrefix: (prefix: string) => mockGetSettingsByPrefix(prefix, mockSettings),
 }));
 
 const mockFindMany = vi.fn();
@@ -229,49 +239,42 @@ describe("probeTelegramPollingConflict", () => {
 describe("hasMainTelegramBot", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mockSettings.clear();
   });
 
   it("returns false when there are no personal agents", async () => {
     mockFindMany.mockResolvedValueOnce([]);
     await expect(hasMainTelegramBot()).resolves.toBe(false);
-    expect(mockGetSetting).not.toHaveBeenCalled();
+    expect(mockGetSettingsByPrefix).not.toHaveBeenCalled();
   });
 
   it("returns false when no personal agent has a telegram bot token", async () => {
     mockFindMany.mockResolvedValueOnce([{ id: "smithers-1" }, { id: "smithers-2" }]);
-    mockGetSetting.mockResolvedValue(null);
     await expect(hasMainTelegramBot()).resolves.toBe(false);
-    expect(mockGetSetting).toHaveBeenCalledWith("telegram_bot_token:smithers-1");
-    expect(mockGetSetting).toHaveBeenCalledWith("telegram_bot_token:smithers-2");
   });
 
   it("returns true when a personal agent has a telegram bot token", async () => {
     mockFindMany.mockResolvedValueOnce([{ id: "smithers-1" }, { id: "smithers-2" }]);
-    mockGetSetting.mockImplementation(async (key: string) => {
-      if (key === "telegram_bot_token:smithers-2") return "123456:ABC-token";
-      return null;
-    });
+    mockSettings.set("telegram_bot_token:smithers-2", "123456:ABC-token");
     await expect(hasMainTelegramBot()).resolves.toBe(true);
   });
 
-  it("short-circuits as soon as it finds a token", async () => {
+  it("uses a single batched prefix query, not one getSetting per agent (#261)", async () => {
     mockFindMany.mockResolvedValueOnce([
       { id: "smithers-1" },
       { id: "smithers-2" },
       { id: "smithers-3" },
     ]);
-    mockGetSetting.mockImplementation(async (key: string) => {
-      if (key === "telegram_bot_token:smithers-1") return "123456:ABC-token";
-      return null;
-    });
+    mockSettings.set("telegram_bot_token:smithers-1", "123456:ABC-token");
     await expect(hasMainTelegramBot()).resolves.toBe(true);
-    // Should not query the 2nd and 3rd agents once it found the first one
-    expect(mockGetSetting).toHaveBeenCalledTimes(1);
+    expect(mockGetSettingsByPrefix).toHaveBeenCalledTimes(1);
+    expect(mockGetSettingsByPrefix).toHaveBeenCalledWith("telegram_bot_token:", mockSettings);
+    expect(mockGetSetting).not.toHaveBeenCalled();
   });
 
   it("treats an empty-string token as not configured", async () => {
     mockFindMany.mockResolvedValueOnce([{ id: "smithers-1" }]);
-    mockGetSetting.mockResolvedValueOnce("");
+    mockSettings.set("telegram_bot_token:smithers-1", "");
     await expect(hasMainTelegramBot()).resolves.toBe(false);
   });
 });

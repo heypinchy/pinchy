@@ -12,7 +12,7 @@ import {
   integrationConnections,
   channelLinks,
 } from "@/db/schema";
-import { getSetting } from "@/lib/settings";
+import { getSetting, getSettingsByPrefix } from "@/lib/settings";
 import {
   computeAllowedTools,
   getEmailToolsForOperations,
@@ -1215,8 +1215,10 @@ export async function regenerateOpenClawConfig() {
   const bindings: TelegramBinding[] = [];
   const personalBotsAccountIds: Array<{ accountId: string; ownerId: string | null }> = [];
 
+  // Single batched query instead of one getSetting per liveAgent (#261).
+  const botTokenByKey = await getSettingsByPrefix("telegram_bot_token:");
   for (const agent of liveAgents) {
-    const botToken = await getSetting(`telegram_bot_token:${agent.id}`);
+    const botToken = botTokenByKey.get(`telegram_bot_token:${agent.id}`);
     // #477 layer 2: an account auto-disabled after a sustained getUpdates-409
     // conflict must stay excluded across a full config regen (restart, agent
     // create, etc.) — not just at the moment of the targeted disable write.

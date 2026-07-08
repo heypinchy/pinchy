@@ -1,7 +1,7 @@
 import { db } from "@/db";
 import { agents } from "@/db/schema";
 import { eq } from "drizzle-orm";
-import { getSetting } from "@/lib/settings";
+import { getSettingsByPrefix } from "@/lib/settings";
 
 interface TelegramValidationSuccess {
   valid: true;
@@ -104,9 +104,11 @@ export async function hasMainTelegramBot(): Promise<boolean> {
     where: eq(agents.isPersonal, true),
     columns: { id: true },
   });
-  for (const agent of personalAgents) {
-    const token = await getSetting(`telegram_bot_token:${agent.id}`);
-    if (token) return true;
-  }
-  return false;
+  if (personalAgents.length === 0) return false;
+
+  // Single batched query instead of one getSetting per personal agent (#261).
+  const botTokenByKey = await getSettingsByPrefix("telegram_bot_token:");
+  return personalAgents.some((agent) =>
+    Boolean(botTokenByKey.get(`telegram_bot_token:${agent.id}`))
+  );
 }

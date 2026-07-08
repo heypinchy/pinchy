@@ -50,6 +50,7 @@ vi.mock("@/db", () => ({
 
 vi.mock("@/lib/settings", () => ({
   getSetting: vi.fn().mockResolvedValue(null),
+  getSettingsByPrefix: vi.fn().mockResolvedValue(new Map()),
   setSetting: vi.fn().mockResolvedValue(undefined),
 }));
 
