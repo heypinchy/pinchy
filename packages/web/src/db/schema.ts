@@ -638,3 +638,21 @@ export const chatSessionErrors = pgTable(
     index("idx_chat_session_errors_gc").on(t.createdAt),
   ]
 );
+
+// ── Audit Verify Checkpoint ──────────────────────────────────────────
+//
+// Singleton checkpoint (id is always 1) for the periodic incremental
+// hash-chain verification job (audit-verify-job.ts). Tracks how far the
+// last run scanned so subsequent runs only verify newly-appended rows,
+// instead of re-walking the whole (unboundedly growing) audit_log every
+// cycle. lastVerifiedHmac is the rowHmac of the row at lastVerifiedId — it
+// seeds verifyIntegrity's boundary-link check so the link BETWEEN
+// lastVerifiedId and lastVerifiedId+1 is never left unchecked (see
+// verifyIntegrity's `seedPrevHmac` option).
+export const auditVerifyState = pgTable("audit_verify_state", {
+  id: integer("id").primaryKey(),
+  lastVerifiedId: integer("last_verified_id").notNull().default(0),
+  lastVerifiedHmac: text("last_verified_hmac"),
+  lastStatus: text("last_status"),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+});

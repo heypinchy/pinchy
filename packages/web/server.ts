@@ -335,6 +335,13 @@ ${domain ? `<p><a href="https://${domain}">Go to ${domain} →</a></p>` : ""}
   const { startChatErrorGc, stopChatErrorGc } = await import("./src/server/chat-error-gc");
   startChatErrorGc();
 
+  // Periodically re-verify the audit-log hash chain from the last checkpoint
+  // forward, so a break introduced via direct DB access (bypassing the
+  // no_update/no_delete/no_truncate triggers) is caught automatically instead
+  // of only surfacing when someone opens the admin "verify" page.
+  const { startAuditVerifyJob, stopAuditVerifyJob } = await import("./src/server/audit-verify-job");
+  startAuditVerifyJob();
+
   // Graceful shutdown: stop the upload GC + usage poller intervals, close the
   // memory-audit watcher, disconnect from OpenClaw, drain browser WebSockets,
   // then close the HTTP server and DB pool. Without this, a SIGTERM (e.g.
@@ -353,6 +360,7 @@ ${domain ? `<p><a href="https://${domain}">Go to ${domain} →</a></p>` : ""}
     buildShutdownSteps({
       stopUploadGc: () => stopUploadGc(),
       stopChatErrorGc: () => stopChatErrorGc(),
+      stopAuditVerifyJob: () => stopAuditVerifyJob(),
       stopUsagePoller: () => stopUsagePoller(),
       stopMemoryAuditWatcher: () =>
         stopMemoryAuditWatcher ? stopMemoryAuditWatcher() : Promise.resolve(),

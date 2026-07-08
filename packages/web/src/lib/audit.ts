@@ -73,6 +73,7 @@ export type AuditEventType =
   | "agent.memory_changed"
   | "agent.upstream_format_error"
   | "audit.exported"
+  | "audit.integrity_check"
   | "diagnostics.exported"
   | "integration.created"
   | "integration.updated"
@@ -418,6 +419,22 @@ export type AuditLogEntry =
       detail: { format: "csv" | "pdf"; filterSummary: string; rowCount: number };
     })
   | (AuditLogBase & {
+      // Periodic incremental hash-chain verification (audit-verify-job). One
+      // row per run: success when the scanned window is intact, failure when
+      // verifyIntegrity found tampered rows or a broken chain link.
+      eventType: "audit.integrity_check";
+      detail: {
+        scannedFrom: number;
+        scannedTo: number;
+        invalidCount: number;
+        chainBreakCount: number;
+        // Capped lists — see truncateDetail()/MAX_DETAIL_BYTES; a run with a
+        // huge number of violations still fits the 2048-byte detail budget.
+        invalidIds: number[];
+        chainBreakIds: number[];
+      };
+    })
+  | (AuditLogBase & {
       eventType: "diagnostics.exported";
       detail: {
         agent: { id: string; name: string };
@@ -581,19 +598,33 @@ const VERIFY_PAGE_SIZE = 5000;
 export async function verifyIntegrity(
   fromId?: number,
   toId?: number,
-  opts?: { pageSize?: number }
+  opts?: {
+    pageSize?: number;
+    // Expected prevHmac of the FIRST row in the [fromId, toId] window. Without
+    // it, the first row of a bounded range is treated as a chain root and its
+    // own prevHmac is never compared against anything — the exact gap an
+    // incremental verifier (resuming from a checkpoint at fromId-1) must
+    // close, since that boundary link is otherwise never checked by any call.
+    // `null` asserts the row is the true genesis (no predecessor); `undefined`
+    // (the default, omitting the option) preserves the pre-existing
+    // unchecked-root behavior for existing callers.
+    seedPrevHmac?: string | null;
+  }
 ): Promise<VerifyResult> {
   const secret = getOrCreateSecret("audit_hmac_secret");
   const pageSize = opts?.pageSize ?? VERIFY_PAGE_SIZE;
+  const hasSeed = opts !== undefined && Object.prototype.hasOwnProperty.call(opts, "seedPrevHmac");
 
   const invalidIds: number[] = [];
   const chainBreakIds: number[] = [];
   let totalChecked = 0;
   // rowHmac of the previous row in range; undefined before the first row so the
   // first row in a partial range isn't chain-checked against a missing
-  // predecessor. Carried ACROSS pages so a chain break that straddles a page
-  // boundary is still detected.
-  let prevRowHmac: string | null | undefined = undefined;
+  // predecessor — UNLESS seedPrevHmac was supplied, in which case it seeds the
+  // expected predecessor for the boundary row instead of leaving it unchecked.
+  // Carried ACROSS pages so a chain break that straddles a page boundary is
+  // still detected.
+  let prevRowHmac: string | null | undefined = hasSeed ? (opts?.seedPrevHmac ?? null) : undefined;
   // Exclusive lower-bound cursor for keyset pagination. Undefined on the first
   // page (which honors `fromId`); afterwards it advances past the last id seen.
   let cursor: number | undefined = undefined;

@@ -274,6 +274,76 @@ describe("verifyIntegrity", () => {
       expect(result.valid).toBe(true);
       expect(result.chainBreakIds).toEqual([]);
     });
+
+    describe("seedPrevHmac (boundary-link check for incremental verification)", () => {
+      // Incremental callers (e.g. a periodic verify job resuming from a
+      // checkpoint) start the window at lastVerifiedId+1. Without a seed, the
+      // first row of that window is treated as a chain root and its prevHmac
+      // is never compared against anything — exactly the link an attacker
+      // could forge without detection. seedPrevHmac closes that gap by
+      // supplying the expected prevHmac for the first in-range row.
+
+      it("flags the first row of the window when its prevHmac does not match seedPrevHmac", async () => {
+        const r6 = makeV3Entry(6, "tampered-prev-hmac-not-matching-seed".padEnd(64, "0"));
+        const r7 = makeV3Entry(7, r6.rowHmac);
+        mockLimit.mockResolvedValue([r6, r7]);
+
+        const result = await verifyIntegrity(6, 7, { seedPrevHmac: "f".repeat(64) });
+
+        expect(result.valid).toBe(false);
+        expect(result.invalidIds).toEqual([]); // each row's own HMAC still verifies
+        expect(result.chainBreakIds).toEqual([6]); // the boundary link itself is broken
+      });
+
+      it("does not flag the first row when its prevHmac matches seedPrevHmac", async () => {
+        const seedHmac = "a".repeat(64);
+        const r6 = makeV3Entry(6, seedHmac);
+        const r7 = makeV3Entry(7, r6.rowHmac);
+        mockLimit.mockResolvedValue([r6, r7]);
+
+        const result = await verifyIntegrity(6, 7, { seedPrevHmac: seedHmac });
+
+        expect(result.valid).toBe(true);
+        expect(result.chainBreakIds).toEqual([]);
+      });
+
+      it("checks the boundary link when seedPrevHmac is explicitly null (genesis row)", async () => {
+        const r1 = makeV3Entry(1, null);
+        const r2 = makeV3Entry(2, r1.rowHmac);
+        mockLimit.mockResolvedValue([r1, r2]);
+
+        const result = await verifyIntegrity(1, 2, { seedPrevHmac: null });
+
+        expect(result.valid).toBe(true);
+        expect(result.chainBreakIds).toEqual([]);
+      });
+
+      it("flags the boundary link when seedPrevHmac is null but the row claims a non-null predecessor", async () => {
+        // Models an attacker forging a fake predecessor on what should be the
+        // genesis row.
+        const r1 = makeV3Entry(1, "forged-predecessor-hmac".padEnd(64, "0"));
+        mockLimit.mockResolvedValue([r1]);
+
+        const result = await verifyIntegrity(1, 1, { seedPrevHmac: null });
+
+        expect(result.valid).toBe(false);
+        expect(result.chainBreakIds).toEqual([1]);
+      });
+
+      it("existing callers without seedPrevHmac keep treating the first row as an unchecked chain root", async () => {
+        // Additive/optional: omitting seedPrevHmac must reproduce the
+        // pre-existing "first row of a partial range is not chain-checked"
+        // behavior exactly.
+        const r5 = makeV3Entry(5, "f".repeat(64));
+        const r6 = makeV3Entry(6, r5.rowHmac);
+        mockLimit.mockResolvedValue([r5, r6]);
+
+        const result = await verifyIntegrity(5, 6);
+
+        expect(result.valid).toBe(true);
+        expect(result.chainBreakIds).toEqual([]);
+      });
+    });
   });
 
   describe("keyset pagination (#16: bounded memory)", () => {

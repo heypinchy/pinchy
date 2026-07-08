@@ -35,6 +35,7 @@ const APPLICATION_TABLES = [
   '"user"', // Quoted because `user` is a reserved word in Postgres.
   "settings",
   "models",
+  "audit_verify_state",
 ] as const;
 
 // Drift guard: a new pgTable in db/schema.ts that isn't added to the truncate

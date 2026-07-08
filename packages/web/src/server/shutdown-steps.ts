@@ -16,6 +16,7 @@ export type ShutdownStopFn = () => void | Promise<void>;
 export interface ShutdownDeps {
   stopUploadGc: ShutdownStopFn;
   stopChatErrorGc: ShutdownStopFn;
+  stopAuditVerifyJob: ShutdownStopFn;
   stopUsagePoller: ShutdownStopFn;
   stopMemoryAuditWatcher: ShutdownStopFn;
   getOpenclawClient: () => { disconnect: () => void | Promise<void> } | null;
@@ -34,6 +35,7 @@ export function buildShutdownSteps(deps: ShutdownDeps): ShutdownStopFn[] {
   return [
     () => deps.stopUploadGc(),
     () => deps.stopChatErrorGc(),
+    () => deps.stopAuditVerifyJob(),
     () => deps.stopUsagePoller(),
     () => deps.stopMemoryAuditWatcher(),
     // Disconnect from the OpenClaw Gateway cleanly so the WS + its in-flight

@@ -20,6 +20,9 @@ function makeDeps(overrides: Partial<ShutdownDeps> = {}, calls: string[] = []): 
     stopChatErrorGc: vi.fn(async () => {
       calls.push("stopChatErrorGc");
     }),
+    stopAuditVerifyJob: vi.fn(async () => {
+      calls.push("stopAuditVerifyJob");
+    }),
     stopUsagePoller: vi.fn(async () => {
       calls.push("stopUsagePoller");
     }),
@@ -42,12 +45,12 @@ function makeDeps(overrides: Partial<ShutdownDeps> = {}, calls: string[] = []): 
 }
 
 describe("buildShutdownSteps (#263)", () => {
-  it("returns exactly 8 steps in the documented order", async () => {
+  it("returns exactly 9 steps in the documented order", async () => {
     const calls: string[] = [];
     const deps = makeDeps({}, calls);
     const steps = buildShutdownSteps(deps);
 
-    expect(steps).toHaveLength(8);
+    expect(steps).toHaveLength(9);
 
     for (const step of steps) {
       await step();
@@ -56,6 +59,7 @@ describe("buildShutdownSteps (#263)", () => {
     expect(calls).toEqual([
       "stopUploadGc",
       "stopChatErrorGc",
+      "stopAuditVerifyJob",
       "stopUsagePoller",
       "stopMemoryAuditWatcher",
       // disconnect + WS drain + closeHttpServer produce no `calls` entry by
@@ -83,6 +87,7 @@ describe("buildShutdownSteps (#263)", () => {
 
     expect(deps.stopUploadGc).toHaveBeenCalledTimes(1);
     expect(deps.stopChatErrorGc).toHaveBeenCalledTimes(1);
+    expect(deps.stopAuditVerifyJob).toHaveBeenCalledTimes(1);
     expect(deps.stopUsagePoller).toHaveBeenCalledTimes(1);
     expect(deps.stopMemoryAuditWatcher).toHaveBeenCalledTimes(1);
     expect(client.disconnect).toHaveBeenCalledTimes(1);
@@ -102,8 +107,8 @@ describe("buildShutdownSteps (#263)", () => {
       const deps = makeDeps({ getOpenclawClient: vi.fn(() => client) });
       const steps = buildShutdownSteps(deps);
 
-      // Step index 4 (0-based) is the OpenClaw disconnect step.
-      await steps[4]();
+      // Step index 5 (0-based) is the OpenClaw disconnect step.
+      await steps[5]();
 
       expect(client.disconnect).toHaveBeenCalledTimes(1);
     });
@@ -112,7 +117,7 @@ describe("buildShutdownSteps (#263)", () => {
       const deps = makeDeps({ getOpenclawClient: vi.fn(() => null) });
       const steps = buildShutdownSteps(deps);
 
-      await expect(steps[4]()).resolves.toBeUndefined();
+      await expect(steps[5]()).resolves.toBeUndefined();
     });
   });
 
@@ -131,8 +136,8 @@ describe("buildShutdownSteps (#263)", () => {
       });
       const steps = buildShutdownSteps(deps);
 
-      // Step index 5 (0-based) is the WS-drain step.
-      await steps[5]();
+      // Step index 6 (0-based) is the WS-drain step.
+      await steps[6]();
 
       expect(openClient.close).toHaveBeenCalledWith(1001, "server shutting down");
       expect(closedClient.close).not.toHaveBeenCalled();
@@ -148,7 +153,7 @@ describe("buildShutdownSteps (#263)", () => {
         setTimeout(() => reject(new Error("WS drain step hung")), 500)
       );
 
-      await expect(Promise.race([steps[5](), timeout])).resolves.toBeUndefined();
+      await expect(Promise.race([steps[6](), timeout])).resolves.toBeUndefined();
     });
   });
 
@@ -157,8 +162,8 @@ describe("buildShutdownSteps (#263)", () => {
       const deps = makeDeps();
       const steps = buildShutdownSteps(deps);
 
-      // Step index 6 (0-based) closes the HTTP server.
-      await steps[6]();
+      // Step index 7 (0-based) closes the HTTP server.
+      await steps[7]();
 
       expect(deps.closeHttpServer).toHaveBeenCalledTimes(1);
     });
@@ -167,8 +172,8 @@ describe("buildShutdownSteps (#263)", () => {
       const deps = makeDeps();
       const steps = buildShutdownSteps(deps);
 
-      // Step index 7 (0-based) closes the DB pool.
-      await steps[7]();
+      // Step index 8 (0-based) closes the DB pool.
+      await steps[8]();
 
       expect(deps.closeDb).toHaveBeenCalledTimes(1);
     });
