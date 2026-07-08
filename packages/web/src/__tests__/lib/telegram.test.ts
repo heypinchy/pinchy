@@ -16,7 +16,11 @@ vi.mock("@/db", () => ({
   },
 }));
 
-import { validateTelegramBotToken, hasMainTelegramBot } from "@/lib/telegram";
+import {
+  validateTelegramBotToken,
+  hasMainTelegramBot,
+  probeTelegramPollingConflict,
+} from "@/lib/telegram";
 
 const fetchMock = vi.fn();
 vi.stubGlobal("fetch", fetchMock);
@@ -106,6 +110,91 @@ describe("validateTelegramBotToken", () => {
     expect(result).toEqual({ valid: true, botId: 42, botUsername: "test_bot" });
 
     delete process.env.TELEGRAM_API_URL;
+  });
+});
+
+describe("probeTelegramPollingConflict", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("returns conflict: true on a 409 getUpdates response", async () => {
+    fetchMock.mockResolvedValue({
+      ok: false,
+      status: 409,
+      json: async () => ({
+        ok: false,
+        error_code: 409,
+        description:
+          "Conflict: terminated by other getUpdates request; make sure that only one bot instance is running",
+      }),
+    });
+
+    const result = await probeTelegramPollingConflict("123456:ABC-token");
+    expect(result).toEqual({ conflict: true });
+    expect(fetchMock).toHaveBeenCalledWith(
+      "https://api.telegram.org/bot123456:ABC-token/getUpdates?timeout=1",
+      expect.objectContaining({ signal: expect.any(AbortSignal) })
+    );
+  });
+
+  it("returns conflict: false on a 200 getUpdates response", async () => {
+    fetchMock.mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: async () => ({ ok: true, result: [] }),
+    });
+
+    const result = await probeTelegramPollingConflict("123456:ABC-token");
+    expect(result).toEqual({ conflict: false });
+  });
+
+  it("returns conflict: false on a non-409 error status", async () => {
+    fetchMock.mockResolvedValue({
+      ok: false,
+      status: 401,
+      json: async () => ({ ok: false, error_code: 401, description: "Unauthorized" }),
+    });
+
+    const result = await probeTelegramPollingConflict("123456:ABC-token");
+    expect(result).toEqual({ conflict: false });
+  });
+
+  it("returns conflict: false on a network error / timeout", async () => {
+    fetchMock.mockRejectedValue(new Error("Network error"));
+
+    const result = await probeTelegramPollingConflict("123456:ABC-token");
+    expect(result).toEqual({ conflict: false });
+  });
+
+  it("uses TELEGRAM_API_URL env var when set", async () => {
+    process.env.TELEGRAM_API_URL = "http://mock-telegram:9001";
+    fetchMock.mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: async () => ({ ok: true, result: [] }),
+    });
+
+    await probeTelegramPollingConflict("test-token:abc");
+    expect(fetchMock).toHaveBeenCalledWith(
+      "http://mock-telegram:9001/bottest-token:abc/getUpdates?timeout=1",
+      expect.objectContaining({ signal: expect.any(AbortSignal) })
+    );
+
+    delete process.env.TELEGRAM_API_URL;
+  });
+
+  it("applies a short internal timeout so a hanging getUpdates can't stall the caller", async () => {
+    fetchMock.mockImplementation((_url: string, opts: { signal?: AbortSignal }) => {
+      expect(opts.signal).toBeInstanceOf(AbortSignal);
+      return new Promise(() => {
+        // never resolves — the AbortSignal is what must save us
+      });
+    });
+
+    // Not awaiting the hang itself; just assert the call was made with a signal.
+    void probeTelegramPollingConflict("123456:ABC-token");
+    expect(fetchMock).toHaveBeenCalled();
   });
 });
 

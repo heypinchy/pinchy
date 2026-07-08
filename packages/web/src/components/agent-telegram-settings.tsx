@@ -400,6 +400,11 @@ export function AgentTelegramSettings({
               <Lock className="size-3" />
               Your bot token is encrypted at rest and never leaves your server.
             </p>
+            <p className="text-xs text-muted-foreground">
+              Use a separate bot token for each environment (staging, production, local). Telegram
+              only allows one poller per token — Pinchy checks for this at connect time and rejects
+              a token another deployment is already using.
+            </p>
           </div>
 
           {connectedUsername && (

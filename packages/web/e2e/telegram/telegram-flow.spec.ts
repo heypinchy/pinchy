@@ -27,6 +27,9 @@ import {
   waitForTelegramPolling,
   waitForBotPolling,
   seedSetup,
+  pinchyPost,
+  pinchyGet,
+  setMockConflict409,
 } from "./helpers";
 
 const BOT_TOKEN = "123456:ABC-test-token-for-e2e";
@@ -332,4 +335,55 @@ test.describe.serial("Multi-Bot Telegram", () => {
       console.log(`[multi-bot] Smithers still responds: "${response.substring(0, 80)}..."`);
     }
   );
+});
+
+// ── Connect-Time Polling-Conflict Probe (#477 layer 1) ─────────────────
+//
+// A separate, dedicated bot token so it can't collide with the tokens used
+// by the suites above. No channel restart is expected here: the whole point
+// is that the connect is rejected BEFORE Pinchy writes config or restarts
+// OpenClaw's channel worker, so this doesn't need @channel-restart tagging.
+
+const CONFLICT_PROBE_BOT_TOKEN = "8103000003:AAEconnectConflictProbeBot0000000";
+
+test.describe("Connect-time Telegram polling-conflict probe", () => {
+  test.beforeAll(async () => {
+    await waitForPinchy();
+    await waitForMockTelegram();
+    await seedSetup();
+    await waitForOpenClawConnected(120000);
+    await login();
+  });
+
+  test.afterAll(async () => {
+    try {
+      await setMockConflict409(CONFLICT_PROBE_BOT_TOKEN, false);
+    } catch {
+      // best-effort cleanup
+    }
+  });
+
+  test("rejects connecting a bot token another deployment is already polling", async () => {
+    const agentId = await getAgentId();
+
+    // Simulate the target token already being polled by ANOTHER deployment:
+    // the mock returns Telegram's real 409 "Conflict: terminated by other
+    // getUpdates request" for every getUpdates call against this token,
+    // including the probe's own call.
+    await setMockConflict409(CONFLICT_PROBE_BOT_TOKEN, true);
+
+    const res = await pinchyPost(`/api/agents/${agentId}/channels/telegram`, {
+      botToken: CONFLICT_PROBE_BOT_TOKEN,
+    });
+    const data = await res.json();
+
+    expect(res.status).toBe(409);
+    expect(data.error).toContain("already being polled by another deployment");
+
+    // The bot must NOT have ended up connected — the probe rejected it before
+    // any config write.
+    const config = await pinchyGet(`/api/agents/${agentId}/channels/telegram`);
+    const configData = await config.json();
+    expect(configData.configured).toBe(false);
+  });
 });

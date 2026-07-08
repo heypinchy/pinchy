@@ -1,7 +1,11 @@
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 import { requireAdmin, withAuth } from "@/lib/api-auth";
-import { validateTelegramBotToken, hasMainTelegramBot } from "@/lib/telegram";
+import {
+  validateTelegramBotToken,
+  hasMainTelegramBot,
+  probeTelegramPollingConflict,
+} from "@/lib/telegram";
 import { getSetting, setSetting, deleteSetting } from "@/lib/settings";
 import { appendAuditLog } from "@/lib/audit";
 import { updateTelegramChannelConfig } from "@/lib/openclaw-config";
@@ -122,6 +126,23 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ age
         { status: 409 }
       );
     }
+  }
+
+  // Point-in-time probe: reject a token another deployment (staging, prod, a
+  // local stack) is already polling right now. Best-effort only — see
+  // probeTelegramPollingConflict's doc comment — so it never blocks a connect
+  // for any reason other than a confirmed Telegram getUpdates 409. Runs after
+  // getMe validation and the duplicate-token check so it only fires for an
+  // otherwise-valid, not-already-connected-here token (issue #477 layer 1).
+  const conflictProbe = await probeTelegramPollingConflict(botToken);
+  if (conflictProbe.conflict) {
+    return NextResponse.json(
+      {
+        error:
+          "This bot is already being polled by another deployment (for example a staging or production stack). Use a separate bot token per environment, or disconnect it there first.",
+      },
+      { status: 409 }
+    );
   }
 
   // DB first (source of truth)

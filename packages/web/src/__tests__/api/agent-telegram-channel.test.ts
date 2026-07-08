@@ -20,9 +20,11 @@ vi.mock("@/lib/auth", () => ({
 
 const mockValidateTelegramBotToken = vi.fn();
 const mockHasMainTelegramBot = vi.fn().mockResolvedValue(true);
+const mockProbeTelegramPollingConflict = vi.fn().mockResolvedValue({ conflict: false });
 vi.mock("@/lib/telegram", () => ({
   validateTelegramBotToken: (...args: unknown[]) => mockValidateTelegramBotToken(...args),
   hasMainTelegramBot: (...args: unknown[]) => mockHasMainTelegramBot(...args),
+  probeTelegramPollingConflict: (...args: unknown[]) => mockProbeTelegramPollingConflict(...args),
 }));
 
 vi.mock("@/lib/settings", () => ({
@@ -242,6 +244,7 @@ describe("POST /api/agents/[agentId]/channels/telegram", () => {
       botId: 123456,
       botUsername: "test_bot",
     });
+    mockProbeTelegramPollingConflict.mockResolvedValue({ conflict: false });
   });
 
   it("validates and stores bot token, sends config.patch, logs audit event", async () => {
@@ -359,6 +362,57 @@ describe("POST /api/agents/[agentId]/channels/telegram", () => {
 
     expect(response.status).toBe(409);
     expect(data.error).toContain("already in use");
+  });
+
+  it("returns 409 when the polling-conflict probe detects another poller (#477 layer 1)", async () => {
+    mockProbeTelegramPollingConflict.mockResolvedValueOnce({ conflict: true });
+
+    const response = await POST(makeRequest({ botToken: "123456:ABC-token" }), {
+      params: mockParams,
+    });
+    const data = await response.json();
+
+    expect(response.status).toBe(409);
+    expect(data.error).toBe(
+      "This bot is already being polled by another deployment (for example a staging or production stack). Use a separate bot token per environment, or disconnect it there first."
+    );
+    expect(mockUpdateTelegramChannelConfig).not.toHaveBeenCalled();
+    expect(appendAuditLog).not.toHaveBeenCalled();
+  });
+
+  it("probes for a polling conflict only after getMe validation and the duplicate-token check pass", async () => {
+    await POST(makeRequest({ botToken: "123456:ABC-token" }), { params: mockParams });
+
+    expect(mockProbeTelegramPollingConflict).toHaveBeenCalledWith("123456:ABC-token");
+  });
+
+  it("does not probe for a polling conflict when token validation fails", async () => {
+    mockValidateTelegramBotToken.mockResolvedValueOnce({
+      valid: false,
+      error: "Invalid token",
+    });
+
+    await POST(makeRequest({ botToken: "invalid-token" }), { params: mockParams });
+
+    expect(mockProbeTelegramPollingConflict).not.toHaveBeenCalled();
+  });
+
+  it("does not probe for a polling conflict when the token is already used by another agent", async () => {
+    vi.mocked(db.select).mockReturnValueOnce({
+      from: vi.fn().mockReturnValue({
+        where: vi
+          .fn()
+          .mockResolvedValue([{ key: "telegram_bot_token:agent-2", value: "encrypted" }]),
+      }),
+    } as never);
+    vi.mocked(getSetting).mockImplementation(async (key: string) => {
+      if (key === "telegram_bot_token:agent-2") return "123456:OTHER-secret";
+      return null;
+    });
+
+    await POST(makeRequest({ botToken: "123456:ABC-token" }), { params: mockParams });
+
+    expect(mockProbeTelegramPollingConflict).not.toHaveBeenCalled();
   });
 
   it("calls recalculateTelegramAllowStores after connecting", async () => {

@@ -68,6 +68,17 @@ describe("AgentTelegramSettings", () => {
     expect(screen.queryByText(/Telegram isn't set up yet/i)).not.toBeInTheDocument();
   });
 
+  it("shows a one-bot-per-environment hint near the token field in the setup form", async () => {
+    global.fetch = mockFetch({ configured: false, mainBotConfigured: true });
+
+    render(<AgentTelegramSettings agentId="agent-1" />);
+
+    await waitFor(() => {
+      expect(screen.getByLabelText(/Bot Token/i)).toBeInTheDocument();
+    });
+    expect(screen.getByText(/Use a separate bot token for each environment/i)).toBeInTheDocument();
+  });
+
   it("renders the connected state when agent has its own bot, regardless of main bot flag", async () => {
     // Defensive: this combination shouldn't happen in production, but the UI
     // must not regress to empty state if it does.
