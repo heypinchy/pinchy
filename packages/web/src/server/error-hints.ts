@@ -14,13 +14,16 @@ export const PROVIDER_SETTINGS_HINT =
 // (#584). The raw wording — "provider rejected the request schema or tool
 // payload" — reads like a malformed-request bug; the real cause (most often a
 // provider-account issue: billing, API key, quota) is collapsed by OpenClaw and
-// never reaches Pinchy in the chunk text. This honest, hedged message points an
-// admin at the provider-account cause family without asserting a specific cause.
-// getErrorHint already treats this same string as a provider-config pointer, so
-// the banner agrees instead of showing the raw contradiction. Only the banner
-// uses this; the audit trail keeps the raw text.
+// never reaches Pinchy in the chunk text. This honest, hedged message names the
+// provider-account cause family without asserting a specific cause. Deliberately
+// role-NEUTRAL (like MODEL_RETIRED_MESSAGE / CONTEXT_OVERFLOW_MESSAGE):
+// presentProviderError takes no role, so baking in the admin-only "check
+// Settings > AI Provider" action would tell a member to visit a page they can't
+// reach and contradict getErrorHint's member guidance ("contact your
+// administrator"). The banner describes; the role-gated action lives in the
+// hint. Only the banner uses this; the audit trail keeps the raw text.
 export const PROVIDER_REJECTED_GENERIC_MESSAGE =
-  "The AI provider rejected the request. This is often a provider-account issue (billing, API key, or quota) — check Settings > AI Provider.";
+  "The AI provider rejected the request. This is often a provider-account issue — billing, API key, or quota.";
 
 // A retired model can't be retried as-is — an admin needs to pick a different
 // one for this agent. Deliberately NOT an automatic swap: an admin pinned this

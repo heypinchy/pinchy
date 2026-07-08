@@ -248,6 +248,19 @@ describe("getErrorHint", () => {
       expect(shown).toMatch(/billing|quota|api key|provider/i);
     });
 
+    it("keeps the banner role-neutral so it never contradicts the member hint", () => {
+      // The banner text is role-independent (presentProviderError takes no
+      // role), so it must NOT bake in the admin-only "go to Settings > AI
+      // Provider" action — a member would then be told to visit a page they
+      // can't reach, directly contradicting getErrorHint's member guidance
+      // ("Please contact your administrator."). Same discipline as
+      // MODEL_RETIRED_MESSAGE / CONTEXT_OVERFLOW_MESSAGE: banner describes,
+      // hint carries the role-gated action.
+      expect(PROVIDER_REJECTED_GENERIC_MESSAGE).not.toMatch(/settings/i);
+      expect(getErrorHint(envelope, "admin")).toBe(PROVIDER_SETTINGS_HINT);
+      expect(getErrorHint(envelope, "member")).toBe("Please contact your administrator.");
+    });
+
     it("still rewrites (does not append-model) when the dispatched model is known", () => {
       // A full-replacement message doesn't get the trailing "(model: X)" — same
       // rule the overflow/retirement replacements follow.
