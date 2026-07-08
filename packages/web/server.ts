@@ -18,6 +18,7 @@ import {
   startChannelHealthWatchdog,
   CHANNEL_HEALTH_INTERVAL_MS,
   DEFAULT_TERMINAL_AFTER_CONSECUTIVE_DEGRADED,
+  parseRecentlyAddedWindowMs,
 } from "./src/server/channel-health-watchdog";
 import { setChannelHealthMonitor } from "./src/server/channel-health-singleton";
 import { appendAuditLog, safeProviderError } from "./src/lib/audit";
@@ -487,8 +488,9 @@ ${domain ? `<p><a href="https://${domain}">Go to ${domain} →</a></p>` : ""}
       .trim()
       .toLowerCase();
     const autoDisableEnabled = !["false", "0", "no"].includes(autoDisableEnvRaw);
-    const recentlyAddedWindowMs =
-      Number(process.env.TELEGRAM_CONFLICT_RECENT_WINDOW_MS) || 86_400_000;
+    const recentlyAddedWindowMs = parseRecentlyAddedWindowMs(
+      process.env.TELEGRAM_CONFLICT_RECENT_WINDOW_MS
+    );
 
     const stopChannelHealth = startChannelHealthWatchdog(
       channelHealthMonitor,

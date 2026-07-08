@@ -103,6 +103,22 @@ function isConflictSignal(lastError: string | null): boolean {
   return lastError !== null && lastError.toLowerCase().includes(CONFLICT_SIGNAL);
 }
 
+/** Default recently-added window: 24h. */
+export const DEFAULT_RECENTLY_ADDED_WINDOW_MS = 86_400_000;
+
+/**
+ * Parse `TELEGRAM_CONFLICT_RECENT_WINDOW_MS`. A missing, empty, non-numeric, or
+ * negative value falls back to the 24h default, but an explicit `0` is honored
+ * (an operator turning the recently-added gate off) — unlike `Number(x) ||
+ * DEFAULT`, which would silently revert 0 back to the default.
+ */
+export function parseRecentlyAddedWindowMs(raw: string | undefined): number {
+  if (raw === undefined || raw.trim() === "") return DEFAULT_RECENTLY_ADDED_WINDOW_MS;
+  const n = Number(raw);
+  if (!Number.isFinite(n) || n < 0) return DEFAULT_RECENTLY_ADDED_WINDOW_MS;
+  return n;
+}
+
 export interface ChannelHealthSnapshotEntry extends ChannelAccountHealth {
   /** When this account first went degraded in the current episode, else null. */
   degradedSince: number | null;

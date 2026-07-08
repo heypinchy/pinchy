@@ -10,7 +10,12 @@
  *   degraded → healthy                emit one `channel.recovered`
  */
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { ChannelHealthMonitor, type ChannelHealthDeps } from "@/server/channel-health-watchdog";
+import {
+  ChannelHealthMonitor,
+  type ChannelHealthDeps,
+  parseRecentlyAddedWindowMs,
+  DEFAULT_RECENTLY_ADDED_WINDOW_MS,
+} from "@/server/channel-health-watchdog";
 import {
   healthyTelegramStatus,
   degradedTelegramStatus,
@@ -281,5 +286,35 @@ describe("ChannelHealthMonitor", () => {
       await monitor.tick(deps); // terminal again in the new episode
       expect(autoDisableConflictedAccount).toHaveBeenCalledTimes(2);
     });
+  });
+});
+
+// #477 layer 2: the recently-added window env var must be parsed so an explicit
+// `0` (operator turning the recently-added gate off) is honored, instead of the
+// `Number(x) || DEFAULT` footgun that silently reverts 0 to the 24h default.
+describe("parseRecentlyAddedWindowMs", () => {
+  it("returns the default when the env var is unset", () => {
+    expect(parseRecentlyAddedWindowMs(undefined)).toBe(DEFAULT_RECENTLY_ADDED_WINDOW_MS);
+  });
+
+  it("returns the default for an empty or whitespace value", () => {
+    expect(parseRecentlyAddedWindowMs("")).toBe(DEFAULT_RECENTLY_ADDED_WINDOW_MS);
+    expect(parseRecentlyAddedWindowMs("   ")).toBe(DEFAULT_RECENTLY_ADDED_WINDOW_MS);
+  });
+
+  it("returns the default for a non-numeric value", () => {
+    expect(parseRecentlyAddedWindowMs("abc")).toBe(DEFAULT_RECENTLY_ADDED_WINDOW_MS);
+  });
+
+  it("returns the default for a negative value", () => {
+    expect(parseRecentlyAddedWindowMs("-5")).toBe(DEFAULT_RECENTLY_ADDED_WINDOW_MS);
+  });
+
+  it("honors an explicit 0 instead of falling back to the default", () => {
+    expect(parseRecentlyAddedWindowMs("0")).toBe(0);
+  });
+
+  it("returns a valid positive numeric value", () => {
+    expect(parseRecentlyAddedWindowMs("60000")).toBe(60000);
   });
 });

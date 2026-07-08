@@ -172,6 +172,11 @@ export function AgentTelegramSettings({
       const data = await res.json();
       setConnectedUsername(data.botUsername || null);
       setBotToken("");
+      // A successful (re)connect clears the auto-disable marker server-side, so
+      // leave the reconnect form and let the refreshed config drop us back into
+      // the normal connected view — otherwise the user is stranded on an empty
+      // token form after connecting (#477 layer 2).
+      setShowReconnectForm(false);
       triggerRestart();
       toast.success("Telegram bot connected");
       fetchConfig();

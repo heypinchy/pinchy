@@ -179,5 +179,55 @@ describe("AgentTelegramSettings", () => {
       expect(screen.getByLabelText(/Bot Token/i)).toBeInTheDocument();
       expect(screen.getByRole("button", { name: /^Connect$/i })).toBeInTheDocument();
     });
+
+    it("shows the Connected confirmation (not a fresh empty connect form) after a successful reconnect", async () => {
+      // First GET → auto-disabled. POST connect → success. The follow-up
+      // fetchConfig GET → no longer disabled (marker cleared server-side). The
+      // user must land on the Connected state, not back on an empty token form:
+      // regression where `showReconnectForm` stayed true forever after Reconnect.
+      let telegramGetCount = 0;
+      global.fetch = vi.fn().mockImplementation((url: string, init?: RequestInit) => {
+        if (typeof url === "string" && url.includes("/channels/telegram")) {
+          if (init?.method === "POST") {
+            return Promise.resolve({
+              ok: true,
+              json: () => Promise.resolve({ botUsername: "acme_bot", botId: "123" }),
+            });
+          }
+          telegramGetCount++;
+          const disabled = telegramGetCount === 1;
+          return Promise.resolve({
+            ok: true,
+            json: () =>
+              Promise.resolve({
+                configured: true,
+                hint: "xY9z",
+                mainBotConfigured: true,
+                conflictDisabled: disabled,
+                ...(disabled
+                  ? { lastError: "Conflict: terminated by other getUpdates request" }
+                  : {}),
+              }),
+          });
+        }
+        return Promise.resolve({ ok: false });
+      });
+
+      render(<AgentTelegramSettings agentId="agent-1" />);
+
+      const reconnectButton = await screen.findByRole("button", { name: /reconnect/i });
+      await userEvent.click(reconnectButton);
+
+      await userEvent.type(screen.getByLabelText(/Bot Token/i), "123456:ABC-fresh-token");
+      await userEvent.click(screen.getByRole("button", { name: /^Connect$/i }));
+
+      // The connected state owns the Disconnect action; the empty connect form
+      // owns the Bot Token field. After a successful reconnect the user must be
+      // back on the connected view, not stranded on the token form.
+      await waitFor(() => {
+        expect(screen.getByRole("button", { name: /disconnect/i })).toBeInTheDocument();
+      });
+      expect(screen.queryByLabelText(/Bot Token/i)).not.toBeInTheDocument();
+    });
   });
 });
