@@ -3223,20 +3223,28 @@ const plugin = {
               filename: {
                 type: "string",
                 description:
-                  "Plain filename of an existing upload in the agent's workspace uploads directory. Must not contain path separators ('/', '\\') or '..' and must not start with '.'",
+                  'Filename of an existing upload in the agent\'s uploads directory — either a plain filename, or a full path (e.g. from a "[media attached: …]" hint); only the basename is used. Must not start with "." after reducing to its basename.',
               },
             },
             required: ["targetRef", "filename"],
             additionalProperties: false,
           },
           async execute(_toolCallId: string, params: Record<string, unknown>) {
-            const filename = params.filename as string;
+            // Tolerant input: agents often pass the full "[media attached: /root/.openclaw/
+            // media/inbound/x.jpg]" path from the message hint. Only the basename matters —
+            // mirrored Telegram media lands in uploads/ under the same basename.
+            const rawFilename = String(params.filename ?? "");
+            const filename = basename(rawFilename.replace(/\\/g, "/"));
             try {
               // Filename validation runs first — independent of targetRef
               // decoding or permission checks — because it defends against
               // prompt-injection-driven file exfiltration. A compromised
               // agent could otherwise pass `../../etc/passwd` and have the
               // plugin attach arbitrary container files to an Odoo record.
+              // basename() above already strips every directory component
+              // (including ".." segments), so reads stay confined to this
+              // agent's uploads/ dir; isSafeFilename still rejects dotfiles
+              // and empty names.
               if (!isSafeFilename(filename)) {
                 return toolError(
                   `Invalid filename: "${filename}". Must be a plain file name without path components (no "/", no "\\", no "..", no leading ".").`,
@@ -3281,7 +3289,7 @@ const plugin = {
                     : "";
                 if (code === "ENOENT") {
                   return toolError(
-                    `File not found: ${filename}. Make sure the file was uploaded before calling odoo_attach_file.`,
+                    `File not found: ${filename}. Chat uploads and Telegram media land in the uploads directory automatically (Telegram media keeps the basename shown in "[media attached: …]"). If it is missing, tell the user honestly and ask the user to re-send the file — never guess or invent filenames.`,
                   );
                 }
                 throw err;

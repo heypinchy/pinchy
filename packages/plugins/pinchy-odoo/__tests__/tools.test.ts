@@ -2181,13 +2181,34 @@ describe("error handling", () => {
     const tool = findTool(tools, "odoo_attach_file", agentId)!;
 
     const result = await tool.execute("call-1", {
-      filename: "../../etc/passwd",
+      filename: ".env",
       targetRef: "x",
     });
 
     expect(result.isError).toBe(true);
     expect((result.details as { error?: string } | undefined)?.error).toContain(
       "Invalid filename",
+    );
+  });
+
+  // "../../etc/passwd" used to hit the "Invalid filename" branch directly.
+  // odoo_attach_file now normalizes path-like input to its basename before
+  // validating (see the "accepts a media-attached path" tests below), so
+  // this filename is now VALID ("passwd") and the request instead fails at
+  // the (also invalid) targetRef "x" — still an inline validation error,
+  // still surfaced via details.error, just from a different gate.
+  it("attaches details.error on an inline validation error (odoo_attach_file invalid targetRef, after filename normalization)", async () => {
+    const tools = createApi({ [agentId]: agentConfig });
+    const tool = findTool(tools, "odoo_attach_file", agentId)!;
+
+    const result = await tool.execute("call-1", {
+      filename: "../../etc/passwd",
+      targetRef: "x",
+    });
+
+    expect(result.isError).toBe(true);
+    expect((result.details as { error?: string } | undefined)?.error).toContain(
+      "does not belong to this Odoo connection",
     );
   });
 
@@ -2721,6 +2742,18 @@ describe("odoo_attach_file", () => {
   // Security: prevents prompt-injection-driven file exfiltration. A
   // compromised agent could otherwise request `filename: "../../etc/passwd"`
   // and the plugin would attach arbitrary container files to an Odoo record.
+  //
+  // Note: odoo_attach_file now normalizes the incoming filename to its
+  // basename before validating (agents routinely echo back the FULL
+  // "[media attached: /root/.openclaw/media/inbound/x.jpg]" path from the
+  // message hint). basename() strips every directory component, INCLUDING
+  // ".." segments and a leading "/", so path-like input no longer escapes
+  // isSafeFilename's gate — it just collapses to the trailing segment,
+  // which is then validated exactly as a plain filename would be. The
+  // security property (reads only from this agent's uploads/ dir) is
+  // preserved; only the previous "reject anything with a separator" UX is
+  // relaxed. See the "still rejected after normalization" cases below for
+  // what remains blocked.
   describe("filename validation (prevents path traversal)", () => {
     const validTargetRef = () =>
       encodeRef({
@@ -2732,15 +2765,12 @@ describe("odoo_attach_file", () => {
       });
 
     it.each([
-      ["../etc/passwd", "parent directory traversal"],
-      ["../../etc/passwd", "deep parent traversal"],
-      ["/etc/passwd", "absolute path"],
-      ["subdir/file.txt", "subdirectory"],
       [".env", "hidden file"],
       ["..", "just dots"],
       [".", "single dot"],
-      ["..\\windows\\system32", "Windows-style backslash traversal"],
-    ])('rejects filename "%s" (%s)', async (badFilename) => {
+      ["", "empty string"],
+      ["/uploads/.hidden", "path to a hidden file (basename still rejected)"],
+    ])('still rejects filename "%s" (%s)', async (badFilename) => {
       mockReadFile.mockResolvedValue(Buffer.from("bytes"));
       mockCreate.mockResolvedValue(1);
 
@@ -2759,6 +2789,44 @@ describe("odoo_attach_file", () => {
       expect(mockCreate).not.toHaveBeenCalled();
     });
 
+    // By design: a path with directory components is no longer rejected
+    // outright. Instead only its basename is used, and reads are still
+    // confined to this agent's uploads/ directory — the traversal attempt
+    // is neutralized, not honored.
+    it.each([
+      ["../etc/passwd", "passwd", "parent directory traversal"],
+      ["../../etc/passwd", "passwd", "deep parent traversal"],
+      ["/etc/passwd", "passwd", "absolute path"],
+      ["subdir/file.txt", "file.txt", "subdirectory"],
+      ["..\\windows\\system32", "system32", "Windows-style backslash traversal"],
+    ])(
+      'normalizes filename "%s" to basename "%s" and reads only from uploads/ (%s)',
+      async (inputFilename, expectedBasename) => {
+        mockReadFile.mockResolvedValue(Buffer.from("bytes"));
+        mockCreate.mockResolvedValue(1);
+
+        const tools = createApi({ [attachAgentId]: attachAgentConfig });
+        const tool = findTool(tools, "odoo_attach_file", attachAgentId)!;
+
+        const result = await tool.execute("call-1", {
+          targetRef: validTargetRef(),
+          filename: inputFilename,
+        });
+
+        expect(result.isError).toBeFalsy();
+        expect(mockStat).toHaveBeenCalledWith(
+          `/root/.openclaw/workspaces/${attachAgentId}/uploads/${expectedBasename}`,
+        );
+        expect(mockReadFile).toHaveBeenCalledWith(
+          `/root/.openclaw/workspaces/${attachAgentId}/uploads/${expectedBasename}`,
+        );
+        expect(mockCreate).toHaveBeenCalledWith(
+          "ir.attachment",
+          expect.objectContaining({ name: expectedBasename }),
+        );
+      },
+    );
+
     it("accepts a plain filename with spaces, digits, and dashes", async () => {
       mockReadFile.mockResolvedValue(Buffer.from("bytes"));
       mockCreate.mockResolvedValue(7);
@@ -2773,6 +2841,100 @@ describe("odoo_attach_file", () => {
 
       expect(result.isError).toBeFalsy();
       expect(mockCreate).toHaveBeenCalled();
+    });
+  });
+
+  // Agents routinely echo back the FULL path from the "[media attached: …]"
+  // hint that Telegram-mirrored media produces, e.g.
+  // "/root/.openclaw/media/inbound/file_12---abc.jpg", instead of just the
+  // basename. odoo_attach_file must be tolerant of that shape: only the
+  // basename matters, and mirrored Telegram media lands in uploads/ under
+  // that same basename.
+  describe("media-attached path tolerance (Telegram mirror)", () => {
+    const validTargetRef = () =>
+      encodeRef({
+        integrationType: "odoo",
+        connectionId: "conn-test-1",
+        model: "account.move",
+        id: 42,
+        label: "INV/2025/0001",
+      });
+
+    it('accepts the full "[media attached: …]" inbound path and reads only the basename from uploads/', async () => {
+      const fakeBytes = Buffer.from("fake-image-bytes");
+      mockReadFile.mockResolvedValue(fakeBytes);
+      mockCreate.mockResolvedValue(99);
+
+      const tools = createApi({ [attachAgentId]: attachAgentConfig });
+      const tool = findTool(tools, "odoo_attach_file", attachAgentId)!;
+
+      const result = await tool.execute("call-1", {
+        targetRef: validTargetRef(),
+        filename: "/root/.openclaw/media/inbound/file_12---abc.jpg",
+      });
+
+      expect(result.isError).toBeFalsy();
+      const data = JSON.parse(result.content[0].text);
+      expect(data.name).toBe("file_12---abc.jpg");
+
+      const expectedPath = `/root/.openclaw/workspaces/${attachAgentId}/uploads/file_12---abc.jpg`;
+      expect(mockStat).toHaveBeenCalledWith(expectedPath);
+      expect(mockReadFile).toHaveBeenCalledWith(expectedPath);
+      expect(mockCreate).toHaveBeenCalledWith(
+        "ir.attachment",
+        expect.objectContaining({ name: "file_12---abc.jpg" }),
+      );
+    });
+
+    it("accepts a Windows-style backslash path and reads only the basename from uploads/", async () => {
+      mockReadFile.mockResolvedValue(Buffer.from("bytes"));
+      mockCreate.mockResolvedValue(7);
+
+      const tools = createApi({ [attachAgentId]: attachAgentConfig });
+      const tool = findTool(tools, "odoo_attach_file", attachAgentId)!;
+
+      const result = await tool.execute("call-1", {
+        targetRef: validTargetRef(),
+        filename: "C:\\pics\\y.jpg",
+      });
+
+      expect(result.isError).toBeFalsy();
+      const expectedPath = `/root/.openclaw/workspaces/${attachAgentId}/uploads/y.jpg`;
+      expect(mockStat).toHaveBeenCalledWith(expectedPath);
+      expect(mockReadFile).toHaveBeenCalledWith(expectedPath);
+    });
+  });
+
+  // 2026-07 production incident: the agent invented plausible-looking
+  // filenames and asked the user to re-upload with those names instead of
+  // honestly reporting the file was missing. The not-found error text now
+  // explicitly tells the model to ask the user to re-send rather than
+  // guess or invent a filename.
+  describe("not-found error gives honest guidance instead of inviting hallucinated filenames", () => {
+    it("tells the agent to ask the user to re-send and never guess or invent filenames", async () => {
+      const targetRef = encodeRef({
+        integrationType: "odoo",
+        connectionId: "conn-test-1",
+        model: "account.move",
+        id: 42,
+        label: "INV/2025/0001",
+      });
+      mockStat.mockRejectedValue(
+        Object.assign(new Error("no such file"), { code: "ENOENT" }),
+      );
+
+      const tools = createApi({ [attachAgentId]: attachAgentConfig });
+      const tool = findTool(tools, "odoo_attach_file", attachAgentId)!;
+
+      const result = await tool.execute("call-1", {
+        targetRef,
+        filename: "missing.jpg",
+      });
+
+      expect(result.isError).toBe(true);
+      const errorText = result.content[0].text.toLowerCase();
+      expect(errorText).toContain("ask the user to re-send");
+      expect(errorText).toContain("never guess or invent filenames");
     });
   });
 
