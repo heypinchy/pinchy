@@ -151,6 +151,79 @@ describe("discoverViaSrv", () => {
 
     expect(result.imapHost).toBe("primary-imap.example.com");
   });
+
+  it("discovers SMTP from _submissions._tcp (RFC 8314 implicit TLS) when the legacy _submission._tcp is absent", async () => {
+    // Real-world case (Migadu-hosted domains, e.g. heypinchy.com): only
+    // _submissions._tcp (implicit TLS, 465) is published; the older
+    // _submission._tcp (587) does not exist. Querying just the RFC 6186 name
+    // left the SMTP host blank.
+    const resolver = makeResolver(async (name: string) => {
+      if (name === "_imaps._tcp.example.com") {
+        return [{ name: "imap.example.com", port: 993, priority: 0, weight: 1 }];
+      }
+      if (name === "_submissions._tcp.example.com") {
+        return [{ name: "smtp.example.com", port: 465, priority: 0, weight: 1 }];
+      }
+      const err = new Error("ENOTFOUND") as NodeJS.ErrnoException;
+      err.code = "ENOTFOUND";
+      throw err;
+    });
+
+    const result = await discoverViaSrv("example.com", resolver);
+
+    expect(result.smtpHost).toBe("smtp.example.com");
+    expect(result.smtpPort).toBe(465);
+  });
+
+  it("prefers the implicit-TLS submission record (_submissions._tcp) over the STARTTLS one (_submission._tcp) when both exist", async () => {
+    const resolver = makeResolver(async (name: string) => {
+      if (name === "_submissions._tcp.example.com") {
+        return [{ name: "implicit.example.com", port: 465, priority: 0, weight: 1 }];
+      }
+      if (name === "_submission._tcp.example.com") {
+        return [{ name: "starttls.example.com", port: 587, priority: 0, weight: 1 }];
+      }
+      return [];
+    });
+
+    const result = await discoverViaSrv("example.com", resolver);
+
+    expect(result.smtpHost).toBe("implicit.example.com");
+    expect(result.smtpPort).toBe(465);
+  });
+
+  it("falls back to the STARTTLS IMAP record (_imap._tcp) when _imaps._tcp is absent", async () => {
+    const resolver = makeResolver(async (name: string) => {
+      if (name === "_imap._tcp.example.com") {
+        return [{ name: "imap.example.com", port: 143, priority: 0, weight: 1 }];
+      }
+      return [];
+    });
+
+    const result = await discoverViaSrv("example.com", resolver);
+
+    expect(result.imapHost).toBe("imap.example.com");
+    expect(result.imapPort).toBe(143);
+  });
+
+  it("treats an SRV record with a root ('.') target as 'service not offered' (RFC 6186), not a host", async () => {
+    const resolver = makeResolver(async (name: string) => {
+      if (name === "_imaps._tcp.example.com") {
+        return [{ name: "imap.example.com", port: 993, priority: 0, weight: 1 }];
+      }
+      if (name === "_submissions._tcp.example.com") {
+        // "." explicitly signals the service is NOT available at this domain.
+        return [{ name: ".", port: 0, priority: 0, weight: 1 }];
+      }
+      return [];
+    });
+
+    const result = await discoverViaSrv("example.com", resolver);
+
+    expect(result.imapHost).toBe("imap.example.com");
+    expect(result.smtpHost).toBeUndefined();
+    expect(result.smtpPort).toBeUndefined();
+  });
 });
 
 describe("autodiscover", () => {

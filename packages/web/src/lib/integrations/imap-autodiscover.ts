@@ -156,7 +156,11 @@ async function resolveSrvSafely(
 ): Promise<SrvRecord | undefined> {
   try {
     const records = await resolver.resolveSrv(name);
-    return pickHighestPriority(records);
+    // RFC 6186 §3 / RFC 2782: a single record whose target is the root (".")
+    // explicitly signals the service is NOT offered — treat it as no record
+    // rather than filling the form with "." as a host. Drop empty targets too.
+    const usable = records.filter((r) => r.name && r.name !== ".");
+    return pickHighestPriority(usable);
   } catch {
     // NXDOMAIN, timeout, no DNS available (air-gapped) — degrade silently.
     return undefined;
@@ -164,19 +168,30 @@ async function resolveSrvSafely(
 }
 
 /**
- * RFC 6186 DNS-SRV discovery. Looks up `_imaps._tcp.<domain>` and
- * `_submission._tcp.<domain>` via the injected resolver. Never throws: each
- * lookup is caught independently so one failing record doesn't blank the
- * other, and a fully-failing resolver (e.g. no DNS at all) yields `{}`.
+ * DNS-SRV discovery for IMAP + SMTP. Queries BOTH the implicit-TLS service
+ * records (RFC 8314: `_imaps._tcp`, `_submissions._tcp`) and the older STARTTLS
+ * ones (RFC 6186: `_imap._tcp`, `_submission._tcp`), preferring implicit TLS
+ * when a provider publishes it. Many modern hosts (e.g. Migadu-hosted domains)
+ * publish ONLY `_submissions._tcp` (implicit TLS, 465) and omit the legacy
+ * `_submission._tcp` (587), so querying just the RFC 6186 name silently left
+ * the SMTP host blank. Never throws: each lookup is caught independently so one
+ * failing record doesn't blank the others, and a fully-failing resolver (e.g.
+ * no DNS at all) yields `{}`.
  */
 export async function discoverViaSrv(
   domain: string,
   resolver: SrvResolver
 ): Promise<Partial<DiscoveredConfig>> {
-  const [imapRecord, smtpRecord] = await Promise.all([
+  const [imapsRecord, imapRecord_, submissionsRecord, submissionRecord] = await Promise.all([
     resolveSrvSafely(resolver, `_imaps._tcp.${domain}`),
+    resolveSrvSafely(resolver, `_imap._tcp.${domain}`),
+    resolveSrvSafely(resolver, `_submissions._tcp.${domain}`),
     resolveSrvSafely(resolver, `_submission._tcp.${domain}`),
   ]);
+
+  // Prefer the implicit-TLS record; fall back to the STARTTLS one.
+  const imapRecord = imapsRecord ?? imapRecord_;
+  const smtpRecord = submissionsRecord ?? submissionRecord;
 
   const result: Partial<DiscoveredConfig> = {};
   if (imapRecord) {
