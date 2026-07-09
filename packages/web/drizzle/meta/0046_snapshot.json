@@ -1,6 +1,6 @@
 {
-  "id": "5d1dbbca-2e0a-4272-a4f2-6df93b284840",
-  "prevId": "5a12eb10-1eb0-47c4-9af0-45cce5f64505",
+  "id": "78b0a229-a815-4c18-90b7-0f267a7b4953",
+  "prevId": "41631e33-4b91-4f81-86e2-31847da6ee32",
   "version": "7",
   "dialect": "postgresql",
   "tables": {
@@ -394,6 +394,13 @@
           "type": "text",
           "primaryKey": false,
           "notNull": false
+        },
+        "starter_prompts": {
+          "name": "starter_prompts",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'[]'::jsonb"
         },
         "avatar_seed": {
           "name": "avatar_seed",
@@ -2191,6 +2198,12 @@
           "primaryKey": false,
           "notNull": false
         },
+        "audit_pseudonym": {
+          "name": "audit_pseudonym",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
         "created_at": {
           "name": "created_at",
           "type": "timestamp",
@@ -2214,6 +2227,11 @@
           "name": "user_email_unique",
           "nullsNotDistinct": false,
           "columns": ["email"]
+        },
+        "user_audit_pseudonym_unique": {
+          "name": "user_audit_pseudonym_unique",
+          "nullsNotDistinct": false,
+          "columns": ["audit_pseudonym"]
         }
       },
       "policies": {},
@@ -2368,6 +2386,13 @@
           "primaryKey": false,
           "notNull": false
         },
+        "starter_prompts": {
+          "name": "starter_prompts",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'[]'::jsonb"
+        },
         "avatar_seed": {
           "name": "avatar_seed",
           "type": "text",
@@ -2394,7 +2419,7 @@
           "notNull": false
         }
       },
-      "definition": "select \"id\", \"name\", \"model\", \"template_id\", \"plugin_config\", \"allowed_tools\", \"skills\", \"owner_id\", \"is_personal\", \"visibility\", \"greeting_message\", \"tagline\", \"avatar_seed\", \"personality_preset_id\", \"created_at\", \"deleted_at\" from \"agents\" where \"agents\".\"deleted_at\" is null",
+      "definition": "select \"id\", \"name\", \"model\", \"template_id\", \"plugin_config\", \"allowed_tools\", \"skills\", \"owner_id\", \"is_personal\", \"visibility\", \"greeting_message\", \"tagline\", \"starter_prompts\", \"avatar_seed\", \"personality_preset_id\", \"created_at\", \"deleted_at\" from \"agents\" where \"agents\".\"deleted_at\" is null",
       "name": "active_agents",
       "schema": "public",
       "isExisting": false,
