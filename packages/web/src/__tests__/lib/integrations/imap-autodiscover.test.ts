@@ -356,11 +356,11 @@ describe("autodiscover", () => {
     await expect(autodiscover("user@unknown-domain.example")).resolves.toBeDefined();
   });
 
-  it("falls back to MX-provider detection when the provider table and SRV both miss (the helmcraft.ai/Migadu case)", async () => {
+  it("uses MX-provider detection when the provider table misses (the helmcraft.ai/Migadu case)", async () => {
     // Real-world motivating case: helmcraft.ai is hosted at Migadu but has no
     // SRV records, so it used to fall all the way through to the wrong
     // `imap.helmcraft.ai` guess. Its MX records (aspmx1/aspmx2.migadu.com)
-    // identify Migadu unambiguously.
+    // identify Migadu unambiguously — and MX now runs before SRV.
     const resolveSrv = vi.fn(async () => []);
     const resolveMx = vi.fn(async (name: string) => {
       if (name === "helmcraft.ai") {
@@ -386,21 +386,27 @@ describe("autodiscover", () => {
     });
   });
 
-  it("prefers a DNS-SRV hit over MX-provider detection — MX is not even consulted", async () => {
+  it("prefers an MX-provider match over a DNS-SRV record — SRV is not even consulted (the heypinchy.com misconfigured-port case)", async () => {
+    // heypinchy.com is hosted at Migadu and DOES publish an SRV record, but it
+    // is misconfigured: `_imaps._tcp` points at imap.migadu.com:995 (Migadu's
+    // POP3S port, not IMAPS/993), so trusting SRV yields a mailbox that fails
+    // to connect. The MX records identify Migadu, whose VERIFIED IMAP port is
+    // 993 — so the MX-provider tier must win over (and short-circuit) SRV.
     const resolveSrv = vi.fn(async (name: string) => {
-      if (name === "_imaps._tcp.srv-domain.example") {
-        return [{ name: "imap.srv-domain.example", port: 993, priority: 0, weight: 0 }];
+      if (name === "_imaps._tcp.heypinchy.com") {
+        return [{ name: "imap.migadu.com", port: 995, priority: 0, weight: 0 }];
       }
       return [];
     });
-    const resolveMx = vi.fn();
+    const resolveMx = vi.fn(async () => [{ exchange: "aspmx1.migadu.com", priority: 10 }]);
 
-    const result = await autodiscover("user@srv-domain.example", {
+    const result = await autodiscover("clemens@heypinchy.com", {
       resolver: { resolveSrv, resolveMx },
     });
 
-    expect(result.source).toBe("dns-srv");
-    expect(resolveMx).not.toHaveBeenCalled();
+    expect(result.source).toBe("mx-provider");
+    expect(result.config.imapPort).toBe(993); // NOT the SRV's wrong 995
+    expect(resolveSrv).not.toHaveBeenCalled();
   });
 
   it("falls all the way to guess when provider table, SRV, and MX all miss", async () => {

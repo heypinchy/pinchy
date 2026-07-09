@@ -309,10 +309,19 @@ function guessConfig(domain: string): DiscoveredConfig {
 }
 
 /**
- * Orchestrates provider-table -> DNS-SRV -> MX-provider -> guess resolution
+ * Orchestrates provider-table -> MX-provider -> DNS-SRV -> guess resolution
  * for a user-typed email address. NEVER throws — every tier degrades to the
  * next on any error, so this always resolves with at least a guessed config
  * (unless the email itself is unparseable, in which case `source: "none"`).
+ *
+ * MX-provider is tried BEFORE DNS-SRV deliberately: when a domain's MX records
+ * unambiguously identify a known provider, that provider's VERIFIED ports beat
+ * a domain-published SRV record, which can be misconfigured. (Real case:
+ * heypinchy.com's `_imaps._tcp` SRV points at imap.migadu.com:995 — Migadu's
+ * POP3S port, not IMAPS/993 — so trusting SRV produced a mailbox that failed
+ * to connect. The MX records `aspmx*.migadu.com` identify Migadu, whose known
+ * IMAP port is 993.) SRV still runs after MX for self-hosted/custom domains
+ * that publish SRV but aren't operated by a provider we recognize.
  */
 export async function autodiscover(
   email: string,
@@ -328,11 +337,12 @@ export async function autodiscover(
 
     try {
       const resolver = deps.resolver ?? (await defaultResolver());
-      const srvResult = await discoverViaSrv(domain, resolver);
-      if (srvResult.imapHost) return { config: srvResult, source: "dns-srv" };
 
       const mxHit = await discoverViaMx(domain, resolver);
       if (mxHit) return { config: mxHit, source: "mx-provider" };
+
+      const srvResult = await discoverViaSrv(domain, resolver);
+      if (srvResult.imapHost) return { config: srvResult, source: "dns-srv" };
     } catch {
       // Resolver construction or lookup failed entirely (e.g. no DNS module
       // available, or every lookup rejected) — fall through to the guess.
