@@ -46,10 +46,16 @@ const REPO_ROOT = path.resolve(process.cwd(), "../..");
  * invite_groups, channel_links, agent_connection_permissions, usage_records).
  */
 export async function resetStack(): Promise<void> {
+  // audit_log carries a statement-level `no_truncate` trigger (migration
+  // 0047_audit_truncate_guard) so production code can never bulk-wipe it.
+  // Test isolation is the one legitimate exception to that rule, so disable
+  // and re-enable the trigger around this reset — mirrors the same bypass in
+  // src/test-helpers/integration/setup.ts (the vitest integration suite's
+  // per-test reset).
   execSync(
     `docker compose ${COMPOSE_ARGS} exec -T db ` +
       `psql -U pinchy -d pinchy -c ` +
-      `'TRUNCATE TABLE "user", account, agents, settings, audit_log, session, verification, groups, invites, integration_connections RESTART IDENTITY CASCADE'`,
+      `'ALTER TABLE audit_log DISABLE TRIGGER no_truncate; TRUNCATE TABLE "user", account, agents, settings, audit_log, session, verification, groups, invites, integration_connections RESTART IDENTITY CASCADE; ALTER TABLE audit_log ENABLE TRIGGER no_truncate'`,
     { stdio: "pipe", cwd: REPO_ROOT }
   );
 
