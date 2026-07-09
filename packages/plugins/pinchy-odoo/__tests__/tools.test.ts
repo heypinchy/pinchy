@@ -3864,6 +3864,283 @@ describe("cross-company write guard", () => {
   });
 });
 
+// Nested-permission gating for one2many command tuples (Feature 1) and
+// many2many command-tuple resolution (Feature 2), exercised through the
+// actual odoo_create / odoo_write tools rather than normalizeMany2OneValues
+// directly. See __tests__/nested-m2o.test.ts for the lower-level unit
+// coverage of the same logic.
+describe("odoo_create / odoo_write — nested governance (one2many + many2many)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.stubEnv("PINCHY_REF_TOKEN_KEY", "a".repeat(64));
+  });
+
+  const MOVE_WITH_LINES_AND_TAXES: OdooField[] = [
+    { name: "id", type: "integer", required: false, readonly: true },
+    {
+      name: "line_ids",
+      type: "one2many",
+      relation: "account.move.line",
+      required: false,
+      readonly: false,
+    },
+    {
+      name: "tax_ids",
+      type: "many2many",
+      relation: "account.tax",
+      required: false,
+      readonly: false,
+    },
+  ];
+  const MOVE_LINE_FIELDS: OdooField[] = [
+    { name: "id", type: "integer", required: false, readonly: true },
+    {
+      name: "account_id",
+      type: "many2one",
+      relation: "account.account",
+      required: true,
+      readonly: false,
+    },
+  ];
+  // account.tax reuses the same account_id many2one shape purely so the
+  // m2m create-tuple tests below can exercise nested m2o resolution inside
+  // a many2many command dict — it isn't a realistic account.tax field.
+  const TAX_FIELDS: OdooField[] = [
+    { name: "id", type: "integer", required: false, readonly: true },
+    {
+      name: "account_id",
+      type: "many2one",
+      relation: "account.account",
+      required: false,
+      readonly: false,
+    },
+  ];
+
+  function stubMoveFields() {
+    mockFields.mockImplementation(async (model: string) => {
+      if (model === "account.move") return MOVE_WITH_LINES_AND_TAXES;
+      if (model === "account.move.line") return MOVE_LINE_FIELDS;
+      if (model === "account.tax") return TAX_FIELDS;
+      return [];
+    });
+  }
+
+  it("rejects a nested one2many [2,id] delete when the agent lacks account.move.line:delete", async () => {
+    stubMoveFields();
+    const tools = createApi({
+      [agentId]: {
+        ...agentConfig,
+        permissions: { "account.move": ["write"] },
+      },
+    });
+    const tool = findTool(tools, "odoo_write", agentId)!;
+    const result = await tool.execute("call-nested-delete", {
+      model: "account.move",
+      ids: [1],
+      values: { line_ids: [[2, 1]] },
+    });
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toMatch(/account\.move\.line/);
+    expect(result.content[0].text).toMatch(/delete/i);
+    expect(mockWrite).not.toHaveBeenCalled();
+  });
+
+  it("allows a nested one2many [2,id] delete once account.move.line:delete is granted", async () => {
+    stubMoveFields();
+    mockWrite.mockResolvedValue(true);
+    const tools = createApi({
+      [agentId]: {
+        ...agentConfig,
+        permissions: {
+          "account.move": ["write"],
+          "account.move.line": ["delete"],
+        },
+      },
+    });
+    const tool = findTool(tools, "odoo_write", agentId)!;
+    const result = await tool.execute("call-nested-delete-ok", {
+      model: "account.move",
+      ids: [1],
+      values: { line_ids: [[2, 1]] },
+    });
+    expect(result.isError).toBeFalsy();
+    expect(mockWrite).toHaveBeenCalledWith("account.move", [1], {
+      line_ids: [[2, 1]],
+    });
+  });
+
+  it("allows an inline [0,0,{...}] line create with only the parent's create grant", async () => {
+    stubMoveFields();
+    mockCreate.mockResolvedValue(55);
+    const accountRef = encodeRef({
+      integrationType: "odoo",
+      connectionId: "conn-test-1",
+      model: "account.account",
+      id: 5,
+      label: "Fake Account",
+    });
+    const tools = createApi({
+      [agentId]: {
+        ...agentConfig,
+        permissions: { "account.move": ["create"] },
+      },
+    });
+    const tool = findTool(tools, "odoo_create", agentId)!;
+    const result = await tool.execute("call-inline-create", {
+      model: "account.move",
+      values: { line_ids: [[0, 0, { account_id: accountRef }]] },
+    });
+    expect(result.isError).toBeFalsy();
+    expect(mockCreate).toHaveBeenCalled();
+  });
+
+  it("rejects a nested [1,id,{...}] update when the agent lacks account.move.line:write", async () => {
+    stubMoveFields();
+    const tools = createApi({
+      [agentId]: {
+        ...agentConfig,
+        permissions: { "account.move": ["write"] },
+      },
+    });
+    const tool = findTool(tools, "odoo_write", agentId)!;
+    const result = await tool.execute("call-nested-update", {
+      model: "account.move",
+      ids: [1],
+      values: { line_ids: [[1, 7, { account_id: 5 }]] },
+    });
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toMatch(/account\.move\.line/);
+    expect(result.content[0].text).toMatch(/write/i);
+    expect(mockWrite).not.toHaveBeenCalled();
+  });
+
+  it("resolves a bare _pinchy_ref inside a many2many [0,0,{...}] create tuple", async () => {
+    stubMoveFields();
+    mockCreate.mockResolvedValue(60);
+    const accountRef = encodeRef({
+      integrationType: "odoo",
+      connectionId: "conn-test-1",
+      model: "account.account",
+      id: 5,
+      label: "Fake Account",
+    });
+    const tools = createApi({
+      [agentId]: {
+        ...agentConfig,
+        permissions: {
+          "account.move": ["create"],
+          "account.tax": ["create"],
+        },
+      },
+    });
+    const tool = findTool(tools, "odoo_create", agentId)!;
+    const result = await tool.execute("call-m2m-create", {
+      model: "account.move",
+      values: {
+        tax_ids: [[0, 0, { account_id: accountRef }]],
+      },
+    });
+    expect(result.isError).toBeFalsy();
+    expect(mockCreate).toHaveBeenCalledWith("account.move", {
+      tax_ids: [[0, 0, { account_id: 5 }]],
+    });
+  });
+
+  it("rejects a many2many [0,0,{...}] create when the agent lacks account.tax:create", async () => {
+    stubMoveFields();
+    const tools = createApi({
+      [agentId]: {
+        ...agentConfig,
+        permissions: { "account.move": ["create"] },
+      },
+    });
+    const tool = findTool(tools, "odoo_create", agentId)!;
+    const result = await tool.execute("call-m2m-reject", {
+      model: "account.move",
+      values: { tax_ids: [[0, 0, { account_id: 5 }]] },
+    });
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toMatch(/account\.tax/);
+    expect(result.content[0].text).toMatch(/create/i);
+    expect(mockCreate).not.toHaveBeenCalled();
+  });
+
+  it("decodes a bare ref in a many2many [4,<ref>] link tuple's id position, no target grant needed", async () => {
+    stubMoveFields();
+    mockCreate.mockResolvedValue(61);
+    const taxRef = encodeRef({
+      integrationType: "odoo",
+      connectionId: "conn-test-1",
+      model: "account.tax",
+      id: 9,
+      label: "VAT 19%",
+    });
+    const tools = createApi({
+      [agentId]: {
+        ...agentConfig,
+        // No account.tax grant at all — link (4) needs none.
+        permissions: { "account.move": ["create"] },
+      },
+    });
+    const tool = findTool(tools, "odoo_create", agentId)!;
+    const result = await tool.execute("call-m2m-link", {
+      model: "account.move",
+      values: { tax_ids: [[4, taxRef]] },
+    });
+    expect(result.isError).toBeFalsy();
+    expect(mockCreate).toHaveBeenCalledWith("account.move", {
+      tax_ids: [[4, 9]],
+    });
+  });
+
+  it("decodes refs in a many2many [6,0,[<ref>]] replace tuple's id list, no target grant needed", async () => {
+    stubMoveFields();
+    mockCreate.mockResolvedValue(62);
+    const taxRef = encodeRef({
+      integrationType: "odoo",
+      connectionId: "conn-test-1",
+      model: "account.tax",
+      id: 9,
+      label: "VAT 19%",
+    });
+    const tools = createApi({
+      [agentId]: {
+        ...agentConfig,
+        permissions: { "account.move": ["create"] },
+      },
+    });
+    const tool = findTool(tools, "odoo_create", agentId)!;
+    const result = await tool.execute("call-m2m-replace", {
+      model: "account.move",
+      values: { tax_ids: [[6, 0, [taxRef]]] },
+    });
+    expect(result.isError).toBeFalsy();
+    expect(mockCreate).toHaveBeenCalledWith("account.move", {
+      tax_ids: [[6, 0, [9]]],
+    });
+  });
+
+  it("does not require a target grant for many2many codes 3/4/5/6 (join-table-only ops)", async () => {
+    stubMoveFields();
+    mockCreate.mockResolvedValue(63);
+    const tools = createApi({
+      [agentId]: {
+        ...agentConfig,
+        permissions: { "account.move": ["create"] },
+      },
+    });
+    const tool = findTool(tools, "odoo_create", agentId)!;
+    const result = await tool.execute("call-m2m-nogr", {
+      model: "account.move",
+      values: {
+        tax_ids: [[3, 1], [4, 2], [5], [6, 0, [3, 4]]],
+      },
+    });
+    expect(result.isError).toBeFalsy();
+    expect(mockCreate).toHaveBeenCalled();
+  });
+});
+
 // The agent-facing output (odoo_read / odoo_create) emits `_pinchy_ref` as a
 // BARE string, and the prose tells the model to "pass the `_pinchy_ref`
 // verbatim". For dedicated ref params (odoo_attach_file.targetRef,

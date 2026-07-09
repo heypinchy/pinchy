@@ -1146,6 +1146,7 @@ export async function normalizeMany2OneValues(
   connectionId: string,
   model: string,
   values: Record<string, unknown>,
+  permissions: Permissions,
   depth = 0,
   inheritedScope: number | null = null,
   fieldsCache: FieldsCache = new Map(),
@@ -1199,28 +1200,37 @@ export async function normalizeMany2OneValues(
     );
   }
 
-  // One nesting level down (#615): resolve m2o fields inside one2many command
-  // tuples (e.g. account.move `line_ids: [[0, 0, { account_id: "…" }]]`). The
-  // nested m2o values get the same ref decoding + company scoping as top-level
-  // fields, inheriting the parent's `scopeCompanyId` (the lines belong to the
-  // same company). Bounded to depth 1 — Odoo's command tuples can nest
-  // arbitrarily, but one level covers the account.move line_ids case; deeper
-  // nesting is left to a future change to avoid unbounded recursion through
-  // self-referential models.
+  // One nesting level down (#615; many2many follow-up): resolve m2o fields
+  // inside one2many AND many2many command tuples (e.g. account.move
+  // `line_ids: [[0, 0, { account_id: "…" }]]`, or a many2many `tax_ids: [[4,
+  // "…"]]`). The nested m2o values get the same ref decoding + company
+  // scoping as top-level fields, inheriting the parent's `scopeCompanyId`
+  // (the lines belong to the same company). Bounded to depth 1 — Odoo's
+  // command tuples can nest arbitrarily, but one level covers the
+  // account.move line_ids case; deeper nesting is left to a future change to
+  // avoid unbounded recursion through self-referential models.
   if (depth < 1) {
     for (const field of fields) {
-      if (field.type !== "one2many" || !field.relation) continue;
+      const kind =
+        field.type === "one2many"
+          ? "one2many"
+          : field.type === "many2many"
+            ? "many2many"
+            : null;
+      if (kind === null || !field.relation) continue;
       if (!(field.name in normalized)) continue;
       const commands = normalized[field.name];
       if (!Array.isArray(commands)) continue;
-      normalized[field.name] = await normalizeOne2ManyCommands(
+      normalized[field.name] = await normalizeCommandTuples(
         client,
         connectionId,
-        field.relation,
+        field,
         commands,
         scopeCompanyId,
+        permissions,
         depth,
         fieldsCache,
+        kind,
       );
     }
   }
@@ -1228,45 +1238,166 @@ export async function normalizeMany2OneValues(
   return { values: normalized, fields };
 }
 
+// Odoo Command codes on a one2many that modify EXISTING nested records and
+// therefore require a grant on the line model. Inline create (0) is part of
+// the parent's atomic create — already gated by the top-level `create`
+// check — so it needs no separate line-model grant. Link (4) only rewires
+// the parent's relation set and creates/destroys nothing. Clear (5) and
+// replace (6), however, are bulk forms of unlink (3): for a one2many with a
+// REQUIRED inverse many2one (e.g. account.move.line.move_id), Odoo deletes
+// every orphaned child record when the relation set is cleared or replaced
+// (Odoo "[FIX] fields: setting a one2many field deletes all its lines"
+// #13082). They are therefore gated exactly like 2/3 — an agent needs the
+// `delete` grant on the line model to clear or replace a one2many, not just
+// `write` on the parent.
+const NESTED_OP_BY_CODE: Record<number, "write" | "delete"> = {
+  1: "write",
+  2: "delete",
+  3: "delete",
+  5: "delete",
+  6: "delete",
+};
+
+// many2many Command permission map. Unlike one2many, m2m is a join table
+// with no required inverse — clearing or replacing the set never
+// cascade-deletes target rows, it only rewires the join table. So only the
+// codes that actually create/write/delete a TARGET record need a grant: 0
+// create needs `create` on the target (relation) model, 1 update needs
+// `write`, 2 delete needs `delete`. Codes 3 (unlink), 4 (link), 5 (clear), 6
+// (replace) only rewire the join table and need no grant (contrast with
+// `NESTED_OP_BY_CODE`, where o2m codes 2/3/5/6 all need `delete` because
+// Odoo cascade-deletes orphaned children — see the comment above that map).
+const M2M_OP_BY_CODE: Record<number, "create" | "write" | "delete"> = {
+  0: "create",
+  1: "write",
+  2: "delete",
+};
+
 /**
- * Resolve m2o fields inside the value dicts of one2many command tuples.
- * Only the create (`[0, 0, {values}]`) and update (`[1, id, {values}]`)
- * commands carry a value dict; every other command (`[2,id]` delete, `[3,id]`
- * unlink, `[4,id]` link, `[5]` clear, `[6,0,[ids]]` set) passes through
- * unchanged. Recurses via `normalizeMany2OneValues` at depth+1, passing the
- * parent's `scopeCompanyId` as the inherited scope so the nested m2o lookups
- * are company-scoped even when the line doesn't restate company_id.
+ * Resolve a Command tuple's id position (tuple[1], or an element of the
+ * code-6 id list). Raw numeric ids — the standard Odoo wire format used by
+ * every pre-existing caller — pass straight through unchanged; `false`/`null`
+ * (code 6's "clear" id slot) also pass through. Only a ref-shaped value
+ * (`_pinchy_ref` bare string, `{ref}` object, or a name/code lookup string)
+ * is resolved via `resolveRelationValue`, so a line ref captured by
+ * `odoo_read` can be pasted back into an edit tuple's id position.
  */
-async function normalizeOne2ManyCommands(
+async function resolveCommandTargetId(
   client: OdooClient,
   connectionId: string,
-  relationModel: string,
+  relationField: OdooField,
+  idValue: unknown,
+  scopeCompanyId: number | null,
+  fieldsCache: FieldsCache,
+): Promise<unknown> {
+  if (typeof idValue === "number") return idValue;
+  if (idValue === false || idValue == null) return idValue;
+  return resolveRelationValue(
+    client,
+    connectionId,
+    relationField,
+    idValue,
+    scopeCompanyId,
+    fieldsCache,
+  );
+}
+
+/**
+ * Unified walker for one2many AND many2many Command tuples. Only the create
+ * (`[0, 0, {values}]`) and update (`[1, id, {values}]`) commands carry a
+ * value dict whose m2o fields get resolved recursively via
+ * `normalizeMany2OneValues` at depth+1, inheriting the parent's
+ * `scopeCompanyId`. Every code's id position(s) — `tuple[1]` for codes
+ * 1-4, each element of code 6's id list — is ref-decoded via
+ * `resolveCommandTargetId` so a ref captured by `odoo_read` can be pasted
+ * back into an edit. `[5]` clear carries no id at all and passes through
+ * unchanged.
+ *
+ * Governance: before doing any ref work for a tuple, the command's op code
+ * is checked against `NESTED_OP_BY_CODE` (one2many) or `M2M_OP_BY_CODE`
+ * (many2many) — see the doc comments above those maps for which codes need
+ * which grant, and why the two relation kinds differ.
+ */
+async function normalizeCommandTuples(
+  client: OdooClient,
+  connectionId: string,
+  relationField: OdooField,
   commands: unknown[],
   scopeCompanyId: number | null,
+  permissions: Permissions,
   depth: number,
   fieldsCache: FieldsCache,
+  kind: "one2many" | "many2many",
 ): Promise<unknown[]> {
+  const relationModel = relationField.relation as string;
+  const opByCode = kind === "one2many" ? NESTED_OP_BY_CODE : M2M_OP_BY_CODE;
   const out: unknown[] = [];
   for (const cmd of commands) {
-    if (!Array.isArray(cmd)) {
+    if (!Array.isArray(cmd) || typeof cmd[0] !== "number") {
       out.push(cmd);
       continue;
     }
-    const op = cmd[0];
-    const values = cmd[2];
-    if ((op === 0 || op === 1) && isRecord(values)) {
-      const resolved = (
+    const code = cmd[0];
+    const op = opByCode[code];
+    if (op !== undefined && !checkPermission(permissions, relationModel, op)) {
+      // Pinchy-allowlist rejection (not an Odoo server AccessError): phrase
+      // it as a permission gap, not an Odoo-side sync issue.
+      throw new Error(
+        `Agent missing ${op} grant on ${relationModel} ` +
+          `(nested via ${relationField.name} command ${code}). ` +
+          `Add ${op} on ${relationModel} to this agent's permissions.`,
+      );
+    }
+
+    if ((code === 0 || code === 1) && isRecord(cmd[2])) {
+      const resolvedValues = (
         await normalizeMany2OneValues(
           client,
           connectionId,
           relationModel,
-          values,
+          cmd[2],
+          permissions,
           depth + 1,
           scopeCompanyId,
           fieldsCache,
         )
       ).values;
-      out.push([op, cmd[1], resolved]);
+      const resolvedId =
+        code === 1
+          ? await resolveCommandTargetId(
+              client,
+              connectionId,
+              relationField,
+              cmd[1],
+              scopeCompanyId,
+              fieldsCache,
+            )
+          : cmd[1];
+      out.push([code, resolvedId, resolvedValues]);
+    } else if ((code === 2 || code === 3 || code === 4) && cmd.length >= 2) {
+      const resolvedId = await resolveCommandTargetId(
+        client,
+        connectionId,
+        relationField,
+        cmd[1],
+        scopeCompanyId,
+        fieldsCache,
+      );
+      out.push([code, resolvedId, ...cmd.slice(2)]);
+    } else if (code === 6 && Array.isArray(cmd[2])) {
+      const resolvedIds = await Promise.all(
+        (cmd[2] as unknown[]).map((id) =>
+          resolveCommandTargetId(
+            client,
+            connectionId,
+            relationField,
+            id,
+            scopeCompanyId,
+            fieldsCache,
+          ),
+        ),
+      );
+      out.push([code, cmd[1], resolvedIds]);
     } else {
       out.push(cmd);
     }
@@ -2266,6 +2397,7 @@ const plugin = {
                       config.connectionId,
                       model,
                       cleaned,
+                      config.permissions,
                     );
                     values = normalized.values;
                     modelFields = normalized.fields;
@@ -3120,6 +3252,7 @@ const plugin = {
                         config.connectionId,
                         model,
                         cleaned,
+                        config.permissions,
                       )
                     ).values;
                     values = await ensureActivityResModelId(

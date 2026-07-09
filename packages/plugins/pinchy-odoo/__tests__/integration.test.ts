@@ -934,3 +934,195 @@ describe("pinchy-odoo multi-company journal resolution (bare ref + scoped lookup
     });
   });
 });
+
+describe("pinchy-odoo nested one2many + many2many governance against real mock-odoo", () => {
+  const accountingAgentId = "agent-accounting-nested";
+  const accountingConnectionId = "conn-accounting-nested";
+
+  beforeAll(async () => {
+    await fetch(`http://127.0.0.1:${mockOdoo.controlPort}/control/reset`, {
+      method: "POST",
+    });
+    credentialsByConnectionId.set(accountingConnectionId, {
+      url: `http://127.0.0.1:${mockOdoo.jsonRpcPort}`,
+      db: "testdb",
+      uid: 2,
+      apiKey: "test-api-key",
+    });
+  });
+
+  function ref(model: string, id: number, label: string): string {
+    return encodeRef({
+      integrationType: "odoo",
+      connectionId: accountingConnectionId,
+      model,
+      id,
+      label,
+    });
+  }
+
+  it("creates an account.move with an inline line_ids create tuple resolving a bare-ref account_id, with only account.move:create granted", async () => {
+    const config = {
+      connectionId: accountingConnectionId,
+      permissions: { "account.move": ["read", "create"] },
+    };
+    const tools = createApi({ [accountingAgentId]: config });
+    const createTool = findTool(tools, "odoo_create", accountingAgentId);
+
+    const accountRef = ref("account.account", 40, "Bank");
+    const companyRef = ref("res.company", 1, "Helmcraft GmbH");
+    const result = await createTool.execute("create-move-inline-line", {
+      model: "account.move",
+      values: {
+        ref: "Inline line create",
+        date: "2026-01-01",
+        move_type: "entry",
+        company_id: { ref: companyRef },
+        journal_id: "Miscellaneous Operations",
+        line_ids: [[0, 0, { account_id: accountRef, debit: 42 }]],
+      },
+    });
+
+    expect(result.isError).toBeFalsy();
+    const { id } = JSON.parse(result.content[0].text) as { id: number };
+    const moves = (await fetch(
+      `http://127.0.0.1:${mockOdoo.controlPort}/control/records?model=account.move`,
+    ).then((res) => res.json())) as Array<Record<string, unknown>>;
+    const move = moves.find((m) => m.id === id);
+    expect(move).toBeDefined();
+    expect(Array.isArray(move!.line_ids)).toBe(true);
+    expect((move!.line_ids as number[]).length).toBe(1);
+
+    const lines = (await fetch(
+      `http://127.0.0.1:${mockOdoo.controlPort}/control/records?model=account.move.line`,
+    ).then((res) => res.json())) as Array<Record<string, unknown>>;
+    const createdLine = lines.find(
+      (l) => l.id === (move!.line_ids as number[])[0],
+    );
+    expect(createdLine).toMatchObject({ account_id: 40, debit: 42 });
+  });
+
+  it("rejects a nested line_ids [2,id] delete tuple when the agent lacks account.move.line:delete", async () => {
+    const config = {
+      connectionId: accountingConnectionId,
+      permissions: { "account.move": ["read", "write"] },
+    };
+    const tools = createApi({ [accountingAgentId]: config });
+    const writeTool = findTool(tools, "odoo_write", accountingAgentId);
+
+    const result = await writeTool.execute("write-move-delete-line", {
+      model: "account.move",
+      ids: [1],
+      values: { line_ids: [[2, 1]] },
+    });
+
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toMatch(/account\.move\.line/);
+    expect(result.content[0].text).toMatch(/delete/i);
+  });
+
+  it("allows a nested line_ids [2,id] delete tuple once account.move.line:delete is granted", async () => {
+    const config = {
+      connectionId: accountingConnectionId,
+      permissions: {
+        "account.move": ["read", "write"],
+        "account.move.line": ["delete"],
+      },
+    };
+    const tools = createApi({ [accountingAgentId]: config });
+    const writeTool = findTool(tools, "odoo_write", accountingAgentId);
+
+    const result = await writeTool.execute("write-move-delete-line-ok", {
+      model: "account.move",
+      ids: [1],
+      values: { line_ids: [[2, 1]] },
+    });
+
+    expect(result.isError).toBeFalsy();
+  });
+
+  it("resolves bare refs inside a many2many tax_ids create tuple and materializes the join set", async () => {
+    const config = {
+      connectionId: accountingConnectionId,
+      permissions: {
+        "account.move": ["read", "create"],
+        "account.tax": ["read"],
+      },
+    };
+    const tools = createApi({ [accountingAgentId]: config });
+    const createTool = findTool(tools, "odoo_create", accountingAgentId);
+
+    const taxRef = ref("account.tax", 1, "VAT 19%");
+    const companyRef = ref("res.company", 1, "Helmcraft GmbH");
+    const result = await createTool.execute("create-move-m2m", {
+      model: "account.move",
+      values: {
+        ref: "M2M tax test",
+        date: "2026-01-01",
+        move_type: "entry",
+        company_id: { ref: companyRef },
+        journal_id: "Miscellaneous Operations",
+        tax_ids: [[4, taxRef]],
+      },
+    });
+
+    expect(result.isError).toBeFalsy();
+    const { id } = JSON.parse(result.content[0].text) as { id: number };
+    const moves = (await fetch(
+      `http://127.0.0.1:${mockOdoo.controlPort}/control/records?model=account.move`,
+    ).then((res) => res.json())) as Array<Record<string, unknown>>;
+    const move = moves.find((m) => m.id === id);
+    expect(move).toMatchObject({ tax_ids: [1] });
+  });
+
+  it("rejects a many2many [0,0,{...}] create tuple when the agent lacks account.tax:create", async () => {
+    const config = {
+      connectionId: accountingConnectionId,
+      permissions: { "account.move": ["read", "create"] },
+    };
+    const tools = createApi({ [accountingAgentId]: config });
+    const createTool = findTool(tools, "odoo_create", accountingAgentId);
+
+    const companyRef = ref("res.company", 1, "Helmcraft GmbH");
+    const result = await createTool.execute("create-move-m2m-reject", {
+      model: "account.move",
+      values: {
+        ref: "M2M tax reject test",
+        date: "2026-01-01",
+        move_type: "entry",
+        company_id: { ref: companyRef },
+        journal_id: "Miscellaneous Operations",
+        tax_ids: [[0, 0, { name: "New Tax", amount: 5 }]],
+      },
+    });
+
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toMatch(/account\.tax/);
+    expect(result.content[0].text).toMatch(/create/i);
+  });
+
+  it("allows a many2many [4,<ref>] link tuple with no account.tax grant at all (join-table-only op)", async () => {
+    const config = {
+      connectionId: accountingConnectionId,
+      permissions: { "account.move": ["read", "create"] },
+    };
+    const tools = createApi({ [accountingAgentId]: config });
+    const createTool = findTool(tools, "odoo_create", accountingAgentId);
+
+    const taxRef = ref("account.tax", 2, "VAT 7%");
+    const companyRef = ref("res.company", 1, "Helmcraft GmbH");
+    const result = await createTool.execute("create-move-m2m-link-nogrant", {
+      model: "account.move",
+      values: {
+        ref: "M2M link no-grant test",
+        date: "2026-01-01",
+        move_type: "entry",
+        company_id: { ref: companyRef },
+        journal_id: "Miscellaneous Operations",
+        tax_ids: [[4, taxRef]],
+      },
+    });
+
+    expect(result.isError).toBeFalsy();
+  });
+});

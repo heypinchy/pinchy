@@ -388,6 +388,16 @@ const MODEL_FIELDS = {
       readonly: false,
       relation: "account.move.line",
     },
+    // many2many relation to exercise nested command-tuple resolution +
+    // permission gating for join-table fields (issue #615 follow-up),
+    // parallel to the one2many line_ids above.
+    tax_ids: {
+      string: "Taxes",
+      type: "many2many",
+      required: false,
+      readonly: false,
+      relation: "account.tax",
+    },
   },
   // Chart-of-accounts model, seeded with a cross-company name collision (see
   // getDefaultRecords) mirroring the account.journal collision above — needed
@@ -444,6 +454,32 @@ const MODEL_FIELDS = {
       required: false,
       readonly: false,
       relation: "account.move",
+    },
+    company_id: {
+      string: "Company",
+      type: "many2one",
+      required: false,
+      readonly: false,
+      relation: "res.company",
+    },
+  },
+  // Tax model — the many2many relation of account.move#tax_ids. Field
+  // metadata drives the same generic many2one write-value validation as
+  // account.move.line above, so a nested m2o inside a many2many command
+  // tuple is validated the same way.
+  "account.tax": {
+    id: { string: "ID", type: "integer", required: false, readonly: true },
+    name: {
+      string: "Tax Name",
+      type: "char",
+      required: true,
+      readonly: false,
+    },
+    amount: {
+      string: "Amount",
+      type: "float",
+      required: false,
+      readonly: false,
     },
     company_id: {
       string: "Company",
@@ -684,6 +720,10 @@ function getDefaultRecords() {
       },
     ],
     "account.move.line": [],
+    "account.tax": [
+      { id: 1, name: "VAT 19%", amount: 19.0, company_id: [1, "Helmcraft GmbH"] },
+      { id: 2, name: "VAT 7%", amount: 7.0, company_id: [1, "Helmcraft GmbH"] },
+    ],
   };
 }
 
@@ -938,6 +978,76 @@ function expandOne2ManyCommands(
   return { ids };
 }
 
+/**
+ * Expand many2many command tuples, mirroring Odoo's Command semantics for a
+ * join-table relation (contrast with `expandOne2ManyCommands` above, which
+ * has a required back-reference to the parent — m2m has none):
+ *   [0, 0, {vals}]   create a new target record, validating + storing it,
+ *                    then adding it to the relation set
+ *   [1, id, {vals}]  update an existing target record, validating first
+ *   [2, id]          delete: remove the target record entirely (not modeled
+ *                    here beyond dropping it from the relation set — no
+ *                    separate model-wide deletion, matching the faithful-
+ *                    but-minimal #615 scope)
+ *   [3, id]          unlink: remove from the relation set only
+ *   [4, id]          link: add an existing id to the relation set
+ *   [5]              clear: empty the relation set
+ *   [6, 0, [ids]]    replace: set the relation set to exactly these ids
+ *
+ * No back-reference or company_id inheritance — a many2many target row
+ * belongs to no single parent. Returns `{ error }` on the first invalid
+ * nested many2one value, or `{ ids }` — the ids to store on the parent's
+ * many2many field — on success. `currentIds` is the field's existing value
+ * on the record being written (needed for 3/4/5/6 to compute the new set).
+ */
+function expandMany2ManyCommands(relationModel, commands, currentIds) {
+  let ids = [...(currentIds || [])];
+
+  for (const cmd of commands) {
+    if (!Array.isArray(cmd)) continue;
+    const [op, cmdId, cmdValues] = cmd;
+
+    if (op === 0 || op === 1) {
+      const targetValues = { ...(cmdValues || {}) };
+      const validationError = validateMany2OneValues(
+        relationModel,
+        targetValues,
+      );
+      if (validationError) return { error: validationError };
+
+      if (op === 0) {
+        ensureModel(relationModel);
+        const newId = nextIds.get(relationModel) || 1;
+        nextIds.set(relationModel, newId + 1);
+        store.get(relationModel).push({ id: newId, ...targetValues });
+        ids.push(newId);
+      } else {
+        // op === 1: update existing target, keep it in the relation set
+        ensureModel(relationModel);
+        const existing = store
+          .get(relationModel)
+          .find((r) => r.id === cmdId);
+        if (existing) Object.assign(existing, targetValues);
+        if (!ids.includes(cmdId)) ids.push(cmdId);
+      }
+    } else if (op === 2 || op === 3) {
+      // delete / unlink: drop from the relation set
+      ids = ids.filter((id) => id !== cmdId);
+    } else if (op === 4) {
+      // link: add if not already present
+      if (!ids.includes(cmdId)) ids.push(cmdId);
+    } else if (op === 5) {
+      // clear
+      ids = [];
+    } else if (op === 6) {
+      // replace with exactly this id list
+      ids = Array.isArray(cmdValues) ? [...cmdValues] : [];
+    }
+  }
+
+  return { ids };
+}
+
 // ---------------------------------------------------------------------------
 // Helper: pick fields from record
 // ---------------------------------------------------------------------------
@@ -1162,17 +1272,25 @@ function handleJsonRpc(body) {
         const topLevelError = validateMany2OneValues(model, values);
         if (topLevelError) return topLevelError;
 
-        // Separate one2many command-tuple fields (e.g. account.move#line_ids)
-        // from plain scalar/m2o values — those need expansion AFTER the
-        // parent record exists, since lines back-reference the parent id.
+        // Separate one2many AND many2many command-tuple fields (e.g.
+        // account.move#line_ids, #tax_ids) from plain scalar/m2o values —
+        // those need expansion AFTER the parent record exists (one2many
+        // lines back-reference the parent id; many2many is expanded at the
+        // same point purely for symmetry/ordering, though it needs no
+        // back-ref).
         const modelSchema = MODEL_FIELDS[model] || {};
         const one2manyFields = Object.entries(modelSchema).filter(
           ([name, def]) =>
             def.type === "one2many" && Array.isArray(values[name]),
         );
+        const many2manyFields = Object.entries(modelSchema).filter(
+          ([name, def]) =>
+            def.type === "many2many" && Array.isArray(values[name]),
+        );
 
         const scalarValues = { ...values };
         for (const [name] of one2manyFields) delete scalarValues[name];
+        for (const [name] of many2manyFields) delete scalarValues[name];
 
         const newId = nextIds.get(model) || 1;
         nextIds.set(model, newId + 1);
@@ -1190,6 +1308,22 @@ function handleJsonRpc(body) {
           if (expansion.error) {
             // Roll back the just-created parent — Odoo creates are atomic;
             // a failed nested line means the whole create fails.
+            store.set(
+              model,
+              store.get(model).filter((r) => r.id !== newId),
+            );
+            return expansion.error;
+          }
+          newRecord[name] = expansion.ids;
+        }
+
+        for (const [name, def] of many2manyFields) {
+          const expansion = expandMany2ManyCommands(
+            def.relation,
+            values[name],
+            [],
+          );
+          if (expansion.error) {
             store.set(
               model,
               store.get(model).filter((r) => r.id !== newId),
