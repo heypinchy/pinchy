@@ -34,33 +34,34 @@ You'll also need your IMAP and SMTP server hostnames and ports — but Pinchy tr
 
     In Pinchy, go to **Settings → Integrations**, click **Add Integration**, then select **IMAP / Other email**.
 
-2.  **Enter a name and your email address**
+2.  **Enter your details**
 
-    Give the connection a name (e.g. "Support inbox") and enter your email address. When you tab away from the email field, Pinchy looks up the server settings for known providers and fills in the fields below automatically.
+    Three fields are all most mailboxes need:
 
-3.  **Confirm or adjust the server settings**
+    - **Your name** (optional) — shown to recipients when an agent sends email from this mailbox (`Clemens Helm <clemens@example.com>` instead of a bare address).
+    - **Email address** — when you tab away from this field, Pinchy looks up your provider's server settings automatically (via its built-in provider list and your domain's DNS records).
+    - **Password** — use an app-specific password if your provider requires one (see the caution above).
 
-    Check the pre-filled values, or enter them yourself if your provider wasn't recognized:
+3.  **Check the server settings**
 
-    - **IMAP host** and **IMAP port** — defaults to port `993`
-    - **SMTP host** and **SMTP port** — defaults to port `587`
-    - **Security** — `TLS`, `STARTTLS`, or `None`, applied to both connections; defaults to `TLS`. Most providers pair port 993 (IMAP) and 465 (SMTP) with `TLS`, and port 587 (SMTP) with `STARTTLS` — check your provider's settings if the connection test fails.
+    If Pinchy found your provider's settings, they appear as a one-line summary — you don't need to touch them. Click **Edit server settings** if you want to inspect or change them.
+
+    If your provider wasn't recognized, the server fields open up pre-filled with a best guess. Verify them against your provider's documentation:
+
+    - **IMAP host** and **IMAP port** — usually port `993`
+    - **SMTP host** and **SMTP port** — usually port `465` or `587`
+    - **Username** — pre-filled with your email address, which is what almost every provider expects
+    - **Security** — leave on `Automatic (TLS)`; Pinchy picks implicit TLS or STARTTLS based on the port. `None` disables encryption entirely and is only for special setups like a local Proton Mail Bridge.
 
     Your provider's help pages usually list these under "IMAP/SMTP settings" or "set up a mail client." Search for `<your provider> IMAP settings` if you're not sure.
 
-4.  **Enter your username and password**
+4.  **Test & Save**
 
-    Username is usually your full email address. For the password, use an app-specific password if your provider requires one (see the caution above).
+    Click **Test & Save**. Pinchy logs in to both the IMAP and SMTP servers and, if both succeed, saves the connection in one step — a broken connection can't end up saved and silently unusable.
 
-5.  **Test the connection**
+    If the test fails, the server settings open up with a specific failure reason — wrong credentials, unreachable host, or a TLS mismatch — so you can correct them and try again.
 
-    Click **Test connection**. Pinchy tries to log in to both the IMAP and SMTP servers with the settings you entered and reports success or a specific failure reason — wrong credentials, unreachable host, or a TLS mismatch.
-
-    Pinchy always tests the connection before saving. **Save** stays disabled until the test succeeds, so a broken connection can't end up saved and silently unusable.
-
-6.  **Save**
-
-    Once the test succeeds, click **Save**. The mailbox now appears in the **Integrations** list, ready to grant to agents.
+    The mailbox then appears in the **Integrations** list, named after its email address (rename it anytime from the list), ready to grant to agents.
 
 </Steps>
 
