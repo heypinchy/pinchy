@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { NextRequest } from "next/server";
+import { captureChannelMessageSchema } from "@/lib/schemas/channel-messages";
 
 const mockValidateGatewayToken = vi.fn();
 vi.mock("@/lib/gateway-auth", () => ({
@@ -90,5 +91,57 @@ describe("POST /api/internal/channel-messages", () => {
     mockOnConflictDoNothing.mockRejectedValueOnce(new Error("db down"));
     const res = await POST(makeRequest(validBody));
     expect(res.status).toBe(503);
+  });
+});
+
+describe("captureChannelMessageSchema media", () => {
+  it("accepts an optional media array", () => {
+    const parsed = captureChannelMessageSchema.safeParse({
+      ...validBody,
+      content: "<media:image>",
+      media: [{ path: "/root/.openclaw/media/inbound/file_12---abc.jpg", mimeType: "image/jpeg" }],
+    });
+    expect(parsed.success).toBe(true);
+    if (!parsed.success) return;
+    // Guards against unknown-key stripping silently making this a false pass.
+    expect(parsed.data.media).toBeDefined();
+    expect(parsed.data.media).toEqual([
+      { path: "/root/.openclaw/media/inbound/file_12---abc.jpg", mimeType: "image/jpeg" },
+    ]);
+  });
+
+  it("allows a media entry without mimeType", () => {
+    const parsed = captureChannelMessageSchema.safeParse({
+      ...validBody,
+      media: [{ path: "/root/.openclaw/media/inbound/file_12---abc.jpg" }],
+    });
+    expect(parsed.success).toBe(true);
+    if (!parsed.success) return;
+    expect(parsed.data.media).toEqual([
+      { path: "/root/.openclaw/media/inbound/file_12---abc.jpg" },
+    ]);
+  });
+
+  it("rejects a media entry without a path", () => {
+    const parsed = captureChannelMessageSchema.safeParse({
+      ...validBody,
+      media: [{ mimeType: "image/jpeg" }],
+    });
+    expect(parsed.success).toBe(false);
+  });
+
+  it("caps media at 20 entries", () => {
+    const media = Array.from({ length: 21 }, (_, i) => ({
+      path: `/root/.openclaw/media/inbound/file_${i}.jpg`,
+    }));
+    const parsed = captureChannelMessageSchema.safeParse({ ...validBody, media });
+    expect(parsed.success).toBe(false);
+  });
+
+  it("still parses a payload without media (backward compat)", () => {
+    const parsed = captureChannelMessageSchema.safeParse(validBody);
+    expect(parsed.success).toBe(true);
+    if (!parsed.success) return;
+    expect(parsed.data.media).toBeUndefined();
   });
 });

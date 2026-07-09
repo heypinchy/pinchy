@@ -26,6 +26,20 @@ export const captureChannelMessageSchema = z.object({
   content: z.string().min(1),
   /** Epoch milliseconds the message was sent on the channel. */
   sentAt: z.number().int().nonnegative(),
+  /**
+   * Inbound media OpenClaw saved to its media store (`~/.openclaw/media/inbound/`).
+   * The route mirrors each file into the agent workspace uploads dir. Only the
+   * BASENAME of `path` is trusted server-side. Cap 20 = generous album bound.
+   */
+  media: z
+    .array(
+      z.object({
+        path: z.string().trim().min(1).max(1024),
+        mimeType: z.string().trim().min(1).max(255).optional(),
+      })
+    )
+    .max(20)
+    .optional(),
 });
 
 export type CaptureChannelMessage = z.infer<typeof captureChannelMessageSchema>;
