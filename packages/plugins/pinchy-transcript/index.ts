@@ -36,6 +36,10 @@ interface MessageReceivedEvent {
   sessionKey?: string;
   messageId?: string;
   timestamp?: number;
+  // `mediaPaths`/`mediaTypes` are untyped at the SDK boundary: OpenClaw pairs
+  // them by array index and `mediaTypes` may be shorter than `mediaPaths` (or
+  // absent). Kept as `unknown` here and validated at runtime in extractMedia.
+  metadata?: { mediaPaths?: unknown; mediaTypes?: unknown };
 }
 
 interface MessageSentEvent {
@@ -53,9 +57,14 @@ interface PluginApi {
     hookName: "message_received" | "message_sent",
     handler: (
       event: MessageReceivedEvent | MessageSentEvent,
-      ctx: MessageHookContext
-    ) => Promise<void> | void
+      ctx: MessageHookContext,
+    ) => Promise<void> | void,
   ) => void;
+}
+
+interface CapturedMedia {
+  path: string;
+  mimeType?: string;
 }
 
 interface CaptureChannelMessage {
@@ -66,6 +75,41 @@ interface CaptureChannelMessage {
   externalId: string;
   content: string;
   sentAt: number;
+  media?: CapturedMedia[];
+}
+
+// Mirrors the server schema's cap (captureChannelMessageSchema, media.max(20))
+// so an oversized album is trimmed here instead of the whole message 400ing.
+const MAX_MEDIA = 20;
+
+/**
+ * Extract captured media from a message_received event's `metadata`. OpenClaw
+ * pairs `mediaPaths[i]` with `mediaTypes[i]` by index; `mediaTypes` may be
+ * shorter than `mediaPaths` or absent entirely, so a missing type is dropped
+ * rather than defaulted. Returns undefined when there's nothing usable so
+ * callers can omit the key entirely instead of sending `media: []`.
+ */
+function extractMedia(event: {
+  metadata?: { mediaPaths?: unknown; mediaTypes?: unknown };
+}): CapturedMedia[] | undefined {
+  const mediaPaths = event.metadata?.mediaPaths;
+  if (!Array.isArray(mediaPaths)) return undefined;
+  const mediaTypes = Array.isArray(event.metadata?.mediaTypes)
+    ? event.metadata.mediaTypes
+    : [];
+
+  const media: CapturedMedia[] = [];
+  for (let i = 0; i < mediaPaths.length && media.length < MAX_MEDIA; i++) {
+    const path = mediaPaths[i];
+    if (typeof path !== "string" || path.length === 0) continue;
+    const mimeType = mediaTypes[i];
+    media.push(
+      typeof mimeType === "string" && mimeType.length > 0
+        ? { path, mimeType }
+        : { path },
+    );
+  }
+  return media.length > 0 ? media : undefined;
 }
 
 // Channels whose direct conversations Pinchy mirrors. Widen to add Slack etc.
@@ -86,7 +130,7 @@ function normalizeBaseUrl(url: string): string {
  * segment.
  */
 function parseDirectSessionKey(
-  sessionKey: string | undefined
+  sessionKey: string | undefined,
 ): { agentId: string; peer: string } | null {
   if (!sessionKey) return null;
   const m = /^agent:([^:]+):direct:([^:]+)$/.exec(sessionKey);
@@ -101,7 +145,11 @@ function djb2(str: string): string {
   return (h >>> 0).toString(36);
 }
 
-function surrogateId(direction: string, content: string, sentAt: number): string {
+function surrogateId(
+  direction: string,
+  content: string,
+  sentAt: number,
+): string {
   return `surrogate:${direction}:${sentAt}:${djb2(content)}`;
 }
 
@@ -110,7 +158,7 @@ const MAX_RETRIES = 2;
 async function postChannelMessage(
   cfg: PluginConfig,
   logger: PluginLogger | undefined,
-  payload: CaptureChannelMessage
+  payload: CaptureChannelMessage,
 ): Promise<void> {
   const endpoint = `${normalizeBaseUrl(cfg.apiBaseUrl)}/api/internal/channel-messages`;
   let lastError: Error | undefined;
@@ -130,7 +178,7 @@ async function postChannelMessage(
       if (res.ok) return;
       if (res.status < 500) {
         logger?.warn?.(
-          `[pinchy-transcript] capture rejected (${res.status}) for ${payload.direction} ${payload.channel} message; dropping`
+          `[pinchy-transcript] capture rejected (${res.status}) for ${payload.direction} ${payload.channel} message; dropping`,
         );
         return;
       }
@@ -141,7 +189,7 @@ async function postChannelMessage(
 
     if (attempt < MAX_RETRIES) {
       logger?.warn?.(
-        `[pinchy-transcript] capture failed (attempt ${attempt + 1}/${MAX_RETRIES + 1}), retrying: ${lastError?.message}`
+        `[pinchy-transcript] capture failed (attempt ${attempt + 1}/${MAX_RETRIES + 1}), retrying: ${lastError?.message}`,
       );
     }
   }
@@ -159,42 +207,62 @@ function buildPayload(args: {
   content: string | undefined;
   messageId: string | undefined;
   sentAt: number;
+  media?: CapturedMedia[];
 }): CaptureChannelMessage | null {
-  const { channel, sessionKey, direction, content, messageId, sentAt } = args;
+  const { channel, sessionKey, direction, content, messageId, sentAt, media } =
+    args;
   if (!channel || !CAPTURED_CHANNELS.has(channel)) return null;
   // Only mirror DIRECT (1:1) conversations; the endpoint re-derives agent+peer
   // from this same key, so we just gate on it being a valid direct session.
   if (!parseDirectSessionKey(sessionKey)) return null;
   const text = (content ?? "").trim();
-  if (!text) return null;
+  const hasMedia = !!media && media.length > 0;
+  if (!text && !hasMedia) return null;
+  // A photo-only message often has empty content (OpenClaw's own placeholder
+  // isn't guaranteed on every path). The capture schema requires non-empty
+  // content and the mirror UI renders it directly, so substitute a stable
+  // placeholder rather than dropping media-only messages.
+  const finalContent = text || "<media>";
 
   return {
     channel,
     sessionKey: sessionKey!,
     direction,
-    externalId: messageId ?? surrogateId(direction, text, sentAt),
-    content: text,
+    externalId: messageId ?? surrogateId(direction, finalContent, sentAt),
+    content: finalContent,
     sentAt,
+    ...(hasMedia ? { media } : {}),
   };
 }
 
 const plugin = {
   id: "pinchy-transcript",
   name: "Pinchy Transcript",
-  description: "Captures channel conversation messages into Pinchy's durable transcript store.",
+  description:
+    "Captures channel conversation messages into Pinchy's durable transcript store.",
   configSchema: {
     validate: (value: unknown) => {
-      if (value && typeof value === "object" && "apiBaseUrl" in value && "gatewayToken" in value) {
+      if (
+        value &&
+        typeof value === "object" &&
+        "apiBaseUrl" in value &&
+        "gatewayToken" in value
+      ) {
         return { ok: true as const, value };
       }
-      return { ok: false as const, errors: ["Missing required keys in config"] };
+      return {
+        ok: false as const,
+        errors: ["Missing required keys in config"],
+      };
     },
   },
 
   register(api: PluginApi) {
     const cfg = api.pluginConfig;
     if (!cfg?.apiBaseUrl || !cfg?.gatewayToken) {
-      api.logger?.warn?.("[pinchy-transcript] plugin config is missing apiBaseUrl or gatewayToken");
+      api.logger?.warn?.(
+        "[pinchy-transcript] plugin config is missing apiBaseUrl or gatewayToken",
+      );
       return;
     }
 
@@ -207,6 +275,7 @@ const plugin = {
         content: e.content,
         messageId: e.messageId,
         sentAt: typeof e.timestamp === "number" ? e.timestamp : Date.now(),
+        media: extractMedia(e),
       });
       if (payload) await postChannelMessage(cfg, api.logger, payload);
     });
@@ -230,5 +299,11 @@ const plugin = {
 };
 
 // Exported for unit tests; the default export is the plugin OpenClaw loads.
-export { buildPayload, parseDirectSessionKey, surrogateId, postChannelMessage };
+export {
+  buildPayload,
+  parseDirectSessionKey,
+  surrogateId,
+  postChannelMessage,
+  extractMedia,
+};
 export default plugin;
