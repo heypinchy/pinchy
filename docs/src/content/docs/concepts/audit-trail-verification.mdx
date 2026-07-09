@@ -1,0 +1,143 @@
+---
+title: How the Audit Trail Works — and How to Verify It Yourself
+description: A deep dive into Pinchy's tamper-evident audit log — per-row HMAC signatures, the hash chain, the append-only database guard, and how you can independently verify integrity on demand.
+---
+
+The [Audit Trail](/concepts/audit-trail/) reference explains **what** Pinchy logs. This page explains **how** that log defends itself against tampering — and, just as importantly, how you can check that defense yourself instead of taking our word for it.
+
+We wrote this page because "trust us, it's signed" is not a security property. A tamper-evident log is only worth something if the people relying on it can independently confirm it hasn't been touched. So everything below is verifiable by you, from the admin UI or the API, against the same cryptographic evidence stored in your own database.
+
+A note on wording we hold ourselves to: the audit trail is **tamper-evident**, not tamper-proof. Nothing here prevents a sufficiently privileged attacker from changing rows. What it does is make any change — an edited field, a deleted row, a reordered history — **detectable**. The difference between prevention and detection matters, and we cover exactly where that line sits in [The threat model, honestly](#the-threat-model-honestly) below.
+
+## Two layers, two jobs
+
+Pinchy protects the audit log with two independent mechanisms that catch different attacks:
+
+1. **A per-row HMAC signature** catches a change to the *contents* of a row — someone edits a field in an existing entry.
+2. **A hash chain linking each row to its predecessor** catches a change to the *shape* of the log — someone deletes a row from the middle, truncates the tail, or reorders history.
+
+Neither alone is enough. A per-row signature says "this row is unchanged" but says nothing about whether the row *next to it* was quietly deleted. The chain closes that gap. Together they make the whole log tamper-evident, not just each row in isolation.
+
+Underneath both sits a third layer that isn't cryptographic at all: the database itself refuses to modify or delete audit rows. That's the append-only guard, and we cover it in [The append-only guard](#the-append-only-guard).
+
+## Per-row HMAC signatures
+
+When an audit event occurs, Pinchy builds a **canonical serialization** of the row's meaningful fields — timestamp, event type, actor type and id, resource, the structured `detail` payload, outcome, and error — and signs it with **HMAC-SHA256** using a server-side secret. The result is stored in the row's `row_hmac` column.
+
+Canonical means deterministic: the same logical row always serializes to the exact same bytes, so the signature is reproducible. Anyone holding the HMAC secret can re-derive the expected signature for a row and compare it against the stored one. If a single character of any signed field was changed after the fact, the recomputed signature won't match — and the row is flagged as invalid.
+
+The HMAC secret is auto-generated on first start if you don't set one. For multi-instance deployments you should set `AUDIT_HMAC_SECRET` explicitly so every instance signs and verifies against the same key — see [Multi-instance deployments](/concepts/audit-trail/#multi-instance-deployments) in the reference.
+
+## The hash chain
+
+A per-row signature has a blind spot: it proves each surviving row is intact, but it can't see a row that's no longer there. Delete entry #5000 entirely and every remaining row still verifies perfectly on its own. That's the gap the chain closes.
+
+Each row's signature also folds in the **previous row's signature**. Concretely, before Pinchy signs a row it includes the predecessor's `row_hmac` in the canonical payload, and it stores that predecessor value in the row's `prev_hmac` column. Every row is therefore cryptographically bound to the one before it, forming a chain back to the very first row — the genesis row, which has no predecessor.
+
+Because each link depends on the row before it, changing the *sequence* breaks the chain even when every individual row is untouched:
+
+- **Deleting a row from the middle** leaves a gap — the next row's `prev_hmac` no longer matches the signature of the row that now precedes it.
+- **Truncating the tail** removes the most recent links; verification of a known range detects the missing continuation.
+- **Reordering rows** puts a `prev_hmac` next to the wrong predecessor.
+
+Verification reports these two failure modes **separately**, because they mean different things:
+
+- `invalidIds` — rows whose own signature doesn't recompute. A field inside the row was changed.
+- `chainBreakIds` — rows whose own signature is fine, but whose chain link no longer points at the correct predecessor. A neighbouring row was deleted, or rows were reordered.
+
+Keeping them distinct tells you not just *that* something is wrong but *what kind* of tampering happened, which is exactly what an investigation needs first.
+
+:::note[Rows written before the chain existed]
+Entries created before the hash chain was introduced keep their original per-row signatures and stay verifiable under them. The chain binds forward from the point it was introduced — older rows are checked for content integrity but aren't chain-checked against a predecessor they never recorded. This is expected, not an integrity failure.
+:::
+
+## The append-only guard
+
+The HMAC chain makes tampering *detectable*. The database makes the most common tampering *fail outright*.
+
+The `audit_log` table carries PostgreSQL triggers that reject every attempt to change it:
+
+- A `BEFORE UPDATE` trigger raises an exception — no row can be edited.
+- A `BEFORE DELETE` trigger raises an exception — no row can be removed.
+- A `BEFORE TRUNCATE` statement-level trigger raises an exception — the whole table can't be wiped in one shot. (`TRUNCATE` is a statement-level operation in Postgres, so the row-level `UPDATE`/`DELETE` triggers don't fire for it — it needs its own guard.)
+
+This is enforced by the database, not by application code, so it holds even against direct SQL. The application role Pinchy connects with cannot disable these triggers; only a database **superuser** can. That's the boundary: append-only is guaranteed against anyone operating with Pinchy's own credentials, and against ordinary database access. It is not a guarantee against someone who already holds superuser on your Postgres — see the threat model below.
+
+We describe this as **append-only, database-enforced**. We deliberately don't call the log "immutable" without that qualifier, because the honest scope is "the application and normal database access cannot change it," not "no one in any circumstance can."
+
+## Verify it yourself
+
+You don't have to trust that any of the above is working. You can run the exact same verification Pinchy runs internally, on demand, and read the result.
+
+### On demand, via the API
+
+`GET /api/audit/verify` (admin only) walks the log, recomputes every row signature and every chain link, and returns a structured result:
+
+```bash
+curl -b session_cookie https://your-pinchy-instance/api/audit/verify
+```
+
+```json
+{
+  "valid": true,
+  "totalChecked": 14203,
+  "invalidIds": [],
+  "chainBreakIds": []
+}
+```
+
+`valid` is `true` only when both `invalidIds` and `chainBreakIds` are empty. If tampering is present, `valid` is `false` and the two arrays tell you which rows failed and how — `invalidIds` for changed content, `chainBreakIds` for deletion or reordering, as described above.
+
+Optional `fromId` and `toId` query parameters restrict verification to a range of row ids, which is useful for spot-checking a window without scanning the entire table. The scan is memory-bounded, so verifying a large log won't strain the process.
+
+The same check is available in the admin UI: open the **Audit** page and click **Verify Integrity**.
+
+### Continuously, via the verify cron
+
+On-demand verification is only run when someone remembers to run it. So Pinchy also runs the *same* check continuously in the background.
+
+A periodic verify job re-verifies newly written rows against the chain and raises an alarm the moment it finds a break — you don't have to be watching for it. The alarm is itself an audit event: `audit.integrity_check`.
+
+- On a clean sweep it writes `audit.integrity_check` with `outcome: "success"`.
+- On a detected break it writes `audit.integrity_check` with `outcome: "failure"`, and the `detail` carries structured findings — `invalidCount`, `chainBreakCount`, and the offending `invalidIds` / `chainBreakIds` (capped so the row stays within the audit-detail size budget).
+
+Because the alarm is a first-class audit event, you can wire your normal audit monitoring to it: filter the log for `eventType=audit.integrity_check` with a failure outcome, or route those rows to your SIEM, and you have a standing tamper alarm without any extra plumbing. The actor is the system job (`audit-verify-job`), and each sweep records the id range it covered so you can confirm coverage.
+
+## Personal data is redacted at write time
+
+Verifiability and privacy pull in opposite directions: a tamper-evident log is one you *can't* go back and scrub, but privacy law expects personal data to be erasable. Pinchy resolves this by keeping the identifying data out of the signed row in the first place, so there's never anything to scrub.
+
+Two things happen **before** a row is signed:
+
+- **Email addresses** are never stored as plaintext. Where an event needs to identify an address, Pinchy stores a keyed HMAC of it (so an admin holding a known address can match it, but a leaked log doesn't yield addresses back) plus a short masked preview for human recognition. See [Email addresses](/concepts/audit-trail/#email-addresses-gdpr-art-17) in the reference.
+- **User identity** is recorded as a per-user pseudonym rather than the raw user id, again folded into the row before signing so the chain covers it consistently.
+
+Because the pseudonym-to-person mapping lives on the user's own (mutable) record, **deleting a user removes that mapping** while every audit row they generated stays exactly where it is, still signed, still chained. What happened and when remains intact and verifiable; who did it becomes an opaque token that nothing in the database can resolve back to a person. This is the standard **crypto-erasure** (crypto-shredding) pattern for append-only logs — you erase the key to the data rather than the data itself.
+
+The design consequence is deliberate: the audit trail survives a right-to-erasure request structurally intact and still passes verification. Erasure changes *who a row can be linked to*, not *whether the row is authentic*.
+
+:::caution[Not legal advice]
+This describes a design stance, not a legal opinion. Whether crypto-erasure satisfies a specific obligation for your organization is a question for your Data Protection Officer or counsel. We're documenting the mechanism so your DPO can assess it — not asserting a compliance outcome on your behalf.
+:::
+
+## The threat model, honestly
+
+It's worth being precise about what this system does and does not promise, because a security control you misunderstand is worse than one you don't have.
+
+**What the chain detects.** Any tampering that touches the signed data or the sequence:
+
+- editing a field in an existing row (`invalidIds`),
+- deleting a row from the middle (`chainBreakIds`),
+- reordering rows (`chainBreakIds`),
+- truncating the tail — the missing continuation shows up when you verify a range whose end you know.
+
+**What it gives you: detection, not prevention.** The cryptography can't stop a write; it can only make the write conspicuous when you check. The append-only database triggers *do* prevent the common cases (edits and deletes through Pinchy's own role, or ordinary SQL), but they too can be disabled by a database superuser.
+
+**The root-of-trust caveat.** The signatures are only as trustworthy as the secret that produces them. An attacker who holds **both** database superuser (to disable the triggers and rewrite rows) **and** the HMAC secret (to re-sign the rewritten rows and rebuild a consistent chain) could, in principle, forge a clean-looking history. Detection assumes the attacker doesn't control the signing key. This isn't a Pinchy-specific limitation — it's inherent to any log that signs itself with a key held in the same trust domain it's protecting.
+
+**Where we're headed.** The roadmap answer to that caveat is **external anchoring**: periodically publishing the chain head (the latest row signature) into a second, independent trust domain — an append-only store the Pinchy host can't rewrite. Once the chain head is anchored externally, an attacker who forges local history still can't match the externally recorded head, so even a superuser-plus-key compromise becomes detectable. Until that ships, treat the guarantee as: strong detection against everything short of a full compromise of both the database and the signing key.
+
+## Where to go next
+
+- [Audit Trail](/concepts/audit-trail/) — the full reference: every event type, what each `detail` payload carries, redaction rules, and export formats.
+- [Hardening Guide](/guides/hardening/) — production deployment hardening, including reverse-proxy TLS and the CSRF gate.

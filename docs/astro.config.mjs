@@ -183,6 +183,7 @@ export default defineConfig({
             { label: 'User Roles', slug: 'concepts/user-roles' },
             { label: 'Groups', slug: 'concepts/groups' },
             { label: 'Audit Trail', slug: 'concepts/audit-trail' },
+            { label: 'Verifying the Audit Trail', slug: 'concepts/audit-trail-verification' },
             { label: 'AI Disclosure', slug: 'concepts/ai-disclosure' },
             { label: 'Attachments', slug: 'concepts/attachments' },
             { label: 'Integrations', slug: 'concepts/integrations' },
