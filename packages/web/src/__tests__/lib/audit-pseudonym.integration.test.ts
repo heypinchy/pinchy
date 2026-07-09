@@ -20,7 +20,7 @@
 // read side still resolves rows written BEFORE this feature (raw actorId).
 
 import { describe, it, expect } from "vitest";
-import { eq } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import { appendAuditLog } from "@/lib/audit";
 import { db } from "@/db";
 import { auditLog, users } from "@/db/schema";
@@ -126,5 +126,38 @@ describe("audit_log crypto-erasure (integration)", () => {
       .where(eq(users.auditPseudonym, survivingUser.auditPseudonym));
     expect(survivorRow).toBeDefined();
     expect(survivorRow.id).toBe(survivingUser.id);
+  });
+
+  it("backfills audit_pseudonym via a DB-level default for inserts that bypass Drizzle", async () => {
+    // auditPseudonym previously only had a Drizzle-side $defaultFn, which
+    // fires only for inserts issued through this Drizzle table object. Any
+    // insert into "user" that does NOT go through db.insert(users) — e.g.
+    // Better Auth's own adapter queries, or a raw-SQL seed/migration — would
+    // violate the NOT NULL constraint because nothing populates the column.
+    // This raw SQL INSERT simulates that non-Drizzle path: every column
+    // except audit_pseudonym is supplied explicitly, so the only way this
+    // insert can succeed is a DB-level DEFAULT on the column itself.
+    const id = crypto.randomUUID();
+    const email = `raw-insert-${Math.random().toString(36).slice(2)}@example.com`;
+
+    await db.execute(
+      sql`INSERT INTO "user" (id, name, email, email_verified, role) VALUES (${id}, ${"Raw Insert User"}, ${email}, ${true}, ${"member"})`
+    );
+
+    const [row] = await db.select().from(users).where(eq(users.id, id));
+    expect(row).toBeDefined();
+    expect(row.auditPseudonym).toEqual(expect.any(String));
+    expect(row.auditPseudonym.length).toBeGreaterThan(0);
+
+    // Uniqueness: a second raw insert must get a DIFFERENT pseudonym, not a
+    // fixed/constant default that would violate the UNIQUE constraint (or
+    // worse, silently collide two users' erasure mappings).
+    const id2 = crypto.randomUUID();
+    const email2 = `raw-insert-${Math.random().toString(36).slice(2)}@example.com`;
+    await db.execute(
+      sql`INSERT INTO "user" (id, name, email, email_verified, role) VALUES (${id2}, ${"Raw Insert User 2"}, ${email2}, ${true}, ${"member"})`
+    );
+    const [row2] = await db.select().from(users).where(eq(users.id, id2));
+    expect(row2.auditPseudonym).not.toBe(row.auditPseudonym);
   });
 });

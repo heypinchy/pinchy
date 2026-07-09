@@ -1,0 +1,1 @@
+ALTER TABLE "user" ALTER COLUMN "audit_pseudonym" SET DEFAULT gen_random_uuid()::text;

@@ -97,7 +97,14 @@ export const users = pgTable(
     // mapping, making all of that user's future-written audit rows
     // unlinkable, while the audit trail itself stays intact (Art. 17(3)).
     // Unrelated to `id`: a fresh random UUID, never derived from it.
+    //
+    // Both a DB-level DEFAULT and a Drizzle $defaultFn are set: $defaultFn
+    // only fires for inserts that go through this Drizzle table object. Rows
+    // inserted via a different path (Better Auth's own adapter queries, raw
+    // SQL seeds, or any future non-Drizzle writer) would otherwise violate
+    // the NOT NULL constraint. The DB default makes every insert path safe.
     auditPseudonym: text("audit_pseudonym")
+      .default(sql`gen_random_uuid()::text`)
       .$defaultFn(() => crypto.randomUUID())
       .notNull()
       .unique(),
