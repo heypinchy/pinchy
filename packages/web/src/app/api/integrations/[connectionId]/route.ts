@@ -40,6 +40,16 @@ const credentialSchemas: Record<string, z.ZodType> = {
       username: z.string().min(1).optional(),
       password: z.string().min(1).optional(),
       security: z.enum(["tls", "starttls", "none"]).optional(),
+      // Optional display name for the From header of agent-sent mail. Same
+      // CR/LF header-injection guard as imapCreateSchema (packages/web/src/lib/schemas/imap.ts).
+      senderName: z
+        .string()
+        .min(1)
+        .max(200)
+        .refine((v) => !/[\r\n]/.test(v), {
+          message: "Sender name must not contain line breaks",
+        })
+        .optional(),
     })
     .strict()
     .partial(),

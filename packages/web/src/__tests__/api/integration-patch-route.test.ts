@@ -478,6 +478,45 @@ describe("PATCH /api/integrations/[connectionId] — credential probe", () => {
       expect(mockProbeIntegrationCredentials).not.toHaveBeenCalled();
       expect(mockUpdateSet).not.toHaveBeenCalled();
     });
+
+    it("PATCH with senderName merges it into the encrypted credentials blob", async () => {
+      const { PATCH } = await import("@/app/api/integrations/[connectionId]/route");
+
+      const response = await PATCH(
+        makeRequest("/api/integrations/conn-imap-1", {
+          method: "PATCH",
+          body: JSON.stringify({ credentials: { senderName: "Team Support" } }),
+        }),
+        { params: Promise.resolve({ connectionId: "conn-imap-1" }) }
+      );
+
+      expect(response.status).toBe(200);
+      expect(mockProbeIntegrationCredentials).toHaveBeenCalledWith(
+        "imap",
+        expect.objectContaining({ senderName: "Team Support" })
+      );
+      const encryptedPayload = mockEncrypt.mock.calls[0]?.[0] as string;
+      const persisted = JSON.parse(encryptedPayload);
+      expect(persisted.senderName).toBe("Team Support");
+      // Existing fields are preserved via merge.
+      expect(persisted.imapHost).toBe("imap.example.com");
+    });
+
+    it("PATCH with a CR/LF senderName returns 400 and writes nothing", async () => {
+      const { PATCH } = await import("@/app/api/integrations/[connectionId]/route");
+
+      const response = await PATCH(
+        makeRequest("/api/integrations/conn-imap-1", {
+          method: "PATCH",
+          body: JSON.stringify({ credentials: { senderName: "x\r\nBcc: evil@example.com" } }),
+        }),
+        { params: Promise.resolve({ connectionId: "conn-imap-1" }) }
+      );
+
+      expect(response.status).toBe(400);
+      expect(mockProbeIntegrationCredentials).not.toHaveBeenCalled();
+      expect(mockUpdateSet).not.toHaveBeenCalled();
+    });
   });
 
   it("returns 409 when credentials were updated concurrently (optimistic lock)", async () => {

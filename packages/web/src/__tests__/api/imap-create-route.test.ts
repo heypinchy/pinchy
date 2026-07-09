@@ -11,8 +11,10 @@ vi.mock("@/lib/auth", () => ({
 }));
 
 const mockEncrypt = vi.fn().mockReturnValue("encrypted-imap-creds");
+const mockDecrypt = vi.fn();
 vi.mock("@/lib/encryption", () => ({
   encrypt: (...args: unknown[]) => mockEncrypt(...args),
+  decrypt: (...args: unknown[]) => mockDecrypt(...args),
   getOrCreateSecret: vi.fn().mockReturnValue(Buffer.alloc(32)),
 }));
 
@@ -180,11 +182,32 @@ describe("POST /api/integrations/imap", () => {
     expect(serializedDetail).not.toContain("support@example.com");
   });
 
-  it("returns 400 and does not insert or audit when name is missing", async () => {
+  it("defaults the connection name to the mailbox address when name is omitted", async () => {
     const { POST } = await import("@/app/api/integrations/imap/route");
 
     const { name: _name, ...rest } = validBody;
+    mockInsertReturning.mockResolvedValueOnce([{ ...insertedConnection, name: rest.username }]);
+
     const response = await POST(makeRequest(rest));
+    const body = await response.json();
+
+    expect(response.status).toBe(201);
+    expect(mockInsertValues).toHaveBeenCalledWith(expect.objectContaining({ name: rest.username }));
+    expect(body.name).toBe(rest.username);
+
+    // Audit detail must also reflect the defaulted name (the mailbox
+    // address), not a blank/undefined name.
+    expect(mockAppendAuditLog).toHaveBeenCalledWith(
+      expect.objectContaining({
+        detail: expect.objectContaining({ name: rest.username }),
+      })
+    );
+  });
+
+  it("returns 400 and does not insert or audit when name is blank", async () => {
+    const { POST } = await import("@/app/api/integrations/imap/route");
+
+    const response = await POST(makeRequest({ ...validBody, name: "" }));
 
     expect(response.status).toBe(400);
     expect(mockInsertValues).not.toHaveBeenCalled();
@@ -226,5 +249,50 @@ describe("POST /api/integrations/imap", () => {
       outcome: "failure",
     });
     expect(JSON.stringify(failureEntry)).not.toContain("super-secret-password");
+  });
+
+  describe("senderName", () => {
+    it("stores senderName inside the encrypted credentials blob", async () => {
+      const { POST } = await import("@/app/api/integrations/imap/route");
+
+      await POST(makeRequest({ ...validBody, senderName: "Support Team" }));
+
+      expect(mockEncrypt).toHaveBeenCalledWith(
+        JSON.stringify({
+          imapHost: "imap.example.com",
+          imapPort: 993,
+          smtpHost: "smtp.example.com",
+          smtpPort: 465,
+          username: "support@example.com",
+          password: "super-secret-password",
+          security: "tls",
+          senderName: "Support Team",
+        })
+      );
+    });
+
+    it("never puts senderName in the plaintext data column or audit detail", async () => {
+      const { POST } = await import("@/app/api/integrations/imap/route");
+
+      await POST(makeRequest({ ...validBody, senderName: "Support Team" }));
+
+      const insertedRow = mockInsertValues.mock.calls[0][0];
+      expect(JSON.stringify(insertedRow.data)).not.toContain("Support Team");
+
+      const auditCall = mockAppendAuditLog.mock.calls[0][0];
+      expect(JSON.stringify(auditCall.detail)).not.toContain("Support Team");
+    });
+
+    it("returns 400 when senderName contains CR/LF (header injection guard)", async () => {
+      const { POST } = await import("@/app/api/integrations/imap/route");
+
+      const response = await POST(
+        makeRequest({ ...validBody, senderName: "x\r\nBcc: evil@example.com" })
+      );
+
+      expect(response.status).toBe(400);
+      expect(mockInsertValues).not.toHaveBeenCalled();
+      expect(mockAppendAuditLog).not.toHaveBeenCalled();
+    });
   });
 });

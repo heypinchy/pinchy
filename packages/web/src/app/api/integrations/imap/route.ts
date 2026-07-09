@@ -21,14 +21,27 @@ export const POST = withAdmin(async (request: NextRequest, _ctx, session) => {
   const parsed = await parseRequestBody(imapCreateSchema, request);
   if ("error" in parsed) return parsed.error;
 
-  const { name, imapHost, imapPort, smtpHost, smtpPort, username, password, security } =
+  const { name, imapHost, imapPort, smtpHost, smtpPort, username, password, security, senderName } =
     parsed.data;
   const actorId = session.user.id!;
+  // `name` is an optional label for the integrations list; default it to the
+  // mailbox address so the row always has a sensible, renameable name.
+  const connectionName = name ?? username;
 
-  // Store every field (including host/port/security) encrypted as a single
-  // blob — never persist the password in plaintext anywhere, including `data`.
+  // Store every field (including host/port/security/senderName) encrypted as
+  // a single blob — never persist the password (or the sender display name,
+  // which is identity data) in plaintext anywhere, including `data`.
   const encryptedCredentials = encrypt(
-    JSON.stringify({ imapHost, imapPort, smtpHost, smtpPort, username, password, security })
+    JSON.stringify({
+      imapHost,
+      imapPort,
+      smtpHost,
+      smtpPort,
+      username,
+      password,
+      security,
+      ...(senderName !== undefined ? { senderName } : {}),
+    })
   );
 
   let connection;
@@ -37,7 +50,7 @@ export const POST = withAdmin(async (request: NextRequest, _ctx, session) => {
       .insert(integrationConnections)
       .values({
         type: "imap",
-        name,
+        name: connectionName,
         credentials: encryptedCredentials,
         // The client already tested these credentials via /imap/test before
         // calling this route, so the connection starts out active.
@@ -54,7 +67,7 @@ export const POST = withAdmin(async (request: NextRequest, _ctx, session) => {
       resource: "integration",
       outcome: "failure" as const,
       error: { message: err instanceof Error ? err.message : String(err) },
-      detail: { name, type: "imap", ...(identity ?? {}) },
+      detail: { name: connectionName, type: "imap", ...(identity ?? {}) },
     };
     recordAuditFailure(err, failureEntry);
     return NextResponse.json({ error: "Could not create the IMAP connection" }, { status: 500 });

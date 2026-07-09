@@ -42,5 +42,30 @@ describe("maskConnectionCredentials", () => {
       expect(masked.db).toBeUndefined();
       expect(masked.login).toBeUndefined();
     });
+
+    it("returns senderName when present in the blob (not a secret, needed for edit-dialog prefill)", () => {
+      const encrypted = JSON.stringify({ ...imapCredentials, senderName: "Support Team" });
+
+      const masked = maskConnectionCredentials("imap", encrypted, fakeDecrypt);
+
+      expect(masked.senderName).toBe("Support Team");
+    });
+
+    it("returns an empty string for senderName when absent from the blob", () => {
+      const encrypted = JSON.stringify(imapCredentials);
+
+      const masked = maskConnectionCredentials("imap", encrypted, fakeDecrypt);
+
+      expect(masked.senderName).toBe("");
+    });
+
+    it("still never returns the password even when senderName is present", () => {
+      const encrypted = JSON.stringify({ ...imapCredentials, senderName: "Support Team" });
+
+      const masked = maskConnectionCredentials("imap", encrypted, fakeDecrypt);
+
+      expect(masked).not.toHaveProperty("password");
+      expect(JSON.stringify(masked)).not.toContain(imapCredentials.password);
+    });
   });
 });
