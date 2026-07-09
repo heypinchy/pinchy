@@ -11,7 +11,8 @@ const {
   mockAppendAuditLog,
   mockRecordAuditFailure,
   mockCheckpointWhere,
-  mockAuditLogWhere,
+  mockMaxIdThen,
+  mockLastScannedLimit,
   mockOwnRowLimit,
   mockInsertValues,
   mockOnConflictDoUpdate,
@@ -24,8 +25,14 @@ const {
 
   // db.select(...).from(auditVerifyState).where(...) -> checkpoint row(s)
   const mockCheckpointWhere = vi.fn();
-  // db.select(...).from(auditLog).where(...) -> last-scanned row's hmac
-  const mockAuditLogWhere = vi.fn();
+  // db.select({ maxId }).from(auditLog) -> awaited directly (bare thenable,
+  // no .where()/.orderBy() chained) for the pre-scan MAX(id) snapshot.
+  const mockMaxIdThen = vi.fn();
+  // db.select(...).from(auditLog).where(...).orderBy(desc(...)).limit(1) ->
+  // the highest real row actually scanned in [fromId, toId]
+  const mockLastScannedLimit = vi.fn();
+  const mockLastScannedOrderBy = vi.fn().mockReturnValue({ limit: mockLastScannedLimit });
+  const mockLastScannedWhere = vi.fn().mockReturnValue({ orderBy: mockLastScannedOrderBy });
   // db.select(...).from(auditLog).orderBy(desc(...)).limit(1) -> the sweep's
   // own just-appended audit.integrity_check row (self-fold into checkpoint)
   const mockOwnRowLimit = vi.fn();
@@ -38,6 +45,11 @@ const {
   // A single db.select() stub serves both tables the module queries,
   // routing on which table object .from(...) is called with (identity
   // comparison against the __marker tag the @/db/schema mock below attaches).
+  // For auditLog there are three distinct call shapes: a bare await (MAX(id)
+  // snapshot), .where().orderBy().limit() (last-scanned-row lookup), and
+  // .orderBy().limit() (own just-appended report row). They're distinguished
+  // by which chain method is called first, exactly like the real query
+  // builder — this mock never calls .where() with no follow-on chain.
   const mockSelect = vi.fn(() => ({
     from: (table: unknown) => {
       const isCheckpointTable =
@@ -45,7 +57,11 @@ const {
         table !== null &&
         (table as { __marker?: string }).__marker === "auditVerifyState";
       if (isCheckpointTable) return { where: mockCheckpointWhere };
-      return { where: mockAuditLogWhere, orderBy: mockOwnRowOrderBy };
+      return {
+        where: mockLastScannedWhere,
+        orderBy: mockOwnRowOrderBy,
+        then: (...args: Parameters<Promise<unknown>["then"]>) => mockMaxIdThen().then(...args),
+      };
     },
   }));
 
@@ -54,7 +70,8 @@ const {
     mockAppendAuditLog,
     mockRecordAuditFailure,
     mockCheckpointWhere,
-    mockAuditLogWhere,
+    mockMaxIdThen,
+    mockLastScannedLimit,
     mockOwnRowLimit,
     mockInsertValues,
     mockOnConflictDoUpdate,
@@ -99,8 +116,16 @@ function mockCheckpointRow(
   mockCheckpointWhere.mockResolvedValue(row ? [row] : []);
 }
 
-function mockLastScannedRow(rowHmac: string | null) {
-  mockAuditLogWhere.mockResolvedValue(rowHmac !== null ? [{ rowHmac }] : []);
+// The current MAX(id) snapshot taken before verifyIntegrity() runs — sets the
+// `toId` bound passed to verifyIntegrity and the fallback for scannedTo when
+// no row is found in [fromId, toId] (shouldn't happen in practice, but keeps
+// the fallback path exercised).
+function mockCurrentMaxId(maxId: number | null) {
+  mockMaxIdThen.mockResolvedValue(maxId !== null ? [{ maxId }] : [{ maxId: null }]);
+}
+
+function mockLastScannedRow(row: { id: number; rowHmac: string } | null) {
+  mockLastScannedLimit.mockResolvedValue(row ? [row] : []);
 }
 
 // The row the sweep's OWN appendAuditLog call just inserted — the module
@@ -121,8 +146,22 @@ describe("sweepAuditVerify", () => {
     mockInsert.mockReturnValue({ values: mockInsertValues });
   });
 
-  it("no new rows since the checkpoint: no-op, no audit row, checkpoint untouched", async () => {
+  it("no new rows since the checkpoint (toId < fromId): no-op, verifyIntegrity never called", async () => {
     mockCheckpointRow({ lastVerifiedId: 10, lastVerifiedHmac: "abc" });
+    // Current MAX(id) is still 10 — nothing appended since the checkpoint.
+    mockCurrentMaxId(10);
+
+    const result = await sweepAuditVerify();
+
+    expect(result.scanned).toBe(false);
+    expect(mockVerifyIntegrity).not.toHaveBeenCalled();
+    expect(mockAppendAuditLog).not.toHaveBeenCalled();
+    expect(mockInsert).not.toHaveBeenCalled();
+  });
+
+  it("defensive fallback: toId >= fromId but verifyIntegrity reports totalChecked=0 anyway is still a no-op", async () => {
+    mockCheckpointRow({ lastVerifiedId: 10, lastVerifiedHmac: "abc" });
+    mockCurrentMaxId(11);
     mockVerifyIntegrity.mockResolvedValue({
       valid: true,
       totalChecked: 0,
@@ -133,40 +172,58 @@ describe("sweepAuditVerify", () => {
     const result = await sweepAuditVerify();
 
     expect(result.scanned).toBe(false);
-    expect(mockVerifyIntegrity).toHaveBeenCalledWith(11, undefined, { seedPrevHmac: "abc" });
+    expect(mockVerifyIntegrity).toHaveBeenCalledWith(11, 11, { seedPrevHmac: "abc" });
     expect(mockAppendAuditLog).not.toHaveBeenCalled();
     expect(mockInsert).not.toHaveBeenCalled();
   });
 
   it("defaults to lastVerifiedId=0 / seedPrevHmac=null when no checkpoint row exists yet", async () => {
     mockCheckpointRow(null);
+    mockCurrentMaxId(0);
+
+    const result = await sweepAuditVerify();
+
+    // toId (0) < fromId (1): no rows, no-op before verifyIntegrity is even
+    // called — mirrors "no checkpoint row + empty table" (genesis, nothing to
+    // verify yet).
+    expect(result.scanned).toBe(false);
+    expect(mockVerifyIntegrity).not.toHaveBeenCalled();
+  });
+
+  it("defaults to lastVerifiedId=0 / seedPrevHmac=null and passes toId when rows exist", async () => {
+    mockCheckpointRow(null);
+    mockCurrentMaxId(5);
     mockVerifyIntegrity.mockResolvedValue({
       valid: true,
-      totalChecked: 0,
+      totalChecked: 5,
       invalidIds: [],
       chainBreakIds: [],
     });
+    mockLastScannedRow({ id: 5, rowHmac: "hmac-5" });
+    mockOwnReportRow(6, "hmac-6");
 
     await sweepAuditVerify();
 
-    expect(mockVerifyIntegrity).toHaveBeenCalledWith(1, undefined, { seedPrevHmac: null });
+    expect(mockVerifyIntegrity).toHaveBeenCalledWith(1, 5, { seedPrevHmac: null });
   });
 
   it("clean run: advances the checkpoint past its own report row and emits audit.integrity_check success", async () => {
     mockCheckpointRow({ lastVerifiedId: 10, lastVerifiedHmac: "hmac-10" });
+    mockCurrentMaxId(13);
     mockVerifyIntegrity.mockResolvedValue({
       valid: true,
       totalChecked: 3, // rows 11, 12, 13
       invalidIds: [],
       chainBreakIds: [],
     });
-    mockLastScannedRow("hmac-13");
+    mockLastScannedRow({ id: 13, rowHmac: "hmac-13" });
     // The sweep's own appendAuditLog call inserts row 14; the module re-reads
     // MAX(id) and folds it into the checkpoint too.
     mockOwnReportRow(14, "hmac-14");
 
     const result = await sweepAuditVerify();
 
+    expect(mockVerifyIntegrity).toHaveBeenCalledWith(11, 13, { seedPrevHmac: "hmac-10" });
     expect(result).toEqual({
       scanned: true,
       scannedFrom: 11,
@@ -218,13 +275,14 @@ describe("sweepAuditVerify", () => {
 
   it("violation: advances the checkpoint anyway, sets lastStatus='violation', emits failure audit + stderr + increments counter", async () => {
     mockCheckpointRow({ lastVerifiedId: 0, lastVerifiedHmac: null });
+    mockCurrentMaxId(2);
     mockVerifyIntegrity.mockResolvedValue({
       valid: false,
       totalChecked: 2,
       invalidIds: [2],
       chainBreakIds: [],
     });
-    mockLastScannedRow("hmac-2");
+    mockLastScannedRow({ id: 2, rowHmac: "hmac-2" });
     mockOwnReportRow(3, "hmac-3");
     const stderrSpy = vi.spyOn(console, "error").mockImplementation(() => {});
 
@@ -259,6 +317,7 @@ describe("sweepAuditVerify", () => {
 
   it("caps invalidIds/chainBreakIds in the emitted detail without affecting the reported counts", async () => {
     mockCheckpointRow({ lastVerifiedId: 0, lastVerifiedHmac: null });
+    mockCurrentMaxId(80);
     const manyIds = Array.from({ length: 80 }, (_, i) => i + 1);
     mockVerifyIntegrity.mockResolvedValue({
       valid: false,
@@ -266,7 +325,7 @@ describe("sweepAuditVerify", () => {
       invalidIds: manyIds,
       chainBreakIds: [],
     });
-    mockLastScannedRow("hmac-80");
+    mockLastScannedRow({ id: 80, rowHmac: "hmac-80" });
     mockOwnReportRow(81, "hmac-81");
     vi.spyOn(console, "error").mockImplementation(() => {});
 
@@ -279,13 +338,14 @@ describe("sweepAuditVerify", () => {
 
   it("audit-write failure inside the sweep is recorded via recordAuditFailure, not thrown, and the checkpoint still advances to the scanned window", async () => {
     mockCheckpointRow({ lastVerifiedId: 0, lastVerifiedHmac: null });
+    mockCurrentMaxId(1);
     mockVerifyIntegrity.mockResolvedValue({
       valid: true,
       totalChecked: 1,
       invalidIds: [],
       chainBreakIds: [],
     });
-    mockLastScannedRow("hmac-1");
+    mockLastScannedRow({ id: 1, rowHmac: "hmac-1" });
     mockAppendAuditLog.mockRejectedValueOnce(new Error("db down"));
 
     await expect(sweepAuditVerify()).resolves.toBeDefined();
@@ -307,12 +367,19 @@ describe("startAuditVerifyJob / stopAuditVerifyJob", () => {
     vi.useFakeTimers();
     vi.clearAllMocks();
     mockCheckpointRow({ lastVerifiedId: 0, lastVerifiedHmac: null });
+    // A row exists (toId=1 >= fromId=1) so the sweep actually reaches
+    // verifyIntegrity — otherwise the toId < fromId no-op guard would short
+    // circuit before verifyIntegrity is ever called, and the "fires once
+    // ~60s after start" assertion below couldn't observe the call.
+    mockCurrentMaxId(1);
     mockVerifyIntegrity.mockResolvedValue({
       valid: true,
-      totalChecked: 0,
+      totalChecked: 1,
       invalidIds: [],
       chainBreakIds: [],
     });
+    mockLastScannedRow({ id: 1, rowHmac: "hmac-1" });
+    mockOwnReportRow(2, "hmac-2");
     stopAuditVerifyJob();
   });
 

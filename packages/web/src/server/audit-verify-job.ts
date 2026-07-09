@@ -25,7 +25,7 @@
  * passed as `seedPrevHmac`, forcing that boundary link to be checked on every
  * run.
  */
-import { eq, desc } from "drizzle-orm";
+import { eq, desc, and, gte, lte, sql } from "drizzle-orm";
 import { db } from "@/db";
 import { auditVerifyState, auditLog } from "@/db/schema";
 import { verifyIntegrity, appendAuditLog } from "@/lib/audit";
@@ -107,24 +107,48 @@ export async function sweepAuditVerify(): Promise<AuditVerifySweepResult> {
   const checkpoint = await readCheckpoint();
   const fromId = checkpoint.lastVerifiedId + 1;
 
-  const result = await verifyIntegrity(fromId, undefined, {
-    seedPrevHmac: checkpoint.lastVerifiedHmac,
-  });
+  // Snapshot the upper bound BEFORE verifying so the scan window is fixed:
+  // otherwise a row appended concurrently with verifyIntegrity() could be
+  // scanned but then miscounted against a `toId` that raced ahead of it.
+  const [maxRow] = await db
+    .select({ maxId: sql<number | null>`max(${auditLog.id})` })
+    .from(auditLog);
+  const toId = maxRow?.maxId ?? 0;
 
-  if (result.totalChecked === 0) {
+  if (toId < fromId) {
     // No new rows since the last checkpoint — nothing to do, checkpoint
     // stays put.
     return { scanned: false };
   }
 
-  // Determine the highest id actually scanned and its rowHmac so the
-  // checkpoint can advance to exactly that row (not the current MAX(id),
-  // which could race ahead if a row was appended between the scan and here).
-  const scannedTo = fromId + result.totalChecked - 1;
+  const result = await verifyIntegrity(fromId, toId, {
+    seedPrevHmac: checkpoint.lastVerifiedHmac,
+  });
+
+  if (result.totalChecked === 0) {
+    // Defensive fallback for the same "nothing to verify" outcome — kept in
+    // addition to the toId < fromId guard above in case totalChecked can
+    // legitimately be 0 despite toId >= fromId (e.g. a race where rows in
+    // [fromId, toId] were deleted between the snapshot and the scan).
+    return { scanned: false };
+  }
+
+  // Determine the highest id actually scanned and its rowHmac from the real
+  // rows in [fromId, toId], not via arithmetic on totalChecked: Postgres
+  // serial sequences are NOT gapless (a rolled-back transaction consumes a
+  // sequence value without leaving a row), so `fromId + totalChecked - 1`
+  // can UNDERSTATE the true highest scanned id whenever a gap falls inside
+  // the window. An understated scannedTo both under-reports compliance
+  // evidence and, on the audit-write-failure fallback below, could seed the
+  // next sweep's checkpoint with a non-existent id / null hmac — causing a
+  // false chainBreak alarm on the next run instead of a clean resume.
   const [lastRow] = await db
-    .select({ rowHmac: auditLog.rowHmac })
+    .select({ id: auditLog.id, rowHmac: auditLog.rowHmac })
     .from(auditLog)
-    .where(eq(auditLog.id, scannedTo));
+    .where(and(gte(auditLog.id, fromId), lte(auditLog.id, toId)))
+    .orderBy(desc(auditLog.id))
+    .limit(1);
+  const scannedTo = lastRow?.id ?? toId;
   const lastVerifiedHmac = lastRow?.rowHmac ?? null;
 
   const status: "ok" | "violation" = result.valid ? "ok" : "violation";

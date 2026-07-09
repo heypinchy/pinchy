@@ -181,4 +181,48 @@ describe("audit-verify-job (integration)", () => {
     const checkpointAfterSecondSweep = await readCheckpointRow();
     expect(checkpointAfterSecondSweep!.lastStatus).toBe("violation");
   });
+
+  it("SEQUENCE GAP: scannedTo reflects the true highest scanned id, not fromId + count - 1", async () => {
+    await appendRow("u1");
+    await appendRow("u2");
+    const rowsBeforeGap = await allRowsById();
+
+    // Model a rolled-back transaction consuming sequence values without
+    // leaving a row: bump the id sequence by 5 so the next inserted row's id
+    // jumps ahead, leaving a gap in [fromId, true max]. Postgres serial
+    // sequences are NOT guaranteed gapless — this is a normal, common
+    // occurrence, not an attack.
+    await db.execute(
+      sql`SELECT setval(pg_get_serial_sequence('audit_log', 'id'), (SELECT MAX(id) FROM audit_log) + 5)`
+    );
+
+    await appendRow("u3");
+    const rowsAfterGap = await allRowsById();
+    const lastRow = rowsAfterGap[rowsAfterGap.length - 1];
+
+    // Sanity: the gap actually happened (id jumped by more than 1).
+    expect(lastRow.id).toBeGreaterThan(rowsBeforeGap[rowsBeforeGap.length - 1].id + 1);
+
+    const result = await sweepAuditVerify();
+
+    expect(result.scanned).toBe(true);
+    expect(result.valid).toBe(true);
+    // The buggy arithmetic (fromId + totalChecked - 1) would UNDERESTIMATE
+    // scannedTo here because totalChecked counts only the 3 real rows while
+    // the id space spans the gap. The true highest scanned id is lastRow.id.
+    expect(result.scannedTo).toBe(lastRow.id);
+
+    const checkpoint = await readCheckpointRow();
+    expect(checkpoint!.lastStatus).toBe("ok");
+    // The checkpoint must be seeded with a real row's hmac (from an id that
+    // actually exists), not a phantom id computed via the gappy arithmetic —
+    // otherwise the next sweep's chain-seed lookup would miss and could
+    // raise a false chainBreak alarm.
+    expect(checkpoint!.lastVerifiedHmac).not.toBeNull();
+
+    // Next sweep must be a clean no-op: no false chainBreak alarm from a
+    // checkpoint that pointed at a non-existent or wrong row.
+    const secondSweep = await sweepAuditVerify();
+    expect(secondSweep.scanned).toBe(false);
+  });
 });
