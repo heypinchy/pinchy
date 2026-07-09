@@ -114,4 +114,20 @@ describe("assertImapCredentialsShape", () => {
       /credentials\.security/,
     );
   });
+
+  it("accepts a valid senderName string", () => {
+    expect(() =>
+      assertImapCredentialsShape({ ...validImap, senderName: "Clemens Helm" }),
+    ).not.toThrow();
+  });
+
+  it("accepts credentials without senderName (unchanged behavior)", () => {
+    expect(() => assertImapCredentialsShape(validImap)).not.toThrow();
+  });
+
+  it("throws naming senderName when present but not a string", () => {
+    expect(() =>
+      assertImapCredentialsShape({ ...validImap, senderName: 123 }),
+    ).toThrow(/credentials\.senderName/);
+  });
 });

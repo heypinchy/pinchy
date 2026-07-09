@@ -23,6 +23,12 @@ export interface ImapAdapterOptions {
   username: string;
   password: string;
   security: "tls" | "starttls" | "none";
+  // Optional display name so agent-sent mail arrives as
+  // `Clemens Helm <clemens@example.com>` instead of a bare address. Passed to
+  // nodemailer/MailComposer as the object form { name, address } rather than
+  // string-concatenated, so RFC-2047 encoding/quoting of the display name
+  // (umlauts, commas, etc.) is handled correctly by the library.
+  senderName?: string;
 }
 
 export interface ImapMailbox {
@@ -273,6 +279,17 @@ interface ResolvedSmtpConnection extends ResolvedConnection {
 export class ImapAdapter implements EmailAdapter {
   constructor(private opts: ImapAdapterOptions) {}
 
+  // Builds the From value for sendMail()/MailComposer(): an { name, address }
+  // object when a sender display name is configured, or the bare username
+  // string otherwise. The object form is required (not string concatenation)
+  // so nodemailer/MailComposer RFC-2047-encode and quote the display name
+  // correctly (umlauts, commas, etc.).
+  private fromField(): string | { name: string; address: string } {
+    if (!this.opts.senderName) return this.opts.username;
+    assertNoHeaderInjection("senderName", this.opts.senderName);
+    return { name: this.opts.senderName, address: this.opts.username };
+  }
+
   // Resolves the effective IMAP connection: this.opts, unless the insecure mock
   // seam is explicitly opted into. The seam fires ONLY when BOTH IMAP_MOCK_HOST
   // AND PINCHY_INSECURE_MAIL_MOCK==="1" are set — then host/port come from
@@ -468,9 +485,10 @@ export class ImapAdapter implements EmailAdapter {
   // don't guess at a fallback mailbox to file a draft into.
   async draft(opts: ComposeOptions): Promise<{ draftId: string }> {
     assertComposeOptionsSafe(opts);
+    const from = this.fromField();
 
     const raw = await new MailComposer({
-      from: this.opts.username,
+      from,
       to: opts.to,
       subject: opts.subject,
       text: opts.body,
@@ -496,6 +514,7 @@ export class ImapAdapter implements EmailAdapter {
   // that actually delivers mail).
   async send(opts: ComposeOptions): Promise<{ messageId: string | null }> {
     assertComposeOptionsSafe(opts);
+    const from = this.fromField();
 
     const conn = this.resolveSmtpConnection();
     const transport = nodemailer.createTransport({
@@ -511,7 +530,7 @@ export class ImapAdapter implements EmailAdapter {
     let messageId: string | null;
     try {
       const info = await transport.sendMail({
-        from: this.opts.username,
+        from,
         to: opts.to,
         subject: opts.subject,
         text: opts.body,
@@ -530,7 +549,7 @@ export class ImapAdapter implements EmailAdapter {
     // APPEND leaves the already-delivered message untouched.
     try {
       const raw = await new MailComposer({
-        from: this.opts.username,
+        from,
         to: opts.to,
         subject: opts.subject,
         text: opts.body,

@@ -1350,3 +1350,144 @@ describe("ImapAdapter#send", () => {
     expect(result.messageId).toBe("<generated@smtp.example.com>");
   });
 });
+
+describe("ImapAdapter#send with senderName", () => {
+  it("passes from as { name, address } to sendMail when senderName is set", async () => {
+    const withName: ImapAdapterOptions = {
+      ...opts,
+      senderName: "Clemens Helm",
+    };
+    const adapter = new ImapAdapter(withName);
+    await adapter.send({
+      to: "bob@example.com",
+      subject: "Hello",
+      body: "World",
+    });
+
+    expect(mockTransport.sendMail).toHaveBeenCalledWith(
+      expect.objectContaining({
+        from: { name: "Clemens Helm", address: opts.username },
+      }),
+    );
+  });
+
+  it("passes from as the bare username string when senderName is not set", async () => {
+    const adapter = new ImapAdapter(opts);
+    await adapter.send({
+      to: "bob@example.com",
+      subject: "Hello",
+      body: "World",
+    });
+
+    expect(mockTransport.sendMail).toHaveBeenCalledWith(
+      expect.objectContaining({ from: opts.username }),
+    );
+  });
+
+  it("passes from as { name, address } to the best-effort Sent-APPEND MailComposer", async () => {
+    const withName: ImapAdapterOptions = {
+      ...opts,
+      senderName: "Clemens Helm",
+    };
+    const adapter = new ImapAdapter(withName);
+    await adapter.send({
+      to: "bob@example.com",
+      subject: "Archived please",
+      body: "keep a copy",
+    });
+
+    expect(mockClient.append).toHaveBeenCalledTimes(1);
+    const [, raw] = mockClient.append.mock.calls[0];
+    const rawStr = Buffer.isBuffer(raw) ? raw.toString("utf-8") : String(raw);
+    // MailComposer RFC-2047-encodes/quotes the display name into the raw
+    // From header rather than us string-concatenating it.
+    expect(rawStr).toMatch(/From:.*Clemens Helm.*<user@example\.com>/);
+  });
+
+  it("throws on CR/LF header injection in senderName before any SMTP call", async () => {
+    const withInjection: ImapAdapterOptions = {
+      ...opts,
+      senderName: "Clemens\r\nBcc: attacker@evil.com",
+    };
+    const adapter = new ImapAdapter(withInjection);
+
+    await expect(
+      adapter.send({ to: "bob@example.com", subject: "Hi", body: "Hi" }),
+    ).rejects.toThrow(/senderName/);
+    expect(createTransportMock).not.toHaveBeenCalled();
+    expect(mockTransport.sendMail).not.toHaveBeenCalled();
+  });
+});
+
+describe("ImapAdapter#draft with senderName", () => {
+  it("passes from as { name, address } to the draft MailComposer when senderName is set", async () => {
+    mockClient.list.mockResolvedValue(SERVER_MAILBOXES_WITH_DRAFTS);
+    const withName: ImapAdapterOptions = {
+      ...opts,
+      senderName: "Clemens Helm",
+    };
+    const adapter = new ImapAdapter(withName);
+    await adapter.draft({
+      to: "bob@example.com",
+      subject: "Quarterly report",
+      body: "Please find it attached.",
+    });
+
+    const [, raw] = mockClient.append.mock.calls[0];
+    const rawStr = Buffer.isBuffer(raw) ? raw.toString("utf-8") : String(raw);
+    expect(rawStr).toMatch(/From:.*Clemens Helm.*<user@example\.com>/);
+  });
+
+  it("passes from as the bare username string to the draft MailComposer when senderName is not set", async () => {
+    mockClient.list.mockResolvedValue(SERVER_MAILBOXES_WITH_DRAFTS);
+    const adapter = new ImapAdapter(opts);
+    await adapter.draft({
+      to: "bob@example.com",
+      subject: "Quarterly report",
+      body: "Please find it attached.",
+    });
+
+    const [, raw] = mockClient.append.mock.calls[0];
+    const rawStr = Buffer.isBuffer(raw) ? raw.toString("utf-8") : String(raw);
+    expect(rawStr).toMatch(/From: user@example\.com/);
+  });
+
+  it("RFC-2047-encodes umlauts in senderName rather than string-concatenating", async () => {
+    mockClient.list.mockResolvedValue(SERVER_MAILBOXES_WITH_DRAFTS);
+    const withUmlaut: ImapAdapterOptions = {
+      ...opts,
+      senderName: "Jürgen Müller",
+    };
+    const adapter = new ImapAdapter(withUmlaut);
+    await adapter.draft({
+      to: "bob@example.com",
+      subject: "Quarterly report",
+      body: "Please find it attached.",
+    });
+
+    const [, raw] = mockClient.append.mock.calls[0];
+    const rawStr = Buffer.isBuffer(raw) ? raw.toString("utf-8") : String(raw);
+    // A raw literal "Jürgen Müller" would not survive 7-bit MIME transport
+    // unencoded; MailComposer must RFC-2047-encode the display name.
+    expect(rawStr).not.toContain("Jürgen Müller <user@example.com>");
+    expect(rawStr).toMatch(/From:.*<user@example\.com>/);
+  });
+
+  it("throws on CR/LF header injection in senderName before any IMAP APPEND call", async () => {
+    mockClient.list.mockResolvedValue(SERVER_MAILBOXES_WITH_DRAFTS);
+    const withInjection: ImapAdapterOptions = {
+      ...opts,
+      senderName: "Clemens\r\nBcc: attacker@evil.com",
+    };
+    const adapter = new ImapAdapter(withInjection);
+
+    await expect(
+      adapter.draft({
+        to: "bob@example.com",
+        subject: "hi",
+        body: "hi",
+      }),
+    ).rejects.toThrow(/senderName/);
+    expect(mockClient.append).not.toHaveBeenCalled();
+  });
+});

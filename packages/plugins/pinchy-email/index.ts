@@ -338,6 +338,11 @@ export interface ImapEmailCredentials {
   username: string;
   password: string;
   security: "tls" | "starttls" | "none";
+  // Optional sender display name so agent-sent mail arrives as
+  // `Clemens Helm <clemens@example.com>` instead of a bare address. The zod
+  // edge on the web side already rejects CR/LF in this field; the plugin
+  // guards again in imap-adapter.ts (defense in depth).
+  senderName?: string;
 }
 
 export type EmailCredentials = OAuthEmailCredentials | ImapEmailCredentials;
@@ -431,6 +436,11 @@ export function assertImapCredentialsShape(
   ) {
     throw new Error(
       `pinchy-email: credentials.security must be one of "tls", "starttls", "none", got ${JSON.stringify(obj.security)}`,
+    );
+  }
+  if (obj.senderName !== undefined && typeof obj.senderName !== "string") {
+    throw new Error(
+      `pinchy-email: credentials.senderName must be a string, got ${typeof obj.senderName}`,
     );
   }
 }
