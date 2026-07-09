@@ -859,6 +859,78 @@ describe("assertNoCrossCompanyRefs", () => {
       }),
     ).not.toThrow();
   });
+
+  // Hardening A: the guard now recurses into one2many command tuples
+  // (line_ids: [[0, 0, { account_id: <ref> }]]) instead of only checking
+  // top-level fields of `values`.
+  describe("nested command-tuple recursion (Hardening A)", () => {
+    it("rejects a cross-company account_id nested inside a [0,0,{...}] create tuple, naming the line_ids[i].field path", () => {
+      try {
+        assertNoCrossCompanyRefs({
+          company_id: tagged("res.company", 1, 1, "GmbH A"),
+          line_ids: [
+            [0, 0, { account_id: tagged("account.account", 5, 2, "GmbH B") }],
+          ],
+        });
+        throw new Error("did not throw");
+      } catch (err) {
+        expect(String(err)).toMatch(/cross-company/i);
+        expect(String(err)).toMatch(/line_ids\[0\]\.account_id/);
+      }
+    });
+
+    it("does NOT reject a line self-consistently scoped to another company via its own company_id", () => {
+      // The line declares company_id: B and account_id: B — internally
+      // consistent even though the parent's company_id is A. The guard must
+      // re-derive the intended company from the LINE's own company_id.
+      expect(() =>
+        assertNoCrossCompanyRefs({
+          company_id: tagged("res.company", 1, 1, "GmbH A"),
+          line_ids: [
+            [
+              0,
+              0,
+              {
+                company_id: tagged("res.company", 2, 2, "GmbH B"),
+                account_id: tagged("account.account", 5, 2, "GmbH B"),
+              },
+            ],
+          ],
+        }),
+      ).not.toThrow();
+    });
+
+    it("rejects a cross-company ref in a [2,<ref>] delete id position", () => {
+      expect(() =>
+        assertNoCrossCompanyRefs({
+          company_id: tagged("res.company", 1, 1, "GmbH A"),
+          line_ids: [[2, tagged("account.move.line", 9, 2, "GmbH B")]],
+        }),
+      ).toThrow(/cross-company/i);
+    });
+
+    it("rejects a cross-company ref in a [1,<ref>,{...}] update id position", () => {
+      expect(() =>
+        assertNoCrossCompanyRefs({
+          company_id: tagged("res.company", 1, 1, "GmbH A"),
+          line_ids: [[1, tagged("account.move.line", 9, 2, "GmbH B"), {}]],
+        }),
+      ).toThrow(/cross-company/i);
+    });
+
+    it("does not throw for nested tuples with no cross-company refs", () => {
+      expect(() =>
+        assertNoCrossCompanyRefs({
+          company_id: tagged("res.company", 1, 1, "GmbH A"),
+          line_ids: [
+            [0, 0, { account_id: tagged("account.account", 5, 1, "GmbH A") }],
+            [4, 42],
+            [6, 0, [1, 2, 3]],
+          ],
+        }),
+      ).not.toThrow();
+    });
+  });
 });
 
 describe("formatMultiMatchError", () => {
@@ -1428,6 +1500,294 @@ describe("odoo_read", () => {
     expect(decodeRef(data.records[0]._pinchy_ref).label).toBe("Fancy Display");
     expect(decodeRef(data.records[1]._pinchy_ref).label).toBe("Only Name");
     expect(decodeRef(data.records[2]._pinchy_ref).label).toBe("res.partner#3");
+  });
+});
+
+// Feature 3: one2many line refs. odoo_read on a model with a one2many field
+// (e.g. account.move.line_ids) previously returned a bare array of child
+// ids — an agent had no way to target a SPECIFIC line in a later edit
+// command tuple without first guessing the id shape. wrapOne2ManyValue wraps
+// each child id into `{ _pinchy_ref, id, model }` so the agent can paste the
+// `_pinchy_ref` (or the whole object, or the whole array) back into a
+// Command tuple's id position.
+describe("odoo_read — one2many line refs (Feature 3)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.stubEnv("PINCHY_REF_TOKEN_KEY", "a".repeat(64));
+  });
+
+  const MOVE_WITH_LINES: OdooField[] = [
+    { name: "id", type: "integer" },
+    { name: "name", type: "char" },
+    {
+      name: "line_ids",
+      type: "one2many",
+      relation: "account.move.line",
+      string: "Lines",
+    },
+    {
+      name: "partner_id",
+      type: "many2one",
+      relation: "res.partner",
+      string: "Partner",
+    },
+    {
+      name: "tag_ids",
+      type: "many2many",
+      relation: "account.account.tag",
+      string: "Tags",
+    },
+  ];
+
+  it("wraps a one2many field's child ids into { _pinchy_ref, id, model } objects", async () => {
+    mockFields.mockResolvedValue(MOVE_WITH_LINES);
+    mockSearchRead.mockResolvedValue({
+      records: [
+        {
+          id: 40,
+          name: "INV/2026/001",
+          line_ids: [101, 102],
+          partner_id: [7, "Acme Inc"],
+        },
+      ],
+      total: 1,
+      limit: 100,
+      offset: 0,
+    });
+
+    const tools = createApi({
+      [agentId]: {
+        ...agentConfig,
+        permissions: { "account.move": ["read"] },
+      },
+    });
+    const tool = findTool(tools, "odoo_read", agentId)!;
+    const result = await tool.execute("call-o2m-read", {
+      model: "account.move",
+      filters: [],
+      fields: ["name", "line_ids", "partner_id"],
+    });
+
+    expect(result.isError).toBeFalsy();
+    const data = JSON.parse(result.content[0].text);
+    const record = data.records[0];
+
+    expect(record.line_ids).toHaveLength(2);
+    for (const [i, id] of [101, 102].entries()) {
+      const line = record.line_ids[i];
+      expect(line).toEqual({
+        _pinchy_ref: expect.stringMatching(/^pinchy_ref:v1:/),
+        id,
+        model: "account.move.line",
+      });
+      const decoded = decodeRef(line._pinchy_ref);
+      expect(decoded.model).toBe("account.move.line");
+      expect(decoded.id).toBe(id);
+    }
+
+    // m2o fields still wrap as { ref, label, model } — o2m wrapping doesn't
+    // clobber the existing m2o wrap.
+    expect(record.partner_id).toEqual({
+      ref: expect.stringMatching(/^pinchy_ref:v1:/),
+      label: "Acme Inc",
+      model: "res.partner",
+    });
+  });
+
+  it("leaves an empty one2many array as []", async () => {
+    mockFields.mockResolvedValue(MOVE_WITH_LINES);
+    mockSearchRead.mockResolvedValue({
+      records: [{ id: 40, name: "INV/2026/001", line_ids: [] }],
+      total: 1,
+      limit: 100,
+      offset: 0,
+    });
+
+    const tools = createApi({
+      [agentId]: {
+        ...agentConfig,
+        permissions: { "account.move": ["read"] },
+      },
+    });
+    const tool = findTool(tools, "odoo_read", agentId)!;
+    const result = await tool.execute("call-o2m-empty", {
+      model: "account.move",
+      filters: [],
+      fields: ["name", "line_ids"],
+    });
+
+    const data = JSON.parse(result.content[0].text);
+    expect(data.records[0].line_ids).toEqual([]);
+  });
+
+  it("leaves a many2many field as a raw id array (out of scope for wrapOne2ManyValue)", async () => {
+    mockFields.mockResolvedValue(MOVE_WITH_LINES);
+    mockSearchRead.mockResolvedValue({
+      records: [{ id: 40, name: "INV/2026/001", tag_ids: [3, 4] }],
+      total: 1,
+      limit: 100,
+      offset: 0,
+    });
+
+    const tools = createApi({
+      [agentId]: {
+        ...agentConfig,
+        permissions: { "account.move": ["read"] },
+      },
+    });
+    const tool = findTool(tools, "odoo_read", agentId)!;
+    const result = await tool.execute("call-m2m-read", {
+      model: "account.move",
+      filters: [],
+      fields: ["name", "tag_ids"],
+    });
+
+    const data = JSON.parse(result.content[0].text);
+    expect(data.records[0].tag_ids).toEqual([3, 4]);
+  });
+
+  it("round-trips a pasted line _pinchy_ref STRING into a [1, ref, {...}] update command tuple", async () => {
+    const lineRef = encodeRef({
+      integrationType: "odoo",
+      connectionId: "conn-test-1",
+      model: "account.move.line",
+      id: 101,
+      label: "account.move.line#101",
+    });
+    mockFields.mockImplementation(async (model: string) => {
+      if (model === "account.move") return MOVE_WITH_LINES;
+      if (model === "account.move.line") {
+        return [
+          { name: "id", type: "integer" },
+          { name: "debit", type: "float" },
+        ];
+      }
+      return [];
+    });
+    mockWrite.mockResolvedValue(true);
+
+    const tools = createApi({
+      [agentId]: {
+        ...agentConfig,
+        permissions: {
+          "account.move": ["write"],
+          "account.move.line": ["write"],
+        },
+      },
+    });
+    const tool = findTool(tools, "odoo_write", agentId)!;
+    const result = await tool.execute("call-o2m-roundtrip-str", {
+      model: "account.move",
+      ids: [40],
+      values: { line_ids: [[1, lineRef, { debit: 5 }]] },
+    });
+
+    expect(result.isError).toBeFalsy();
+    expect(mockWrite).toHaveBeenCalledWith("account.move", [40], {
+      line_ids: [[1, 101, { debit: 5 }]],
+    });
+  });
+
+  it("round-trips a pasted WHOLE line object into a [1, {...}, {...}] update command tuple", async () => {
+    const lineRef = encodeRef({
+      integrationType: "odoo",
+      connectionId: "conn-test-1",
+      model: "account.move.line",
+      id: 102,
+      label: "account.move.line#102",
+    });
+    mockFields.mockImplementation(async (model: string) => {
+      if (model === "account.move") return MOVE_WITH_LINES;
+      if (model === "account.move.line") {
+        return [
+          { name: "id", type: "integer" },
+          { name: "credit", type: "float" },
+        ];
+      }
+      return [];
+    });
+    mockWrite.mockResolvedValue(true);
+
+    const tools = createApi({
+      [agentId]: {
+        ...agentConfig,
+        permissions: {
+          "account.move": ["write"],
+          "account.move.line": ["write"],
+        },
+      },
+    });
+    const tool = findTool(tools, "odoo_write", agentId)!;
+    const result = await tool.execute("call-o2m-roundtrip-obj", {
+      model: "account.move",
+      ids: [40],
+      values: {
+        line_ids: [
+          [
+            1,
+            { _pinchy_ref: lineRef, id: 102, model: "account.move.line" },
+            { credit: 7 },
+          ],
+        ],
+      },
+    });
+
+    expect(result.isError).toBeFalsy();
+    expect(mockWrite).toHaveBeenCalledWith("account.move", [40], {
+      line_ids: [[1, 102, { credit: 7 }]],
+    });
+  });
+
+  it("round-trips the VERBATIM read line_ids array pasted into a [6, 0, <array>] replace command", async () => {
+    const line1 = {
+      _pinchy_ref: encodeRef({
+        integrationType: "odoo",
+        connectionId: "conn-test-1",
+        model: "account.move.line",
+        id: 201,
+        label: "account.move.line#201",
+      }),
+      id: 201,
+      model: "account.move.line",
+    };
+    const line2 = {
+      _pinchy_ref: encodeRef({
+        integrationType: "odoo",
+        connectionId: "conn-test-1",
+        model: "account.move.line",
+        id: 202,
+        label: "account.move.line#202",
+      }),
+      id: 202,
+      model: "account.move.line",
+    };
+    mockFields.mockImplementation(async (model: string) => {
+      if (model === "account.move") return MOVE_WITH_LINES;
+      if (model === "account.move.line") return [{ name: "id", type: "integer" }];
+      return [];
+    });
+    mockWrite.mockResolvedValue(true);
+
+    const tools = createApi({
+      [agentId]: {
+        ...agentConfig,
+        permissions: {
+          "account.move": ["write"],
+          "account.move.line": ["delete"],
+        },
+      },
+    });
+    const tool = findTool(tools, "odoo_write", agentId)!;
+    const result = await tool.execute("call-o2m-roundtrip-array", {
+      model: "account.move",
+      ids: [40],
+      values: { line_ids: [[6, 0, [line1, line2]]] },
+    });
+
+    expect(result.isError).toBeFalsy();
+    expect(mockWrite).toHaveBeenCalledWith("account.move", [40], {
+      line_ids: [[6, 0, [201, 202]]],
+    });
   });
 });
 

@@ -230,6 +230,90 @@ describe("normalizeMany2OneValues — nested one2many command tuples (#615)", ()
   });
 });
 
+// Hardening B: when the line model's schema comes back empty, the nested m2o
+// resolution loop inside normalizeMany2OneValues has nothing to check ref
+// shapes against and silently returns the values dict UNCHANGED — including
+// any unresolved refs. A pure raw-id tuple ([6,0,[1,2,3]]) is harmless in
+// that case (nothing needed resolving anyway), but a ref-shaped value inside
+// a create/update tuple (e.g. a bare _pinchy_ref) reaching Odoo unresolved is
+// a silent data-corruption risk. Fail loud instead.
+describe("normalizeMany2OneValues — fail loud on empty line schema when resolution is needed (Hardening B)", () => {
+  function makeEmptySchemaClient() {
+    const client = {
+      async fields(model: string) {
+        if (model === "account.move") return FIELDS["account.move"];
+        // account.move.line schema comes back EMPTY — simulates a broken
+        // connection / stale cache / an Odoo model the plugin can't
+        // introspect.
+        return {};
+      },
+      async searchRead() {
+        return [];
+      },
+    };
+    return client as unknown as OdooClient;
+  }
+
+  it("throws naming the field and relation when a create tuple carries a bare _pinchy_ref and the line schema is empty", async () => {
+    const client = makeEmptySchemaClient();
+    const bareRef =
+      "pinchy_ref:v1:doesnotneedtobevalid-the-schema-check-happens-first";
+    const values = {
+      line_ids: [[0, 0, { account_id: bareRef }]],
+    };
+
+    await expect(
+      normalizeMany2OneValues(
+        client,
+        "conn-1",
+        "account.move",
+        values,
+        FULL_LINE_PERMISSIONS,
+      ),
+    ).rejects.toThrow(/line_ids/);
+    await expect(
+      normalizeMany2OneValues(
+        client,
+        "conn-1",
+        "account.move",
+        values,
+        FULL_LINE_PERMISSIONS,
+      ),
+    ).rejects.toThrow(/account\.move\.line/);
+  });
+
+  it("throws naming the field and relation when a create tuple carries a {ref} object and the line schema is empty", async () => {
+    const client = makeEmptySchemaClient();
+    const values = {
+      line_ids: [[0, 0, { account_id: { ref: "pinchy_ref:v1:whatever" } }]],
+    };
+
+    await expect(
+      normalizeMany2OneValues(
+        client,
+        "conn-1",
+        "account.move",
+        values,
+        FULL_LINE_PERMISSIONS,
+      ),
+    ).rejects.toThrow(/line_ids.*account\.move\.line/s);
+  });
+
+  it("passes a pure raw-id tuple ([6,0,[1,2]]) through unchanged when the line schema is empty (no resolution needed)", async () => {
+    const client = makeEmptySchemaClient();
+    const values = { line_ids: [[6, 0, [1, 2]]] };
+
+    const result = await normalizeMany2OneValues(
+      client,
+      "conn-1",
+      "account.move",
+      values,
+      FULL_LINE_PERMISSIONS,
+    );
+    expect(result.values.line_ids).toEqual([[6, 0, [1, 2]]]);
+  });
+});
+
 describe("normalizeMany2OneValues — nested-permission gating (governance priority)", () => {
   // Codes that modify EXISTING nested one2many records require a grant on
   // the line model: 1 (update) needs write; 2 (delete)/3 (unlink)/5

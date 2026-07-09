@@ -884,8 +884,20 @@ function refToId(
   field: OdooField,
   value: Record<string, unknown>,
 ): number | null {
-  if (typeof value.ref !== "string") return null;
-  return decodeAndValidateRef(connectionId, field, value.ref);
+  // Accept BOTH wire shapes: the m2o wrapper's `{ ref }` (wrapMany2OneValue)
+  // and the one2many wrapper's `{ _pinchy_ref }` (wrapOne2ManyValue). Without
+  // this an agent pasting a whole read-emitted o2m line object — or the
+  // read `line_ids` array verbatim — into a Command tuple id position would
+  // hit the "Raw numeric IDs are not accepted" guard below, because only the
+  // bare string decoded, not the object carrying it.
+  const refString =
+    typeof value.ref === "string"
+      ? value.ref
+      : typeof value._pinchy_ref === "string"
+        ? value._pinchy_ref
+        : null;
+  if (refString === null) return null;
+  return decodeAndValidateRef(connectionId, field, refString);
 }
 
 /**
@@ -907,11 +919,13 @@ function refToId(
  * prefix in `detail`. Admins can grep / filter for that string — no separate
  * audit pipeline is needed here.
  *
- * Scope: only top-level fields of `values` are inspected. Nested 2many/o2m
- * command tuples (e.g. `invoice_line_ids: [[0, 0, { account_id: ... }]]`)
- * are not walked — that broader check would require following Odoo's
- * Command structure, which is out of scope for this guard. Odoo's
- * server-side `company_id` constraint remains the ultimate authority.
+ * Scope: top-level fields of `values` AND nested one2many/many2many command
+ * tuples (e.g. `line_ids: [[0, 0, { account_id: <ref> }]]`) are inspected.
+ * A line-level ref whose company tag disagrees with the parent's (or its
+ * own line-level `company_id`, when the line declares one) is rejected with
+ * the same "Cross-company write rejected" prefix and a path like
+ * `line_ids[0].account_id`. Odoo's server-side `company_id` constraint
+ * remains the ultimate authority.
  */
 export function assertNoCrossCompanyRefs(
   values: Record<string, unknown>,
@@ -922,17 +936,96 @@ export function assertNoCrossCompanyRefs(
 
   for (const [field, value] of Object.entries(values)) {
     if (field === "company_id") continue;
-    const sibling = readRefCompanyTag(value);
-    if (sibling === null) continue;
+    assertNoCrossCompanyValue(value, intended, intendedLabel, field, 0);
+  }
+}
+
+// Depth cap for the cross-company guard's tuple recursion — a defensive
+// bound against a pathologically deep/self-referential nested structure,
+// mirroring the bound `normalizeMany2OneValues` already applies to its own
+// nested walk (one level today). Generous enough for any real Odoo o2m/m2m
+// nesting while still stopping unbounded recursion.
+const MAX_CROSS_COMPANY_DEPTH = 8;
+
+/**
+ * Recursive companion to {@link assertNoCrossCompanyRefs}. Checks a single
+ * value: if it carries a company-tagged ref, compare against `intended`;
+ * if it is a one2many/many2many command-tuple array, descend into the
+ * create (0) and update (1) tuples' values dicts and check each field.
+ * `path` is threaded for actionable error messages (e.g.
+ * `line_ids[0].account_id`).
+ */
+function assertNoCrossCompanyValue(
+  value: unknown,
+  intended: { id: number; label: string | null },
+  intendedLabel: string,
+  path: string,
+  depth: number,
+): void {
+  if (depth >= MAX_CROSS_COMPANY_DEPTH) return;
+  const sibling = readRefCompanyTag(value);
+  if (sibling !== null) {
     if (sibling.id !== intended.id) {
       const otherLabel = sibling.label ?? `id=${sibling.id}`;
       throw new Error(
         `Cross-company write rejected: values.company_id points to "${intendedLabel}" ` +
-          `but values.${field} points to a record in "${otherLabel}". ` +
-          `Re-resolve ${field} in the right company first.`,
+          `but values.${path} points to a record in "${otherLabel}". ` +
+          `Re-resolve ${path} in the right company first.`,
       );
     }
+    return;
   }
+  if (!Array.isArray(value)) return;
+  value.forEach((tuple, i) => {
+    if (!Array.isArray(tuple)) return;
+    // Odoo Command tuple: [code, ...]. 0 (create) and 1 (update) carry a
+    // values dict at index 2 with refs to check.
+    if ((tuple[0] === 0 || tuple[0] === 1) && isRecord(tuple[2])) {
+      const lineDict = tuple[2] as Record<string, unknown>;
+      // A line may declare its OWN company_id; normalizeMany2OneValues
+      // re-scopes that line's m2o lookups to it, so the guard must use the
+      // SAME baseline or it false-rejects a self-consistent line. Fall back
+      // to the parent's company when the line declares none.
+      const lineTag = readRefCompanyTag(lineDict.company_id);
+      const lineIntended = lineTag ?? intended;
+      const lineIntendedLabel = lineTag
+        ? (lineTag.label ?? `id=${lineTag.id}`)
+        : intendedLabel;
+      for (const [k, v] of Object.entries(lineDict)) {
+        if (k === "company_id") continue; // the scoping anchor itself
+        assertNoCrossCompanyValue(
+          v,
+          lineIntended,
+          lineIntendedLabel,
+          `${path}[${i}].${k}`,
+          depth + 1,
+        );
+      }
+    }
+    // Codes 1 (update), 2 (delete), 3 (unlink), 4 (link) all carry a
+    // company-taggable id at tuple[1]. (0 has no id; 6 is handled below.)
+    if (tuple[0] === 1 || tuple[0] === 2 || tuple[0] === 3 || tuple[0] === 4) {
+      assertNoCrossCompanyValue(
+        tuple[1],
+        intended,
+        intendedLabel,
+        `${path}[${i}]`,
+        depth + 1,
+      );
+    }
+    // replace (6, 0, [ids]) — check every id in the replacement list.
+    if (tuple[0] === 6 && Array.isArray(tuple[2])) {
+      (tuple[2] as unknown[]).forEach((id, j) => {
+        assertNoCrossCompanyValue(
+          id,
+          intended,
+          intendedLabel,
+          `${path}[${i}][${j}]`,
+          depth + 1,
+        );
+      });
+    }
+  });
 }
 
 /**
@@ -994,17 +1087,22 @@ export function formatInvalidSelectionError(
 function readRefCompanyTag(
   value: unknown,
 ): { id: number; label: string | null } | null {
-  // Accept the ref in either wire form the agent may pass: the structured
-  // `{ ref: "…" }` object OR a bare `_pinchy_ref` string (the form odoo_read
-  // emits and the prose tells the agent to copy verbatim). Without the
-  // bare-string branch, Layer 1's bare-ref support would let a bare ref slip
-  // past the cross-company guard entirely.
-  const refString =
-    isRecord(value) && typeof value.ref === "string"
+  // Accept the ref in any wire form the agent may pass: the m2o wrapper's
+  // `{ ref: "…" }` object, the one2many wrapper's `{ _pinchy_ref: "…" }`
+  // object (so a pasted whole o2m line object is visible to this guard too),
+  // OR a bare `_pinchy_ref` string (the form odoo_read emits and the prose
+  // tells the agent to copy verbatim). Without the bare-string branch,
+  // Layer 1's bare-ref support would let a bare ref slip past the
+  // cross-company guard entirely.
+  const refString = isRecord(value)
+    ? typeof value.ref === "string"
       ? value.ref
-      : isIntegrationRef(value)
-        ? value
-        : null;
+      : typeof value._pinchy_ref === "string"
+        ? value._pinchy_ref
+        : null
+    : isIntegrationRef(value)
+      ? value
+      : null;
   if (refString === null) return null;
   try {
     const payload = decodeRef(refString);
@@ -1303,6 +1401,45 @@ async function resolveCommandTargetId(
 }
 
 /**
+ * A single value is "ref-shaped" when it needs decoding before it can reach
+ * Odoo: a bare `_pinchy_ref` string, or a `{ref}`/`{_pinchy_ref}` object.
+ * Used by {@link commandTuplesNeedResolution} to decide whether an empty
+ * line schema is actually a problem for a given set of tuples.
+ */
+function isRefShaped(value: unknown): boolean {
+  if (isIntegrationRef(value)) return true;
+  return (
+    isRecord(value) &&
+    (typeof value.ref === "string" || typeof value._pinchy_ref === "string")
+  );
+}
+
+/**
+ * True when at least one command tuple in `tuples` actually needs relation
+ * resolution: a code-0/1 values dict containing a ref-shaped value, or an id
+ * position (tuple[1], or an element of a code-6 id list) that is neither a
+ * raw number nor `false`/`null` (Odoo's own wire shapes, which never need
+ * resolution). Pure raw-id tuples such as `[6, 0, [1, 2, 3]]` return false
+ * here — they carry nothing for the line schema to resolve against, so an
+ * empty/unavailable line schema is harmless for them.
+ */
+function commandTuplesNeedResolution(tuples: unknown[]): boolean {
+  const idNeedsResolution = (id: unknown): boolean =>
+    typeof id !== "number" && id !== false && id != null;
+  return tuples.some((tuple) => {
+    if (!Array.isArray(tuple)) return false;
+    const code = tuple[0];
+    if ((code === 0 || code === 1) && isRecord(tuple[2])) {
+      if (Object.values(tuple[2]).some(isRefShaped)) return true;
+    }
+    if (code === 6 && Array.isArray(tuple[2])) {
+      return (tuple[2] as unknown[]).some(idNeedsResolution);
+    }
+    return idNeedsResolution(tuple[1]);
+  });
+}
+
+/**
  * Unified walker for one2many AND many2many Command tuples. Only the create
  * (`[0, 0, {values}]`) and update (`[1, id, {values}]`) commands carry a
  * value dict whose m2o fields get resolved recursively via
@@ -1331,6 +1468,23 @@ async function normalizeCommandTuples(
 ): Promise<unknown[]> {
   const relationModel = relationField.relation as string;
   const opByCode = kind === "one2many" ? NESTED_OP_BY_CODE : M2M_OP_BY_CODE;
+
+  // An empty line schema means the nested m2o resolution inside
+  // `normalizeMany2OneValues` has nothing to resolve against and would
+  // otherwise silently return the values dict UNCHANGED (Hardening B). When
+  // the tuples carry only raw ids (no ref-shaped value anywhere), that's
+  // fine — Odoo's own wire format expects raw ids and there's nothing to
+  // resolve. But if resolution IS needed, silently no-op-ing here would let
+  // a bare ref reach Odoo undecoded — fail loud instead.
+  const lineFields = await loadFields(client, relationModel, fieldsCache);
+  if (lineFields.length === 0 && commandTuplesNeedResolution(commands)) {
+    throw new Error(
+      `Cannot resolve references in "${relationField.name}" (relation "${relationModel}"): ` +
+        `the schema for ${relationModel} came back empty, so many2one refs in its ` +
+        `command tuples cannot be decoded. Re-check the connection to Odoo and try again.`,
+    );
+  }
+
   const out: unknown[] = [];
   for (const cmd of commands) {
     if (!Array.isArray(cmd) || typeof cmd[0] !== "number") {
@@ -1680,6 +1834,51 @@ function wrapMany2OneValue(
   } satisfies OdooRefValue;
 }
 
+/**
+ * Wrap each child id of a one2many field into a thin ref-carrying object so
+ * the agent can target that specific line (e.g. to edit or remove it) by
+ * pasting the `_pinchy_ref` into a Command tuple's id position — decoded
+ * back to a numeric id by `resolveCommandTargetId`. Odoo's read/search_read
+ * only ever returns o2m fields as a bare array of child ids (no name or
+ * company tag comes back at read time), so the label is the best we can do
+ * without an extra round trip: `<relation>#<id>`.
+ *
+ * Scope is one2many ONLY — many2many fields are left as raw id arrays
+ * (out of scope for this change).
+ *
+ * Only transforms a non-empty array whose elements are all numbers. Empty
+ * arrays stay `[]` (nothing to wrap). Anything else (shouldn't happen for
+ * o2m on read, but the field loop is generic) passes through unchanged —
+ * defensive, never throws.
+ */
+function wrapOne2ManyValue(
+  connectionId: string,
+  field: OdooField,
+  value: unknown,
+): unknown {
+  if (
+    field.type !== "one2many" ||
+    !field.relation ||
+    !Array.isArray(value) ||
+    value.length === 0 ||
+    !value.every((item) => typeof item === "number")
+  ) {
+    return value;
+  }
+  const relation = field.relation;
+  return value.map((id) => ({
+    _pinchy_ref: encodeRef({
+      integrationType: "odoo",
+      connectionId,
+      model: relation,
+      id: id as number,
+      label: `${relation}#${id}`,
+    }),
+    id,
+    model: relation,
+  }));
+}
+
 function wrapReadResult(
   connectionId: string,
   model: string,
@@ -1729,6 +1928,7 @@ function wrapReadResult(
       const field = byName.get(name);
       if (field) {
         wrapped[name] = wrapMany2OneValue(connectionId, field, value);
+        wrapped[name] = wrapOne2ManyValue(connectionId, field, wrapped[name]);
       }
     }
     return wrapped;
