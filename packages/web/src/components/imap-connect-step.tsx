@@ -265,7 +265,6 @@ export function ImapConnectStep({ onSuccess, onCancel }: ImapConnectStepProps) {
         <Label htmlFor="imap-sender-name">Your name</Label>
         <Input
           id="imap-sender-name"
-          placeholder="Clemens Helm"
           value={form.senderName}
           onChange={(e) => updateField("senderName", e.target.value)}
         />
