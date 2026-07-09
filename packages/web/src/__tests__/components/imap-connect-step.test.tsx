@@ -50,7 +50,7 @@ describe("ImapConnectStep", () => {
     expect(
       screen.getByText(/shown to recipients when this mailbox sends email/i)
     ).toBeInTheDocument();
-    expect(screen.getByText(/app password or account password/i)).toBeInTheDocument();
+    expect(screen.getByPlaceholderText(/app password or account password/i)).toBeInTheDocument();
   });
 
   it("does not render a Name field for the integration label", () => {
@@ -58,20 +58,42 @@ describe("ImapConnectStep", () => {
     expect(screen.queryByLabelText(/^name$/i)).not.toBeInTheDocument();
   });
 
-  it("has the server settings grid expanded with empty values before any autodiscover", () => {
+  it("hides the server settings entirely before any autodiscover, behind a manual-entry link", () => {
     renderStep();
+
+    // The intimidating field wall must not be the first thing a user sees:
+    // no server grid, no summary — just the three identity fields and a
+    // low-key escape hatch for people who want to type settings themselves.
+    expect(screen.queryByLabelText(/^imap host$/i)).not.toBeInTheDocument();
+    expect(screen.queryByLabelText(/^smtp host$/i)).not.toBeInTheDocument();
+    expect(screen.queryByLabelText(/^username$/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/server settings found/i)).not.toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: /enter server settings manually/i })
+    ).toBeInTheDocument();
+  });
+
+  it("opens the empty server grid with port defaults via 'Enter server settings manually'", async () => {
+    const user = userEvent.setup();
+    renderStep();
+
+    await user.click(screen.getByRole("button", { name: /enter server settings manually/i }));
 
     expect(screen.getByLabelText(/^imap host$/i)).toHaveValue("");
     expect(screen.getByLabelText(/^imap port$/i)).toHaveValue("993");
     expect(screen.getByLabelText(/^smtp host$/i)).toHaveValue("");
     expect(screen.getByLabelText(/^smtp port$/i)).toHaveValue("587");
     expect(screen.getByLabelText(/^username$/i)).toBeInTheDocument();
-    expect(screen.queryByText(/server settings found/i)).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: /enter server settings manually/i })
+    ).not.toBeInTheDocument();
   });
 
   it("security select only offers Automatic (TLS) and None (insecure)", async () => {
     const user = userEvent.setup();
     renderStep();
+
+    await user.click(screen.getByRole("button", { name: /enter server settings manually/i }));
 
     // The trigger shows the current value ("Automatic (TLS)" is the default).
     expect(screen.getByRole("combobox")).toHaveTextContent("Automatic (TLS)");
@@ -165,7 +187,7 @@ describe("ImapConnectStep", () => {
     expect(screen.queryByText(/server settings found/i)).not.toBeInTheDocument();
   });
 
-  it("keeps the grid expanded when autodiscover finds nothing (source: none)", async () => {
+  it("expands the grid when autodiscover finds nothing (source: none)", async () => {
     vi.mocked(apiGet).mockResolvedValue({ config: {}, source: "none" });
 
     const user = userEvent.setup();
@@ -220,7 +242,7 @@ describe("ImapConnectStep", () => {
     expect(screen.queryByText(/server settings found/i)).not.toBeInTheDocument();
   });
 
-  it("does not block the user when autodiscover fails", async () => {
+  it("expands the empty grid when the autodiscover request itself fails, without blocking", async () => {
     vi.mocked(apiGet).mockRejectedValue(new ApiError(500, "boom"));
 
     const user = userEvent.setup();
@@ -233,13 +255,15 @@ describe("ImapConnectStep", () => {
       expect(apiGet).toHaveBeenCalled();
     });
 
-    // Host fields remain empty, but nothing crashes / no error is shown.
+    // Discovery could not run, so the user needs the fields — show them
+    // empty; nothing crashes / no error is shown.
     expect(screen.getByLabelText(/^imap host$/i)).toHaveValue("");
   });
 
   it("username defaults to the email address and stays in sync until the user edits it", async () => {
     const user = userEvent.setup();
     renderStep();
+    await user.click(screen.getByRole("button", { name: /enter server settings manually/i }));
 
     await user.type(screen.getByLabelText(/email address/i), "someone@example.com");
     await waitFor(() => {
@@ -280,6 +304,7 @@ describe("ImapConnectStep", () => {
 
     const user = userEvent.setup();
     const { onSuccess } = renderStep();
+    await user.click(screen.getByRole("button", { name: /enter server settings manually/i }));
 
     await user.type(screen.getByLabelText(/your name/i), "Clemens Helm");
     await user.type(screen.getByLabelText(/^imap host$/i), "imap.example.com");
@@ -333,6 +358,7 @@ describe("ImapConnectStep", () => {
 
     const user = userEvent.setup();
     renderStep();
+    await user.click(screen.getByRole("button", { name: /enter server settings manually/i }));
 
     await user.type(screen.getByLabelText(/^imap host$/i), "imap.example.com");
     await user.type(screen.getByLabelText(/^smtp host$/i), "smtp.example.com");
@@ -367,6 +393,7 @@ describe("ImapConnectStep", () => {
 
     const user = userEvent.setup();
     renderStep();
+    await user.click(screen.getByRole("button", { name: /enter server settings manually/i }));
 
     await user.type(screen.getByLabelText(/^imap host$/i), "imap.example.com");
     await user.type(screen.getByLabelText(/^smtp host$/i), "smtp.example.com");
@@ -427,6 +454,7 @@ describe("ImapConnectStep", () => {
 
     const user = userEvent.setup();
     renderStep();
+    await user.click(screen.getByRole("button", { name: /enter server settings manually/i }));
 
     await user.type(screen.getByLabelText(/^imap host$/i), "imap.example.com");
     await user.type(screen.getByLabelText(/^smtp host$/i), "smtp.example.com");
@@ -448,6 +476,7 @@ describe("ImapConnectStep", () => {
 
     const user = userEvent.setup();
     const { onSuccess } = renderStep();
+    await user.click(screen.getByRole("button", { name: /enter server settings manually/i }));
 
     await user.type(screen.getByLabelText(/^imap host$/i), "imap.example.com");
     await user.type(screen.getByLabelText(/^smtp host$/i), "smtp.example.com");

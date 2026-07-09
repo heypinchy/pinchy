@@ -460,9 +460,12 @@ describe("AddIntegrationDialog", () => {
 
       // Should no longer be on the type-selection step
       expect(screen.queryByText("Add Integration")).not.toBeInTheDocument();
-      // A distinctive field from ImapConnectStep confirms it rendered.
-      expect(screen.getByLabelText("IMAP host")).toBeInTheDocument();
-      expect(screen.getByLabelText("SMTP host")).toBeInTheDocument();
+      // Distinctive elements from ImapConnectStep confirm it rendered — the
+      // server grid itself is hidden behind the manual-entry link initially.
+      expect(screen.getByLabelText("Your name")).toBeInTheDocument();
+      expect(
+        screen.getByRole("button", { name: /enter server settings manually/i })
+      ).toBeInTheDocument();
     });
 
     it("closes the dialog and refreshes the connection list when ImapConnectStep succeeds", async () => {
@@ -476,8 +479,8 @@ describe("AddIntegrationDialog", () => {
 
       // Name field for the integration label was removed from this form —
       // the server defaults it to the mailbox address. Only email/password
-      // are required; the server-settings grid is expanded by default
-      // (autodiscover is a no-op here since apiGet has no implementation).
+      // are required; the server grid starts hidden, so open it manually.
+      await user.click(screen.getByRole("button", { name: /enter server settings manually/i }));
       await user.type(screen.getByLabelText("IMAP host"), "imap.example.com");
       await user.type(screen.getByLabelText("SMTP host"), "smtp.example.com");
       await user.type(screen.getByLabelText("Email address"), "me@example.com");
@@ -527,6 +530,7 @@ describe("AddIntegrationDialog", () => {
       await selectImapType(user);
 
       await user.type(screen.getByLabelText("Your name"), "Clemens Helm");
+      await user.click(screen.getByRole("button", { name: /enter server settings manually/i }));
       await user.type(screen.getByLabelText("IMAP host"), "imap.example.com");
       await user.type(screen.getByLabelText("SMTP host"), "smtp.example.com");
       await user.type(screen.getByLabelText("Email address"), "me@example.com");

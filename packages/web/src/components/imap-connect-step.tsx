@@ -124,50 +124,54 @@ export function ImapConnectStep({ onSuccess, onCancel }: ImapConnectStepProps) {
     const email = form.email.trim();
     if (!email) return;
 
-    // Best-effort — failures here are silent and never block the user.
+    // Best-effort — a failed discovery is silent and never blocks the user.
+    let result: AutodiscoverResponse | undefined;
     try {
-      const result = await apiGet<AutodiscoverResponse>(
+      result = await apiGet<AutodiscoverResponse>(
         `/api/integrations/imap/autodiscover?email=${encodeURIComponent(email)}`
       );
-      const config = result?.config ?? {};
-
-      setSource(result?.source ?? "none");
-      // Confident matches collapse into a summary; guesses/no-match stay
-      // expanded so the user can review or fill in values. Never collapse
-      // again once the user has expanded or edited the grid themselves.
-      if (!userExpanded) {
-        if (result?.source === "provider-table" || result?.source === "dns-srv") {
-          setServerSettingsExpanded(false);
-        } else {
-          setServerSettingsExpanded(true);
-        }
-      }
-
-      setForm((prev) => {
-        const next = { ...prev };
-        if (!touched.has("imapHost") && config.imapHost) {
-          next.imapHost = config.imapHost;
-        }
-        if (!touched.has("imapPort") && config.imapPort) {
-          next.imapPort = String(config.imapPort);
-        }
-        if (!touched.has("smtpHost") && config.smtpHost) {
-          next.smtpHost = config.smtpHost;
-        }
-        if (!touched.has("smtpPort") && config.smtpPort) {
-          next.smtpPort = String(config.smtpPort);
-        }
-        if (!touched.has("security") && config.security) {
-          next.security = config.security;
-        }
-        if (!usernameTouched && !prev.username) {
-          next.username = email;
-        }
-        return next;
-      });
     } catch {
-      // Autodiscovery is best-effort — never surface an error to the user.
+      // Discovery itself failed (network, 5xx). The user now needs the
+      // fields, so open the empty grid instead of leaving them hidden.
+      if (!userExpanded) setServerSettingsExpanded(true);
+      return;
     }
+    const config = result?.config ?? {};
+
+    setSource(result?.source ?? "none");
+    // Confident matches collapse into a summary; guesses/no-match expand the
+    // grid so the user can review or fill in values. Never collapse again
+    // once the user has expanded or edited the grid themselves.
+    if (!userExpanded) {
+      if (result?.source === "provider-table" || result?.source === "dns-srv") {
+        setServerSettingsExpanded(false);
+      } else {
+        setServerSettingsExpanded(true);
+      }
+    }
+
+    setForm((prev) => {
+      const next = { ...prev };
+      if (!touched.has("imapHost") && config.imapHost) {
+        next.imapHost = config.imapHost;
+      }
+      if (!touched.has("imapPort") && config.imapPort) {
+        next.imapPort = String(config.imapPort);
+      }
+      if (!touched.has("smtpHost") && config.smtpHost) {
+        next.smtpHost = config.smtpHost;
+      }
+      if (!touched.has("smtpPort") && config.smtpPort) {
+        next.smtpPort = String(config.smtpPort);
+      }
+      if (!touched.has("security") && config.security) {
+        next.security = config.security;
+      }
+      if (!usernameTouched && !prev.username) {
+        next.username = email;
+      }
+      return next;
+    });
   }
 
   // Username defaults to the email address and stays in sync with it until
@@ -302,10 +306,24 @@ export function ImapConnectStep({ onSuccess, onCancel }: ImapConnectStepProps) {
             {showPassword ? <EyeOff className="size-4" /> : <Eye className="size-4" />}
           </button>
         </div>
-        <p className="text-xs text-muted-foreground">App password or account password</p>
       </div>
 
-      {summary ? (
+      {!summary && !serverSettingsExpanded ? (
+        // Initial state: no server fields at all. They appear only after
+        // autodiscover has run (summary or expanded grid) — or on explicit
+        // request, for users who already know their settings.
+        <Button
+          type="button"
+          variant="link"
+          className="h-auto p-0 text-sm"
+          onClick={() => {
+            setServerSettingsExpanded(true);
+            setUserExpanded(true);
+          }}
+        >
+          Enter server settings manually
+        </Button>
+      ) : summary ? (
         <div className="space-y-2 rounded-md border bg-muted/40 p-3">
           <p className="text-sm">{summary}</p>
           <Button
