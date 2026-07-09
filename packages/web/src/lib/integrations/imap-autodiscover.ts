@@ -5,20 +5,26 @@
  * always confirms and runs "test connection" before saving.
  *
  * Offline-first: Pinchy must work air-gapped, so resolution goes through
- * three fallback tiers, each strictly more speculative than the last:
+ * four fallback tiers, each strictly more speculative than the last:
  *
  *   1. `lookupProviderTable` — bundled, zero-network, authoritative for the
  *      ~20-30 providers in imap-providers.ts.
  *   2. `discoverViaSrv` — RFC 6186 DNS-SRV records (`_imaps._tcp.<domain>`,
  *      `_submission._tcp.<domain>`). Best-effort; absent/failing DNS (e.g. an
  *      air-gapped deployment) degrades to an empty result, never a throw.
- *   3. A plain hostname guess (`imap.<domain>` / `smtp.<domain>`) — no
+ *   3. `discoverViaMx` — the domain's MX records, matched against the same
+ *      bundled provider table by MX-hostname suffix (see
+ *      `lookupProviderByMx` in imap-providers.ts). Catches hosted-mail
+ *      domains that publish no SRV records at all (e.g. Migadu) but whose MX
+ *      records unambiguously identify the provider — the same trick
+ *      Thunderbird's autoconfig uses. Also best-effort; never throws.
+ *   4. A plain hostname guess (`imap.<domain>` / `smtp.<domain>`) — no
  *      network at all, just a convention most providers follow.
  *
- * A fourth tier — fetching a provider's `.well-known` HTTP autoconfig
+ * A fifth tier — fetching a provider's `.well-known` HTTP autoconfig
  * document — is intentionally NOT implemented for v1. That fetch's URL would
  * be derived from a user-supplied domain, which is real SSRF surface, and
- * DNS-SRV + the provider table + the guess already cover the cases that
+ * DNS-SRV + MX + the provider table + the guess already cover the cases that
  * matter for a prefill-only feature. `isSafeAutodiscoverUrl` below still
  * ships as the guard a future HTTP stage would need, so it can be exercised
  * and reviewed independently of that stage ever landing.
@@ -29,6 +35,7 @@
  */
 import {
   lookupProviderTable,
+  lookupProviderByMx,
   type ProviderConfig,
   type MailSecurity,
 } from "@/lib/integrations/imap-providers";
@@ -38,7 +45,7 @@ export type { ProviderConfig, MailSecurity };
 
 export type DiscoveredConfig = ProviderConfig;
 
-export type AutodiscoverSource = "provider-table" | "dns-srv" | "guess" | "none";
+export type AutodiscoverSource = "provider-table" | "dns-srv" | "mx-provider" | "guess" | "none";
 
 export interface AutodiscoverResult {
   config: Partial<DiscoveredConfig>;
@@ -53,9 +60,22 @@ export interface SrvRecord {
   weight: number;
 }
 
-/** Injected DNS resolver dependency — matches Node's `dns/promises` shape. */
+/** Shape of an RFC 1035 MX record, matching Node's `dns/promises`.resolveMx. */
+export interface MxRecord {
+  exchange: string;
+  priority: number;
+}
+
+/**
+ * Injected DNS resolver dependency — matches Node's `dns/promises` shape.
+ * `resolveMx` is OPTIONAL so existing callers/tests built against the
+ * SRV-only shape (before the MX tier existed) keep working unchanged: when
+ * it's absent, `autodiscover()` simply skips the MX tier and falls straight
+ * through to the guess, exactly as it did before this tier was added.
+ */
 export interface SrvResolver {
   resolveSrv(hostname: string): Promise<SrvRecord[]>;
+  resolveMx?(hostname: string): Promise<MxRecord[]>;
 }
 
 // ---------------------------------------------------------------------------
@@ -209,6 +229,47 @@ export async function discoverViaSrv(
 }
 
 // ---------------------------------------------------------------------------
+// MX-record provider detection
+// ---------------------------------------------------------------------------
+
+async function resolveMxSafely(resolver: SrvResolver, domain: string): Promise<MxRecord[]> {
+  if (!resolver.resolveMx) return [];
+  try {
+    return await resolver.resolveMx(domain);
+  } catch {
+    // NXDOMAIN, timeout, no DNS available (air-gapped) — degrade silently,
+    // same contract as resolveSrvSafely above.
+    return [];
+  }
+}
+
+/**
+ * MX-record-based provider detection. Many hosted-mail domains (Migadu among
+ * them) publish no SRV records at all, so a domain with no provider-table
+ * hit and no SRV hit would otherwise fall straight through to a guessed
+ * `imap.<domain>` host — which is simply wrong for hosted mail. The domain's
+ * MX records identify WHO handles its mail even when they say nothing about
+ * HOW to connect to it, so this maps the MX hostnames to the same bundled,
+ * offline provider table via `lookupProviderByMx` (imap-providers.ts) —
+ * never anything derived from the MX hostname itself. Best-effort like
+ * `discoverViaSrv`: any DNS failure, or a resolver that doesn't implement
+ * `resolveMx` at all, degrades to `null`, never a throw.
+ */
+export async function discoverViaMx(
+  domain: string,
+  resolver: SrvResolver
+): Promise<ProviderConfig | null> {
+  const records = await resolveMxSafely(resolver, domain);
+  if (records.length === 0) return null;
+
+  // RFC 5321 §5.1: lower preference number = higher priority. Feed the
+  // exchanges to lookupProviderByMx in priority order so the primary MX host
+  // is checked first.
+  const sorted = [...records].sort((a, b) => a.priority - b.priority);
+  return lookupProviderByMx(sorted.map((r) => r.exchange));
+}
+
+// ---------------------------------------------------------------------------
 // Orchestration
 // ---------------------------------------------------------------------------
 
@@ -231,7 +292,10 @@ function extractDomain(email: string): string | undefined {
 
 async function defaultResolver(): Promise<SrvResolver> {
   const dns = await import("node:dns/promises");
-  return { resolveSrv: (name: string) => dns.resolveSrv(name) };
+  return {
+    resolveSrv: (name: string) => dns.resolveSrv(name),
+    resolveMx: (name: string) => dns.resolveMx(name),
+  };
 }
 
 function guessConfig(domain: string): DiscoveredConfig {
@@ -245,10 +309,10 @@ function guessConfig(domain: string): DiscoveredConfig {
 }
 
 /**
- * Orchestrates provider-table -> DNS-SRV -> guess resolution for a user-typed
- * email address. NEVER throws — every tier degrades to the next on any
- * error, so this always resolves with at least a guessed config (unless the
- * email itself is unparseable, in which case `source: "none"`).
+ * Orchestrates provider-table -> DNS-SRV -> MX-provider -> guess resolution
+ * for a user-typed email address. NEVER throws — every tier degrades to the
+ * next on any error, so this always resolves with at least a guessed config
+ * (unless the email itself is unparseable, in which case `source: "none"`).
  */
 export async function autodiscover(
   email: string,
@@ -266,6 +330,9 @@ export async function autodiscover(
       const resolver = deps.resolver ?? (await defaultResolver());
       const srvResult = await discoverViaSrv(domain, resolver);
       if (srvResult.imapHost) return { config: srvResult, source: "dns-srv" };
+
+      const mxHit = await discoverViaMx(domain, resolver);
+      if (mxHit) return { config: mxHit, source: "mx-provider" };
     } catch {
       // Resolver construction or lookup failed entirely (e.g. no DNS module
       // available, or every lookup rejected) — fall through to the guess.

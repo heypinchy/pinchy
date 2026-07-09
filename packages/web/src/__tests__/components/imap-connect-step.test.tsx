@@ -159,6 +159,36 @@ describe("ImapConnectStep", () => {
     });
   });
 
+  it("collapses into a summary when autodiscover hits an MX-based provider match", async () => {
+    vi.mocked(apiGet).mockResolvedValue({
+      config: {
+        imapHost: "imap.migadu.com",
+        imapPort: 993,
+        smtpHost: "smtp.migadu.com",
+        smtpPort: 465,
+        security: "tls",
+      },
+      source: "mx-provider",
+    });
+
+    const user = userEvent.setup();
+    renderStep();
+
+    await user.type(screen.getByLabelText(/email address/i), "someone@helmcraft.ai");
+    await user.tab();
+
+    await waitFor(() => {
+      expect(screen.getByText(/server settings found/i)).toBeInTheDocument();
+    });
+
+    // Same confident treatment as provider-table/dns-srv: no caution line,
+    // grid stays collapsed behind the summary.
+    expect(
+      screen.queryByText(/we couldn.t find your provider.s settings/i)
+    ).not.toBeInTheDocument();
+    expect(screen.queryByLabelText(/^imap host$/i)).not.toBeInTheDocument();
+  });
+
   it("expands the grid with a caution line when autodiscover only produces a guess", async () => {
     vi.mocked(apiGet).mockResolvedValue({
       config: {

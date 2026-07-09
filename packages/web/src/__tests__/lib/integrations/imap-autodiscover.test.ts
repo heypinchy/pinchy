@@ -5,7 +5,7 @@ import {
   autodiscover,
   type SrvResolver,
 } from "@/lib/integrations/imap-autodiscover";
-import { lookupProviderTable } from "@/lib/integrations/imap-providers";
+import { lookupProviderTable, lookupProviderByMx } from "@/lib/integrations/imap-providers";
 
 describe("isSafeAutodiscoverUrl", () => {
   it.each([
@@ -80,6 +80,60 @@ describe("lookupProviderTable", () => {
       expect(lookupProviderTable(key)).toBeNull();
     }
   );
+});
+
+describe("lookupProviderByMx", () => {
+  it("returns the Migadu config for an aspmx1.migadu.com MX host", () => {
+    expect(lookupProviderByMx(["aspmx1.migadu.com"])).toEqual({
+      imapHost: "imap.migadu.com",
+      imapPort: 993,
+      smtpHost: "smtp.migadu.com",
+      smtpPort: 465,
+      security: "tls",
+    });
+  });
+
+  it("matches case-insensitively and strips a trailing FQDN dot (ASPMX.L.GOOGLE.COM.)", () => {
+    expect(lookupProviderByMx(["ASPMX.L.GOOGLE.COM."])).toEqual({
+      imapHost: "imap.gmail.com",
+      imapPort: 993,
+      smtpHost: "smtp.gmail.com",
+      smtpPort: 587,
+      security: "tls",
+    });
+  });
+
+  it("does NOT match a suffix without a dot boundary (evilmigadu.com must not match migadu.com)", () => {
+    expect(lookupProviderByMx(["evilmigadu.com"])).toBeNull();
+  });
+
+  it("returns null for an unknown MX host", () => {
+    expect(lookupProviderByMx(["mx.unknown-host.example"])).toBeNull();
+  });
+
+  it("returns null for an empty array", () => {
+    expect(lookupProviderByMx([])).toBeNull();
+  });
+
+  it("matches Fastmail's messagingengine.com MX suffix", () => {
+    expect(lookupProviderByMx(["in1-smtp.messagingengine.com"])).toEqual({
+      imapHost: "imap.fastmail.com",
+      imapPort: 993,
+      smtpHost: "smtp.fastmail.com",
+      smtpPort: 587,
+      security: "tls",
+    });
+  });
+
+  it("matches Outlook/Office365's mail.protection.outlook.com MX suffix", () => {
+    expect(lookupProviderByMx(["contoso-com.mail.protection.outlook.com"])).toEqual({
+      imapHost: "outlook.office365.com",
+      imapPort: 993,
+      smtpHost: "smtp.office365.com",
+      smtpPort: 587,
+      security: "tls",
+    });
+  });
 });
 
 function makeResolver(impl: SrvResolver["resolveSrv"]): SrvResolver {
@@ -300,5 +354,95 @@ describe("autodiscover", () => {
     // unresolvable domain so this stays fast and network-result-agnostic; the
     // only contract under test is "never throws, always resolves".
     await expect(autodiscover("user@unknown-domain.example")).resolves.toBeDefined();
+  });
+
+  it("falls back to MX-provider detection when the provider table and SRV both miss (the helmcraft.ai/Migadu case)", async () => {
+    // Real-world motivating case: helmcraft.ai is hosted at Migadu but has no
+    // SRV records, so it used to fall all the way through to the wrong
+    // `imap.helmcraft.ai` guess. Its MX records (aspmx1/aspmx2.migadu.com)
+    // identify Migadu unambiguously.
+    const resolveSrv = vi.fn(async () => []);
+    const resolveMx = vi.fn(async (name: string) => {
+      if (name === "helmcraft.ai") {
+        return [
+          { exchange: "aspmx2.migadu.com", priority: 20 },
+          { exchange: "aspmx1.migadu.com", priority: 10 },
+        ];
+      }
+      return [];
+    });
+
+    const result = await autodiscover("someone@helmcraft.ai", {
+      resolver: { resolveSrv, resolveMx },
+    });
+
+    expect(result.source).toBe("mx-provider");
+    expect(result.config).toEqual({
+      imapHost: "imap.migadu.com",
+      imapPort: 993,
+      smtpHost: "smtp.migadu.com",
+      smtpPort: 465,
+      security: "tls",
+    });
+  });
+
+  it("prefers a DNS-SRV hit over MX-provider detection — MX is not even consulted", async () => {
+    const resolveSrv = vi.fn(async (name: string) => {
+      if (name === "_imaps._tcp.srv-domain.example") {
+        return [{ name: "imap.srv-domain.example", port: 993, priority: 0, weight: 0 }];
+      }
+      return [];
+    });
+    const resolveMx = vi.fn();
+
+    const result = await autodiscover("user@srv-domain.example", {
+      resolver: { resolveSrv, resolveMx },
+    });
+
+    expect(result.source).toBe("dns-srv");
+    expect(resolveMx).not.toHaveBeenCalled();
+  });
+
+  it("falls all the way to guess when provider table, SRV, and MX all miss", async () => {
+    const resolveSrv = vi.fn(async () => []);
+    const resolveMx = vi.fn(async () => []);
+
+    const result = await autodiscover("user@unknown-domain.example", {
+      resolver: { resolveSrv, resolveMx },
+    });
+
+    expect(result.source).toBe("guess");
+    expect(result.config).toEqual({
+      imapHost: "imap.unknown-domain.example",
+      imapPort: 993,
+      smtpHost: "smtp.unknown-domain.example",
+      smtpPort: 587,
+      security: "tls",
+    });
+  });
+
+  it("falls to guess without crashing when the resolver has no resolveMx (old resolver shape)", async () => {
+    const resolveSrv = vi.fn(async () => []);
+
+    // Deliberately the OLD resolver shape — no resolveMx at all — to prove
+    // the MX tier is skipped gracefully for callers/tests that predate it.
+    const result = await autodiscover("user@unknown-domain.example", {
+      resolver: { resolveSrv },
+    });
+
+    expect(result.source).toBe("guess");
+  });
+
+  it("falls to guess without crashing when resolveMx rejects", async () => {
+    const resolveSrv = vi.fn(async () => []);
+    const resolveMx = vi.fn(async () => {
+      throw new Error("MX lookup boom");
+    });
+
+    const result = await autodiscover("user@unknown-domain.example", {
+      resolver: { resolveSrv, resolveMx },
+    });
+
+    expect(result.source).toBe("guess");
   });
 });

@@ -24,8 +24,18 @@ interface AutodiscoverResponse {
     smtpPort: number;
     security: "tls" | "starttls" | "none";
   }>;
-  source: "provider-table" | "dns-srv" | "guess" | "none";
+  source: "provider-table" | "dns-srv" | "mx-provider" | "guess" | "none";
 }
+
+// Sources confident enough to collapse the server-settings grid into a
+// summary instead of showing the raw fields (and the "best guess" caution
+// line). Both call sites below check against this ONE set so they can never
+// drift apart on which sources count as "confident".
+const CONFIDENT_SOURCES = new Set<AutodiscoverResponse["source"]>([
+  "provider-table",
+  "dns-srv",
+  "mx-provider",
+]);
 
 // The create UI only offers the two security modes that matter to a user
 // picking server settings by hand — "tls" (works for the vast majority of
@@ -143,7 +153,7 @@ export function ImapConnectStep({ onSuccess, onCancel }: ImapConnectStepProps) {
     // grid so the user can review or fill in values. Never collapse again
     // once the user has expanded or edited the grid themselves.
     if (!userExpanded) {
-      if (result?.source === "provider-table" || result?.source === "dns-srv") {
+      if (result?.source && CONFIDENT_SOURCES.has(result.source)) {
         setServerSettingsExpanded(false);
       } else {
         setServerSettingsExpanded(true);
@@ -255,7 +265,7 @@ export function ImapConnectStep({ onSuccess, onCancel }: ImapConnectStepProps) {
   const canSubmit = !inFlight && form.email.trim().length > 0 && form.password.trim().length > 0;
 
   const summary =
-    !serverSettingsExpanded && (source === "provider-table" || source === "dns-srv")
+    !serverSettingsExpanded && CONFIDENT_SOURCES.has(source)
       ? `Server settings found — IMAP ${form.imapHost}:${form.imapPort} · SMTP ${form.smtpHost}:${form.smtpPort}`
       : null;
 
