@@ -60,6 +60,7 @@ export type AuditEventType =
   | "channel.polling_failed"
   | "channel.recovered"
   | "channel.auto_disabled"
+  | "channel.media_mirrored"
   | "chat.retry_triggered"
   | "chat.session_reset"
   | "chat.agent_error"
@@ -374,6 +375,19 @@ export type AuditLogEntry =
         account: { id: string; name: string | null };
         reason: string;
         lastError: string | null;
+      };
+    })
+  | (AuditLogBase & {
+      // Telegram media mirror: an inbound channel file was copied into the
+      // agent workspace uploads dir (or failed to). Basename only, no PII.
+      eventType: "channel.media_mirrored";
+      detail: {
+        channel: string;
+        agent: { id: string; name: string | null };
+        filename: string;
+        mimeType: string | null;
+        bytes: number | null;
+        error?: string;
       };
     })
   | (AuditLogBase & {

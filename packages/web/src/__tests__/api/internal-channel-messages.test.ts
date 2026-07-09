@@ -10,12 +10,34 @@ vi.mock("@/lib/gateway-auth", () => ({
 const mockOnConflictDoNothing = vi.fn();
 const mockValues = vi.fn().mockReturnValue({ onConflictDoNothing: mockOnConflictDoNothing });
 const mockInsert = vi.fn().mockReturnValue({ values: mockValues });
+const mockFindFirst = vi.fn();
 vi.mock("@/db", () => ({
-  db: { insert: (...args: unknown[]) => mockInsert(...args) },
+  db: {
+    insert: (...args: unknown[]) => mockInsert(...args),
+    query: { agents: { findFirst: (...args: unknown[]) => mockFindFirst(...args) } },
+  },
 }));
 
-// channelMessages is referenced as the insert target; a sentinel is enough.
-vi.mock("@/db/schema", () => ({ channelMessages: { __table: "channel_messages" } }));
+// channelMessages/agents are referenced as query targets; sentinels are enough.
+vi.mock("@/db/schema", () => ({
+  channelMessages: { __table: "channel_messages" },
+  agents: { __table: "agents", id: "agents.id" },
+}));
+
+const mockMirrorChannelMedia = vi.fn();
+vi.mock("@/server/channel-media", () => ({
+  mirrorChannelMedia: (...args: unknown[]) => mockMirrorChannelMedia(...args),
+}));
+
+const mockAppendAuditLog = vi.fn();
+vi.mock("@/lib/audit", () => ({
+  appendAuditLog: (...args: unknown[]) => mockAppendAuditLog(...args),
+}));
+
+const mockRecordAuditFailure = vi.fn();
+vi.mock("@/lib/audit-deferred", () => ({
+  recordAuditFailure: (...args: unknown[]) => mockRecordAuditFailure(...args),
+}));
 
 function makeRequest(body: unknown) {
   return new NextRequest("http://localhost/api/internal/channel-messages", {
@@ -42,6 +64,9 @@ describe("POST /api/internal/channel-messages", () => {
     vi.clearAllMocks();
     mockValidateGatewayToken.mockReturnValue(true);
     mockOnConflictDoNothing.mockResolvedValue(undefined);
+    mockFindFirst.mockResolvedValue({ id: "agent-1", name: "Smithers" });
+    mockMirrorChannelMedia.mockResolvedValue([]);
+    mockAppendAuditLog.mockResolvedValue(undefined);
     POST = (await import("@/app/api/internal/channel-messages/route")).POST;
   });
 
@@ -91,6 +116,105 @@ describe("POST /api/internal/channel-messages", () => {
     mockOnConflictDoNothing.mockRejectedValueOnce(new Error("db down"));
     const res = await POST(makeRequest(validBody));
     expect(res.status).toBe(503);
+  });
+
+  describe("media mirroring", () => {
+    const mediaBody = {
+      ...validBody,
+      content: "<media:image>",
+      media: [{ path: "/root/.openclaw/media/inbound/photo.jpg", mimeType: "image/jpeg" }],
+    };
+
+    it("mirrors media and audits a success", async () => {
+      mockFindFirst.mockResolvedValue({ id: "agent-1", name: "Smithers" });
+      mockMirrorChannelMedia.mockResolvedValue([
+        { filename: "photo.jpg", mimeType: "image/jpeg", bytes: 1024, outcome: "success" },
+      ]);
+
+      const res = await POST(makeRequest(mediaBody));
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({ success: true });
+
+      expect(mockMirrorChannelMedia).toHaveBeenCalledTimes(1);
+      expect(mockMirrorChannelMedia).toHaveBeenCalledWith({
+        agentId: "agent-1",
+        media: mediaBody.media,
+      });
+
+      expect(mockAppendAuditLog).toHaveBeenCalledTimes(1);
+      const entry = mockAppendAuditLog.mock.calls[0][0];
+      expect(entry.eventType).toBe("channel.media_mirrored");
+      expect(entry.outcome).toBe("success");
+      expect(entry.detail).toMatchObject({
+        channel: "telegram",
+        agent: { id: "agent-1", name: "Smithers" },
+        filename: "photo.jpg",
+        mimeType: "image/jpeg",
+        bytes: 1024,
+      });
+    });
+
+    it("audits a failure and still captures the message when the source file is gone (pre-existing conversation / already-cleaned media)", async () => {
+      mockFindFirst.mockResolvedValue({ id: "agent-1", name: "Smithers" });
+      mockMirrorChannelMedia.mockResolvedValue([
+        {
+          filename: "photo.jpg",
+          mimeType: "image/jpeg",
+          bytes: null,
+          outcome: "failure",
+          error: "ENOENT: no such file",
+        },
+      ]);
+
+      const res = await POST(makeRequest(mediaBody));
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({ success: true });
+
+      // The message itself was still captured, independent of the media outcome.
+      expect(mockOnConflictDoNothing).toHaveBeenCalledTimes(1);
+
+      expect(mockAppendAuditLog).toHaveBeenCalledTimes(1);
+      const entry = mockAppendAuditLog.mock.calls[0][0];
+      expect(entry.eventType).toBe("channel.media_mirrored");
+      expect(entry.outcome).toBe("failure");
+      expect(entry.detail.error).toBe("ENOENT: no such file");
+    });
+
+    it("does not mirror or audit when the payload has no media (existing audit-exempt behavior unchanged)", async () => {
+      const res = await POST(makeRequest(validBody));
+      expect(res.status).toBe(200);
+      expect(mockMirrorChannelMedia).not.toHaveBeenCalled();
+      expect(mockAppendAuditLog).not.toHaveBeenCalled();
+    });
+
+    it("still captures the message and reports via recordAuditFailure when mirrorChannelMedia throws unexpectedly", async () => {
+      mockFindFirst.mockResolvedValue({ id: "agent-1", name: "Smithers" });
+      mockMirrorChannelMedia.mockRejectedValue(new Error("unexpected boom"));
+
+      const res = await POST(makeRequest(mediaBody));
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({ success: true });
+
+      expect(mockOnConflictDoNothing).toHaveBeenCalledTimes(1);
+      expect(mockAppendAuditLog).not.toHaveBeenCalled();
+      expect(mockRecordAuditFailure).toHaveBeenCalledTimes(1);
+      const [err] = mockRecordAuditFailure.mock.calls[0];
+      expect(err).toBeInstanceOf(Error);
+    });
+
+    it("snapshots the agent name from a db lookup, and tolerates a missing agent row", async () => {
+      mockFindFirst.mockResolvedValue(undefined);
+      mockMirrorChannelMedia.mockResolvedValue([
+        { filename: "photo.jpg", mimeType: "image/jpeg", bytes: 1024, outcome: "success" },
+      ]);
+
+      const res = await POST(makeRequest(mediaBody));
+      expect(res.status).toBe(200);
+
+      expect(mockAppendAuditLog).toHaveBeenCalledTimes(1);
+      const entry = mockAppendAuditLog.mock.calls[0][0];
+      expect(entry.detail.agent).toEqual({ id: "agent-1", name: null });
+    });
   });
 });
 
