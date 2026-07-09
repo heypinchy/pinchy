@@ -11,7 +11,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { Loader2, CheckCircle2, AlertTriangle, Eye, EyeOff } from "lucide-react";
+import { Loader2, AlertTriangle, Eye, EyeOff } from "lucide-react";
 import { toast } from "sonner";
 import { apiGet, apiPost, ApiError } from "@/lib/api-client";
 import type { ImapTestInput, ImapCreateInput } from "@/lib/schemas/imap";
@@ -27,10 +27,17 @@ interface AutodiscoverResponse {
   source: "provider-table" | "dns-srv" | "guess" | "none";
 }
 
+// The create UI only offers the two security modes that matter to a user
+// picking server settings by hand — "tls" (works for the vast majority of
+// modern providers on port 993/465) and "none". STARTTLS is dropped from
+// this form only: the backend now derives tls vs starttls from the port, so
+// the distinction no longer changes behavior here. `imapCreateSchema` still
+// accepts "starttls" for autodiscover results and the edit form.
+type CreateSecurity = "tls" | "none";
 type Security = "tls" | "starttls" | "none";
 
 interface FormState {
-  name: string;
+  senderName: string;
   email: string;
   imapHost: string;
   imapPort: string;
@@ -42,7 +49,7 @@ interface FormState {
 }
 
 const INITIAL_STATE: FormState = {
-  name: "",
+  senderName: "",
   email: "",
   imapHost: "",
   imapPort: "993",
@@ -57,6 +64,8 @@ const INITIAL_STATE: FormState = {
 // edited one of these, prefill leaves it alone — see `touched` below.
 type PrefillableField = "imapHost" | "imapPort" | "smtpHost" | "smtpPort" | "security";
 
+type ServerSettingsSource = AutodiscoverResponse["source"];
+
 interface ImapConnectStepProps {
   /** Called after the connection is created — the caller closes the dialog. */
   onSuccess: (connection: { id: string; name: string }) => void;
@@ -69,18 +78,29 @@ export function ImapConnectStep({ onSuccess, onCancel }: ImapConnectStepProps) {
   const [usernameTouched, setUsernameTouched] = useState(false);
   const [showPassword, setShowPassword] = useState(false);
 
-  const [testStatus, setTestStatus] = useState<"idle" | "testing" | "success" | "failure">("idle");
-  const [testError, setTestError] = useState<string | null>(null);
+  // Progressive disclosure: server settings default to collapsed once
+  // autodiscover confidently finds a provider match, expanded otherwise
+  // (guess/none). Once the user expands (via the "Edit server settings"
+  // button) or edits a field, `userExpanded` locks it open — a later
+  // autodiscover re-run (e.g. re-blurring the email field) must never
+  // collapse the grid back out from under the user's cursor.
+  const [serverSettingsExpanded, setServerSettingsExpanded] = useState(false);
+  const [userExpanded, setUserExpanded] = useState(false);
+  const [source, setSource] = useState<ServerSettingsSource>("none");
 
-  const [saving, setSaving] = useState(false);
+  const [flightStatus, setFlightStatus] = useState<"idle" | "testing" | "saving" | "failure">(
+    "idle"
+  );
+  const [testError, setTestError] = useState<string | null>(null);
   const [saveError, setSaveError] = useState<string | null>(null);
 
   function updateField<K extends keyof FormState>(key: K, value: FormState[K]) {
     setForm((prev) => ({ ...prev, [key]: value }));
-    // Any field edit invalidates a previous successful test — the user must
-    // re-test before Save is enabled again.
-    setTestStatus("idle");
     setTestError(null);
+    setSaveError(null);
+    if (flightStatus === "failure") {
+      setFlightStatus("idle");
+    }
 
     if (key === "username") {
       setUsernameTouched(true);
@@ -93,6 +113,10 @@ export function ImapConnectStep({ onSuccess, onCancel }: ImapConnectStepProps) {
       key === "security"
     ) {
       setTouched((prev) => new Set(prev).add(key as PrefillableField));
+      // Editing a server-settings field only happens once the grid is
+      // visible, but guard anyway so it can never re-collapse.
+      setServerSettingsExpanded(true);
+      setUserExpanded(true);
     }
   }
 
@@ -106,6 +130,18 @@ export function ImapConnectStep({ onSuccess, onCancel }: ImapConnectStepProps) {
         `/api/integrations/imap/autodiscover?email=${encodeURIComponent(email)}`
       );
       const config = result?.config ?? {};
+
+      setSource(result?.source ?? "none");
+      // Confident matches collapse into a summary; guesses/no-match stay
+      // expanded so the user can review or fill in values. Never collapse
+      // again once the user has expanded or edited the grid themselves.
+      if (!userExpanded) {
+        if (result?.source === "provider-table" || result?.source === "dns-srv") {
+          setServerSettingsExpanded(false);
+        } else {
+          setServerSettingsExpanded(true);
+        }
+      }
 
       setForm((prev) => {
         const next = { ...prev };
@@ -134,6 +170,24 @@ export function ImapConnectStep({ onSuccess, onCancel }: ImapConnectStepProps) {
     }
   }
 
+  // Username defaults to the email address and stays in sync with it until
+  // the user edits the username directly — same touched-tracking pattern as
+  // the autodiscovered host/port fields.
+  function handleEmailChange(value: string) {
+    setForm((prev) => {
+      const next = { ...prev, email: value };
+      if (!usernameTouched) {
+        next.username = value;
+      }
+      return next;
+    });
+    setTestError(null);
+    setSaveError(null);
+    if (flightStatus === "failure") {
+      setFlightStatus("idle");
+    }
+  }
+
   function buildTestBody(): ImapTestInput {
     return {
       imapHost: form.imapHost,
@@ -146,9 +200,10 @@ export function ImapConnectStep({ onSuccess, onCancel }: ImapConnectStepProps) {
     };
   }
 
-  async function handleTestConnection() {
-    setTestStatus("testing");
+  async function handleTestAndSave() {
     setTestError(null);
+    setSaveError(null);
+    setFlightStatus("testing");
 
     try {
       const result = await apiPost<{ ok: boolean; error?: string }>(
@@ -156,25 +211,26 @@ export function ImapConnectStep({ onSuccess, onCancel }: ImapConnectStepProps) {
         buildTestBody()
       );
 
-      if (result.ok) {
-        setTestStatus("success");
-      } else {
-        setTestStatus("failure");
+      if (!result.ok) {
+        setFlightStatus("failure");
         setTestError(result.error ?? "Connection test failed");
+        setServerSettingsExpanded(true);
+        setUserExpanded(true);
+        return;
       }
     } catch (err) {
-      setTestStatus("failure");
+      setFlightStatus("failure");
       setTestError(err instanceof ApiError ? err.message : "Connection test failed");
+      setServerSettingsExpanded(true);
+      setUserExpanded(true);
+      return;
     }
-  }
 
-  async function handleSave() {
-    setSaveError(null);
-    setSaving(true);
+    setFlightStatus("saving");
 
     const body: ImapCreateInput = {
-      name: form.name,
       ...buildTestBody(),
+      ...(form.senderName.trim() ? { senderName: form.senderName.trim() } : {}),
     };
 
     try {
@@ -183,26 +239,35 @@ export function ImapConnectStep({ onSuccess, onCancel }: ImapConnectStepProps) {
         body
       );
       toast.success("Email connection ready");
+      setFlightStatus("idle");
       onSuccess(connection);
     } catch (err) {
+      setFlightStatus("failure");
       setSaveError(err instanceof ApiError ? err.message : "Failed to create the connection");
-    } finally {
-      setSaving(false);
     }
   }
 
-  const canSave = testStatus === "success" && form.name.trim().length > 0 && !saving;
+  const inFlight = flightStatus === "testing" || flightStatus === "saving";
+  const canSubmit = !inFlight && form.email.trim().length > 0 && form.password.trim().length > 0;
+
+  const summary =
+    !serverSettingsExpanded && (source === "provider-table" || source === "dns-srv")
+      ? `Server settings found — IMAP ${form.imapHost}:${form.imapPort} · SMTP ${form.smtpHost}:${form.smtpPort}`
+      : null;
 
   return (
     <div className="space-y-4">
       <div className="space-y-2">
-        <Label htmlFor="imap-name">Name</Label>
+        <Label htmlFor="imap-sender-name">Your name</Label>
         <Input
-          id="imap-name"
-          placeholder="Work email (IMAP)"
-          value={form.name}
-          onChange={(e) => updateField("name", e.target.value)}
+          id="imap-sender-name"
+          placeholder="Clemens Helm"
+          value={form.senderName}
+          onChange={(e) => updateField("senderName", e.target.value)}
         />
+        <p className="text-xs text-muted-foreground">
+          Shown to recipients when this mailbox sends email. Optional.
+        </p>
       </div>
 
       <div className="space-y-2">
@@ -212,65 +277,8 @@ export function ImapConnectStep({ onSuccess, onCancel }: ImapConnectStepProps) {
           type="email"
           placeholder="you@example.com"
           value={form.email}
-          onChange={(e) => updateField("email", e.target.value)}
+          onChange={(e) => handleEmailChange(e.target.value)}
           onBlur={handleEmailBlur}
-        />
-        <p className="text-xs text-muted-foreground">
-          We&apos;ll try to fill in the server settings below.
-        </p>
-      </div>
-
-      <div className="grid grid-cols-[1fr_auto] gap-3">
-        <div className="space-y-2">
-          <Label htmlFor="imap-host">IMAP host</Label>
-          <Input
-            id="imap-host"
-            placeholder="imap.example.com"
-            value={form.imapHost}
-            onChange={(e) => updateField("imapHost", e.target.value)}
-          />
-        </div>
-        <div className="space-y-2">
-          <Label htmlFor="imap-port">IMAP port</Label>
-          <Input
-            id="imap-port"
-            className="w-20"
-            inputMode="numeric"
-            value={form.imapPort}
-            onChange={(e) => updateField("imapPort", e.target.value)}
-          />
-        </div>
-      </div>
-
-      <div className="grid grid-cols-[1fr_auto] gap-3">
-        <div className="space-y-2">
-          <Label htmlFor="smtp-host">SMTP host</Label>
-          <Input
-            id="smtp-host"
-            placeholder="smtp.example.com"
-            value={form.smtpHost}
-            onChange={(e) => updateField("smtpHost", e.target.value)}
-          />
-        </div>
-        <div className="space-y-2">
-          <Label htmlFor="smtp-port">SMTP port</Label>
-          <Input
-            id="smtp-port"
-            className="w-20"
-            inputMode="numeric"
-            value={form.smtpPort}
-            onChange={(e) => updateField("smtpPort", e.target.value)}
-          />
-        </div>
-      </div>
-
-      <div className="space-y-2">
-        <Label htmlFor="imap-username">Username</Label>
-        <Input
-          id="imap-username"
-          placeholder="you@example.com"
-          value={form.username}
-          onChange={(e) => updateField("username", e.target.value)}
         />
       </div>
 
@@ -294,36 +302,112 @@ export function ImapConnectStep({ onSuccess, onCancel }: ImapConnectStepProps) {
             {showPassword ? <EyeOff className="size-4" /> : <Eye className="size-4" />}
           </button>
         </div>
+        <p className="text-xs text-muted-foreground">App password or account password</p>
       </div>
 
-      <div className="space-y-2">
-        <Label htmlFor="imap-security">Security</Label>
-        <Select
-          value={form.security}
-          onValueChange={(value) => updateField("security", value as Security)}
-        >
-          <SelectTrigger id="imap-security" className="w-full">
-            <SelectValue />
-          </SelectTrigger>
-          <SelectContent>
-            <SelectItem value="tls">TLS</SelectItem>
-            <SelectItem value="starttls">STARTTLS</SelectItem>
-            <SelectItem value="none">None</SelectItem>
-          </SelectContent>
-        </Select>
-      </div>
-
-      {testStatus === "success" && (
-        <div className="flex items-center gap-2 text-sm text-green-600 dark:text-green-400">
-          <CheckCircle2 className="h-4 w-4" />
-          <span>Connection successful</span>
+      {summary ? (
+        <div className="space-y-2 rounded-md border bg-muted/40 p-3">
+          <p className="text-sm">{summary}</p>
+          <Button
+            type="button"
+            variant="link"
+            className="h-auto p-0 text-sm"
+            onClick={() => {
+              setServerSettingsExpanded(true);
+              setUserExpanded(true);
+            }}
+          >
+            Edit server settings
+          </Button>
         </div>
-      )}
+      ) : (
+        <div className="space-y-4 rounded-md border p-3">
+          {source === "guess" && (
+            <div className="flex items-start gap-2 text-sm text-amber-600 dark:text-amber-400">
+              <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
+              <span>
+                We couldn&apos;t find your provider&apos;s settings, so these are a best guess —
+                please verify with your provider.
+              </span>
+            </div>
+          )}
 
-      {testStatus === "failure" && testError && (
-        <div className="flex items-start gap-2 text-sm text-destructive">
-          <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
-          <span>{testError}</span>
+          <div className="grid grid-cols-[1fr_auto] gap-3">
+            <div className="space-y-2">
+              <Label htmlFor="imap-host">IMAP host</Label>
+              <Input
+                id="imap-host"
+                placeholder="imap.example.com"
+                value={form.imapHost}
+                onChange={(e) => updateField("imapHost", e.target.value)}
+              />
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="imap-port">IMAP port</Label>
+              <Input
+                id="imap-port"
+                className="w-20"
+                inputMode="numeric"
+                value={form.imapPort}
+                onChange={(e) => updateField("imapPort", e.target.value)}
+              />
+            </div>
+          </div>
+
+          <div className="grid grid-cols-[1fr_auto] gap-3">
+            <div className="space-y-2">
+              <Label htmlFor="smtp-host">SMTP host</Label>
+              <Input
+                id="smtp-host"
+                placeholder="smtp.example.com"
+                value={form.smtpHost}
+                onChange={(e) => updateField("smtpHost", e.target.value)}
+              />
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="smtp-port">SMTP port</Label>
+              <Input
+                id="smtp-port"
+                className="w-20"
+                inputMode="numeric"
+                value={form.smtpPort}
+                onChange={(e) => updateField("smtpPort", e.target.value)}
+              />
+            </div>
+          </div>
+
+          <div className="space-y-2">
+            <Label htmlFor="imap-username">Username</Label>
+            <Input
+              id="imap-username"
+              placeholder="you@example.com"
+              value={form.username}
+              onChange={(e) => updateField("username", e.target.value)}
+            />
+          </div>
+
+          <div className="space-y-2">
+            <Label htmlFor="imap-security">Security</Label>
+            <Select
+              value={form.security === "starttls" ? "tls" : form.security}
+              onValueChange={(value) => updateField("security", value as CreateSecurity)}
+            >
+              <SelectTrigger id="imap-security" className="w-full">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="tls">Automatic (TLS)</SelectItem>
+                <SelectItem value="none">None (insecure)</SelectItem>
+              </SelectContent>
+            </Select>
+          </div>
+
+          {testError && (
+            <div className="flex items-start gap-2 text-sm text-destructive">
+              <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
+              <span>{testError}</span>
+            </div>
+          )}
         </div>
       )}
 
@@ -338,33 +422,21 @@ export function ImapConnectStep({ onSuccess, onCancel }: ImapConnectStepProps) {
         <Button type="button" variant="ghost" onClick={onCancel}>
           Cancel
         </Button>
-        <div className="flex gap-2">
-          <Button
-            type="button"
-            variant="outline"
-            disabled={testStatus === "testing"}
-            onClick={handleTestConnection}
-          >
-            {testStatus === "testing" ? (
-              <>
-                <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                Testing...
-              </>
-            ) : (
-              "Test connection"
-            )}
-          </Button>
-          <Button type="button" disabled={!canSave} onClick={handleSave}>
-            {saving ? (
-              <>
-                <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                Saving...
-              </>
-            ) : (
-              "Save"
-            )}
-          </Button>
-        </div>
+        <Button type="button" disabled={!canSubmit} onClick={handleTestAndSave}>
+          {flightStatus === "testing" ? (
+            <>
+              <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+              Testing…
+            </>
+          ) : flightStatus === "saving" ? (
+            <>
+              <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+              Saving…
+            </>
+          ) : (
+            "Test & Save"
+          )}
+        </Button>
       </div>
     </div>
   );

@@ -64,6 +64,7 @@ type ImapFormValues = {
   username: string;
   password: string;
   security: "tls" | "starttls" | "none";
+  senderName: string;
 };
 
 function OdooForm({
@@ -314,6 +315,7 @@ function ImapForm({
           smtpPort?: string;
           username?: string;
           security?: string;
+          senderName?: string;
         })
       : {};
 
@@ -331,6 +333,7 @@ function ImapForm({
       username: maskedCreds.username ?? "",
       password: "",
       security: maskedSecurity,
+      senderName: maskedCreds.senderName ?? "",
     },
   });
 
@@ -339,7 +342,12 @@ function ImapForm({
     setServerError("");
 
     // Build only the non-empty/edited fields, then coerce ports to numbers and
-    // validate the subset with imapEditSchema before sending.
+    // validate the subset with imapEditSchema before sending. senderName
+    // follows the same "leave empty to keep current" convention as every
+    // other field — see the odoo pattern this mirrors. This means it's not
+    // possible to explicitly clear senderName from this form once set; that
+    // matches the existing convention for every other field here (e.g.
+    // there's no way to clear the username either).
     const edited: Record<string, string> = {};
     if (values.imapHost) edited.imapHost = values.imapHost;
     if (values.imapPort) edited.imapPort = values.imapPort;
@@ -348,6 +356,9 @@ function ImapForm({
     if (values.username) edited.username = values.username;
     if (values.password) edited.password = values.password;
     if (values.security) edited.security = values.security;
+    if (values.senderName && values.senderName !== maskedCreds.senderName) {
+      edited.senderName = values.senderName;
+    }
 
     const parsed = imapEditSchema.safeParse(edited);
     if (!parsed.success) {
@@ -384,6 +395,19 @@ function ImapForm({
           </Alert>
         )}
 
+        <FormField
+          control={form.control}
+          name="senderName"
+          render={({ field }) => (
+            <FormItem>
+              <FormLabel>Sender name</FormLabel>
+              <FormControl>
+                <Input placeholder="Leave empty to keep current" {...field} />
+              </FormControl>
+              <FormMessage />
+            </FormItem>
+          )}
+        />
         <FormField
           control={form.control}
           name="imapHost"

@@ -23,4 +23,7 @@ export const imapEditSchema = z.object({
   username: z.string().optional(),
   password: z.string().optional(),
   security: z.enum(["tls", "starttls", "none"]).optional(),
+  // From-header display name. Empty means "leave current" — same convention
+  // as every other field here.
+  senderName: z.string().max(200).optional(),
 });

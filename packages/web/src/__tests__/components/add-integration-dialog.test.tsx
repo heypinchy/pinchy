@@ -474,10 +474,13 @@ describe("AddIntegrationDialog", () => {
       );
       await selectImapType(user);
 
-      await user.type(screen.getByLabelText("Name"), "Work email (IMAP)");
+      // Name field for the integration label was removed from this form —
+      // the server defaults it to the mailbox address. Only email/password
+      // are required; the server-settings grid is expanded by default
+      // (autodiscover is a no-op here since apiGet has no implementation).
       await user.type(screen.getByLabelText("IMAP host"), "imap.example.com");
       await user.type(screen.getByLabelText("SMTP host"), "smtp.example.com");
-      await user.type(screen.getByLabelText("Username"), "me@example.com");
+      await user.type(screen.getByLabelText("Email address"), "me@example.com");
       await user.type(screen.getByLabelText("Password"), "secret");
 
       const fetchSpy = vi.spyOn(global, "fetch").mockImplementation((input) => {
@@ -490,7 +493,7 @@ describe("AddIntegrationDialog", () => {
           } as Response);
         }
         if (urlStr.includes("/api/integrations/imap")) {
-          const body = { id: "conn-imap-1", name: "Work email (IMAP)" };
+          const body = { id: "conn-imap-1", name: "me@example.com" };
           return Promise.resolve({
             ok: true,
             text: async () => JSON.stringify(body),
@@ -504,17 +507,66 @@ describe("AddIntegrationDialog", () => {
         } as Response);
       });
 
-      await user.click(screen.getByRole("button", { name: /test connection/i }));
-      await waitFor(() => {
-        expect(screen.getByText(/connection successful/i)).toBeInTheDocument();
-      });
-
-      await user.click(screen.getByRole("button", { name: /^save$/i }));
+      await user.click(screen.getByRole("button", { name: /test & save/i }));
 
       await waitFor(() => {
         expect(onOpenChange).toHaveBeenCalledWith(false);
       });
       expect(onSuccess).toHaveBeenCalled();
+
+      fetchSpy.mockRestore();
+    });
+
+    it("does not send a name field and sends senderName when 'Your name' is filled", async () => {
+      const onOpenChange = vi.fn();
+      const onSuccess = vi.fn();
+      const user = userEvent.setup();
+      render(
+        <AddIntegrationDialog open={true} onOpenChange={onOpenChange} onSuccess={onSuccess} />
+      );
+      await selectImapType(user);
+
+      await user.type(screen.getByLabelText("Your name"), "Clemens Helm");
+      await user.type(screen.getByLabelText("IMAP host"), "imap.example.com");
+      await user.type(screen.getByLabelText("SMTP host"), "smtp.example.com");
+      await user.type(screen.getByLabelText("Email address"), "me@example.com");
+      await user.type(screen.getByLabelText("Password"), "secret");
+
+      let createBody: Record<string, unknown> | null = null;
+      const fetchSpy = vi.spyOn(global, "fetch").mockImplementation((input, init) => {
+        const urlStr = resolveUrl(input as string | URL | Request);
+        if (urlStr.includes("/api/integrations/imap/test")) {
+          return Promise.resolve({
+            ok: true,
+            text: async () => JSON.stringify({ ok: true }),
+            json: async () => ({ ok: true }),
+          } as Response);
+        }
+        if (urlStr.includes("/api/integrations/imap")) {
+          createBody = JSON.parse((init?.body as string) ?? "{}");
+          const body = { id: "conn-imap-1", name: "me@example.com" };
+          return Promise.resolve({
+            ok: true,
+            text: async () => JSON.stringify(body),
+            json: async () => body,
+          } as Response);
+        }
+        return Promise.resolve({
+          ok: true,
+          text: async () => "{}",
+          json: async () => ({}),
+        } as Response);
+      });
+
+      await user.click(screen.getByRole("button", { name: /test & save/i }));
+
+      await waitFor(() => {
+        expect(onSuccess).toHaveBeenCalled();
+      });
+
+      expect(createBody).not.toBeNull();
+      expect(createBody).not.toHaveProperty("name");
+      expect((createBody as Record<string, unknown>).senderName).toBe("Clemens Helm");
 
       fetchSpy.mockRestore();
     });

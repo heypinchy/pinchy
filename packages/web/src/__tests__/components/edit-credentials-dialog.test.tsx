@@ -374,6 +374,7 @@ describe("EditCredentialsDialog", () => {
         smtpPort: "587",
         username: "team@example.com",
         security: "tls",
+        senderName: "Team Mailbox Sender",
       },
       data: null,
       status: "auth_failed",
@@ -401,6 +402,7 @@ describe("EditCredentialsDialog", () => {
       expect(screen.getByLabelText("Username")).toHaveValue("team@example.com");
       // Password starts empty, "leave empty to keep current"
       expect(screen.getByLabelText("Password")).toHaveValue("");
+      expect(screen.getByLabelText("Sender name")).toHaveValue("Team Mailbox Sender");
       expect(screen.getByText(/Current credentials failed authentication/i)).toBeInTheDocument();
     });
 
@@ -459,6 +461,87 @@ describe("EditCredentialsDialog", () => {
         expect(screen.getByText("IMAP login rejected")).toBeInTheDocument();
       });
       expect(toast.success).not.toHaveBeenCalled();
+    });
+
+    it("does not resend senderName when left unchanged from its prefilled value", async () => {
+      const user = userEvent.setup();
+      vi.mocked(apiPatch).mockResolvedValue({ id: "conn-imap-1" });
+
+      render(
+        <EditCredentialsDialog
+          connection={authFailedImapConnection}
+          open={true}
+          onOpenChange={vi.fn()}
+          onSuccess={vi.fn()}
+        />
+      );
+
+      // Only touch the password — senderName stays at its prefilled value.
+      await user.type(screen.getByLabelText("Password"), "new-app-password");
+      await user.click(screen.getByRole("button", { name: "Save" }));
+
+      await waitFor(() => {
+        expect(apiPatch).toHaveBeenCalled();
+      });
+
+      const [, payload] = vi.mocked(apiPatch).mock.calls[0] as [
+        string,
+        { credentials: Record<string, unknown> },
+      ];
+      expect(payload.credentials).not.toHaveProperty("senderName");
+    });
+
+    it("sends senderName in the PATCH when the user edits it", async () => {
+      const user = userEvent.setup();
+      const onSuccess = vi.fn();
+      vi.mocked(apiPatch).mockResolvedValue({ id: "conn-imap-1" });
+
+      render(
+        <EditCredentialsDialog
+          connection={authFailedImapConnection}
+          open={true}
+          onOpenChange={vi.fn()}
+          onSuccess={onSuccess}
+        />
+      );
+
+      await user.clear(screen.getByLabelText("Sender name"));
+      await user.type(screen.getByLabelText("Sender name"), "New Display Name");
+      await user.click(screen.getByRole("button", { name: "Save" }));
+
+      await waitFor(() => {
+        expect(apiPatch).toHaveBeenCalled();
+      });
+
+      const [url, payload] = vi.mocked(apiPatch).mock.calls[0] as [
+        string,
+        { credentials: Record<string, unknown> },
+      ];
+      expect(url).toBe("/api/integrations/conn-imap-1");
+      expect(payload.credentials.senderName).toBe("New Display Name");
+      expect(onSuccess).toHaveBeenCalled();
+    });
+
+    it("prefills an empty Sender name field when the connection has none set", () => {
+      const noSenderNameConnection: IntegrationConnection = {
+        ...authFailedImapConnection,
+        id: "conn-imap-2",
+        credentials: {
+          ...(authFailedImapConnection.credentials as Record<string, unknown>),
+          senderName: undefined,
+        },
+      };
+
+      render(
+        <EditCredentialsDialog
+          connection={noSenderNameConnection}
+          open={true}
+          onOpenChange={vi.fn()}
+          onSuccess={vi.fn()}
+        />
+      );
+
+      expect(screen.getByLabelText("Sender name")).toHaveValue("");
     });
   });
 
