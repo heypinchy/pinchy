@@ -31,6 +31,19 @@ function generateSelfSignedCert() {
 const botResponses = []; // Messages sent BY the bot (via sendMessage)
 let messageIdCounter = 1000;
 let updateIdCounter = 100;
+let fileIdCounter = 0;
+
+// In-memory file store for getFile/download, keyed by file_id.
+// file_id -> { file_path, file_unique_id, file_size, bytes: Buffer }
+const mockFiles = new Map();
+
+// A tiny deterministic "JPEG" — real magic bytes (SOI ffd8ff.. / EOI ffd9) so
+// consumers checking Content-Type/signature are satisfied, but not a vendored
+// image. Good enough for E2E to confirm bytes made it through the mock.
+const MOCK_JPEG_BYTES = Buffer.from(
+  "ffd8ffe000104a46494600010100000100010000ffdb004300030202020203020203030303040604040404040805050405080b0908090909080b0d0f0f0c0c0f0d0d0e0e0e0e0effc9000b080001000103011100ffcc00060010ffda0008010100003f00ffd9",
+  "hex"
+);
 
 // Registered bot tokens and their info
 const bots = new Map();
@@ -149,6 +162,10 @@ function resetState() {
   // (botResponses is cleared and read back by timestamp), whereas a stale
   // long-poll offset filters incoming updates against update_id.
   messageIdCounter = 1000;
+  // file_id/file_path likewise: getFile is a fresh lookup per test, not a
+  // filtered/offset stream, so resetting is safe and keeps IDs small.
+  fileIdCounter = 0;
+  mockFiles.clear();
 }
 
 // ── Anthropic API mock (for model prewarm) ─────────────────────────────
@@ -193,33 +210,77 @@ function notifyUpdateListeners(token) {
   for (const cb of listeners) cb();
 }
 
+// Build a Telegram `PhotoSize[]` for an inbound photo update: small -> large,
+// each backed by a registered entry in `mockFiles` so a subsequent getFile +
+// download round-trip resolves. Real Telegram sends several resized variants
+// of the same photo (thumbnail, medium, original); two is enough to prove
+// "array with distinct sizes, sorted small to large" without over-building.
+const PHOTO_DIMENSIONS = [
+  { width: 90, height: 90 },
+  { width: 800, height: 600 },
+];
+
+function buildPhotoSizes() {
+  return PHOTO_DIMENSIONS.map(({ width, height }) => {
+    const n = ++fileIdCounter;
+    const filePath = `photos/file_${n}.jpg`;
+    const fileId = `mock-file-id-${n}`;
+    const fileUniqueId = `mock-file-unique-${n}`;
+    const bytes = MOCK_JPEG_BYTES;
+
+    mockFiles.set(fileId, {
+      file_path: filePath,
+      file_unique_id: fileUniqueId,
+      file_size: bytes.length,
+      bytes,
+    });
+
+    return {
+      file_id: fileId,
+      file_unique_id: fileUniqueId,
+      width,
+      height,
+      file_size: bytes.length,
+    };
+  });
+}
+
 // Simulate a user sending a message to the bot: build a Telegram update,
 // queue it for the token's long-poll, and wake any waiting getUpdates. Shared
 // by POST /control/sendMessage and the unit test. Returns the new update_id.
-function injectMessage({ token, chatId, text, userId, username, firstName, lastName }) {
+//
+// `photo: true` builds a photo message (PhotoSize[] + optional caption)
+// instead of a text message — mirrors real Telegram, where a message carries
+// either `text` or `photo`/`caption`, never both.
+function injectMessage({ token, chatId, text, userId, username, firstName, lastName, photo, caption }) {
   const updateId = ++updateIdCounter;
-  const update = {
-    update_id: updateId,
-    message: {
-      message_id: ++messageIdCounter,
-      from: {
-        id: parseInt(userId || chatId),
-        is_bot: false,
-        first_name: firstName || "TestUser",
-        last_name: lastName || "",
-        username: username || "testuser",
-      },
-      chat: {
-        id: parseInt(chatId),
-        type: "private",
-        first_name: firstName || "TestUser",
-        last_name: lastName || "",
-        username: username || "testuser",
-      },
-      date: Math.floor(Date.now() / 1000),
-      text,
+  const message = {
+    message_id: ++messageIdCounter,
+    from: {
+      id: parseInt(userId || chatId),
+      is_bot: false,
+      first_name: firstName || "TestUser",
+      last_name: lastName || "",
+      username: username || "testuser",
     },
+    chat: {
+      id: parseInt(chatId),
+      type: "private",
+      first_name: firstName || "TestUser",
+      last_name: lastName || "",
+      username: username || "testuser",
+    },
+    date: Math.floor(Date.now() / 1000),
   };
+
+  if (photo) {
+    message.photo = buildPhotoSizes();
+    if (caption) message.caption = caption;
+  } else {
+    message.text = text;
+  }
+
+  const update = { update_id: updateId, message };
 
   if (!pendingUpdates.has(token)) {
     pendingUpdates.set(token, []);
@@ -341,6 +402,16 @@ function dispatchGetUpdates(req, res, token, body) {
   });
 }
 
+// Look up the raw bytes for a file previously registered via a photo update,
+// by the `file_path` returned from getFile. Used by the GET
+// /file/bot<token>/<file_path> download route (and directly by unit tests).
+function getFileBytes(filePath) {
+  for (const file of mockFiles.values()) {
+    if (file.file_path === filePath) return file.bytes;
+  }
+  return null;
+}
+
 function handleBotRequest(token, method, body) {
   switch (method) {
     case "getMe": {
@@ -379,6 +450,22 @@ function handleBotRequest(token, method, body) {
       return { ok: true, result: response };
     }
 
+    case "getFile": {
+      const file = mockFiles.get(body?.file_id);
+      if (!file) {
+        return { ok: false, error_code: 400, description: "Bad Request: invalid file_id" };
+      }
+      return {
+        ok: true,
+        result: {
+          file_id: body.file_id,
+          file_unique_id: file.file_unique_id,
+          file_size: file.file_size,
+          file_path: file.file_path,
+        },
+      };
+    }
+
     case "deleteWebhook":
       return { ok: true, result: true };
 
@@ -389,6 +476,27 @@ function handleBotRequest(token, method, body) {
       // Return a generic success for unhandled methods
       return { ok: true, result: true };
   }
+}
+
+// Handle GET /file/bot<token>/<file_path> — the grammY/Bot API file download
+// route (distinct from /bot<token>/<method>, which POSTs JSON RPC-style
+// calls). Returns true if it handled the request. Shared between the HTTPS
+// Bot API port and the control port so both mirror real Telegram's surface.
+function dispatchFileDownload(req, res) {
+  const match = req.url.match(/^\/file\/bot([^/]+)\/(.+)$/);
+  if (!match) return false;
+
+  const [, , filePath] = match;
+  const bytes = getFileBytes(decodeURIComponent(filePath));
+  if (!bytes) {
+    res.writeHead(404, { "Content-Type": "application/json" });
+    res.end(JSON.stringify({ ok: false, error_code: 404, description: "Not Found" }));
+    return true;
+  }
+
+  res.writeHead(200, { "Content-Type": "image/jpeg" });
+  res.end(bytes);
+  return true;
 }
 
 // ── HTTPS proxy (port 443) — serves the Bot API ───────────────────────
@@ -405,6 +513,11 @@ function startHttpsServer(cert) {
         const result = handleAnthropicRequest(req.url, parsedBody(body));
         res.writeHead(200, { "Content-Type": "application/json" });
         res.end(JSON.stringify(result));
+        return;
+      }
+
+      // GET /file/bot<token>/<file_path> — grammY's getFile download step
+      if (req.method === "GET" && dispatchFileDownload(req, res)) {
         return;
       }
 
@@ -454,13 +567,15 @@ function startControlServer() {
       const url = new URL(req.url, "http://localhost");
       res.setHeader("Content-Type", "application/json");
 
-      // POST /control/sendMessage — simulate user sending a message to bot
+      // POST /control/sendMessage — simulate user sending a message to bot.
+      // `{ photo: true, caption? }` queues a photo update instead of text
+      // (mirrors real Telegram: a message carries text OR photo, not both).
       if (req.method === "POST" && url.pathname === "/control/sendMessage") {
         const opts = JSON.parse(body);
 
-        if (!opts.token || !opts.chatId || !opts.text) {
+        if (!opts.token || !opts.chatId || !(opts.text || opts.photo)) {
           res.writeHead(400);
-          res.end(JSON.stringify({ error: "token, chatId, and text required" }));
+          res.end(JSON.stringify({ error: "token, chatId, and text or photo required" }));
           return;
         }
 
@@ -471,7 +586,7 @@ function startControlServer() {
         // Strip CR/LF from the user-provided values before logging (CodeQL
         // js/log-injection — it only recognises an explicit newline replace).
         const safeChatId = String(opts.chatId).replace(/[\r\n]/g, "");
-        const safeText = String(opts.text).replace(/[\r\n]/g, "");
+        const safeText = String(opts.photo ? "[photo]" : opts.text).replace(/[\r\n]/g, "");
         console.log(
           `[telegram-mock] Injected message from user ${safeChatId}: "${safeText}"`
         );
@@ -548,6 +663,11 @@ function startControlServer() {
         return;
       }
 
+      // GET /file/bot<token>/<file_path> — also mirrored on this port
+      if (req.method === "GET" && dispatchFileDownload(req, res)) {
+        return;
+      }
+
       // Also handle Bot API on this port (for Pinchy's validateTelegramBotToken)
       const botMatch = req.url.match(/^\/bot([^/]+)\/(\w+)/);
       if (botMatch) {
@@ -601,6 +721,8 @@ module.exports = {
   resetState,
   injectMessage,
   handleGetUpdates,
+  handleBotRequest,
+  getFileBytes,
   getHealthSnapshot,
   ACTIVE_GRACE_MS,
 };
