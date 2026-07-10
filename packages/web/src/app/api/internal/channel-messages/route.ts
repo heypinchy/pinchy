@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { eq } from "drizzle-orm";
-import { basename } from "path";
+import { basename } from "node:path";
 import { validateGatewayToken } from "@/lib/gateway-auth";
 import { parseRequestBody } from "@/lib/api-validation";
 import { captureChannelMessageSchema } from "@/lib/schemas/channel-messages";

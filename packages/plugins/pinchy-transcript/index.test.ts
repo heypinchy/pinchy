@@ -6,6 +6,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import plugin, {
   buildPayload,
   parseDirectSessionKey,
+  shouldMirror,
   surrogateId,
   postChannelMessage,
   extractMedia,
@@ -26,6 +27,31 @@ describe("parseDirectSessionKey", () => {
     expect(parseDirectSessionKey("agent:a:group:g")).toBeNull();
     expect(parseDirectSessionKey("nope")).toBeNull();
     expect(parseDirectSessionKey(undefined)).toBeNull();
+  });
+});
+
+describe("shouldMirror", () => {
+  // shouldMirror is the gate that keeps a media copy from ever happening for a
+  // message that buildPayload would then drop — otherwise the file would land
+  // in uploads/ with no corresponding capture or audit row (see the function's
+  // doc comment). It MUST agree with buildPayload's own channel + direct-session
+  // gates, so these cases mirror buildPayload's own "skips …" tests.
+  it("returns the agentId for a captured channel + direct session", () => {
+    expect(shouldMirror("telegram", SK)).toEqual({ agentId: "agent-1" });
+  });
+
+  it("returns null for a NON-captured channel even with a valid direct session (no un-audited uploads write)", () => {
+    expect(shouldMirror("slack", SK)).toBeNull();
+    expect(shouldMirror("discord", SK)).toBeNull();
+  });
+
+  it("returns null for a captured channel that is not a direct session", () => {
+    expect(shouldMirror("telegram", "agent:agent-1:group:g")).toBeNull();
+    expect(shouldMirror("telegram", "garbage")).toBeNull();
+  });
+
+  it("returns null when the channel is undefined", () => {
+    expect(shouldMirror(undefined, SK)).toBeNull();
   });
 });
 
@@ -76,8 +102,15 @@ describe("buildPayload", () => {
   });
 
   it("includes media in the payload when provided", () => {
+    // buildPayload only ever receives mirrored results (the handler mirrors
+    // before building), so fixtures carry the per-file outcome.
     const media = [
-      { path: "/root/.openclaw/media/inbound/x.jpg", mimeType: "image/jpeg" },
+      {
+        path: "/root/.openclaw/media/inbound/x.jpg",
+        mimeType: "image/jpeg",
+        outcome: "success" as const,
+        bytes: 1024,
+      },
     ];
     expect(buildPayload({ ...base, media })).toEqual({
       channel: "telegram",
@@ -97,7 +130,12 @@ describe("buildPayload", () => {
 
   it("photo-only message: empty/whitespace content WITH media uses the <media> placeholder instead of being dropped", () => {
     const media = [
-      { path: "/root/.openclaw/media/inbound/x.jpg", mimeType: "image/jpeg" },
+      {
+        path: "/root/.openclaw/media/inbound/x.jpg",
+        mimeType: "image/jpeg",
+        outcome: "success" as const,
+        bytes: 1024,
+      },
     ];
     const p1 = buildPayload({ ...base, content: "", media });
     expect(p1).not.toBeNull();
@@ -510,6 +548,32 @@ describe("plugin.register", () => {
         error: expect.any(String),
       },
     ]);
+  });
+
+  it("does NOT mirror or capture media on a non-captured channel (would otherwise be an un-audited uploads write)", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true, status: 200 });
+    vi.stubGlobal("fetch", fetchMock);
+    const api = fakeApi();
+    plugin.register(api as never);
+
+    // Media-only message on a channel Pinchy does NOT capture, but with an
+    // otherwise-valid direct session key. shouldMirror gates the copy on the
+    // same condition buildPayload uses to capture, so nothing is copied and
+    // nothing is POSTed — no capture, no audit, no workspace write.
+    await api.handlers["message_received"](
+      {
+        content: "",
+        sessionKey: SK,
+        timestamp: 1700000000000,
+        metadata: {
+          mediaPaths: ["/root/.openclaw/media/inbound/x.jpg"],
+          mediaTypes: ["image/jpeg"],
+        },
+      },
+      { channelId: "slack" },
+    );
+
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 
   it("does NOT attach media handling to message_sent (outbound media reporting is out of scope)", async () => {

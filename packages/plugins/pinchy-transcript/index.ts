@@ -79,7 +79,11 @@ interface CaptureChannelMessage {
   externalId: string;
   content: string;
   sentAt: number;
-  media?: CapturedMedia[];
+  // Only mirrored results reach a capturable payload: the handler mirrors
+  // BEFORE building the payload and passes `undefined` when it didn't mirror,
+  // so every `media` entry that lands here carries the per-file `outcome` the
+  // capture route audits (MirrorMediaResult, not the raw extracted CapturedMedia).
+  media?: MirrorMediaResult[];
 }
 
 // Mirrors the server schema's cap (captureChannelMessageSchema, media.max(20))
@@ -206,6 +210,13 @@ function buildResult(
  * Copy uses `COPYFILE_EXCL` so it never overwrites an existing file; an
  * `EEXIST` from a prior successful copy of the same basename (retry /
  * redelivery) is treated as success, making the whole operation idempotent.
+ * This treats a same-basename collision as "already mirrored", which is safe
+ * ONLY because OpenClaw mints globally-unique basenames for inbound media
+ * (photos are pure UUIDs, documents carry a `---<uuid>` suffix — see
+ * reference_openclaw_media_store), so an EEXIST is genuinely the same file,
+ * never a distinct file that happens to share a name. If a future channel
+ * ever supplies caller-controlled, non-unique basenames, this branch would
+ * silently skip the new file and must be revisited (e.g. content hash check).
  *
  * Per-file best effort: each entry is processed independently, so one
  * missing/unsafe/oversized file never blocks the rest of the batch.
@@ -356,6 +367,27 @@ function parseDirectSessionKey(
   return m ? { agentId: m[1], peer: m[2] } : null;
 }
 
+/**
+ * Decide whether inbound media on this event should be mirrored into an agent
+ * workspace — and, if so, for which agent. Returns null (skip the copy) unless
+ * the channel is one Pinchy captures AND the session is a direct (1:1) one.
+ *
+ * This gate MUST match buildPayload's own (channel + direct-session) checks,
+ * because the copy happens BEFORE buildPayload runs. Without it, a message on
+ * a non-captured channel would have its media copied into `uploads/` even
+ * though buildPayload then drops the message — an un-audited workspace write
+ * (the copy is only ever audited via the capture POST buildPayload gates).
+ * Sharing CAPTURED_CHANNELS keeps the two gates from drifting.
+ */
+function shouldMirror(
+  channel: string | undefined,
+  sessionKey: string | undefined,
+): { agentId: string } | null {
+  if (!channel || !CAPTURED_CHANNELS.has(channel)) return null;
+  const parsed = parseDirectSessionKey(sessionKey);
+  return parsed ? { agentId: parsed.agentId } : null;
+}
+
 // Small deterministic hash for the surrogate externalId used when a channel
 // hook omits a message id. Stable across retries so dedup still works.
 function djb2(str: string): string {
@@ -426,7 +458,7 @@ function buildPayload(args: {
   content: string | undefined;
   messageId: string | undefined;
   sentAt: number;
-  media?: CapturedMedia[];
+  media?: MirrorMediaResult[];
 }): CaptureChannelMessage | null {
   const { channel, sessionKey, direction, content, messageId, sentAt, media } =
     args;
@@ -494,13 +526,15 @@ const plugin = {
       // OpenClaw's 0700 media store) and report the per-file outcome back to
       // Pinchy in the same `media` field, so the capture route can audit
       // `channel.media_mirrored` without ever touching the filesystem itself.
-      // If the sessionKey doesn't parse to a direct session, buildPayload
-      // below already returns null, so skipping the copy here is harmless.
-      const parsedSession = parseDirectSessionKey(sessionKey);
+      // The copy is gated by shouldMirror on the SAME (captured channel +
+      // direct session) condition buildPayload uses to capture — so we never
+      // copy media for a message we'd then drop (which would be an un-audited
+      // uploads write). When we don't mirror, media stays out of the payload.
+      const mirrorTarget = shouldMirror(ctx.channelId, sessionKey);
       const media =
-        extractedMedia && extractedMedia.length > 0 && parsedSession
-          ? await mirrorMedia(extractedMedia, { agentId: parsedSession.agentId })
-          : extractedMedia;
+        mirrorTarget && extractedMedia && extractedMedia.length > 0
+          ? await mirrorMedia(extractedMedia, { agentId: mirrorTarget.agentId })
+          : undefined;
       const payload = buildPayload({
         channel: ctx.channelId,
         sessionKey,
@@ -536,6 +570,7 @@ const plugin = {
 export {
   buildPayload,
   parseDirectSessionKey,
+  shouldMirror,
   surrogateId,
   postChannelMessage,
   extractMedia,
