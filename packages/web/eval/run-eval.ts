@@ -20,7 +20,7 @@
 // Playwright spec (packages/web/eval/eval.spec.ts) without embedding
 // `test`/`expect` calls itself.
 import type { Page } from "@playwright/test";
-import { mkdir, writeFile, appendFile } from "node:fs/promises";
+import { mkdir, writeFile, appendFile, readFile } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 import path from "node:path";
 import { buildTrajectory, type NormalizeAuditEntry } from "../src/lib/eval/normalize";
@@ -414,6 +414,31 @@ export async function appendRunResult(label: string, result: RunResult): Promise
   const filePath = path.join(RESULTS_DIR, `${label}.jsonl`);
   // eslint-disable-next-line security/detect-non-literal-fs-filename -- label validated above (alnum/./_/- only)
   await appendFile(filePath, `${JSON.stringify(result)}\n`, "utf8");
+}
+
+/**
+ * Reads the runs already persisted to `results/<label>.jsonl` (empty if the
+ * file doesn't exist). Lets the sweep RESUME: a scenario/model that already has
+ * its N runs on disk is skipped, so a multi-hour sweep survives a Playwright
+ * per-test timeout or a crash and continues from where it stopped instead of
+ * restarting from zero.
+ */
+export async function readExistingRuns(label: string): Promise<RunResult[]> {
+  if (!/^[a-zA-Z0-9._-]+$/.test(label)) {
+    throw new Error(`Invalid run-log label: ${label}`);
+  }
+  const filePath = path.join(RESULTS_DIR, `${label}.jsonl`);
+  let text: string;
+  try {
+    // eslint-disable-next-line security/detect-non-literal-fs-filename -- label validated above (alnum/._- only)
+    text = await readFile(filePath, "utf8");
+  } catch {
+    return [];
+  }
+  return text
+    .split("\n")
+    .filter((line) => line.trim().length > 0)
+    .map((line) => JSON.parse(line) as RunResult);
 }
 
 export async function writeScorecard(label: string, runs: RunResult[]): Promise<ScorecardEntry[]> {

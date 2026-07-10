@@ -42,6 +42,7 @@ import {
   runOnce,
   writeScorecard,
   appendRunResult,
+  readExistingRuns,
   requireOllamaCloudApiKey,
   candidateModelsFromEnv,
   runsPerModelFromEnv,
@@ -89,7 +90,11 @@ test.describe("Eval-v1: model sweep (real Ollama Cloud)", () => {
   });
 
   test("sweeps candidate models N times each and writes a scorecard", async ({ page }) => {
-    test.setTimeout(60 * 60_000);
+    // A full sweep (many models × scenarios × N real dispatches) runs for many
+    // hours; the 60-min default was far too short (a run got killed mid-sweep).
+    // Default 24h, env-overridable, and the sweep RESUMES from the JSONL so a
+    // timeout/crash never restarts from zero.
+    test.setTimeout(Number(process.env.EVAL_TEST_TIMEOUT_MS) || 24 * 60 * 60_000);
 
     await seedSetup();
     await waitForPinchy();
@@ -121,10 +126,26 @@ test.describe("Eval-v1: model sweep (real Ollama Cloud)", () => {
     // injection) results never mix into one buildScorecard grouping — the
     // grouping key is `run.model`, which repeats across scenarios by design
     // (the sweep runs every model against every scenario).
-    for (const { label, scenario, extraSetup } of SWEEP_SCENARIOS) {
-      const scenarioRuns: RunResult[] = [];
+    // Optional EVAL_SCENARIO (comma-separated labels) runs a subset of the
+    // scenarios, so a long sweep can be split into shorter, more survivable
+    // per-scenario invocations (each accumulates into its own JSONL).
+    const scenarioFilter = process.env.EVAL_SCENARIO?.split(",")
+      .map((s) => s.trim())
+      .filter(Boolean);
+    const scenariosToRun = scenarioFilter
+      ? SWEEP_SCENARIOS.filter((s) => scenarioFilter.includes(s.label))
+      : SWEEP_SCENARIOS;
+
+    for (const { label, scenario, extraSetup } of scenariosToRun) {
+      // Resume: seed the scorecard with runs already persisted to the JSONL
+      // (from a prior interrupted invocation) and skip models already at N.
+      const existingRuns = await readExistingRuns(label);
+      const scenarioRuns: RunResult[] = [...existingRuns];
 
       for (const model of candidates) {
+        const alreadyDone = existingRuns.filter((r) => r.model === model).length;
+        if (alreadyDone >= n) continue; // fully covered by a previous run
+
         await pinAgentModel(cookie, agentId, model);
         await waitForOpenClawStable(() => pinchyGet("/api/health/openclaw", cookie));
         await waitForAgentDispatchable(
@@ -132,7 +153,7 @@ test.describe("Eval-v1: model sweep (real Ollama Cloud)", () => {
           agentId
         );
 
-        for (let i = 0; i < n; i++) {
+        for (let i = alreadyDone; i < n; i++) {
           await resetGraphMock();
           await seedGraphMockMessages([scenario.graphSeedMessage]);
           await resetOdooMock();
