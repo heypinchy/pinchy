@@ -1469,6 +1469,25 @@ async function normalizeCommandTuples(
   const relationModel = relationField.relation as string;
   const opByCode = kind === "one2many" ? NESTED_OP_BY_CODE : M2M_OP_BY_CODE;
 
+  // Governance first: check every tuple's op against the allowlist BEFORE any
+  // I/O (schema fetch) or ref resolution. A missing grant is the agent's to
+  // fix and must surface as a permission error even when the line schema also
+  // happens to be unavailable — and it lets an under-permissioned request fail
+  // fast without a schema round trip.
+  for (const cmd of commands) {
+    if (!Array.isArray(cmd) || typeof cmd[0] !== "number") continue;
+    const op = opByCode[cmd[0]];
+    if (op !== undefined && !checkPermission(permissions, relationModel, op)) {
+      // Pinchy-allowlist rejection (not an Odoo server AccessError): phrase
+      // it as a permission gap, not an Odoo-side sync issue.
+      throw new Error(
+        `Agent missing ${op} grant on ${relationModel} ` +
+          `(nested via ${relationField.name} command ${cmd[0]}). ` +
+          `Add ${op} on ${relationModel} to this agent's permissions.`,
+      );
+    }
+  }
+
   // An empty line schema means the nested m2o resolution inside
   // `normalizeMany2OneValues` has nothing to resolve against and would
   // otherwise silently return the values dict UNCHANGED (Hardening B). When
@@ -1492,16 +1511,6 @@ async function normalizeCommandTuples(
       continue;
     }
     const code = cmd[0];
-    const op = opByCode[code];
-    if (op !== undefined && !checkPermission(permissions, relationModel, op)) {
-      // Pinchy-allowlist rejection (not an Odoo server AccessError): phrase
-      // it as a permission gap, not an Odoo-side sync issue.
-      throw new Error(
-        `Agent missing ${op} grant on ${relationModel} ` +
-          `(nested via ${relationField.name} command ${code}). ` +
-          `Add ${op} on ${relationModel} to this agent's permissions.`,
-      );
-    }
 
     if ((code === 0 || code === 1) && isRecord(cmd[2])) {
       const resolvedValues = (

@@ -483,4 +483,37 @@ describe("normalizeMany2OneValues — nested-permission gating (governance prior
       /Agent missing delete grant on account\.move\.line.*line_ids.*command 2/,
     );
   });
+
+  it("throws the PERMISSION error, not the empty-schema error, when both apply (authz wins)", async () => {
+    // account.move schema present, account.move.line schema EMPTY, AND the
+    // agent lacks account.move.line:delete. The permission gap must surface
+    // (fail fast on authz before the schema round trip), not Hardening B's
+    // empty-schema error. The target id is ref-shaped (not a raw number) so
+    // `commandTuplesNeedResolution` is true and the empty-schema pre-check
+    // actually has something to fire on — a plain numeric id wouldn't
+    // exercise the race at all.
+    const client = {
+      async fields(model: string) {
+        if (model === "account.move") return FIELDS["account.move"];
+        return {}; // account.move.line schema comes back empty
+      },
+      async searchRead() {
+        return [];
+      },
+    } as unknown as OdooClient;
+    const values = {
+      line_ids: [
+        [2, "pinchy_ref:v1:doesnotneedtobevalid-the-schema-check-happens-first"],
+      ],
+    }; // delete needs account.move.line:delete
+    await expect(
+      normalizeMany2OneValues(
+        client,
+        "conn-1",
+        "account.move",
+        values,
+        NO_LINE_PERMISSIONS,
+      ),
+    ).rejects.toThrow(/Agent missing delete grant on account\.move\.line/);
+  });
 });
