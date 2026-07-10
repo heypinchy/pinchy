@@ -46,6 +46,15 @@ After an admin connects a bot, each team member links their own Telegram account
 
 You're now linked. Messages you send to the bot are answered by the agent.
 
+## Sending Files and Photos
+
+Send a photo or a file to the bot, and Pinchy mirrors it into the agent's workspace automatically — no upload step needed. The agent can then read it, or hand it to a tool like `odoo_attach_file`, the same way it would a chat attachment or an email attachment. See [Attachments](/concepts/attachments/) for how this fits into the rest of the upload system.
+
+A couple of things worth knowing:
+
+- **Size limit:** Telegram bots can only download files up to 20 MB, so that's the effective ceiling — Pinchy's own mirror limit is a more generous 25 MB.
+- **Photo vs. file:** Telegram recompresses and strips metadata from anything sent as a photo, and replaces the filename with a generated one. If you need the original quality — full resolution, EXIF data, the real filename — send it as a file/document instead of a photo. For everyday things like receipts, either way works fine.
+
 ## Connect Additional Agents
 
 Each agent can have its own Telegram bot. To connect a second agent:
