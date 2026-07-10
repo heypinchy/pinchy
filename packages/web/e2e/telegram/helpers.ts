@@ -276,6 +276,32 @@ export async function sendTelegramAndAwaitReply(
   );
 }
 
+/**
+ * Inject an inbound Telegram PHOTO update via the mock's `/control/sendMessage`
+ * (`photo: true` instead of `text`). The mock builds a `PhotoSize[]` backed by
+ * deterministic JPEG bytes registered under `getFile`/`GET /file/bot<token>/…`,
+ * so a real OpenClaw/grammY download of the resulting `photos/file_<n>.jpg`
+ * round-trips through the mock exactly as a real Telegram photo would.
+ */
+export async function sendTelegramPhoto(opts: {
+  token: string;
+  chatId: string;
+  caption?: string;
+  userId?: string;
+  username?: string;
+  firstName?: string;
+  lastName?: string;
+}): Promise<void> {
+  const res = await fetch(`${MOCK_TELEGRAM_URL}/control/sendMessage`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ ...opts, photo: true }),
+  });
+  if (!res.ok) {
+    throw new Error(`sendTelegramPhoto failed: ${await res.text()}`);
+  }
+}
+
 export async function resetMockTelegram(): Promise<void> {
   await fetch(`${MOCK_TELEGRAM_URL}/control/reset`, { method: "POST" });
 }

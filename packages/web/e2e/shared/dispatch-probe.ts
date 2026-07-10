@@ -242,3 +242,47 @@ export async function pollAuditForTool(
   }
   return false;
 }
+
+/** A single row from `GET /api/audit`, as returned by the audit route. */
+export interface AuditApiEntry {
+  eventType: string;
+  resource: string | null;
+  outcome: string;
+  detail: Record<string, unknown> | null;
+}
+
+/**
+ * Poll `/api/audit?eventType=<eventType>` (authed via `page`'s cookie jar)
+ * until an entry matching `predicate` appears, or the deadline elapses.
+ * Returns the matching entry. Generalizes `pollAuditForTool` (which is
+ * hardcoded to `tool.<name>` + `detail.toolName` matching) for audit events
+ * outside the plugin tool-dispatch family, e.g. `channel.media_mirrored`.
+ */
+export async function pollAuditForEvent(
+  page: Page,
+  params: {
+    eventType: string;
+    predicate: (entry: AuditApiEntry) => boolean;
+    deadlineMs?: number;
+    intervalMs?: number;
+    since?: string;
+  }
+): Promise<AuditApiEntry> {
+  const deadline = Date.now() + (params.deadlineMs ?? 60_000);
+  const interval = params.intervalMs ?? 500;
+  const sinceQs = params.since ? `&from=${encodeURIComponent(params.since)}` : "";
+  while (Date.now() < deadline) {
+    const res = await page.request.get(
+      `/api/audit?eventType=${encodeURIComponent(params.eventType)}&limit=25${sinceQs}`
+    );
+    if (res.status() === 200) {
+      const audit = (await res.json()) as { entries: AuditApiEntry[] };
+      const match = audit.entries.find(params.predicate);
+      if (match) return match;
+    }
+    await new Promise((r) => setTimeout(r, interval));
+  }
+  throw new Error(
+    `No "${params.eventType}" audit entry matched predicate within ${params.deadlineMs ?? 60_000}ms`
+  );
+}
