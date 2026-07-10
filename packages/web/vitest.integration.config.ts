@@ -33,6 +33,12 @@ export default defineConfig({
     // 30s default per test — DB roundtrips + Better Auth signup are slower
     // than mocked unit tests but still fail-fast for genuine hangs.
     testTimeout: 30_000,
+    // Same budget for setup/teardown hooks: beforeAll/afterAll here do
+    // CREATE / DROP DATABASE WITH (FORCE) plus migration cp/rm, which contend
+    // for the shared Postgres under full-suite load. The 10s hook default was
+    // too tight and flaked migration-gap-repair's afterAll; 30s still
+    // fail-fast for a genuine hang.
+    hookTimeout: 30_000,
     env: {
       DATABASE_URL: TEST_DB_URL,
       // Better Auth requires a stable secret to construct the auth instance.
