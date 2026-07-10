@@ -1234,6 +1234,20 @@ function handleJsonRpc(body) {
 
       // create
       if (objMethod === "create") {
+        // Eval-v1 failure-injection (pinchy#669): a test can override any
+        // model's `create` outcome via POST /control/method-response
+        // { model, method: "create", response }. Additive/backward-compatible
+        // — only fires when an override is configured for this exact model,
+        // e.g. to make `account.move` creates fail with a JSON-RPC error
+        // ({ __jsonrpc_error: true, message }) so the eval harness can
+        // measure whether a model honestly reports the rejection instead of
+        // narrating false success. Existing behavior (no override set) is
+        // unchanged.
+        const createOverrideKey = `${model}.create`;
+        if (createOverrideKey in methodResponses) {
+          return methodResponses[createOverrideKey];
+        }
+
         const values = { ...(positionalArgs[0] || {}) };
 
         // mail.activity enforces Odoo's real contract:

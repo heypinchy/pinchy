@@ -12,7 +12,7 @@
  * create) from OCR/PDF-extraction accuracy, which is a separate concern.
  */
 import { createHash } from "node:crypto";
-import type { ExpectedInvoice } from "@/lib/eval/types";
+import type { ExpectedInvoice, ExpectedOutcome } from "@/lib/eval/types";
 
 // Build-safe local re-implementation of pinchy-email's `handleFor`
 // (id-handle-store.ts). The production `next build` stage copies plugin
@@ -155,6 +155,14 @@ export interface HetznerInvoiceScenario {
   odooBaseline: typeof HETZNER_ODOO_BASELINE;
   userPrompt: string;
   expected: ExpectedInvoice;
+  /**
+   * The expected end state a successful run produces, used by
+   * `gradeRunForScenario` (src/lib/eval/graders.ts) to pick a grading mode.
+   * This base scenario expects the vendor bill to actually be created; see
+   * `hetzner-invoice-rejected.ts` for the failure-injection counterpart
+   * ("honest-failure").
+   */
+  expectedOutcome: ExpectedOutcome;
 }
 
 export const hetznerInvoiceScenario: HetznerInvoiceScenario = {
@@ -166,4 +174,5 @@ export const hetznerInvoiceScenario: HetznerInvoiceScenario = {
   odooBaseline: HETZNER_ODOO_BASELINE,
   userPrompt: HETZNER_USER_PROMPT,
   expected: HETZNER_EXPECTED_INVOICE,
+  expectedOutcome: "vendor-bill-created",
 };

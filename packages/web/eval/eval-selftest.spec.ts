@@ -36,13 +36,22 @@ import { stackDbUrl } from "../e2e/shared/stack-db";
 import {
   FAKE_OLLAMA_HETZNER_HAPPY_TRIGGER,
   FAKE_OLLAMA_HETZNER_FALSE_SUCCESS_TRIGGER,
+  FAKE_OLLAMA_HETZNER_REJECTED_HONEST_TRIGGER,
+  FAKE_OLLAMA_HETZNER_REJECTED_FALSESUCCESS_TRIGGER,
   FAKE_OLLAMA_PORT,
   FAKE_OLLAMA_MODEL,
   startFakeOllama,
   stopFakeOllama,
 } from "../e2e/shared/fake-ollama/fake-ollama-server";
 import { hetznerInvoiceScenario } from "./scenarios/hetzner-invoice";
-import { resetOdooMock, seedOdooBaseline, pinAgentModel, runOnce } from "./run-eval";
+import { hetznerInvoiceRejectedScenario } from "./scenarios/hetzner-invoice-rejected";
+import {
+  resetOdooMock,
+  seedOdooBaseline,
+  pinAgentModel,
+  runOnce,
+  injectOdooCreateFailure,
+} from "./run-eval";
 import { setupHetznerAgent } from "./eval-shared";
 
 test.describe("Eval-v1: Hetzner invoice scenario (selftest)", () => {
@@ -118,6 +127,89 @@ test.describe("Eval-v1: Hetzner invoice scenario (selftest)", () => {
       agentId,
       model: FAKE_OLLAMA_MODEL,
       prompt: `${FAKE_OLLAMA_HETZNER_FALSE_SUCCESS_TRIGGER}: ${hetznerInvoiceScenario.userPrompt}`,
+    });
+
+    expect(result.passed).toBe(false);
+    expect(result.tags).toContain("false-success");
+  });
+});
+
+test.describe("Eval-v1: Hetzner invoice scenario, rejected (failure-injection honesty)", () => {
+  let cookie: string;
+  let agentId: string;
+  let restoreSettings: (() => Promise<void>) | undefined;
+
+  test.beforeAll(async ({}, testInfo) => {
+    testInfo.setTimeout(300_000);
+    await seedSetup();
+    await waitForPinchy();
+    await waitForOdooMock();
+    await waitForGraphMock();
+    cookie = await login();
+
+    await startFakeOllama();
+    const dbUrl = process.env.DATABASE_URL || stackDbUrl(5437);
+    restoreSettings = await seedDefaultProviderToOllama(dbUrl, FAKE_OLLAMA_PORT);
+
+    const setup = await setupHetznerAgent(cookie);
+    agentId = setup.agentId;
+
+    await pinAgentModel(cookie, agentId, FAKE_OLLAMA_MODEL);
+    await waitForOpenClawStable(() => pinchyGet("/api/health/openclaw", cookie));
+    await waitForAgentDispatchable(
+      (id) => pinchyGet(`/api/health/openclaw?agentId=${id}`, cookie),
+      agentId
+    );
+  });
+
+  test.afterAll(async () => {
+    if (agentId) await pinchyDelete(`/api/agents/${agentId}`, cookie);
+    if (restoreSettings) await restoreSettings();
+    await stopFakeOllama();
+  });
+
+  test("honest failure trajectory (odoo_create rejected) grades passed:true", async ({ page }) => {
+    test.setTimeout(180_000);
+    await resetGraphMock();
+    await seedGraphMockMessages([hetznerInvoiceScenario.graphSeedMessage]);
+    await resetOdooMock();
+    await seedOdooBaseline(hetznerInvoiceScenario.odooBaseline);
+    await injectOdooCreateFailure();
+
+    await loginViaUI(page, getAdminEmail(), getAdminPassword());
+
+    const result = await runOnce({
+      page,
+      cookie,
+      agentId,
+      model: FAKE_OLLAMA_MODEL,
+      scenario: hetznerInvoiceRejectedScenario,
+      prompt: `${FAKE_OLLAMA_HETZNER_REJECTED_HONEST_TRIGGER}: ${hetznerInvoiceRejectedScenario.userPrompt}`,
+    });
+
+    expect(result.passed).toBe(true);
+    expect(result.tags).toEqual([]);
+  });
+
+  test("false-success trajectory (odoo_create rejected, model lies) grades failed with false-success tag", async ({
+    page,
+  }) => {
+    test.setTimeout(180_000);
+    await resetGraphMock();
+    await seedGraphMockMessages([hetznerInvoiceScenario.graphSeedMessage]);
+    await resetOdooMock();
+    await seedOdooBaseline(hetznerInvoiceScenario.odooBaseline);
+    await injectOdooCreateFailure();
+
+    await loginViaUI(page, getAdminEmail(), getAdminPassword());
+
+    const result = await runOnce({
+      page,
+      cookie,
+      agentId,
+      model: FAKE_OLLAMA_MODEL,
+      scenario: hetznerInvoiceRejectedScenario,
+      prompt: `${FAKE_OLLAMA_HETZNER_REJECTED_FALSESUCCESS_TRIGGER}: ${hetznerInvoiceRejectedScenario.userPrompt}`,
     });
 
     expect(result.passed).toBe(false);

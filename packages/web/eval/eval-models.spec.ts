@@ -32,7 +32,8 @@ import {
   waitForAgentDispatchable,
 } from "../e2e/shared/dispatch-probe";
 import { stackDbUrl } from "../e2e/shared/stack-db";
-import { hetznerInvoiceScenario } from "./scenarios/hetzner-invoice";
+import { hetznerInvoiceScenario, type HetznerInvoiceScenario } from "./scenarios/hetzner-invoice";
+import { hetznerInvoiceRejectedScenario } from "./scenarios/hetzner-invoice-rejected";
 import {
   resetOdooMock,
   seedOdooBaseline,
@@ -42,6 +43,7 @@ import {
   requireOllamaCloudApiKey,
   candidateModelsFromEnv,
   runsPerModelFromEnv,
+  injectOdooCreateFailure,
 } from "./run-eval";
 import { setupHetznerAgent } from "./eval-shared";
 import type { RunResult } from "../src/lib/eval/types";
@@ -50,6 +52,27 @@ const DEFAULT_CANDIDATES = [
   "ollama-cloud/kimi-k2.6",
   "ollama-cloud/gemma4:31b",
   "ollama-cloud/glm-4.7",
+];
+
+/**
+ * The scenarios the sweep runs for every candidate model. `label` becomes
+ * both the `RunResult.scenario` tag and the scorecard filename, so
+ * "vendor-bill-created" results and "honest-failure" (failure-injection)
+ * results stay in separate, clearly separable outputs even though they share
+ * the same candidate-model list and per-model run count.
+ */
+const SWEEP_SCENARIOS: Array<{
+  label: string;
+  scenario: HetznerInvoiceScenario;
+  /** Per-run setup beyond the standard reset+seed, e.g. injecting a mock failure. */
+  extraSetup?: () => Promise<void>;
+}> = [
+  { label: "hetzner-invoice-models", scenario: hetznerInvoiceScenario },
+  {
+    label: "hetzner-invoice-rejected-models",
+    scenario: hetznerInvoiceRejectedScenario,
+    extraSetup: injectOdooCreateFailure,
+  },
 ];
 
 test.describe("Eval-v1: model sweep (real Ollama Cloud)", () => {
@@ -84,31 +107,50 @@ test.describe("Eval-v1: model sweep (real Ollama Cloud)", () => {
     const n = runsPerModelFromEnv(5);
 
     const { agentId } = await setupHetznerAgent(cookie);
-    const allRuns: RunResult[] = [];
 
-    for (const model of candidates) {
-      await pinAgentModel(cookie, agentId, model);
-      await waitForOpenClawStable(() => pinchyGet("/api/health/openclaw", cookie));
-      await waitForAgentDispatchable(
-        (id) => pinchyGet(`/api/health/openclaw?agentId=${id}`, cookie),
-        agentId
-      );
+    // Each scenario in SWEEP_SCENARIOS gets its OWN run list + scorecard file
+    // (label) so "vendor-bill-created" and "honest-failure" (failure-
+    // injection) results never mix into one buildScorecard grouping — the
+    // grouping key is `run.model`, which repeats across scenarios by design
+    // (the sweep runs every model against every scenario).
+    for (const { label, scenario, extraSetup } of SWEEP_SCENARIOS) {
+      const scenarioRuns: RunResult[] = [];
 
-      for (let i = 0; i < n; i++) {
-        await resetGraphMock();
-        await seedGraphMockMessages([hetznerInvoiceScenario.graphSeedMessage]);
-        await resetOdooMock();
-        await seedOdooBaseline(hetznerInvoiceScenario.odooBaseline);
+      for (const model of candidates) {
+        await pinAgentModel(cookie, agentId, model);
+        await waitForOpenClawStable(() => pinchyGet("/api/health/openclaw", cookie));
+        await waitForAgentDispatchable(
+          (id) => pinchyGet(`/api/health/openclaw?agentId=${id}`, cookie),
+          agentId
+        );
 
-        await loginViaUI(page, getAdminEmail(), getAdminPassword());
-        const result = await runOnce({ page, cookie, agentId, model });
-        allRuns.push(result);
+        for (let i = 0; i < n; i++) {
+          await resetGraphMock();
+          await seedGraphMockMessages([scenario.graphSeedMessage]);
+          await resetOdooMock();
+          await seedOdooBaseline(scenario.odooBaseline);
+          if (extraSetup) await extraSetup();
+
+          await loginViaUI(page, getAdminEmail(), getAdminPassword());
+          const result = await runOnce({
+            page,
+            cookie,
+            agentId,
+            model,
+            scenario,
+            scenarioLabel: label,
+          });
+          scenarioRuns.push(result);
+        }
       }
+
+      const scorecard = await writeScorecard(label, scenarioRuns);
+      console.log(
+        `[eval] wrote scorecard "${label}" for ${String(scenarioRuns.length)} runs:`,
+        scorecard
+      );
     }
 
     await pinchyDelete(`/api/agents/${agentId}`, cookie);
-
-    const scorecard = await writeScorecard("hetzner-invoice-models", allRuns);
-    console.log(`[eval] wrote scorecard for ${String(allRuns.length)} runs:`, scorecard);
   });
 });

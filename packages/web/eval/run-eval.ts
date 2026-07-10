@@ -24,10 +24,10 @@ import { mkdir, writeFile } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 import path from "node:path";
 import { buildTrajectory, type NormalizeAuditEntry } from "../src/lib/eval/normalize";
-import { gradeRun } from "../src/lib/eval/graders";
+import { gradeRunForScenario } from "../src/lib/eval/graders";
 import { buildScorecard, type ScorecardEntry } from "../src/lib/eval/scorecard";
 import type { OdooMoveRecord, RunResult } from "../src/lib/eval/types";
-import { hetznerInvoiceScenario } from "./scenarios/hetzner-invoice";
+import { hetznerInvoiceScenario, type HetznerInvoiceScenario } from "./scenarios/hetzner-invoice";
 
 const PINCHY_URL = process.env.PINCHY_URL || "http://localhost:7777";
 const MOCK_ODOO_URL = process.env.MOCK_ODOO_URL || "http://localhost:9002";
@@ -99,6 +99,32 @@ export async function seedOdooBaseline(
 ): Promise<void> {
   for (const { model, records } of baseline) {
     await seedOdooRecords(model, records);
+  }
+}
+
+/**
+ * Injects a JSON-RPC failure into the NEXT `account.move` create call the
+ * Odoo mock receives (Eval-v1 failure-injection scenario, pinchy#669 — see
+ * `eval/scenarios/hetzner-invoice-rejected.ts`, expectedOutcome
+ * "honest-failure"). Backed by the generic `${model}.create` override in
+ * `config/odoo-mock/server.js`'s create handler, configured via
+ * `POST /control/method-response`. `resetOdooMock()` clears the override like
+ * any other mock configuration, so call this again after every reset.
+ */
+export async function injectOdooCreateFailure(
+  message = "ValidationError: could not create account.move (Eval-v1 injected failure)"
+): Promise<void> {
+  const res = await fetch(`${MOCK_ODOO_URL}/control/method-response`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      model: "account.move",
+      method: "create",
+      response: { __jsonrpc_error: true, message },
+    }),
+  });
+  if (!res.ok) {
+    throw new Error(`Failed to inject Odoo create failure: ${String(res.status)}`);
   }
 }
 
@@ -286,10 +312,25 @@ export interface RunOnceParams {
    * stays identical between selftest and real-model runs.
    */
   prompt?: string;
+  /**
+   * The scenario to dispatch/grade against. Defaults to
+   * `hetznerInvoiceScenario` ("vendor-bill-created"). Pass
+   * `hetznerInvoiceRejectedScenario` for the failure-injection
+   * ("honest-failure") scenario — same fixtures, only `expectedOutcome`
+   * differs, which routes grading through `gradeHonestFailureRun` instead of
+   * `gradeRun` (see `gradeRunForScenario` in `src/lib/eval/graders.ts`).
+   */
+  scenario?: HetznerInvoiceScenario;
+  /**
+   * Recorded onto the returned `RunResult.scenario` so a scorecard can group
+   * runs by (model, scenario) when multiple scenarios are swept together
+   * (see `writeScorecard`). Purely a label — does not affect grading.
+   */
+  scenarioLabel?: string;
 }
 
 /**
- * Runs the Hetzner scenario ONCE against an already-configured agent
+ * Runs a Hetzner-family scenario ONCE against an already-configured agent
  * (permissions + allowedTools + model already set by the caller) and
  * returns the graded RunResult. Does NOT reset/seed mocks or pin the model
  * — the caller does that once per model (mocks are reset/seeded per run;
@@ -297,12 +338,13 @@ export interface RunOnceParams {
  */
 export async function runOnce(params: RunOnceParams): Promise<RunResult> {
   const { page, cookie, agentId, model } = params;
+  const scenario = params.scenario ?? hetznerInvoiceScenario;
   const since = new Date().toISOString();
 
   const { finalMessage, latencyMs } = await dispatchAndScrape(
     page,
     agentId,
-    params.prompt ?? hetznerInvoiceScenario.userPrompt
+    params.prompt ?? scenario.userPrompt
   );
 
   const auditEntries = await collectToolAuditEntries(cookie, agentId, since);
@@ -313,12 +355,13 @@ export async function runOnce(params: RunOnceParams): Promise<RunResult> {
     auditEntries,
     finalMessage,
     odooMoves,
-    issuedMessageHandle: hetznerInvoiceScenario.issuedMessageHandle,
-    issuedAttachmentHandle: hetznerInvoiceScenario.issuedAttachmentHandle,
+    issuedMessageHandle: scenario.issuedMessageHandle,
+    issuedAttachmentHandle: scenario.issuedAttachmentHandle,
     latencyMs,
   });
 
-  return gradeRun(trajectory, hetznerInvoiceScenario.expected);
+  const result = gradeRunForScenario(trajectory, scenario);
+  return params.scenarioLabel ? { ...result, scenario: params.scenarioLabel } : result;
 }
 
 // ── Scorecard I/O ─────────────────────────────────────────────────────────
