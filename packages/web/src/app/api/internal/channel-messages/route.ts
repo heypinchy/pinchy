@@ -1,11 +1,11 @@
 import { NextRequest, NextResponse } from "next/server";
 import { eq } from "drizzle-orm";
+import { basename } from "path";
 import { validateGatewayToken } from "@/lib/gateway-auth";
 import { parseRequestBody } from "@/lib/api-validation";
 import { captureChannelMessageSchema } from "@/lib/schemas/channel-messages";
 import { db } from "@/db";
 import { channelMessages, agents } from "@/db/schema";
-import { mirrorChannelMedia } from "@/server/channel-media";
 import { appendAuditLog, type AuditLogEntry } from "@/lib/audit";
 import { recordAuditFailure } from "@/lib/audit-deferred";
 
@@ -37,8 +37,12 @@ function parseDirectSessionKey(sessionKey: string): { agentId: string; peer: str
  * would bloat the audit log with no added accountability (the plugin is the
  * only, gateway-token-authed caller, mirroring /api/internal/audit/tool-use).
  * This exemption covers the MESSAGE insert only — an inbound media file copy
- * (below) is a distinct workspace filesystem state change and IS audited,
- * one "channel.media_mirrored" row per file, success or failure.
+ * is a distinct workspace filesystem state change and IS audited, one
+ * "channel.media_mirrored" row per file, success or failure. The COPY itself
+ * happens plugin-side (pinchy-transcript runs as root inside the OpenClaw
+ * container and can read OpenClaw's 0700 media store; this non-root web
+ * process cannot). This route only writes the audit row from what the plugin
+ * reports — it never touches the filesystem.
  */
 // audit-exempt: high-volume internal transcript ingestion; the captured rows are
 // the conversation record, so a per-message audit entry adds no accountability.
@@ -91,31 +95,44 @@ export async function POST(request: NextRequest) {
   return NextResponse.json({ success: true });
 }
 
+// Derives an audit-friendly filename from a plugin-reported path. This is
+// NOT a filesystem access — the plugin already performed (or attempted) the
+// copy; this is purely cosmetic for the audit detail. Backslashes are
+// normalized to forward slashes first because basename() only splits on "/"
+// on POSIX, so a Windows-style hostile path would otherwise survive intact.
+function auditFilename(path: string): string {
+  return basename(path.replace(/\\/g, "/"));
+}
+
 async function mirrorAndAuditMedia(
   agentId: string,
   channel: string,
-  media: Array<{ path: string; mimeType?: string }>
+  media: Array<{
+    path: string;
+    mimeType?: string;
+    outcome: "success" | "failure";
+    bytes?: number;
+    error?: string;
+  }>
 ): Promise<void> {
   try {
     const agentRow = await db.query.agents.findFirst({ where: eq(agents.id, agentId) });
     const agentName = agentRow?.name ?? null;
 
-    const results = await mirrorChannelMedia({ agentId, media });
-
-    for (const result of results) {
+    for (const item of media) {
       const entry: AuditLogEntry = {
         actorType: "system",
         actorId: "channel-media-mirror",
         eventType: "channel.media_mirrored",
         resource: `agent:${agentId}`,
-        outcome: result.outcome,
+        outcome: item.outcome,
         detail: {
           channel,
           agent: { id: agentId, name: agentName },
-          filename: result.filename,
-          mimeType: result.mimeType,
-          bytes: result.bytes,
-          ...(result.error !== undefined ? { error: result.error } : {}),
+          filename: auditFilename(item.path),
+          mimeType: item.mimeType ?? null,
+          bytes: item.bytes ?? null,
+          ...(item.error !== undefined ? { error: item.error } : {}),
         },
       };
       try {
@@ -125,10 +142,10 @@ async function mirrorAndAuditMedia(
       }
     }
   } catch (err) {
-    // mirrorChannelMedia (or the agent-name lookup) threw unexpectedly —
-    // never let a media-mirroring bug fail message capture. Report it the
-    // same way a failed audit write is reported, so it's still visible in
-    // the structured stderr signal / failure counter.
+    // The agent-name lookup (or something else here) threw unexpectedly —
+    // never let a media-audit bug fail message capture. Report it the same
+    // way a failed audit write is reported, so it's still visible in the
+    // structured stderr signal / failure counter.
     const entry: AuditLogEntry = {
       actorType: "system",
       actorId: "channel-media-mirror",
@@ -138,7 +155,7 @@ async function mirrorAndAuditMedia(
       detail: {
         channel,
         agent: { id: agentId, name: null },
-        filename: media.length === 1 ? media[0].path.split("/").pop()! : `${media.length} files`,
+        filename: media.length === 1 ? auditFilename(media[0].path) : `${media.length} files`,
         mimeType: null,
         bytes: null,
         error: err instanceof Error ? err.message : String(err),

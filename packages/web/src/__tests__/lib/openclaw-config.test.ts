@@ -542,9 +542,10 @@ describe("regenerateOpenClawConfig", () => {
 
   it("enables OpenClaw's media TTL so ~/.openclaw/media doesn't grow unboundedly", async () => {
     // Inbound Telegram media is mirrored into the agent workspace within
-    // milliseconds of arrival (POST /api/internal/channel-messages ->
-    // mirrorChannelMedia), so the original OpenClaw copies under
-    // ~/.openclaw/media are disposable shortly after capture. OpenClaw only
+    // milliseconds of arrival by the pinchy-transcript plugin's mirrorMedia
+    // (reported via POST /api/internal/channel-messages), so the original
+    // OpenClaw copies under ~/.openclaw/media are disposable shortly after
+    // capture. OpenClaw only
     // runs its own media-cleanup sweep when `media.ttlHours` is set in
     // config — verified against OpenClaw 2026.6.11's server.impl, which reads
     // `cfgAtStart.media?.ttlHours` and otherwise sets `mediaCleanup: null`

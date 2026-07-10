@@ -24,11 +24,6 @@ vi.mock("@/db/schema", () => ({
   agents: { __table: "agents", id: "agents.id" },
 }));
 
-const mockMirrorChannelMedia = vi.fn();
-vi.mock("@/server/channel-media", () => ({
-  mirrorChannelMedia: (...args: unknown[]) => mockMirrorChannelMedia(...args),
-}));
-
 const mockAppendAuditLog = vi.fn();
 vi.mock("@/lib/audit", () => ({
   appendAuditLog: (...args: unknown[]) => mockAppendAuditLog(...args),
@@ -65,7 +60,6 @@ describe("POST /api/internal/channel-messages", () => {
     mockValidateGatewayToken.mockReturnValue(true);
     mockOnConflictDoNothing.mockResolvedValue(undefined);
     mockFindFirst.mockResolvedValue({ id: "agent-1", name: "Smithers" });
-    mockMirrorChannelMedia.mockResolvedValue([]);
     mockAppendAuditLog.mockResolvedValue(undefined);
     POST = (await import("@/app/api/internal/channel-messages/route")).POST;
   });
@@ -118,28 +112,33 @@ describe("POST /api/internal/channel-messages", () => {
     expect(res.status).toBe(503);
   });
 
+  // The copy itself now happens plugin-side (pinchy-transcript runs as root
+  // inside the OpenClaw container, unlike this non-root web process — see
+  // packages/plugins/pinchy-transcript/index.ts's mirrorMedia). This route
+  // only writes one channel.media_mirrored audit row per REPORTED outcome;
+  // it never touches the filesystem, so these tests feed `media[]` entries
+  // exactly as the plugin would report them (outcome/bytes/error already
+  // populated) instead of mocking a mirroring call.
   describe("media mirroring", () => {
     const mediaBody = {
       ...validBody,
       content: "<media:image>",
-      media: [{ path: "/root/.openclaw/media/inbound/photo.jpg", mimeType: "image/jpeg" }],
+      media: [
+        {
+          path: "/root/.openclaw/media/inbound/photo.jpg",
+          mimeType: "image/jpeg",
+          outcome: "success" as const,
+          bytes: 1024,
+        },
+      ],
     };
 
-    it("mirrors media and audits a success", async () => {
+    it("audits a success reported by the plugin", async () => {
       mockFindFirst.mockResolvedValue({ id: "agent-1", name: "Smithers" });
-      mockMirrorChannelMedia.mockResolvedValue([
-        { filename: "photo.jpg", mimeType: "image/jpeg", bytes: 1024, outcome: "success" },
-      ]);
 
       const res = await POST(makeRequest(mediaBody));
       expect(res.status).toBe(200);
       expect(await res.json()).toEqual({ success: true });
-
-      expect(mockMirrorChannelMedia).toHaveBeenCalledTimes(1);
-      expect(mockMirrorChannelMedia).toHaveBeenCalledWith({
-        agentId: "agent-1",
-        media: mediaBody.media,
-      });
 
       expect(mockAppendAuditLog).toHaveBeenCalledTimes(1);
       const entry = mockAppendAuditLog.mock.calls[0][0];
@@ -156,17 +155,20 @@ describe("POST /api/internal/channel-messages", () => {
 
     it("audits a failure and still captures the message when the source file is gone (pre-existing conversation / already-cleaned media)", async () => {
       mockFindFirst.mockResolvedValue({ id: "agent-1", name: "Smithers" });
-      mockMirrorChannelMedia.mockResolvedValue([
-        {
-          filename: "photo.jpg",
-          mimeType: "image/jpeg",
-          bytes: null,
-          outcome: "failure",
-          error: "ENOENT: no such file",
-        },
-      ]);
+      const failureBody = {
+        ...validBody,
+        content: "<media:image>",
+        media: [
+          {
+            path: "/root/.openclaw/media/inbound/photo.jpg",
+            mimeType: "image/jpeg",
+            outcome: "failure" as const,
+            error: "ENOENT: no such file",
+          },
+        ],
+      };
 
-      const res = await POST(makeRequest(mediaBody));
+      const res = await POST(makeRequest(failureBody));
       expect(res.status).toBe(200);
       expect(await res.json()).toEqual({ success: true });
 
@@ -177,19 +179,18 @@ describe("POST /api/internal/channel-messages", () => {
       const entry = mockAppendAuditLog.mock.calls[0][0];
       expect(entry.eventType).toBe("channel.media_mirrored");
       expect(entry.outcome).toBe("failure");
+      expect(entry.detail.bytes).toBeNull();
       expect(entry.detail.error).toBe("ENOENT: no such file");
     });
 
-    it("does not mirror or audit when the payload has no media (existing audit-exempt behavior unchanged)", async () => {
+    it("does not audit when the payload has no media (existing audit-exempt behavior unchanged)", async () => {
       const res = await POST(makeRequest(validBody));
       expect(res.status).toBe(200);
-      expect(mockMirrorChannelMedia).not.toHaveBeenCalled();
       expect(mockAppendAuditLog).not.toHaveBeenCalled();
     });
 
-    it("still captures the message and reports via recordAuditFailure when mirrorChannelMedia throws unexpectedly", async () => {
-      mockFindFirst.mockResolvedValue({ id: "agent-1", name: "Smithers" });
-      mockMirrorChannelMedia.mockRejectedValue(new Error("unexpected boom"));
+    it("still captures the message and reports via recordAuditFailure when the audit path throws unexpectedly (e.g. the agent-name lookup fails)", async () => {
+      mockFindFirst.mockRejectedValue(new Error("unexpected boom"));
 
       const res = await POST(makeRequest(mediaBody));
       expect(res.status).toBe(200);
@@ -204,9 +205,6 @@ describe("POST /api/internal/channel-messages", () => {
 
     it("snapshots the agent name from a db lookup, and tolerates a missing agent row", async () => {
       mockFindFirst.mockResolvedValue(undefined);
-      mockMirrorChannelMedia.mockResolvedValue([
-        { filename: "photo.jpg", mimeType: "image/jpeg", bytes: 1024, outcome: "success" },
-      ]);
 
       const res = await POST(makeRequest(mediaBody));
       expect(res.status).toBe(200);
@@ -215,41 +213,114 @@ describe("POST /api/internal/channel-messages", () => {
       const entry = mockAppendAuditLog.mock.calls[0][0];
       expect(entry.detail.agent).toEqual({ id: "agent-1", name: null });
     });
+
+    it("audits multiple reported entries independently (mixed success/failure in one album)", async () => {
+      mockFindFirst.mockResolvedValue({ id: "agent-1", name: "Smithers" });
+      const mixedBody = {
+        ...validBody,
+        content: "<media:image>",
+        media: [
+          { path: "/root/.openclaw/media/inbound/a.jpg", outcome: "success" as const, bytes: 10 },
+          {
+            path: "/root/.openclaw/media/inbound/b.jpg",
+            outcome: "failure" as const,
+            error: "unsafe filename: b.jpg",
+          },
+        ],
+      };
+
+      const res = await POST(makeRequest(mixedBody));
+      expect(res.status).toBe(200);
+
+      expect(mockAppendAuditLog).toHaveBeenCalledTimes(2);
+      expect(mockAppendAuditLog.mock.calls[0][0].outcome).toBe("success");
+      expect(mockAppendAuditLog.mock.calls[1][0].outcome).toBe("failure");
+    });
   });
 });
 
 describe("captureChannelMessageSchema media", () => {
-  it("accepts an optional media array", () => {
+  it("accepts a reported success entry with mimeType and bytes", () => {
     const parsed = captureChannelMessageSchema.safeParse({
       ...validBody,
       content: "<media:image>",
-      media: [{ path: "/root/.openclaw/media/inbound/file_12---abc.jpg", mimeType: "image/jpeg" }],
+      media: [
+        {
+          path: "/root/.openclaw/media/inbound/file_12---abc.jpg",
+          mimeType: "image/jpeg",
+          outcome: "success",
+          bytes: 2048,
+        },
+      ],
     });
     expect(parsed.success).toBe(true);
     if (!parsed.success) return;
     // Guards against unknown-key stripping silently making this a false pass.
     expect(parsed.data.media).toBeDefined();
     expect(parsed.data.media).toEqual([
-      { path: "/root/.openclaw/media/inbound/file_12---abc.jpg", mimeType: "image/jpeg" },
+      {
+        path: "/root/.openclaw/media/inbound/file_12---abc.jpg",
+        mimeType: "image/jpeg",
+        outcome: "success",
+        bytes: 2048,
+      },
+    ]);
+  });
+
+  it("accepts a reported failure entry with an error message and no bytes", () => {
+    const parsed = captureChannelMessageSchema.safeParse({
+      ...validBody,
+      media: [
+        {
+          path: "/root/.openclaw/media/inbound/file_12---abc.jpg",
+          outcome: "failure",
+          error: "unsafe filename: file_12---abc.jpg",
+        },
+      ],
+    });
+    expect(parsed.success).toBe(true);
+    if (!parsed.success) return;
+    expect(parsed.data.media).toEqual([
+      {
+        path: "/root/.openclaw/media/inbound/file_12---abc.jpg",
+        outcome: "failure",
+        error: "unsafe filename: file_12---abc.jpg",
+      },
     ]);
   });
 
   it("allows a media entry without mimeType", () => {
     const parsed = captureChannelMessageSchema.safeParse({
       ...validBody,
-      media: [{ path: "/root/.openclaw/media/inbound/file_12---abc.jpg" }],
+      media: [{ path: "/root/.openclaw/media/inbound/file_12---abc.jpg", outcome: "success" }],
     });
     expect(parsed.success).toBe(true);
     if (!parsed.success) return;
     expect(parsed.data.media).toEqual([
-      { path: "/root/.openclaw/media/inbound/file_12---abc.jpg" },
+      { path: "/root/.openclaw/media/inbound/file_12---abc.jpg", outcome: "success" },
     ]);
   });
 
   it("rejects a media entry without a path", () => {
     const parsed = captureChannelMessageSchema.safeParse({
       ...validBody,
-      media: [{ mimeType: "image/jpeg" }],
+      media: [{ mimeType: "image/jpeg", outcome: "success" }],
+    });
+    expect(parsed.success).toBe(false);
+  });
+
+  it("rejects a media entry without an outcome (the plugin is the only caller and always reports one)", () => {
+    const parsed = captureChannelMessageSchema.safeParse({
+      ...validBody,
+      media: [{ path: "/root/.openclaw/media/inbound/file_12---abc.jpg", mimeType: "image/jpeg" }],
+    });
+    expect(parsed.success).toBe(false);
+  });
+
+  it("rejects a media entry with an outcome outside success/failure", () => {
+    const parsed = captureChannelMessageSchema.safeParse({
+      ...validBody,
+      media: [{ path: "/root/.openclaw/media/inbound/file_12---abc.jpg", outcome: "pending" }],
     });
     expect(parsed.success).toBe(false);
   });
@@ -257,6 +328,7 @@ describe("captureChannelMessageSchema media", () => {
   it("caps media at 20 entries", () => {
     const media = Array.from({ length: 21 }, (_, i) => ({
       path: `/root/.openclaw/media/inbound/file_${i}.jpg`,
+      outcome: "success" as const,
     }));
     const parsed = captureChannelMessageSchema.safeParse({ ...validBody, media });
     expect(parsed.success).toBe(false);

@@ -4,26 +4,33 @@
  * Proves the full protocol-real round trip: an inbound Telegram PHOTO is
  * downloaded by OpenClaw itself (grammY resolves `getFile` + the file download
  * URL against `api.telegram.org`, which `docker-compose.test.yml` DNS-overrides
- * to the mock — see that file's `extra_hosts`), the `pinchy-transcript` plugin
- * reports the saved path via `metadata.mediaPaths` to
- * `POST /api/internal/channel-messages`, and that route's `mirrorChannelMedia`
- * copies the file from OpenClaw's shared inbound media store into the agent's
- * workspace `uploads/` dir — auditing one `channel.media_mirrored` row per file
- * (see `packages/web/src/server/channel-media.ts` and
+ * to the mock — see that file's `extra_hosts`), and the `pinchy-transcript`
+ * plugin — root inside the `openclaw` container, unlike the non-root `pinchy`
+ * web process — copies the file from OpenClaw's inbound media store into the
+ * agent's workspace `uploads/` dir itself (`mirrorMedia`) and reports the
+ * per-file outcome via `metadata.mediaPaths`-derived `media[]` on
+ * `POST /api/internal/channel-messages`; that route audits one
+ * `channel.media_mirrored` row per reported outcome, without touching the
+ * filesystem itself (see `packages/plugins/pinchy-transcript/index.ts` and
  * `packages/web/src/app/api/internal/channel-messages/route.ts`).
+ *
+ * Photo basenames are pure UUIDs (e.g. `481cb969-....jpg`) minted by the
+ * Telegram mock's `getFile`/file-download implementation — NOT the
+ * `file_<n>.jpg` shape an earlier version of this mock used — so the audit
+ * predicate below matches on the `.jpg` extension rather than a `file_N`
+ * pattern.
  *
  * Wiring this depends on (verified, not assumed):
  *  - `docker-compose.test.yml` DNS-overrides `api.telegram.org` to the mock's
  *    static IP inside the `openclaw` container, so grammY's `getFile` AND its
  *    subsequent `GET /file/bot<token>/<file_path>` download both transparently
  *    hit the mock — no OpenClaw/grammY code path needs mocking.
- *  - The base `docker-compose.yml` mounts the SAME `openclaw-config` volume at
- *    `/root/.openclaw` in the `openclaw` container and at `/openclaw-config` in
- *    the `pinchy` container. OpenClaw saves inbound media under
- *    `~/.openclaw/media/inbound/`, which is exactly
- *    `getMediaInboundPath()`'s default (`/openclaw-config/media/inbound`) as
- *    seen from the pinchy container — no `MEDIA_INBOUND_PATH` override needed
- *    in the E2E overlay.
+ *  - The `openclaw` container runs as root and sees OpenClaw's inbound media
+ *    store natively at `~/.openclaw/media/inbound/` — exactly
+ *    `pinchy-transcript`'s hardcoded `MEDIA_INBOUND_DIR`
+ *    (`/root/.openclaw/media/inbound`). No shared-volume path translation is
+ *    needed (unlike the earlier web-side implementation): the plugin and
+ *    OpenClaw are the same container.
  *  - `channels.telegram.network.dangerouslyAllowPrivateNetwork` must be set
  *    (via `PINCHY_E2E_ALLOW_PRIVATE_TELEGRAM_MEDIA=1` in docker-compose.test.yml,
  *    see build.ts's `desiredTelegram`). OpenClaw SSRF-guards the actual file
@@ -174,10 +181,11 @@ test.describe("Telegram media mirror", () => {
     });
 
     // Observable: OpenClaw downloads the photo from the mock, the
-    // pinchy-transcript plugin reports metadata.mediaPaths, and the capture
-    // route mirrors the file into workspaces/<agentId>/uploads — recording one
-    // channel.media_mirrored success row with the mock's photos/file_<n>.jpg
-    // basename.
+    // pinchy-transcript plugin (root inside the openclaw container) copies it
+    // into workspaces/<agentId>/uploads and reports the outcome, and the
+    // capture route audits it — recording one channel.media_mirrored success
+    // row. Photo basenames are pure UUIDs (e.g. `481cb969-....jpg`), not
+    // `file_<n>.jpg`, so the predicate matches the `.jpg` extension.
     const entry = await pollAuditForEvent(page, {
       eventType: "channel.media_mirrored",
       since,
@@ -185,7 +193,7 @@ test.describe("Telegram media mirror", () => {
       predicate: (e) =>
         e.resource === `agent:${agentId}` &&
         e.outcome === "success" &&
-        /^file_\d+\.jpg$/.test(String((e.detail as { filename?: string } | null)?.filename ?? "")),
+        /\.jpg$/.test(String((e.detail as { filename?: string } | null)?.filename ?? "")),
     });
 
     const detail = entry.detail as {

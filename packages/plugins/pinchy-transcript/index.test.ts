@@ -1,4 +1,7 @@
 // @vitest-environment node
+import { mkdtemp, writeFile, readFile, symlink, truncate, mkdir, readdir } from "fs/promises";
+import { tmpdir } from "os";
+import { join } from "path";
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import plugin, {
   buildPayload,
@@ -6,6 +9,8 @@ import plugin, {
   surrogateId,
   postChannelMessage,
   extractMedia,
+  mirrorMedia,
+  MAX_MIRRORED_MEDIA_BYTES,
 } from "./index";
 
 const SK = "agent:agent-1:direct:tg-peer-111";
@@ -164,6 +169,221 @@ describe("extractMedia", () => {
   });
 });
 
+// Ported 1:1 from the now-removed packages/web/src/server/channel-media.ts
+// and its packages/web/src/__tests__/server/channel-media.test.ts — the copy
+// logic moved into this plugin (root inside the OpenClaw container) because
+// the non-root web process gets EACCES on OpenClaw's 0700 media store. Real
+// tmp dirs, no fs mocking, matching the original test style.
+describe("mirrorMedia", () => {
+  let inboundDir: string;
+  let workspaceRoot: string;
+  const agentId = "agent-1";
+
+  beforeEach(async () => {
+    inboundDir = await mkdtemp(join(tmpdir(), "inbound-"));
+    workspaceRoot = await mkdtemp(join(tmpdir(), "ws-"));
+  });
+
+  it("copies a reported file into <workspaceRoot>/<agentId>/uploads/<basename> (was: 'copies a reported file...')", async () => {
+    const source = join(inboundDir, "photo.jpg");
+    await writeFile(source, "binary-jpeg-content");
+
+    const results = await mirrorMedia([{ path: source, mimeType: "image/jpeg" }], {
+      agentId,
+      inboundDir,
+      workspaceRoot,
+    });
+
+    expect(results).toEqual([
+      {
+        path: source,
+        mimeType: "image/jpeg",
+        bytes: "binary-jpeg-content".length,
+        outcome: "success",
+      },
+    ]);
+
+    const target = join(workspaceRoot, agentId, "uploads", "photo.jpg");
+    const copied = await readFile(target, "utf-8");
+    expect(copied).toBe("binary-jpeg-content");
+  });
+
+  it("is idempotent: running twice both succeed and content is unchanged (was: 'is idempotent...')", async () => {
+    const source = join(inboundDir, "note.txt");
+    await writeFile(source, "hello world");
+
+    const first = await mirrorMedia([{ path: source }], { agentId, inboundDir, workspaceRoot });
+    expect(first[0].outcome).toBe("success");
+
+    const second = await mirrorMedia([{ path: source }], { agentId, inboundDir, workspaceRoot });
+    expect(second[0].outcome).toBe("success");
+
+    const target = join(workspaceRoot, agentId, "uploads", "note.txt");
+    const content = await readFile(target, "utf-8");
+    expect(content).toBe("hello world");
+  });
+
+  it("uses only the basename of a hostile reported path, but preserves the original path in the result (was: 'uses only the basename...')", async () => {
+    const source = join(inboundDir, "x.jpg");
+    await writeFile(source, "content");
+
+    const results = await mirrorMedia([{ path: "/etc/../whatever/x.jpg" }], {
+      agentId,
+      inboundDir,
+      workspaceRoot,
+    });
+
+    expect(results[0].outcome).toBe("success");
+    expect(results[0].path).toBe("/etc/../whatever/x.jpg");
+    const target = join(workspaceRoot, agentId, "uploads", "x.jpg");
+    const copied = await readFile(target, "utf-8");
+    expect(copied).toBe("content");
+  });
+
+  it("rejects unsafe basenames: dotfiles and backslashes (was: 'rejects unsafe basenames...')", async () => {
+    await writeFile(join(inboundDir, ".env"), "SECRET=1");
+
+    const results = await mirrorMedia([{ path: ".env" }, { path: "a\\b" }], {
+      agentId,
+      inboundDir,
+      workspaceRoot,
+    });
+
+    expect(results[0].outcome).toBe("failure");
+    expect(results[1].outcome).toBe("failure");
+
+    // No files created in uploads
+    await expect(readdir(join(workspaceRoot, agentId, "uploads")).catch(() => [])).resolves.toEqual(
+      [],
+    );
+  });
+
+  it("rejects a symlink source escaping the inbound dir (was: 'rejects a symlink source...')", async () => {
+    const outsideDir = await mkdtemp(join(tmpdir(), "outside-"));
+    const outsideFile = join(outsideDir, "secret.txt");
+    await writeFile(outsideFile, "top secret");
+
+    const symlinkPath = join(inboundDir, "evil.jpg");
+    await symlink(outsideFile, symlinkPath);
+
+    const results = await mirrorMedia([{ path: "evil.jpg" }], { agentId, inboundDir, workspaceRoot });
+
+    expect(results[0].outcome).toBe("failure");
+    await expect(readdir(join(workspaceRoot, agentId, "uploads")).catch(() => [])).resolves.toEqual(
+      [],
+    );
+  });
+
+  it("rejects files over 25 MB without copying (was: 'rejects files over 25 MB...')", async () => {
+    const source = join(inboundDir, "huge.bin");
+    await writeFile(source, "");
+    await truncate(source, MAX_MIRRORED_MEDIA_BYTES + 1);
+
+    const results = await mirrorMedia([{ path: source }], { agentId, inboundDir, workspaceRoot });
+
+    expect(results[0].outcome).toBe("failure");
+    await expect(readdir(join(workspaceRoot, agentId, "uploads")).catch(() => [])).resolves.toEqual(
+      [],
+    );
+  });
+
+  it("processes entries per-file best-effort: missing then present (was: 'processes files per-file best-effort...')", async () => {
+    const presentSource = join(inboundDir, "present.jpg");
+    await writeFile(presentSource, "present-content");
+
+    const results = await mirrorMedia(
+      [{ path: join(inboundDir, "missing.jpg") }, { path: presentSource }],
+      { agentId, inboundDir, workspaceRoot },
+    );
+
+    expect(results.map((r) => r.outcome)).toEqual(["failure", "success"]);
+
+    const target = join(workspaceRoot, agentId, "uploads", "present.jpg");
+    const copied = await readFile(target, "utf-8");
+    expect(copied).toBe("present-content");
+  });
+
+  it("reports failure (not a throw) for every entry when agentId contains path separators, without touching the filesystem (was: 'throws for an agentId containing path separators' — behavior changed: mirrorMedia never throws, it reports per-entry outcomes like every other failure mode)", async () => {
+    const source = join(inboundDir, "photo.jpg");
+    await writeFile(source, "content");
+
+    const results = await mirrorMedia(
+      [{ path: source }, { path: join(inboundDir, "other.jpg") }],
+      { agentId: "../escape", inboundDir, workspaceRoot },
+    );
+
+    expect(results).toEqual([
+      { path: source, outcome: "failure", error: "invalid agentId" },
+      { path: join(inboundDir, "other.jpg"), outcome: "failure", error: "invalid agentId" },
+    ]);
+    await expect(readdir(workspaceRoot)).resolves.toEqual([]);
+  });
+
+  it("creates the uploads directory automatically when it doesn't yet exist (was: 'creates the uploads directory automatically...')", async () => {
+    const source = join(inboundDir, "photo.jpg");
+    await writeFile(source, "content");
+    // workspaceRoot exists but agent dir/uploads doesn't
+    await mkdir(join(workspaceRoot, agentId), { recursive: true }).catch(() => {});
+
+    const results = await mirrorMedia([{ path: source }], { agentId, inboundDir, workspaceRoot });
+
+    expect(results[0].outcome).toBe("success");
+  });
+
+  it("chowns the copied file to uid/gid 999 via the injected chownImpl (new: ownership handoff back to the web process)", async () => {
+    const source = join(inboundDir, "photo.jpg");
+    await writeFile(source, "content");
+    const chownCalls: Array<[string, number, number]> = [];
+    const chownImpl = async (path: string, uid: number, gid: number) => {
+      chownCalls.push([path, uid, gid]);
+    };
+
+    const results = await mirrorMedia([{ path: source }], {
+      agentId,
+      inboundDir,
+      workspaceRoot,
+      chownImpl,
+    });
+
+    expect(results[0].outcome).toBe("success");
+    const target = join(workspaceRoot, agentId, "uploads", "photo.jpg");
+    expect(chownCalls).toContainEqual([target, 999, 999]);
+  });
+
+  it("also chowns the uploads directory when this call creates it (new: dir ownership so the web process keeps being able to create upload slots)", async () => {
+    const source = join(inboundDir, "photo.jpg");
+    await writeFile(source, "content");
+    const chownCalls: string[] = [];
+    const chownImpl = async (path: string) => {
+      chownCalls.push(path);
+    };
+
+    await mirrorMedia([{ path: source }], { agentId, inboundDir, workspaceRoot, chownImpl });
+
+    const uploadsDir = join(workspaceRoot, agentId, "uploads");
+    expect(chownCalls).toContain(uploadsDir);
+  });
+
+  it("tolerates a chown failure: the copy still succeeds (new: 'chown-failure tolerated')", async () => {
+    const source = join(inboundDir, "photo.jpg");
+    await writeFile(source, "content");
+    const chownImpl = async () => {
+      throw new Error("EPERM: operation not permitted");
+    };
+
+    const results = await mirrorMedia([{ path: source }], {
+      agentId,
+      inboundDir,
+      workspaceRoot,
+      chownImpl,
+    });
+
+    expect(results[0].outcome).toBe("success");
+    const target = join(workspaceRoot, agentId, "uploads", "photo.jpg");
+    await expect(readFile(target, "utf-8")).resolves.toBe("content");
+  });
+});
+
 describe("postChannelMessage", () => {
   const cfg = { apiBaseUrl: "http://pinchy:7777/", gatewayToken: "tok" };
   const payload = {
@@ -258,7 +478,7 @@ describe("plugin.register", () => {
     });
   });
 
-  it("passes extracted media through on message_received", async () => {
+  it("runs mirrorMedia and passes its reported result through on message_received (wiring test: the real inbound dir — /root/.openclaw/media/inbound — doesn't exist on this test host, so the reported outcome is a failure; mirrorMedia's own success-path behavior has dedicated real-tmp-dir tests below)", async () => {
     const fetchMock = vi.fn().mockResolvedValue({ ok: true, status: 200 });
     vi.stubGlobal("fetch", fetchMock);
     const api = fakeApi();
@@ -280,8 +500,15 @@ describe("plugin.register", () => {
 
     expect(fetchMock).toHaveBeenCalledTimes(1);
     const body = JSON.parse(fetchMock.mock.calls[0][1].body);
+    // The plugin reports mirrorMedia's ACTUAL result rather than the raw
+    // extracted media — the original path/mimeType survive, plus an outcome.
     expect(body.media).toEqual([
-      { path: "/root/.openclaw/media/inbound/x.jpg", mimeType: "image/jpeg" },
+      {
+        path: "/root/.openclaw/media/inbound/x.jpg",
+        mimeType: "image/jpeg",
+        outcome: "failure",
+        error: expect.any(String),
+      },
     ]);
   });
 

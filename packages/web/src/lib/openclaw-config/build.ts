@@ -613,9 +613,10 @@ export async function regenerateOpenClawConfig() {
     // workflows are inactive to reduce exposed local services."
     canvasHost: { ...existingCanvasHost, enabled: false },
     // Inbound channel media (Telegram photos/documents/etc.) is mirrored
-    // into the agent workspace within milliseconds of arrival (POST
-    // /api/internal/channel-messages -> mirrorChannelMedia), so the
-    // original copy OpenClaw stores under ~/.openclaw/media is disposable
+    // into the agent workspace within milliseconds of arrival by the
+    // pinchy-transcript plugin's mirrorMedia (reported via POST
+    // /api/internal/channel-messages), so the original copy OpenClaw stores
+    // under ~/.openclaw/media is disposable
     // shortly after capture. OpenClaw only runs its own media-cleanup
     // sweep when `media.ttlHours` is present in config — verified against
     // OpenClaw 2026.6.11's server.impl, which reads

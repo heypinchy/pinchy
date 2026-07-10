@@ -12,6 +12,10 @@
  * extending to Slack/WhatsApp is just widening CAPTURED_CHANNELS.
  */
 
+import { constants } from "node:fs";
+import { chown as fsChown, copyFile, mkdir, realpath, stat } from "node:fs/promises";
+import { basename, dirname, join } from "node:path";
+
 interface PluginConfig {
   apiBaseUrl: string;
   gatewayToken: string;
@@ -110,6 +114,221 @@ function extractMedia(event: {
     );
   }
   return media.length > 0 ? media : undefined;
+}
+
+// Where THIS container (root inside the `openclaw` service) sees OpenClaw's
+// inbound media store and the shared agent workspaces. Unlike the web
+// container, this plugin runs as root, which is why the copy lives here: web
+// runs as uid 999 and gets EACCES on OpenClaw's media dirs (OpenClaw chmods
+// them 0700 on every write). Hardcoded, matching pinchy-odoo's WORKSPACE_ROOT
+// pattern — injectable only via mirrorMedia()'s params, for tests.
+const MEDIA_INBOUND_DIR = "/root/.openclaw/media/inbound";
+const WORKSPACE_ROOT = "/root/.openclaw/workspaces";
+
+// Mirrors the odoo_attach_file cap (packages/plugins/pinchy-odoo) so a single
+// oversized Telegram media file can't blow past the same ceiling already
+// enforced for outbound attachments.
+export const MAX_MIRRORED_MEDIA_BYTES = 25 * 1024 * 1024;
+
+// The web process creates the per-agent uploads dir as uid/gid 999 so it can
+// later write new uploads there with O_EXCL. This plugin runs as root, so any
+// directory/file IT creates in that shared volume would otherwise land
+// root-owned, which would then lock the web process out of a dir it needs to
+// keep writing into (and make plugin-copied files look un-web-owned). Every
+// directory/file this plugin creates is chowned back to uid/gid 999,
+// best-effort — a chown failure (e.g. no CAP_CHOWN, non-Linux test host) must
+// never fail the underlying copy, just leave ownership as-is.
+const UPLOADS_UID = 999;
+const UPLOADS_GID = 999;
+
+type ChownImpl = (path: string, uid: number, gid: number) => Promise<void>;
+
+async function bestEffortChown(path: string, chownImpl: ChownImpl): Promise<void> {
+  try {
+    await chownImpl(path, UPLOADS_UID, UPLOADS_GID);
+  } catch {
+    // Best-effort — see UPLOADS_UID/UPLOADS_GID comment above.
+  }
+}
+
+// Matches pinchy-odoo's isSafeFilename and the now-removed
+// packages/web/src/server/channel-media.ts: plain basename (no directory
+// component survives basename() on Linux), no dotfiles, no backslashes/NUL
+// bytes that could confuse a downstream consumer.
+function isSafeBasename(name: string): boolean {
+  if (typeof name !== "string" || name.length === 0 || name.length > 255) return false;
+  if (name !== basename(name)) return false;
+  if (name.startsWith(".")) return false;
+  if (name.includes("\\") || name.includes("\0")) return false;
+  return true;
+}
+
+export interface MirrorMediaResult {
+  /** The ORIGINAL reported path (not the resolved source or basename) — the
+   *  route/audit layer derives the basename itself, keeping the payload
+   *  shape stable regardless of how mirroring resolved the file. */
+  path: string;
+  mimeType?: string;
+  outcome: "success" | "failure";
+  bytes?: number;
+  error?: string;
+}
+
+function buildResult(
+  path: string,
+  mimeType: string | undefined,
+  outcome: "success" | "failure",
+  extra: { bytes?: number; error?: string } = {},
+): MirrorMediaResult {
+  return {
+    path,
+    ...(mimeType !== undefined ? { mimeType } : {}),
+    outcome,
+    ...(extra.bytes !== undefined ? { bytes: extra.bytes } : {}),
+    ...(extra.error !== undefined ? { error: extra.error } : {}),
+  };
+}
+
+/**
+ * Copy OpenClaw inbound media files into the agent's workspace uploads dir,
+ * preserving the basename — this is the deterministic contract the agent
+ * relies on: a `[media attached: …/<basename>]` hint in the message means
+ * `uploads/<basename>` exists.
+ *
+ * Trust model: `entries[].path` is data extracted from an OpenClaw hook
+ * event's metadata, NOT a trusted filesystem path — only its basename is
+ * used, and it is resolved against OUR OWN inbound dir (`inboundDir`/
+ * `MEDIA_INBOUND_DIR`), never the reported directory component. The resolved
+ * source's realpath must still land inside the inbound dir (symlink defense:
+ * a symlink planted in the inbound dir pointing elsewhere on the filesystem
+ * resolves outside this prefix and is rejected).
+ *
+ * Copy uses `COPYFILE_EXCL` so it never overwrites an existing file; an
+ * `EEXIST` from a prior successful copy of the same basename (retry /
+ * redelivery) is treated as success, making the whole operation idempotent.
+ *
+ * Per-file best effort: each entry is processed independently, so one
+ * missing/unsafe/oversized file never blocks the rest of the batch.
+ *
+ * agentId is validated defensively: it is normally derived from a parsed
+ * sessionKey by the caller (register()'s message_received handler), but a
+ * value containing `/`, `\`, or `..` is still rejected here rather than ever
+ * being joined into a filesystem path — every entry is reported as a
+ * failure instead of touching the filesystem.
+ */
+export async function mirrorMedia(
+  entries: CapturedMedia[],
+  params: {
+    agentId: string;
+    /** Test injection point; defaults to MEDIA_INBOUND_DIR. */
+    inboundDir?: string;
+    /** Test injection point; defaults to WORKSPACE_ROOT. */
+    workspaceRoot?: string;
+    /** Test injection point; defaults to fs.chown. */
+    chownImpl?: ChownImpl;
+  },
+): Promise<MirrorMediaResult[]> {
+  const { agentId } = params;
+  const inboundDir = params.inboundDir ?? MEDIA_INBOUND_DIR;
+  const workspaceRoot = params.workspaceRoot ?? WORKSPACE_ROOT;
+  const chownImpl = params.chownImpl ?? fsChown;
+
+  if (!agentId || agentId.includes("/") || agentId.includes("\\") || agentId.includes("..")) {
+    return entries.map((item) =>
+      buildResult(item.path, item.mimeType, "failure", { error: "invalid agentId" }),
+    );
+  }
+
+  const uploadsDir = join(workspaceRoot, agentId, "uploads");
+
+  const results: MirrorMediaResult[] = [];
+  for (const item of entries) {
+    results.push(await mirrorOne(item, inboundDir, uploadsDir, chownImpl));
+  }
+  return results;
+}
+
+async function mirrorOne(
+  item: CapturedMedia,
+  inboundDir: string,
+  uploadsDir: string,
+  chownImpl: ChownImpl,
+): Promise<MirrorMediaResult> {
+  const { path: originalPath, mimeType } = item;
+  const filename = basename(originalPath);
+
+  if (!isSafeBasename(filename)) {
+    return buildResult(originalPath, mimeType, "failure", {
+      error: `unsafe filename: ${filename}`,
+    });
+  }
+
+  try {
+    // Resolve strictly against OUR inbound dir — the reported directory
+    // component (if any) was already discarded by basename() above.
+    const candidateSource = join(inboundDir, filename);
+
+    let realSource: string;
+    let realInboundDir: string;
+    try {
+      [realSource, realInboundDir] = await Promise.all([
+        realpath(candidateSource),
+        realpath(inboundDir),
+      ]);
+    } catch (err) {
+      return buildResult(originalPath, mimeType, "failure", {
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+
+    // Symlink defense: the resolved real path must still be a direct child
+    // of the real inbound dir.
+    if (realSource !== join(realInboundDir, filename)) {
+      return buildResult(originalPath, mimeType, "failure", {
+        error: "source resolves outside the inbound directory",
+      });
+    }
+
+    const sourceStat = await stat(realSource);
+    if (!sourceStat.isFile()) {
+      return buildResult(originalPath, mimeType, "failure", {
+        error: "source is not a regular file",
+      });
+    }
+    if (sourceStat.size > MAX_MIRRORED_MEDIA_BYTES) {
+      return buildResult(originalPath, mimeType, "failure", {
+        error: `file exceeds ${MAX_MIRRORED_MEDIA_BYTES} byte cap (${sourceStat.size} bytes)`,
+      });
+    }
+
+    const target = join(uploadsDir, filename);
+    const targetDir = dirname(target);
+    let targetDirExisted = true;
+    try {
+      await stat(targetDir);
+    } catch {
+      targetDirExisted = false;
+    }
+    await mkdir(targetDir, { recursive: true });
+    if (!targetDirExisted) await bestEffortChown(targetDir, chownImpl);
+
+    try {
+      await copyFile(realSource, target, constants.COPYFILE_EXCL);
+      // Only chown a file THIS call actually copied — see UPLOADS_UID/GID
+      // comment above.
+      await bestEffortChown(target, chownImpl);
+    } catch (err) {
+      const code = (err as NodeJS.ErrnoException)?.code;
+      if (code !== "EEXIST") throw err;
+      // Already mirrored by a prior run (retry / redelivery) — idempotent success.
+    }
+
+    return buildResult(originalPath, mimeType, "success", { bytes: sourceStat.size });
+  } catch (err) {
+    return buildResult(originalPath, mimeType, "failure", {
+      error: err instanceof Error ? err.message : String(err),
+    });
+  }
 }
 
 // Channels whose direct conversations Pinchy mirrors. Widen to add Slack etc.
@@ -268,14 +487,28 @@ const plugin = {
 
     api.on("message_received", async (event, ctx) => {
       const e = event as MessageReceivedEvent;
+      const sessionKey = e.sessionKey ?? ctx.sessionKey;
+      const extractedMedia = extractMedia(e);
+      // Mirror inbound media into the agent's workspace uploads dir (this
+      // container runs as root, so — unlike the web process — it can read
+      // OpenClaw's 0700 media store) and report the per-file outcome back to
+      // Pinchy in the same `media` field, so the capture route can audit
+      // `channel.media_mirrored` without ever touching the filesystem itself.
+      // If the sessionKey doesn't parse to a direct session, buildPayload
+      // below already returns null, so skipping the copy here is harmless.
+      const parsedSession = parseDirectSessionKey(sessionKey);
+      const media =
+        extractedMedia && extractedMedia.length > 0 && parsedSession
+          ? await mirrorMedia(extractedMedia, { agentId: parsedSession.agentId })
+          : extractedMedia;
       const payload = buildPayload({
         channel: ctx.channelId,
-        sessionKey: e.sessionKey ?? ctx.sessionKey,
+        sessionKey,
         direction: "inbound",
         content: e.content,
         messageId: e.messageId,
         sentAt: typeof e.timestamp === "number" ? e.timestamp : Date.now(),
-        media: extractMedia(e),
+        media,
       });
       if (payload) await postChannelMessage(cfg, api.logger, payload);
     });
@@ -299,6 +532,7 @@ const plugin = {
 };
 
 // Exported for unit tests; the default export is the plugin OpenClaw loads.
+// (mirrorMedia and MAX_MIRRORED_MEDIA_BYTES are already exported inline above.)
 export {
   buildPayload,
   parseDirectSessionKey,
