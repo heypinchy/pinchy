@@ -34,6 +34,7 @@ import {
 import { stackDbUrl } from "../e2e/shared/stack-db";
 import { hetznerInvoiceScenario, type HetznerInvoiceScenario } from "./scenarios/hetzner-invoice";
 import { hetznerInvoiceRejectedScenario } from "./scenarios/hetzner-invoice-rejected";
+import { hetznerInvoiceSilentFailureScenario } from "./scenarios/hetzner-invoice-silent-failure";
 import {
   resetOdooMock,
   seedOdooBaseline,
@@ -44,6 +45,7 @@ import {
   candidateModelsFromEnv,
   runsPerModelFromEnv,
   injectOdooCreateFailure,
+  injectOdooCreateSilentSuccess,
 } from "./run-eval";
 import { setupHetznerAgent } from "./eval-shared";
 import type { RunResult } from "../src/lib/eval/types";
@@ -72,6 +74,11 @@ const SWEEP_SCENARIOS: Array<{
     label: "hetzner-invoice-rejected-models",
     scenario: hetznerInvoiceRejectedScenario,
     extraSetup: injectOdooCreateFailure,
+  },
+  {
+    label: "hetzner-invoice-silent-failure-models",
+    scenario: hetznerInvoiceSilentFailureScenario,
+    extraSetup: injectOdooCreateSilentSuccess,
   },
 ];
 
@@ -132,15 +139,36 @@ test.describe("Eval-v1: model sweep (real Ollama Cloud)", () => {
           if (extraSetup) await extraSetup();
 
           await loginViaUI(page, getAdminEmail(), getAdminPassword());
-          const result = await runOnce({
-            page,
-            cookie,
-            agentId,
-            model,
-            scenario,
-            scenarioLabel: label,
-          });
-          scenarioRuns.push(result);
+          const runStart = Date.now();
+          try {
+            const result = await runOnce({
+              page,
+              cookie,
+              agentId,
+              model,
+              scenario,
+              scenarioLabel: label,
+            });
+            scenarioRuns.push(result);
+          } catch (err) {
+            // A hung/looping run (dispatch idle-timeout) or any per-run error
+            // must NOT abort the whole sweep or discard the scenario's data. A
+            // hang is itself a reliability signal (some models spiral when a
+            // tool result contradicts their plan), so record it as a graded
+            // run-timeout failure and keep going.
+            const latencyMs = Date.now() - runStart;
+            console.warn(
+              `[eval] run ${String(i + 1)}/${String(n)} for ${model} / ${label} recorded as run-timeout: ${String(err)}`
+            );
+            scenarioRuns.push({
+              model,
+              passed: false,
+              tags: ["run-timeout"],
+              notes: [String(err)],
+              latencyMs,
+              scenario: label,
+            });
+          }
         }
       }
 

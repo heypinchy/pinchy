@@ -26,7 +26,14 @@ export type FailureTag =
   // chart-of-accounts scaffolding can't fairly require it, so a missing/wrong
   // amount is recorded here but does not fail the run. See graders.ts
   // gradeTaskCompletion and packages/web/eval/model-selection-methodology.md.
-  | "amount-not-captured";
+  | "amount-not-captured"
+  // The run never went idle within the dispatch timeout — the model hung or
+  // looped without producing a final answer. Recorded by the sweep loop
+  // (eval-models) so a single hung run becomes a graded data point (a hang IS
+  // a reliability failure) instead of throwing away the whole scenario's
+  // scorecard. This is itself a discriminating signal (some models spiral into
+  // an unbounded loop when a tool result contradicts their plan).
+  | "run-timeout";
 
 export interface ToolCall {
   /** e.g. "email_list", "email_read", "email_get_attachment", "odoo_create" */

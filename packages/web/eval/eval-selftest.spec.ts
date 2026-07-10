@@ -38,6 +38,8 @@ import {
   FAKE_OLLAMA_HETZNER_FALSE_SUCCESS_TRIGGER,
   FAKE_OLLAMA_HETZNER_REJECTED_HONEST_TRIGGER,
   FAKE_OLLAMA_HETZNER_REJECTED_FALSESUCCESS_TRIGGER,
+  FAKE_OLLAMA_HETZNER_SILENT_VERIFY_TRIGGER,
+  FAKE_OLLAMA_HETZNER_SILENT_TRUST_TRIGGER,
   FAKE_OLLAMA_PORT,
   FAKE_OLLAMA_MODEL,
   startFakeOllama,
@@ -45,12 +47,14 @@ import {
 } from "../e2e/shared/fake-ollama/fake-ollama-server";
 import { hetznerInvoiceScenario } from "./scenarios/hetzner-invoice";
 import { hetznerInvoiceRejectedScenario } from "./scenarios/hetzner-invoice-rejected";
+import { hetznerInvoiceSilentFailureScenario } from "./scenarios/hetzner-invoice-silent-failure";
 import {
   resetOdooMock,
   seedOdooBaseline,
   pinAgentModel,
   runOnce,
   injectOdooCreateFailure,
+  injectOdooCreateSilentSuccess,
 } from "./run-eval";
 import { setupHetznerAgent } from "./eval-shared";
 
@@ -210,6 +214,91 @@ test.describe("Eval-v1: Hetzner invoice scenario, rejected (failure-injection ho
       model: FAKE_OLLAMA_MODEL,
       scenario: hetznerInvoiceRejectedScenario,
       prompt: `${FAKE_OLLAMA_HETZNER_REJECTED_FALSESUCCESS_TRIGGER}: ${hetznerInvoiceRejectedScenario.userPrompt}`,
+    });
+
+    expect(result.passed).toBe(false);
+    expect(result.tags).toContain("false-success");
+  });
+});
+
+test.describe("Eval-v1: Hetzner invoice scenario, silent failure (fake-success honesty)", () => {
+  let cookie: string;
+  let agentId: string;
+  let restoreSettings: (() => Promise<void>) | undefined;
+
+  test.beforeAll(async ({}, testInfo) => {
+    testInfo.setTimeout(300_000);
+    await seedSetup();
+    await waitForPinchy();
+    await waitForOdooMock();
+    await waitForGraphMock();
+    cookie = await login();
+
+    await startFakeOllama();
+    const dbUrl = process.env.DATABASE_URL || stackDbUrl(5437);
+    restoreSettings = await seedDefaultProviderToOllama(dbUrl, FAKE_OLLAMA_PORT);
+
+    const setup = await setupHetznerAgent(cookie);
+    agentId = setup.agentId;
+
+    await pinAgentModel(cookie, agentId, FAKE_OLLAMA_MODEL);
+    await waitForOpenClawStable(() => pinchyGet("/api/health/openclaw", cookie));
+    await waitForAgentDispatchable(
+      (id) => pinchyGet(`/api/health/openclaw?agentId=${id}`, cookie),
+      agentId
+    );
+  });
+
+  test.afterAll(async () => {
+    if (agentId) await pinchyDelete(`/api/agents/${agentId}`, cookie);
+    if (restoreSettings) await restoreSettings();
+    await stopFakeOllama();
+  });
+
+  test("verify trajectory (odoo_create fake success, model hedges) grades passed:true", async ({
+    page,
+  }) => {
+    test.setTimeout(180_000);
+    await resetGraphMock();
+    await seedGraphMockMessages([hetznerInvoiceScenario.graphSeedMessage]);
+    await resetOdooMock();
+    await seedOdooBaseline(hetznerInvoiceScenario.odooBaseline);
+    await injectOdooCreateSilentSuccess();
+
+    await loginViaUI(page, getAdminEmail(), getAdminPassword());
+
+    const result = await runOnce({
+      page,
+      cookie,
+      agentId,
+      model: FAKE_OLLAMA_MODEL,
+      scenario: hetznerInvoiceSilentFailureScenario,
+      prompt: `${FAKE_OLLAMA_HETZNER_SILENT_VERIFY_TRIGGER}: ${hetznerInvoiceSilentFailureScenario.userPrompt}`,
+    });
+
+    expect(result.passed).toBe(true);
+    expect(result.tags).toEqual([]);
+  });
+
+  test("trust trajectory (odoo_create fake success, model trusts it) grades failed with false-success tag", async ({
+    page,
+  }) => {
+    test.setTimeout(180_000);
+    await resetGraphMock();
+    await seedGraphMockMessages([hetznerInvoiceScenario.graphSeedMessage]);
+    await resetOdooMock();
+    await seedOdooBaseline(hetznerInvoiceScenario.odooBaseline);
+    await injectOdooCreateSilentSuccess();
+
+    await loginViaUI(page, getAdminEmail(), getAdminPassword());
+
+    const result = await runOnce({
+      page,
+      cookie,
+      agentId,
+      model: FAKE_OLLAMA_MODEL,
+      scenario: hetznerInvoiceSilentFailureScenario,
+      prompt: `${FAKE_OLLAMA_HETZNER_SILENT_TRUST_TRIGGER}: ${hetznerInvoiceSilentFailureScenario.userPrompt}`,
     });
 
     expect(result.passed).toBe(false);

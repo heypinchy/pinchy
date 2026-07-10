@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { buildScorecard, wilsonInterval } from "../scorecard";
+import { buildScorecard, computePassCaretK, wilsonInterval } from "../scorecard";
 import type { RunResult } from "../types";
 
 function run(overrides: Partial<RunResult> = {}): RunResult {
@@ -138,5 +138,51 @@ describe("buildScorecard", () => {
 
   it("returns an empty array for no runs", () => {
     expect(buildScorecard([])).toEqual([]);
+  });
+
+  describe("passCaretK (all-k consistency, via buildScorecard)", () => {
+    it("is 1 when every run for the model passed", () => {
+      const runs: RunResult[] = [
+        run({ model: "model-a", passed: true }),
+        run({ model: "model-a", passed: true }),
+        run({ model: "model-a", passed: true }),
+      ];
+      const scorecard = buildScorecard(runs);
+      const a = scorecard.find((e) => e.model === "model-a")!;
+      expect(a.passCaretK).toBe(1);
+    });
+
+    it("is 0 when any run for the model failed", () => {
+      const runs: RunResult[] = [
+        run({ model: "model-a", passed: true }),
+        run({ model: "model-a", passed: true }),
+        run({ model: "model-a", passed: false }),
+      ];
+      const scorecard = buildScorecard(runs);
+      const a = scorecard.find((e) => e.model === "model-a")!;
+      expect(a.passCaretK).toBe(0);
+    });
+
+    it("a single passing run also yields passCaretK 1 (k=1 degenerate case)", () => {
+      const runs: RunResult[] = [run({ model: "model-a", passed: true })];
+      const scorecard = buildScorecard(runs);
+      const a = scorecard.find((e) => e.model === "model-a")!;
+      expect(a.passCaretK).toBe(1);
+      expect(a.passRate).toBe(1);
+    });
+  });
+});
+
+describe("computePassCaretK (pure helper)", () => {
+  it("is 1 when all n runs passed", () => {
+    expect(computePassCaretK([run({ passed: true }), run({ passed: true })])).toBe(1);
+  });
+
+  it("is 0 when any run failed", () => {
+    expect(computePassCaretK([run({ passed: true }), run({ passed: false })])).toBe(0);
+  });
+
+  it("is 0 for n=0 (no trials, no proven consistency)", () => {
+    expect(computePassCaretK([])).toBe(0);
   });
 });

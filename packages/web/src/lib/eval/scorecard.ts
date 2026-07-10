@@ -8,11 +8,39 @@ export interface ScorecardEntry {
   model: string;
   n: number;
   passes: number;
+  /**
+   * pass@1: the proportion of the n runs that passed (`passes / n`). This is
+   * a CAPABILITY measure — "how often does a single attempt succeed" — and is
+   * the number `wilson95` puts a confidence interval around.
+   */
   passRate: number;
   wilson95: [number, number];
+  /**
+   * pass^k (all-k consistency): 1 if EVERY one of the n runs passed, else 0.
+   * This is a RELIABILITY measure, not a capability measure — enterprises
+   * deploying an agent unattended care whether it succeeds every time, not
+   * whether it succeeds most of the time. A model can have a high `passRate`
+   * (e.g. 4/5) and still score `passCaretK: 0`, which is the point: one
+   * failure in n is enough to fail the "succeeds every time" bar. 0 for
+   * n === 0 (no trials, nothing to prove consistent).
+   */
+  passCaretK: number;
   tagHistogram: Record<string, number>;
   medianLatencyMs: number;
   medianTokens?: number;
+}
+
+/**
+ * pass^k for one model's runs: 1 if every run passed, else 0. 0 for an empty
+ * run list (no trials, no proven consistency). Exported as a standalone pure
+ * function (in addition to being folded into `buildScorecard`'s per-model
+ * entries) so it can be unit-tested directly against the n=0 edge case, which
+ * `buildScorecard`'s per-model grouping never produces (a model only gets an
+ * entry when it has >= 1 run).
+ */
+export function computePassCaretK(runs: RunResult[]): number {
+  if (runs.length === 0) return 0;
+  return runs.every((r) => r.passed) ? 1 : 0;
 }
 
 /**
@@ -45,10 +73,11 @@ function median(values: number[]): number {
 }
 
 /**
- * Groups runs by model and computes pass-rate, a Wilson 95% score interval
- * for the pass proportion, a failure-tag histogram, median latency, and
- * median total tokens (prompt + completion). One entry per model, sorted by
- * passRate descending.
+ * Groups runs by model and computes pass@1 (`passRate`, the proportion of
+ * runs that passed) with a Wilson 95% score interval, pass^k (`passCaretK`,
+ * the all-k consistency measure — 1 only if every run passed), a failure-tag
+ * histogram, median latency, and median total tokens (prompt + completion).
+ * One entry per model, sorted by passRate descending.
  */
 export function buildScorecard(runs: RunResult[]): ScorecardEntry[] {
   const byModel = new Map<string, RunResult[]>();
@@ -86,6 +115,7 @@ export function buildScorecard(runs: RunResult[]): ScorecardEntry[] {
       passes,
       passRate,
       wilson95: wilsonInterval(passes, n),
+      passCaretK: computePassCaretK(modelRuns),
       tagHistogram,
       medianLatencyMs,
       medianTokens,
