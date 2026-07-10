@@ -39,3 +39,6 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+# Eval-v1 scorecard outputs (regenerable; scorecards that drive a decision are cited in the PR, not committed)
+eval/results/

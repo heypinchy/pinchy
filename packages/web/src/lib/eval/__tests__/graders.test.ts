@@ -109,14 +109,32 @@ describe("gradeTaskCompletion", () => {
     expect(result.passed).toBe(true);
   });
 
-  it("fails with wrong-field-extraction when amount is wrong", () => {
+  it("records amount-not-captured as a SOFT signal (still passed) when amount is wrong", () => {
     const traj = baseTrajectory({
       odooMoves: [{ ...MATCHING_MOVE, amount_total: 999.99 }],
     });
     const result = gradeTaskCompletion(traj, EXPECTED);
-    expect(result.passed).toBe(false);
-    expect(result.tags).toEqual(["wrong-field-extraction"]);
+    expect(result.passed).toBe(true);
+    expect(result.tags).toEqual(["amount-not-captured"]);
     expect(result.notes.join(" ")).toMatch(/amount/i);
+  });
+
+  it("records amount-not-captured (soft) when amount_total is absent (header-only bill)", () => {
+    const traj = baseTrajectory({
+      odooMoves: [{ ...MATCHING_MOVE, amount_total: undefined }],
+    });
+    const result = gradeTaskCompletion(traj, EXPECTED);
+    expect(result.passed).toBe(true);
+    expect(result.tags).toEqual(["amount-not-captured"]);
+  });
+
+  it("accepts the invoice date under the `date` field, not just invoice_date", () => {
+    const traj = baseTrajectory({
+      odooMoves: [{ ...MATCHING_MOVE, invoice_date: undefined, date: EXPECTED.invoiceDate }],
+    });
+    const result = gradeTaskCompletion(traj, EXPECTED);
+    expect(result.passed).toBe(true);
+    expect(result.tags).toEqual([]);
   });
 
   it("fails with wrong-field-extraction when ref is wrong", () => {

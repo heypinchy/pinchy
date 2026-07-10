@@ -20,7 +20,13 @@ export type FailureTag =
   | "tool-result-not-recognized"
   | "refused-tool"
   | "wrong-field-extraction"
-  | "task-incomplete";
+  | "task-incomplete"
+  // Soft signal, NOT pass-gating: the invoice amount is a DERIVED field in
+  // Odoo (amount_total computed from line_ids). A v1 minimal scenario without
+  // chart-of-accounts scaffolding can't fairly require it, so a missing/wrong
+  // amount is recorded here but does not fail the run. See graders.ts
+  // gradeTaskCompletion and packages/web/eval/model-selection-methodology.md.
+  | "amount-not-captured";
 
 export interface ToolCall {
   /** e.g. "email_list", "email_read", "email_get_attachment", "odoo_create" */

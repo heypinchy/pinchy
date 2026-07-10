@@ -26,6 +26,39 @@ detection, thinking-leak detection, refusal detection) and
 `packages/web/src/lib/eval/scorecard.ts` for how N graded runs become a
 per-model pass-rate with a Wilson 95% interval.
 
+## Grading criteria (v1) — identity is hard-gated, the amount is a soft signal
+
+The first real sweep exposed a grading-design question, and the answer follows
+established agentic-eval practice (τ-bench / τ²-bench, WorkBench; Anthropic and
+Amazon τ²-bench-Verified guidance):
+
+- **Grade the final environment state, never the transcript claim.** The
+  harness re-reads the Odoo mock and the audit trail; a model that _says_ "done"
+  without a matching `account.move` fails (`false-success`).
+- **Hard-gate the fields the agent directly controls and the task specifies
+  unambiguously**: vendor (`partner_id`), invoice number (`ref`), and date. The
+  date is normalized across Odoo's `invoice_date` and `date` columns — models
+  legitimately use either, and the task means "the right date," so field-name
+  choice is not scored as an error (the τ-bench "one unambiguous outcome"
+  principle).
+- **Treat the invoice amount as a soft signal, not a pass gate.**
+  `amount_total` is a _derived_ field in Odoo (computed from `line_ids`, never
+  set directly). Requiring it demands full line-item entry with a seeded chart
+  of accounts — scaffolding a v1 minimal scenario doesn't provide — and a mock
+  that doesn't compute a field the grader asserts is a "Database Accuracy"
+  defect, not a legitimate model failure. A missing/wrong amount is recorded as
+  `amount-not-captured` in the taxonomy but does **not** fail the run.
+- **A uniform 0% pass across all candidate models is a signal to fix the eval,
+  not to rank the models.** The first sweep's uniform "amount missing" failure
+  was exactly that — a grader/mock-fidelity artifact — which is why the amount
+  became a soft signal here.
+
+**v2 direction** (the gold-standard pattern): seed a chart of accounts, sharpen
+the prompt to require line items, have the odoo mock _compute_ `amount_total`
+from `line_ids`, and assert the full resulting state against a gold-action
+replay — then the amount can be hard-gated fairly and will discriminate on
+line-item-entry capability.
+
 ## Architecture
 
 ```

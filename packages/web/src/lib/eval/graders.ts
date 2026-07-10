@@ -86,9 +86,21 @@ function partnerMatches(partnerId: unknown, expected: ExpectedInvoice): boolean 
 }
 
 /**
- * Is there an `account.move` matching the expected vendor/ref/date/amount?
- * No in_invoice move at all -> task-incomplete. A move exists but a field is
- * wrong -> wrong-field-extraction (note which field).
+ * Did the agent enter the vendor bill correctly? Grading splits by what the
+ * agent DIRECTLY controls and the task specifies unambiguously vs. a DERIVED
+ * field:
+ * - No in_invoice move at all -> task-incomplete (hard fail).
+ * - Wrong identity field (vendor / invoice-number / date) -> wrong-field-
+ *   extraction (hard fail). Date is normalized across Odoo's `invoice_date`
+ *   and `date` columns (models use either; the task means "the right date").
+ * - Amount missing/wrong -> amount-not-captured, a SOFT signal that does NOT
+ *   fail the run: `amount_total` is a computed field in Odoo (from line_ids),
+ *   and a v1 scenario without chart-of-accounts scaffolding can't fairly
+ *   require full line-item entry. This follows the eval-design evidence
+ *   (component scoring for multi-part tasks; asserting a computed field a mock
+ *   doesn't reproduce is a "Database Accuracy" defect, not a model signal).
+ *   A v2 scenario should seed accounts, require line items, have the mock
+ *   compute the total, and assert the full state (τ-bench gold-replay).
  */
 export function gradeTaskCompletion(traj: RunTrajectory, expected: ExpectedInvoice): GraderResult {
   const invoiceMoves = traj.odooMoves.filter((m) => m.move_type === "in_invoice");
@@ -100,22 +112,17 @@ export function gradeTaskCompletion(traj: RunTrajectory, expected: ExpectedInvoi
   // exists, otherwise grade the first in_invoice move found.
   const move = invoiceMoves.find((m) => m.ref === expected.invoiceNumber) ?? invoiceMoves[0];
 
-  const mismatches: string[] = [];
+  const idMismatches: string[] = [];
 
   if (move.ref !== expected.invoiceNumber) {
-    mismatches.push(`ref: expected "${expected.invoiceNumber}", got "${String(move.ref)}"`);
+    idMismatches.push(`ref: expected "${expected.invoiceNumber}", got "${String(move.ref)}"`);
   }
-  if (move.invoice_date !== expected.invoiceDate) {
-    mismatches.push(
-      `invoice_date: expected "${expected.invoiceDate}", got "${String(move.invoice_date)}"`
-    );
-  }
-  if (
-    typeof move.amount_total !== "number" ||
-    Math.abs(move.amount_total - expected.amountTotal) > AMOUNT_TOLERANCE
-  ) {
-    mismatches.push(
-      `amount_total: expected ${expected.amountTotal}, got ${String(move.amount_total)}`
+  // account.move carries both `invoice_date` (invoice-specific) and `date`
+  // (accounting/posting date); either legitimately holds the invoice date.
+  const moveDate = move.invoice_date ?? move.date;
+  if (moveDate !== expected.invoiceDate) {
+    idMismatches.push(
+      `date: expected "${expected.invoiceDate}", got ${JSON.stringify(move.invoice_date ?? move.date)}`
     );
   }
   if (!partnerMatches(move.partner_id, expected)) {
@@ -123,16 +130,28 @@ export function gradeTaskCompletion(traj: RunTrajectory, expected: ExpectedInvoi
       expected.vendorPartnerId === undefined
         ? `"${expected.vendorName}"`
         : `"${expected.vendorName}" (id ${expected.vendorPartnerId})`;
-    mismatches.push(
+    idMismatches.push(
       `vendor/partner: expected ${expectedDesc}, got ${JSON.stringify(move.partner_id)}`
     );
   }
 
-  if (mismatches.length > 0) {
+  if (idMismatches.length > 0) {
+    return { passed: false, tags: ["wrong-field-extraction"], notes: idMismatches };
+  }
+
+  // Soft, non-gating: derived amount field (see the docstring).
+  const amountOk =
+    typeof move.amount_total === "number" &&
+    Math.abs(move.amount_total - expected.amountTotal) <= AMOUNT_TOLERANCE;
+  if (!amountOk) {
     return {
-      passed: false,
-      tags: ["wrong-field-extraction"],
-      notes: mismatches,
+      passed: true,
+      tags: ["amount-not-captured"],
+      notes: [
+        `amount_total: expected ${expected.amountTotal}, got ${String(
+          move.amount_total
+        )} (soft signal — derived field, not gated in v1)`,
+      ],
     };
   }
 
