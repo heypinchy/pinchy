@@ -171,6 +171,23 @@ test.describe("Telegram media mirror", () => {
 
     const since = new Date().toISOString();
 
+    // Cross-route baseline: how many inbound (user) messages the read-only
+    // transcript renders BEFORE the photo. The transcript route derives its
+    // messages from Pinchy's own `channel_messages` store (the mirror source),
+    // so a delta here proves the captured photo message is readable via the
+    // detail route — not just present as an audit row. A count delta is robust
+    // to test/container clock skew and to whatever exact text a photo message
+    // captures (caption vs media placeholder).
+    const countUserMessages = async (): Promise<number> => {
+      const res = await page.request.get(`/api/agents/${agentId}/telegram-chat`);
+      if (!res.ok()) return 0;
+      const data = (await res.json()) as {
+        messages?: Array<{ role: string }>;
+      };
+      return (data.messages ?? []).filter((m) => m.role === "user").length;
+    };
+    const userMessagesBeforePhoto = await countUserMessages();
+
     await sendTelegramPhoto({
       token: BOT_TOKEN,
       chatId: TG_PEER_ID,
@@ -206,6 +223,26 @@ test.describe("Telegram media mirror", () => {
     expect(detail.agent?.id).toBe(agentId);
     expect(detail.channel).toBe("telegram");
     expect(detail.bytes ?? 0).toBeGreaterThan(0);
+
+    // Cross-route invariant (list ⟹ detail): the capture route inserts the
+    // channel_messages row BEFORE it mirrors + audits, so a media_mirrored
+    // audit row implies the message itself was captured. Prove the read side
+    // actually surfaces it — the photo turn must appear as a NEW inbound
+    // message in the read-only transcript the mirror renders, not just in the
+    // audit log. (The image bytes themselves are served by a future
+    // ownership-checked route — out of scope here; `bytes > 0` above already
+    // proves the file was physically copied with content.)
+    let userMessagesAfterPhoto = userMessagesBeforePhoto;
+    const transcriptDeadline = Date.now() + 60000;
+    while (Date.now() < transcriptDeadline) {
+      userMessagesAfterPhoto = await countUserMessages();
+      if (userMessagesAfterPhoto > userMessagesBeforePhoto) break;
+      await new Promise((r) => setTimeout(r, 1500));
+    }
+    expect(
+      userMessagesAfterPhoto,
+      "the captured photo turn must appear as a new inbound message in the read-only transcript (channel_messages), not only in the audit log"
+    ).toBeGreaterThan(userMessagesBeforePhoto);
   });
 
   test.afterAll(async () => {
