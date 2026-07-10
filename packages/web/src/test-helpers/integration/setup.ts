@@ -60,7 +60,7 @@ beforeAll(async () => {
 });
 
 beforeEach(async () => {
-  // audit_log carries a statement-level `no_truncate` trigger (migration 0045)
+  // audit_log carries a statement-level `no_truncate` trigger (migration 0047)
   // so production code can never bulk-wipe it. Test isolation is the one
   // legitimate exception to that rule, so disable/re-enable it around the
   // shared reset instead of excluding audit_log (which would leak rows

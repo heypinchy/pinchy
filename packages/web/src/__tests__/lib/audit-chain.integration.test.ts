@@ -80,7 +80,7 @@ describe("v3 audit hash-chain (integration)", () => {
     await appendRow("u2");
     // Row-level triggers (no_update/no_delete) never fire for TRUNCATE, which
     // is a statement-level operation — a separate BEFORE TRUNCATE trigger
-    // (migration 0045) is required to close that gap.
+    // (migration 0047) is required to close that gap.
     await expect(db.execute(sql`TRUNCATE audit_log`)).rejects.toThrow();
     // The rows survived — the truncate never took effect.
     expect(await allRowsById()).toHaveLength(2);
