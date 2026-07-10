@@ -1277,7 +1277,7 @@ export async function regenerateOpenClawConfig() {
     // precedence over any value in the file.
     const existingTelegram =
       ((existing.channels as Record<string, unknown>)?.telegram as Record<string, unknown>) || {};
-    const PINCHY_OWNED_TELEGRAM_FIELDS = new Set(["enabled", "dmPolicy", "accounts"]);
+    const PINCHY_OWNED_TELEGRAM_FIELDS = new Set(["enabled", "dmPolicy", "accounts", "network"]);
     const preservedTelegram: Record<string, unknown> = {};
     for (const [k, v] of Object.entries(existingTelegram)) {
       if (!PINCHY_OWNED_TELEGRAM_FIELDS.has(k)) {
@@ -1309,6 +1309,26 @@ export async function regenerateOpenClawConfig() {
       enabled: true,
       dmPolicy: "pairing",
       accounts,
+      // E2E-only escape hatch. OpenClaw's Telegram media downloader SSRF-
+      // guards inbound photo/video/document fetches: it only allows the
+      // resolved connection IP to be a private/internal address when
+      // `network.dangerouslyAllowPrivateNetwork` is set (real defense
+      // against a malicious file_path redirecting the download to an
+      // internal host). The Telegram E2E stack DNS-overrides
+      // api.telegram.org to the mock server's private Docker IP
+      // (docker-compose.test.yml), so without this override every inbound
+      // media download is silently SSRF-rejected — resolveMedia swallows
+      // the error and the message just has no media, no error surfaces.
+      // `PINCHY_E2E_ALLOW_PRIVATE_TELEGRAM_MEDIA=1` is set ONLY in
+      // docker-compose.test.yml; production/dev compose files must never
+      // set it (guarded by the compose-guardrail tests in
+      // openclaw-config.test.ts, mirroring PINCHY_E2E_DISABLE_AUTH_RATE_LIMIT
+      // in auth-config-consistency.test.ts). "network" is in
+      // PINCHY_OWNED_TELEGRAM_FIELDS above so a later regen with the flag
+      // unset actually clears a stale value instead of preserving it.
+      ...(process.env.PINCHY_E2E_ALLOW_PRIVATE_TELEGRAM_MEDIA === "1"
+        ? { network: { dangerouslyAllowPrivateNetwork: true } }
+        : {}),
     };
     const existingChannels = (existing.channels as Record<string, unknown>) || {};
     const existingTelegramForCompare = (existingChannels.telegram as Record<string, unknown>) || {};

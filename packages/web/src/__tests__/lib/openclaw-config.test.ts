@@ -5347,6 +5347,106 @@ describe("restart-state integration", () => {
     expect(config.session.dmScope).toBe("per-peer");
   });
 
+  // OpenClaw SSRF-guards Telegram media downloads against private-network
+  // targets by default. The Telegram E2E stack DNS-overrides api.telegram.org
+  // to the mock's private Docker IP (docker-compose.test.yml), so without
+  // this env-gated override every inbound media download is silently
+  // SSRF-rejected. See build.ts's `desiredTelegram` comment.
+  it("omits channels.telegram.network when PINCHY_E2E_ALLOW_PRIVATE_TELEGRAM_MEDIA is unset (production default)", async () => {
+    delete process.env.PINCHY_E2E_ALLOW_PRIVATE_TELEGRAM_MEDIA;
+    mockedDb.select.mockReturnValue({
+      from: mockFrom([
+        {
+          id: "agent-1",
+          name: "Smithers",
+          model: "anthropic/claude-haiku-4-5-20251001",
+          allowedTools: [],
+          createdAt: new Date(),
+        },
+      ]),
+    } as never);
+    mockedGetSetting.mockImplementation(async (key: string) => {
+      if (key === "telegram_bot_token:agent-1") return "123456:ABC-token";
+      return null;
+    });
+
+    await regenerateOpenClawConfig();
+
+    const written = mockedWriteFileSync.mock.calls[0][1] as string;
+    const config = JSON.parse(written);
+    expect(config.channels.telegram.network).toBeUndefined();
+  });
+
+  it('sets channels.telegram.network.dangerouslyAllowPrivateNetwork when PINCHY_E2E_ALLOW_PRIVATE_TELEGRAM_MEDIA="1"', async () => {
+    process.env.PINCHY_E2E_ALLOW_PRIVATE_TELEGRAM_MEDIA = "1";
+    mockedDb.select.mockReturnValue({
+      from: mockFrom([
+        {
+          id: "agent-1",
+          name: "Smithers",
+          model: "anthropic/claude-haiku-4-5-20251001",
+          allowedTools: [],
+          createdAt: new Date(),
+        },
+      ]),
+    } as never);
+    mockedGetSetting.mockImplementation(async (key: string) => {
+      if (key === "telegram_bot_token:agent-1") return "123456:ABC-token";
+      return null;
+    });
+
+    try {
+      await regenerateOpenClawConfig();
+
+      const written = mockedWriteFileSync.mock.calls[0][1] as string;
+      const config = JSON.parse(written);
+      expect(config.channels.telegram.network).toEqual({ dangerouslyAllowPrivateNetwork: true });
+    } finally {
+      delete process.env.PINCHY_E2E_ALLOW_PRIVATE_TELEGRAM_MEDIA;
+    }
+  });
+
+  it("clears a stale channels.telegram.network on a later regen once PINCHY_E2E_ALLOW_PRIVATE_TELEGRAM_MEDIA is unset again", async () => {
+    // "network" must be in PINCHY_OWNED_TELEGRAM_FIELDS (build.ts) so the
+    // preserved-fields passthrough doesn't keep a stale value around after
+    // the flag is turned off — a regression here would silently leave a
+    // production deployment with dangerouslyAllowPrivateNetwork stuck on.
+    mockedDb.select.mockReturnValue({
+      from: mockFrom([
+        {
+          id: "agent-1",
+          name: "Smithers",
+          model: "anthropic/claude-haiku-4-5-20251001",
+          allowedTools: [],
+          createdAt: new Date(),
+        },
+      ]),
+    } as never);
+    mockedGetSetting.mockImplementation(async (key: string) => {
+      if (key === "telegram_bot_token:agent-1") return "123456:ABC-token";
+      return null;
+    });
+
+    process.env.PINCHY_E2E_ALLOW_PRIVATE_TELEGRAM_MEDIA = "1";
+    try {
+      await regenerateOpenClawConfig();
+      const firstWritten = mockedWriteFileSync.mock.calls[0][1] as string;
+      const firstConfig = JSON.parse(firstWritten);
+      expect(firstConfig.channels.telegram.network).toEqual({
+        dangerouslyAllowPrivateNetwork: true,
+      });
+
+      mockedReadFileSync.mockReturnValue(firstWritten);
+      delete process.env.PINCHY_E2E_ALLOW_PRIVATE_TELEGRAM_MEDIA;
+      await regenerateOpenClawConfig();
+      const secondWritten = mockedWriteFileSync.mock.calls.at(-1)![1] as string;
+      const secondConfig = JSON.parse(secondWritten);
+      expect(secondConfig.channels.telegram.network).toBeUndefined();
+    } finally {
+      delete process.env.PINCHY_E2E_ALLOW_PRIVATE_TELEGRAM_MEDIA;
+    }
+  });
+
   it("should include multiple accounts when multiple agents have bots", async () => {
     let callCount = 0;
     mockedDb.select.mockReturnValue({

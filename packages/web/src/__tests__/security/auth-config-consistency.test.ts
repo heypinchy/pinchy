@@ -127,4 +127,38 @@ describe("auth config consistency", () => {
       expect(content).toContain(ENV_VAR);
     });
   });
+
+  describe("PINCHY_E2E_ALLOW_PRIVATE_TELEGRAM_MEDIA — security guardrail", () => {
+    // The env var makes OpenClaw's Telegram media downloader skip its SSRF
+    // guard against private-network targets (build.ts's `desiredTelegram`).
+    // It exists ONLY because the Telegram E2E stack DNS-overrides
+    // api.telegram.org to the mock's private Docker IP
+    // (docker-compose.test.yml). It MUST never appear in production, dev, or
+    // the base E2E overlay, so a misplaced copy-paste can't accidentally
+    // disable SSRF protection on a live deployment.
+    const ENV_VAR = "PINCHY_E2E_ALLOW_PRIVATE_TELEGRAM_MEDIA";
+
+    it(`docker-compose.yml must NOT set ${ENV_VAR} (production compose)`, () => {
+      const content = readFileSync(resolve(PROJECT_ROOT, "docker-compose.yml"), "utf-8");
+      expect(
+        content,
+        `${ENV_VAR} found in docker-compose.yml — that file deploys to production. Move it to docker-compose.test.yml.`
+      ).not.toContain(ENV_VAR);
+    });
+
+    it(`docker-compose.dev.yml must NOT set ${ENV_VAR}`, () => {
+      const content = readFileSync(resolve(PROJECT_ROOT, "docker-compose.dev.yml"), "utf-8");
+      expect(content).not.toContain(ENV_VAR);
+    });
+
+    it(`docker-compose.e2e.yml must NOT set ${ENV_VAR} (belongs in the telegram-mock-only overlay)`, () => {
+      const content = readFileSync(resolve(PROJECT_ROOT, "docker-compose.e2e.yml"), "utf-8");
+      expect(content).not.toContain(ENV_VAR);
+    });
+
+    it(`docker-compose.test.yml DOES set ${ENV_VAR} (the only legitimate location)`, () => {
+      const content = readFileSync(resolve(PROJECT_ROOT, "docker-compose.test.yml"), "utf-8");
+      expect(content).toContain(ENV_VAR);
+    });
+  });
 });
