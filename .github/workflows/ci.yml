@@ -100,8 +100,10 @@ jobs:
       - name: Format check (web)
         run: pnpm --filter @pinchy/web format:check
 
-      - name: Format check (docs & workflows)
-        run: pnpm -C packages/web exec prettier --check "../../docs/src/**/*.{mdx,md}" "../../.github/**/*.yml"
+      # Docs & workflow formatting is checked by the dedicated `docs-format.yml`
+      # workflow, which (unlike this one) is NOT paths-ignored for docs, so it
+      # runs on the docs PRs it guards instead of only firing as collateral
+      # here on unrelated code changes.
 
       - name: Typecheck plugins
         # The pinchy-* plugins run via tsx with no ahead-of-time type checking

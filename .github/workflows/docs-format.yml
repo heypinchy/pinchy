@@ -1,0 +1,48 @@
+# Prettier check for docs & workflow files.
+#
+# The main CI workflow (`ci.yml`) is deliberately `paths-ignore: [docs/**,
+# **/*.md, ...]` so its heavy build/test/e2e matrix does not run on docs-only
+# changes. But that also meant its "Format check (docs & workflows)" step never
+# ran on the docs PRs it exists to guard — it only fired as collateral on
+# unrelated code PRs, where a pre-existing docs-formatting slip surfaced as a
+# confusing failure attributed to unrelated code (observed: an unformatted
+# .mdx merged via a docs-only PR, then reddened a plugin PR's CI).
+#
+# This dedicated workflow closes that gap: it runs the exact same prettier
+# check, but triggers on the docs/workflow paths themselves (the inverse of
+# ci.yml's ignore), so docs formatting is validated on the PR that changes it.
+# It is intentionally lightweight (checkout + setup + one prettier run).
+name: Docs & Workflow Format
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - "docs/src/**/*.mdx"
+      - "docs/src/**/*.md"
+      - ".github/**/*.yml"
+  push:
+    branches: [main]
+    paths:
+      - "docs/src/**/*.mdx"
+      - "docs/src/**/*.md"
+      - ".github/**/*.yml"
+
+# Cancel superseded PR runs; never cancel on main so post-merge runs complete.
+concurrency:
+  group: docs-format-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  docs-format:
+    name: Format check (docs & workflows)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: ./.github/actions/setup-pnpm
+
+      # Same command as ci.yml used to run inline — kept identical so the two
+      # never drift in prettier version, config resolution, or plugins.
+      - name: Format check (docs & workflows)
+        run: pnpm -C packages/web exec prettier --check "../../docs/src/**/*.{mdx,md}" "../../.github/**/*.yml"
