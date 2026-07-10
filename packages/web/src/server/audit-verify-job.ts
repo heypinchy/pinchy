@@ -39,9 +39,14 @@ const CHECKPOINT_ID = 1;
 // pathological run with thousands of violations.
 const MAX_REPORTED_IDS = 50;
 
-// Process-wide counter mirroring getAuditWriteFailedCount() (audit-deferred.ts):
-// exposed so health/metrics endpoints can surface a chain-integrity violation
-// even if nobody is watching stderr.
+// Process-wide counter mirroring getAuditWriteFailedCount() (audit-deferred.ts).
+// Groundwork only: exported via getAuditIntegrityViolationCount() for a future
+// ADMIN-authenticated status surface (#699), but nothing reads it yet — a
+// violation is currently observable via the audit.integrity_check row + the
+// stderr line below. Deliberately NOT wired into the unauthenticated
+// /api/health (that would leak "tampering detected" to anonymous callers), and
+// being process-local it wouldn't survive a restart anyway: audit_verify_state
+// .lastStatus is the durable signal a real surface should read (see #699).
 let integrityViolationCount = 0;
 
 export function getAuditIntegrityViolationCount(): number {

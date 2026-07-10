@@ -553,7 +553,33 @@ export type AuditLogEntry =
 // The dual read-side join in /api/audit and /api/audit/export resolves BOTH
 // shapes (pseudonym for new rows, raw id for old ones) so display and
 // filtering keep working across the cutover.
+//
+// The cache is bounded (FIFO eviction) so a long-lived process serving many
+// distinct users can't grow it without limit. The userId → pseudonym mapping
+// is immutable, so any entry is equally safe to drop — a re-lookup just costs
+// one query. Override the cap via AUDIT_PSEUDONYM_CACHE_MAX (mirrors the
+// AUDIT_VERIFY_INTERVAL_MS env pattern); the default sits comfortably above
+// any realistic concurrent-user working set.
+//
+// NOTE for #697 (irreversible erasure): when that action lands it MUST evict
+// the erased user's entry here (or clear the cache), or the mapping lingers in
+// process memory until restart — a stale copy of exactly what erasure is
+// meant to destroy.
 const auditPseudonymCache = new Map<string, string>();
+
+function pseudonymCacheMax(): number {
+  return Number(process.env.AUDIT_PSEUDONYM_CACHE_MAX) || 10_000;
+}
+
+function cachePseudonym(actorId: string, pseudonym: string): void {
+  // FIFO eviction: a Map preserves insertion order, so the first key is the
+  // oldest. Only evict when a genuinely new key would push us past the cap.
+  if (!auditPseudonymCache.has(actorId) && auditPseudonymCache.size >= pseudonymCacheMax()) {
+    const oldest = auditPseudonymCache.keys().next().value;
+    if (oldest !== undefined) auditPseudonymCache.delete(oldest);
+  }
+  auditPseudonymCache.set(actorId, pseudonym);
+}
 
 /** Test-only: clear the in-process actorId → pseudonym cache between tests. */
 export function resetAuditPseudonymCache(): void {
@@ -585,7 +611,7 @@ async function resolveActorId(
       return actorId;
     }
 
-    auditPseudonymCache.set(actorId, row.auditPseudonym);
+    cachePseudonym(actorId, row.auditPseudonym);
     return row.auditPseudonym;
   } catch (err) {
     console.warn(

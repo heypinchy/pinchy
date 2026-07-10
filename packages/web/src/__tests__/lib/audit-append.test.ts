@@ -596,5 +596,40 @@ describe("appendAuditLog", () => {
       expect(mockValues.mock.calls[0][0].actorId).toBe("pseudo-a");
       expect(mockValues.mock.calls[1][0].actorId).toBe("pseudo-b");
     });
+
+    it("evicts the oldest entry once the cache exceeds its max size (bounded, not unbounded)", async () => {
+      // The userId → pseudonym cache must not grow without bound in a
+      // long-lived process that serves many distinct users. Shrink the cap to
+      // 2 (via the same env-override pattern as AUDIT_VERIFY_INTERVAL_MS) so
+      // eviction is exercised deterministically without inserting thousands of
+      // entries.
+      process.env.AUDIT_PSEUDONYM_CACHE_MAX = "2";
+      try {
+        mockPseudonymRow.mockResolvedValue([{ auditPseudonym: "p" }]);
+        const append = (actorId: string) =>
+          appendAuditLog({
+            actorType: "user",
+            actorId,
+            eventType: "auth.login",
+            outcome: "success",
+          });
+
+        await append("user-a"); // lookup 1 → cache {a}
+        await append("user-b"); // lookup 2 → cache {a, b}
+        await append("user-c"); // lookup 3 → overflow, evict oldest (a) → {b, c}
+        expect(mockPseudonymRow).toHaveBeenCalledTimes(3);
+
+        // user-c is still cached → no fresh lookup.
+        await append("user-c");
+        expect(mockPseudonymRow).toHaveBeenCalledTimes(3);
+
+        // user-a was evicted → it must be looked up again. An unbounded cache
+        // would still hold it and wrongly skip this fourth lookup.
+        await append("user-a");
+        expect(mockPseudonymRow).toHaveBeenCalledTimes(4);
+      } finally {
+        delete process.env.AUDIT_PSEUDONYM_CACHE_MAX;
+      }
+    });
   });
 });
