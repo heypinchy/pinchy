@@ -34,8 +34,8 @@ importers:
         specifier: ^6.3.3
         version: 6.4.7(@types/node@24.12.2)(lightningcss@1.32.0)(rollup@4.60.1)
       astro-loader-github-releases:
-        specifier: ^3.0.0
-        version: 3.0.0(astro@6.4.7(@types/node@24.12.2)(lightningcss@1.32.0)(rollup@4.60.1))
+        specifier: ^3.0.1
+        version: 3.0.1(astro@6.4.7(@types/node@24.12.2)(lightningcss@1.32.0)(rollup@4.60.1))
       mermaid:
         specifier: ^11.16.0
         version: 11.16.0
@@ -995,10 +995,10 @@ packages:
     peerDependencies:
       astro: ^4.0.0-beta || ^5.0.0-beta || ^3.3.0 || ^6.0.0-beta
 
-  astro-loader-github-releases@3.0.0:
-    resolution: {integrity: sha512-K82CYHNCn7IL7B6LmPFYkSuQqAFWZnWMXRVcowrX8pZw+v/qg2WOEWM2lzh2iePN6OajYr1K/C0N0Bi7C3jI4w==}
+  astro-loader-github-releases@3.0.1:
+    resolution: {integrity: sha512-9dHOnMqa9jTZK2fYPfmhC7DStAH9gjNS688LrexDgpXwy4V2RS047ym5WSTWK6EEzjepE7+ztY4oqVPbXCwGrg==}
     peerDependencies:
-      astro: '>=4.14.0 <7.0.0'
+      astro: '>=4.14.0 <8.0.0'
 
   astro@6.4.7:
     resolution: {integrity: sha512-5vsXx0H52u23Jpshs9tM81D03Tb3Oh2Vt2Zo0bpqjXN+njkAWjFyGjTfmWJLAcrCQd9Q+iWB1eqfhR1sZJEaUA==}
@@ -3379,7 +3379,7 @@ snapshots:
       astro: 6.4.7(@types/node@24.12.2)(lightningcss@1.32.0)(rollup@4.60.1)
       rehype-expressive-code: 0.41.6
 
-  astro-loader-github-releases@3.0.0(astro@6.4.7(@types/node@24.12.2)(lightningcss@1.32.0)(rollup@4.60.1)):
+  astro-loader-github-releases@3.0.1(astro@6.4.7(@types/node@24.12.2)(lightningcss@1.32.0)(rollup@4.60.1)):
     dependencies:
       astro: 6.4.7(@types/node@24.12.2)(lightningcss@1.32.0)(rollup@4.60.1)
       octokit: 5.0.5
