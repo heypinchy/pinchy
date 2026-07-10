@@ -186,10 +186,11 @@ Before Pinchy 0.5.4, integration lifecycle events were logged under `config.chan
 
 ### Audit trail access
 
-| Event Type             | Description                                                                                                                                                                                                                                                                                                                                                                    |
-| ---------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `audit.exported`       | An admin downloaded an audit-trail export (CSV or PDF). The detail records the chosen format, applied filters, and row count — but never the exported data itself.                                                                                                                                                                                                             |
-| `diagnostics.exported` | An admin exported a chat-diagnostics bundle for a single agent. The detail records `agent.{id,name}`, the captured `scope` (anchor turn and included turn range), the bundle's `byteSize`, the number of `droppedTurns`, and whether the bundle was `truncated` to fit the size cap. The chat content itself is sanitized before export and is never written to the audit row. |
+| Event Type              | Description                                                                                                                                                                                                                                                                                                                                                                                |
+| ----------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `audit.exported`        | An admin downloaded an audit-trail export (CSV or PDF). The detail records the chosen format, applied filters, and row count — but never the exported data itself.                                                                                                                                                                                                                         |
+| `audit.integrity_check` | The periodic background verification job checked a range of the hash chain (see [Automatic verification](#automatic-verification)). Detail records the scanned range (`scannedFrom`/`scannedTo`), the `invalidCount`/`chainBreakCount`, and capped `invalidIds`/`chainBreakIds` lists. `outcome: "success"` means the scanned window was intact; `"failure"` means tampering was detected. |
+| `diagnostics.exported`  | An admin exported a chat-diagnostics bundle for a single agent. The detail records `agent.{id,name}`, the captured `scope` (anchor turn and included turn range), the bundle's `byteSize`, the number of `droppedTurns`, and whether the bundle was `truncated` to fit the size cap. The chat content itself is sanitized before export and is never written to the audit row.             |
 
 ### What is NOT logged
 
@@ -254,7 +255,17 @@ Because each signature covers the previous one, tampering is detectable in every
 
 ## How to verify integrity
 
-Admins can verify the integrity of the audit log in two ways:
+Pinchy verifies the audit log **automatically in the background**, and admins can also verify it **on demand** at any time.
+
+### Automatic verification
+
+A background job re-verifies the hash chain on a schedule, so a break introduced through direct database access — bypassing the append-only triggers — is caught on its own, rather than only when someone happens to open the Verify page. Each run:
+
+- verifies only the rows appended since the last run — an incremental checkpoint keeps this cheap as the log grows — and seeds the check with the previous run's last signature, so the boundary link between two runs is never left unchecked;
+- writes an `audit.integrity_check` entry recording the scanned range and any violations found;
+- on a detected break, also emits a structured `audit_integrity_violation` line to stderr, so an external log monitor can alert on it even if no admin is watching the UI.
+
+The job runs shortly after startup and then every 6 hours by default; set the `AUDIT_VERIFY_INTERVAL_MS` environment variable (in milliseconds) to change the cadence. It is enabled by default and needs no configuration.
 
 ### Via the admin UI
 
