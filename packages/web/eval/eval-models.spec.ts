@@ -136,6 +136,25 @@ test.describe("Eval-v1: model sweep (real Ollama Cloud)", () => {
       ? SWEEP_SCENARIOS.filter((s) => scenarioFilter.includes(s.label))
       : SWEEP_SCENARIOS;
 
+    // Retry a stack/network operation a few times — over a multi-hour sweep a
+    // host<->container fetch transiently fails ("TypeError: fetch failed")
+    // without the containers crashing, and one such blip must not abort the run.
+    const withRetry = async (fn: () => Promise<void>, what: string): Promise<void> => {
+      const attempts = 4;
+      for (let a = 1; a <= attempts; a++) {
+        try {
+          await fn();
+          return;
+        } catch (e) {
+          if (a === attempts) throw e;
+          console.warn(
+            `[eval] ${what} attempt ${String(a)}/${String(attempts)} failed, retrying: ${String(e)}`
+          );
+          await new Promise((r) => setTimeout(r, 8000));
+        }
+      }
+    };
+
     for (const { label, scenario, extraSetup } of scenariosToRun) {
       // Resume: seed the scorecard with runs already persisted to the JSONL
       // (from a prior interrupted invocation) and skip models already at N.
@@ -146,23 +165,38 @@ test.describe("Eval-v1: model sweep (real Ollama Cloud)", () => {
         const alreadyDone = existingRuns.filter((r) => r.model === model).length;
         if (alreadyDone >= n) continue; // fully covered by a previous run
 
-        await pinAgentModel(cookie, agentId, model);
-        await waitForOpenClawStable(() => pinchyGet("/api/health/openclaw", cookie));
-        await waitForAgentDispatchable(
-          (id) => pinchyGet(`/api/health/openclaw?agentId=${id}`, cookie),
-          agentId
-        );
+        // Per-model setup (pin + stack readiness) with retry; if the stack
+        // stays unreachable, SKIP this model rather than aborting the sweep.
+        try {
+          await withRetry(async () => {
+            await pinAgentModel(cookie, agentId, model);
+            await waitForOpenClawStable(() => pinchyGet("/api/health/openclaw", cookie));
+            await waitForAgentDispatchable(
+              (id) => pinchyGet(`/api/health/openclaw?agentId=${id}`, cookie),
+              agentId
+            );
+          }, `setup ${model} / ${label}`);
+        } catch (err) {
+          console.warn(
+            `[eval] SKIPPING ${model} / ${label} — setup failed after retries: ${String(err)}`
+          );
+          continue;
+        }
 
         for (let i = alreadyDone; i < n; i++) {
-          await resetGraphMock();
-          await seedGraphMockMessages([scenario.graphSeedMessage]);
-          await resetOdooMock();
-          await seedOdooBaseline(scenario.odooBaseline);
-          if (extraSetup) await extraSetup();
-
-          await loginViaUI(page, getAdminEmail(), getAdminPassword());
           const runStart = Date.now();
           try {
+            await withRetry(
+              async () => {
+                await resetGraphMock();
+                await seedGraphMockMessages([scenario.graphSeedMessage]);
+                await resetOdooMock();
+                await seedOdooBaseline(scenario.odooBaseline);
+                if (extraSetup) await extraSetup();
+                await loginViaUI(page, getAdminEmail(), getAdminPassword());
+              },
+              `run-setup ${model} #${String(i)}`
+            );
             const result = await runOnce({
               page,
               cookie,
