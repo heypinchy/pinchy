@@ -10,6 +10,7 @@
     "test:plugins": "pnpm --fail-if-no-match --filter \"./packages/plugins/*\" test",
     "test:scripts": "node --test scripts/lib/*.test.mjs docs/scripts/*.test.mjs config/telegram-mock/__tests__/*.test.mjs config/__tests__/*.test.mjs",
     "typecheck:plugins": "node scripts/typecheck-plugins.mjs",
+    "smoke-load:plugins": "node scripts/smoke-load-plugins.mjs",
     "release": "node scripts/release.mjs",
     "release:preflight": "node scripts/release-preflight.mjs",
     "docs:paths": "node scripts/generate-docs-paths.mjs",

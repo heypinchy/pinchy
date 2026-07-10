@@ -114,6 +114,19 @@ jobs:
         # (run by `pnpm test:scripts`) keeps every plugin wired for this gate.
         run: pnpm typecheck:plugins
 
+      - name: Smoke-load plugins (production deps only)
+        # Runtime complement to typecheck:plugins: tsc sees devDependencies'
+        # type declarations, so a dependency that's missing from a plugin's
+        # *runtime* install (should be `dependencies`, was left in
+        # `devDependencies`) typechecks fine but throws when OpenClaw actually
+        # loads the plugin — silently dropping every tool it registers, with
+        # no error surfaced anywhere (the incident behind this gate: a missing
+        # `googleapis` took out all 6 pinchy-email tools). This installs each
+        # plugin's deps with `--omit=dev` in isolation (mirroring
+        # Dockerfile.openclaw), loads it via tsx, and asserts it registers
+        # exactly the tools declared in openclaw.plugin.json#contracts.tools.
+        run: pnpm smoke-load:plugins
+
       - name: Docs lint (no indented tables)
         run: cd docs && pnpm install --frozen-lockfile && pnpm check:tables
 
