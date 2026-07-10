@@ -371,6 +371,10 @@ describe("Pre-existing IMAP connection — cross-route invariant (listed ⟹ rea
       vi.doMock("@/lib/settings", () => ({
         getSetting: vi.fn().mockResolvedValue(null),
         setSetting: vi.fn().mockResolvedValue(undefined),
+        // regenerateOpenClawConfig() reads telegram bot tokens by prefix
+        // (build.ts) — return an empty Map so this migration test (which has
+        // no telegram accounts) exercises the config path without crashing.
+        getSettingsByPrefix: vi.fn().mockResolvedValue(new Map<string, string>()),
       }));
       vi.doMock("@/server/restart-state", () => ({
         restartState: { notifyRestart: vi.fn() },
