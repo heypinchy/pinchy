@@ -540,6 +540,47 @@ describe("regenerateOpenClawConfig", () => {
     expect(config.canvasHost?.boundPort).toBe(18792);
   });
 
+  it("enables OpenClaw's media TTL so ~/.openclaw/media doesn't grow unboundedly", async () => {
+    // Inbound Telegram media is mirrored into the agent workspace within
+    // milliseconds of arrival (POST /api/internal/channel-messages ->
+    // mirrorChannelMedia), so the original OpenClaw copies under
+    // ~/.openclaw/media are disposable shortly after capture. OpenClaw only
+    // runs its own media-cleanup sweep when `media.ttlHours` is set in
+    // config — verified against OpenClaw 2026.6.11's server.impl, which reads
+    // `cfgAtStart.media?.ttlHours` and otherwise sets `mediaCleanup: null`
+    // (no maintenance loop at all). Without this field the media directory
+    // grows without bound. 48h is a generous safety margin over the
+    // millisecond-scale mirror, covering mirror outages/retries.
+    await regenerateOpenClawConfig();
+
+    const config = JSON.parse(mockedWriteFileSync.mock.calls[0][1] as string) as {
+      media?: { ttlHours?: number };
+    };
+    expect(config.media?.ttlHours).toBe(48);
+  });
+
+  it("owns media.ttlHours deterministically but preserves other keys under an existing media block", async () => {
+    // Same "Pinchy-owned field, spread the rest" pattern as
+    // channels.telegram's PINCHY_OWNED_TELEGRAM_FIELDS and canvasHost.enabled
+    // above: an admin- or OpenClaw-tuned ttlHours must not survive a
+    // regenerate (Pinchy is the source of truth for this operational value,
+    // matching the disposable-original rationale above), but any OTHER
+    // sibling OpenClaw enriches under `media` must round-trip untouched.
+    mockedReadFileSync.mockReturnValue(
+      JSON.stringify({
+        media: { ttlHours: 12, someOtherEnrichedField: "keep-me" },
+      }) as unknown as Buffer
+    );
+
+    await regenerateOpenClawConfig();
+
+    const config = JSON.parse(mockedWriteFileSync.mock.calls[0][1] as string) as {
+      media?: { ttlHours?: number; someOtherEnrichedField?: string };
+    };
+    expect(config.media?.ttlHours).toBe(48);
+    expect(config.media?.someOtherEnrichedField).toBe("keep-me");
+  });
+
   it("should disable mDNS discovery so the Bonjour watchdog can't kill the gateway", async () => {
     // Rationale: OpenClaw's gateway tries to advertise itself via mDNS
     // (Bonjour) on startup. In Docker bridge networks multicast doesn't

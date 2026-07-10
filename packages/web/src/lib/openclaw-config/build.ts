@@ -580,6 +580,7 @@ export async function regenerateOpenClawConfig() {
   const existingMdns = (existingDiscovery.mdns as Record<string, unknown>) || {};
   const existingUpdate = (existing.update as Record<string, unknown>) || {};
   const existingCanvasHost = (existing.canvasHost as Record<string, unknown>) || {};
+  const existingMedia = (existing.media as Record<string, unknown>) || {};
 
   // #508: identityLinks is no longer Pinchy-owned. Purge any stale value left by
   // a pre-per-task version so UPGRADES actually un-unify Telegram. We only
@@ -611,6 +612,21 @@ export async function regenerateOpenClawConfig() {
     // canvases anywhere in its UI; per schema: "Keep disabled when canvas
     // workflows are inactive to reduce exposed local services."
     canvasHost: { ...existingCanvasHost, enabled: false },
+    // Inbound channel media (Telegram photos/documents/etc.) is mirrored
+    // into the agent workspace within milliseconds of arrival (POST
+    // /api/internal/channel-messages -> mirrorChannelMedia), so the
+    // original copy OpenClaw stores under ~/.openclaw/media is disposable
+    // shortly after capture. OpenClaw only runs its own media-cleanup
+    // sweep when `media.ttlHours` is present in config — verified against
+    // OpenClaw 2026.6.11's server.impl, which reads
+    // `cfgAtStart.media?.ttlHours` and otherwise sets `mediaCleanup: null`
+    // (no maintenance loop at all, unbounded disk growth). 48h is a
+    // generous safety margin over the millisecond-scale mirror, covering
+    // mirror outages/retries. Pinchy owns this value deterministically
+    // (same pattern as canvasHost.enabled above) — any admin- or
+    // OpenClaw-tuned ttlHours must not survive a regenerate — but other
+    // sibling fields OpenClaw may enrich under `media` are preserved.
+    media: { ...existingMedia, ttlHours: 48 },
     secrets: {
       providers: {
         pinchy: {
