@@ -1,8 +1,5 @@
 import { mkdir, writeFile, access } from "node:fs/promises";
 import { basename } from "node:path";
-import { GmailAdapter } from "./gmail-adapter.js";
-import { GraphAdapter } from "./graph-adapter.js";
-import { ImapAdapter } from "./imap-adapter.js";
 import type { EmailAdapter, EmailSummary, Folder } from "./email-adapter.js";
 import { checkPermission, type Permissions } from "./permissions.js";
 import {
@@ -596,20 +593,47 @@ const plugin = {
       // fetchCredentials already ran the matching assertion
       // (assertOAuthCredentialsShape or assertImapCredentialsShape) for
       // `type` before returning, so narrowing here is safe.
-      const adapter: EmailAdapter =
-        type === "microsoft"
-          ? new GraphAdapter({
-              accessToken: (creds as OAuthEmailCredentials).accessToken,
-            })
-          : type === "google"
-            ? new GmailAdapter({
-                accessToken: (creds as OAuthEmailCredentials).accessToken,
-              })
-            : type === "imap"
-              ? new ImapAdapter(creds as ImapEmailCredentials)
-              : (() => {
-                  throw new Error(`unsupported email provider: ${type}`);
-                })();
+      //
+      // Adapter modules are imported dynamically, per type, right here at
+      // dispatch time — NOT statically at the top of this file. Each
+      // adapter module pulls in its own third-party SDK at its own top
+      // level (gmail-adapter.js -> googleapis, imap-adapter.js ->
+      // imapflow), and a missing/broken dependency in one of those SDKs
+      // must not crash the whole plugin's module load, which would
+      // silently drop every email tool (including providers that don't
+      // even use the broken SDK). Isolating the import to this function
+      // means a broken adapter dependency is only ever discovered — and
+      // only ever fails — when THAT provider is actually dispatched.
+      let adapter: EmailAdapter;
+      try {
+        if (type === "microsoft") {
+          const { GraphAdapter } = await import("./graph-adapter.js");
+          adapter = new GraphAdapter({
+            accessToken: (creds as OAuthEmailCredentials).accessToken,
+          });
+        } else if (type === "google") {
+          const { GmailAdapter } = await import("./gmail-adapter.js");
+          adapter = new GmailAdapter({
+            accessToken: (creds as OAuthEmailCredentials).accessToken,
+          });
+        } else if (type === "imap") {
+          const { ImapAdapter } = await import("./imap-adapter.js");
+          adapter = new ImapAdapter(creds as ImapEmailCredentials);
+        } else {
+          throw new Error(`unsupported email provider: ${type}`);
+        }
+      } catch (err) {
+        // A missing/broken adapter dependency (e.g. googleapis for Gmail)
+        // must not crash plugin load — it's isolated to this provider's
+        // dispatch and surfaced as an actionable error the tool layer turns
+        // into a failed tool result. Re-throw "unsupported email provider"
+        // unchanged so its message/behavior above is untouched.
+        if (err instanceof Error && /unsupported email provider/.test(err.message))
+          throw err;
+        throw new Error(
+          `The ${type} email integration failed to initialize (a required module could not be loaded): ${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
       cache.set(cacheKey, {
         adapter,
         expiresAt: Date.now() + CREDENTIALS_TTL_MS,
