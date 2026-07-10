@@ -8,10 +8,6 @@
 //   POST /api/chat   → streaming NDJSON response
 import * as http from "http";
 import type { AddressInfo } from "net";
-import {
-  HETZNER_ISSUED_MSG_HANDLE,
-  HETZNER_ISSUED_ATT_HANDLE,
-} from "../../../eval/scenarios/hetzner-invoice";
 
 const MODEL_NAME = "llama3.2";
 
@@ -223,12 +219,18 @@ const HETZNER_FALSE_SUCCESS_TRIGGER = "E2E_HETZNER_FALSE_SUCCESS";
 // The self-test drives the REAL pinchy-email plugin end-to-end (fake-ollama
 // only stands in for the LLM; the tool calls hit the real plugin + graph
 // mock). So the handles the scripted email_read/email_get_attachment steps
-// pass MUST be the exact ones the plugin mints for the seeded ids — the
-// scenario computes these deterministically (see hetzner-invoice.ts). Hardcoded
-// placeholders would (a) fail to resolve in the plugin and (b) trip
-// gradeIdFidelity as "unissued handle" in the normalizer.
-const HETZNER_MSG_HANDLE = HETZNER_ISSUED_MSG_HANDLE;
-const HETZNER_ATTACHMENT_HANDLE = HETZNER_ISSUED_ATT_HANDLE;
+// pass MUST be the exact ones the plugin mints for the seeded ids.
+//
+// These are HARDCODED (not imported from the eval scenario) on purpose: this
+// server is COPY'd into a standalone container by its own Dockerfile (only
+// fake-ollama-server.ts + fake-ollama-process.ts are copied), so it must not
+// import anything outside this directory or the container fails to start.
+// The values equal `handleFor(HETZNER_SEEDED_{MESSAGE,ATTACHMENT}_ID)` from
+// hetzner-invoice.ts; the drift guard `fake-ollama-hetzner-handles.test.ts`
+// asserts they stay equal to the scenario's (which the handle-parity test in
+// turn locks to pinchy-email's real handleFor).
+const HETZNER_MSG_HANDLE = "msg_61aa311d8debdd3f";
+const HETZNER_ATTACHMENT_HANDLE = "att_465b369c7b459e6f";
 const HETZNER_INVOICE_NUMBER = "R0012345678";
 const HETZNER_INVOICE_DATE = "2026-06-30";
 const HETZNER_INVOICE_AMOUNT = 47.6;
