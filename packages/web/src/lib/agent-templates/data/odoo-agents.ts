@@ -5,6 +5,7 @@ import {
   ODOO_OUTPUT_FORMATTING,
   ODOO_QUERY_INSTRUCTIONS,
   ODOO_RULES,
+  ODOO_TELEGRAM_MEDIA_GUIDANCE,
 } from "../odoo-factory";
 import type { AgentTemplate } from "../types";
 
@@ -219,6 +220,8 @@ ${ODOO_RULES}
 ### Attach documents to a transfer
 If the user sends a delivery note, packing slip, or other shipping document, attach it to the corresponding \`stock.picking\` using \`odoo_attach_file\`. Always confirm the target picking with the user before attaching.
 
+${ODOO_TELEGRAM_MEDIA_GUIDANCE}
+
 ${ODOO_ATTACHMENT_REF_FLOW}`,
     requiredModels: [
       { model: "stock.picking", operations: ["read", "create", "write"] },
@@ -431,6 +434,8 @@ ${ODOO_MULTI_COMPANY_GUIDANCE}
 
 ### Attach the source document to the bill/invoice
 After creating a draft \`account.move\`, offer to attach the uploaded receipt or invoice image to it. Use \`odoo_attach_file\` with a \`targetRef\` pointing to the \`account.move\` record and the filename of the uploaded file. Source documents attached to accounting records provide the audit trail required by external auditors.
+
+${ODOO_TELEGRAM_MEDIA_GUIDANCE}
 
 ${ODOO_ATTACHMENT_REF_FLOW}`,
     requiredModels: [
@@ -828,6 +833,8 @@ ${ODOO_RULES}
 ### Attach supporting documents
 If the user sends a supporting document (e.g., medical certificate for sick leave, signed contract amendment), attach it to the relevant record using \`odoo_attach_file\`. For leave requests, attach to \`hr.leave\`. For employee profile updates, attach to \`hr.employee\`. Always confirm before attaching.
 
+${ODOO_TELEGRAM_MEDIA_GUIDANCE}
+
 ${ODOO_ATTACHMENT_REF_FLOW}`,
     requiredModels: [
       { model: "hr.employee", operations: ["read", "write"] },
@@ -987,6 +994,8 @@ ${ODOO_RULES}
 
 ### Attach documents to tasks or projects
 If the user sends a file related to a task or project (specification, screenshot, contract, design asset), attach it to the relevant record using \`odoo_attach_file\`. Attach to \`project.task\` for task-level documents or to \`project.project\` for project-wide ones. Confirm the target record with the user first.
+
+${ODOO_TELEGRAM_MEDIA_GUIDANCE}
 
 ${ODOO_ATTACHMENT_REF_FLOW}`,
     requiredModels: [
@@ -1155,6 +1164,8 @@ ${ODOO_RULES}
 
 ### Attach documents to a manufacturing order
 If the user sends a work instruction, quality report, or delivery note related to an MO, attach it to the \`mrp.production\` record using \`odoo_attach_file\`. Confirm the target MO with the user before attaching.
+
+${ODOO_TELEGRAM_MEDIA_GUIDANCE}
 
 ${ODOO_ATTACHMENT_REF_FLOW}`,
     requiredModels: [
@@ -1580,6 +1591,8 @@ ${ODOO_RULES}
 
 ### Attach supporting documents to approvals
 If the user sends a receipt, supporting invoice, or policy document related to an approval, attach it to the relevant \`hr.expense.sheet\` or \`hr.expense\` record using \`odoo_attach_file\`. Source documents attached before approval eliminate the most common audit query ("where is the receipt?").
+
+${ODOO_TELEGRAM_MEDIA_GUIDANCE}
 
 ${ODOO_ATTACHMENT_REF_FLOW}`,
     requiredModels: [

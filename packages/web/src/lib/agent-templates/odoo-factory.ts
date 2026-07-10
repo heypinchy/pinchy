@@ -79,6 +79,18 @@ The same \`_pinchy_ref\` field appears on every record returned by \`odoo_read\`
 Never construct ref strings yourself. Formats like \`"account.move,37"\`, \`"37"\`, or any other guess will be rejected. The token is encrypted — only the plugin can produce a valid one.`;
 
 /**
+ * Teaches attach-capable templates the Telegram media -> uploads mapping
+ * *before* they ever hit the not-found path. Inbound Telegram media is
+ * mirrored into the agent's `uploads/` directory under the same basename
+ * shown in a `[media attached: …]` hint, and `odoo_attach_file` accepts
+ * either the bare name or the full bracketed path. Without this, agents
+ * have hallucinated plausible-looking filenames and asked the user to
+ * re-upload under those invented names instead of saying the file was
+ * missing — splice this into every template that grants `odoo_attach_file`.
+ */
+export const ODOO_TELEGRAM_MEDIA_GUIDANCE = `Files from Telegram: when a message shows \`[media attached: /root/.openclaw/media/inbound/<name>]\`, that file is also available in your uploads directory under the same name — pass \`<name>\` (or the full bracketed path) to \`odoo_attach_file\`. If a file is not in your uploads directory, say so honestly and ask the user to re-send it. Never invent or guess filenames.`;
+
+/**
  * Multi-Company guidance spliced into accounting templates whose agents act
  * across multiple Odoo companies. Teaches the LLM (a) that records like
  * \`account.move\`, \`account.account\`, \`account.journal\` carry a \`company_id\`,
