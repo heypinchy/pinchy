@@ -348,6 +348,34 @@ describe("InviteDialog", () => {
     expect(screen.getByLabelText("Engineering")).toBeInTheDocument();
   });
 
+  it("degrades gracefully when the groups fetch rejects", async () => {
+    fetchSpy.mockImplementation((url: string | URL | Request) => {
+      const urlStr = resolveUrl(url);
+      if (urlStr.includes("/api/enterprise/status")) {
+        return Promise.resolve({
+          ok: true,
+          json: async () => ({ enterprise: true }),
+        } as Response);
+      }
+      if (urlStr.includes("/api/groups")) {
+        return Promise.reject(new Error("Network error"));
+      }
+      return Promise.resolve({
+        ok: true,
+        json: async () => ({ token: "test" }),
+      } as Response);
+    });
+
+    render(<InviteDialog open={true} onOpenChange={vi.fn()} />);
+
+    // Dialog stays usable and the Groups section simply stays empty rather than
+    // leaking an unhandled promise rejection.
+    await waitFor(() => {
+      expect(screen.getByRole("button", { name: "Create Invite" })).toBeInTheDocument();
+    });
+    expect(screen.queryByText("Groups")).not.toBeInTheDocument();
+  });
+
   it("does not show group checkboxes when enterprise is disabled", async () => {
     fetchSpy.mockImplementation((url: string | URL | Request) => {
       const urlStr = typeof url === "string" ? url : url instanceof URL ? url.toString() : url.url;
