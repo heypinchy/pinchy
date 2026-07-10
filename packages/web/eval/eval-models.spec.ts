@@ -41,6 +41,7 @@ import {
   pinAgentModel,
   runOnce,
   writeScorecard,
+  appendRunResult,
   requireOllamaCloudApiKey,
   candidateModelsFromEnv,
   runsPerModelFromEnv,
@@ -150,6 +151,7 @@ test.describe("Eval-v1: model sweep (real Ollama Cloud)", () => {
               scenarioLabel: label,
             });
             scenarioRuns.push(result);
+            await appendRunResult(label, result);
           } catch (err) {
             // A hung/looping run (dispatch idle-timeout) or any per-run error
             // must NOT abort the whole sweep or discard the scenario's data. A
@@ -160,14 +162,16 @@ test.describe("Eval-v1: model sweep (real Ollama Cloud)", () => {
             console.warn(
               `[eval] run ${String(i + 1)}/${String(n)} for ${model} / ${label} recorded as run-timeout: ${String(err)}`
             );
-            scenarioRuns.push({
+            const timeoutResult: RunResult = {
               model,
               passed: false,
               tags: ["run-timeout"],
               notes: [String(err)],
               latencyMs,
               scenario: label,
-            });
+            };
+            scenarioRuns.push(timeoutResult);
+            await appendRunResult(label, timeoutResult);
           }
         }
       }

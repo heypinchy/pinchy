@@ -20,7 +20,7 @@
 // Playwright spec (packages/web/eval/eval.spec.ts) without embedding
 // `test`/`expect` calls itself.
 import type { Page } from "@playwright/test";
-import { mkdir, writeFile } from "node:fs/promises";
+import { mkdir, writeFile, appendFile } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 import path from "node:path";
 import { buildTrajectory, type NormalizeAuditEntry } from "../src/lib/eval/normalize";
@@ -398,6 +398,23 @@ export async function runOnce(params: RunOnceParams): Promise<RunResult> {
 }
 
 // ── Scorecard I/O ─────────────────────────────────────────────────────────
+
+/**
+ * Appends one graded run to `results/<label>.jsonl` immediately after it
+ * completes, so a long unattended sweep never loses finished runs if it
+ * crashes mid-scenario. `writeScorecard` still writes the aggregate JSON at the
+ * end; this JSONL is the durable raw-run log to rebuild a scorecard from after
+ * a crash (one JSON object per line).
+ */
+export async function appendRunResult(label: string, result: RunResult): Promise<void> {
+  if (!/^[a-zA-Z0-9._-]+$/.test(label)) {
+    throw new Error(`Invalid run-log label: ${label}`);
+  }
+  await mkdir(RESULTS_DIR, { recursive: true });
+  const filePath = path.join(RESULTS_DIR, `${label}.jsonl`);
+  // eslint-disable-next-line security/detect-non-literal-fs-filename -- label validated above (alnum/./_/- only)
+  await appendFile(filePath, `${JSON.stringify(result)}\n`, "utf8");
+}
 
 export async function writeScorecard(label: string, runs: RunResult[]): Promise<ScorecardEntry[]> {
   // Defense in depth: label is a hardcoded literal at every call site today,
