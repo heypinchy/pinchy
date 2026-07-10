@@ -2,6 +2,10 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 
 const mockInsert = vi.fn();
 const mockValues = vi.fn();
+// appendAuditLog now chains `.returning({ id, rowHmac })` off `.values(...)`
+// and returns the inserted row. `.values()` therefore returns a builder with a
+// `.returning()`; this stub echoes the just-inserted rowHmac with a fixed id.
+const mockReturning = vi.fn();
 // Returns the "previous row" the chain reads inside the transaction. Default:
 // no prior row (genesis → prevHmac null).
 const mockPrevRow = vi.fn();
@@ -63,7 +67,11 @@ describe("appendAuditLog", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockGetOrCreateSecret.mockReturnValue(fakeSecret);
-    mockValues.mockResolvedValue(undefined);
+    mockValues.mockReturnValue({ returning: mockReturning });
+    mockReturning.mockImplementation(() => {
+      const insertedRow = mockValues.mock.calls.at(-1)?.[0] as { rowHmac?: string } | undefined;
+      return Promise.resolve([{ id: 1, rowHmac: insertedRow?.rowHmac ?? null }]);
+    });
     mockPrevRow.mockResolvedValue([]); // genesis: no previous row
     mockPseudonymRow.mockResolvedValue([]); // no matching user by default
     resetAuditPseudonymCache();
@@ -81,6 +89,21 @@ describe("appendAuditLog", () => {
 
     expect(mockInsert).toHaveBeenCalledWith(auditLog);
     expect(mockValues).toHaveBeenCalledOnce();
+  });
+
+  it("returns the inserted row's { id, rowHmac } (INSERT ... RETURNING)", async () => {
+    // The verify job folds its own report row into its checkpoint from this
+    // return value rather than a follow-up MAX(id) read (race-safe, see
+    // audit-verify-job.ts). Prove appendAuditLog surfaces the inserted row.
+    const result = await appendAuditLog({
+      actorType: "system",
+      actorId: "sys-1",
+      eventType: "config.changed",
+      outcome: "success",
+    });
+
+    const insertedRow = mockValues.mock.calls[0][0] as { rowHmac: string };
+    expect(result).toEqual({ id: 1, rowHmac: insertedRow.rowHmac });
   });
 
   it("should request the audit_hmac_secret", async () => {
@@ -393,7 +416,7 @@ describe("appendAuditLog", () => {
           sessionKey: "agent:agent-1:direct:user-123",
         },
       })
-    ).resolves.toBeUndefined();
+    ).resolves.toBeDefined();
   });
 
   // ── GDPR crypto-erasure: actorId → auditPseudonym substitution ─────────
@@ -519,7 +542,7 @@ describe("appendAuditLog", () => {
           eventType: "auth.login",
           outcome: "success",
         })
-      ).resolves.toBeUndefined();
+      ).resolves.toBeDefined();
 
       const inserted = mockValues.mock.calls[0][0];
       expect(inserted.actorId).toBe("user-1");

@@ -620,7 +620,18 @@ export async function resolveActorIdMatchSet(userId: string): Promise<string[]> 
   return [userId, row.auditPseudonym];
 }
 
-export async function appendAuditLog(entry: AuditLogEntry): Promise<void> {
+/**
+ * Append one row to the immutable, HMAC-chained audit log.
+ *
+ * Returns the inserted row's `{ id, rowHmac }` (via `INSERT ... RETURNING`) so
+ * a caller that needs to reference the row it just wrote — e.g. the periodic
+ * verify job folding its own report row into its checkpoint — can do so from
+ * this call's own return value, instead of a follow-up `MAX(id)` read that
+ * could race against a concurrent append. Most callers ignore the return.
+ */
+export async function appendAuditLog(
+  entry: AuditLogEntry
+): Promise<{ id: number; rowHmac: string }> {
   const secret = getOrCreateSecret("audit_hmac_secret");
   const timestamp = new Date();
   const detail = truncateDetail(entry.detail ?? null);
@@ -633,7 +644,7 @@ export async function appendAuditLog(entry: AuditLogEntry): Promise<void> {
   // appends are serialized — otherwise two writers could read the same
   // predecessor and fork the chain, which verifyIntegrity would (correctly) then
   // flag as tampering.
-  await db.transaction(async (tx) => {
+  return db.transaction(async (tx) => {
     await tx.execute(sql`SELECT pg_advisory_xact_lock(${AUDIT_CHAIN_LOCK_KEY})`);
 
     const [prev] = await tx
@@ -655,19 +666,28 @@ export async function appendAuditLog(entry: AuditLogEntry): Promise<void> {
       prevHmac,
     });
 
-    await tx.insert(auditLog).values({
-      timestamp,
-      actorType: entry.actorType,
-      actorId,
-      eventType: entry.eventType,
-      resource: entry.resource ?? null,
-      detail,
-      version: 3,
-      outcome,
-      error,
-      rowHmac,
-      prevHmac,
-    });
+    const inserted = await tx
+      .insert(auditLog)
+      .values({
+        timestamp,
+        actorType: entry.actorType,
+        actorId,
+        eventType: entry.eventType,
+        resource: entry.resource ?? null,
+        detail,
+        version: 3,
+        outcome,
+        error,
+        rowHmac,
+        prevHmac,
+      })
+      .returning({ id: auditLog.id, rowHmac: auditLog.rowHmac });
+
+    // INSERT ... RETURNING always yields exactly one row; guard defensively so
+    // the { id, rowHmac } return contract never silently degrades to undefined.
+    const row = inserted[0];
+    if (!row) throw new Error("[audit] insert returned no row");
+    return row;
   });
 }
 

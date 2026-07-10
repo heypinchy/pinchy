@@ -8,7 +8,9 @@ import { parseAgentMemoryPath } from "./parse-path";
 export type MemoryAuditWatcherDeps = {
   root: string;
   lookupAgent: (agentId: string) => Promise<{ id: string; name: string } | null>;
-  appendAuditLog: (entry: AuditLogEntry) => Promise<void>;
+  // Return type is intentionally `unknown`: appendAuditLog now resolves the
+  // inserted row's { id, rowHmac }, but the watcher fire-and-forgets it.
+  appendAuditLog: (entry: AuditLogEntry) => Promise<unknown>;
   recordAuditFailure: (err: unknown, entry: AuditLogEntry) => void;
   /** Polling interval in ms (default: 250). Lower values increase responsiveness at the cost of more FS I/O. */
   pollingInterval?: number;

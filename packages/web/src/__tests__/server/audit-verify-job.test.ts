@@ -13,7 +13,6 @@ const {
   mockCheckpointWhere,
   mockMaxIdThen,
   mockLastScannedLimit,
-  mockOwnRowLimit,
   mockInsertValues,
   mockOnConflictDoUpdate,
   mockInsert,
@@ -33,10 +32,11 @@ const {
   const mockLastScannedLimit = vi.fn();
   const mockLastScannedOrderBy = vi.fn().mockReturnValue({ limit: mockLastScannedLimit });
   const mockLastScannedWhere = vi.fn().mockReturnValue({ orderBy: mockLastScannedOrderBy });
-  // db.select(...).from(auditLog).orderBy(desc(...)).limit(1) -> the sweep's
-  // own just-appended audit.integrity_check row (self-fold into checkpoint)
-  const mockOwnRowLimit = vi.fn();
-  const mockOwnRowOrderBy = vi.fn().mockReturnValue({ limit: mockOwnRowLimit });
+  // NOTE: there is deliberately no "own report row" query stub any more. The
+  // sweep folds its own audit.integrity_check row into the checkpoint from the
+  // {id, rowHmac} that appendAuditLog RETURNS (INSERT ... RETURNING), not from
+  // a follow-up MAX(id) read — so mockAppendAuditLog's resolved value drives
+  // that fold (see mockOwnReportRow below).
 
   const mockOnConflictDoUpdate = vi.fn().mockResolvedValue(undefined);
   const mockInsertValues = vi.fn().mockReturnValue({ onConflictDoUpdate: mockOnConflictDoUpdate });
@@ -45,11 +45,10 @@ const {
   // A single db.select() stub serves both tables the module queries,
   // routing on which table object .from(...) is called with (identity
   // comparison against the __marker tag the @/db/schema mock below attaches).
-  // For auditLog there are three distinct call shapes: a bare await (MAX(id)
-  // snapshot), .where().orderBy().limit() (last-scanned-row lookup), and
-  // .orderBy().limit() (own just-appended report row). They're distinguished
-  // by which chain method is called first, exactly like the real query
-  // builder — this mock never calls .where() with no follow-on chain.
+  // For auditLog there are two distinct call shapes: a bare await (MAX(id)
+  // snapshot) and .where().orderBy().limit() (last-scanned-row lookup). They're
+  // distinguished by which chain method is called first, exactly like the real
+  // query builder — this mock never calls .where() with no follow-on chain.
   const mockSelect = vi.fn(() => ({
     from: (table: unknown) => {
       const isCheckpointTable =
@@ -59,7 +58,6 @@ const {
       if (isCheckpointTable) return { where: mockCheckpointWhere };
       return {
         where: mockLastScannedWhere,
-        orderBy: mockOwnRowOrderBy,
         then: (...args: Parameters<Promise<unknown>["then"]>) => mockMaxIdThen().then(...args),
       };
     },
@@ -72,7 +70,6 @@ const {
     mockCheckpointWhere,
     mockMaxIdThen,
     mockLastScannedLimit,
-    mockOwnRowLimit,
     mockInsertValues,
     mockOnConflictDoUpdate,
     mockInsert,
@@ -128,13 +125,14 @@ function mockLastScannedRow(row: { id: number; rowHmac: string } | null) {
   mockLastScannedLimit.mockResolvedValue(row ? [row] : []);
 }
 
-// The row the sweep's OWN appendAuditLog call just inserted — the module
-// re-reads MAX(id) to fold that row into the checkpoint too (see
-// audit-verify-job.ts's "self-fold" comment), so the checkpoint always
-// converges to a true no-op on the next call instead of perpetually
-// rediscovering its own prior report.
+// The row the sweep's OWN appendAuditLog call just inserted. The module folds
+// that row into the checkpoint from the {id, rowHmac} appendAuditLog RETURNS
+// (INSERT ... RETURNING), NOT from a follow-up MAX(id) query — so a row some
+// other request appends concurrently right after the report can't be mis-folded
+// into the checkpoint. Driving the fold through the append's own return value
+// is what makes it race-free, so we stub it via mockAppendAuditLog here.
 function mockOwnReportRow(id: number, rowHmac: string) {
-  mockOwnRowLimit.mockResolvedValue([{ id, rowHmac }]);
+  mockAppendAuditLog.mockResolvedValue({ id, rowHmac });
 }
 
 describe("sweepAuditVerify", () => {
@@ -144,6 +142,10 @@ describe("sweepAuditVerify", () => {
     mockOnConflictDoUpdate.mockResolvedValue(undefined);
     mockInsertValues.mockReturnValue({ onConflictDoUpdate: mockOnConflictDoUpdate });
     mockInsert.mockReturnValue({ values: mockInsertValues });
+    // Re-assert the "no report row folded" default each test (clearAllMocks
+    // keeps implementations, so a prior test's mockOwnReportRow could leak in).
+    // Tests that reach the append override this via mockOwnReportRow.
+    mockAppendAuditLog.mockResolvedValue(undefined);
   });
 
   it("no new rows since the checkpoint (toId < fromId): no-op, verifyIntegrity never called", async () => {
@@ -217,8 +219,8 @@ describe("sweepAuditVerify", () => {
       chainBreakIds: [],
     });
     mockLastScannedRow({ id: 13, rowHmac: "hmac-13" });
-    // The sweep's own appendAuditLog call inserts row 14; the module re-reads
-    // MAX(id) and folds it into the checkpoint too.
+    // The sweep's own appendAuditLog call inserts row 14 and RETURNS it; the
+    // module folds that returned {id, rowHmac} into the checkpoint directly.
     mockOwnReportRow(14, "hmac-14");
 
     const result = await sweepAuditVerify();
@@ -271,6 +273,33 @@ describe("sweepAuditVerify", () => {
     expect(getAuditIntegrityViolationCount()).toBe(0);
     // A clean run must never route through the audit-write-failure path.
     expect(mockRecordAuditFailure).not.toHaveBeenCalled();
+  });
+
+  it("folds the checkpoint from appendAuditLog's RETURNED row, never a post-append MAX(id) re-read (race-safe)", async () => {
+    // Regression guard for the concurrency gap: the sweep must advance its
+    // checkpoint to the exact row appendAuditLog reports it inserted, taken
+    // from that call's return value — NOT from a separate "current highest
+    // row" query that could observe a row another request appended
+    // concurrently right after the report and silently skip the rows between.
+    // The mock deliberately provides NO own-report-row query stub; if the
+    // module tried to re-read the latest row instead of trusting the append's
+    // return, that missing stub would surface here.
+    mockCheckpointRow({ lastVerifiedId: 10, lastVerifiedHmac: "hmac-10" });
+    mockCurrentMaxId(13);
+    mockVerifyIntegrity.mockResolvedValue({
+      valid: true,
+      totalChecked: 3,
+      invalidIds: [],
+      chainBreakIds: [],
+    });
+    mockLastScannedRow({ id: 13, rowHmac: "hmac-13" });
+    mockAppendAuditLog.mockResolvedValue({ id: 14, rowHmac: "hmac-14" });
+
+    await sweepAuditVerify();
+
+    expect(mockInsertValues).toHaveBeenCalledWith(
+      expect.objectContaining({ lastVerifiedId: 14, lastVerifiedHmac: "hmac-14", lastStatus: "ok" })
+    );
   });
 
   it("violation: advances the checkpoint anyway, sets lastStatus='violation', emits failure audit + stderr + increments counter", async () => {

@@ -15,7 +15,9 @@ export type HandleMemoryEventDeps = {
   // Different paths still run concurrently because each path has its own entry.
   inflight: Map<string, Promise<void>>;
   lookupAgent: (agentId: string) => Promise<{ id: string; name: string } | null>;
-  appendAuditLog: (entry: AuditLogEntry) => Promise<void>;
+  // Return type is intentionally `unknown`: appendAuditLog now resolves the
+  // inserted row's { id, rowHmac }, but the watcher fire-and-forgets it.
+  appendAuditLog: (entry: AuditLogEntry) => Promise<unknown>;
   recordAuditFailure?: (err: unknown, entry: AuditLogEntry) => void;
   readyState: "scanning" | "ready";
 };

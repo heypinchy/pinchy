@@ -1,7 +1,7 @@
 /**
  * Periodic incremental hash-chain verification for `audit_log` (#584 follow-up).
  *
- * The DB triggers (migration 0008 row-level, 0045 statement-level TRUNCATE
+ * The DB triggers (migration 0008 row-level, 0047 statement-level TRUNCATE
  * guard) and the v3 prevHmac chain (see `verifyIntegrity` in `@/lib/audit`)
  * are tamper-evident, but nothing walks the chain on a schedule — a break
  * introduced via direct DB access (superuser, a doctored backup/replica)
@@ -67,9 +67,13 @@ async function readCheckpoint(): Promise<Checkpoint> {
     .where(eq(auditVerifyState.id, CHECKPOINT_ID));
 
   if (!row) {
-    // Genesis default: nothing verified yet, no seed (the first ever run's
-    // first row IS the true chain genesis, so leaving it unchecked is correct
-    // — mirroring verifyIntegrity()'s own un-seeded first-call behavior).
+    // Genesis default: nothing verified yet. lastVerifiedHmac stays null, which
+    // sweepAuditVerify passes as `seedPrevHmac: null` — that DOES check the
+    // first row of the first window, asserting it is the true chain genesis
+    // (its prevHmac must be null). This also catches a deleted row 1: a
+    // surviving row 2 whose prevHmac is non-null would be flagged against the
+    // null seed. (Distinct from omitting the seed entirely, which would leave
+    // that first row unchecked.)
     return { lastVerifiedId: 0, lastVerifiedHmac: null };
   }
   return row;
@@ -170,27 +174,29 @@ export async function sweepAuditVerify(): Promise<AuditVerifySweepResult> {
       chainBreakIds: cappedChainBreakIds,
     },
   };
-  // The upcoming appendAuditLog call inserts a new audit_log row: this very
-  // audit.integrity_check entry. Folding that row into the checkpoint here
-  // (write once, past its own report row) — instead of writing scannedTo
-  // first and re-writing again afterward — means the NEXT sweep starts
-  // clean of its own prior report and a "no activity since the last sweep"
+  // appendAuditLog inserts this audit.integrity_check row AND returns its
+  // { id, rowHmac }. Fold that returned row into the checkpoint directly:
+  // writing once, past the sweep's own report row, means the NEXT sweep starts
+  // clean of its own prior report, so a "no activity since the last sweep"
   // steady state genuinely converges to a no-op instead of perpetually
   // rediscovering exactly one new row (its own last write) forever.
+  //
+  // Folding from the append's OWN return value — not a follow-up MAX(id) read —
+  // is what makes this race-free: a separate "current highest row" query could
+  // observe a row another request appended concurrently right after our report
+  // and mis-fold THAT into the checkpoint, silently skipping the rows between
+  // on the next sweep. (A smaller residual remains: rows appended DURING the
+  // verify pass, in (toId, reportId), are caught by the full GET
+  // /api/audit/verify scan but skipped by this incremental job — see #698.)
+  //
+  // Advancing even on violation is intentional: re-scanning the same tampered
+  // window forever would just re-alarm on every cycle without surfacing new
+  // information — the violation is recorded (audit row + stderr + counter)
+  // exactly once. On an audit-write failure there is no report row to fold, so
+  // fall back to the window actually scanned.
   try {
-    await appendAuditLog(entry);
-    const [ownRow] = await db
-      .select({ id: auditLog.id, rowHmac: auditLog.rowHmac })
-      .from(auditLog)
-      .orderBy(desc(auditLog.id))
-      .limit(1);
-    // Advance past the sweep's own report row when the write succeeded and a
-    // row was actually found; otherwise (write failed, or somehow no row) at
-    // minimum advance to the window actually scanned. Advancing even on
-    // violation is intentional: re-scanning the same tampered window forever
-    // would just re-alarm on every cycle without surfacing new information —
-    // the violation is recorded (audit row + stderr + counter) exactly once.
-    await writeCheckpoint(ownRow?.id ?? scannedTo, ownRow?.rowHmac ?? lastVerifiedHmac, status);
+    const ownRow = await appendAuditLog(entry);
+    await writeCheckpoint(ownRow.id, ownRow.rowHmac, status);
   } catch (err) {
     recordAuditFailure(err, entry);
     await writeCheckpoint(scannedTo, lastVerifiedHmac, status);
