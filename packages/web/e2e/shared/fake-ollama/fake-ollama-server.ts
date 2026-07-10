@@ -113,6 +113,15 @@ const LIVENESS_SLOW_DELAY_MS = 18000;
 const LIVENESS_DYING_TRIGGER = "E2E_LIVENESS_DYING_RESPONSE";
 const LIVENESS_DYING_PARTIAL = "Starting to respond";
 
+// ── Multi-device live-sync trigger ─────────────────────────────────────────
+// A fast, UNIQUE reply for the multi-device spec. The integration suite shares
+// ONE OpenClaw session across specs, so a generic FAKE_RESPONSE reply would
+// appear multiple times in the transcript — breaking any strict getByText (both
+// this spec's device-B assertion and agent-chat's default-reply assertion).
+// A dedicated trigger keeps this spec's turn self-identifying and side-effect-free.
+const MULTI_DEVICE_TRIGGER = "E2E_MULTI_DEVICE_SYNC";
+const MULTI_DEVICE_RESPONSE = "Multi-device sync reply — device B sees this live.";
+
 // ── Transient provider-error triggers (durable agent-error banner) ──────────
 // RATE_LIMIT: the provider returns an HTTP 429 with a rate-limit body, the
 // canonical "transient, retry later" failure. OpenClaw surfaces it as a chat
@@ -881,6 +890,11 @@ export async function handleRequest(req: http.IncomingMessage, res: http.ServerR
       return;
     }
 
+    if (lastContent.includes(MULTI_DEVICE_TRIGGER) && !hasToolResult) {
+      streamTextResponse(res, MULTI_DEVICE_RESPONSE, countUserMessages(messages));
+      return;
+    }
+
     streamTextResponse(
       res,
       activeTrigger ? activeTrigger.response : FAKE_RESPONSE,
@@ -968,6 +982,11 @@ export async function handleRequest(req: http.IncomingMessage, res: http.ServerR
       return;
     }
 
+    if (lastContent.includes(MULTI_DEVICE_TRIGGER) && !hasToolResult) {
+      streamOpenAiText(res, MULTI_DEVICE_RESPONSE, countUserMessages(messages));
+      return;
+    }
+
     streamOpenAiText(
       res,
       activeTrigger ? activeTrigger.response : FAKE_RESPONSE,
@@ -997,6 +1016,8 @@ export const FAKE_OLLAMA_SLOW_STREAM_DELAY_MS = SLOW_STREAM_DELAY_MS;
 // Chat-liveness triggers (slow "taking longer" + dying provider failure).
 export const FAKE_OLLAMA_LIVENESS_SLOW_TRIGGER = LIVENESS_SLOW_TRIGGER;
 export const FAKE_OLLAMA_LIVENESS_SLOW_RESPONSE = LIVENESS_SLOW_RESPONSE;
+export const FAKE_OLLAMA_MULTI_DEVICE_TRIGGER = MULTI_DEVICE_TRIGGER;
+export const FAKE_OLLAMA_MULTI_DEVICE_RESPONSE = MULTI_DEVICE_RESPONSE;
 export const FAKE_OLLAMA_LIVENESS_SLOW_DELAY_MS = LIVENESS_SLOW_DELAY_MS;
 export const FAKE_OLLAMA_LIVENESS_DYING_TRIGGER = LIVENESS_DYING_TRIGGER;
 export const FAKE_OLLAMA_LIVENESS_DYING_PARTIAL = LIVENESS_DYING_PARTIAL;

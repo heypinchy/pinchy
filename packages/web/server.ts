@@ -12,6 +12,7 @@ import { applyKeepAliveTuning } from "./src/server/http-keepalive";
 import { setOpenClawClient } from "./src/server/openclaw-client";
 import { once } from "./src/lib/once";
 import { getActiveRunsSingleton } from "./src/server/active-runs-singleton";
+import { getSessionPokeBridgeSingleton } from "./src/server/session-poke-bridge-singleton";
 import { startRunWatchdog, DEFAULT_FIRST_CHUNK_TIMEOUT_MS } from "./src/server/run-watchdog";
 import {
   ChannelHealthMonitor,
@@ -150,6 +151,7 @@ ${domain ? `<p><a href="https://${domain}">Go to ${domain} →</a></p>` : ""}
   // #310 Tier 2a: server-wide registry of in-flight chat runs. Shared
   // across all ClientRouter instances (one per ws) and the watchdog.
   const activeRuns = getActiveRunsSingleton();
+  const pokeBridge = getSessionPokeBridgeSingleton();
 
   const wss = new WebSocketServer({
     noServer: true,
@@ -232,7 +234,8 @@ ${domain ? `<p><a href="https://${domain}">Go to ${domain} →</a></p>` : ""}
           sessionInfo.userRole,
           sessionCache,
           activeRuns,
-          disconnectSignal
+          disconnectSignal,
+          pokeBridge
         )
       : null;
 
@@ -267,6 +270,11 @@ ${domain ? `<p><a href="https://${domain}">Go to ${domain} →</a></p>` : ""}
       // a dead socket. The run itself stays alive until OC's stream
       // terminates or the watchdog tears it down on absolute timeout.
       activeRuns.removeListenerFromAll(clientWs);
+      // Lane B: prune this socket from every session-subscriber set and close
+      // any upstream subscription it was the last viewer of (reverse-index).
+      void pokeBridge.disconnect(clientWs).catch((err) => {
+        console.error("poke-bridge disconnect failed:", err instanceof Error ? err.message : err);
+      });
     });
 
     clientWs.on("error", (err) => {
@@ -274,6 +282,9 @@ ${domain ? `<p><a href="https://${domain}">Go to ${domain} →</a></p>` : ""}
       releaseConnectionOnce();
       sessionMap.delete(clientWs);
       activeRuns.removeListenerFromAll(clientWs);
+      void pokeBridge.disconnect(clientWs).catch((e) => {
+        console.error("poke-bridge disconnect failed:", e instanceof Error ? e.message : e);
+      });
     });
   });
 

@@ -19,6 +19,7 @@ import { maybeSelfHealOnModelError } from "@/server/model-self-heal";
 import { ActiveRuns } from "@/server/active-runs";
 import { iterateUntilAborted } from "@/server/abortable-stream";
 import { NEVER_DISCONNECTS, type DisconnectSignal } from "@/server/openclaw-disconnect-signal";
+import type { SessionPokeBridge } from "@/server/session-poke-bridge";
 import { recordSessionTurnsUsage } from "@/lib/usage-per-turn";
 import {
   QUEUED_RETRY_PREFIX,
@@ -168,7 +169,14 @@ export class ClientRouter {
      * Defaults to a never-firing signal so tests keep the prior drain-to-end
      * behavior; production wires the real one in `server.ts`.
      */
-    private disconnectSignal: DisconnectSignal = NEVER_DISCONNECTS
+    private disconnectSignal: DisconnectSignal = NEVER_DISCONNECTS,
+    /**
+     * Multi-device live-sync bridge (Lane B). Optional so legacy tests that
+     * predate it get no sync wiring; production passes the process singleton.
+     * When present, `handleHistory` registers this socket as a session
+     * subscriber behind the SAME access gate that already guards history.
+     */
+    private pokeBridge?: SessionPokeBridge
   ) {}
 
   private computeSessionKey(agentId: string, chatId?: string): string {
@@ -710,6 +718,21 @@ export class ClientRouter {
     const activeRun = this.activeRuns.get(sessionKey);
     if (activeRun) {
       this.activeRuns.addListener(sessionKey, clientWs);
+    }
+
+    // Multi-device live-sync (Lane B): this socket now EXCLUSIVELY views this
+    // session, so register it as a persistent session subscriber. Done here —
+    // after the access gate in handleMessage that guards every path into
+    // handleHistory — so a socket can only ever subscribe to a session its user
+    // is allowed to see (the structural half of the no-cross-user-leak story).
+    // A failed subscribe RPC degrades to "no live push"; history still serves
+    // and the client re-pulls on its next lifecycle trigger.
+    if (this.pokeBridge) {
+      try {
+        await this.pokeBridge.view(sessionKey, clientWs);
+      } catch (err) {
+        console.error("poke-bridge view failed:", err instanceof Error ? err.message : err);
+      }
     }
     // Signal embedded in every history response variant so the client
     // can preserve `isRunning=true` and anchor incoming chunks to the

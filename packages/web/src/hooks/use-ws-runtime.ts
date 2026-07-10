@@ -579,6 +579,9 @@ export function useWsRuntime(
    */
   const pendingHistoryRef = useRef(false);
   const frameBufferRef = useRef<unknown[]>([]);
+  // Multi-device live-sync: the highest poke seq already acted on, so a stale or
+  // duplicate poke (seq <= this) does not trigger a redundant history re-pull.
+  const lastSeenPokeSeqRef = useRef(-1);
   /**
    * Server-correlated runId for the in-flight chat turn (Tier 2b). Set
    * when a history frame includes the `activeRun` signal and used by
@@ -779,6 +782,45 @@ export function useWsRuntime(
       }
     }
 
+    // Multi-device live-sync: a lightweight catch-up re-pull used by the poke
+    // handler and the window-focus listener. Same buffer-then-drain protocol as
+    // ws.onopen / recoverFromPageLifecycle — armed so an in-flight run's chunks
+    // merge ONTO the reconciled history instead of building a competing bubble,
+    // which makes it safe to call mid-stream. Unlike recoverFromPageLifecycle it
+    // has no lifecycle-suspend gate: focus and poke are their own triggers.
+    function requestHistoryCatchup() {
+      // While THIS device is streaming a turn (its own, or one it joined by
+      // re-pulling into an in-flight run), the live stream (Lane A) already
+      // delivers the session's newest content. A catch-up re-pull now would race
+      // the stream and double-render the in-flight message — the exact failure
+      // the CI integration E2E caught. Skip; a poke/focus after the run completes
+      // reconciles cleanly. (The reconnect/lifecycle recover path does NOT call
+      // this helper, so a genuine reconnect mid-run still resumes.)
+      if (isRunningRef.current) return;
+      // Adopt the server's CANONICAL history on the reconcile that follows —
+      // same as recoverFromPageLifecycle. Without this the reconcile keeps the
+      // stale local view (shouldReplaceLocalWithServerHistory returns false when
+      // the flag is unset): a turn written on another device never appears, and
+      // the SENDING device double-renders its own just-streamed turn (the CI
+      // integration E2E caught exactly this).
+      shouldRecoverFromHistoryRef.current = true;
+      if (wsRef.current?.readyState === WebSocket.OPEN) {
+        pendingHistoryRef.current = true;
+        frameBufferRef.current = [];
+        wsRef.current.send(JSON.stringify({ type: "history", agentId, ...(chatId && { chatId }) }));
+      } else {
+        connect();
+      }
+    }
+
+    function handleFocus() {
+      // Returning to the window (another app was in front) fires `focus` but no
+      // `visibilitychange`, so recoverFromPageLifecycle never ran — this is the
+      // reported "stale until reload" bug. Re-pull to catch up; coalesce with an
+      // already in-flight pull.
+      if (!pendingHistoryRef.current) requestHistoryCatchup();
+    }
+
     function handleVisibilityChange() {
       if (document.visibilityState === "hidden") {
         suspendForPageLifecycle();
@@ -955,6 +997,21 @@ export function useWsRuntime(
 
         if (data.type === "openclaw_status") {
           setIsOpenClawConnected(!!data.connected);
+          return;
+        }
+
+        // Multi-device live-sync (Lane B): a BODY-FREE signal that this session
+        // changed (another device of this user, or a Telegram message). Handled
+        // BEFORE the pre-history buffer so it is never queued/replayed. We hold
+        // no content — we re-pull authoritative state through the normal
+        // authorized history path. `seq` is a dedup HINT (it may be absent or
+        // non-monotonic across a compaction), so it only ever SUPPRESSES a
+        // redundant pull, never the identity.
+        if (data.type === "poke") {
+          const seq = typeof data.seq === "number" ? data.seq : undefined;
+          if (seq !== undefined && seq <= lastSeenPokeSeqRef.current) return;
+          if (seq !== undefined) lastSeenPokeSeqRef.current = seq;
+          if (!pendingHistoryRef.current) requestHistoryCatchup();
           return;
         }
 
@@ -1471,6 +1528,7 @@ export function useWsRuntime(
     document.addEventListener("resume", handlePageShow);
     window.addEventListener("offline", handleOffline);
     window.addEventListener("online", handleOnline);
+    window.addEventListener("focus", handleFocus);
 
     return () => {
       mountedRef.current = false;
@@ -1484,6 +1542,7 @@ export function useWsRuntime(
       document.removeEventListener("resume", handlePageShow);
       window.removeEventListener("offline", handleOffline);
       window.removeEventListener("online", handleOnline);
+      window.removeEventListener("focus", handleFocus);
       if (reconnectTimerRef.current) {
         clearTimeout(reconnectTimerRef.current);
         reconnectTimerRef.current = null;

@@ -4648,3 +4648,193 @@ describe("user-triggered abort (onCancel) (#550)", () => {
     expect(result.current.runtime.isRunning).toBe(false);
   });
 });
+
+describe("useWsRuntime — multi-device live-sync (poke + focus)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.useFakeTimers();
+    wsInstances = [];
+    // A prior describe may have run vi.unstubAllGlobals() in its afterEach,
+    // tearing down the module-level WebSocket stub — re-establish it so these
+    // tests are order-independent (they passed alone but failed in a full run).
+    vi.stubGlobal("WebSocket", MockWebSocket);
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.unstubAllGlobals();
+  });
+
+  function openWithHistory(): MockWebSocket {
+    const ws = latestWs();
+    act(() => {
+      ws.simulateOpen();
+      // The history response clears the pre-history latch armed by onopen.
+      ws.simulateMessage({ type: "history", messages: [] });
+    });
+    return ws;
+  }
+
+  it("re-pulls history when a poke arrives for the open session", () => {
+    renderHook(() => useWsRuntime("agent-1"));
+    const ws = openWithHistory();
+    const before = ws.send.mock.calls.length;
+
+    act(() => {
+      ws.simulateMessage({
+        type: "poke",
+        sessionKey: "agent:agent-1:direct:u1",
+        messageId: "m1",
+        seq: 1,
+      });
+    });
+
+    const newSends = ws.send.mock.calls
+      .slice(before)
+      .map((c: unknown[]) => JSON.parse(c[0] as string));
+    expect(newSends).toContainEqual({ type: "history", agentId: "agent-1" });
+  });
+
+  it("ignores a stale poke whose seq was already seen (no redundant re-pull)", () => {
+    renderHook(() => useWsRuntime("agent-1"));
+    const ws = openWithHistory();
+
+    act(() => {
+      ws.simulateMessage({ type: "poke", messageId: "m5", seq: 5 });
+    });
+    const afterFirst = ws.send.mock.calls.length;
+
+    act(() => {
+      ws.simulateMessage({ type: "poke", messageId: "m3", seq: 3 }); // older seq
+    });
+
+    expect(ws.send.mock.calls.length).toBe(afterFirst); // no new send for a stale poke
+  });
+
+  it("re-pulls history on window focus (the bug: returning to the window fires no visibilitychange)", () => {
+    renderHook(() => useWsRuntime("agent-1"));
+    const ws = openWithHistory();
+    const before = ws.send.mock.calls.length;
+
+    act(() => {
+      window.dispatchEvent(new Event("focus"));
+    });
+
+    const newSends = ws.send.mock.calls
+      .slice(before)
+      .map((c: unknown[]) => JSON.parse(c[0] as string));
+    expect(newSends).toContainEqual({ type: "history", agentId: "agent-1" });
+  });
+
+  it("adopts newer server history on a poke (recover semantics), so a turn from another device appears", () => {
+    const { result } = renderHook(() => useWsRuntime("agent-1"));
+    const ws = latestWs();
+    act(() => {
+      ws.simulateOpen();
+      ws.simulateMessage({
+        type: "history",
+        messages: [
+          { role: "user", content: "u1" },
+          { role: "assistant", content: "a1" },
+        ],
+      });
+    });
+
+    // A poke → the follow-up history carries a NEW turn that only exists on the
+    // server (another device wrote it). Without recover semantics the reconcile
+    // keeps the stale local view: device B stays blank AND the sending device
+    // double-renders its own turn — exactly the CI E2E failures this guards.
+    act(() => {
+      ws.simulateMessage({ type: "poke", messageId: "m2", seq: 1 });
+      ws.simulateMessage({
+        type: "history",
+        messages: [
+          { role: "user", content: "u1" },
+          { role: "assistant", content: "a1" },
+          { role: "user", content: "u2-from-device-A" },
+          { role: "assistant", content: "a2-from-device-A" },
+        ],
+      });
+    });
+
+    const messages = result.current.runtime.messages as { role: string }[];
+    expect(JSON.stringify(messages)).toContain("a2-from-device-A");
+    expect(messages.filter((m) => m.role === "assistant")).toHaveLength(2);
+  });
+
+  it("does not duplicate a just-streamed turn when a poke re-pulls the same session", () => {
+    const { result } = renderHook(() => useWsRuntime("agent-1"));
+    const ws = latestWs();
+    act(() => {
+      ws.simulateOpen();
+      ws.simulateMessage({ type: "history", messages: [] });
+    });
+    // Stream a full assistant turn locally (Lane A), like the sending device.
+    act(() => {
+      result.current.runtime.onNew({
+        content: [{ type: "text", text: "Hello" }],
+        parentId: "root",
+      });
+    });
+    act(() => {
+      ws.simulateMessage({
+        type: "chunk",
+        content: "Integration test response.",
+        messageId: "srv-1",
+      });
+    });
+    act(() => {
+      ws.simulateMessage({ type: "done", messageId: "srv-1" });
+      ws.simulateMessage({ type: "complete" });
+    });
+    // A poke for the sender's OWN session re-pulls history that already contains
+    // the just-streamed reply — it must reconcile, not append a 2nd bubble.
+    act(() => {
+      ws.simulateMessage({ type: "poke", messageId: "srv-1", seq: 1 });
+      ws.simulateMessage({
+        type: "history",
+        messages: [
+          { role: "user", content: "Hello" },
+          { role: "assistant", content: "Integration test response." },
+        ],
+      });
+    });
+    const messages = result.current.runtime.messages as { role: string; content: unknown }[];
+    const dupes = messages.filter(
+      (m) =>
+        m.role === "assistant" && JSON.stringify(m.content).includes("Integration test response.")
+    );
+    expect(dupes).toHaveLength(1);
+  });
+
+  it("skips the catch-up re-pull while a run is in-flight (the live stream already covers it)", () => {
+    const { result } = renderHook(() => useWsRuntime("agent-1"));
+    const ws = latestWs();
+    act(() => {
+      ws.simulateOpen();
+      ws.simulateMessage({ type: "history", messages: [] });
+    });
+    // Start streaming a turn — isRunning=true, no `complete` yet.
+    act(() => {
+      result.current.runtime.onNew({
+        content: [{ type: "text", text: "Hello" }],
+        parentId: "root",
+      });
+    });
+    act(() => {
+      ws.simulateMessage({ type: "chunk", content: "partial", messageId: "srv-1" });
+    });
+    expect(result.current.isRunning).toBe(true);
+
+    // A poke arriving mid-stream must NOT trigger a re-pull: re-pulling now would
+    // race the live stream and double-render the in-flight turn (the CI E2E bug).
+    const before = ws.send.mock.calls.length;
+    act(() => {
+      ws.simulateMessage({ type: "poke", messageId: "srv-1", seq: 1 });
+    });
+    const historySends = ws.send.mock.calls
+      .slice(before)
+      .map((c: unknown[]) => JSON.parse(c[0] as string))
+      .filter((f: { type: string }) => f.type === "history");
+    expect(historySends).toHaveLength(0);
+  });
+});
