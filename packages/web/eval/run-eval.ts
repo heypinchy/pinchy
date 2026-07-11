@@ -26,7 +26,7 @@ import path from "node:path";
 import { buildTrajectory, type NormalizeAuditEntry } from "../src/lib/eval/normalize";
 import { gradeRunForScenario } from "../src/lib/eval/graders";
 import { buildScorecard, type ScorecardEntry } from "../src/lib/eval/scorecard";
-import type { OdooMoveRecord, RunResult } from "../src/lib/eval/types";
+import type { OdooMoveRecord, RunResult, RunTrajectory } from "../src/lib/eval/types";
 import { hetznerInvoiceScenario, type HetznerInvoiceScenario } from "./scenarios/hetzner-invoice";
 
 const PINCHY_URL = process.env.PINCHY_URL || "http://localhost:7777";
@@ -394,7 +394,51 @@ export async function runOnce(params: RunOnceParams): Promise<RunResult> {
   });
 
   const result = gradeRunForScenario(trajectory, scenario);
+  // Persist the FULL trajectory (final message + tool calls + read-back moves)
+  // beside the graded RunResult. Two payoffs: (1) any grader change can be
+  // re-scored offline against real runs (scripts/regrade-eval.mjs) instead of
+  // burning budget on a re-sweep, and (2) the raw final messages are the
+  // evidence corpus — e.g. the exact words a model uses to claim a completion
+  // that never persisted (the silent-failure signal). Best-effort: a dump
+  // failure must never fail the run itself.
+  if (params.scenarioLabel) {
+    try {
+      await appendTrajectory(params.scenarioLabel, trajectory, result.passed, result.tags);
+    } catch (err) {
+      console.warn(`[eval] trajectory dump failed for ${model}: ${String(err)}`);
+    }
+  }
   return params.scenarioLabel ? { ...result, scenario: params.scenarioLabel } : result;
+}
+
+/**
+ * One persisted trajectory record: the full normalized run plus the grade it
+ * received. Written to `results/<label>.trajectories.jsonl` (one JSON object
+ * per line) so graders can be re-scored offline and final messages mined as
+ * evidence. `passed`/`tags` snapshot the grade THIS harness version assigned —
+ * a re-grade recomputes them from the same trajectory.
+ */
+export interface PersistedTrajectory extends RunTrajectory {
+  scenarioLabel: string;
+  passed: boolean;
+  tags: RunResult["tags"];
+}
+
+/** Appends one full trajectory to `results/<label>.trajectories.jsonl`. */
+export async function appendTrajectory(
+  label: string,
+  trajectory: RunTrajectory,
+  passed: boolean,
+  tags: RunResult["tags"]
+): Promise<void> {
+  if (!/^[a-zA-Z0-9._-]+$/.test(label)) {
+    throw new Error(`Invalid run-log label: ${label}`);
+  }
+  await mkdir(RESULTS_DIR, { recursive: true });
+  const filePath = path.join(RESULTS_DIR, `${label}.trajectories.jsonl`);
+  const record: PersistedTrajectory = { ...trajectory, scenarioLabel: label, passed, tags };
+  // eslint-disable-next-line security/detect-non-literal-fs-filename -- label validated above (alnum/./_/- only)
+  await appendFile(filePath, `${JSON.stringify(record)}\n`, "utf8");
 }
 
 // ── Scorecard I/O ─────────────────────────────────────────────────────────

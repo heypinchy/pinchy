@@ -52,10 +52,30 @@ import {
 import { setupHetznerAgent } from "./eval-shared";
 import type { RunResult } from "../src/lib/eval/types";
 
+// The curated candidate set for a public open-weight agent-reliability
+// benchmark (pinchy#669). Chosen for vendor breadth AND intra-family
+// comparisons (does the bigger/newer sibling actually behave better on a real
+// tool-using workflow?). Every id must exist in
+// src/lib/ollama-cloud-models.ts TOOL_CAPABLE_OLLAMA_CLOUD_MODELS — that file
+// is the source of truth for which models the /v1 path actually serves with
+// working tool calls. Override per-run with EVAL_CANDIDATE_MODELS.
 const DEFAULT_CANDIDATES = [
+  // — original 8-model sweep (2026-07-11) —
   "ollama-cloud/kimi-k2.6",
   "ollama-cloud/gemma4:31b",
   "ollama-cloud/glm-4.7",
+  "ollama-cloud/glm-5.2",
+  "ollama-cloud/qwen3.5:397b",
+  "ollama-cloud/minimax-m3",
+  "ollama-cloud/gpt-oss:120b",
+  "ollama-cloud/mistral-large-3:675b",
+  // — breadth expansion: new vendors (DeepSeek, NVIDIA) + intra-family pairs —
+  "ollama-cloud/deepseek-v3.2",
+  "ollama-cloud/deepseek-v4-pro",
+  "ollama-cloud/nemotron-3-ultra",
+  "ollama-cloud/gpt-oss:20b",
+  "ollama-cloud/glm-5.1",
+  "ollama-cloud/minimax-m2.7",
 ];
 
 /**
