@@ -340,7 +340,7 @@ describe("SettingsIntegrations — IMAP connections", () => {
     fetchSpy.mockRestore();
   });
 
-  it("shows Rename, Test Connection, and Delete actions for an imap connection (no Edit credentials dialog yet)", async () => {
+  it("shows Rename, Edit credentials, Test Connection, and Delete actions for an imap connection", async () => {
     const user = userEvent.setup();
     const fetchSpy = mockFetchConnections([activeImapConnection]);
 
@@ -358,9 +358,12 @@ describe("SettingsIntegrations — IMAP connections", () => {
     expect(screen.getByText("Rename")).toBeInTheDocument();
     expect(screen.getByText("Test Connection")).toBeInTheDocument();
     expect(screen.getByText("Delete")).toBeInTheDocument();
-    // Edit credentials would open a dead-end dialog (mask-credentials.ts and the
-    // PATCH route don't know the imap shape yet) — deliberately not offered.
-    expect(screen.queryByText("Edit credentials")).not.toBeInTheDocument();
+    // IMAP is credential-based (like Odoo/web-search), so the mailbox host,
+    // port, username, password, and sender name can all be edited in place —
+    // mask-credentials.ts, imapEditSchema, and the PATCH route all know the
+    // imap shape. The dialog is opened by the ImapForm branch of
+    // EditCredentialsDialog.
+    expect(screen.getByText("Edit credentials")).toBeInTheDocument();
 
     fetchSpy.mockRestore();
   });

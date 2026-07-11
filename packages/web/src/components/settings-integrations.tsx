@@ -408,8 +408,7 @@ export function SettingsIntegrations({ oauthError }: { oauthError?: string } = {
                               >
                                 Rename
                               </DropdownMenuItem>
-                              {conn.type === "google" ? null : conn.type === "microsoft" ||
-                                conn.type === "imap" ? (
+                              {conn.type === "google" ? null : conn.type === "microsoft" ? (
                                 <DropdownMenuItem
                                   onClick={() => testConnection(conn.id)}
                                   disabled={testing === conn.id}
