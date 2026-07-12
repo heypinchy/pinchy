@@ -17,13 +17,23 @@ interface UseShareIntakeArgs {
  * text prefill the user can edit before sending — a shared LINK carries no
  * file, so the prefill is its only path into the composer.
  *
- * Runs at most once per share id (guarded by a ref) and never throws even
- * if the cache read fails — a corrupted or already-cleared entry is treated
- * like "nothing to attach" rather than crashing the chat. Either way, the
- * `share` param is stripped from the URL afterwards so a refresh doesn't
- * replay the intake. Every OTHER param (notably `?keep`, which is what let
- * this route render `<Chat>` instead of redirecting to the most recent chat
- * — see chat/[agentId]/page.tsx) is preserved.
+ * Runs at most once per share id (guarded solely by a ref) and never throws
+ * even if the cache read fails — a corrupted or already-cleared entry is
+ * treated like "nothing to attach" rather than crashing the chat. Either
+ * way, the `share` param is stripped from the URL afterwards so a refresh
+ * doesn't replay the intake. Every OTHER param (notably `?keep`, which is
+ * what let this route render `<Chat>` instead of redirecting to the most
+ * recent chat — see chat/[agentId]/page.tsx) is preserved.
+ *
+ * Deliberately NO cleanup-cancellation flag: React StrictMode (Next 16's
+ * dev default) runs the mount effect, its cleanup, then the effect again —
+ * synchronously, before `readSharedPayload` resolves. A `cancelled` flag set
+ * in cleanup would abort the single in-flight read (the re-run bails on the
+ * already-committed `handledRef`), leaving the feature a permanent no-op in
+ * dev. So we let the one committed run finish. React 18+ does not warn on
+ * calling the setters or `router.replace` after an unmount, so the only cost
+ * in the genuine unmount-mid-read case is a harmless no-op — far better than
+ * never firing at all.
  */
 export function useShareIntake({ addPendingUpload, setComposerText }: UseShareIntakeArgs) {
   const router = useRouter();
@@ -36,12 +46,10 @@ export function useShareIntake({ addPendingUpload, setComposerText }: UseShareIn
     if (!shareId || handledRef.current) return;
     handledRef.current = true;
 
-    let cancelled = false;
-
     (async () => {
       try {
         const payload = await readSharedPayload(shareId);
-        if (payload && !cancelled) {
+        if (payload) {
           for (const file of payload.files) {
             addPendingUpload(file);
           }
@@ -57,15 +65,10 @@ export function useShareIntake({ addPendingUpload, setComposerText }: UseShareIn
         // below so the chat is never left in a permanently-replaying state.
       }
 
-      if (cancelled) return;
       const params = new URLSearchParams(searchParams.toString());
       params.delete("share");
       const query = params.toString();
       router.replace(query ? `${pathname}?${query}` : pathname);
     })();
-
-    return () => {
-      cancelled = true;
-    };
   }, [searchParams, router, pathname, addPendingUpload, setComposerText]);
 }

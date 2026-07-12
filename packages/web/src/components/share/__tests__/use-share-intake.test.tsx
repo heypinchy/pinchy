@@ -10,6 +10,7 @@
 // server-side redirect-to-most-recent-chat would kick back in on any
 // subsequent navigation that re-hits the bare route.
 import { render } from "@testing-library/react";
+import { StrictMode } from "react";
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { useShareIntake } from "../use-share-intake";
 
@@ -89,6 +90,40 @@ describe("useShareIntake", () => {
     expect(target).toContain("/chat/a1?");
     expect(target).toContain("keep");
     expect(target).not.toContain("share=");
+  });
+
+  it("still fires under StrictMode's synchronous mount → cleanup → mount double-invoke", async () => {
+    // Next 16 defaults reactStrictMode: true, so `next dev` runs the mount
+    // effect, its cleanup, then the effect again — synchronously, before the
+    // readSharedPayload promise resolves. A cleanup that cancels the in-flight
+    // read would leave the feature a permanent no-op in dev. Guard against
+    // that regression by reproducing the double-invoke here.
+    const file = new File(["a"], "one.pdf", { type: "application/pdf" });
+    readSharedPayload.mockResolvedValue({
+      files: [file],
+      title: "",
+      text: "please book this",
+      url: "",
+    });
+
+    const addPendingUpload = vi.fn();
+    const setComposerText = vi.fn();
+
+    render(
+      <StrictMode>
+        <Harness addPendingUpload={addPendingUpload} setComposerText={setComposerText} />
+      </StrictMode>
+    );
+
+    await vi.waitFor(() => {
+      expect(clearSharedPayload).toHaveBeenCalledWith("abc");
+    });
+
+    expect(addPendingUpload).toHaveBeenCalledTimes(1);
+    expect(addPendingUpload).toHaveBeenCalledWith(file);
+    expect(setComposerText).toHaveBeenCalledTimes(1);
+    expect(setComposerText).toHaveBeenCalledWith("please book this");
+    expect(replace).toHaveBeenCalledTimes(1);
   });
 
   it("does nothing when there is no share param", () => {

@@ -351,14 +351,27 @@ export const DraftPersistence: FC = () => {
  * best-effort: `composerRuntime` is `null` until assistant-ui's composer
  * context mounts, in which case the shared files still attach and only the
  * text/url prefill is skipped for that render.
+ *
+ * The prefill MERGES rather than overwrites: DraftPersistence restores a
+ * saved draft into the same composer (synchronously in the no-attachment
+ * case), so a plain `setText(prefill)` would silently clobber whatever the
+ * user had already typed. We append instead. (Residual known edge: if the
+ * saved draft carries file attachments, its async restore can still land
+ * after this read — a narrow case we deliberately don't try to fully
+ * coordinate here.)
  */
-const ShareIntake: FC = () => {
+export const ShareIntake: FC = () => {
   const addPendingUpload = useContext(AddPendingUploadContext);
   const composerRuntime = useComposerRuntime({ optional: true });
 
   useShareIntake({
     addPendingUpload,
-    setComposerText: composerRuntime ? (text) => composerRuntime.setText(text) : undefined,
+    setComposerText: composerRuntime
+      ? (prefill) => {
+          const existing = composerRuntime.getState().text;
+          composerRuntime.setText(existing ? `${existing}\n${prefill}` : prefill);
+        }
+      : undefined,
   });
 
   return null;
