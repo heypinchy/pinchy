@@ -1,6 +1,7 @@
 import {
   pgTable,
   text,
+  uuid,
   timestamp,
   boolean,
   jsonb,
@@ -30,6 +31,7 @@ import {
   type IntegrationConnectionType,
   type IntegrationConnectionStatus,
 } from "./enums";
+import type { EmailWorkflowFilter } from "@/lib/email-workflows/types";
 
 // Render `IN ('a', 'b')` from an enum const (db/enums.ts) so a CHECK constraint
 // and its TypeScript source of truth can never drift. The values are enum-safe
@@ -497,6 +499,36 @@ export const agentConnectionPermissions = pgTable(
     ),
     index("idx_agent_conn_perms_agent").on(table.agentId),
     index("idx_agent_conn_perms_conn").on(table.connectionId),
+  ]
+);
+
+// ── Inbox Agent: email workflows & processed-email ledger ────────────
+
+// A workflow = a deterministic trigger+filter plus an agentic action, run by a
+// specific agent against one or more mailboxes. See the design of record at
+// docs/plans/2026-07-12-inbox-agent-design.md §5.
+export const emailWorkflows = pgTable(
+  "email_workflows",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    agentId: text("agent_id")
+      .notNull()
+      .references(() => agents.id, { onDelete: "cascade" }),
+    name: text("name").notNull(),
+    filter: jsonb("filter").$type<EmailWorkflowFilter>().notNull(),
+    action: text("action").notNull(),
+    pollEvery: text("poll_every").notNull().default("5m"),
+    sweepWindowDays: integer("sweep_window_days").notNull().default(14),
+    enabled: boolean("enabled").notNull().default(false),
+    status: text("status").notNull().default("pending"),
+    openclawJobId: text("openclaw_job_id"),
+    createdBy: text("created_by").references(() => users.id),
+    createdAt: timestamp("created_at").notNull().defaultNow(),
+    updatedAt: timestamp("updated_at").notNull().defaultNow(),
+  },
+  (table) => [
+    index("email_workflows_agent_idx").on(table.agentId),
+    index("email_workflows_enabled_idx").on(table.enabled),
   ]
 );
 
