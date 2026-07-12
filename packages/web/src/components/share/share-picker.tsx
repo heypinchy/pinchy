@@ -111,9 +111,18 @@ export function SharePicker({ agents }: SharePickerProps) {
     // is nothing to fetch or to set here.
     if (!shareId) return;
     let cancelled = false;
-    readSharedPayload(shareId).then((result) => {
-      if (!cancelled) setPayload(result);
-    });
+    readSharedPayload(shareId).then(
+      (result) => {
+        if (!cancelled) setPayload(result);
+      },
+      // A cache read can throw (corrupted entry, malformed JSON, private-
+      // browsing Cache API restrictions, quota/security errors). Treat any
+      // failure the same as "nothing to share" so the user always gets the
+      // friendly empty state with a way back, never a permanently blank page.
+      () => {
+        if (!cancelled) setPayload(null);
+      }
+    );
     return () => {
       cancelled = true;
     };

@@ -79,6 +79,15 @@ describe("SharePicker", () => {
     expect(await screen.findByText(/nothing to share/i)).toBeInTheDocument();
   });
 
+  it("shows the empty state when the cache read fails", async () => {
+    readSharedPayload.mockRejectedValueOnce(new Error("cache read failed"));
+
+    render(<SharePicker agents={agents} />);
+
+    expect(await screen.findByText(/nothing to share/i)).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: /back to your agents/i })).toBeInTheDocument();
+  });
+
   it("shows the shared file's name when a file payload is present", async () => {
     readSharedPayload.mockResolvedValue({
       files: [new File(["x"], "invoice.pdf", { type: "application/pdf" })],
