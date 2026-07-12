@@ -50,11 +50,23 @@ export async function extractPdfPages(absPath: string): Promise<ExtractedPdfPage
       const page = await doc.getPage(i);
       try {
         const textContent = await page.getTextContent();
-        const text = textContent.items
-          .filter((item): item is typeof item & { str: string } => "str" in item)
-          .map((item) => item.str)
-          .join(" ")
-          .replace(/\s+/g, " ")
+        // Reconstruct line breaks from pdfjs's TextItem.hasEOL. The chunker
+        // (chunk.ts) finds line boundaries by splitting on "\n", so page
+        // text MUST carry real newlines; collapsing every whitespace run
+        // (including EOLs) into a single space would make each page a single
+        // giant line and defeat sub-chunking + overlap entirely. We join
+        // items with a space, emit "\n" at each end-of-line item, then
+        // collapse only runs of spaces/tabs WITHIN a line (never newlines).
+        let raw = "";
+        for (const item of textContent.items) {
+          if (!("str" in item)) continue;
+          raw += item.str;
+          raw += item.hasEOL ? "\n" : " ";
+        }
+        const text = raw
+          .replace(/[ \t]+/g, " ") // collapse intra-line whitespace only
+          .replace(/ *\n */g, "\n") // trim spaces hugging a newline
+          .replace(/\n{2,}/g, "\n") // collapse blank lines
           .trim();
         pages.push({ page: i, text });
       } finally {
