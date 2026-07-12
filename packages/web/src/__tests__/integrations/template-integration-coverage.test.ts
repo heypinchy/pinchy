@@ -82,6 +82,12 @@ const NO_SCHEMA_REQUIRED: ReadonlyArray<KnownPinchyPlugin> = [
   "pinchy-context",
   "pinchy-docs",
   "pinchy-files",
+  // pinchy-knowledge: templates opt into `knowledge_search` via `allowedTools`
+  // (Task 11 of the KB plan). A KB agent's document scope is derived at
+  // request time from its EXISTING pinchy-files `allowed_paths` — there is no
+  // separate per-instance schema (probed identifier list) for this plugin to
+  // drift against.
+  "pinchy-knowledge",
   // External plugins without per-template schema requirements (today).
   // pinchy-email: templates declare `requiresEmailConnection: true` but no
   //   `requiredFolders` / `requiredLabels` — any IMAP/Gmail account works.

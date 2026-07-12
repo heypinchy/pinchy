@@ -37,6 +37,7 @@ services:
       - ./packages/plugins/pinchy-web:/root/.openclaw/extensions/pinchy-web
       - ./packages/plugins/pinchy-email:/root/.openclaw/extensions/pinchy-email
       - ./packages/plugins/pinchy-docs:/root/.openclaw/extensions/pinchy-docs
+      - ./packages/plugins/pinchy-knowledge:/root/.openclaw/extensions/pinchy-knowledge
       - ./sample-data:/data/sample-docs
       # Shadow volumes: mounted ON TOP of the node_modules path of the four
       # plugins that have baked /opt/<plugin>-deps bundles (pinchy-files,
@@ -51,9 +52,9 @@ services:
       # keeps the container's node_modules physically separate from the
       # host's, so config/install-plugin-deps.sh (mountpoint-safe — see its
       # header comment) and host `pnpm install` stop clobbering each other.
-      # context/audit/transcript/docs are intentionally excluded: they have
-      # no /opt/*-deps bundle, so their (host-managed) node_modules must stay
-      # visible through the bind mount above.
+      # context/audit/transcript/docs/knowledge are intentionally excluded:
+      # they have no /opt/*-deps bundle, so their (host-managed) node_modules
+      # must stay visible through the bind mount above.
       - dev-pinchy-files-node-modules:/root/.openclaw/extensions/pinchy-files/node_modules
       - dev-pinchy-odoo-node-modules:/root/.openclaw/extensions/pinchy-odoo/node_modules
       - dev-pinchy-web-node-modules:/root/.openclaw/extensions/pinchy-web/node_modules

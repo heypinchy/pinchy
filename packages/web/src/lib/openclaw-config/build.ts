@@ -461,6 +461,11 @@ export async function regenerateOpenClawConfig() {
   // Build agents list with OpenClaw-side workspace paths, tools.allow, and plugin configs
   const pluginConfigs: Record<string, Record<string, Record<string, unknown>>> = {};
   let contextPluginAgents: Record<string, { tools: string[]; userId: string }> | undefined;
+  // Presence-only per-agent gating for pinchy-knowledge's knowledge_search
+  // tool (no per-agent parameters — the route derives an agent's KB scope
+  // from its existing pinchy-files allowed_paths), same shape as pinchy-docs'
+  // agents map.
+  let knowledgePluginAgents: Record<string, Record<string, never>> | undefined;
 
   const agentsList = liveAgents.map((agent) => {
     const agentEntry: Record<string, unknown> = {
@@ -572,6 +577,16 @@ export async function regenerateOpenClawConfig() {
         tools: contextTools.map((t: string) => t.replace("pinchy_", "")),
         userId: agent.ownerId,
       };
+    }
+
+    // Collect plugin config for agents granted knowledge_search. Presence in
+    // the map is the only signal the plugin needs (see PluginConfig doc
+    // comment in pinchy-knowledge/index.ts) — the value carries no fields.
+    if (allowedTools.includes("knowledge_search")) {
+      if (!knowledgePluginAgents) {
+        knowledgePluginAgents = {};
+      }
+      knowledgePluginAgents[agent.id] = {};
     }
 
     // Skills (master issue #543). The allowlist is ALWAYS emitted — even
@@ -835,6 +850,20 @@ export async function regenerateOpenClawConfig() {
           process.env.PINCHY_INTERNAL_URL || `http://pinchy:${process.env.PORT || "7777"}`,
         gatewayToken: gatewayTokenString,
         agents: contextPluginAgents,
+      },
+    };
+  }
+
+  // Only include pinchy-knowledge when agents use it — same
+  // include-only-when-used rationale as pinchy-context above.
+  if (knowledgePluginAgents) {
+    entries["pinchy-knowledge"] = {
+      enabled: true,
+      config: {
+        apiBaseUrl:
+          process.env.PINCHY_INTERNAL_URL || `http://pinchy:${process.env.PORT || "7777"}`,
+        gatewayToken: gatewayTokenString,
+        agents: knowledgePluginAgents,
       },
     };
   }
