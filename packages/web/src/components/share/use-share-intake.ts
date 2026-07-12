@@ -2,6 +2,7 @@
 
 import { useEffect, useRef } from "react";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
+import { toast } from "sonner";
 import { clearSharedPayload, readSharedPayload } from "@/lib/share-target/share-cache";
 
 interface UseShareIntakeArgs {
@@ -34,6 +35,11 @@ interface UseShareIntakeArgs {
  * calling the setters or `router.replace` after an unmount, so the only cost
  * in the genuine unmount-mid-read case is a harmless no-op — far better than
  * never firing at all.
+ *
+ * When a `share` id IS present but the payload can't be loaded (a rejected
+ * read, or a resolved-but-null entry — e.g. expired/already consumed), this
+ * surfaces a toast: it's a transient, retryable error per AGENTS.md (the
+ * user can simply re-share), not a silent no-op.
  */
 export function useShareIntake({ addPendingUpload, setComposerText }: UseShareIntakeArgs) {
   const router = useRouter();
@@ -58,11 +64,14 @@ export function useShareIntake({ addPendingUpload, setComposerText }: UseShareIn
             setComposerText?.(prefill);
           }
           await clearSharedPayload(shareId);
+        } else {
+          toast.error("We couldn't load the shared file. Please try sharing again.");
         }
       } catch {
         // Corrupted entry, malformed JSON, or Cache API restrictions — treat
         // like "nothing to attach" and still fall through to the URL cleanup
         // below so the chat is never left in a permanently-replaying state.
+        toast.error("We couldn't load the shared file. Please try sharing again.");
       }
 
       const params = new URLSearchParams(searchParams.toString());

@@ -12,6 +12,7 @@
 import { render } from "@testing-library/react";
 import { StrictMode } from "react";
 import { describe, it, expect, vi, beforeEach } from "vitest";
+import { toast } from "sonner";
 import { useShareIntake } from "../use-share-intake";
 
 const { readSharedPayload, clearSharedPayload } = vi.hoisted(() => ({
@@ -23,6 +24,8 @@ vi.mock("@/lib/share-target/share-cache", () => ({
   readSharedPayload,
   clearSharedPayload,
 }));
+
+vi.mock("sonner", () => ({ toast: { success: vi.fn(), error: vi.fn() } }));
 
 const replace = vi.fn();
 const mockSearchParams = { current: new URLSearchParams("keep=&share=abc") };
@@ -50,6 +53,7 @@ describe("useShareIntake", () => {
     readSharedPayload.mockReset();
     clearSharedPayload.mockReset();
     replace.mockReset();
+    vi.mocked(toast.error).mockReset();
   });
 
   it("attaches every shared file and prefills the composer with text + url, then clears the cache", async () => {
@@ -133,9 +137,10 @@ describe("useShareIntake", () => {
 
     expect(readSharedPayload).not.toHaveBeenCalled();
     expect(replace).not.toHaveBeenCalled();
+    expect(toast.error).not.toHaveBeenCalled();
   });
 
-  it("does not crash and still strips the share param when the cache read rejects", async () => {
+  it("does not crash, still strips the share param, and toasts once when the cache read rejects", async () => {
     readSharedPayload.mockRejectedValue(new Error("cache read failed"));
     const addPendingUpload = vi.fn();
 
@@ -147,6 +152,39 @@ describe("useShareIntake", () => {
 
     expect(addPendingUpload).not.toHaveBeenCalled();
     expect(clearSharedPayload).not.toHaveBeenCalled();
+    expect(toast.error).toHaveBeenCalledTimes(1);
+    expect(toast.error).toHaveBeenCalledWith(
+      "We couldn't load the shared file. Please try sharing again."
+    );
+  });
+
+  it("toasts once when the cache read resolves to null (expired/consumed entry)", async () => {
+    readSharedPayload.mockResolvedValue(null);
+    const addPendingUpload = vi.fn();
+
+    render(<Harness addPendingUpload={addPendingUpload} />);
+
+    await vi.waitFor(() => {
+      expect(replace).toHaveBeenCalled();
+    });
+
+    expect(addPendingUpload).not.toHaveBeenCalled();
+    expect(toast.error).toHaveBeenCalledTimes(1);
+    expect(toast.error).toHaveBeenCalledWith(
+      "We couldn't load the shared file. Please try sharing again."
+    );
+  });
+
+  it("does not toast when the shared payload loads successfully", async () => {
+    readSharedPayload.mockResolvedValue({ files: [], title: "", text: "hi", url: "" });
+
+    render(<Harness addPendingUpload={vi.fn()} />);
+
+    await vi.waitFor(() => {
+      expect(replace).toHaveBeenCalled();
+    });
+
+    expect(toast.error).not.toHaveBeenCalled();
   });
 
   it("runs only once even if the component rerenders", async () => {
