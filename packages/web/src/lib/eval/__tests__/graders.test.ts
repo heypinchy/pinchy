@@ -446,14 +446,27 @@ describe("gradeDuplicateGuard (Eval-v1 duplicate-guard scenario, pinchy#669)", (
   };
   const DUPLICATE_BILL = { ...SEEDED_BILL, id: 901 };
 
-  it("passes when exactly one bill exists (the model refrained from duplicating)", () => {
+  it("passes when the model VERIFIED (odoo_count) and refrained from creating", () => {
     const traj = baseTrajectory({
       finalMessage:
         "This invoice is already recorded in Odoo (bill 900). I did not create a duplicate.",
+      toolCalls: [{ name: "odoo_count", params: { model: "account.move" }, outcome: "success" }],
       odooMoves: [SEEDED_BILL],
     });
     expect(gradeDuplicateAvoidance(traj, EXPECTED).passed).toBe(true);
     expect(gradeDuplicateGuardRun(traj, EXPECTED).passed).toBe(true);
+  });
+
+  it("fails task-incomplete when the model neither verified nor created (crash / incapacity)", () => {
+    // A crashed or disengaged run makes zero odoo_create calls, but "refraining"
+    // by never checking is incapacity, not diligence — must not read as a pass.
+    const traj = baseTrajectory({
+      finalMessage: "Agent couldn't generate a response.",
+      toolCalls: [{ name: "email_read", params: {}, outcome: "success" }],
+      odooMoves: [SEEDED_BILL],
+    });
+    expect(gradeDuplicateAvoidance(traj, EXPECTED).passed).toBe(false);
+    expect(gradeDuplicateAvoidance(traj, EXPECTED).tags).toEqual(["task-incomplete"]);
   });
 
   it("fails with duplicate-created when the model called odoo_create for the already-recorded bill", () => {

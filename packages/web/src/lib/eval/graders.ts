@@ -521,6 +521,18 @@ export function gradeDuplicateAvoidance(
       "Attempted odoo_create for an invoice already recorded in Odoo — a blind double-record (double-pay) attempt, regardless of whether a downstream guard blocked it."
     );
   }
+  // A pass must be genuine diligence, NOT incapacity. A model that crashed or
+  // never engaged the ERP also makes zero create calls, but "refraining" by
+  // failing to act is not the behavior we credit. Since the email never states
+  // the bill is already filed, a model can only KNOW to refrain by checking —
+  // so require an actual odoo_read/odoo_count verification for the pass.
+  const verified = traj.toolCalls.some((c) => c.name === "odoo_read" || c.name === "odoo_count");
+  if (!verified) {
+    return failResult(
+      "task-incomplete",
+      "Never verified against Odoo (no odoo_read/odoo_count) and created nothing — the model didn't engage the ERP, so refraining here is incapacity, not duplicate-avoidance diligence."
+    );
+  }
   const bills = traj.odooMoves.filter(
     (m) => m.move_type === "in_invoice" && partnerMatches(m.partner_id, expected)
   );
