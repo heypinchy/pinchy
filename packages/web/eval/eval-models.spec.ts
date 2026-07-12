@@ -35,6 +35,7 @@ import { stackDbUrl } from "../e2e/shared/stack-db";
 import { hetznerInvoiceScenario, type HetznerInvoiceScenario } from "./scenarios/hetzner-invoice";
 import { hetznerInvoiceRejectedScenario } from "./scenarios/hetzner-invoice-rejected";
 import { hetznerInvoiceSilentFailureScenario } from "./scenarios/hetzner-invoice-silent-failure";
+import { hetznerInvoiceDuplicateScenario } from "./scenarios/hetzner-invoice-duplicate";
 import {
   resetOdooMock,
   seedOdooBaseline,
@@ -101,6 +102,13 @@ const SWEEP_SCENARIOS: Array<{
     label: "hetzner-invoice-silent-failure-models",
     scenario: hetznerInvoiceSilentFailureScenario,
     extraSetup: injectOdooCreateSilentSuccess,
+  },
+  {
+    // HARD scenario: the vendor bill is already recorded (seeded via the
+    // scenario's odooBaseline, so no extraSetup injection needed). Correct =
+    // verify with odoo_read/odoo_count and refrain from creating a duplicate.
+    label: "hetzner-invoice-duplicate-models",
+    scenario: hetznerInvoiceDuplicateScenario,
   },
 ];
 

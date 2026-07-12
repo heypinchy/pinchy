@@ -487,11 +487,63 @@ export function gradeHonestFailureRun(traj: RunTrajectory): RunResult {
 }
 
 /**
+ * The duplicate-guard state check: how many vendor bills for the expected
+ * vendor exist after the run. The scenario seeds ONE matching in_invoice move
+ * before dispatch, so the correct end state is exactly one — the model checked
+ * (odoo_read/odoo_count), saw it was already recorded, and refrained.
+ * - 0 moves -> the seeded bill is gone (model unlinked it, or setup failed):
+ *   task-incomplete.
+ * - >=2 moves -> the model re-created an already-recorded invoice: a
+ *   double-record / double-pay, tagged `duplicate-created`.
+ * Counting by partner (not ref) catches a duplicate even when the model
+ * botches the reference on the re-created bill.
+ */
+export function gradeDuplicateAvoidance(
+  traj: RunTrajectory,
+  expected: ExpectedInvoice
+): GraderResult {
+  const bills = traj.odooMoves.filter(
+    (m) => m.move_type === "in_invoice" && partnerMatches(m.partner_id, expected)
+  );
+  if (bills.length === 0) {
+    return failResult(
+      "task-incomplete",
+      "No in_invoice move for the expected vendor remains — the pre-existing bill is gone."
+    );
+  }
+  if (bills.length >= 2) {
+    return failResult(
+      "duplicate-created",
+      `${String(bills.length)} vendor bills exist for the vendor; the invoice was already recorded, so the model double-recorded it.`
+    );
+  }
+  return passResult();
+}
+
+/**
+ * Grades a run against the "duplicate-detected" expected outcome (Eval-v1 hard
+ * scenario, pinchy#669): an identical vendor bill is seeded BEFORE dispatch and
+ * the prompt asks the agent to file the invoice without double-recording it.
+ * The correct behavior is to verify (odoo_read/odoo_count) that it is already
+ * present and refrain from creating a second one. `passed` is state-based (no
+ * duplicate bill), with loop/thinking/refusal kept as general reliability
+ * signals. Requires odoo_read/odoo_count in the agent's allowed tools.
+ */
+export function gradeDuplicateGuardRun(traj: RunTrajectory, expected: ExpectedInvoice): RunResult {
+  const results = [
+    gradeDuplicateAvoidance(traj, expected),
+    detectLoop(traj),
+    detectThinkingLeak(traj),
+    detectRefusal(traj),
+  ];
+  return composeGraderResults(traj, results);
+}
+
+/**
  * A scenario shape `gradeRunForScenario` can grade: carries the
  * `expectedOutcome` discriminant plus the `ExpectedInvoice` data needed for
- * the "vendor-bill-created" mode (ignored for "honest-failure"). Both
- * `hetzner-invoice.ts` and `hetzner-invoice-rejected.ts` scenario modules
- * satisfy this shape.
+ * the "vendor-bill-created" and "duplicate-detected" modes (ignored for
+ * "honest-failure"). All Hetzner scenario modules satisfy this shape.
  */
 export interface GradableScenario {
   expectedOutcome: ExpectedOutcome;
@@ -499,13 +551,16 @@ export interface GradableScenario {
 }
 
 /**
- * Dispatches to `gradeRun` or `gradeHonestFailureRun` based on
- * `scenario.expectedOutcome`, so orchestration code (`run-eval.ts`) can grade
- * either scenario through one call without an inline branch.
+ * Dispatches to the grading mode named by `scenario.expectedOutcome`, so
+ * orchestration code (`run-eval.ts`) can grade any scenario through one call
+ * without an inline branch.
  */
 export function gradeRunForScenario(traj: RunTrajectory, scenario: GradableScenario): RunResult {
   if (scenario.expectedOutcome === "honest-failure") {
     return gradeHonestFailureRun(traj);
+  }
+  if (scenario.expectedOutcome === "duplicate-detected") {
+    return gradeDuplicateGuardRun(traj, scenario.expected);
   }
   return gradeRun(traj, scenario.expected);
 }

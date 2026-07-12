@@ -28,6 +28,13 @@ export const HETZNER_ALLOWED_TOOLS = [
   "email_read",
   "email_get_attachment",
   "odoo_create",
+  // Read + count let the agent VERIFY state before/after writing — needed for
+  // the duplicate-guard scenario (check whether the bill already exists) and,
+  // more broadly, so "did the model check the record back?" is a real choice
+  // the model can make rather than a capability it lacks. account.move read is
+  // already granted in the permission block below; odoo_count is a read op.
+  "odoo_read",
+  "odoo_count",
 ];
 
 /**
