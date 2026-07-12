@@ -1,5 +1,7 @@
+import { and, eq } from "drizzle-orm";
 import { db } from "@/db";
 import { processedEmails } from "@/db/schema";
+import type { ProcessedEmailOutcome } from "@/lib/email-workflows/types";
 
 export interface ClaimInput {
   workflowId: string;
@@ -37,4 +39,38 @@ export async function claimEmail(input: ClaimInput): Promise<boolean> {
     })
     .returning({ id: processedEmails.id });
   return rows.length > 0;
+}
+
+export type FinalizeStatus = "done" | "no_action" | "failed";
+
+export interface FinalizeInput {
+  workflowId: string;
+  connectionId: string;
+  providerMessageId: string;
+  status: FinalizeStatus;
+  outcome?: ProcessedEmailOutcome;
+  runId?: string;
+}
+
+/**
+ * Mark a claimed email's ledger row with its terminal status and outcome. Called
+ * by the isolated agent run when it finishes (draft created / nothing to do /
+ * failed). Keyed by the same claim tuple as {@link claimEmail}.
+ */
+export async function finalizeEmail(input: FinalizeInput): Promise<void> {
+  await db
+    .update(processedEmails)
+    .set({
+      status: input.status,
+      outcome: input.outcome ?? null,
+      runId: input.runId ?? null,
+      finalizedAt: new Date(),
+    })
+    .where(
+      and(
+        eq(processedEmails.workflowId, input.workflowId),
+        eq(processedEmails.connectionId, input.connectionId),
+        eq(processedEmails.providerMessageId, input.providerMessageId)
+      )
+    );
 }
