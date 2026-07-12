@@ -44,7 +44,6 @@ import {
   writeScorecard,
   appendRunResult,
   readExistingRuns,
-  requireOllamaCloudApiKey,
   candidateModelsFromEnv,
   runsPerModelFromEnv,
   injectOdooCreateFailure,
@@ -113,10 +112,6 @@ const SWEEP_SCENARIOS: Array<{
 ];
 
 test.describe("Eval-v1: model sweep (real Ollama Cloud)", () => {
-  test.beforeAll(() => {
-    requireOllamaCloudApiKey();
-  });
-
   test("sweeps candidate models N times each and writes a scorecard", async ({ page }) => {
     // A full sweep (many models × scenarios × N real dispatches) runs for many
     // hours; the 60-min default was far too short (a run got killed mid-sweep).
@@ -130,17 +125,33 @@ test.describe("Eval-v1: model sweep (real Ollama Cloud)", () => {
     await waitForGraphMock();
     const cookie = await login();
 
-    const apiKey = requireOllamaCloudApiKey();
+    // Resolve the Ollama Cloud key from the environment, or fall back to the
+    // copy already stored in the eval DB. The fallback is what lets an
+    // unattended watchdog RESUME a sweep with NO secret on disk or in its
+    // environment — the key only has to be supplied (via env) for the first run
+    // that seeds it. See ~/.pinchy-eval-watchdog. Without either, fail loudly.
     const dbUrl = process.env.DATABASE_URL || stackDbUrl(5437);
     const { default: postgres } = await import("postgres");
     const sql = postgres(dbUrl);
+    const envKey = process.env.OLLAMA_CLOUD_API_KEY?.trim();
+    if (envKey) {
+      await sql`
+        INSERT INTO settings (key, value, encrypted) VALUES ('ollama_cloud_api_key', ${envKey}, false)
+        ON CONFLICT (key) DO UPDATE SET value = ${envKey}
+      `;
+    } else {
+      const rows = await sql`SELECT value FROM settings WHERE key = 'ollama_cloud_api_key'`;
+      if (rows.length === 0) {
+        await sql.end();
+        throw new Error(
+          "No OLLAMA_CLOUD_API_KEY in the environment and none stored in the eval DB — " +
+            "supply the key via env at least once so it can be seeded."
+        );
+      }
+    }
     await sql`
       INSERT INTO settings (key, value, encrypted) VALUES ('default_provider', 'ollama-cloud', false)
       ON CONFLICT (key) DO UPDATE SET value = 'ollama-cloud'
-    `;
-    await sql`
-      INSERT INTO settings (key, value, encrypted) VALUES ('ollama_cloud_api_key', ${apiKey}, false)
-      ON CONFLICT (key) DO UPDATE SET value = ${apiKey}
     `;
     await sql.end();
 
