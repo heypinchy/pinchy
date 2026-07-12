@@ -1,78 +1,106 @@
 ---
 title: Create a Knowledge Base Agent
-description: Step-by-step guide to creating an agent that can answer questions from your documents.
+description: Step-by-step guide to creating an agent that answers questions from your documents with cited sources.
 ---
 
-This guide walks you through creating a Knowledge Base agent — an agent that can read and answer questions from your documents, but cannot access anything else on the system.
+This guide walks you through creating a Knowledge Base agent — an agent that searches an indexed set of your documents and answers with numbered citations back to the source document and page, instead of guessing.
 
 ## Prerequisites
 
 - Pinchy is running (see [Quick Start](/getting-started/))
 - You have mounted at least one data directory (see [Mount Data Directories](/guides/mount-data-directories/))
+- Local Ollama is connected under **Settings → LLM Provider → Ollama (Local)** (see [Set Up Local Ollama](/guides/ollama-setup/)) — the knowledge base uses a fixed local embedding model, independent of whichever chat model the agent uses
 - You are logged in as an admin
 
 ## 1. Mount your data directories
 
 Before creating a Knowledge Base agent, make sure the documents you want the agent to access are mounted under `/data/` in the Pinchy container. See the [Mount Data Directories](/guides/mount-data-directories/) guide for detailed instructions.
 
-## 2. Navigate to "New Agent"
+## 2. Pull the embedding model
+
+The knowledge base turns your documents into searchable passages using a fixed embedding model, `bge-m3`, served by the same local Ollama endpoint you configured above. Pull it once:
+
+```bash
+ollama pull bge-m3
+```
+
+If `bge-m3` isn't available when you trigger indexing (see below), the reindex request fails until it's pulled.
+
+## 3. Navigate to "New Agent"
 
 In the Pinchy sidebar, click the **+** button next to "Agents" to open the agent creation form.
 
-## 3. Select the "Knowledge Base" template
+## 4. Select the "Knowledge Base" template
 
-Choose **Knowledge Base** from the template options. This template pre-configures the agent with safe file access tools (list and read files in approved directories).
+Choose **Knowledge Base** from the template options. This template gives the agent the `knowledge_search` tool — a search over your indexed documents that returns citable passages, not raw file access.
 
-## 4. Enter a name and create
+## 5. Enter a name and create
 
 Give your agent a descriptive name, for example "HR Policy Assistant" or "Engineering Docs". You can also add an optional tagline like "Answers questions about company HR policies". Then click **Create**.
 
-The agent is created with an auto-generated avatar and you are taken to its chat page. The Knowledge Base template pre-fills operating instructions (AGENTS.md) with document-answering guidelines. The agent can already list and read files — that capability is built in, not a toggle — but it does not yet know which directories to access. You scope that in the Permissions tab with the **Allowed Directories** picker.
+The agent is created with an auto-generated avatar and you are taken to its chat page. The Knowledge Base template pre-fills operating instructions (AGENTS.md) with cite-then-answer guidelines, but the agent doesn't know which documents to search yet — you scope that in the Permissions tab, then index those documents.
 
-## 5. Configure directory access
+## 6. Configure directory access
 
 Open the agent's settings by clicking the gear icon, then select the **Permissions** tab.
 
 ![Permissions tab with safe tools and directory picker](/screenshots/agent-settings-permissions.png)
 
-Under **Knowledge Base**, the **Allowed Directories** picker shows all directories found under `/data/`. Listing and reading files is built into the agent, so there are no separate file-tool toggles to enable — you only choose which directories the agent may reach.
-
-Select the directories that contain the documents this agent should be able to read. For example, if you mounted your HR policies at `/data/hr-policies` and your engineering handbook at `/data/engineering`, select one or both.
+Under **Knowledge Base**, the **Allowed Directories** picker shows all directories found under `/data/`. Select the directories that contain the documents this agent should be able to search. This is the same folder scope that governs everything the agent can retrieve and cite — an agent can never search or cite a document outside its granted directories.
 
 Click **Save** to apply the permissions.
 
-## 6. Chat with the agent
+## 7. Index the documents
 
-Go back to the agent's chat and start asking questions. The agent can:
+Granting a directory doesn't index it automatically — an admin has to trigger indexing. Call the reindex endpoint for the agent:
 
-- List files in the directories you selected
-- Read the contents of those files, including **PDF documents** and **Microsoft Word `.docx` files**
-- Answer questions based on what it reads
+```bash
+curl -X POST -b session_cookie "https://pinchy.example.com/api/agents/<agentId>/knowledge/reindex"
+```
 
-### PDF support
+This reads the agent's granted folders, extracts text from each PDF, splits it into overlapping chunks, embeds every chunk with `bge-m3`, and stores the result in Pinchy's own Postgres database (using `pgvector`) so it can be searched later.
 
-Knowledge Base agents fully support PDF files:
+Indexing is idempotent — unchanged files are skipped on the next run, changed files are re-indexed, and files removed from disk are dropped from the index. **Re-run reindex whenever documents change** — new files, edits, or deletions. There's no automatic file-watcher yet; a scheduled sweep is planned for a later phase.
 
-- **Text-based PDFs** — text is extracted directly, preserving structure and tables
-- **Scanned PDFs** — pages are analyzed using the configured AI model's vision capabilities (requires a vision-capable model)
-- **Mixed PDFs** — documents with both text and scanned pages are handled automatically
+The response reports what happened:
 
-For best results with scanned documents, use a vision-capable model (all Anthropic, OpenAI, and Google models support this). If you're using Ollama, choose a vision model like `llava` or `llama3.2-vision`. In the model dropdown, capability-incompatible models are flagged with an amber warning icon. If you send an image or scanned PDF to an agent whose model can't read it, Pinchy shows a recovery panel at send time that lets you switch the agent to a compatible model or remove the attachment.
+```json
+{ "indexed": 3, "skipped": 12, "removed": 1, "pathCount": 2 }
+```
 
-### Word document support
+## 8. Chat with the agent
 
-Drop a `.docx` file into an approved directory and the agent reads it as Markdown. Headings round-trip as `#`/`##`, tables as GitHub-flavored pipe tables, and lists as bullet or numbered lines — the agent can reason over the document's structure, not just its words. No vision model is required.
+Go back to the agent's chat and start asking questions. The agent calls `knowledge_search` behind the scenes, which runs a hybrid search — semantic (vector) and full-text — over the passages you indexed, then answers using only what it found.
 
-Embedded images are replaced with `[image]` placeholders for now. Real image descriptions will arrive in a future release.
+### Cite-then-answer
 
-The size limit for `.docx` files is **50 MB**.
+Every grounded answer cites its sources inline, like `[1]` and `[2]`, and ends with a **Sources** list mapping each number to its document name and page:
 
-The agent **cannot**:
+```
+Sources:
+[1] Employee Handbook — p. 12
+[2] Employee Handbook — p. 14
+```
 
-- Access files outside the selected directories
-- Execute shell commands
-- Make network requests
-- Read system files
+That makes every claim in the answer traceable back to a specific document and page, even though the underlying search results aren't shown in the chat.
+
+### Honest when it doesn't know
+
+If the indexed documents don't contain the answer, the agent says so instead of guessing. If only part of a question is answered by the sources, it answers what's supported and flags what's missing rather than padding the rest.
+
+### Cross-language
+
+The agent answers in the language you asked in, even if the source documents are written in a different language.
+
+## Scope in this release
+
+Phase 1 of the knowledge base is deliberately narrow:
+
+- Only **text-based PDFs** are indexed and searchable via `knowledge_search`. Scanned/image-only PDFs and Office documents (`.docx`, etc.) are on the roadmap, not indexed today.
+- There's no clickable link from a citation into the PDF viewer yet — citations are text (document name + page), not a jump-to-passage link.
+- Indexing is a manual, synchronous admin action (step 7). A scheduled sweep and progress UI are planned for a later phase.
+
+Every retrieval and every reindex is recorded in the [audit trail](/concepts/audit-trail/) — reindex as `knowledge.reindex`, and each `knowledge_search` call as `retrieval.query` with the documents it drew on. The search query text itself is never stored in plaintext, only a one-way hash.
 
 ## Customizing the agent
 
@@ -80,14 +108,14 @@ Beyond permissions, you can customize your Knowledge Base agent through its sett
 
 - **General** — Change the name, tagline, avatar, or model
 - **Personality** — Choose a personality preset (e.g. The Professor for a formal tone) or write custom personality instructions
-- **Instructions** — Edit the operating instructions that tell the agent how to handle questions and cite documents
+- **Instructions** — Edit the operating instructions that tell the agent how to cite documents and when to abstain
 
 To add organization-specific context like team structure or terminology, go to **Settings → Context**. This context is applied to all shared agents, not configured per-agent.
 
 ## Changing permissions later
 
-You can update an agent's permissions at any time by returning to the **Permissions** tab. Add or remove directories, or enable additional tools as needed. Changes take effect after clicking **Save**.
+You can update an agent's permissions at any time by returning to the **Permissions** tab. Add or remove directories, then re-run the reindex step so the index matches the new folder set. Changes take effect after clicking **Save**.
 
 ## How it works
 
-Under the hood, Pinchy uses an allow-list approach. The agent starts with no capabilities and only gets the tools an admin explicitly enables. For a full explanation, see [Agent Permissions](/concepts/agent-permissions/).
+Under the hood, Pinchy uses an allow-list approach. The agent starts with no capabilities and only gets the tools an admin explicitly enables — here, `knowledge_search`, scoped by the same folder allowlist as everything else. For a full explanation, see [Agent Permissions](/concepts/agent-permissions/).
