@@ -23,15 +23,27 @@ export function TimezoneSettings() {
 
   useEffect(() => {
     async function load() {
+      // Best-effort preload: any fetch failure or unexpected response shape
+      // falls back to the UTC default already in state, never throwing.
       try {
         const res = await fetch("/api/settings");
         if (res.ok) {
-          const settings: { key: string; value: string }[] = await res.json();
-          const tz = settings.find((s) => s.key === "org.timezone");
-          if (tz) {
-            setTimezone(tz.value);
+          const settings: unknown = await res.json();
+          if (Array.isArray(settings)) {
+            const tz = settings.find(
+              (s): s is { key: string; value: string } =>
+                typeof s === "object" &&
+                s !== null &&
+                (s as { key?: unknown }).key === "org.timezone" &&
+                typeof (s as { value?: unknown }).value === "string"
+            );
+            if (tz) {
+              setTimezone(tz.value);
+            }
           }
         }
+      } catch {
+        // Preload is non-critical; keep the UTC default.
       } finally {
         setLoading(false);
       }

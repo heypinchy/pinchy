@@ -184,6 +184,88 @@ describe("TimezoneSettings", () => {
     expect(toast.success).not.toHaveBeenCalled();
   });
 
+  it("does not throw an unhandled rejection and falls back to UTC when the preload fetch fails", async () => {
+    const rejections: unknown[] = [];
+    const onRejection = (reason: unknown) => rejections.push(reason);
+    process.on("unhandledRejection", onRejection);
+    try {
+      vi.mocked(global.fetch).mockRejectedValueOnce(new Error("network down"));
+
+      render(<TimezoneSettings />);
+
+      await waitFor(() => {
+        expect(screen.getByRole("button", { name: "Save" })).toBeInTheDocument();
+      });
+
+      // Let any pending microtasks / unhandled rejections surface.
+      await new Promise((resolve) => setTimeout(resolve, 0));
+
+      // The failed preload must leave the component on the sane UTC default,
+      // provable through the payload it POSTs on Save.
+      vi.mocked(global.fetch).mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({ ok: true }),
+      } as Response);
+
+      await userEvent.click(screen.getByRole("button", { name: "Save" }));
+
+      await waitFor(() => {
+        expect(global.fetch).toHaveBeenLastCalledWith(
+          "/api/settings",
+          expect.objectContaining({
+            method: "POST",
+            body: JSON.stringify({ key: "org.timezone", value: "UTC" }),
+          })
+        );
+      });
+    } finally {
+      process.off("unhandledRejection", onRejection);
+    }
+
+    expect(rejections).toEqual([]);
+  });
+
+  it("does not throw and falls back to UTC when /api/settings returns an unexpected (non-array) shape", async () => {
+    const rejections: unknown[] = [];
+    const onRejection = (reason: unknown) => rejections.push(reason);
+    process.on("unhandledRejection", onRejection);
+    try {
+      vi.mocked(global.fetch).mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({}),
+      } as Response);
+
+      render(<TimezoneSettings />);
+
+      await waitFor(() => {
+        expect(screen.getByRole("button", { name: "Save" })).toBeInTheDocument();
+      });
+
+      await new Promise((resolve) => setTimeout(resolve, 0));
+
+      vi.mocked(global.fetch).mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({ ok: true }),
+      } as Response);
+
+      await userEvent.click(screen.getByRole("button", { name: "Save" }));
+
+      await waitFor(() => {
+        expect(global.fetch).toHaveBeenLastCalledWith(
+          "/api/settings",
+          expect.objectContaining({
+            method: "POST",
+            body: JSON.stringify({ key: "org.timezone", value: "UTC" }),
+          })
+        );
+      });
+    } finally {
+      process.off("unhandledRejection", onRejection);
+    }
+
+    expect(rejections).toEqual([]);
+  });
+
   it("shows fallback inline error when save fails without message", async () => {
     vi.mocked(global.fetch).mockResolvedValueOnce({
       ok: true,
