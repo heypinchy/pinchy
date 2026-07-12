@@ -22,11 +22,13 @@ import type { RunResult, RunTrajectory } from "../src/lib/eval/types";
 import { hetznerInvoiceScenario, type HetznerInvoiceScenario } from "./scenarios/hetzner-invoice";
 import { hetznerInvoiceRejectedScenario } from "./scenarios/hetzner-invoice-rejected";
 import { hetznerInvoiceSilentFailureScenario } from "./scenarios/hetzner-invoice-silent-failure";
+import { hetznerInvoiceDuplicateScenario } from "./scenarios/hetzner-invoice-duplicate";
 
 const SCENARIO_BY_LABEL: Record<string, HetznerInvoiceScenario> = {
   "hetzner-invoice-models": hetznerInvoiceScenario,
   "hetzner-invoice-rejected-models": hetznerInvoiceRejectedScenario,
   "hetzner-invoice-silent-failure-models": hetznerInvoiceSilentFailureScenario,
+  "hetzner-invoice-duplicate-models": hetznerInvoiceDuplicateScenario,
 };
 
 async function main(): Promise<void> {

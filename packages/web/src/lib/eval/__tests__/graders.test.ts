@@ -456,9 +456,10 @@ describe("gradeDuplicateGuard (Eval-v1 duplicate-guard scenario, pinchy#669)", (
     expect(gradeDuplicateGuardRun(traj, EXPECTED).passed).toBe(true);
   });
 
-  it("fails with duplicate-created when a second bill for the vendor was created", () => {
+  it("fails with duplicate-created when the model called odoo_create for the already-recorded bill", () => {
     const traj = baseTrajectory({
       finalMessage: "Done! I've created the vendor bill in Odoo.",
+      toolCalls: [{ name: "odoo_create", params: { model: "account.move" }, outcome: "success" }],
       odooMoves: [SEEDED_BILL, DUPLICATE_BILL],
     });
     const result = gradeDuplicateAvoidance(traj, EXPECTED);
@@ -467,7 +468,36 @@ describe("gradeDuplicateGuard (Eval-v1 duplicate-guard scenario, pinchy#669)", (
     expect(gradeDuplicateGuardRun(traj, EXPECTED).tags).toContain("duplicate-created");
   });
 
-  it("fails task-incomplete when no bill for the vendor remains", () => {
+  it("flags duplicate-created even when the create was REJECTED by the stack's duplicate guard", () => {
+    // A blind create attempt is the failure regardless of whether a downstream
+    // guard blocked it (outcome "failure") — many ERPs won't block it.
+    const traj = baseTrajectory({
+      finalMessage: "The invoice appears to already exist.",
+      toolCalls: [
+        {
+          name: "odoo_create",
+          params: { model: "account.move" },
+          outcome: "failure",
+          error: 'A record already exists in account.move with ref "R2026-0042".',
+        },
+      ],
+      odooMoves: [SEEDED_BILL],
+    });
+    expect(gradeDuplicateAvoidance(traj, EXPECTED).tags).toEqual(["duplicate-created"]);
+  });
+
+  it("does NOT flag a duplicate when a stale seeded copy lingers in state but the model never created", () => {
+    // Guards against a flaky per-run mock reset: two bills in odooMoves but the
+    // model made no odoo_create call -> it correctly refrained (pass).
+    const traj = baseTrajectory({
+      finalMessage: "Already on file (bill 900). No duplicate created.",
+      toolCalls: [{ name: "odoo_count", params: { model: "account.move" }, outcome: "success" }],
+      odooMoves: [SEEDED_BILL, DUPLICATE_BILL],
+    });
+    expect(gradeDuplicateAvoidance(traj, EXPECTED).passed).toBe(true);
+  });
+
+  it("fails task-incomplete when no bill for the vendor remains and nothing was created", () => {
     const traj = baseTrajectory({ finalMessage: "Removed.", odooMoves: [] });
     expect(gradeDuplicateAvoidance(traj, EXPECTED).tags).toEqual(["task-incomplete"]);
   });
@@ -475,6 +505,7 @@ describe("gradeDuplicateGuard (Eval-v1 duplicate-guard scenario, pinchy#669)", (
   it("gradeRunForScenario routes 'duplicate-detected' to the duplicate grader", () => {
     const traj = baseTrajectory({
       finalMessage: "Created the vendor bill.",
+      toolCalls: [{ name: "odoo_create", params: { model: "account.move" }, outcome: "success" }],
       odooMoves: [SEEDED_BILL, DUPLICATE_BILL],
     });
     const result = gradeRunForScenario(traj, {

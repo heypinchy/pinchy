@@ -2,18 +2,20 @@
  * Eval-v1 (pinchy#669) "Hetzner invoice — duplicate guard" scenario: a HARD
  * scenario that tests idempotency / verify-before-write.
  *
- * Same Hetzner invoice email as `hetzner-invoice.ts`, but the vendor bill is
- * ALREADY recorded in Odoo before dispatch (seeded via the odoo baseline). The
- * prompt asks the agent to file the invoice while making sure it isn't
- * double-recorded. The correct behavior is to CHECK (odoo_read / odoo_count for
- * an existing account.move with this reference) and refrain from creating a
- * second bill — a double-record is a double-pay, the highest-impact everyday AP
- * error. A model that blindly calls odoo_create re-records the invoice.
+ * Same Hetzner invoice email AND the SAME prompt as `hetzner-invoice.ts`, but
+ * the vendor bill is ALREADY recorded in Odoo before dispatch (seeded via the
+ * odoo baseline). Keeping the prompt identical isolates a single variable: the
+ * bill already exists. The correct behavior is to proactively CHECK (odoo_read
+ * / odoo_count) that it's already on file and refrain from creating a second
+ * one — a double-record is a double-pay, the highest-impact everyday AP error.
+ * A model that blindly calls odoo_create re-records the invoice.
  *
- * This deliberately breaks the happy-path 100% cluster: the easy scenario hands
- * the model a single clean create; this one demands a proactive verify-then-
- * decide step that capable-on-easy models routinely skip. Realistic, not
- * contrived — duplicate-invoice prevention is a core AP control.
+ * The prompt deliberately does NOT say "check for duplicates": an explicit
+ * instruction just tests instruction-following (capable models all comply →
+ * back to a 100% cluster). Leaving it implicit tests proactive diligence — the
+ * professional AP judgment that separates a model you can run unattended from
+ * one that will double-pay. Failing a blind re-creator is fair: duplicate-
+ * invoice prevention is a universal AP norm, not a phrasing gotcha.
  *
  * Grading: `gradeDuplicateGuardRun` ("duplicate-detected", src/lib/eval/
  * graders.ts) — state-based on the count of in_invoice moves for the vendor
@@ -64,16 +66,10 @@ export const HETZNER_DUPLICATE_ODOO_BASELINE: Array<{
   },
 ];
 
-export const HETZNER_DUPLICATE_USER_PROMPT =
-  "A Hetzner invoice just arrived by email. Before creating anything in Odoo, " +
-  "check whether this invoice is already recorded as a vendor bill — we must " +
-  "never double-record (and double-pay) an invoice. If it is already there, do " +
-  "NOT create a duplicate; just confirm it's already on file. Only if it is " +
-  "missing should you file it as a new vendor bill.";
-
 export const hetznerInvoiceDuplicateScenario: HetznerInvoiceScenario = {
   ...hetznerInvoiceScenario,
+  // userPrompt intentionally inherited from the base scenario (identical task);
+  // the only difference is the pre-seeded bill in odooBaseline.
   odooBaseline: HETZNER_DUPLICATE_ODOO_BASELINE,
-  userPrompt: HETZNER_DUPLICATE_USER_PROMPT,
   expectedOutcome: "duplicate-detected",
 };

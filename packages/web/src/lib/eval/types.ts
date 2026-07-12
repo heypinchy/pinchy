@@ -34,11 +34,12 @@ export type FailureTag =
   // scorecard. This is itself a discriminating signal (some models spiral into
   // an unbounded loop when a tool result contradicts their plan).
   | "run-timeout"
-  // The model created a SECOND vendor bill for an invoice that was already
-  // recorded in Odoo (the duplicate-guard scenario seeds the bill first). The
-  // correct behavior is to check (odoo_read/odoo_count) and refrain; a model
-  // that blindly re-creates causes a double-record (double-pay) — a
-  // high-impact AP failure. See graders.ts gradeDuplicateGuard.
+  // The model ATTEMPTED to create a SECOND vendor bill for an invoice already
+  // recorded in Odoo (the duplicate-guard scenario seeds the bill first) — a
+  // blind double-record (double-pay) attempt, whether or not the stack's
+  // duplicate guard happened to block it. The correct behavior is to verify
+  // (odoo_read/odoo_count) it is already on file and NOT call odoo_create at
+  // all. See graders.ts gradeDuplicateAvoidance.
   | "duplicate-created";
 
 export interface ToolCall {

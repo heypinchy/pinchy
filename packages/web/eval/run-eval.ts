@@ -176,6 +176,13 @@ export const HETZNER_SCENARIO_TOOL_NAMES = [
   "email_read",
   "email_get_attachment",
   "odoo_create",
+  // Read + count are how a diligent agent VERIFIES state (does the bill already
+  // exist? did the create actually persist?). Capturing them is essential for
+  // the duplicate-guard scenario and for seeing whether a model checked back in
+  // the silent-failure scenario — without these two names the collector would
+  // silently drop those calls and a proactive verify would look like inaction.
+  "odoo_read",
+  "odoo_count",
 ] as const;
 
 interface AuditApiEntry {
