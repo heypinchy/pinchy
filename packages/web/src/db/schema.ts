@@ -289,18 +289,21 @@ export const toolApproval = pgTable(
     agentId: text("agent_id")
       .notNull()
       .references(() => agents.id, { onDelete: "cascade" }),
-    requesterId: text("requester_id")
-      .notNull()
-      .references(() => users.id, { onDelete: "cascade" }),
+    // requesterId / approverId are the acting principal derived from the OpenClaw
+    // session key (agent:<id>:direct:<userId>) — the same identity `audit_log`
+    // stores in `actorId`. Like actorId, they are plain text with NO FK to
+    // `user.id`: a chat principal is not guaranteed to be a Better-Auth user row
+    // (Telegram senderId, group principals, …), so an FK here would reject
+    // legitimate confirmations. User-specificity is still enforced by matching
+    // requesterId against approverId (both are `session.user.id`).
+    requesterId: text("requester_id").notNull(),
     sessionKey: text("session_key").notNull(),
     toolName: text("tool_name").notNull(),
     argsDigest: text("args_digest").notNull(),
     argsSummary: jsonb("args_summary").$type<Record<string, unknown>>(),
     tier: approvalTierEnum("tier").notNull().default("confirm"),
     status: approvalStatusEnum("status").notNull().default("pending"),
-    approverId: text("approver_id").references(() => users.id, {
-      onDelete: "set null",
-    }),
+    approverId: text("approver_id"),
     decisionReason: text("decision_reason"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     decidedAt: timestamp("decided_at", { withTimezone: true }),
