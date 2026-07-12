@@ -38,25 +38,35 @@ export type AgentSettingsTab = (typeof AGENT_SETTINGS_TABS)[number];
  * Accepts an optional `initialTab` from server-side searchParams to
  * avoid SSR/hydration flicker. Falls back to useSearchParams() for
  * client-side navigation.
+ *
+ * The third return value, `isExplicit`, is true when the resolved tab
+ * came from an explicit (valid) `?tab=` param rather than the fallback
+ * default. Consumers that need to distinguish "no selection yet" from
+ * "the default tab was explicitly selected" (e.g. a mobile drill-down
+ * menu) should pass `keepParamForDefault: true` so selecting the
+ * default tab still writes `?tab=<default>` instead of clearing it.
  */
 export function useTabParam<T extends string>(
   defaultTab: T,
   validTabs: readonly T[],
-  initialTab?: string | null
-): [T, (tab: string) => void] {
+  initialTab?: string | null,
+  options?: { keepParamForDefault?: boolean }
+): readonly [T, (tab: string) => void, boolean] {
   const searchParams = useSearchParams();
   const pathname = usePathname();
   const router = useRouter();
+  const keepParamForDefault = options?.keepParamForDefault ?? false;
 
-  const urlTab = (searchParams.get("tab") ?? initialTab ?? null) as T | null;
-  const tab = urlTab && validTabs.includes(urlTab) ? urlTab : defaultTab;
+  const rawTab = (searchParams.get("tab") ?? initialTab ?? null) as T | null;
+  const isExplicit = Boolean(rawTab && validTabs.includes(rawTab));
+  const tab = isExplicit ? (rawTab as T) : defaultTab;
 
   const setTab = useCallback(
     (newTab: string) => {
       if (!validTabs.includes(newTab as T)) return;
 
       const params = new URLSearchParams(searchParams.toString());
-      if (newTab === defaultTab) {
+      if (newTab === defaultTab && !keepParamForDefault) {
         params.delete("tab");
       } else {
         params.set("tab", newTab);
@@ -67,8 +77,8 @@ export function useTabParam<T extends string>(
         scroll: false,
       });
     },
-    [defaultTab, pathname, router, searchParams, validTabs]
+    [defaultTab, keepParamForDefault, pathname, router, searchParams, validTabs]
   );
 
-  return [tab, setTab];
+  return [tab, setTab, isExplicit] as const;
 }

@@ -96,6 +96,54 @@ describe("useTabParam", () => {
 
     expect(result.current[0]).toBe("context");
   });
+
+  it("reports isExplicit as false when no tab param is present", () => {
+    const { result } = renderHook(() => useTabParam("context", SETTINGS_TABS));
+
+    expect(result.current[2]).toBe(false);
+  });
+
+  it("reports isExplicit as true when a valid tab param is present", () => {
+    mockSearchParams.set("tab", "license");
+
+    const { result } = renderHook(() => useTabParam("context", SETTINGS_TABS));
+
+    expect(result.current[2]).toBe(true);
+  });
+
+  it("reports isExplicit as false when the tab param is invalid", () => {
+    mockSearchParams.set("tab", "nonexistent");
+
+    const { result } = renderHook(() => useTabParam("context", SETTINGS_TABS));
+
+    expect(result.current[2]).toBe(false);
+  });
+
+  it("keeps the tab param on the default tab when keepParamForDefault is set", () => {
+    const { result } = renderHook(() =>
+      useTabParam("context", SETTINGS_TABS, undefined, { keepParamForDefault: true })
+    );
+
+    act(() => {
+      result.current[1]("context");
+    });
+
+    expect(mockReplace).toHaveBeenCalledWith("/settings?tab=context", {
+      scroll: false,
+    });
+  });
+
+  it("still removes the tab param on the default tab when keepParamForDefault is not set", () => {
+    mockSearchParams.set("tab", "license");
+
+    const { result } = renderHook(() => useTabParam("context", SETTINGS_TABS));
+
+    act(() => {
+      result.current[1]("context");
+    });
+
+    expect(mockReplace).toHaveBeenCalledWith("/settings", { scroll: false });
+  });
 });
 
 describe("tab constants", () => {

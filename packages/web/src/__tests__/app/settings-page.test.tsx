@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { render, screen, waitFor, act } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import "@testing-library/jest-dom";
+import { useRouter, useSearchParams } from "next/navigation";
 import { SettingsPageContent as SettingsPage } from "@/components/settings-page-content";
 
 let capturedProviderProps: {
@@ -167,6 +168,7 @@ describe("Settings Page", () => {
   beforeEach(() => {
     fetchSpy = vi.spyOn(global, "fetch").mockImplementation(vi.fn());
     vi.clearAllMocks();
+    vi.mocked(useSearchParams).mockReturnValue(new URLSearchParams());
     capturedProviderProps = {};
     capturedOnDirtyChangeProvider = undefined;
     capturedOnDirtyChangeContext = undefined;
@@ -522,6 +524,50 @@ describe("Settings Page", () => {
         expect(global.fetch).toHaveBeenCalledWith("/api/users/me/context");
         expect(global.fetch).not.toHaveBeenCalledWith("/api/settings/providers");
       });
+    });
+  });
+
+  describe("Mobile drill-down navigation", () => {
+    it("does not show a back control when no tab is explicitly selected", async () => {
+      setupAdminFetchMocks();
+
+      render(<SettingsPage isAdmin={isCurrentTestAdmin} />);
+
+      await waitFor(() => screen.getByTestId("mock-settings-context"));
+      expect(screen.queryByRole("button", { name: /back to settings/i })).not.toBeInTheDocument();
+    });
+
+    it("shows a back control when a tab is explicitly selected via the URL param", async () => {
+      vi.mocked(useSearchParams).mockReturnValue(new URLSearchParams("tab=profile"));
+      setupAdminFetchMocks();
+
+      render(<SettingsPage isAdmin={isCurrentTestAdmin} />);
+
+      await waitFor(() => {
+        expect(screen.getByRole("button", { name: /back to settings/i })).toBeInTheDocument();
+      });
+    });
+
+    it("clears the tab param when the back control is clicked", async () => {
+      vi.mocked(useSearchParams).mockReturnValue(new URLSearchParams("tab=profile"));
+      setupAdminFetchMocks();
+
+      render(<SettingsPage isAdmin={isCurrentTestAdmin} />);
+
+      const backButton = await screen.findByRole("button", { name: /back to settings/i });
+      await userEvent.click(backButton);
+
+      const router = useRouter();
+      expect(router.replace).toHaveBeenCalledWith("/settings", { scroll: false });
+    });
+
+    it("keeps the active tab indicator on the sidebar variant", async () => {
+      setupAdminFetchMocks();
+
+      render(<SettingsPage isAdmin={isCurrentTestAdmin} />);
+
+      const contextTab = await screen.findByRole("tab", { name: /context/i });
+      expect(contextTab).toHaveAttribute("data-state", "active");
     });
   });
 });
