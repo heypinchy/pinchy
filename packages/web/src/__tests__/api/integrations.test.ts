@@ -29,6 +29,9 @@ vi.mock("@/lib/encryption", () => ({
 const mockAppendAuditLog = vi.fn().mockResolvedValue(undefined);
 vi.mock("@/lib/audit", () => ({
   appendAuditLog: (...args: unknown[]) => mockAppendAuditLog(...args),
+  // Faithful stand-in for the real scrubEmails: email-shaped tokens become
+  // <email-redacted>, everything else passes through unchanged.
+  scrubEmails: (text: string) => text.replace(/[^\s@]+@[^\s@]+\.[^\s@]+/g, "<email-redacted>"),
 }));
 
 const { mockAuthenticate, mockVersion, mockModels, mockFields, mockCheckAccessRights } = vi.hoisted(

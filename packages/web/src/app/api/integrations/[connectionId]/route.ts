@@ -4,8 +4,9 @@ import { withAdmin } from "@/lib/api-auth";
 import { db } from "@/db";
 import { integrationConnections } from "@/db/schema";
 import { encrypt, decrypt } from "@/lib/encryption";
-import { appendAuditLog } from "@/lib/audit";
+import { appendAuditLog, scrubEmails } from "@/lib/audit";
 import { odooCredentialsSchema } from "@/lib/integrations/odoo-schema";
+import { imapEditSchema } from "@/lib/schemas/integration-edit";
 import { validateExternalUrl } from "@/lib/integrations/url-validation";
 import { maskConnectionCredentials } from "@/lib/integrations/mask-credentials";
 import { probeIntegrationCredentials } from "@/lib/integrations/probe";
@@ -28,31 +29,10 @@ const credentialSchemas: Record<string, z.ZodType> = {
     .object({ apiKey: z.string().min(1) })
     .strict()
     .partial(),
-  // IMAP reconnect/edit: all fields optional ("leave empty to keep current").
-  // Ports are coerced to number so the merged blob keeps numeric ports — the
+  // IMAP reconnect/edit: shared with the client dialog so validation can't
+  // drift. Ports coerce to number so the merged blob keeps numeric ports — the
   // pinchy-email plugin asserts a strict `typeof number` shape.
-  imap: z
-    .object({
-      imapHost: z.string().min(1).optional(),
-      imapPort: z.coerce.number().int().min(1).max(65535).optional(),
-      smtpHost: z.string().min(1).optional(),
-      smtpPort: z.coerce.number().int().min(1).max(65535).optional(),
-      username: z.string().min(1).optional(),
-      password: z.string().min(1).optional(),
-      security: z.enum(["tls", "starttls", "none"]).optional(),
-      // Optional display name for the From header of agent-sent mail. Same
-      // CR/LF header-injection guard as imapCreateSchema (packages/web/src/lib/schemas/imap.ts).
-      senderName: z
-        .string()
-        .min(1)
-        .max(200)
-        .refine((v) => !/[\r\n]/.test(v), {
-          message: "Sender name must not contain line breaks",
-        })
-        .optional(),
-    })
-    .strict()
-    .partial(),
+  imap: imapEditSchema,
 };
 
 type RouteContext = { params: Promise<{ connectionId: string }> };
@@ -124,7 +104,12 @@ export const PATCH = withAdmin<RouteContext>(async (request, { params }, session
   if (body.name !== undefined) {
     updateData.name = body.name;
     if (body.name !== existing.name) {
-      changes.name = { from: existing.name, to: body.name };
+      // IMAP connection names default to the mailbox address, so a rename diff
+      // can carry a raw email on either side — scrub before it hits the log.
+      changes.name = {
+        from: existing.name ? scrubEmails(existing.name) : existing.name,
+        to: scrubEmails(body.name),
+      };
     }
   }
   if (body.description !== undefined) {
@@ -196,7 +181,7 @@ export const PATCH = withAdmin<RouteContext>(async (request, { params }, session
       actorId: session.user.id!,
       eventType: "integration.updated",
       resource: `integration:${connectionId}`,
-      detail: { id: connectionId, name: updated.name, changes },
+      detail: { id: connectionId, name: scrubEmails(updated.name), changes },
       outcome: "success",
     });
   }
@@ -213,7 +198,7 @@ export const PATCH = withAdmin<RouteContext>(async (request, { params }, session
       resource: `integration:${connectionId}`,
       detail: {
         id: connectionId,
-        name: updated.name,
+        name: scrubEmails(updated.name),
         fields: Object.keys(parsedCredentials),
       },
       outcome: "success",
@@ -250,7 +235,7 @@ export const DELETE = withAdmin<RouteContext>(async (_req, { params }, session) 
     actorId: session.user.id!,
     eventType: "integration.deleted",
     resource: `integration:${connectionId}`,
-    detail: { id: connectionId, name: existing.name, type: existing.type },
+    detail: { id: connectionId, name: scrubEmails(existing.name), type: existing.type },
     outcome: "success",
   });
 

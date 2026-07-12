@@ -22,6 +22,9 @@ const mockAppendAuditLog = vi.fn().mockResolvedValue(undefined);
 vi.mock("@/lib/audit", () => ({
   appendAuditLog: (...args: unknown[]) => mockAppendAuditLog(...args),
   redactEmail: (email: string) => ({ emailDomain: email.split("@")[1] ?? "unknown" }),
+  // Faithful stand-in for the real scrubEmails: email-shaped tokens become
+  // <email-redacted>, everything else passes through unchanged.
+  scrubEmails: (text: string) => text.replace(/[^\s@]+@[^\s@]+\.[^\s@]+/g, "<email-redacted>"),
 }));
 
 const mockRecordAuditFailure = vi.fn();
@@ -192,16 +195,17 @@ describe("POST /api/integrations/imap", () => {
     const body = await response.json();
 
     expect(response.status).toBe(201);
+    // The DB row and the API response keep the mailbox address as a renameable
+    // label — that's not the append-only audit log, so it's fine there.
     expect(mockInsertValues).toHaveBeenCalledWith(expect.objectContaining({ name: rest.username }));
     expect(body.name).toBe(rest.username);
 
-    // Audit detail must also reflect the defaulted name (the mailbox
-    // address), not a blank/undefined name.
-    expect(mockAppendAuditLog).toHaveBeenCalledWith(
-      expect.objectContaining({
-        detail: expect.objectContaining({ name: rest.username }),
-      })
-    );
+    // But the append-only, HMAC-signed audit `detail` must NOT carry the raw
+    // mailbox address (GDPR Art. 17 — unerasable). The defaulted email-shaped
+    // name must be scrubbed before it lands in the audit row.
+    const auditCall = mockAppendAuditLog.mock.calls[0][0];
+    expect(JSON.stringify(auditCall.detail)).not.toContain(rest.username);
+    expect(auditCall.detail.name).toBe("<email-redacted>");
   });
 
   it("returns 400 and does not insert or audit when name is blank", async () => {
@@ -249,6 +253,20 @@ describe("POST /api/integrations/imap", () => {
       outcome: "failure",
     });
     expect(JSON.stringify(failureEntry)).not.toContain("super-secret-password");
+  });
+
+  it("scrubs the email-shaped defaulted name from the audit failure detail", async () => {
+    mockInsertReturning.mockRejectedValueOnce(new Error("DB unreachable"));
+    const { POST } = await import("@/app/api/integrations/imap/route");
+
+    // Name omitted → defaults to the mailbox address, which must not leak into
+    // the append-only audit failure row.
+    const { name: _name, ...rest } = validBody;
+    await POST(makeRequest(rest));
+
+    const [, failureEntry] = mockRecordAuditFailure.mock.calls[0];
+    expect(JSON.stringify(failureEntry.detail)).not.toContain(rest.username);
+    expect(failureEntry.detail.name).toBe("<email-redacted>");
   });
 
   describe("senderName", () => {

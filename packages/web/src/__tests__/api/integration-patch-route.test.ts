@@ -29,6 +29,9 @@ vi.mock("@/lib/encryption", () => ({
 const mockAppendAuditLog = vi.fn().mockResolvedValue(undefined);
 vi.mock("@/lib/audit", () => ({
   appendAuditLog: (...args: unknown[]) => mockAppendAuditLog(...args),
+  // Faithful stand-in for the real scrubEmails: email-shaped tokens become
+  // <email-redacted>, everything else passes through unchanged.
+  scrubEmails: (text: string) => text.replace(/[^\s@]+@[^\s@]+\.[^\s@]+/g, "<email-redacted>"),
 }));
 
 const mockProbeIntegrationCredentials = vi.fn();
@@ -500,6 +503,36 @@ describe("PATCH /api/integrations/[connectionId] — credential probe", () => {
       expect(persisted.senderName).toBe("Team Support");
       // Existing fields are preserved via merge.
       expect(persisted.imapHost).toBe("imap.example.com");
+    });
+
+    it("scrubs an email-shaped connection name from the credentials_updated audit detail", async () => {
+      // IMAP connections default their name to the mailbox address at create
+      // time. That email-shaped name must not propagate raw into the
+      // append-only audit row when credentials are later edited.
+      const emailNamedConn = { ...mockImapConnection, name: "team@example.com" };
+      mockSelectWhere.mockResolvedValue([emailNamedConn]);
+      mockUpdateSet.mockReturnValue({
+        where: vi.fn().mockReturnValue({
+          returning: vi.fn().mockResolvedValue([emailNamedConn]),
+        }),
+      });
+
+      const { PATCH } = await import("@/app/api/integrations/[connectionId]/route");
+
+      await PATCH(
+        makeRequest("/api/integrations/conn-imap-1", {
+          method: "PATCH",
+          body: JSON.stringify({ credentials: { password: "new-app-password" } }),
+        }),
+        { params: Promise.resolve({ connectionId: "conn-imap-1" }) }
+      );
+
+      const credCall = mockAppendAuditLog.mock.calls.find(
+        (c) => (c[0] as { eventType?: string }).eventType === "integration.credentials_updated"
+      );
+      expect(credCall).toBeDefined();
+      expect(JSON.stringify(credCall![0].detail)).not.toContain("team@example.com");
+      expect(credCall![0].detail.name).toBe("<email-redacted>");
     });
 
     it("PATCH with a CR/LF senderName returns 400 and writes nothing", async () => {

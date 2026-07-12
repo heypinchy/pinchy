@@ -5,7 +5,7 @@ import { imapCreateSchema } from "@/lib/schemas/imap";
 import { db } from "@/db";
 import { integrationConnections } from "@/db/schema";
 import { encrypt } from "@/lib/encryption";
-import { appendAuditLog, redactEmail } from "@/lib/audit";
+import { appendAuditLog, redactEmail, scrubEmails } from "@/lib/audit";
 import { recordAuditFailure } from "@/lib/audit-deferred";
 
 // Matches an email-shaped username so we can redact it the same way the IMAP
@@ -67,7 +67,10 @@ export const POST = withAdmin(async (request: NextRequest, _ctx, session) => {
       resource: "integration",
       outcome: "failure" as const,
       error: { message: err instanceof Error ? err.message : String(err) },
-      detail: { name: connectionName, type: "imap", ...(identity ?? {}) },
+      // `connectionName` defaults to the mailbox address — scrub it so the
+      // append-only audit row never stores the raw email (redacted identity
+      // is spread separately below).
+      detail: { name: scrubEmails(connectionName), type: "imap", ...(identity ?? {}) },
     };
     recordAuditFailure(err, failureEntry);
     return NextResponse.json({ error: "Could not create the IMAP connection" }, { status: 500 });
@@ -79,7 +82,9 @@ export const POST = withAdmin(async (request: NextRequest, _ctx, session) => {
     actorId,
     resource: `integration:${connection.id}`,
     outcome: "success",
-    detail: { id: connection.id, name: connection.name, type: "imap" },
+    // The name defaults to the mailbox address; scrub it before it lands in
+    // the append-only, HMAC-signed audit detail (GDPR Art. 17).
+    detail: { id: connection.id, name: scrubEmails(connection.name), type: "imap" },
   });
 
   return NextResponse.json(
