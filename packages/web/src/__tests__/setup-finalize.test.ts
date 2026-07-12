@@ -4,7 +4,15 @@ const { findFirstMock } = vi.hoisted(() => ({
   findFirstMock: vi.fn(),
 }));
 
-vi.mock("@/lib/settings-timezone");
+// Keep the real isValidIanaTimezone so the createAdmin validation is exercised
+// for real (not a mocked tautology); only setOrgTimezone is stubbed.
+vi.mock("@/lib/settings-timezone", async (importActual) => {
+  const actual = await importActual<typeof import("@/lib/settings-timezone")>();
+  return {
+    ...actual,
+    setOrgTimezone: vi.fn(),
+  };
+});
 
 vi.mock("@/db", () => ({
   db: {
@@ -85,5 +93,14 @@ describe("createAdmin — timezone", () => {
   it("falls back to UTC when browser timezone is missing", async () => {
     await createAdmin("A", "a@x.com", "password123", undefined);
     expect(tz.setOrgTimezone).toHaveBeenCalledWith("UTC");
+  });
+
+  it("falls back to UTC when browser timezone is not a valid IANA zone", async () => {
+    // A malformed/spoofed timezone must never block admin creation: it must
+    // still create the admin and store UTC instead of throwing.
+    const result = await createAdmin("A", "a@example.com", "password123", "Not/AZone");
+    expect(result).toEqual({ id: "user-1", email: "a@x.com" });
+    expect(tz.setOrgTimezone).toHaveBeenCalledWith("UTC");
+    expect(tz.setOrgTimezone).not.toHaveBeenCalledWith("Not/AZone");
   });
 });

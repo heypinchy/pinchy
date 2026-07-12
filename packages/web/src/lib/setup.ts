@@ -4,7 +4,7 @@ import { eq } from "drizzle-orm";
 import { auth } from "@/lib/auth";
 import { seedDefaultAgent } from "@/db/seed";
 import { getSetting } from "@/lib/settings";
-import { setOrgTimezone } from "@/lib/settings-timezone";
+import { setOrgTimezone, isValidIanaTimezone } from "@/lib/settings-timezone";
 
 export async function isProviderConfigured(): Promise<boolean> {
   const provider = await getSetting("default_provider");
@@ -46,7 +46,11 @@ export async function createAdmin(
 
     await seedDefaultAgent(result.user.id);
 
-    await setOrgTimezone(browserTimezone ?? "UTC");
+    // A malformed or spoofed browserTimezone must never block account
+    // creation: validate before storing and fall back to UTC on invalid input
+    // so setOrgTimezone is only ever called with a valid zone here.
+    const tz = browserTimezone && isValidIanaTimezone(browserTimezone) ? browserTimezone : "UTC";
+    await setOrgTimezone(tz);
   } catch (error) {
     // Clean up the orphaned user if post-signup steps fail
     try {
