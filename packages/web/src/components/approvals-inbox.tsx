@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useEffect, useState } from "react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { ApiError } from "@/lib/api-client";
@@ -28,20 +28,25 @@ export function ApprovalsInbox() {
   const [pending, setPending] = useState<PendingApproval[]>([]);
   const [busy, setBusy] = useState<string | null>(null);
 
-  const refresh = useCallback(async () => {
-    try {
-      const { approvals } = await fetchPendingApprovals();
-      setPending(approvals);
-    } catch {
-      // Background poller — transient failures self-heal on the next tick.
-    }
-  }, []);
-
   useEffect(() => {
-    void refresh();
-    const timer = setInterval(() => void refresh(), POLL_MS);
-    return () => clearInterval(timer);
-  }, [refresh]);
+    let cancelled = false;
+    // Defined inside the effect (not a useCallback) so the setState is clearly
+    // behind the await — satisfies the react-compiler set-state-in-effect rule.
+    const poll = async () => {
+      try {
+        const { approvals } = await fetchPendingApprovals();
+        if (!cancelled) setPending(approvals);
+      } catch {
+        // Background poller — transient failures self-heal on the next tick.
+      }
+    };
+    void poll();
+    const timer = setInterval(() => void poll(), POLL_MS);
+    return () => {
+      cancelled = true;
+      clearInterval(timer);
+    };
+  }, []);
 
   const decide = async (approval: PendingApproval, decision: "approve" | "deny") => {
     setBusy(approval.id);
