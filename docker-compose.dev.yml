@@ -15,6 +15,11 @@ services:
       # ../../../../plugins/<name>/ relative to web/src/lib/openclaw-config/.
       # Mount read-only so the dev server can import them without a rebuild.
       - ./packages/plugins:/app/packages/plugins:ro
+      # Dev KB corpus, read-only, at the SAME /data/sample-docs path the
+      # openclaw service mounts it — so the knowledge-base ingest pipeline and
+      # the workspace-file serve route in web resolve the same paths an agent's
+      # allowed_paths reference.
+      - ./sample-data:/data/sample-docs:ro
   openclaw:
     build:
       context: .

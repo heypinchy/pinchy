@@ -15,6 +15,14 @@ services:
       - pinchy-workspaces:/openclaw-config/workspaces
       - openclaw-extensions:/openclaw-extensions
       - pinchy-secrets:/app/secrets
+      # KB corpus, read-only. The knowledge-base ingest pipeline and the
+      # workspace-file serve route (packages/web) read source documents from
+      # /data — the SAME path the openclaw service mounts, so an agent's
+      # allowed_paths (/data/...) resolve identically in both containers.
+      # Read-only: web only reads the corpus (it never writes it; user uploads
+      # land in a separate store), which also keeps the corpus tamper-proof
+      # from the web tier.
+      - pinchy-data:/data:ro
     restart: unless-stopped
     depends_on:
       db:
