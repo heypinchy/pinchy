@@ -454,6 +454,24 @@ describe("ImapAdapter mock env overrides", () => {
     );
   });
 
+  it("bounds the IMAP connection with connection/greeting/socket timeouts and silences the logger", async () => {
+    // Agent tool calls must fail fast against a firewalled/dead host instead of
+    // hanging on imapflow's ~90s default — same bounds the test-connection probe
+    // uses (imap-probe.ts). The default logger would also spam OpenClaw stdout.
+    const adapter = new ImapAdapter(opts);
+    await adapter.list({});
+
+    const { ImapFlow } = await import("imapflow");
+    expect(ImapFlow).toHaveBeenCalledWith(
+      expect.objectContaining({
+        connectionTimeout: 10_000,
+        greetingTimeout: 10_000,
+        socketTimeout: 20_000,
+        logger: false,
+      }),
+    );
+  });
+
   it("uses this.opts host/port with port-derived TLS for SMTP when no mock env vars are set", async () => {
     const adapter = new ImapAdapter(opts);
     await adapter.send({ to: "bob@example.com", subject: "Hi", body: "Hi" });
@@ -517,6 +535,21 @@ describe("ImapAdapter mock env overrides", () => {
         port: opts.smtpPort,
         secure: false, // port 587 → STARTTLS, not implicit TLS
         requireTLS: true,
+      }),
+    );
+  });
+
+  it("bounds the SMTP transport with connection/greeting/socket timeouts", async () => {
+    // Mirror the probe's bounds so a dead SMTP host can't hang an agent send on
+    // nodemailer's ~2min default.
+    const adapter = new ImapAdapter(opts);
+    await adapter.send({ to: "bob@example.com", subject: "Hi", body: "Hi" });
+
+    expect(createTransportMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        connectionTimeout: 10_000,
+        greetingTimeout: 10_000,
+        socketTimeout: 20_000,
       }),
     );
   });
@@ -1171,6 +1204,24 @@ describe("ImapAdapter#draft", () => {
     ).rejects.toThrow();
     expect(mockClient.append).not.toHaveBeenCalled();
   });
+
+  it("throws on CR/LF header injection in `replyTo` and does not call append", async () => {
+    // replyTo is model/agent-controllable (resolveEmailReference passes any
+    // non-msg_/att_ value through unchanged) and flows into the In-Reply-To
+    // header — it must be guarded like to/subject/senderName.
+    mockClient.list.mockResolvedValue(SERVER_MAILBOXES_WITH_DRAFTS);
+    const adapter = new ImapAdapter(opts);
+
+    await expect(
+      adapter.draft({
+        to: "bob@example.com",
+        subject: "hi",
+        body: "hi",
+        replyTo: "<x>\r\nBcc: attacker@evil.com",
+      }),
+    ).rejects.toThrow();
+    expect(mockClient.append).not.toHaveBeenCalled();
+  });
 });
 
 describe("ImapAdapter#send", () => {
@@ -1293,6 +1344,21 @@ describe("ImapAdapter#send", () => {
         to: "bob@example.com",
         subject: "Innocent\r\nBcc: attacker@evil.com",
         body: "hi",
+      }),
+    ).rejects.toThrow();
+    expect(createTransportMock).not.toHaveBeenCalled();
+    expect(mockTransport.sendMail).not.toHaveBeenCalled();
+  });
+
+  it("throws on CR/LF header injection in `replyTo` and does not create a transport", async () => {
+    const adapter = new ImapAdapter(opts);
+
+    await expect(
+      adapter.send({
+        to: "bob@example.com",
+        subject: "hi",
+        body: "hi",
+        replyTo: "<x>\r\nBcc: attacker@evil.com",
       }),
     ).rejects.toThrow();
     expect(createTransportMock).not.toHaveBeenCalled();

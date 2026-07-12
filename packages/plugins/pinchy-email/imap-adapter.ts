@@ -238,6 +238,11 @@ function assertNoHeaderInjection(field: string, value: string): void {
 function assertComposeOptionsSafe(opts: ComposeOptions): void {
   assertNoHeaderInjection("to", opts.to);
   assertNoHeaderInjection("subject", opts.subject);
+  // replyTo is model/agent-controllable and flows into the In-Reply-To header,
+  // so it gets the same throw-don't-rewrite treatment as to/subject.
+  if (opts.replyTo !== undefined) {
+    assertNoHeaderInjection("replyTo", opts.replyTo);
+  }
 }
 
 function toSummary(m: FetchMessageObject, path: string): EmailSummary {
@@ -351,6 +356,13 @@ export class ImapAdapter implements EmailAdapter {
         user: this.opts.username,
         pass: this.opts.password,
       },
+      logger: false,
+      // Bound the connection so a firewalled/dead host can't hang an agent tool
+      // call on imapflow's ~90s default — same bounds as the test-connection
+      // probe (packages/web/src/lib/integrations/imap-probe.ts).
+      connectionTimeout: 10_000,
+      greetingTimeout: 10_000,
+      socketTimeout: 20_000,
     });
     await client.connect();
     try {
@@ -526,6 +538,11 @@ export class ImapAdapter implements EmailAdapter {
         user: this.opts.username,
         pass: this.opts.password,
       },
+      // Bound the SMTP send so a dead host can't hang an agent tool call on
+      // nodemailer's ~2min default — mirrors imap-probe.ts.
+      connectionTimeout: 10_000,
+      greetingTimeout: 10_000,
+      socketTimeout: 20_000,
     });
     let messageId: string | null;
     try {
