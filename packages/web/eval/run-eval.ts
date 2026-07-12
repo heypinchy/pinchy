@@ -397,6 +397,8 @@ export async function runOnce(params: RunOnceParams): Promise<RunResult> {
     odooMoves,
     issuedMessageHandle: scenario.issuedMessageHandle,
     issuedAttachmentHandle: scenario.issuedAttachmentHandle,
+    extraIssuedMessageHandles: scenario.extraIssuedMessageHandles,
+    extraIssuedAttachmentHandles: scenario.extraIssuedAttachmentHandles,
     latencyMs,
   });
 

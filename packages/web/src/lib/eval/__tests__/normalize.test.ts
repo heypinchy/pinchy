@@ -173,6 +173,38 @@ describe("buildTrajectory", () => {
     expect(traj.toolCalls[1]?.issuedIds).toBeUndefined();
   });
 
+  it("attaches extra issued handles (distractor emails) so reading them is not id-malformed", () => {
+    const msgHandle = handleFor(SEEDED_MESSAGE_ID, MSG_PREFIX);
+    const attHandle = handleFor(SEEDED_ATTACHMENT_ID, ATT_PREFIX);
+    const extraMsg = "msg_deadbeefdeadbeef";
+    const extraAtt = "att_cafebabecafebabe";
+
+    const traj = buildTrajectory(
+      baseInput({
+        extraIssuedMessageHandles: [extraMsg],
+        extraIssuedAttachmentHandles: [extraAtt],
+        auditEntries: [
+          {
+            eventType: "tool.email_list",
+            outcome: "success",
+            detail: { toolName: "email_list", params: {} },
+            timestamp: "2026-07-07T10:00:01.000Z",
+          },
+          {
+            eventType: "tool.email_read",
+            outcome: "success",
+            detail: { toolName: "email_read", params: { id: extraMsg } },
+            timestamp: "2026-07-07T10:00:02.000Z",
+          },
+        ],
+      })
+    );
+
+    // Both the primary and the distractor message handles are "issued" by the list.
+    expect(traj.toolCalls[0]?.issuedIds).toEqual([msgHandle, extraMsg]);
+    expect(traj.toolCalls[1]?.issuedIds).toEqual([attHandle, extraAtt]);
+  });
+
   it("passes through odooMoves, model, finalMessage, latencyMs, tokens", () => {
     const move = {
       id: 1,

@@ -35,6 +35,13 @@ export interface NormalizeInput {
   issuedMessageHandle: string;
   /** The handle the plugin issues for the seeded attachment (see above). */
   issuedAttachmentHandle: string;
+  /**
+   * Handles for ADDITIONAL seeded inbox items (e.g. a distractor scenario's
+   * second invoice). Without these, `gradeIdFidelity` would false-flag the
+   * model for reading a legitimately-listed extra email as an unissued handle.
+   */
+  extraIssuedMessageHandles?: string[];
+  extraIssuedAttachmentHandles?: string[];
   latencyMs: number;
   tokens?: { prompt: number; completion: number };
 }
@@ -66,10 +73,11 @@ function coerceOdooMove(move: OdooMoveRecord): OdooMoveRecord {
  * such call exists. Mutates the call in place (the array itself was freshly
  * built by this module, so this is safe and avoids an extra full clone).
  */
-function attachIssuedId(toolCalls: ToolCall[], names: string[], handle: string): void {
+function attachIssuedId(toolCalls: ToolCall[], names: string[], handles: string[]): void {
+  if (handles.length === 0) return;
   const target = toolCalls.find((call) => names.includes(call.name));
   if (!target) return;
-  target.issuedIds = [...(target.issuedIds ?? []), handle];
+  target.issuedIds = [...(target.issuedIds ?? []), ...handles];
 }
 
 /**
@@ -91,8 +99,16 @@ export function buildTrajectory(input: NormalizeInput): RunTrajectory {
     .sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime())
     .map(toToolCall);
 
-  attachIssuedId(toolCalls, ["email_list", "email_search"], input.issuedMessageHandle);
-  attachIssuedId(toolCalls, ["email_read"], input.issuedAttachmentHandle);
+  attachIssuedId(
+    toolCalls,
+    ["email_list", "email_search"],
+    [input.issuedMessageHandle, ...(input.extraIssuedMessageHandles ?? [])]
+  );
+  attachIssuedId(
+    toolCalls,
+    ["email_read"],
+    [input.issuedAttachmentHandle, ...(input.extraIssuedAttachmentHandles ?? [])]
+  );
 
   return {
     model: input.model,

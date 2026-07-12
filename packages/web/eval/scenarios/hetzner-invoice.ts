@@ -21,9 +21,9 @@ import type { ExpectedInvoice, ExpectedOutcome } from "@/lib/eval/types";
 // import the plugin source. This mirrors the plugin's deterministic handle
 // (sha256 of the real id, first 16 hex, prefixed); `handle-parity.test.ts`
 // (excluded from the build under `src/**/*.test.ts`) asserts they stay equal.
-const EVAL_MSG_PREFIX = "msg";
-const EVAL_ATT_PREFIX = "att";
-function evalHandleFor(realId: string, prefix: string): string {
+export const EVAL_MSG_PREFIX = "msg";
+export const EVAL_ATT_PREFIX = "att";
+export function evalHandleFor(realId: string, prefix: string): string {
   return `${prefix}_${createHash("sha256").update(realId).digest("hex").slice(0, 16)}`;
 }
 
@@ -152,6 +152,20 @@ export interface HetznerInvoiceScenario {
   issuedMessageHandle: string;
   issuedAttachmentHandle: string;
   graphSeedMessage: typeof HETZNER_GRAPH_SEED_MESSAGE;
+  /**
+   * Additional inbox messages seeded ALONGSIDE `graphSeedMessage` before
+   * dispatch. Used by the distractor scenario to plant plausible-but-wrong
+   * emails (e.g. a payment reminder for a different invoice) that the agent
+   * must NOT file. Defaults to none. Same shape as `graphSeedMessage`.
+   */
+  extraGraphMessages?: (typeof HETZNER_GRAPH_SEED_MESSAGE)[];
+  /**
+   * The plugin-issued message/attachment handles for `extraGraphMessages`, so
+   * `gradeIdFidelity` treats reading those extra emails as legitimate (see
+   * `normalize.buildTrajectory`). Compute with `evalHandleFor`. Default none.
+   */
+  extraIssuedMessageHandles?: string[];
+  extraIssuedAttachmentHandles?: string[];
   odooBaseline: typeof HETZNER_ODOO_BASELINE;
   userPrompt: string;
   expected: ExpectedInvoice;

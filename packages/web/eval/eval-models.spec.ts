@@ -36,6 +36,7 @@ import { hetznerInvoiceScenario, type HetznerInvoiceScenario } from "./scenarios
 import { hetznerInvoiceRejectedScenario } from "./scenarios/hetzner-invoice-rejected";
 import { hetznerInvoiceSilentFailureScenario } from "./scenarios/hetzner-invoice-silent-failure";
 import { hetznerInvoiceDuplicateScenario } from "./scenarios/hetzner-invoice-duplicate";
+import { hetznerInvoiceDistractorScenario } from "./scenarios/hetzner-invoice-distractor";
 import {
   resetOdooMock,
   seedOdooBaseline,
@@ -108,6 +109,13 @@ const SWEEP_SCENARIOS: Array<{
     // verify with odoo_read/odoo_count and refrain from creating a duplicate.
     label: "hetzner-invoice-duplicate-models",
     scenario: hetznerInvoiceDuplicateScenario,
+  },
+  {
+    // HARD scenario: a distractor payment-reminder email is planted alongside
+    // the real invoice (via the scenario's extraGraphMessages, no extraSetup).
+    // Correct = file the real invoice, not the reminder's number.
+    label: "hetzner-invoice-distractor-models",
+    scenario: hetznerInvoiceDistractorScenario,
   },
 ];
 
@@ -228,7 +236,10 @@ test.describe("Eval-v1: model sweep (real Ollama Cloud)", () => {
             await withRetry(
               async () => {
                 await resetGraphMock();
-                await seedGraphMockMessages([scenario.graphSeedMessage]);
+                await seedGraphMockMessages([
+                  scenario.graphSeedMessage,
+                  ...(scenario.extraGraphMessages ?? []),
+                ]);
                 await resetOdooMock();
                 await seedOdooBaseline(scenario.odooBaseline);
                 if (extraSetup) await extraSetup();
