@@ -91,10 +91,12 @@ export const POST = withAuth<Params>(async (req, { params }, session) => {
     return NextResponse.json({ error: message }, { status: 400 });
   }
 
-  // MIME validation.
-  let detectedMime: string;
+  // MIME validation. Note: for a legacy text/x-vcard upload this is the
+  // client's claimed string (an accepted alias), not the sniffed MIME —
+  // hence "validated" rather than "detected". See isKnownMimeAlias.
+  let validatedMime: string;
   try {
-    detectedMime = await validateUploadBuffer(buffer, file.type);
+    validatedMime = await validateUploadBuffer(buffer, file.type);
   } catch (err) {
     await appendAuditLog({
       ...auditBase,
@@ -129,7 +131,7 @@ export const POST = withAuth<Params>(async (req, { params }, session) => {
         agentId,
         draftId,
         filename: staged.filename,
-        mimeType: detectedMime,
+        mimeType: validatedMime,
         sizeBytes: buffer.length,
         contentHash: staged.contentHash,
         status: "staged",
@@ -155,7 +157,7 @@ export const POST = withAuth<Params>(async (req, { params }, session) => {
     detail: {
       uploadId: row.id,
       filename: staged.filename,
-      mimeType: detectedMime,
+      mimeType: validatedMime,
       sizeBytes: buffer.length,
       contentHash: staged.contentHash,
       agent: { id: agentId, name: agent.name },
@@ -164,7 +166,7 @@ export const POST = withAuth<Params>(async (req, { params }, session) => {
   });
 
   return NextResponse.json(
-    { id: row.id, filename: staged.filename, mimeType: detectedMime, sizeBytes: buffer.length },
+    { id: row.id, filename: staged.filename, mimeType: validatedMime, sizeBytes: buffer.length },
     { status: 201 }
   );
 });

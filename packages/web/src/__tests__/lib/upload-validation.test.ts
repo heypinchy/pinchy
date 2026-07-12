@@ -201,14 +201,8 @@ describe("text file support", () => {
   });
 });
 
-// Unlike the other text formats above, a vCard body DOES have "magic bytes":
-// file-type's content sniffer recognizes any `BEGIN:VCARD…END:VCARD` payload
-// and always reports it as the single canonical `{ mime: "text/vcard" }`,
-// regardless of the vCard VERSION or what the uploading client claimed. So
-// vCard lives in `ALLOWED_ATTACHMENT_MIMES` (the detected-mime allowlist),
-// not `ALLOWED_TEXT_MIMES` — the no-magic-bytes branch is unreachable for
-// real vCard content. The agent still reads the file natively via
-// `pinchy_read`, no parser needed.
+// See isKnownMimeAlias in upload-validation.ts for why vCard is content-
+// sniffed as text/vcard, lives in both allowlists, and aliases text/x-vcard.
 describe("vCard support", () => {
   const VCARD = Buffer.from(
     "BEGIN:VCARD\nVERSION:3.0\nFN:Maria Huber\nEMAIL:maria@example.com\nEND:VCARD\n",
@@ -219,12 +213,9 @@ describe("vCard support", () => {
     await expect(validateUploadBuffer(VCARD, "text/vcard")).resolves.toBe("text/vcard");
   });
 
-  // RFC 6350 registered `text/vcard`, obsoleting the pre-standard `x-token`
-  // `text/x-vcard` — but real-world clients (older macOS/Outlook export
-  // flows) still commonly claim the legacy spelling for identical content.
-  // file-type's sniffer always normalizes to `text/vcard`, so without this
-  // alias the exact-match mismatch check below would reject every
-  // legacy-labelled vCard as spoofed content, even though it's genuine.
+  // Legacy x-token spelling still claimed by real clients; the sniffer
+  // normalizes to text/vcard, so the alias preserves the caller's string
+  // instead of failing the mismatch check. See isKnownMimeAlias.
   it("accepts valid vCard content claimed as the legacy text/x-vcard MIME", async () => {
     await expect(validateUploadBuffer(VCARD, "text/x-vcard")).resolves.toBe("text/x-vcard");
   });
