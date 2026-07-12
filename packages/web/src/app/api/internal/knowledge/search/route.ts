@@ -10,28 +10,11 @@ import { db } from "@/db";
 import { activeAgents, type AgentPluginConfig } from "@/db/schema";
 import { retrieve, type RetrievedChunk } from "@/lib/knowledge/retrieve";
 import { embedTexts } from "@/lib/knowledge/embeddings";
+import { DEFAULT_ORG_ID, EMBEDDING_MODEL } from "@/lib/knowledge/constants";
 import { getSetting } from "@/lib/settings";
 import { PROVIDERS } from "@/lib/providers";
 import { deferAuditLog } from "@/lib/audit-deferred";
 import { safeProviderError, type AuditLogEntry, type EntityRef } from "@/lib/audit";
-
-/**
- * Single-tenant seam: Pinchy has no `organizations` table anywhere in the
- * schema — one self-hosted deployment IS one org. The KB design doc
- * ("Architecture") describes the index as "korpus-/org-weit" (corpus-/org-wide)
- * across the whole deployment, with agents acting as filtered views via
- * `allowed_paths` — NOT as separate orgs. `kb_documents.org_id` /
- * `kb_chunks.org_id` exist to keep `retrieve()`'s SQL future-proof for real
- * multi-org tenancy, but nothing in the codebase resolves a per-request org id
- * today (ingest.ts's `orgId` param is only ever exercised by tests). This
- * constant is that seam: every ingest and every retrieval in a single Pinchy
- * deployment uses it, so they always see the same corpus. If Pinchy ever grows
- * real multi-org tenancy, replace this constant with a real per-tenant
- * resolution — do NOT invent a second one that could drift from ingest's.
- */
-export const DEFAULT_ORG_ID = "default";
-
-const EMBEDDING_MODEL = "bge-m3";
 
 function docRefsFromChunks(chunks: RetrievedChunk[]): EntityRef[] {
   const seen = new Map<string, string>();

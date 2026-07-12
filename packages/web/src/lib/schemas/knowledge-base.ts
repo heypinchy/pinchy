@@ -17,3 +17,18 @@ export const knowledgeSearchSchema = z.object({
 });
 
 export type KnowledgeSearchRequest = z.infer<typeof knowledgeSearchSchema>;
+
+/**
+ * Body for `POST /api/agents/[agentId]/knowledge/reindex` — the admin-only
+ * manual ingest trigger. `agentId` comes from the route path, not the body.
+ * `paths` is an optional subset of the agent's granted folders to reindex; when
+ * omitted (the common case) the route reindexes ALL of the agent's granted
+ * folders. Any supplied path that is not among the agent's granted folders is
+ * ignored server-side — the body can only ever narrow the granted set, never
+ * widen it past the agent's `pinchy-files` allowlist.
+ */
+export const knowledgeReindexSchema = z.object({
+  paths: z.array(z.string().trim().min(1)).optional(),
+});
+
+export type KnowledgeReindexRequest = z.infer<typeof knowledgeReindexSchema>;

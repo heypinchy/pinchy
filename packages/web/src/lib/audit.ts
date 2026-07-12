@@ -88,7 +88,8 @@ export type AuditEventType =
   | "file.upload.attached"
   | "file.upload.expired"
   | "retrieval.query"
-  | "knowledge.source_viewed";
+  | "knowledge.source_viewed"
+  | "knowledge.reindex";
 
 interface HmacFieldsV1 {
   timestamp: Date;
@@ -595,6 +596,23 @@ export type AuditLogEntry =
         userId: string;
         agent: EntityRef;
         document: { name: string };
+        reason?: string;
+      };
+    })
+  | (AuditLogBase & {
+      // POST /api/agents/[agentId]/knowledge/reindex: an admin manually
+      // (re)ingests the agent's granted knowledge-base folders. Audited as an
+      // index-management action. `pathCount` is the number of granted folders
+      // reindexed — NOT the folder paths themselves, which can embed a
+      // username (AGENTS.md PII rule). `reason` is present on failure rows
+      // only (embedding endpoint unconfigured, ingest error).
+      eventType: "knowledge.reindex";
+      detail: {
+        agent: EntityRef;
+        pathCount: number;
+        indexed: number;
+        skipped: number;
+        removed: number;
         reason?: string;
       };
     });
