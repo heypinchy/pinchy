@@ -31,7 +31,7 @@ import {
   type IntegrationConnectionType,
   type IntegrationConnectionStatus,
 } from "./enums";
-import type { EmailWorkflowFilter } from "@/lib/email-workflows/types";
+import type { EmailWorkflowFilter, ProcessedEmailOutcome } from "@/lib/email-workflows/types";
 
 // Render `IN ('a', 'b')` from an enum const (db/enums.ts) so a CHECK constraint
 // and its TypeScript source of truth can never drift. The values are enum-safe
@@ -548,6 +548,39 @@ export const emailWorkflowConnections = pgTable(
     addedAt: timestamp("added_at").notNull().defaultNow(),
   },
   (table) => [primaryKey({ columns: [table.workflowId, table.connectionId] })]
+);
+
+// The ledger is the source of truth for processed-tracking. A claim is an atomic
+// INSERT ... ON CONFLICT DO NOTHING on the unique key below (design D2/D3) —
+// mirroring the channel_messages dedup pattern. An email is processed at most
+// once per workflow, so a cursor-loss resync is safe (the sweep re-discovers,
+// the ledger dedups). Real-world dedup ("does this invoice exist?") is the
+// action layer's job, not the ledger's.
+export const processedEmails = pgTable(
+  "processed_emails",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    workflowId: uuid("workflow_id")
+      .notNull()
+      .references(() => emailWorkflows.id, { onDelete: "cascade" }),
+    connectionId: text("connection_id").notNull(),
+    providerMessageId: text("provider_message_id").notNull(),
+    messageIdHeader: text("message_id_header"),
+    status: text("status").notNull().default("processing"),
+    outcome: jsonb("outcome").$type<ProcessedEmailOutcome>(),
+    runId: text("run_id"),
+    claimedAt: timestamp("claimed_at").notNull().defaultNow(),
+    finalizedAt: timestamp("finalized_at"),
+  },
+  (table) => [
+    // Atomic per-rule claim: an email is processed at most once per workflow.
+    uniqueIndex("processed_emails_claim_uniq").on(
+      table.workflowId,
+      table.connectionId,
+      table.providerMessageId
+    ),
+    index("processed_emails_status_idx").on(table.status),
+  ]
 );
 
 // ── Usage Tracking ───────────────────────────────────────────────────
