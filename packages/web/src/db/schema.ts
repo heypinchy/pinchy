@@ -532,6 +532,24 @@ export const emailWorkflows = pgTable(
   ]
 );
 
+// One workflow can watch several mailboxes (design D9). `sinceTs` is the
+// per-(workflow, connection) watermark set when a connection is added, so a new
+// workflow never retroactively processes historical mail.
+export const emailWorkflowConnections = pgTable(
+  "email_workflow_connections",
+  {
+    workflowId: uuid("workflow_id")
+      .notNull()
+      .references(() => emailWorkflows.id, { onDelete: "cascade" }),
+    connectionId: text("connection_id")
+      .notNull()
+      .references(() => integrationConnections.id, { onDelete: "cascade" }),
+    sinceTs: timestamp("since_ts").notNull(),
+    addedAt: timestamp("added_at").notNull().defaultNow(),
+  },
+  (table) => [primaryKey({ columns: [table.workflowId, table.connectionId] })]
+);
+
 // ── Usage Tracking ───────────────────────────────────────────────────
 
 export const usageRecords = pgTable(
