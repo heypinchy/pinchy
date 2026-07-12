@@ -45,8 +45,8 @@ describe("service worker stub", () => {
     expect(bodyOutsideGuard).not.toMatch(/respondWith\s*\(/);
   });
 
-  it("keeps claiming clients and sweeps orphaned share-target cache entries on activate", () => {
+  it("claims clients on activate but does NOT sweep the share-target cache (a deploy landing mid-share must not wipe an unconsumed one — the consume path already clears it, and abandoned entries are evicted by the browser)", () => {
     expect(source).toMatch(/clients\.claim\s*\(/);
-    expect(source).toMatch(/caches\.open\s*\(\s*["']share-target["']\s*\)/);
+    expect(source).not.toMatch(/caches\.open\s*\(\s*["']share-target["']\s*\)/);
   });
 });

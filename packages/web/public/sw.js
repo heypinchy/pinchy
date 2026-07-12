@@ -9,19 +9,13 @@ self.addEventListener("install", () => {
 });
 
 self.addEventListener("activate", (event) => {
-  event.waitUntil(
-    (async () => {
-      await self.clients.claim();
-      try {
-        const cache = await caches.open("share-target");
-        const keys = await cache.keys();
-        await Promise.all(keys.map((k) => cache.delete(k)));
-      } catch {
-        // Best-effort sweep of orphaned share-target cache entries; failures
-        // here must not block activation.
-      }
-    })()
-  );
+  // No cache sweep here: this handler runs immediately on every deploy
+  // (skipWaiting() + clients.claim() below hand over without waiting for
+  // open tabs to close), so a deploy landing while a user has an unconsumed
+  // share would wipe it before the chat page gets a chance to read it. The
+  // normal consume path already clears the entry via clearSharedPayload,
+  // and abandoned entries fall off via the browser's own cache eviction.
+  event.waitUntil(self.clients.claim());
 });
 
 // MUST NOT call event.respondWith() outside the guarded branch below; doing
