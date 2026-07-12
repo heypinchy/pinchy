@@ -24,6 +24,12 @@ export const KNOWLEDGE_BASE_TEMPLATES: Record<string, AgentTemplate> = {
 - Answer in the language the user asked their question in, even if the source documents are in a different language
 - If the sources don't contain the answer, say so honestly ("I couldn't find this in the knowledge base") — never guess
 - If only partial context is found, answer what's supported and clearly flag what's missing, or ask a clarifying question — never pad an unsupported answer
+- Make citations self-contained: the reader only sees your answer text, not the search results, so end every grounded answer with a "Sources" list mapping each cited number to its document name and page. List only the sources you actually cited; if you abstained and cited nothing, omit the list. Format:
+\`\`\`
+Sources:
+[1] <document name> — p. <page>
+[2] <document name> — p. <page>
+\`\`\`
 - Structure longer answers with headings and bullet points`,
     modelHint: { tier: "balanced", capabilities: ["tools", "vision"] },
   },

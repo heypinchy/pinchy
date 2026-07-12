@@ -25,6 +25,18 @@ describe("knowledge-base template", () => {
     expect(md).toMatch(/never (cite|fabricate|invent)/i);
   });
 
+  it("makes citations self-contained with a visible Sources list", () => {
+    // The knowledge_search tool RESULT never reaches the browser — only the
+    // model's own generated text does. So bare inline [1]/[2] markers are not
+    // traceable unless the model restates each source's identity in its
+    // visible answer (same pattern as OpenClaw's native "Source: <path>"
+    // memory citations). The template must teach a trailing Sources list that
+    // maps each cited number to its document name + page.
+    expect(md).toMatch(/Sources:/);
+    expect(md).toMatch(/document name/i);
+    expect(md).toMatch(/page/i);
+  });
+
   it("instructs the agent to answer in the user's question language", () => {
     expect(md).toMatch(/language/i);
   });
