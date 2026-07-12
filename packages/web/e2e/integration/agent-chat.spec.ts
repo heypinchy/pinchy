@@ -6,8 +6,14 @@ import {
   FAKE_OLLAMA_DOMAIN_LOCK_TOOL_TRIGGER,
   FAKE_OLLAMA_FILES_LS_TOOL_TRIGGER,
   FAKE_OLLAMA_FILES_READ_DOCX_TOOL_TRIGGER,
+  FAKE_OLLAMA_KNOWLEDGE_SEARCH_TOOL_TRIGGER,
   FAKE_OLLAMA_RESPONSE,
 } from "../shared/fake-ollama/fake-ollama-server";
+import {
+  pollAuditForTool,
+  waitForOpenClawStable,
+  waitForAgentDispatchable,
+} from "../shared/dispatch-probe";
 import { login, getSmithersAgentId, waitForOpenClawConnected } from "./helpers";
 
 test.describe("Agent chat — full integration", () => {
@@ -433,5 +439,102 @@ test.describe("Plugin behavior — pinchy-files", () => {
         },
       });
     }
+  });
+});
+
+// ── Plugin behavior: pinchy-knowledge ────────────────────────────────────────
+// DISPATCH-COVERAGE ONLY. Proves the pinchy-knowledge plugin loaded into
+// OpenClaw, its registerTool("knowledge_search") took effect, the tool is
+// callable, Pinchy's internal POST /api/internal/knowledge/search route is
+// reached, and a `tool.knowledge_search` audit row fires end-to-end.
+//
+// The probe agent is granted knowledge_search but NO pinchy-files
+// `allowed_paths`, so the route resolves `allowedPaths = []` and `retrieve()`
+// short-circuits to `[]` WITHOUT ever calling the embedder — the fake-ollama
+// server needs no /api/embed support. The tool returns "No matching passages
+// found" with a success outcome, which is exactly the audit signal this guard
+// needs. The REAL data path (ingested docs, RRF ranking, citations, page
+// links) is verified by Task 14's end-to-end check, not here.
+//
+// Uses a fresh SHARED custom agent because Smithers is personal and PATCH
+// allowedTools on a personal agent returns 400 ("Cannot change permissions
+// for personal agents", #427); a custom shared agent accepts the grant.
+test.describe.serial("Plugin behavior — pinchy-knowledge", () => {
+  let agentId: string;
+
+  test.beforeAll(async ({ browser }) => {
+    // The config-regen wait can exceed the 120 s per-test default; give the
+    // setup hook its own generous budget so the dispatch test stays focused.
+    test.setTimeout(300_000);
+    const context = await browser.newContext();
+    const page = await context.newPage();
+    try {
+      await login(page);
+
+      const createRes = await page.request.post("/api/agents", {
+        data: { name: `KnowledgeDispatch-${Date.now()}`, templateId: "custom" },
+      });
+      expect(createRes.status(), await createRes.text()).toBe(201);
+      agentId = ((await createRes.json()) as { id: string }).id;
+
+      // Grant knowledge_search and NOTHING else — crucially no pinchy-files
+      // allowed_paths, so the route's allowedPaths stays [] (clean
+      // empty-success path, no embedder needed).
+      const patchRes = await page.request.patch(`/api/agents/${agentId}`, {
+        data: { allowedTools: ["knowledge_search"] },
+      });
+      expect(patchRes.status(), await patchRes.text()).toBe(200);
+
+      // Wait for OC to settle after the create+PATCH regens, then confirm the
+      // new agent is actually in OC's runtime agents.list before dispatching.
+      await waitForOpenClawStable(async () => {
+        const r = await page.request.get("/api/health/openclaw");
+        return { ok: r.ok(), json: () => r.json() };
+      });
+      await waitForAgentDispatchable(
+        async (id) => {
+          const r = await page.request.get(`/api/health/openclaw?agentId=${id}`);
+          return { ok: r.ok(), json: () => r.json() };
+        },
+        agentId,
+        { deadlineMs: 120_000 }
+      );
+    } finally {
+      await context.close();
+    }
+  });
+
+  test.afterAll(async ({ browser }) => {
+    if (!agentId) return;
+    const context = await browser.newContext();
+    const page = await context.newPage();
+    try {
+      await login(page);
+      await page.request.delete(`/api/agents/${agentId}`);
+    } finally {
+      await context.close();
+    }
+  });
+
+  test("knowledge_search dispatches via fake-LLM and writes audit entry", async ({
+    page,
+  }, testInfo) => {
+    testInfo.setTimeout(180_000);
+    await login(page);
+
+    await page.goto(`/chat/${agentId}`);
+    await expect(page).toHaveURL(`/chat/${agentId}`, { timeout: 10_000 });
+
+    const input = page.getByPlaceholder(/send a message/i);
+    await expect(input).toBeVisible({ timeout: 10_000 });
+    await input.fill(`${FAKE_OLLAMA_KNOWLEDGE_SEARCH_TOOL_TRIGGER}: search the knowledge base`);
+    await input.press("Enter");
+
+    const found = await pollAuditForTool(page, {
+      toolName: "knowledge_search",
+      agentId,
+      deadlineMs: 160_000,
+    });
+    expect(found).toBe(true);
   });
 });
