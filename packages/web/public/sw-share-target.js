@@ -66,16 +66,4 @@ async function handleShareTarget(request) {
   });
 }
 
-async function clearShare(id) {
-  const cache = await caches.open("share-target");
-  const keys = await cache.keys();
-  const prefix = `/__share/${id}/`;
-  await Promise.all(
-    keys
-      .filter((key) => new URL(key.url).pathname.startsWith(prefix))
-      .map((key) => cache.delete(key))
-  );
-}
-
 globalThis.handleShareTarget = handleShareTarget;
-globalThis.clearShare = clearShare;

@@ -15,8 +15,6 @@ import "../../../../public/sw-share-target.js";
 const handleShareTarget = (
   globalThis as unknown as { handleShareTarget: (request: Request) => Promise<Response> }
 ).handleShareTarget;
-const clearShare = (globalThis as unknown as { clearShare: (id: string) => Promise<void> })
-  .clearShare;
 
 /**
  * Minimal in-memory stand-in for the Cache Storage API (`caches.open`).
@@ -140,27 +138,5 @@ describe("sw-share-target", () => {
       text: "",
       url: "https://example.com/source",
     });
-  });
-
-  it("clearShare removes only the entries for the given share id", async () => {
-    const formA = new FormData();
-    formA.set("files", new File(["a"], "a.png", { type: "image/png" }));
-    await handleShareTarget(buildRequest(formA));
-    const idA = FIXED_ID;
-
-    const idB = "22222222-2222-2222-2222-222222222222";
-    (globalThis.crypto.randomUUID as ReturnType<typeof vi.fn>).mockReturnValueOnce(idB);
-    const formB = new FormData();
-    formB.set("files", new File(["b"], "b.png", { type: "image/png" }));
-    await handleShareTarget(buildRequest(formB));
-
-    expect(mockCache.store.size).toBe(4); // 2 files + 2 metas
-
-    await clearShare(idA);
-
-    expect(await mockCache.match(`/__share/${idA}/file/0`)).toBeUndefined();
-    expect(await mockCache.match(`/__share/${idA}/meta`)).toBeUndefined();
-    expect(await mockCache.match(`/__share/${idB}/file/0`)).toBeDefined();
-    expect(await mockCache.match(`/__share/${idB}/meta`)).toBeDefined();
   });
 });
