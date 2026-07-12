@@ -86,7 +86,8 @@ export type AuditEventType =
   | "integration.credentials_updated"
   | "file.upload.staged"
   | "file.upload.attached"
-  | "file.upload.expired";
+  | "file.upload.expired"
+  | "retrieval.query";
 
 interface HmacFieldsV1 {
   timestamp: Date;
@@ -558,6 +559,23 @@ export type AuditLogEntry =
             sweepId: string;
             reason: string;
           };
+    })
+  | (AuditLogBase & {
+      // Knowledge-base retrieval (Task 8 of the KB implementation plan): the
+      // internal /api/internal/knowledge/search route audits every retrieval
+      // deliberately, even though it's read-only — this is the record of
+      // which documents an agent's answer drew on. `query` is intentionally
+      // NOT here: a KB question can carry PII (a name, a case number), so
+      // only a one-way `queryHash` is logged. `reason` is present on failure
+      // rows only (agent not found, retrieval/embedding error).
+      eventType: "retrieval.query";
+      detail: {
+        agent: EntityRef;
+        queryHash: string;
+        resultCount: number;
+        returnedDocumentIds: EntityRef[];
+        reason?: string;
+      };
     });
 
 // ── GDPR crypto-erasure: actorId → auditPseudonym substitution ─────────────
