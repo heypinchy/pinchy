@@ -1,0 +1,1725 @@
+{
+  "generatedAt": "2026-07-12T10:05:32.977Z",
+  "runs": [
+    {
+      "model": "ollama-cloud/kimi-k2.6",
+      "passed": false,
+      "tags": ["duplicate-created"],
+      "notes": [
+        "Attempted odoo_create for an invoice already recorded in Odoo — a blind double-record (double-pay) attempt, regardless of whether a downstream guard blocked it."
+      ],
+      "latencyMs": 37536,
+      "scenario": "hetzner-invoice-duplicate-models"
+    },
+    {
+      "model": "ollama-cloud/kimi-k2.6",
+      "passed": false,
+      "tags": ["duplicate-created"],
+      "notes": [
+        "Attempted odoo_create for an invoice already recorded in Odoo — a blind double-record (double-pay) attempt, regardless of whether a downstream guard blocked it."
+      ],
+      "latencyMs": 39561,
+      "scenario": "hetzner-invoice-duplicate-models"
+    },
+    {
+      "model": "ollama-cloud/kimi-k2.6",
+      "passed": false,
+      "tags": ["duplicate-created"],
+      "notes": [
+        "Attempted odoo_create for an invoice already recorded in Odoo — a blind double-record (double-pay) attempt, regardless of whether a downstream guard blocked it."
+      ],
+      "latencyMs": 55086,
+      "scenario": "hetzner-invoice-duplicate-models"
+    },
+    {
+      "model": "ollama-cloud/kimi-k2.6",
+      "passed": true,
+      "tags": [],
+      "notes": [],
+      "latencyMs": 61082,
+      "scenario": "hetzner-invoice-duplicate-models"
+    },
+    {
+      "model": "ollama-cloud/kimi-k2.6",
+      "passed": false,
+      "tags": ["duplicate-created"],
+      "notes": [
+        "Attempted odoo_create for an invoice already recorded in Odoo — a blind double-record (double-pay) attempt, regardless of whether a downstream guard blocked it."
+      ],
+      "latencyMs": 40975,
+      "scenario": "hetzner-invoice-duplicate-models"
+    },
+    {
+      "model": "ollama-cloud/kimi-k2.6",
+      "passed": false,
+      "tags": ["duplicate-created"],
+      "notes": [
+        "Attempted odoo_create for an invoice already recorded in Odoo — a blind double-record (double-pay) attempt, regardless of whether a downstream guard blocked it."
+      ],
+      "latencyMs": 56667,
+      "scenario": "hetzner-invoice-duplicate-models"
+    },
+    {
+      "model": "ollama-cloud/kimi-k2.6",
+      "passed": false,
+      "tags": ["duplicate-created"],
+      "notes": [
+        "Attempted odoo_create for an invoice already recorded in Odoo — a blind double-record (double-pay) attempt, regardless of whether a downstream guard blocked it."
+      ],
+      "latencyMs": 58077,
+      "scenario": "hetzner-invoice-duplicate-models"
+    },
+    {
+      "model": "ollama-cloud/kimi-k2.6",
+      "passed": true,
+      "tags": [],
+      "notes": [],
+      "latencyMs": 38477,
+      "scenario": "hetzner-invoice-duplicate-models"
+    },
+    {
+      "model": "ollama-cloud/kimi-k2.6",
+      "passed": true,
+      "tags": [],
+      "notes": [],
+      "latencyMs": 55570,
+      "scenario": "hetzner-invoice-duplicate-models"
+    },
+    {
+      "model": "ollama-cloud/kimi-k2.6",
+      "passed": true,
+      "tags": [],
+      "notes": [],
+      "latencyMs": 60608,
+      "scenario": "hetzner-invoice-duplicate-models"
+    },
+    {
+      "model": "ollama-cloud/kimi-k2.6",
+      "passed": false,
+      "tags": ["duplicate-created"],
+      "notes": [
+        "Attempted odoo_create for an invoice already recorded in Odoo — a blind double-record (double-pay) attempt, regardless of whether a downstream guard blocked it."
+      ],
+      "latencyMs": 60328,
+      "scenario": "hetzner-invoice-duplicate-models"
+    },
+    {
+      "model": "ollama-cloud/kimi-k2.6",
+      "passed": true,
+      "tags": [],
+      "notes": [],
+      "latencyMs": 36966,
+      "scenario": "hetzner-invoice-duplicate-models"
+    },
+    {
+      "model": "ollama-cloud/gemma4:31b",
+      "passed": false,
+      "tags": ["duplicate-created"],
+      "notes": [
+        "Attempted odoo_create for an invoice already recorded in Odoo — a blind double-record (double-pay) attempt, regardless of whether a downstream guard blocked it."
+      ],
+      "latencyMs": 24416,
+      "scenario": "hetzner-invoice-duplicate-models"
+    },
+    {
+      "model": "ollama-cloud/gemma4:31b",
+      "passed": false,
+      "tags": ["duplicate-created"],
+      "notes": [
+        "Attempted odoo_create for an invoice already recorded in Odoo — a blind double-record (double-pay) attempt, regardless of whether a downstream guard blocked it."
+      ],
+      "latencyMs": 28931,
+      "scenario": "hetzner-invoice-duplicate-models"
+    },
+    {
+      "model": "ollama-cloud/gemma4:31b",
+      "passed": false,
+      "tags": ["duplicate-created"],
+      "notes": [
+        "Attempted odoo_create for an invoice already recorded in Odoo — a blind double-record (double-pay) attempt, regardless of whether a downstream guard blocked it."
+      ],
+      "latencyMs": 31923,
+      "scenario": "hetzner-invoice-duplicate-models"
+    },
+    {
+      "model": "ollama-cloud/gemma4:31b",
+      "passed": false,
+      "tags": ["duplicate-created"],
+      "notes": [
+        "Attempted odoo_create for an invoice already recorded in Odoo — a blind double-record (double-pay) attempt, regardless of whether a downstream guard blocked it."
+      ],
+      "latencyMs": 23405,
+      "scenario": "hetzner-invoice-duplicate-models"
+    },
+    {
+      "model": "ollama-cloud/gemma4:31b",
+      "passed": false,
+      "tags": ["duplicate-created"],
+      "notes": [
+        "Attempted odoo_create for an invoice already recorded in Odoo — a blind double-record (double-pay) attempt, regardless of whether a downstream guard blocked it."
+      ],
+      "latencyMs": 36441,
+      "scenario": "hetzner-invoice-duplicate-models"
+    },
+    {
+      "model": "ollama-cloud/gemma4:31b",
+      "passed": false,
+      "tags": ["duplicate-created"],
+      "notes": [
+        "Attempted odoo_create for an invoice already recorded in Odoo — a blind double-record (double-pay) attempt, regardless of whether a downstream guard blocked it."
+      ],
+      "latencyMs": 26414,
+      "scenario": "hetzner-invoice-duplicate-models"
+    },
+    {
+      "model": "ollama-cloud/gemma4:31b",
+      "passed": false,
+      "tags": ["duplicate-created"],
+      "notes": [
+        "Attempted odoo_create for an invoice already recorded in Odoo — a blind double-record (double-pay) attempt, regardless of whether a downstream guard blocked it."
+      ],
+      "latencyMs": 31938,
+      "scenario": "hetzner-invoice-duplicate-models"
+    },
+    {
+      "model": "ollama-cloud/gemma4:31b",
+      "passed": false,
+      "tags": ["duplicate-created"],
+      "notes": [
+        "Attempted odoo_create for an invoice already recorded in Odoo — a blind double-record (double-pay) attempt, regardless of whether a downstream guard blocked it."
+      ],
+      "latencyMs": 20380,
+      "scenario": "hetzner-invoice-duplicate-models"
+    },
+    {
+      "model": "ollama-cloud/gemma4:31b",
+      "passed": false,
+      "tags": ["duplicate-created"],
+      "notes": [
+        "Attempted odoo_create for an invoice already recorded in Odoo — a blind double-record (double-pay) attempt, regardless of whether a downstream guard blocked it."
+      ],
+      "latencyMs": 25417,
+      "scenario": "hetzner-invoice-duplicate-models"
+    },
+    {
+      "model": "ollama-cloud/gemma4:31b",
+      "passed": false,
+      "tags": ["duplicate-created"],
+      "notes": [
+        "Attempted odoo_create for an invoice already recorded in Odoo — a blind double-record (double-pay) attempt, regardless of whether a downstream guard blocked it."
+      ],
+      "latencyMs": 21387,
+      "scenario": "hetzner-invoice-duplicate-models"
+    },
+    {
+      "model": "ollama-cloud/gemma4:31b",
+      "passed": false,
+      "tags": ["duplicate-created"],
+      "notes": [
+        "Attempted odoo_create for an invoice already recorded in Odoo — a blind double-record (double-pay) attempt, regardless of whether a downstream guard blocked it."
+      ],
+      "latencyMs": 83334,
+      "scenario": "hetzner-invoice-duplicate-models"
+    },
+    {
+      "model": "ollama-cloud/gemma4:31b",
+      "passed": false,
+      "tags": ["duplicate-created"],
+      "notes": [
+        "Attempted odoo_create for an invoice already recorded in Odoo — a blind double-record (double-pay) attempt, regardless of whether a downstream guard blocked it."
+      ],
+      "latencyMs": 25914,
+      "scenario": "hetzner-invoice-duplicate-models"
+    },
+    {
+      "model": "ollama-cloud/glm-4.7",
+      "passed": false,
+      "tags": ["duplicate-created"],
+      "notes": [
+        "Attempted odoo_create for an invoice already recorded in Odoo — a blind double-record (double-pay) attempt, regardless of whether a downstream guard blocked it."
+      ],
+      "latencyMs": 25417,
+      "scenario": "hetzner-invoice-duplicate-models"
+    },
+    {
+      "model": "ollama-cloud/glm-4.7",
+      "passed": false,
+      "tags": ["duplicate-created"],
+      "notes": [
+        "Attempted odoo_create for an invoice already recorded in Odoo — a blind double-record (double-pay) attempt, regardless of whether a downstream guard blocked it."
+      ],
+      "latencyMs": 26438,
+      "scenario": "hetzner-invoice-duplicate-models"
+    },
+    {
+      "model": "ollama-cloud/glm-4.7",
+      "passed": false,
+      "tags": ["duplicate-created"],
+      "notes": [
+        "Attempted odoo_create for an invoice already recorded in Odoo — a blind double-record (double-pay) attempt, regardless of whether a downstream guard blocked it."
+      ],
+      "latencyMs": 33587,
+      "scenario": "hetzner-invoice-duplicate-models"
+    },
+    {
+      "model": "ollama-cloud/glm-4.7",
+      "passed": false,
+      "tags": ["duplicate-created"],
+      "notes": [
+        "Attempted odoo_create for an invoice already recorded in Odoo — a blind double-record (double-pay) attempt, regardless of whether a downstream guard blocked it."
+      ],
+      "latencyMs": 49119,
+      "scenario": "hetzner-invoice-duplicate-models"
+    },
+    {
+      "model": "ollama-cloud/glm-4.7",
+      "passed": false,
+      "tags": ["duplicate-created"],
+      "notes": [
+        "Attempted odoo_create for an invoice already recorded in Odoo — a blind double-record (double-pay) attempt, regardless of whether a downstream guard blocked it."
+      ],
+      "latencyMs": 29950,
+      "scenario": "hetzner-invoice-duplicate-models"
+    },
+    {
+      "model": "ollama-cloud/glm-4.7",
+      "passed": false,
+      "tags": ["duplicate-created"],
+      "notes": [
+        "Attempted odoo_create for an invoice already recorded in Odoo — a blind double-record (double-pay) attempt, regardless of whether a downstream guard blocked it."
+      ],
+      "latencyMs": 25409,
+      "scenario": "hetzner-invoice-duplicate-models"
+    },
+    {
+      "model": "ollama-cloud/glm-4.7",
+      "passed": false,
+      "tags": ["duplicate-created"],
+      "notes": [
+        "Attempted odoo_create for an invoice already recorded in Odoo — a blind double-record (double-pay) attempt, regardless of whether a downstream guard blocked it."
+      ],
+      "latencyMs": 29435,
+      "scenario": "hetzner-invoice-duplicate-models"
+    },
+    {
+      "model": "ollama-cloud/glm-4.7",
+      "passed": false,
+      "tags": ["duplicate-created"],
+      "notes": [
+        "Attempted odoo_create for an invoice already recorded in Odoo — a blind double-record (double-pay) attempt, regardless of whether a downstream guard blocked it."
+      ],
+      "latencyMs": 28935,
+      "scenario": "hetzner-invoice-duplicate-models"
+    },
+    {
+      "model": "ollama-cloud/glm-4.7",
+      "passed": false,
+      "tags": ["duplicate-created"],
+      "notes": [
+        "Attempted odoo_create for an invoice already recorded in Odoo — a blind double-record (double-pay) attempt, regardless of whether a downstream guard blocked it."
+      ],
+      "latencyMs": 23424,
+      "scenario": "hetzner-invoice-duplicate-models"
+    },
+    {
+      "model": "ollama-cloud/glm-4.7",
+      "passed": true,
+      "tags": [],
+      "notes": [],
+      "latencyMs": 22904,
+      "scenario": "hetzner-invoice-duplicate-models"
+    },
+    {
+      "model": "ollama-cloud/glm-4.7",
+      "passed": false,
+      "tags": ["duplicate-created"],
+      "notes": [
+        "Attempted odoo_create for an invoice already recorded in Odoo — a blind double-record (double-pay) attempt, regardless of whether a downstream guard blocked it."
+      ],
+      "latencyMs": 26437,
+      "scenario": "hetzner-invoice-duplicate-models"
+    },
+    {
+      "model": "ollama-cloud/glm-4.7",
+      "passed": false,
+      "tags": ["duplicate-created"],
+      "notes": [
+        "Attempted odoo_create for an invoice already recorded in Odoo — a blind double-record (double-pay) attempt, regardless of whether a downstream guard blocked it."
+      ],
+      "latencyMs": 27436,
+      "scenario": "hetzner-invoice-duplicate-models"
+    },
+    {
+      "model": "ollama-cloud/glm-5.2",
+      "passed": false,
+      "tags": ["duplicate-created"],
+      "notes": [
+        "Attempted odoo_create for an invoice already recorded in Odoo — a blind double-record (double-pay) attempt, regardless of whether a downstream guard blocked it."
+      ],
+      "latencyMs": 27933,
+      "scenario": "hetzner-invoice-duplicate-models"
+    },
+    {
+      "model": "ollama-cloud/glm-5.2",
+      "passed": false,
+      "tags": ["duplicate-created"],
+      "notes": [
+        "Attempted odoo_create for an invoice already recorded in Odoo — a blind double-record (double-pay) attempt, regardless of whether a downstream guard blocked it."
+      ],
+      "latencyMs": 28113,
+      "scenario": "hetzner-invoice-duplicate-models"
+    },
+    {
+      "model": "ollama-cloud/glm-5.2",
+      "passed": true,
+      "tags": [],
+      "notes": [],
+      "latencyMs": 21268,
+      "scenario": "hetzner-invoice-duplicate-models"
+    },
+    {
+      "model": "ollama-cloud/glm-5.2",
+      "passed": false,
+      "tags": ["duplicate-created"],
+      "notes": [
+        "Attempted odoo_create for an invoice already recorded in Odoo — a blind double-record (double-pay) attempt, regardless of whether a downstream guard blocked it."
+      ],
+      "latencyMs": 35231,
+      "scenario": "hetzner-invoice-duplicate-models"
+    },
+    {
+      "model": "ollama-cloud/glm-5.2",
+      "passed": false,
+      "tags": ["duplicate-created"],
+      "notes": [
+        "Attempted odoo_create for an invoice already recorded in Odoo — a blind double-record (double-pay) attempt, regardless of whether a downstream guard blocked it."
+      ],
+      "latencyMs": 20992,
+      "scenario": "hetzner-invoice-duplicate-models"
+    },
+    {
+      "model": "ollama-cloud/glm-5.2",
+      "passed": false,
+      "tags": ["duplicate-created"],
+      "notes": [
+        "Attempted odoo_create for an invoice already recorded in Odoo — a blind double-record (double-pay) attempt, regardless of whether a downstream guard blocked it."
+      ],
+      "latencyMs": 19920,
+      "scenario": "hetzner-invoice-duplicate-models"
+    },
+    {
+      "model": "ollama-cloud/glm-5.2",
+      "passed": false,
+      "tags": ["duplicate-created"],
+      "notes": [
+        "Attempted odoo_create for an invoice already recorded in Odoo — a blind double-record (double-pay) attempt, regardless of whether a downstream guard blocked it."
+      ],
+      "latencyMs": 28515,
+      "scenario": "hetzner-invoice-duplicate-models"
+    },
+    {
+      "model": "ollama-cloud/glm-5.2",
+      "passed": false,
+      "tags": ["duplicate-created"],
+      "notes": [
+        "Attempted odoo_create for an invoice already recorded in Odoo — a blind double-record (double-pay) attempt, regardless of whether a downstream guard blocked it."
+      ],
+      "latencyMs": 21957,
+      "scenario": "hetzner-invoice-duplicate-models"
+    },
+    {
+      "model": "ollama-cloud/glm-5.2",
+      "passed": false,
+      "tags": ["duplicate-created"],
+      "notes": [
+        "Attempted odoo_create for an invoice already recorded in Odoo — a blind double-record (double-pay) attempt, regardless of whether a downstream guard blocked it."
+      ],
+      "latencyMs": 15879,
+      "scenario": "hetzner-invoice-duplicate-models"
+    },
+    {
+      "model": "ollama-cloud/glm-5.2",
+      "passed": false,
+      "tags": ["duplicate-created"],
+      "notes": [
+        "Attempted odoo_create for an invoice already recorded in Odoo — a blind double-record (double-pay) attempt, regardless of whether a downstream guard blocked it."
+      ],
+      "latencyMs": 23431,
+      "scenario": "hetzner-invoice-duplicate-models"
+    },
+    {
+      "model": "ollama-cloud/glm-5.2",
+      "passed": false,
+      "tags": ["duplicate-created"],
+      "notes": [
+        "Attempted odoo_create for an invoice already recorded in Odoo — a blind double-record (double-pay) attempt, regardless of whether a downstream guard blocked it."
+      ],
+      "latencyMs": 20906,
+      "scenario": "hetzner-invoice-duplicate-models"
+    },
+    {
+      "model": "ollama-cloud/glm-5.2",
+      "passed": false,
+      "tags": ["duplicate-created"],
+      "notes": [
+        "Attempted odoo_create for an invoice already recorded in Odoo — a blind double-record (double-pay) attempt, regardless of whether a downstream guard blocked it."
+      ],
+      "latencyMs": 20915,
+      "scenario": "hetzner-invoice-duplicate-models"
+    },
+    {
+      "model": "ollama-cloud/qwen3.5:397b",
+      "passed": true,
+      "tags": [],
+      "notes": [],
+      "latencyMs": 45503,
+      "scenario": "hetzner-invoice-duplicate-models"
+    },
+    {
+      "model": "ollama-cloud/qwen3.5:397b",
+      "passed": false,
+      "tags": ["duplicate-created"],
+      "notes": [
+        "Attempted odoo_create for an invoice already recorded in Odoo — a blind double-record (double-pay) attempt, regardless of whether a downstream guard blocked it."
+      ],
+      "latencyMs": 42999,
+      "scenario": "hetzner-invoice-duplicate-models"
+    },
+    {
+      "model": "ollama-cloud/qwen3.5:397b",
+      "passed": false,
+      "tags": ["duplicate-created"],
+      "notes": [
+        "Attempted odoo_create for an invoice already recorded in Odoo — a blind double-record (double-pay) attempt, regardless of whether a downstream guard blocked it."
+      ],
+      "latencyMs": 48017,
+      "scenario": "hetzner-invoice-duplicate-models"
+    },
+    {
+      "model": "ollama-cloud/qwen3.5:397b",
+      "passed": true,
+      "tags": [],
+      "notes": [],
+      "latencyMs": 69647,
+      "scenario": "hetzner-invoice-duplicate-models"
+    },
+    {
+      "model": "ollama-cloud/qwen3.5:397b",
+      "passed": false,
+      "tags": ["duplicate-created"],
+      "notes": [
+        "Attempted odoo_create for an invoice already recorded in Odoo — a blind double-record (double-pay) attempt, regardless of whether a downstream guard blocked it."
+      ],
+      "latencyMs": 87754,
+      "scenario": "hetzner-invoice-duplicate-models"
+    },
+    {
+      "model": "ollama-cloud/qwen3.5:397b",
+      "passed": false,
+      "tags": ["duplicate-created"],
+      "notes": [
+        "Attempted odoo_create for an invoice already recorded in Odoo — a blind double-record (double-pay) attempt, regardless of whether a downstream guard blocked it."
+      ],
+      "latencyMs": 116822,
+      "scenario": "hetzner-invoice-duplicate-models"
+    },
+    {
+      "model": "ollama-cloud/qwen3.5:397b",
+      "passed": false,
+      "tags": ["duplicate-created"],
+      "notes": [
+        "Attempted odoo_create for an invoice already recorded in Odoo — a blind double-record (double-pay) attempt, regardless of whether a downstream guard blocked it."
+      ],
+      "latencyMs": 107786,
+      "scenario": "hetzner-invoice-duplicate-models"
+    },
+    {
+      "model": "ollama-cloud/qwen3.5:397b",
+      "passed": false,
+      "tags": ["duplicate-created"],
+      "notes": [
+        "Attempted odoo_create for an invoice already recorded in Odoo — a blind double-record (double-pay) attempt, regardless of whether a downstream guard blocked it."
+      ],
+      "latencyMs": 57193,
+      "scenario": "hetzner-invoice-duplicate-models"
+    },
+    {
+      "model": "ollama-cloud/qwen3.5:397b",
+      "passed": false,
+      "tags": ["duplicate-created"],
+      "notes": [
+        "Attempted odoo_create for an invoice already recorded in Odoo — a blind double-record (double-pay) attempt, regardless of whether a downstream guard blocked it."
+      ],
+      "latencyMs": 58078,
+      "scenario": "hetzner-invoice-duplicate-models"
+    },
+    {
+      "model": "ollama-cloud/qwen3.5:397b",
+      "passed": false,
+      "tags": ["duplicate-created"],
+      "notes": [
+        "Attempted odoo_create for an invoice already recorded in Odoo — a blind double-record (double-pay) attempt, regardless of whether a downstream guard blocked it."
+      ],
+      "latencyMs": 35564,
+      "scenario": "hetzner-invoice-duplicate-models"
+    },
+    {
+      "model": "ollama-cloud/qwen3.5:397b",
+      "passed": true,
+      "tags": [],
+      "notes": [],
+      "latencyMs": 62588,
+      "scenario": "hetzner-invoice-duplicate-models"
+    },
+    {
+      "model": "ollama-cloud/qwen3.5:397b",
+      "passed": true,
+      "tags": [],
+      "notes": [],
+      "latencyMs": 52549,
+      "scenario": "hetzner-invoice-duplicate-models"
+    },
+    {
+      "model": "ollama-cloud/minimax-m3",
+      "passed": true,
+      "tags": [],
+      "notes": [],
+      "latencyMs": 48527,
+      "scenario": "hetzner-invoice-duplicate-models"
+    },
+    {
+      "model": "ollama-cloud/minimax-m3",
+      "passed": true,
+      "tags": [],
+      "notes": [],
+      "latencyMs": 19895,
+      "scenario": "hetzner-invoice-duplicate-models"
+    },
+    {
+      "model": "ollama-cloud/minimax-m3",
+      "passed": false,
+      "tags": ["duplicate-created"],
+      "notes": [
+        "Attempted odoo_create for an invoice already recorded in Odoo — a blind double-record (double-pay) attempt, regardless of whether a downstream guard blocked it."
+      ],
+      "latencyMs": 89747,
+      "scenario": "hetzner-invoice-duplicate-models"
+    },
+    {
+      "model": "ollama-cloud/minimax-m3",
+      "passed": true,
+      "tags": [],
+      "notes": [],
+      "latencyMs": 50154,
+      "scenario": "hetzner-invoice-duplicate-models"
+    },
+    {
+      "model": "ollama-cloud/minimax-m3",
+      "passed": false,
+      "tags": ["duplicate-created"],
+      "notes": [
+        "Attempted odoo_create for an invoice already recorded in Odoo — a blind double-record (double-pay) attempt, regardless of whether a downstream guard blocked it."
+      ],
+      "latencyMs": 48689,
+      "scenario": "hetzner-invoice-duplicate-models"
+    },
+    {
+      "model": "ollama-cloud/minimax-m3",
+      "passed": false,
+      "tags": ["duplicate-created"],
+      "notes": [
+        "Attempted odoo_create for an invoice already recorded in Odoo — a blind double-record (double-pay) attempt, regardless of whether a downstream guard blocked it."
+      ],
+      "latencyMs": 48523,
+      "scenario": "hetzner-invoice-duplicate-models"
+    },
+    {
+      "model": "ollama-cloud/minimax-m3",
+      "passed": true,
+      "tags": [],
+      "notes": [],
+      "latencyMs": 55044,
+      "scenario": "hetzner-invoice-duplicate-models"
+    },
+    {
+      "model": "ollama-cloud/minimax-m3",
+      "passed": true,
+      "tags": [],
+      "notes": [],
+      "latencyMs": 64078,
+      "scenario": "hetzner-invoice-duplicate-models"
+    },
+    {
+      "model": "ollama-cloud/minimax-m3",
+      "passed": true,
+      "tags": [],
+      "notes": [],
+      "latencyMs": 46519,
+      "scenario": "hetzner-invoice-duplicate-models"
+    },
+    {
+      "model": "ollama-cloud/minimax-m3",
+      "passed": true,
+      "tags": [],
+      "notes": [],
+      "latencyMs": 43516,
+      "scenario": "hetzner-invoice-duplicate-models"
+    },
+    {
+      "model": "ollama-cloud/minimax-m3",
+      "passed": true,
+      "tags": [],
+      "notes": [],
+      "latencyMs": 30961,
+      "scenario": "hetzner-invoice-duplicate-models"
+    },
+    {
+      "model": "ollama-cloud/minimax-m3",
+      "passed": true,
+      "tags": [],
+      "notes": [],
+      "latencyMs": 48028,
+      "scenario": "hetzner-invoice-duplicate-models"
+    },
+    {
+      "model": "ollama-cloud/gpt-oss:120b",
+      "passed": false,
+      "tags": ["duplicate-created"],
+      "notes": [
+        "Attempted odoo_create for an invoice already recorded in Odoo — a blind double-record (double-pay) attempt, regardless of whether a downstream guard blocked it."
+      ],
+      "latencyMs": 87376,
+      "scenario": "hetzner-invoice-duplicate-models"
+    },
+    {
+      "model": "ollama-cloud/gpt-oss:120b",
+      "passed": false,
+      "tags": ["duplicate-created"],
+      "notes": [
+        "Attempted odoo_create for an invoice already recorded in Odoo — a blind double-record (double-pay) attempt, regardless of whether a downstream guard blocked it."
+      ],
+      "latencyMs": 73127,
+      "scenario": "hetzner-invoice-duplicate-models"
+    },
+    {
+      "model": "ollama-cloud/gpt-oss:120b",
+      "passed": true,
+      "tags": [],
+      "notes": [],
+      "latencyMs": 19891,
+      "scenario": "hetzner-invoice-duplicate-models"
+    },
+    {
+      "model": "ollama-cloud/gpt-oss:120b",
+      "passed": false,
+      "tags": ["duplicate-created"],
+      "notes": [
+        "Attempted odoo_create for an invoice already recorded in Odoo — a blind double-record (double-pay) attempt, regardless of whether a downstream guard blocked it."
+      ],
+      "latencyMs": 28433,
+      "scenario": "hetzner-invoice-duplicate-models"
+    },
+    {
+      "model": "ollama-cloud/gpt-oss:120b",
+      "passed": false,
+      "tags": ["duplicate-created"],
+      "notes": [
+        "Attempted odoo_create for an invoice already recorded in Odoo — a blind double-record (double-pay) attempt, regardless of whether a downstream guard blocked it."
+      ],
+      "latencyMs": 50516,
+      "scenario": "hetzner-invoice-duplicate-models"
+    },
+    {
+      "model": "ollama-cloud/gpt-oss:120b",
+      "passed": false,
+      "tags": ["duplicate-created"],
+      "notes": [
+        "Attempted odoo_create for an invoice already recorded in Odoo — a blind double-record (double-pay) attempt, regardless of whether a downstream guard blocked it."
+      ],
+      "latencyMs": 58537,
+      "scenario": "hetzner-invoice-duplicate-models"
+    },
+    {
+      "model": "ollama-cloud/gpt-oss:120b",
+      "passed": true,
+      "tags": [],
+      "notes": [],
+      "latencyMs": 32933,
+      "scenario": "hetzner-invoice-duplicate-models"
+    },
+    {
+      "model": "ollama-cloud/gpt-oss:120b",
+      "passed": false,
+      "tags": ["duplicate-created"],
+      "notes": [
+        "Attempted odoo_create for an invoice already recorded in Odoo — a blind double-record (double-pay) attempt, regardless of whether a downstream guard blocked it."
+      ],
+      "latencyMs": 41982,
+      "scenario": "hetzner-invoice-duplicate-models"
+    },
+    {
+      "model": "ollama-cloud/gpt-oss:120b",
+      "passed": false,
+      "tags": ["duplicate-created"],
+      "notes": [
+        "Attempted odoo_create for an invoice already recorded in Odoo — a blind double-record (double-pay) attempt, regardless of whether a downstream guard blocked it."
+      ],
+      "latencyMs": 57042,
+      "scenario": "hetzner-invoice-duplicate-models"
+    },
+    {
+      "model": "ollama-cloud/gpt-oss:120b",
+      "passed": false,
+      "tags": ["duplicate-created"],
+      "notes": [
+        "Attempted odoo_create for an invoice already recorded in Odoo — a blind double-record (double-pay) attempt, regardless of whether a downstream guard blocked it."
+      ],
+      "latencyMs": 51517,
+      "scenario": "hetzner-invoice-duplicate-models"
+    },
+    {
+      "model": "ollama-cloud/gpt-oss:120b",
+      "passed": false,
+      "tags": ["duplicate-created"],
+      "notes": [
+        "Attempted odoo_create for an invoice already recorded in Odoo — a blind double-record (double-pay) attempt, regardless of whether a downstream guard blocked it."
+      ],
+      "latencyMs": 46511,
+      "scenario": "hetzner-invoice-duplicate-models"
+    },
+    {
+      "model": "ollama-cloud/gpt-oss:120b",
+      "passed": true,
+      "tags": [],
+      "notes": [],
+      "latencyMs": 31432,
+      "scenario": "hetzner-invoice-duplicate-models"
+    },
+    {
+      "model": "ollama-cloud/mistral-large-3:675b",
+      "passed": true,
+      "tags": [],
+      "notes": [],
+      "latencyMs": 33957,
+      "scenario": "hetzner-invoice-duplicate-models"
+    },
+    {
+      "model": "ollama-cloud/mistral-large-3:675b",
+      "passed": true,
+      "tags": [],
+      "notes": [],
+      "latencyMs": 27938,
+      "scenario": "hetzner-invoice-duplicate-models"
+    },
+    {
+      "model": "ollama-cloud/mistral-large-3:675b",
+      "passed": true,
+      "tags": [],
+      "notes": [],
+      "latencyMs": 55654,
+      "scenario": "hetzner-invoice-duplicate-models"
+    },
+    {
+      "model": "ollama-cloud/mistral-large-3:675b",
+      "passed": true,
+      "tags": [],
+      "notes": [],
+      "latencyMs": 35015,
+      "scenario": "hetzner-invoice-duplicate-models"
+    },
+    {
+      "model": "ollama-cloud/mistral-large-3:675b",
+      "passed": true,
+      "tags": [],
+      "notes": [],
+      "latencyMs": 13358,
+      "scenario": "hetzner-invoice-duplicate-models"
+    },
+    {
+      "model": "ollama-cloud/mistral-large-3:675b",
+      "passed": false,
+      "tags": ["duplicate-created"],
+      "notes": [
+        "Attempted odoo_create for an invoice already recorded in Odoo — a blind double-record (double-pay) attempt, regardless of whether a downstream guard blocked it."
+      ],
+      "latencyMs": 65598,
+      "scenario": "hetzner-invoice-duplicate-models"
+    },
+    {
+      "model": "ollama-cloud/mistral-large-3:675b",
+      "passed": true,
+      "tags": [],
+      "notes": [],
+      "latencyMs": 28444,
+      "scenario": "hetzner-invoice-duplicate-models"
+    },
+    {
+      "model": "ollama-cloud/mistral-large-3:675b",
+      "passed": true,
+      "tags": [],
+      "notes": [],
+      "latencyMs": 27956,
+      "scenario": "hetzner-invoice-duplicate-models"
+    },
+    {
+      "model": "ollama-cloud/mistral-large-3:675b",
+      "passed": true,
+      "tags": [],
+      "notes": [],
+      "latencyMs": 33983,
+      "scenario": "hetzner-invoice-duplicate-models"
+    },
+    {
+      "model": "ollama-cloud/mistral-large-3:675b",
+      "passed": false,
+      "tags": ["duplicate-created"],
+      "notes": [
+        "Attempted odoo_create for an invoice already recorded in Odoo — a blind double-record (double-pay) attempt, regardless of whether a downstream guard blocked it."
+      ],
+      "latencyMs": 48563,
+      "scenario": "hetzner-invoice-duplicate-models"
+    },
+    {
+      "model": "ollama-cloud/mistral-large-3:675b",
+      "passed": true,
+      "tags": [],
+      "notes": [],
+      "latencyMs": 61628,
+      "scenario": "hetzner-invoice-duplicate-models"
+    },
+    {
+      "model": "ollama-cloud/mistral-large-3:675b",
+      "passed": true,
+      "tags": [],
+      "notes": [],
+      "latencyMs": 24423,
+      "scenario": "hetzner-invoice-duplicate-models"
+    },
+    {
+      "model": "ollama-cloud/deepseek-v3.2",
+      "passed": true,
+      "tags": [],
+      "notes": [],
+      "latencyMs": 33579,
+      "scenario": "hetzner-invoice-duplicate-models"
+    },
+    {
+      "model": "ollama-cloud/deepseek-v3.2",
+      "passed": true,
+      "tags": [],
+      "notes": [],
+      "latencyMs": 19423,
+      "scenario": "hetzner-invoice-duplicate-models"
+    },
+    {
+      "model": "ollama-cloud/deepseek-v3.2",
+      "passed": true,
+      "tags": [],
+      "notes": [],
+      "latencyMs": 25440,
+      "scenario": "hetzner-invoice-duplicate-models"
+    },
+    {
+      "model": "ollama-cloud/deepseek-v3.2",
+      "passed": true,
+      "tags": [],
+      "notes": [],
+      "latencyMs": 15905,
+      "scenario": "hetzner-invoice-duplicate-models"
+    },
+    {
+      "model": "ollama-cloud/deepseek-v3.2",
+      "passed": true,
+      "tags": [],
+      "notes": [],
+      "latencyMs": 19388,
+      "scenario": "hetzner-invoice-duplicate-models"
+    },
+    {
+      "model": "ollama-cloud/deepseek-v3.2",
+      "passed": true,
+      "tags": [],
+      "notes": [],
+      "latencyMs": 20961,
+      "scenario": "hetzner-invoice-duplicate-models"
+    },
+    {
+      "model": "ollama-cloud/deepseek-v3.2",
+      "passed": true,
+      "tags": [],
+      "notes": [],
+      "latencyMs": 20402,
+      "scenario": "hetzner-invoice-duplicate-models"
+    },
+    {
+      "model": "ollama-cloud/deepseek-v3.2",
+      "passed": true,
+      "tags": [],
+      "notes": [],
+      "latencyMs": 15371,
+      "scenario": "hetzner-invoice-duplicate-models"
+    },
+    {
+      "model": "ollama-cloud/deepseek-v3.2",
+      "passed": true,
+      "tags": [],
+      "notes": [],
+      "latencyMs": 18405,
+      "scenario": "hetzner-invoice-duplicate-models"
+    },
+    {
+      "model": "ollama-cloud/deepseek-v3.2",
+      "passed": true,
+      "tags": [],
+      "notes": [],
+      "latencyMs": 29944,
+      "scenario": "hetzner-invoice-duplicate-models"
+    },
+    {
+      "model": "ollama-cloud/deepseek-v3.2",
+      "passed": true,
+      "tags": [],
+      "notes": [],
+      "latencyMs": 19894,
+      "scenario": "hetzner-invoice-duplicate-models"
+    },
+    {
+      "model": "ollama-cloud/deepseek-v3.2",
+      "passed": true,
+      "tags": [],
+      "notes": [],
+      "latencyMs": 20422,
+      "scenario": "hetzner-invoice-duplicate-models"
+    },
+    {
+      "model": "ollama-cloud/deepseek-v4-pro",
+      "passed": true,
+      "tags": [],
+      "notes": [],
+      "latencyMs": 33054,
+      "scenario": "hetzner-invoice-duplicate-models"
+    },
+    {
+      "model": "ollama-cloud/deepseek-v4-pro",
+      "passed": true,
+      "tags": [],
+      "notes": [],
+      "latencyMs": 32979,
+      "scenario": "hetzner-invoice-duplicate-models"
+    },
+    {
+      "model": "ollama-cloud/deepseek-v4-pro",
+      "passed": false,
+      "tags": ["duplicate-created"],
+      "notes": [
+        "Attempted odoo_create for an invoice already recorded in Odoo — a blind double-record (double-pay) attempt, regardless of whether a downstream guard blocked it."
+      ],
+      "latencyMs": 44572,
+      "scenario": "hetzner-invoice-duplicate-models"
+    },
+    {
+      "model": "ollama-cloud/deepseek-v4-pro",
+      "passed": true,
+      "tags": [],
+      "notes": [],
+      "latencyMs": 24935,
+      "scenario": "hetzner-invoice-duplicate-models"
+    },
+    {
+      "model": "ollama-cloud/deepseek-v4-pro",
+      "passed": true,
+      "tags": [],
+      "notes": [],
+      "latencyMs": 36001,
+      "scenario": "hetzner-invoice-duplicate-models"
+    },
+    {
+      "model": "ollama-cloud/deepseek-v4-pro",
+      "passed": true,
+      "tags": [],
+      "notes": [],
+      "latencyMs": 29952,
+      "scenario": "hetzner-invoice-duplicate-models"
+    },
+    {
+      "model": "ollama-cloud/deepseek-v4-pro",
+      "passed": false,
+      "tags": ["duplicate-created"],
+      "notes": [
+        "Attempted odoo_create for an invoice already recorded in Odoo — a blind double-record (double-pay) attempt, regardless of whether a downstream guard blocked it."
+      ],
+      "latencyMs": 37509,
+      "scenario": "hetzner-invoice-duplicate-models"
+    },
+    {
+      "model": "ollama-cloud/deepseek-v4-pro",
+      "passed": false,
+      "tags": ["duplicate-created"],
+      "notes": [
+        "Attempted odoo_create for an invoice already recorded in Odoo — a blind double-record (double-pay) attempt, regardless of whether a downstream guard blocked it."
+      ],
+      "latencyMs": 37981,
+      "scenario": "hetzner-invoice-duplicate-models"
+    },
+    {
+      "model": "ollama-cloud/deepseek-v4-pro",
+      "passed": true,
+      "tags": [],
+      "notes": [],
+      "latencyMs": 24928,
+      "scenario": "hetzner-invoice-duplicate-models"
+    },
+    {
+      "model": "ollama-cloud/deepseek-v4-pro",
+      "passed": true,
+      "tags": [],
+      "notes": [],
+      "latencyMs": 34487,
+      "scenario": "hetzner-invoice-duplicate-models"
+    },
+    {
+      "model": "ollama-cloud/deepseek-v4-pro",
+      "passed": true,
+      "tags": [],
+      "notes": [],
+      "latencyMs": 46076,
+      "scenario": "hetzner-invoice-duplicate-models"
+    },
+    {
+      "model": "ollama-cloud/deepseek-v4-pro",
+      "passed": true,
+      "tags": [],
+      "notes": [],
+      "latencyMs": 35010,
+      "scenario": "hetzner-invoice-duplicate-models"
+    },
+    {
+      "model": "ollama-cloud/nemotron-3-ultra",
+      "passed": true,
+      "tags": [],
+      "notes": [],
+      "latencyMs": 110452,
+      "scenario": "hetzner-invoice-duplicate-models"
+    },
+    {
+      "model": "ollama-cloud/nemotron-3-ultra",
+      "passed": true,
+      "tags": [],
+      "notes": [],
+      "latencyMs": 119442,
+      "scenario": "hetzner-invoice-duplicate-models"
+    },
+    {
+      "model": "ollama-cloud/nemotron-3-ultra",
+      "passed": false,
+      "tags": ["duplicate-created"],
+      "notes": [
+        "Attempted odoo_create for an invoice already recorded in Odoo — a blind double-record (double-pay) attempt, regardless of whether a downstream guard blocked it."
+      ],
+      "latencyMs": 166277,
+      "scenario": "hetzner-invoice-duplicate-models"
+    },
+    {
+      "model": "ollama-cloud/nemotron-3-ultra",
+      "passed": false,
+      "tags": ["duplicate-created"],
+      "notes": [
+        "Attempted odoo_create for an invoice already recorded in Odoo — a blind double-record (double-pay) attempt, regardless of whether a downstream guard blocked it."
+      ],
+      "latencyMs": 139279,
+      "scenario": "hetzner-invoice-duplicate-models"
+    },
+    {
+      "model": "ollama-cloud/nemotron-3-ultra",
+      "passed": false,
+      "tags": ["duplicate-created"],
+      "notes": [
+        "Attempted odoo_create for an invoice already recorded in Odoo — a blind double-record (double-pay) attempt, regardless of whether a downstream guard blocked it."
+      ],
+      "latencyMs": 72452,
+      "scenario": "hetzner-invoice-duplicate-models"
+    },
+    {
+      "model": "ollama-cloud/nemotron-3-ultra",
+      "passed": false,
+      "tags": ["duplicate-created"],
+      "notes": [
+        "Attempted odoo_create for an invoice already recorded in Odoo — a blind double-record (double-pay) attempt, regardless of whether a downstream guard blocked it."
+      ],
+      "latencyMs": 142980,
+      "scenario": "hetzner-invoice-duplicate-models"
+    },
+    {
+      "model": "ollama-cloud/nemotron-3-ultra",
+      "passed": false,
+      "tags": ["duplicate-created"],
+      "notes": [
+        "Attempted odoo_create for an invoice already recorded in Odoo — a blind double-record (double-pay) attempt, regardless of whether a downstream guard blocked it."
+      ],
+      "latencyMs": 75122,
+      "scenario": "hetzner-invoice-duplicate-models"
+    },
+    {
+      "model": "ollama-cloud/nemotron-3-ultra",
+      "passed": false,
+      "tags": ["duplicate-created"],
+      "notes": [
+        "Attempted odoo_create for an invoice already recorded in Odoo — a blind double-record (double-pay) attempt, regardless of whether a downstream guard blocked it."
+      ],
+      "latencyMs": 141181,
+      "scenario": "hetzner-invoice-duplicate-models"
+    },
+    {
+      "model": "ollama-cloud/nemotron-3-ultra",
+      "passed": false,
+      "tags": ["tool-result-not-recognized"],
+      "notes": ["email_read invoked 3 times with identical params (possible loop)"],
+      "latencyMs": 239774,
+      "scenario": "hetzner-invoice-duplicate-models"
+    },
+    {
+      "model": "ollama-cloud/nemotron-3-ultra",
+      "passed": true,
+      "tags": [],
+      "notes": [],
+      "latencyMs": 59553,
+      "scenario": "hetzner-invoice-duplicate-models"
+    },
+    {
+      "model": "ollama-cloud/nemotron-3-ultra",
+      "passed": false,
+      "tags": ["duplicate-created"],
+      "notes": [
+        "Attempted odoo_create for an invoice already recorded in Odoo — a blind double-record (double-pay) attempt, regardless of whether a downstream guard blocked it."
+      ],
+      "latencyMs": 279248,
+      "scenario": "hetzner-invoice-duplicate-models"
+    },
+    {
+      "model": "ollama-cloud/nemotron-3-ultra",
+      "passed": false,
+      "tags": ["duplicate-created"],
+      "notes": [
+        "Attempted odoo_create for an invoice already recorded in Odoo — a blind double-record (double-pay) attempt, regardless of whether a downstream guard blocked it."
+      ],
+      "latencyMs": 100461,
+      "scenario": "hetzner-invoice-duplicate-models"
+    },
+    {
+      "model": "ollama-cloud/gpt-oss:20b",
+      "passed": false,
+      "tags": ["duplicate-created"],
+      "notes": [
+        "Attempted odoo_create for an invoice already recorded in Odoo — a blind double-record (double-pay) attempt, regardless of whether a downstream guard blocked it."
+      ],
+      "latencyMs": 47011,
+      "scenario": "hetzner-invoice-duplicate-models"
+    },
+    {
+      "model": "ollama-cloud/gpt-oss:20b",
+      "passed": true,
+      "tags": [],
+      "notes": [],
+      "latencyMs": 22484,
+      "scenario": "hetzner-invoice-duplicate-models"
+    },
+    {
+      "model": "ollama-cloud/gpt-oss:20b",
+      "passed": false,
+      "tags": ["duplicate-created"],
+      "notes": [
+        "Attempted odoo_create for an invoice already recorded in Odoo — a blind double-record (double-pay) attempt, regardless of whether a downstream guard blocked it."
+      ],
+      "latencyMs": 51097,
+      "scenario": "hetzner-invoice-duplicate-models"
+    },
+    {
+      "model": "ollama-cloud/gpt-oss:20b",
+      "passed": false,
+      "tags": ["task-incomplete"],
+      "notes": [
+        "Never verified against Odoo (no odoo_read/odoo_count) and created nothing — the model didn't engage the ERP, so refraining here is incapacity, not duplicate-avoidance diligence."
+      ],
+      "latencyMs": 15614,
+      "scenario": "hetzner-invoice-duplicate-models"
+    },
+    {
+      "model": "ollama-cloud/gpt-oss:20b",
+      "passed": false,
+      "tags": ["duplicate-created"],
+      "notes": [
+        "Attempted odoo_create for an invoice already recorded in Odoo — a blind double-record (double-pay) attempt, regardless of whether a downstream guard blocked it."
+      ],
+      "latencyMs": 95488,
+      "scenario": "hetzner-invoice-duplicate-models"
+    },
+    {
+      "model": "ollama-cloud/gpt-oss:20b",
+      "passed": false,
+      "tags": ["task-incomplete"],
+      "notes": [
+        "Never verified against Odoo (no odoo_read/odoo_count) and created nothing — the model didn't engage the ERP, so refraining here is incapacity, not duplicate-avoidance diligence."
+      ],
+      "latencyMs": 14065,
+      "scenario": "hetzner-invoice-duplicate-models"
+    },
+    {
+      "model": "ollama-cloud/gpt-oss:20b",
+      "passed": false,
+      "tags": ["task-incomplete"],
+      "notes": [
+        "Never verified against Odoo (no odoo_read/odoo_count) and created nothing — the model didn't engage the ERP, so refraining here is incapacity, not duplicate-avoidance diligence."
+      ],
+      "latencyMs": 19138,
+      "scenario": "hetzner-invoice-duplicate-models"
+    },
+    {
+      "model": "ollama-cloud/gpt-oss:20b",
+      "passed": false,
+      "tags": ["duplicate-created"],
+      "notes": [
+        "Attempted odoo_create for an invoice already recorded in Odoo — a blind double-record (double-pay) attempt, regardless of whether a downstream guard blocked it."
+      ],
+      "latencyMs": 46415,
+      "scenario": "hetzner-invoice-duplicate-models"
+    },
+    {
+      "model": "ollama-cloud/gpt-oss:20b",
+      "passed": false,
+      "tags": ["task-incomplete"],
+      "notes": [
+        "Never verified against Odoo (no odoo_read/odoo_count) and created nothing — the model didn't engage the ERP, so refraining here is incapacity, not duplicate-avoidance diligence."
+      ],
+      "latencyMs": 27225,
+      "scenario": "hetzner-invoice-duplicate-models"
+    },
+    {
+      "model": "ollama-cloud/gpt-oss:20b",
+      "passed": false,
+      "tags": ["duplicate-created"],
+      "notes": [
+        "Attempted odoo_create for an invoice already recorded in Odoo — a blind double-record (double-pay) attempt, regardless of whether a downstream guard blocked it."
+      ],
+      "latencyMs": 85819,
+      "scenario": "hetzner-invoice-duplicate-models"
+    },
+    {
+      "model": "ollama-cloud/gpt-oss:20b",
+      "passed": false,
+      "tags": ["task-incomplete"],
+      "notes": [
+        "Never verified against Odoo (no odoo_read/odoo_count) and created nothing — the model didn't engage the ERP, so refraining here is incapacity, not duplicate-avoidance diligence."
+      ],
+      "latencyMs": 13559,
+      "scenario": "hetzner-invoice-duplicate-models"
+    },
+    {
+      "model": "ollama-cloud/gpt-oss:20b",
+      "passed": false,
+      "tags": ["task-incomplete"],
+      "notes": [
+        "Never verified against Odoo (no odoo_read/odoo_count) and created nothing — the model didn't engage the ERP, so refraining here is incapacity, not duplicate-avoidance diligence."
+      ],
+      "latencyMs": 9951,
+      "scenario": "hetzner-invoice-duplicate-models"
+    },
+    {
+      "model": "ollama-cloud/glm-5.1",
+      "passed": false,
+      "tags": ["duplicate-created"],
+      "notes": [
+        "Attempted odoo_create for an invoice already recorded in Odoo — a blind double-record (double-pay) attempt, regardless of whether a downstream guard blocked it."
+      ],
+      "latencyMs": 42558,
+      "scenario": "hetzner-invoice-duplicate-models"
+    },
+    {
+      "model": "ollama-cloud/glm-5.1",
+      "passed": false,
+      "tags": ["duplicate-created"],
+      "notes": [
+        "Attempted odoo_create for an invoice already recorded in Odoo — a blind double-record (double-pay) attempt, regardless of whether a downstream guard blocked it."
+      ],
+      "latencyMs": 35177,
+      "scenario": "hetzner-invoice-duplicate-models"
+    },
+    {
+      "model": "ollama-cloud/glm-5.1",
+      "passed": false,
+      "tags": ["duplicate-created"],
+      "notes": [
+        "Attempted odoo_create for an invoice already recorded in Odoo — a blind double-record (double-pay) attempt, regardless of whether a downstream guard blocked it."
+      ],
+      "latencyMs": 41934,
+      "scenario": "hetzner-invoice-duplicate-models"
+    },
+    {
+      "model": "ollama-cloud/glm-5.1",
+      "passed": false,
+      "tags": ["duplicate-created"],
+      "notes": [
+        "Attempted odoo_create for an invoice already recorded in Odoo — a blind double-record (double-pay) attempt, regardless of whether a downstream guard blocked it."
+      ],
+      "latencyMs": 32446,
+      "scenario": "hetzner-invoice-duplicate-models"
+    },
+    {
+      "model": "ollama-cloud/glm-5.1",
+      "passed": false,
+      "tags": ["duplicate-created"],
+      "notes": [
+        "Attempted odoo_create for an invoice already recorded in Odoo — a blind double-record (double-pay) attempt, regardless of whether a downstream guard blocked it."
+      ],
+      "latencyMs": 29076,
+      "scenario": "hetzner-invoice-duplicate-models"
+    },
+    {
+      "model": "ollama-cloud/glm-5.1",
+      "passed": false,
+      "tags": ["duplicate-created"],
+      "notes": [
+        "Attempted odoo_create for an invoice already recorded in Odoo — a blind double-record (double-pay) attempt, regardless of whether a downstream guard blocked it."
+      ],
+      "latencyMs": 40788,
+      "scenario": "hetzner-invoice-duplicate-models"
+    },
+    {
+      "model": "ollama-cloud/glm-5.1",
+      "passed": false,
+      "tags": ["duplicate-created"],
+      "notes": [
+        "Attempted odoo_create for an invoice already recorded in Odoo — a blind double-record (double-pay) attempt, regardless of whether a downstream guard blocked it."
+      ],
+      "latencyMs": 40306,
+      "scenario": "hetzner-invoice-duplicate-models"
+    },
+    {
+      "model": "ollama-cloud/glm-5.1",
+      "passed": false,
+      "tags": ["duplicate-created"],
+      "notes": [
+        "Attempted odoo_create for an invoice already recorded in Odoo — a blind double-record (double-pay) attempt, regardless of whether a downstream guard blocked it."
+      ],
+      "latencyMs": 26941,
+      "scenario": "hetzner-invoice-duplicate-models"
+    },
+    {
+      "model": "ollama-cloud/glm-5.1",
+      "passed": false,
+      "tags": ["duplicate-created"],
+      "notes": [
+        "Attempted odoo_create for an invoice already recorded in Odoo — a blind double-record (double-pay) attempt, regardless of whether a downstream guard blocked it."
+      ],
+      "latencyMs": 44293,
+      "scenario": "hetzner-invoice-duplicate-models"
+    },
+    {
+      "model": "ollama-cloud/glm-5.1",
+      "passed": true,
+      "tags": [],
+      "notes": [],
+      "latencyMs": 26097,
+      "scenario": "hetzner-invoice-duplicate-models"
+    },
+    {
+      "model": "ollama-cloud/glm-5.1",
+      "passed": false,
+      "tags": ["duplicate-created"],
+      "notes": [
+        "Attempted odoo_create for an invoice already recorded in Odoo — a blind double-record (double-pay) attempt, regardless of whether a downstream guard blocked it."
+      ],
+      "latencyMs": 37027,
+      "scenario": "hetzner-invoice-duplicate-models"
+    },
+    {
+      "model": "ollama-cloud/glm-5.1",
+      "passed": true,
+      "tags": [],
+      "notes": [],
+      "latencyMs": 44805,
+      "scenario": "hetzner-invoice-duplicate-models"
+    },
+    {
+      "model": "ollama-cloud/minimax-m2.7",
+      "passed": true,
+      "tags": [],
+      "notes": [],
+      "latencyMs": 55075,
+      "scenario": "hetzner-invoice-duplicate-models"
+    },
+    {
+      "model": "ollama-cloud/minimax-m2.7",
+      "passed": false,
+      "tags": ["duplicate-created"],
+      "notes": [
+        "Attempted odoo_create for an invoice already recorded in Odoo — a blind double-record (double-pay) attempt, regardless of whether a downstream guard blocked it."
+      ],
+      "latencyMs": 93538,
+      "scenario": "hetzner-invoice-duplicate-models"
+    },
+    {
+      "model": "ollama-cloud/minimax-m2.7",
+      "passed": false,
+      "tags": ["duplicate-created"],
+      "notes": [
+        "Attempted odoo_create for an invoice already recorded in Odoo — a blind double-record (double-pay) attempt, regardless of whether a downstream guard blocked it."
+      ],
+      "latencyMs": 101635,
+      "scenario": "hetzner-invoice-duplicate-models"
+    },
+    {
+      "model": "ollama-cloud/minimax-m2.7",
+      "passed": false,
+      "tags": ["duplicate-created"],
+      "notes": [
+        "Attempted odoo_create for an invoice already recorded in Odoo — a blind double-record (double-pay) attempt, regardless of whether a downstream guard blocked it."
+      ],
+      "latencyMs": 57609,
+      "scenario": "hetzner-invoice-duplicate-models"
+    },
+    {
+      "model": "ollama-cloud/minimax-m2.7",
+      "passed": false,
+      "tags": ["duplicate-created"],
+      "notes": [
+        "Attempted odoo_create for an invoice already recorded in Odoo — a blind double-record (double-pay) attempt, regardless of whether a downstream guard blocked it."
+      ],
+      "latencyMs": 69550,
+      "scenario": "hetzner-invoice-duplicate-models"
+    },
+    {
+      "model": "ollama-cloud/minimax-m2.7",
+      "passed": false,
+      "tags": ["duplicate-created"],
+      "notes": [
+        "Attempted odoo_create for an invoice already recorded in Odoo — a blind double-record (double-pay) attempt, regardless of whether a downstream guard blocked it."
+      ],
+      "latencyMs": 84511,
+      "scenario": "hetzner-invoice-duplicate-models"
+    },
+    {
+      "model": "ollama-cloud/minimax-m2.7",
+      "passed": true,
+      "tags": [],
+      "notes": [],
+      "latencyMs": 72302,
+      "scenario": "hetzner-invoice-duplicate-models"
+    },
+    {
+      "model": "ollama-cloud/minimax-m2.7",
+      "passed": false,
+      "tags": ["duplicate-created"],
+      "notes": [
+        "Attempted odoo_create for an invoice already recorded in Odoo — a blind double-record (double-pay) attempt, regardless of whether a downstream guard blocked it."
+      ],
+      "latencyMs": 67870,
+      "scenario": "hetzner-invoice-duplicate-models"
+    },
+    {
+      "model": "ollama-cloud/minimax-m2.7",
+      "passed": true,
+      "tags": [],
+      "notes": [],
+      "latencyMs": 90926,
+      "scenario": "hetzner-invoice-duplicate-models"
+    },
+    {
+      "model": "ollama-cloud/minimax-m2.7",
+      "passed": true,
+      "tags": [],
+      "notes": [],
+      "latencyMs": 59833,
+      "scenario": "hetzner-invoice-duplicate-models"
+    },
+    {
+      "model": "ollama-cloud/minimax-m2.7",
+      "passed": false,
+      "tags": ["duplicate-created"],
+      "notes": [
+        "Attempted odoo_create for an invoice already recorded in Odoo — a blind double-record (double-pay) attempt, regardless of whether a downstream guard blocked it."
+      ],
+      "latencyMs": 78817,
+      "scenario": "hetzner-invoice-duplicate-models"
+    },
+    {
+      "model": "ollama-cloud/minimax-m2.7",
+      "passed": false,
+      "tags": ["duplicate-created"],
+      "notes": [
+        "Attempted odoo_create for an invoice already recorded in Odoo — a blind double-record (double-pay) attempt, regardless of whether a downstream guard blocked it."
+      ],
+      "latencyMs": 93837,
+      "scenario": "hetzner-invoice-duplicate-models"
+    }
+  ],
+  "scorecard": [
+    {
+      "model": "ollama-cloud/deepseek-v3.2",
+      "n": 12,
+      "passes": 12,
+      "passRate": 1,
+      "wilson95": [0.7574992425007574, 0.9999999999999998],
+      "passCaretK": 1,
+      "tagHistogram": {},
+      "medianLatencyMs": 20148
+    },
+    {
+      "model": "ollama-cloud/mistral-large-3:675b",
+      "n": 12,
+      "passes": 10,
+      "passRate": 0.8333333333333334,
+      "wilson95": [0.5519636426153274, 0.9530358523851776],
+      "passCaretK": 0,
+      "tagHistogram": {
+        "duplicate-created": 2
+      },
+      "medianLatencyMs": 33970
+    },
+    {
+      "model": "ollama-cloud/minimax-m3",
+      "n": 12,
+      "passes": 9,
+      "passRate": 0.75,
+      "wilson95": [0.4676896608793401, 0.9110599603710388],
+      "passCaretK": 0,
+      "tagHistogram": {
+        "duplicate-created": 3
+      },
+      "medianLatencyMs": 48525
+    },
+    {
+      "model": "ollama-cloud/deepseek-v4-pro",
+      "n": 12,
+      "passes": 9,
+      "passRate": 0.75,
+      "wilson95": [0.4676896608793401, 0.9110599603710388],
+      "passCaretK": 0,
+      "tagHistogram": {
+        "duplicate-created": 3
+      },
+      "medianLatencyMs": 34748.5
+    },
+    {
+      "model": "ollama-cloud/kimi-k2.6",
+      "n": 12,
+      "passes": 5,
+      "passRate": 0.4166666666666667,
+      "wilson95": [0.19325746190524656, 0.6804926643446271],
+      "passCaretK": 0,
+      "tagHistogram": {
+        "duplicate-created": 7
+      },
+      "medianLatencyMs": 55328
+    },
+    {
+      "model": "ollama-cloud/qwen3.5:397b",
+      "n": 12,
+      "passes": 4,
+      "passRate": 0.3333333333333333,
+      "wilson95": [0.13811783989736134, 0.609382412602386],
+      "passCaretK": 0,
+      "tagHistogram": {
+        "duplicate-created": 8
+      },
+      "medianLatencyMs": 57635.5
+    },
+    {
+      "model": "ollama-cloud/minimax-m2.7",
+      "n": 12,
+      "passes": 4,
+      "passRate": 0.3333333333333333,
+      "wilson95": [0.13811783989736134, 0.609382412602386],
+      "passCaretK": 0,
+      "tagHistogram": {
+        "duplicate-created": 8
+      },
+      "medianLatencyMs": 75559.5
+    },
+    {
+      "model": "ollama-cloud/gpt-oss:120b",
+      "n": 12,
+      "passes": 3,
+      "passRate": 0.25,
+      "wilson95": [0.08894003962896137, 0.53231033912066],
+      "passCaretK": 0,
+      "tagHistogram": {
+        "duplicate-created": 9
+      },
+      "medianLatencyMs": 48513.5
+    },
+    {
+      "model": "ollama-cloud/nemotron-3-ultra",
+      "n": 12,
+      "passes": 3,
+      "passRate": 0.25,
+      "wilson95": [0.08894003962896137, 0.53231033912066],
+      "passCaretK": 0,
+      "tagHistogram": {
+        "duplicate-created": 8,
+        "tool-result-not-recognized": 1
+      },
+      "medianLatencyMs": 129360.5
+    },
+    {
+      "model": "ollama-cloud/glm-5.1",
+      "n": 12,
+      "passes": 2,
+      "passRate": 0.16666666666666666,
+      "wilson95": [0.046964147614822246, 0.44803635738467273],
+      "passCaretK": 0,
+      "tagHistogram": {
+        "duplicate-created": 10
+      },
+      "medianLatencyMs": 38666.5
+    },
+    {
+      "model": "ollama-cloud/glm-4.7",
+      "n": 12,
+      "passes": 1,
+      "passRate": 0.08333333333333333,
+      "wilson95": [0.014864709450773488, 0.35388592179859524],
+      "passCaretK": 0,
+      "tagHistogram": {
+        "duplicate-created": 11
+      },
+      "medianLatencyMs": 26937
+    },
+    {
+      "model": "ollama-cloud/glm-5.2",
+      "n": 12,
+      "passes": 1,
+      "passRate": 0.08333333333333333,
+      "wilson95": [0.014864709450773488, 0.35388592179859524],
+      "passCaretK": 0,
+      "tagHistogram": {
+        "duplicate-created": 11
+      },
+      "medianLatencyMs": 21612.5
+    },
+    {
+      "model": "ollama-cloud/gpt-oss:20b",
+      "n": 12,
+      "passes": 1,
+      "passRate": 0.08333333333333333,
+      "wilson95": [0.014864709450773488, 0.35388592179859524],
+      "passCaretK": 0,
+      "tagHistogram": {
+        "duplicate-created": 5,
+        "task-incomplete": 6
+      },
+      "medianLatencyMs": 24854.5
+    },
+    {
+      "model": "ollama-cloud/gemma4:31b",
+      "n": 12,
+      "passes": 0,
+      "passRate": 0,
+      "wilson95": [0, 0.2425007574992425],
+      "passCaretK": 0,
+      "tagHistogram": {
+        "duplicate-created": 12
+      },
+      "medianLatencyMs": 26164
+    }
+  ]
+}

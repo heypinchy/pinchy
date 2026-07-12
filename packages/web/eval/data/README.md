@@ -41,12 +41,12 @@ conflicting-data, hard-amount-gate.
 
 Target per scenario: 14 models × 12 runs = 168.
 
-| Scenario  |  RunResults | Models | Trajectories | Status                                                       |
-| --------- | ----------: | -----: | -----------: | ------------------------------------------------------------ |
-| happy     |     168/168 |     14 |       68/168 | data complete; trajectories partial*                         |
-| silent    |     168/168 |     14 |      162/168 | complete (missing = run-timeouts, which carry no trajectory) |
-| rejected  |         108 |      9 |            4 | partial (8-model cohort + 1); re-run pending                 |
-| duplicate | in progress |    →14 |         full | running under the watchdog                                   |
+| Scenario  | RunResults | Models | Trajectories | Status                                                                              |
+| --------- | ---------: | -----: | -----------: | ----------------------------------------------------------------------------------- |
+| happy     |    168/168 |     14 |       68/168 | data complete; trajectories partial*                                                |
+| silent    |    168/168 |     14 |      162/168 | complete (missing = run-timeouts, which carry no trajectory)                        |
+| rejected  |        108 |      9 |            4 | partial (8-model cohort + 1); re-run pending                                        |
+| duplicate |    168/168 |     14 |         full | complete (deepseek-v4-pro 9/12 leads; task-perfect models mostly duplicate blindly) |
 
 \* Trajectory persistence was added partway through, so the earliest runs
 (happy's original 8 models, most of rejected) carry only `RunResult`s, not the
