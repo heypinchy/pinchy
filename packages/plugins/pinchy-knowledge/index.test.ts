@@ -181,7 +181,11 @@ describe("pinchy-knowledge plugin", () => {
     const result = await tool.execute("call-1", { query: "test" });
     expect(result.isError).toBe(true);
     expect(result.content[0].text).toContain("Agent not found");
-    expect(result.details).toEqual({ toolName: "knowledge_search", error: "Agent not found" });
+    // error-only details (no toolName) — the audit endpoint suppresses raw
+    // params ONLY when details carries a curated field beyond `error`, and a
+    // failed call's params must survive for forensics (see the code comment
+    // in index.ts referencing the 2026-06-25 false-success incident).
+    expect(result.details).toEqual({ error: "Agent not found" });
   });
 
   it("falls back to an HTTP-status message when the error body isn't JSON", async () => {

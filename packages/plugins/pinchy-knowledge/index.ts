@@ -199,10 +199,16 @@ const plugin = {
                   content: [
                     { type: "text", text: `Knowledge base search failed: ${message}` },
                   ],
-                  // Set details so the audit endpoint suppresses raw params
-                  // (which include the raw question text — PII protection)
-                  // and still records the failure reason.
-                  details: { toolName: "knowledge_search", error: message },
+                  // details.error (and ONLY error — no other keys) is set on
+                  // every failure path so the audit endpoint's isError-
+                  // stripping defense (#404) can't mask the failure, WITHOUT
+                  // suppressing raw params: /api/internal/audit/tool-use only
+                  // suppresses params when a curated field beyond `error` is
+                  // present (see its "curatesNonErrorFields" check), and a
+                  // failed call's params are exactly what forensics needs —
+                  // see the 2026-06-25 false-success incident referenced
+                  // there. Same shape as pinchy-files' write/read error path.
+                  details: { error: message },
                 };
               }
 
@@ -221,7 +227,9 @@ const plugin = {
               return {
                 isError: true,
                 content: [{ type: "text", text: `Knowledge base search failed: ${message}` }],
-                details: { toolName: "knowledge_search", error: message },
+                // error-only details — see the identical comment on the
+                // !res.ok branch above.
+                details: { error: message },
               };
             }
           },
