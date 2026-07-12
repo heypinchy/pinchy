@@ -122,6 +122,16 @@ vi.mock("@assistant-ui/react", () => ({
   })),
 }));
 
+// Composer now also mounts ShareIntake (use-share-intake.ts), which reads
+// next/navigation directly. None of these tests exercise a `?share=` URL, so
+// a bare "no params" stub keeps the intake a no-op here, exactly like a real
+// chat visited without a share id.
+vi.mock("next/navigation", () => ({
+  useRouter: () => ({ replace: vi.fn() }),
+  usePathname: () => "/chat/test-agent",
+  useSearchParams: () => new URLSearchParams(),
+}));
+
 vi.mock("@/lib/draft-store", () => ({
   getDraft: vi.fn(() => null),
   saveDraft: vi.fn(),

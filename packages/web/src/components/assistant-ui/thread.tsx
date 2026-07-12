@@ -48,6 +48,7 @@ import {
   RetryContinueContext,
   ChatStatusContext,
   PendingUploadsContext,
+  AddPendingUploadContext,
   RemovePendingUploadContext,
   RetryPendingUploadContext,
 } from "@/components/chat";
@@ -60,6 +61,7 @@ import { RetryButton } from "@/components/chat/retry-button";
 import { DuplicateRetryConfirm } from "@/components/chat/duplicate-retry-confirm";
 import { useComposerRuntime } from "@assistant-ui/react";
 import { getDraft, saveDraft, draftKey } from "@/lib/draft-store";
+import { useShareIntake } from "@/components/share/use-share-intake";
 
 function formatTimestamp(iso: string): string {
   const date = new Date(iso);
@@ -340,6 +342,28 @@ export const DraftPersistence: FC = () => {
   return null;
 };
 
+/**
+ * Mounts the /share hand-off (use-share-intake.ts) inside the composer so it
+ * can reach both the two-phase upload pipeline (`AddPendingUploadContext`,
+ * provided higher up by chat.tsx) and the live composer runtime (`setText`,
+ * only resolvable here — `useComposerRuntime` needs to be inside
+ * `ComposerPrimitive.Root`, which chat.tsx sits above). Text prefill is
+ * best-effort: `composerRuntime` is `null` until assistant-ui's composer
+ * context mounts, in which case the shared files still attach and only the
+ * text/url prefill is skipped for that render.
+ */
+const ShareIntake: FC = () => {
+  const addPendingUpload = useContext(AddPendingUploadContext);
+  const composerRuntime = useComposerRuntime({ optional: true });
+
+  useShareIntake({
+    addPendingUpload,
+    setComposerText: composerRuntime ? (text) => composerRuntime.setText(text) : undefined,
+  });
+
+  return null;
+};
+
 function UploadChip({ upload }: { upload: PendingUpload }) {
   const removePendingUpload = useContext(RemovePendingUploadContext);
   const retryPendingUpload = useContext(RetryPendingUploadContext);
@@ -441,6 +465,7 @@ export const Composer: FC = () => {
       onKeyDownCapture={slashMenu.onKeyDownCapture}
     >
       <DraftPersistence />
+      <ShareIntake />
       <SlashCommandMenuList menu={slashMenu} />
       <PinchyDropZone className="aui-composer-attachment-dropzone flex w-full flex-col rounded-2xl border border-input bg-background px-1 pt-2 outline-none transition-shadow has-[textarea:focus-visible]:border-ring has-[textarea:focus-visible]:ring-2 has-[textarea:focus-visible]:ring-ring/20">
         <PendingUploadChips />

@@ -148,7 +148,7 @@ export function SharePicker({ agents }: SharePickerProps) {
             <li key={agent.id}>
               <button
                 type="button"
-                onClick={() => router.push(`/chat/${agent.id}?share=${shareId}`)}
+                onClick={() => router.push(`/chat/${agent.id}?keep&share=${shareId}`)}
                 className="flex w-full items-center gap-3 rounded-lg px-3 py-2 text-left transition-colors hover:bg-accent hover:text-accent-foreground"
               >
                 {/* eslint-disable-next-line @next/next/no-img-element */}

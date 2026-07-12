@@ -53,7 +53,14 @@ describe("SharePicker", () => {
     vi.restoreAllMocks();
   });
 
-  it("lists agents and navigates to the chosen agent's chat carrying the share id", async () => {
+  // Navigates with `?keep&share=<id>`, not just `?share=<id>`: a bare
+  // `/chat/<agentId>` redirects server-side to the user's most-recently-
+  // interacted chat (see chat/[agentId]/page.tsx), and a Next.js redirect()
+  // drops the query string — so `share` would be lost before any client
+  // code could read it whenever the agent already has chat history. `?keep`
+  // skips that redirect so the page renders <Chat> directly with `share`
+  // intact for use-share-intake.ts to pick up.
+  it("lists agents and navigates to the chosen agent's chat carrying the share id, keeping the default chat", async () => {
     readSharedPayload.mockResolvedValue({
       files: [],
       title: "",
@@ -68,7 +75,7 @@ describe("SharePicker", () => {
 
     await userEvent.click(screen.getByText("Buchhaltung"));
 
-    expect(push).toHaveBeenCalledWith("/chat/a1?share=abc");
+    expect(push).toHaveBeenCalledWith("/chat/a1?keep&share=abc");
   });
 
   it("shows an empty state when the share id is unknown", async () => {
