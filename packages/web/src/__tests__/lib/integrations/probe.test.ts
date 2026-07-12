@@ -19,41 +19,20 @@ vi.mock("@/lib/integrations/brave-probe", () => ({
 
 const mockTestImapLogin = vi.fn();
 const mockTestSmtpVerify = vi.fn();
-vi.mock("@/lib/integrations/imap-probe", () => ({
-  testImapLogin: (...args: unknown[]) => mockTestImapLogin(...args),
-  testSmtpVerify: (...args: unknown[]) => mockTestSmtpVerify(...args),
-  // Mirrors the real friendlyError mapping so the transient classification in
-  // the imap branch is exercised against realistic friendly strings — in
-  // particular that unmapped errors (socket hang up, EPIPE, …) fall through to
-  // the generic "Connection failed" fallback and are still treated as transient.
-  friendlyError: (error: unknown) => {
-    const message = error instanceof Error ? error.message : String(error);
-    const lower = message.toLowerCase();
-    if (
-      lower.includes("auth") ||
-      lower.includes("invalid login") ||
-      lower.includes("invalid credentials") ||
-      lower.includes("535")
-    ) {
-      return "Authentication failed — check the username and password";
-    }
-    if (lower.includes("timed out") || lower.includes("timeout") || lower.includes("etimedout")) {
-      return "Connection timed out — check the host and port";
-    }
-    if (
-      lower.includes("econnrefused") ||
-      lower.includes("enotfound") ||
-      lower.includes("ehostunreach") ||
-      lower.includes("could not connect")
-    ) {
-      return "Could not connect to the server — check the host and port";
-    }
-    if (lower.includes("certificate") || lower.includes("self signed") || lower.includes("ssl")) {
-      return "Could not establish a secure connection — check the security setting";
-    }
-    return "Connection failed — check your settings and try again";
-  },
-}));
+// Only the network I/O (testImapLogin/testSmtpVerify) is mocked; friendlyError
+// comes from the REAL module via importActual. The imap branch of probe.ts
+// classifies transient-vs-auth by matching the real friendlyError wording
+// (/authentication failed/i), so re-implementing it here would let a reword of
+// the real string silently break auth-failure detection while this test stayed
+// green. Importing the real one makes that coupling a real compile/run check.
+vi.mock("@/lib/integrations/imap-probe", async (importActual) => {
+  const actual = await importActual<typeof import("@/lib/integrations/imap-probe")>();
+  return {
+    ...actual,
+    testImapLogin: (...args: unknown[]) => mockTestImapLogin(...args),
+    testSmtpVerify: (...args: unknown[]) => mockTestSmtpVerify(...args),
+  };
+});
 
 import { fetchOdooSchema } from "@/lib/integrations/odoo-sync";
 import { probeBraveApiKey } from "@/lib/integrations/brave-probe";
