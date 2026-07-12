@@ -63,7 +63,9 @@ describe("SessionPokeBridge", () => {
     await bridge.join(KEY, a);
     await bridge.join(KEY, b);
 
-    // A Gateway session.message whose body throws if anyone touches it.
+    // A Gateway session.message whose body throws if anyone touches it. The
+    // extra messageSeq is deliberately ignored — the poke identifies the changed
+    // message by its globally-unique messageId, which is all the client dedups on.
     const payload: Record<string, unknown> = { sessionKey: KEY, messageId: "m7", messageSeq: 42 };
     Object.defineProperty(payload, "message", {
       enumerable: true,
@@ -75,7 +77,7 @@ describe("SessionPokeBridge", () => {
 
     expect(sent).toHaveLength(2);
     expect(sent.map((s) => s.ws)).toEqual(expect.arrayContaining([a, b]));
-    expect(sent[0].frame).toEqual({ type: "poke", sessionKey: KEY, messageId: "m7", seq: 42 });
+    expect(sent[0].frame).toEqual({ type: "poke", sessionKey: KEY, messageId: "m7" });
   });
 
   it("routes by the server-subscribed key, ignoring a spoofed payload.sessionKey", async () => {

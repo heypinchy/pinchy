@@ -4684,7 +4684,6 @@ describe("useWsRuntime — multi-device live-sync (poke + focus)", () => {
         type: "poke",
         sessionKey: "agent:agent-1:direct:u1",
         messageId: "m1",
-        seq: 1,
       });
     });
 
@@ -4694,20 +4693,66 @@ describe("useWsRuntime — multi-device live-sync (poke + focus)", () => {
     expect(newSends).toContainEqual({ type: "history", agentId: "agent-1" });
   });
 
-  it("ignores a stale poke whose seq was already seen (no redundant re-pull)", () => {
+  it("dedups a poke on messageId — a repeat is suppressed, a new id re-pulls", () => {
     renderHook(() => useWsRuntime("agent-1"));
     const ws = openWithHistory();
 
+    // m5 → re-pull; COMPLETE that pull so the pending-history latch clears.
+    // Without draining the latch, coalescing alone (not the dedup) would mask a
+    // missing/miswired dedup and the test would pass for the wrong reason.
     act(() => {
-      ws.simulateMessage({ type: "poke", messageId: "m5", seq: 5 });
+      ws.simulateMessage({ type: "poke", messageId: "m5" });
     });
-    const afterFirst = ws.send.mock.calls.length;
-
     act(() => {
-      ws.simulateMessage({ type: "poke", messageId: "m3", seq: 3 }); // older seq
+      ws.simulateMessage({ type: "history", messages: [] });
+    });
+    const afterM5 = ws.send.mock.calls.length;
+
+    // A duplicate event for the SAME finished message must NOT re-pull. Dedup is
+    // on the globally-unique messageId — a per-session seq counter would instead
+    // falsely suppress a lower-seq poke on a newly-opened chat or after a
+    // compaction, and an absent seq would re-pull here every time.
+    act(() => {
+      ws.simulateMessage({ type: "poke", messageId: "m5" });
+    });
+    expect(ws.send.mock.calls.length).toBe(afterM5); // no new send for a duplicate
+
+    // A DIFFERENT message → re-pull again (dedup is per-message, not permanent).
+    act(() => {
+      ws.simulateMessage({ type: "poke", messageId: "m6" });
+    });
+    const newSends = ws.send.mock.calls
+      .slice(afterM5)
+      .map((c: unknown[]) => JSON.parse(c[0] as string));
+    expect(newSends).toContainEqual({ type: "history", agentId: "agent-1" });
+  });
+
+  it("resets poke dedup on a chat switch, so the new chat still re-pulls on its first poke", () => {
+    const { rerender } = renderHook(({ chatId }) => useWsRuntime("agent-1", chatId), {
+      initialProps: { chatId: "chat-a" },
+    });
+    const wsA = openWithHistory();
+    // Catch up on a message in chat A — this records its messageId as "seen".
+    act(() => {
+      wsA.simulateMessage({ type: "poke", messageId: "shared-id" });
     });
 
-    expect(ws.send.mock.calls.length).toBe(afterFirst); // no new send for a stale poke
+    // User switches to chat B: the effect tears down and reconnects.
+    rerender({ chatId: "chat-b" });
+    const wsB = openWithHistory();
+    const before = wsB.send.mock.calls.length;
+
+    // A poke on chat B that happens to reuse chat A's messageId MUST still
+    // re-pull: the dedup identity is per-session and was cleared on the switch.
+    // Without the reset the new chat would silently miss its first live update.
+    act(() => {
+      wsB.simulateMessage({ type: "poke", messageId: "shared-id" });
+    });
+
+    const newSends = wsB.send.mock.calls
+      .slice(before)
+      .map((c: unknown[]) => JSON.parse(c[0] as string));
+    expect(newSends).toContainEqual({ type: "history", agentId: "agent-1", chatId: "chat-b" });
   });
 
   it("re-pulls history on window focus (the bug: returning to the window fires no visibilitychange)", () => {
@@ -4744,7 +4789,7 @@ describe("useWsRuntime — multi-device live-sync (poke + focus)", () => {
     // keeps the stale local view: device B stays blank AND the sending device
     // double-renders its own turn — exactly the CI E2E failures this guards.
     act(() => {
-      ws.simulateMessage({ type: "poke", messageId: "m2", seq: 1 });
+      ws.simulateMessage({ type: "poke", messageId: "m2" });
       ws.simulateMessage({
         type: "history",
         messages: [
@@ -4789,7 +4834,7 @@ describe("useWsRuntime — multi-device live-sync (poke + focus)", () => {
     // A poke for the sender's OWN session re-pulls history that already contains
     // the just-streamed reply — it must reconcile, not append a 2nd bubble.
     act(() => {
-      ws.simulateMessage({ type: "poke", messageId: "srv-1", seq: 1 });
+      ws.simulateMessage({ type: "poke", messageId: "srv-1" });
       ws.simulateMessage({
         type: "history",
         messages: [
@@ -4829,7 +4874,7 @@ describe("useWsRuntime — multi-device live-sync (poke + focus)", () => {
     // race the live stream and double-render the in-flight turn (the CI E2E bug).
     const before = ws.send.mock.calls.length;
     act(() => {
-      ws.simulateMessage({ type: "poke", messageId: "srv-1", seq: 1 });
+      ws.simulateMessage({ type: "poke", messageId: "srv-1" });
     });
     const historySends = ws.send.mock.calls
       .slice(before)

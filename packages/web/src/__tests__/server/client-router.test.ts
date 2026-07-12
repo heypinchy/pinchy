@@ -417,6 +417,59 @@ describe("ClientRouter", () => {
     expect(messages[0].message).toBe("Access denied");
   });
 
+  describe("multi-device live-sync subscription is gated on access (Lane B)", () => {
+    function withPokeBridge() {
+      const pokeBridge = { view: vi.fn().mockResolvedValue(undefined) };
+      const guarded = new ClientRouter(
+        mockOpenClawClient as any,
+        "user-1",
+        "member",
+        sessionCache,
+        undefined,
+        undefined,
+        pokeBridge as any
+      );
+      return { pokeBridge, guarded };
+    }
+
+    it("does NOT register a session subscriber when the history request is access-denied", async () => {
+      const { pokeBridge, guarded } = withPokeBridge();
+      // A personal agent owned by someone else → assertAgentAccess throws before
+      // any path into handleHistory.
+      mockFindFirst.mockResolvedValue({
+        id: "agent-1",
+        name: "Personal Agent",
+        ownerId: "other-user",
+        isPersonal: true,
+      });
+
+      const clientWs = createMockClientWs();
+      await guarded.handleMessage(clientWs as any, { type: "history", agentId: "agent-1" });
+
+      // The denial short-circuits before handleHistory, so the socket is never
+      // subscribed — the structural no-cross-user-leak guarantee. A regression
+      // that moved view() above the gate would leak "a session changed" pokes
+      // to a user who may not access the agent; this pins the ordering.
+      expect(pokeBridge.view).not.toHaveBeenCalled();
+      const messages = clientWs.sent.map((s) => JSON.parse(s));
+      expect(messages[0].message).toBe("Access denied");
+    });
+
+    it("registers the socket to its OWN server-built session key once access is granted", async () => {
+      const { pokeBridge, guarded } = withPokeBridge();
+
+      const clientWs = createMockClientWs();
+      await guarded.handleMessage(clientWs as any, { type: "history", agentId: "agent-1" });
+
+      // Subscribed behind the gate, always with the SERVER-built key derived from
+      // this.userId — never a client-supplied identity.
+      expect(pokeBridge.view).toHaveBeenCalledWith(
+        "agent:agent-1:direct:user-1",
+        expect.anything()
+      );
+    });
+  });
+
   it("should allow access to restricted agent when user is in matching group", async () => {
     const restrictedAgent = {
       id: "agent-restricted",

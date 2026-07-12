@@ -726,7 +726,11 @@ export class ClientRouter {
     // handleHistory — so a socket can only ever subscribe to a session its user
     // is allowed to see (the structural half of the no-cross-user-leak story).
     // A failed subscribe RPC degrades to "no live push"; history still serves
-    // and the client re-pulls on its next lifecycle trigger.
+    // and the client re-pulls on its next lifecycle trigger. The `await` is
+    // deliberate: by the time the history response is sent the upstream
+    // subscription is open, so no `session.message` between history-load and
+    // subscribe slips through unseen. Only the first join per session pays the
+    // RPC — repeat view()s for the same key are churn-free (see `view()`).
     if (this.pokeBridge) {
       try {
         await this.pokeBridge.view(sessionKey, clientWs);

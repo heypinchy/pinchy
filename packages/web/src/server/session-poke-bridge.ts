@@ -24,8 +24,8 @@ export type SendToSocket = (ws: WebSocket, frame: unknown) => void;
 interface PokeFrame {
   type: "poke";
   sessionKey: string;
+  /** Globally-unique id of the finished message; the client dedups its re-pull on it. */
   messageId: string | undefined;
-  seq: number | undefined;
 }
 
 /**
@@ -128,7 +128,6 @@ export class SessionPokeBridge {
       // SERVER-subscribed key — the trust anchor. Never payload.sessionKey.
       sessionKey,
       messageId: typeof payload.messageId === "string" ? payload.messageId : undefined,
-      seq: typeof payload.messageSeq === "number" ? payload.messageSeq : undefined,
     };
     for (const ws of this.subs.socketsFor(sessionKey)) this.send(ws, frame);
   }

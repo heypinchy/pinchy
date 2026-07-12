@@ -579,9 +579,13 @@ export function useWsRuntime(
    */
   const pendingHistoryRef = useRef(false);
   const frameBufferRef = useRef<unknown[]>([]);
-  // Multi-device live-sync: the highest poke seq already acted on, so a stale or
-  // duplicate poke (seq <= this) does not trigger a redundant history re-pull.
-  const lastSeenPokeSeqRef = useRef(-1);
+  // Multi-device live-sync: the messageId of the poke we last acted on, so a
+  // duplicate poke for the same finished message does not trigger a redundant
+  // history re-pull. Dedup is keyed on the globally-unique messageId rather than
+  // a per-session seq counter — a seq high-water mark would falsely suppress a
+  // poke for a newly-opened chat (whose per-session seq is lower) or after a
+  // history compaction (which renumbers seq). Reset on a session switch below.
+  const lastPokeMessageIdRef = useRef<string | null>(null);
   /**
    * Server-correlated runId for the in-flight chat turn (Tier 2b). Set
    * when a history frame includes the `activeRun` signal and used by
@@ -643,6 +647,11 @@ export function useWsRuntime(
     setIsReconcilingMessages(false);
     setKnownEmptyHistory(false);
     setPayloadRejected(false);
+    // Multi-device live-sync: drop the poke-dedup identity so the newly-opened
+    // session's first poke always re-pulls — its messageIds are unrelated to the
+    // previous chat's, and starting fresh avoids any chance of a stale match.
+    // Plain ref write during render, exactly like `livenessRef` above.
+    lastPokeMessageIdRef.current = null;
     // Synchronous timer cleanup is the entire point of doing this in render
     // (see comment above). Deferring it to useEffect would defeat the
     // race-prevention this block exists for.
@@ -1004,13 +1013,14 @@ export function useWsRuntime(
         // changed (another device of this user, or a Telegram message). Handled
         // BEFORE the pre-history buffer so it is never queued/replayed. We hold
         // no content — we re-pull authoritative state through the normal
-        // authorized history path. `seq` is a dedup HINT (it may be absent or
-        // non-monotonic across a compaction), so it only ever SUPPRESSES a
-        // redundant pull, never the identity.
+        // authorized history path. Dedup is on the globally-unique `messageId`:
+        // it only SUPPRESSES a repeat poke for a message we already caught up on,
+        // never a genuine new one. An absent id can't be deduped, so we re-pull
+        // (safe — the reconcile is idempotent).
         if (data.type === "poke") {
-          const seq = typeof data.seq === "number" ? data.seq : undefined;
-          if (seq !== undefined && seq <= lastSeenPokeSeqRef.current) return;
-          if (seq !== undefined) lastSeenPokeSeqRef.current = seq;
+          const messageId = typeof data.messageId === "string" ? data.messageId : undefined;
+          if (messageId !== undefined && messageId === lastPokeMessageIdRef.current) return;
+          if (messageId !== undefined) lastPokeMessageIdRef.current = messageId;
           if (!pendingHistoryRef.current) requestHistoryCatchup();
           return;
         }
