@@ -12,6 +12,7 @@ export const SETTINGS_TABS = [
   "users",
   "groups",
   "integrations",
+  "organization",
   "license",
   "security",
 ] as const;

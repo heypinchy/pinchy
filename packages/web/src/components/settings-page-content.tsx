@@ -15,6 +15,7 @@ import { SettingsIntegrations } from "@/components/settings-integrations";
 import { SettingsLicense } from "@/components/settings-license";
 import { TelegramLinkSettings } from "@/components/telegram-link-settings";
 import { SettingsSecurity } from "@/components/settings-security";
+import { TimezoneSettings } from "@/components/timezone-settings";
 import { SecretsProvenanceCard } from "@/components/secrets-provenance-card";
 import { SettingsSupport } from "@/components/settings-support";
 import { useIntegrationHealth } from "@/hooks/use-integration-health";
@@ -173,6 +174,7 @@ export function SettingsPageContent({
                 <TabsTrigger value="integrations">
                   Integrations {needsAttentionCount > 0 && <ErrorDot />}
                 </TabsTrigger>
+                <TabsTrigger value="organization">Organization</TabsTrigger>
                 <div
                   role="presentation"
                   className="px-2 pt-3 pb-1 text-xs font-semibold uppercase tracking-wide text-muted-foreground"
@@ -259,6 +261,12 @@ export function SettingsPageContent({
           {isAdmin && (
             <TabsContent value="integrations" keepMounted>
               <SettingsIntegrations oauthError={oauthError} />
+            </TabsContent>
+          )}
+
+          {isAdmin && (
+            <TabsContent value="organization" keepMounted>
+              <TimezoneSettings />
             </TabsContent>
           )}
 
