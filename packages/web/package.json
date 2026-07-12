@@ -62,6 +62,7 @@
     "nodemailer": "^9.0.3",
     "odoo-node": "0.3.0",
     "openclaw-node": "0.13.1",
+    "pdfjs-dist": "^5.7.284",
     "pdfkit": "^0.19.1",
     "postgres": "^3.4.9",
     "prismjs": "^1.30.0",
