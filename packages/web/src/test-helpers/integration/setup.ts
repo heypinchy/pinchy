@@ -42,6 +42,8 @@ const APPLICATION_TABLES = [
   "settings",
   "models",
   "audit_verify_state",
+  "kb_documents",
+  "kb_chunks",
 ] as const;
 
 // Drift guard: a new pgTable in db/schema.ts that isn't added to the truncate

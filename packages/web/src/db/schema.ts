@@ -38,6 +38,7 @@ import {
   type NotificationStatus,
 } from "./enums";
 import type { EmailWorkflowFilter, ProcessedEmailOutcome } from "@/lib/email-workflows/types";
+import { vector } from "./vector";
 
 // Render `IN ('a', 'b')` from an enum const (db/enums.ts) so a CHECK constraint
 // and its TypeScript source of truth can never drift. The values are enum-safe
@@ -857,3 +858,59 @@ export const auditVerifyState = pgTable("audit_verify_state", {
   lastStatus: text("last_status"),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
 });
+
+// ── Knowledge Base (RAG) ─────────────────────────────────────────────
+//
+// kb_documents is the per-org, per-file source of truth for ingested
+// knowledge-base content. (org_id, content_hash) is the idempotency key —
+// re-ingesting an unchanged file must not duplicate it. status lets later
+// freshness work (Task 5+) archive stale docs without deleting history.
+export const kbDocuments = pgTable(
+  "kb_documents",
+  {
+    id: text("id")
+      .primaryKey()
+      .$defaultFn(() => crypto.randomUUID()),
+    orgId: text("org_id").notNull(),
+    contentHash: text("content_hash").notNull(),
+    sourcePath: text("source_path").notNull(),
+    status: text("status", { enum: ["active", "archived"] })
+      .notNull()
+      .default("active"),
+    lang: text("lang"),
+    pageCount: integer("page_count"),
+    mtime: timestamp("mtime"),
+    createdAt: timestamp("created_at").notNull().defaultNow(),
+  },
+  (t) => [
+    uniqueIndex("uq_kb_doc_org_hash").on(t.orgId, t.contentHash),
+    index("idx_kb_doc_org_path").on(t.orgId, t.sourcePath),
+  ]
+);
+
+// kb_chunks denormalizes org_id and source_path from the parent document so
+// retrieval (Task 7) can filter by allowed_paths without a join. embedding
+// is vector(1024) (bge-m3, see ./vector); the FTS tsv generated column +
+// GIN index and the HNSW vector index are hand-added raw SQL in the
+// generated migration (drizzle-kit cannot express either).
+export const kbChunks = pgTable(
+  "kb_chunks",
+  {
+    id: text("id")
+      .primaryKey()
+      .$defaultFn(() => crypto.randomUUID()),
+    documentId: text("document_id")
+      .notNull()
+      .references(() => kbDocuments.id, { onDelete: "cascade" }),
+    orgId: text("org_id").notNull(),
+    sourcePath: text("source_path").notNull(),
+    chunkText: text("chunk_text").notNull(),
+    page: integer("page"),
+    lang: text("lang"),
+    embedding: vector("embedding"),
+  },
+  (t) => [
+    index("idx_kb_chunks_doc").on(t.documentId),
+    index("idx_kb_chunks_org_path").on(t.orgId, t.sourcePath),
+  ]
+);
