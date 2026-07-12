@@ -18,7 +18,7 @@ describe("knowledge-base template", () => {
   });
 
   it("teaches cite-then-answer against the closed numbered source list", () => {
-    // knowledge_search returns "[1] docName (S. page): ..." — the model must
+    // knowledge_search returns "[1] docName (p. page): ..." — the model must
     // cite by that number and never invent an id outside the returned set.
     expect(md).toMatch(/cite/i);
     expect(md).toMatch(/\[1\]|\[N\]|number/i);

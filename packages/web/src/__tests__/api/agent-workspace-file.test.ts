@@ -101,6 +101,25 @@ describe("GET /api/agents/[agentId]/workspace-file", () => {
     expect(JSON.stringify(entry.detail)).not.toContain(tmpRoot);
   });
 
+  it("sanitizes a filename containing a quote/backslash so it cannot break out of the quoted Content-Disposition value", async () => {
+    // macOS/Linux both allow `"` and `\` in a filename. If either survived
+    // into `filename="<name>"` unescaped, a crafted document name could
+    // terminate the quoted value early (header/response splitting risk).
+    const evilName = 'evil"na\\me.pdf';
+    const pdfPath = join(allowedRoot, evilName);
+    writeFileSync(pdfPath, PDF_BYTES);
+
+    const res = await callGET("agent-1", pdfPath);
+
+    expect(res.status).toBe(200);
+    const disposition = res.headers.get("content-disposition")!;
+    const match = disposition.match(/filename="([^]*?)";\s*filename\*=/);
+    expect(match).not.toBeNull();
+    const quotedFilename = match![1];
+    expect(quotedFilename).not.toContain('"');
+    expect(quotedFilename).not.toContain("\\");
+  });
+
   it("serves a non-PDF file under an allowed root as an attachment (not inline)", async () => {
     const txtPath = join(allowedRoot, "notes.txt");
     writeFileSync(txtPath, "hello");

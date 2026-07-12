@@ -103,7 +103,7 @@ export function formatWithCitations(results: KnowledgeSearchResult[]): string {
   }
   return results
     .map((result, index) => {
-      const pageSuffix = result.page != null ? ` (S. ${result.page})` : "";
+      const pageSuffix = result.page != null ? ` (p. ${result.page})` : "";
       return `[${index + 1}] ${result.docName}${pageSuffix}: "${result.text}"`;
     })
     .join("\n\n");

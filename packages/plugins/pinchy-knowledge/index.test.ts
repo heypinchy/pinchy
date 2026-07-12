@@ -136,7 +136,7 @@ describe("pinchy-knowledge plugin", () => {
     );
 
     expect(result.content).toEqual([
-      { type: "text", text: '[1] a.pdf (S. 3): "Snippet one."' },
+      { type: "text", text: '[1] a.pdf (p. 3): "Snippet one."' },
     ]);
     expect(result.details).toEqual({
       toolName: "knowledge_search",
@@ -247,7 +247,7 @@ describe("formatWithCitations", () => {
 
   it("formats results as numbered, citable sources with docName and page", () => {
     expect(formatWithCitations(results)).toBe(
-      '[1] a.pdf (S. 3): "Snippet one."\n\n[2] b.pdf: "Snippet two."'
+      '[1] a.pdf (p. 3): "Snippet one."\n\n[2] b.pdf: "Snippet two."'
     );
   });
 

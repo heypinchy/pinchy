@@ -186,7 +186,7 @@ export const GET = withAuth<Params>(async (req, { params }, session) => {
       // Content-Type via its own MIME sniffing — the anti-XSS control that
       // makes the inline/attachment split above meaningful.
       "x-content-type-options": "nosniff",
-      "content-disposition": `${disposition}; filename="${documentName.replace(/[^\x20-\x7e]/g, "_")}"; filename*=UTF-8''${encodeURIComponent(documentName)}`,
+      "content-disposition": `${disposition}; filename="${documentName.replace(/[^\x20-\x7e]|["\\]/g, "_")}"; filename*=UTF-8''${encodeURIComponent(documentName)}`,
       // Only relevant for the inline (PDF) case: without this override
       // Next.js emits X-Frame-Options: DENY by default, which blocks a
       // same-origin <embed>/<iframe> PDF viewer (see uploads/[filename]/route.ts
