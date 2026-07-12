@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { NextRequest } from "next/server";
-import { proxy } from "@/proxy";
+import { proxy, config } from "@/proxy";
 
 describe("proxy", () => {
   it("stamps the request path + query onto the x-pathname header", () => {
@@ -27,5 +27,15 @@ describe("proxy", () => {
     const response = proxy(request);
 
     expect(response.headers.get("x-middleware-request-x-pathname")).toBe("/agents");
+  });
+
+  it("excludes the service worker + manifest static assets from the matcher", () => {
+    const [pattern] = config.matcher;
+    // These are served straight from /public and never need the returnTo
+    // header; running the proxy on them is pointless and inconsistent with
+    // the deliberate sw.js exclusion.
+    expect(pattern).toContain("sw.js");
+    expect(pattern).toContain("sw-share-target.js");
+    expect(pattern).toContain("manifest.webmanifest");
   });
 });

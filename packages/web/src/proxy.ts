@@ -29,7 +29,8 @@ export function proxy(request: NextRequest) {
 export const config = {
   matcher: [
     // Skip Next internals, API routes (which have their own auth checks),
-    // and static assets — none of them need the returnTo redirect.
-    "/((?!api|_next/static|_next/image|favicon.ico|sw.js).*)",
+    // and static assets (service workers + manifest) — none of them need the
+    // returnTo redirect header.
+    "/((?!api|_next/static|_next/image|favicon.ico|sw.js|sw-share-target.js|manifest.webmanifest).*)",
   ],
 };

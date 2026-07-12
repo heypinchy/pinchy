@@ -11,7 +11,9 @@
 // updating both):
 //   Cache name: "share-target"
 //   meta -> /__share/<id>/meta
-//     JSON body: { files: [{ index, name, type }], title, text, url }
+//     JSON body: { files: [{ index, name, type }], title, text, url, createdAt }
+//     createdAt (epoch ms) lets sweepStaleShares() reclaim entries the user
+//     previewed but never sent — Cache Storage has no TTL of its own.
 //   file -> /__share/<id>/file/<index>
 //     Body: the raw file blob.
 //     Headers: Content-Type: <mime>, X-Filename: <encodeURIComponent(name)>
@@ -28,6 +30,7 @@ async function handleShareTarget(request) {
     title: String(form.get("title") || ""),
     text: String(form.get("text") || ""),
     url: String(form.get("url") || ""),
+    createdAt: Date.now(),
   };
 
   for (let index = 0; index < files.length; index++) {

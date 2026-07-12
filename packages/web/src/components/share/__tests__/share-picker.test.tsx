@@ -1,16 +1,18 @@
-import { render, screen } from "@testing-library/react";
+import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import "@testing-library/jest-dom";
 import { SharePicker } from "../share-picker";
 import type { Agent } from "@/components/agent-list";
 
-const { readSharedPayload } = vi.hoisted(() => ({
+const { readSharedPayload, sweepStaleShares } = vi.hoisted(() => ({
   readSharedPayload: vi.fn(),
+  sweepStaleShares: vi.fn(),
 }));
 
 vi.mock("@/lib/share-target/share-cache", () => ({
   readSharedPayload,
+  sweepStaleShares,
 }));
 
 const push = vi.fn();
@@ -46,6 +48,8 @@ describe("SharePicker", () => {
   beforeEach(() => {
     mockSearchParams.current = new URLSearchParams("share_id=abc");
     readSharedPayload.mockReset();
+    sweepStaleShares.mockReset();
+    sweepStaleShares.mockResolvedValue(undefined);
     push.mockReset();
   });
 
@@ -84,6 +88,28 @@ describe("SharePicker", () => {
     render(<SharePicker agents={agents} />);
 
     expect(await screen.findByText(/nothing to share/i)).toBeInTheDocument();
+  });
+
+  it("sweeps stale previewed-but-unsent shares on mount", async () => {
+    readSharedPayload.mockResolvedValue({ files: [], title: "", text: "hi", url: "" });
+
+    render(<SharePicker agents={agents} />);
+
+    await waitFor(() => expect(sweepStaleShares).toHaveBeenCalledTimes(1));
+    expect(sweepStaleShares).toHaveBeenCalledWith(60 * 60 * 1000);
+  });
+
+  it("shows a retry-specific empty state when the SW-miss fallback redirected with ?error=retry", async () => {
+    // The server fallback route (share-target/route.ts) redirects here with
+    // ?error=retry and no share_id when a stale SW let the POST hit the
+    // network. That's a distinct situation from an expired/unknown share, so
+    // the copy should tell the user the share was interrupted, not "expired".
+    mockSearchParams.current = new URLSearchParams("error=retry");
+
+    render(<SharePicker agents={agents} />);
+
+    expect(await screen.findByText(/sharing didn't go through/i)).toBeInTheDocument();
+    expect(readSharedPayload).not.toHaveBeenCalled();
   });
 
   it("shows the empty state when the cache read fails", async () => {

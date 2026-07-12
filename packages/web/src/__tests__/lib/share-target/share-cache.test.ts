@@ -7,7 +7,11 @@
 // misbehaves on real Request/Response bodies), so this file opts out of the
 // default jsdom environment in favor of Node's native fetch implementation.
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
-import { readSharedPayload, clearSharedPayload } from "@/lib/share-target/share-cache";
+import {
+  readSharedPayload,
+  clearSharedPayload,
+  sweepStaleShares,
+} from "@/lib/share-target/share-cache";
 
 /**
  * Minimal in-memory stand-in for the Cache Storage API (`caches.open`),
@@ -55,6 +59,7 @@ async function seedShare(
     fileName?: string;
     fileType?: string;
     fileBody?: string;
+    createdAt?: number;
   } = {}
 ) {
   const fileName = options.fileName ?? "photo.jpg";
@@ -71,12 +76,15 @@ async function seedShare(
     })
   );
 
-  const meta = {
+  const meta: Record<string, unknown> = {
     files: [{ index: 0, name: fileName, type: fileType }],
     title: options.title ?? "Shared title",
     text: options.text ?? "Shared text",
     url: options.url ?? "https://example.com/shared",
   };
+  if (options.createdAt !== undefined) {
+    meta.createdAt = options.createdAt;
+  }
 
   await mockCache.put(
     `/__share/${id}/meta`,
@@ -262,6 +270,59 @@ describe("share-cache", () => {
 
       try {
         await expect(clearSharedPayload("any-id")).resolves.toBeUndefined();
+      } finally {
+        globalThis.caches = original;
+      }
+    });
+  });
+
+  describe("sweepStaleShares", () => {
+    it("deletes shares older than maxAge and leaves fresh ones intact", async () => {
+      await seedShare(mockCache, "old", { createdAt: 1000 });
+      await seedShare(mockCache, "fresh", { createdAt: 9000 });
+      expect(mockCache.store.size).toBe(4);
+
+      // now=10000, maxAge=2000 → "old" (age 9000) is stale, "fresh" (age 1000) survives.
+      await sweepStaleShares(2000, 10000);
+
+      const paths = Array.from(mockCache.store.keys()).map((url) => new URL(url).pathname);
+      expect(paths).toHaveLength(2);
+      expect(paths.every((path) => path.startsWith("/__share/fresh/"))).toBe(true);
+
+      expect(await readSharedPayload("old")).toBeNull();
+      expect(await readSharedPayload("fresh")).not.toBeNull();
+    });
+
+    it("reclaims an entry whose meta predates the createdAt field", async () => {
+      await mockCache.put(
+        `/__share/legacy/meta`,
+        new Response(JSON.stringify({ files: [] }), {
+          headers: { "Content-Type": "application/json" },
+        })
+      );
+
+      await sweepStaleShares(2000, 10000);
+
+      expect(mockCache.store.size).toBe(0);
+    });
+
+    it("keeps an entry exactly at the age boundary (not strictly older)", async () => {
+      await seedShare(mockCache, "boundary", { createdAt: 8000 });
+
+      // age === maxAge is NOT "older than", so it stays.
+      await sweepStaleShares(2000, 10000);
+
+      expect(await readSharedPayload("boundary")).not.toBeNull();
+    });
+
+    it("does nothing when the Cache API is unavailable (SSR/unsupported)", async () => {
+      vi.unstubAllGlobals();
+      const original = globalThis.caches;
+      // @ts-expect-error - simulating an environment without Cache API
+      delete globalThis.caches;
+
+      try {
+        await expect(sweepStaleShares(2000, 10000)).resolves.toBeUndefined();
       } finally {
         globalThis.caches = original;
       }

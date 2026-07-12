@@ -49,6 +49,7 @@ function createMockCache() {
 }
 
 const FIXED_ID = "11111111-1111-1111-1111-111111111111";
+const FIXED_TIME = 1_700_000_000_000;
 
 describe("sw-share-target", () => {
   let mockCache: ReturnType<typeof createMockCache>;
@@ -65,10 +66,12 @@ describe("sw-share-target", () => {
       ...globalThis.crypto,
       randomUUID: vi.fn(() => FIXED_ID),
     });
+    vi.spyOn(Date, "now").mockReturnValue(FIXED_TIME);
   });
 
   afterEach(() => {
     vi.unstubAllGlobals();
+    vi.restoreAllMocks();
   });
 
   function buildRequest(form: FormData) {
@@ -108,6 +111,7 @@ describe("sw-share-target", () => {
       title: "",
       text: "Look at this invoice",
       url: "",
+      createdAt: FIXED_TIME,
     });
   });
 
@@ -137,6 +141,7 @@ describe("sw-share-target", () => {
       title: "Two files",
       text: "",
       url: "https://example.com/source",
+      createdAt: FIXED_TIME,
     });
   });
 });

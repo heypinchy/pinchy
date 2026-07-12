@@ -130,6 +130,31 @@ describe("useShareIntake", () => {
     expect(replace).toHaveBeenCalledTimes(1);
   });
 
+  it("processes a second, different share id even without a remount", async () => {
+    // The run-once guard keys on the share id, not a bare boolean: if a fresh
+    // `?share=<id>` arrives into an already-mounted intake (a future routing
+    // change could do this), it must still fire rather than silently no-op.
+    readSharedPayload.mockResolvedValue({ files: [], title: "", text: "first", url: "" });
+    const setComposerText = vi.fn();
+
+    const { rerender } = render(
+      <Harness addPendingUpload={vi.fn()} setComposerText={setComposerText} />
+    );
+
+    await vi.waitFor(() => {
+      expect(setComposerText).toHaveBeenCalledWith("first");
+    });
+
+    readSharedPayload.mockResolvedValue({ files: [], title: "", text: "second", url: "" });
+    mockSearchParams.current = new URLSearchParams("keep=&share=def");
+    rerender(<Harness addPendingUpload={vi.fn()} setComposerText={setComposerText} />);
+
+    await vi.waitFor(() => {
+      expect(setComposerText).toHaveBeenCalledWith("second");
+    });
+    expect(readSharedPayload).toHaveBeenCalledTimes(2);
+  });
+
   it("does nothing when there is no share param", () => {
     mockSearchParams.current = new URLSearchParams("keep=");
 

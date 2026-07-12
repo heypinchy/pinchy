@@ -6,7 +6,11 @@ import { useRouter, useSearchParams } from "next/navigation";
 import { FileText } from "lucide-react";
 import { type Agent, sortAgents } from "@/components/agent-list";
 import { getAgentAvatarSvg } from "@/lib/avatar";
-import { readSharedPayload, type SharedPayload } from "@/lib/share-target/share-cache";
+import {
+  readSharedPayload,
+  sweepStaleShares,
+  type SharedPayload,
+} from "@/lib/share-target/share-cache";
 
 interface SharePickerProps {
   agents: Agent[];
@@ -79,14 +83,25 @@ function SharePreview({ payload }: { payload: SharedPayload }) {
   return <p className="line-clamp-3 text-sm text-muted-foreground">{excerpt}</p>;
 }
 
-function EmptyState() {
+function EmptyState({ reason }: { reason?: "retry" }) {
+  // `retry` means the SW-miss server fallback (share-target/route.ts) sent us
+  // here because a stale service worker let the POST hit the network — the
+  // share was interrupted rather than expired, so say so honestly.
+  const { heading, body } =
+    reason === "retry"
+      ? {
+          heading: "Sharing didn't go through",
+          body: "Something interrupted the share before it reached Pinchy. Please try sharing again.",
+        }
+      : {
+          heading: "Nothing to share",
+          body: "We couldn't find what you shared — it may have expired, or the share didn't come through. Try sharing again.",
+        };
+
   return (
     <div className="flex flex-col items-center gap-3 py-16 text-center">
-      <h1 className="text-lg font-semibold">Nothing to share</h1>
-      <p className="max-w-sm text-sm text-muted-foreground">
-        We couldn&apos;t find what you shared — it may have expired, or the share didn&apos;t come
-        through. Try sharing again.
-      </p>
+      <h1 className="text-lg font-semibold">{heading}</h1>
+      <p className="max-w-sm text-sm text-muted-foreground">{body}</p>
       <Link
         href="/agents"
         className="text-sm font-medium text-primary underline-offset-4 hover:underline"
@@ -101,9 +116,18 @@ export function SharePicker({ agents }: SharePickerProps) {
   const router = useRouter();
   const searchParams = useSearchParams();
   const shareId = searchParams.get("share_id");
+  const shareError = searchParams.get("error");
   const [payload, setPayload] = useState<SharedPayload | null | typeof LOADING>(
     shareId ? LOADING : null
   );
+
+  useEffect(() => {
+    // Reclaim shares the user previewed here but never sent — Cache Storage
+    // has no TTL of its own, so orphaned entries (potentially 15 MB photos)
+    // would otherwise linger until quota pressure. One hour comfortably
+    // outlasts any real share → pick flow.
+    sweepStaleShares(60 * 60 * 1000).catch(() => {});
+  }, []);
 
   useEffect(() => {
     // No id at all (unknown/expired share, or the `?error=retry` fallback) —
@@ -133,7 +157,7 @@ export function SharePicker({ agents }: SharePickerProps) {
   }
 
   if (!payload) {
-    return <EmptyState />;
+    return <EmptyState reason={shareError === "retry" ? "retry" : undefined} />;
   }
 
   const sortedAgents = sortAgents(agents);

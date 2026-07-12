@@ -18,8 +18,11 @@ interface UseShareIntakeArgs {
  * text prefill the user can edit before sending — a shared LINK carries no
  * file, so the prefill is its only path into the composer.
  *
- * Runs at most once per share id (guarded solely by a ref) and never throws
- * even if the cache read fails — a corrupted or already-cleared entry is
+ * Runs at most once per share id: a ref remembers the id it already handled,
+ * so a StrictMode double-invoke (or a re-render) is a no-op, while a genuinely
+ * different `?share=<id>` arriving into the same mounted intake still fires.
+ * Never throws even if the cache read fails — a corrupted or already-cleared
+ * entry is
  * treated like "nothing to attach" rather than crashing the chat. Either
  * way, the `share` param is stripped from the URL afterwards so a refresh
  * doesn't replay the intake. Every OTHER param (notably `?keep`, which is
@@ -45,12 +48,12 @@ export function useShareIntake({ addPendingUpload, setComposerText }: UseShareIn
   const router = useRouter();
   const pathname = usePathname();
   const searchParams = useSearchParams();
-  const handledRef = useRef(false);
+  const handledRef = useRef<string | null>(null);
 
   useEffect(() => {
     const shareId = searchParams.get("share");
-    if (!shareId || handledRef.current) return;
-    handledRef.current = true;
+    if (!shareId || handledRef.current === shareId) return;
+    handledRef.current = shareId;
 
     (async () => {
       try {
