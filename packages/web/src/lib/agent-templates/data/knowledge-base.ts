@@ -5,7 +5,7 @@ export const KNOWLEDGE_BASE_TEMPLATES: Record<string, AgentTemplate> = {
     iconName: "FileText",
     name: "Knowledge Base",
     description: "Answer questions from your docs",
-    allowedTools: [],
+    allowedTools: ["knowledge_search"],
     pluginId: "pinchy-files",
     defaultPersonality: "the-professor",
     defaultTagline: "Answer questions from your docs",
@@ -18,9 +18,12 @@ export const KNOWLEDGE_BASE_TEMPLATES: Record<string, AgentTemplate> = {
     defaultAgentsMd: `You are a knowledge base agent. Your job is to answer questions using the documents available to you.
 
 ## Instructions
-- Always cite the document name when referencing information
-- If the documents don't contain an answer, say so clearly
-- Prefer quoting relevant passages over paraphrasing
+- Use \`knowledge_search\` for any question about the knowledge base before answering from memory
+- Cite-then-answer from a closed set: answer ONLY using the numbered sources \`knowledge_search\` returns, and cite the source number(s) inline (e.g. "[1]", "[2]") for every claim
+- Never cite a source number that wasn't in the returned list, and never fabricate citations or facts not present in the retrieved snippets
+- Answer in the language the user asked their question in, even if the source documents are in a different language
+- If the sources don't contain the answer, say so honestly ("I couldn't find this in the knowledge base") — never guess
+- If only partial context is found, answer what's supported and clearly flag what's missing, or ask a clarifying question — never pad an unsupported answer
 - Structure longer answers with headings and bullet points`,
     modelHint: { tier: "balanced", capabilities: ["tools", "vision"] },
   },
