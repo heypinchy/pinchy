@@ -81,6 +81,33 @@ describe("buildAttachmentBlock", () => {
     expect(block).not.toContain("analyze with `image`");
   });
 
+  it("routes vCards to `pinchy_read` (both text/vcard and legacy text/x-vcard)", async () => {
+    // vCard (.vcf) contact files are plain UTF-8 text — the agent reads them
+    // natively with pinchy_read, no dedicated parser needed. Two MIME
+    // spellings exist in the wild: the registered `text/vcard` and the
+    // legacy `text/x-vcard` some contact-export flows still emit.
+    const { buildAttachmentBlock } = await import("@/server/attachment-pipeline");
+    const block = buildAttachmentBlock([
+      {
+        relativePath: "uploads/contact.vcf",
+        absolutePath: "/root/.openclaw/workspaces/test/uploads/contact.vcf",
+        mimeType: "text/vcard",
+        sizeBytes: 200,
+        contentHash: "d".repeat(64),
+        reused: false,
+      },
+      {
+        relativePath: "uploads/contact2.vcf",
+        absolutePath: "/root/.openclaw/workspaces/test/uploads/contact2.vcf",
+        mimeType: "text/x-vcard",
+        sizeBytes: 200,
+        contentHash: "e".repeat(64),
+        reused: false,
+      },
+    ]);
+    expect(block.match(/analyze with `pinchy_read`/g)).toHaveLength(2);
+  });
+
   it("returns empty string when no uploads", async () => {
     const { buildAttachmentBlock } = await import("@/server/attachment-pipeline");
     expect(buildAttachmentBlock([])).toBe("");

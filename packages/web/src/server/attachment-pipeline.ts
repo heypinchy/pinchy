@@ -262,6 +262,8 @@ const PINCHY_READ_TEXT_MIMES = new Set([
   "text/markdown",
   "application/json",
   "text/yaml",
+  "text/vcard",
+  "text/x-vcard",
 ]);
 
 /**

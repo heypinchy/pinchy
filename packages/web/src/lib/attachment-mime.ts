@@ -17,6 +17,11 @@ export const EXTENSION_TO_MIME: Record<string, string> = {
   ".json": "application/json",
   ".yaml": "text/yaml",
   ".yml": "text/yaml",
+  // vCard (.vcf) is normally content-sniffed as `text/vcard` (it has "magic
+  // bytes" — see ALLOWED_ATTACHMENT_MIMES in upload-validation.ts), so this
+  // entry is defense-in-depth for the rare edge case where a vCard body
+  // doesn't start exactly with `BEGIN:VCARD` and file-type can't sniff it.
+  ".vcf": "text/vcard",
 };
 
 /**
@@ -49,4 +54,7 @@ export const INPUT_ACCEPT_ATTRIBUTE = [
   "text/yaml",
   ".yaml",
   ".yml",
+  "text/vcard",
+  "text/x-vcard",
+  ".vcf",
 ].join(",");

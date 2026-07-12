@@ -66,6 +66,13 @@ export function sanitizeFilename(raw: string): string {
 
 // Audio is intentionally absent — see #321. Adding audio MIMEs here without
 // also wiring transcription means the agent receives a file it cannot read.
+//
+// text/vcard is ALSO listed in ALLOWED_TEXT_MIMES below: file-type's content
+// sniffer recognizes a properly-formatted `BEGIN:VCARD…END:VCARD` payload and
+// always returns `{ mime: "text/vcard" }` here, but some real-world vCard
+// exports (lowercase `begin:vcard`, leading blank line/CRLF) aren't sniffed
+// and fall through to the no-magic-bytes branch instead. Both allowlists
+// carry the type; see the ALLOWED_TEXT_MIMES comment for the fallback case.
 export const ALLOWED_ATTACHMENT_MIMES = new Set<string>([
   "application/pdf",
   "image/jpeg",
@@ -74,17 +81,41 @@ export const ALLOWED_ATTACHMENT_MIMES = new Set<string>([
   "image/gif",
   "image/heic",
   "image/heif",
+  "text/vcard",
 ]);
 
 // Text formats have no magic bytes, so fileTypeFromBuffer returns undefined.
 // These are validated by UTF-8 null-byte guard instead.
+//
+// text/vcard and text/x-vcard are also listed here even though a *properly*
+// formatted vCard (uppercase `BEGIN:VCARD`, no leading bytes) IS sniffed via
+// content and handled by ALLOWED_ATTACHMENT_MIMES above. Real-world exporters
+// still produce vCards file-type's sniffer misses — lowercase `begin:vcard`
+// (older vCard 2.1 tools) or a leading blank line/CRLF — which fall through
+// to this no-magic-bytes branch instead. Both allowlists carry the type
+// deliberately; they cover different fallback paths for the same format.
 export const ALLOWED_TEXT_MIMES = new Set<string>([
   "text/plain",
   "text/csv",
   "text/markdown",
   "application/json",
   "text/yaml",
+  "text/vcard",
+  "text/x-vcard",
 ]);
+
+// RFC 6350 registered `text/vcard`, obsoleting the pre-standard `x-token`
+// `text/x-vcard` — but real-world clients (older macOS/Outlook export flows)
+// still commonly claim the legacy spelling for identical content. file-type's
+// sniffer always normalizes vCard content to the single canonical
+// `text/vcard`, so the exact-match mismatch check below would otherwise
+// reject every legacy-labelled vCard as spoofed content even though it's
+// genuine. This is the only MIME alias in this module — deliberately, so a
+// future addition needs the same justification (a registered synonym for the
+// exact same wire format, not merely "close enough").
+function isKnownMimeAlias(detectedMime: string, claimedMime: string): boolean {
+  return detectedMime === "text/vcard" && claimedMime === "text/x-vcard";
+}
 
 export async function validateUploadBuffer(buffer: Buffer, claimedMime: string): Promise<string> {
   const detected = await fileTypeFromBuffer(
@@ -106,8 +137,8 @@ export async function validateUploadBuffer(buffer: Buffer, claimedMime: string):
   if (!ALLOWED_ATTACHMENT_MIMES.has(detected.mime)) {
     throw new Error(`File type ${detected.mime} not supported`);
   }
-  if (detected.mime !== claimedMime) {
+  if (detected.mime !== claimedMime && !isKnownMimeAlias(detected.mime, claimedMime)) {
     throw new Error(`File type mismatch: claimed ${claimedMime}, content is ${detected.mime}`);
   }
-  return detected.mime;
+  return claimedMime;
 }

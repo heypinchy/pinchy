@@ -127,6 +127,7 @@ describe("validateUploadBuffer", () => {
     expect(ALLOWED_ATTACHMENT_MIMES.has("image/gif")).toBe(true);
     expect(ALLOWED_ATTACHMENT_MIMES.has("image/heic")).toBe(true);
     expect(ALLOWED_ATTACHMENT_MIMES.has("image/heif")).toBe(true);
+    expect(ALLOWED_ATTACHMENT_MIMES.has("text/vcard")).toBe(true);
   });
 
   // Audio is intentionally NOT in the whitelist yet — see #321 for the
@@ -165,6 +166,8 @@ describe("text file support", () => {
     expect(ALLOWED_TEXT_MIMES.has("text/markdown")).toBe(true);
     expect(ALLOWED_TEXT_MIMES.has("application/json")).toBe(true);
     expect(ALLOWED_TEXT_MIMES.has("text/yaml")).toBe(true);
+    expect(ALLOWED_TEXT_MIMES.has("text/vcard")).toBe(true);
+    expect(ALLOWED_TEXT_MIMES.has("text/x-vcard")).toBe(true);
   });
 
   it("accepts valid UTF-8 CSV content", async () => {
@@ -195,5 +198,53 @@ describe("text file support", () => {
 
   it("rejects known binary (PDF magic bytes) claiming text/csv", async () => {
     await expect(validateUploadBuffer(PDF_HEADER, "text/csv")).rejects.toThrow(/mismatch/i);
+  });
+});
+
+// Unlike the other text formats above, a vCard body DOES have "magic bytes":
+// file-type's content sniffer recognizes any `BEGIN:VCARD…END:VCARD` payload
+// and always reports it as the single canonical `{ mime: "text/vcard" }`,
+// regardless of the vCard VERSION or what the uploading client claimed. So
+// vCard lives in `ALLOWED_ATTACHMENT_MIMES` (the detected-mime allowlist),
+// not `ALLOWED_TEXT_MIMES` — the no-magic-bytes branch is unreachable for
+// real vCard content. The agent still reads the file natively via
+// `pinchy_read`, no parser needed.
+describe("vCard support", () => {
+  const VCARD = Buffer.from(
+    "BEGIN:VCARD\nVERSION:3.0\nFN:Maria Huber\nEMAIL:maria@example.com\nEND:VCARD\n",
+    "utf-8"
+  );
+
+  it("accepts valid vCard content claimed as text/vcard", async () => {
+    await expect(validateUploadBuffer(VCARD, "text/vcard")).resolves.toBe("text/vcard");
+  });
+
+  // RFC 6350 registered `text/vcard`, obsoleting the pre-standard `x-token`
+  // `text/x-vcard` — but real-world clients (older macOS/Outlook export
+  // flows) still commonly claim the legacy spelling for identical content.
+  // file-type's sniffer always normalizes to `text/vcard`, so without this
+  // alias the exact-match mismatch check below would reject every
+  // legacy-labelled vCard as spoofed content, even though it's genuine.
+  it("accepts valid vCard content claimed as the legacy text/x-vcard MIME", async () => {
+    await expect(validateUploadBuffer(VCARD, "text/x-vcard")).resolves.toBe("text/x-vcard");
+  });
+
+  it("still rejects genuine mismatches for vCard-shaped content", async () => {
+    await expect(validateUploadBuffer(VCARD, "application/pdf")).rejects.toThrow(/mismatch/i);
+  });
+
+  // Real-world vCard 2.1 exporters (older Nokia/Symbian and legacy CRM tools)
+  // emit lowercase property names. file-type's sniffer only matches the
+  // uppercase `BEGIN:VCARD` form, so this content is NOT detected and falls
+  // through to the ALLOWED_TEXT_MIMES branch instead.
+  it("accepts lowercase begin:vcard content via the no-magic-bytes text branch", async () => {
+    const lowercaseVcard = Buffer.from(
+      "begin:vcard\nversion:2.1\nfn:Maria Huber\nend:vcard\n",
+      "utf-8"
+    );
+    await expect(validateUploadBuffer(lowercaseVcard, "text/vcard")).resolves.toBe("text/vcard");
+    await expect(validateUploadBuffer(lowercaseVcard, "text/x-vcard")).resolves.toBe(
+      "text/x-vcard"
+    );
   });
 });
