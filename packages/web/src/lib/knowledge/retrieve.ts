@@ -111,22 +111,31 @@ export async function retrieve(
   const baseFilter = sql`c.org_id = ${orgId} AND d.status = 'active' AND (${pathFilter})`;
 
   return db.transaction(async (tx) => {
-    // Filtered HNSW recall: without this, pgvector's HNSW index can return
-    // fewer than candidateK rows once the WHERE filter (org/status/path)
-    // eliminates most of a graph neighborhood, instead of continuing the
-    // graph walk until candidateK filtered matches are found. SET LOCAL
-    // scopes the setting to this transaction only.
+    // Filtered HNSW recall for the vector arm's index scan: without this,
+    // pgvector's HNSW index can return fewer than candidateK rows once the
+    // WHERE filter (org/status/path) eliminates most of a graph neighborhood,
+    // instead of continuing the graph walk until candidateK filtered matches
+    // are found. SET LOCAL scopes the setting to this transaction only.
     await tx.execute(sql`SET LOCAL hnsw.iterative_scan = 'relaxed_order'`);
 
     const rows = await tx.execute<RetrieveRow>(sql`
       WITH vector_arm AS (
-        SELECT c.id AS chunk_id,
-               ROW_NUMBER() OVER (ORDER BY c.embedding <=> ${queryVectorLiteral}::vector) AS rank
-        FROM kb_chunks c
-        JOIN kb_documents d ON d.id = c.document_id
-        WHERE ${baseFilter}
-        ORDER BY rank
-        LIMIT ${candidateK}
+        -- The index-eligible \`ORDER BY embedding <=> qvec ... LIMIT\` runs in the
+        -- inner subquery: that shape lets pgvector's HNSW index walk the graph
+        -- (continuing under the org/status/path WHERE thanks to the transaction's
+        -- iterative_scan setting) until candidateK filtered matches are found,
+        -- instead of an exact brute-force sort over the whole filtered set. Ranks
+        -- are then assigned over that already-truncated top-K.
+        SELECT chunk_id, ROW_NUMBER() OVER (ORDER BY dist) AS rank
+        FROM (
+          SELECT c.id AS chunk_id,
+                 (c.embedding <=> ${queryVectorLiteral}::vector) AS dist
+          FROM kb_chunks c
+          JOIN kb_documents d ON d.id = c.document_id
+          WHERE ${baseFilter}
+          ORDER BY c.embedding <=> ${queryVectorLiteral}::vector
+          LIMIT ${candidateK}
+        ) t
       ),
       fts_arm AS (
         SELECT c.id AS chunk_id,
