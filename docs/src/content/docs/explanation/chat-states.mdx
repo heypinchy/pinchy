@@ -29,6 +29,14 @@ When the state is Unavailable, the indicator and status message explain why:
 
 When the agent runtime becomes reachable again — whether after a network drop or after a settings change — Pinchy automatically requests the latest conversation history and resumes where it left off. No reload needed.
 
+## Your chats stay in sync across your devices
+
+Open the same chat on your phone and your computer, and both stay current. Send a message on one, and it appears on the other in real time — no reload needed. A message that arrives from a connected channel like Telegram shows up in the web chat live, too.
+
+This works out of the box. There's nothing to switch on.
+
+The live update itself carries no message content — only a small signal that the chat changed. Your device then fetches the new messages over the same secure, permission-checked connection it always uses, so a conversation is only ever delivered to the person it belongs to.
+
 ## Brief disconnects don't lock the UI
 
 Pinchy waits 2 seconds before showing the Disconnected state. During those 2 seconds the interface stays in its previous state (Ready or Responding) so short network hiccups are absorbed silently without disrupting your flow.
