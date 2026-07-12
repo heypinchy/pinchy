@@ -1,0 +1,36 @@
+---
+title: Share to Pinchy from Your Phone
+description: Send photos, PDFs, contacts, and links from any app straight into a Pinchy agent's chat using your phone's Share sheet.
+---
+
+Once Pinchy is installed on your phone, it shows up in the system **Share** sheet — the same menu you use to send a photo to a friend or a link to a chat app. Pick Pinchy, pick an agent, and the content lands in that agent's chat, ready for you to add a note and send.
+
+:::caution[Android only, for now]
+Share to Pinchy works on **Android** in Chrome, Edge, and other Chromium-based browsers. It does not work on iPhone or iPad — iOS does not let installed web apps register as share targets, which is a platform limitation of iOS itself, not something Pinchy can configure around. A native iOS app is the planned path to close this gap.
+:::
+
+## Requirements
+
+- **Android**, with Chrome, Edge, or another Chromium-based browser.
+- Pinchy must be **installed** as an app first — Share Target only shows up for installed PWAs, not for a browser tab. See [Install as an App](/guides/install-as-app/) if you haven't done that yet.
+
+## What you can share
+
+| Content                                              | What happens                                  |
+| ---------------------------------------------------- | --------------------------------------------- |
+| Images (JPEG, PNG, WebP, GIF, HEIC)                  | Attached to the chat, same as a manual upload |
+| PDFs                                                 | Attached to the chat                          |
+| Text files (`.txt`, `.csv`, `.md`, `.json`, `.yaml`) | Attached to the chat                          |
+| Contact cards (vCard)                                | Attached to the chat                          |
+| Shared text or links                                 | Pre-filled into the message composer          |
+
+The same **15 MB per-file** limit as regular chat attachments applies — see [Upload Files in Chat](/guides/file-uploads/) for the full picture of how Pinchy handles each file type once it's in a conversation.
+
+## How to share
+
+1. In any app — your phone's photo gallery, a browser, a contacts app — tap **Share**.
+2. Choose **Pinchy** from the share sheet.
+3. Pinchy opens and asks **"Which agent?"** Tap the agent you want to send this to.
+4. The shared content lands in that agent's chat composer. Add a note if you want, then send it yourself — Pinchy never sends it automatically. This gives you a chance to add context before the agent sees it.
+
+That's it — the agent processes the attachment exactly as if you'd uploaded it directly in chat.

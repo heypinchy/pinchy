@@ -160,6 +160,7 @@ export default defineConfig({
             { label: 'Connect Odoo', slug: 'guides/connect-odoo' },
             { label: 'Upload Files in Chat', slug: 'guides/file-uploads' },
             { label: 'Install as an App', slug: 'guides/install-as-app' },
+            { label: 'Share to Pinchy from Your Phone', slug: 'guides/share-to-pinchy' },
             { label: 'Set Up Web Search', slug: 'guides/web-search-setup' },
             { label: 'Message Delivery & Retry', slug: 'guides/retry-messages' },
             { label: 'Slash Commands in Chat', slug: 'guides/slash-commands' },
