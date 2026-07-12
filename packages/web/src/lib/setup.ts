@@ -4,6 +4,7 @@ import { eq } from "drizzle-orm";
 import { auth } from "@/lib/auth";
 import { seedDefaultAgent } from "@/db/seed";
 import { getSetting } from "@/lib/settings";
+import { setOrgTimezone } from "@/lib/settings-timezone";
 
 export async function isProviderConfigured(): Promise<boolean> {
   const provider = await getSetting("default_provider");
@@ -17,7 +18,12 @@ export async function isSetupComplete(): Promise<boolean> {
   return adminUser !== undefined;
 }
 
-export async function createAdmin(name: string, email: string, password: string) {
+export async function createAdmin(
+  name: string,
+  email: string,
+  password: string,
+  browserTimezone?: string
+) {
   const existing = await db.query.users.findFirst({
     where: eq(users.role, "admin"),
   });
@@ -39,6 +45,8 @@ export async function createAdmin(name: string, email: string, password: string)
     await db.update(users).set({ role: "admin" }).where(eq(users.id, result.user.id));
 
     await seedDefaultAgent(result.user.id);
+
+    await setOrgTimezone(browserTimezone ?? "UTC");
   } catch (error) {
     // Clean up the orphaned user if post-signup steps fail
     try {
