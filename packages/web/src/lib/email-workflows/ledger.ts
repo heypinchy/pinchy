@@ -56,9 +56,13 @@ export interface FinalizeInput {
  * Mark a claimed email's ledger row with its terminal status and outcome. Called
  * by the isolated agent run when it finishes (draft created / nothing to do /
  * failed). Keyed by the same claim tuple as {@link claimEmail}.
+ *
+ * Throws if no row matched: finalize is only ever valid after a successful claim,
+ * so a zero-row update means a bug (finalize-before-claim or a mismatched key).
+ * We surface it loudly rather than leaving the row silently stuck in `processing`.
  */
 export async function finalizeEmail(input: FinalizeInput): Promise<void> {
-  await db
+  const rows = await db
     .update(processedEmails)
     .set({
       status: input.status,
@@ -72,5 +76,11 @@ export async function finalizeEmail(input: FinalizeInput): Promise<void> {
         eq(processedEmails.connectionId, input.connectionId),
         eq(processedEmails.providerMessageId, input.providerMessageId)
       )
+    )
+    .returning({ id: processedEmails.id });
+  if (rows.length === 0) {
+    throw new Error(
+      `finalizeEmail: no ledger row for (${input.workflowId}, ${input.connectionId}, ${input.providerMessageId}) — finalize called without a prior claim?`
     );
+  }
 }

@@ -1,5 +1,4 @@
 import { describe, it, expect } from "vitest";
-import { getTableConfig } from "drizzle-orm/pg-core";
 import { emailConnectionCursors } from "@/db/schema";
 
 const cols = (t: unknown) => (t as any)[Symbol.for("drizzle:Columns")];

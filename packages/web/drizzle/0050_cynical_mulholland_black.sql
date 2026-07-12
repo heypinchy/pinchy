@@ -1,0 +1,2 @@
+ALTER TABLE "email_workflows" ADD CONSTRAINT "email_workflows_status_check" CHECK ("email_workflows"."status" IN ('pending', 'active', 'error'));--> statement-breakpoint
+ALTER TABLE "processed_emails" ADD CONSTRAINT "processed_emails_status_check" CHECK ("processed_emails"."status" IN ('processing', 'done', 'no_action', 'failed'));

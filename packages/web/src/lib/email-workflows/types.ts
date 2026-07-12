@@ -14,5 +14,9 @@ export interface ProcessedEmailOutcome {
   note?: string;
 }
 
-export const PROCESSED_STATUSES = ["processing", "done", "no_action", "failed"] as const;
-export type ProcessedStatus = (typeof PROCESSED_STATUSES)[number];
+// Status domains live in db/enums.ts (single source of truth, DB CHECK-enforced).
+// Re-exported here under the domain-facing names for lib/email-workflows consumers.
+export {
+  PROCESSED_EMAIL_STATUSES as PROCESSED_STATUSES,
+  type ProcessedEmailStatus as ProcessedStatus,
+} from "@/db/enums";

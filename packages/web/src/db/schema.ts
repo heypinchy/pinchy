@@ -30,6 +30,10 @@ import {
   type InviteType,
   type IntegrationConnectionType,
   type IntegrationConnectionStatus,
+  EMAIL_WORKFLOW_STATUSES,
+  type EmailWorkflowStatus,
+  PROCESSED_EMAIL_STATUSES,
+  type ProcessedEmailStatus,
 } from "./enums";
 import type { EmailWorkflowFilter, ProcessedEmailOutcome } from "@/lib/email-workflows/types";
 
@@ -520,7 +524,7 @@ export const emailWorkflows = pgTable(
     pollEvery: text("poll_every").notNull().default("5m"),
     sweepWindowDays: integer("sweep_window_days").notNull().default(14),
     enabled: boolean("enabled").notNull().default(false),
-    status: text("status").notNull().default("pending"),
+    status: text("status").$type<EmailWorkflowStatus>().notNull().default("pending"),
     openclawJobId: text("openclaw_job_id"),
     createdBy: text("created_by").references(() => users.id),
     createdAt: timestamp("created_at").notNull().defaultNow(),
@@ -529,6 +533,7 @@ export const emailWorkflows = pgTable(
   (table) => [
     index("email_workflows_agent_idx").on(table.agentId),
     index("email_workflows_enabled_idx").on(table.enabled),
+    check("email_workflows_status_check", sql`${table.status} ${inEnum(EMAIL_WORKFLOW_STATUSES)}`),
   ]
 );
 
@@ -566,7 +571,7 @@ export const processedEmails = pgTable(
     connectionId: text("connection_id").notNull(),
     providerMessageId: text("provider_message_id").notNull(),
     messageIdHeader: text("message_id_header"),
-    status: text("status").notNull().default("processing"),
+    status: text("status").$type<ProcessedEmailStatus>().notNull().default("processing"),
     outcome: jsonb("outcome").$type<ProcessedEmailOutcome>(),
     runId: text("run_id"),
     claimedAt: timestamp("claimed_at").notNull().defaultNow(),
@@ -580,6 +585,10 @@ export const processedEmails = pgTable(
       table.providerMessageId
     ),
     index("processed_emails_status_idx").on(table.status),
+    check(
+      "processed_emails_status_check",
+      sql`${table.status} ${inEnum(PROCESSED_EMAIL_STATUSES)}`
+    ),
   ]
 );
 

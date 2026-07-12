@@ -71,6 +71,25 @@ describe("email ledger — claimEmail", () => {
     // Per-rule scope (D3): the same email is claimable once per workflow.
     expect(await claimEmail({ workflowId: wfB.id, ...msg })).toBe(true);
   });
+
+  it("is atomic under concurrent claims — exactly one winner", async () => {
+    const agent = await seedAgent();
+    const wf = await seedWorkflow(agent.id);
+    const key = { workflowId: wf.id, connectionId: "conn-1", providerMessageId: "race-1" };
+
+    // The whole point of the ON CONFLICT DO NOTHING claim (design §12) is that it
+    // holds under a race, not just sequentially. drizzle/postgres-js gives each
+    // query its own pooled connection, so these five run as genuinely concurrent
+    // transactions. A naive SELECT-then-INSERT would let more than one win here.
+    const results = await Promise.all([
+      claimEmail(key),
+      claimEmail(key),
+      claimEmail(key),
+      claimEmail(key),
+      claimEmail(key),
+    ]);
+    expect(results.filter(Boolean)).toHaveLength(1);
+  });
 });
 
 describe("email ledger — finalizeEmail", () => {
@@ -106,5 +125,65 @@ describe("email ledger — finalizeEmail", () => {
     // after a cursor loss: the ledger — not the cursor — is the source of truth,
     // so the already-finalized email must NOT be re-processed.
     expect(await claimEmail(key)).toBe(false);
+  });
+
+  it("throws when finalizing an email that was never claimed", async () => {
+    const agent = await seedAgent();
+    const wf = await seedWorkflow(agent.id);
+
+    // finalize-before-claim is always a bug: surface it loudly rather than
+    // silently updating zero rows and leaving the (nonexistent) row unmarked.
+    await expect(
+      finalizeEmail({
+        workflowId: wf.id,
+        connectionId: "conn-1",
+        providerMessageId: "never-claimed",
+        status: "done",
+      })
+    ).rejects.toThrow(/no ledger row/);
+  });
+});
+
+describe("email ledger — status CHECK constraints", () => {
+  // Flatten drizzle's wrapped error chain: the violated constraint name lands on
+  // `.cause`, not the top-level message. Mirrors schema-hardening's helper.
+  function violates(pattern: RegExp) {
+    return (err: unknown) => {
+      const e = err as {
+        message?: unknown;
+        cause?: { message?: unknown; constraint?: unknown };
+        constraint?: unknown;
+      };
+      const text = [e?.message, e?.cause?.message, e?.cause?.constraint, e?.constraint]
+        .filter((v): v is string => typeof v === "string")
+        .join(" ");
+      return pattern.test(text);
+    };
+  }
+
+  it("rejects an out-of-domain processed_emails.status at the DB", async () => {
+    const agent = await seedAgent();
+    const wf = await seedWorkflow(agent.id);
+    await expect(
+      db.insert(processedEmails).values({
+        workflowId: wf.id,
+        connectionId: "conn-1",
+        providerMessageId: "msg-1",
+        status: "bogus" as never,
+      })
+    ).rejects.toSatisfy(violates(/processed_emails_status_check/));
+  });
+
+  it("rejects an out-of-domain email_workflows.status at the DB", async () => {
+    const agent = await seedAgent();
+    await expect(
+      db.insert(emailWorkflows).values({
+        agentId: agent.id,
+        name: "Bad status",
+        filter: {},
+        action: "noop",
+        status: "bogus" as never,
+      })
+    ).rejects.toSatisfy(violates(/email_workflows_status_check/));
   });
 });

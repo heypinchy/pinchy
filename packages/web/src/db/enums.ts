@@ -45,3 +45,12 @@ export type IntegrationConnectionType = (typeof INTEGRATION_CONNECTION_TYPES)[nu
 
 export const INTEGRATION_CONNECTION_STATUSES = ["active", "pending", "auth_failed"] as const;
 export type IntegrationConnectionStatus = (typeof INTEGRATION_CONNECTION_STATUSES)[number];
+
+// Inbox Agent (#139). Status domains for the email-workflow tables. Enforced at
+// the DB with CHECK constraints (see schema.ts) so untyped callers in later
+// slices (dispatcher/route) can't write an out-of-domain status.
+export const EMAIL_WORKFLOW_STATUSES = ["pending", "active", "error"] as const;
+export type EmailWorkflowStatus = (typeof EMAIL_WORKFLOW_STATUSES)[number];
+
+export const PROCESSED_EMAIL_STATUSES = ["processing", "done", "no_action", "failed"] as const;
+export type ProcessedEmailStatus = (typeof PROCESSED_EMAIL_STATUSES)[number];
