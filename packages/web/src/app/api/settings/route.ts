@@ -2,7 +2,7 @@ import { NextRequest, NextResponse, after } from "next/server";
 import { z } from "zod";
 import { requireAdmin } from "@/lib/api-auth";
 import { getAllSettings, setSetting } from "@/lib/settings";
-import { getOrgTimezone, setOrgTimezone } from "@/lib/settings-timezone";
+import { getOrgTimezone, setOrgTimezone, isValidIanaTimezone } from "@/lib/settings-timezone";
 import { appendAuditLog } from "@/lib/audit";
 import { parseRequestBody } from "@/lib/api-validation";
 
@@ -32,12 +32,14 @@ export async function POST(request: NextRequest) {
   const { key, value } = parsed.data;
 
   if (key === "org.timezone") {
-    const previous = await getOrgTimezone();
-    try {
-      await setOrgTimezone(value);
-    } catch (e) {
-      return NextResponse.json({ error: (e as Error).message }, { status: 400 });
+    // Validate client input first (400). Persistence failures below are NOT
+    // caught here, so a genuine DB error surfaces as a 500 rather than being
+    // misreported to the client as bad input.
+    if (!isValidIanaTimezone(value)) {
+      return NextResponse.json({ error: `invalid IANA timezone: ${value}` }, { status: 400 });
     }
+    const previous = await getOrgTimezone();
+    await setOrgTimezone(value);
     after(() =>
       appendAuditLog({
         actorType: "user",
@@ -48,7 +50,7 @@ export async function POST(request: NextRequest) {
         outcome: "success",
       })
     );
-    return NextResponse.json({ ok: true });
+    return NextResponse.json({ success: true });
   }
 
   await setSetting(key, value, key.includes("api_key"));

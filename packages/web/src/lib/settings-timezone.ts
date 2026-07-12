@@ -14,7 +14,7 @@ export async function setOrgTimezone(timezone: string): Promise<void> {
   await setSetting(TIMEZONE_KEY, timezone);
 }
 
-function isValidIanaTimezone(tz: string): boolean {
+export function isValidIanaTimezone(tz: string): boolean {
   try {
     new Intl.DateTimeFormat("en-US", { timeZone: tz });
     return true;

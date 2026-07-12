@@ -22,7 +22,16 @@ vi.mock("@/lib/settings", () => ({
   getSetting: vi.fn().mockResolvedValue(null),
 }));
 
-vi.mock("@/lib/settings-timezone");
+// Keep the real, pure `isValidIanaTimezone` so the invalid → 400 case is driven
+// by the actual validator path; only the I/O helpers are stubbed.
+vi.mock("@/lib/settings-timezone", async (importActual) => {
+  const actual = await importActual<typeof import("@/lib/settings-timezone")>();
+  return {
+    ...actual,
+    getOrgTimezone: vi.fn(),
+    setOrgTimezone: vi.fn(),
+  };
+});
 vi.mock("@/lib/audit", () => ({
   appendAuditLog: vi.fn().mockResolvedValue(undefined),
 }));
@@ -57,6 +66,7 @@ describe("POST /api/settings — timezone", () => {
     });
     const res = await POST(req as any);
     expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ success: true });
     expect(tz.setOrgTimezone).toHaveBeenCalledWith("Europe/Vienna");
     expect(after).toHaveBeenCalledTimes(1);
     expect(audit.appendAuditLog).toHaveBeenCalledWith(
@@ -68,18 +78,33 @@ describe("POST /api/settings — timezone", () => {
     );
   });
 
-  it("rejects invalid timezone with 400", async () => {
+  it("rejects invalid timezone with 400 before touching persistence", async () => {
     vi.mocked(tz.getOrgTimezone).mockResolvedValue("UTC");
-    vi.mocked(tz.setOrgTimezone).mockRejectedValue(new Error("invalid IANA timezone: X"));
 
     const req = new Request("http://test/api/settings", {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ key: "org.timezone", value: "X" }),
+      body: JSON.stringify({ key: "org.timezone", value: "Not/AZone" }),
     });
     const res = await POST(req as any);
     expect(res.status).toBe(400);
     const body = await res.json();
     expect(body).toEqual({ error: expect.stringMatching(/invalid/i) });
+    // Validation happens before persistence, so setSetting is never reached.
+    expect(tz.setOrgTimezone).not.toHaveBeenCalled();
+  });
+
+  it("propagates a persistence failure instead of masking it as a 400", async () => {
+    vi.mocked(tz.getOrgTimezone).mockResolvedValue("UTC");
+    // Valid zone, but the DB write fails: this must surface as a genuine error
+    // (→ 500 via the framework), never be reported to the client as a 400.
+    vi.mocked(tz.setOrgTimezone).mockRejectedValue(new Error("db down"));
+
+    const req = new Request("http://test/api/settings", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ key: "org.timezone", value: "Europe/Vienna" }),
+    });
+    await expect(POST(req as any)).rejects.toThrow(/db down/);
   });
 });
