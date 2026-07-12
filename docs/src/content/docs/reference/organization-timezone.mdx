@@ -1,0 +1,54 @@
+---
+title: Organization Timezone
+description: The org-wide timezone setting used for scheduled jobs and briefing delivery times.
+---
+
+Pinchy stores a single, org-wide IANA timezone. Background jobs — scheduled briefings, automations, and anything else that runs on a clock — use this value to decide _when_ to fire.
+
+The setting is shared across the whole organization. Individual users don't have their own timezone; everyone sees scheduled events anchored to the same wall-clock time.
+
+## Where to find it
+
+**Settings → Organization → Timezone**
+
+The Organization tab is **admin-only**. Non-admin users won't see it.
+
+## Default behavior
+
+Pinchy captures the admin's browser timezone during initial setup (via `Intl.DateTimeFormat().resolvedOptions().timeZone`) and stores it as the org timezone. If the browser doesn't report one, Pinchy falls back to `UTC`.
+
+You can change it any time after setup — there's no special migration step.
+
+## Format
+
+The selector lists every IANA timezone your runtime knows about, sourced from [`Intl.supportedValuesOf("timeZone")`](https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Intl/supportedValuesOf). Examples:
+
+- `Europe/Vienna`
+- `America/New_York`
+- `Asia/Tokyo`
+- `UTC`
+
+Pinchy validates the value against `Intl.DateTimeFormat` before saving. Invalid timezones are rejected with a `400` and an inline error.
+
+## What uses the timezone today
+
+Today, only the **Background Jobs** infrastructure reads this value. End-user features that schedule work — briefings, automations — will land in later milestones (see [issue #138](https://github.com/heypinchy/pinchy/issues/138)). Setting the timezone now means those features will pick up the correct value when they ship.
+
+## Audit trail
+
+Every change is recorded as a `settings.updated` event with a from/to diff:
+
+```json
+{
+  "eventType": "settings.updated",
+  "resource": "settings",
+  "detail": {
+    "changes": {
+      "timezone": { "from": "UTC", "to": "Europe/Vienna" }
+    }
+  },
+  "outcome": "success"
+}
+```
+
+See [Audit Trail](/concepts/audit-trail/) for how to query and export audit events.
