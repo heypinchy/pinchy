@@ -583,6 +583,17 @@ export const processedEmails = pgTable(
   ]
 );
 
+// One cursor per mailbox, shared by all workflows on it. The cursor is a
+// performance optimization for "what's new"; the ledger + reconciliation sweep
+// are the correctness layer. Advanced only after a tick's claims are durable.
+export const emailConnectionCursors = pgTable("email_connection_cursors", {
+  connectionId: text("connection_id")
+    .primaryKey()
+    .references(() => integrationConnections.id, { onDelete: "cascade" }),
+  cursor: text("cursor").notNull(),
+  updatedAt: timestamp("updated_at").notNull().defaultNow(),
+});
+
 // ── Usage Tracking ───────────────────────────────────────────────────
 
 export const usageRecords = pgTable(
