@@ -107,4 +107,21 @@ describe("POST /api/settings — timezone", () => {
     });
     await expect(POST(req as any)).rejects.toThrow(/db down/);
   });
+
+  it("does not write an audit event when the timezone is unchanged (from === to)", async () => {
+    vi.mocked(tz.getOrgTimezone).mockResolvedValue("Europe/Vienna");
+    vi.mocked(tz.setOrgTimezone).mockResolvedValue(undefined);
+
+    const req = new Request("http://test/api/settings", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ key: "org.timezone", value: "Europe/Vienna" }),
+    });
+    const res = await POST(req as any);
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ success: true });
+    // A no-op save (same value) must not spam the audit log with from===to rows.
+    expect(after).not.toHaveBeenCalled();
+    expect(audit.appendAuditLog).not.toHaveBeenCalled();
+  });
 });

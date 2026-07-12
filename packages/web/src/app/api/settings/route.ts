@@ -40,16 +40,23 @@ export async function POST(request: NextRequest) {
     }
     const previous = await getOrgTimezone();
     await setOrgTimezone(value);
-    after(() =>
-      appendAuditLog({
-        actorType: "user",
-        actorId: sessionOrError.user.id!,
-        eventType: "settings.updated",
-        resource: "settings",
-        detail: { changes: { timezone: { from: previous, to: value } } },
-        outcome: "success",
-      })
-    );
+    // The generic branch below intentionally logs a value-less `config.changed`
+    // because it also handles secret keys (api_key*), where a from/to diff would
+    // leak the secret into the audit detail. The timezone is not a secret, so it
+    // gets the richer `settings.updated` diff — but only when it actually changed,
+    // so a no-op save doesn't spam the audit log with from===to rows.
+    if (previous !== value) {
+      after(() =>
+        appendAuditLog({
+          actorType: "user",
+          actorId: sessionOrError.user.id!,
+          eventType: "settings.updated",
+          resource: "settings",
+          detail: { changes: { timezone: { from: previous, to: value } } },
+          outcome: "success",
+        })
+      );
+    }
     return NextResponse.json({ success: true });
   }
 

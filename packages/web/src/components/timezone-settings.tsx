@@ -13,7 +13,18 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 
-const TIMEZONES: string[] = Intl.supportedValuesOf("timeZone");
+// `Intl.supportedValuesOf` is ES2022; on an older runtime that lacks it, reading
+// it at module load would throw and break the whole settings bundle. Fall back to
+// a minimal list so the component still renders (validation still happens server-side).
+export function getSupportedTimezones(): string[] {
+  try {
+    return Intl.supportedValuesOf("timeZone");
+  } catch {
+    return ["UTC"];
+  }
+}
+
+const TIMEZONES: string[] = getSupportedTimezones();
 
 export function TimezoneSettings() {
   const [timezone, setTimezone] = useState("UTC");

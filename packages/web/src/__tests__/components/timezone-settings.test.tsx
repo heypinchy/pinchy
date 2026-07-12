@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import "@testing-library/jest-dom";
-import { TimezoneSettings } from "@/components/timezone-settings";
+import { TimezoneSettings, getSupportedTimezones } from "@/components/timezone-settings";
 import { toast } from "sonner";
 
 vi.mock("sonner", () => ({
@@ -264,6 +264,18 @@ describe("TimezoneSettings", () => {
     }
 
     expect(rejections).toEqual([]);
+  });
+
+  it("getSupportedTimezones falls back to ['UTC'] when the runtime lacks Intl.supportedValuesOf", () => {
+    const original = Intl.supportedValuesOf;
+    try {
+      // Simulate an older runtime (pre-ES2022) where the API is absent, so the
+      // "use client" module can't throw at import time.
+      (Intl as { supportedValuesOf?: unknown }).supportedValuesOf = undefined;
+      expect(getSupportedTimezones()).toEqual(["UTC"]);
+    } finally {
+      Intl.supportedValuesOf = original;
+    }
   });
 
   it("shows fallback inline error when save fails without message", async () => {
