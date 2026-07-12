@@ -1,11 +1,12 @@
 "use client";
 
-import { useState } from "react";
+import { Suspense, useState } from "react";
 import { authClient } from "@/lib/auth-client";
-import { useRouter } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
+import { isSafeReturnTo } from "@/lib/return-to";
 import { Button } from "@/components/ui/button";
 import { PasswordInput } from "@/components/password-input";
 import { Input } from "@/components/ui/input";
@@ -27,7 +28,20 @@ const loginSchema = z.object({
 type LoginFormValues = z.infer<typeof loginSchema>;
 
 export default function LoginPage() {
+  // useSearchParams() opts the render into a Suspense boundary (Next.js
+  // requires one so the rest of the page can still be statically
+  // prerendered) — see
+  // https://nextjs.org/docs/messages/missing-suspense-with-csr-bailout
+  return (
+    <Suspense>
+      <LoginForm />
+    </Suspense>
+  );
+}
+
+function LoginForm() {
   const router = useRouter();
+  const searchParams = useSearchParams();
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
 
@@ -49,7 +63,8 @@ export default function LoginPage() {
       if (error) {
         setError("Invalid email or password");
       } else {
-        router.push("/");
+        const returnTo = searchParams.get("returnTo");
+        router.push(isSafeReturnTo(returnTo) ? returnTo : "/");
       }
     } catch {
       setError("Login failed. Please try again.");

@@ -15,9 +15,13 @@ vi.mock("@/lib/auth-client", () => ({
 }));
 
 const mockPush = vi.fn();
+const mockSearchParamsGet = vi.fn();
 vi.mock("next/navigation", () => ({
   useRouter: () => ({
     push: mockPush,
+  }),
+  useSearchParams: () => ({
+    get: mockSearchParamsGet,
   }),
 }));
 
@@ -34,6 +38,7 @@ vi.mock("next/image", () => ({
 describe("Login Page", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mockSearchParamsGet.mockReturnValue(null);
   });
 
   it("should render the Pinchy logo", () => {
@@ -127,6 +132,42 @@ describe("Login Page", () => {
   it("should redirect to / on successful login", async () => {
     const user = userEvent.setup();
     mockSignInEmail.mockResolvedValue({ error: null });
+
+    render(<LoginPage />);
+
+    await user.type(screen.getByLabelText(/email/i), "user@example.com");
+    await user.type(screen.getByLabelText("Password"), "mypassword");
+    await user.click(screen.getByRole("button", { name: /sign in/i }));
+
+    await waitFor(() => {
+      expect(mockPush).toHaveBeenCalledWith("/");
+    });
+  });
+
+  it("should redirect to a safe returnTo destination on successful login", async () => {
+    const user = userEvent.setup();
+    mockSignInEmail.mockResolvedValue({ error: null });
+    mockSearchParamsGet.mockImplementation((key: string) =>
+      key === "returnTo" ? "/share?share_id=abc" : null
+    );
+
+    render(<LoginPage />);
+
+    await user.type(screen.getByLabelText(/email/i), "user@example.com");
+    await user.type(screen.getByLabelText("Password"), "mypassword");
+    await user.click(screen.getByRole("button", { name: /sign in/i }));
+
+    await waitFor(() => {
+      expect(mockPush).toHaveBeenCalledWith("/share?share_id=abc");
+    });
+  });
+
+  it("should fall back to / when returnTo is an unsafe, open-redirect-shaped value", async () => {
+    const user = userEvent.setup();
+    mockSignInEmail.mockResolvedValue({ error: null });
+    mockSearchParamsGet.mockImplementation((key: string) =>
+      key === "returnTo" ? "//evil.com" : null
+    );
 
     render(<LoginPage />);
 

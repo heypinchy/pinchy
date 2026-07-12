@@ -1,6 +1,7 @@
 import { redirect } from "next/navigation";
-import { cookies } from "next/headers";
-import { requireAuth } from "@/lib/require-auth";
+import { cookies, headers } from "next/headers";
+import { getSession } from "@/lib/auth";
+import { buildLoginRedirectPath } from "@/lib/return-to";
 import { isSetupComplete, isProviderConfigured } from "@/lib/setup";
 import { getVisibleAgents } from "@/lib/visible-agents";
 import { AppSidebar } from "@/components/sidebar";
@@ -19,7 +20,14 @@ export default async function AppLayout({ children }: { children: React.ReactNod
   const setupComplete = await isSetupComplete();
   if (!setupComplete) redirect("/setup");
 
-  const session = await requireAuth();
+  const headersList = await headers();
+  const session = await getSession({ headers: headersList });
+  if (!session?.user) {
+    // Send the user to login and back to where they were headed once they
+    // sign in again. `x-pathname` is stamped by src/proxy.ts and
+    // re-validated by buildLoginRedirectPath (open-redirect guard).
+    redirect(buildLoginRedirectPath(headersList.get("x-pathname")));
+  }
 
   const providerConfigured = await isProviderConfigured();
   if (!providerConfigured) redirect("/setup/provider");
