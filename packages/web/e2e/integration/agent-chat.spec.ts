@@ -451,23 +451,21 @@ test.describe("Plugin behavior — pinchy-approvals", () => {
     const beforeRes = await page.request.get(`/api/agents/${agentId}`);
     expect(beforeRes.status()).toBe(200);
     const before = (await beforeRes.json()) as {
-      allowedTools: string[] | null;
       pluginConfig: Record<string, unknown> | null;
     };
-    const originalAllowedTools = before.allowedTools ?? [];
     const originalPluginConfig = before.pluginConfig ?? null;
 
-    // A clean pluginConfig with only schema-valid keys — spreading Smithers'
-    // original config can re-introduce a key the strict pluginConfigSchema
-    // rejects (the sibling pinchy-files probe that used a spread is skipped, so
-    // it never validated this in CI). Restored from `originalPluginConfig` in
-    // the finally block below.
+    // Gate an existing Smithers tool via a pluginConfig-ONLY patch. Smithers is a
+    // personal agent — the route blocks `allowedTools` changes on personal agents,
+    // but a pluginConfig change is allowed. pinchy_save_user_context is already in
+    // Smithers' default tools (the pinchy-context probe above proves it dispatches),
+    // so no allowedTools change and no agent creation is needed. Restored in the
+    // finally block below.
     const patchRes = await page.request.patch(`/api/agents/${agentId}`, {
       data: {
-        allowedTools: [...new Set([...originalAllowedTools, "pinchy_ls"])],
         pluginConfig: {
-          "pinchy-files": { allowed_paths: ["/data"] },
-          "pinchy-approvals": { confirmTools: ["pinchy_ls"] },
+          ...(originalPluginConfig ?? {}),
+          "pinchy-approvals": { confirmTools: ["pinchy_save_user_context"] },
         },
       },
     });
@@ -480,7 +478,7 @@ test.describe("Plugin behavior — pinchy-approvals", () => {
 
       const input = page.getByPlaceholder(/send a message/i);
       await expect(input).toBeVisible({ timeout: 10000 });
-      await input.fill(`${FAKE_OLLAMA_FILES_LS_TOOL_TRIGGER}: list knowledge base files`);
+      await input.fill(`${FAKE_OLLAMA_CONTEXT_SAVE_USER_TOOL_TRIGGER}: save my context`);
       await input.press("Enter");
 
       // The gate blocks the call and records approval.requested for this agent.
@@ -494,7 +492,9 @@ test.describe("Plugin behavior — pinchy-approvals", () => {
           (e: {
             resource: string | null;
             detail: { toolName?: string; request?: { id: string } };
-          }) => e.detail?.toolName === "pinchy_ls" && typeof e.detail?.request?.id === "string"
+          }) =>
+            e.detail?.toolName === "pinchy_save_user_context" &&
+            typeof e.detail?.request?.id === "string"
         );
         if (entry) {
           requestId = entry.detail.request.id as string;
@@ -525,7 +525,7 @@ test.describe("Plugin behavior — pinchy-approvals", () => {
       expect(granted).toBe(true);
     } finally {
       await page.request.patch(`/api/agents/${agentId}`, {
-        data: { allowedTools: originalAllowedTools, pluginConfig: originalPluginConfig },
+        data: { pluginConfig: originalPluginConfig },
       });
     }
   });
