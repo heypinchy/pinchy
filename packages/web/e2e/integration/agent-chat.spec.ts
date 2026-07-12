@@ -457,17 +457,21 @@ test.describe("Plugin behavior — pinchy-approvals", () => {
     const originalAllowedTools = before.allowedTools ?? [];
     const originalPluginConfig = before.pluginConfig ?? null;
 
+    // A clean pluginConfig with only schema-valid keys — spreading Smithers'
+    // original config can re-introduce a key the strict pluginConfigSchema
+    // rejects (the sibling pinchy-files probe that used a spread is skipped, so
+    // it never validated this in CI). Restored from `originalPluginConfig` in
+    // the finally block below.
     const patchRes = await page.request.patch(`/api/agents/${agentId}`, {
       data: {
         allowedTools: [...new Set([...originalAllowedTools, "pinchy_ls"])],
         pluginConfig: {
-          ...(originalPluginConfig ?? {}),
           "pinchy-files": { allowed_paths: ["/data"] },
           "pinchy-approvals": { confirmTools: ["pinchy_ls"] },
         },
       },
     });
-    expect(patchRes.status()).toBe(200);
+    expect(patchRes.status(), await patchRes.text()).toBe(200);
 
     try {
       await waitForOpenClawConnected(page);
