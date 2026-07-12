@@ -42,20 +42,37 @@ it("inserts a document + chunk and queries the chunk by orgId", async () => {
   expect(rows[0].embedding).toHaveLength(1024);
 });
 
-it("enforces the (org_id, content_hash) idempotency unique constraint", async () => {
+it("keys a document by (org_id, source_path), with content_hash as a non-unique change-detection column", async () => {
+  // Same (org_id, source_path) twice must reject: a path is one document.
   await db.insert(kbDocuments).values({
     orgId: ORG_ID,
-    contentHash: "hash-dup",
-    sourcePath: "/data/a.pdf",
+    contentHash: "hash-a",
+    sourcePath: "/data/same-path.pdf",
   });
-
   await expect(
     db.insert(kbDocuments).values({
       orgId: ORG_ID,
-      contentHash: "hash-dup",
-      sourcePath: "/data/b.pdf",
+      contentHash: "hash-b-changed",
+      sourcePath: "/data/same-path.pdf",
     })
   ).rejects.toThrow();
+
+  // The SAME content_hash at DIFFERENT source_paths must both succeed:
+  // byte-identical files (e.g. an OLD/ archive copy) are distinct documents,
+  // which is what per-path allowed_paths filtering (Task 7) needs. Cross-path
+  // content dedup would break path filtering, so content_hash is NOT unique.
+  await db.insert(kbDocuments).values({
+    orgId: ORG_ID,
+    contentHash: "hash-shared",
+    sourcePath: "/data/current/report.pdf",
+  });
+  await expect(
+    db.insert(kbDocuments).values({
+      orgId: ORG_ID,
+      contentHash: "hash-shared",
+      sourcePath: "/data/OLD/report.pdf",
+    })
+  ).resolves.toBeDefined();
 });
 
 it("cascades chunk deletion when the parent document is deleted", async () => {

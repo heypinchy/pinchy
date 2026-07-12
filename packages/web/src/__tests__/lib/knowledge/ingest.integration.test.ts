@@ -9,7 +9,7 @@
  * logic that Task 6 owns.
  */
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { and, eq } from "drizzle-orm";
@@ -139,6 +139,36 @@ it("replaces the document and its chunks when the file's content changes", async
 
   const newChunks = await chunksFor(docsAfter[0].id);
   expect(newChunks.length).toBeGreaterThanOrEqual(1);
+});
+
+it("indexes byte-identical files at different paths as separate documents (no unique-hash collision)", async () => {
+  // Real corpora carry duplicate content (OLD/ archives, version copies).
+  // Documents are keyed by path, not content hash, so two files with
+  // identical bytes must both be indexed — a hash-unique constraint here
+  // would throw on the second insert.
+  const bytes = "identical-pdf-bytes";
+  writeFileSync(join(tmpRoot, "current.pdf"), bytes);
+  const oldDir = join(tmpRoot, "OLD");
+  mkdirSync(oldDir);
+  writeFileSync(join(oldDir, "current.pdf"), bytes);
+
+  const { deps } = fakeDeps();
+  const result = await ingestDirectory(ORG_ID, tmpRoot, deps);
+
+  expect(result).toEqual({ indexed: 2, skipped: 0, removed: 0 });
+  const docs = await db.select().from(kbDocuments).where(eq(kbDocuments.orgId, ORG_ID));
+  expect(docs).toHaveLength(2);
+  // Both share the same content hash but are distinct rows with distinct paths.
+  expect(new Set(docs.map((d) => d.contentHash)).size).toBe(1);
+  expect(docs.map((d) => d.sourcePath).sort()).toEqual(
+    [join(tmpRoot, "current.pdf"), join(oldDir, "current.pdf")].sort()
+  );
+
+  // Idempotent re-run: both skip, no crash, no new rows.
+  const secondResult = await ingestDirectory(ORG_ID, tmpRoot, deps);
+  expect(secondResult).toEqual({ indexed: 0, skipped: 2, removed: 0 });
+  const docsAfter = await db.select().from(kbDocuments).where(eq(kbDocuments.orgId, ORG_ID));
+  expect(docsAfter).toHaveLength(2);
 });
 
 it("removes the document and its chunks when the source file disappears from disk", async () => {

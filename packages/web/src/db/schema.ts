@@ -862,9 +862,11 @@ export const auditVerifyState = pgTable("audit_verify_state", {
 // ── Knowledge Base (RAG) ─────────────────────────────────────────────
 //
 // kb_documents is the per-org, per-file source of truth for ingested
-// knowledge-base content. (org_id, content_hash) is the idempotency key —
-// re-ingesting an unchanged file must not duplicate it. status lets later
-// freshness work (Task 5+) archive stale docs without deleting history.
+// knowledge-base content. (org_id, source_path) is the identity/idempotency
+// key — re-ingesting the same path updates one row. content_hash is a
+// change-detection column (same hash => skip, different hash => re-ingest),
+// NOT an identity key. status lets later freshness work (Task 5+) archive
+// stale docs without deleting history.
 export const kbDocuments = pgTable(
   "kb_documents",
   {
@@ -883,8 +885,15 @@ export const kbDocuments = pgTable(
     createdAt: timestamp("created_at").notNull().defaultNow(),
   },
   (t) => [
-    uniqueIndex("uq_kb_doc_org_hash").on(t.orgId, t.contentHash),
-    index("idx_kb_doc_org_path").on(t.orgId, t.sourcePath),
+    // A document is keyed by its PATH: (org_id, source_path) is unique, so
+    // re-ingesting the same path updates one row. content_hash is a
+    // non-unique change-detection column — two different paths with
+    // byte-identical content (e.g. an OLD/ archive copy) are DISTINCT
+    // documents, which per-path allowed_paths filtering (Task 7) requires;
+    // cross-path content dedup would break that filtering. The plain
+    // (org_id, content_hash) index just speeds change-detection lookups.
+    uniqueIndex("uq_kb_doc_org_path").on(t.orgId, t.sourcePath),
+    index("idx_kb_doc_org_hash").on(t.orgId, t.contentHash),
   ]
 );
 
