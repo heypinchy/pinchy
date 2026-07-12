@@ -328,6 +328,22 @@ describe("ImapConnectStep", () => {
     expect(screen.getByRole("button", { name: /test & save/i })).not.toBeDisabled();
   });
 
+  it("renders a Back button that calls onBack when the prop is provided", async () => {
+    const user = userEvent.setup();
+    const onBack = vi.fn();
+    renderStep({ onBack });
+
+    const backButton = screen.getByRole("button", { name: /^back$/i });
+    expect(backButton).toBeInTheDocument();
+    await user.click(backButton);
+    expect(onBack).toHaveBeenCalledTimes(1);
+  });
+
+  it("omits the Back button when no onBack prop is provided", () => {
+    renderStep();
+    expect(screen.queryByRole("button", { name: /^back$/i })).not.toBeInTheDocument();
+  });
+
   it("Test & Save runs the test then creates the connection without name, with senderName", async () => {
     vi.mocked(apiPost).mockResolvedValueOnce({ ok: true }); // test
     vi.mocked(apiPost).mockResolvedValueOnce({ id: "conn-1", name: "someone@example.com" }); // create

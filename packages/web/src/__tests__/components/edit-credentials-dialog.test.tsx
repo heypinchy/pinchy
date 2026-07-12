@@ -385,6 +385,27 @@ describe("EditCredentialsDialog", () => {
       cannotDecrypt: false,
     };
 
+    it("toggles password visibility via the show/hide control (parity with the create form)", async () => {
+      const user = userEvent.setup();
+      render(
+        <EditCredentialsDialog
+          connection={authFailedImapConnection}
+          open={true}
+          onOpenChange={vi.fn()}
+          onSuccess={vi.fn()}
+        />
+      );
+
+      const password = screen.getByLabelText("Password");
+      expect(password).toHaveAttribute("type", "password");
+
+      await user.click(screen.getByRole("button", { name: /show password/i }));
+      expect(password).toHaveAttribute("type", "text");
+
+      await user.click(screen.getByRole("button", { name: /hide password/i }));
+      expect(password).toHaveAttribute("type", "password");
+    });
+
     it("renders IMAP fields prefilled (not a blank dialog) and the auth_failed alert", () => {
       render(
         <EditCredentialsDialog

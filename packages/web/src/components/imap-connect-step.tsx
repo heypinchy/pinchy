@@ -80,9 +80,15 @@ interface ImapConnectStepProps {
   /** Called after the connection is created — the caller closes the dialog. */
   onSuccess: (connection: { id: string; name: string }) => void;
   onCancel: () => void;
+  /**
+   * Optional: return to the integration-type picker. When provided a "Back"
+   * button appears, matching the Odoo/web-search connect steps so a user who
+   * picked IMAP by mistake doesn't have to close the whole dialog.
+   */
+  onBack?: () => void;
 }
 
-export function ImapConnectStep({ onSuccess, onCancel }: ImapConnectStepProps) {
+export function ImapConnectStep({ onSuccess, onCancel, onBack }: ImapConnectStepProps) {
   const [form, setForm] = useState<FormState>(INITIAL_STATE);
   const [touched, setTouched] = useState<Set<PrefillableField>>(new Set());
   const [usernameTouched, setUsernameTouched] = useState(false);
@@ -446,9 +452,16 @@ export function ImapConnectStep({ onSuccess, onCancel }: ImapConnectStepProps) {
       )}
 
       <div className="flex justify-between pt-2">
-        <Button type="button" variant="ghost" onClick={onCancel}>
-          Cancel
-        </Button>
+        <div className="flex gap-2">
+          {onBack && (
+            <Button type="button" variant="ghost" onClick={onBack}>
+              Back
+            </Button>
+          )}
+          <Button type="button" variant="ghost" onClick={onCancel}>
+            Cancel
+          </Button>
+        </div>
         <Button type="button" disabled={!canSubmit} onClick={handleTestAndSave}>
           {flightStatus === "testing" ? (
             <>

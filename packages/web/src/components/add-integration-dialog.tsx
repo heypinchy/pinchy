@@ -1150,6 +1150,7 @@ export function AddIntegrationDialog({
                 handleClose(false);
                 onSuccess();
               }}
+              onBack={handleBack}
               onCancel={() => handleClose(false)}
             />
           </>

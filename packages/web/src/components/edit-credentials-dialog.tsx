@@ -30,7 +30,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Alert, AlertDescription } from "@/components/ui/alert";
-import { AlertTriangle, Loader2 } from "lucide-react";
+import { AlertTriangle, Eye, EyeOff, Loader2 } from "lucide-react";
 import { apiPatch, apiPost, ApiError } from "@/lib/api-client";
 import {
   odooEditSchema,
@@ -304,6 +304,7 @@ function ImapForm({
 }) {
   const [serverError, setServerError] = useState("");
   const [saving, setSaving] = useState(false);
+  const [showPassword, setShowPassword] = useState(false);
 
   // Masked credentials (server strips the password). Ports arrive as strings.
   const maskedCreds =
@@ -479,9 +480,28 @@ function ImapForm({
           render={({ field }) => (
             <FormItem>
               <FormLabel>Password</FormLabel>
-              <FormControl>
-                <Input type="password" placeholder="Leave empty to keep current" {...field} />
-              </FormControl>
+              {/* The relative wrapper lives OUTSIDE FormControl so FormControl's
+                  Radix Slot still forwards the field id/aria onto the Input (its
+                  single child) — wrapping the Input in a div would move the id
+                  onto the div and break the label association. */}
+              <div className="relative">
+                <FormControl>
+                  <Input
+                    type={showPassword ? "text" : "password"}
+                    className="pr-10"
+                    placeholder="Leave empty to keep current"
+                    {...field}
+                  />
+                </FormControl>
+                <button
+                  type="button"
+                  className="absolute right-0 top-0 h-full px-3 py-2 text-muted-foreground hover:text-foreground"
+                  onClick={() => setShowPassword((prev) => !prev)}
+                  aria-label={showPassword ? "Hide password" : "Show password"}
+                >
+                  {showPassword ? <EyeOff className="size-4" /> : <Eye className="size-4" />}
+                </button>
+              </div>
               <FormMessage />
             </FormItem>
           )}
