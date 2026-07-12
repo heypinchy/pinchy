@@ -17,5 +17,36 @@
       "type": "image/png",
       "purpose": "maskable"
     }
-  ]
+  ],
+  "share_target": {
+    "action": "/share-target",
+    "method": "POST",
+    "enctype": "multipart/form-data",
+    "params": {
+      "title": "title",
+      "text": "text",
+      "url": "url",
+      "files": [
+        {
+          "name": "files",
+          "accept": [
+            "application/pdf",
+            "image/jpeg",
+            "image/png",
+            "image/webp",
+            "image/gif",
+            "image/heic",
+            "image/heif",
+            "text/vcard",
+            "text/plain",
+            "text/csv",
+            "text/markdown",
+            "application/json",
+            "text/yaml",
+            "text/x-vcard"
+          ]
+        }
+      ]
+    }
+  }
 }
