@@ -57,9 +57,10 @@ export interface FinalizeInput {
  * by the isolated agent run when it finishes (draft created / nothing to do /
  * failed). Keyed by the same claim tuple as {@link claimEmail}.
  *
- * Throws if no row matched: finalize is only ever valid after a successful claim,
- * so a zero-row update means a bug (finalize-before-claim or a mismatched key).
- * We surface it loudly rather than leaving the row silently stuck in `processing`.
+ * finalize only ever transitions `processing` → terminal: the WHERE clause pins
+ * `status = 'processing'`, so a zero-row update means either finalize-before-claim
+ * or a duplicate finalize of an already-terminal row. Both are bugs, and both must
+ * NOT silently overwrite a recorded outcome — we surface them loudly instead.
  */
 export async function finalizeEmail(input: FinalizeInput): Promise<void> {
   const rows = await db
@@ -74,13 +75,14 @@ export async function finalizeEmail(input: FinalizeInput): Promise<void> {
       and(
         eq(processedEmails.workflowId, input.workflowId),
         eq(processedEmails.connectionId, input.connectionId),
-        eq(processedEmails.providerMessageId, input.providerMessageId)
+        eq(processedEmails.providerMessageId, input.providerMessageId),
+        eq(processedEmails.status, "processing")
       )
     )
     .returning({ id: processedEmails.id });
   if (rows.length === 0) {
     throw new Error(
-      `finalizeEmail: no ledger row for (${input.workflowId}, ${input.connectionId}, ${input.providerMessageId}) — finalize called without a prior claim?`
+      `finalizeEmail: no processing ledger row for (${input.workflowId}, ${input.connectionId}, ${input.providerMessageId}) — already finalized or never claimed?`
     );
   }
 }

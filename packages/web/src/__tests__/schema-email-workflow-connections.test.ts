@@ -1,18 +1,17 @@
 import { describe, it, expect } from "vitest";
+import { getTableColumns } from "drizzle-orm";
 import { getTableConfig } from "drizzle-orm/pg-core";
 import { emailWorkflowConnections } from "@/db/schema";
 
-const cols = (t: unknown) => (t as any)[Symbol.for("drizzle:Columns")];
-
 describe("email_workflow_connections schema", () => {
-  it("has the expected columns", () => {
-    expect(Object.keys(cols(emailWorkflowConnections))).toEqual(
-      expect.arrayContaining(["workflowId", "connectionId", "sinceTs", "addedAt"])
+  it("has exactly the expected columns", () => {
+    expect(new Set(Object.keys(getTableColumns(emailWorkflowConnections)))).toEqual(
+      new Set(["workflowId", "connectionId", "sinceTs", "addedAt"])
     );
   });
 
   it("requires workflowId, connectionId and sinceTs", () => {
-    const c = cols(emailWorkflowConnections);
+    const c = getTableColumns(emailWorkflowConnections);
     expect(c.workflowId.notNull).toBe(true);
     expect(c.connectionId.notNull).toBe(true);
     expect(c.sinceTs.notNull).toBe(true);

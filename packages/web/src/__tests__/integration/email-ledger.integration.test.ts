@@ -5,7 +5,14 @@ import { describe, it, expect } from "vitest";
 import { and, eq } from "drizzle-orm";
 
 import { db } from "@/db";
-import { agents, emailWorkflows, processedEmails } from "@/db/schema";
+import {
+  agents,
+  emailWorkflows,
+  emailWorkflowConnections,
+  emailConnectionCursors,
+  processedEmails,
+  integrationConnections,
+} from "@/db/schema";
 import { claimEmail, finalizeEmail } from "@/lib/email-workflows/ledger";
 
 async function getProcessed(key: {
@@ -33,6 +40,19 @@ async function seedAgent() {
       name: "Penny",
       model: "ollama-cloud/gemini-3-flash",
       greetingMessage: "Hi",
+    })
+    .returning();
+  return row;
+}
+
+async function seedConnection(id: string) {
+  const [row] = await db
+    .insert(integrationConnections)
+    .values({
+      id,
+      type: "imap",
+      name: "Mailbox",
+      credentials: "enc:placeholder",
     })
     .returning();
   return row;
@@ -140,7 +160,28 @@ describe("email ledger — finalizeEmail", () => {
         providerMessageId: "never-claimed",
         status: "done",
       })
-    ).rejects.toThrow(/no ledger row/);
+    ).rejects.toThrow(/no processing ledger row/);
+  });
+
+  it("does not re-write a terminal row — a second finalize throws", async () => {
+    const agent = await seedAgent();
+    const wf = await seedWorkflow(agent.id);
+    const key = { workflowId: wf.id, connectionId: "conn-1", providerMessageId: "msg-1" };
+
+    await claimEmail(key);
+    await finalizeEmail({ ...key, status: "done", outcome: { note: "first" } });
+
+    // finalize only ever transitions processing → terminal. A duplicate finalize
+    // (e.g. a buggy retry) must NOT silently overwrite the recorded outcome —
+    // the WHERE clause no longer matches, so zero rows update and we throw.
+    await expect(finalizeEmail({ ...key, status: "failed" })).rejects.toThrow(
+      /no processing ledger row/
+    );
+
+    // The original terminal state is preserved untouched.
+    const row = await getProcessed(key);
+    expect(row.status).toBe("done");
+    expect(row.outcome).toEqual({ note: "first" });
   });
 });
 
@@ -185,5 +226,77 @@ describe("email ledger — status CHECK constraints", () => {
         status: "bogus" as never,
       })
     ).rejects.toSatisfy(violates(/email_workflows_status_check/));
+  });
+});
+
+describe("email ledger — durability across connection deletion", () => {
+  it("keeps the ledger row after its integration connection is deleted", async () => {
+    const agent = await seedAgent();
+    const wf = await seedWorkflow(agent.id);
+    const conn = await seedConnection("conn-survives");
+    const key = { workflowId: wf.id, connectionId: conn.id, providerMessageId: "msg-1" };
+
+    await claimEmail(key);
+    await finalizeEmail({ ...key, status: "done" });
+
+    // processed_emails.connectionId is intentionally FK-less: the ledger is a
+    // historical record of what was already handled. Deleting the connection
+    // (user disconnects the mailbox) must NOT erase that trail — otherwise a
+    // reconnect + resync would reprocess every past email. This test locks in
+    // the no-FK decision against a future "helpful" FK addition.
+    await db.delete(integrationConnections).where(eq(integrationConnections.id, conn.id));
+
+    const row = await getProcessed(key);
+    expect(row).toBeDefined();
+    expect(row.status).toBe("done");
+  });
+});
+
+describe("email schema — cascade & watermark", () => {
+  it("cascades the workflow↔connection link when the workflow is deleted", async () => {
+    const agent = await seedAgent();
+    const wf = await seedWorkflow(agent.id);
+    const conn = await seedConnection("conn-cascade-wf");
+    await db
+      .insert(emailWorkflowConnections)
+      .values({ workflowId: wf.id, connectionId: conn.id, sinceTs: new Date() });
+
+    await db.delete(emailWorkflows).where(eq(emailWorkflows.id, wf.id));
+
+    const rows = await db
+      .select()
+      .from(emailWorkflowConnections)
+      .where(eq(emailWorkflowConnections.workflowId, wf.id));
+    expect(rows).toHaveLength(0);
+  });
+
+  it("cascades the workflow↔connection link when the connection is deleted", async () => {
+    const agent = await seedAgent();
+    const wf = await seedWorkflow(agent.id);
+    const conn = await seedConnection("conn-cascade-conn");
+    await db
+      .insert(emailWorkflowConnections)
+      .values({ workflowId: wf.id, connectionId: conn.id, sinceTs: new Date() });
+
+    await db.delete(integrationConnections).where(eq(integrationConnections.id, conn.id));
+
+    const rows = await db
+      .select()
+      .from(emailWorkflowConnections)
+      .where(eq(emailWorkflowConnections.connectionId, conn.id));
+    expect(rows).toHaveLength(0);
+  });
+
+  it("cascades the sync cursor when its connection is deleted", async () => {
+    const conn = await seedConnection("conn-cursor");
+    await db.insert(emailConnectionCursors).values({ connectionId: conn.id, cursor: "cursor-abc" });
+
+    await db.delete(integrationConnections).where(eq(integrationConnections.id, conn.id));
+
+    const rows = await db
+      .select()
+      .from(emailConnectionCursors)
+      .where(eq(emailConnectionCursors.connectionId, conn.id));
+    expect(rows).toHaveLength(0);
   });
 });

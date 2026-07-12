@@ -532,7 +532,12 @@ export const emailWorkflows = pgTable(
   },
   (table) => [
     index("email_workflows_agent_idx").on(table.agentId),
-    index("email_workflows_enabled_idx").on(table.enabled),
+    // Partial index: the dispatcher only ever scans for enabled workflows, so
+    // index just those rows (most workflows sit disabled) rather than the whole
+    // low-cardinality boolean column.
+    index("email_workflows_enabled_idx")
+      .on(table.enabled)
+      .where(sql`${table.enabled}`),
     check("email_workflows_status_check", sql`${table.status} ${inEnum(EMAIL_WORKFLOW_STATUSES)}`),
   ]
 );

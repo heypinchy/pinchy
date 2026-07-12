@@ -1,13 +1,12 @@
 import { describe, it, expect } from "vitest";
+import { getTableColumns } from "drizzle-orm";
 import { getTableConfig } from "drizzle-orm/pg-core";
 import { processedEmails } from "@/db/schema";
 
-const cols = (t: unknown) => (t as any)[Symbol.for("drizzle:Columns")];
-
 describe("processed_emails schema", () => {
-  it("has the expected columns", () => {
-    expect(Object.keys(cols(processedEmails))).toEqual(
-      expect.arrayContaining([
+  it("has exactly the expected columns", () => {
+    expect(new Set(Object.keys(getTableColumns(processedEmails)))).toEqual(
+      new Set([
         "id",
         "workflowId",
         "connectionId",
@@ -23,7 +22,7 @@ describe("processed_emails schema", () => {
   });
 
   it("defaults status=processing and requires the claim-key columns", () => {
-    const c = cols(processedEmails);
+    const c = getTableColumns(processedEmails);
     expect(c.status.default).toBe("processing");
     expect(c.workflowId.notNull).toBe(true);
     expect(c.connectionId.notNull).toBe(true);
