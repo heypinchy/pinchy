@@ -382,10 +382,11 @@ test.describe.serial("Chats — per-task session model (#508)", () => {
   test("a listed Telegram chat stays readable even when Pinchy captured nothing (OpenClaw history fallback)", async () => {
     // Send a FRESH message so the per-peer OpenClaw session has history (the
     // earlier `/new` reset it). Capture mirrors it into channel_messages.
+    const HIDDEN_MSG = "Message that we will hide from Pinchy's own store";
     await sendTelegramMessage({
       token: BOT_TOKEN,
       chatId: TG_PEER_ID,
-      text: "Message that we will hide from Pinchy's own store",
+      text: HIDDEN_MSG,
       userId: TG_PEER_ID,
       username: TG_USERNAME,
       firstName: "ChatsE2E",
@@ -416,8 +417,17 @@ test.describe.serial("Chats — per-task session model (#508)", () => {
 
     // ...and STILL readable: the mirror falls back to the peer's OpenClaw session
     // history. A source switch that blanks pre-existing conversations fails here.
+    // Poll until the EXACT message we sent is back through the fallback — not
+    // merely until the transcript is non-empty. OpenClaw can surface the
+    // assistant's reply (or an older turn) a beat before the just-sent user
+    // message is queryable, so a loop that exits on "any message" races the
+    // specific-text assertion below — the intermittent failure this guards. If
+    // the fallback genuinely drops the message, this now fails deterministically
+    // (the loop exhausts its budget) instead of flaking.
+    const fallbackHasSentMessage = (r: { status: number; messages: { text: string }[] }) =>
+      r.status === 200 && r.messages.some((m) => m.text.includes(HIDDEN_MSG));
     let after = await getTelegramChatAs(adminCookie, agentId);
-    for (let i = 0; i < 20 && (after.status !== 200 || after.messages.length === 0); i++) {
+    for (let i = 0; i < 20 && !fallbackHasSentMessage(after); i++) {
       await new Promise((r) => setTimeout(r, 1000));
       after = await getTelegramChatAs(adminCookie, agentId);
     }
@@ -430,9 +440,7 @@ test.describe.serial("Chats — per-task session model (#508)", () => {
     // It renders the ACTUAL conversation, not just "something non-empty": the
     // exact message we sent must come back through the history fallback.
     expect(
-      after.messages.some((m) =>
-        m.text.includes("Message that we will hide from Pinchy's own store")
-      ),
+      after.messages.some((m) => m.text.includes(HIDDEN_MSG)),
       "the fallback must render the real message text from OpenClaw history"
     ).toBe(true);
 
