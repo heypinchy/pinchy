@@ -25,6 +25,8 @@ const APPLICATION_TABLES = [
   "email_workflow_connections",
   "processed_emails",
   "email_connection_cursors",
+  "notifications",
+  "notification_recipients",
   "channel_links",
   "channel_messages",
   "agent_groups",

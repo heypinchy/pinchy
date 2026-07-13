@@ -14,6 +14,9 @@ import {
   INVITE_TYPES,
   INTEGRATION_CONNECTION_TYPES,
   INTEGRATION_CONNECTION_STATUSES,
+  EMAIL_WORKFLOW_STATUSES,
+  PROCESSED_EMAIL_STATUSES,
+  NOTIFICATION_STATUSES,
 } from "@/db/enums";
 
 const suffix = Math.random().toString(36).slice(2);
@@ -233,6 +236,9 @@ describe("CHECK constraints match db/enums.ts (drift guard, #259)", () => {
     ["invites_type_check", INVITE_TYPES],
     ["integration_connections_type_check", INTEGRATION_CONNECTION_TYPES],
     ["integration_connections_status_check", INTEGRATION_CONNECTION_STATUSES],
+    ["email_workflows_status_check", EMAIL_WORKFLOW_STATUSES],
+    ["processed_emails_status_check", PROCESSED_EMAIL_STATUSES],
+    ["notifications_status_check", NOTIFICATION_STATUSES],
   ] as const)("%s enforces exactly its const's values", async (constraintName, values) => {
     expect(await enforcedValues(constraintName)).toEqual(new Set(values));
   });

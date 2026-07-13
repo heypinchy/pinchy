@@ -54,3 +54,11 @@ export type EmailWorkflowStatus = (typeof EMAIL_WORKFLOW_STATUSES)[number];
 
 export const PROCESSED_EMAIL_STATUSES = ["processing", "done", "no_action", "failed"] as const;
 export type ProcessedEmailStatus = (typeof PROCESSED_EMAIL_STATUSES)[number];
+
+// Background Jobs foundation (#704). Outcome status of a background-run
+// notification (Inbox Agent #139, Scheduled Briefings #138). Enforced at the DB
+// with a CHECK constraint so the Activity feed can render a success/failure badge
+// straight from this column without parsing the content, and untyped later
+// callers can't write an out-of-domain status.
+export const NOTIFICATION_STATUSES = ["success", "failure"] as const;
+export type NotificationStatus = (typeof NOTIFICATION_STATUSES)[number];

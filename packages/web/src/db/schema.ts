@@ -34,6 +34,8 @@ import {
   type EmailWorkflowStatus,
   PROCESSED_EMAIL_STATUSES,
   type ProcessedEmailStatus,
+  NOTIFICATION_STATUSES,
+  type NotificationStatus,
 } from "./enums";
 import type { EmailWorkflowFilter, ProcessedEmailOutcome } from "@/lib/email-workflows/types";
 
@@ -607,6 +609,57 @@ export const emailConnectionCursors = pgTable("email_connection_cursors", {
   cursor: text("cursor").notNull(),
   updatedAt: timestamp("updated_at").notNull().defaultNow(),
 });
+
+// ── Background Jobs: notifications / activity feed ────────────────────
+
+// The output of a background run (Inbox Agent #139, Scheduled Briefings #138)
+// lands here, never in chat (foundation #704). Deliberately source-agnostic:
+// `sourceType` + `sourceId` reference the producing run / ledger row without a
+// hard FK, so a notification survives deletion of its source (mirrors the
+// ledger's FK-less connectionId) and either background feature can produce one
+// without importing the other's run table. See the design of record at
+// docs/plans/2026-07-13-slice-c-notifications-foundation.md.
+export const notifications = pgTable(
+  "notifications",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    agentId: text("agent_id")
+      .notNull()
+      .references(() => agents.id, { onDelete: "cascade" }),
+    sourceType: text("source_type"),
+    sourceId: text("source_id"),
+    title: text("title").notNull(),
+    content: text("content").notNull(),
+    status: text("status").$type<NotificationStatus>().notNull(),
+    errorMessage: text("error_message"),
+    createdAt: timestamp("created_at").notNull().defaultNow(),
+  },
+  (table) => [
+    index("notifications_agent_created_idx").on(table.agentId, table.createdAt),
+    check("notifications_status_check", sql`${table.status} ${inEnum(NOTIFICATION_STATUSES)}`),
+  ]
+);
+
+// Per-user fan-out (foundation #704): one row per recipient, carrying that
+// user's own read state (`readAt` null == unread). Written when the notification
+// is created; the unread index powers the per-user activity-feed badge.
+export const notificationRecipients = pgTable(
+  "notification_recipients",
+  {
+    userId: text("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    notificationId: uuid("notification_id")
+      .notNull()
+      .references(() => notifications.id, { onDelete: "cascade" }),
+    deliveredAt: timestamp("delivered_at").notNull().defaultNow(),
+    readAt: timestamp("read_at"),
+  },
+  (table) => [
+    primaryKey({ columns: [table.userId, table.notificationId] }),
+    index("notification_recipients_user_unread_idx").on(table.userId, table.readAt),
+  ]
+);
 
 // ── Usage Tracking ───────────────────────────────────────────────────
 
