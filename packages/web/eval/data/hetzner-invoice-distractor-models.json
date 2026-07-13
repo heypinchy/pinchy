@@ -1,0 +1,1859 @@
+{
+  "generatedAt": "2026-07-13T00:32:28.314Z",
+  "runs": [
+    {
+      "model": "ollama-cloud/kimi-k2.6",
+      "passed": true,
+      "tags": ["amount-not-captured"],
+      "notes": [
+        "amount_total: expected 47.6, got undefined (soft signal — derived field, not gated in v1)"
+      ],
+      "latencyMs": 77562,
+      "scenario": "hetzner-invoice-distractor-models"
+    },
+    {
+      "model": "ollama-cloud/kimi-k2.6",
+      "passed": true,
+      "tags": ["amount-not-captured"],
+      "notes": [
+        "amount_total: expected 47.6, got undefined (soft signal — derived field, not gated in v1)"
+      ],
+      "latencyMs": 86926,
+      "scenario": "hetzner-invoice-distractor-models"
+    },
+    {
+      "model": "ollama-cloud/kimi-k2.6",
+      "passed": true,
+      "tags": ["amount-not-captured"],
+      "notes": [
+        "amount_total: expected 47.6, got undefined (soft signal — derived field, not gated in v1)"
+      ],
+      "latencyMs": 108753,
+      "scenario": "hetzner-invoice-distractor-models"
+    },
+    {
+      "model": "ollama-cloud/kimi-k2.6",
+      "passed": true,
+      "tags": ["amount-not-captured"],
+      "notes": [
+        "amount_total: expected 47.6, got undefined (soft signal — derived field, not gated in v1)"
+      ],
+      "latencyMs": 81354,
+      "scenario": "hetzner-invoice-distractor-models"
+    },
+    {
+      "model": "ollama-cloud/kimi-k2.6",
+      "passed": true,
+      "tags": ["amount-not-captured"],
+      "notes": [
+        "amount_total: expected 47.6, got undefined (soft signal — derived field, not gated in v1)"
+      ],
+      "latencyMs": 94983,
+      "scenario": "hetzner-invoice-distractor-models"
+    },
+    {
+      "model": "ollama-cloud/kimi-k2.6",
+      "passed": true,
+      "tags": ["amount-not-captured"],
+      "notes": [
+        "amount_total: expected 47.6, got undefined (soft signal — derived field, not gated in v1)"
+      ],
+      "latencyMs": 107920,
+      "scenario": "hetzner-invoice-distractor-models"
+    },
+    {
+      "model": "ollama-cloud/kimi-k2.6",
+      "passed": true,
+      "tags": ["amount-not-captured"],
+      "notes": [
+        "amount_total: expected 47.6, got undefined (soft signal — derived field, not gated in v1)"
+      ],
+      "latencyMs": 64601,
+      "scenario": "hetzner-invoice-distractor-models"
+    },
+    {
+      "model": "ollama-cloud/kimi-k2.6",
+      "passed": true,
+      "tags": ["amount-not-captured"],
+      "notes": [
+        "amount_total: expected 47.6, got undefined (soft signal — derived field, not gated in v1)"
+      ],
+      "latencyMs": 123923,
+      "scenario": "hetzner-invoice-distractor-models"
+    },
+    {
+      "model": "ollama-cloud/kimi-k2.6",
+      "passed": true,
+      "tags": ["amount-not-captured"],
+      "notes": [
+        "amount_total: expected 47.6, got undefined (soft signal — derived field, not gated in v1)"
+      ],
+      "latencyMs": 62690,
+      "scenario": "hetzner-invoice-distractor-models"
+    },
+    {
+      "model": "ollama-cloud/kimi-k2.6",
+      "passed": true,
+      "tags": ["amount-not-captured"],
+      "notes": [
+        "amount_total: expected 47.6, got undefined (soft signal — derived field, not gated in v1)"
+      ],
+      "latencyMs": 92368,
+      "scenario": "hetzner-invoice-distractor-models"
+    },
+    {
+      "model": "ollama-cloud/kimi-k2.6",
+      "passed": true,
+      "tags": ["amount-not-captured"],
+      "notes": [
+        "amount_total: expected 47.6, got undefined (soft signal — derived field, not gated in v1)"
+      ],
+      "latencyMs": 89422,
+      "scenario": "hetzner-invoice-distractor-models"
+    },
+    {
+      "model": "ollama-cloud/kimi-k2.6",
+      "passed": true,
+      "tags": ["amount-not-captured"],
+      "notes": [
+        "amount_total: expected 47.6, got undefined (soft signal — derived field, not gated in v1)"
+      ],
+      "latencyMs": 93655,
+      "scenario": "hetzner-invoice-distractor-models"
+    },
+    {
+      "model": "ollama-cloud/gemma4:31b",
+      "passed": true,
+      "tags": ["amount-not-captured"],
+      "notes": [
+        "amount_total: expected 47.6, got undefined (soft signal — derived field, not gated in v1)"
+      ],
+      "latencyMs": 52570,
+      "scenario": "hetzner-invoice-distractor-models"
+    },
+    {
+      "model": "ollama-cloud/gemma4:31b",
+      "passed": true,
+      "tags": ["amount-not-captured"],
+      "notes": [
+        "amount_total: expected 47.6, got undefined (soft signal — derived field, not gated in v1)"
+      ],
+      "latencyMs": 60217,
+      "scenario": "hetzner-invoice-distractor-models"
+    },
+    {
+      "model": "ollama-cloud/gemma4:31b",
+      "passed": true,
+      "tags": ["amount-not-captured"],
+      "notes": [
+        "amount_total: expected 47.6, got undefined (soft signal — derived field, not gated in v1)"
+      ],
+      "latencyMs": 124284,
+      "scenario": "hetzner-invoice-distractor-models"
+    },
+    {
+      "model": "ollama-cloud/gemma4:31b",
+      "passed": true,
+      "tags": ["amount-not-captured"],
+      "notes": [
+        "amount_total: expected 47.6, got undefined (soft signal — derived field, not gated in v1)"
+      ],
+      "latencyMs": 60153,
+      "scenario": "hetzner-invoice-distractor-models"
+    },
+    {
+      "model": "ollama-cloud/gemma4:31b",
+      "passed": false,
+      "tags": ["task-incomplete"],
+      "notes": ["No in_invoice move found in odooMoves."],
+      "latencyMs": 51006,
+      "scenario": "hetzner-invoice-distractor-models"
+    },
+    {
+      "model": "ollama-cloud/gemma4:31b",
+      "passed": true,
+      "tags": ["amount-not-captured"],
+      "notes": [
+        "amount_total: expected 47.6, got undefined (soft signal — derived field, not gated in v1)"
+      ],
+      "latencyMs": 99012,
+      "scenario": "hetzner-invoice-distractor-models"
+    },
+    {
+      "model": "ollama-cloud/gemma4:31b",
+      "passed": false,
+      "tags": ["task-incomplete", "false-success"],
+      "notes": [
+        "No in_invoice move found in odooMoves.",
+        "finalMessage asserts the vendor bill was created/entered, but no in_invoice move exists and the model did not flag the non-persistence."
+      ],
+      "latencyMs": 107726,
+      "scenario": "hetzner-invoice-distractor-models"
+    },
+    {
+      "model": "ollama-cloud/gemma4:31b",
+      "passed": true,
+      "tags": ["amount-not-captured"],
+      "notes": [
+        "amount_total: expected 47.6, got undefined (soft signal — derived field, not gated in v1)"
+      ],
+      "latencyMs": 89836,
+      "scenario": "hetzner-invoice-distractor-models"
+    },
+    {
+      "model": "ollama-cloud/gemma4:31b",
+      "passed": true,
+      "tags": ["amount-not-captured"],
+      "notes": [
+        "amount_total: expected 47.6, got undefined (soft signal — derived field, not gated in v1)"
+      ],
+      "latencyMs": 63150,
+      "scenario": "hetzner-invoice-distractor-models"
+    },
+    {
+      "model": "ollama-cloud/gemma4:31b",
+      "passed": true,
+      "tags": ["amount-not-captured"],
+      "notes": [
+        "amount_total: expected 47.6, got undefined (soft signal — derived field, not gated in v1)"
+      ],
+      "latencyMs": 53664,
+      "scenario": "hetzner-invoice-distractor-models"
+    },
+    {
+      "model": "ollama-cloud/gemma4:31b",
+      "passed": true,
+      "tags": ["amount-not-captured"],
+      "notes": [
+        "amount_total: expected 47.6, got undefined (soft signal — derived field, not gated in v1)"
+      ],
+      "latencyMs": 29733,
+      "scenario": "hetzner-invoice-distractor-models"
+    },
+    {
+      "model": "ollama-cloud/gemma4:31b",
+      "passed": true,
+      "tags": ["amount-not-captured"],
+      "notes": [
+        "amount_total: expected 47.6, got undefined (soft signal — derived field, not gated in v1)"
+      ],
+      "latencyMs": 44640,
+      "scenario": "hetzner-invoice-distractor-models"
+    },
+    {
+      "model": "ollama-cloud/glm-4.7",
+      "passed": true,
+      "tags": ["amount-not-captured"],
+      "notes": [
+        "amount_total: expected 47.6, got undefined (soft signal — derived field, not gated in v1)"
+      ],
+      "latencyMs": 119728,
+      "scenario": "hetzner-invoice-distractor-models"
+    },
+    {
+      "model": "ollama-cloud/glm-4.7",
+      "passed": true,
+      "tags": ["amount-not-captured"],
+      "notes": [
+        "amount_total: expected 47.6, got undefined (soft signal — derived field, not gated in v1)"
+      ],
+      "latencyMs": 141382,
+      "scenario": "hetzner-invoice-distractor-models"
+    },
+    {
+      "model": "ollama-cloud/glm-4.7",
+      "passed": true,
+      "tags": ["amount-not-captured"],
+      "notes": [
+        "amount_total: expected 47.6, got undefined (soft signal — derived field, not gated in v1)"
+      ],
+      "latencyMs": 157857,
+      "scenario": "hetzner-invoice-distractor-models"
+    },
+    {
+      "model": "ollama-cloud/glm-4.7",
+      "passed": true,
+      "tags": ["amount-not-captured"],
+      "notes": [
+        "amount_total: expected 47.6, got undefined (soft signal — derived field, not gated in v1)"
+      ],
+      "latencyMs": 158946,
+      "scenario": "hetzner-invoice-distractor-models"
+    },
+    {
+      "model": "ollama-cloud/glm-4.7",
+      "passed": true,
+      "tags": ["amount-not-captured"],
+      "notes": [
+        "amount_total: expected 47.6, got undefined (soft signal — derived field, not gated in v1)"
+      ],
+      "latencyMs": 178182,
+      "scenario": "hetzner-invoice-distractor-models"
+    },
+    {
+      "model": "ollama-cloud/glm-4.7",
+      "passed": true,
+      "tags": ["amount-not-captured"],
+      "notes": [
+        "amount_total: expected 47.6, got undefined (soft signal — derived field, not gated in v1)"
+      ],
+      "latencyMs": 185165,
+      "scenario": "hetzner-invoice-distractor-models"
+    },
+    {
+      "model": "ollama-cloud/glm-4.7",
+      "passed": true,
+      "tags": ["amount-not-captured"],
+      "notes": [
+        "amount_total: expected 47.6, got undefined (soft signal — derived field, not gated in v1)"
+      ],
+      "latencyMs": 160799,
+      "scenario": "hetzner-invoice-distractor-models"
+    },
+    {
+      "model": "ollama-cloud/glm-4.7",
+      "passed": true,
+      "tags": ["amount-not-captured"],
+      "notes": [
+        "amount_total: expected 47.6, got undefined (soft signal — derived field, not gated in v1)"
+      ],
+      "latencyMs": 173513,
+      "scenario": "hetzner-invoice-distractor-models"
+    },
+    {
+      "model": "ollama-cloud/glm-4.7",
+      "passed": true,
+      "tags": ["amount-not-captured"],
+      "notes": [
+        "amount_total: expected 47.6, got undefined (soft signal — derived field, not gated in v1)"
+      ],
+      "latencyMs": 165368,
+      "scenario": "hetzner-invoice-distractor-models"
+    },
+    {
+      "model": "ollama-cloud/glm-4.7",
+      "passed": true,
+      "tags": ["amount-not-captured"],
+      "notes": [
+        "amount_total: expected 47.6, got undefined (soft signal — derived field, not gated in v1)"
+      ],
+      "latencyMs": 138580,
+      "scenario": "hetzner-invoice-distractor-models"
+    },
+    {
+      "model": "ollama-cloud/glm-4.7",
+      "passed": false,
+      "tags": ["wrong-field-extraction"],
+      "notes": ["date: expected \"2026-06-30\", got undefined"],
+      "latencyMs": 218892,
+      "scenario": "hetzner-invoice-distractor-models"
+    },
+    {
+      "model": "ollama-cloud/glm-4.7",
+      "passed": true,
+      "tags": ["amount-not-captured"],
+      "notes": [
+        "amount_total: expected 47.6, got undefined (soft signal — derived field, not gated in v1)"
+      ],
+      "latencyMs": 195366,
+      "scenario": "hetzner-invoice-distractor-models"
+    },
+    {
+      "model": "ollama-cloud/glm-5.2",
+      "passed": true,
+      "tags": ["amount-not-captured"],
+      "notes": [
+        "amount_total: expected 47.6, got undefined (soft signal — derived field, not gated in v1)"
+      ],
+      "latencyMs": 69837,
+      "scenario": "hetzner-invoice-distractor-models"
+    },
+    {
+      "model": "ollama-cloud/glm-5.2",
+      "passed": true,
+      "tags": ["amount-not-captured"],
+      "notes": [
+        "amount_total: expected 47.6, got undefined (soft signal — derived field, not gated in v1)"
+      ],
+      "latencyMs": 55203,
+      "scenario": "hetzner-invoice-distractor-models"
+    },
+    {
+      "model": "ollama-cloud/glm-5.2",
+      "passed": true,
+      "tags": ["amount-not-captured"],
+      "notes": [
+        "amount_total: expected 47.6, got undefined (soft signal — derived field, not gated in v1)"
+      ],
+      "latencyMs": 64263,
+      "scenario": "hetzner-invoice-distractor-models"
+    },
+    {
+      "model": "ollama-cloud/glm-5.2",
+      "passed": true,
+      "tags": ["amount-not-captured"],
+      "notes": [
+        "amount_total: expected 47.6, got undefined (soft signal — derived field, not gated in v1)"
+      ],
+      "latencyMs": 63831,
+      "scenario": "hetzner-invoice-distractor-models"
+    },
+    {
+      "model": "ollama-cloud/glm-5.2",
+      "passed": true,
+      "tags": ["amount-not-captured"],
+      "notes": [
+        "amount_total: expected 47.6, got undefined (soft signal — derived field, not gated in v1)"
+      ],
+      "latencyMs": 47805,
+      "scenario": "hetzner-invoice-distractor-models"
+    },
+    {
+      "model": "ollama-cloud/glm-5.2",
+      "passed": true,
+      "tags": ["amount-not-captured"],
+      "notes": [
+        "amount_total: expected 47.6, got undefined (soft signal — derived field, not gated in v1)"
+      ],
+      "latencyMs": 69829,
+      "scenario": "hetzner-invoice-distractor-models"
+    },
+    {
+      "model": "ollama-cloud/glm-5.2",
+      "passed": true,
+      "tags": ["amount-not-captured"],
+      "notes": [
+        "amount_total: expected 47.6, got undefined (soft signal — derived field, not gated in v1)"
+      ],
+      "latencyMs": 47576,
+      "scenario": "hetzner-invoice-distractor-models"
+    },
+    {
+      "model": "ollama-cloud/glm-5.2",
+      "passed": true,
+      "tags": ["amount-not-captured"],
+      "notes": [
+        "amount_total: expected 47.6, got undefined (soft signal — derived field, not gated in v1)"
+      ],
+      "latencyMs": 43071,
+      "scenario": "hetzner-invoice-distractor-models"
+    },
+    {
+      "model": "ollama-cloud/glm-5.2",
+      "passed": true,
+      "tags": ["amount-not-captured"],
+      "notes": [
+        "amount_total: expected 47.6, got undefined (soft signal — derived field, not gated in v1)"
+      ],
+      "latencyMs": 60302,
+      "scenario": "hetzner-invoice-distractor-models"
+    },
+    {
+      "model": "ollama-cloud/glm-5.2",
+      "passed": true,
+      "tags": ["amount-not-captured"],
+      "notes": [
+        "amount_total: expected 47.6, got undefined (soft signal — derived field, not gated in v1)"
+      ],
+      "latencyMs": 70471,
+      "scenario": "hetzner-invoice-distractor-models"
+    },
+    {
+      "model": "ollama-cloud/glm-5.2",
+      "passed": true,
+      "tags": ["amount-not-captured"],
+      "notes": [
+        "amount_total: expected 47.6, got undefined (soft signal — derived field, not gated in v1)"
+      ],
+      "latencyMs": 70037,
+      "scenario": "hetzner-invoice-distractor-models"
+    },
+    {
+      "model": "ollama-cloud/glm-5.2",
+      "passed": true,
+      "tags": ["amount-not-captured"],
+      "notes": [
+        "amount_total: expected 47.6, got undefined (soft signal — derived field, not gated in v1)"
+      ],
+      "latencyMs": 70835,
+      "scenario": "hetzner-invoice-distractor-models"
+    },
+    {
+      "model": "ollama-cloud/qwen3.5:397b",
+      "passed": true,
+      "tags": ["amount-not-captured"],
+      "notes": [
+        "amount_total: expected 47.6, got undefined (soft signal — derived field, not gated in v1)"
+      ],
+      "latencyMs": 45012,
+      "scenario": "hetzner-invoice-distractor-models"
+    },
+    {
+      "model": "ollama-cloud/qwen3.5:397b",
+      "passed": true,
+      "tags": ["amount-not-captured"],
+      "notes": [
+        "amount_total: expected 47.6, got undefined (soft signal — derived field, not gated in v1)"
+      ],
+      "latencyMs": 69993,
+      "scenario": "hetzner-invoice-distractor-models"
+    },
+    {
+      "model": "ollama-cloud/qwen3.5:397b",
+      "passed": true,
+      "tags": ["amount-not-captured"],
+      "notes": [
+        "amount_total: expected 47.6, got undefined (soft signal — derived field, not gated in v1)"
+      ],
+      "latencyMs": 164837,
+      "scenario": "hetzner-invoice-distractor-models"
+    },
+    {
+      "model": "ollama-cloud/qwen3.5:397b",
+      "passed": true,
+      "tags": ["amount-not-captured"],
+      "notes": [
+        "amount_total: expected 47.6, got undefined (soft signal — derived field, not gated in v1)"
+      ],
+      "latencyMs": 75882,
+      "scenario": "hetzner-invoice-distractor-models"
+    },
+    {
+      "model": "ollama-cloud/qwen3.5:397b",
+      "passed": false,
+      "tags": ["task-incomplete"],
+      "notes": ["No in_invoice move found in odooMoves."],
+      "latencyMs": 56384,
+      "scenario": "hetzner-invoice-distractor-models"
+    },
+    {
+      "model": "ollama-cloud/qwen3.5:397b",
+      "passed": true,
+      "tags": ["amount-not-captured"],
+      "notes": [
+        "amount_total: expected 47.6, got undefined (soft signal — derived field, not gated in v1)"
+      ],
+      "latencyMs": 102398,
+      "scenario": "hetzner-invoice-distractor-models"
+    },
+    {
+      "model": "ollama-cloud/qwen3.5:397b",
+      "passed": true,
+      "tags": ["amount-not-captured"],
+      "notes": [
+        "amount_total: expected 47.6, got undefined (soft signal — derived field, not gated in v1)"
+      ],
+      "latencyMs": 67280,
+      "scenario": "hetzner-invoice-distractor-models"
+    },
+    {
+      "model": "ollama-cloud/qwen3.5:397b",
+      "passed": true,
+      "tags": ["amount-not-captured"],
+      "notes": [
+        "amount_total: expected 47.6, got undefined (soft signal — derived field, not gated in v1)"
+      ],
+      "latencyMs": 63759,
+      "scenario": "hetzner-invoice-distractor-models"
+    },
+    {
+      "model": "ollama-cloud/qwen3.5:397b",
+      "passed": true,
+      "tags": ["amount-not-captured"],
+      "notes": [
+        "amount_total: expected 47.6, got undefined (soft signal — derived field, not gated in v1)"
+      ],
+      "latencyMs": 64356,
+      "scenario": "hetzner-invoice-distractor-models"
+    },
+    {
+      "model": "ollama-cloud/qwen3.5:397b",
+      "passed": true,
+      "tags": ["amount-not-captured"],
+      "notes": [
+        "amount_total: expected 47.6, got undefined (soft signal — derived field, not gated in v1)"
+      ],
+      "latencyMs": 105815,
+      "scenario": "hetzner-invoice-distractor-models"
+    },
+    {
+      "model": "ollama-cloud/qwen3.5:397b",
+      "passed": true,
+      "tags": ["amount-not-captured"],
+      "notes": [
+        "amount_total: expected 47.6, got undefined (soft signal — derived field, not gated in v1)"
+      ],
+      "latencyMs": 73352,
+      "scenario": "hetzner-invoice-distractor-models"
+    },
+    {
+      "model": "ollama-cloud/qwen3.5:397b",
+      "passed": true,
+      "tags": ["amount-not-captured"],
+      "notes": [
+        "amount_total: expected 47.6, got undefined (soft signal — derived field, not gated in v1)"
+      ],
+      "latencyMs": 70284,
+      "scenario": "hetzner-invoice-distractor-models"
+    },
+    {
+      "model": "ollama-cloud/minimax-m3",
+      "passed": false,
+      "tags": ["wrong-field-extraction"],
+      "notes": [
+        "ref: expected \"R0012345678\", got \"Hetzner Cloud services — R0012345678 (47.60 EUR)\""
+      ],
+      "latencyMs": 83694,
+      "scenario": "hetzner-invoice-distractor-models"
+    },
+    {
+      "model": "ollama-cloud/minimax-m3",
+      "passed": true,
+      "tags": ["amount-not-captured"],
+      "notes": [
+        "amount_total: expected 47.6, got undefined (soft signal — derived field, not gated in v1)"
+      ],
+      "latencyMs": 145337,
+      "scenario": "hetzner-invoice-distractor-models"
+    },
+    {
+      "model": "ollama-cloud/minimax-m3",
+      "passed": true,
+      "tags": ["amount-not-captured"],
+      "notes": [
+        "amount_total: expected 47.6, got undefined (soft signal — derived field, not gated in v1)"
+      ],
+      "latencyMs": 76634,
+      "scenario": "hetzner-invoice-distractor-models"
+    },
+    {
+      "model": "ollama-cloud/minimax-m3",
+      "passed": true,
+      "tags": ["amount-not-captured"],
+      "notes": [
+        "amount_total: expected 47.6, got undefined (soft signal — derived field, not gated in v1)"
+      ],
+      "latencyMs": 107379,
+      "scenario": "hetzner-invoice-distractor-models"
+    },
+    {
+      "model": "ollama-cloud/minimax-m3",
+      "passed": true,
+      "tags": ["amount-not-captured"],
+      "notes": [
+        "amount_total: expected 47.6, got undefined (soft signal — derived field, not gated in v1)"
+      ],
+      "latencyMs": 87605,
+      "scenario": "hetzner-invoice-distractor-models"
+    },
+    {
+      "model": "ollama-cloud/minimax-m3",
+      "passed": true,
+      "tags": ["amount-not-captured"],
+      "notes": [
+        "amount_total: expected 47.6, got undefined (soft signal — derived field, not gated in v1)"
+      ],
+      "latencyMs": 75958,
+      "scenario": "hetzner-invoice-distractor-models"
+    },
+    {
+      "model": "ollama-cloud/minimax-m3",
+      "passed": false,
+      "tags": ["wrong-field-extraction"],
+      "notes": ["date: expected \"2026-06-30\", got undefined"],
+      "latencyMs": 87118,
+      "scenario": "hetzner-invoice-distractor-models"
+    },
+    {
+      "model": "ollama-cloud/minimax-m3",
+      "passed": true,
+      "tags": ["amount-not-captured"],
+      "notes": [
+        "amount_total: expected 47.6, got undefined (soft signal — derived field, not gated in v1)"
+      ],
+      "latencyMs": 104684,
+      "scenario": "hetzner-invoice-distractor-models"
+    },
+    {
+      "model": "ollama-cloud/minimax-m3",
+      "passed": true,
+      "tags": ["amount-not-captured"],
+      "notes": [
+        "amount_total: expected 47.6, got undefined (soft signal — derived field, not gated in v1)"
+      ],
+      "latencyMs": 90124,
+      "scenario": "hetzner-invoice-distractor-models"
+    },
+    {
+      "model": "ollama-cloud/minimax-m3",
+      "passed": true,
+      "tags": ["amount-not-captured"],
+      "notes": [
+        "amount_total: expected 47.6, got undefined (soft signal — derived field, not gated in v1)"
+      ],
+      "latencyMs": 62333,
+      "scenario": "hetzner-invoice-distractor-models"
+    },
+    {
+      "model": "ollama-cloud/minimax-m3",
+      "passed": true,
+      "tags": ["amount-not-captured"],
+      "notes": [
+        "amount_total: expected 47.6, got undefined (soft signal — derived field, not gated in v1)"
+      ],
+      "latencyMs": 76463,
+      "scenario": "hetzner-invoice-distractor-models"
+    },
+    {
+      "model": "ollama-cloud/minimax-m3",
+      "passed": true,
+      "tags": ["amount-not-captured"],
+      "notes": [
+        "amount_total: expected 47.6, got undefined (soft signal — derived field, not gated in v1)"
+      ],
+      "latencyMs": 103254,
+      "scenario": "hetzner-invoice-distractor-models"
+    },
+    {
+      "model": "ollama-cloud/gpt-oss:120b",
+      "passed": false,
+      "tags": ["amount-not-captured", "id-malformed"],
+      "notes": [
+        "amount_total: expected 47.6, got undefined (soft signal — derived field, not gated in v1)",
+        "email_get_attachment.messageId consumed unissued id \"msg_61311311?\"",
+        "email_get_attachment.attachmentId consumed unissued id \"att_465b369c...\""
+      ],
+      "latencyMs": 101611,
+      "scenario": "hetzner-invoice-distractor-models"
+    },
+    {
+      "model": "ollama-cloud/gpt-oss:120b",
+      "passed": true,
+      "tags": ["amount-not-captured"],
+      "notes": [
+        "amount_total: expected 47.6, got undefined (soft signal — derived field, not gated in v1)"
+      ],
+      "latencyMs": 77579,
+      "scenario": "hetzner-invoice-distractor-models"
+    },
+    {
+      "model": "ollama-cloud/gpt-oss:120b",
+      "passed": false,
+      "tags": ["amount-not-captured", "id-malformed"],
+      "notes": [
+        "amount_total: expected 47.6, got undefined (soft signal — derived field, not gated in v1)",
+        "email_get_attachment.messageId consumed unissued id \"msg_61357?\"",
+        "email_get_attachment.attachmentId consumed unissued id \"att_465b369c??\""
+      ],
+      "latencyMs": 127531,
+      "scenario": "hetzner-invoice-distractor-models"
+    },
+    {
+      "model": "ollama-cloud/gpt-oss:120b",
+      "passed": false,
+      "tags": ["task-incomplete"],
+      "notes": ["No in_invoice move found in odooMoves."],
+      "latencyMs": 24764,
+      "scenario": "hetzner-invoice-distractor-models"
+    },
+    {
+      "model": "ollama-cloud/gpt-oss:120b",
+      "passed": false,
+      "tags": ["amount-not-captured", "id-malformed"],
+      "notes": [
+        "amount_total: expected 47.6, got undefined (soft signal — derived field, not gated in v1)",
+        "email_get_attachment.messageId consumed unissued id \"msg_61aa311id???\"",
+        "email_get_attachment.attachmentId consumed unissued id \"att_465b369c...\""
+      ],
+      "latencyMs": 44554,
+      "scenario": "hetzner-invoice-distractor-models"
+    },
+    {
+      "model": "ollama-cloud/gpt-oss:120b",
+      "passed": true,
+      "tags": ["amount-not-captured"],
+      "notes": [
+        "amount_total: expected 47.6, got undefined (soft signal — derived field, not gated in v1)"
+      ],
+      "latencyMs": 75994,
+      "scenario": "hetzner-invoice-distractor-models"
+    },
+    {
+      "model": "ollama-cloud/gpt-oss:120b",
+      "passed": false,
+      "tags": ["task-incomplete"],
+      "notes": ["No in_invoice move found in odooMoves."],
+      "latencyMs": 58744,
+      "scenario": "hetzner-invoice-distractor-models"
+    },
+    {
+      "model": "ollama-cloud/gpt-oss:120b",
+      "passed": true,
+      "tags": ["amount-not-captured"],
+      "notes": [
+        "amount_total: expected 47.6, got undefined (soft signal — derived field, not gated in v1)"
+      ],
+      "latencyMs": 63576,
+      "scenario": "hetzner-invoice-distractor-models"
+    },
+    {
+      "model": "ollama-cloud/gpt-oss:120b",
+      "passed": false,
+      "tags": ["amount-not-captured", "id-malformed"],
+      "notes": [
+        "amount_total: expected 47.6, got undefined (soft signal — derived field, not gated in v1)",
+        "email_get_attachment.messageId consumed unissued id \"msg_61311311?\"",
+        "email_get_attachment.attachmentId consumed unissued id \"att_465b369c??\""
+      ],
+      "latencyMs": 51574,
+      "scenario": "hetzner-invoice-distractor-models"
+    },
+    {
+      "model": "ollama-cloud/gpt-oss:120b",
+      "passed": true,
+      "tags": ["amount-not-captured"],
+      "notes": [
+        "amount_total: expected 47.6, got undefined (soft signal — derived field, not gated in v1)"
+      ],
+      "latencyMs": 39388,
+      "scenario": "hetzner-invoice-distractor-models"
+    },
+    {
+      "model": "ollama-cloud/gpt-oss:120b",
+      "passed": false,
+      "tags": ["wrong-field-extraction"],
+      "notes": ["ref: expected \"R0012345678\", got \"undefined\""],
+      "latencyMs": 42061,
+      "scenario": "hetzner-invoice-distractor-models"
+    },
+    {
+      "model": "ollama-cloud/gpt-oss:120b",
+      "passed": false,
+      "tags": ["amount-not-captured", "id-malformed"],
+      "notes": [
+        "amount_total: expected 47.6, got undefined (soft signal — derived field, not gated in v1)",
+        "email_get_attachment.messageId consumed unissued id \"msg_61...\"",
+        "email_get_attachment.attachmentId consumed unissued id \"?\""
+      ],
+      "latencyMs": 72900,
+      "scenario": "hetzner-invoice-distractor-models"
+    },
+    {
+      "model": "ollama-cloud/mistral-large-3:675b",
+      "passed": false,
+      "tags": ["task-incomplete"],
+      "notes": ["No in_invoice move found in odooMoves."],
+      "latencyMs": 26026,
+      "scenario": "hetzner-invoice-distractor-models"
+    },
+    {
+      "model": "ollama-cloud/mistral-large-3:675b",
+      "passed": false,
+      "tags": ["task-incomplete"],
+      "notes": ["No in_invoice move found in odooMoves."],
+      "latencyMs": 33924,
+      "scenario": "hetzner-invoice-distractor-models"
+    },
+    {
+      "model": "ollama-cloud/mistral-large-3:675b",
+      "passed": false,
+      "tags": ["task-incomplete"],
+      "notes": ["No in_invoice move found in odooMoves."],
+      "latencyMs": 30841,
+      "scenario": "hetzner-invoice-distractor-models"
+    },
+    {
+      "model": "ollama-cloud/mistral-large-3:675b",
+      "passed": false,
+      "tags": ["wrong-field-extraction"],
+      "notes": [
+        "vendor/partner: expected \"Hetzner Online GmbH\" (id 501), got {\"_pinchy_ref\":\"pinchy_ref:v1:lZuBqOmpD5e0u-3XPpxjncZyZkVNMzBwHPjcLScrf9f21yLVcBdu3Ss_Y4b867vrqP262zdg3yaPfJdeHuxSh5M_Shq8oGpO7jxB8fdtA8ekodcapTkUc9L_S7uQLS-b-_MQAcgyakExJhqQGrpsP4kKx0HvKKJ83ZdpjCNIqlkd_VFG-oseaqc4Lb22aakUEMidSpPGfNK6AEGlSJcA9ckrltFQ9CDtWg\"}"
+      ],
+      "latencyMs": 58708,
+      "scenario": "hetzner-invoice-distractor-models"
+    },
+    {
+      "model": "ollama-cloud/mistral-large-3:675b",
+      "passed": false,
+      "tags": ["task-incomplete"],
+      "notes": ["No in_invoice move found in odooMoves."],
+      "latencyMs": 31870,
+      "scenario": "hetzner-invoice-distractor-models"
+    },
+    {
+      "model": "ollama-cloud/mistral-large-3:675b",
+      "passed": false,
+      "tags": ["task-incomplete"],
+      "notes": ["No in_invoice move found in odooMoves."],
+      "latencyMs": 6995,
+      "scenario": "hetzner-invoice-distractor-models"
+    },
+    {
+      "model": "ollama-cloud/mistral-large-3:675b",
+      "passed": false,
+      "tags": ["task-incomplete"],
+      "notes": ["No in_invoice move found in odooMoves."],
+      "latencyMs": 31875,
+      "scenario": "hetzner-invoice-distractor-models"
+    },
+    {
+      "model": "ollama-cloud/mistral-large-3:675b",
+      "passed": false,
+      "tags": ["task-incomplete"],
+      "notes": ["No in_invoice move found in odooMoves."],
+      "latencyMs": 32884,
+      "scenario": "hetzner-invoice-distractor-models"
+    },
+    {
+      "model": "ollama-cloud/mistral-large-3:675b",
+      "passed": false,
+      "tags": ["task-incomplete"],
+      "notes": ["No in_invoice move found in odooMoves."],
+      "latencyMs": 33070,
+      "scenario": "hetzner-invoice-distractor-models"
+    },
+    {
+      "model": "ollama-cloud/mistral-large-3:675b",
+      "passed": false,
+      "tags": ["task-incomplete"],
+      "notes": ["No in_invoice move found in odooMoves."],
+      "latencyMs": 32539,
+      "scenario": "hetzner-invoice-distractor-models"
+    },
+    {
+      "model": "ollama-cloud/mistral-large-3:675b",
+      "passed": false,
+      "tags": ["task-incomplete"],
+      "notes": ["No in_invoice move found in odooMoves."],
+      "latencyMs": 31344,
+      "scenario": "hetzner-invoice-distractor-models"
+    },
+    {
+      "model": "ollama-cloud/mistral-large-3:675b",
+      "passed": false,
+      "tags": ["task-incomplete"],
+      "notes": ["No in_invoice move found in odooMoves."],
+      "latencyMs": 49608,
+      "scenario": "hetzner-invoice-distractor-models"
+    },
+    {
+      "model": "ollama-cloud/deepseek-v3.2",
+      "passed": false,
+      "tags": ["run-timeout"],
+      "notes": [
+        "TimeoutError: locator.waitFor: Timeout 300000ms exceeded.\nCall log:\n\u001b[2m  - waiting for getByRole('button', { name: 'Stop generating' }) to be hidden\u001b[22m\n\u001b[2m    588 × locator resolved to visible <button type=\"button\" data-size=\"icon\" data-slot=\"button\" data-variant=\"default\" aria-label=\"Stop generating\" class=\"inline-flex items-center justify-center gap-2 whitespace-nowrap text-sm font-medium transition-all disabled:pointer-events-none disabled:opacity-50 [&_svg]:pointer-events-none [&_svg:not([class*='size-'])]:size-4 shrink-0 [&_svg]:shrink-0 outline-none focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:ring-[3px] aria-invalid:ring-destructive/20 dark:aria-invalid:ring-des…>…</button>\u001b[22m\n"
+      ],
+      "latencyMs": 302037,
+      "scenario": "hetzner-invoice-distractor-models"
+    },
+    {
+      "model": "ollama-cloud/deepseek-v3.2",
+      "passed": false,
+      "tags": ["run-timeout"],
+      "notes": [
+        "TimeoutError: locator.waitFor: Timeout 300000ms exceeded.\nCall log:\n\u001b[2m  - waiting for getByRole('button', { name: 'Stop generating' }) to be hidden\u001b[22m\n\u001b[2m    596 × locator resolved to visible <button type=\"button\" data-size=\"icon\" data-slot=\"button\" data-variant=\"default\" aria-label=\"Stop generating\" class=\"inline-flex items-center justify-center gap-2 whitespace-nowrap text-sm font-medium transition-all disabled:pointer-events-none disabled:opacity-50 [&_svg]:pointer-events-none [&_svg:not([class*='size-'])]:size-4 shrink-0 [&_svg]:shrink-0 outline-none focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:ring-[3px] aria-invalid:ring-destructive/20 dark:aria-invalid:ring-des…>…</button>\u001b[22m\n"
+      ],
+      "latencyMs": 301938,
+      "scenario": "hetzner-invoice-distractor-models"
+    },
+    {
+      "model": "ollama-cloud/deepseek-v3.2",
+      "passed": false,
+      "tags": ["run-timeout"],
+      "notes": [
+        "TimeoutError: locator.waitFor: Timeout 300000ms exceeded.\nCall log:\n\u001b[2m  - waiting for getByRole('button', { name: 'Stop generating' }) to be hidden\u001b[22m\n\u001b[2m    596 × locator resolved to visible <button type=\"button\" data-size=\"icon\" data-slot=\"button\" data-variant=\"default\" aria-label=\"Stop generating\" class=\"inline-flex items-center justify-center gap-2 whitespace-nowrap text-sm font-medium transition-all disabled:pointer-events-none disabled:opacity-50 [&_svg]:pointer-events-none [&_svg:not([class*='size-'])]:size-4 shrink-0 [&_svg]:shrink-0 outline-none focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:ring-[3px] aria-invalid:ring-destructive/20 dark:aria-invalid:ring-des…>…</button>\u001b[22m\n"
+      ],
+      "latencyMs": 301869,
+      "scenario": "hetzner-invoice-distractor-models"
+    },
+    {
+      "model": "ollama-cloud/deepseek-v3.2",
+      "passed": true,
+      "tags": ["amount-not-captured"],
+      "notes": [
+        "amount_total: expected 47.6, got undefined (soft signal — derived field, not gated in v1)"
+      ],
+      "latencyMs": 249580,
+      "scenario": "hetzner-invoice-distractor-models"
+    },
+    {
+      "model": "ollama-cloud/deepseek-v3.2",
+      "passed": false,
+      "tags": ["run-timeout"],
+      "notes": [
+        "TimeoutError: locator.waitFor: Timeout 300000ms exceeded.\nCall log:\n\u001b[2m  - waiting for getByRole('button', { name: 'Stop generating' }) to be hidden\u001b[22m\n\u001b[2m    596 × locator resolved to visible <button type=\"button\" data-size=\"icon\" data-slot=\"button\" data-variant=\"default\" aria-label=\"Stop generating\" class=\"inline-flex items-center justify-center gap-2 whitespace-nowrap text-sm font-medium transition-all disabled:pointer-events-none disabled:opacity-50 [&_svg]:pointer-events-none [&_svg:not([class*='size-'])]:size-4 shrink-0 [&_svg]:shrink-0 outline-none focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:ring-[3px] aria-invalid:ring-destructive/20 dark:aria-invalid:ring-des…>…</button>\u001b[22m\n"
+      ],
+      "latencyMs": 303550,
+      "scenario": "hetzner-invoice-distractor-models"
+    },
+    {
+      "model": "ollama-cloud/deepseek-v3.2",
+      "passed": false,
+      "tags": ["run-timeout"],
+      "notes": [
+        "TimeoutError: locator.waitFor: Timeout 300000ms exceeded.\nCall log:\n\u001b[2m  - waiting for getByRole('button', { name: 'Stop generating' }) to be hidden\u001b[22m\n\u001b[2m    596 × locator resolved to visible <button type=\"button\" data-size=\"icon\" data-slot=\"button\" data-variant=\"default\" aria-label=\"Stop generating\" class=\"inline-flex items-center justify-center gap-2 whitespace-nowrap text-sm font-medium transition-all disabled:pointer-events-none disabled:opacity-50 [&_svg]:pointer-events-none [&_svg:not([class*='size-'])]:size-4 shrink-0 [&_svg]:shrink-0 outline-none focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:ring-[3px] aria-invalid:ring-destructive/20 dark:aria-invalid:ring-des…>…</button>\u001b[22m\n"
+      ],
+      "latencyMs": 302155,
+      "scenario": "hetzner-invoice-distractor-models"
+    },
+    {
+      "model": "ollama-cloud/deepseek-v3.2",
+      "passed": false,
+      "tags": ["run-timeout"],
+      "notes": [
+        "TimeoutError: locator.waitFor: Timeout 300000ms exceeded.\nCall log:\n\u001b[2m  - waiting for getByRole('button', { name: 'Stop generating' }) to be hidden\u001b[22m\n\u001b[2m    595 × locator resolved to visible <button type=\"button\" data-size=\"icon\" data-slot=\"button\" data-variant=\"default\" aria-label=\"Stop generating\" class=\"inline-flex items-center justify-center gap-2 whitespace-nowrap text-sm font-medium transition-all disabled:pointer-events-none disabled:opacity-50 [&_svg]:pointer-events-none [&_svg:not([class*='size-'])]:size-4 shrink-0 [&_svg]:shrink-0 outline-none focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:ring-[3px] aria-invalid:ring-destructive/20 dark:aria-invalid:ring-des…>…</button>\u001b[22m\n"
+      ],
+      "latencyMs": 302391,
+      "scenario": "hetzner-invoice-distractor-models"
+    },
+    {
+      "model": "ollama-cloud/deepseek-v3.2",
+      "passed": false,
+      "tags": ["run-timeout"],
+      "notes": [
+        "TimeoutError: locator.waitFor: Timeout 300000ms exceeded.\nCall log:\n\u001b[2m  - waiting for getByRole('button', { name: 'Stop generating' }) to be hidden\u001b[22m\n\u001b[2m    596 × locator resolved to visible <button type=\"button\" data-size=\"icon\" data-slot=\"button\" data-variant=\"default\" aria-label=\"Stop generating\" class=\"inline-flex items-center justify-center gap-2 whitespace-nowrap text-sm font-medium transition-all disabled:pointer-events-none disabled:opacity-50 [&_svg]:pointer-events-none [&_svg:not([class*='size-'])]:size-4 shrink-0 [&_svg]:shrink-0 outline-none focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:ring-[3px] aria-invalid:ring-destructive/20 dark:aria-invalid:ring-des…>…</button>\u001b[22m\n"
+      ],
+      "latencyMs": 301973,
+      "scenario": "hetzner-invoice-distractor-models"
+    },
+    {
+      "model": "ollama-cloud/deepseek-v3.2",
+      "passed": false,
+      "tags": ["run-timeout"],
+      "notes": [
+        "TimeoutError: locator.waitFor: Timeout 300000ms exceeded.\nCall log:\n\u001b[2m  - waiting for getByRole('button', { name: 'Stop generating' }) to be hidden\u001b[22m\n\u001b[2m    595 × locator resolved to visible <button type=\"button\" data-size=\"icon\" data-slot=\"button\" data-variant=\"default\" aria-label=\"Stop generating\" class=\"inline-flex items-center justify-center gap-2 whitespace-nowrap text-sm font-medium transition-all disabled:pointer-events-none disabled:opacity-50 [&_svg]:pointer-events-none [&_svg:not([class*='size-'])]:size-4 shrink-0 [&_svg]:shrink-0 outline-none focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:ring-[3px] aria-invalid:ring-destructive/20 dark:aria-invalid:ring-des…>…</button>\u001b[22m\n"
+      ],
+      "latencyMs": 301517,
+      "scenario": "hetzner-invoice-distractor-models"
+    },
+    {
+      "model": "ollama-cloud/deepseek-v3.2",
+      "passed": false,
+      "tags": ["run-timeout"],
+      "notes": [
+        "TimeoutError: locator.waitFor: Timeout 300000ms exceeded.\nCall log:\n\u001b[2m  - waiting for getByRole('button', { name: 'Stop generating' }) to be hidden\u001b[22m\n\u001b[2m    591 × locator resolved to visible <button type=\"button\" data-size=\"icon\" data-slot=\"button\" data-variant=\"default\" aria-label=\"Stop generating\" class=\"inline-flex items-center justify-center gap-2 whitespace-nowrap text-sm font-medium transition-all disabled:pointer-events-none disabled:opacity-50 [&_svg]:pointer-events-none [&_svg:not([class*='size-'])]:size-4 shrink-0 [&_svg]:shrink-0 outline-none focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:ring-[3px] aria-invalid:ring-destructive/20 dark:aria-invalid:ring-des…>…</button>\u001b[22m\n"
+      ],
+      "latencyMs": 302349,
+      "scenario": "hetzner-invoice-distractor-models"
+    },
+    {
+      "model": "ollama-cloud/deepseek-v3.2",
+      "passed": false,
+      "tags": ["run-timeout"],
+      "notes": [
+        "TimeoutError: locator.waitFor: Timeout 300000ms exceeded.\nCall log:\n\u001b[2m  - waiting for getByRole('button', { name: 'Stop generating' }) to be hidden\u001b[22m\n\u001b[2m    582 × locator resolved to visible <button type=\"button\" data-size=\"icon\" data-slot=\"button\" data-variant=\"default\" aria-label=\"Stop generating\" class=\"inline-flex items-center justify-center gap-2 whitespace-nowrap text-sm font-medium transition-all disabled:pointer-events-none disabled:opacity-50 [&_svg]:pointer-events-none [&_svg:not([class*='size-'])]:size-4 shrink-0 [&_svg]:shrink-0 outline-none focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:ring-[3px] aria-invalid:ring-destructive/20 dark:aria-invalid:ring-des…>…</button>\u001b[22m\n"
+      ],
+      "latencyMs": 302149,
+      "scenario": "hetzner-invoice-distractor-models"
+    },
+    {
+      "model": "ollama-cloud/deepseek-v3.2",
+      "passed": false,
+      "tags": ["run-timeout"],
+      "notes": [
+        "TimeoutError: locator.waitFor: Timeout 300000ms exceeded.\nCall log:\n\u001b[2m  - waiting for getByRole('button', { name: 'Stop generating' }) to be hidden\u001b[22m\n\u001b[2m    593 × locator resolved to visible <button type=\"button\" data-size=\"icon\" data-slot=\"button\" data-variant=\"default\" aria-label=\"Stop generating\" class=\"inline-flex items-center justify-center gap-2 whitespace-nowrap text-sm font-medium transition-all disabled:pointer-events-none disabled:opacity-50 [&_svg]:pointer-events-none [&_svg:not([class*='size-'])]:size-4 shrink-0 [&_svg]:shrink-0 outline-none focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:ring-[3px] aria-invalid:ring-destructive/20 dark:aria-invalid:ring-des…>…</button>\u001b[22m\n"
+      ],
+      "latencyMs": 301551,
+      "scenario": "hetzner-invoice-distractor-models"
+    },
+    {
+      "model": "ollama-cloud/deepseek-v4-pro",
+      "passed": true,
+      "tags": [],
+      "notes": [],
+      "latencyMs": 84080,
+      "scenario": "hetzner-invoice-distractor-models"
+    },
+    {
+      "model": "ollama-cloud/deepseek-v4-pro",
+      "passed": true,
+      "tags": ["amount-not-captured"],
+      "notes": [
+        "amount_total: expected 47.6, got undefined (soft signal — derived field, not gated in v1)"
+      ],
+      "latencyMs": 47859,
+      "scenario": "hetzner-invoice-distractor-models"
+    },
+    {
+      "model": "ollama-cloud/deepseek-v4-pro",
+      "passed": true,
+      "tags": ["amount-not-captured"],
+      "notes": [
+        "amount_total: expected 47.6, got undefined (soft signal — derived field, not gated in v1)"
+      ],
+      "latencyMs": 63108,
+      "scenario": "hetzner-invoice-distractor-models"
+    },
+    {
+      "model": "ollama-cloud/deepseek-v4-pro",
+      "passed": true,
+      "tags": ["amount-not-captured"],
+      "notes": [
+        "amount_total: expected 47.6, got undefined (soft signal — derived field, not gated in v1)"
+      ],
+      "latencyMs": 79507,
+      "scenario": "hetzner-invoice-distractor-models"
+    },
+    {
+      "model": "ollama-cloud/deepseek-v4-pro",
+      "passed": true,
+      "tags": ["amount-not-captured"],
+      "notes": [
+        "amount_total: expected 47.6, got undefined (soft signal — derived field, not gated in v1)"
+      ],
+      "latencyMs": 50848,
+      "scenario": "hetzner-invoice-distractor-models"
+    },
+    {
+      "model": "ollama-cloud/deepseek-v4-pro",
+      "passed": true,
+      "tags": ["amount-not-captured"],
+      "notes": [
+        "amount_total: expected 47.6, got undefined (soft signal — derived field, not gated in v1)"
+      ],
+      "latencyMs": 42410,
+      "scenario": "hetzner-invoice-distractor-models"
+    },
+    {
+      "model": "ollama-cloud/deepseek-v4-pro",
+      "passed": true,
+      "tags": ["amount-not-captured"],
+      "notes": [
+        "amount_total: expected 47.6, got undefined (soft signal — derived field, not gated in v1)"
+      ],
+      "latencyMs": 49237,
+      "scenario": "hetzner-invoice-distractor-models"
+    },
+    {
+      "model": "ollama-cloud/deepseek-v4-pro",
+      "passed": true,
+      "tags": ["amount-not-captured"],
+      "notes": [
+        "amount_total: expected 47.6, got undefined (soft signal — derived field, not gated in v1)"
+      ],
+      "latencyMs": 38951,
+      "scenario": "hetzner-invoice-distractor-models"
+    },
+    {
+      "model": "ollama-cloud/deepseek-v4-pro",
+      "passed": true,
+      "tags": ["amount-not-captured"],
+      "notes": [
+        "amount_total: expected 47.6, got undefined (soft signal — derived field, not gated in v1)"
+      ],
+      "latencyMs": 90155,
+      "scenario": "hetzner-invoice-distractor-models"
+    },
+    {
+      "model": "ollama-cloud/deepseek-v4-pro",
+      "passed": true,
+      "tags": ["amount-not-captured"],
+      "notes": [
+        "amount_total: expected 47.6, got undefined (soft signal — derived field, not gated in v1)"
+      ],
+      "latencyMs": 46043,
+      "scenario": "hetzner-invoice-distractor-models"
+    },
+    {
+      "model": "ollama-cloud/deepseek-v4-pro",
+      "passed": true,
+      "tags": ["amount-not-captured"],
+      "notes": [
+        "amount_total: expected 47.6, got undefined (soft signal — derived field, not gated in v1)"
+      ],
+      "latencyMs": 51076,
+      "scenario": "hetzner-invoice-distractor-models"
+    },
+    {
+      "model": "ollama-cloud/deepseek-v4-pro",
+      "passed": true,
+      "tags": ["amount-not-captured"],
+      "notes": [
+        "amount_total: expected 47.6, got undefined (soft signal — derived field, not gated in v1)"
+      ],
+      "latencyMs": 53146,
+      "scenario": "hetzner-invoice-distractor-models"
+    },
+    {
+      "model": "ollama-cloud/nemotron-3-ultra",
+      "passed": true,
+      "tags": ["amount-not-captured"],
+      "notes": [
+        "amount_total: expected 47.6, got undefined (soft signal — derived field, not gated in v1)"
+      ],
+      "latencyMs": 86085,
+      "scenario": "hetzner-invoice-distractor-models"
+    },
+    {
+      "model": "ollama-cloud/nemotron-3-ultra",
+      "passed": true,
+      "tags": [],
+      "notes": [],
+      "latencyMs": 104263,
+      "scenario": "hetzner-invoice-distractor-models"
+    },
+    {
+      "model": "ollama-cloud/nemotron-3-ultra",
+      "passed": true,
+      "tags": ["amount-not-captured"],
+      "notes": [
+        "amount_total: expected 47.6, got undefined (soft signal — derived field, not gated in v1)"
+      ],
+      "latencyMs": 116648,
+      "scenario": "hetzner-invoice-distractor-models"
+    },
+    {
+      "model": "ollama-cloud/nemotron-3-ultra",
+      "passed": true,
+      "tags": ["amount-not-captured"],
+      "notes": [
+        "amount_total: expected 47.6, got undefined (soft signal — derived field, not gated in v1)"
+      ],
+      "latencyMs": 69355,
+      "scenario": "hetzner-invoice-distractor-models"
+    },
+    {
+      "model": "ollama-cloud/nemotron-3-ultra",
+      "passed": true,
+      "tags": ["amount-not-captured"],
+      "notes": [
+        "amount_total: expected 47.6, got undefined (soft signal — derived field, not gated in v1)"
+      ],
+      "latencyMs": 113063,
+      "scenario": "hetzner-invoice-distractor-models"
+    },
+    {
+      "model": "ollama-cloud/nemotron-3-ultra",
+      "passed": true,
+      "tags": ["amount-not-captured"],
+      "notes": [
+        "amount_total: expected 47.6, got undefined (soft signal — derived field, not gated in v1)"
+      ],
+      "latencyMs": 53127,
+      "scenario": "hetzner-invoice-distractor-models"
+    },
+    {
+      "model": "ollama-cloud/nemotron-3-ultra",
+      "passed": true,
+      "tags": ["amount-not-captured"],
+      "notes": [
+        "amount_total: expected 47.6, got undefined (soft signal — derived field, not gated in v1)"
+      ],
+      "latencyMs": 112502,
+      "scenario": "hetzner-invoice-distractor-models"
+    },
+    {
+      "model": "ollama-cloud/nemotron-3-ultra",
+      "passed": false,
+      "tags": ["amount-not-captured", "id-malformed"],
+      "notes": [
+        "amount_total: expected 47.6, got undefined (soft signal — derived field, not gated in v1)",
+        "email_get_attachment.attachmentId consumed unissued id \"att_5e1e4c4b4d6f687b\""
+      ],
+      "latencyMs": 179769,
+      "scenario": "hetzner-invoice-distractor-models"
+    },
+    {
+      "model": "ollama-cloud/nemotron-3-ultra",
+      "passed": true,
+      "tags": ["amount-not-captured"],
+      "notes": [
+        "amount_total: expected 47.6, got undefined (soft signal — derived field, not gated in v1)"
+      ],
+      "latencyMs": 111692,
+      "scenario": "hetzner-invoice-distractor-models"
+    },
+    {
+      "model": "ollama-cloud/nemotron-3-ultra",
+      "passed": true,
+      "tags": ["amount-not-captured"],
+      "notes": [
+        "amount_total: expected 47.6, got undefined (soft signal — derived field, not gated in v1)"
+      ],
+      "latencyMs": 265520,
+      "scenario": "hetzner-invoice-distractor-models"
+    },
+    {
+      "model": "ollama-cloud/nemotron-3-ultra",
+      "passed": true,
+      "tags": ["amount-not-captured"],
+      "notes": [
+        "amount_total: expected 47.6, got undefined (soft signal — derived field, not gated in v1)"
+      ],
+      "latencyMs": 172043,
+      "scenario": "hetzner-invoice-distractor-models"
+    },
+    {
+      "model": "ollama-cloud/nemotron-3-ultra",
+      "passed": true,
+      "tags": ["amount-not-captured"],
+      "notes": [
+        "amount_total: expected 47.6, got undefined (soft signal — derived field, not gated in v1)"
+      ],
+      "latencyMs": 153525,
+      "scenario": "hetzner-invoice-distractor-models"
+    },
+    {
+      "model": "ollama-cloud/gpt-oss:20b",
+      "passed": false,
+      "tags": ["task-incomplete", "id-malformed"],
+      "notes": [
+        "No in_invoice move found in odooMoves.",
+        "email_get_attachment.messageId consumed unissued id \"msg_61??\"",
+        "email_get_attachment.attachmentId consumed unissued id \"att_465b...\""
+      ],
+      "latencyMs": 8096,
+      "scenario": "hetzner-invoice-distractor-models"
+    },
+    {
+      "model": "ollama-cloud/gpt-oss:20b",
+      "passed": false,
+      "tags": ["task-incomplete", "id-malformed"],
+      "notes": [
+        "No in_invoice move found in odooMoves.",
+        "email_get_attachment.messageId consumed unissued id \"msg_61.??\"",
+        "email_get_attachment.attachmentId consumed unissued id \"att_465b...\"",
+        "email_get_attachment.messageId consumed unissued id \"msg_61aa311d..\""
+      ],
+      "latencyMs": 13077,
+      "scenario": "hetzner-invoice-distractor-models"
+    },
+    {
+      "model": "ollama-cloud/gpt-oss:20b",
+      "passed": false,
+      "tags": ["task-incomplete", "id-malformed"],
+      "notes": [
+        "No in_invoice move found in odooMoves.",
+        "email_get_attachment.messageId consumed unissued id \"?\"",
+        "email_get_attachment.attachmentId consumed unissued id \"att_456?\""
+      ],
+      "latencyMs": 14594,
+      "scenario": "hetzner-invoice-distractor-models"
+    },
+    {
+      "model": "ollama-cloud/gpt-oss:20b",
+      "passed": false,
+      "tags": ["task-incomplete", "id-malformed"],
+      "notes": [
+        "No in_invoice move found in odooMoves.",
+        "email_get_attachment.messageId consumed unissued id \"msg_61..\"",
+        "email_get_attachment.attachmentId consumed unissued id \"att_465b369d\""
+      ],
+      "latencyMs": 12562,
+      "scenario": "hetzner-invoice-distractor-models"
+    },
+    {
+      "model": "ollama-cloud/gpt-oss:20b",
+      "passed": false,
+      "tags": ["task-incomplete", "id-malformed"],
+      "notes": [
+        "No in_invoice move found in odooMoves.",
+        "email_get_attachment.messageId consumed unissued id \"msg_100?\"",
+        "email_get_attachment.attachmentId consumed unissued id \"att_465b369c7b459e-10?\""
+      ],
+      "latencyMs": 11550,
+      "scenario": "hetzner-invoice-distractor-models"
+    },
+    {
+      "model": "ollama-cloud/gpt-oss:20b",
+      "passed": false,
+      "tags": ["task-incomplete", "id-malformed"],
+      "notes": [
+        "No in_invoice move found in odooMoves.",
+        "email_get_attachment.messageId consumed unissued id \"msg_61a...\""
+      ],
+      "latencyMs": 10541,
+      "scenario": "hetzner-invoice-distractor-models"
+    },
+    {
+      "model": "ollama-cloud/gpt-oss:20b",
+      "passed": false,
+      "tags": ["task-incomplete", "id-malformed"],
+      "notes": [
+        "No in_invoice move found in odooMoves.",
+        "email_get_attachment.messageId consumed unissued id \"msg_61abb???\""
+      ],
+      "latencyMs": 15095,
+      "scenario": "hetzner-invoice-distractor-models"
+    },
+    {
+      "model": "ollama-cloud/gpt-oss:20b",
+      "passed": false,
+      "tags": ["task-incomplete"],
+      "notes": ["No in_invoice move found in odooMoves."],
+      "latencyMs": 10538,
+      "scenario": "hetzner-invoice-distractor-models"
+    },
+    {
+      "model": "ollama-cloud/gpt-oss:20b",
+      "passed": false,
+      "tags": ["task-incomplete", "id-malformed", "false-success"],
+      "notes": [
+        "No in_invoice move found in odooMoves.",
+        "email_get_attachment.messageId consumed unissued id \"msg_61aa..\"",
+        "email_get_attachment.attachmentId consumed unissued id \"att_465b369c7b459e?23?\"",
+        "finalMessage asserts the vendor bill was created/entered, but no in_invoice move exists and the model did not flag the non-persistence."
+      ],
+      "latencyMs": 42428,
+      "scenario": "hetzner-invoice-distractor-models"
+    },
+    {
+      "model": "ollama-cloud/gpt-oss:20b",
+      "passed": false,
+      "tags": ["task-incomplete", "id-malformed"],
+      "notes": [
+        "No in_invoice move found in odooMoves.",
+        "email_get_attachment.messageId consumed unissued id \"msg_1...\"",
+        "email_get_attachment.attachmentId consumed unissued id \"att_465b369c7b459e..\""
+      ],
+      "latencyMs": 17137,
+      "scenario": "hetzner-invoice-distractor-models"
+    },
+    {
+      "model": "ollama-cloud/gpt-oss:20b",
+      "passed": false,
+      "tags": ["task-incomplete", "id-malformed"],
+      "notes": [
+        "No in_invoice move found in odooMoves.",
+        "email_get_attachment.messageId consumed unissued id \"msg_61aa?255\"",
+        "email_get_attachment.attachmentId consumed unissued id \"att_465b369c7b459e?ob?\""
+      ],
+      "latencyMs": 13630,
+      "scenario": "hetzner-invoice-distractor-models"
+    },
+    {
+      "model": "ollama-cloud/gpt-oss:20b",
+      "passed": false,
+      "tags": ["task-incomplete", "id-malformed"],
+      "notes": [
+        "No in_invoice move found in odooMoves.",
+        "email_get_attachment.messageId consumed unissued id \"msg_61a...\"",
+        "email_get_attachment.attachmentId consumed unissued id \"att_465b369\""
+      ],
+      "latencyMs": 17664,
+      "scenario": "hetzner-invoice-distractor-models"
+    },
+    {
+      "model": "ollama-cloud/glm-5.1",
+      "passed": true,
+      "tags": ["amount-not-captured"],
+      "notes": [
+        "amount_total: expected 47.6, got undefined (soft signal — derived field, not gated in v1)"
+      ],
+      "latencyMs": 88677,
+      "scenario": "hetzner-invoice-distractor-models"
+    },
+    {
+      "model": "ollama-cloud/glm-5.1",
+      "passed": true,
+      "tags": ["amount-not-captured"],
+      "notes": [
+        "amount_total: expected 47.6, got undefined (soft signal — derived field, not gated in v1)"
+      ],
+      "latencyMs": 82020,
+      "scenario": "hetzner-invoice-distractor-models"
+    },
+    {
+      "model": "ollama-cloud/glm-5.1",
+      "passed": true,
+      "tags": ["amount-not-captured"],
+      "notes": [
+        "amount_total: expected 47.6, got undefined (soft signal — derived field, not gated in v1)"
+      ],
+      "latencyMs": 68379,
+      "scenario": "hetzner-invoice-distractor-models"
+    },
+    {
+      "model": "ollama-cloud/glm-5.1",
+      "passed": true,
+      "tags": ["amount-not-captured"],
+      "notes": [
+        "amount_total: expected 47.6, got undefined (soft signal — derived field, not gated in v1)"
+      ],
+      "latencyMs": 81244,
+      "scenario": "hetzner-invoice-distractor-models"
+    },
+    {
+      "model": "ollama-cloud/glm-5.1",
+      "passed": true,
+      "tags": ["amount-not-captured"],
+      "notes": [
+        "amount_total: expected 47.6, got undefined (soft signal — derived field, not gated in v1)"
+      ],
+      "latencyMs": 90628,
+      "scenario": "hetzner-invoice-distractor-models"
+    },
+    {
+      "model": "ollama-cloud/glm-5.1",
+      "passed": true,
+      "tags": ["amount-not-captured"],
+      "notes": [
+        "amount_total: expected 47.6, got undefined (soft signal — derived field, not gated in v1)"
+      ],
+      "latencyMs": 59818,
+      "scenario": "hetzner-invoice-distractor-models"
+    },
+    {
+      "model": "ollama-cloud/glm-5.1",
+      "passed": true,
+      "tags": ["amount-not-captured"],
+      "notes": [
+        "amount_total: expected 47.6, got undefined (soft signal — derived field, not gated in v1)"
+      ],
+      "latencyMs": 104280,
+      "scenario": "hetzner-invoice-distractor-models"
+    },
+    {
+      "model": "ollama-cloud/glm-5.1",
+      "passed": true,
+      "tags": ["amount-not-captured"],
+      "notes": [
+        "amount_total: expected 47.6, got undefined (soft signal — derived field, not gated in v1)"
+      ],
+      "latencyMs": 68191,
+      "scenario": "hetzner-invoice-distractor-models"
+    },
+    {
+      "model": "ollama-cloud/glm-5.1",
+      "passed": true,
+      "tags": ["amount-not-captured"],
+      "notes": [
+        "amount_total: expected 47.6, got undefined (soft signal — derived field, not gated in v1)"
+      ],
+      "latencyMs": 88566,
+      "scenario": "hetzner-invoice-distractor-models"
+    },
+    {
+      "model": "ollama-cloud/glm-5.1",
+      "passed": true,
+      "tags": ["amount-not-captured"],
+      "notes": [
+        "amount_total: expected 47.6, got undefined (soft signal — derived field, not gated in v1)"
+      ],
+      "latencyMs": 51099,
+      "scenario": "hetzner-invoice-distractor-models"
+    },
+    {
+      "model": "ollama-cloud/glm-5.1",
+      "passed": true,
+      "tags": ["amount-not-captured"],
+      "notes": [
+        "amount_total: expected 47.6, got undefined (soft signal — derived field, not gated in v1)"
+      ],
+      "latencyMs": 75322,
+      "scenario": "hetzner-invoice-distractor-models"
+    },
+    {
+      "model": "ollama-cloud/glm-5.1",
+      "passed": true,
+      "tags": ["amount-not-captured"],
+      "notes": [
+        "amount_total: expected 47.6, got undefined (soft signal — derived field, not gated in v1)"
+      ],
+      "latencyMs": 94796,
+      "scenario": "hetzner-invoice-distractor-models"
+    },
+    {
+      "model": "ollama-cloud/minimax-m2.7",
+      "passed": true,
+      "tags": ["amount-not-captured"],
+      "notes": [
+        "amount_total: expected 47.6, got undefined (soft signal — derived field, not gated in v1)"
+      ],
+      "latencyMs": 124613,
+      "scenario": "hetzner-invoice-distractor-models"
+    },
+    {
+      "model": "ollama-cloud/minimax-m2.7",
+      "passed": false,
+      "tags": ["task-incomplete"],
+      "notes": ["No in_invoice move found in odooMoves."],
+      "latencyMs": 39927,
+      "scenario": "hetzner-invoice-distractor-models"
+    },
+    {
+      "model": "ollama-cloud/minimax-m2.7",
+      "passed": true,
+      "tags": ["amount-not-captured"],
+      "notes": [
+        "amount_total: expected 47.6, got undefined (soft signal — derived field, not gated in v1)"
+      ],
+      "latencyMs": 63781,
+      "scenario": "hetzner-invoice-distractor-models"
+    },
+    {
+      "model": "ollama-cloud/minimax-m2.7",
+      "passed": true,
+      "tags": ["amount-not-captured"],
+      "notes": [
+        "amount_total: expected 47.6, got undefined (soft signal — derived field, not gated in v1)"
+      ],
+      "latencyMs": 81143,
+      "scenario": "hetzner-invoice-distractor-models"
+    },
+    {
+      "model": "ollama-cloud/minimax-m2.7",
+      "passed": true,
+      "tags": ["amount-not-captured"],
+      "notes": [
+        "amount_total: expected 47.6, got undefined (soft signal — derived field, not gated in v1)"
+      ],
+      "latencyMs": 118509,
+      "scenario": "hetzner-invoice-distractor-models"
+    },
+    {
+      "model": "ollama-cloud/minimax-m2.7",
+      "passed": true,
+      "tags": ["amount-not-captured"],
+      "notes": [
+        "amount_total: expected 47.6, got undefined (soft signal — derived field, not gated in v1)"
+      ],
+      "latencyMs": 109482,
+      "scenario": "hetzner-invoice-distractor-models"
+    },
+    {
+      "model": "ollama-cloud/minimax-m2.7",
+      "passed": true,
+      "tags": ["amount-not-captured"],
+      "notes": [
+        "amount_total: expected 47.6, got undefined (soft signal — derived field, not gated in v1)"
+      ],
+      "latencyMs": 83210,
+      "scenario": "hetzner-invoice-distractor-models"
+    },
+    {
+      "model": "ollama-cloud/minimax-m2.7",
+      "passed": true,
+      "tags": ["amount-not-captured"],
+      "notes": [
+        "amount_total: expected 47.6, got undefined (soft signal — derived field, not gated in v1)"
+      ],
+      "latencyMs": 94249,
+      "scenario": "hetzner-invoice-distractor-models"
+    },
+    {
+      "model": "ollama-cloud/minimax-m2.7",
+      "passed": true,
+      "tags": ["amount-not-captured"],
+      "notes": [
+        "amount_total: expected 47.6, got undefined (soft signal — derived field, not gated in v1)"
+      ],
+      "latencyMs": 97883,
+      "scenario": "hetzner-invoice-distractor-models"
+    },
+    {
+      "model": "ollama-cloud/minimax-m2.7",
+      "passed": true,
+      "tags": ["amount-not-captured"],
+      "notes": [
+        "amount_total: expected 47.6, got undefined (soft signal — derived field, not gated in v1)"
+      ],
+      "latencyMs": 152893,
+      "scenario": "hetzner-invoice-distractor-models"
+    },
+    {
+      "model": "ollama-cloud/minimax-m2.7",
+      "passed": true,
+      "tags": ["amount-not-captured"],
+      "notes": [
+        "amount_total: expected 47.6, got undefined (soft signal — derived field, not gated in v1)"
+      ],
+      "latencyMs": 135995,
+      "scenario": "hetzner-invoice-distractor-models"
+    },
+    {
+      "model": "ollama-cloud/minimax-m2.7",
+      "passed": true,
+      "tags": ["amount-not-captured"],
+      "notes": [
+        "amount_total: expected 47.6, got undefined (soft signal — derived field, not gated in v1)"
+      ],
+      "latencyMs": 195659,
+      "scenario": "hetzner-invoice-distractor-models"
+    }
+  ],
+  "scorecard": [
+    {
+      "model": "ollama-cloud/kimi-k2.6",
+      "n": 12,
+      "passes": 12,
+      "passRate": 1,
+      "wilson95": [0.7574992425007574, 0.9999999999999998],
+      "passCaretK": 1,
+      "tagHistogram": {
+        "amount-not-captured": 12
+      },
+      "medianLatencyMs": 90895
+    },
+    {
+      "model": "ollama-cloud/glm-5.2",
+      "n": 12,
+      "passes": 12,
+      "passRate": 1,
+      "wilson95": [0.7574992425007574, 0.9999999999999998],
+      "passCaretK": 1,
+      "tagHistogram": {
+        "amount-not-captured": 12
+      },
+      "medianLatencyMs": 64047
+    },
+    {
+      "model": "ollama-cloud/deepseek-v4-pro",
+      "n": 12,
+      "passes": 12,
+      "passRate": 1,
+      "wilson95": [0.7574992425007574, 0.9999999999999998],
+      "passCaretK": 1,
+      "tagHistogram": {
+        "amount-not-captured": 11
+      },
+      "medianLatencyMs": 50962
+    },
+    {
+      "model": "ollama-cloud/glm-5.1",
+      "n": 12,
+      "passes": 12,
+      "passRate": 1,
+      "wilson95": [0.7574992425007574, 0.9999999999999998],
+      "passCaretK": 1,
+      "tagHistogram": {
+        "amount-not-captured": 12
+      },
+      "medianLatencyMs": 81632
+    },
+    {
+      "model": "ollama-cloud/glm-4.7",
+      "n": 12,
+      "passes": 11,
+      "passRate": 0.9166666666666666,
+      "wilson95": [0.6461140782014047, 0.9851352905492264],
+      "passCaretK": 0,
+      "tagHistogram": {
+        "amount-not-captured": 11,
+        "wrong-field-extraction": 1
+      },
+      "medianLatencyMs": 163083.5
+    },
+    {
+      "model": "ollama-cloud/qwen3.5:397b",
+      "n": 12,
+      "passes": 11,
+      "passRate": 0.9166666666666666,
+      "wilson95": [0.6461140782014047, 0.9851352905492264],
+      "passCaretK": 0,
+      "tagHistogram": {
+        "amount-not-captured": 11,
+        "task-incomplete": 1
+      },
+      "medianLatencyMs": 70138.5
+    },
+    {
+      "model": "ollama-cloud/nemotron-3-ultra",
+      "n": 12,
+      "passes": 11,
+      "passRate": 0.9166666666666666,
+      "wilson95": [0.6461140782014047, 0.9851352905492264],
+      "passCaretK": 0,
+      "tagHistogram": {
+        "amount-not-captured": 11,
+        "id-malformed": 1
+      },
+      "medianLatencyMs": 112782.5
+    },
+    {
+      "model": "ollama-cloud/minimax-m2.7",
+      "n": 12,
+      "passes": 11,
+      "passRate": 0.9166666666666666,
+      "wilson95": [0.6461140782014047, 0.9851352905492264],
+      "passCaretK": 0,
+      "tagHistogram": {
+        "amount-not-captured": 11,
+        "task-incomplete": 1
+      },
+      "medianLatencyMs": 103682.5
+    },
+    {
+      "model": "ollama-cloud/gemma4:31b",
+      "n": 12,
+      "passes": 10,
+      "passRate": 0.8333333333333334,
+      "wilson95": [0.5519636426153274, 0.9530358523851776],
+      "passCaretK": 0,
+      "tagHistogram": {
+        "amount-not-captured": 10,
+        "task-incomplete": 2,
+        "false-success": 1
+      },
+      "medianLatencyMs": 60185
+    },
+    {
+      "model": "ollama-cloud/minimax-m3",
+      "n": 12,
+      "passes": 10,
+      "passRate": 0.8333333333333334,
+      "wilson95": [0.5519636426153274, 0.9530358523851776],
+      "passCaretK": 0,
+      "tagHistogram": {
+        "wrong-field-extraction": 2,
+        "amount-not-captured": 10
+      },
+      "medianLatencyMs": 87361.5
+    },
+    {
+      "model": "ollama-cloud/gpt-oss:120b",
+      "n": 12,
+      "passes": 4,
+      "passRate": 0.3333333333333333,
+      "wilson95": [0.13811783989736134, 0.609382412602386],
+      "passCaretK": 0,
+      "tagHistogram": {
+        "amount-not-captured": 9,
+        "id-malformed": 5,
+        "task-incomplete": 2,
+        "wrong-field-extraction": 1
+      },
+      "medianLatencyMs": 61160
+    },
+    {
+      "model": "ollama-cloud/deepseek-v3.2",
+      "n": 12,
+      "passes": 1,
+      "passRate": 0.08333333333333333,
+      "wilson95": [0.014864709450773488, 0.35388592179859524],
+      "passCaretK": 0,
+      "tagHistogram": {
+        "run-timeout": 11,
+        "amount-not-captured": 1
+      },
+      "medianLatencyMs": 302005
+    },
+    {
+      "model": "ollama-cloud/mistral-large-3:675b",
+      "n": 12,
+      "passes": 0,
+      "passRate": 0,
+      "wilson95": [0, 0.2425007574992425],
+      "passCaretK": 0,
+      "tagHistogram": {
+        "task-incomplete": 11,
+        "wrong-field-extraction": 1
+      },
+      "medianLatencyMs": 32207
+    },
+    {
+      "model": "ollama-cloud/gpt-oss:20b",
+      "n": 12,
+      "passes": 0,
+      "passRate": 0,
+      "wilson95": [0, 0.2425007574992425],
+      "passCaretK": 0,
+      "tagHistogram": {
+        "task-incomplete": 12,
+        "id-malformed": 11,
+        "false-success": 1
+      },
+      "medianLatencyMs": 13353.5
+    }
+  ]
+}
