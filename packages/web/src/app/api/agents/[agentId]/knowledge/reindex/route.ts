@@ -9,7 +9,7 @@ import { activeAgents, type AgentPluginConfig } from "@/db/schema";
 import { ingestDirectory, type IngestDeps } from "@/lib/knowledge/ingest";
 import { embedTexts } from "@/lib/knowledge/embeddings";
 import { extractPdfPages } from "@/lib/knowledge/pdf-extract";
-import { DEFAULT_ORG_ID, EMBEDDING_MODEL } from "@/lib/knowledge/constants";
+import { DEFAULT_ORG_ID, EMBEDDING_MODEL, EMBEDDING_DIMENSIONS } from "@/lib/knowledge/constants";
 import { getSetting } from "@/lib/settings";
 import { PROVIDERS } from "@/lib/providers";
 import { deferAuditLog } from "@/lib/audit-deferred";
@@ -131,7 +131,12 @@ export const POST = withAdmin<RouteContext>(async (request, { params }, session)
   }
 
   const deps: IngestDeps = {
-    embed: (texts) => embedTexts(texts, { baseUrl: ollamaBaseUrl, model: EMBEDDING_MODEL }),
+    embed: (texts) =>
+      embedTexts(texts, {
+        baseUrl: ollamaBaseUrl,
+        model: EMBEDDING_MODEL,
+        expectedDim: EMBEDDING_DIMENSIONS,
+      }),
     extractPdf: extractPdfPages,
   };
 

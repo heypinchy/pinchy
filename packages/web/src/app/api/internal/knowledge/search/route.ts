@@ -10,7 +10,7 @@ import { db } from "@/db";
 import { activeAgents, type AgentPluginConfig } from "@/db/schema";
 import { retrieve, type RetrievedChunk } from "@/lib/knowledge/retrieve";
 import { embedTexts } from "@/lib/knowledge/embeddings";
-import { DEFAULT_ORG_ID, EMBEDDING_MODEL } from "@/lib/knowledge/constants";
+import { DEFAULT_ORG_ID, EMBEDDING_MODEL, EMBEDDING_DIMENSIONS } from "@/lib/knowledge/constants";
 import { getSetting } from "@/lib/settings";
 import { PROVIDERS } from "@/lib/providers";
 import { deferAuditLog } from "@/lib/audit-deferred";
@@ -132,7 +132,12 @@ export async function POST(request: NextRequest) {
   let chunks: RetrievedChunk[];
   try {
     chunks = await retrieve(DEFAULT_ORG_ID, allowedPaths, query, {
-      embed: (texts) => embedTexts(texts, { baseUrl: ollamaBaseUrl, model: EMBEDDING_MODEL }),
+      embed: (texts) =>
+        embedTexts(texts, {
+          baseUrl: ollamaBaseUrl,
+          model: EMBEDDING_MODEL,
+          expectedDim: EMBEDDING_DIMENSIONS,
+        }),
     });
   } catch (err) {
     // safeProviderError scrubs emails and caps length — the underlying error

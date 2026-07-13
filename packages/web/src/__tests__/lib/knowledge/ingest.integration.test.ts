@@ -251,3 +251,45 @@ it("recovers a document whose chunks were deleted directly, without crashing or 
   const chunksAfter = await chunksFor(doc.id);
   expect(chunksAfter.length).toBeGreaterThan(0);
 });
+
+// Robustness: an agent's allowed_paths grant can point at a single FILE, not
+// only a directory (pinchy-files allows either). A naive readdir(root) throws
+// ENOTDIR on a file root, which the reindex route would surface as an opaque
+// 500. Ingest must instead treat a file root as a one-file corpus.
+it("accepts a single-file root path (not just a directory) and indexes that one file", async () => {
+  const pdfPath = join(tmpRoot, "solo.pdf");
+  writeFileSync(pdfPath, "fake-pdf-bytes-solo");
+
+  const { deps, extractPdf } = fakeDeps();
+  // Root IS the file, not its parent directory.
+  const result = await ingestDirectory(ORG_ID, pdfPath, deps);
+
+  expect(result).toEqual({ indexed: 1, skipped: 0, removed: 0 });
+  expect(extractPdf).toHaveBeenCalledWith(pdfPath);
+
+  const docs = await db.select().from(kbDocuments).where(eq(kbDocuments.orgId, ORG_ID));
+  expect(docs).toHaveLength(1);
+  expect(docs[0].sourcePath).toBe(pdfPath);
+
+  // Idempotent on a file root too: a second run skips, never re-removes.
+  const second = await ingestDirectory(ORG_ID, pdfPath, deps);
+  expect(second).toEqual({ indexed: 0, skipped: 1, removed: 0 });
+});
+
+it("ignores a single-file root whose extension is not on the allowlist", async () => {
+  const txtPath = join(tmpRoot, "notes.txt");
+  writeFileSync(txtPath, "not a pdf");
+
+  const { deps, extractPdf } = fakeDeps();
+  const result = await ingestDirectory(ORG_ID, txtPath, deps);
+
+  expect(result).toEqual({ indexed: 0, skipped: 0, removed: 0 });
+  expect(extractPdf).not.toHaveBeenCalled();
+  const docs = await db.select().from(kbDocuments).where(eq(kbDocuments.orgId, ORG_ID));
+  expect(docs).toHaveLength(0);
+});
+
+it("returns a zero result for a root path that does not exist, without throwing", async () => {
+  const result = await ingestDirectory(ORG_ID, join(tmpRoot, "does-not-exist"), fakeDeps().deps);
+  expect(result).toEqual({ indexed: 0, skipped: 0, removed: 0 });
+});

@@ -17,6 +17,14 @@ export interface EmbeddingConfig {
   provider?: string;
   /** Only attached as a Bearer token when provider !== "ollama". */
   apiKey?: string;
+  /**
+   * Optional expected vector width. When set, a returned width other than
+   * this throws a clear error naming both expected and actual dims — the KB
+   * pipeline passes `EMBEDDING_DIMENSIONS` (1024) so a wrong model surfaces
+   * here, not as an opaque `vector(1024)` insert failure at Postgres. Unset =
+   * no dimension enforcement (the client stays model-agnostic).
+   */
+  expectedDim?: number;
 }
 
 const DEFAULT_MODEL = "bge-m3";
@@ -62,6 +70,14 @@ export async function embedTexts(texts: string[], cfg: EmbeddingConfig): Promise
   );
   if (!allVectors) {
     throw new Error("Ollama embeddings API returned vectors with inconsistent dimensions");
+  }
+
+  if (cfg.expectedDim != null && dim !== cfg.expectedDim) {
+    throw new Error(
+      `Ollama embeddings API returned ${dim}-dim vectors but expected ${cfg.expectedDim} ` +
+        `(model "${cfg.model ?? DEFAULT_MODEL}" is not the configured embedding model, ` +
+        `or its dimensions differ from the kb_chunks.embedding column width)`
+    );
   }
 
   return embeddings as number[][];

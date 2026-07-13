@@ -19,7 +19,7 @@
  */
 import { createHash } from "node:crypto";
 import { readdir, readFile, stat } from "node:fs/promises";
-import { join, sep } from "node:path";
+import { basename, join, sep } from "node:path";
 
 import { and, count, eq } from "drizzle-orm";
 
@@ -62,29 +62,74 @@ export interface IngestResult {
   removed: number;
 }
 
-/** Recursively lists ingest-eligible files under `rootDir`, applying the allowlist + skip-hidden + A/B denylist (exclude-globs.ts). */
-async function discoverFiles(
-  rootDir: string,
-  allowedExtensions: readonly string[]
-): Promise<string[]> {
-  const entries = await readdir(rootDir, { withFileTypes: true });
+/** Applies the per-file eligibility rules (skip-hidden + A/B denylist + extension allowlist) to a basename. */
+function isEligibleFile(name: string, allowedExtensions: readonly string[]): boolean {
+  if (isHiddenSegment(name)) return false;
+  if (isDenylistedFileName(name)) return false;
+  return isAllowedExtension(name, allowedExtensions);
+}
+
+/** Recursively lists ingest-eligible files under a DIRECTORY, applying the allowlist + skip-hidden + A/B denylist (exclude-globs.ts). */
+async function walkDir(dir: string, allowedExtensions: readonly string[]): Promise<string[]> {
+  const entries = await readdir(dir, { withFileTypes: true });
   const files: string[] = [];
 
   for (const entry of entries) {
     if (isHiddenSegment(entry.name)) continue;
-    const absPath = join(rootDir, entry.name);
+    const absPath = join(dir, entry.name);
 
     if (entry.isDirectory()) {
       if (isDenylistedDirName(entry.name)) continue;
-      files.push(...(await discoverFiles(absPath, allowedExtensions)));
+      files.push(...(await walkDir(absPath, allowedExtensions)));
     } else if (entry.isFile()) {
-      if (isDenylistedFileName(entry.name)) continue;
-      if (!isAllowedExtension(entry.name, allowedExtensions)) continue;
-      files.push(absPath);
+      if (isEligibleFile(entry.name, allowedExtensions)) files.push(absPath);
     }
   }
 
   return files;
+}
+
+/**
+ * Lists ingest-eligible files for a root that may be a directory OR a single
+ * file. An `allowed_paths` grant (pinchy-files) can point at either; a naive
+ * `readdir(root)` throws ENOTDIR on a file root (surfacing as an opaque 500
+ * from the reindex route), so we stat the root first: a directory is walked
+ * recursively, a file is treated as a one-file corpus (subject to the same
+ * eligibility rules), and a missing/other root yields nothing rather than
+ * throwing.
+ */
+async function discoverFiles(
+  rootDir: string,
+  allowedExtensions: readonly string[]
+): Promise<string[]> {
+  let rootStat;
+  try {
+    rootStat = await stat(rootDir);
+  } catch {
+    // Missing or unreadable root: nothing to ingest (and nothing to remove —
+    // see the removal pass, which is scoped to this same root).
+    return [];
+  }
+
+  if (rootStat.isFile()) {
+    return isEligibleFile(basename(rootDir), allowedExtensions) ? [rootDir] : [];
+  }
+  if (!rootStat.isDirectory()) return [];
+
+  return walkDir(rootDir, allowedExtensions);
+}
+
+/**
+ * Is `sourcePath` within this ingest root? Handles both root shapes with one
+ * predicate: an exact match (file root, or the root's own path) OR a
+ * separator-bounded descendant (directory root — "/data/foo" never matches
+ * "/data/foobar/x.pdf"). Used to scope the removal pass so ingesting one root
+ * never deletes documents indexed from a different root for the same org.
+ */
+function isUnderRoot(sourcePath: string, rootDir: string): boolean {
+  if (sourcePath === rootDir) return true;
+  const rootPrefix = rootDir.endsWith(sep) ? rootDir : rootDir + sep;
+  return sourcePath.startsWith(rootPrefix);
 }
 
 /** Chunks `pages`, embeds every chunk, and inserts the resulting kb_chunks rows for `documentId`. No-op if chunking yields nothing (e.g. an all-whitespace PDF). */
@@ -188,16 +233,15 @@ export async function ingestDirectory(
 
   // Removal pass: any previously-indexed document under this root whose
   // source file is no longer among the discovered files. Scoped to rootDir
-  // (with a path-separator boundary, so "/data/foo" never matches
-  // "/data/foobar/x.pdf") so ingesting one directory never touches documents
-  // indexed from a different root for the same org.
+  // via isUnderRoot (separator-bounded for a directory root, exact-match for
+  // a file root) so ingesting one root never touches documents indexed from a
+  // different root for the same org.
   const discoveredSet = new Set(discovered);
-  const rootPrefix = rootDir.endsWith(sep) ? rootDir : rootDir + sep;
   const existingForOrg = await db.select().from(kbDocuments).where(eq(kbDocuments.orgId, orgId));
 
   let removed = 0;
   for (const doc of existingForOrg) {
-    if (!doc.sourcePath.startsWith(rootPrefix)) continue;
+    if (!isUnderRoot(doc.sourcePath, rootDir)) continue;
     if (discoveredSet.has(doc.sourcePath)) continue;
     await db.delete(kbDocuments).where(eq(kbDocuments.id, doc.id));
     removed++;

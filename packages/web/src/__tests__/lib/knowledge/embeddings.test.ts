@@ -112,4 +112,28 @@ describe("embedTexts", () => {
       /dimension/i
     );
   });
+
+  it("throws a clear error when expectedDim is set and the returned width does not match", async () => {
+    // The KB pipeline pins bge-m3's 1024 dims; a misconfigured model (e.g. a
+    // 768-dim embedder) otherwise only surfaces as an opaque vector(1024)
+    // insert failure at the DB. expectedDim turns that into a clear,
+    // source-of-truth error naming both the expected and actual width.
+    vi.mocked(fetch).mockResolvedValue(
+      new Response(JSON.stringify({ embeddings: [[1, 2, 3]] }), { status: 200 })
+    );
+
+    await expect(
+      embedTexts(["hallo"], { baseUrl: "http://ollama:11434", expectedDim: 1024 })
+    ).rejects.toThrow(/expected 1024.*got 3|1024/i);
+  });
+
+  it("does not enforce a dimension when expectedDim is unset (client stays model-agnostic)", async () => {
+    vi.mocked(fetch).mockResolvedValue(
+      new Response(JSON.stringify({ embeddings: [[1, 2, 3]] }), { status: 200 })
+    );
+
+    await expect(embedTexts(["hallo"], { baseUrl: "http://ollama:11434" })).resolves.toEqual([
+      [1, 2, 3],
+    ]);
+  });
 });

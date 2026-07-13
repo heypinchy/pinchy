@@ -19,3 +19,13 @@ export const DEFAULT_ORG_ID = "default";
 
 /** Fixed embedding model for the knowledge base (bge-m3, 1024-dim). */
 export const EMBEDDING_MODEL = "bge-m3";
+
+/**
+ * bge-m3's output width. The `kb_chunks.embedding` column is `vector(1024)`
+ * (see db/vector.ts), so a model that returns any other width can only be
+ * inserted as an opaque Postgres dimension-mismatch error. Callers pass this
+ * as `embedTexts(..., { expectedDim: EMBEDDING_DIMENSIONS })` so a
+ * misconfigured embedder fails with a clear, source-of-truth message at the
+ * embedding boundary instead. Keep in lockstep with `vector()`'s `vector(N)`.
+ */
+export const EMBEDDING_DIMENSIONS = 1024;
