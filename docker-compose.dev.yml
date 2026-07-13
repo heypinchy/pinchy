@@ -15,6 +15,15 @@ services:
       # ../../../../plugins/<name>/ relative to web/src/lib/openclaw-config/.
       # Mount read-only so the dev server can import them without a rebuild.
       - ./packages/plugins:/app/packages/plugins:ro
+      # Re-declare /data WRITABLE for dev, overriding the base compose's
+      # `pinchy-data:/data:ro` (Compose merges service volumes by target, so
+      # this same-target entry wins). Required because the sample-docs bind
+      # below nests UNDER /data: Docker must create the `/data/sample-docs`
+      # mountpoint inside the /data volume, which a read-only parent mount
+      # forbids ("read-only file system" — fatal under Linux runc in CI, though
+      # tolerated by macOS/OrbStack locally). Production keeps /data read-only
+      # (it has no nested bind); only dev needs it writable.
+      - pinchy-data:/data
       # Dev KB corpus, read-only, at the SAME /data/sample-docs path the
       # openclaw service mounts it — so the knowledge-base ingest pipeline and
       # the workspace-file serve route in web resolve the same paths an agent's
