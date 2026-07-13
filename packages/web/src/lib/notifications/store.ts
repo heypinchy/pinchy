@@ -30,9 +30,15 @@ export interface NotifyInput {
  *
  * An empty `recipientUserIds` is a caller bug — a notification nobody can see —
  * so we throw *before* any insert rather than persist an orphan notification.
+ *
+ * Repeated recipient ids are deduplicated: a caller deriving the same user from
+ * two overlapping sources (e.g. "agent admins" ∪ "owner") must get one recipient
+ * row, not a `(userId, notificationId)` PK violation that rolls the whole
+ * notification back.
  */
 export async function notify(input: NotifyInput): Promise<string> {
-  if (input.recipientUserIds.length === 0) {
+  const recipientUserIds = [...new Set(input.recipientUserIds)];
+  if (recipientUserIds.length === 0) {
     throw new Error("notify: at least one recipient is required");
   }
 
@@ -51,7 +57,7 @@ export async function notify(input: NotifyInput): Promise<string> {
       .returning({ id: notifications.id });
 
     await tx.insert(notificationRecipients).values(
-      input.recipientUserIds.map((userId) => ({
+      recipientUserIds.map((userId) => ({
         userId,
         notificationId: row.id,
       }))

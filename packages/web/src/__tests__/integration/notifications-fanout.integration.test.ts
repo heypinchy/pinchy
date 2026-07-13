@@ -107,6 +107,27 @@ describe("notification fan-out — notify()", () => {
     expect(row.errorMessage).toBe("ECONNREFUSED");
   });
 
+  it("deduplicates repeated recipient ids instead of losing the notification", async () => {
+    const agent = await seedAgent();
+    const u = await seedUser();
+
+    // A caller (the future dispatcher) may derive the same user from two
+    // overlapping sources (e.g. "agent admins" ∪ "owner"). A duplicate must not
+    // trip the (userId, notificationId) PK and roll the whole notification back
+    // — the notification is created and the user gets exactly one recipient row.
+    const id = await notify({
+      agentId: agent.id,
+      title: "t",
+      content: "c",
+      status: "success",
+      recipientUserIds: [u.id, u.id],
+    });
+
+    const recips = await recipientsOf(id);
+    expect(recips).toHaveLength(1);
+    expect(recips[0].userId).toBe(u.id);
+  });
+
   it("cascades recipient rows when the notification is deleted", async () => {
     const agent = await seedAgent();
     const u = await seedUser();
