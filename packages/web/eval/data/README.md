@@ -48,6 +48,7 @@ Target per scenario: 14 models × 12 runs = 168.
 | rejected   |        108 |      9 |            4 | partial (8-model cohort + 1); re-run pending                                                    |
 | duplicate  |    168/168 |     14 |         full | complete (deepseek-v4-pro 9/12 leads; task-perfect models mostly duplicate blindly)             |
 | distractor |    168/168 |     14 |      157/168 | complete (selection is easy for capable models, 92–100%; weak models drop — gpt-oss/mistral 0%) |
+| conflict   |    168/168 |     14 |      150/168 | complete (most capable models resist 12/12; glm-5.1 8/12 & nemotron 1/11 grab the wrong number) |
 
 \* Trajectory persistence was added partway through, so the earliest runs
 (happy's original 8 models, most of rejected) carry only `RunResult`s, not the
