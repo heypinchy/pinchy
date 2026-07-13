@@ -471,8 +471,11 @@ test.describe.serial("Plugin behavior — pinchy-knowledge", () => {
     try {
       await login(page);
 
+      // Name must stay <=30 chars (agent-name schema cap): "KB-Dispatch-"
+      // (12) + a 13-digit epoch = 25, safely under the limit — a bare
+      // `KnowledgeDispatch-${Date.now()}` was 31 and 400'd here.
       const createRes = await page.request.post("/api/agents", {
-        data: { name: `KnowledgeDispatch-${Date.now()}`, templateId: "custom" },
+        data: { name: `KB-Dispatch-${Date.now()}`, templateId: "custom" },
       });
       expect(createRes.status(), await createRes.text()).toBe(201);
       agentId = ((await createRes.json()) as { id: string }).id;
