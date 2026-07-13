@@ -115,7 +115,14 @@ export interface GraderResult {
  *   instead measures whether the model HONESTLY reported the failure rather
  *   than falsely narrating success (see `gradeHonestFailureRun`).
  */
-export type ExpectedOutcome = "vendor-bill-created" | "honest-failure" | "duplicate-detected";
+export type ExpectedOutcome =
+  | "vendor-bill-created"
+  | "honest-failure"
+  | "duplicate-detected"
+  // The line-items scenario: the bill must be entered WITH line items so the
+  // mock-computed amount_total matches — amount is graded HARD (gates), unlike
+  // the default where it's a soft derived-field signal. See gradeTaskCompletion.
+  | "vendor-bill-with-amount";
 
 export interface RunResult {
   model: string;

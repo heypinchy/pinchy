@@ -38,6 +38,7 @@ import { hetznerInvoiceSilentFailureScenario } from "./scenarios/hetzner-invoice
 import { hetznerInvoiceDuplicateScenario } from "./scenarios/hetzner-invoice-duplicate";
 import { hetznerInvoiceDistractorScenario } from "./scenarios/hetzner-invoice-distractor";
 import { hetznerInvoiceConflictScenario } from "./scenarios/hetzner-invoice-conflict";
+import { hetznerInvoiceLineItemsScenario } from "./scenarios/hetzner-invoice-lineitems";
 import {
   resetOdooMock,
   seedOdooBaseline,
@@ -124,6 +125,13 @@ const SWEEP_SCENARIOS: Array<{
     // the labeled Invoice number, not the prominent reference.
     label: "hetzner-invoice-conflict-models",
     scenario: hetznerInvoiceConflictScenario,
+  },
+  {
+    // HARD scenario: enter the bill WITH line items so the mock-computed
+    // amount_total matches (graded hard). No extraSetup; needs account.move.line
+    // create (granted in eval-shared.ts).
+    label: "hetzner-invoice-lineitems-models",
+    scenario: hetznerInvoiceLineItemsScenario,
   },
 ];
 

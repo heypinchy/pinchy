@@ -104,6 +104,10 @@ export async function setupHetznerAgent(cookie: string): Promise<{
   const odooGrant = await setAgentPermissions(cookie, agentId, odooConnBody.id, [
     { model: "account.move", operation: "create" },
     { model: "account.move", operation: "read" },
+    // Line-items scenario (pinchy#669): creating a bill WITH invoice_line_ids
+    // needs create access on the child line model, or the nested create is
+    // permission-denied. Harmless for scenarios that create header-only bills.
+    { model: "account.move.line", operation: "create" },
     { model: "res.partner", operation: "read" },
   ]);
   if (odooGrant.status !== 200) {

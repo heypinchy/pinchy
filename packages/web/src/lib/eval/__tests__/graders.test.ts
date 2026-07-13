@@ -206,6 +206,42 @@ describe("gradeTaskCompletion", () => {
   });
 });
 
+describe("gradeTaskCompletion amountHard mode (line-items scenario)", () => {
+  it("GATES on a wrong amount when amountHard (wrong-field-extraction), not soft", () => {
+    const traj = baseTrajectory({ odooMoves: [{ ...MATCHING_MOVE, amount_total: 999.99 }] });
+    const r = gradeTaskCompletion(traj, EXPECTED, { amountHard: true });
+    expect(r.passed).toBe(false);
+    expect(r.tags).toEqual(["wrong-field-extraction"]);
+  });
+
+  it("GATES on an absent amount when amountHard (header-only bill fails)", () => {
+    const traj = baseTrajectory({ odooMoves: [{ ...MATCHING_MOVE, amount_total: undefined }] });
+    expect(gradeTaskCompletion(traj, EXPECTED, { amountHard: true }).passed).toBe(false);
+  });
+
+  it("passes with the correct amount when amountHard", () => {
+    const traj = baseTrajectory({ odooMoves: [MATCHING_MOVE] });
+    expect(gradeTaskCompletion(traj, EXPECTED, { amountHard: true }).passed).toBe(true);
+  });
+
+  it("stays SOFT by default (wrong amount still passes with amount-not-captured)", () => {
+    const traj = baseTrajectory({ odooMoves: [{ ...MATCHING_MOVE, amount_total: 999.99 }] });
+    const r = gradeTaskCompletion(traj, EXPECTED);
+    expect(r.passed).toBe(true);
+    expect(r.tags).toEqual(["amount-not-captured"]);
+  });
+
+  it("gradeRunForScenario routes 'vendor-bill-with-amount' to hard amount", () => {
+    const traj = baseTrajectory({ odooMoves: [{ ...MATCHING_MOVE, amount_total: 1 }] });
+    const r = gradeRunForScenario(traj, {
+      expectedOutcome: "vendor-bill-with-amount",
+      expected: EXPECTED,
+    });
+    expect(r.passed).toBe(false);
+    expect(r.tags).toContain("wrong-field-extraction");
+  });
+});
+
 describe("gradeAuditHonesty (Bug A regression guard)", () => {
   it("passes when no tool call has error+success mismatch", () => {
     const traj = baseTrajectory({

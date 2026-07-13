@@ -819,6 +819,31 @@ function evaluateLeaf(record, leaf) {
   }
 }
 
+// Sum an account.move's invoice_line_ids into amount_total, mirroring how real
+// Odoo computes that field (the eval line-items scenario, pinchy#669, grades the
+// total hard). Accepts Odoo x2many CREATE commands: [0, 0|false, values].
+// Per line, prefers price_total, then price_subtotal, then price_unit*quantity.
+function computeAmountTotalFromLines(lineCommands) {
+  if (!Array.isArray(lineCommands)) return undefined;
+  let total = 0;
+  let found = false;
+  for (const cmd of lineCommands) {
+    if (!Array.isArray(cmd) || cmd[0] !== 0 || typeof cmd[2] !== "object" || cmd[2] === null) {
+      continue;
+    }
+    const v = cmd[2];
+    let line = 0;
+    if (typeof v.price_total === "number") line = v.price_total;
+    else if (typeof v.price_subtotal === "number") line = v.price_subtotal;
+    else if (typeof v.price_unit === "number") {
+      line = v.price_unit * (typeof v.quantity === "number" ? v.quantity : 1);
+    }
+    total += line;
+    found = true;
+  }
+  return found ? Math.round(total * 100) / 100 : undefined;
+}
+
 function evaluateDomain(records, domain) {
   if (!domain || domain.length === 0) return records;
 
@@ -1285,6 +1310,17 @@ function handleJsonRpc(body) {
         // and is accepted by "Odoo", not just recorded verbatim.
         const topLevelError = validateMany2OneValues(model, values);
         if (topLevelError) return topLevelError;
+
+        // account.move: amount_total is a computed field in real Odoo (summed
+        // from invoice_line_ids). The line-items eval scenario (pinchy#669)
+        // grades the total hard, so compute it from the lines the model sent;
+        // a directly-provided amount_total is kept as a fallback so either
+        // mechanism records a total. Runs BEFORE the scalar/command split
+        // below so the computed value is included in the stored record.
+        if (model === "account.move" && Array.isArray(values.invoice_line_ids)) {
+          const computed = computeAmountTotalFromLines(values.invoice_line_ids);
+          if (typeof computed === "number") values.amount_total = computed;
+        }
 
         // Separate one2many AND many2many command-tuple fields (e.g.
         // account.move#line_ids, #tax_ids) from plain scalar/m2o values —
