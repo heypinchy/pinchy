@@ -24,6 +24,7 @@ import { hetznerInvoiceRejectedScenario } from "./scenarios/hetzner-invoice-reje
 import { hetznerInvoiceSilentFailureScenario } from "./scenarios/hetzner-invoice-silent-failure";
 import { hetznerInvoiceDuplicateScenario } from "./scenarios/hetzner-invoice-duplicate";
 import { hetznerInvoiceDistractorScenario } from "./scenarios/hetzner-invoice-distractor";
+import { hetznerInvoiceConflictScenario } from "./scenarios/hetzner-invoice-conflict";
 
 const SCENARIO_BY_LABEL: Record<string, HetznerInvoiceScenario> = {
   "hetzner-invoice-models": hetznerInvoiceScenario,
@@ -31,6 +32,7 @@ const SCENARIO_BY_LABEL: Record<string, HetznerInvoiceScenario> = {
   "hetzner-invoice-silent-failure-models": hetznerInvoiceSilentFailureScenario,
   "hetzner-invoice-duplicate-models": hetznerInvoiceDuplicateScenario,
   "hetzner-invoice-distractor-models": hetznerInvoiceDistractorScenario,
+  "hetzner-invoice-conflict-models": hetznerInvoiceConflictScenario,
 };
 
 async function main(): Promise<void> {

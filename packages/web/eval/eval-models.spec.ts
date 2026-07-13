@@ -37,6 +37,7 @@ import { hetznerInvoiceRejectedScenario } from "./scenarios/hetzner-invoice-reje
 import { hetznerInvoiceSilentFailureScenario } from "./scenarios/hetzner-invoice-silent-failure";
 import { hetznerInvoiceDuplicateScenario } from "./scenarios/hetzner-invoice-duplicate";
 import { hetznerInvoiceDistractorScenario } from "./scenarios/hetzner-invoice-distractor";
+import { hetznerInvoiceConflictScenario } from "./scenarios/hetzner-invoice-conflict";
 import {
   resetOdooMock,
   seedOdooBaseline,
@@ -116,6 +117,13 @@ const SWEEP_SCENARIOS: Array<{
     // Correct = file the real invoice, not the reminder's number.
     label: "hetzner-invoice-distractor-models",
     scenario: hetznerInvoiceDistractorScenario,
+  },
+  {
+    // HARD scenario: one email, but a prominent WRONG invoice number (subject +
+    // reference line) competes with the labeled correct one. Correct = extract
+    // the labeled Invoice number, not the prominent reference.
+    label: "hetzner-invoice-conflict-models",
+    scenario: hetznerInvoiceConflictScenario,
   },
 ];
 
