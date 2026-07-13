@@ -844,6 +844,55 @@ function computeAmountTotalFromLines(lineCommands) {
   return found ? Math.round(total * 100) / 100 : undefined;
 }
 
+// Sum a single account.move.line's amount, preferring price_total, then
+// price_subtotal, then price_unit * quantity.
+function lineAmount(ln) {
+  if (typeof ln.price_total === "number") return ln.price_total;
+  if (typeof ln.price_subtotal === "number") return ln.price_subtotal;
+  if (typeof ln.price_unit === "number") {
+    return ln.price_unit * (typeof ln.quantity === "number" ? ln.quantity : 1);
+  }
+  return 0;
+}
+
+// Does an account.move.line's `move_id` link to move `id`? Accepts a bare
+// numeric id or an Odoo [id, name] many2one tuple.
+function moveLinkMatches(moveId, id) {
+  if (typeof moveId === "number") return moveId === id;
+  if (Array.isArray(moveId) && typeof moveId[0] === "number") return moveId[0] === id;
+  return false;
+}
+
+// Enrich account.move records with amount_total computed from their child
+// account.move.line records (Odoo computes amount_total; models record bills
+// two-step — create the move, then create linked lines — so the total only
+// exists once the lines are summed). A move that already carries an
+// amount_total (nested invoice_line_ids on create, or a directly-set value) and
+// has no separate lines keeps its value.
+function withComputedMoveAmounts(moves, store) {
+  const lines = store.get("account.move.line") || [];
+  // Link lines to moves by move_id where it resolves to a numeric id.
+  const linked = new Set();
+  for (const ln of lines) {
+    if (moves.some((mv) => moveLinkMatches(ln.move_id, mv.id))) linked.add(ln);
+  }
+  // Lines whose move_id didn't resolve (e.g. an opaque pinchy_ref the mock
+  // can't map to a numeric id). In this single-invoice scenario every line
+  // belongs to the one bill, so attribute these orphans to the sole in_invoice
+  // move rather than dropping the total.
+  const orphans = lines.filter((ln) => !linked.has(ln));
+  const inInvoiceMoves = moves.filter((mv) => mv.move_type === "in_invoice");
+  return moves.map((move) => {
+    let own = lines.filter((ln) => moveLinkMatches(ln.move_id, move.id));
+    if (inInvoiceMoves.length === 1 && move.move_type === "in_invoice") {
+      own = own.concat(orphans);
+    }
+    if (own.length === 0) return move;
+    const total = own.reduce((sum, ln) => sum + lineAmount(ln), 0);
+    return { ...move, amount_total: Math.round(total * 100) / 100 };
+  });
+}
+
 function evaluateDomain(records, domain) {
   if (!domain || domain.length === 0) return records;
 
@@ -1619,7 +1668,11 @@ const controlServer = http.createServer(async (req, res) => {
       sendJson(res, 400, { error: "Need ?model= parameter" });
       return;
     }
-    sendJson(res, 200, store.get(model) || []);
+    let records = store.get(model) || [];
+    if (model === "account.move") {
+      records = withComputedMoveAmounts(records, store);
+    }
+    sendJson(res, 200, records);
     return;
   }
 
