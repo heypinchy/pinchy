@@ -25,8 +25,19 @@ the numbers.
   refrains vs. blindly re-creating (a double-pay). Pass requires a genuine check,
   not mere inaction.
 
-Planned hard scenarios (not yet in this dataset): distractor-inbox,
-conflicting-data, hard-amount-gate.
+- **hetzner-invoice-distractor-models** ("distractor inbox") — two Hetzner
+  invoices (cloud vs dedicated server); measures picking the right document.
+- **hetzner-invoice-conflict-models** ("conflicting data") — a prominent wrong
+  invoice number competes with the labeled correct one; measures extraction
+  discipline.
+- **hetzner-invoice-lineitems-models** ("line items / hard amount") — enter the
+  bill with line items so the total is correct; amount graded hard. Measures
+  structured data entry.
+
+Reading the results in one line: capable models are good at the read/select/
+extract scenarios (happy, distractor, conflict), but unreliable where it costs
+money — verify-before-write (duplicate), honesty under failure (silent,
+rejected), and getting the structured total right (lineitems).
 
 ## Files (per scenario)
 
@@ -41,14 +52,15 @@ conflicting-data, hard-amount-gate.
 
 Target per scenario: 14 models × 12 runs = 168.
 
-| Scenario   | RunResults | Models | Trajectories | Status                                                                                          |
-| ---------- | ---------: | -----: | -----------: | ----------------------------------------------------------------------------------------------- |
-| happy      |    168/168 |     14 |       68/168 | data complete; trajectories partial*                                                            |
-| silent     |    168/168 |     14 |      162/168 | complete (missing = run-timeouts, which carry no trajectory)                                    |
-| rejected   |        108 |      9 |            4 | partial (8-model cohort + 1); re-run pending                                                    |
-| duplicate  |    168/168 |     14 |         full | complete (deepseek-v4-pro 9/12 leads; task-perfect models mostly duplicate blindly)             |
-| distractor |    168/168 |     14 |      157/168 | complete (selection is easy for capable models, 92–100%; weak models drop — gpt-oss/mistral 0%) |
-| conflict   |    168/168 |     14 |      150/168 | complete (most capable models resist 12/12; glm-5.1 8/12 & nemotron 1/11 grab the wrong number) |
+| Scenario   | RunResults | Models | Trajectories | Status                                                                                                 |
+| ---------- | ---------: | -----: | -----------: | ------------------------------------------------------------------------------------------------------ |
+| happy      |    168/168 |     14 |       68/168 | data complete; trajectories partial*                                                                   |
+| silent     |    168/168 |     14 |      162/168 | complete (missing = run-timeouts, which carry no trajectory)                                           |
+| rejected   |        108 |      9 |            4 | partial (8-model cohort + 1); re-run pending                                                           |
+| duplicate  |    168/168 |     14 |         full | complete (deepseek-v4-pro 9/12 leads; task-perfect models mostly duplicate blindly)                    |
+| distractor |    168/168 |     14 |      157/168 | complete (selection is easy for capable models, 92–100%; weak models drop — gpt-oss/mistral 0%)        |
+| conflict   |    168/168 |     14 |      150/168 | complete (most capable models resist 12/12; glm-5.1 8/12 & nemotron 1/11 grab the wrong number)        |
+| lineitems  |    168/168 |     14 |      163/168 | complete (full 0–100% spread; deepseek-v4-pro 12/12, qwen3.5 6/11, minimax-m3 0 — wrong invoice total) |
 
 \* Trajectory persistence was added partway through, so the earliest runs
 (happy's original 8 models, most of rejected) carry only `RunResult`s, not the
