@@ -35,6 +35,8 @@
 
 **Gate:** do not start Phase 2 until the `verifyApiKey` signature and the session-resolution behavior are known — Task 2 depends on both.
 
+**✅ Findings applied (spike done, independently verified — see design §7.1):** SHA-256 hashing with **no custom-hash hook** (pepper formally dropped); `enableSessionForAPIKeys` **defaults to `false`** (D1 holds); `verifyApiKey({ body: { key } })` returns `{ valid, error, key }` where `key` is `Omit<ApiKey,"key">` and the **owner is `key.referenceId`, NOT `userId`**; `key.permissions` is `Record<resource, action[]>|null`; plugin **default rate limit is 10 req/24h per key** (must be disabled); `createApiKey` must be called with **no `headers`/`request`** (permissions are server-only) and `expiresIn` is in **seconds**. These are folded into Tasks 1.1, 2.1, and 5.1 below.
+
 ---
 
 ## Phase 1 — Schema & audit foundation
@@ -57,7 +59,10 @@ import { apiKey } from "@better-auth/api-key";
   plugins: [
     admin({ defaultRole: "member" }),
     apiKey({
-      // options finalized from Task 0.1 — e.g. enableSessionForAPIKeys: false, custom hash
+      enableSessionForAPIKeys: false, // D1 security: keys must NOT resolve to sessions (default already false; set explicitly)
+      defaultPrefix: "pinchy_",        // one-time key format
+      rateLimit: { enabled: false },   // Task 0.1: plugin default is 10 req/24h PER KEY — would throttle the API; disable it
+      // NO custom hasher — the plugin exposes no injection hook; SHA-256 is fixed and the pepper is dropped (design §7.1)
     }),
   ],
 ```
@@ -139,10 +144,10 @@ export function withApiKey<C = unknown>(required: ApiKeyScope[], handler: ApiKey
     if (!key) return unauthorized();
     const res = await auth.api.verifyApiKey({ body: { key } }); // shape per Task 0.1
     if (!res?.valid || !res.key) return unauthorized();
-    const scopes = extractScopes(res.key); // maps plugin permissions → ApiKeyScope[]
+    const scopes = extractScopes(res.key.permissions); // permissions is Record<resource, action[]>|null (e.g. { agents: ["read","write"] }); flatten to ApiKeyScope[] (["agents:read","agents:write"]); null → []
     if (!required.every((s) => scopes.includes(s))) return forbidden();
     return handler(req, ctx, {
-      keyId: res.key.id, name: res.key.name ?? "", scopes, issuerUserId: res.key.userId,
+      keyId: res.key.id, name: res.key.name ?? "", scopes, issuerUserId: res.key.referenceId, // Task 0.1: owner is `referenceId`, NOT `userId`
     });
   };
 }
@@ -251,7 +256,7 @@ Same file. Guard `agent.isPersonal` → 400 (mirror the session DELETE). `await 
 ### Task 5.1: `POST /api/settings/api-keys` — issue a key (one-time plaintext)
 **Files:** Create `packages/web/src/app/api/settings/api-keys/route.ts`; `packages/web/src/lib/schemas/api-keys.ts` (`createApiKeySchema`: `{ name: string; scopes: ApiKeyScope[]; expiresInDays?: number }`); test `__tests__/api/api-keys-create.test.ts`.
 
-**Behavior:** `withAdmin` → `parseRequestBody(createApiKeySchema)` → `auth.api.createApiKey({ body: { name, permissions: mapScopes(scopes), expiresIn, prefix: "pinchy_" } })` → return the plaintext key **once** `{ id, key, name, scopes }`. Audit `api_key.created` with `{ id, name, scopes, expiresAt }` (no plaintext key in audit). Test: 201 + plaintext returned + audit asserted; non-admin → 403.
+**Behavior:** `withAdmin` → `parseRequestBody(createApiKeySchema)` → `auth.api.createApiKey({ body: { name, permissions: mapScopes(scopes), expiresIn: expiresInDays ? expiresInDays * 86400 : undefined } })` **(no `headers`/`request` in the call — `permissions` is a server-only prop; passing headers throws `SERVER_ONLY_PROPERTY`, Task 0.1; `prefix` comes from the global `defaultPrefix: "pinchy_"` set in Task 1.1)** → return the plaintext key **once** `{ id, key, name, scopes }` (the plugin returns the plaintext in the response `key` field). Note `expiresIn` is in **seconds** while the schema takes `expiresInDays`. Audit `api_key.created` with `{ id, name, scopes, expiresAt }` (no plaintext key in audit). Test: 201 + plaintext returned + audit asserted; non-admin → 403.
 
 **Commit:** `feat: issue API keys via admin endpoint (#572)`
 
