@@ -138,6 +138,30 @@ describe("dispatchEmails — fan-out lifecycle", () => {
     expect(recips.map((r) => r.userId)).toEqual(workflow.recipientUserIds);
   });
 
+  it("finalizes no_action and still notifies when the run reports nothing to do", async () => {
+    const workflow = await workflowForDispatch();
+    const noActionRun: RunAgent = async () => ({
+      status: "no_action",
+      title: "Nothing to file",
+      content: "No matching invoices in this batch.",
+    });
+
+    const summary = await dispatchEmails({ workflow, emails: [email()], runAgent: noActionRun });
+
+    expect(summary).toMatchObject({ claimed: 1, succeeded: 1, failed: 0 });
+
+    // no_action is a terminal, successful outcome: the ledger records it (so a
+    // resync never re-runs it) and the feed still gets a "checked, nothing to do"
+    // entry — the run owns the title/content, so it is never empty noise.
+    const row = await ledgerRow(workflow.id, "msg-1");
+    expect(row.status).toBe("no_action");
+    expect(row.finalizedAt).not.toBeNull();
+
+    const [note] = await db.select().from(notifications).where(eq(notifications.sourceId, row.id));
+    expect(note.status).toBe("success");
+    expect(note.title).toBe("Nothing to file");
+  });
+
   it("skips a non-matching email without claiming or running it", async () => {
     const workflow = await workflowForDispatch();
     let ran = 0;
@@ -238,5 +262,39 @@ describe("dispatchEmails — run failure", () => {
     expect(summary).toMatchObject({ claimed: 2, succeeded: 1, failed: 1 });
     expect((await ledgerRow(workflow.id, "bad")).status).toBe("failed");
     expect((await ledgerRow(workflow.id, "good")).status).toBe("done");
+  });
+});
+
+describe("dispatchEmails — delivery failure", () => {
+  it("keeps a claimed email recoverable (processing) and does not abort the batch when notify fails", async () => {
+    // A recipient id that is not a real user makes notify() fail on the FK when
+    // it fans out — a realistic transient/misconfig delivery failure. The guard
+    // above only rejects an *empty* recipient list, so a single ghost id gets
+    // past it and reaches the insert.
+    const workflow = await workflowForDispatch({ recipientUserIds: ["ghost-user-does-not-exist"] });
+
+    // Two matching emails: if the first email's delivery failure aborted the
+    // loop, the second would never be claimed. It must not.
+    const summary = await dispatchEmails({
+      workflow,
+      emails: [email({ providerMessageId: "a" }), email({ providerMessageId: "b" })],
+      runAgent: doneRun,
+    });
+
+    // Both emails were attempted; neither counts as succeeded, both deferred.
+    expect(summary).toMatchObject({ claimed: 2, succeeded: 0, failed: 0, deferred: 2 });
+
+    // Crucial: notify runs BEFORE finalize, so a notify failure leaves the row
+    // in `processing` — recoverable by the reconciliation sweep — rather than a
+    // `done` row with no notification, which no sweep could ever find again.
+    expect((await ledgerRow(workflow.id, "a")).status).toBe("processing");
+    expect((await ledgerRow(workflow.id, "b")).status).toBe("processing");
+
+    // notify's transaction rolled back, so no orphan notification leaked.
+    const notes = await db
+      .select()
+      .from(notifications)
+      .where(eq(notifications.agentId, workflow.agentId));
+    expect(notes).toHaveLength(0);
   });
 });

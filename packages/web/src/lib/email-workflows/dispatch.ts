@@ -53,15 +53,34 @@ export interface DispatchSummary {
   claimed: number;
   succeeded: number;
   failed: number;
+  /**
+   * Claimed emails whose delivery (notify) or finalize threw. Their ledger row
+   * is intentionally left `processing` for the reconciliation sweep to retry —
+   * see the ordering note below. Distinct from `failed`, which is a *run* that
+   * threw but was itself delivered and finalized as `failed`.
+   */
+  deferred: number;
 }
 
 /**
  * Dispatch a connection's batch of emails through one workflow (design §6):
  * per email — filter (deterministic) → claim (atomic ledger) → isolated run →
- * finalize ledger → notify. Claimed-but-failed runs finalize as `failed` and
- * still notify, so a run crash never leaves the ledger stuck in `processing`
- * (§8 at-least-once). Runs are independent: one email's failure never aborts the
- * rest of the batch.
+ * notify → finalize ledger.
+ *
+ * **notify runs before finalize on purpose.** The ledger row only leaves
+ * `processing` once its notification is durably persisted, so we get real
+ * at-least-once delivery (§8): if notify or finalize throws, the row stays
+ * `processing` and the reconciliation sweep (later slice) re-discovers and
+ * retries it. The rejected alternative — finalize `done` first, then notify —
+ * would, on a notify failure, strand a `done` row with no notification that no
+ * sweep could ever find: a silent, permanent loss. At-least-once may deliver a
+ * duplicate notification on a retry; that is the accepted trade against loss.
+ *
+ * A run that throws is itself an outcome, not a delivery failure: it finalizes
+ * `failed` and still notifies (a run crash never leaves the ledger stuck in
+ * `processing`). Runs are independent: one email's failure — run, delivery, or
+ * finalize — never aborts the rest of the batch. A post-claim throw is caught,
+ * counted as `deferred`, and logged; the loop moves on.
  *
  * A workflow with no recipients is a caller bug (a run nobody would ever see):
  * we reject it up front, before any claim, mirroring notify()'s own guard.
@@ -82,6 +101,7 @@ export async function dispatchEmails(params: {
     claimed: 0,
     succeeded: 0,
     failed: 0,
+    deferred: 0,
   };
 
   for (const email of emails) {
@@ -103,37 +123,59 @@ export async function dispatchEmails(params: {
     }
     summary.claimed++;
 
+    // Everything below the claim is isolated per email: a run crash, a notify
+    // failure, or a finalize failure must not abort the batch. On a post-claim
+    // throw the row stays `processing` (recoverable) and we move on.
     try {
-      const result = await runAgent({ workflow, email });
-      await finalizeEmail({
-        ...claimKey,
-        status: result.status,
-        outcome: result.outcome,
-        runId: result.runId,
-      });
-      await notify({
-        agentId: workflow.agentId,
-        title: result.title,
-        content: result.content,
-        status: "success",
-        sourceType: "inbox",
-        sourceId: ledgerId,
-        recipientUserIds: workflow.recipientUserIds,
-      });
-      summary.succeeded++;
+      // The run itself is the one step whose failure is a normal outcome
+      // (finalize `failed` + notify), not a reason to leave the row processing.
+      let result: RunAgentResult | null = null;
+      let runError: unknown;
+      try {
+        result = await runAgent({ workflow, email });
+      } catch (err) {
+        runError = err;
+      }
+
+      if (result) {
+        await notify({
+          agentId: workflow.agentId,
+          title: result.title,
+          content: result.content,
+          status: "success",
+          sourceType: "inbox",
+          sourceId: ledgerId,
+          recipientUserIds: workflow.recipientUserIds,
+        });
+        await finalizeEmail({
+          ...claimKey,
+          status: result.status,
+          outcome: result.outcome,
+          runId: result.runId,
+        });
+        summary.succeeded++;
+      } else {
+        await notify({
+          agentId: workflow.agentId,
+          title: `${workflow.name}: processing failed`,
+          content: `Could not process "${email.subject}".`,
+          status: "failure",
+          errorMessage: runError instanceof Error ? runError.message : String(runError),
+          sourceType: "inbox",
+          sourceId: ledgerId,
+          recipientUserIds: workflow.recipientUserIds,
+        });
+        await finalizeEmail({ ...claimKey, status: "failed" });
+        summary.failed++;
+      }
     } catch (err) {
-      await finalizeEmail({ ...claimKey, status: "failed" });
-      await notify({
-        agentId: workflow.agentId,
-        title: `${workflow.name}: processing failed`,
-        content: `Could not process "${email.subject}".`,
-        status: "failure",
-        errorMessage: err instanceof Error ? err.message : String(err),
-        sourceType: "inbox",
-        sourceId: ledgerId,
-        recipientUserIds: workflow.recipientUserIds,
-      });
-      summary.failed++;
+      // Delivery or finalize threw after the claim. Leave the row `processing`
+      // for the reconciliation sweep; never abort the batch.
+      summary.deferred++;
+      console.error(
+        `dispatchEmails: deferred email ${email.providerMessageId} (workflow ${workflow.id}) after claim — left processing for the reconciliation sweep`,
+        err
+      );
     }
   }
 

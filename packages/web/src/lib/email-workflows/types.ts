@@ -25,9 +25,13 @@ export interface EmailAttachment {
  * `email_search`/`email_read`, never from the LLM.
  */
 export interface DispatchableEmail {
-  /** Provider immutable id (Graph id / Gmail message id) — part of the claim key. */
+  /** Provider immutable id (Graph id / Gmail message id) — the dedup/claim key. */
   providerMessageId: string;
-  /** RFC 5322 `Message-ID`, the secondary key. */
+  /**
+   * RFC 5322 `Message-ID`, stored for cross-provider traceability. NOT part of
+   * the claim's uniqueness — dedup is `(workflowId, connectionId,
+   * providerMessageId)` only (see {@link claimEmail}).
+   */
   messageIdHeader?: string;
   /** Normalized sender address (no display name). */
   from: string;
