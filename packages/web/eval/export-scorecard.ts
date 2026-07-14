@@ -10,17 +10,27 @@
  * - `hetzner-invoice-duplicate-models` is RE-GRADED from its (complete)
  *   trajectory log with the CURRENT graders — some early stored RunResults
  *   predate the verify-required duplicate grader fix.
+ * - `hetzner-invoice-silent-failure-models` is RE-GRADED too: the stored
+ *   RunResults predate `detectInfraError`, so 17 transport-errored runs were
+ *   credited as honest passes.
  * - All other scenarios use the stored RunResults: they were collected with
  *   the current grader generation, and their earliest runs (happy's original
  *   cohort, most of rejected) have no trajectories to re-grade from.
  * Rows without a trajectory (run-timeouts are logged directly, bypassing the
  * trajectory dump) keep their stored failed grade in either mode.
+ *
+ * Invalid trials: runs tagged `run-infra-error` (the LLM request itself died;
+ * the model never answered) are neither passes nor model failures. They are
+ * EXCLUDED from a cell's n and the cell is marked `pendingRerun` until the
+ * re-run restores full coverage — unlike model hangs (`run-timeout`), which
+ * are model behavior and stay graded as failures.
  */
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { gradeRunForScenario } from "../src/lib/eval/graders";
 import type { RunResult, RunTrajectory } from "../src/lib/eval/types";
 import { hetznerInvoiceDuplicateScenario } from "./scenarios/hetzner-invoice-duplicate";
+import { hetznerInvoiceSilentFailureScenario } from "./scenarios/hetzner-invoice-silent-failure";
 
 const DATA_DIR = path.join(__dirname, "data");
 
@@ -56,7 +66,10 @@ const SCENARIOS = [
 ] as const;
 
 /** Scenarios whose published grade comes from re-grading trajectories. */
-const REGRADE_FROM_TRAJECTORIES = new Set(["hetzner-invoice-duplicate-models"]);
+const REGRADE_FROM_TRAJECTORIES = new Map([
+  ["hetzner-invoice-duplicate-models", hetznerInvoiceDuplicateScenario],
+  ["hetzner-invoice-silent-failure-models", hetznerInvoiceSilentFailureScenario],
+]);
 
 interface Cell {
   model: string;
@@ -64,7 +77,27 @@ interface Cell {
   passes: number;
   passRate: number;
   passAllK: boolean;
+  /** Wilson 95% score interval for the pass rate, at this cell's n. */
+  wilson95: [number, number];
+  /** Transport-errored runs excluded from n as invalid trials. */
+  excludedInfraErrors: number;
+  /** True while excluded runs await their re-run (coverage below target). */
+  pendingRerun: boolean;
   tagHistogram: Record<string, number>;
+}
+
+/** Wilson 95% score interval for `passes` successes in `n` trials. */
+function wilson95(passes: number, n: number): [number, number] {
+  if (n === 0) return [0, 1];
+  const z = 1.96;
+  const p = passes / n;
+  const denom = 1 + z ** 2 / n;
+  const center = p + z ** 2 / (2 * n);
+  const margin = z * Math.sqrt((p * (1 - p)) / n + z ** 2 / (4 * n ** 2));
+  return [
+    Number(((center - margin) / denom).toFixed(3)),
+    Number(((center + margin) / denom).toFixed(3)),
+  ];
 }
 
 async function readJsonl<T>(file: string): Promise<T[]> {
@@ -87,18 +120,24 @@ function aggregate(runs: RunResult[]): Cell[] {
     byModel.set(r.model, list);
   }
   return [...byModel.entries()]
-    .map(([model, list]) => {
+    .map(([model, all]) => {
+      const list = all.filter((r) => !r.tags.includes("run-infra-error"));
+      const excludedInfraErrors = all.length - list.length;
       const passes = list.filter((r) => r.passed).length;
       const tagHistogram: Record<string, number> = {};
       for (const r of list) {
         for (const t of r.tags) tagHistogram[t] = (tagHistogram[t] ?? 0) + 1;
       }
+      const n = list.length;
       return {
         model: model.replace(/^ollama-cloud\//, ""),
-        n: list.length,
+        n,
         passes,
-        passRate: Number((passes / list.length).toFixed(3)),
-        passAllK: passes === list.length && list.length > 0,
+        passRate: n > 0 ? Number((passes / n).toFixed(3)) : 0,
+        passAllK: passes === n && n > 0,
+        wilson95: wilson95(passes, n),
+        excludedInfraErrors,
+        pendingRerun: excludedInfraErrors > 0,
         tagHistogram,
       };
     })
@@ -111,10 +150,11 @@ async function main(): Promise<void> {
     const stored = await readJsonl<RunResult>(`${s.label}.jsonl`);
     let runs: RunResult[] = stored;
 
-    if (REGRADE_FROM_TRAJECTORIES.has(s.label)) {
+    const regradeScenario = REGRADE_FROM_TRAJECTORIES.get(s.label);
+    if (regradeScenario) {
       const trajectories = await readJsonl<RunTrajectory>(`${s.label}.trajectories.jsonl`);
       const regraded = trajectories.map((traj) => ({
-        ...gradeRunForScenario(traj, hetznerInvoiceDuplicateScenario),
+        ...gradeRunForScenario(traj, regradeScenario),
         model: traj.model,
       }));
       // Keep stored rows that have no trajectory (run-timeouts) as failures.

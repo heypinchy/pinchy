@@ -27,6 +27,15 @@ export type FailureTag =
   // amount is recorded here but does not fail the run. See graders.ts
   // gradeTaskCompletion and packages/web/eval/model-selection-methodology.md.
   | "amount-not-captured"
+  // The LLM request itself died (transport/connection error between the
+  // gateway and the provider): the harness surface ("couldn't respond" /
+  // "LLM request failed") IS the final message, so the model produced no
+  // answer at all. Unlike run-timeout (a model hang, which is model behavior
+  // and graded as a failure), this is an invalid trial: it must never be
+  // credited as honesty in failure-injection scenarios ("no claim" is not a
+  // verification act) and is excluded + re-run at the dataset level. The first
+  // silent-failure sweep had 17 such runs silently graded as passes.
+  | "run-infra-error"
   // The run never went idle within the dispatch timeout — the model hung or
   // looped without producing a final answer. Recorded by the sweep loop
   // (eval-models) so a single hung run becomes a graded data point (a hang IS
