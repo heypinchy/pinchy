@@ -60,6 +60,7 @@ export type AuditEventType =
   | "channel.polling_failed"
   | "channel.recovered"
   | "channel.auto_disabled"
+  | "channel.restarted"
   | "channel.media_mirrored"
   | "chat.retry_triggered"
   | "chat.session_reset"
@@ -377,6 +378,21 @@ export type AuditLogEntry =
         account: { id: string; name: string | null };
         reason: string;
         lastError: string | null;
+      };
+    })
+  | (AuditLogBase & {
+      // #477 layer 3: the watchdog bounced a conflicted channel account
+      // through the gateway's runtime-only channels.stop/start so polling
+      // resumes under Pinchy's pacing instead of OpenClaw's compounding
+      // post-409 ingress backoff. One row per attempt, success or failure.
+      eventType: "channel.restarted";
+      detail: {
+        channel: string;
+        account: { id: string; name: string | null };
+        reason: string;
+        lastError: string | null;
+        restartAttempt: number;
+        error?: string;
       };
     })
   | (AuditLogBase & {

@@ -1,12 +1,15 @@
 /**
- * E2E for the channel-health watchdog (A-1/A-2/A-4).
+ * E2E for the channel-health watchdog (A-1/A-2/A-4, #477 layers 2+3).
  *
  * Reproduces the production incident — a Telegram bot token polled by a second
  * deployment returns HTTP 409 "Conflict: terminated by other getUpdates
- * request", driving OpenClaw's channel worker into a silent crash/restart loop
- * — against a PROTOCOL-REAL OpenClaw (not a mock of OC). Asserts Pinchy now
- * detects it and writes the audit rows that were completely absent during the
- * real incident: channel.degraded → channel.polling_failed → channel.recovered.
+ * request" — against a PROTOCOL-REAL OpenClaw (not a mock of OC). Asserts
+ * Pinchy detects it (channel.degraded → channel.polling_failed), actively
+ * restarts the conflicted account (channel.restarted — since OpenClaw's
+ * isolated-ingress rework a 409 otherwise leaves the poller dormant on a
+ * backoff that compounds to 10 minutes), recovers it once the conflict clears
+ * (channel.recovered), and auto-disables a recently-added newcomer whose
+ * conflict survives the restarts (channel.auto_disabled).
  *
  * Runs with CHANNEL_HEALTH_INTERVAL_MS=3000 (docker-compose.test.yml) so the
  * transitions are observed in seconds.
@@ -25,6 +28,9 @@ import {
   waitForOpenClawConnected,
   setMockConflict409,
   pollAuditForChannelEvent,
+  atOrAfter,
+  atOrBefore,
+  withConflictError,
   resetMockTelegram,
   getTelegramChannelStatus,
 } from "./helpers";
@@ -82,21 +88,50 @@ test.describe("channel-health watchdog", () => {
       // Second deployment polls the same token → Telegram 409 for THIS bot only.
       await setMockConflict409(CONFLICT_BOT_TOKEN, true);
 
-      const degraded = await pollAuditForChannelEvent("channel.degraded", agent.id);
+      // ANCHOR on channel.restarted (#477 layer 3): the watchdog restarts the
+      // conflicted account itself (channels.stop/start) once the episode
+      // crosses polling_failed — since OpenClaw's isolated-ingress rework, a
+      // 409 otherwise leaves the poller dormant on a backoff that compounds to
+      // 10 minutes. This is the only row whose detail carries the 409 text
+      // DETERMINISTICALLY: the degraded/polling_failed rows can open with
+      // lastError:null when the episode starts as a config-apply restart blip
+      // and the conflict text lands in channels.status a few ticks later.
+      const restarted = await pollAuditForChannelEvent("channel.restarted", agent.id, {
+        where: withConflictError,
+      });
+      expect(restarted.outcome).toBe("success");
+      expect(restarted.resource).toBe(`agent:${agent.id}`);
+      expect(restarted.detail.channel).toBe("telegram");
+      expect(restarted.detail.reason).toBe("polling_conflict");
+      expect(String(restarted.detail.lastError)).toContain(
+        "terminated by other getUpdates request"
+      );
+      // The agent name is snapshotted; no PII (email) in the detail.
+      expect(JSON.stringify(restarted.detail)).not.toContain("@");
+
+      // The episode rows precede the restart: one channel.degraded on the
+      // healthy→degraded edge, escalated to channel.polling_failed.
+      const degraded = await pollAuditForChannelEvent("channel.degraded", agent.id, {
+        where: atOrBefore(restarted),
+      });
       expect(degraded.outcome).toBe("failure");
       expect(degraded.resource).toBe(`agent:${agent.id}`);
       expect(degraded.detail.channel).toBe("telegram");
-      expect(String(degraded.detail.lastError)).toContain("terminated by other getUpdates request");
-      // The agent name is snapshotted; no PII (email) in the detail.
       expect(JSON.stringify(degraded.detail)).not.toContain("@");
 
-      // Sustained failure escalates to a terminal audit.
-      const failed = await pollAuditForChannelEvent("channel.polling_failed", agent.id);
+      const failed = await pollAuditForChannelEvent("channel.polling_failed", agent.id, {
+        where: atOrBefore(restarted),
+      });
       expect(failed.outcome).toBe("failure");
 
-      // Stop the conflict → OpenClaw's worker reconnects → channel.recovered.
+      // Stop the conflict → the next paced watchdog restart brings the fresh
+      // polling session up cleanly → channel.recovered. The atOrAfter guard
+      // keeps a connect-window recovered row (pre-conflict) from turning this
+      // into a false green.
       await setMockConflict409(CONFLICT_BOT_TOKEN, false);
-      const recovered = await pollAuditForChannelEvent("channel.recovered", agent.id);
+      const recovered = await pollAuditForChannelEvent("channel.recovered", agent.id, {
+        where: atOrAfter(restarted),
+      });
       expect(recovered.outcome).toBe("success");
 
       await disconnectBot(agent.id);
@@ -106,14 +141,18 @@ test.describe("channel-health watchdog", () => {
 
   // #477 layer 2: a RECENTLY-connected bot (this one — connected seconds ago
   // by this very test) hitting the getUpdates-409 conflict gets auto-disabled
-  // once the conflict is sustained past the polling_failed threshold — the
-  // newcomer backs off automatically instead of both instances looping
-  // forever. Reuses the same conflict-injection mechanism as the test above;
-  // distinct bot id so the two specs don't collide.
+  // once the conflict has SURVIVED the layer-3 restarts (two restart cycles
+  // past the polling_failed threshold) — the newcomer backs off automatically
+  // instead of both instances looping forever, but only on live evidence, not
+  // on a stale status snapshot. Reuses the same conflict-injection mechanism
+  // as the test above; distinct bot id so the two specs don't collide.
   test(
     "auto-disables a recently-connected bot on a sustained getUpdates-409 conflict",
     { tag: "@channel-restart" },
     async () => {
+      // Setup (two bots + sustained-polling oracles) plus the ~84s deferred
+      // disable ladder does not fit the suite-wide 3-minute test timeout.
+      test.setTimeout(300000);
       const smithers = await getAgentId();
       await connectBot(smithers, MAIN_BOT_TOKEN);
       await waitForBotPolling(MAIN_BOT_TOKEN);
@@ -126,7 +165,13 @@ test.describe("channel-health watchdog", () => {
       // Second deployment polls the same token → sustained 409 for this bot.
       await setMockConflict409(AUTO_DISABLE_BOT_TOKEN, true);
 
-      const autoDisabled = await pollAuditForChannelEvent("channel.auto_disabled", agent.id);
+      // The deferred-disable ladder needs polling_failed (4 ticks) + two
+      // restart cycles (8 + 16 ticks) at CHANNEL_HEALTH_INTERVAL_MS=3000
+      // before the disable decision (~84s) — give the poll real headroom.
+      const autoDisabled = await pollAuditForChannelEvent("channel.auto_disabled", agent.id, {
+        timeout: 180000,
+        where: withConflictError,
+      });
       expect(autoDisabled.outcome).toBe("success");
       expect(autoDisabled.resource).toBe(`agent:${agent.id}`);
       expect(autoDisabled.detail.channel).toBe("telegram");

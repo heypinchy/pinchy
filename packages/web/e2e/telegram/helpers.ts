@@ -323,35 +323,62 @@ export async function setMockConflict409(token: string, enabled: boolean): Promi
   }
 }
 
-interface AuditEntry {
+export interface AuditEntry {
   eventType: string;
   resource: string | null;
   outcome: string;
-  detail: Record<string, unknown> & { account?: { id?: string } };
+  timestamp: string;
+  detail: Record<string, unknown> & { account?: { id?: string }; lastError?: unknown };
 }
 
 /**
  * Poll `/api/audit?eventType=<eventType>` until an entry for the given account
  * (Pinchy agent id) appears. Used by the channel-health E2E to assert the
  * watchdog audited a degraded/failed/recovered telegram channel.
+ *
+ * `where` narrows the match beyond the account id. The poll oracle must select
+ * the row the assertions are about: a freshly connected bot passes through a
+ * short degraded window (connected:false, lastError:null) before its first
+ * poll success, so an unfiltered poll can grab that connect-time
+ * `channel.degraded`/`channel.recovered` row instead of the conflict
+ * episode's — a false red on degraded and, worse, a false GREEN on recovered.
  */
 export async function pollAuditForChannelEvent(
   eventType: string,
   accountId: string,
-  opts: { timeout?: number } = {}
+  opts: { timeout?: number; where?: (e: AuditEntry) => boolean } = {}
 ): Promise<AuditEntry> {
-  const { timeout = 90000 } = opts;
+  const { timeout = 90000, where } = opts;
   const start = Date.now();
   while (Date.now() - start < timeout) {
     const res = await pinchyGet(`/api/audit?eventType=${encodeURIComponent(eventType)}&limit=25`);
     if (res.ok) {
       const data = (await res.json()) as { entries?: AuditEntry[] };
-      const match = (data.entries ?? []).find((e) => e.detail?.account?.id === accountId);
+      const match = (data.entries ?? []).find(
+        (e) => e.detail?.account?.id === accountId && (!where || where(e))
+      );
       if (match) return match;
     }
     await new Promise((r) => setTimeout(r, 1500));
   }
   throw new Error(`No ${eventType} audit for account ${accountId} within ${timeout}ms`);
+}
+
+/** Selects rows written at or after `row` (DB timestamps — no host-clock skew). */
+export function atOrAfter(row: AuditEntry): (e: AuditEntry) => boolean {
+  return (e) => new Date(e.timestamp).getTime() >= new Date(row.timestamp).getTime();
+}
+
+/** Selects rows written at or before `row` — for episode rows that must precede an anchor. */
+export function atOrBefore(row: AuditEntry): (e: AuditEntry) => boolean {
+  return (e) => new Date(e.timestamp).getTime() <= new Date(row.timestamp).getTime();
+}
+
+/** Selects rows whose detail.lastError carries the Telegram getUpdates-409 conflict text. */
+export function withConflictError(e: AuditEntry): boolean {
+  return String(e.detail?.lastError ?? "")
+    .toLowerCase()
+    .includes("terminated by other getupdates");
 }
 
 // ── Pairing code helpers ───────────────────────────────────────────────

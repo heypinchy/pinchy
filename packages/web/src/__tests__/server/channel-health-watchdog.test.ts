@@ -14,7 +14,10 @@ import {
   ChannelHealthMonitor,
   type ChannelHealthDeps,
   parseRecentlyAddedWindowMs,
+  restartSpacingTicks,
   DEFAULT_RECENTLY_ADDED_WINDOW_MS,
+  MAX_RESTART_SPACING_TICKS,
+  AUTO_DISABLE_AFTER_RESTART_ATTEMPTS,
 } from "@/server/channel-health-watchdog";
 import {
   healthyTelegramStatus,
@@ -26,6 +29,7 @@ describe("ChannelHealthMonitor", () => {
   let writeAudit: ReturnType<typeof vi.fn>;
   let getChannelStatus: ReturnType<typeof vi.fn>;
   let autoDisableConflictedAccount: ReturnType<typeof vi.fn>;
+  let restartConflictedAccount: ReturnType<typeof vi.fn>;
   let getConnectionAgeMs: ReturnType<typeof vi.fn>;
   let monitor: ChannelHealthMonitor;
   let clock: number;
@@ -35,6 +39,7 @@ describe("ChannelHealthMonitor", () => {
     writeAudit = vi.fn().mockResolvedValue(undefined);
     getChannelStatus = vi.fn();
     autoDisableConflictedAccount = vi.fn().mockResolvedValue(undefined);
+    restartConflictedAccount = vi.fn().mockResolvedValue(undefined);
     // Default: recently-added (1 hour old), well inside the 24h window.
     getConnectionAgeMs = vi.fn().mockResolvedValue(60 * 60 * 1000);
     clock = 1_000_000;
@@ -46,8 +51,10 @@ describe("ChannelHealthMonitor", () => {
       now: () => clock,
       terminalAfterConsecutiveDegraded: 3,
       autoDisableConflictedAccount,
+      restartConflictedAccount,
       getConnectionAgeMs,
       autoDisableEnabled: true,
+      restartEnabled: true,
       recentlyAddedWindowMs: 86_400_000,
     };
   });
@@ -181,11 +188,19 @@ describe("ChannelHealthMonitor", () => {
   });
 
   // Auto-disable (#477 layer 2): a RECENTLY-ADDED account whose lastError is
-  // the Telegram getUpdates-409 conflict signal gets auto-disabled the moment
-  // it crosses into polling_failed — the newcomer backs off so the incumbent
-  // survives. Long-standing connections, non-conflict failures, and a disabled
-  // feature flag must never trigger it.
-  describe("auto-disable on sustained polling conflict", () => {
+  // the Telegram getUpdates-409 conflict signal gets auto-disabled — the
+  // newcomer backs off so the incumbent survives. Long-standing connections,
+  // non-conflict failures, and a disabled feature flag must never trigger it.
+  //
+  // With conflict-restarts DISABLED (legacy / operator opt-out), auto-disable
+  // fires directly at the polling_failed edge — the pre-layer-3 behavior these
+  // tests pin. The restart-enabled arbitration (auto-disable only after the
+  // conflict survives restarts) is covered in the layer-3 describe below.
+  describe("auto-disable on sustained polling conflict (restarts disabled)", () => {
+    beforeEach(() => {
+      deps.restartEnabled = false;
+    });
+
     it("calls autoDisableConflictedAccount exactly once when polling_failed fires for a recently-added conflicted account", async () => {
       getChannelStatus.mockResolvedValue(degradedTelegramStatus(2));
       await monitor.tick(deps); // 1 (degraded)
@@ -286,6 +301,202 @@ describe("ChannelHealthMonitor", () => {
       await monitor.tick(deps); // terminal again in the new episode
       expect(autoDisableConflictedAccount).toHaveBeenCalledTimes(2);
     });
+  });
+
+  // Conflict-restart recovery (#477 layer 3): once a conflicted account crosses
+  // into polling_failed, the watchdog restarts the channel account itself
+  // (channels.stop/start) instead of waiting on OpenClaw's internal ingress
+  // backoff, which since the isolated-ingress rework compounds to 10 minutes
+  // and leaves lastError stale while it sleeps. Restarts are paced on the tick
+  // counter with exponential spacing; auto-disable (layer 2) is deferred until
+  // the conflict has survived AUTO_DISABLE_AFTER_RESTART_ATTEMPTS restarts, so
+  // a stale status snapshot can never disable a bot whose conflict is already
+  // gone. terminalAfterConsecutiveDegraded = 3 in these tests, so the decision
+  // points sit at consecutiveDegraded 3, 3+6=9, 9+12=21, 21+20=41, …
+  describe("conflict-restart recovery (restarts enabled)", () => {
+    const ACCOUNT = "29ea51b1-67af-4fad-8864-f550c7543333";
+
+    async function tickTimes(n: number) {
+      for (let i = 0; i < n; i++) await monitor.tick(deps);
+    }
+
+    it("fires restartConflictedAccount once at the polling_failed edge with channel, account, error, and attempt", async () => {
+      getChannelStatus.mockResolvedValue(degradedTelegramStatus(2));
+      await tickTimes(2);
+      expect(restartConflictedAccount).not.toHaveBeenCalled();
+      await monitor.tick(deps); // 3 -> polling_failed edge
+      expect(restartConflictedAccount).toHaveBeenCalledTimes(1);
+      expect(restartConflictedAccount).toHaveBeenCalledWith(
+        "telegram",
+        ACCOUNT,
+        expect.stringContaining("terminated by other getUpdates request"),
+        1
+      );
+    });
+
+    it("does NOT auto-disable at the polling_failed edge while restarts are enabled", async () => {
+      getChannelStatus.mockResolvedValue(degradedTelegramStatus(2));
+      await tickTimes(3); // edge
+      expect(autoDisableConflictedAccount).not.toHaveBeenCalled();
+    });
+
+    it("paces follow-up restarts exponentially on the tick counter while the conflict persists", async () => {
+      getChannelStatus.mockResolvedValue(degradedTelegramStatus(2));
+      await tickTimes(8); // consecutive 1..8 — edge at 3 (attempt 1), next decision at 9
+      expect(restartConflictedAccount).toHaveBeenCalledTimes(1);
+      await monitor.tick(deps); // consecutive 9 -> attempt 2
+      expect(restartConflictedAccount).toHaveBeenCalledTimes(2);
+      expect(restartConflictedAccount).toHaveBeenLastCalledWith(
+        "telegram",
+        ACCOUNT,
+        expect.any(String),
+        2
+      );
+      await tickTimes(11); // consecutive 10..20 — next decision at 21
+      expect(restartConflictedAccount).toHaveBeenCalledTimes(2);
+    });
+
+    it("defers auto-disable of a recently-added account until the conflict survives the restart threshold, then stops restarting", async () => {
+      getChannelStatus.mockResolvedValue(degradedTelegramStatus(2));
+      await tickTimes(20); // decisions at 3 and 9 -> two restarts, no disable yet
+      expect(autoDisableConflictedAccount).not.toHaveBeenCalled();
+      await monitor.tick(deps); // consecutive 21: attempts >= 2 -> auto-disable
+      expect(autoDisableConflictedAccount).toHaveBeenCalledTimes(1);
+      expect(restartConflictedAccount).toHaveBeenCalledTimes(2); // no restart after disable
+      await tickTimes(30);
+      expect(autoDisableConflictedAccount).toHaveBeenCalledTimes(1);
+      expect(restartConflictedAccount).toHaveBeenCalledTimes(2);
+    });
+
+    it("keeps restarting a long-standing (incumbent) account at the capped cadence and never auto-disables it", async () => {
+      getConnectionAgeMs.mockResolvedValue(86_400_000); // at/over the window
+      getChannelStatus.mockResolvedValue(degradedTelegramStatus(2));
+      await tickTimes(41); // decisions at 3, 9, 21, 41
+      expect(autoDisableConflictedAccount).not.toHaveBeenCalled();
+      expect(restartConflictedAccount).toHaveBeenCalledTimes(4);
+      expect(restartConflictedAccount).toHaveBeenLastCalledWith(
+        "telegram",
+        ACCOUNT,
+        expect.any(String),
+        4
+      );
+    });
+
+    it("does NOT restart on a non-conflict degradation (network error), at the edge or later", async () => {
+      const status = degradedTelegramStatus(2) as Record<string, unknown>;
+      (
+        status.channelAccounts as Record<string, Array<Record<string, unknown>>>
+      ).telegram[0].lastError = "ETIMEDOUT: connection reset";
+      getChannelStatus.mockResolvedValue(status);
+      await tickTimes(25);
+      expect(restartConflictedAccount).not.toHaveBeenCalled();
+      expect(autoDisableConflictedAccount).not.toHaveBeenCalled();
+      expect(auditsOfType("channel.polling_failed")).toHaveLength(1);
+    });
+
+    it("swallows a rejecting restartConflictedAccount and still advances the pacing", async () => {
+      restartConflictedAccount.mockRejectedValue(new Error("gateway timeout"));
+      getChannelStatus.mockResolvedValue(degradedTelegramStatus(2));
+      await expect(tickTimes(3)).resolves.toBeUndefined(); // edge attempt
+      expect(restartConflictedAccount).toHaveBeenCalledTimes(1);
+      await tickTimes(6); // next decision at 9
+      expect(restartConflictedAccount).toHaveBeenCalledTimes(2);
+      expect(auditsOfType("channel.polling_failed")).toHaveLength(1);
+    });
+
+    it("falls back to restarting when auto-disable is not applicable at the deferred decision point", async () => {
+      // Recently-added but the feature flag is off: at consecutive 21 the
+      // deferred auto-disable check declines, so the watchdog keeps the
+      // account alive with another restart instead of stalling.
+      deps.autoDisableEnabled = false;
+      getChannelStatus.mockResolvedValue(degradedTelegramStatus(2));
+      await tickTimes(21);
+      expect(autoDisableConflictedAccount).not.toHaveBeenCalled();
+      expect(restartConflictedAccount).toHaveBeenCalledTimes(3);
+    });
+
+    it("fires the first restart on the tick a LATE conflict signal appears (episode began as a non-conflict blip)", async () => {
+      // Real-world shape (seen in E2E tg8): a config-apply channel restart
+      // opens the degraded episode with lastError:null; the 409 only lands in
+      // channels.status AFTER the polling_failed edge already fired. The
+      // conflict machinery must arm itself then — not stay dead for the
+      // whole episode.
+      const blip = degradedTelegramStatus(2) as Record<string, unknown>;
+      (
+        blip.channelAccounts as Record<string, Array<Record<string, unknown>>>
+      ).telegram[0].lastError = null;
+      getChannelStatus.mockResolvedValue(blip);
+      await tickTimes(5); // edge at 3 with NO conflict signal — nothing scheduled
+      expect(restartConflictedAccount).not.toHaveBeenCalled();
+      expect(auditsOfType("channel.polling_failed")).toHaveLength(1);
+
+      getChannelStatus.mockResolvedValue(degradedTelegramStatus(2)); // 409 text appears
+      await monitor.tick(deps); // consecutive 6 — late conflict detected
+      expect(restartConflictedAccount).toHaveBeenCalledTimes(1);
+      expect(restartConflictedAccount).toHaveBeenCalledWith(
+        "telegram",
+        ACCOUNT,
+        expect.stringContaining("terminated by other getUpdates request"),
+        1
+      );
+      // Pacing continues normally: next decision at 6 + spacing(3,1)=12.
+      await tickTimes(5); // consecutive 7..11
+      expect(restartConflictedAccount).toHaveBeenCalledTimes(1);
+      await monitor.tick(deps); // consecutive 12
+      expect(restartConflictedAccount).toHaveBeenCalledTimes(2);
+    });
+
+    it("late conflict signal does NOT trigger anything in legacy mode (restarts disabled)", async () => {
+      deps.restartEnabled = false;
+      const blip = degradedTelegramStatus(2) as Record<string, unknown>;
+      (
+        blip.channelAccounts as Record<string, Array<Record<string, unknown>>>
+      ).telegram[0].lastError = null;
+      getChannelStatus.mockResolvedValue(blip);
+      await tickTimes(4); // edge at 3 without signal — legacy auto-disable declines
+      getChannelStatus.mockResolvedValue(degradedTelegramStatus(2));
+      await tickTimes(5);
+      expect(restartConflictedAccount).not.toHaveBeenCalled();
+      expect(autoDisableConflictedAccount).not.toHaveBeenCalled();
+    });
+
+    it("resets restart pacing on recovery so a new episode starts at attempt 1", async () => {
+      getChannelStatus.mockResolvedValue(degradedTelegramStatus(2));
+      await tickTimes(3); // attempt 1
+      getChannelStatus.mockResolvedValue(healthyTelegramStatus());
+      await monitor.tick(deps); // recovered
+      getChannelStatus.mockResolvedValue(degradedTelegramStatus(2));
+      await tickTimes(3); // new episode edge
+      expect(restartConflictedAccount).toHaveBeenCalledTimes(2);
+      expect(restartConflictedAccount).toHaveBeenLastCalledWith(
+        "telegram",
+        ACCOUNT,
+        expect.any(String),
+        1
+      );
+    });
+  });
+});
+
+// #477 layer 3: exponential restart spacing, capped so a persistent conflict
+// settles into a bounded audit/restart cadence instead of unbounded doubling.
+describe("restartSpacingTicks", () => {
+  it("doubles from the terminal threshold per attempt", () => {
+    expect(restartSpacingTicks(3, 1)).toBe(6);
+    expect(restartSpacingTicks(3, 2)).toBe(12);
+    expect(restartSpacingTicks(4, 1)).toBe(8);
+  });
+
+  it("caps at MAX_RESTART_SPACING_TICKS", () => {
+    expect(restartSpacingTicks(3, 3)).toBe(MAX_RESTART_SPACING_TICKS);
+    expect(restartSpacingTicks(4, 10)).toBe(MAX_RESTART_SPACING_TICKS);
+  });
+
+  it("auto-disable deferral threshold is two survived restarts", () => {
+    // Pinned: lowering this re-opens the stale-status false-disable window
+    // (a cleared conflict must get at least two full restart cycles to prove
+    // recovery before a newcomer is backed off permanently).
+    expect(AUTO_DISABLE_AFTER_RESTART_ATTEMPTS).toBe(2);
   });
 });
 

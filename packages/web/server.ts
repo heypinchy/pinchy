@@ -22,6 +22,7 @@ import {
   parseRecentlyAddedWindowMs,
 } from "./src/server/channel-health-watchdog";
 import { setChannelHealthMonitor } from "./src/server/channel-health-singleton";
+import { createConflictRestartHandler } from "./src/server/channel-conflict-restart";
 import { appendAuditLog, safeProviderError } from "./src/lib/audit";
 import { recordAuditFailure } from "./src/lib/audit-deferred";
 import { db, closeDb } from "./src/db";
@@ -511,6 +512,29 @@ ${domain ? `<p><a href="https://${domain}">Go to ${domain} →</a></p>` : ""}
       process.env.TELEGRAM_CONFLICT_RECENT_WINDOW_MS
     );
 
+    // #477 layer 3: env-flag opt-out for conflict restarts (same convention as
+    // the auto-disable flag). With restarts off, the watchdog falls back to
+    // auto-disabling recently-added conflicted bots directly at the
+    // polling_failed edge.
+    const autoRestartEnvRaw = (process.env.TELEGRAM_CONFLICT_AUTO_RESTART ?? "")
+      .trim()
+      .toLowerCase();
+    const restartEnabled = !["false", "0", "no"].includes(autoRestartEnvRaw);
+
+    const restartConflictedAccount = createConflictRestartHandler({
+      request: (method, params) => ocForWatchdog.request(method, params),
+      isConflictDisabled: async (accountId) =>
+        Boolean(await getSetting(`telegram_conflict_disabled:${accountId}`)),
+      resolveAccountName,
+      writeAudit: async (entry) => {
+        try {
+          await appendAuditLog(entry);
+        } catch (err) {
+          recordAuditFailure(err, entry);
+        }
+      },
+    });
+
     const stopChannelHealth = startChannelHealthWatchdog(
       channelHealthMonitor,
       {
@@ -532,6 +556,8 @@ ${domain ? `<p><a href="https://${domain}">Go to ${domain} →</a></p>` : ""}
         now: () => Date.now(),
         terminalAfterConsecutiveDegraded: DEFAULT_TERMINAL_AFTER_CONSECUTIVE_DEGRADED,
         autoDisableEnabled,
+        restartEnabled,
+        restartConflictedAccount,
         recentlyAddedWindowMs,
         // Age of the account's connection = time since its `channel.created`
         // audit row (the most recent one for this resource — a reconnect
