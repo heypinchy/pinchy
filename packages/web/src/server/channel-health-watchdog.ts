@@ -146,6 +146,23 @@ export const MAX_RESTART_SPACING_TICKS = 20;
 export const AUTO_DISABLE_AFTER_RESTART_ATTEMPTS = 2;
 
 /**
+ * Upper bound on active conflict-restarts per degradation episode. A
+ * recently-added newcomer is auto-disabled first (at
+ * AUTO_DISABLE_AFTER_RESTART_ATTEMPTS), so this cap only governs an incumbent
+ * (or any account auto-disable declines): after this many restarts without
+ * recovery the conflict is clearly persistent — the other poller is not going
+ * away on our timescale. Continuing to force fresh `channels.start` sessions
+ * past this point only resets OpenClaw to an aggressive 30s poll and appends a
+ * `channel.restarted` row every cycle indefinitely, without improving recovery
+ * latency: OpenClaw's own post-409 backoff has by now reached its 10-minute
+ * ceiling and retries at parity with our capped cadence. So we stop actively
+ * restarting and defer to that native retry — which still recovers the poller
+ * once the conflict clears, detected and audited by the tick loop
+ * independently. Must stay above AUTO_DISABLE_AFTER_RESTART_ATTEMPTS.
+ */
+export const MAX_CONFLICT_RESTART_ATTEMPTS = 3;
+
+/**
  * Ticks to wait after restart attempt N before the next conflict decision:
  * doubles from the polling_failed threshold, capped. With the defaults
  * (terminalAfter=4, 30s ticks) decisions land ~2, 6, 14, 24, 34… minutes into
@@ -310,6 +327,17 @@ export class ChannelHealthMonitor {
         t.conflictActionDone = true;
         return;
       }
+    }
+
+    // Bounded restarts: once an incumbent (or any account auto-disable
+    // declined) has survived MAX_CONFLICT_RESTART_ATTEMPTS restarts, stop
+    // forcing fresh sessions and hand the episode back to OpenClaw's native
+    // (now 10-min-ceiling) retry. This bounds both the extra polling and the
+    // audit rows a permanently-conflicted incumbent produces; recovery is still
+    // detected and audited independently when the poller comes back.
+    if (t.restartAttempts >= MAX_CONFLICT_RESTART_ATTEMPTS) {
+      t.conflictActionDone = true;
+      return;
     }
 
     t.restartAttempts += 1;

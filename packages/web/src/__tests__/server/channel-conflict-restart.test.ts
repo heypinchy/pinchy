@@ -108,6 +108,25 @@ describe("createConflictRestartHandler", () => {
     expect(auditEntries()[0].outcome).toBe("success");
   });
 
+  it("still attempts channels.start when channels.stop itself rejects (throws), and audits success if start succeeds", async () => {
+    // A stop that times out/disconnects must not abort the restart: the account
+    // may already be dormant (the very state we are recovering from), so the
+    // revive-side channels.start is what matters. A throwing stop used to be
+    // caught by a shared try/catch that then skipped start entirely.
+    request
+      .mockRejectedValueOnce(new Error("Request channels.stop timed out")) // stop throws
+      .mockResolvedValueOnce({ ok: true }); // start succeeds
+
+    await handler()("telegram", ACCOUNT, CONFLICT, 1);
+
+    expect(request).toHaveBeenNthCalledWith(2, "channels.start", {
+      channel: "telegram",
+      accountId: ACCOUNT,
+    });
+    expect(auditEntries()[0].outcome).toBe("success");
+    expect(auditEntries()[0].detail.error).toBeUndefined();
+  });
+
   it("audits with a null name when resolveAccountName rejects", async () => {
     resolveAccountName.mockRejectedValue(new Error("db down"));
     await handler()("telegram", ACCOUNT, CONFLICT, 1);

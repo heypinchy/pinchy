@@ -18,6 +18,7 @@ import {
   DEFAULT_RECENTLY_ADDED_WINDOW_MS,
   MAX_RESTART_SPACING_TICKS,
   AUTO_DISABLE_AFTER_RESTART_ATTEMPTS,
+  MAX_CONFLICT_RESTART_ATTEMPTS,
 } from "@/server/channel-health-watchdog";
 import {
   healthyTelegramStatus,
@@ -368,18 +369,25 @@ describe("ChannelHealthMonitor", () => {
       expect(restartConflictedAccount).toHaveBeenCalledTimes(2);
     });
 
-    it("keeps restarting a long-standing (incumbent) account at the capped cadence and never auto-disables it", async () => {
+    it("restarts a long-standing (incumbent) account up to the attempt cap, then stops without auto-disabling", async () => {
       getConnectionAgeMs.mockResolvedValue(86_400_000); // at/over the window
       getChannelStatus.mockResolvedValue(degradedTelegramStatus(2));
-      await tickTimes(41); // decisions at 3, 9, 21, 41
+      // Decisions at 3, 9, 21 fire attempts 1..3 (= MAX_CONFLICT_RESTART_ATTEMPTS);
+      // the decision at 41 hits the cap and stops actively restarting.
+      await tickTimes(41);
       expect(autoDisableConflictedAccount).not.toHaveBeenCalled();
-      expect(restartConflictedAccount).toHaveBeenCalledTimes(4);
+      expect(restartConflictedAccount).toHaveBeenCalledTimes(MAX_CONFLICT_RESTART_ATTEMPTS);
       expect(restartConflictedAccount).toHaveBeenLastCalledWith(
         "telegram",
         ACCOUNT,
         expect.any(String),
-        4
+        MAX_CONFLICT_RESTART_ATTEMPTS
       );
+      // Past the cap the incumbent is left to OpenClaw's own (now 10-min-ceiling)
+      // retry — no further forced restarts, no auto-disable, no fresh audit rows.
+      await tickTimes(60);
+      expect(restartConflictedAccount).toHaveBeenCalledTimes(MAX_CONFLICT_RESTART_ATTEMPTS);
+      expect(autoDisableConflictedAccount).not.toHaveBeenCalled();
     });
 
     it("does NOT restart on a non-conflict degradation (network error), at the edge or later", async () => {
@@ -497,6 +505,15 @@ describe("restartSpacingTicks", () => {
     // (a cleared conflict must get at least two full restart cycles to prove
     // recovery before a newcomer is backed off permanently).
     expect(AUTO_DISABLE_AFTER_RESTART_ATTEMPTS).toBe(2);
+  });
+
+  it("caps active restarts above the auto-disable threshold so an incumbent episode is bounded", () => {
+    // Pinned: the cap must sit above the auto-disable threshold (a newcomer is
+    // handled by auto-disable before the cap bites) and stay a small constant
+    // so a permanently-conflicted incumbent produces a bounded number of
+    // restart rows per episode instead of one every cycle forever.
+    expect(MAX_CONFLICT_RESTART_ATTEMPTS).toBeGreaterThan(AUTO_DISABLE_AFTER_RESTART_ATTEMPTS);
+    expect(MAX_CONFLICT_RESTART_ATTEMPTS).toBe(3);
   });
 });
 

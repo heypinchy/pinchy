@@ -65,10 +65,17 @@ export function createConflictRestartHandler(deps: ConflictRestartDeps) {
     }
 
     // A failing stop is tolerated: the account may already be stopped (that is
-    // the dormant state we are recovering from). Only the start must succeed.
+    // the dormant state we are recovering from). Only the start must succeed, so
+    // stop and start get separate try/catch blocks — a stop that rejects
+    // (timeout/disconnect) or returns ok:false must NOT abort the start, which
+    // is the operation that actually revives polling.
     let failure: string | null = null;
     try {
       await deps.request("channels.stop", { channel, accountId });
+    } catch {
+      // Swallow — proceed to start regardless of how the stop failed.
+    }
+    try {
       const started = await deps.request("channels.start", { channel, accountId });
       if (!started.ok) {
         failure = started.error?.message ?? "channels.start failed";
