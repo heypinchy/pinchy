@@ -1,8 +1,10 @@
 // Real-DB integration tests for the Inbox Agent dispatcher (Slice D). The
 // dispatcher is the loop from design §6: for each new email × matching workflow,
-// filter (deterministic) → claim (ledger) → isolated agent run → finalize ledger
-// → notify (activity feed). The run itself is injected (`runAgent`) so the whole
-// lifecycle is testable on the current OpenClaw pin without spawning a real run.
+// filter (deterministic) → claim (ledger) → isolated agent run → notify
+// (activity feed) → finalize ledger (notify-before-finalize is load-bearing,
+// see dispatch.ts). The run is injected (`runAgent`) so the lifecycle is
+// testable without a real OpenClaw run; the last describe block wires the
+// production adapter (`createOpenClawRunAgent`) against a mock gateway client.
 import { describe, it, expect } from "vitest";
 import { and, eq } from "drizzle-orm";
 
@@ -17,7 +19,9 @@ import {
 } from "@/db/schema";
 import { dispatchEmails } from "@/lib/email-workflows/dispatch";
 import type { RunAgent, WorkflowForDispatch } from "@/lib/email-workflows/dispatch";
+import { createOpenClawRunAgent } from "@/lib/email-workflows/run-adapter";
 import type { DispatchableEmail } from "@/lib/email-workflows/types";
+import { inboxSessionKey } from "@/lib/session-key";
 
 let userCounter = 0;
 async function seedUser() {
@@ -104,9 +108,9 @@ async function ledgerRow(workflowId: string, providerMessageId: string) {
 describe("dispatchEmails — fan-out lifecycle", () => {
   it("claims, runs, finalizes and notifies for a matching email", async () => {
     const workflow = await workflowForDispatch();
-    const seen: DispatchableEmail[] = [];
+    const seen: { email: DispatchableEmail; ledgerId: string }[] = [];
     const runAgent: RunAgent = async (ctx) => {
-      seen.push(ctx.email);
+      seen.push({ email: ctx.email, ledgerId: ctx.ledgerId });
       return doneRun(ctx);
     };
 
@@ -114,11 +118,14 @@ describe("dispatchEmails — fan-out lifecycle", () => {
 
     // Ran exactly once, on the matching email.
     expect(seen).toHaveLength(1);
-    expect(seen[0].providerMessageId).toBe("msg-1");
+    expect(seen[0].email.providerMessageId).toBe("msg-1");
     expect(summary).toMatchObject({ claimed: 1, succeeded: 1, failed: 0 });
 
     // Ledger finalized with the run's terminal status + outcome.
     const row = await ledgerRow(workflow.id, "msg-1");
+    // The run received the claim's ledger row id — the adapter keys the
+    // isolated OpenClaw session by it, so this correlation must be exact.
+    expect(seen[0].ledgerId).toBe(row.id);
     expect(row.status).toBe("done");
     expect(row.outcome).toEqual({ odooModel: "account.move", odooId: 7 });
     expect(row.runId).toBe("run-x");
@@ -296,5 +303,52 @@ describe("dispatchEmails — delivery failure", () => {
       .from(notifications)
       .where(eq(notifications.agentId, workflow.agentId));
     expect(notes).toHaveLength(0);
+  });
+});
+
+describe("dispatchEmails × createOpenClawRunAgent — production adapter end-to-end", () => {
+  it("streams a real-shaped OpenClaw run into a finalized ledger row and a feed notification", async () => {
+    const workflow = await workflowForDispatch();
+    const chatCalls: { message: string; options: Record<string, unknown> }[] = [];
+    const client = {
+      chat: (message: string, options: Record<string, unknown>) => {
+        chatCalls.push({ message, options });
+        return (async function* () {
+          yield { type: "agent_start" as const, text: "", runId: "run-real" };
+          yield {
+            type: "text" as const,
+            text:
+              'Filed it.\n\n```json\n{"status":"done","title":"Invoice 4711 filed",' +
+              '"content":"Drafted supplier bill.","outcome":{"odooModel":"account.move","odooId":9}}\n```',
+            runId: "run-real",
+          };
+          yield { type: "done" as const, text: "", runId: "run-real" };
+        })();
+      },
+      chatAbort: async () => undefined,
+    };
+    const runAgent = createOpenClawRunAgent({
+      client: client as never,
+      loadAgentModel: async () => "ollama-cloud/gemini-3-flash",
+      waitForAgentReady: async () => true,
+    });
+
+    const summary = await dispatchEmails({ workflow, emails: [email()], runAgent });
+
+    expect(summary).toMatchObject({ claimed: 1, succeeded: 1, failed: 0, deferred: 0 });
+
+    // The ledger row carries the run's report verbatim, and the run was
+    // addressed at the isolated inbox session keyed by exactly this row.
+    const row = await ledgerRow(workflow.id, "msg-1");
+    expect(row.status).toBe("done");
+    expect(row.outcome).toEqual({ odooModel: "account.move", odooId: 9 });
+    expect(row.runId).toBe("run-real");
+    expect(chatCalls).toHaveLength(1);
+    expect(chatCalls[0].options.sessionKey).toBe(inboxSessionKey(workflow.agentId, row.id));
+
+    // The feed entry is the agent's own headline, not a synthesized one.
+    const [note] = await db.select().from(notifications).where(eq(notifications.sourceId, row.id));
+    expect(note.title).toBe("Invoice 4711 filed");
+    expect(note.status).toBe("success");
   });
 });

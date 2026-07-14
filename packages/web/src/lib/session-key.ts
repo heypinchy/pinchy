@@ -11,3 +11,16 @@ export function directSessionKey(agentId: string, userId: string, chatId?: strin
   const base = `agent:${agentId}:direct:${userId}`;
   return chatId ? `${base}:${chatId}` : base;
 }
+
+/**
+ * The OpenClaw session key for one isolated Inbox-Agent run (#139).
+ *
+ * Keyed by the `processed_emails` ledger row so run ↔ ledger correlation is
+ * one string comparison, and deliberately NOT in the `:direct:` namespace —
+ * chat listing keys on `:direct:`, so an inbox run can never surface as a user
+ * conversation. Sessions in this namespace are throwaway: OpenClaw's daily
+ * session reset garbage-collects them.
+ */
+export function inboxSessionKey(agentId: string, ledgerId: string): string {
+  return `agent:${agentId}:inbox:${ledgerId}`;
+}

@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { classifyUserSessions, type RawSession } from "@/lib/chats/classify-sessions";
+import { inboxSessionKey } from "@/lib/session-key";
 
 const AGENT = "agt_1";
 
@@ -142,6 +143,25 @@ describe("classifyUserSessions", () => {
       {
         key: `agent:${AGENT}:subagent:u-1`,
         sessionId: "ses_8",
+        lastInteractionAt: 1,
+      },
+    ];
+
+    const result = classifyUserSessions(sessions, "u-1", new Set());
+
+    expect(result).toEqual([]);
+  });
+
+  it("excludes an :inbox: key — an Inbox-Agent run must never surface as a user chat (#139)", () => {
+    // Derived from the real helper so a key-format change can't silently
+    // desynchronize this pin from what the dispatcher actually creates.
+    // Worst-case crafted: the ledger segment EQUALS the requesting userId, so
+    // this test only survives on the namespace check (`:direct:`), not on the
+    // principal comparison accidentally saving us.
+    const sessions: RawSession[] = [
+      {
+        key: inboxSessionKey(AGENT, "u-1"),
+        sessionId: "ses_inbox",
         lastInteractionAt: 1,
       },
     ];

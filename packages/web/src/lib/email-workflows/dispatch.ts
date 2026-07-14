@@ -38,13 +38,16 @@ export interface RunAgentResult {
 
 /**
  * Runs the workflow's action against one email in an isolated context. Injected
- * so the dispatcher's lifecycle is testable without a real OpenClaw run; the
- * production adapter (spawns a run via the agent's tools/permissions) lands in a
- * later slice, gated on the OpenClaw bump.
+ * so the dispatcher's lifecycle is testable without a real OpenClaw run. The
+ * production adapter is `createOpenClawRunAgent` (run-adapter.ts): it runs on
+ * the current OpenClaw pin — no version bump required. `ledgerId` is the claim's
+ * `processed_emails` row id; the adapter keys the isolated OpenClaw session by
+ * it so run ↔ ledger correlation is one string comparison.
  */
 export type RunAgent = (ctx: {
   workflow: WorkflowForDispatch;
   email: DispatchableEmail;
+  ledgerId: string;
 }) => Promise<RunAgentResult>;
 
 export interface DispatchSummary {
@@ -132,7 +135,7 @@ export async function dispatchEmails(params: {
       let result: RunAgentResult | null = null;
       let runError: unknown;
       try {
-        result = await runAgent({ workflow, email });
+        result = await runAgent({ workflow, email, ledgerId });
       } catch (err) {
         runError = err;
       }
