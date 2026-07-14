@@ -1567,7 +1567,7 @@ describe("ClientRouter", () => {
           role: "user",
           content:
             "Was steht in dieser Datei?\n\n<pinchy:attachments>\n" +
-            "The user attached these files (already saved into your workspace). Read each file with the listed built-in tool, using the exact absolute path:\n" +
+            "The user attached these files (already saved into your workspace). Read each file with the listed tool, using the exact absolute path:\n" +
             "- `/root/.openclaw/workspaces/agent-1/uploads/invoice.pdf` (application/pdf, 240 KB) — analyze with `pinchy_read`\n" +
             "\nIf you delegate this task to a sub-agent or another tool, pass these exact paths verbatim — do not retype from memory.\n" +
             "</pinchy:attachments>",
@@ -1605,7 +1605,7 @@ describe("ClientRouter", () => {
           role: "user",
           content:
             "<pinchy:attachments>\n" +
-            "The user attached these files (already saved into your workspace). Read each file with the listed built-in tool, using the exact absolute path:\n" +
+            "The user attached these files (already saved into your workspace). Read each file with the listed tool, using the exact absolute path:\n" +
             "- `/root/.openclaw/workspaces/agent-1/uploads/silent-pdf.pdf` (application/pdf, 100 KB) — analyze with `pinchy_read`\n" +
             "\nIf you delegate this task to a sub-agent or another tool, pass these exact paths verbatim — do not retype from memory.\n" +
             "</pinchy:attachments>",

@@ -1009,8 +1009,14 @@ export async function regenerateOpenClawConfig() {
   // `existingAllow` on first boot). Without explicit inclusion in
   // plugins.allow they are blocked by the whitelist and the dependent
   // built-in tools fail at runtime.
-  //   - document-extract: PDF text + image extraction backend used by the
-  //     built-in `pdf` tool's extraction fallback mode (pdfjs-dist).
+  //   - document-extract: PDF text + image extraction backend (pdfjs-dist) for
+  //     OpenClaw's built-in `pdf` tool. That built-in is now DENIED by the
+  //     per-agent allowlist — chat attachments are read via the pinchy-files
+  //     `pinchy_read` tool, which bundles its own pdfjs and does NOT depend on
+  //     document-extract (see tool-registry.ts § INTENDED_BUILTIN_TOOLS and the
+  //     2026-07-14 prod incident). This entry is therefore currently inert; it
+  //     is kept until the now-unreachable built-in `pdf` registration
+  //     (`pdfModel` below) is dropped together in a follow-up.
   const REQUIRED_BUNDLED_PLUGINS = ["document-extract"] as const;
 
   const DISABLED_OPENCLAW_PLUGINS = new Set(["acpx", "bonjour", "device-pair", "phone-control"]);

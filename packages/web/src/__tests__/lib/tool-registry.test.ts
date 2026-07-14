@@ -136,18 +136,23 @@ describe("getToolsByCategory", () => {
 });
 
 describe("computeAllowedTools", () => {
-  it("does NOT allow the built-in `pdf`/`image` tools — they cannot read workspace uploads (prod incident 2026-07-14)", () => {
-    // OpenClaw's built-in pdf/image media tools fail with "Local media file not
-    // found" on workspace upload paths. attachment-pipeline routes every PDF and
-    // image through the pinchy-files `pinchy_read` tool instead. Keeping the
-    // built-ins in the allowlist handed weaker models (e.g. kimi-k2.6) a
-    // temptingly-named trap they picked over `pinchy_read`, then reported the
-    // attached file as unreadable even though it was present on disk.
-    const allowed = computeAllowedTools();
-    expect(allowed).not.toContain("pdf");
-    expect(allowed).not.toContain("image");
-    // The intended media reader stays available.
-    expect(allowed).toContain("pinchy_read");
+  // OpenClaw's built-in pdf/image media tools fail with "Local media file not
+  // found" on workspace upload paths. attachment-pipeline routes every PDF and
+  // image through the pinchy-files `pinchy_read` tool instead. Keeping the
+  // built-ins in the allowlist handed weaker models (e.g. kimi-k2.6) a
+  // temptingly-named trap they picked over `pinchy_read`, then reported the
+  // attached file as unreadable even though it was present on disk (prod
+  // incident 2026-07-14).
+  it("does NOT allow the built-in `pdf` tool — it cannot read workspace uploads (prod incident 2026-07-14)", () => {
+    expect(computeAllowedTools()).not.toContain("pdf");
+  });
+
+  it("does NOT allow the built-in `image` tool — same reason as `pdf` (prod incident 2026-07-14)", () => {
+    expect(computeAllowedTools()).not.toContain("image");
+  });
+
+  it("keeps `pinchy_read` — the intended media reader — available", () => {
+    expect(computeAllowedTools()).toContain("pinchy_read");
   });
 
   it("allows memory_search/memory_get (bundled memory-core plugin powers agent memory)", () => {

@@ -372,7 +372,7 @@ export function buildAttachmentBlock(refs: ProcessedWorkspaceRef[]): string {
   });
   return [
     ATTACHMENT_BLOCK_OPEN,
-    "The user attached these files (already saved into your workspace). Read each file with the listed built-in tool, using the exact absolute path:",
+    "The user attached these files (already saved into your workspace). Read each file with the listed tool, using the exact absolute path:",
     ...lines,
     "",
     "If you delegate this task to a sub-agent or another tool, pass these exact paths verbatim — do not retype from memory.",
