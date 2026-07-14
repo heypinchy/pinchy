@@ -8,6 +8,13 @@ const openclawVersion: string =
 
 const nextConfig: NextConfig = {
   devIndicators: false,
+  // pdfjs-dist must NOT be bundled: its Node fallback ("fake worker") loads
+  // pdf.worker.mjs via a runtime dynamic import that the bundler cannot see,
+  // so bundling breaks the KB ingest's PDF extraction at runtime with
+  // "Cannot find module '…/chunks/pdf.worker.mjs'" (found in the Phase-1
+  // live verify — unit tests run unbundled and can't catch this). External =
+  // resolved from node_modules at runtime, where the worker file exists.
+  serverExternalPackages: ["pdfjs-dist"],
   allowedDevOrigins: ["local.heypinchy.com", "https://local.heypinchy.com:8443"],
   env: {
     NEXT_PUBLIC_PINCHY_VERSION: pkg.version,
