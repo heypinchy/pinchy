@@ -32,14 +32,16 @@ export const INVITE_TYPES = ["invite", "reset"] as const;
 export type InviteType = (typeof INVITE_TYPES)[number];
 
 // Connection types the app writes today (`odoo`, `web-search`, `google`) plus
-// the recognised email types (`microsoft`, `imap`). Expand via a new migration
-// as integrations land — the plugin-first architecture means this list grows.
+// the recognised email types (`microsoft`, `imap`) and generic MCP server
+// connections (`mcp`). Expand via a new migration as integrations land — the
+// plugin-first architecture means this list grows.
 export const INTEGRATION_CONNECTION_TYPES = [
   "odoo",
   "web-search",
   "google",
   "microsoft",
   "imap",
+  "mcp",
 ] as const;
 export type IntegrationConnectionType = (typeof INTEGRATION_CONNECTION_TYPES)[number];
 

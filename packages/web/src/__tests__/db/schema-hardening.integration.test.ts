@@ -126,6 +126,14 @@ describe("schema-hardening CHECK constraints (#259)", () => {
     ).rejects.toSatisfy(constraintViolation(/integration_connections_type_check/));
   });
 
+  it("accepts an integration connection with type 'mcp'", async () => {
+    const [conn] = await db
+      .insert(integrationConnections)
+      .values({ type: "mcp", name: "MCP Server", credentials: "enc" })
+      .returning();
+    expect(conn.type).toBe("mcp");
+  });
+
   it("rejects an integration connection with an invalid status", async () => {
     await expect(
       db
