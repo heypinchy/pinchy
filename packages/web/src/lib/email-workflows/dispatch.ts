@@ -26,6 +26,26 @@ export interface WorkflowForDispatch {
   recipientUserIds: string[];
 }
 
+/**
+ * A run signalling that it never actually started because of a *transient*
+ * condition (e.g. the agent isn't in the OpenClaw runtime yet — a config reload
+ * can lag a gateway restart by 10–30 s). The dispatcher treats this exactly
+ * like a delivery failure: the claim's row is left `processing` for the
+ * reconciliation sweep to retry, NOT finalized `failed`. A terminal `failed`
+ * would strand the email — the sweep only re-discovers `processing`/`deferred`
+ * rows — turning a momentary infra gap into permanent, silent loss.
+ *
+ * Reserve this for conditions that self-heal on retry. A misconfiguration (no
+ * model) or a run that started and then failed is a genuine failure: throw a
+ * plain Error so the row finalizes `failed` and the recipient is notified.
+ */
+export class RunDeferredError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "RunDeferredError";
+  }
+}
+
 /** The terminal outcome of an isolated agent run (non-failure paths). */
 export interface RunAgentResult {
   status: "done" | "no_action";
@@ -137,6 +157,11 @@ export async function dispatchEmails(params: {
       try {
         result = await runAgent({ workflow, email, ledgerId });
       } catch (err) {
+        // A deferral is not a run failure: the run never really started (a
+        // transient infra gap). Rethrow to the outer catch so the row stays
+        // `processing` for the reconciliation sweep, rather than finalizing
+        // `failed` + notifying — which would strand the email permanently.
+        if (err instanceof RunDeferredError) throw err;
         runError = err;
       }
 
@@ -172,8 +197,9 @@ export async function dispatchEmails(params: {
         summary.failed++;
       }
     } catch (err) {
-      // Delivery or finalize threw after the claim. Leave the row `processing`
-      // for the reconciliation sweep; never abort the batch.
+      // A deferral (RunDeferredError), or delivery/finalize threw after the
+      // claim. Leave the row `processing` for the reconciliation sweep; never
+      // abort the batch.
       summary.deferred++;
       console.error(
         `dispatchEmails: deferred email ${email.providerMessageId} (workflow ${workflow.id}) after claim — left processing for the reconciliation sweep`,

@@ -6,7 +6,7 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
 
 import { createOpenClawRunAgent } from "@/lib/email-workflows/run-adapter";
-import type { WorkflowForDispatch } from "@/lib/email-workflows/dispatch";
+import { RunDeferredError, type WorkflowForDispatch } from "@/lib/email-workflows/dispatch";
 import type { DispatchableEmail } from "@/lib/email-workflows/types";
 import { inboxSessionKey } from "@/lib/session-key";
 
@@ -198,16 +198,22 @@ describe("createOpenClawRunAgent — failure semantics", () => {
     expect(client.chat).not.toHaveBeenCalled();
   });
 
-  it("throws before chatting when the agent never becomes ready in the runtime", async () => {
+  it("DEFERS (not fails) when the agent never becomes ready — a transient infra gap must be retryable", async () => {
     const client = makeClient();
 
-    await expect(
-      makeAdapter(client, { waitForAgentReady: async () => false })({
-        workflow,
-        email,
-        ledgerId: "l",
-      })
-    ).rejects.toThrow(/runtime/);
+    // RunDeferredError is the sentinel the dispatcher treats as "leave the row
+    // processing for the reconciliation sweep", NOT as a terminal run failure.
+    // The agent simply isn't in the runtime yet (a config reload can lag a
+    // restart by 10–30 s); failing the email terminally would strand it, since
+    // the sweep only retries `processing`/`deferred` rows, never `failed` ones.
+    const promise = makeAdapter(client, { waitForAgentReady: async () => false })({
+      workflow,
+      email,
+      ledgerId: "l",
+    });
+
+    await expect(promise).rejects.toBeInstanceOf(RunDeferredError);
+    await expect(promise).rejects.toThrow(/runtime/);
     expect(client.chat).not.toHaveBeenCalled();
   });
 });

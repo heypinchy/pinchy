@@ -1,5 +1,6 @@
-import type { OpenClawClient } from "openclaw-node";
+import type { ChatOptions, OpenClawClient } from "openclaw-node";
 
+import { RunDeferredError } from "@/lib/email-workflows/dispatch";
 import type { RunAgent, WorkflowForDispatch } from "@/lib/email-workflows/dispatch";
 import { parseInboxReport } from "@/lib/email-workflows/report";
 import type { DispatchableEmail } from "@/lib/email-workflows/types";
@@ -62,11 +63,13 @@ export function createOpenClawRunAgent(deps: OpenClawRunAgentDeps): RunAgent {
       throw new Error(`agent ${workflow.agentId} has no model configured`);
     }
     if (!(await deps.waitForAgentReady(workflow.agentId))) {
-      throw new Error(`agent ${workflow.agentId} is not in the OpenClaw runtime`);
+      // Transient: the agent hasn't landed in the runtime yet (a config reload
+      // lagging a restart). Defer, don't fail — the sweep retries `processing`.
+      throw new RunDeferredError(`agent ${workflow.agentId} is not in the OpenClaw runtime yet`);
     }
 
     const sessionKey = inboxSessionKey(workflow.agentId, ledgerId);
-    const options: Record<string, unknown> = {
+    const options: ChatOptions = {
       sessionKey,
       agentId: workflow.agentId,
       extraSystemPrompt: REPORT_CONTRACT,
@@ -146,7 +149,7 @@ class TurnTimeout extends Error {}
 async function collectTurn(
   client: Pick<OpenClawClient, "chat" | "chatAbort">,
   message: string,
-  options: Record<string, unknown>,
+  options: ChatOptions,
   run: { sessionKey: string; timeoutMs: number }
 ): Promise<{ text: string; runId?: string }> {
   const generator = client.chat(message, options);

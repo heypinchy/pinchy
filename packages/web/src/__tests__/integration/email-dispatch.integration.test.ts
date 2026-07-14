@@ -17,7 +17,7 @@ import {
   notificationRecipients,
   processedEmails,
 } from "@/db/schema";
-import { dispatchEmails } from "@/lib/email-workflows/dispatch";
+import { dispatchEmails, RunDeferredError } from "@/lib/email-workflows/dispatch";
 import type { RunAgent, WorkflowForDispatch } from "@/lib/email-workflows/dispatch";
 import { createOpenClawRunAgent } from "@/lib/email-workflows/run-adapter";
 import type { DispatchableEmail } from "@/lib/email-workflows/types";
@@ -269,6 +269,53 @@ describe("dispatchEmails — run failure", () => {
     expect(summary).toMatchObject({ claimed: 2, succeeded: 1, failed: 1 });
     expect((await ledgerRow(workflow.id, "bad")).status).toBe("failed");
     expect((await ledgerRow(workflow.id, "good")).status).toBe("done");
+  });
+});
+
+describe("dispatchEmails — deferred run", () => {
+  it("leaves the row processing (not failed) when the run signals RunDeferredError", async () => {
+    const workflow = await workflowForDispatch();
+    // A run that never started because the agent wasn't in the runtime yet —
+    // a purely transient infra gap. It must be retryable by the reconciliation
+    // sweep, not a terminal `failed` that the sweep can never re-discover.
+    const runAgent: RunAgent = async () => {
+      throw new RunDeferredError("agent not in the OpenClaw runtime yet");
+    };
+
+    const summary = await dispatchEmails({ workflow, emails: [email()], runAgent });
+
+    expect(summary).toMatchObject({ claimed: 1, succeeded: 0, failed: 0, deferred: 1 });
+
+    // Recoverable, exactly like a notify/finalize failure: the row stays
+    // `processing` and is never finalized.
+    const row = await ledgerRow(workflow.id, "msg-1");
+    expect(row.status).toBe("processing");
+    expect(row.finalizedAt).toBeNull();
+
+    // A deferral is silent — no failure notification reaches the recipient,
+    // because the email hasn't actually failed; the sweep will retry it.
+    const notes = await db.select().from(notifications).where(eq(notifications.sourceId, row.id));
+    expect(notes).toHaveLength(0);
+  });
+
+  it("isolates a deferred run — the rest of the batch still processes", async () => {
+    const workflow = await workflowForDispatch();
+    const runAgent: RunAgent = async (ctx) => {
+      if (ctx.email.providerMessageId === "wait") {
+        throw new RunDeferredError("not ready");
+      }
+      return doneRun(ctx);
+    };
+
+    const summary = await dispatchEmails({
+      workflow,
+      emails: [email({ providerMessageId: "wait" }), email({ providerMessageId: "go" })],
+      runAgent,
+    });
+
+    expect(summary).toMatchObject({ claimed: 2, succeeded: 1, failed: 0, deferred: 1 });
+    expect((await ledgerRow(workflow.id, "wait")).status).toBe("processing");
+    expect((await ledgerRow(workflow.id, "go")).status).toBe("done");
   });
 });
 
