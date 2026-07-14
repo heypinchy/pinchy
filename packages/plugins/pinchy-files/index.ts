@@ -1,4 +1,4 @@
-import { readdirSync, statSync, realpathSync } from "fs";
+import { readdirSync, statSync, realpathSync, existsSync } from "fs";
 import { readFile, open, writeFile } from "fs/promises";
 import { createHash } from "crypto";
 import { join, extname, basename } from "path";
@@ -14,6 +14,24 @@ import { resolveAgentInfo } from "./resolve-agent-info";
 
 interface PluginToolContext {
   agentId?: string;
+}
+
+// Resolve a caller-supplied path to the Unicode form that actually exists on
+// disk. Linux filesystems don't fold Unicode, so a path the agent's model
+// produced in NFC ("ä" = U+00E4) will not match a file stored in NFD ("a" +
+// U+0308) — the case for anything uploaded from macOS before the sanitizeFilename
+// NFC fix landed. Try the path as given, then its NFC and NFD forms, returning
+// the first that exists; fall back to the original so the caller's realpathSync
+// still throws its normal ENOENT when the file is genuinely absent. `exists` is
+// injectable because the dev host (macOS/APFS) folds normalization and would mask
+// the mismatch that only reproduces on the Linux container filesystem.
+export function resolveOnDiskPath(requestedPath: string, exists: (p: string) => boolean = existsSync): string {
+  if (exists(requestedPath)) return requestedPath;
+  for (const form of ["NFC", "NFD"] as const) {
+    const variant = requestedPath.normalize(form);
+    if (variant !== requestedPath && exists(variant)) return variant;
+  }
+  return requestedPath;
 }
 
 // Strips the workspace/writePath prefix from an absolute path for audit logging.
@@ -271,7 +289,10 @@ const plugin = {
           ) {
             try {
               const requestedPath = params.path as string;
-              const realPath = realpathSync(requestedPath);
+              // Fall back to the other Unicode normalization form when the exact
+              // bytes don't exist — an NFC path from the model vs an NFD file on
+              // the Linux volume (macOS upload). See resolveOnDiskPath.
+              const realPath = realpathSync(resolveOnDiskPath(requestedPath));
               validateAccess({ allowed_paths: paths }, realPath);
 
               const entries = readdirSync(realPath);
@@ -336,7 +357,10 @@ const plugin = {
           ) {
             try {
               const requestedPath = params.path as string;
-              const realPath = realpathSync(requestedPath);
+              // Fall back to the other Unicode normalization form when the exact
+              // bytes don't exist — an NFC path from the model vs an NFD file on
+              // the Linux volume (macOS upload). See resolveOnDiskPath.
+              const realPath = realpathSync(resolveOnDiskPath(requestedPath));
               validateAccess({ allowed_paths: paths }, realPath);
 
               const lowerPath = realPath.toLowerCase();
