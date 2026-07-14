@@ -480,7 +480,7 @@ export const settings = pgTable("settings", {
 
 // ── Audit Trail ──────────────────────────────────────────────────────
 
-export const actorTypeEnum = pgEnum("actor_type", ["user", "agent", "system"]);
+export const actorTypeEnum = pgEnum("actor_type", ["user", "agent", "system", "api_key"]);
 
 export const auditLog = pgTable(
   "audit_log",

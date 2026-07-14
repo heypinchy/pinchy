@@ -353,7 +353,7 @@ export function truncateDetail(detail: AuditDetail | null | undefined): AuditDet
 }
 
 type AuditLogBase = {
-  actorType: "user" | "agent" | "system";
+  actorType: "user" | "agent" | "system" | "api_key";
   actorId: string;
   resource?: string | null;
   outcome: "success" | "failure";
