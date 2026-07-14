@@ -149,6 +149,58 @@ Target: `HMAC-SHA256(pepper, secret)`, pepper via `getOrCreateSecret("api_key_pe
 - **Pepper source:** `getOrCreateSecret("api_key_pepper")` vs. reusing the plugin's own secret.
 - **Key format:** whether the plugin fixes the format or we can set a `pinchy_`-prefixed one.
 
+### 7.1 Verification findings (Task 0.1, 2026-07-14)
+
+Installed `@better-auth/api-key@1.6.23` (pinned to match `better-auth`). All evidence below was read from the installed 1.6.23 source, not from memory. Package dist lives at `node_modules/.pnpm/@better-auth+api-key@1.6.23_*/node_modules/@better-auth/api-key/dist/` — code in `index.mjs`, types in `index-CI6mGUwK.d.mts` and `types-BR70O3Q3.d.mts`. Line numbers below are into those files.
+
+**Hashing method → classification (a): fast deterministic SHA-256, no custom-hash hook. Drop the pepper.**
+
+- `index.mjs:2246-2248` — the default hasher is plain SHA-256, base64url-encoded (no padding), fast and deterministic:
+  ```js
+  const defaultKeyHasher = async (key) => {
+    const hash = await createHash("SHA-256").digest(new TextEncoder().encode(key));
+    return base64Url.encode(new Uint8Array(hash), { padding: false });
+  };
+  ```
+  (`createHash` from `@better-auth/utils/hash`, `index.mjs:5`.) Applied at `index.mjs:807` (create) and `index.mjs:1624` (verify): `const hashed = opts.disableKeyHashing ? key : await defaultKeyHasher(key);`
+- The **only** hashing-related config option is `disableKeyHashing?: boolean` (default `false`) — `types-BR70O3Q3.d.mts:225`, defaulted at `index.mjs:2267`. A grep for `keyHasher|customHasher|customKeyHasher|hashKey|hasher` finds only `disableKeyHashing` and the module-level const `defaultKeyHasher`. `defaultKeyHasher` is `export`ed (`index.mjs:2393`) but there is **no config hook to inject a replacement**. So option (b) does not exist.
+- **Classification (a).** SHA-256 satisfies §6.8 goals (i) entropy-based security, (ii) deterministic ⇒ O(1) UNIQUE-index lookup, (iii) fast per-request auth. **Caveat:** §6.8 goal (iv), the external pepper, is **not achievable** — no custom-hash option, so `HMAC-SHA256(pepper, secret)` cannot be wired through the plugin without abandoning the D1 hybrid (plugin owns storage). **Decision: accept the plugin's SHA-256 and drop the pepper.** This is acceptable because generated keys are 64 random `[a-zA-Z]` chars (`defaultKeyLength: 64` at `index.mjs:2263`; generator uses `a-z`,`A-Z` at `index.mjs:2296`) ≈ 52^64 ≈ 2^365 bits of preimage entropy — a leak of the SHA-256 column is not brute-forceable even without a pepper.
+- **Task 1.1 instruction:** do **not** set `disableKeyHashing`; do **not** attempt a custom hasher (none exists). Update §6.8's target: keys are hashed-at-rest (SHA-256) and indexable, but no pepper.
+
+**Session resolution (D1) → registering `apiKey()` does NOT auto-resolve keys into `getSession()` by default.**
+
+- The plugin registers a `before` hook that can inject a session from an API-key header, but its matcher only fires when `findApiKeyAndConfig` returns a key, and that function **skips every config whose `enableSessionForAPIKeys` is falsy**:
+  - `index.mjs:2310-2312`: `for (const config of configurations) { if (!config.enableSessionForAPIKeys) continue; const key = getApiKeyFromConfig(ctx, config); ... }`
+  - `index.mjs:2329-2330`: `hooks: { before: [{ matcher: (ctx) => !!findApiKeyAndConfig(ctx), ...`
+- `enableSessionForAPIKeys` **defaults to `false`** — `index.mjs:2285`: `enableSessionForAPIKeys: config?.enableSessionForAPIKeys ?? false,`. While off, the session-injection block (`ctx.context.session = session; if (ctx.path === "/get-session") return session;`, `index.mjs:2375-2376`) is unreachable.
+- Header default: `apiKeyHeaders: config?.apiKeyHeaders ?? "x-api-key"` (`index.mjs:2260`).
+- **Task 1.1 instruction:** explicitly set `enableSessionForAPIKeys: false` in `apiKey({...})` (matches the default; belt-and-suspenders against an upstream default flip). Existing `withAuth`/`withAdmin` routes stay session-only and are not key-authenticable.
+- **Task 2.2 instruction:** the "can't disable" branch does **not** apply — it can be disabled and is off by default. The regression test proving `GET /api/users` rejects an `x-api-key` header is therefore **downgraded from required to recommended defense-in-depth** (cheap guard against a future accidental `enableSessionForAPIKeys: true`). Given Pinchy's security posture, keeping one small regression test is advised, but it is no longer a gating requirement.
+
+**`verifyApiKey` signature (gate for Phase 2).** Server-only endpoint — `createAuthEndpoint.serverOnly({ method: "POST", body: verifyApiKeyBodySchema }, ...)` at `index.mjs:1951-1954`; call as `auth.api.verifyApiKey({ body })`, not a public HTTP route.
+- Request body (`index-CI6mGUwK.d.mts:446-450`): `{ configId?: string; key: string; permissions?: Record<string, string[]> }`. Passing `permissions` authorizes the required permissions against the key's stored permissions (`index.mjs:1666-1669`, via `role(apiKeyPermissions).authorize(permissions)`).
+- Response — **does not throw** on an invalid key; it catches internally and returns a discriminated union (`index-CI6mGUwK.d.mts:444-477`, impl `index.mjs:1988-2024`):
+  - Failure: `{ valid: false, error: { message, code }, key: null }` (codes: `KEY_NOT_FOUND`, `INVALID_API_KEY`, and `KEY_DISABLED`/`KEY_EXPIRED`/`USAGE_EXCEEDED` from `validateApiKey`).
+  - Success: `{ valid: true, error: null, key: Omit<ApiKey, "key"> }` — the hashed `key` is stripped at `index.mjs:2011` (`const { key: _, ...returningApiKey } = apiKey`).
+- Returned `key` object fields (`index-CI6mGUwK.d.mts:640-666`): `id: string`, `name: string | null`, **`referenceId: string`** (owner), `permissions: { [k: string]: string[] } | null` (JSON-parsed at `index.mjs:2016`), `prefix`, `start`, `enabled`, `expiresAt`, `metadata`, `remaining`, rate-limit fields, `configId`, `createdAt`, `updatedAt`.
+- **GOTCHA (Task 2 critical):** the owner field on the output is **`referenceId`, not `userId`** — there is no `userId` on the returned object. (`userId` appears only as a stale property in the getApiKey OpenAPI *doc* block, `index-CI6mGUwK.d.mts:~579`, and as a server-only *input* alias on create.) Read the principal from `result.key.referenceId`.
+
+**`createApiKey` signature (gate for Phase 5).** Endpoint `POST /api-key/create` (`index-CI6mGUwK.d.mts:261`); also `auth.api.createApiKey({ body })`.
+- Request body (`index-CI6mGUwK.d.mts:262-277`): `configId?`, `name?`, `expiresIn` (number|null, **seconds**), `prefix?`, `remaining?`, `metadata?`, `refillAmount?`, `refillInterval?`, `rateLimit*?`, `permissions?: Record<string, string[]>`, `userId?` (server-only), `organizationId?`.
+  - `expiresIn` is in **seconds** (`index.mjs:584` meta "in seconds"; `getDate(expiresIn, "sec")` at `index.mjs:821`), but is range-checked against `keyExpiration.minExpiresIn`/`maxExpiresIn` which are in **days** (defaults 1 / 365) after dividing by `3600*24` (`index.mjs:785-789`) ⇒ default max life 365 days.
+- Response (`index-CI6mGUwK.d.mts:406-431`, impl `index.mjs:853-858`) returns the full row spread with **`key` overridden to the PLAINTEXT key including prefix** — the one-time secret:
+  ```js
+  return ctx.json({ ...apiKey, key, metadata: metadata ?? null, permissions: ... });
+  ```
+  Plaintext field name = **`key: string`**. Only `createApiKey` returns it; verify/get/list strip it. Owner returned as `referenceId`.
+- **GOTCHA (Task 5 critical):** `permissions`, `remaining`, and all `rateLimit*` fields are **server-only** — passing any of them when `ctx.request || ctx.headers` is truthy throws `SERVER_ONLY_PROPERTY` (`index.mjs:735-736`); a body `userId` is rejected when `ctx.request` is set (`index.mjs:737`). ⇒ To mint a scoped key for an arbitrary agent principal, call `auth.api.createApiKey({ body: { userId, name, prefix, permissions, expiresIn } })` **server-side with NO `headers`/`request`** in the call options. That reaches the `else` branch (`index.mjs:754-766`) where `referenceId = body.userId` and `permissions` is accepted.
+
+**Key format / prefix.** Two ways to get a `pinchy_` prefix:
+- Per-key: pass `prefix: "pinchy_"` in the create body (not server-only; accepted on any call).
+- Global (recommended): set **`defaultPrefix: "pinchy_"`** in `apiKey({...})` config — used as `prefix || opts.defaultPrefix` (`index.mjs:805`) and stored (`index.mjs:817`). Type `defaultPrefix?: string` (`types-BR70O3Q3.d.mts:281`). Bounds: `minimumPrefixLength` 1 / `maximumPrefixLength` 32 (`index.mjs:2262-2263`) ⇒ `pinchy_` (7 chars) is valid. Prefix is stored as plain text and prepended to the key.
+
+**Surprise — aggressive default per-key rate limit (flag for Task 1.1).** Each created key defaults to rate-limited **on**: 10 requests / 24h (`index.mjs:2270-2274`: `enabled: true, timeWindow: 86400000, maxRequests: 10`), written onto every row (`index.mjs:830-832`) and enforced on every `verifyApiKey` via `claimUsageInDatabase` (`index.mjs:1700-1710`). Left as-is this throttles the verify path to 10 calls/day per key. **Task 1.1 should set** `rateLimit: { enabled: false }` (or sane `maxRequests`/`timeWindow`) in the plugin config, or set per-key rate-limit fields at creation. Outside the three core questions but material to a working provisioning API.
+
 ## 8. Docs-first tasks (same PR, per CLAUDE.md)
 
 - New reference page on docs.heypinchy.com for the agent-provisioning API (auth, scopes, endpoints, examples).
