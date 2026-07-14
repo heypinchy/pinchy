@@ -1,6 +1,6 @@
 // @vitest-environment node
 import { describe, it, expect, vi, beforeEach, afterEach, afterAll } from "vitest";
-import { readFileSync as realReadFileSync, mkdtempSync, rmSync, mkdirSync, writeFileSync, symlinkSync, existsSync } from "fs";
+import { readFileSync as realReadFileSync, mkdtempSync, rmSync, mkdirSync, writeFileSync, symlinkSync, existsSync, readdirSync } from "fs";
 import { join } from "path";
 import { tmpdir } from "os";
 import Database from "better-sqlite3";
@@ -1063,5 +1063,92 @@ describe("pinchy_write tool", () => {
     expect(result.details.path).not.toMatch(/^\//);
 
     expect(realReadFileSync(filePath, "utf-8")).toBe("new content");
+  });
+});
+
+// ── pinchy_write: NFC/NFD normalization fallback ─────────────────────────────
+// A file already on disk in a different Unicode normalization form than the path
+// the model emits (an NFD macOS upload vs the NFC request) is the same file — see
+// resolveOnDiskPath. Its decision logic is unit-tested with an injectable `exists`
+// in unicode-path.test.ts; these tests exercise the real pinchy_write wiring
+// end-to-end against the filesystem, so overwrite=false reports the collision and
+// overwrite=true reuses the existing file instead of writing an NFC duplicate.
+//
+// This can only reproduce on a normalization-sensitive filesystem (Linux/ext4,
+// where CI runs). macOS/APFS folds NFC and NFD onto the same file, so the mismatch
+// physically cannot occur and the block is gated off there — an OS-feature gate
+// (allowed by AGENTS.md), not a suppression: a real-tempfile test would pass even
+// without the fix and prove nothing, which is why resolveOnDiskPath is injectable.
+function fsFoldsUnicode(): boolean {
+  const probeDir = mkdtempSync(join(tmpdir(), "pinchy-fold-probe-"));
+  try {
+    const nfd = join(probeDir, "probe-a\u0308"); // "a" + U+0308 (decomposed)
+    const nfc = join(probeDir, "probe-\u00e4"); // U+00E4 (composed)
+    writeFileSync(nfd, "");
+    return existsSync(nfc); // true => the FS folded the NFC lookup onto the NFD file
+  } finally {
+    rmSync(probeDir, { recursive: true, force: true });
+  }
+}
+
+describe.skipIf(fsFoldsUnicode())("pinchy_write NFC/NFD fallback (normalization-sensitive FS only)", () => {
+  let tmpDir: string;
+
+  // Explicit escapes so the source file's own encoding can't fold the two forms.
+  const NFD_NAME = "Absch" + "a\u0308" + "tzung.pdf"; // "a" + U+0308 (decomposed)
+  const NFC_NAME = "Absch" + "\u00e4" + "tzung.pdf"; // U+00E4 (composed)
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    tmpDir = mkdtempSync(join(tmpdir(), "pinchy-write-nfc-nfd-"));
+  });
+
+  afterEach(() => {
+    rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  async function makeWriteTool() {
+    const api = createMockApi({
+      "agent-1": { allowed_paths: [tmpDir], write_paths: [tmpDir] },
+    });
+    const { default: plugin } = await import("./index");
+    plugin.register!(api as any);
+    const factory = mockRegisterTool.mock.calls.find(
+      (call: any[]) => call[1]?.name === "pinchy_write"
+    )?.[0];
+    return factory({ agentId: "agent-1" });
+  }
+
+  it("reports the collision instead of creating an NFC duplicate (overwrite=false)", async () => {
+    writeFileSync(join(tmpDir, NFD_NAME), "original-nfd");
+    const tool = await makeWriteTool();
+
+    const result = await tool.execute("call-1", {
+      path: join(tmpDir, NFC_NAME), // NFC request; the file on disk is NFD
+      content: "would-be-duplicate",
+    });
+
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toMatch(/already exists/i);
+    // No second file: the NFC write must not have landed beside the NFD original.
+    expect(readdirSync(tmpDir)).toHaveLength(1);
+    expect(realReadFileSync(join(tmpDir, NFD_NAME), "utf-8")).toBe("original-nfd");
+  });
+
+  it("overwrites the existing NFD file rather than duplicating it (overwrite=true)", async () => {
+    writeFileSync(join(tmpDir, NFD_NAME), "original-nfd");
+    const tool = await makeWriteTool();
+
+    const result = await tool.execute("call-1", {
+      path: join(tmpDir, NFC_NAME),
+      content: "updated",
+      overwrite: true,
+    });
+
+    expect(result.isError).toBeFalsy();
+    expect(result.details.mode).toBe("overwrite");
+    // Still exactly one file, and it's the original NFD file with new content.
+    expect(readdirSync(tmpDir)).toHaveLength(1);
+    expect(realReadFileSync(join(tmpDir, NFD_NAME), "utf-8")).toBe("updated");
   });
 });

@@ -25,6 +25,12 @@ interface PluginToolContext {
 // still throws its normal ENOENT when the file is genuinely absent. `exists` is
 // injectable because the dev host (macOS/APFS) folds normalization and would mask
 // the mismatch that only reproduces on the Linux container filesystem.
+//
+// Only uniform, whole-string normalization forms are tried: a mixed-form path
+// (e.g. an NFC directory segment with an NFD filename) matches neither the NFC
+// nor the NFD normalization of the whole string and won't resolve — it just
+// falls back to the original (safe). That case doesn't arise here because every
+// segment comes from the same macOS upload written in one normalization form.
 export function resolveOnDiskPath(requestedPath: string, exists: (p: string) => boolean = existsSync): string {
   if (exists(requestedPath)) return requestedPath;
   for (const form of ["NFC", "NFD"] as const) {
@@ -546,11 +552,22 @@ const plugin = {
                 "write"
               );
 
+              // A file already stored in the other Unicode normalization form (an
+              // NFD upload from macOS vs the NFC path the model emits) is the same
+              // file. Without this, overwrite=true would create an NFC duplicate
+              // beside the NFD original, and overwrite=false would silently create
+              // a duplicate instead of reporting the collision. resolveOnDiskPath
+              // returns the form that exists on disk, or `resolved` unchanged when
+              // creating a genuinely new file. Like the read side, this only bites
+              // on a normalization-sensitive FS (Linux); macOS/APFS folds the forms.
+              const onDisk = resolveOnDiskPath(resolved);
+
               // Defense in depth: the read tools realpath before validating, so
               // a symlink inside an allowed dir pointing outside it is caught.
               // The lexical check above can't see that, so reject any write
               // whose real (symlink-resolved) target escapes the write roots.
-              assertNoSymlinkEscape(requestedPath, writePaths);
+              // Check the form we actually write to.
+              assertNoSymlinkEscape(onDisk, writePaths);
 
               const buffer = Buffer.from(content, "utf-8");
               if (buffer.byteLength > MAX_FILE_SIZE) {
@@ -564,17 +581,17 @@ const plugin = {
 
               if (overwrite) {
                 try {
-                  const existing = await readFile(resolved);
+                  const existing = await readFile(onDisk);
                   previousContentHash = createHash("sha256").update(existing).digest("hex");
                   mode = "overwrite";
                 } catch (err) {
                   if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
                   mode = "create";
                 }
-                await writeFile(resolved, buffer);
+                await writeFile(onDisk, buffer);
               } else {
                 try {
-                  const fh = await open(resolved, "wx");
+                  const fh = await open(onDisk, "wx");
                   try {
                     await fh.writeFile(buffer);
                   } finally {
@@ -594,7 +611,7 @@ const plugin = {
                       // Set details so the audit endpoint suppresses raw params
                       // (which include the full content blob — PII protection).
                       details: {
-                        path: relativizeWritePath(resolved, writePaths),
+                        path: relativizeWritePath(onDisk, writePaths),
                         mode: "create",
                         overwrite: false,
                         error: "File already exists",
@@ -615,7 +632,7 @@ const plugin = {
                   },
                 ],
                 details: {
-                  path: relativizeWritePath(resolved, writePaths),
+                  path: relativizeWritePath(onDisk, writePaths),
                   mode,
                   sizeBytes: buffer.byteLength,
                   contentHash,
