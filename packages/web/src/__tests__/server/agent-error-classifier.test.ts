@@ -42,9 +42,8 @@ describe("classifyAgentError", () => {
 
   it("classifies the production Gemini-3 thought_signature schema rejection (issue #338 / #355)", () => {
     // Verbatim production payload — the Penny tracking entry from #355.
-    // Different shape than classifyUpstreamFormatError's input (which gets
-    // model context too): here we classify from the raw error text alone, so
-    // the audit umbrella sees the same outcome regardless of model context.
+    // Classified from the raw error text alone (no model context needed),
+    // so the audit umbrella sees the same outcome regardless of model context.
     const result = classifyAgentError(
       "LLM request failed: provider rejected the request schema or tool payload. " +
         'rawError=400 "Function call is missing a thought_signature in functionCall parts. ' +
@@ -99,10 +98,9 @@ describe("classifyAgentError", () => {
   });
 
   it("does not match bare-word 'thoughtsignature' without separator (defensive)", () => {
-    // Same defensive rule as classifyUpstreamFormatError in
-    // model-error-classifier.ts — keep the regex narrow enough that an
-    // unrelated future provider error mentioning the wrong English word
-    // cannot hijack the schema_rejection branch.
+    // Keep the regex narrow enough that an unrelated future provider error
+    // mentioning the wrong English word cannot hijack the schema_rejection
+    // branch.
     expect(classifyAgentError("thoughtsignature mismatch detected by linter")).toBe("unknown");
   });
 

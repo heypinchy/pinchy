@@ -33,38 +33,6 @@ export type ModelUnavailableError = z.infer<typeof modelUnavailableErrorSchema>;
 
 /**
  * Structured payload attached to an `error` frame when the upstream provider
- * rejects the request payload due to a known schema/format defect that retry
- * usually clears (issue #338). The browser renders a dedicated "transient
- * upstream issue" bubble whose copy tells the user to click Retry — the
- * underlying generic provider-error wording sounds like Pinchy's fault, but
- * the cause is upstream (e.g. openclaw/openclaw#72879 dropping
- * `thought_signature` on Gemini 3 replay turns).
- *
- * `errorPattern` is the matched pattern family. The chat-frame schema below
- * intentionally constrains it to `z.literal("thought_signature")` — the only
- * pattern currently surfaced to the UI. Adding a new visible pattern requires
- * both extending this literal (so the client's safeParse accepts it) and
- * teaching the bubble component how to render it. The matching `audit.ts`
- * detail type keeps `errorPattern: string` so new patterns can land in the
- * audit table from a server-only commit, without a schema migration, ahead of
- * any UI work. The server also writes an `agent.upstream_format_error` audit
- * entry (throttled) to make frequency tracking automatic rather than manual
- * log-grepping (issue #338 tracking item #1).
- *
- * Produced by `server/model-error-classifier.ts:classifyUpstreamFormatError`.
- * Consumed by `components/assistant-ui/chat-error-message.tsx`.
- */
-export const upstreamFormatErrorSchema = z.object({
-  kind: z.literal("upstream_format_error"),
-  model: z.string(),
-  errorPattern: z.literal("thought_signature"),
-  ref: z.string().optional(),
-});
-
-export type UpstreamFormatError = z.infer<typeof upstreamFormatErrorSchema>;
-
-/**
- * Structured payload attached to an `error` frame when the upstream provider
  * returns a retryable, time-limited failure — `errorClass: "transient"` from
  * `agent-error-classifier.ts` (rate limit, too-many-requests, overloaded,
  * timeout, HTTP 529). The browser renders a dedicated "paused" bubble whose

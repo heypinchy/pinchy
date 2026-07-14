@@ -73,7 +73,6 @@ export type AuditEventType =
   | "chat.image_model_fallback"
   | "agent.model_unavailable"
   | "agent.memory_changed"
-  | "agent.upstream_format_error"
   | "audit.exported"
   | "audit.integrity_check"
   | "diagnostics.exported"
@@ -262,7 +261,7 @@ export function scrubEmails(text: string): string {
  * Canonical way to land an upstream `providerError` string in audit
  * detail. Single source of truth so every `providerError` field across
  * every audit event (chat.agent_error, agent.model_unavailable,
- * agent.upstream_format_error, chat.silent_stream, …) gets the same
+ * chat.silent_stream, …) gets the same
  * scrub + truncate treatment without each call site rediscovering the
  * rules.
  *
@@ -426,23 +425,6 @@ export type AuditLogEntry =
         addedLines: number;
         removedLines: number;
         byteSize: number;
-      };
-    })
-  | (AuditLogBase & {
-      eventType: "agent.upstream_format_error";
-      detail: {
-        agent: { id: string; name: string };
-        model: string | null | undefined;
-        providerError: string;
-        ref?: string;
-        // Pattern family the error matched. Kept as `string` (rather than a
-        // narrower literal union) so server-only commits can add a new known
-        // pattern to the audit table — for frequency tracking — without a
-        // schema migration. The chat-frame schema in `lib/schemas/chat-frames`
-        // keeps the visible-to-UI set narrower (currently the single literal
-        // `"thought_signature"`); extending the UI surface is a separate
-        // commit that has to update both. Current values: "thought_signature".
-        errorPattern: string;
       };
     })
   | (AuditLogBase & {

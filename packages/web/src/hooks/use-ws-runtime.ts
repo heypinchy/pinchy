@@ -23,7 +23,7 @@ import {
   type AssistantRuntime,
 } from "@assistant-ui/react";
 import type { ChatError } from "@/components/assistant-ui/chat-error-message";
-import { upstreamFormatErrorSchema, modelUnavailableErrorSchema } from "@/lib/schemas/chat-frames";
+import { modelUnavailableErrorSchema } from "@/lib/schemas/chat-frames";
 import { reduceMessages, type Action } from "./message-status-reducer";
 import type { MessageStatus } from "./message-status-reducer";
 import {
@@ -1439,25 +1439,10 @@ export function useWsRuntime(
             return;
           }
 
-          // Defense-in-depth: parse the structured upstream-format-error
-          // payload with the zod schema instead of trusting the inbound
-          // shape. A stale server or malformed frame must NOT be able to
-          // render the "Retry usually clears it" bubble for an unrelated
-          // error — that would lie to the user about the cause and the
-          // recovery path. On parse failure the bare providerError still
-          // surfaces via the generic bubble. Issue #338.
-          const upstreamFormatErrorParsed = data.upstreamFormatError
-            ? upstreamFormatErrorSchema.safeParse(data.upstreamFormatError)
-            : null;
-          const upstreamFormatError = upstreamFormatErrorParsed?.success
-            ? upstreamFormatErrorParsed.data
-            : undefined;
-
-          // Same defense-in-depth as upstreamFormatError above: validate the
-          // model-unavailable payload before it reaches the dedicated bubble, so
-          // a stale or malformed frame can't render garbage (undefined model /
-          // httpStatus). On parse failure the bare providerError still surfaces
-          // via the generic bubble. Revives the otherwise-unused schema.
+          // Defense-in-depth: validate the model-unavailable payload before it
+          // reaches the dedicated bubble, so a stale or malformed frame can't
+          // render garbage (undefined model / httpStatus). On parse failure
+          // the bare providerError still surfaces via the generic bubble.
           const modelUnavailableParsed = data.modelUnavailable
             ? modelUnavailableErrorSchema.safeParse(data.modelUnavailable)
             : null;
@@ -1480,7 +1465,6 @@ export function useWsRuntime(
                 providerError: data.providerError,
                 hint: data.hint,
                 modelUnavailable,
-                upstreamFormatError,
                 sideEffects: data.sideEffects,
               }
             : isAttachmentErrorCode

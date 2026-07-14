@@ -117,10 +117,12 @@ export function presentProviderError(errorText: string, modelName?: string): str
   // bug when the real cause is an account-side rejection), so — unlike the
   // neutral bare "LLM request failed." fallback below — it's fully replaced with
   // an honest account-issue message rather than passed through with a model
-  // name. Guarded by `!isThoughtSignatureRejection`: the Gemini-3 schema
-  // rejection (#338) carries the same envelope text plus a thought_signature and
-  // has its own user-facing handling (`classifyUpstreamFormatError`); without
-  // this guard its wording would be collapsed into the account-issue message.
+  // name. Guarded by `!isThoughtSignatureRejection`: the same envelope text
+  // plus a thought_signature marker identifies the distinct Gemini-3 replay
+  // defect (#338, fixed in OpenClaw 2026.7.1 — the dedicated user-facing
+  // "Retry usually works" bubble was removed once the fix was verified, but
+  // the marker itself stays here so a thought_signature rejection is never
+  // mislabeled as the #584 account-issue message).
   if (
     PROVIDER_REJECTED_GENERIC_PATTERN.test(errorText) &&
     !isThoughtSignatureRejection(errorText)

@@ -13,7 +13,6 @@ const {
   mockGetAgentGroupIds,
   mockShouldEmitModelUnavailableAudit,
   mockShouldEmitSilentStreamAudit,
-  mockShouldEmitUpstreamFormatErrorAudit,
   mockMaterializeAttachments,
   mockListVisionModels,
   mockIsModelVisionCapable,
@@ -33,7 +32,6 @@ const {
   mockGetAgentGroupIds: vi.fn().mockResolvedValue([]),
   mockShouldEmitModelUnavailableAudit: vi.fn().mockReturnValue(true),
   mockShouldEmitSilentStreamAudit: vi.fn().mockReturnValue(true),
-  mockShouldEmitUpstreamFormatErrorAudit: vi.fn().mockReturnValue(true),
   mockMaterializeAttachments: vi.fn().mockResolvedValue({ chatAttachments: [], workspaceRefs: [] }),
   // Image-fallback I/O adapters used by the chat router on image turns.
   mockListVisionModels: vi.fn().mockResolvedValue([]),
@@ -146,8 +144,6 @@ vi.mock("@/server/model-unavailable-throttle", () => ({
   shouldEmitModelUnavailableAudit: (...args: unknown[]) =>
     mockShouldEmitModelUnavailableAudit(...args),
   shouldEmitSilentStreamAudit: (...args: unknown[]) => mockShouldEmitSilentStreamAudit(...args),
-  shouldEmitUpstreamFormatErrorAudit: (...args: unknown[]) =>
-    mockShouldEmitUpstreamFormatErrorAudit(...args),
 }));
 
 vi.mock("@/server/attachment-pipeline", async (importOriginal) => {
@@ -4194,257 +4190,6 @@ describe("ClientRouter", () => {
       consoleSpy.mockRestore();
     });
 
-    it("includes upstreamFormatError in error frame when error chunk contains thought_signature (issue #338)", async () => {
-      // Pinchy chat surface: when the upstream provider rejects a tool-call
-      // replay because OpenClaw dropped the Gemini 3 `thought_signature`
-      // (openclaw/openclaw#72879), the chunk text contains the marker. We
-      // attach a structured frame so the UI can render a "retry usually
-      // works" bubble instead of the misleading generic provider error.
-      const clientWs = createMockClientWs();
-      const consoleSpy = vi.spyOn(console, "error").mockImplementation(() => {});
-
-      mockFindFirst.mockResolvedValue({
-        ...defaultAgent,
-        model: "ollama-cloud/gemini-3-flash-preview",
-      });
-
-      mockChat.mockImplementation(() => {
-        return (async function* () {
-          yield {
-            type: "error" as const,
-            text:
-              "LLM request failed: provider rejected the request schema or tool payload. " +
-              'rawError=400 "Function call is missing a thought_signature in functionCall parts. ' +
-              '(ref: 3d5cf450-a3f6-4566-a1db-a7c5c0515cc0)"',
-          };
-        })();
-      });
-
-      await router.handleMessage(clientWs as any, {
-        type: "message",
-        content: "Hi",
-        agentId: "agent-1",
-      });
-
-      const messages = clientWs.sent.map((s) => JSON.parse(s));
-      const errorMsg = messages.find((m: any) => m.type === "error");
-      expect(errorMsg).toBeDefined();
-      expect(errorMsg.upstreamFormatError).toEqual({
-        kind: "upstream_format_error",
-        model: "ollama-cloud/gemini-3-flash-preview",
-        errorPattern: "thought_signature",
-        ref: "3d5cf450-a3f6-4566-a1db-a7c5c0515cc0",
-      });
-      // A 400 with thought_signature must NOT also classify as model_unavailable
-      // (that bubble would offer a "Switch model" link, which is wrong here —
-      // the model is fine, the replay-time payload is corrupt).
-      expect(errorMsg).not.toHaveProperty("modelUnavailable");
-
-      consoleSpy.mockRestore();
-    });
-
-    it("writes an agent.upstream_format_error audit entry when throttle allows (issue #338)", async () => {
-      const clientWs = createMockClientWs();
-      const consoleSpy = vi.spyOn(console, "error").mockImplementation(() => {});
-
-      mockFindFirst.mockResolvedValue({
-        ...defaultAgent,
-        model: "ollama-cloud/gemini-3-flash-preview",
-      });
-      mockShouldEmitUpstreamFormatErrorAudit.mockReturnValue(true);
-
-      mockChat.mockImplementation(() => {
-        return (async function* () {
-          yield {
-            type: "error" as const,
-            text:
-              'rawError=400 "Function call is missing a thought_signature in functionCall parts. ' +
-              '(ref: abc-123)"',
-          };
-        })();
-      });
-
-      await router.handleMessage(clientWs as any, {
-        type: "message",
-        content: "Hi",
-        agentId: "agent-1",
-      });
-
-      expect(mockAppendAuditLog).toHaveBeenCalledWith(
-        expect.objectContaining({
-          eventType: "agent.upstream_format_error",
-          outcome: "failure",
-          detail: expect.objectContaining({
-            agent: expect.objectContaining({
-              id: "agent-1",
-              name: defaultAgent.name,
-            }),
-            model: "ollama-cloud/gemini-3-flash-preview",
-            errorPattern: "thought_signature",
-            ref: "abc-123",
-          }),
-        })
-      );
-
-      consoleSpy.mockRestore();
-    });
-
-    it("suppresses the upstream_format_error audit when the throttle denies (still sends frame)", async () => {
-      // Throttle covers the audit side only — the user should ALWAYS see the
-      // bubble, but we don't spam the audit table for a known issue we cannot
-      // fix from here. Pattern matches `agent.model_unavailable`.
-      const clientWs = createMockClientWs();
-      const consoleSpy = vi.spyOn(console, "error").mockImplementation(() => {});
-
-      mockFindFirst.mockResolvedValue({
-        ...defaultAgent,
-        model: "ollama-cloud/gemini-3-flash-preview",
-      });
-      mockShouldEmitUpstreamFormatErrorAudit.mockReturnValue(false);
-
-      mockChat.mockImplementation(() => {
-        return (async function* () {
-          yield {
-            type: "error" as const,
-            text: "rawError=400 missing thought_signature in functionCall parts.",
-          };
-        })();
-      });
-
-      await router.handleMessage(clientWs as any, {
-        type: "message",
-        content: "Hi",
-        agentId: "agent-1",
-      });
-
-      const messages = clientWs.sent.map((s) => JSON.parse(s));
-      const errorMsg = messages.find((m: any) => m.type === "error");
-      expect(errorMsg).toBeDefined();
-      expect(errorMsg.upstreamFormatError?.errorPattern).toBe("thought_signature");
-
-      expect(mockAppendAuditLog).not.toHaveBeenCalledWith(
-        expect.objectContaining({ eventType: "agent.upstream_format_error" })
-      );
-
-      consoleSpy.mockRestore();
-    });
-
-    it("does NOT include upstreamFormatError or audit when agent.model is null even on thought_signature (#338)", async () => {
-      // Mirror of the model_unavailable rule: without a known model id we
-      // can't tell the user *which* model failed, so we don't emit the
-      // structured payload. The legacy plain-error path still shows the
-      // raw provider text.
-      const clientWs = createMockClientWs();
-      const consoleSpy = vi.spyOn(console, "error").mockImplementation(() => {});
-
-      mockFindFirst.mockResolvedValue({
-        ...defaultAgent,
-        model: null,
-      });
-      mockShouldEmitUpstreamFormatErrorAudit.mockReturnValue(true);
-
-      mockChat.mockImplementation(() => {
-        return (async function* () {
-          yield {
-            type: "error" as const,
-            text: 'rawError=400 "Function call is missing a thought_signature ..."',
-          };
-        })();
-      });
-
-      await router.handleMessage(clientWs as any, {
-        type: "message",
-        content: "Hi",
-        agentId: "agent-1",
-      });
-
-      const messages = clientWs.sent.map((s) => JSON.parse(s));
-      const errorMsg = messages.find((m: any) => m.type === "error");
-      expect(errorMsg).toBeDefined();
-      expect(errorMsg).not.toHaveProperty("upstreamFormatError");
-      expect(mockAppendAuditLog).not.toHaveBeenCalledWith(
-        expect.objectContaining({ eventType: "agent.upstream_format_error" })
-      );
-
-      consoleSpy.mockRestore();
-    });
-
-    it("truncates providerError to 1024 chars in upstream_format_error audit detail", async () => {
-      const clientWs = createMockClientWs();
-      const consoleSpy = vi.spyOn(console, "error").mockImplementation(() => {});
-
-      mockFindFirst.mockResolvedValue({
-        ...defaultAgent,
-        model: "ollama-cloud/gemini-3-flash-preview",
-      });
-      mockShouldEmitUpstreamFormatErrorAudit.mockReturnValue(true);
-
-      const longError =
-        `rawError=400 "Function call is missing a thought_signature ` + "x".repeat(2000) + `"`;
-      mockChat.mockImplementation(() => {
-        return (async function* () {
-          yield { type: "error" as const, text: longError };
-        })();
-      });
-
-      await router.handleMessage(clientWs as any, {
-        type: "message",
-        content: "Hi",
-        agentId: "agent-1",
-      });
-
-      const call = mockAppendAuditLog.mock.calls.find(
-        (c: any[]) => c[0]?.eventType === "agent.upstream_format_error"
-      );
-      expect(call).toBeDefined();
-      expect(call![0].detail.providerError.length).toBeLessThanOrEqual(1024);
-
-      consoleSpy.mockRestore();
-    });
-
-    it("scrubs emails out of providerError in agent.upstream_format_error audit detail", async () => {
-      // Same defence-in-depth as the model_unavailable scrub test above.
-      // Schema-rejection envelopes from Gemini occasionally include identity
-      // fragments from the offending tool-call replay payload — strip any
-      // email shape before the HMAC seals it into the append-only log.
-      const clientWs = createMockClientWs();
-      const consoleSpy = vi.spyOn(console, "error").mockImplementation(() => {});
-
-      mockFindFirst.mockResolvedValue({
-        ...defaultAgent,
-        model: "ollama-cloud/gemini-3-flash-preview",
-      });
-      mockShouldEmitUpstreamFormatErrorAudit.mockReturnValue(true);
-
-      mockChat.mockImplementation(() => {
-        return (async function* () {
-          yield {
-            type: "error" as const,
-            text:
-              `rawError=400 "Function call is missing a thought_signature ` +
-              `for user.name@example.com replay"`,
-          };
-        })();
-      });
-
-      await router.handleMessage(clientWs as any, {
-        type: "message",
-        content: "Hi",
-        agentId: "agent-1",
-      });
-
-      const call = mockAppendAuditLog.mock.calls.find(
-        (c: any[]) => c[0]?.eventType === "agent.upstream_format_error"
-      );
-      expect(call).toBeDefined();
-      const providerError = call![0].detail.providerError as string;
-      expect(providerError).not.toContain("user.name@example.com");
-      expect(providerError).not.toContain("user.name");
-      expect(providerError).toContain("<email-redacted>");
-
-      consoleSpy.mockRestore();
-    });
-
     it("does NOT include modelUnavailable and does NOT audit when agent.model is null even on HTTP 5xx", async () => {
       // Edge case: an agent in the DB with model=null falls through to the
       // provider's default at runtime. classifyModelError requires a non-empty
@@ -4494,8 +4239,8 @@ describe("ClientRouter", () => {
   describe("chat.agent_error audit log (issue #355 — universal measurement)", () => {
     // The umbrella audit event fires for EVERY error chunk that reaches the
     // chat WS error surface, regardless of whether a more specialised event
-    // (agent.model_unavailable, agent.upstream_format_error, chat.silent_stream)
-    // also fires. Goal: a single queryable signal that captures every
+    // (agent.model_unavailable, chat.silent_stream) also fires. Goal: a
+    // single queryable signal that captures every
     // user-visible chat failure, classified by family. The specialised events
     // remain in their role as throttled operational signals with richer
     // per-class detail.

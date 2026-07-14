@@ -82,7 +82,6 @@ vi.mock("@/server/attachment-pipeline", () => ({
 vi.mock("@/server/model-unavailable-throttle", () => ({
   shouldEmitModelUnavailableAudit: vi.fn().mockReturnValue(false),
   shouldEmitSilentStreamAudit: vi.fn().mockReturnValue(false),
-  shouldEmitUpstreamFormatErrorAudit: vi.fn().mockReturnValue(false),
 }));
 
 import { ActiveRuns } from "@/server/active-runs";

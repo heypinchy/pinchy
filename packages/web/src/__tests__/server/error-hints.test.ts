@@ -269,10 +269,10 @@ describe("getErrorHint", () => {
       );
     });
 
-    it("does NOT rewrite the thought_signature payload (schema_rejection keeps its own #338 handling)", () => {
+    it("does NOT rewrite the thought_signature payload (schema_rejection stays distinct from #584)", () => {
       // The Gemini-3 schema-rejection text carries the generic envelope plus a
-      // thought_signature. Its own branch (classifyUpstreamFormatError) owns the
-      // user-facing wording; presentProviderError must not collapse it into the
+      // thought_signature marker, which distinguishes it from a plain #584
+      // rejection; presentProviderError must not collapse it into the
       // account-issue message.
       const raw =
         "LLM request failed: provider rejected the request schema or tool payload. " +

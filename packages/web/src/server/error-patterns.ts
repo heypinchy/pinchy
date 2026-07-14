@@ -69,14 +69,16 @@ export const PROVIDER_REJECTED_GENERIC_PATTERN =
 
 /**
  * OpenClaw's upstream schema/format rejection (verified on staging: Gemini 3
- * missing `thought_signature` on tool-call replay, issue #338). This payload
- * carries the SAME generic envelope text as PROVIDER_REJECTED_GENERIC_PATTERN
- * plus a thought_signature token, but is a genuine schema rejection with its
- * own user-facing handling (`classifyUpstreamFormatError`). Shared here so the
- * audit classifier (`agent-error-classifier.ts`) and the banner rewriter
- * (`error-hints.ts`) agree on what counts as a schema rejection: the generic
- * envelope is classified/rewritten as an account issue ONLY when it is NOT
- * carrying a thought_signature (issue #584).
+ * missing `thought_signature` on tool-call replay, issue #338 — fixed in
+ * OpenClaw 2026.7.1; the dedicated user-facing UX classifier that issue
+ * tracked was removed once the fix was verified). This payload carries the
+ * SAME generic envelope text as PROVIDER_REJECTED_GENERIC_PATTERN plus a
+ * thought_signature token, but is a genuine schema rejection distinct from
+ * the still-open #584 catch-all. Shared here so the audit classifier
+ * (`agent-error-classifier.ts`) and the banner rewriter (`error-hints.ts`)
+ * agree on what counts as a schema rejection: the generic envelope is
+ * classified/rewritten as an account issue ONLY when it is NOT carrying a
+ * thought_signature (issue #584).
  *
  * Two patterns, mirroring the narrower anchoring in `model-error-classifier.ts`:
  * the snake_case form carries a `_` separator and is matched case-insensitively;

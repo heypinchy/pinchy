@@ -6,10 +6,10 @@
  * query time.
  *
  * Separate from the specialised classifiers in `model-error-classifier.ts`:
- * those decide whether to fire a richly-typed audit event (model_unavailable,
- * upstream_format_error) and require model context. This one runs on every
- * error chunk regardless, including the silent-stream timeout path where
- * Pinchy synthesises the error itself.
+ * those decide whether to fire a richly-typed audit event (model_unavailable)
+ * and require model context. This one runs on every error chunk regardless,
+ * including the silent-stream timeout path where Pinchy synthesises the
+ * error itself.
  *
  * The `silent_stream_timeout` label is not pattern-matched — it is mapped
  * from a `SynthesisedErrorReason` via `classifySynthesisedError()`. Call
