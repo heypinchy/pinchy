@@ -136,12 +136,18 @@ describe("getToolsByCategory", () => {
 });
 
 describe("computeAllowedTools", () => {
-  it("allows the OpenClaw built-in `pdf` tool — it powers chat-attachment PDF reading", () => {
-    expect(computeAllowedTools()).toContain("pdf");
-  });
-
-  it("allows the OpenClaw built-in `image` tool — same reason for image attachments", () => {
-    expect(computeAllowedTools()).toContain("image");
+  it("does NOT allow the built-in `pdf`/`image` tools — they cannot read workspace uploads (prod incident 2026-07-14)", () => {
+    // OpenClaw's built-in pdf/image media tools fail with "Local media file not
+    // found" on workspace upload paths. attachment-pipeline routes every PDF and
+    // image through the pinchy-files `pinchy_read` tool instead. Keeping the
+    // built-ins in the allowlist handed weaker models (e.g. kimi-k2.6) a
+    // temptingly-named trap they picked over `pinchy_read`, then reported the
+    // attached file as unreadable even though it was present on disk.
+    const allowed = computeAllowedTools();
+    expect(allowed).not.toContain("pdf");
+    expect(allowed).not.toContain("image");
+    // The intended media reader stays available.
+    expect(allowed).toContain("pinchy_read");
   });
 
   it("allows memory_search/memory_get (bundled memory-core plugin powers agent memory)", () => {
@@ -257,9 +263,12 @@ describe("allow-list drift guard vs OpenClaw built-in tool groups", () => {
     "tts",
   ] as const;
 
-  // The ONLY non-Pinchy tools the allowlist may contain (read-only / attachment
-  // helpers). Anything else from group:media etc. must stay out.
-  const INTENDED_BUILTINS = ["memory_search", "memory_get", "pdf", "image", "session_status"];
+  // The ONLY non-Pinchy tools the allowlist may contain (bundled memory-core +
+  // read-only self-status). Everything in group:media — including the `pdf` and
+  // `image` built-ins — must stay out: chat attachments are read via the
+  // pinchy-files `pinchy_read` tool, not the built-ins (see the tool-registry
+  // comment on INTENDED_BUILTIN_TOOLS and the 2026-07-14 prod incident).
+  const INTENDED_BUILTINS = ["memory_search", "memory_get", "session_status"];
 
   it("excludes every built-in a governed agent must never reach", () => {
     const allowed = new Set(computeAllowedTools());

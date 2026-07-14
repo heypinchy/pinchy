@@ -831,27 +831,33 @@ describe("regenerateOpenClawConfig", () => {
   });
 
   // Locks the combined chat-attachment security contract (PR #316 review #3),
-  // re-expressed for the fail-closed allowlist posture (#605):
+  // re-expressed for the fail-closed allowlist posture (#605) and corrected
+  // after the 2026-07-14 prod incident:
   //
-  //   1. `pdf` and `image` MUST be available to every agent — they're the
-  //      built-in tools the upload hint instructs the agent to call. If
-  //      either is missing from `tools.allow`, the entire attachment feature
-  //      silently breaks: the agent receives a path it cannot read.
+  //   1. The pinchy-files `pinchy_read` tool MUST be available to every agent —
+  //      it is the tool the upload hint instructs the agent to call, and it
+  //      reads the file straight from the workspace. If it is missing from
+  //      `tools.allow`, the attachment feature silently breaks.
   //
-  //   2. `image_generate` MUST stay out of the allowlist. It produces new
+  //   2. OpenClaw's built-in `pdf` / `image` media tools MUST stay OUT of the
+  //      allowlist. They fail with "Local media file not found" on workspace
+  //      upload paths, so they cannot serve attachments; keeping them reachable
+  //      gave weaker models a wrongly-named trap they picked over `pinchy_read`
+  //      (prod incident 2026-07-14). See tool-registry.ts § INTENDED_BUILTIN_TOOLS.
+  //
+  //   3. `image_generate` MUST stay out of the allowlist. It produces new
   //      content (token cost, output side-effects) and belongs behind explicit
-  //      admin opt-in. This is the explicit boundary documented in
-  //      tool-registry.ts § INTENDED_BUILTIN_TOOLS.
+  //      admin opt-in.
   //
-  //   3. `tools.fs.workspaceOnly === true` MUST be set. Without it, `pdf`
-  //      and `image` have unrestricted host-filesystem access — an agent
-  //      could read /etc/passwd via the `pdf` tool.
+  //   4. `tools.fs.workspaceOnly === true` MUST be set — the pinchy-files tools
+  //      have unrestricted host-filesystem access without it, so an agent could
+  //      otherwise read /etc/passwd.
   //
-  // The three together are the guarantee: agents can read user uploads,
-  // confined to the workspace, but cannot generate new content without
-  // admin permission. Regression in any one of them silently changes the
-  // security posture for every Pinchy install.
-  it("locks the chat-attachment security contract: pdf/image allowed + workspace-confined + image_generate excluded", async () => {
+  // Together these guarantee: agents can read user uploads via `pinchy_read`,
+  // confined to the workspace, cannot reach the broken/ambiguous media built-ins,
+  // and cannot generate new content without admin permission. Regression in any
+  // one of them silently changes the security posture for every Pinchy install.
+  it("locks the chat-attachment security contract: pinchy_read allowed + pdf/image excluded + workspace-confined + image_generate excluded", async () => {
     const agentsData = [
       {
         id: "security-contract-agent",
@@ -871,14 +877,17 @@ describe("regenerateOpenClawConfig", () => {
     );
     const allow = (agentEntry.tools?.allow ?? []) as string[];
 
-    // (1) pdf/image MUST be reachable (present in the allowlist).
-    expect(allow).toContain("pdf");
-    expect(allow).toContain("image");
+    // (1) pinchy_read — the actual attachment reader — MUST be reachable.
+    expect(allow).toContain("pinchy_read");
 
-    // (2) image_generate MUST stay out of the allowlist (admin-only).
+    // (2) the built-in pdf/image media tools MUST be excluded (prod incident 2026-07-14).
+    expect(allow).not.toContain("pdf");
+    expect(allow).not.toContain("image");
+
+    // (3) image_generate MUST stay out of the allowlist (admin-only).
     expect(allow).not.toContain("image_generate");
 
-    // (3) workspace confinement MUST be active.
+    // (4) workspace confinement MUST be active.
     expect(agentEntry.tools.fs).toEqual({ workspaceOnly: true });
   });
 

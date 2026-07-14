@@ -240,21 +240,23 @@ export const TOOL_REGISTRY: readonly ToolDefinition[] = [
 //     Pinchy's agent-memory feature (see memory-prompt.ts). They are
 //     plugin-owned, so they must be allowed by NAME — `group:memory` does NOT
 //     match them (verified against OpenClaw 2026.6.8).
-//   - pdf / image: read-only vision/document tools that respect
-//     `tools.fs.workspaceOnly`. They power chat attachments: the upload hint
-//     tells the agent to call them with the workspace path.
 //   - session_status: read-only self-status (the baseline `minimal` profile).
 // Notably ABSENT (hence denied): image_generate / music_generate /
 // video_generate / tts (produce new content — admin-only), the native
 // browser/canvas (group:ui), cron, gateway, message, nodes, subagents,
 // sessions_*, and raw exec/fs/web.
-const INTENDED_BUILTIN_TOOLS = [
-  "memory_search",
-  "memory_get",
-  "pdf",
-  "image",
-  "session_status",
-] as const;
+//
+// Also ABSENT — and this is deliberate, not an oversight: OpenClaw's built-in
+// `pdf` / `image` media tools. Chat attachments (PDFs and images) are read via
+// the pinchy-files `pinchy_read` tool, NOT the built-ins — see toolNameForMime()
+// in server/attachment-pipeline.ts for the rationale (the built-ins 410 when
+// their auto-resolved upstream model retires, and #501). The built-ins also
+// simply do not work here: given a workspace upload path they fail with "Local
+// media file not found", so an agent that reaches for them cannot read the file
+// at all. Worse, keeping them in the allowlist gave weaker models (e.g.
+// kimi-k2.6) a temptingly-named `pdf` tool they picked over `pinchy_read`, then
+// told the user the attachment was unreadable (prod incident 2026-07-14).
+const INTENDED_BUILTIN_TOOLS = ["memory_search", "memory_get", "session_status"] as const;
 
 export function getToolById(id: string): ToolDefinition | undefined {
   return TOOL_REGISTRY.find((t) => t.id === id);
