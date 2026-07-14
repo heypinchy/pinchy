@@ -38,8 +38,10 @@ vi.mock("@/lib/audit", () => ({
 }));
 
 const mockUpdateTelegramChannelConfig = vi.fn();
+const mockRegenerateOpenClawConfig = vi.fn().mockResolvedValue(undefined);
 vi.mock("@/lib/openclaw-config", () => ({
   updateTelegramChannelConfig: (...args: unknown[]) => mockUpdateTelegramChannelConfig(...args),
+  regenerateOpenClawConfig: (...args: unknown[]) => mockRegenerateOpenClawConfig(...args),
 }));
 
 const mockClearAllowStoreForAccount = vi.fn();
@@ -280,6 +282,33 @@ describe("POST /api/agents/[agentId]/channels/telegram", () => {
 
     expect(response.status).toBe(200);
     expect(deleteSetting).toHaveBeenCalledWith("telegram_conflict_disabled:agent-1");
+  });
+
+  it("falls back to a full config regeneration when the targeted write reports the agent missing from agents.list (OpenClaw 2026.7.1 bindings validation)", async () => {
+    // The on-disk agents.list can predate a just-created agent (its
+    // create-regen is fire-and-forget). OpenClaw ≥2026.7.1 rejects a config
+    // whose bindings reference an agent not in agents.list, so the targeted
+    // patch must not be written — the route regenerates the full config
+    // (agents.list + account + binding from the DB) instead.
+    mockUpdateTelegramChannelConfig.mockReturnValueOnce("agent-not-in-config");
+
+    const response = await POST(makeRequest({ botToken: "123456:ABC-token" }), {
+      params: mockParams,
+    });
+
+    expect(response.status).toBe(200);
+    expect(mockRegenerateOpenClawConfig).toHaveBeenCalledOnce();
+  });
+
+  it("does not run a full regeneration when the targeted write applied cleanly", async () => {
+    mockUpdateTelegramChannelConfig.mockReturnValueOnce("applied");
+
+    const response = await POST(makeRequest({ botToken: "123456:ABC-token" }), {
+      params: mockParams,
+    });
+
+    expect(response.status).toBe(200);
+    expect(mockRegenerateOpenClawConfig).not.toHaveBeenCalled();
   });
 
   it("does not mutate channels.telegram on validation failure", async () => {

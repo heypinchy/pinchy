@@ -8,7 +8,7 @@ import {
 } from "@/lib/telegram";
 import { getSetting, setSetting, deleteSetting } from "@/lib/settings";
 import { appendAuditLog } from "@/lib/audit";
-import { updateTelegramChannelConfig } from "@/lib/openclaw-config";
+import { updateTelegramChannelConfig, regenerateOpenClawConfig } from "@/lib/openclaw-config";
 import {
   clearAllowStoreForAccount,
   recalculateTelegramAllowStores,
@@ -166,7 +166,16 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ age
   // fields like agents.defaults to avoid hot-reloads that break polling).
   // updateTelegramChannelConfig() also notifies restart-state on actual write so
   // /api/health/openclaw reflects the pending OC restart.
-  updateTelegramChannelConfig(agentId, { botToken });
+  const targetedResult = updateTelegramChannelConfig(agentId, { botToken });
+  if (targetedResult === "agent-not-in-config") {
+    // The on-disk agents.list predates this agent (its create-regen is still
+    // in flight). OpenClaw ≥2026.7.1 rejects a config whose bindings
+    // reference an agent missing from agents.list, so the targeted patch was
+    // not written — regenerate the full config instead, which emits
+    // agents.list, the account, and the binding consistently from the DB
+    // (the token is already stored above).
+    await regenerateOpenClawConfig();
+  }
 
   // Populate allow-from store with all linked users who have permission to this agent
   await recalculateTelegramAllowStores();

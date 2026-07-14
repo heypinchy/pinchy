@@ -33,6 +33,15 @@ export function sanitizeOpenClawConfig(): boolean {
 }
 
 /**
+ * Result of a targeted Telegram channel update. "agent-not-in-config" means
+ * the on-disk agents.list does not (yet) contain the agent the new binding
+ * would reference — the caller must run `regenerateOpenClawConfig()` instead,
+ * which emits agents.list, the account, and the binding from the DB in one
+ * consistent write.
+ */
+export type UpdateTelegramChannelConfigResult = "applied" | "agent-not-in-config";
+
+/**
  * Update a single Telegram account in the config (add or remove).
  *
  * Uses OpenClaw's multi-account format: channels.telegram.accounts.<accountId>.
@@ -48,7 +57,7 @@ export function sanitizeOpenClawConfig(): boolean {
 export function updateTelegramChannelConfig(
   accountId: string | null,
   account: { botToken: string } | null
-): void {
+): UpdateTelegramChannelConfigResult {
   const existing = readExistingConfig();
 
   // Safety: refuse to write a config that would clobber the gateway block.
@@ -68,6 +77,24 @@ export function updateTelegramChannelConfig(
   }
 
   if (accountId && account) {
+    // OpenClaw ≥2026.7.1 cross-validates the whole config: every
+    // bindings[].agentId must exist in agents.list (skipped only when
+    // agents.list is empty/absent). The on-disk agents.list can predate a
+    // just-created agent because the create-regen is fire-and-forget, and a
+    // binding patched on top of that stale list produces a config OpenClaw
+    // rejects on BOTH transports — the config.apply RPC (INVALID_REQUEST)
+    // and the file-watcher reload ("config reload skipped (invalid
+    // config)") — silently stranding the new account with no polling.
+    // Signal the caller to run the full regeneration instead.
+    const agentsList = (existing.agents as { list?: Array<{ id?: string }> } | undefined)?.list;
+    if (
+      Array.isArray(agentsList) &&
+      agentsList.length > 0 &&
+      !agentsList.some((a) => a?.id === accountId)
+    ) {
+      return "agent-not-in-config";
+    }
+
     const existingTelegram =
       ((existing.channels as Record<string, unknown>)?.telegram as Record<string, unknown>) || {};
     const existingAccounts = (existingTelegram.accounts as Record<string, unknown>) || {};
@@ -148,7 +175,7 @@ export function updateTelegramChannelConfig(
   const newContent = JSON.stringify(existing, null, 2).trimEnd() + "\n";
   try {
     const current = readFileSync(CONFIG_PATH, "utf-8");
-    if (current === newContent) return;
+    if (current === newContent) return "applied";
   } catch {
     // File doesn't exist
   }
@@ -197,6 +224,7 @@ export function updateTelegramChannelConfig(
   pushConfigInBackground(newContent, {
     onChangeApplied: () => restartState.notifyRestart(),
   });
+  return "applied";
 }
 
 /**

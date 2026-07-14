@@ -344,7 +344,12 @@ test.describe.serial("Multi-Bot Telegram", () => {
 // is that the connect is rejected BEFORE Pinchy writes config or restarts
 // OpenClaw's channel worker, so this doesn't need @channel-restart tagging.
 
-const CONFLICT_PROBE_BOT_TOKEN = "8103000003:AAEconnectConflictProbeBot0000000";
+// Bot id 8104… — must stay distinct from channel-health.spec.ts's 8101…/8102…/
+// 8103… tokens: the connect route's duplicate-token guard compares BOT IDS
+// (token prefix before ":"), and channel-health's auto-disable spec leaves its
+// 8103-bot connected by design, so a colliding id here turns this spec's
+// expected probe-409 into a duplicate-token-409 with the wrong message.
+const CONFLICT_PROBE_BOT_TOKEN = "8104000004:AAEconnectConflictProbeBot0000000";
 
 test.describe("Connect-time Telegram polling-conflict probe", () => {
   test.beforeAll(async () => {

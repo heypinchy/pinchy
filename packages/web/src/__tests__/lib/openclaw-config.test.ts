@@ -5350,6 +5350,87 @@ describe("restart-state integration", () => {
     });
   });
 
+  describe("updateTelegramChannelConfig agents.list consistency (OpenClaw 2026.7.1 bindings validation)", () => {
+    // OpenClaw 2026.7.1 cross-validates the whole config: every
+    // bindings[].agentId must exist in agents.list (skipped only when
+    // agents.list is empty/absent). A targeted bot-connect that patches a
+    // binding into an on-disk config whose agents.list predates the agent
+    // (the agent-create full regen is fire-and-forget and can still be in
+    // flight) was tolerated by OpenClaw ≤2026.6.11 — 2026.7.1 rejects the
+    // config.apply RPC with INVALID_REQUEST AND skips the file-watcher
+    // reload of the same file ("config reload skipped (invalid config)"),
+    // so the new account never reaches OpenClaw and its polling never
+    // starts. The targeted writer must detect the stale agents.list and
+    // hand the update to the caller for a full regeneration instead of
+    // writing a config OpenClaw refuses to load.
+
+    it("returns 'agent-not-in-config' and writes nothing when agents.list lacks the agent", async () => {
+      const { restartState } = await import("@/server/restart-state");
+      mockedReadFileSync.mockReturnValue(
+        JSON.stringify({
+          gateway: { mode: "local", bind: "lan" },
+          agents: { list: [{ id: "some-other-agent" }] },
+        })
+      );
+
+      const result = updateTelegramChannelConfig("agent-99", { botToken: "tg-secret-token" });
+
+      expect(result).toBe("agent-not-in-config");
+      expect(mockedWriteFileSync).not.toHaveBeenCalled();
+      expect(restartState.notifyRestart).not.toHaveBeenCalled();
+    });
+
+    it("returns 'applied' and writes when agents.list contains the agent", () => {
+      mockedReadFileSync.mockReturnValue(
+        JSON.stringify({
+          gateway: { mode: "local", bind: "lan" },
+          agents: { list: [{ id: "agent-99" }] },
+        })
+      );
+
+      const result = updateTelegramChannelConfig("agent-99", { botToken: "tg-secret-token" });
+
+      expect(result).toBe("applied");
+      expect(mockedWriteFileSync).toHaveBeenCalled();
+    });
+
+    it("returns 'applied' when the config has no agents.list (bootstrap) — OpenClaw skips the cross-check for an empty list", () => {
+      mockedReadFileSync.mockReturnValue(
+        JSON.stringify({ gateway: { mode: "local", bind: "lan" } })
+      );
+
+      const result = updateTelegramChannelConfig("agent-99", { botToken: "tg-secret-token" });
+
+      expect(result).toBe("applied");
+      expect(mockedWriteFileSync).toHaveBeenCalled();
+    });
+
+    it("removal (accountId, null) is unaffected by a stale agents.list", () => {
+      // Removing a binding can never introduce an unknown agentId.
+      mockedReadFileSync.mockReturnValue(
+        JSON.stringify({
+          gateway: { mode: "local", bind: "lan" },
+          agents: { list: [{ id: "some-other-agent" }] },
+          channels: {
+            telegram: {
+              enabled: true,
+              dmPolicy: "pairing",
+              accounts: { "agent-99": { botToken: "tg-secret-token" } },
+            },
+          },
+          bindings: [
+            { agentId: "agent-99", match: { channel: "telegram", accountId: "agent-99" } },
+          ],
+        })
+      );
+
+      const result = updateTelegramChannelConfig("agent-99", null);
+
+      expect(result).toBe("applied");
+      expect(mockedWriteFileSync).toHaveBeenCalled();
+    });
+  });
+
   it("should include Telegram channel config with accounts format when bot token is configured", async () => {
     mockedDb.select.mockReturnValue({
       from: mockFrom([
