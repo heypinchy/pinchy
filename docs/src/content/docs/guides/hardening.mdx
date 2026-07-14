@@ -378,6 +378,16 @@ OpenClaw 2026.5.12+ refuses to bind on a non-loopback interface without a `gatew
 
 **Failure mode to watch for.** If `boot-inits.ts` cannot reach the database at startup (DB outage, mis-configured `DATABASE_URL`), the seed step logs a FATAL line and Pinchy refuses to start — better to fail fast than to leave OpenClaw stuck. If you see `pinchy-openclaw` restart-looping with `Refusing to bind gateway to lan without auth` _and_ Pinchy itself is healthy, the seed wrote successfully but OpenClaw is reading from a different config path — verify the `openclaw-config` volume mount.
 
+## Workspace terminals (disabled)
+
+OpenClaw 2026.7.1 introduced **workspace terminals** — a PTY-backed interactive shell that authenticated admins can open inside an agent's workspace, controlled by `gateway.terminal.enabled` in `openclaw.json`. Fully sandboxed agents are blocked from it, but for anyone else it is a direct shell on the gateway host with the gateway process environment.
+
+**Pinchy pins this off** (`gateway.terminal.enabled: false`) on every config it generates. An interactive shell is an uncontrolled side channel: it runs commands that never pass through Pinchy's agent-permission allow-lists and never land in the [audit trail](/concepts/audit-trail/). Leaving it on would undercut the exact governance guarantees Pinchy exists to provide — every agent action being permission-checked and recorded.
+
+This is enforced in three places so no code path can re-enable it by omission: the config Pinchy regenerates from the database, the pre-start seed that runs before OpenClaw boots, and the image's baked-in `config/openclaw.json`. OpenClaw's own default for this flag is also `false`, so Pinchy's setting is defense-in-depth against a future default change or a hand-edited config — not a correction of an unsafe default.
+
+We expect to bring workspace terminals back as a first-class, **RBAC-scoped and audited** feature — gated behind a role grant and writing an audit row per session — rather than the ungoverned admin shell OpenClaw ships upstream. Until then, it stays off. If you have a specific need for it, [open an issue](https://github.com/heypinchy/pinchy/issues) describing the use case.
+
 ## Backup & recovery
 
 :::note

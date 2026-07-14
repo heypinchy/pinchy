@@ -53,4 +53,24 @@ describe("buildGatewayBlock", () => {
     expect(controlUi.theme).toBe("dark");
     expect(controlUi.enabled).toBe(false);
   });
+
+  it("disables workspace terminals (governance: uncontrolled side channel)", () => {
+    const terminal = buildGatewayBlock({}, "tok").terminal as Record<string, unknown>;
+    expect(terminal.enabled).toBe(false);
+  });
+
+  it("forces terminal.enabled:false even when the existing config enabled it", () => {
+    const terminal = buildGatewayBlock({ terminal: { enabled: true } }, "tok").terminal as Record<
+      string,
+      unknown
+    >;
+    expect(terminal.enabled).toBe(false);
+  });
+
+  it("preserves enriched terminal siblings while forcing enabled:false", () => {
+    const terminal = buildGatewayBlock({ terminal: { shell: "/bin/bash", enabled: true } }, "tok")
+      .terminal as Record<string, unknown>;
+    expect(terminal.shell).toBe("/bin/bash");
+    expect(terminal.enabled).toBe(false);
+  });
 });

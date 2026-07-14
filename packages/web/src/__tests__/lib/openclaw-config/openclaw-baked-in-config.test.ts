@@ -80,4 +80,18 @@ describe("config/openclaw.json (baked-in config)", () => {
     expect(canvasHost, "config.canvasHost must exist").toBeDefined();
     expect(canvasHost!.enabled).toBe(false);
   });
+
+  it("has gateway.terminal.enabled: false — governance + prevents restart-triggering diff on first config.apply", () => {
+    // OpenClaw 2026.7.1+ adds gateway.terminal.enabled, an interactive workspace
+    // shell for admins. OC defaults it to false, but materializes the block in its
+    // parsed compare config even when the file omits it — so baking it in keeps
+    // the first config.apply a no-op diff for the restart-class `gateway` path
+    // (instead of a missing-then-added diff that cascades into a SIGUSR1 restart).
+    // Pinchy also pins it off as explicit governance: an uncontrolled side channel
+    // that bypasses permission checks + audit trail.
+    const gateway = config.gateway as Record<string, unknown>;
+    const terminal = gateway.terminal as Record<string, unknown> | undefined;
+    expect(terminal, "config.gateway.terminal must exist").toBeDefined();
+    expect(terminal!.enabled).toBe(false);
+  });
 });

@@ -20,6 +20,13 @@ import { OPENCLAW_CONTROL_UI_ALLOWED_ORIGINS } from "./paths";
  * it); otherwise we seed the same origins OC would. See
  * OPENCLAW_CONTROL_UI_ALLOWED_ORIGINS in paths.ts for the full rationale.
  *
+ * Workspace terminals (OpenClaw 2026.7.1+, `gateway.terminal.enabled`) are
+ * disabled. An interactive shell in an agent workspace is an uncontrolled side
+ * channel that bypasses Pinchy's permission checks and audit trail — exactly the
+ * governance surface Pinchy exists to own. We force it off until it can be
+ * re-introduced as an RBAC-scoped, audited feature. Enriched sibling fields on
+ * the `terminal` block survive; only `enabled` is Pinchy-managed.
+ *
  * Pure given its inputs — `existingGateway` is spread through so any
  * OpenClaw-enriched sibling fields survive the regenerate untouched.
  */
@@ -28,6 +35,7 @@ export function buildGatewayBlock(
   gatewayTokenValue: string | null | undefined
 ): Record<string, unknown> {
   const existingControlUi = (existingGateway.controlUi as Record<string, unknown>) || {};
+  const existingTerminal = (existingGateway.terminal as Record<string, unknown>) || {};
   return {
     ...existingGateway,
     mode: "local",
@@ -42,6 +50,10 @@ export function buildGatewayBlock(
       allowedOrigins: Array.isArray(existingControlUi.allowedOrigins)
         ? existingControlUi.allowedOrigins
         : OPENCLAW_CONTROL_UI_ALLOWED_ORIGINS,
+    },
+    terminal: {
+      ...existingTerminal,
+      enabled: false,
     },
   };
 }

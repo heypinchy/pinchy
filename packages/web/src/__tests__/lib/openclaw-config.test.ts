@@ -392,7 +392,15 @@ describe("regenerateOpenClawConfig", () => {
     //     in its UI; the schema says "Keep disabled when canvas workflows
     //     are inactive to reduce exposed local services."
     //
-    // All three are written by regenerateOpenClawConfig() BEFORE the first
+    //   - gateway.terminal.enabled (OpenClaw 2026.7.1+): lets authenticated
+    //     admins open an interactive shell in an agent workspace. OC defaults it
+    //     to false, but Pinchy pins it off explicitly — it's an uncontrolled side
+    //     channel that bypasses Pinchy's permission checks and audit trail (the
+    //     governance surface Pinchy exists to own), and emitting it keeps the
+    //     config-reload diff empty since OC materializes the block in its compare
+    //     config. Disabled until it can return as an RBAC-scoped, audited feature.
+    //
+    // All four are written by regenerateOpenClawConfig() BEFORE the first
     // gateway boot (OpenClaw's depends_on Pinchy's healthcheck ensures this).
     // The paths are restart-classified by OpenClaw, so writing them once at
     // startup avoids any SIGUSR1 on the first Pinchy regenerate.
@@ -401,12 +409,13 @@ describe("regenerateOpenClawConfig", () => {
     const written = mockedWriteFileSync.mock.calls[0][1] as string;
     const config = JSON.parse(written) as {
       update?: { checkOnStart?: boolean };
-      gateway?: { controlUi?: { enabled?: boolean } };
+      gateway?: { controlUi?: { enabled?: boolean }; terminal?: { enabled?: boolean } };
       canvasHost?: { enabled?: boolean };
     };
     expect(config.update?.checkOnStart).toBe(false);
     expect(config.gateway?.controlUi?.enabled).toBe(false);
     expect(config.canvasHost?.enabled).toBe(false);
+    expect(config.gateway?.terminal?.enabled).toBe(false);
   });
 
   it("emits gateway.controlUi.allowedOrigins so OpenClaw's in-memory seed never diffs", async () => {
@@ -4179,6 +4188,10 @@ describe("seedRestartClassOverridesIfMissing", () => {
     expect(written.discovery?.mdns?.mode).toBe("off");
     expect(written.update?.checkOnStart).toBe(false);
     expect(written.canvasHost?.enabled).toBe(false);
+    // Workspace terminals (OpenClaw 2026.7.1+) are a restart-class gateway field;
+    // seed them off up front so the first regenerate isn't a missing-then-added
+    // diff that triggers a SIGUSR1 restart.
+    expect(written.gateway?.terminal?.enabled).toBe(false);
   });
 
   it("returns false (no write) when file already has all overrides — production case", () => {
@@ -4192,6 +4205,7 @@ describe("seedRestartClassOverridesIfMissing", () => {
           enabled: false,
           allowedOrigins: ["http://localhost:18789", "http://127.0.0.1:18789"],
         },
+        terminal: { enabled: false },
       },
       discovery: { mdns: { mode: "off" } },
       update: { checkOnStart: false },
@@ -4233,6 +4247,36 @@ describe("seedRestartClassOverridesIfMissing", () => {
       "http://localhost:18789",
       "http://127.0.0.1:18789",
     ]);
+  });
+
+  it("seeds gateway.terminal.enabled:false when the file omits it (2026.7.1 upgrade case)", () => {
+    // Pre-2026.7.1 configs have no gateway.terminal block. On upgrade, Pinchy's
+    // next regenerate adds gateway.terminal.enabled — a missing-then-added change
+    // on the restart-class `gateway` path that triggers a SIGUSR1 restart cascade.
+    // The seed must add it up front even when every other override is correct.
+    const existing = {
+      gateway: {
+        mode: "local",
+        bind: "lan",
+        controlUi: {
+          enabled: false,
+          allowedOrigins: ["http://localhost:18789", "http://127.0.0.1:18789"],
+        },
+      },
+      discovery: { mdns: { mode: "off" } },
+      update: { checkOnStart: false },
+      canvasHost: { enabled: false },
+    };
+    mockedReadFileSync.mockReturnValue(JSON.stringify(existing) as unknown as Buffer);
+
+    const changed = seedRestartClassOverridesIfMissing();
+
+    expect(changed).toBe(true);
+    const writtenAtomic = mockedWriteFileSync.mock.calls.find(
+      (c) => typeof c[0] === "string" && (c[0] as string).includes("openclaw.json.tmp")
+    );
+    const written = JSON.parse(String(writtenAtomic![1]));
+    expect(written.gateway.terminal.enabled).toBe(false);
   });
 
   it("preserves existing fields outside the four restart-class paths", () => {

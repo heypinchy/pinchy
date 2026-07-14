@@ -341,6 +341,7 @@ export function seedRestartClassOverridesIfMissing(): boolean {
 
   const gateway = (existing.gateway as Record<string, unknown>) || {};
   const controlUi = (gateway.controlUi as Record<string, unknown>) || {};
+  const terminal = (gateway.terminal as Record<string, unknown>) || {};
   const discovery = (existing.discovery as Record<string, unknown>) || {};
   const mdns = (discovery.mdns as Record<string, unknown>) || {};
   const update = (existing.update as Record<string, unknown>) || {};
@@ -352,6 +353,13 @@ export function seedRestartClassOverridesIfMissing(): boolean {
   // field and trigger a restart-class diff. Seed it up front. See
   // OPENCLAW_CONTROL_UI_ALLOWED_ORIGINS in paths.ts for the full rationale.
   const needsAllowedOrigins = !Array.isArray(controlUi.allowedOrigins);
+  // Workspace terminals (OpenClaw 2026.7.1+, gateway.terminal.enabled). OC's own
+  // default is false, but it *materializes* gateway.terminal={enabled:false} in
+  // its parsed compare config even when the file omits it. So an on-disk config
+  // that omits terminal makes the next regenerate a missing-then-added diff on
+  // the restart-class `gateway` path → SIGUSR1 restart cascade. Pin it off up
+  // front (also the explicit governance posture — see gateway.ts).
+  const needsTerminalOff = terminal.enabled !== false;
   const needsMdnsOff = mdns.mode !== "off";
   const needsUpdateCheck = update.checkOnStart !== false;
   const needsCanvasHostOff = canvasHost.enabled !== false;
@@ -359,6 +367,7 @@ export function seedRestartClassOverridesIfMissing(): boolean {
   if (
     !needsControlUi &&
     !needsAllowedOrigins &&
+    !needsTerminalOff &&
     !needsMdnsOff &&
     !needsUpdateCheck &&
     !needsCanvasHostOff
@@ -377,6 +386,7 @@ export function seedRestartClassOverridesIfMissing(): boolean {
           ? controlUi.allowedOrigins
           : OPENCLAW_CONTROL_UI_ALLOWED_ORIGINS,
       },
+      terminal: { ...terminal, enabled: false },
     },
     discovery: { ...discovery, mdns: { ...mdns, mode: "off" } },
     update: { ...update, checkOnStart: false },

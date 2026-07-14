@@ -100,5 +100,12 @@ describe("openclaw.json emitted by Pinchy validates under OpenClaw's own loader"
     expect(() => loadConfig()).not.toThrow();
     // openclaw ESM cold import is slow in a full-suite run; 30s ceiling avoids
     // false-positive timeouts while still catching genuine hangs.
+
+    // Governance guard: Pinchy disables workspace terminals. Reading the value
+    // back off OC's own parsed config proves two things at once — the key is a
+    // real, schema-recognized field in this OpenClaw version (a stripped unknown
+    // key would come back undefined), and Pinchy actually emits it as false.
+    const loaded = loadConfig() as { gateway?: { terminal?: { enabled?: unknown } } };
+    expect(loaded.gateway?.terminal?.enabled).toBe(false);
   }, 30_000);
 });
