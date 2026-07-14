@@ -77,8 +77,10 @@ describe("email ledger — claimEmail", () => {
     const wf = await seedWorkflow(agent.id);
     const key = { workflowId: wf.id, connectionId: "conn-1", providerMessageId: "msg-1" };
 
-    expect(await claimEmail(key)).toBe(true); // first caller wins
-    expect(await claimEmail(key)).toBe(false); // re-claim rejected (idempotent)
+    // The winner gets the new ledger row's id (the dispatcher uses it as the
+    // notification's sourceId); a re-claim gets null.
+    expect(await claimEmail(key)).toEqual(expect.any(String)); // first caller wins
+    expect(await claimEmail(key)).toBeNull(); // re-claim rejected (idempotent)
   });
 
   it("lets a different workflow claim the same email independently", async () => {
@@ -87,9 +89,9 @@ describe("email ledger — claimEmail", () => {
     const wfB = await seedWorkflow(agent.id);
     const msg = { connectionId: "conn-1", providerMessageId: "msg-1" };
 
-    expect(await claimEmail({ workflowId: wfA.id, ...msg })).toBe(true);
+    expect(await claimEmail({ workflowId: wfA.id, ...msg })).toEqual(expect.any(String));
     // Per-rule scope (D3): the same email is claimable once per workflow.
-    expect(await claimEmail({ workflowId: wfB.id, ...msg })).toBe(true);
+    expect(await claimEmail({ workflowId: wfB.id, ...msg })).toEqual(expect.any(String));
   });
 
   it("is atomic under concurrent claims — exactly one winner", async () => {
@@ -144,7 +146,7 @@ describe("email ledger — finalizeEmail", () => {
     // Simulate the reconciliation sweep finding the same provider message again
     // after a cursor loss: the ledger — not the cursor — is the source of truth,
     // so the already-finalized email must NOT be re-processed.
-    expect(await claimEmail(key)).toBe(false);
+    expect(await claimEmail(key)).toBeNull();
   });
 
   it("throws when finalizing an email that was never claimed", async () => {

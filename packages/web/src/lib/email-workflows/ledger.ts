@@ -11,8 +11,9 @@ export interface ClaimInput {
 }
 
 /**
- * Atomically claim an email for a workflow. Returns true iff THIS caller won the
- * claim and should process the email; false if it was already claimed.
+ * Atomically claim an email for a workflow. Returns the new ledger row's id iff
+ * THIS caller won the claim and should process the email; null if it was already
+ * claimed. The dispatcher uses the returned id as the notification's `sourceId`.
  *
  * The claim is an `INSERT ... ON CONFLICT DO NOTHING` on the unique key
  * `(workflowId, connectionId, providerMessageId)` — the same idempotency pattern
@@ -20,7 +21,7 @@ export interface ClaimInput {
  * sweep re-discovers the email, but the ledger rejects the re-claim, so it is
  * never processed twice. The dedup decision is deterministic code, never the LLM.
  */
-export async function claimEmail(input: ClaimInput): Promise<boolean> {
+export async function claimEmail(input: ClaimInput): Promise<string | null> {
   const rows = await db
     .insert(processedEmails)
     .values({
@@ -38,7 +39,7 @@ export async function claimEmail(input: ClaimInput): Promise<boolean> {
       ],
     })
     .returning({ id: processedEmails.id });
-  return rows.length > 0;
+  return rows[0]?.id ?? null;
 }
 
 export type FinalizeStatus = "done" | "no_action" | "failed";

@@ -14,6 +14,31 @@ export interface ProcessedEmailOutcome {
   note?: string;
 }
 
+export interface EmailAttachment {
+  contentType: string;
+  filename?: string;
+}
+
+/**
+ * A mailbox message as the dispatcher sees it: the deterministic fields the
+ * filter runs against plus the claim keys. Sourced from `pinchy-email`'s
+ * `email_search`/`email_read`, never from the LLM.
+ */
+export interface DispatchableEmail {
+  /** Provider immutable id (Graph id / Gmail message id) — part of the claim key. */
+  providerMessageId: string;
+  /** RFC 5322 `Message-ID`, the secondary key. */
+  messageIdHeader?: string;
+  /** Normalized sender address (no display name). */
+  from: string;
+  /** Normalized recipient addresses (To + Cc). */
+  to: string[];
+  subject: string;
+  folder?: string;
+  attachments: EmailAttachment[];
+  receivedAt: Date;
+}
+
 // Status domains live in db/enums.ts (single source of truth, DB CHECK-enforced).
 // Re-exported here under the domain-facing names for lib/email-workflows consumers.
 export {
