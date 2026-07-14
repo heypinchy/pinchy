@@ -49,4 +49,14 @@ describe("knowledge-base template", () => {
     // Never pad an unsupported answer.
     expect(md).toMatch(/never (pad|guess)/i);
   });
+
+  it("teaches that a knowledge_search error is not the same as an empty knowledge base", () => {
+    // The embedding model can cold-load after idle and knowledge_search can
+    // return isError: true (a transport/route failure), distinct from a
+    // zero-match result. Without this guidance the model paraphrases that
+    // error as "the knowledge base is empty," which is false and misleads
+    // the user. Regression guard: this bullet must not silently disappear.
+    expect(md).toMatch(/temporarily unavailable/i);
+    expect(md).toMatch(/never claim the knowledge base is empty/i);
+  });
 });

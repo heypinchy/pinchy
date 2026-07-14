@@ -24,7 +24,11 @@ describe("embedTexts", () => {
       expect.objectContaining({
         method: "POST",
         headers: expect.objectContaining({ "content-type": "application/json" }),
-        body: JSON.stringify({ model: "bge-m3", input: ["hallo", "welt"] }),
+        body: JSON.stringify({
+          model: "bge-m3",
+          input: ["hallo", "welt"],
+          keep_alive: -1,
+        }),
       })
     );
     expect(result).toEqual(embeddings);
@@ -40,7 +44,38 @@ describe("embedTexts", () => {
     expect(fetch).toHaveBeenCalledWith(
       "http://ollama:11434/api/embed",
       expect.objectContaining({
-        body: JSON.stringify({ model: "bge-m3", input: ["hallo"] }),
+        body: JSON.stringify({ model: "bge-m3", input: ["hallo"], keep_alive: -1 }),
+      })
+    );
+  });
+
+  it("pins the model resident (keep_alive: -1) by default so it never idle-unloads", async () => {
+    // Ollama's default keep_alive is 5m. The first KB query after idle then
+    // hits a ~25s cold model load, knowledge_search errors out, and the
+    // agent wrongly reports the knowledge base as empty. Pinning keep_alive
+    // to -1 (forever resident) prevents that cold start.
+    vi.mocked(fetch).mockResolvedValue(
+      new Response(JSON.stringify({ embeddings: [[1, 2]] }), { status: 200 })
+    );
+
+    await embedTexts(["hallo"], { baseUrl: "http://ollama:11434" });
+
+    const [, init] = vi.mocked(fetch).mock.calls[0];
+    const body = JSON.parse((init?.body as string) ?? "{}");
+    expect(body.keep_alive).toBe(-1);
+  });
+
+  it("uses a caller-provided keepAlive instead of the -1 default", async () => {
+    vi.mocked(fetch).mockResolvedValue(
+      new Response(JSON.stringify({ embeddings: [[1, 2]] }), { status: 200 })
+    );
+
+    await embedTexts(["hallo"], { baseUrl: "http://ollama:11434", keepAlive: "30m" });
+
+    expect(fetch).toHaveBeenCalledWith(
+      "http://ollama:11434/api/embed",
+      expect.objectContaining({
+        body: JSON.stringify({ model: "bge-m3", input: ["hallo"], keep_alive: "30m" }),
       })
     );
   });

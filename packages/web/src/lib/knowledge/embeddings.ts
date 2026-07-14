@@ -25,6 +25,14 @@ export interface EmbeddingConfig {
    * no dimension enforcement (the client stays model-agnostic).
    */
   expectedDim?: number;
+  /**
+   * keep_alive for the Ollama model (seconds, a duration string like "30m",
+   * or -1 to pin the model resident indefinitely). Defaults to -1: the
+   * embedding model must NOT idle-unload, otherwise the first KB query after
+   * idle hits a ~25s cold load, the search times out, and the agent wrongly
+   * reports the knowledge base as empty.
+   */
+  keepAlive?: number | string;
 }
 
 const DEFAULT_MODEL = "bge-m3";
@@ -48,7 +56,11 @@ export async function embedTexts(texts: string[], cfg: EmbeddingConfig): Promise
   const response = await fetch(url, {
     method: "POST",
     headers,
-    body: JSON.stringify({ model: cfg.model ?? DEFAULT_MODEL, input: texts }),
+    body: JSON.stringify({
+      model: cfg.model ?? DEFAULT_MODEL,
+      input: texts,
+      keep_alive: cfg.keepAlive ?? -1,
+    }),
   });
 
   if (!response.ok) {
