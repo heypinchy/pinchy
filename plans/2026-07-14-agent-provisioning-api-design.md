@@ -42,6 +42,8 @@ Building the API for (2) makes us the first consumer of (1) — the best way to 
 ### D1 — Build vs. buy: **hybrid**
 Use the **Better Auth `apiKey` plugin** for the security-critical mechanics (hashing at rest, verification, expiry, revocation) — we already run Better Auth with the `admin` plugin, so this is "don't rebuild what the platform gives us" (the same principle we apply to OpenClaw). But write our **own explicit `withApiKey()` wrapper** for scope enforcement, audit writing, and actor mapping.
 
+> **Verified 2026-07-14 against installed deps:** the plugin is a **separate package `@better-auth/api-key` (v1.6.23, matches our better-auth 1.6.23)**, imported as `import { apiKey } from "@better-auth/api-key"` — it is **not** in core `better-auth/plugins` (confirmed absent from the barrel export and the package `exports` map). D1 stands; we just add this dependency. The package advertises "sessions from API keys" as a feature — see the open questions (§7) for the two things to confirm before coding: its hashing method and whether merely registering it auto-resolves keys into `getSession()`.
+
 **Critical:** do **not** enable the plugin's automatic session resolution. If a `x-api-key` header auto-resolved to a session, *every* existing `withAuth`/`withAdmin` route (settings, user deletion, provider keys, integrations, chat) would silently become API-key reachable. That is the opposite of the curated, default-deny surface we're selling. The key must open **only** the routes we explicitly expose.
 
 ### D2 — Audit actor model: **machine as actor, human as separate issuer metadata**
