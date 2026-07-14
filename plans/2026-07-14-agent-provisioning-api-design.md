@@ -128,13 +128,13 @@ Extract from the inline POST handler: `createAgent()` (DB insert + OpenClaw conf
 ### 6.5 Key-management API (session/admin)
 - `POST /api/settings/api-keys` (`withAdmin`) — create; returns plaintext **once**. Audit `api_key.created`.
 - `GET /api/settings/api-keys` — list, masked (prefix + last-4).
-- `DELETE /api/settings/api-keys/[id]` — revoke. Audit `api_key.revoked`.
+- `DELETE /api/settings/api-keys/[id]` — revoke (hard-deletes the key via better-auth `deleteApiKey`). Audit `api_key.deleted` (`DeleteDetail { name }`).
 
 ### 6.6 Minimal admin UI (Settings → API Keys)
 List (name, prefix+last-4, scopes, created, expiry, last-used) · Create dialog (name, scope checkboxes, optional expiry) · one-time-display modal · Revoke.
 
 ### 6.7 Audit additions
-- New `AuditResource`: `"api_key"`. New event types: `api_key.created`, `api_key.revoked`.
+- New `AuditResource`: `"api_key"`. New event types: `api_key.created`, `api_key.deleted` (revocation hard-deletes the key, so `.deleted` + `DeleteDetail` per the audit convention — matches the implementation plan's Task 1.3/5.3).
 - Detail snapshots per AGENTS.md: `{ id, name }` for the key; scopes; issuer `{ id, name }`; expiry.
 
 ### 6.8 Crypto
