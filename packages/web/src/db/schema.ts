@@ -183,6 +183,66 @@ export const verification = pgTable("verification", {
   updatedAt: timestamp("updated_at").notNull().defaultNow(),
 });
 
+/**
+ * Better Auth `@better-auth/api-key` plugin table (#572).
+ *
+ * Hand-written to match the plugin's `apiKeySchema` field definitions exactly
+ * (dist/index.mjs — `apiKeySchema`, `API_KEY_TABLE_NAME = "apikey"`). Pinchy
+ * maintains every Better Auth table by hand (see users/sessions/accounts above)
+ * rather than via `@better-auth/cli generate`, then diffs it with drizzle-kit.
+ * The plugin resolves its `apikey` model to this table via the explicit adapter
+ * mapping in lib/auth.ts (`apikey: schema.apiKeys`).
+ *
+ * Fidelity rules applied: plugin `required: true` → `.notNull()`; `required:
+ * false` → nullable; static `defaultValue` → `.default(...)`. The rate-limit
+ * VALUE columns (`rateLimitTimeWindow`, `rateLimitMax`) intentionally carry no
+ * DB default — the plugin computes their defaults from runtime options and
+ * writes them on insert, so a static DB default would be wrong.
+ *
+ * No FK on `reference_id`: the plugin schema deliberately keeps it a plain
+ * string (it supports non-user owners upstream), so we follow suit rather than
+ * add `.references(users.id)`.
+ */
+export const apiKeys = pgTable(
+  "apikey",
+  {
+    id: text("id")
+      .primaryKey()
+      .$defaultFn(() => crypto.randomUUID()),
+    name: text("name"),
+    start: text("start"),
+    prefix: text("prefix"),
+    key: text("key").notNull(),
+    referenceId: text("reference_id").notNull(),
+    configId: text("config_id").notNull().default("default"),
+    refillInterval: integer("refill_interval"),
+    refillAmount: integer("refill_amount"),
+    lastRefillAt: timestamp("last_refill_at"),
+    enabled: boolean("enabled").default(true),
+    rateLimitEnabled: boolean("rate_limit_enabled").default(true),
+    rateLimitTimeWindow: integer("rate_limit_time_window"),
+    rateLimitMax: integer("rate_limit_max"),
+    requestCount: integer("request_count").default(0),
+    remaining: integer("remaining"),
+    lastRequest: timestamp("last_request"),
+    expiresAt: timestamp("expires_at"),
+    createdAt: timestamp("created_at").notNull().defaultNow(),
+    updatedAt: timestamp("updated_at").notNull().defaultNow(),
+    // The plugin serializes these to JSON strings — do NOT "improve" to jsonb.
+    // permissions: Record<resource, action[]>; metadata: arbitrary object.
+    permissions: text("permissions"),
+    metadata: text("metadata"),
+  },
+  (table) => [
+    // `key` is hashed and looked up on every verify; `reference_id` drives
+    // per-owner listing. The plugin also flags `config_id` as indexed, but we
+    // run a single config so it is always "default" — a non-selective, useless
+    // index — so we omit it.
+    index("apikey_key_idx").on(table.key),
+    index("apikey_reference_id_idx").on(table.referenceId),
+  ]
+);
+
 // ── Application tables ─────────────────────────────────────────────────
 
 export const agents = pgTable(

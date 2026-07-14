@@ -2,6 +2,7 @@ import { betterAuth, type BetterAuthRateLimitOptions } from "better-auth";
 import { drizzleAdapter } from "better-auth/adapters/drizzle";
 import { createAuthMiddleware } from "better-auth/api";
 import { admin } from "better-auth/plugins";
+import { apiKey } from "@better-auth/api-key";
 import { verifyPassword as verifyScrypt } from "better-auth/crypto";
 import bcrypt from "bcryptjs";
 import { db } from "@/db";
@@ -174,6 +175,7 @@ export const auth = betterAuth({
       user: schema.users,
       session: schema.sessions,
       account: schema.accounts,
+      apikey: schema.apiKeys,
     },
   }),
   emailAndPassword: {
@@ -206,6 +208,20 @@ export const auth = betterAuth({
   plugins: [
     admin({
       defaultRole: "member",
+    }),
+    // Agent Provisioning API (#572): programmatic clients authenticate with
+    // `pinchy_`-prefixed API keys instead of session cookies.
+    apiKey({
+      // D1 security: an API key must NEVER resolve to a full user session —
+      // keys are scoped machine credentials, not login tokens. Defaults false;
+      // set explicitly as belt-and-suspenders against a future default flip.
+      enableSessionForAPIKeys: false,
+      // One-time key format: `pinchy_<random>`.
+      defaultPrefix: "pinchy_",
+      // The plugin's built-in per-key limiter defaults to 10 requests / 24h,
+      // which would throttle a legitimately busy API client. We govern rate
+      // limiting at Pinchy's own layer, so disable the plugin's.
+      rateLimit: { enabled: false },
     }),
   ],
   session: {

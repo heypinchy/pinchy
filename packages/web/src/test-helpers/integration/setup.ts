@@ -37,6 +37,7 @@ const APPLICATION_TABLES = [
   "agents",
   "groups",
   "verification",
+  "apikey", // Better Auth @better-auth/api-key plugin table (#572).
   "account",
   "session",
   '"user"', // Quoted because `user` is a reserved word in Postgres.

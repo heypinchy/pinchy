@@ -20,6 +20,7 @@ vi.mock("@/db/schema", () => ({
   users: {},
   sessions: {},
   accounts: {},
+  apiKeys: {},
 }));
 
 vi.mock("better-auth", () => ({
