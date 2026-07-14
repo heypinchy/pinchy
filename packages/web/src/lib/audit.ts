@@ -60,7 +60,8 @@ export type AuditResource =
   // Inbox Agent email workflows (design §5). Durable noun matching the
   // email_workflows table; yields email_workflow.created/.updated/.deleted for
   // the whole Automations CRUD lifecycle (the create path lands first).
-  | "email_workflow";
+  | "email_workflow"
+  | "api_key";
 
 export type AuditEventType =
   | `tool.${string}`
@@ -120,6 +121,13 @@ export type AuditEventType =
   | "email_workflow.created"
   | "email_workflow.updated"
   | "email_workflow.deleted"
+  // Agent-provisioning API key lifecycle (#572). Issuance → api_key.created with
+  // { id, name, scopes, expiresAt }; revocation → api_key.deleted (better-auth
+  // hard-deletes the row) with DeleteDetail { name }. No api_key.updated: PATCH
+  // over keys is an explicit Non-Goal for #572. audit-exempt: infrastructure
+  // (audit resource + event-type vocabulary; no state-changing endpoint here).
+  | "api_key.created"
+  | "api_key.deleted"
   | "file.upload.staged"
   | "file.upload.attached"
   | "file.upload.expired"

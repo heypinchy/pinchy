@@ -37,3 +37,60 @@ describe("api_key audit actor type (integration)", () => {
     expect(rows[0].outcome).toBe("success");
   });
 });
+
+// #572, Task 1.3: the API key is also an audit RESOURCE, not just an actor.
+// Issuing a key emits `api_key.created`; revoking it (better-auth hard-deletes
+// the row) emits `api_key.deleted` — mapped to DeleteDetail per the audit
+// convention (AGENTS.md). This proves BOTH event-type literals type-check
+// (against the AuditResource-templated AuditLogEntry arms) AND persist through
+// the real HMAC/insert path. The vocabulary lands here; the real audit calls
+// arrive in Phase 5.
+describe("api_key lifecycle audit events (integration)", () => {
+  it("persists an 'api_key.created' event with issuance detail and reads it back", async () => {
+    await appendAuditLog({
+      actorType: "user",
+      actorId: "admin-1",
+      eventType: "api_key.created",
+      resource: "api_key:key-1",
+      detail: {
+        id: "key-1",
+        name: "CI key",
+        scopes: ["agents:read"],
+        expiresAt: "2027-01-01T00:00:00.000Z",
+      },
+      outcome: "success",
+    });
+
+    const rows = await db.select().from(auditLog).where(eq(auditLog.resource, "api_key:key-1"));
+
+    expect(rows).toHaveLength(1);
+    expect(rows[0].eventType).toBe("api_key.created");
+    expect(rows[0].resource).toBe("api_key:key-1");
+    expect(rows[0].detail).toEqual({
+      id: "key-1",
+      name: "CI key",
+      scopes: ["agents:read"],
+      expiresAt: "2027-01-01T00:00:00.000Z",
+    });
+    expect(rows[0].outcome).toBe("success");
+  });
+
+  it("persists an 'api_key.deleted' (revoke) event with DeleteDetail and reads it back", async () => {
+    await appendAuditLog({
+      actorType: "user",
+      actorId: "admin-1",
+      eventType: "api_key.deleted",
+      resource: "api_key:key-1",
+      detail: { name: "CI key" },
+      outcome: "success",
+    });
+
+    const rows = await db.select().from(auditLog).where(eq(auditLog.resource, "api_key:key-1"));
+
+    expect(rows).toHaveLength(1);
+    expect(rows[0].eventType).toBe("api_key.deleted");
+    expect(rows[0].resource).toBe("api_key:key-1");
+    expect(rows[0].detail).toEqual({ name: "CI key" });
+    expect(rows[0].outcome).toBe("success");
+  });
+});
