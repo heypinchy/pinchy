@@ -30,6 +30,17 @@ export function sanitizeFilename(raw: string): string {
   if (typeof raw !== "string") {
     throw new Error("Invalid filename: not a string");
   }
+
+  // Canonicalize to NFC before anything else. macOS uploads a filename in NFD
+  // (decomposed) form — "ä" arrives as "a" + U+0308 combining diaeresis. Stored
+  // verbatim on the Linux workspace volume (which does no Unicode folding), the
+  // file then can't be read back: the attachment path round-trips through JSON
+  // and the agent's own model, both of which emit NFC, so `pinchy_read` is handed
+  // the composed form and readFile ENOENTs with "no such file or directory".
+  // Normalizing here makes the stored name, the DB row, and the path the agent
+  // sees all identical bytes. (prod incident 2026-07-14)
+  raw = raw.normalize("NFC");
+
   if (CONTROL_CHAR_RE.test(raw)) {
     throw new Error("Invalid filename: contains control characters");
   }

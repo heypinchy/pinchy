@@ -46,6 +46,20 @@ describe("sanitizeFilename", () => {
     expect(sanitizeFilename("a..b.pdf")).toBe("a..b.pdf");
   });
 
+  it("normalizes decomposed (NFD) Unicode filenames to NFC so they match the on-disk bytes", () => {
+    // macOS uploads arrive NFD: "ä" is "a" + U+0308 (combining diaeresis). Stored
+    // verbatim on the Linux volume, the file then cannot be read back via the NFC
+    // path that any text round-trip (JSON, the agent's own model) produces — the
+    // read ENOENTs with "no such file or directory". Canonicalize to NFC at this
+    // trust boundary so the stored name matches. (prod incident 2026-07-14)
+    const nfd = "Absch" + "a\u0308" + "tzung.pdf"; // "a" + U+0308 combining diaeresis (NFD)
+    const nfc = "Absch" + "\u00e4" + "tzung.pdf"; // single U+00E4 "\u00e4" codepoint (NFC)
+    expect(nfd).not.toBe(nfc); // sanity: distinct byte sequences
+    const out = sanitizeFilename(nfd);
+    expect(out).toBe(nfc);
+    expect(out.normalize("NFC")).toBe(out); // output is canonical NFC
+  });
+
   it("rejects BiDi override and invisible Unicode control characters", () => {
     expect(() => sanitizeFilename("foo‮.pdf")).toThrow(/invalid/i); // RIGHT-TO-LEFT OVERRIDE
     expect(() => sanitizeFilename("foo​.pdf")).toThrow(/invalid/i); // ZERO-WIDTH SPACE
