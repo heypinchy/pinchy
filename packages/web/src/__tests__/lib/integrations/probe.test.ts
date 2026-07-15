@@ -1,8 +1,11 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 
-const { mockAuthenticate, mockFetch } = vi.hoisted(() => ({
+const { mockAuthenticate, mockFetch, realFetch } = vi.hoisted(() => ({
   mockAuthenticate: vi.fn(),
   mockFetch: vi.fn(),
+  // Captured before stubGlobal swaps it out, so the one end-to-end mcp test
+  // below can do real loopback HTTP against a mock MCP server.
+  realFetch: globalThis.fetch.bind(globalThis),
 }));
 
 vi.stubGlobal("fetch", mockFetch);
@@ -35,6 +38,11 @@ vi.mock("@/lib/integrations/imap-probe", async (importActual) => {
 });
 
 const mockListMcpTools = vi.fn();
+// Holds the REAL listMcpTools so the end-to-end test at the bottom of the mcp
+// block can opt back into it while every other test keeps the fast fake.
+const mcpClientActual = vi.hoisted(
+  () => ({}) as { listMcpTools?: typeof import("@/lib/integrations/mcp-client").listMcpTools }
+);
 // Only the network I/O (listMcpTools) is mocked; the typed error classes come
 // from the REAL module via importActual, exactly like the imap-probe pattern
 // above. The mcp branch of probe.ts classifies transient-vs-auth via
@@ -42,6 +50,7 @@ const mockListMcpTools = vi.fn();
 // real classes drift from the classification silently.
 vi.mock("@/lib/integrations/mcp-client", async (importActual) => {
   const actual = await importActual<typeof import("@/lib/integrations/mcp-client")>();
+  mcpClientActual.listMcpTools = actual.listMcpTools;
   return {
     ...actual,
     listMcpTools: (...args: unknown[]) => mockListMcpTools(...args),
@@ -52,6 +61,7 @@ import { fetchOdooSchema } from "@/lib/integrations/odoo-sync";
 import { probeBraveApiKey } from "@/lib/integrations/brave-probe";
 import { probeIntegrationCredentials } from "@/lib/integrations/probe";
 import { McpAuthError, McpServerError, McpSchemaError } from "@/lib/integrations/mcp-client";
+import { createMcpMockServer } from "@/test-utils/mcp-mock-server";
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -486,5 +496,38 @@ describe("probeIntegrationCredentials", () => {
       if (res.success) return;
       expect(res.reason).not.toContain(validCreds.token);
     });
+
+    // End-to-end over the REAL listMcpTools + real loopback HTTP. The tests
+    // above mock the client, so they can only prove "given an McpAuthError,
+    // probe says non-transient" — they'd stay green even if the client never
+    // produced an McpAuthError for a 403 in the first place. This one pins the
+    // whole chain a user actually hits: HTTP 403 → McpAuthError → auth_failed
+    // (not the "server unreachable, try again" lie that shipped before).
+    it("classifies a real 403 from an MCP server as a non-transient auth failure (full chain)", async () => {
+      vi.stubEnv("ALLOW_PRIVATE_URLS", "1"); // loopback must pass the SSRF guard
+      mockFetch.mockImplementation((...args: Parameters<typeof fetch>) => realFetch(...args));
+      mockListMcpTools.mockImplementation((...args: unknown[]) =>
+        (mcpClientActual.listMcpTools as unknown as (...a: unknown[]) => Promise<unknown>)(...args)
+      );
+      const mock = await createMcpMockServer("forbidden");
+
+      try {
+        const res = await probeIntegrationCredentials(
+          "mcp",
+          { token: "under-scoped-token" },
+          { ...validData, url: `http://127.0.0.1:${mock.port}/mcp` }
+        );
+
+        expect(res.success).toBe(false);
+        if (res.success) return;
+        expect(res.transient).toBeFalsy();
+        // The message must point at the token, not at reachability.
+        expect(res.reason).toMatch(/token/i);
+        expect(res.reason).not.toMatch(/reach/i);
+      } finally {
+        await mock.close();
+        vi.unstubAllEnvs();
+      }
+    }, 10000);
   });
 });

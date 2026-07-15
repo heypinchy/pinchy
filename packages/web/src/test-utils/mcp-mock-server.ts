@@ -2,12 +2,17 @@
  * Reusable mock MCP server for unit and integration tests.
  *
  * Creates a minimal HTTP server that responds to MCP JSON-RPC requests.
- * Supports four control modes:
+ * Supports these control modes:
  *   - "normal": returns a valid tool list
- *   - "auth-error": returns 401
+ *   - "auth-error": returns 401 (token rejected outright)
+ *   - "forbidden": returns 403 (token authenticates but lacks the scope)
  *   - "server-error": returns 500 with an error body
  *   - "malformed": returns tools missing the `name` field
  *   - "hang": never responds (used to test timeout)
+ *
+ * The two auth modes answer ANY method, not just POST: a server that rejects
+ * your token rejects the SSE transport's GET handshake too, and the SSE tests
+ * depend on that.
  *
  * Usage:
  *   const { server, port, close } = await createMcpMockServer("normal");
@@ -17,7 +22,8 @@
 
 import http from "node:http";
 
-export type MockServerMode = "normal" | "auth-error" | "server-error" | "malformed" | "hang";
+export type MockServerMode =
+  "normal" | "auth-error" | "forbidden" | "server-error" | "malformed" | "hang";
 
 export interface McpMockServer {
   server: http.Server;
@@ -98,17 +104,24 @@ export async function createMcpMockServer(mode: MockServerMode): Promise<McpMock
       return;
     }
 
+    // Auth rejections come before the method check: a server that refuses the
+    // token refuses every method, including the SSE transport's GET handshake.
+    if (mode === "auth-error") {
+      res.writeHead(401, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ error: "Unauthorized" }));
+      return;
+    }
+
+    if (mode === "forbidden") {
+      res.writeHead(403, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ error: "Forbidden" }));
+      return;
+    }
+
     // Only handle POST requests for MCP JSON-RPC
     if (req.method !== "POST") {
       res.writeHead(405, { "Content-Type": "application/json" });
       res.end(JSON.stringify({ error: "Method not allowed" }));
-      return;
-    }
-
-    // Handle auth-error mode
-    if (mode === "auth-error") {
-      res.writeHead(401, { "Content-Type": "application/json" });
-      res.end(JSON.stringify({ error: "Unauthorized" }));
       return;
     }
 

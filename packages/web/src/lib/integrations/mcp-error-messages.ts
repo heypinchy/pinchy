@@ -28,7 +28,7 @@ export function mcpErrorMessage(opts: {
   providerName: string;
   /** True for the generic/custom preset — wording shifts to "the server". */
   isCustom: boolean;
-  /** Raw error string from the API, e.g. "MCP server returned 401 Unauthorized". */
+  /** Raw error string from the API, e.g. "MCP server rejected the token". */
   rawMessage?: string;
 }): McpErrorDisplay {
   const { code, providerName, isCustom, rawMessage } = opts;

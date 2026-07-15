@@ -157,7 +157,11 @@ export async function probeIntegrationCredentials(
       if (err instanceof McpAuthError) {
         return {
           success: false,
-          reason: "The server rejected this token. Check that it's still valid, then reconnect.",
+          // Covers both codes McpAuthError stands for: 401 (token rejected)
+          // and 403 (token fine, permissions missing) — so the message names
+          // both things worth checking, like mcp-error-messages.ts does.
+          reason:
+            "The server rejected this token. Check that it hasn't expired and has the permissions it needs, then reconnect.",
         };
       }
       return {

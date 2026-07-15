@@ -2,7 +2,7 @@
  * MCP client — lists tools from a remote MCP server over HTTP or SSE transport.
  *
  * Typed errors:
- *   McpAuthError   — server returned 401
+ *   McpAuthError   — server returned 401 or 403 (see the class for why both)
  *   McpServerError — server returned 5xx (includes status code + body for audit log)
  *   McpSchemaError — response was valid JSON but a tool was missing `name`
  *
@@ -26,8 +26,16 @@ import { validateExternalUrl } from "./url-validation";
 // Typed error subclasses
 // ---------------------------------------------------------------------------
 
+/**
+ * The token is the problem — raised for both 401 (rejected outright) and 403
+ * (authenticated, but missing the scope it needs). Both are fixed the same
+ * way: the user fetches a new, properly scoped token and reconnects, so both
+ * belong on the auth_failed path. This mirrors main's microsoft probe branch,
+ * which also treats 401 and 403 as one "reconnect" case. Keep the message
+ * status-agnostic — callers render it, and it covers both codes.
+ */
 export class McpAuthError extends Error {
-  constructor(message = "MCP server returned 401 Unauthorized") {
+  constructor(message = "MCP server rejected the token") {
     super(message);
     this.name = "McpAuthError";
   }
@@ -224,22 +232,18 @@ async function fetchJsonRpc(
   headers: Record<string, string>,
   signal: AbortSignal
 ): Promise<Response> {
-  let response: Response;
-  try {
-    response = await fetch(url, {
-      method: "POST",
-      headers,
-      body: JSON.stringify(payload),
-      signal,
-    });
-  } catch (err) {
-    if (err instanceof Error && (err.name === "AbortError" || err.message.includes("abort"))) {
-      throw err;
-    }
-    throw err;
-  }
+  const response = await fetch(url, {
+    method: "POST",
+    headers,
+    body: JSON.stringify(payload),
+    signal,
+  });
 
-  if (response.status === 401) {
+  // 403 belongs here with 401: the request reached the server fine, the token
+  // just isn't good enough. Without this it would fall through, trip over the
+  // error body as a bogus JSON-RPC error, and get reported as "couldn't reach
+  // the server" — untrue, and it left the connection marked healthy.
+  if (response.status === 401 || response.status === 403) {
     throw new McpAuthError();
   }
 
@@ -392,10 +396,13 @@ function translateSdkError(err: unknown): Error {
   }
 
   if (err instanceof Error) {
+    // The SDK's SseError carries the HTTP status on `.code`.
     const asHttpErr = err as Error & { code?: unknown };
     if (typeof asHttpErr.code === "number") {
       const statusCode = asHttpErr.code;
-      if (statusCode === 401) return new McpAuthError();
+      // Same 401/403 pairing as the HTTP transport above — the transport a
+      // connection happens to use must not change how we classify its errors.
+      if (statusCode === 401 || statusCode === 403) return new McpAuthError();
       if (statusCode >= 500 && statusCode < 600) {
         return new McpServerError(statusCode, err.message);
       }

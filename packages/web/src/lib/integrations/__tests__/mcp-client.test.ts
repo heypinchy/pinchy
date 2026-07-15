@@ -57,6 +57,23 @@ describe("listMcpTools", () => {
       ).rejects.toThrow(McpAuthError);
     });
 
+    it("throws McpAuthError on 403 (authenticated but missing scope — still the token's fault)", async () => {
+      // Regression guard: a 403 used to fall through the status checks, fail
+      // later on the tools/list shape check as an McpSchemaError, and get
+      // classified transient — so we told the user "couldn't reach the server,
+      // try again" while the server was perfectly reachable and the token was
+      // the actual problem. 403 must reach the auth path like main's microsoft
+      // probe branch (401 || 403).
+      mock = await createMcpMockServer("forbidden");
+      await expect(
+        listMcpTools({
+          url: `http://127.0.0.1:${mock.port}/mcp`,
+          transport: "http",
+          token: "under-scoped-token",
+        })
+      ).rejects.toThrow(McpAuthError);
+    });
+
     it("throws McpServerError on 5xx with body", async () => {
       mock = await createMcpMockServer("server-error");
       const err = await listMcpTools({
@@ -96,12 +113,41 @@ describe("listMcpTools", () => {
       ).rejects.toThrow("abort");
     }, 3000); // vitest test timeout: 3s is plenty for a 100ms abort
   });
+
+  // The SSE transport goes through the MCP SDK rather than our own fetch, so
+  // its auth failures arrive as the SDK's SseError (which carries the HTTP
+  // status on `.code`) and must be translated back onto our typed errors.
+  // These run against the real SDK transport — mocking it would prove nothing
+  // about the shape the SDK actually throws.
+  describe("SSE transport", () => {
+    it("translates a 401 from the SDK transport into McpAuthError", async () => {
+      mock = await createMcpMockServer("auth-error");
+      await expect(
+        listMcpTools({
+          url: `http://127.0.0.1:${mock.port}/sse`,
+          transport: "sse",
+          token: "bad-token",
+        })
+      ).rejects.toThrow(McpAuthError);
+    }, 10000);
+
+    it("translates a 403 from the SDK transport into McpAuthError", async () => {
+      mock = await createMcpMockServer("forbidden");
+      await expect(
+        listMcpTools({
+          url: `http://127.0.0.1:${mock.port}/sse`,
+          transport: "sse",
+          token: "under-scoped-token",
+        })
+      ).rejects.toThrow(McpAuthError);
+    }, 10000);
+  });
 });
 
 describe("mcpErrorCodeFromError", () => {
   // The API routes ship this code to the browser so the dialog can render a
-  // human-friendly message (mcp-error-messages.ts) instead of leaking the
-  // raw "MCP server returned 401 Unauthorized" protocol error at users.
+  // human-friendly message (mcp-error-messages.ts) instead of leaking a raw
+  // protocol error like "MCP server returned 503: boom" at users.
   it("maps the typed client errors onto stable wire codes", () => {
     expect(mcpErrorCodeFromError(new McpAuthError())).toBe("unauthorized");
     expect(mcpErrorCodeFromError(new McpServerError(503, "boom"))).toBe("server_error");
