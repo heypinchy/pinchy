@@ -186,3 +186,9 @@ export const MCP_PRESETS: McpPreset[] = [
 export function getMcpPreset(id: string): McpPreset {
   return MCP_PRESETS.find((p) => p.id === id) ?? MCP_PRESETS.find((p) => p.id === "generic")!;
 }
+
+// Single source of truth for "every preset id" as a zod-friendly tuple —
+// shared by lib/schemas/mcp-integration.ts (request validation) and
+// add-integration-dialog.tsx's client-side form schema, so both stay in sync
+// with this registry without a third hardcoded list.
+export const MCP_PRESET_IDS = MCP_PRESETS.map((p) => p.id) as [McpPresetId, ...McpPresetId[]];

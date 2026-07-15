@@ -36,6 +36,7 @@ import {
   odooEditSchema,
   webSearchEditSchema,
   imapEditSchema,
+  mcpEditSchema,
 } from "@/lib/schemas/integration-edit";
 import type { IntegrationConnection } from "@/lib/integrations/types";
 import type { z } from "zod";
@@ -49,6 +50,7 @@ interface EditCredentialsDialogProps {
 
 type OdooFormValues = z.infer<typeof odooEditSchema>;
 type WebSearchFormValues = z.infer<typeof webSearchEditSchema>;
+type McpFormValues = z.infer<typeof mcpEditSchema>;
 
 // The IMAP form carries every field as a string (ports included) because the
 // inputs are text. We do NOT use imapEditSchema as the react-hook-form resolver:
@@ -263,6 +265,110 @@ function WebSearchForm({
           render={({ field }) => (
             <FormItem>
               <FormLabel>API Key</FormLabel>
+              <FormControl>
+                <Input type="password" placeholder="Leave empty to keep current" {...field} />
+              </FormControl>
+              <FormMessage />
+            </FormItem>
+          )}
+        />
+
+        {serverError && <p className="text-sm text-destructive">{serverError}</p>}
+
+        <div className="flex justify-end gap-2">
+          <Button type="button" variant="outline" onClick={() => onOpenChange(false)}>
+            Cancel
+          </Button>
+          <Button type="submit" disabled={saving}>
+            {saving ? (
+              <>
+                <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                Saving...
+              </>
+            ) : (
+              "Save"
+            )}
+          </Button>
+        </div>
+      </form>
+    </Form>
+  );
+}
+
+// MCP credential edit = token rotation only. extraHeaders (e.g. HighLevel's
+// locationId) live on connection.data, not the credentials blob — they're
+// reused as-is by the sync/re-discovery path, so there's no field for them
+// here (mirrors mcpEditSchema, which is token-only).
+//
+// mcpEditSchema is NOT used as the react-hook-form resolver — same reason as
+// ImapForm below: its `.min(1)` on `token` would reject the field's own
+// empty-string default (the "leave empty to keep current" convention), since
+// zod's `.optional()` only exempts `undefined`, not `""`. Instead the submit
+// handler filters to the non-empty subset first (OdooForm's pattern) and runs
+// mcpEditSchema over that subset before the PATCH.
+function McpForm({
+  connection,
+  onSuccess,
+  onOpenChange,
+}: {
+  connection: IntegrationConnection;
+  onSuccess: () => void;
+  onOpenChange: (open: boolean) => void;
+}) {
+  const [serverError, setServerError] = useState("");
+  const [saving, setSaving] = useState(false);
+
+  const form = useForm<McpFormValues>({
+    defaultValues: { token: "" },
+  });
+
+  async function onSubmit(values: McpFormValues) {
+    setSaving(true);
+    setServerError("");
+    const edited: Record<string, string> = {};
+    if (values.token) edited.token = values.token;
+
+    const parsed = mcpEditSchema.safeParse(edited);
+    if (!parsed.success) {
+      setServerError(parsed.error.issues[0]?.message ?? "Please check your input.");
+      setSaving(false);
+      return;
+    }
+
+    try {
+      await apiPatch(`/api/integrations/${connection.id}`, { credentials: parsed.data });
+      toast.success("Credentials updated");
+      onSuccess();
+      onOpenChange(false);
+    } catch (err) {
+      if (err instanceof ApiError) {
+        setServerError(err.message);
+      } else {
+        setServerError("Something went wrong. Please try again.");
+      }
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <Form {...form}>
+      <form onSubmit={form.handleSubmit(onSubmit)} className="space-y-4">
+        {connection.status === "auth_failed" && (
+          <Alert variant="destructive">
+            <AlertTriangle className="h-4 w-4" />
+            <AlertDescription>
+              Current credentials failed authentication — please enter new credentials below.
+            </AlertDescription>
+          </Alert>
+        )}
+
+        <FormField
+          control={form.control}
+          name="token"
+          render={({ field }) => (
+            <FormItem>
+              <FormLabel>Token</FormLabel>
               <FormControl>
                 <Input type="password" placeholder="Leave empty to keep current" {...field} />
               </FormControl>
@@ -659,6 +765,13 @@ export function EditCredentialsDialog({
           />
         ) : connection?.type === "imap" ? (
           <ImapForm
+            key={connection.id}
+            connection={connection}
+            onSuccess={onSuccess}
+            onOpenChange={onOpenChange}
+          />
+        ) : connection?.type === "mcp" ? (
+          <McpForm
             key={connection.id}
             connection={connection}
             onSuccess={onSuccess}

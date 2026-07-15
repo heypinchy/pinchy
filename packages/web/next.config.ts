@@ -12,6 +12,10 @@ const nextConfig: NextConfig = {
   env: {
     NEXT_PUBLIC_PINCHY_VERSION: pkg.version,
     NEXT_PUBLIC_OPENCLAW_VERSION: openclawVersion,
+    // Forward the server-side MCP feature flag to the client bundle so an
+    // operator only has to set PINCHY_MCP_ENABLED=1 — see
+    // lib/feature-flags.ts's isMcpEnabled()/isMcpEnabledClient() pair.
+    NEXT_PUBLIC_PINCHY_MCP_ENABLED: process.env.PINCHY_MCP_ENABLED ?? "0",
   },
   async headers() {
     return [

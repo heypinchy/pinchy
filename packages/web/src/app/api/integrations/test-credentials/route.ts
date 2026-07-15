@@ -7,6 +7,7 @@ import { validateExternalUrl } from "@/lib/integrations/url-validation";
 import { parseRequestBody } from "@/lib/api-validation";
 import { listMcpTools, mcpErrorCodeFromError } from "@/lib/integrations/mcp-client";
 import { isMcpEnabled } from "@/lib/feature-flags";
+import { mcpTestCredentialsSchema } from "@/lib/schemas/mcp-integration";
 
 const testCredentialsSchema = z.discriminatedUnion("type", [
   z.object({
@@ -24,16 +25,10 @@ const testCredentialsSchema = z.discriminatedUnion("type", [
       apiKey: z.string().min(1),
     }),
   }),
-  z.object({
-    type: z.literal("mcp"),
-    transport: z.enum(["http", "sse"]),
-    url: z.string().url(),
-    token: z.string().min(1),
-    // Same shape as POST /api/integrations — used today by the HighLevel
-    // preset to send the required `locationId` header during pre-save
-    // discovery.
-    extraHeaders: z.record(z.string(), z.string()).optional(),
-  }),
+  // Same shape as POST /api/integrations — used today by the HighLevel
+  // preset to send the required `locationId` header during pre-save
+  // discovery.
+  mcpTestCredentialsSchema,
 ]);
 
 export const POST = withAdmin(async (request) => {

@@ -2,7 +2,15 @@ export class ApiError extends Error {
   constructor(
     public readonly status: number,
     message: string,
-    public readonly details?: unknown
+    public readonly details?: unknown,
+    /**
+     * The full parsed error response body, verbatim. `details` above is
+     * reserved for Zod's flattened field errors (see formatValidationError);
+     * routes that ship other structured error fields (e.g. the MCP routes'
+     * `code`/`detail`, used to render human-friendly connection errors) read
+     * them from here instead of overloading `details` with a second shape.
+     */
+    public readonly body?: unknown
   ) {
     super(message);
     this.name = "ApiError";
@@ -29,7 +37,8 @@ async function send<R>(url: string, method: string, body?: unknown): Promise<R> 
     throw new ApiError(
       res.status,
       errBody.error ?? "Something went wrong. Please try again.",
-      errBody.details
+      errBody.details,
+      parsedBody
     );
   }
   return (parsedBody as R) ?? (undefined as R);

@@ -21,6 +21,7 @@ import { SSEClientTransport } from "@modelcontextprotocol/sdk/client/sse.js";
 import type { McpTool } from "./types";
 import type { McpErrorCode } from "./mcp-error-messages";
 import { validateExternalUrl } from "./url-validation";
+import { RESERVED_HEADERS } from "./mcp-shared";
 
 // ---------------------------------------------------------------------------
 // Typed error subclasses
@@ -91,16 +92,13 @@ export interface ListMcpToolsOptions {
   extraHeaders?: Record<string, string>;
 }
 
-// Headers the client owns — caller-supplied values with these names are
-// silently dropped to avoid foot-guns (e.g. a caller forcing a different
-// Content-Type that breaks JSON-RPC parsing).
-//
-// Exported and reused by the MCP credential proxy route
-// (api/internal/mcp-proxy/[connectionId]/route.ts), which applies the exact
-// same sanitisation to connection.data.extraHeaders before injecting the
-// real bearer token — one rule, one definition, so "what was tested at
-// Test Connection" and "what goes out at runtime" can't drift apart.
-export const RESERVED_HEADERS = new Set(["authorization", "content-type", "accept"]);
+// Re-exported from mcp-shared.ts (a client-safe module with no SDK import) so
+// existing server-side importers of RESERVED_HEADERS from this file — the
+// credential proxy route and the create-route's schema — don't need to
+// change. New client-safe consumers (e.g. lib/schemas/mcp-integration.ts)
+// should import RESERVED_HEADERS from ./mcp-shared directly instead of from
+// here, to avoid pulling the MCP SDK into a client bundle.
+export { RESERVED_HEADERS } from "./mcp-shared";
 
 export function sanitiseExtraHeaders(extra?: Record<string, string>): Record<string, string> {
   if (!extra) return {};

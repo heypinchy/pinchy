@@ -71,6 +71,7 @@
     "react": "19.2.7",
     "react-dom": "19.2.7",
     "react-hook-form": "^7.81.0",
+    "react-markdown": "^10.1.0",
     "react-simple-code-editor": "^0.14.1",
     "recharts": "^3.9.2",
     "remark-gfm": "^4.0.1",

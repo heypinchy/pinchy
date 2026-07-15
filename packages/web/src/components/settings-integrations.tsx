@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useCallback, useRef } from "react";
 import { useRouter } from "next/navigation";
+import Link from "next/link";
 import { useIntegrationActions } from "@/hooks/use-integration-actions";
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -37,13 +38,14 @@ import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/comp
 import { AddIntegrationDialog } from "./add-integration-dialog";
 import { EditCredentialsDialog } from "./edit-credentials-dialog";
 import { ConnectedApps } from "./connected-apps";
-import { BraveIcon, GoogleIcon, MicrosoftIcon, OdooIcon } from "./integration-icons";
-import { ImapIcon } from "./imap-icon";
+import { getConnectionIcon } from "./integration-types";
 import type { IntegrationConnection } from "@/lib/integrations/types";
 import { getAccessibleCategoryLabels } from "@/lib/integrations/odoo-sync";
 import { getOAuthProvider, type OAuthProviderId } from "@/lib/integrations/oauth-providers";
 import { EMAIL_CONNECTION_TYPES } from "@/lib/integrations/oauth-providers";
 import { apiGet } from "@/lib/api-client";
+
+const NEW_INTEGRATION_HREF = "/settings/integrations/new";
 
 function formatRelativeTime(dateString: string): string {
   const date = new Date(dateString);
@@ -102,7 +104,6 @@ export function SettingsIntegrations({ oauthError }: { oauthError?: string } = {
   const router = useRouter();
   const [connections, setConnections] = useState<IntegrationConnection[]>([]);
   const [loading, setLoading] = useState(true);
-  const [showAddDialog, setShowAddDialog] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState<IntegrationConnection | null>(null);
   const [renameTarget, setRenameTarget] = useState<IntegrationConnection | null>(null);
   const [renameName, setRenameName] = useState("");
@@ -286,9 +287,11 @@ export function SettingsIntegrations({ oauthError }: { oauthError?: string } = {
       <Card>
         <CardHeader className="flex flex-row items-center justify-between">
           <CardTitle>Integrations</CardTitle>
-          <Button onClick={() => setShowAddDialog(true)}>
-            <Plus className="mr-2 h-4 w-4" />
-            Add Integration
+          <Button asChild>
+            <Link href={NEW_INTEGRATION_HREF}>
+              <Plus className="mr-2 h-4 w-4" />
+              Add Integration
+            </Link>
           </Button>
         </CardHeader>
         <CardContent>
@@ -296,8 +299,8 @@ export function SettingsIntegrations({ oauthError }: { oauthError?: string } = {
             <div className="flex flex-col items-center justify-center py-8">
               <Plug className="h-12 w-12 text-muted-foreground/50 mb-4" />
               <p className="text-muted-foreground">No integrations configured yet.</p>
-              <Button variant="outline" className="mt-4" onClick={() => setShowAddDialog(true)}>
-                Add your first integration
+              <Button variant="outline" className="mt-4" asChild>
+                <Link href={NEW_INTEGRATION_HREF}>Add your first integration</Link>
               </Button>
             </div>
           ) : (
@@ -335,6 +338,7 @@ export function SettingsIntegrations({ oauthError }: { oauthError?: string } = {
                   );
                 }
                 const isOdoo = conn.type === "odoo";
+                const isMcp = conn.type === "mcp";
                 const categories = isOdoo ? getAccessibleCategoryLabels(conn.data) : [];
                 const lastSyncAt =
                   isOdoo && conn.data && typeof conn.data.lastSyncAt === "string"
@@ -350,21 +354,18 @@ export function SettingsIntegrations({ oauthError }: { oauthError?: string } = {
                   conn.status === "active" &&
                   oauthProvider !== null &&
                   appConfigured[oauthProvider.id] === false;
+                const mcpPreset =
+                  isMcp && conn.data && typeof conn.data.preset === "string"
+                    ? conn.data.preset
+                    : undefined;
+                const ConnectionIcon = getConnectionIcon(conn.type, mcpPreset);
                 return (
                   <div key={conn.id} className="rounded-lg border p-4 space-y-2">
                     <div className="flex items-center justify-between">
                       <div className="flex items-center gap-3">
-                        {conn.type === "google" ? (
-                          <GoogleIcon className="h-6 w-6 shrink-0" />
-                        ) : conn.type === "microsoft" ? (
-                          <MicrosoftIcon className="h-6 w-6 shrink-0" />
-                        ) : conn.type === "web-search" ? (
-                          <BraveIcon className="h-6 w-6 shrink-0" />
-                        ) : conn.type === "imap" ? (
-                          <ImapIcon className="h-6 w-6 shrink-0" />
-                        ) : (
-                          <OdooIcon className="h-6 w-12 shrink-0" />
-                        )}
+                        <span data-connection-icon={mcpPreset ?? conn.type} className="shrink-0">
+                          <ConnectionIcon className={isOdoo ? "h-6 w-12" : "h-6 w-6"} />
+                        </span>
                         <span className="text-sm font-medium">{conn.name}</span>
                       </div>
                       <DropdownMenu>
@@ -432,6 +433,14 @@ export function SettingsIntegrations({ oauthError }: { oauthError?: string } = {
                                       disabled={syncing === conn.id}
                                     >
                                       {syncing === conn.id ? "Syncing..." : "Sync Schema"}
+                                    </DropdownMenuItem>
+                                  )}
+                                  {isMcp && (
+                                    <DropdownMenuItem
+                                      onClick={() => syncSchema(conn.id)}
+                                      disabled={syncing === conn.id}
+                                    >
+                                      {syncing === conn.id ? "Syncing..." : "Re-sync tools"}
                                     </DropdownMenuItem>
                                   )}
                                 </>
@@ -555,16 +564,11 @@ export function SettingsIntegrations({ oauthError }: { oauthError?: string } = {
 
       <ConnectedApps onConnectionsChanged={fetchConnections} />
 
-      <AddIntegrationDialog
-        open={showAddDialog}
-        onOpenChange={setShowAddDialog}
-        onSuccess={() => {
-          fetchConnections();
-          setShowAddDialog(false);
-        }}
-        existingTypes={connections.map((c) => c.type)}
-      />
-
+      {/* "Add Integration" now navigates to /settings/integrations/new (the
+          type-picker grid), which opens this same dialog with initialType
+          pre-filled. The one remaining direct render is the Google resume-setup
+          flow below — reached from the pending connection's dropdown, not from
+          the type picker, so it still needs its own dialog instance. */}
       <AddIntegrationDialog
         open={resumeGoogleSetup}
         onOpenChange={setResumeGoogleSetup}

@@ -977,3 +977,92 @@ describe("SettingsIntegrations — OAuth callback errors (persistent banner)", (
     await waitFor(() => expect(banner).toHaveFocus());
   });
 });
+
+const activeMcpConnection = {
+  id: "conn-mcp-1",
+  type: "mcp",
+  name: "GitHub",
+  description: "",
+  credentials: { configured: true },
+  status: "active",
+  lastError: null,
+  lastErrorAt: null,
+  data: {
+    preset: "github",
+    transport: "http",
+    url: "https://api.githubcopilot.com/mcp/",
+    tools: [{ name: "list_repos", inputSchema: {} }],
+    lastSyncAt: "2026-04-13T12:00:00Z",
+  },
+  createdAt: "2026-04-13T12:00:00Z",
+  updatedAt: "2026-04-13T12:00:00Z",
+  cannotDecrypt: false,
+};
+
+describe("SettingsIntegrations — MCP connections", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("shows Rename, Edit credentials, Test Connection, Re-sync tools, and Delete actions for an MCP connection", async () => {
+    const user = userEvent.setup();
+    const fetchSpy = mockFetchConnections([activeMcpConnection]);
+
+    render(<SettingsIntegrations />);
+
+    await waitFor(() => {
+      expect(screen.getByText("GitHub")).toBeInTheDocument();
+    });
+
+    const row = screen.getByText("GitHub").closest("[class*='rounded-lg']")!;
+    const buttons = row.querySelectorAll("button");
+    const menuButton = buttons[buttons.length - 1];
+    await user.click(menuButton);
+
+    expect(screen.getByText("Rename")).toBeInTheDocument();
+    expect(screen.getByText("Edit credentials")).toBeInTheDocument();
+    expect(screen.getByText("Test Connection")).toBeInTheDocument();
+    expect(screen.getByText("Re-sync tools")).toBeInTheDocument();
+    expect(screen.getByText("Delete")).toBeInTheDocument();
+
+    fetchSpy.mockRestore();
+  });
+
+  it("calls POST /api/integrations/:id/sync when 'Re-sync tools' is clicked", async () => {
+    const user = userEvent.setup();
+    const fetchSpy = mockFetchConnections([activeMcpConnection]);
+
+    render(<SettingsIntegrations />);
+
+    await waitFor(() => {
+      expect(screen.getByText("GitHub")).toBeInTheDocument();
+    });
+
+    const row = screen.getByText("GitHub").closest("[class*='rounded-lg']")!;
+    const buttons = row.querySelectorAll("button");
+    await user.click(buttons[buttons.length - 1]);
+    await user.click(screen.getByText("Re-sync tools"));
+
+    await waitFor(() => {
+      expect(fetchSpy).toHaveBeenCalledWith(
+        "/api/integrations/conn-mcp-1/sync",
+        expect.objectContaining({ method: "POST" })
+      );
+    });
+
+    fetchSpy.mockRestore();
+  });
+
+  it("renders 'Connected' with the GitHub brand icon for an active MCP connection", async () => {
+    const fetchSpy = mockFetchConnections([activeMcpConnection]);
+
+    render(<SettingsIntegrations />);
+
+    await waitFor(() => {
+      expect(screen.getByText("GitHub")).toBeInTheDocument();
+    });
+    expect(screen.getByText("Connected")).toBeInTheDocument();
+
+    fetchSpy.mockRestore();
+  });
+});

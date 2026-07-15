@@ -10,58 +10,10 @@ import { odooCredentialsSchema, odooConnectionDataSchema } from "@/lib/integrati
 import { validateExternalUrl } from "@/lib/integrations/url-validation";
 import { maskConnectionCredentials } from "@/lib/integrations/mask-credentials";
 import { parseRequestBody } from "@/lib/api-validation";
-import {
-  listMcpTools,
-  mcpErrorCodeFromError,
-  RESERVED_HEADERS,
-} from "@/lib/integrations/mcp-client";
-import { MCP_PRESETS, type McpPresetId } from "@/lib/integrations/mcp-presets";
+import { listMcpTools, mcpErrorCodeFromError } from "@/lib/integrations/mcp-client";
 import { isMcpEnabled } from "@/lib/feature-flags";
 import type { McpIntegrationData } from "@/lib/integrations/types";
-
-// Single source of truth for the preset id enum — pulled from mcp-presets.ts
-// so adding a preset there automatically flows into request validation
-// without a second hardcoded list to keep in sync.
-const mcpPresetIds = MCP_PRESETS.map((p) => p.id) as [McpPresetId, ...McpPresetId[]];
-
-const mcpCreateSchema = z
-  .object({
-    type: z.literal("mcp"),
-    name: z.string().min(1).max(100),
-    description: z.string().max(500).default(""),
-    preset: z.enum(mcpPresetIds),
-    transport: z.enum(["http", "sse"]),
-    url: z.string().url(),
-    token: z.string().min(1),
-    // Per-connection metadata the MCP credential proxy injects as HTTP headers
-    // alongside Authorization: Bearer <token> when forwarding to the upstream.
-    // Today only HighLevel needs this (locationId Sub-Account ID); other
-    // presets ignore it. Values are non-secret and stay in Pinchy's DB (never
-    // openclaw.json) — see AGENTS.md § Secret Handling, Pattern B.
-    extraHeaders: z.record(z.string(), z.string()).optional(),
-  })
-  .superRefine((val, ctx) => {
-    if (!val.extraHeaders) return;
-    // The proxy (api/internal/mcp-proxy/[connectionId]/route.ts) always
-    // strips these names out of extraHeaders via the same RESERVED_HEADERS
-    // set (mcp-client.ts) before injecting the real Authorization header —
-    // silently accepting them here and dropping them later would mean an
-    // admin's "Test Connection" (which also strips them) looks identical to
-    // what actually goes out at runtime, but a header they typed in the
-    // create form would silently never apply. Reject at create time instead
-    // so the admin finds out immediately, same principle as the HighLevel
-    // locationId check below.
-    const reserved = Object.keys(val.extraHeaders).filter((key) =>
-      RESERVED_HEADERS.has(key.toLowerCase())
-    );
-    if (reserved.length > 0) {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        path: ["extraHeaders"],
-        message: `extraHeaders cannot set reserved header names (${reserved.join(", ")}) — they are set automatically by the credential proxy.`,
-      });
-    }
-  });
+import { mcpCreateSchema } from "@/lib/schemas/mcp-integration";
 
 const createIntegrationSchema = z.discriminatedUnion("type", [
   z.object({
