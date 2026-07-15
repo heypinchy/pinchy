@@ -1,0 +1,160 @@
+---
+title: Connect an MCP Server
+description: Connect GitHub, Linear, Atlassian, Stripe, Cloudflare, Intercom, HighLevel, or any MCP-compatible server to Pinchy.
+---
+
+import { Aside } from "@astrojs/starlight/components";
+
+[MCP](https://modelcontextprotocol.io) (Model Context Protocol) is an open standard that lets an AI agent call an external service's tools directly — creating a GitHub issue, updating a Linear ticket, looking up a Stripe customer — without a custom integration for each one. Pinchy speaks MCP natively through OpenClaw; there's no Pinchy plugin involved. This guide walks you through connecting a server and granting an agent access to it.
+
+<Aside type="note">
+  MCP support is behind a feature flag. If **Add Integration** doesn't show any
+  MCP tiles, ask whoever runs your Pinchy deployment to set
+  `PINCHY_MCP_ENABLED=1` — see [Turning it on](#turning-it-on) below.
+</Aside>
+
+## Prerequisites
+
+- Pinchy is running (see [Quick Start](/getting-started/))
+- The MCP feature flag is enabled (see below)
+- You're logged in as an admin in Pinchy
+- An account with the service you want to connect (or your own MCP-compatible server)
+
+## Turning it on
+
+MCP integrations are gated behind one server-side flag, `PINCHY_MCP_ENABLED`. Set it in your Docker Compose configuration:
+
+```yaml
+services:
+  pinchy:
+    environment:
+      - PINCHY_MCP_ENABLED=1
+```
+
+Then restart the container:
+
+```bash
+docker compose up -d
+```
+
+With the flag off, MCP tiles don't appear in **Add Integration**, and any existing MCP connections stay dormant — no MCP tool reaches an agent, but nothing is deleted. Turning the flag back on brings existing connections and grants back to life at the next config regenerate.
+
+## Supported providers
+
+| Provider              | What it gives your agents                                                                                           |
+| --------------------- | ------------------------------------------------------------------------------------------------------------------- |
+| **GitHub**            | Repos, issues, and pull requests — see [Connect GitHub via MCP](/guides/connect-mcp-github/) for a full walkthrough |
+| **Linear**            | Issues, projects, and teams                                                                                         |
+| **Atlassian**         | Jira issues and Confluence pages, through one token                                                                 |
+| **Stripe**            | Customers, payments, and subscriptions                                                                              |
+| **Cloudflare**        | Workers, DNS, KV, R2, and other Cloudflare resources                                                                |
+| **Intercom**          | Conversations and tickets across your support workspace                                                             |
+| **HighLevel**         | Contacts, conversations, and opportunities in a Sub-Account                                                         |
+| **Custom MCP server** | Any other MCP-compatible endpoint — you supply the URL                                                              |
+
+Don't see your service? Pick **Custom MCP server** and connect it as a generic MCP endpoint — Pinchy doesn't need a preset to talk to it, presets are just UI convenience (a pre-filled URL and setup notes).
+
+<Aside type="caution">
+  Notion and GitLab are **not** supported yet — their hosted MCP servers require
+  OAuth, which Pinchy's MCP integration doesn't support in this phase. Connect
+  Notion or GitLab as a custom server only if you're running a self-hosted MCP
+  proxy in front of them that accepts a plain bearer token.
+</Aside>
+
+## 1. Create a token at the provider
+
+Each provider needs an API token or personal access token that Pinchy will use on the agent's behalf. Click the tile for your provider in step 2 below — the dialog shows that provider's exact steps and a direct link to its token page, so you don't need to look them up separately.
+
+A few things worth knowing before you start:
+
+- **Scope narrowly.** Grant the token only the permissions your agents actually need (e.g. read-only for a reporting agent). Pinchy's Permissions tab adds a second layer of control on top — the token determines what's _possible_, the Permissions tab determines what's _actually allowed_ — but a narrowly-scoped token is still the safer default.
+- **HighLevel** also needs a Sub-Account (Location) ID alongside the token — the dialog shows a dedicated field for it.
+- **Atlassian** requires a service-account API key rather than a personal token, and an org admin needs to enable API-token authentication first. The dialog's setup note explains both steps.
+- **Intercom** only supports US-hosted workspaces today — EU and AU regions aren't supported yet.
+
+## 2. Add the connection in Pinchy
+
+1. Go to **Settings → Integrations**
+2. Click **Add Integration**
+3. Pick the provider's tile — or **Custom MCP server** for anything not listed
+4. For a named provider, the URL and transport are pre-filled; paste your token (and, for HighLevel, the Sub-Account ID)
+5. For **Custom MCP server**, fill in:
+   - **Name** — a descriptive name for this connection (e.g. "Internal Knowledge MCP")
+   - **URL** — the server's full URL (e.g. `https://mcp.yourcompany.com/`)
+   - **Transport** — HTTP (Streamable HTTP) or SSE — most servers use HTTP; use SSE only if the server's documentation requires it
+   - **Token** — the bearer token used to authenticate requests
+6. Optionally click **Test connection** — it shows the discovered tool list before you save, so you can confirm the right server is connected and the token works
+7. Click **Connect**
+
+Pinchy connects to the server, discovers its available tools, and only saves the connection once discovery succeeds. If the token is invalid, the server is unreachable, or it returns a response Pinchy can't parse, you'll see an inline error and nothing is saved — fix the issue and try again.
+
+## 3. Grant agent access
+
+A connection alone doesn't give any agent access — you grant specific tools per agent.
+
+1. Open the agent you want to connect
+2. Click the gear icon to open **Agent Settings**
+3. Select the **Permissions** tab
+4. Find the connection and check the tools this agent may use — tools are grouped by category (for example GitHub's are grouped into Pull Requests, Issues, Files & Branches, and so on) and searchable by name or description
+5. Click **Save**
+
+Grant only what the agent actually needs — it's easier to add more later than to explain why an agent took an action you didn't expect.
+
+## 4. Test it
+
+Open the agent's chat and ask it to do something with a tool you granted. If the agent doesn't respond as expected, check:
+
+- The tool is checked in the agent's **Permissions** tab
+- The connection's status on **Settings → Integrations** is healthy (not a red "Authentication failed" card)
+- The token hasn't expired at the provider
+
+## Keeping the tool list current
+
+MCP servers add, rename, or remove tools over time. To refresh the list: go to **Settings → Integrations**, open the connection's `…` menu, and click **Re-sync tools**. Pinchy re-runs discovery and updates the connection's tool list.
+
+<Aside type="note">
+  A tool that disappears in a re-sync doesn't delete anything an agent was
+  granted — it just stops being usable. The next time Pinchy regenerates the
+  agent's configuration (which happens automatically on a permission change or a
+  re-sync), a revoked tool silently drops out of that agent's allow-list and out
+  of the Permissions tab's checked list. If you re-add the same tool later (the
+  provider brings it back, or you fix whatever removed it), you'll need to grant
+  it again — Pinchy doesn't auto-restore a dropped grant.
+</Aside>
+
+## Rotating or updating the token
+
+1. Go to **Settings → Integrations**
+2. Open the connection's `…` menu and click **Edit credentials**
+3. Paste the new token and click **Save**
+
+The new token takes effect on the very next request — there's no OpenClaw restart and no config regenerate involved, because the token was never part of OpenClaw's configuration in the first place. See [The MCP Security Boundary](/explanation/mcp-security-boundary/) for why.
+
+## Agent templates
+
+Pinchy ships two MCP-backed agent templates:
+
+- **GitHub PR Reviewer** — reviews pull requests, checks code quality, and summarizes changes. See [Connect GitHub via MCP](/guides/connect-mcp-github/) for the full walkthrough.
+- **Linear Triage** — triages incoming issues, assigns priorities, and routes them to the right team.
+
+Both templates only appear as available once you've connected the matching provider (GitHub or Linear) — before that, they're listed but grayed out with a link back to **Settings → Integrations**. When you create an agent from one of these templates, Pinchy automatically grants it the tools the template needs, using the first active connection for that provider. If a needed tool isn't in that connection's synced tool list — the provider renamed it, or your token doesn't cover it — Pinchy still creates the agent and shows a toast naming which tools it couldn't grant, so you can add them manually in the Permissions tab.
+
+## Troubleshooting
+
+**"[Provider] rejected this token. Check that it hasn't expired and has the permissions listed above, then paste a fresh one."** — The token is invalid, expired, or missing a required scope. Generate a new one and update the connection via **Edit credentials**.
+
+**"[Provider] couldn't process the request right now. Try again in a moment."** — A transient error on the provider's side (a 5xx or rate limit). This does not mark the connection as failed — try again shortly.
+
+**"Couldn't reach [Provider]. Check your network connection and try again."** (named presets) / **"Couldn't reach the server. Check the URL and your network connection."** (custom) — Pinchy couldn't establish a connection at all. For a custom server running on your own network, make sure the URL is reachable from inside the Pinchy container — `localhost` on your laptop is not the same host as Pinchy's container. If your MCP server itself lives on a private or internal address, see the [SSRF guard section](/explanation/mcp-security-boundary/#the-ssrf-guard) of the security boundary explanation for how to allow it.
+
+**"[Provider]'s response doesn't look like a valid MCP tool list."** — The server responded, but not in a way Pinchy's MCP client could parse. For a custom server, double check the URL points at the actual MCP endpoint and that the server is MCP-compliant.
+
+**Agent can't use a tool it should have** — Confirm the tool is checked in the agent's **Permissions** tab and that it still appears in the connection's tool list (re-sync if you're not sure). A tool that drifted out of the connection's synced list is silently unusable even if it still shows as granted somewhere stale in the UI.
+
+## What's next
+
+- [MCP Reference](/reference/mcp/) — data model, permission model, and audit events
+- [The MCP Security Boundary](/explanation/mcp-security-boundary/) — how Pinchy proxies MCP traffic and what that protects against
+- [Connect GitHub via MCP](/guides/connect-mcp-github/) — a full worked example
+- [Agent Permissions](/concepts/agent-permissions/) — how the tool allow-list works
+- [Skills, Templates, and Capabilities](/explanation/skills-and-templates/) — how the tools you grant become a workflow guide for the agent

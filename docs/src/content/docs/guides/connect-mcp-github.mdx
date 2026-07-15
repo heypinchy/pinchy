@@ -1,0 +1,103 @@
+---
+title: Connect GitHub via MCP
+description: Connect Pinchy to GitHub's MCP server so your agents can manage pull requests, issues, and repositories.
+---
+
+This guide walks through connecting Pinchy to GitHub's MCP server as a concrete example of the general [Connect an MCP Server](/guides/connect-mcp/) flow. Once connected, you can grant agents the ability to review pull requests, open issues, list repositories, and more — with fine-grained control over exactly which tools each agent can use.
+
+## Prerequisites
+
+- Pinchy is running with the MCP feature enabled — `PINCHY_MCP_ENABLED=1` (see [Turning it on](/guides/connect-mcp/#turning-it-on))
+- You're logged in as an admin in Pinchy
+- A GitHub account with access to the repositories you want agents to work with
+
+## 1. Create a GitHub personal access token
+
+Pinchy connects to GitHub's MCP server using a personal access token (PAT). Both classic and fine-grained tokens work — fine-grained is recommended, since it lets you scope access to specific repositories.
+
+1. Go to [github.com/settings/personal-access-tokens](https://github.com/settings/personal-access-tokens) and click **Generate new token**
+2. Set an expiration and choose the repositories the agent should access
+3. Under **Repository permissions**, grant the permissions below
+4. Click **Generate token** and copy the value — you won't see it again
+
+| Permission        | Access level   | Required for                                                     |
+| ----------------- | -------------- | ---------------------------------------------------------------- |
+| **Contents**      | Read-only      | Reading files and code                                           |
+| **Issues**        | Read and write | Creating and updating issues                                     |
+| **Pull requests** | Read and write | Reviewing and managing PRs (only if the agent should manage PRs) |
+
+The token starts with `github_pat_` (fine-grained) or `ghp_` (classic).
+
+:::note
+The token determines what the agent _can_ access at the GitHub level. Pinchy adds a second, independent layer: you also choose which MCP tools each agent is allowed to use in its Permissions tab. A token with reasonably broad repository access, combined with a narrow per-agent tool grant, is a good default posture.
+:::
+
+## 2. Add the connection in Pinchy
+
+1. Go to **Settings → Integrations**
+2. Click **Add Integration** and select the **GitHub** tile
+3. The URL (`https://api.githubcopilot.com/mcp/`) and transport (HTTP) are pre-filled — leave them as-is
+4. Paste your PAT into the **Token** field
+5. Optionally click **Test connection** to preview the discovered tool list
+6. Click **Connect**
+
+Pinchy connects to GitHub's MCP server, discovers the available tools, and saves the connection. If the token is invalid or lacks the required permissions, you'll see an inline error — double check the token's repository access and scopes and try again.
+
+## 3. Grant agent access
+
+A connection alone doesn't give any agent access — you grant specific tools per agent.
+
+1. Open the agent you want to connect to GitHub
+2. Click the gear icon to open **Agent Settings**
+3. Select the **Permissions** tab
+4. Find the GitHub connection and check the tools this agent may use — GitHub exposes dozens of tools, grouped into categories like Pull Requests, Issues, Files & Branches, Commits & Tags, Releases, and Repositories, with a search box to find a specific one
+5. Click **Save**
+
+Start with a minimal set. It's easier to grant more later than to explain why an agent took an action you didn't expect.
+
+## 4. Test it
+
+Open the agent's chat and try a few requests:
+
+- "List open pull requests in the repo"
+- "Create an issue titled 'Update dependencies' in the project"
+- "What's the status of PR #42?"
+
+If something doesn't work, check that the token's repository access and permission scopes match what the agent is trying to do, and that the corresponding tool is checked in the agent's Permissions tab.
+
+## Use the GitHub PR Reviewer template
+
+Instead of building an agent from scratch, Pinchy ships a **GitHub PR Reviewer** template that comes pre-configured to review pull requests, check code quality, and summarize changes. It only appears as available once you've connected a GitHub integration — before that it's listed but grayed out.
+
+When you create an agent from this template, Pinchy automatically grants it the tools it needs (reading a pull request, listing pull requests, and posting a review) from the first active GitHub connection. If your connection's synced tool list doesn't include one of them — for example if GitHub renamed it — Pinchy still creates the agent and shows a toast naming the tool it couldn't grant, so you can add it manually afterward.
+
+The template's starter prompts give you a quick way to try it:
+
+- "Review pull request #123 in owner/repo"
+- "List the open pull requests in this repo"
+- "Summarize the changes in this PR"
+
+## Rotating the token
+
+1. Go to **Settings → Integrations**
+2. Open the GitHub connection's `…` menu and click **Edit credentials**
+3. Paste the new token and click **Save**
+
+The new token takes effect on the next request — no OpenClaw restart needed.
+
+## Troubleshooting
+
+**"GitHub rejected this token…"** — The token is invalid or expired, or missing a required scope. Generate a new PAT and update the connection via **Edit credentials**.
+
+**"Couldn't reach GitHub…"** — A network issue between Pinchy and GitHub's MCP server. Check Pinchy's outbound connectivity.
+
+**Tool not available after connecting** — GitHub may add or change MCP tools over time. Use **Re-sync tools** (Settings → Integrations → the connection's `…` menu) to refresh the tool list.
+
+**Agent returns an error when using a tool** — Verify the agent has been granted that tool in the Permissions tab. Pinchy enforces the allow-list — the agent cannot call a tool it hasn't been granted, even if the token would technically allow it.
+
+## What's next
+
+- [MCP Reference](/reference/mcp/) — data model, audit events, and tool naming
+- [The MCP Security Boundary](/explanation/mcp-security-boundary/) — how Pinchy proxies MCP traffic
+- [Connect an MCP Server](/guides/connect-mcp/) — the general flow, other providers, and a custom server
+- [Agent Permissions](/concepts/agent-permissions/) — how the tool allow-list works

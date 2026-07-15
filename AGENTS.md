@@ -268,6 +268,8 @@ External-integration plugins, such as web search, email, Odoo, and future third-
 
 Internal plugins, such as files, context, docs, and audit, must be listed in `INTERNAL_PLUGINS` and exercised by `packages/web/e2e/integration/agent-chat.spec.ts` or another E2E spec with a clear assertion comment mentioning the plugin id.
 
+Not every native integration is a plugin. MCP, for example, is OpenClaw speaking the MCP protocol natively — there is no `packages/plugins/pinchy-mcp`, so it cannot appear in `KNOWN_PINCHY_PLUGINS` and none of the three drift guards below (manifest/tools, unit-test coverage, tool-dispatch coverage) run against it. A native, non-plugin integration like this still owes the same coverage in spirit — mock server, compose overlay, Playwright config, an E2E spec with a tool round trip and an audit assertion, a `test:e2e:<suffix>` script, and a CI job — but enforcing it is a manual review responsibility, not an automated gate. Treat its E2E spec as load-bearing: nothing currently flags its deletion except the generic net-test-count guard (`scripts/check-test-deletions.mjs`).
+
 ### Typecheck gate
 
 Plugins run via `tsx` at runtime with no ahead-of-time type checking elsewhere in CI (root `pnpm build` is `next build`, which only typechecks `packages/web`; `Dockerfile.openclaw` only installs plugin deps). `pnpm typecheck:plugins` (`scripts/typecheck-plugins.mjs`, wired into the `quality` job) runs `tsc --noEmit` against every `packages/plugins/pinchy-*` plugin's own tsconfig.

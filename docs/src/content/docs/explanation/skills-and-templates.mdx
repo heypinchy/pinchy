@@ -15,7 +15,7 @@ A skill doesn't grant a tool and it isn't a personality. It's a playbook: a `SKI
 
 ## How a skill reaches an agent
 
-Skills are attached through **templates**. When you create an agent from a template that includes a skill, Pinchy:
+Most skills are attached through **templates**. When you create an agent from a template that includes a skill, Pinchy:
 
 1. Materializes the skill body into the agent's workspace at `skills/<skill-id>/SKILL.md`.
 2. Emits `skills: ["<skill-id>"]` in that agent's OpenClaw configuration.
@@ -23,11 +23,15 @@ Skills are attached through **templates**. When you create an agent from a templ
 
 Because Pinchy writes the skill files at config-regenerate time — alongside the AGENTS.md and SOUL.md bootstrap files — the skill travels with the agent and stays in sync with its configuration.
 
+One category of skill skips templates entirely and is generated straight from an integration instead — see [Dynamically generated MCP skills](#dynamically-generated-mcp-skills) below.
+
 <Aside type="note">
-  Skills are **template-driven today**: you get them by choosing a template, not
-  by ticking them individually in an agent's settings. Authoring custom skills
-  and assigning them per agent is on the roadmap — [master issue
-  #543](https://github.com/heypinchy/pinchy/issues/543) tracks the skill layer.
+  The **bundled skills** below are template-driven today: you get one by
+  choosing a template, not by ticking it individually in an agent's settings.
+  Authoring a fully custom skill and assigning it yourself is on the roadmap —
+  [master issue #543](https://github.com/heypinchy/pinchy/issues/543) tracks the
+  skill layer. **MCP skills, further down, are generated rather than authored**
+  — they don't close that gap either, since you still can't hand-write one.
 </Aside>
 
 ## The skills that ship today
@@ -37,6 +41,20 @@ Because Pinchy writes the skill files at config-regenerate time — alongside th
 | `web-search` | [Market & News Monitor](/guides/create-market-monitor-agent/)                                 | A workflow for researching a topic with the web-search tools and reporting back. |
 | `email`      | [Email Assistant templates](/guides/connect-email/#email-agent-templates-use-the-email-skill) | A workflow for triaging, reading, and drafting mail with the email tools.        |
 
+These are Pinchy-authored, hand-written `SKILL.md` files, checked into the codebase and identical for every agent that gets them. MCP skills, described next, are generated content, one per (agent, connection) pair, whose content varies by exactly what that agent was granted.
+
+## Dynamically generated MCP skills
+
+[MCP connections](/guides/connect-mcp/) produce a third kind of skill — neither bundled nor attached by a template. When an agent has at least one tool granted on an MCP connection, Pinchy generates a skill for that specific (agent, connection) pair at config-regenerate time: a `SKILL.md` listing exactly the tools that agent was granted on that connection (by their actual callable names), a short "when to use this" note, and a safety block reminding the model that everything the server returns — tool descriptions included — is data from an external system, never an instruction to follow.
+
+This isn't something a user creates or edits, and it isn't stored in the `agents.skills` database column the way template-attached skills are. It's derived fresh every time from the connection's currently synced tools intersected with that agent's current grants:
+
+- **Grant a new tool** → it appears in the skill's capability list on the next config regenerate.
+- **Revoke a tool, or a re-sync drops it from the connection** → it disappears from the skill the same way it disappears from the agent's allow-list (see [drift filtering](/reference/mcp/#drift-filtering)).
+- **Delete the connection, or remove every grant an agent has on it** → the skill file is removed from the agent's workspace entirely.
+
+Because the skill's content — tool names, descriptions — ultimately comes from a third-party server Pinchy doesn't control, the generator treats it as untrusted: text is collapsed to single lines and length-capped before being written into the skill, so a hostile or careless MCP server can't use its own tool descriptions to inject fake instructions or corrupt the skill file's structure. See the [MCP Reference](/reference/mcp/#dynamic-per-connection-skills) for the generation details, and [The MCP Security Boundary](/explanation/mcp-security-boundary/) for why tool output is treated as data rather than instructions more broadly.
+
 ## Why an allow-list of skills
 
-OpenClaw ships dozens of bundled "desktop" skills (1Password, Apple Notes, and the like) that make no sense for a governed enterprise agent. Pinchy's `skills: [...]` entry is an **allow-list**: it enables exactly the Pinchy-authored skills an agent's template attached, and nothing else. That's the same fail-closed principle Pinchy applies to [tools](/concepts/agent-permissions/#how-permissions-reach-openclaw) — list only what's trusted, and deny the rest by default.
+OpenClaw ships dozens of bundled "desktop" skills (1Password, Apple Notes, and the like) that make no sense for a governed enterprise agent. Pinchy's `skills: [...]` entry is an **allow-list**: it enables exactly the skills an agent's template attached plus any MCP skills its current grants generate, and nothing else. That's the same fail-closed principle Pinchy applies to [tools](/concepts/agent-permissions/#how-permissions-reach-openclaw) — list only what's trusted, and deny the rest by default.

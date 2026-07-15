@@ -155,6 +155,14 @@ Each permission is selected per-agent and does **not** imply the others — gran
 
 For the full setup walkthrough, see [Connect Email](/guides/connect-email/). For details on setting up connections in general, see [Integrations](/concepts/integrations/).
 
+### MCP tools
+
+MCP integrations (GitHub, Linear, Atlassian, Stripe, Cloudflare, Intercom, HighLevel, or a custom server) are different from every other integration type here: instead of a fixed set of tools Pinchy defines, each connection exposes whatever tool list the third-party server reports at connect time. There's no access-level shortcut like Odoo's Read-only/Read & Write/Full — you check individual tools, grouped by category (for example GitHub's are grouped into Pull Requests, Issues, Files & Branches, and more) with a search box to find a specific one in a large list.
+
+A grant only holds as long as the tool is still part of the connection's most recently synced tool list — if a re-sync removes a tool the agent was granted, that grant becomes inert (it silently drops out of the agent's runtime allow-list) rather than being deleted outright, so re-adding the same tool later just requires granting it again, not reconnecting anything.
+
+Unlike Odoo and email, MCP tools aren't gated inside a Pinchy plugin — see [How permissions reach OpenClaw](#how-permissions-reach-openclaw) above for the general mechanism, and [The MCP Security Boundary](/explanation/mcp-security-boundary/) for why MCP's gating works differently and what that implies. For the full setup walkthrough, see [Connect an MCP Server](/guides/connect-mcp/); for the data model and audit events, see the [MCP Reference](/reference/mcp/).
+
 ## Agent templates and default permissions
 
 When you create an agent, you pick a template. Each template comes with different default tool permissions. Every new agent also starts with **Write files** (`pinchy_write`) enabled by default — reading the workspace is always on, and the create flow adds write so the agent can save notes and exports out of the box. You can toggle it off later in the Permissions tab.

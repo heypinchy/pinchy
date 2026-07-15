@@ -1,0 +1,68 @@
+---
+title: The MCP Security Boundary
+description: How Pinchy proxies MCP traffic so third-party tokens never reach OpenClaw's configuration, and what that model does and doesn't protect against.
+---
+
+import { Aside } from "@astrojs/starlight/components";
+
+Model Context Protocol servers are how Pinchy connects agents to GitHub, Linear, Stripe, and any other MCP-compatible service. Handing an AI agent runtime a live bearer token for one of these services is exactly the kind of thing that should make a CISO nervous — so this page explains, precisely, what Pinchy does about it, and what it honestly can't do anything about.
+
+## OpenClaw never talks to the third-party server directly
+
+When you connect an MCP server, OpenClaw's `mcp.servers` configuration doesn't point at GitHub, Linear, or wherever the server actually lives. It points at Pinchy's own credential-injecting reverse proxy:
+
+```
+/api/internal/mcp-proxy/<connectionId>
+```
+
+OpenClaw opens its MCP session against that URL, using only the gateway bootstrap token — the same trust-root credential every Pinchy plugin already uses to reach Pinchy's internal API. The proxy looks up the connection, decrypts its real bearer token in memory, injects it as the `Authorization` header, and transparently streams the request and response between OpenClaw and the actual upstream server. As far as OpenClaw is concerned, it's talking to "the MCP server" — it never sees, and never needs, the real credential.
+
+This is a byte-level passthrough, not a reimplementation of MCP: the proxy doesn't parse or understand the JSON-RPC payload, it just swaps the authentication header and forwards everything else — including long-lived streaming responses — without buffering.
+
+## The third-party token never lands in `openclaw.json`
+
+This is the direct consequence of the proxy design, and it's worth stating plainly: at no point does `openclaw.json` — the config file OpenClaw reads, which can be inspected, backed up, or handed to support without exposing anything — contain a GitHub PAT, a Stripe restricted key, or any other third-party MCP credential. The only credential in that file's `mcp.servers` section is the gateway bootstrap token, which is already the config's trust root for every other Pinchy-to-OpenClaw interaction.
+
+The real token lives in exactly two places: encrypted at rest in Pinchy's PostgreSQL database (AES-256-GCM, same as every other integration credential — see [Secrets & API Key Storage](/security/secrets/)), and decrypted in this Node process's memory for the duration of a single proxied request.
+
+This is architecturally similar to the credential-fetch pattern Pinchy's own plugins use (see [Secrets & API Key Storage → Pattern B](/security/secrets/#how-credentials-reach-plugins-three-patterns)) — a runtime fetch with nothing persisted in the config — but MCP isn't a Pinchy plugin, so it doesn't literally follow that same code path. Instead of a plugin calling an internal credentials endpoint and caching the result, the credential is injected transparently into every proxied request, because OpenClaw is the one making MCP calls directly, not a Pinchy-authored plugin.
+
+## Consequence: rotate a token without restarting anything
+
+Because the token was never in `openclaw.json` to begin with, rotating it is a plain database update — there's no config to regenerate and no OpenClaw restart. Open the connection's **Edit credentials**, paste the new token, and save. The very next request the proxy handles for that connection decrypts and injects the new value. This was verified end-to-end: a rotated token takes effect on the next tool dispatch with no OpenClaw restart in between.
+
+Adding or removing an agent's _access_ to specific tools is a different operation — that does regenerate and push OpenClaw's config live (`tools.allow` changed), but still without a container restart in the normal case.
+
+## Per-agent gating happens at the OpenClaw layer, not inside a plugin
+
+Every other Pinchy integration enforces its permission checks inside its own plugin, at the moment a tool is called. MCP can't do that, because there is no `pinchy-mcp` plugin — OpenClaw dispatches MCP tool calls itself. So the enforcement point is one layer up: each agent's `tools.allow` array in `openclaw.json` lists exactly the materialized MCP tool names (`<connection-key>__<toolName>`) that agent was granted. An agent whose allow-list doesn't contain a given tool name simply cannot invoke it — OpenClaw won't dispatch a call to a tool name outside that list, regardless of what the underlying token would technically permit at the provider. See the [MCP Reference](/reference/mcp/#config-emission) for the exact shape of what gets emitted.
+
+## The SSRF guard
+
+An MCP server URL is one more place a malicious or careless admin input could point at Pinchy's own internal network — a Docker service, a cloud metadata endpoint, `localhost`. Pinchy validates every MCP server URL against a private/internal address list, and re-validates it **again inside the proxy, on every single request** — not just once at connection-creation time — since the stored URL could theoretically change between when it was validated and when a request is actually proxied.
+
+If you're deliberately running your own internal MCP server (a self-hosted tool exposed only on your Docker network), the guard would reject it by default. Set `ALLOW_PRIVATE_URLS=1` in Pinchy's environment to opt out of the private-address check — this is an explicit, deployment-wide decision an operator makes, not something end users can toggle per connection.
+
+## What this doesn't protect against — said plainly
+
+An MCP server is a third-party system. Pinchy proxies and gates access to it; it does not audit, sandbox, or vet what that server actually does with a request, or what it sends back.
+
+- **Pinchy can't see what a token can do.** The scope of an MCP token — which repositories, which customers, which records — is entirely determined by whoever created it at the provider. Pinchy has no way to introspect or display that scope; it only enforces which _tool names_ an agent may call, not what those tools are allowed to touch upstream. A GitHub token scoped to every repository in your org, combined with a narrow Pinchy-side tool grant, still means the _tool_ is narrow but the _credential_ underneath it is broad. Scope the token itself carefully — see the setup guidance in [Connect an MCP Server](/guides/connect-mcp/#1-create-a-token-at-the-provider).
+- **Tool descriptions and tool results are untrusted data, not instructions.** Everything an MCP server tells Pinchy — a tool's description, the content of a result — originates from a system Pinchy doesn't control. Pinchy doesn't attempt to sanitize or "understand" that content; instead, the auto-generated skill each agent gets for a connection explicitly instructs the model that this content is data, never a command, no matter how it's phrased (including a tool result that claims to speak for Pinchy, the user, or "the system"). This is a prompting mitigation, not a technical barrier — a sufficiently novel injection could still, in principle, mislead a model. Only grant tools from servers you trust the output of.
+- **A compromised or malicious MCP server sees every request you proxy to it.** The proxy forwards whatever OpenClaw sends — including tool-call arguments an agent constructed from the conversation. If the server itself is malicious or compromised, it can see (and potentially act on) whatever data ends up in those arguments, the same way any legitimate MCP client would expose that data to it.
+
+<Aside type="note">
+  None of this is unique to MCP — it's the same trust boundary every Pinchy
+  integration has with the outside world. What's specific to MCP is that the
+  *shape* of what a server can expose (an open-ended, server-defined tool list)
+  is broader than Odoo's fixed operation set or email's fixed permission tiers,
+  which is exactly why the tool-level allow-list and the drift-filtered grant
+  model (see the [MCP Reference](/reference/mcp/#drift-filtering)) exist.
+</Aside>
+
+## What's next
+
+- [Connect an MCP Server](/guides/connect-mcp/) — set up a connection
+- [MCP Reference](/reference/mcp/) — the full data model, config emission, and audit events
+- [Secrets & API Key Storage](/security/secrets/) — how Pinchy handles every other credential
+- [Agent Permissions](/concepts/agent-permissions/) — the allow-list model MCP tools plug into

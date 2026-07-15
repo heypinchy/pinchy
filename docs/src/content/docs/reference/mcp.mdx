@@ -1,0 +1,183 @@
+---
+title: MCP Integrations Reference
+description: Data model, permission model, config emission, and audit events for MCP integrations.
+---
+
+import { Aside } from "@astrojs/starlight/components";
+
+This page is the technical reference for MCP integrations in Pinchy. For step-by-step setup, see [Connect an MCP Server](/guides/connect-mcp/) or [Connect GitHub via MCP](/guides/connect-mcp-github/). For how the security boundary works, see [The MCP Security Boundary](/explanation/mcp-security-boundary/).
+
+## Not a plugin
+
+Every other Pinchy integration — Odoo, email, web search — is a `packages/plugins/pinchy-*` package that talks to Pinchy's internal API and enforces its own permission checks at tool-call time. MCP is different: OpenClaw speaks the MCP protocol natively, so there is no `pinchy-mcp` plugin. All of MCP's gating instead lives directly in the OpenClaw config Pinchy generates — the `mcp.servers` block and each agent's `tools.allow` array (see [Config emission](#config-emission) below).
+
+## Feature flag
+
+MCP integrations are gated by exactly one environment variable, `PINCHY_MCP_ENABLED`, read server-side at runtime (never inlined into a build). Set it to `1` to enable MCP:
+
+```yaml
+services:
+  pinchy:
+    environment:
+      - PINCHY_MCP_ENABLED=1
+```
+
+When the flag is off, the MCP preset tiles don't appear in **Add Integration**, MCP-related API routes behave as if `type: "mcp"` connections don't exist, and `openclaw.json` never emits an `mcp` section or any MCP tool name — even if MCP connections and grants still exist in the database. Nothing is deleted; re-enabling the flag brings them back to life at the next config regenerate.
+
+## Supported transports
+
+| Transport | Description                                                                     | When to use                         |
+| --------- | ------------------------------------------------------------------------------- | ----------------------------------- |
+| **HTTP**  | Streamable HTTP — the standard MCP transport                                    | Most MCP servers — the default      |
+| **SSE**   | Server-Sent Events — a persistent connection where the server streams responses | Servers that explicitly require SSE |
+
+OAuth-authenticated and stdio-based MCP servers are not supported in this phase.
+
+## Presets
+
+Presets pre-fill the server URL and transport for known providers and show provider-specific token setup guidance in the connect dialog. They're a UI convenience only — every MCP connection, named preset or custom, uses the same data model and the same security boundary underneath.
+
+| Preset ID    | Provider          | Default URL                                     | Transport                  |
+| ------------ | ----------------- | ----------------------------------------------- | -------------------------- |
+| `github`     | GitHub            | `https://api.githubcopilot.com/mcp/`            | HTTP                       |
+| `linear`     | Linear            | `https://mcp.linear.app/mcp`                    | HTTP                       |
+| `atlassian`  | Atlassian         | `https://mcp.atlassian.com/v1/mcp`              | HTTP                       |
+| `stripe`     | Stripe            | `https://mcp.stripe.com`                        | HTTP                       |
+| `cloudflare` | Cloudflare        | `https://mcp.cloudflare.com/mcp?codemode=false` | HTTP                       |
+| `intercom`   | Intercom          | `https://mcp.intercom.com/mcp`                  | HTTP                       |
+| `highlevel`  | HighLevel         | `https://services.leadconnectorhq.com/mcp/`     | HTTP                       |
+| `generic`    | Custom MCP server | _(none — you supply the URL)_                   | HTTP (SSE also selectable) |
+
+<Aside type="caution">
+  `notion` and `gitlab` are deliberately not supported presets — their hosted
+  MCP servers are OAuth-only, which this phase doesn't support.
+</Aside>
+
+## Data model
+
+MCP connections are stored in the same `integrationConnections` table as every other integration type. The `type` column is `"mcp"`; the `data` column holds a JSON object with MCP-specific fields:
+
+```ts
+type McpIntegrationData = {
+  type: "mcp";
+  preset:
+    | "github"
+    | "linear"
+    | "atlassian"
+    | "stripe"
+    | "cloudflare"
+    | "intercom"
+    | "highlevel"
+    | "generic";
+  transport: "http" | "sse";
+  url: string;
+  tools: McpTool[];
+  lastSyncAt: string; // ISO 8601
+  extraHeaders?: Record<string, string>; // e.g. HighLevel's locationId
+};
+
+type McpTool = {
+  name: string;
+  description?: string;
+  inputSchema: Record<string, unknown>;
+};
+```
+
+`tools` is populated at connection time (via an MCP `initialize` + `tools/list` handshake) and refreshed on every re-sync — it reflects exactly the tool list the server reported at last contact, using the server's raw tool names.
+
+The bearer token is **not** stored in `data`. It's encrypted with AES-256-GCM as `{ "token": "…" }` in the `credentials` column, and only decrypted in memory at request time by the credential proxy (see [The MCP Security Boundary](/explanation/mcp-security-boundary/)).
+
+## Permission model
+
+Unlike Odoo (operation-level: read/write/delete) or email (permission tiers: read/draft/send), MCP permissions are **tool-level**: one row per (agent, connection, tool). There's no separate MCP table — grants are ordinary rows in Pinchy's generic `agent_connection_permissions` table, with `model: "mcp"` and `operation` set to the exact tool name as reported by the server:
+
+| Column         | Meaning                                    |
+| -------------- | ------------------------------------------ |
+| `agentId`      | The agent being granted access             |
+| `connectionId` | The MCP connection                         |
+| `model`        | Always `"mcp"` for MCP grants              |
+| `operation`    | The tool's exact name, e.g. `create_issue` |
+
+A unique index on `(agentId, connectionId, model, operation)` prevents duplicates. `PUT /api/agents/[agentId]/integrations` replaces all of an agent's grants for a given connection atomically and rejects any tool name not currently present in that connection's synced tool list with a `400`.
+
+Creating a connection does not grant any agent access — access is always explicit.
+
+### Drift filtering
+
+A tool grant can outlive the tool it names: a re-sync can remove a tool from a connection's `data.tools` after an agent was already granted it. Pinchy does **not** delete the stale grant row from the database. Instead, every time OpenClaw's config is regenerated, Pinchy intersects each agent's grants against that connection's _current_ synced tool list — a grant for a tool that's no longer synced is silently excluded from both `tools.allow` and the agent's dynamic MCP skill (see below), and the Permissions tab UI applies the same intersection so it never shows a grant as checked when the runtime would drop it anyway. Re-granting a tool that comes back requires an explicit action; nothing auto-restores.
+
+## Tool naming
+
+OpenClaw materializes each MCP tool as `<serverKey>__<sanitizedToolName>`, where `serverKey` is the sanitized `mcp.servers` key for the connection (see below). Pinchy computes this name with `nativeMcpToolName()` and uses it both when writing `tools.allow` and when rendering an agent's dynamic skill, so the two always agree on exactly what the agent can call.
+
+`serverKey` is `mcpServerKey(connectionId)`: a stable, ≤30-character, letter-initial, alphanumeric-only key derived from the connection's UUID (prefixed with `m`, non-alphanumerics stripped, truncated to 30 chars). This is deliberately **not** the raw connection ID — OpenClaw's own key sanitizer would otherwise transform a raw UUID (which starts with a digit about as often as a letter) in a way that no longer matches what Pinchy writes into `tools.allow`, silently denying every tool on that connection. Keying with an already-sanitized ID makes OpenClaw's sanitizer an identity operation.
+
+## Config emission
+
+Pinchy never writes a third-party MCP token into `openclaw.json`. Instead, `regenerateOpenClawConfig()` emits OpenClaw's native `mcp.servers` block, pointed at Pinchy's own credential-injecting proxy rather than the upstream server:
+
+```json
+{
+  "mcp": {
+    "servers": {
+      "m7bbfbc51a2b34c9e...": {
+        "url": "http://pinchy:7777/api/internal/mcp-proxy/<connectionId>",
+        "transport": "streamable-http",
+        "headers": { "Authorization": "Bearer <gateway-bootstrap-token>" }
+      }
+    }
+  },
+  "agents": {
+    "list": [
+      {
+        "id": "<agentId>",
+        "tools": {
+          "allow": [
+            "…existing base tools…",
+            "m7bbfbc51a2b34c9e...__create_issue"
+          ]
+        },
+        "skills": ["…existing skills…", "mcp-<connectionId-sanitized>"]
+      }
+    ]
+  }
+}
+```
+
+Only connections with `status: "active"` and at least one surviving grant get an `mcp.servers` entry — a connection nobody has been granted tools on would just be a wasted upstream connection attempt. The `Authorization` header carries the gateway bootstrap token OpenClaw already uses to reach Pinchy's internal API (the same trust root as every other Pinchy plugin) — never a third-party secret. `tools.allow` for MCP tools is appended **after** the fail-closed base [`computeAllowedTools()`](/concepts/agent-permissions/#how-permissions-reach-openclaw) computes, never replacing it.
+
+Granting or revoking an agent's MCP tools regenerates and pushes the config live (`config.apply`) immediately — unlike Odoo and email, whose gating happens inside their plugin at tool-call time and doesn't depend on config content, MCP's _entire_ enforcement lives in this config, so a revoked tool must stop being emitted right away.
+
+## Dynamic per-connection skills
+
+Every agent with at least one surviving MCP grant on a connection gets an auto-generated skill for that connection — a `SKILL.md` written into the agent's workspace listing exactly the tools it was granted, with a safety block reminding the model that tool descriptions and tool results are data from an external system, not instructions. This is generated at config-regenerate time from the connection's synced tools and the agent's drift-filtered grants — nothing a user writes or maintains, and it disappears automatically once the connection or the last grant is gone. See [Skills, Templates, and Capabilities](/explanation/skills-and-templates/#dynamically-generated-mcp-skills) for the full picture of where this fits alongside Pinchy's template-attached skills.
+
+The skill's frontmatter `name` is `mcp-<connectionId-with-non-alphanumerics-replaced-by-hyphens>` — this must exactly match the ID Pinchy puts into `agents.list[].skills`, since that's what OpenClaw matches against to decide whether the skill is visible to the agent at all.
+
+## Templates
+
+Pinchy ships two MCP-backed agent templates, **GitHub PR Reviewer** and **Linear Triage** (`requiresMcpConnection: "github"` / `"linear"`). `GET /api/templates` marks a template unavailable (`unavailableReason: "no-connection"`) unless there's at least one **active** connection of the required preset.
+
+Both templates declare a `recommendedTools` wish-list — tool names to auto-grant from the first active connection of the matching preset at agent-creation time (`POST /api/agents`). A wish-list entry that has no matching active connection, or names a tool the connection hasn't synced, is silently skipped rather than failing agent creation; the response includes `skippedMcpTools`, which the New Agent form surfaces as a toast naming exactly what it couldn't grant.
+
+## Audit events
+
+Every state-changing MCP operation is recorded in the audit trail with `outcome` set. All audit rows are HMAC-SHA256 signed.
+
+| Event                                     | `eventType`                       | `resource`                   | Notable `detail` fields                                                                               |
+| ----------------------------------------- | --------------------------------- | ---------------------------- | ----------------------------------------------------------------------------------------------------- |
+| Connection created                        | `integration.created`             | `integration:<connectionId>` | `type: "mcp"`, `name`, `preset`, `transport`, `url`, `toolCount`                                      |
+| Tools re-synced                           | `integration.synced`              | `integration:<connectionId>` | `id`, `name`, `tools: { added, removed, total }` (name lists over 20 entries collapse to `{ count }`) |
+| Token / credentials updated               | `integration.credentials_updated` | `integration:<connectionId>` | `id`, `name`, `fields` (field names only, never values)                                               |
+| Connection metadata updated (e.g. rename) | `integration.updated`             | `integration:<connectionId>` | `id`, `name`, `changes`                                                                               |
+| Connection deleted                        | `integration.deleted`             | `integration:<connectionId>` | `id`, `name`, `type`, and — for MCP — `preset`, `transport`, `url`                                    |
+| Agent's tool grants changed               | `config.changed`                  | `agent:<agentId>`            | `action: "agent_integration_permissions_updated"`, `connectionId`, `changes: { added, removed }`      |
+| All of an agent's grants cleared          | `config.changed`                  | `agent:<agentId>`            | `action: "agent_integration_permissions_cleared"`, `removed`                                          |
+
+Discovery failures during connection creation are **not** audited — nothing was persisted, mirroring how a failed credential probe on other integration types isn't audited either.
+
+Individual tool calls (an agent actually invoking `create_issue`) are audited separately by OpenClaw's `before_tool_call`/`after_tool_call` hooks via the `pinchy-audit` plugin, as `tool.<serverKey>__<toolName>` events — the same mechanism every other tool call uses, not something MCP-specific.
+
+## Security
+
+See [The MCP Security Boundary](/explanation/mcp-security-boundary/) for the full explanation of why the config never carries a third-party token, how the SSRF guard works, and what this design does and doesn't protect against.

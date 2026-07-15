@@ -159,6 +159,13 @@ export default defineConfig({
               ],
             },
             { label: 'Connect Odoo', slug: 'guides/connect-odoo' },
+            {
+              label: 'Connect an MCP Server',
+              items: [
+                { label: 'Overview', slug: 'guides/connect-mcp' },
+                { label: 'GitHub', slug: 'guides/connect-mcp-github' },
+              ],
+            },
             { label: 'Upload Files in Chat', slug: 'guides/file-uploads' },
             { label: 'Install as an App', slug: 'guides/install-as-app' },
             { label: 'Share to Pinchy from Your Phone', slug: 'guides/share-to-pinchy' },
@@ -178,6 +185,7 @@ export default defineConfig({
             { label: 'Instructions vs. Memory', slug: 'explanation/instructions-vs-memory' },
             { label: 'Skills & Templates', slug: 'explanation/skills-and-templates' },
             { label: 'Chat Connection States', slug: 'explanation/chat-states' },
+            { label: 'The MCP Security Boundary', slug: 'explanation/mcp-security-boundary' },
             { label: 'Agent Settings', slug: 'concepts/agent-settings' },
             { label: 'Agent Permissions', slug: 'concepts/agent-permissions' },
             { label: 'Agent Workspaces', slug: 'concepts/workspaces' },
@@ -211,6 +219,7 @@ export default defineConfig({
           items: [
             { label: 'API Reference', slug: 'reference/api' },
             { label: 'Organization Timezone', slug: 'reference/organization-timezone' },
+            { label: 'MCP Integrations', slug: 'reference/mcp' },
             { label: 'SBOM', slug: 'reference/sbom' },
           ],
         },
