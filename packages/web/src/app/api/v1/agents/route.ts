@@ -1,38 +1,12 @@
 import { NextResponse, after } from "next/server";
 import { revalidatePath } from "next/cache";
-import { eq } from "drizzle-orm";
 import { withApiKey } from "@/lib/api-auth";
 import { parseRequestBody } from "@/lib/api-validation";
 import { createAgent, listAgents } from "@/lib/agents";
 import { createAgentSchema } from "@/lib/schemas/agents";
 import { appendAuditLog } from "@/lib/audit";
 import { deferAuditLog } from "@/lib/audit-deferred";
-import { db } from "@/db";
-import { users } from "@/db/schema";
-
-/**
- * Resolve the display name of the user who issued the calling API key, for
- * the audit `issuer` snapshot (design D2 — the key is logged as an
- * independent machine actor; the issuing admin is separate delegation
- * metadata inside `detail`, never merged into the actor fields).
- *
- * `ApiKeyContext` only carries `issuerUserId` (better-auth's `referenceId`),
- * not a name, so the route resolves it once per request. MUST NOT throw: a
- * missing user (deleted after the key was issued) or a DB hiccup both
- * degrade to an empty name — the audit write (and agent creation) must never
- * fail because of this lookup.
- */
-async function resolveIssuer(issuerUserId: string): Promise<{ id: string; name: string }> {
-  try {
-    const rows = await db
-      .select({ name: users.name })
-      .from(users)
-      .where(eq(users.id, issuerUserId));
-    return { id: issuerUserId, name: rows[0]?.name ?? "" };
-  } catch {
-    return { id: issuerUserId, name: "" };
-  }
-}
+import { resolveIssuer } from "@/lib/api-key-audit";
 
 /**
  * List every non-deleted agent. Key-authenticated counterpart to the
