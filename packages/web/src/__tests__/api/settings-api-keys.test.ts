@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { NextRequest } from "next/server";
+import { routeContext } from "@/test-helpers/route";
 
 /**
  * POST + GET /api/settings/api-keys — admin key-management surface (#572,
@@ -99,7 +100,10 @@ describe("POST /api/settings/api-keys", () => {
       expiresAt: null,
     });
 
-    const response = await POST(postRequest({ name: "CI Deploy", scopes: ["agents:read"] }));
+    const response = await POST(
+      postRequest({ name: "CI Deploy", scopes: ["agents:read"] }),
+      routeContext()
+    );
     const body = await response.json();
 
     expect(response.status).toBe(201);
@@ -119,7 +123,10 @@ describe("POST /api/settings/api-keys", () => {
       expiresAt: null,
     });
 
-    await POST(postRequest({ name: "CI", scopes: ["agents:read", "agents:write"] }));
+    await POST(
+      postRequest({ name: "CI", scopes: ["agents:read", "agents:write"] }),
+      routeContext()
+    );
 
     // Two things are pinned here, and both are load-bearing:
     //
@@ -155,7 +162,10 @@ describe("POST /api/settings/api-keys", () => {
       expiresAt: new Date("2026-08-14T00:00:00.000Z"),
     });
 
-    await POST(postRequest({ name: "CI", scopes: ["agents:read"], expiresInDays: 30 }));
+    await POST(
+      postRequest({ name: "CI", scopes: ["agents:read"], expiresInDays: 30 }),
+      routeContext()
+    );
 
     expect(mockCreateApiKey).toHaveBeenCalledWith(
       expect.objectContaining({ body: expect.objectContaining({ expiresIn: 30 * 86400 }) })
@@ -170,7 +180,10 @@ describe("POST /api/settings/api-keys", () => {
       expiresAt: null,
     });
 
-    const response = await POST(postRequest({ name: "CI Deploy", scopes: ["agents:read"] }));
+    const response = await POST(
+      postRequest({ name: "CI Deploy", scopes: ["agents:read"] }),
+      routeContext()
+    );
     expect(response.status).toBe(201);
 
     // Exact-match: proves the detail carries ONLY {id, name, scopes,
@@ -192,7 +205,7 @@ describe("POST /api/settings/api-keys", () => {
   });
 
   it("returns 400 for an empty name and never creates a key or audits", async () => {
-    const response = await POST(postRequest({ name: "", scopes: ["agents:read"] }));
+    const response = await POST(postRequest({ name: "", scopes: ["agents:read"] }), routeContext());
 
     expect(response.status).toBe(400);
     expect(mockCreateApiKey).not.toHaveBeenCalled();
@@ -200,14 +213,17 @@ describe("POST /api/settings/api-keys", () => {
   });
 
   it("returns 400 for empty scopes (default-deny: at least one scope required)", async () => {
-    const response = await POST(postRequest({ name: "CI", scopes: [] }));
+    const response = await POST(postRequest({ name: "CI", scopes: [] }), routeContext());
 
     expect(response.status).toBe(400);
     expect(mockCreateApiKey).not.toHaveBeenCalled();
   });
 
   it("returns 400 for an unknown/invalid scope", async () => {
-    const response = await POST(postRequest({ name: "CI", scopes: ["agents:admin"] }));
+    const response = await POST(
+      postRequest({ name: "CI", scopes: ["agents:admin"] }),
+      routeContext()
+    );
 
     expect(response.status).toBe(400);
     expect(mockCreateApiKey).not.toHaveBeenCalled();
@@ -222,7 +238,8 @@ describe("POST /api/settings/api-keys", () => {
     // surfacing as a 500. The schema must reject it first, same reasoning as
     // the sibling `name` cap (max 32) a few lines up.
     const response = await POST(
-      postRequest({ name: "CI", scopes: ["agents:read"], expiresInDays: 366 })
+      postRequest({ name: "CI", scopes: ["agents:read"], expiresInDays: 366 }),
+      routeContext()
     );
 
     expect(response.status).toBe(400);
@@ -238,7 +255,8 @@ describe("POST /api/settings/api-keys", () => {
     });
 
     const response = await POST(
-      postRequest({ name: "CI", scopes: ["agents:read"], expiresInDays: 365 })
+      postRequest({ name: "CI", scopes: ["agents:read"], expiresInDays: 365 }),
+      routeContext()
     );
 
     expect(response.status).toBe(201);
@@ -250,7 +268,10 @@ describe("POST /api/settings/api-keys", () => {
   it("returns 403 Forbidden for a non-admin session and never creates a key", async () => {
     mockGetSession.mockResolvedValue(memberSession());
 
-    const response = await POST(postRequest({ name: "CI", scopes: ["agents:read"] }));
+    const response = await POST(
+      postRequest({ name: "CI", scopes: ["agents:read"] }),
+      routeContext()
+    );
 
     expect(response.status).toBe(403);
     expect(mockCreateApiKey).not.toHaveBeenCalled();
@@ -331,7 +352,7 @@ describe("GET /api/settings/api-keys", () => {
   it("returns 200 with a masked key list containing only the safe whitelisted fields", async () => {
     mockKeyRows([fullKeyRow()]);
 
-    const response = await GET(getRequest());
+    const response = await GET(getRequest(), routeContext());
     const body = await response.json();
 
     expect(response.status).toBe(200);
@@ -362,7 +383,7 @@ describe("GET /api/settings/api-keys", () => {
       fullKeyRow({ id: "key-partial", metadata: JSON.stringify({ createdBy: { id: "u1" } }) }),
     ]);
 
-    const response = await GET(getRequest());
+    const response = await GET(getRequest(), routeContext());
     const body = await response.json();
 
     // Degrade honestly rather than guess or throw: one bad row must not take
@@ -373,7 +394,7 @@ describe("GET /api/settings/api-keys", () => {
   it("queries the apikey table directly, org-wide — no per-admin filter", async () => {
     const { from } = mockKeyRows([]);
 
-    await GET(getRequest());
+    await GET(getRequest(), routeContext());
 
     expect(mockDbSelect).toHaveBeenCalled();
     expect(from).toHaveBeenCalledWith(apiKeys);
@@ -385,7 +406,7 @@ describe("GET /api/settings/api-keys", () => {
       fullKeyRow({ id: "key-2", name: "Admin Two's key", referenceId: "admin-2" }),
     ]);
 
-    const response = await GET(getRequest());
+    const response = await GET(getRequest(), routeContext());
     const body = await response.json();
 
     expect(body.keys.map((k: { id: string }) => k.id)).toEqual(["key-1", "key-2"]);
@@ -408,7 +429,7 @@ describe("GET /api/settings/api-keys", () => {
       }),
     ]);
 
-    const response = await GET(getRequest());
+    const response = await GET(getRequest(), routeContext());
     const body = await response.json();
     const bodyText = JSON.stringify(body);
 
@@ -446,7 +467,7 @@ describe("GET /api/settings/api-keys", () => {
       }),
     ]);
 
-    const response = await GET(getRequest());
+    const response = await GET(getRequest(), routeContext());
     const body = await response.json();
 
     // "agents:admin" and "billing:read" are not valid API_KEY_SCOPES — must
@@ -457,7 +478,7 @@ describe("GET /api/settings/api-keys", () => {
   it("maps a null permissions column to an empty scopes array", async () => {
     mockKeyRows([fullKeyRow({ permissions: null })]);
 
-    const response = await GET(getRequest());
+    const response = await GET(getRequest(), routeContext());
     const body = await response.json();
 
     expect(body.keys[0].scopes).toEqual([]);
@@ -466,7 +487,7 @@ describe("GET /api/settings/api-keys", () => {
   it("degrades to an empty scopes array (not a crash/500) when the permissions column is invalid JSON", async () => {
     mockKeyRows([fullKeyRow({ permissions: "{not-valid-json" })]);
 
-    const response = await GET(getRequest());
+    const response = await GET(getRequest(), routeContext());
     const body = await response.json();
 
     expect(response.status).toBe(200);
@@ -476,7 +497,7 @@ describe("GET /api/settings/api-keys", () => {
   it("returns an empty keys array when there are no keys", async () => {
     mockKeyRows([]);
 
-    const response = await GET(getRequest());
+    const response = await GET(getRequest(), routeContext());
     const body = await response.json();
 
     expect(response.status).toBe(200);
@@ -486,7 +507,7 @@ describe("GET /api/settings/api-keys", () => {
   it("does not write an audit entry (read-only, audit-exempt)", async () => {
     mockKeyRows([]);
 
-    await GET(getRequest());
+    await GET(getRequest(), routeContext());
 
     expect(appendAuditLog).not.toHaveBeenCalled();
   });
@@ -494,7 +515,7 @@ describe("GET /api/settings/api-keys", () => {
   it("returns 403 Forbidden for a non-admin session and never queries keys", async () => {
     mockGetSession.mockResolvedValue(memberSession());
 
-    const response = await GET(getRequest());
+    const response = await GET(getRequest(), routeContext());
 
     expect(response.status).toBe(403);
     expect(mockDbSelect).not.toHaveBeenCalled();

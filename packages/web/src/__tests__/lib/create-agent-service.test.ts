@@ -235,7 +235,12 @@ describe("createAgent() service", () => {
     expect(result.ok).toBe(false);
     if (result.ok) throw new Error("expected failure");
 
-    expect(result.error.status).toBe(422);
+    // Narrow on the discriminant, don't just assert it: `expect(...).toBe(422)`
+    // proves the value at runtime but tells TypeScript nothing, so
+    // `capabilityFailure` — which only exists on the 422 arm — wouldn't
+    // type-check. The throw doubles as the assertion.
+    if (result.error.status !== 422) throw new Error("expected a 422 capability failure");
+
     expect(result.error.capabilityFailure).toEqual({
       templateId: "knowledge-base",
       missingCapabilities: ["vision"],

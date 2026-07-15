@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { NextRequest } from "next/server";
+import { routeContext } from "@/test-helpers/route";
 
 /**
  * POST /api/v1/agents — key-authenticated agent creation (#572, Task 4.2).
@@ -149,7 +150,7 @@ describe("POST /api/v1/agents", () => {
     mockVerifyApiKey.mockResolvedValue(verifiedKey());
     createAgentSucceeds();
 
-    const response = await POST(postRequest(validBody));
+    const response = await POST(postRequest(validBody), routeContext());
     const body = await response.json();
 
     expect(response.status).toBe(201);
@@ -175,7 +176,7 @@ describe("POST /api/v1/agents", () => {
     mockVerifyApiKey.mockResolvedValue(verifiedKey());
     createAgentSucceeds();
 
-    const response = await POST(postRequest(validBody));
+    const response = await POST(postRequest(validBody), routeContext());
     expect(response.status).toBe(201);
 
     // Exact-match: the absence of an `issuer` field is as load-bearing as the
@@ -217,7 +218,7 @@ describe("POST /api/v1/agents", () => {
       throw new Error("regen failed");
     }) as never);
 
-    await expect(POST(postRequest(validBody))).rejects.toThrow("regen failed");
+    await expect(POST(postRequest(validBody), routeContext())).rejects.toThrow("regen failed");
 
     // An agent that exists but was never written down is the one outcome an
     // audit product cannot ship. Registering the after() only once
@@ -239,7 +240,7 @@ describe("POST /api/v1/agents", () => {
     // fires, so there is genuinely nothing to record.
     vi.mocked(createAgent).mockRejectedValueOnce(new Error("provider unreachable"));
 
-    await expect(POST(postRequest(validBody))).rejects.toThrow();
+    await expect(POST(postRequest(validBody), routeContext())).rejects.toThrow();
 
     expect(appendAuditLog).not.toHaveBeenCalled();
   });
@@ -256,7 +257,7 @@ describe("POST /api/v1/agents", () => {
       ],
     });
 
-    const response = await POST(postRequest(validBody));
+    const response = await POST(postRequest(validBody), routeContext());
     expect(response.status).toBe(201);
 
     expect(deferAuditLog).toHaveBeenCalledWith({
@@ -278,7 +279,7 @@ describe("POST /api/v1/agents", () => {
   it("returns 400 for an invalid body and does not write an audit entry", async () => {
     mockVerifyApiKey.mockResolvedValue(verifiedKey());
 
-    const response = await POST(postRequest({}));
+    const response = await POST(postRequest({}), routeContext());
     const body = await response.json();
 
     expect(response.status).toBe(400);
@@ -310,7 +311,8 @@ describe("POST /api/v1/agents", () => {
     } as never);
 
     const response = await POST(
-      postRequest({ name: "Contract Bot", templateId: "contract-analyzer" })
+      postRequest({ name: "Contract Bot", templateId: "contract-analyzer" }),
+      routeContext()
     );
     const body = await response.json();
 
@@ -345,7 +347,10 @@ describe("POST /api/v1/agents", () => {
       error: { status: 400, body: { error: "Unknown template: nonexistent" } },
     } as never);
 
-    const response = await POST(postRequest({ name: "Test", templateId: "nonexistent" }));
+    const response = await POST(
+      postRequest({ name: "Test", templateId: "nonexistent" }),
+      routeContext()
+    );
     const body = await response.json();
 
     expect(response.status).toBe(400);
@@ -356,7 +361,7 @@ describe("POST /api/v1/agents", () => {
   it("returns 403 Forbidden when the key is missing the agents:write scope, and creates nothing", async () => {
     mockVerifyApiKey.mockResolvedValue(verifiedKey({ permissions: { agents: ["read"] } }));
 
-    const response = await POST(postRequest(validBody));
+    const response = await POST(postRequest(validBody), routeContext());
 
     expect(response.status).toBe(403);
     expect(await response.json()).toEqual({ error: "Forbidden" });
@@ -370,7 +375,7 @@ describe("POST /api/v1/agents", () => {
   });
 
   it("returns 401 Unauthorized when no API key is present", async () => {
-    const response = await POST(postRequest(validBody, {}));
+    const response = await POST(postRequest(validBody, {}), routeContext());
 
     expect(response.status).toBe(401);
     expect(await response.json()).toEqual({ error: "Unauthorized" });

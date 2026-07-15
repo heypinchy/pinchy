@@ -158,8 +158,10 @@ describe("C1: the api-key plugin's HTTP endpoints are governed (#572 review)", (
 
   it("blocks a non-admin member from mutating a key via POST /api-key/update (404, key unchanged)", async () => {
     const { userId, cookieHeader } = await seedMemberSessionCookie();
+    // No explicit `enabled` — it isn't on the plugin's create body, and the
+    // column defaults to true, which is what the assertion below relies on.
     const created = await auth.api.createApiKey({
-      body: { name: "pre-existing-key", userId, enabled: true },
+      body: { name: "pre-existing-key", userId },
     });
 
     const res = await authPost(

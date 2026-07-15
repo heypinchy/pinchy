@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { NextRequest } from "next/server";
+import { routeContext } from "@/test-helpers/route";
 
 /**
  * GET /api/v1/agents — key-authenticated agent listing (#572, Task 4.1).
@@ -80,7 +81,7 @@ describe("GET /api/v1/agents", () => {
     ];
     vi.mocked(listAgents).mockResolvedValueOnce(agents as never);
 
-    const response = await GET(reqWith({ Authorization: "Bearer pinchy_good" }));
+    const response = await GET(reqWith({ Authorization: "Bearer pinchy_good" }), routeContext());
 
     expect(response.status).toBe(200);
     expect(await response.json()).toEqual({ agents });
@@ -93,7 +94,10 @@ describe("GET /api/v1/agents", () => {
   it("returns 403 Forbidden when the key is missing the agents:read scope", async () => {
     mockVerifyApiKey.mockResolvedValue(verifiedKey({ permissions: { agents: ["write"] } }));
 
-    const response = await GET(reqWith({ Authorization: "Bearer pinchy_write_only" }));
+    const response = await GET(
+      reqWith({ Authorization: "Bearer pinchy_write_only" }),
+      routeContext()
+    );
 
     expect(response.status).toBe(403);
     expect(await response.json()).toEqual({ error: "Forbidden" });
@@ -101,7 +105,7 @@ describe("GET /api/v1/agents", () => {
   });
 
   it("returns 401 Unauthorized when no API key is present", async () => {
-    const response = await GET(reqWith());
+    const response = await GET(reqWith(), routeContext());
 
     expect(response.status).toBe(401);
     expect(await response.json()).toEqual({ error: "Unauthorized" });
