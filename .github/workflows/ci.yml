@@ -1,28 +1,21 @@
 name: CI
 
+# NOTE: deliberately NO `paths-ignore:` here. This workflow hosts main's
+# required status checks, and a workflow that never starts never reports a
+# status — so a docs-only PR would sit forever on "Expected — Waiting for status
+# to be reported", unmergeable with nothing actually broken. The same path
+# filter now lives at the JOB level: the `changes` job below works out whether
+# real code changed, and every expensive job is gated on it. The required checks
+# themselves are never gated, so they always report.
 on:
   push:
     branches: [main]
-    paths-ignore:
-      - "docs/**"
-      - "**/*.md"
-      - ".github/ISSUE_TEMPLATE/**"
-      - "PERSONALITY.md"
-      - "sample-data/**"
-      - "screenshots/**"
   pull_request:
     branches: [main]
-    paths-ignore:
-      - "docs/**"
-      - "**/*.md"
-      - ".github/ISSUE_TEMPLATE/**"
-      - "PERSONALITY.md"
-      - "sample-data/**"
-      - "screenshots/**"
   # Manual trigger: lets a maintainer re-run the full CI (incl. osv-scan) on a
-  # ref on demand. Needed because docs-only / *.md changes are paths-ignored
-  # above, so a docs-lockfile security bump (osv-scan reads docs/pnpm-lock.yaml)
-  # cannot otherwise produce a fresh green run on main to clear a stale red one.
+  # ref on demand — e.g. to clear a stale red main after a docs-lockfile
+  # security bump (osv-scan reads docs/pnpm-lock.yaml), which the `changes`
+  # gate classifies as docs-only.
   workflow_dispatch:
 
 # Cancel in-progress runs on the same PR/branch when a new commit is pushed.
@@ -32,8 +25,55 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
+  # Replaces the workflow-level `paths-ignore` this file used to carry (see the
+  # note above `on:`). Every expensive job gates on `code`; the required checks
+  # (quality, vitest-integration, e2e) deliberately do NOT, so they report on
+  # every PR instead of relying on GitHub's "a skipped job counts as success"
+  # behaviour for the one thing protecting main.
+  #
+  # Decision logic + the drift guards keeping this wiring honest live in
+  # scripts/lib/ci-path-filter.mjs and its test (run by `pnpm test:scripts`).
+  changes:
+    name: Detect changed paths
+    runs-on: ubuntu-latest
+    outputs:
+      code: ${{ steps.filter.outputs.code }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          # Enough history for a merge-base against the target branch. The
+          # filter falls back to "run everything" if a base can't be resolved,
+          # so a too-shallow clone costs CI minutes, never coverage.
+          fetch-depth: 0
+
+      - id: filter
+        env:
+          BASE_REF: ${{ github.base_ref }}
+          BEFORE: ${{ github.event.before }}
+        run: |
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            BASE="origin/$BASE_REF"
+          elif [ "${{ github.event_name }}" = "push" ]; then
+            BASE="$BEFORE"
+          else
+            # workflow_dispatch: an explicit manual run always means "run it all".
+            echo "Manual run — full matrix."
+            echo "code=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          # An unresolvable base (first push to a branch, force push, grafted
+          # history) yields an empty diff, which the filter reads as "unknown"
+          # and answers with the full matrix.
+          if ! git rev-parse --verify --quiet "$BASE^{commit}" >/dev/null; then
+            echo "Base '$BASE' not resolvable — full matrix."
+            echo "code=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          git diff --name-only "$BASE...HEAD" | node scripts/detect-code-changes.mjs
+
   build-image:
     name: Build Pinchy + OpenClaw images
+    needs: changes
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -41,7 +81,9 @@ jobs:
     # Skip on fork PRs: GITHUB_TOKEN is read-only for forks and cannot push
     # to GHCR. Non-PR pushes (main) and same-repo PRs always run.
     # Downstream jobs fall back to per-job local build when this is skipped.
-    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.fork != true
+    if: >-
+      needs.changes.outputs.code == 'true' &&
+      (github.event_name != 'pull_request' || github.event.pull_request.head.repo.fork != true)
     outputs:
       pinchy-image: ${{ steps.tags.outputs.pinchy }}
       openclaw-image: ${{ steps.tags.outputs.openclaw }}
@@ -239,6 +281,8 @@ jobs:
 
   license-keypair:
     name: Verify License Keypair
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -347,10 +391,14 @@ jobs:
 
   docker-smoke:
     name: Docker smoke test
-    needs: build-image
-    # Run even when build-image is skipped (fork PRs) or on push events
+    needs: [changes, build-image]
+    # Run even when build-image is skipped: on fork PRs that's by design and we
+    # fall back to a local build below. But build-image is ALSO skipped on a
+    # docs-only PR — where we must not build anything at all — so the changes
+    # gate has to be explicit rather than inferred from build-image's result.
     if: >-
       always() &&
+      needs.changes.outputs.code == 'true' &&
       (needs.build-image.result == 'success' ||
        needs.build-image.result == 'skipped')
     runs-on: ubuntu-latest
@@ -814,9 +862,13 @@ jobs:
 
   end-user-install:
     name: End-user install simulation
-    needs: build-image
+    needs: [changes, build-image]
+    # See docker-smoke: build-image is skipped both on fork PRs (fall back to a
+    # local build) and on docs-only PRs (build nothing) — only the changes gate
+    # tells those two apart.
     if: >-
       always() &&
+      needs.changes.outputs.code == 'true' &&
       (needs.build-image.result == 'success' ||
        needs.build-image.result == 'skipped')
     permissions:
@@ -960,9 +1012,13 @@ jobs:
 
   end-user-upgrade:
     name: End-user upgrade simulation
-    needs: build-image
+    needs: [changes, build-image]
+    # See docker-smoke: build-image is skipped both on fork PRs (fall back to a
+    # local build) and on docs-only PRs (build nothing) — only the changes gate
+    # tells those two apart.
     if: >-
       always() &&
+      needs.changes.outputs.code == 'true' &&
       (needs.build-image.result == 'success' ||
        needs.build-image.result == 'skipped')
     permissions:
@@ -1200,9 +1256,12 @@ jobs:
   odoo-e2e:
     name: Odoo E2E Tests
     runs-on: ubuntu-latest
-    needs: build-image
+    needs: [changes, build-image]
+    # See docker-smoke on why the changes gate is explicit rather than inferred
+    # from build-image being skipped.
     if: >-
       always() &&
+      needs.changes.outputs.code == 'true' &&
       (needs.build-image.result == 'success' ||
        needs.build-image.result == 'skipped')
     permissions:
@@ -1332,9 +1391,12 @@ jobs:
   web-e2e:
     name: Web Search E2E Tests
     runs-on: ubuntu-latest
-    needs: build-image
+    needs: [changes, build-image]
+    # See docker-smoke on why the changes gate is explicit rather than inferred
+    # from build-image being skipped.
     if: >-
       always() &&
+      needs.changes.outputs.code == 'true' &&
       (needs.build-image.result == 'success' ||
        needs.build-image.result == 'skipped')
     permissions:
@@ -1455,9 +1517,12 @@ jobs:
     # email-microsoft.spec.ts against gmail-mock + graph-mock.
     name: Email E2E Tests
     runs-on: ubuntu-latest
-    needs: build-image
+    needs: [changes, build-image]
+    # See docker-smoke on why the changes gate is explicit rather than inferred
+    # from build-image being skipped.
     if: >-
       always() &&
+      needs.changes.outputs.code == 'true' &&
       (needs.build-image.result == 'success' ||
        needs.build-image.result == 'skipped')
     permissions:
@@ -1582,9 +1647,12 @@ jobs:
     # GreenMail server (SMTP+IMAP) fronted by the imap-mock control sidecar.
     name: IMAP E2E Tests
     runs-on: ubuntu-latest
-    needs: build-image
+    needs: [changes, build-image]
+    # See docker-smoke on why the changes gate is explicit rather than inferred
+    # from build-image being skipped.
     if: >-
       always() &&
+      needs.changes.outputs.code == 'true' &&
       (needs.build-image.result == 'success' ||
        needs.build-image.result == 'skipped')
     permissions:
@@ -1706,9 +1774,12 @@ jobs:
   setup-wizard-e2e:
     name: Setup Wizard E2E Tests
     runs-on: ubuntu-latest
-    needs: build-image
+    needs: [changes, build-image]
+    # See docker-smoke on why the changes gate is explicit rather than inferred
+    # from build-image being skipped.
     if: >-
       always() &&
+      needs.changes.outputs.code == 'true' &&
       (needs.build-image.result == 'success' ||
        needs.build-image.result == 'skipped')
     permissions:
@@ -1829,9 +1900,12 @@ jobs:
   telegram-e2e:
     name: Telegram E2E Tests
     runs-on: ubuntu-latest
-    needs: build-image
+    needs: [changes, build-image]
+    # See docker-smoke on why the changes gate is explicit rather than inferred
+    # from build-image being skipped.
     if: >-
       always() &&
+      needs.changes.outputs.code == 'true' &&
       (needs.build-image.result == 'success' ||
        needs.build-image.result == 'skipped')
     permissions:
@@ -2004,9 +2078,12 @@ jobs:
   integration:
     name: Integration Tests (OpenClaw + Fake Ollama)
     runs-on: ubuntu-latest
-    needs: build-image
+    needs: [changes, build-image]
+    # See docker-smoke on why the changes gate is explicit rather than inferred
+    # from build-image being skipped.
     if: >-
       always() &&
+      needs.changes.outputs.code == 'true' &&
       (needs.build-image.result == 'success' ||
        needs.build-image.result == 'skipped')
     permissions:
@@ -2172,9 +2249,12 @@ jobs:
     # (stochastic + paid); see #669 for the on-demand/scheduled follow-ups.
     name: Eval Harness Self-Test
     runs-on: ubuntu-latest
-    needs: build-image
+    needs: [changes, build-image]
+    # See docker-smoke on why the changes gate is explicit rather than inferred
+    # from build-image being skipped.
     if: >-
       always() &&
+      needs.changes.outputs.code == 'true' &&
       (needs.build-image.result == 'success' ||
        needs.build-image.result == 'skipped')
     permissions:
@@ -2300,6 +2380,8 @@ jobs:
 
   ollama-integration:
     name: Ollama integration tests
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-latest
 
     steps:
@@ -2346,6 +2428,8 @@ jobs:
 
   links:
     name: Check links
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-latest
 
     steps:
@@ -2380,6 +2464,8 @@ jobs:
   # depend on npm's legacy audit API.
   vuln-scan:
     name: Security audit
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     uses: "google/osv-scanner-action/.github/workflows/osv-scanner-reusable.yml@v2.3.8"
     with:
       scan-args: |-
@@ -2393,6 +2479,8 @@ jobs:
 
   repo-hygiene:
     name: Repo hygiene
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-latest
 
     steps:

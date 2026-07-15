@@ -93,6 +93,20 @@ Concretely:
 - **Simulate the pre-existing state:** let the new path capture/write, then delete those rows for the entity, then assert the feature still works (it must fall back or have been backfilled). See `deleteCapturedTelegramMessages` + the "listed ⟹ readable" test in `packages/web/e2e/telegram/chats.spec.ts`, and the deterministic route-level equivalent in `packages/web/src/__tests__/api/agent-telegram-chat.test.ts`.
 - **Assert the cross-route invariant**, not just one route in isolation: if an item appears in a list, opening it must show content (or a defined, honest empty state). List and detail are often changed independently.
 
+## CI Path Filtering Is Job-Level, Never Workflow-Level
+
+`.github/workflows/ci.yml` must **never** carry `paths-ignore:` (or `paths:`) on its triggers. It hosts main's required status checks, and a workflow that never starts never reports a status — so a docs-only PR would sit forever on "Expected — Waiting for status to be reported": unmergeable, with nothing actually broken. This is exactly what the old `paths-ignore: [docs/**, "**/*.md", ...]` did once those checks became required.
+
+The filter now lives one level down:
+
+- The **`changes` job** diffs the PR against its base and outputs `code=true|false` via `scripts/detect-code-changes.mjs`. Pure logic is in `scripts/lib/ci-path-filter.mjs` (`hasCodeChanges`), covered by `scripts/lib/ci-path-filter.test.mjs` (`pnpm test:scripts`).
+- **Required-check jobs** (`quality`, `vitest-integration`, `e2e` — the names in branch protection, listed as `ALWAYS_RUN_JOBS`) are **never gated**. They run and report on every PR, so no required check depends on GitHub's subtle "a skipped job counts as success" behaviour.
+- **Every other job** carries `needs: changes` + `if: needs.changes.outputs.code == 'true'`, which is where the CI-minute saving comes from. A gated job is genuinely skipped on a docs-only PR.
+
+Two mistakes the drift guards in `ci-path-filter.test.mjs` exist to catch: re-adding `paths-ignore` (the original bug), and adding a new job without the gate (it would silently run the full Docker/E2E matrix on every README typo).
+
+An unresolvable base or empty diff deliberately answers **`code=true`**: wasting CI minutes is recoverable, skipping the matrix on a real code change is not. When adding a job that depends on `build-image`, note that `build-image` is skipped both on fork PRs (fall back to a local build) and on docs-only PRs (build nothing) — only the explicit `changes` gate tells those two apart.
+
 ## Web Test Files Are Type-Checked
 
 `packages/web` test files (`*.test.ts(x)`, `*.integration.test.ts`, `*.test-d.ts`) are type-checked in CI by the `quality` job's "Typecheck web (incl. tests)" step: `pnpm -C packages/web typecheck` → `tsc --noEmit -p packages/web/tsconfig.typecheck.json`.
