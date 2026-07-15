@@ -1,8 +1,8 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, mkdirSync, existsSync, rmSync } from "node:fs";
+import { mkdtempSync, mkdirSync, existsSync, rmSync, writeFileSync, chmodSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { join, resolve, delimiter } from "node:path";
 
 // config/stage-llama-cpp-provider.sh is start-openclaw.sh's boot-time staging
 // step for the bundled llama.cpp embedding provider, extracted into a sourceable
@@ -18,6 +18,12 @@ import { join, resolve } from "node:path";
 // that shadows image-baked content on upgrade. On boot the function copies it
 // into ~/.openclaw/npm if the provider isn't already there, then refreshes the
 // registry. Paths are env-overridable so this test can drive it against temp dirs.
+//
+// The function shells out to `openclaw plugins registry --refresh`. We stub that
+// binary on PATH so the refresh is deterministic and instant in EVERY
+// environment: the real CLI may be absent, or present-and-slow, on a CI runner —
+// exactly the non-determinism that timed this test out in CI. The stub's exit
+// code also lets us exercise the warn-on-failure branch directly.
 
 const REPO_ROOT = resolve(__dirname, "../../../../..");
 const SCRIPT = resolve(REPO_ROOT, "config/stage-llama-cpp-provider.sh");
@@ -25,11 +31,25 @@ const SCRIPT = resolve(REPO_ROOT, "config/stage-llama-cpp-provider.sh");
 let root: string;
 let depsRoot: string;
 let npmRoot: string;
+let binDir: string;
+
+// Install a stub `openclaw` on PATH whose `plugins registry --refresh` returns
+// the given exit code (0 = refresh succeeds, non-zero = refresh fails).
+function stubOpenclaw(exitCode: number): void {
+  const bin = join(binDir, "openclaw");
+  writeFileSync(bin, `#!/bin/bash\nexit ${exitCode}\n`);
+  chmodSync(bin, 0o755);
+}
 
 function runStage(): string {
   return execFileSync("bash", ["-c", `source '${SCRIPT}'; stage_llama_cpp_provider`], {
-    env: { ...process.env, LLAMA_CPP_DEPS_ROOT: depsRoot, OPENCLAW_NPM_ROOT: npmRoot },
-    stdio: "pipe",
+    env: {
+      ...process.env,
+      PATH: `${binDir}${delimiter}${process.env.PATH ?? ""}`,
+      LLAMA_CPP_DEPS_ROOT: depsRoot,
+      OPENCLAW_NPM_ROOT: npmRoot,
+    },
+    stdio: ["ignore", "pipe", "pipe"],
     encoding: "utf8",
   });
 }
@@ -38,6 +58,9 @@ beforeEach(() => {
   root = mkdtempSync(join(tmpdir(), "stage-llama-cpp-"));
   depsRoot = join(root, "opt", "llama-cpp-deps");
   npmRoot = join(root, "home", ".openclaw", "npm");
+  binDir = join(root, "bin");
+  mkdirSync(binDir, { recursive: true });
+  stubOpenclaw(0); // registry refresh succeeds by default
 });
 
 afterEach(() => {
@@ -74,5 +97,23 @@ describe("stage_llama_cpp_provider", () => {
     // No depsRoot/npm — e.g. a build that didn't bundle the provider.
     expect(() => runStage()).not.toThrow();
     expect(existsSync(join(npmRoot, "projects"))).toBe(false);
+  });
+
+  it("warns but stays non-fatal when the registry refresh fails", () => {
+    // A silent refresh failure means the provider never loads and recall
+    // regresses to 0 chunks — so the function must WARN (not swallow with
+    // `|| true`) yet keep booting (the file-read fallback still works).
+    mkdirSync(join(depsRoot, "npm", "projects", "openclaw-llama-cpp-provider-abc123"), {
+      recursive: true,
+    });
+    stubOpenclaw(1); // registry refresh fails
+
+    let output = "";
+    expect(() => {
+      output = runStage();
+    }).not.toThrow(); // non-fatal: boot continues
+    expect(output).toMatch(/WARNING/);
+    // Staging still happened despite the refresh failure.
+    expect(existsSync(join(npmRoot, "projects", "openclaw-llama-cpp-provider-abc123"))).toBe(true);
   });
 });
