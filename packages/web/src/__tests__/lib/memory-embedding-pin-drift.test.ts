@@ -43,6 +43,23 @@ describe("memory embedding pin drift guard", () => {
     expect(downloaded).toBe(MEMORY_EMBEDDING_MODEL_PATH);
   });
 
+  it("pins the GGUF download to an immutable commit revision, not a moving ref", () => {
+    // `resolve/main/…` is a moving ref: upstream can replace or rename the file
+    // and the image silently changes (or the build breaks). Everything else in
+    // this repo is pinned (openclaw@<version>, marketplace version) — the model
+    // must be too. HuggingFace serves revision-pinned URLs at resolve/<sha>/.
+    expect(DOCKERFILE_OPENCLAW).not.toMatch(/huggingface\.co\/\S+\/resolve\/main\//);
+    expect(DOCKERFILE_OPENCLAW).toMatch(/huggingface\.co\/\S+\/resolve\/[0-9a-f]{40}\/\S+\.gguf/);
+  });
+
+  it("verifies the downloaded GGUF against a sha256 checksum", () => {
+    // No integrity check means a corrupt or tampered 329 MB download is baked
+    // into the image that ships to every deployment. `sha256sum -c` fails the
+    // build LOUD instead. Pin the expected digest next to the download.
+    expect(DOCKERFILE_OPENCLAW).toMatch(/sha256sum\s+-c/);
+    expect(DOCKERFILE_OPENCLAW).toMatch(/[0-9a-f]{64}\s+\S+\.gguf/);
+  });
+
   it("the CI smoke test checks the same model path", () => {
     const smokePath = VERIFY_SCRIPT.match(/MODEL_PATH="([^"]+\.gguf)"/)?.[1];
     expect(smokePath).toBe(MEMORY_EMBEDDING_MODEL_PATH);

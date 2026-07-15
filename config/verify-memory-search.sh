@@ -45,13 +45,11 @@ cat >/root/.openclaw/openclaw.json <<JSON
 JSON
 
 # Stage the bundled provider into the (normally volume-mounted) config dir and
-# refresh the registry — exactly what start-openclaw.sh's stage_llama_cpp_provider
-# does on boot.
-if ! ls -d /root/.openclaw/npm/projects/openclaw-llama-cpp-provider-* >/dev/null 2>&1; then
-  mkdir -p /root/.openclaw/npm
-  cp -r /opt/llama-cpp-deps/npm/. /root/.openclaw/npm/
-fi
-openclaw plugins registry --refresh >/dev/null 2>&1 || true
+# refresh the registry using the REAL boot-path function — sourced from the same
+# helper start-openclaw.sh uses, so this smoke test can't pass against a staging
+# implementation that has drifted from production.
+source /stage-llama-cpp-provider.sh
+stage_llama_cpp_provider
 
 openclaw plugins list 2>&1 | grep -qiE 'llama.?cpp.*enabled' || {
   echo "::error::llama-cpp provider did not load from plugins.allow"

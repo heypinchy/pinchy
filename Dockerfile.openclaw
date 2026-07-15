@@ -77,9 +77,15 @@ RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates
 RUN openclaw plugins install @openclaw/llama-cpp-provider \
     && mkdir -p /opt/llama-cpp-deps \
     && cp -r /root/.openclaw/npm /opt/llama-cpp-deps/npm
+# Download pinned to an immutable commit revision (not the moving `main` ref) and
+# verified against its sha256 — a corrupt or tampered 329 MB blob fails the build
+# LOUD instead of silently shipping in the image. Bump the revision + digest
+# together when updating the model (the memory-embedding-pin-drift unit test
+# enforces that both stay present).
 RUN mkdir -p /opt/embedding-models \
     && curl -fsSL -o /opt/embedding-models/embeddinggemma-300m-qat-Q8_0.gguf \
-       https://huggingface.co/ggml-org/embeddinggemma-300m-qat-q8_0-GGUF/resolve/main/embeddinggemma-300m-qat-Q8_0.gguf
+       https://huggingface.co/ggml-org/embeddinggemma-300m-qat-q8_0-GGUF/resolve/66f974f8cd48cc3b9c41c516b95508e75b4bee64/embeddinggemma-300m-qat-Q8_0.gguf \
+    && echo "6fa0c02a9c302be6f977521d399b4de3a46310a4f2621ee0063747881b673f67  /opt/embedding-models/embeddinggemma-300m-qat-Q8_0.gguf" | sha256sum -c -
 
 # Install pinchy-files plugin dependencies (native modules must be built here).
 # Each bundle's node_modules is copied into /opt/<plugin>-deps so the runtime
@@ -199,11 +205,17 @@ COPY config/start-openclaw.sh /start-openclaw.sh
 # mountpoint-safety invariant is unit-testable — see
 # packages/web/src/__tests__/lib/install-plugin-deps.test.ts.
 COPY config/install-plugin-deps.sh /install-plugin-deps.sh
+# Boot-time staging of the bundled llama.cpp embedding provider, sourced by
+# start-openclaw.sh. Kept as a separate script (same pattern as
+# install-plugin-deps.sh) so the offline smoke test sources the real function and
+# the staging contract is unit-testable — see
+# packages/web/src/__tests__/lib/stage-llama-cpp-provider.test.ts.
+COPY config/stage-llama-cpp-provider.sh /stage-llama-cpp-provider.sh
 # Device-pairing auto-approver invoked per tick by start-openclaw.sh. Kept as a
 # separate Node module so its requestId-churn convergence is unit-testable
 # (config/__tests__/auto-approve-once.test.mjs) instead of embedded bash.
 COPY config/auto-approve-once.mjs /auto-approve-once.mjs
-RUN chmod +x /start-openclaw.sh /install-plugin-deps.sh
+RUN chmod +x /start-openclaw.sh /install-plugin-deps.sh /stage-llama-cpp-provider.sh
 
 # Bake Pinchy's user-facing docs into the image so Smithers' docs_list /
 # docs_read tools (pinchy-docs plugin) work in every deploy. Previously

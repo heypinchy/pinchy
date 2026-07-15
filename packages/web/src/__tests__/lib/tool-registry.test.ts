@@ -155,6 +155,19 @@ describe("computeAllowedTools", () => {
     expect(computeAllowedTools()).toContain("pinchy_read");
   });
 
+  it("keeps `pinchy_read` AND `pinchy_ls` available — the memory-prompt recall fallback promises both", () => {
+    // buildMemoryPromptBlock (memory-prompt.ts) unconditionally steers every
+    // write-capable agent to recall its memory by reading files with pinchy_read
+    // and discovering topic notes with pinchy_ls. That promise is only safe
+    // because computeAllowedTools() — the OUTER OpenClaw allowlist emitted for
+    // EVERY agent — always lists both. If either is ever trimmed here, the prompt
+    // would tell agents to use a tool they no longer have, silently breaking the
+    // fallback (finding #3, PR #736 review). This guards that coupling.
+    const allowed = computeAllowedTools();
+    expect(allowed).toContain("pinchy_read");
+    expect(allowed).toContain("pinchy_ls");
+  });
+
   it("allows memory_search/memory_get (bundled memory-core plugin powers agent memory)", () => {
     const allowed = computeAllowedTools();
     expect(allowed).toContain("memory_search");

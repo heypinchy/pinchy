@@ -66,29 +66,14 @@ ensure_secrets_root_owned() {
 # shellcheck source=install-plugin-deps.sh
 source /install-plugin-deps.sh
 
-# Stage the bundled llama.cpp embedding provider into the config volume.
-# `openclaw plugins install @openclaw/llama-cpp-provider` runs at image-build
-# time and places the provider (with its prebuilt node-llama-cpp native runtime)
-# under ~/.openclaw/npm/projects/. That path lives on the `openclaw-config`
-# volume, which shadows the image-baked copy on upgrades — so we keep the built
-# provider in /opt/llama-cpp-deps (non-volume) and copy it into ~/.openclaw/npm
-# here if absent, then refresh the persisted plugin registry so OpenClaw
-# rediscovers it. This is what gives memory-core its key-less, OFFLINE `local`
-# embedding provider — the backend Pinchy pins in agents.defaults.memorySearch
-# (see MEMORY_EMBEDDING_MODEL_PATH in openclaw-config/build.ts). Without it,
-# memory_search returns 0 chunks and agent recall silently fails. Same
-# volume-shadow-defeating pattern as install_plugin_deps above.
-stage_llama_cpp_provider() {
-    [ -d /opt/llama-cpp-deps/npm ] || return 0
-    if ! ls -d /root/.openclaw/npm/projects/openclaw-llama-cpp-provider-* >/dev/null 2>&1; then
-        echo "[llama-cpp] staging bundled embedding provider into ~/.openclaw/npm"
-        mkdir -p /root/.openclaw/npm
-        cp -r /opt/llama-cpp-deps/npm/. /root/.openclaw/npm/
-    fi
-    # Idempotent, offline: rescans on-disk source roots (incl. ~/.openclaw/npm/
-    # projects) to rebuild the persisted registry so the staged provider loads.
-    openclaw plugins registry --refresh >/dev/null 2>&1 || true
-}
+# Boot-time staging of the bundled llama.cpp embedding provider (memory-core's
+# key-less, offline `local` embedding backend). Extracted to its own sourceable
+# script so the offline CI smoke test (config/verify-memory-search.sh) runs the
+# REAL function and the staging contract is unit-testable — see
+# packages/web/src/__tests__/lib/stage-llama-cpp-provider.test.ts. Defines
+# stage_llama_cpp_provider() into this shell.
+# shellcheck source=stage-llama-cpp-provider.sh
+source /stage-llama-cpp-provider.sh
 
 # Fix plugin ownership — bind-mounted plugin files from the host may have
 # a different UID than root, causing OpenClaw to block them as "suspicious".
