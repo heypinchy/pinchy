@@ -3,6 +3,7 @@ export { AGENT_NAME_MAX_LENGTH } from "@/lib/agent-constants";
 import { db } from "@/db";
 import {
   agents,
+  activeAgents,
   agentConnectionPermissions,
   integrationConnections,
   type AgentPluginConfig,
@@ -50,6 +51,53 @@ export interface UpdateAgentInput {
   avatarSeed?: string | null;
   personalityPresetId?: string | null;
   visibility?: AgentVisibility;
+}
+
+/**
+ * List every non-deleted agent for an admin / key-scoped caller.
+ *
+ * ⚠️ `{ scope: "all" }` DELIBERATELY BYPASSES all visibility and ownership
+ * filtering. It returns personal agents owned by other users and restricted
+ * agents the caller shares no group with — i.e. everything `getVisibleAgents`
+ * hides. Use ONLY for admin / key-authenticated surfaces (the key API's
+ * `/api/v1/agents`, #572). Session routes MUST keep using `getVisibleAgents`,
+ * which filters by the caller's identity.
+ *
+ * The literal `"all"` scope is an explicit "see everything" signal at the call
+ * site and reserves room for a future filtered scope; until then this fails
+ * closed on anything else so a mistyped/JS caller can't silently see all.
+ *
+ * Reads from the `active_agents` view, so soft-deleted agents are excluded.
+ */
+export async function listAgents(opts: {
+  scope: "all";
+}): Promise<(typeof activeAgents.$inferSelect)[]> {
+  // audit-exempt: read-only query, no state change
+  if (opts.scope !== "all") {
+    throw new Error(`listAgents: unsupported scope "${opts.scope}"`);
+  }
+  return db.select().from(activeAgents);
+}
+
+/**
+ * Fetch a single non-deleted agent by id for an admin / key-scoped caller.
+ *
+ * ⚠️ `{ scope: "all" }` DELIBERATELY BYPASSES the access control that
+ * `getAgentWithAccess` applies: it returns the agent regardless of visibility
+ * or ownership (including another user's personal agent). Use ONLY for admin /
+ * key-authenticated surfaces (#572). Returns `undefined` when no non-deleted
+ * agent has that id (the route maps that to 404).
+ */
+export async function getAgent(
+  id: string,
+  opts: { scope: "all" }
+): Promise<typeof activeAgents.$inferSelect | undefined> {
+  // audit-exempt: read-only query, no state change
+  if (opts.scope !== "all") {
+    throw new Error(`getAgent: unsupported scope "${opts.scope}"`);
+  }
+  const rows = await db.select().from(activeAgents).where(eq(activeAgents.id, id));
+  return rows[0];
 }
 
 export async function deleteAgent(id: string) {
