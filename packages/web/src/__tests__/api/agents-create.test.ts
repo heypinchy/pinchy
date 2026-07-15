@@ -192,6 +192,7 @@ import {
   writeIdentityFile,
 } from "@/lib/workspace";
 import { regenerateOpenClawConfig } from "@/lib/openclaw-config";
+import { appendAuditLog } from "@/lib/audit";
 
 describe("POST /api/agents", () => {
   beforeEach(() => {
@@ -1218,5 +1219,157 @@ describe("POST /api/agents", () => {
       hint: expect.objectContaining({ tier: "balanced" }),
       reason: expect.stringContaining("balanced"),
     });
+  });
+});
+
+describe("MCP auto-grant from recommendedTools (T9)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  it("auto-grants recommended MCP tools from the first active connection matching each preset", async () => {
+    vi.stubEnv("PINCHY_MCP_ENABLED", "1");
+    dbSelectFromMock.mockReturnValueOnce({
+      where: vi.fn().mockResolvedValue([
+        {
+          id: "gh-conn-1",
+          type: "mcp",
+          status: "active",
+          data: {
+            preset: "github",
+            tools: [
+              { name: "pull_request_read" },
+              { name: "list_pull_requests" },
+              { name: "pull_request_review_write" },
+            ],
+          },
+        },
+      ]),
+    });
+
+    const request = new NextRequest("http://localhost:7777/api/agents", {
+      method: "POST",
+      body: JSON.stringify({ name: "Merlin", templateId: "github-pr-reviewer" }),
+    });
+
+    const response = await POST(request);
+    expect(response.status).toBe(201);
+
+    expect(permissionsInsertValuesMock).toHaveBeenCalledWith([
+      expect.objectContaining({
+        agentId: "new-agent-id",
+        connectionId: "gh-conn-1",
+        model: "mcp",
+        operation: "pull_request_read",
+      }),
+      expect.objectContaining({
+        agentId: "new-agent-id",
+        connectionId: "gh-conn-1",
+        model: "mcp",
+        operation: "list_pull_requests",
+      }),
+      expect.objectContaining({
+        agentId: "new-agent-id",
+        connectionId: "gh-conn-1",
+        model: "mcp",
+        operation: "pull_request_review_write",
+      }),
+    ]);
+
+    expect(appendAuditLog).toHaveBeenCalledWith(
+      expect.objectContaining({
+        eventType: "config.changed",
+        resource: "agent:new-agent-id",
+        outcome: "success",
+        detail: expect.objectContaining({
+          action: "agent_integration_permissions_auto_configured",
+          agentId: "new-agent-id",
+          permissions: expect.arrayContaining([
+            { connectionId: "gh-conn-1", model: "mcp", operation: "pull_request_read" },
+          ]),
+        }),
+      })
+    );
+  });
+
+  it("silently skips recommended tools when no active connection matches the preset (agent creation still succeeds)", async () => {
+    vi.stubEnv("PINCHY_MCP_ENABLED", "1");
+    // dbSelectFromMock's default resolves to [] — no MCP connections seeded.
+
+    const request = new NextRequest("http://localhost:7777/api/agents", {
+      method: "POST",
+      body: JSON.stringify({ name: "Merlin", templateId: "github-pr-reviewer" }),
+    });
+
+    const response = await POST(request);
+    expect(response.status).toBe(201);
+    expect(permissionsInsertValuesMock).not.toHaveBeenCalled();
+  });
+
+  it("silently skips a recommended tool the connection hasn't synced", async () => {
+    vi.stubEnv("PINCHY_MCP_ENABLED", "1");
+    dbSelectFromMock.mockReturnValueOnce({
+      where: vi.fn().mockResolvedValue([
+        {
+          id: "gh-conn-1",
+          type: "mcp",
+          status: "active",
+          // Only one of the three recommended tools was actually synced —
+          // e.g. the provider renamed the other two upstream.
+          data: { preset: "github", tools: [{ name: "pull_request_read" }] },
+        },
+      ]),
+    });
+
+    const request = new NextRequest("http://localhost:7777/api/agents", {
+      method: "POST",
+      body: JSON.stringify({ name: "Merlin", templateId: "github-pr-reviewer" }),
+    });
+
+    const response = await POST(request);
+    expect(response.status).toBe(201);
+
+    expect(permissionsInsertValuesMock).toHaveBeenCalledWith([
+      expect.objectContaining({ operation: "pull_request_read" }),
+    ]);
+  });
+
+  it("does not auto-grant MCP permissions when the feature flag is off", async () => {
+    // PINCHY_MCP_ENABLED deliberately left unstubbed (off).
+    dbSelectFromMock.mockReturnValueOnce({
+      where: vi.fn().mockResolvedValue([
+        {
+          id: "gh-conn-1",
+          type: "mcp",
+          status: "active",
+          data: { preset: "github", tools: [{ name: "pull_request_read" }] },
+        },
+      ]),
+    });
+
+    const request = new NextRequest("http://localhost:7777/api/agents", {
+      method: "POST",
+      body: JSON.stringify({ name: "Merlin", templateId: "github-pr-reviewer" }),
+    });
+
+    const response = await POST(request);
+    expect(response.status).toBe(201);
+    expect(permissionsInsertValuesMock).not.toHaveBeenCalled();
+  });
+
+  it("does not touch MCP connections for templates with no recommendedTools", async () => {
+    vi.stubEnv("PINCHY_MCP_ENABLED", "1");
+
+    const request = new NextRequest("http://localhost:7777/api/agents", {
+      method: "POST",
+      body: JSON.stringify({ name: "Dev Assistant", templateId: "custom" }),
+    });
+
+    await POST(request);
+    expect(permissionsInsertValuesMock).not.toHaveBeenCalled();
   });
 });

@@ -130,7 +130,8 @@ export type CategoryId =
   | "operations"
   | "marketing-web"
   | "knowledge-compliance"
-  | "email";
+  | "email"
+  | "developer-tools";
 
 const CATEGORY_DEFINITIONS: readonly { id: CategoryId; label: string }[] = [
   { id: "sales-customers", label: "Sales & Customers" },
@@ -140,6 +141,7 @@ const CATEGORY_DEFINITIONS: readonly { id: CategoryId; label: string }[] = [
   { id: "marketing-web", label: "Marketing & Web" },
   { id: "knowledge-compliance", label: "Knowledge & Compliance" },
   { id: "email", label: "Email" },
+  { id: "developer-tools", label: "Developer Tools" },
 ];
 
 const TEMPLATE_CATEGORY_MAP: Record<string, CategoryId> = {
@@ -175,6 +177,8 @@ const TEMPLATE_CATEGORY_MAP: Record<string, CategoryId> = {
   "email-assistant": "email",
   "email-sales-assistant": "email",
   "email-support-assistant": "email",
+  "github-pr-reviewer": "developer-tools",
+  "linear-triage": "developer-tools",
 };
 
 export interface TemplateCategory {

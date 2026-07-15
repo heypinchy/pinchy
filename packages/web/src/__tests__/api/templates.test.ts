@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { NextRequest } from "next/server";
 import { routeContext } from "@/test-helpers/route";
 
@@ -89,6 +89,11 @@ vi.mock("@/lib/integrations/odoo-connection-models", () => ({
   getConnectionModels: (...args: unknown[]) => mockGetConnectionModels(...args),
 }));
 
+const mockGetActiveMcpPresets = vi.fn();
+vi.mock("@/lib/integrations/mcp-connections", () => ({
+  getActiveMcpPresets: (...args: unknown[]) => mockGetActiveMcpPresets(...args),
+}));
+
 vi.mock("@/lib/settings", () => ({
   getSetting: vi.fn().mockResolvedValue("anthropic"),
 }));
@@ -126,6 +131,9 @@ describe("GET /api/templates", () => {
     // Default: no Odoo connections
     mockLimit.mockResolvedValue([]);
     mockGetConnectionModels.mockResolvedValue(null);
+    // Default: no MCP connections of any preset (flag is off by default too,
+    // so this mock isn't even called in most of these tests).
+    mockGetActiveMcpPresets.mockResolvedValue(new Set<string>());
   });
 
   it("should return available templates", async () => {
@@ -428,5 +436,85 @@ describe("GET /api/templates", () => {
       expect(t, `${id} should be in response`).toBeDefined();
       expect(t.requiresDirectories, `${id} requiresDirectories`).toBe(false);
     }
+  });
+});
+
+describe("GET /api/templates — MCP template gating", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockLimit.mockResolvedValue([]);
+    mockGetConnectionModels.mockResolvedValue(null);
+    vi.stubEnv("PINCHY_MCP_ENABLED", "1");
+  });
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  it("marks an MCP template unavailable when its preset has no active connection", async () => {
+    mockGetActiveMcpPresets.mockResolvedValue(new Set<string>()); // nothing connected
+
+    const response = await GET(new NextRequest("http://localhost:7777/api/templates"));
+    const body = await response.json();
+
+    const ghReviewer = body.templates.find((t: { id: string }) => t.id === "github-pr-reviewer");
+    expect(ghReviewer).toBeDefined();
+    expect(ghReviewer.available).toBe(false);
+    expect(ghReviewer.unavailableReason).toBe("no-connection");
+    expect(ghReviewer.requiresMcpConnection).toBe("github");
+
+    // Linear Triage must NOT look available just because the flag is on —
+    // this is the exact "Triage talks about Linear with no Linear connected"
+    // confusion the gating fixes.
+    const linear = body.templates.find((t: { id: string }) => t.id === "linear-triage");
+    expect(linear.available).toBe(false);
+    expect(linear.requiresMcpConnection).toBe("linear");
+  });
+
+  it("marks an MCP template available once its preset is connected", async () => {
+    mockGetActiveMcpPresets.mockResolvedValue(new Set(["github"]));
+
+    const response = await GET(new NextRequest("http://localhost:7777/api/templates"));
+    const body = await response.json();
+
+    const ghReviewer = body.templates.find((t: { id: string }) => t.id === "github-pr-reviewer");
+    expect(ghReviewer.available).toBe(true);
+    expect(ghReviewer.unavailableReason).toBeNull();
+    // A different preset stays gated.
+    const linear = body.templates.find((t: { id: string }) => t.id === "linear-triage");
+    expect(linear.available).toBe(false);
+  });
+
+  it("non-MCP templates get requiresMcpConnection: null", async () => {
+    mockGetActiveMcpPresets.mockResolvedValue(new Set<string>());
+
+    const response = await GET(new NextRequest("http://localhost:7777/api/templates"));
+    const body = await response.json();
+
+    const custom = body.templates.find((t: { id: string }) => t.id === "custom");
+    expect(custom.requiresMcpConnection).toBeNull();
+  });
+});
+
+describe("GET /api/templates — MCP flag off", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockLimit.mockResolvedValue([]);
+    mockGetConnectionModels.mockResolvedValue(null);
+    // PINCHY_MCP_ENABLED deliberately left unset.
+  });
+
+  it("hides MCP templates entirely instead of merely marking them unavailable (D3: entire MCP surface absent)", async () => {
+    const response = await GET(new NextRequest("http://localhost:7777/api/templates"));
+    const body = await response.json();
+
+    const ids = body.templates.map((t: { id: string }) => t.id);
+    expect(ids).not.toContain("github-pr-reviewer");
+    expect(ids).not.toContain("linear-triage");
+  });
+
+  it("never calls getActiveMcpPresets when the flag is off", async () => {
+    await GET(new NextRequest("http://localhost:7777/api/templates"));
+    expect(mockGetActiveMcpPresets).not.toHaveBeenCalled();
   });
 });

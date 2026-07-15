@@ -2,10 +2,11 @@ import { NextResponse, after } from "next/server";
 import { revalidatePath } from "next/cache";
 import { z } from "zod";
 import { withAuth, withAdmin } from "@/lib/api-auth";
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import { db } from "@/db";
 import { agents, agentConnectionPermissions, integrationConnections } from "@/db/schema";
-import { getTemplate, generateAgentsMd } from "@/lib/agent-templates";
+import { getTemplate, generateAgentsMd, applyRecommendedTools } from "@/lib/agent-templates";
+import type { McpConnectionInfo } from "@/lib/agent-templates";
 import { getPersonalityPreset, resolveGreetingMessage } from "@/lib/personality-presets";
 import { generateAvatarSeed } from "@/lib/avatar";
 import { AGENT_NAME_MAX_LENGTH } from "@/lib/agents";
@@ -31,6 +32,8 @@ import { deferAuditLog } from "@/lib/audit-deferred";
 import { getVisibleAgents } from "@/lib/visible-agents";
 import { validateOdooTemplate } from "@/lib/integrations/odoo-template-validation";
 import { detectEmailOperations } from "@/lib/tool-registry";
+import { isMcpEnabled } from "@/lib/feature-flags";
+import type { McpIntegrationData } from "@/lib/integrations/types";
 
 const createAgentSchema = z.object({
   name: z
@@ -284,6 +287,63 @@ export const POST = withAdmin(async (request, _ctx, session) => {
           agentId: agent.id,
           connectionId,
           permissions: permissionRows.map((p) => ({ model: p.model, operation: p.operation })),
+        },
+        outcome: "success",
+      });
+    }
+  }
+
+  // Auto-grant MCP tools from the template's recommendedTools wish-list
+  // (agent-templates/recommended-tools.ts). Unlike Odoo/email, this doesn't
+  // need a user-selected connectionId: the match is automatic — first ACTIVE
+  // connection whose preset matches each wish-list entry. A tool that isn't
+  // in that connection's synced `data.tools` (renamed/removed upstream, or
+  // no connection for the preset at all) is silently skipped — templates
+  // must never fail to create an agent over this. Gated behind the feature
+  // flag: with PINCHY_MCP_ENABLED off, "mcp" connections/permissions are
+  // never touched by this route (D3 — the entire MCP surface stays absent).
+  if (isMcpEnabled() && template.recommendedTools?.length) {
+    const mcpConnRows = await db
+      .select()
+      .from(integrationConnections)
+      .where(
+        and(eq(integrationConnections.type, "mcp"), eq(integrationConnections.status, "active"))
+      );
+
+    const mcpConnections: McpConnectionInfo[] = mcpConnRows.flatMap((row) => {
+      const data = row.data as McpIntegrationData | null;
+      if (!data?.preset) return [];
+      return [{ id: row.id, preset: data.preset, tools: (data.tools ?? []).map((t) => t.name) }];
+    });
+
+    const { grants, skipped } = applyRecommendedTools(template.recommendedTools, mcpConnections);
+
+    if (grants.length > 0) {
+      const permissionRows = grants.map((g) => ({
+        agentId: agent.id,
+        connectionId: g.connectionId,
+        model: "mcp",
+        operation: g.toolName,
+      }));
+
+      await db.insert(agentConnectionPermissions).values(permissionRows);
+
+      deferAuditLog({
+        actorType: "user",
+        actorId: session.user.id!,
+        eventType: "config.changed",
+        resource: `agent:${agent.id}`,
+        detail: {
+          action: "agent_integration_permissions_auto_configured",
+          agentId: agent.id,
+          permissions: permissionRows.map((p) => ({
+            connectionId: p.connectionId,
+            model: p.model,
+            operation: p.operation,
+          })),
+          // Visible to analysts drilling into this row — not surfaced to the
+          // end user as an error (templates never fail over a skipped tool).
+          skippedTools: skipped,
         },
         outcome: "success",
       });

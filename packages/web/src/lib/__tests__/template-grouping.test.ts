@@ -342,4 +342,27 @@ describe("groupTemplatesByCategory", () => {
     expect(result.categories).toHaveLength(1);
     expect(result.categories[0].label).toBe("Email");
   });
+
+  it("assigns github-pr-reviewer and linear-triage to Developer Tools category", () => {
+    const githubTemplate = {
+      id: "github-pr-reviewer",
+      name: "GitHub PR Reviewer",
+      description: "Reviews pull requests",
+      requiresDirectories: false,
+      defaultTagline: "Review and summarize pull requests",
+      available: true,
+    };
+    const linearTemplate = {
+      id: "linear-triage",
+      name: "Linear Triage",
+      description: "Triages incoming issues",
+      requiresDirectories: false,
+      defaultTagline: "Triage and prioritize Linear issues",
+      available: true,
+    };
+    const result = groupTemplatesByCategory([githubTemplate, linearTemplate]);
+    expect(result.categories).toHaveLength(1);
+    expect(result.categories[0].label).toBe("Developer Tools");
+    expect(result.categories[0].templates).toHaveLength(2);
+  });
 });
