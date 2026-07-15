@@ -362,9 +362,12 @@ describe("assertNoSymlinkEscape (write-path symlink containment)", () => {
       mkdirSync(outside);
       symlinkSync(outside, join(sandbox, "link"));
 
+      // This is the proof the fix does not weaken the guard: a genuine
+      // symlink escape (write root exists, an ancestor symlinks outside it)
+      // must still be rejected.
       expect(() =>
         assertNoSymlinkEscape(join(sandbox, "link", "secret.txt"), [sandbox])
-      ).toThrow(/escapes the sandbox/);
+      ).toThrow(/not under any configured write path/);
     } finally {
       rmSync(base, { recursive: true, force: true });
     }
@@ -378,6 +381,48 @@ describe("assertNoSymlinkEscape (write-path symlink containment)", () => {
       const sandbox = join(base, "sandbox");
       mkdirSync(sandbox);
       expect(() => assertNoSymlinkEscape(join(sandbox, "ok.txt"), [sandbox])).not.toThrow();
+    } finally {
+      rmSync(base, { recursive: true, force: true });
+    }
+  });
+
+  it("allows write when the configured write root is itself a symlink resolving to the target's real location", () => {
+    // Explicit macOS `/var` -> `/private/var` shape: the configured root is a
+    // symlink, the requested path is already the real (non-symlinked)
+    // location. Both sides must resolve to the same place and be allowed.
+    const base = mkdtempSync(join(tmpdir(), "pinchy-escape-"));
+    try {
+      const realRoot = join(base, "real-root");
+      mkdirSync(realRoot);
+      const rootLink = join(base, "root-link");
+      symlinkSync(realRoot, rootLink);
+
+      expect(() =>
+        assertNoSymlinkEscape(join(realRoot, "file.txt"), [rootLink])
+      ).not.toThrow();
+    } finally {
+      rmSync(base, { recursive: true, force: true });
+    }
+  });
+
+  it("allows a write target under a write root that does not exist yet (missing root ≠ symlink escape)", () => {
+    // The production bug: build.ts grants write_paths like
+    // `<workspace>/memory` and `<workspace>/MEMORY.md` before
+    // ensureWorkspace creates them. realpathSync(root) then throws ENOENT,
+    // and the old `catch { return false }` made a merely-absent write root
+    // indistinguishable from a genuine symlink escape, denying every write.
+    const base = mkdtempSync(join(tmpdir(), "pinchy-escape-"));
+    try {
+      const workspace = join(base, "workspace"); // exists
+      mkdirSync(workspace);
+      const memoryRoot = join(workspace, "memory"); // configured write root, NOT created yet
+      const memoryFile = join(workspace, "MEMORY.md"); // configured write root (file), NOT created yet
+
+      expect(() =>
+        assertNoSymlinkEscape(join(memoryRoot, "2026-07-15.md"), [memoryRoot, memoryFile])
+      ).not.toThrow();
+
+      expect(() => assertNoSymlinkEscape(memoryFile, [memoryRoot, memoryFile])).not.toThrow();
     } finally {
       rmSync(base, { recursive: true, force: true });
     }

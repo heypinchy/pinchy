@@ -70,20 +70,31 @@ export function realpathWriteTarget(requestedPath: string): string {
  * Compares realpath-to-realpath (the target's resolved path against each
  * resolved write root) so it stays consistent on symlinked roots (e.g. macOS
  * `/var` -> `/private/var`) and only fires on a genuine escape.
+ *
+ * A configured write root may not exist on disk yet (e.g. a workspace's
+ * `memory/` directory or `MEMORY.md` file, granted by config before
+ * `ensureWorkspace` creates them). `realpathSync` throws ENOENT for those, and
+ * that is not a symlink escape — it is an ordinary not-yet-provisioned root.
+ * `realpathWriteTarget` is used for the root too (not just the target) so
+ * both sides resolve the deepest EXISTING ancestor and re-append the
+ * non-existent tail under the same rule: a merely-missing root and the
+ * target agree on where they resolve to, while a symlinked ancestor that
+ * genuinely escapes the root is still resolved and still caught.
  */
 export function assertNoSymlinkEscape(requestedPath: string, writePaths: string[]): void {
   const realTarget = realpathWriteTarget(requestedPath);
-  const contained = writePaths.some((p) => {
-    let realRoot: string;
-    try {
-      realRoot = realpathSync(p);
-    } catch {
-      return false;
-    }
-    return isUnderPath(realTarget, realRoot);
-  });
+  const contained = writePaths.some((p) => isUnderPath(realTarget, realpathWriteTarget(p)));
   if (!contained) {
-    throw new Error("Access denied: write target escapes the sandbox via a symlink");
+    // Only state what is actually known: the resolved target isn't under any
+    // configured write root. The previous message asserted "via a symlink"
+    // as the cause even when the true cause was a not-yet-existing write
+    // root, misdiagnosing a provisioning gap as an attack. Include the
+    // allow-list so an LLM agent that must retry can pick a valid path
+    // instead of guessing (#418 precedent, see validateAccess above).
+    const hint = writePaths.length > 0 ? ` (write_paths: ${writePaths.join(", ")})` : "";
+    throw new Error(
+      `Access denied: resolved write target is not under any configured write path${hint}`
+    );
   }
 }
 
