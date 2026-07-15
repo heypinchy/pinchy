@@ -41,6 +41,35 @@ describe("isBlocked", () => {
     expect(isBlocked("gemini-2.5-pro", ["tools"])).toBe(false);
     expect(isBlocked("gemini-2.5-flash-lite", ["tools"])).toBe(false);
   });
+
+  it("blocks minimax-m3 when tools capability is required", () => {
+    expect(isBlocked("minimax-m3", ["tools"])).toBe(true);
+    expect(isBlocked("ollama-cloud/minimax-m3", ["tools"])).toBe(true);
+  });
+
+  it("blocks minimax-m3 when vision+tools is required — the image-fallback path", () => {
+    expect(isBlocked("ollama-cloud/minimax-m3", ["vision", "tools"])).toBe(true);
+  });
+
+  it("allows minimax-m3 without tools requirement — its vision is good, only tool args are broken", () => {
+    expect(isBlocked("ollama-cloud/minimax-m3", ["vision"])).toBe(false);
+    expect(isBlocked("ollama-cloud/minimax-m3", [])).toBe(false);
+  });
+
+  it("blocks point releases of the minimax-m3 line, which must re-earn trust via a nested-arg probe", () => {
+    // Deliberate: the pattern has no trailing boundary, and the catalog names
+    // point releases `minimax-m2.1`/`m2.5`/`m2.7`, so `minimax-m3.5` is the
+    // expected shape of a "fixed" release. It stays blocked until probed.
+    expect(isBlocked("ollama-cloud/minimax-m3.5", ["tools"])).toBe(true);
+    expect(isBlocked("ollama-cloud/minimax-m3-turbo", ["tools"])).toBe(true);
+  });
+
+  it("does not block other minimax lines — the denylist is evidence-based, not name-guessing", () => {
+    // Only minimax-m3 was measured (20 of 60 calls mangled). m2.x predates it
+    // and m4 does not exist; neither is blocked on suspicion alone.
+    expect(isBlocked("ollama-cloud/minimax-m2.7", ["tools"])).toBe(false);
+    expect(isBlocked("ollama-cloud/minimax-m4", ["tools"])).toBe(false);
+  });
 });
 
 describe("getBlockReason", () => {

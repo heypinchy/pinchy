@@ -154,8 +154,25 @@ export const OLLAMA_CLOUD_IMAGE_PREFERENCE: readonly OllamaCloudModelId[] = [
   // ranks pure image-description quality, and `isBlocked` is consulted with the
   // capabilities the slot actually needs — so a chat-only agent still gets the
   // best eyes, while any tool-using turn skips them.
+  //
+  // kimi-k2.6 was added 2026-07-15 as the tool-safe floor of this list, and it
+  // is the entry that makes blocking minimax-m3 actually help. This list is not
+  // a filter — `intraProviderVisionRank` ranks UNCURATED vision models behind
+  // every curated one, so before kimi-k2.6 was listed, a tool-using agent that
+  // skipped the two blocked models landed on gemma4:31b as the last curated
+  // candidate. gemma4:31b corrupts long identifiers across turns (~150-char
+  // Graph message ID — see providers/ollama-cloud.ts), and Pinchy's opaque refs
+  // are ~230 chars, so Penny would have swapped mangled tool args for corrupted
+  // refs. kimi-k2.6 sits below minimax-m3 on pure image quality but above
+  // gemma4:31b on the thing that decides a tool turn: it emitted 0 malformed
+  // calls across 112 calls in the session minimax failed.
+  //
+  // Ordering matters, not just membership: kimi-k2.6 must stay ahead of
+  // gemma4:31b, or a tool-using image turn degrades to gemma4 again. Pinned by
+  // the ordering guard in ollama-cloud-image-preference-drift.test.ts.
   "gemini-3-flash-preview",
   "minimax-m3",
+  "kimi-k2.6",
   "gemma4:31b",
 ];
 

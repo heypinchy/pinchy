@@ -4642,14 +4642,23 @@ describe("ClientRouter", () => {
       expect(audit.detail.fallbackModel).toBe("ollama-cloud/gemma4:31b");
     });
 
-    it("does not route a tool-using agent's image turn to minimax-m3 — picks the next usable same-provider vision model", async () => {
+    it("routes Penny's image turn to kimi-k2.6 — skips tool-mangling minimax-m3 AND long-ref-corrupting gemma4:31b", async () => {
       // Penny's exact shape, 2026-07-15: a text-only agent (deepseek-v4-pro)
       // using Odoo tools received a receipt photo. minimax-m3 is seeded
-      // tools:true AND outranks gemma4:31b in OLLAMA_CLOUD_IMAGE_PREFERENCE, so
+      // tools:true AND outranked gemma4:31b in OLLAMA_CLOUD_IMAGE_PREFERENCE, so
       // it won the fallback — then mangled every nested tool argument (Odoo
       // domains arrived as {'item': [...]}, invoice_line_ids commands rejected).
       // It must be skipped whenever the turn needs tools, even though it is the
       // better pure-vision model.
+      //
+      // Blocking minimax alone is NOT enough: that leaves gemma4:31b as the only
+      // curated ollama-cloud vision model, and gemma4:31b corrupts long
+      // identifiers across turns (~150-char Graph message ID, balanced-tier note
+      // in providers/ollama-cloud.ts). Pinchy's opaque refs are ~230 chars, so
+      // Penny would just swap one failure mode for another. kimi-k2.6 is listed
+      // last here on purpose: before it was curated it ranked BEHIND every
+      // curated model (intraProviderVisionRank), so a kimi-k2.6 result proves it
+      // is now curated ahead of gemma4:31b rather than winning by row order.
       mockFindFirst.mockResolvedValue({
         ...defaultAgent,
         model: "ollama-cloud/deepseek-v4-pro",
@@ -4660,6 +4669,7 @@ describe("ClientRouter", () => {
       mockListVisionModels.mockResolvedValue([
         { provider: "ollama-cloud", modelId: "minimax-m3", vision: true, tools: true },
         { provider: "ollama-cloud", modelId: "gemma4:31b", vision: true, tools: true },
+        { provider: "ollama-cloud", modelId: "kimi-k2.6", vision: true, tools: true },
       ]);
       mockChat.mockReturnValue(okStream());
 
@@ -4672,13 +4682,13 @@ describe("ClientRouter", () => {
 
       const [, options] = mockChat.mock.calls[0];
       expect(options.provider).toBe("ollama-cloud");
-      expect(options.model).toBe("gemma4:31b");
+      expect(options.model).toBe("kimi-k2.6");
 
       const audit = mockAppendAuditLog.mock.calls
         .map((c) => c[0])
         .find((e) => e.eventType === "chat.image_model_fallback");
       expect(audit).toBeDefined();
-      expect(audit.detail.fallbackModel).toBe("ollama-cloud/gemma4:31b");
+      expect(audit.detail.fallbackModel).toBe("ollama-cloud/kimi-k2.6");
     });
 
     it("picks the highest-quality vision fallback, independent of catalog row order and alphabetical order", async () => {
@@ -4690,10 +4700,16 @@ describe("ClientRouter", () => {
       // (gemma4:31b < minimax-m3) would pick the WRONG model if quality were
       // ignored, so a minimax-m3 result proves the preference sort.
       //
-      // The agent deliberately uses NO tools: minimax-m3 is tools-blocked (it
-      // mangles nested tool arguments), so a tool-using agent would skip it and
-      // land on gemma4:31b for the wrong reason, proving nothing about sorting.
-      // Pure image description is exactly where minimax-m3 is still preferred.
+      // The agent deliberately has no admin-configured tools: minimax-m3 is
+      // tools-blocked (it mangles nested tool arguments), so a tool-using agent
+      // would skip it and land on a different model for the wrong reason,
+      // proving nothing about sorting. Image description with built-ins only is
+      // where minimax-m3 is still preferred.
+      //
+      // Note `allowedTools: []` means "built-ins only" (memory_search,
+      // memory_get, session_status — computeAllowedTools takes no agent), NOT
+      // "no tools at all". Those schemas are flat, which minimax-m3 handles; see
+      // the proxy caveat at the resolveImageTurnModel call site.
       mockFindFirst.mockResolvedValue({
         ...defaultAgent,
         model: "ollama-cloud/glm-5.2",

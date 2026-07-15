@@ -37,6 +37,20 @@ const RULES: BlockRule[] = [
   // preview rule it is seeded tools:true, so it would otherwise win same-provider
   // vision fallback for a text-only agent. Lifting this block requires a fresh
   // multi-round tool probe with NESTED-array arguments against the live endpoint.
+  //
+  // The pattern has NO trailing boundary on purpose, so it also covers point
+  // releases of the same line: the catalog names them `minimax-m2.1`, `m2.5`,
+  // `m2.7`, so a future `minimax-m3.5` is the expected shape, and a substring
+  // match blocks it too. That is the fail-safe direction and it is not silent —
+  // the catalog is hand-curated, so adding `minimax-m3.5` means editing
+  // ollama-cloud-models.ts and meeting this rule. A release claiming the fix
+  // still has to earn the unblock with a nested-array probe, which the current
+  // flat probe cannot give (scripts/lib/ollama-cloud-tool-probe.mjs).
+  //
+  // A new major line (`minimax-m4`) deliberately does NOT match. There is no
+  // evidence about it, and this blocklist is an evidence-based denylist — every
+  // model not named here is allowed. Blocking an unseen model by guessing at its
+  // name would be a different policy than the other two rules follow.
   {
     modelPattern: /minimax-m3/i,
     forbiddenWhen: ["tools"],
