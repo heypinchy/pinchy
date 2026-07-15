@@ -35,7 +35,7 @@ describe("seedDefaultAgent", () => {
     findFirstMock.mockResolvedValue(existingAgent);
 
     const { seedDefaultAgent } = await import("@/db/seed");
-    const agent = await seedDefaultAgent();
+    const agent = await seedDefaultAgent("admin-1");
 
     expect(agent).toEqual(existingAgent);
     expect(createSmithersAgentMock).not.toHaveBeenCalled();
@@ -48,21 +48,21 @@ describe("seedDefaultAgent", () => {
       id: "agent-new",
       name: "Smithers",
       model: "anthropic/claude-sonnet-4-6",
-      ownerId: null,
-      isPersonal: false,
+      ownerId: "admin-1",
+      isPersonal: true,
       createdAt: new Date(),
     };
     createSmithersAgentMock.mockResolvedValue(fakeAgent);
 
     const { seedDefaultAgent } = await import("@/db/seed");
-    const agent = await seedDefaultAgent();
+    const agent = await seedDefaultAgent("admin-1");
 
     expect(agent.name).toBe("Smithers");
     expect(createSmithersAgentMock).toHaveBeenCalledWith({
       model: "anthropic/claude-sonnet-4-6",
-      ownerId: null,
-      isPersonal: false,
-      isAdmin: false,
+      ownerId: "admin-1",
+      isPersonal: true,
+      isAdmin: true,
     });
   });
 
@@ -73,21 +73,27 @@ describe("seedDefaultAgent", () => {
       id: "agent-new",
       name: "Smithers",
       model: "ollama/llama3.2",
-      ownerId: null,
-      isPersonal: false,
+      ownerId: "admin-1",
+      isPersonal: true,
       createdAt: new Date(),
     };
     createSmithersAgentMock.mockResolvedValue(fakeAgent);
 
     const { seedDefaultAgent } = await import("@/db/seed");
-    await seedDefaultAgent();
+    await seedDefaultAgent("admin-1");
 
     expect(createSmithersAgentMock).toHaveBeenCalledWith(
       expect.objectContaining({ model: "ollama/llama3.2" })
     );
   });
 
-  it("passes ownerId and isPersonal when ownerId is provided", async () => {
+  it("always creates a personal, admin-owned Smithers", async () => {
+    // The whole contract, in one assertion. `ownerId` used to be optional, and
+    // the `ownerId ?? null` branch behind it produced an ownerless,
+    // non-personal, non-admin agent that no production path has ever created —
+    // lib/setup.ts is the only caller and always passes the new admin's id.
+    // The dead branch was mistaken for real behavior during PR #754's review,
+    // which is why the parameter is now required.
     findFirstMock.mockResolvedValue(undefined);
     getSettingMock.mockResolvedValue(null);
     const fakeAgent = {
@@ -117,7 +123,7 @@ describe("seedDefaultAgent", () => {
     findFirstMock.mockResolvedValue(existingAgent);
 
     const { seedDefaultAgent } = await import("@/db/seed");
-    await seedDefaultAgent();
+    await seedDefaultAgent("admin-1");
 
     expect(createSmithersAgentMock).not.toHaveBeenCalled();
   });
