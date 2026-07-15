@@ -1,4 +1,4 @@
-import { eq } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import { db } from "@/db";
 import { emailConnectionCursors } from "@/db/schema";
 
@@ -34,6 +34,9 @@ export async function advanceCursor(connectionId: string, cursor: string): Promi
     .values({ connectionId, cursor })
     .onConflictDoUpdate({
       target: emailConnectionCursors.connectionId,
-      set: { cursor, updatedAt: new Date() },
+      // `now()` (DB clock) matches the column's insert-path default, so both
+      // paths stamp `updatedAt` from the same clock rather than mixing the
+      // app's `new Date()` with the server's default.
+      set: { cursor, updatedAt: sql`now()` },
     });
 }

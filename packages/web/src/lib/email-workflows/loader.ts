@@ -22,13 +22,20 @@ export interface DispatchableWorkflow {
  * builds the `WorkflowForDispatch` values the dispatcher consumes but nobody
  * else produces. Both the normal poll and the reconciliation sweep start here.
  *
- * Only `enabled` workflows are scanned (the partial index
- * `email_workflows_enabled_idx` exists for exactly this query). Recipients
- * follow the scope model (design §7): a **personal** agent's workflow notifies
- * its owner; a **shared** agent's workflow notifies its creator. A workflow
- * whose recipient can't be resolved (e.g. a shared workflow with no recorded
- * creator) is dropped rather than emitted — `dispatchEmails` rejects an empty
- * recipient set, so an undeliverable unit of work must never reach it.
+ * `enabled` is the **sole** dispatch gate (the partial index
+ * `email_workflows_enabled_idx` exists for exactly this query). `status`
+ * (`pending | active | error`) is deliberately NOT filtered: it is a health
+ * signal the dispatcher *writes*, not a gate it *reads*. Gating on it would let
+ * one failed run wedge an `enabled` workflow off forever (nothing resets it to
+ * `active`), and would strand freshly-created `pending` workflows — both break
+ * the at-least-once resilience the ledger + reconciliation sweep are built on.
+ *
+ * Recipients follow the scope model (design §7): a **personal** agent's workflow
+ * notifies its owner; a **shared** agent's workflow notifies its creator. A
+ * workflow whose recipient can't be resolved (e.g. a shared workflow with no
+ * recorded creator, or a personal agent with no owner) is dropped rather than
+ * emitted — `dispatchEmails` rejects an empty recipient set, so an
+ * undeliverable unit of work must never reach it.
  */
 export async function loadDispatchableWorkflows(): Promise<DispatchableWorkflow[]> {
   const rows = await db

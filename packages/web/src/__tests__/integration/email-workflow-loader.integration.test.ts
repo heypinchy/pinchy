@@ -19,6 +19,7 @@ import {
   emailWorkflowConnections,
   integrationConnections,
 } from "@/db/schema";
+import type { EmailWorkflowStatus } from "@/db/enums";
 import { loadDispatchableWorkflows } from "@/lib/email-workflows/loader";
 
 let userCounter = 0;
@@ -58,6 +59,7 @@ async function seedWorkflow(opts: {
   agentId: string;
   enabled: boolean;
   createdBy?: string | null;
+  status?: EmailWorkflowStatus;
 }) {
   const [row] = await db
     .insert(emailWorkflows)
@@ -68,6 +70,7 @@ async function seedWorkflow(opts: {
       action: "Draft a supplier bill in Odoo from the attached invoice.",
       enabled: opts.enabled,
       createdBy: opts.createdBy ?? null,
+      ...(opts.status ? { status: opts.status } : {}),
     })
     .returning();
   return row;
@@ -171,5 +174,44 @@ describe("email workflow loader — loadDispatchableWorkflows", () => {
     const mine = onlyWorkflow(await loadDispatchableWorkflows(), wf.id);
 
     expect(mine).toHaveLength(0);
+  });
+
+  it("drops a personal-agent workflow whose agent has no owner — no fallback to the creator", async () => {
+    // Symmetric to the shared/no-creator drop: a PERSONAL workflow resolves to
+    // the agent owner and must NOT silently fall back to createdBy when the
+    // owner is missing. A present creator here would be wrongly picked up by a
+    // "recipient = owner ?? createdBy" mutation — so seed one to pin the branch.
+    const creator = await seedUser();
+    const agent = await seedAgent({ isPersonal: true, ownerId: null });
+    const wf = await seedWorkflow({ agentId: agent.id, enabled: true, createdBy: creator.id });
+    const conn = await seedConnection();
+    await linkConnection(wf.id, conn.id, new Date());
+
+    const mine = onlyWorkflow(await loadDispatchableWorkflows(), wf.id);
+
+    expect(mine).toHaveLength(0);
+  });
+
+  it("dispatches an enabled workflow even when its status is 'error' — status is a health signal, not a dispatch gate", async () => {
+    // `enabled` is the sole dispatch gate; `status` (pending|active|error) is an
+    // observability field the dispatcher WRITES, never a gate it reads. Gating
+    // on status would let one bad run wedge an enabled workflow off forever
+    // (nothing resets it to active), breaking the at-least-once resilience the
+    // ledger + sweep are built on. Pin that an errored-but-enabled workflow is
+    // still loaded.
+    const owner = await seedUser();
+    const agent = await seedAgent({ isPersonal: true, ownerId: owner.id });
+    const wf = await seedWorkflow({
+      agentId: agent.id,
+      enabled: true,
+      createdBy: owner.id,
+      status: "error",
+    });
+    const conn = await seedConnection();
+    await linkConnection(wf.id, conn.id, new Date());
+
+    const mine = onlyWorkflow(await loadDispatchableWorkflows(), wf.id);
+
+    expect(mine).toHaveLength(1);
   });
 });
