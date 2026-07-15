@@ -55,9 +55,23 @@ function humanReadableSize(bytes: number): string {
 }
 
 /**
- * Strip anything that isn't a conservative safe-filename character, then
- * strip leading dots (hidden files / traversal remnants like ".."). Shared
- * by both sanitizeAttachmentFilename call sites below — the cleaned
+ * Normalize to NFC, replace anything that isn't a safe-filename character
+ * with "_", then strip leading dots (hidden files / traversal remnants like
+ * "..").
+ *
+ * The allowlist keeps Unicode letters/marks/numbers (\p{L}\p{M}\p{N}) so real
+ * names survive — "Abschätzung.pdf" stays "Abschätzung.pdf" instead of being
+ * mangled to "Absch_tzung.pdf". Everything dangerous is still replaced: path
+ * separators ("/", "\"), C0/DEL control and BiDi/zero-width formatting
+ * characters, quotes and backticks are all outside \p{L}\p{M}\p{N}._- and
+ * become "_".
+ *
+ * NFC normalization mirrors the web upload path (upload-validation.ts): macOS
+ * mail clients emit decomposed (NFD) filenames, so composing here keeps the
+ * on-disk bytes consistent with what pinchy_read/pinchy_write expect instead
+ * of leaning on the read-side NFC/NFD fallback.
+ *
+ * Shared by both sanitizeAttachmentFilename call sites below — the cleaned
  * filename and the attachmentId-derived fallback stem — so the two paths
  * can never drift apart. Keep this leading-dot strip if you touch it: the
  * defense-in-depth path check in email_get_attachment's execute() relies on
@@ -65,7 +79,10 @@ function humanReadableSize(bytes: number): string {
  * attachment-<id> fallback instead of ever reaching the write.
  */
 function sanitizeNameToken(value: string): string {
-  return value.replace(/[^a-zA-Z0-9._-]/g, "_").replace(/^\.+/, "");
+  return value
+    .normalize("NFC")
+    .replace(/[^\p{L}\p{M}\p{N}._-]/gu, "_")
+    .replace(/^\.+/, "");
 }
 
 /**

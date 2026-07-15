@@ -1519,6 +1519,67 @@ describe("email_get_attachment", () => {
     expect(payload.filename).toMatch(/^attachment-.+\.pdf$/);
   });
 
+  it("preserves umlaut/accented filenames instead of stripping them to underscores", async () => {
+    const data = Buffer.from("pdf-bytes-here");
+    mockGetAttachment.mockResolvedValue({
+      filename: "Abschätzung.pdf", // NFC (composed ä = U+00E4)
+      mimeType: "application/pdf",
+      data,
+    });
+
+    const tools = createApi();
+    const tool = findTool(tools, "email_get_attachment", agentId)!;
+
+    const result = await tool.execute("call-1", {
+      messageId: "msg-1",
+      attachmentId: "att-1",
+    });
+
+    expect(result.isError).toBeFalsy();
+    expect(mockWriteFile).toHaveBeenCalledWith(
+      "/root/.openclaw/workspaces/agent-1/uploads/Abschätzung.pdf",
+      data,
+      { flag: "wx" },
+    );
+
+    const payload = JSON.parse(result.content[0].text);
+    expect(payload.filename).toBe("Abschätzung.pdf");
+  });
+
+  it("normalizes an NFD attachment filename to NFC so the stored bytes match the web upload path", async () => {
+    // macOS mail clients emit decomposed (NFD) filenames: "a" + U+0308.
+    // The web upload path stores NFC (see upload-validation.ts), and
+    // pinchy-files resolves both — but writing NFC here keeps the on-disk
+    // bytes consistent at the source instead of leaning on the read-side
+    // fallback.
+    const nfd = "Absch" + "a\u0308" + "tzung.pdf"; // a + combining diaeresis (NFD)
+    const nfc = "Absch" + "\u00e4" + "tzung.pdf"; // composed ä (NFC)
+    const data = Buffer.from("x");
+    mockGetAttachment.mockResolvedValue({
+      filename: nfd,
+      mimeType: "application/pdf",
+      data,
+    });
+
+    const tools = createApi();
+    const tool = findTool(tools, "email_get_attachment", agentId)!;
+
+    const result = await tool.execute("call-1", {
+      messageId: "msg-1",
+      attachmentId: "att-1",
+    });
+
+    expect(result.isError).toBeFalsy();
+    const [writtenPath] = mockWriteFile.mock.calls[0] as [string, Buffer];
+    expect(writtenPath).toBe(
+      `/root/.openclaw/workspaces/agent-1/uploads/${nfc}`,
+    );
+
+    const payload = JSON.parse(result.content[0].text);
+    expect(payload.filename).toBe(nfc);
+    expect(payload.filename.normalize("NFC")).toBe(payload.filename);
+  });
+
   it("falls back to a .bin extension for an unrecognized mime type with an empty filename", async () => {
     mockGetAttachment.mockResolvedValue({
       filename: "   ",

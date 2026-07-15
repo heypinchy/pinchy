@@ -39,7 +39,7 @@ An agent with read access can also download an email's attachments into its own 
 A few operational details worth knowing:
 
 - **Size cap**: attachments over 25 MB are rejected — the same cap `odoo_attach_file` uses, so anything the agent downloads here is always small enough to hand off downstream.
-- **Filename sanitization**: the sender picks the attachment's original filename, so Pinchy sanitizes it before saving (stripping path separators and unsafe characters) rather than trusting it outright.
+- **Filename sanitization**: the sender picks the attachment's original filename, so Pinchy sanitizes it before saving — stripping path separators and unsafe characters — rather than trusting it outright. International characters are kept intact (an `Abschätzung.pdf` stays `Abschätzung.pdf`) and normalized to a consistent Unicode form, so the agent can read the file back reliably afterward.
 - **Collision handling**: if a file with that name already exists in the agent's workspace, Pinchy appends `-1`, `-2`, and so on rather than overwriting anything.
 - **Use the returned filename**: because sanitization or a collision suffix can change the name, always use the filename the tool actually returns — not the original attachment name — for any hand-off to another tool, such as `odoo_attach_file`.
 
