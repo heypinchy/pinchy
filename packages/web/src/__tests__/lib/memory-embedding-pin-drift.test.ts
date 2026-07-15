@@ -1,0 +1,50 @@
+/**
+ * Drift guard for the bundled local memory-search embedding model.
+ *
+ * The `local` embedding provider that makes memory_search work offline has its
+ * wiring spread across three files that MUST agree on one thing — the path of
+ * the bundled GGUF model:
+ *
+ *   1. `Dockerfile.openclaw` — `curl -o <path> …embeddinggemma…gguf` bakes the
+ *      model into the image, and `openclaw plugins install …llama-cpp-provider`
+ *      installs the provider that reads it.
+ *   2. `openclaw-config/build.ts` — `MEMORY_EMBEDDING_MODEL_PATH` is written into
+ *      every agent's `memorySearch.local.modelPath`, i.e. the path OpenClaw
+ *      actually loads at runtime.
+ *   3. `config/verify-memory-search.sh` — the offline CI smoke test asserts the
+ *      whole chain against the real image.
+ *
+ * If (1) and (2) drift, memory_search silently loads nothing in production
+ * (0 chunks) while every unit test still passes — the exact silent-failure class
+ * this feature exists to kill. If (3) drifts, the smoke test tests the wrong
+ * file. Structural check so drift trips here at `pnpm test`, not in prod.
+ */
+
+import { describe, it, expect } from "vitest";
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
+import { MEMORY_EMBEDDING_MODEL_PATH } from "@/lib/openclaw-config";
+
+const REPO_ROOT = resolve(__dirname, "../../../../..");
+const DOCKERFILE_OPENCLAW = readFileSync(resolve(REPO_ROOT, "Dockerfile.openclaw"), "utf8");
+const VERIFY_SCRIPT = readFileSync(resolve(REPO_ROOT, "config/verify-memory-search.sh"), "utf8");
+
+describe("memory embedding pin drift guard", () => {
+  it("Dockerfile.openclaw installs the external llama-cpp embedding provider", () => {
+    // build.ts pins memorySearch.provider = "local" and adds `llama-cpp` to
+    // plugins.allow; that provider only exists in the image if it's installed.
+    expect(DOCKERFILE_OPENCLAW).toMatch(/openclaw plugins install @openclaw\/llama-cpp-provider/);
+  });
+
+  it("Dockerfile downloads the GGUF to exactly MEMORY_EMBEDDING_MODEL_PATH", () => {
+    // The file Pinchy points memorySearch.local.modelPath at MUST be the file
+    // the image bakes, or memory_search loads nothing while unit tests pass.
+    const downloaded = DOCKERFILE_OPENCLAW.match(/-o\s+(\S+\.gguf)/)?.[1];
+    expect(downloaded).toBe(MEMORY_EMBEDDING_MODEL_PATH);
+  });
+
+  it("the CI smoke test checks the same model path", () => {
+    const smokePath = VERIFY_SCRIPT.match(/MODEL_PATH="([^"]+\.gguf)"/)?.[1];
+    expect(smokePath).toBe(MEMORY_EMBEDDING_MODEL_PATH);
+  });
+});

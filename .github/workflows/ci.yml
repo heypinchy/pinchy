@@ -401,6 +401,22 @@ jobs:
             exit 1
           fi
 
+      - name: Verify memory-search embedding wiring (offline, no API key)
+        run: |
+          # Guarantee the full local-embedding chain works in the shipped image:
+          # the llama-cpp provider loads from plugins.allow, the bundled
+          # EmbeddingGemma GGUF is present, boot-staging + registry refresh make
+          # it discoverable, `openclaw memory index` builds the vector index, and
+          # memory_search semantically recalls a stored fact. `--network none`
+          # means a regression that needs a remote model or API key (e.g. a
+          # revert to memory-core's `openai` default) fails LOUD here instead of
+          # silently returning 0 chunks in production. Script + model path are
+          # pinned to build.ts by the memory-embedding-pin-drift unit test.
+          docker run --rm --network none \
+            -v "$PWD/config/verify-memory-search.sh:/verify-memory-search.sh:ro" \
+            --entrypoint bash \
+            ghcr.io/heypinchy/pinchy-openclaw:latest /verify-memory-search.sh
+
       - name: Start production stack
         run: docker compose up -d
         env:
