@@ -129,12 +129,23 @@ Common host commands from the repository root:
 ```bash
 pnpm test
 pnpm build
-pnpm lint
-pnpm format
-pnpm db:generate
 pnpm test:scripts
 pnpm typecheck:plugins
 pnpm test:plugins
+```
+
+Lint, format, and Drizzle live in `packages/web`, not the root. There is no
+root script for them, and `pnpm lint` / `pnpm format` / `pnpm db:generate` from
+the root do NOT fall back to it — pnpm tries every workspace package and fails
+on the first plugin, which has no such script. Use the same commands CI does:
+
+```bash
+pnpm --filter @pinchy/web lint
+pnpm --filter @pinchy/web format:check
+pnpm --filter @pinchy/web format          # writes
+pnpm -C packages/web db:generate
+# docs + workflow YAML are checked separately (docs-format.yml):
+pnpm -C packages/web exec prettier --check "../../docs/src/**/*.{mdx,md}" "../../.github/**/*.yml"
 ```
 
 Useful web package commands:
@@ -147,6 +158,7 @@ pnpm -C packages/web test:e2e:telegram
 pnpm -C packages/web test:e2e:odoo
 pnpm -C packages/web test:e2e:web
 pnpm -C packages/web test:e2e:email
+pnpm -C packages/web test:e2e:mcp
 pnpm -C packages/web test:integration
 ```
 
