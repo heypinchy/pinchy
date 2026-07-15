@@ -1,3 +1,4 @@
+import { getMcpPreset, type McpPresetId } from "@/lib/integrations/mcp-presets";
 import type { TemplateIconName } from "@/lib/template-icons";
 
 export interface TemplateItem {
@@ -7,6 +8,19 @@ export interface TemplateItem {
   requiresDirectories: boolean;
   requiresOdooConnection?: boolean;
   requiresEmailConnection?: boolean;
+  /**
+   * MCP preset this template needs an active connection of ("github", …).
+   * A preset string rather than a boolean because MCP has many presets —
+   * see AgentTemplate.requiresMcpConnection. Drives the access badge and
+   * the permission preview, parity with the other `requires*` flags.
+   */
+  requiresMcpConnection?: McpPresetId | null;
+  /**
+   * Tool names this template auto-grants at creation time (the template's
+   * `recommendedTools`). Feeds the badge count and the permission preview,
+   * so the card can state what access the agent gets BEFORE it's created.
+   */
+  mcpRecommendedTools?: string[];
   /**
    * Template uses `pinchy-web` (public web search + page fetch). No
    * external account or admin-managed credential is required — the plugin
@@ -36,6 +50,8 @@ export function getAccessBadgeProps(
     | "requiresDirectories"
     | "requiresOdooConnection"
     | "requiresEmailConnection"
+    | "requiresMcpConnection"
+    | "mcpRecommendedTools"
     | "requiresWeb"
     | "odooAccessLevel"
   >
@@ -52,6 +68,27 @@ export function getAccessBadgeProps(
       default:
         return { label: "Odoo · Read-only", variant: "green" };
     }
+  }
+  if (template.requiresMcpConnection) {
+    // Amber, deliberately — NOT green. Unlike email ("Read & Draft") or Odoo
+    // ("Read-only"), MCP tools are third-party surface with no read/write
+    // classification we can derive: the tool list comes from the provider's
+    // server and its real reach is bounded by the admin's token scope, which
+    // Pinchy can't see. Green would claim a harmlessness we haven't verified.
+    // Amber states the honest thing — this agent can act in an external
+    // system — without faking a precision we don't have.
+    //
+    // NOTE: `amber` is currently also Odoo's "read-write" marker, so the
+    // variant is overloaded across two different meanings. That is invisible
+    // today because `variant` is never actually rendered — template-selector
+    // .tsx paints every badge with the same muted style and uses `label`
+    // only. If variant ever becomes a real colour, split these semantics
+    // rather than letting MCP silently inherit "read-write".
+    const count = template.mcpRecommendedTools?.length ?? 0;
+    return {
+      label: `${getMcpPreset(template.requiresMcpConnection).displayName} · ${count} ${count === 1 ? "tool" : "tools"}`,
+      variant: "amber",
+    };
   }
   if (template.requiresDirectories) {
     return { label: "Documents · Read-only", variant: "green" };
@@ -75,6 +112,8 @@ export function getPermissionPreviewItems(
     | "requiresDirectories"
     | "requiresOdooConnection"
     | "requiresEmailConnection"
+    | "requiresMcpConnection"
+    | "mcpRecommendedTools"
     | "requiresWeb"
     | "odooAccessLevel"
   >
@@ -104,6 +143,22 @@ export function getPermissionPreviewItems(
           { icon: "cross", text: "Cannot create, modify, or delete records" },
         ];
     }
+  }
+  if (template.requiresMcpConnection) {
+    const { displayName } = getMcpPreset(template.requiresMcpConnection);
+    const tools = template.mcpRecommendedTools ?? [];
+    const items: PermissionItem[] = [];
+    // Name the exact tools: these are what POST /api/agents auto-grants, and
+    // the preview is where detail is wanted (the badge stays a summary).
+    if (tools.length > 0) {
+      items.push({ icon: "check", text: `Use these ${displayName} tools: ${tools.join(", ")}` });
+    }
+    items.push({ icon: "warning", text: `This agent can act in ${displayName} on your behalf` });
+    // No "Cannot ..." line on purpose — the agent's real reach is bounded by
+    // the admin's MCP token scope, which Pinchy doesn't know. Every other
+    // branch's `cross` item states a limit we actually enforce; inventing one
+    // here would be a promise we can't keep.
+    return items;
   }
   if (template.requiresDirectories) {
     return [

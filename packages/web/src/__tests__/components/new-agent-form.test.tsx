@@ -31,6 +31,16 @@ vi.mock("next/navigation", () => ({
   useSearchParams: () => mockSearchParams.current,
 }));
 
+const { mockToastWarning } = vi.hoisted(() => ({ mockToastWarning: vi.fn() }));
+vi.mock("sonner", () => ({
+  toast: {
+    warning: mockToastWarning,
+    success: vi.fn(),
+    error: vi.fn(),
+    info: vi.fn(),
+  },
+}));
+
 const mockTemplates = [
   {
     id: "knowledge-base",
@@ -1015,5 +1025,126 @@ describe("NewAgentForm — optional Odoo models do not block creation", () => {
     // The "Missing Odoo modules" alert must NOT appear — optional misses are
     // not gating, and the alert is only for blocking (non-optional) misses.
     expect(screen.queryByText(/Missing Odoo modules/i)).not.toBeInTheDocument();
+  });
+});
+
+describe("NewAgentForm — MCP skipped-tool notice", () => {
+  let fetchSpy: ReturnType<typeof vi.spyOn>;
+
+  const mcpTemplates = [
+    {
+      id: "github-pr-reviewer",
+      name: "GitHub PR Reviewer",
+      description: "Reviews pull requests",
+      requiresDirectories: false,
+      requiresOdooConnection: false,
+      requiresMcpConnection: "github",
+      mcpRecommendedTools: ["pull_request_read", "list_pull_requests", "pull_request_review_write"],
+      defaultTagline: "Review and summarize pull requests",
+      available: true,
+    },
+  ];
+
+  function mockCreateReturning(skippedMcpTools: string[]) {
+    fetchSpy.mockImplementation(async (url, init) => {
+      if (String(url) === "/api/templates") {
+        return { ok: true, json: async () => ({ templates: mcpTemplates }) } as Response;
+      }
+      if (String(url) === "/api/agents" && init?.method === "POST") {
+        return {
+          ok: true,
+          json: async () => ({ id: "new-agent-id", skippedMcpTools }),
+        } as Response;
+      }
+      return { ok: false, json: async () => ({}) } as Response;
+    });
+  }
+
+  async function createAgent() {
+    render(<NewAgentForm />);
+    await waitFor(() => {
+      expect(screen.getByText("GitHub PR Reviewer")).toBeInTheDocument();
+    });
+    await userEvent.click(screen.getByText("GitHub PR Reviewer"));
+    await waitFor(() => {
+      expect(screen.getByLabelText(/name/i)).toBeInTheDocument();
+    });
+    const nameInput = screen.getByLabelText(/name/i);
+    await userEvent.clear(nameInput);
+    await userEvent.type(nameInput, "Merlin");
+    await userEvent.click(screen.getByRole("button", { name: /create/i }));
+  }
+
+  beforeEach(() => {
+    mockToastWarning.mockClear();
+    mockPush.mockClear();
+    mockSearchParams.current = new URLSearchParams();
+    fetchSpy = vi.spyOn(global, "fetch");
+  });
+
+  afterEach(() => {
+    fetchSpy.mockRestore();
+  });
+
+  it("warns the user when the API reports tools it could not grant", async () => {
+    // The agent WAS created, so this is a completed action → toast, not an
+    // inline form error (AGENTS.md error/notification policy).
+    mockCreateReturning(["list_pull_requests", "pull_request_review_write"]);
+
+    await createAgent();
+
+    await waitFor(() => {
+      expect(mockToastWarning).toHaveBeenCalledTimes(1);
+    });
+    const [title, opts] = mockToastWarning.mock.calls[0];
+    // Leads with the good news — the agent exists and is usable.
+    expect(title).toMatch(/Merlin/);
+    expect(title).toMatch(/ready|created/i);
+    // Names the tools that are missing, so the gap isn't a surprise later.
+    expect(opts.description).toContain("list_pull_requests");
+    expect(opts.description).toContain("pull_request_review_write");
+    // Tells the user where to act on it.
+    expect(opts.description).toMatch(/settings/i);
+  });
+
+  it("still navigates to the new agent — the notice never blocks the flow", async () => {
+    mockCreateReturning(["list_pull_requests"]);
+
+    await createAgent();
+
+    await waitFor(() => {
+      expect(mockPush).toHaveBeenCalledWith("/chat/new-agent-id");
+    });
+  });
+
+  it("stays quiet when every recommended tool was granted", async () => {
+    mockCreateReturning([]);
+
+    await createAgent();
+
+    await waitFor(() => {
+      expect(mockPush).toHaveBeenCalledWith("/chat/new-agent-id");
+    });
+    expect(mockToastWarning).not.toHaveBeenCalled();
+  });
+
+  it("stays quiet for a template the server reports no skip list for", async () => {
+    // Non-MCP creates must not grow a spurious toast.
+    fetchSpy.mockImplementation(async (url, init) => {
+      if (String(url) === "/api/templates") {
+        return { ok: true, json: async () => ({ templates: mcpTemplates }) } as Response;
+      }
+      if (String(url) === "/api/agents" && init?.method === "POST") {
+        return { ok: true, json: async () => ({ id: "new-agent-id" }) } as Response;
+      }
+      return { ok: false, json: async () => ({}) } as Response;
+    });
+
+    await createAgent();
+
+    await waitFor(() => {
+      expect(mockPush).toHaveBeenCalledWith("/chat/new-agent-id");
+    });
+    expect(mockToastWarning).not.toHaveBeenCalled();
   });
 });

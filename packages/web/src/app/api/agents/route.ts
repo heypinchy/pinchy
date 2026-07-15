@@ -302,6 +302,12 @@ export const POST = withAdmin(async (request, _ctx, session) => {
   // must never fail to create an agent over this. Gated behind the feature
   // flag: with PINCHY_MCP_ENABLED off, "mcp" connections/permissions are
   // never touched by this route (D3 — the entire MCP surface stays absent).
+  // Surfaced in the 201 response so the client can raise a non-blocking
+  // toast. Not failing on a renamed tool is right; not TELLING the person
+  // who just created the agent is not — they'd only discover the gap when
+  // the agent says "I can't do that".
+  let skippedMcpTools: string[] = [];
+
   if (isMcpEnabled() && template.recommendedTools?.length) {
     const mcpConnRows = await db
       .select()
@@ -317,6 +323,7 @@ export const POST = withAdmin(async (request, _ctx, session) => {
     });
 
     const { grants, skipped } = applyRecommendedTools(template.recommendedTools, mcpConnections);
+    skippedMcpTools = skipped.map((rt) => rt.tool);
 
     if (grants.length > 0) {
       const permissionRows = grants.map((g) => ({
@@ -385,5 +392,9 @@ export const POST = withAdmin(async (request, _ctx, session) => {
 
   revalidatePath("/", "layout");
 
-  return NextResponse.json(agent, { status: 201 });
+  // Spread rather than nest: the response contract is "the agent row", and
+  // existing callers read `agent.id` off the top level. `skippedMcpTools` is
+  // always present (empty for non-MCP templates) so the client never has to
+  // distinguish "no skips" from "old server".
+  return NextResponse.json({ ...agent, skippedMcpTools }, { status: 201 });
 });

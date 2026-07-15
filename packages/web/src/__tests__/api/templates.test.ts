@@ -494,6 +494,33 @@ describe("GET /api/templates — MCP template gating", () => {
     const custom = body.templates.find((t: { id: string }) => t.id === "custom");
     expect(custom.requiresMcpConnection).toBeNull();
   });
+
+  it("exposes the auto-granted tool names so the card can show the access badge and preview", async () => {
+    // Without these the MCP card renders a blank badge — silently hiding
+    // that creating the agent grants access to an external system, while
+    // the Odoo card beside it advertises "Odoo · Read & Write".
+    mockGetActiveMcpPresets.mockResolvedValue(new Set(["github"]));
+
+    const response = await GET(new NextRequest("http://localhost:7777/api/templates"));
+    const body = await response.json();
+
+    const ghReviewer = body.templates.find((t: { id: string }) => t.id === "github-pr-reviewer");
+    expect(ghReviewer.mcpRecommendedTools).toEqual([
+      "pull_request_read",
+      "list_pull_requests",
+      "pull_request_review_write",
+    ]);
+  });
+
+  it("non-MCP templates expose no recommended tool names", async () => {
+    mockGetActiveMcpPresets.mockResolvedValue(new Set<string>());
+
+    const response = await GET(new NextRequest("http://localhost:7777/api/templates"));
+    const body = await response.json();
+
+    const custom = body.templates.find((t: { id: string }) => t.id === "custom");
+    expect(custom.mcpRecommendedTools).toEqual([]);
+  });
 });
 
 describe("GET /api/templates — MCP flag off", () => {

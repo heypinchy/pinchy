@@ -30,7 +30,9 @@ import { DirectoryPicker } from "@/components/directory-picker";
 import { DocsLink } from "@/components/docs-link";
 import { ArrowLeft, Check, ExternalLink, Info, AlertTriangle, X } from "lucide-react";
 import { useRestart } from "@/components/restart-provider";
+import { toast } from "sonner";
 import { validateOdooTemplate } from "@/lib/integrations/odoo-template-validation";
+import { getMcpPreset, type McpPresetId } from "@/lib/integrations/mcp-presets";
 import { getTemplate, pickSuggestedName, type OdooTemplateConfig } from "@/lib/agent-templates";
 import { autoSelectConnection, type OdooConnection } from "@/lib/odoo-connection-selection";
 import { EMAIL_CONNECTION_TYPES } from "@/lib/integrations/oauth-providers";
@@ -46,6 +48,10 @@ interface Template {
   requiresDirectories: boolean;
   requiresOdooConnection: boolean;
   requiresEmailConnection?: boolean;
+  /** MCP preset this template needs connected — see TemplateItem. */
+  requiresMcpConnection?: McpPresetId | null;
+  /** Tool names the server auto-grants for this template at creation time. */
+  mcpRecommendedTools?: string[];
   requiresWeb?: boolean;
   odooAccessLevel?: string;
   defaultTagline: string | null;
@@ -391,6 +397,27 @@ export function NewAgentForm() {
       }
 
       const agent = await res.json();
+
+      // The agent exists — a missing tool must never look like a failed
+      // create. But it must not be silent either: without this the user gets
+      // an agent quietly short of the tools its template promised and only
+      // finds out mid-conversation. Completed action + caveat → toast, not an
+      // inline error (AGENTS.md error/notification policy).
+      const skipped: string[] = agent.skippedMcpTools ?? [];
+      if (skipped.length > 0) {
+        const agentName = values.name.trim();
+        const preset = selectedTemplateObj?.requiresMcpConnection;
+        const providerName = preset ? getMcpPreset(preset).displayName : "connection";
+        const noun = skipped.length === 1 ? "tool" : "tools";
+        // Deliberately states no cause: the server reports names only, and a
+        // skip means EITHER the preset has no active connection OR the tool
+        // wasn't in that connection's synced list. Naming the wrong one would
+        // send the user to fix the wrong thing.
+        toast.warning(`${agentName} is ready, but ${skipped.length} ${noun} couldn't be granted`, {
+          description: `Couldn't grant ${providerName} ${noun}: ${skipped.join(", ")}. Check Agent Settings → Permissions to review what ${agentName} can use.`,
+        });
+      }
+
       triggerRestart();
       router.push(`/chat/${agent.id}`);
       router.refresh();

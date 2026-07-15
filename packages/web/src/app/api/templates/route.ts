@@ -102,6 +102,10 @@ export const GET = withAuth(async () => {
         // MCP has 8 presets, so the picker needs to know WHICH one is
         // missing, not just that "some" connection is missing.
         requiresMcpConnection: template.requiresMcpConnection ?? null,
+        // The tools POST /api/agents auto-grants for this template. Sent so
+        // the card can state the access up front (badge + permission
+        // preview) instead of granting an external system silently.
+        mcpRecommendedTools: (template.recommendedTools ?? []).map((rt) => rt.tool),
         requiresWeb: template.pluginId === "pinchy-web",
         odooAccessLevel: template.odooConfig?.accessLevel,
         defaultTagline: template.defaultTagline,

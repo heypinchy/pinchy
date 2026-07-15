@@ -155,6 +155,50 @@ describe("TemplateSelector", () => {
     expect(screen.getByText("Documents · Read-only")).toBeInTheDocument();
   });
 
+  it("renders access badge on an MCP template card", () => {
+    // Regression guard for the blank-badge gap: an MCP card used to render
+    // no badge at all, silently hiding that creating the agent grants access
+    // to an external system — while the Odoo card beside it honestly said
+    // "Odoo · Read & Write". A template that grants something must say so.
+    const mcpTemplates = [
+      {
+        id: "github-pr-reviewer",
+        name: "GitHub PR Reviewer",
+        description: "Reviews pull requests",
+        requiresDirectories: false,
+        requiresMcpConnection: "github" as const,
+        mcpRecommendedTools: [
+          "pull_request_read",
+          "list_pull_requests",
+          "pull_request_review_write",
+        ],
+        available: true,
+      },
+    ];
+
+    render(<TemplateSelector templates={mcpTemplates} onSelect={vi.fn()} />);
+    expect(screen.getByText("GitHub · 3 tools")).toBeInTheDocument();
+  });
+
+  it("never renders an MCP template card without an access badge", () => {
+    // The card is the last honest surface before an agent gets external
+    // access. Pin "has a badge" independently of its exact wording.
+    const mcpTemplates = [
+      {
+        id: "linear-triage",
+        name: "Linear Triage",
+        description: "Triages issues",
+        requiresDirectories: false,
+        requiresMcpConnection: "linear" as const,
+        mcpRecommendedTools: ["list_issues", "update_issue"],
+        available: true,
+      },
+    ];
+
+    render(<TemplateSelector templates={mcpTemplates} onSelect={vi.fn()} />);
+    expect(screen.getByText(/Linear · \d+ tools?/)).toBeInTheDocument();
+  });
+
   it("hides unavailable templates behind collapsible trigger", () => {
     const mixedTemplates = [
       makeTemplateItem({

@@ -1310,6 +1310,88 @@ describe("MCP auto-grant from recommendedTools (T9)", () => {
     expect(permissionsInsertValuesMock).not.toHaveBeenCalled();
   });
 
+  it("returns the skipped tool names in the response so the client can tell the user", async () => {
+    // Silently NOT FAILING is right (a renamed tool must not kill agent
+    // creation); silently NOT INFORMING is not. Without this the user gets a
+    // "GitHub PR Reviewer" quietly missing two of its tools and only finds
+    // out when the agent says "I can't do that".
+    vi.stubEnv("PINCHY_MCP_ENABLED", "1");
+    dbSelectFromMock.mockReturnValueOnce({
+      where: vi.fn().mockResolvedValue([
+        {
+          id: "gh-conn-1",
+          type: "mcp",
+          status: "active",
+          data: { preset: "github", tools: [{ name: "pull_request_read" }] },
+        },
+      ]),
+    });
+
+    const request = new NextRequest("http://localhost:7777/api/agents", {
+      method: "POST",
+      body: JSON.stringify({ name: "Merlin", templateId: "github-pr-reviewer" }),
+    });
+
+    const response = await POST(request);
+    const body = await response.json();
+
+    expect(response.status).toBe(201);
+    // Still the agent row (client reads agent.id to navigate) …
+    expect(body.id).toBe("new-agent-id");
+    // … plus the honest skip list.
+    expect(body.skippedMcpTools).toEqual(["list_pull_requests", "pull_request_review_write"]);
+  });
+
+  it("returns an empty skip list when every recommended tool was granted", async () => {
+    vi.stubEnv("PINCHY_MCP_ENABLED", "1");
+    dbSelectFromMock.mockReturnValueOnce({
+      where: vi.fn().mockResolvedValue([
+        {
+          id: "gh-conn-1",
+          type: "mcp",
+          status: "active",
+          data: {
+            preset: "github",
+            tools: [
+              { name: "pull_request_read" },
+              { name: "list_pull_requests" },
+              { name: "pull_request_review_write" },
+            ],
+          },
+        },
+      ]),
+    });
+
+    const request = new NextRequest("http://localhost:7777/api/agents", {
+      method: "POST",
+      body: JSON.stringify({ name: "Merlin", templateId: "github-pr-reviewer" }),
+    });
+
+    const body = await (await POST(request)).json();
+    expect(body.skippedMcpTools).toEqual([]);
+  });
+
+  it("reports every recommended tool as skipped when no connection matches the preset", async () => {
+    // The agent is still created (201) — but the user must learn it arrived
+    // toolless rather than discovering it in conversation.
+    vi.stubEnv("PINCHY_MCP_ENABLED", "1");
+
+    const request = new NextRequest("http://localhost:7777/api/agents", {
+      method: "POST",
+      body: JSON.stringify({ name: "Merlin", templateId: "github-pr-reviewer" }),
+    });
+
+    const response = await POST(request);
+    const body = await response.json();
+
+    expect(response.status).toBe(201);
+    expect(body.skippedMcpTools).toEqual([
+      "pull_request_read",
+      "list_pull_requests",
+      "pull_request_review_write",
+    ]);
+  });
+
   it("silently skips a recommended tool the connection hasn't synced", async () => {
     vi.stubEnv("PINCHY_MCP_ENABLED", "1");
     dbSelectFromMock.mockReturnValueOnce({
