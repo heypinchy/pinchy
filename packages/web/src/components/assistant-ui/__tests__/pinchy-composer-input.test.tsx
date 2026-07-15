@@ -113,6 +113,21 @@ describe("PinchyComposerInput clipboard paste", () => {
     expect(addPendingUpload).toHaveBeenCalledWith(screenshot);
   });
 
+  it("suppresses the default so a file paste does not also dump text", () => {
+    const { textarea } = renderComposer();
+
+    // A screenshot copied from a web page carries a text/html flavor next to
+    // the bitmap; a file copied from the file manager carries its filename as
+    // text. Without preventDefault the browser writes that flavor into the
+    // message box alongside the attachment. `fireEvent` returns false once a
+    // handler prevented the default.
+    const prevented = firePaste(textarea, [
+      new File(["png-bytes"], "screenshot.png", { type: "image/png" }),
+    ]);
+
+    expect(prevented).toBe(false);
+  });
+
   it("does NOT route pasted files through the assistant-ui adapter chain", () => {
     const { adapter, textarea } = renderComposer();
 

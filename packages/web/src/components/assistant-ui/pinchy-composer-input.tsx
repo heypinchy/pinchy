@@ -4,6 +4,12 @@ import { type ComponentProps, type FC, useContext } from "react";
 import { ComposerPrimitive } from "@assistant-ui/react";
 import { AddPendingUploadContext } from "@/components/chat";
 
+// `ComposerPrimitive.Input`'s props are a discriminated union (`submitMode`
+// XOR the deprecated `submitOnEnter`). A plain `Omit` is not distributive: it
+// collapses that union into one object where both keys may be set at once,
+// which then matches neither branch. Mapping over the union preserves it.
+type DistributiveOmit<T, K extends PropertyKey> = T extends unknown ? Omit<T, K> : never;
+
 /**
  * Composer textarea that routes pasted files (screenshots via Cmd+V or
  * right-click → Paste, files copied from the file manager) into the two-phase
@@ -15,12 +21,13 @@ import { AddPendingUploadContext } from "@/components/chat";
  * carries an image adapter — pasting a screenshot threw "No matching adapter
  * found for file" into its own try/catch and dropped the paste silently. Left
  * enabled it would also double-attach any MIME the chain still accepts, once
- * per path.
+ * per path. It is `Omit`ted from the props rather than merely overridden, so
+ * re-enabling the broken built-in is a compile error instead of a prop this
+ * component silently ignores.
  */
-export const PinchyComposerInput: FC<ComponentProps<typeof ComposerPrimitive.Input>> = ({
-  onPaste,
-  ...props
-}) => {
+export const PinchyComposerInput: FC<
+  DistributiveOmit<ComponentProps<typeof ComposerPrimitive.Input>, "addAttachmentOnPaste">
+> = ({ onPaste, ...props }) => {
   const addPendingUpload = useContext(AddPendingUploadContext);
 
   return (

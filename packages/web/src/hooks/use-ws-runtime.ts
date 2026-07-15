@@ -1854,9 +1854,10 @@ export function useWsRuntime(
 
   // Fire-and-forget: the upload's outcome is driven entirely through the
   // `pendingUploads` state machine (uploading → ready / failed). Callers
-  // (PinchyAttachmentButton, PinchyDropZone) iterate over picked files and
-  // never await — so the public signature is `void`, not `Promise<void>`.
-  // All async work lives inside the IIFE below.
+  // (PinchyAttachmentButton for picked files, PinchyDropZone for dropped,
+  // PinchyComposerInput for pasted, ShareIntake for the /share hand-off)
+  // iterate over their files and never await — so the public signature is
+  // `void`, not `Promise<void>`. All async work lives inside the IIFE below.
   const addPendingUpload = useCallback(
     (file: File): void => {
       // Refuse the 11th-and-beyond attachment client-side. Server-side
