@@ -22,7 +22,7 @@
 // the session and `after()` are faked; the DB, the key plugin, and the audit
 // chain run for real.
 
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { NextRequest } from "next/server";
 import { eq } from "drizzle-orm";
 
@@ -36,6 +36,11 @@ async function flushAfter(): Promise<void> {
     await Promise.allSettled(pendingAfter.splice(0));
   }
 }
+
+afterEach(async () => {
+  await flushAfter();
+});
+
 vi.mock("next/server", async (importOriginal) => {
   const actual = await importOriginal<typeof import("next/server")>();
   return {
