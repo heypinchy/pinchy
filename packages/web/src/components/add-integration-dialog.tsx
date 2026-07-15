@@ -669,7 +669,7 @@ function McpConnectStep({
       </DialogHeader>
 
       <Form {...form}>
-        <form onSubmit={form.handleSubmit(onSubmit)} className="space-y-5">
+        <form onSubmit={form.handleSubmit(onSubmit)} method="post" className="space-y-5">
           {/* Preset selector — custom flow only (a named-preset card already picked the preset) */}
           {isCustom && (
             <FormField

@@ -353,7 +353,7 @@ function McpForm({
 
   return (
     <Form {...form}>
-      <form onSubmit={form.handleSubmit(onSubmit)} className="space-y-4">
+      <form onSubmit={form.handleSubmit(onSubmit)} method="post" className="space-y-4">
         {connection.status === "auth_failed" && (
           <Alert variant="destructive">
             <AlertTriangle className="h-4 w-4" />
