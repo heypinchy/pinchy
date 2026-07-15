@@ -14,7 +14,11 @@ const nextConfig: NextConfig = {
   // "Cannot find module '…/chunks/pdf.worker.mjs'" (found in the Phase-1
   // live verify — unit tests run unbundled and can't catch this). External =
   // resolved from node_modules at runtime, where the worker file exists.
-  serverExternalPackages: ["pdfjs-dist"],
+  // node-llama-cpp ships a native .node addon and is itself ESM-only; it must
+  // be resolved from node_modules at runtime via dynamic import, not bundled
+  // — same class of reason as pdfjs-dist above (bundling breaks native/worker
+  // resolution the bundler can't statically see).
+  serverExternalPackages: ["pdfjs-dist", "node-llama-cpp"],
   allowedDevOrigins: ["local.heypinchy.com", "https://local.heypinchy.com:8443"],
   env: {
     NEXT_PUBLIC_PINCHY_VERSION: pkg.version,

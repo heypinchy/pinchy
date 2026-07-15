@@ -3,6 +3,19 @@ import { embedTexts } from "@/lib/knowledge/embeddings";
 
 global.fetch = vi.fn();
 
+// node-llama-cpp is mocked so the fast unit suite never loads the native
+// addon. embedTexts() must import it lazily (inside embedTextsLocal), never
+// at module top-level, otherwise this mock would need to apply to every test
+// file that transitively imports embeddings.ts (including Ollama-only routes).
+const getEmbeddingFor = vi.fn();
+const createEmbeddingContext = vi.fn();
+const loadModel = vi.fn();
+const getLlama = vi.fn();
+
+vi.mock("node-llama-cpp", () => ({
+  getLlama: (...args: unknown[]) => getLlama(...args),
+}));
+
 describe("embedTexts", () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -170,5 +183,70 @@ describe("embedTexts", () => {
     await expect(embedTexts(["hallo"], { baseUrl: "http://ollama:11434" })).resolves.toEqual([
       [1, 2, 3],
     ]);
+  });
+});
+
+describe("embedTexts (provider: local, node-llama-cpp mocked)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    // Wire the getLlama() -> loadModel() -> createEmbeddingContext() chain
+    // back up after clearAllMocks() wipes implementations set below.
+    getLlama.mockResolvedValue({ loadModel });
+    loadModel.mockResolvedValue({ createEmbeddingContext });
+    createEmbeddingContext.mockResolvedValue({ getEmbeddingFor });
+  });
+
+  it("embeds via node-llama-cpp and returns number[][]", async () => {
+    getEmbeddingFor.mockImplementation(async () => ({ vector: [0.1, 0.2, 0.3] }));
+
+    const result = await embedTexts(["hallo", "welt"], {
+      baseUrl: "unused",
+      provider: "local",
+      modelPath: "/models/embed-1.gguf",
+    });
+
+    expect(result).toEqual([
+      [0.1, 0.2, 0.3],
+      [0.1, 0.2, 0.3],
+    ]);
+    expect(getEmbeddingFor).toHaveBeenCalledTimes(2);
+    expect(getEmbeddingFor).toHaveBeenCalledWith("hallo");
+    expect(getEmbeddingFor).toHaveBeenCalledWith("welt");
+  });
+
+  it("throws a clear error naming modelPath when it is missing, without importing node-llama-cpp", async () => {
+    await expect(embedTexts(["hallo"], { baseUrl: "unused", provider: "local" })).rejects.toThrow(
+      /modelPath/
+    );
+
+    expect(getLlama).not.toHaveBeenCalled();
+  });
+
+  it("throws the same expectedDim error the Ollama path throws when node-llama-cpp returns a mismatched width", async () => {
+    // Proves assertEmbeddingShape is actually shared between the two
+    // backends rather than duplicated with drifting messages.
+    getEmbeddingFor.mockResolvedValue({ vector: [1, 2, 3] });
+
+    await expect(
+      embedTexts(["hallo"], {
+        baseUrl: "unused",
+        provider: "local",
+        modelPath: "/models/embed-2.gguf",
+        expectedDim: 1024,
+      })
+    ).rejects.toThrow(/expected 1024.*got 3|1024/i);
+  });
+
+  it("loads the model once and reuses it across multiple embedTexts calls with the same modelPath", async () => {
+    getEmbeddingFor.mockResolvedValue({ vector: [1, 2, 3] });
+    const modelPath = "/models/embed-singleton.gguf";
+
+    await embedTexts(["a"], { baseUrl: "unused", provider: "local", modelPath });
+    await embedTexts(["b"], { baseUrl: "unused", provider: "local", modelPath });
+
+    expect(getLlama).toHaveBeenCalledTimes(1);
+    expect(loadModel).toHaveBeenCalledTimes(1);
+    expect(createEmbeddingContext).toHaveBeenCalledTimes(1);
+    expect(getEmbeddingFor).toHaveBeenCalledTimes(2);
   });
 });
