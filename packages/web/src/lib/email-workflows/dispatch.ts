@@ -77,9 +77,9 @@ export interface DispatchSummary {
   succeeded: number;
   failed: number;
   /**
-   * Claimed emails whose delivery (notify) or finalize threw. Their ledger row
-   * is intentionally left `processing` for the reconciliation sweep to retry —
-   * see the ordering note below. Distinct from `failed`, which is a *run* that
+   * Claimed emails whose delivery (notify) or finalize threw. We intentionally
+   * do not finalize them, leaving the retry to the reconciliation sweep — see
+   * the ordering note below. Distinct from `failed`, which is a *run* that
    * threw but was itself delivered and finalized as `failed`.
    */
   deferred: number;
@@ -198,11 +198,18 @@ export async function dispatchEmails(params: {
       }
     } catch (err) {
       // A deferral (RunDeferredError), or delivery/finalize threw after the
-      // claim. Leave the row `processing` for the reconciliation sweep; never
-      // abort the batch.
+      // claim. Either way we do not finalize, so the reconciliation sweep owns
+      // the retry; never abort the batch.
+      //
+      // Usually that means our own row is simply left `processing` for the
+      // sweep to pick up. The one exception is a *superseded* claim (#735): a
+      // previous sweep already deleted our row and someone else re-claimed the
+      // email, so finalize threw. Retry ownership has passed to that run — the
+      // row now in `processing` is theirs, and this branch correctly does
+      // nothing to it.
       summary.deferred++;
       console.error(
-        `dispatchEmails: deferred email ${email.providerMessageId} (workflow ${workflow.id}) after claim — left processing for the reconciliation sweep`,
+        `dispatchEmails: deferred email ${email.providerMessageId} (workflow ${workflow.id}) after claim — not finalized, the reconciliation sweep owns the retry`,
         err
       );
     }
