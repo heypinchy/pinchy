@@ -7,6 +7,7 @@ import { appendAuditLog, type AuditLogEntry } from "@/lib/audit";
 import { recordAuditFailure } from "@/lib/audit-deferred";
 import { parseRequestBody } from "@/lib/api-validation";
 import { setAgentIntegrationsSchema } from "@/lib/schemas/agent-integrations";
+import type { McpIntegrationData } from "@/lib/integrations/types";
 
 type RouteContext = { params: Promise<{ agentId: string }> };
 
@@ -96,6 +97,45 @@ export const PUT = withAdmin<RouteContext>(async (request, { params }, session) 
       .where(eq(integrationConnections.id, connectionId));
     if (connRows.length === 0) {
       return NextResponse.json({ error: "Connection not found" }, { status: 404 });
+    }
+
+    // MCP grants (model:"mcp") name a tool on THIS specific connection —
+    // unlike Odoo/email operations, which are a fixed, model-independent
+    // vocabulary, MCP tool names come from a third-party server and only
+    // make sense against the connection that discovered them. `connRows` is
+    // already loaded above, so this costs no extra query.
+    //
+    // This is write-time UX hardening (an honest 400 instead of a silently
+    // inert grant) — it is NOT a substitute for read-time gating. A later
+    // re-sync (POST .../sync) can remove a tool from `data.tools` *after*
+    // the grant below is written, and this route has no way to catch that
+    // drift. T6 (build.ts) MUST intersect grants against the connection's
+    // *current* data.tools before emitting `tools.allow`, and T7's skill
+    // body must be derived from that same intersection — never from the raw
+    // grant rows — or a revoked tool stays silently exposed.
+    const mcpPermissions = permissions.filter((p) => p.model === "mcp");
+    if (mcpPermissions.length > 0) {
+      const connection = connRows[0];
+      if (connection.type !== "mcp") {
+        return NextResponse.json(
+          { error: "Connection is not an MCP integration" },
+          { status: 400 }
+        );
+      }
+      const syncedTools = new Set(
+        ((connection.data as McpIntegrationData | null)?.tools ?? []).map((t) => t.name)
+      );
+      const unknownTools = mcpPermissions
+        .map((p) => p.operation)
+        .filter((toolName) => !syncedTools.has(toolName));
+      if (unknownTools.length > 0) {
+        return NextResponse.json(
+          {
+            error: `Unknown MCP tool(s), not present in the connection's synced tool list: ${unknownTools.join(", ")}`,
+          },
+          { status: 400 }
+        );
+      }
     }
 
     // Atomic replace: read existing → delete → insert within a single transaction
