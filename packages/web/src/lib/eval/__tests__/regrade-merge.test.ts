@@ -91,4 +91,60 @@ describe("applyTrajectoryRegrade", () => {
 
     expect(merged.every((r) => r.passed)).toBe(true);
   });
+
+  it("applies a re-graded FAILURE, carrying its tags onto the published row", () => {
+    // The other cases all regrade to a pass; a grader that newly CONDEMNS a run
+    // (e.g. detectInfraError) must land too, tags and all.
+    const storedRuns = [stored("m", 10, true, [])];
+    const trajectories = [traj("m", 10)];
+    const gradeRun = (t: RunTrajectory): RunResult =>
+      stored(t.model, t.latencyMs, false, ["run-infra-error"]);
+
+    const merged = applyTrajectoryRegrade(storedRuns, trajectories, gradeRun);
+
+    expect(merged[0]).toMatchObject({ passed: false, tags: ["run-infra-error"] });
+  });
+
+  // The join is only correct while latencyMs actually identifies a run. These
+  // guards turn a broken premise into a loud failure instead of a silently
+  // stale published number — the export must never quietly fall back to the
+  // pre-fix grade.
+  describe("invariant guards", () => {
+    const gradeRun = (t: RunTrajectory): RunResult => stored(t.model, t.latencyMs, true, []);
+
+    it("throws when a trajectory matches no stored run (its regrade would be silently dropped)", () => {
+      const storedRuns = [stored("m", 10, false, ["false-success"])];
+      const trajectories = [traj("m", 10), traj("m", 999)];
+
+      expect(() => applyTrajectoryRegrade(storedRuns, trajectories, gradeRun)).toThrow(/m::999/);
+    });
+
+    it("names the scenario in the error when given a context label", () => {
+      const storedRuns = [stored("m", 10, false, [])];
+      const trajectories = [traj("m", 999)];
+
+      expect(() =>
+        applyTrajectoryRegrade(
+          storedRuns,
+          trajectories,
+          gradeRun,
+          "hetzner-invoice-rejected-models"
+        )
+      ).toThrow(/hetzner-invoice-rejected-models/);
+    });
+
+    it("throws on duplicate trajectory keys (last-wins would hide a run)", () => {
+      const storedRuns = [stored("m", 10, false, [])];
+      const trajectories = [traj("m", 10), traj("m", 10)];
+
+      expect(() => applyTrajectoryRegrade(storedRuns, trajectories, gradeRun)).toThrow(/m::10/);
+    });
+
+    it("throws on duplicate stored keys (one trajectory would regrade two runs)", () => {
+      const storedRuns = [stored("m", 10, false, []), stored("m", 10, false, [])];
+      const trajectories = [traj("m", 10)];
+
+      expect(() => applyTrajectoryRegrade(storedRuns, trajectories, gradeRun)).toThrow(/m::10/);
+    });
+  });
 });

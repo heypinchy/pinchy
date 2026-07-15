@@ -169,11 +169,14 @@ async function main(): Promise<void> {
       // by (model, latencyMs). Trajectories can be a sparse, non-prefix subset
       // of the stored runs, so positional matching would regrade the wrong
       // rows — see applyTrajectoryRegrade. Rows with no trajectory (e.g.
-      // run-timeouts) keep their stored grade; n is preserved.
-      runs = applyTrajectoryRegrade(stored, trajectories, (traj) => ({
-        ...gradeRunForScenario(traj, regradeScenario),
-        model: traj.model,
-      }));
+      // run-timeouts) keep their stored grade; n is preserved. Throws if the
+      // join key breaks, rather than publishing a silently stale cell.
+      runs = applyTrajectoryRegrade(
+        stored,
+        trajectories,
+        (traj) => ({ ...gradeRunForScenario(traj, regradeScenario), model: traj.model }),
+        s.label
+      );
     }
 
     scenarios.push({

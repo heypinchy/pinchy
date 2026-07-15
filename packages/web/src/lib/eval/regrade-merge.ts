@@ -20,16 +20,63 @@ import type { RunResult, RunTrajectory } from "./types";
  *
  * `gradeRun` must return a RunResult whose `model` is set (the caller applies
  * the current graders for the scenario).
+ *
+ * The join only holds while `latencyMs` really does identify a run, and a broken
+ * premise fails QUIETLY by nature: an unmatched trajectory just drops its
+ * re-grade, and the published cell silently keeps the stale pre-fix grade while
+ * looking perfectly plausible. That is the exact false-green this module exists
+ * to remove, so the premise is asserted rather than assumed — a violation must
+ * turn into a red build, not a wrong number on the website.
+ *
+ * @param context Optional scenario label, echoed in errors so a failure names
+ *   the dataset that broke.
  */
 export function applyTrajectoryRegrade(
   stored: RunResult[],
   trajectories: RunTrajectory[],
-  gradeRun: (traj: RunTrajectory) => RunResult
+  gradeRun: (traj: RunTrajectory) => RunResult,
+  context?: string
 ): RunResult[] {
   const key = (model: string, latencyMs: number): string => `${model}::${String(latencyMs)}`;
-  const regradedByKey = new Map<string, RunResult>();
-  for (const traj of trajectories) {
-    regradedByKey.set(key(traj.model, traj.latencyMs), gradeRun(traj));
+  const where = context ? ` in ${context}` : "";
+
+  const storedKeys = new Set<string>();
+  const duplicateStored = new Set<string>();
+  for (const r of stored) {
+    const k = key(r.model, r.latencyMs);
+    if (storedKeys.has(k)) duplicateStored.add(k);
+    storedKeys.add(k);
   }
+  if (duplicateStored.size > 0) {
+    throw new Error(
+      `applyTrajectoryRegrade: duplicate (model, latencyMs) among stored runs${where}: ` +
+        `${[...duplicateStored].join(", ")}. latencyMs no longer identifies a run, so one ` +
+        `trajectory would re-grade several runs.`
+    );
+  }
+
+  const regradedByKey = new Map<string, RunResult>();
+  const orphans: string[] = [];
+  const duplicateTrajectories: string[] = [];
+  for (const traj of trajectories) {
+    const k = key(traj.model, traj.latencyMs);
+    if (!storedKeys.has(k)) orphans.push(k);
+    if (regradedByKey.has(k)) duplicateTrajectories.push(k);
+    regradedByKey.set(k, gradeRun(traj));
+  }
+  if (duplicateTrajectories.length > 0) {
+    throw new Error(
+      `applyTrajectoryRegrade: duplicate (model, latencyMs) among trajectories${where}: ` +
+        `${duplicateTrajectories.join(", ")}. Only the last would be applied, hiding a run.`
+    );
+  }
+  if (orphans.length > 0) {
+    throw new Error(
+      `applyTrajectoryRegrade: ${String(orphans.length)} trajectory/ies match no stored run` +
+        `${where}: ${orphans.join(", ")}. Their re-grade would be dropped and the published ` +
+        `cell would silently keep its stale stored grade.`
+    );
+  }
+
   return stored.map((r) => regradedByKey.get(key(r.model, r.latencyMs)) ?? r);
 }
