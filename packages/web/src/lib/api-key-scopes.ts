@@ -39,3 +39,24 @@ export function extractScopes(
   }
   return scopes;
 }
+
+/**
+ * The inverse of `extractScopes`: fold Pinchy's flat scope strings into
+ * better-auth's `permissions: Record<resource, action[]>` shape, so a route
+ * can hand `auth.api.createApiKey` the grants it actually understands.
+ *
+ * Used by `POST /api/settings/api-keys` (#572, Task 5.1) to turn a request's
+ * validated `scopes: ApiKeyScope[]` into the `permissions` body field.
+ */
+export function mapScopes(scopes: ApiKeyScope[]): Record<string, string[]> {
+  const permissions: Record<string, string[]> = {};
+  for (const scope of scopes) {
+    // `resource` is always the left half of a validated ApiKeyScope (a
+    // closed union from API_KEY_SCOPES, e.g. always "agents" today), never
+    // arbitrary user input — .split(":") just widens the type to `string`.
+    const [resource, action] = scope.split(":");
+    // eslint-disable-next-line security/detect-object-injection
+    (permissions[resource] ??= []).push(action);
+  }
+  return permissions;
+}
