@@ -5,6 +5,8 @@ description: How Pinchy agents remember information and what that means for your
 
 Pinchy agents have a memory system that persists knowledge across conversations. When you talk to an agent, it can remember important information and use it in future conversations — giving better, more contextual responses over time.
 
+Recall runs entirely inside your deployment: agents search their memory with a local embedding model that ships in the image, so no memory content is sent to an external service and search keeps working offline and air-gapped. It's multilingual, so an agent recalls what it stored regardless of the language you wrote it in.
+
 ## Personal vs. shared agent memory
 
 Pinchy has two types of agents, and they handle memory differently:

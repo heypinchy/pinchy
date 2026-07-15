@@ -54,6 +54,33 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # literal form unchanged.
 RUN npm install -g openclaw@2026.7.1
 
+# Bundle the external llama.cpp embedding provider (manifest id `llama-cpp`) plus
+# the EmbeddingGemma GGUF it serves. Together they give memory-core a key-less,
+# OFFLINE `local` embedding provider — the backend Pinchy pins in
+# agents.defaults.memorySearch (see build.ts MEMORY_EMBEDDING_MODEL_PATH +
+# REQUIRED_BUNDLED_PLUGINS). Without a working embedding provider, memory_search
+# returns 0 chunks and every recall silently fails; memory-core's default
+# `openai` provider needs a key Pinchy never has, and ollama-cloud/Anthropic
+# expose no embeddings — so a bundled local model is the only option that works
+# on every install.
+#
+# `openclaw plugins install` writes the provider (with its node-llama-cpp native
+# runtime — prebuilt .node/.so for this arch, no compile) into
+# ~/.openclaw/npm/projects/. That dir lives under the `openclaw-config` volume in
+# production, which shadows any image-baked content on upgrade, so we stage the
+# whole npm tree to /opt (non-volume). start-openclaw.sh copies it into
+# ~/.openclaw on boot and refreshes the plugin registry — same pattern as the
+# /opt/*-deps bundles below. ca-certificates + curl live only in this builder
+# stage (the GGUF download); they never reach the runtime image.
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates curl \
+    && rm -rf /var/lib/apt/lists/*
+RUN openclaw plugins install @openclaw/llama-cpp-provider \
+    && mkdir -p /opt/llama-cpp-deps \
+    && cp -r /root/.openclaw/npm /opt/llama-cpp-deps/npm
+RUN mkdir -p /opt/embedding-models \
+    && curl -fsSL -o /opt/embedding-models/embeddinggemma-300m-qat-Q8_0.gguf \
+       https://huggingface.co/ggml-org/embeddinggemma-300m-qat-q8_0-GGUF/resolve/main/embeddinggemma-300m-qat-Q8_0.gguf
+
 # Install pinchy-files plugin dependencies (native modules must be built here).
 # Each bundle's node_modules is copied into /opt/<plugin>-deps so the runtime
 # stage can grab a clean, fully-built tree. The npm download cache stays in this
@@ -140,6 +167,15 @@ COPY --from=builder /opt/pinchy-files-deps /opt/pinchy-files-deps
 COPY --from=builder /opt/pinchy-odoo-deps /opt/pinchy-odoo-deps
 COPY --from=builder /opt/pinchy-web-deps /opt/pinchy-web-deps
 COPY --from=builder /opt/pinchy-email-deps /opt/pinchy-email-deps
+
+# The bundled llama.cpp embedding provider (with its prebuilt node-llama-cpp
+# native binaries) and the EmbeddingGemma GGUF it serves. start-openclaw.sh
+# stages the provider into ~/.openclaw/npm on boot (the config volume shadows an
+# image-baked ~/.openclaw across upgrades) and refreshes the plugin registry;
+# the model is read straight from /opt (never volume-mounted) via
+# MEMORY_EMBEDDING_MODEL_PATH. See the builder stage for why this is bundled.
+COPY --from=builder /opt/llama-cpp-deps /opt/llama-cpp-deps
+COPY --from=builder /opt/embedding-models /opt/embedding-models
 
 # Pre-warm the bundled-plugin runtime-deps cache. Rationale and full
 # behaviour live in config/prewarm-openclaw.sh; in short: boot the

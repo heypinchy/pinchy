@@ -13,6 +13,7 @@ export {
   regenerateOpenClawConfig,
   DEFAULT_DOCS_PUBLIC_BASE_URL,
   DOCS_PUBLIC_BASE_URL_SETTING_KEY,
+  MEMORY_EMBEDDING_MODEL_PATH,
 } from "./build";
 export {
   sanitizeOpenClawConfig,

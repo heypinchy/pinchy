@@ -182,6 +182,7 @@ import {
   updateTelegramChannelConfig,
   DEFAULT_DOCS_PUBLIC_BASE_URL,
   DOCS_PUBLIC_BASE_URL_SETTING_KEY,
+  MEMORY_EMBEDDING_MODEL_PATH,
 } from "@/lib/openclaw-config";
 import { pushConfigInBackground, _resetPushGeneration } from "@/lib/openclaw-config/write";
 import { getPendingConfigPushCount, _resetConfigPushState } from "@/lib/openclaw-config/push-state";
@@ -1351,6 +1352,38 @@ describe("regenerateOpenClawConfig", () => {
     expect(resolveFlushPlan({ cfg: withoutFlag })).not.toBeNull();
   });
 
+  it("pins memory-search to the bundled local embedding provider (no API key, offline)", async () => {
+    // memory_search / memory_get ride on memory-core's embedding index.
+    // memory-core defaults to the `openai` embedding provider, for which Pinchy
+    // provisions no key (only ollama-cloud) — so in production every index sync
+    // failed ("No API key found for provider openai"), leaving 0 chunks and a
+    // disabled tool. ollama-cloud and Anthropic offer NO embeddings, so the only
+    // provider that works for every deployment is the bundled local GGUF
+    // (llama-cpp provider + EmbeddingGemma). Pin it in agents.defaults so recall
+    // works offline, with no key, on every install.
+    await regenerateOpenClawConfig();
+
+    const config = JSON.parse(mockedWriteFileSync.mock.calls[0][1] as string);
+    expect(config.agents.defaults.memorySearch.provider).toBe("local");
+    expect(config.agents.defaults.memorySearch.local.modelPath).toMatch(/\.gguf$/);
+  });
+
+  it("includes the OpenClaw `llama-cpp` embedding provider in plugins.allow", async () => {
+    // The `local` memorySearch provider is registered by the external llama-cpp
+    // provider plugin (manifest id `llama-cpp`). Without it in plugins.allow the
+    // provider never loads and memory_search resolves to nothing.
+    mockedReadFileSync.mockReturnValue(
+      JSON.stringify({
+        gateway: { mode: "local", bind: "lan", auth: { token: "tok" } },
+        plugins: { allow: ["browser", "memory-core"] },
+      })
+    );
+    await regenerateOpenClawConfig();
+
+    const config = JSON.parse(mockedWriteFileSync.mock.calls[0][1] as string);
+    expect(config.plugins.allow).toContain("llama-cpp");
+  });
+
   it("should handle empty agents list", async () => {
     mockedDb.select.mockReturnValue({
       from: mockFrom(),
@@ -1374,10 +1407,15 @@ describe("regenerateOpenClawConfig", () => {
 
     // No env block when no provider keys are configured
     expect(config.env).toBeUndefined();
-    // No provider-derived defaults (no model). The memory-flush disable is
-    // provider-independent and always present (see dedicated test above).
+    // No provider-derived defaults (no model). The memory-flush disable and the
+    // local memory-search embedding provider are provider-independent and always
+    // present (see dedicated tests above).
     expect(config.agents.defaults).toEqual({
       compaction: { memoryFlush: { enabled: false } },
+      memorySearch: {
+        provider: "local",
+        local: { modelPath: MEMORY_EMBEDDING_MODEL_PATH },
+      },
     });
   });
 
@@ -6291,13 +6329,15 @@ describe("restart-state integration", () => {
 
     // Order must match the existing file exactly. Anything else - even with
     // identical contents - triggers a full gateway restart.
-    // pinchy-files is now always emitted (workspace inject); document-extract is required bundled.
+    // pinchy-files is now always emitted (workspace inject); document-extract and
+    // llama-cpp are required bundled plugins appended at the tail.
     expect(config.plugins.allow).toEqual([
       "pinchy-audit",
       "telegram",
       "pinchy-files",
       "pinchy-transcript",
       "document-extract",
+      "llama-cpp",
     ]);
   });
 
@@ -6732,7 +6772,8 @@ describe("restart-state integration", () => {
       const written = JSON.parse(write[1] as string);
       // Same set, same order. Without the fix, telegram migrates to position 0
       // and the pinchy-* entries get re-shuffled by entries-insertion order.
-      // pinchy-files is always emitted (workspace inject); document-extract is required bundled.
+      // pinchy-files is always emitted (workspace inject); document-extract and
+      // llama-cpp are required bundled plugins appended at the tail.
       expect(written.plugins.allow).toEqual([
         "pinchy-audit",
         "pinchy-context",
@@ -6741,6 +6782,7 @@ describe("restart-state integration", () => {
         "pinchy-files",
         "pinchy-transcript",
         "document-extract",
+        "llama-cpp",
       ]);
     }
     // Acceptable alternative: byte-equal early return (no write).

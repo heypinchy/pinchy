@@ -71,6 +71,17 @@ export const DOCS_PUBLIC_BASE_URL_SETTING_KEY = "docs_public_base_url";
 export const DEFAULT_DOCS_PUBLIC_BASE_URL = "https://docs.heypinchy.com";
 
 /**
+ * Absolute path (inside the OpenClaw container) to the bundled EmbeddingGemma
+ * GGUF used by memory-core's `local` embedding provider. Baked into the openclaw
+ * image at build time so memory search works offline with no API key — see
+ * Dockerfile.openclaw. Overridable via `MEMORY_EMBEDDING_MODEL_PATH` for
+ * air-gapped forks that ship a different local model.
+ */
+export const MEMORY_EMBEDDING_MODEL_PATH =
+  process.env.MEMORY_EMBEDDING_MODEL_PATH?.trim() ||
+  "/opt/embedding-models/embeddinggemma-300m-qat-Q8_0.gguf";
+
+/**
  * Rewrites the user-supplied Ollama URL so OpenClaw's `isLocalBaseUrl` check
  * passes. Container-host aliases (see `DOCKER_HOST_ALIASES`) get normalized to
  * `ollama.local` — which clears the check via the rock-stable `.local` rule and
@@ -367,6 +378,25 @@ export async function regenerateOpenClawConfig() {
     // byte-identical → zero changed paths → no reload at all. The field is also
     // schema-valid (OpenClaw's zod schema declares memoryFlush.enabled as boolean).
     compaction: { memoryFlush: { enabled: false } },
+    // Pin memory-core's embedding provider to the bundled local GGUF model
+    // (the llama-cpp provider + EmbeddingGemma-300m, baked into the openclaw
+    // image — see Dockerfile.openclaw and REQUIRED_BUNDLED_PLUGINS below).
+    // memory-core defaults to the `openai` embedding provider, for which Pinchy
+    // provisions no key (only ollama-cloud) — so in production every index sync
+    // failed ("No API key found for provider openai"), leaving 0 chunks and a
+    // `disabled` memory_search. ollama-cloud and Anthropic expose NO embedding
+    // models, so a local, key-less, offline model is the only provider that
+    // works for every Pinchy deployment. EmbeddingGemma is multilingual (100+
+    // languages, #1 MTEB-multilingual <500M), which matters for non-English
+    // memory. Switching the provider changes the index identity; memory-core
+    // rebuilds the index automatically on next sync. Set in agents.defaults
+    // (deep-merged, preserving OpenClaw-enriched siblings — same reload-safe
+    // pattern as compaction above); memory-core reads it from
+    // agents.*.memorySearch.
+    memorySearch: {
+      provider: "local",
+      local: { modelPath: MEMORY_EMBEDDING_MODEL_PATH },
+    },
   };
   const defaultProvider = (await getSetting("default_provider")) as ProviderName | null;
   if (defaultProvider && PROVIDERS[defaultProvider]) {
@@ -1017,7 +1047,13 @@ export async function regenerateOpenClawConfig() {
   //     2026-07-14 prod incident). This entry is therefore currently inert; it
   //     is kept until the now-unreachable built-in `pdf` registration
   //     (`pdfModel` below) is dropped together in a follow-up.
-  const REQUIRED_BUNDLED_PLUGINS = ["document-extract"] as const;
+  //   - llama-cpp: the external llama.cpp provider plugin (manifest id
+  //     `llama-cpp`) that registers memory-core's `local` embedding provider —
+  //     the key-less, offline GGUF backend we pin in agents.defaults.memorySearch
+  //     above. Installed + bundled in Dockerfile.openclaw; without it in
+  //     plugins.allow the `local` provider never loads and memory_search resolves
+  //     to nothing (the same silent-recall failure, one layer down).
+  const REQUIRED_BUNDLED_PLUGINS = ["document-extract", "llama-cpp"] as const;
 
   const DISABLED_OPENCLAW_PLUGINS = new Set(["acpx", "bonjour", "device-pair", "phone-control"]);
   const isWanted = (p: string) =>
