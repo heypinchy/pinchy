@@ -62,6 +62,7 @@ describe("buildUsageRows", () => {
         estimatedCostUsd: "0.082751",
         runId: "run-1",
         seq: 5,
+        contextTokens: null,
       },
     ]);
   });
