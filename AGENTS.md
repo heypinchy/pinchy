@@ -100,10 +100,14 @@ Concretely:
 The filter now lives one level down:
 
 - The **`changes` job** diffs the PR against its base and outputs `code=true|false` via `scripts/detect-code-changes.mjs`. Pure logic is in `scripts/lib/ci-path-filter.mjs` (`hasCodeChanges`), covered by `scripts/lib/ci-path-filter.test.mjs` (`pnpm test:scripts`).
-- **Required-check jobs** (`quality`, `vitest-integration`, `e2e` — the names in branch protection, listed as `ALWAYS_RUN_JOBS`) are **never gated**. They run and report on every PR, so no required check depends on GitHub's subtle "a skipped job counts as success" behaviour.
+- **Ungated jobs** are listed in `UNGATED_JOBS` with the reason each one carries no gate. Two distinct reasons — don't conflate them:
+  - `required` (`quality`, `vitest-integration`, `e2e` — the names in branch protection, exposed as `REQUIRED_JOBS`): they must report on every PR, so no required check depends on GitHub's subtle "a skipped job counts as success" behaviour.
+  - `docs-relevant` (`links`): the job guards exactly the files a docs-only PR consists of (`**/*.md`), so gating it would skip the check on precisely the PRs that need it. Only worth it for cheap jobs.
 - **Every other job** carries `needs: changes` + `if: needs.changes.outputs.code == 'true'`, which is where the CI-minute saving comes from. A gated job is genuinely skipped on a docs-only PR.
 
-Two mistakes the drift guards in `ci-path-filter.test.mjs` exist to catch: re-adding `paths-ignore` (the original bug), and adding a new job without the gate (it would silently run the full Docker/E2E matrix on every README typo).
+Mistakes the drift guards in `ci-path-filter.test.mjs` exist to catch: re-adding `paths-ignore` (the original bug); adding a new job without the gate (it would silently run the full Docker/E2E matrix on every README typo); an `UNGATED_JOBS` entry that is actually gated in `ci.yml` (a list that lies); and a lockfile `vuln-scan` reads that the filter treats as docs.
+
+**Ignoring a path is a claim that no gated job reads it.** `docs/**` is prose with one carve-out: `docs/pnpm-lock.yaml` counts as **code**, because `vuln-scan` scans it — classifying a docs-lockfile security bump as docs-only would skip the very scan that proves the fix and leave main red until someone hand-ran `workflow_dispatch`. Before adding an ignore rule, check which gated job reads those files.
 
 An unresolvable base or empty diff deliberately answers **`code=true`**: wasting CI minutes is recoverable, skipping the matrix on a real code change is not. When adding a job that depends on `build-image`, note that `build-image` is skipped both on fork PRs (fall back to a local build) and on docs-only PRs (build nothing) — only the explicit `changes` gate tells those two apart.
 

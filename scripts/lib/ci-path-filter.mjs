@@ -9,12 +9,21 @@
  *
  * The fix keeps the workflow always starting, and moves the same path filter
  * down to the JOB level:
- *   - the required checks (ALWAYS_RUN_JOBS) run on every PR and always report;
+ *   - the UNGATED_JOBS run on every PR and always report;
  *   - every other job is gated on the `changes` job and is simply skipped when
  *     only docs changed, which is where the CI-minute saving actually came from.
  *
  * The drift guards in ci-path-filter.test.mjs keep that wiring honest.
  */
+
+/**
+ * docs/ is prose — except its dependency manifest. vuln-scan explicitly scans
+ * `./docs/pnpm-lock.yaml`, so treating a docs-lockfile security bump as
+ * "docs-only" would skip the very scan that proves the fix, and main would stay
+ * red until someone hand-ran workflow_dispatch. The lockfile guard in the test
+ * pins this to vuln-scan's real arguments rather than to this comment.
+ */
+const DOCS_LOCKFILE = "docs/pnpm-lock.yaml";
 
 /**
  * Paths that never need the Docker/E2E matrix, as predicates rather than globs
@@ -24,7 +33,7 @@
  * `PERSONALITY.md` is covered by the `**\/*.md` rule and needs no entry.
  */
 const IGNORED_PATHS = [
-  { glob: "docs/**", matches: (p) => p.startsWith("docs/") },
+  { glob: "docs/**", matches: (p) => p.startsWith("docs/") && p !== DOCS_LOCKFILE },
   { glob: "**/*.md", matches: (p) => p.endsWith(".md") },
   {
     glob: ".github/ISSUE_TEMPLATE/**",
@@ -34,8 +43,28 @@ const IGNORED_PATHS = [
   { glob: "screenshots/**", matches: (p) => p.startsWith("screenshots/") },
 ];
 
-/** ci.yml jobs that must run on every PR because branch protection requires them. */
-export const ALWAYS_RUN_JOBS = ["quality", "vitest-integration", "e2e"];
+/**
+ * ci.yml jobs that deliberately carry no `changes` gate, and why. The two
+ * reasons are distinct, and an earlier single "always run" list conflated them:
+ *
+ *   - `required` — named in main's branch protection. A required check must
+ *     report on EVERY pull request, so gating it would rest main's protection on
+ *     GitHub's subtle "a skipped job counts as success" behaviour.
+ *   - `docs-relevant` — cheap, and guards exactly the files a docs-only PR
+ *     changes. `links` checks `**\/*.md`, so gating it would skip the link check
+ *     on precisely the PRs that edit links.
+ */
+export const UNGATED_JOBS = {
+  quality: "required",
+  "vitest-integration": "required",
+  e2e: "required",
+  links: "docs-relevant",
+};
+
+/** The UNGATED_JOBS subset that branch protection requires. */
+export const REQUIRED_JOBS = Object.entries(UNGATED_JOBS)
+  .filter(([, reason]) => reason === "required")
+  .map(([name]) => name);
 
 /** The `if:` condition every other ci.yml job must carry. */
 export const GATE_EXPRESSION = "needs.changes.outputs.code == 'true'";

@@ -47,13 +47,18 @@ jobs:
           fetch-depth: 0
 
       - id: filter
+        # Every github.* value reaches the script through env, never through
+        # `${{ }}` interpolation into the shell — event_name is a closed enum and
+        # harmless, but a half-interpolated script invites the next edit to add a
+        # branch name or PR title, which are attacker-controlled.
         env:
+          EVENT_NAME: ${{ github.event_name }}
           BASE_REF: ${{ github.base_ref }}
           BEFORE: ${{ github.event.before }}
         run: |
-          if [ "${{ github.event_name }}" = "pull_request" ]; then
+          if [ "$EVENT_NAME" = "pull_request" ]; then
             BASE="origin/$BASE_REF"
-          elif [ "${{ github.event_name }}" = "push" ]; then
+          elif [ "$EVENT_NAME" = "push" ]; then
             BASE="$BEFORE"
           else
             # workflow_dispatch: an explicit manual run always means "run it all".
@@ -2426,10 +2431,12 @@ jobs:
         env:
           OLLAMA_URL: http://localhost:11434
 
+  # Deliberately NOT gated on `changes`: this job checks `**/*.md` / `**/*.mdx`,
+  # i.e. exactly the files a "docs-only" PR consists of. Gating it would skip the
+  # link check on precisely the PRs that edit links. It is cheap (checkout + one
+  # lychee run), so it runs on every PR.
   links:
     name: Check links
-    needs: changes
-    if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-latest
 
     steps:
