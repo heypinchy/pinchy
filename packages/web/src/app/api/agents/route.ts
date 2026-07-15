@@ -1,50 +1,12 @@
 import { NextResponse, after } from "next/server";
 import { revalidatePath } from "next/cache";
-import { z } from "zod";
 import { withAuth, withAdmin } from "@/lib/api-auth";
-import { eq } from "drizzle-orm";
-import { db } from "@/db";
-import { agents, agentConnectionPermissions, integrationConnections } from "@/db/schema";
-import { getTemplate, generateAgentsMd } from "@/lib/agent-templates";
-import { getPersonalityPreset, resolveGreetingMessage } from "@/lib/personality-presets";
-import { generateAvatarSeed } from "@/lib/avatar";
-import { AGENT_NAME_MAX_LENGTH } from "@/lib/agents";
-import { validateAllowedPaths } from "@/lib/path-validation";
-import { validatePinchyWebConfig, pluginConfigSchema } from "@/lib/domain-validation";
 import { parseRequestBody } from "@/lib/api-validation";
-import {
-  ensureWorkspace,
-  writeWorkspaceFile,
-  writeWorkspaceFileInternal,
-  writeIdentityFile,
-} from "@/lib/workspace";
-import { getContextForAgent } from "@/lib/context-sync";
-import { regenerateOpenClawConfig } from "@/lib/openclaw-config";
-import { waitForAgentInRuntime } from "@/lib/wait-for-agent-in-runtime";
-import { getOpenClawClient } from "@/server/openclaw-client";
-import { getSetting } from "@/lib/settings";
-import { type ProviderName } from "@/lib/providers";
-import { getDefaultModel } from "@/lib/provider-models";
-import { TemplateCapabilityUnavailableError } from "@/lib/model-resolver";
-import { resolveAvailableModelForTemplate } from "@/lib/model-resolver/resolve-available";
+import { createAgent } from "@/lib/agents";
+import { createAgentSchema } from "@/lib/schemas/agents";
 import { appendAuditLog } from "@/lib/audit";
 import { deferAuditLog } from "@/lib/audit-deferred";
 import { getVisibleAgents } from "@/lib/visible-agents";
-import { validateOdooTemplate } from "@/lib/integrations/odoo-template-validation";
-import { detectEmailOperations } from "@/lib/tool-registry";
-
-const createAgentSchema = z.object({
-  name: z
-    .string()
-    .min(1)
-    .max(AGENT_NAME_MAX_LENGTH)
-    .refine((v) => v.trim().length > 0, "Name is required"),
-  templateId: z.string().min(1),
-  tagline: z.string().nullish(),
-  pluginConfig: pluginConfigSchema.nullish(),
-  connectionId: z.string().nullish(),
-  defaultAllowedTools: z.array(z.string()).optional(),
-});
 
 export const GET = withAuth(async (_req, _ctx, session) => {
   const visibleAgents = await getVisibleAgents(session.user.id!, session.user.role ?? "member");
@@ -59,139 +21,34 @@ export const GET = withAuth(async (_req, _ctx, session) => {
 export const POST = withAdmin(async (request, _ctx, session) => {
   const parsed = await parseRequestBody(createAgentSchema, request);
   if ("error" in parsed) return parsed.error;
-  const { name, templateId, tagline, pluginConfig, connectionId, defaultAllowedTools } =
-    parsed.data;
 
-  const template = getTemplate(templateId);
-  if (!template) {
-    return NextResponse.json({ error: `Unknown template: ${templateId}` }, { status: 400 });
-  }
+  // The domain work lives in the auth-/audit-/HTTP-agnostic createAgent()
+  // service (#572) so the future key-authenticated POST /api/v1/agents route
+  // can reuse it. This route owns auth (withAdmin), audit (actorType: "user"),
+  // and HTTP — mapping the service's discriminated result onto responses.
+  const result = await createAgent(parsed.data, session.user.id!);
 
-  // Validate pinchy-web domain lists (parity with PATCH — agents created with
-  // a knowledge-base template may carry a pinchy-web block in pluginConfig
-  // alongside pinchy-files.allowed_paths).
-  const pluginConfigError = validatePinchyWebConfig(pluginConfig);
-  if (pluginConfigError) {
-    return NextResponse.json({ error: pluginConfigError }, { status: 400 });
-  }
-
-  // Only file-access plugin requires directory selection
-  if (template.pluginId === "pinchy-files") {
-    const paths = pluginConfig?.["pinchy-files"]?.allowed_paths;
-    if (!paths || paths.length === 0) {
-      return NextResponse.json(
-        { error: "At least one directory must be selected" },
-        { status: 400 }
-      );
-    }
-    try {
-      validateAllowedPaths(paths);
-    } catch (error) {
-      const message = error instanceof Error ? error.message : "Invalid paths";
-      return NextResponse.json({ error: message }, { status: 400 });
-    }
-  }
-
-  // Odoo templates require a connection
-  if (template.requiresOdooConnection && !connectionId) {
-    return NextResponse.json(
-      { error: "An Odoo connection is required for this template" },
-      { status: 400 }
-    );
-  }
-
-  // Email templates require a connection
-  if (template.requiresEmailConnection && !connectionId) {
-    return NextResponse.json(
-      { error: "An email connection is required for this template" },
-      { status: 400 }
-    );
-  }
-
-  // Resolve personality preset from template
-  const preset = getPersonalityPreset(template.defaultPersonality);
-
-  // Determine model: use template-aware resolver when modelHint is present,
-  // fall back to provider default for templates without a hint (e.g. "custom").
-  const defaultProvider = (await getSetting("default_provider")) as ProviderName | null;
-
-  let model: string;
-  let modelSelectionSource: "template-hint" | "provider-default" = "provider-default";
-  let modelSelectionReason: string;
-
-  if (template.modelHint && defaultProvider) {
-    try {
-      const resolved = await resolveAvailableModelForTemplate({
-        hint: template.modelHint,
-        provider: defaultProvider,
+  if (!result.ok) {
+    // Only the capability path (422) is audited (parity with the pre-extraction
+    // route). Plain 400 validation failures were never logged. Keying off the
+    // status discriminant also narrows `error` to the arm carrying
+    // `capabilityFailure`.
+    if (result.error.status === 422) {
+      await appendAuditLog({
+        actorType: "user",
+        actorId: session.user.id!,
+        eventType: "agent.created",
+        outcome: "failure",
+        detail: result.error.capabilityFailure,
       });
-      model = resolved.model;
-      modelSelectionReason = resolved.reason;
-      modelSelectionSource = "template-hint";
-    } catch (err) {
-      if (err instanceof TemplateCapabilityUnavailableError) {
-        await appendAuditLog({
-          actorType: "user",
-          actorId: session.user.id!,
-          eventType: "agent.created",
-          outcome: "failure",
-          detail: {
-            templateId,
-            missingCapabilities: err.missingCapabilities,
-            provider: err.provider,
-          },
-        });
-        return NextResponse.json(
-          {
-            error: "template_capability_unavailable",
-            message: err.message,
-            missingCapabilities: err.missingCapabilities,
-            docsUrl: err.docsUrl,
-          },
-          { status: 422 }
-        );
-      }
-      throw err;
     }
-  } else {
-    model = defaultProvider
-      ? await getDefaultModel(defaultProvider)
-      : "anthropic/claude-haiku-4-5-20251001";
-    modelSelectionReason = `provider-default (${defaultProvider ?? "anthropic fallback"})`;
+    return NextResponse.json(result.error.body, { status: result.error.status });
   }
 
-  const mergedAllowedTools = [
-    ...new Set([...(template.allowedTools ?? []), ...(defaultAllowedTools ?? [])]),
-  ];
+  const { agent, audit, autoConfiguredPermissions, runtimeWarning, runtimeApplyError } = result;
 
-  // Skills from the template seed the agent's allowlist. Templates without
-  // defaultSkills get an empty list — same shape as a pre-migration agent.
-  // See master issue #543.
-  const templateSkills = [...new Set(template.defaultSkills ?? [])];
-
-  const [agent] = await db
-    .insert(agents)
-    .values({
-      name,
-      model,
-      templateId,
-      pluginConfig: template.pluginId && pluginConfig ? pluginConfig : null,
-      ownerId: session.user.id,
-      allowedTools: mergedAllowedTools,
-      skills: templateSkills,
-      // Seed the empty-chat starter chips from the template (#570). Templates
-      // without a curated set (e.g. custom) fall back to [] — no chips.
-      starterPrompts: template.defaultStarterPrompts ?? [],
-      tagline: tagline || template.defaultTagline || null,
-      avatarSeed: generateAvatarSeed(),
-      personalityPresetId: template.defaultPersonality,
-      greetingMessage: resolveGreetingMessage(
-        template.defaultGreetingMessage ?? preset?.greetingMessage ?? "Hi {user}. How can I help?",
-        name.trim()
-      ),
-    })
-    .returning();
-
+  // Registered only after createAgent() fully succeeds: a throw mid-creation
+  // (permissions/workspace/regen → 500) must NOT queue a false "success" audit.
   after(() =>
     appendAuditLog({
       actorType: "user",
@@ -201,144 +58,35 @@ export const POST = withAdmin(async (request, _ctx, session) => {
       detail: {
         name: agent.name,
         model: agent.model,
-        templateId,
-        skills: templateSkills,
-        modelSelection: {
-          source: modelSelectionSource,
-          hint: template.modelHint ?? null,
-          reason: modelSelectionReason,
-        },
+        templateId: parsed.data.templateId,
+        skills: audit.templateSkills,
+        modelSelection: audit.modelSelection,
       },
       outcome: "success",
     })
   );
 
-  // Auto-configure Odoo permissions when template has odooConfig
-  if (template.odooConfig && connectionId) {
-    const connRows = await db
-      .select()
-      .from(integrationConnections)
-      .where(eq(integrationConnections.id, connectionId));
-
-    if (connRows.length > 0) {
-      const connectionData = connRows[0].data as {
-        models?: Array<{
-          model: string;
-          name: string;
-          access?: { read: boolean; create: boolean; write: boolean; delete: boolean };
-        }>;
-      } | null;
-      const models = connectionData?.models ?? [];
-
-      const validation = validateOdooTemplate(template.odooConfig, models);
-
-      if (validation.availableModels.length > 0) {
-        const permissionRows = validation.availableModels.flatMap((m) =>
-          m.operations.map((op) => ({
-            agentId: agent.id,
-            connectionId,
-            model: m.model,
-            operation: op,
-          }))
-        );
-
-        await db.insert(agentConnectionPermissions).values(permissionRows);
-
-        deferAuditLog({
-          actorType: "user",
-          actorId: session.user.id!,
-          eventType: "config.changed",
-          resource: `agent:${agent.id}`,
-          detail: {
-            action: "agent_integration_permissions_auto_configured",
-            agentId: agent.id,
-            connectionId,
-            permissions: permissionRows.map((p) => ({ model: p.model, operation: p.operation })),
-          },
-          outcome: "success",
-        });
-      }
-    }
-  }
-
-  // Auto-configure email permissions when template requires email connection
-  if (template.requiresEmailConnection && connectionId) {
-    const emailOps = detectEmailOperations(template.allowedTools);
-
-    if (emailOps.length > 0) {
-      const permissionRows = emailOps.map((op) => ({
+  for (const entry of autoConfiguredPermissions) {
+    deferAuditLog({
+      actorType: "user",
+      actorId: session.user.id!,
+      eventType: "config.changed",
+      resource: `agent:${agent.id}`,
+      detail: {
+        action: "agent_integration_permissions_auto_configured",
         agentId: agent.id,
-        connectionId,
-        model: "email",
-        operation: op,
-      }));
-
-      await db.insert(agentConnectionPermissions).values(permissionRows);
-
-      deferAuditLog({
-        actorType: "user",
-        actorId: session.user.id!,
-        eventType: "config.changed",
-        resource: `agent:${agent.id}`,
-        detail: {
-          action: "agent_integration_permissions_auto_configured",
-          agentId: agent.id,
-          connectionId,
-          permissions: permissionRows.map((p) => ({ model: p.model, operation: p.operation })),
-        },
-        outcome: "success",
-      });
-    }
+        connectionId: entry.connectionId,
+        permissions: entry.permissions,
+      },
+      outcome: "success",
+    });
   }
 
-  // Create workspace with personality preset's SOUL.md
-  ensureWorkspace(agent.id);
-  writeWorkspaceFile(agent.id, "SOUL.md", preset?.soulMd ?? "");
-  writeIdentityFile(agent.id, { name: agent.name, tagline: agent.tagline });
-  const agentsMd = generateAgentsMd(
-    template,
-    template.pluginId && pluginConfig ? pluginConfig : undefined
-  );
-  if (agentsMd) {
-    writeWorkspaceFile(agent.id, "AGENTS.md", agentsMd);
-  }
-  const context = await getContextForAgent({
-    isPersonal: false,
-    ownerId: session.user.id!,
-  });
-  writeWorkspaceFileInternal(agent.id, "USER.md", context);
-
-  // Best-effort runtime apply: the agent row is already committed above, so a
-  // failed regeneration must NOT surface as a 500 that implies the agent
-  // wasn't created (#880) — the UI would show an error while a refresh reveals
-  // the agent exists. On failure we still return 201 with a non-blocking
-  // warning; OpenClaw reconciles on its next startup / config push.
-  let runtimeWarning: string | undefined;
-  try {
-    await regenerateOpenClawConfig();
-
-    // Wait until OC's runtime has the new agent visible in `agents.list`.
-    // Pinchy's regenerate is fire-and-forget (`pushConfigInBackground`) and OC
-    // applies the hot reload asynchronously; without this gate the first
-    // dispatch after POST /api/agents can race the reload and fail with
-    // `invalid agent params: unknown agent id`. Best-effort with a 5 s cap so
-    // we don't block the interactive save flow if OC is restarting.
-    let client = null;
-    try {
-      client = getOpenClawClient();
-    } catch {
-      // OC client not initialised (rare in tests / pre-setup). Skip the wait.
-    }
-    await waitForAgentInRuntime(client, agent.id);
-  } catch (err) {
-    console.error("Failed to apply new agent config to the OpenClaw runtime:", err);
-    runtimeWarning =
-      "Agent created. Applying it to the runtime failed — check the server logs; it will retry on the next restart or config change.";
-    // The agent row is committed (the create is audited as success above), but
-    // it never reached the runtime. Record that as a distinct failure event so
-    // the trail shows "created but not applied" instead of silently implying a
-    // clean create (#880). deferAuditLog: the create already happened and must
-    // not be rolled back if this write fails.
+  // The agent row is committed (audited success above) but never reached the
+  // runtime (#880). Record a distinct failure event so the trail shows "created
+  // but not applied" instead of implying a clean create. deferAuditLog: the
+  // create already happened and must not be rolled back if this write fails.
+  if (runtimeWarning) {
     deferAuditLog({
       actorType: "user",
       actorId: session.user.id!,
@@ -348,7 +96,7 @@ export const POST = withAdmin(async (request, _ctx, session) => {
         action: "runtime_apply_failed",
         agentId: agent.id,
         name: agent.name,
-        error: err instanceof Error ? err.message : String(err),
+        error: runtimeApplyError,
       },
       outcome: "failure",
     });
