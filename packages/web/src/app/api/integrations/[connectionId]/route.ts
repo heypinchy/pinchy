@@ -215,17 +215,22 @@ export const PATCH = withAdmin<RouteContext>(async (request, { params }, session
       outcome: "success",
     });
 
-    // MCP-only (T6, docs/plans/2026-06-30-mcp-port-to-main.md): a credential
-    // edit is how an admin recovers a connection from `auth_failed` (e.g. a
-    // rotated token) — clearIntegrationAuthError above just flipped status
-    // back to `active`. build.ts filters mcp.servers/tools.allow to
-    // status==="active" (auth_failed connections don't get a live config
-    // entry, since MCP has no runtime plugin to degrade gracefully the way
-    // Odoo/email do), so any grants an agent already had on this connection
-    // stay fail-closed until this regenerates. Odoo/email/imap deliberately
-    // do NOT get this call: their credential edits were never gated by
-    // connection status in the config in the first place, so there is
-    // nothing here for them to re-enable.
+    // MCP-only (T6, docs/plans/2026-06-30-mcp-port-to-main.md). A credential
+    // edit is how an admin recovers a connection from `auth_failed` (rotated
+    // token), and build.ts filters mcp.servers/tools.allow to
+    // status==="active" — so the recovery has to reach the config or the
+    // agent's existing grants stay fail-closed.
+    //
+    // That recovery regen is now performed by clearIntegrationAuthError above
+    // (see auth-state.ts: the trigger sits at the status transition, where it
+    // can tell a real flip from a no-op). This call is therefore a belt-and-
+    // braces duplicate on the recovery path, and a no-op otherwise: for MCP a
+    // PATCH can only change the token (mcpEditSchema is token-only), which
+    // never enters openclaw.json — the proxy fetches it per request — so the
+    // emitted config is byte-identical unless the status moved. Kept because
+    // regenerate is idempotent and skips the write when nothing changed; a
+    // follow-up may drop it once the auth-state trigger has proven itself.
+    // Odoo/email/imap deliberately never get this call.
     if (existing.type === "mcp") {
       await regenerateOpenClawConfig();
     }

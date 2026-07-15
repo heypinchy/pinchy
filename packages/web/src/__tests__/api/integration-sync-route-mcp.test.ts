@@ -274,14 +274,13 @@ describe("POST /api/integrations/[connectionId]/sync (type=mcp)", () => {
     expect(mockClearIntegrationAuthError).not.toHaveBeenCalled();
     expect(mockUpdateSet).not.toHaveBeenCalled();
     expect(mockDeferAuditLog).not.toHaveBeenCalled();
-    // The status flip is config-relevant in BOTH directions: build.ts filters
-    // mcp.servers/tools.allow to status==="active", so an expired token that
-    // just flipped this connection to auth_failed must drop out of the config
-    // now — otherwise OpenClaw keeps a live server entry and retries the
-    // failing initialize handshake on every reload, and the config claims a
-    // reachability that no longer exists. (Recovery — auth_failed → active —
-    // is covered by the PATCH route's regen.)
-    expect(mockRegenerateOpenClawConfig).toHaveBeenCalledTimes(1);
+    // No DATA-driven regen on this path: nothing was re-synced, so the route
+    // has no config change of its own to push. The config change that DOES
+    // follow from the auth_failed flip (build.ts filters mcp.servers /
+    // tools.allow on status) is triggered inside setIntegrationAuthFailed and
+    // asserted there — see auth-state.test.ts, "MCP config regeneration on
+    // auth transitions". auth-state is mocked here, so it cannot fire.
+    expect(mockRegenerateOpenClawConfig).not.toHaveBeenCalled();
   });
 
   it("does NOT flip to auth_failed on a 5xx (McpServerError) — a healthy connection must survive a server hiccup", async () => {

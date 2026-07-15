@@ -12,15 +12,20 @@ vi.mock("@/lib/audit", () => ({
 vi.mock("@/lib/audit-deferred", () => ({
   recordAuditFailure: vi.fn(),
 }));
+vi.mock("@/lib/openclaw-config", () => ({
+  regenerateOpenClawConfig: vi.fn().mockResolvedValue(undefined),
+}));
 
 import { db } from "@/db";
 import { appendAuditLog } from "@/lib/audit";
 import { recordAuditFailure } from "@/lib/audit-deferred";
+import { regenerateOpenClawConfig } from "@/lib/openclaw-config";
 import { setIntegrationAuthFailed, clearIntegrationAuthError } from "@/lib/integrations/auth-state";
 
 const mockedDb = vi.mocked(db);
 const mockedAppendAudit = vi.mocked(appendAuditLog);
 const mockedRecordAuditFailure = vi.mocked(recordAuditFailure);
+const mockedRegenerate = vi.mocked(regenerateOpenClawConfig);
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -270,6 +275,145 @@ describe("audit failure handling", () => {
 
     expect(mockedRecordAuditFailure).toHaveBeenCalledWith(
       expect.any(Error),
+      expect.objectContaining({ eventType: "integration.auth_recovered" })
+    );
+  });
+});
+
+/**
+ * MCP config regeneration on auth-status transitions.
+ *
+ * MCP's per-agent gating lives in openclaw.json itself (build.ts emits
+ * `mcp.servers` + `tools.allow` only for connections with status "active"), so
+ * "status changed" implies "config is stale" — for MCP and only for MCP. That
+ * invariant lives here, at the single place status actually changes, rather
+ * than at each of the four callers that can trigger a transition (sync route,
+ * Test Connection ×3): all four were originally missed, and a fail-closed path
+ * must not depend on every future caller remembering.
+ *
+ * Being inside the transition guard is also what makes it precise — the
+ * callers cannot distinguish a real flip from a no-op (both functions return
+ * void and bail early when the conditional UPDATE matches no rows), so a
+ * caller-side trigger necessarily regenerates on repeat calls too.
+ */
+describe("MCP config regeneration on auth transitions", () => {
+  function mockConnection(row: Record<string, unknown>, transitioned: boolean) {
+    mockedDb.select.mockReturnValue({
+      from: () => ({ where: () => Promise.resolve([row]) }),
+    } as never);
+    mockedDb.update.mockReturnValue({
+      set: vi.fn().mockReturnThis(),
+      where: vi.fn().mockReturnThis(),
+      returning: vi.fn().mockResolvedValue(transitioned ? [{ id: row.id }] : []),
+    } as never);
+  }
+
+  const mcpActive = { id: "c-mcp", name: "GitHub MCP", type: "mcp", status: "active" };
+  const mcpFailed = { id: "c-mcp", name: "GitHub MCP", type: "mcp", status: "auth_failed" };
+
+  it("regenerates when an MCP connection really flips active → auth_failed", async () => {
+    mockConnection(mcpActive, true);
+
+    await setIntegrationAuthFailed({
+      connectionId: "c-mcp",
+      reason: "token expired",
+      actor: { type: "user", id: "u1" },
+    });
+
+    // Without this the config keeps a live mcp.servers entry for a connection
+    // that can no longer authenticate: OpenClaw retries the failing
+    // initialize handshake on every reload, and the config claims a
+    // reachability that no longer exists.
+    expect(mockedRegenerate).toHaveBeenCalledTimes(1);
+  });
+
+  it("regenerates when an MCP connection really recovers auth_failed → active", async () => {
+    mockConnection(mcpFailed, true);
+
+    await clearIntegrationAuthError({ connectionId: "c-mcp", actor: { type: "user", id: "u1" } });
+
+    // The mirror case: until this runs, build.ts still filters the connection
+    // out, so the agent's existing grants stay fail-closed even though the UI
+    // reports the connection healthy again.
+    expect(mockedRegenerate).toHaveBeenCalledTimes(1);
+  });
+
+  it("does NOT regenerate on a no-op setIntegrationAuthFailed (already auth_failed)", async () => {
+    // The whole point of living behind the transition guard: repeatedly
+    // hitting "Test Connection" on an already-failed MCP connection changes
+    // nothing, so it must not kick off a full config regenerate each time.
+    mockConnection(mcpFailed, false);
+
+    await setIntegrationAuthFailed({
+      connectionId: "c-mcp",
+      reason: "token expired (again)",
+      actor: { type: "user", id: "u1" },
+    });
+
+    expect(mockedAppendAudit).not.toHaveBeenCalled();
+    expect(mockedRegenerate).not.toHaveBeenCalled();
+  });
+
+  it("does NOT regenerate on a no-op clearIntegrationAuthError (already active)", async () => {
+    mockConnection(mcpActive, false);
+
+    await clearIntegrationAuthError({ connectionId: "c-mcp", actor: { type: "user", id: "u1" } });
+
+    expect(mockedAppendAudit).not.toHaveBeenCalled();
+    expect(mockedRegenerate).not.toHaveBeenCalled();
+  });
+
+  it("does NOT regenerate when the connection does not exist", async () => {
+    mockedDb.select.mockReturnValue({
+      from: () => ({ where: () => Promise.resolve([]) }),
+    } as never);
+
+    await setIntegrationAuthFailed({
+      connectionId: "ghost",
+      reason: "401",
+      actor: { type: "system", id: "plugin:x" },
+    });
+
+    expect(mockedRegenerate).not.toHaveBeenCalled();
+  });
+
+  it.each([["odoo"], ["imap"], ["google"], ["microsoft"], ["web-search"]])(
+    "does NOT regenerate for a non-MCP type (%s) — those gate at runtime in their plugin",
+    async (type) => {
+      // The promise that existing integration types stay byte-identical:
+      // their status never reaches openclaw.json (the plugin fetches
+      // credentials and checks permissions at tool-call time), so a
+      // transition here has no config consequence at all.
+      mockConnection({ id: "c1", name: "Conn", type, status: "active" }, true);
+
+      await setIntegrationAuthFailed({
+        connectionId: "c1",
+        reason: "401",
+        actor: { type: "system", id: "plugin:x" },
+      });
+
+      expect(mockedAppendAudit).toHaveBeenCalled(); // the transition DID happen
+      expect(mockedRegenerate).not.toHaveBeenCalled(); // …it just isn't config-relevant
+    }
+  );
+
+  it("contains a regenerate failure: the committed status change must not throw or roll back", async () => {
+    // Regression guard (moved here with the trigger). The status change has
+    // already committed, so a failed config write must not surface as a
+    // failure of the thing that succeeded. This is not cosmetic: the Test
+    // Connection route's catch-all turns ANY throw into
+    // setIntegrationAuthFailed(reason: <error>), so a propagating regen throw
+    // on the recovery path would mark a *healthy* MCP connection auth_failed
+    // purely because openclaw.json couldn't be written.
+    mockConnection(mcpFailed, true);
+    mockedRegenerate.mockRejectedValueOnce(new Error("EACCES: openclaw.json"));
+
+    await expect(
+      clearIntegrationAuthError({ connectionId: "c-mcp", actor: { type: "user", id: "u1" } })
+    ).resolves.toBeUndefined();
+
+    // The recovery itself still stands and is still audited.
+    expect(mockedAppendAudit).toHaveBeenCalledWith(
       expect.objectContaining({ eventType: "integration.auth_recovered" })
     );
   });
