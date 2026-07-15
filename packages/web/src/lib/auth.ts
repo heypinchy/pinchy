@@ -7,6 +7,7 @@ import bcrypt from "bcryptjs";
 import { db } from "@/db";
 import * as schema from "@/db/schema";
 import { appendAuditLog, redactEmail } from "@/lib/audit";
+import { SIGN_IN_RATE_LIMIT_WINDOW_SECONDS } from "@/lib/auth-rate-limit";
 import { getCachedDomain } from "@/lib/domain";
 import { shouldUseSecureCookies } from "@/lib/secure-cookies";
 import { PASSWORD_MIN_LENGTH } from "@/lib/validate-password";
@@ -122,8 +123,10 @@ export function getAuthRateLimitConfig(): BetterAuthRateLimitOptions {
     // covers any future sub-path (OAuth, magic-link, passkey) we add.
     customRules: {
       // Pre-auth — brute-force / credential-stuffing protection
-      "/sign-in/email": { window: 60, max: 5 }, // was 3/10s = 18/min
-      "/sign-in/*": { window: 60, max: 5 },
+      // The window is shared with the login page, which tells the user how long
+      // to wait — see @/lib/auth-rate-limit.
+      "/sign-in/email": { window: SIGN_IN_RATE_LIMIT_WINDOW_SECONDS, max: 5 }, // was 3/10s = 18/min
+      "/sign-in/*": { window: SIGN_IN_RATE_LIMIT_WINDOW_SECONDS, max: 5 },
       "/sign-up/email": { window: 300, max: 3 },
       "/sign-up/*": { window: 300, max: 3 },
       // Reset flow — also a spam-DOS vector against user inboxes
