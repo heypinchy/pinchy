@@ -12,6 +12,7 @@ import { SettingsUsers } from "@/components/settings-users";
 import { SettingsContext } from "@/components/settings-context";
 import { SettingsProfile } from "@/components/settings-profile";
 import { SettingsGroups } from "@/components/settings-groups";
+import { SettingsApiKeys } from "@/components/settings-api-keys";
 import { SettingsIntegrations } from "@/components/settings-integrations";
 
 import { SettingsLicense } from "@/components/settings-license";
@@ -235,6 +236,7 @@ export function SettingsPageContent({
                 </TabsTrigger>
                 <TabsTrigger value="users">Users</TabsTrigger>
                 <TabsTrigger value="groups">Groups</TabsTrigger>
+                <TabsTrigger value="apikeys">API Keys</TabsTrigger>
                 <TabsTrigger value="integrations">
                   Integrations {needsAttentionCount > 0 && <ErrorDot />}
                 </TabsTrigger>
@@ -323,6 +325,12 @@ export function SettingsPageContent({
             {isAdmin && (
               <TabsContent value="groups" keepMounted>
                 <SettingsGroups refreshKey={enterpriseRefreshKey} isAdmin={isAdmin} />
+              </TabsContent>
+            )}
+
+            {isAdmin && (
+              <TabsContent value="apikeys" keepMounted>
+                <SettingsApiKeys />
               </TabsContent>
             )}
 

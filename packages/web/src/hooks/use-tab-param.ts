@@ -11,6 +11,7 @@ export const SETTINGS_TABS = [
   "provider",
   "users",
   "groups",
+  "apikeys",
   "integrations",
   "organization",
   "license",
