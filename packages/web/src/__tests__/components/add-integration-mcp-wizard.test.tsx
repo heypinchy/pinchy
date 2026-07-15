@@ -13,7 +13,7 @@
  */
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
+import { describe, expect, it, vi, beforeEach } from "vitest";
 
 vi.mock("sonner", () => ({
   toast: { success: vi.fn(), error: vi.fn() },
@@ -37,18 +37,19 @@ import { apiPost, ApiError } from "@/lib/api-client";
 
 function renderDialog(props: Partial<Parameters<typeof AddIntegrationDialog>[0]> = {}) {
   return render(
-    <AddIntegrationDialog open={true} onOpenChange={vi.fn()} onSuccess={vi.fn()} {...props} />
+    <AddIntegrationDialog
+      open={true}
+      onOpenChange={vi.fn()}
+      onSuccess={vi.fn()}
+      mcpEnabled
+      {...props}
+    />
   );
 }
 
 describe("AddIntegrationDialog — MCP type cards", () => {
   beforeEach(() => {
     vi.mocked(apiPost).mockReset();
-    vi.stubEnv("NEXT_PUBLIC_PINCHY_MCP_ENABLED", "1");
-  });
-
-  afterEach(() => {
-    vi.unstubAllEnvs();
   });
 
   it("shows GitHub, Linear, Atlassian and Custom MCP server cards", () => {
@@ -60,8 +61,7 @@ describe("AddIntegrationDialog — MCP type cards", () => {
   });
 
   it("hides every MCP card when the flag is off", () => {
-    vi.stubEnv("NEXT_PUBLIC_PINCHY_MCP_ENABLED", "0");
-    renderDialog();
+    renderDialog({ mcpEnabled: false });
     expect(screen.queryByRole("button", { name: /^GitHub$/i })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /^Linear$/i })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /^Atlassian$/i })).not.toBeInTheDocument();
@@ -74,11 +74,6 @@ describe("AddIntegrationDialog — MCP type cards", () => {
 describe("AddIntegrationDialog — GitHub named-preset flow", () => {
   beforeEach(() => {
     vi.mocked(apiPost).mockReset();
-    vi.stubEnv("NEXT_PUBLIC_PINCHY_MCP_ENABLED", "1");
-  });
-
-  afterEach(() => {
-    vi.unstubAllEnvs();
   });
 
   it("hides the preset selector — the card already picked GitHub", async () => {
@@ -194,11 +189,6 @@ describe("AddIntegrationDialog — GitHub named-preset flow", () => {
 describe("AddIntegrationDialog — additional named presets", () => {
   beforeEach(() => {
     vi.mocked(apiPost).mockReset();
-    vi.stubEnv("NEXT_PUBLIC_PINCHY_MCP_ENABLED", "1");
-  });
-
-  afterEach(() => {
-    vi.unstubAllEnvs();
   });
 
   it("Atlassian card surfaces the admin-enable note, service-account caveat, and canonical token URL", async () => {
@@ -286,11 +276,6 @@ describe("AddIntegrationDialog — additional named presets", () => {
 describe("AddIntegrationDialog — Custom MCP server flow", () => {
   beforeEach(() => {
     vi.mocked(apiPost).mockReset();
-    vi.stubEnv("NEXT_PUBLIC_PINCHY_MCP_ENABLED", "1");
-  });
-
-  afterEach(() => {
-    vi.unstubAllEnvs();
   });
 
   it("shows the preset selector — user may still pick a known preset", async () => {
@@ -331,11 +316,6 @@ describe("AddIntegrationDialog — Custom MCP server flow", () => {
 describe("AddIntegrationDialog — Test connection", () => {
   beforeEach(() => {
     vi.mocked(apiPost).mockReset();
-    vi.stubEnv("NEXT_PUBLIC_PINCHY_MCP_ENABLED", "1");
-  });
-
-  afterEach(() => {
-    vi.unstubAllEnvs();
   });
 
   it("renders the 'Test connection' button in the GitHub flow", async () => {
@@ -487,11 +467,6 @@ describe("AddIntegrationDialog — Test connection", () => {
 describe("AddIntegrationDialog — MCP initialType prop (picker page entry point)", () => {
   beforeEach(() => {
     vi.mocked(apiPost).mockReset();
-    vi.stubEnv("NEXT_PUBLIC_PINCHY_MCP_ENABLED", "1");
-  });
-
-  afterEach(() => {
-    vi.unstubAllEnvs();
   });
 
   it("opens directly at the GitHub connect step when initialType='mcp-github'", () => {

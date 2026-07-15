@@ -19,8 +19,12 @@ const SETTINGS_INTEGRATIONS_HREF = "/settings?tab=integrations";
  *
  * The dialog handles the entire per-type connect flow — this page is purely
  * the type-picker step.
+ *
+ * `mcpEnabled` is threaded in from the server component that renders this
+ * (app/(app)/settings/integrations/new/page.tsx), which reads the live
+ * PINCHY_MCP_ENABLED value per request — see lib/feature-flags.ts.
  */
-export function NewIntegrationContent() {
+export function NewIntegrationContent({ mcpEnabled }: { mcpEnabled: boolean }) {
   const router = useRouter();
   const [selectedType, setSelectedType] = useState<IntegrationTypeId | null>(null);
   const [configuredSingletons, setConfiguredSingletons] = useState<string[]>([]);
@@ -70,6 +74,7 @@ export function NewIntegrationContent() {
       </div>
 
       <IntegrationTypePicker
+        mcpEnabled={mcpEnabled}
         configuredSingletons={configuredSingletons}
         onSelect={setSelectedType}
       />
@@ -81,6 +86,7 @@ export function NewIntegrationContent() {
           onSuccess={handleSuccess}
           existingTypes={configuredSingletons}
           initialType={selectedType}
+          mcpEnabled={mcpEnabled}
         />
       )}
     </div>

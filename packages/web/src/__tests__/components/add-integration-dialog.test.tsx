@@ -39,10 +39,14 @@ function mockListDatabases(databases: string[], success = true) {
 }
 
 describe("AddIntegrationDialog", () => {
+  // These suites cover the odoo/google/microsoft/imap flows, none of which
+  // touch MCP. Passing the flag explicitly (rather than relying on a default)
+  // keeps the dialog's MCP gate an intentional decision at every render site.
   const defaultProps = {
     open: true,
     onOpenChange: vi.fn(),
     onSuccess: vi.fn(),
+    mcpEnabled: false,
   };
 
   beforeEach(() => {
@@ -473,7 +477,12 @@ describe("AddIntegrationDialog", () => {
       const onSuccess = vi.fn();
       const user = userEvent.setup();
       render(
-        <AddIntegrationDialog open={true} onOpenChange={onOpenChange} onSuccess={onSuccess} />
+        <AddIntegrationDialog
+          open={true}
+          onOpenChange={onOpenChange}
+          onSuccess={onSuccess}
+          mcpEnabled={false}
+        />
       );
       await selectImapType(user);
 
@@ -525,7 +534,12 @@ describe("AddIntegrationDialog", () => {
       const onSuccess = vi.fn();
       const user = userEvent.setup();
       render(
-        <AddIntegrationDialog open={true} onOpenChange={onOpenChange} onSuccess={onSuccess} />
+        <AddIntegrationDialog
+          open={true}
+          onOpenChange={onOpenChange}
+          onSuccess={onSuccess}
+          mcpEnabled={false}
+        />
       );
       await selectImapType(user);
 
@@ -580,7 +594,14 @@ describe("AddIntegrationDialog", () => {
     it("closes the dialog when Cancel is clicked from the IMAP connect step", async () => {
       const onOpenChange = vi.fn();
       const user = userEvent.setup();
-      render(<AddIntegrationDialog open={true} onOpenChange={onOpenChange} onSuccess={vi.fn()} />);
+      render(
+        <AddIntegrationDialog
+          open={true}
+          onOpenChange={onOpenChange}
+          onSuccess={vi.fn()}
+          mcpEnabled={false}
+        />
+      );
       await selectImapType(user);
 
       await user.click(screen.getByRole("button", { name: /cancel/i }));
@@ -611,6 +632,7 @@ describe("AddIntegrationDialog", () => {
           onOpenChange={onOpenChange}
           onSuccess={vi.fn()}
           initialType="google"
+          mcpEnabled={false}
         />
       );
 

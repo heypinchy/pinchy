@@ -70,7 +70,6 @@ import {
 } from "@/lib/integrations/mcp-error-messages";
 import type { McpTool } from "@/lib/integrations/types";
 import type { McpCreateInput, McpTestCredentialsInput } from "@/lib/schemas/mcp-integration";
-import { isMcpEnabledClient } from "@/lib/feature-flags";
 import {
   INTEGRATION_TYPES,
   MCP_TYPE_TO_PRESET,
@@ -895,6 +894,15 @@ interface AddIntegrationDialogProps {
    * always supply this so the dialog only ever shows the connect step.
    */
   initialType?: IntegrationTypeId;
+  /**
+   * Whether the MCP feature is enabled. Required (not defaulted) so every
+   * render site has to decide: a silent default here could hide MCP even with
+   * the feature switched on, which is exactly the half-state this flag's
+   * plumbing exists to prevent. The value is resolved per request from
+   * PINCHY_MCP_ENABLED by the nearest server component and threaded down —
+   * see lib/feature-flags.ts.
+   */
+  mcpEnabled: boolean;
 }
 
 export function AddIntegrationDialog({
@@ -903,13 +911,14 @@ export function AddIntegrationDialog({
   onSuccess,
   existingTypes = [],
   initialType,
+  mcpEnabled,
 }: AddIntegrationDialogProps) {
   // Types that only allow one connection (singletons)
   const singletonTypes = new Set(["web-search"]);
 
-  // Hide all MCP-backed integration cards when the feature flag is off — the
+  // Hide all MCP-backed integration cards when the feature is off — the
   // dialog's own type-selection step mirrors IntegrationTypePicker's gate.
-  const visibleIntegrationTypes = isMcpEnabledClient()
+  const visibleIntegrationTypes = mcpEnabled
     ? INTEGRATION_TYPES
     : INTEGRATION_TYPES.filter((t) => !isMcpType(t.id));
   const [step, setStep] = useState<WizardStep>(initialType ? "connect" : "type");
@@ -1716,8 +1725,8 @@ export function AddIntegrationDialog({
           </>
         )}
 
-        {/* Step 1: Connect (MCP) — hidden when the MCP feature flag is off */}
-        {step === "connect" && isMcpType(selectedType) && isMcpEnabledClient() && (
+        {/* Step 1: Connect (MCP) — hidden when the MCP feature is off */}
+        {step === "connect" && isMcpType(selectedType) && mcpEnabled && (
           <McpConnectStep
             form={mcpForm}
             isCustom={selectedType === "mcp-custom"}

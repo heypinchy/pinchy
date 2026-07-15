@@ -3,7 +3,6 @@
 import { Card, CardContent } from "@/components/ui/card";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
-import { isMcpEnabledClient } from "@/lib/feature-flags";
 import {
   INTEGRATION_TYPES,
   isMcpType,
@@ -12,6 +11,14 @@ import {
 } from "./integration-types";
 
 interface IntegrationTypePickerProps {
+  /**
+   * Whether the MCP feature is enabled. Required (not defaulted) so the value
+   * is always a deliberate decision by the caller: resolved per request from
+   * PINCHY_MCP_ENABLED by the server component that owns this page and passed
+   * down. See lib/feature-flags.ts for why this is a prop and not a
+   * NEXT_PUBLIC_* read.
+   */
+  mcpEnabled: boolean;
   /**
    * IDs of integration types that may only have one connection at a time and
    * already have one configured — the matching tile renders disabled with a
@@ -86,15 +93,14 @@ function TypeCard({
  * The "Custom MCP server" tile is visually separated as the catch-all option
  * for advanced users.
  *
- * MCP-backed tiles are hidden when the PINCHY_MCP_ENABLED feature flag is off
- * — same gate the dialog uses (see AddIntegrationDialog's visibleIntegrationTypes).
+ * MCP-backed tiles are hidden when the MCP feature is off — same gate the
+ * dialog uses (see AddIntegrationDialog's visibleIntegrationTypes).
  */
 export function IntegrationTypePicker({
+  mcpEnabled,
   configuredSingletons = [],
   onSelect,
 }: IntegrationTypePickerProps) {
-  const mcpEnabled = isMcpEnabledClient();
-
   const visible = INTEGRATION_TYPES.filter((t) => mcpEnabled || !isMcpType(t.id));
 
   // Split Custom MCP server out of the main grid — visually distinct as a

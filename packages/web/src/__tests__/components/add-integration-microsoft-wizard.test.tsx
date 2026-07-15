@@ -24,7 +24,14 @@ import { AddIntegrationDialog } from "@/components/add-integration-dialog";
 import { apiGet, apiPost, ApiError } from "@/lib/api-client";
 
 function renderDialog() {
-  return render(<AddIntegrationDialog open={true} onOpenChange={vi.fn()} onSuccess={vi.fn()} />);
+  return render(
+    <AddIntegrationDialog
+      open={true}
+      onOpenChange={vi.fn()}
+      onSuccess={vi.fn()}
+      mcpEnabled={false}
+    />
+  );
 }
 
 async function selectMicrosoft(user: ReturnType<typeof userEvent.setup>) {

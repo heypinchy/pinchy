@@ -8,7 +8,7 @@
  */
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
+import { describe, expect, it, vi, beforeEach } from "vitest";
 
 // ── Mocks ────────────────────────────────────────────────────────────────────
 
@@ -52,15 +52,10 @@ vi.stubGlobal("fetch", fetchMock);
 beforeEach(() => {
   vi.clearAllMocks();
   dialogRenders.length = 0;
-  vi.stubEnv("NEXT_PUBLIC_PINCHY_MCP_ENABLED", "1");
   fetchMock.mockResolvedValue({
     ok: true,
     json: async () => [],
   } as unknown as Response);
-});
-
-afterEach(() => {
-  vi.unstubAllEnvs();
 });
 
 // Import after mocks are set up.
@@ -72,14 +67,14 @@ async function importComponent() {
 describe("NewIntegrationContent — initial render", () => {
   it("does not show the dialog until a tile is selected", async () => {
     const NewIntegrationContent = await importComponent();
-    render(<NewIntegrationContent />);
+    render(<NewIntegrationContent mcpEnabled />);
 
     expect(screen.queryByTestId("add-integration-dialog")).not.toBeInTheDocument();
   });
 
   it("fetches existing integrations on mount", async () => {
     const NewIntegrationContent = await importComponent();
-    render(<NewIntegrationContent />);
+    render(<NewIntegrationContent mcpEnabled />);
 
     await waitFor(() => {
       expect(fetchMock).toHaveBeenCalledWith("/api/integrations");
@@ -88,7 +83,7 @@ describe("NewIntegrationContent — initial render", () => {
 
   it("renders a back link to the settings integrations tab", async () => {
     const NewIntegrationContent = await importComponent();
-    render(<NewIntegrationContent />);
+    render(<NewIntegrationContent mcpEnabled />);
 
     const backLink = screen.getByLabelText(/Back to settings/i);
     expect(backLink).toHaveAttribute("href", "/settings?tab=integrations");
@@ -99,7 +94,7 @@ describe("NewIntegrationContent — tile selection opens the dialog", () => {
   it("opens the dialog with initialType=mcp-github when GitHub tile is clicked", async () => {
     const user = userEvent.setup();
     const NewIntegrationContent = await importComponent();
-    render(<NewIntegrationContent />);
+    render(<NewIntegrationContent mcpEnabled />);
 
     await user.click(screen.getByRole("button", { name: /^GitHub/i }));
 
@@ -110,7 +105,7 @@ describe("NewIntegrationContent — tile selection opens the dialog", () => {
   it("opens the dialog with initialType=odoo when Odoo tile is clicked", async () => {
     const user = userEvent.setup();
     const NewIntegrationContent = await importComponent();
-    render(<NewIntegrationContent />);
+    render(<NewIntegrationContent mcpEnabled />);
 
     await user.click(screen.getByRole("button", { name: /Odoo/i }));
 
@@ -122,7 +117,7 @@ describe("NewIntegrationContent — dialog callbacks", () => {
   it("hides the dialog and clears selection when the dialog requests close", async () => {
     const user = userEvent.setup();
     const NewIntegrationContent = await importComponent();
-    render(<NewIntegrationContent />);
+    render(<NewIntegrationContent mcpEnabled />);
 
     await user.click(screen.getByRole("button", { name: /^Atlassian/i }));
     expect(screen.getByTestId("add-integration-dialog")).toBeInTheDocument();
@@ -135,7 +130,7 @@ describe("NewIntegrationContent — dialog callbacks", () => {
   it("navigates back to /settings?tab=integrations on dialog success", async () => {
     const user = userEvent.setup();
     const NewIntegrationContent = await importComponent();
-    render(<NewIntegrationContent />);
+    render(<NewIntegrationContent mcpEnabled />);
 
     await user.click(screen.getByRole("button", { name: /^Linear/i }));
     await user.click(screen.getByTestId("dialog-success"));
@@ -153,7 +148,7 @@ describe("NewIntegrationContent — singleton hints", () => {
     } as unknown as Response);
 
     const NewIntegrationContent = await importComponent();
-    render(<NewIntegrationContent />);
+    render(<NewIntegrationContent mcpEnabled />);
 
     await waitFor(() => {
       const webSearch = screen.getByRole("button", { name: /Web Search/i });

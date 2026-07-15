@@ -9,13 +9,14 @@ const openclawVersion: string =
 const nextConfig: NextConfig = {
   devIndicators: false,
   allowedDevOrigins: ["local.heypinchy.com", "https://local.heypinchy.com:8443"],
+  // NOTE: only build-time constants belong here. Values in `env` are inlined
+  // into the client bundle when the image is built, so a runtime toggle must
+  // never be forwarded this way — it would freeze to CI's value and silently
+  // ignore the operator's .env. Runtime flags are read server-side per request
+  // (lib/feature-flags.ts) and passed to client components as props.
   env: {
     NEXT_PUBLIC_PINCHY_VERSION: pkg.version,
     NEXT_PUBLIC_OPENCLAW_VERSION: openclawVersion,
-    // Forward the server-side MCP feature flag to the client bundle so an
-    // operator only has to set PINCHY_MCP_ENABLED=1 — see
-    // lib/feature-flags.ts's isMcpEnabled()/isMcpEnabledClient() pair.
-    NEXT_PUBLIC_PINCHY_MCP_ENABLED: process.env.PINCHY_MCP_ENABLED ?? "0",
   },
   async headers() {
     return [

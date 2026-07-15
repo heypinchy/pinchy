@@ -100,7 +100,19 @@ const OAUTH_ERROR_MESSAGES = new Map<string, string>([
   ["provider_error", "The provider reported a problem during sign-in. Please try again."],
 ]);
 
-export function SettingsIntegrations({ oauthError }: { oauthError?: string } = {}) {
+export function SettingsIntegrations({
+  oauthError,
+  mcpEnabled = false,
+}: {
+  oauthError?: string;
+  /**
+   * Runtime MCP feature flag, threaded in from the server page via
+   * SettingsPageContent. Defaults to false (fail-closed): this component only
+   * forwards the value to AddIntegrationDialog, so an omitted flag hides the
+   * feature rather than exposing it.
+   */
+  mcpEnabled?: boolean;
+} = {}) {
   const router = useRouter();
   const [connections, setConnections] = useState<IntegrationConnection[]>([]);
   const [loading, setLoading] = useState(true);
@@ -577,6 +589,7 @@ export function SettingsIntegrations({ oauthError }: { oauthError?: string } = {
           setResumeGoogleSetup(false);
         }}
         initialType="google"
+        mcpEnabled={mcpEnabled}
       />
 
       <Dialog open={!!renameTarget} onOpenChange={(open) => !open && setRenameTarget(null)}>

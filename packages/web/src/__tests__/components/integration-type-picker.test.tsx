@@ -4,27 +4,23 @@
  *
  * Behaviour under test:
  *   - Every native tile (odoo/google/microsoft/imap/web-search) always renders
- *   - MCP tiles render when the MCP flag is on, and are hidden when it's off
+ *   - MCP tiles render when mcpEnabled is true, and are hidden when it's false
  *   - "Custom MCP server" is visually separated from the named providers
  *   - Singleton tiles (Web Search) render disabled when already configured
  *   - Clicking a tile invokes onSelect with the tile's id
+ *
+ * `mcpEnabled` arrives as a prop, resolved per request from PINCHY_MCP_ENABLED
+ * by the server component at app/(app)/settings/integrations/new/page.tsx —
+ * NOT from a build-time-inlined NEXT_PUBLIC_* var (see that page's test).
  */
 import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { IntegrationTypePicker } from "@/components/integration-type-picker";
-
-beforeEach(() => {
-  vi.stubEnv("NEXT_PUBLIC_PINCHY_MCP_ENABLED", "1");
-});
-
-afterEach(() => {
-  vi.unstubAllEnvs();
-});
 
 describe("IntegrationTypePicker — tile rendering", () => {
   it("renders every integration tile when the MCP flag is on", () => {
-    render(<IntegrationTypePicker onSelect={vi.fn()} />);
+    render(<IntegrationTypePicker mcpEnabled onSelect={vi.fn()} />);
 
     // Native / non-MCP integrations
     expect(screen.getByRole("button", { name: /Odoo/i })).toBeInTheDocument();
@@ -46,14 +42,13 @@ describe("IntegrationTypePicker — tile rendering", () => {
   });
 
   it("does NOT render Notion or GitLab tiles in Phase 1", () => {
-    render(<IntegrationTypePicker onSelect={vi.fn()} />);
+    render(<IntegrationTypePicker mcpEnabled onSelect={vi.fn()} />);
     expect(screen.queryByRole("button", { name: /^Notion/i })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /^GitLab/i })).not.toBeInTheDocument();
   });
 
   it("hides every MCP-backed tile when the MCP flag is off", () => {
-    vi.stubEnv("NEXT_PUBLIC_PINCHY_MCP_ENABLED", "0");
-    render(<IntegrationTypePicker onSelect={vi.fn()} />);
+    render(<IntegrationTypePicker mcpEnabled={false} onSelect={vi.fn()} />);
 
     // Every MCP-backed tile is gone …
     expect(screen.queryByRole("button", { name: /^GitHub/i })).not.toBeInTheDocument();
@@ -74,14 +69,16 @@ describe("IntegrationTypePicker — tile rendering", () => {
 
 describe("IntegrationTypePicker — singleton disabled state", () => {
   it("disables the Web Search tile when it is already configured", () => {
-    render(<IntegrationTypePicker configuredSingletons={["web-search"]} onSelect={vi.fn()} />);
+    render(
+      <IntegrationTypePicker mcpEnabled configuredSingletons={["web-search"]} onSelect={vi.fn()} />
+    );
 
     const webSearch = screen.getByRole("button", { name: /Web Search/i });
     expect(webSearch).toHaveAttribute("aria-disabled", "true");
   });
 
   it("does not disable other tiles when a different type is configured", () => {
-    render(<IntegrationTypePicker configuredSingletons={["odoo"]} onSelect={vi.fn()} />);
+    render(<IntegrationTypePicker mcpEnabled configuredSingletons={["odoo"]} onSelect={vi.fn()} />);
 
     // Odoo is not a singleton — it stays enabled even when one already exists.
     const odoo = screen.getByRole("button", { name: /Odoo/i });
@@ -93,7 +90,7 @@ describe("IntegrationTypePicker — selection", () => {
   it("calls onSelect with the type id when a tile is clicked", async () => {
     const user = userEvent.setup();
     const onSelect = vi.fn();
-    render(<IntegrationTypePicker onSelect={onSelect} />);
+    render(<IntegrationTypePicker mcpEnabled onSelect={onSelect} />);
 
     await user.click(screen.getByRole("button", { name: /^GitHub/i }));
 
@@ -103,7 +100,7 @@ describe("IntegrationTypePicker — selection", () => {
   it("calls onSelect with mcp-custom when the Custom MCP server tile is clicked", async () => {
     const user = userEvent.setup();
     const onSelect = vi.fn();
-    render(<IntegrationTypePicker onSelect={onSelect} />);
+    render(<IntegrationTypePicker mcpEnabled onSelect={onSelect} />);
 
     await user.click(screen.getByRole("button", { name: /Custom MCP server/i }));
 
@@ -113,7 +110,9 @@ describe("IntegrationTypePicker — selection", () => {
   it("does not call onSelect when a disabled tile is clicked", async () => {
     const user = userEvent.setup();
     const onSelect = vi.fn();
-    render(<IntegrationTypePicker configuredSingletons={["web-search"]} onSelect={onSelect} />);
+    render(
+      <IntegrationTypePicker mcpEnabled configuredSingletons={["web-search"]} onSelect={onSelect} />
+    );
 
     await user.click(screen.getByRole("button", { name: /Web Search/i }));
 
@@ -123,7 +122,7 @@ describe("IntegrationTypePicker — selection", () => {
 
 describe("IntegrationTypePicker — layout", () => {
   it("renders Custom MCP server visually separated from the named tiles", () => {
-    const { container } = render(<IntegrationTypePicker onSelect={vi.fn()} />);
+    const { container } = render(<IntegrationTypePicker mcpEnabled onSelect={vi.fn()} />);
 
     // The Custom MCP server tile lives in a section with a top border — the
     // same pattern the New-Agent picker uses for "Start from scratch". We
