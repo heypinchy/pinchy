@@ -58,6 +58,13 @@ describe("Login Page", () => {
     expect(screen.getByText("Enter your email and password to continue.")).toBeInTheDocument();
   });
 
+  it("should submit via POST so a native pre-hydration submit can't leak credentials into the URL", () => {
+    const { container } = render(<LoginPage />);
+    const form = container.querySelector("form");
+    expect(form).toBeInTheDocument();
+    expect(form?.getAttribute("method")).toBe("post");
+  });
+
   it("should render email and password fields", () => {
     render(<LoginPage />);
     expect(screen.getByLabelText(/email/i)).toBeInTheDocument();

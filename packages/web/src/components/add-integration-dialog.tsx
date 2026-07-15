@@ -895,6 +895,7 @@ export function AddIntegrationDialog({
             <Form {...webSearchForm}>
               <form
                 onSubmit={webSearchForm.handleSubmit(onWebSearchTestAndSave)}
+                method="post"
                 className="space-y-4"
               >
                 <FormField
@@ -967,7 +968,7 @@ export function AddIntegrationDialog({
             <StepIndicator current={1} total={3} label="Connect" />
 
             <Form {...form}>
-              <form onSubmit={form.handleSubmit(onConnect)} className="space-y-4">
+              <form onSubmit={form.handleSubmit(onConnect)} method="post" className="space-y-4">
                 <FormField
                   control={form.control}
                   name="url"

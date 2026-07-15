@@ -241,7 +241,12 @@ export function SetupForm() {
           </CardHeader>
           <CardContent>
             <Form {...form}>
-              <form onSubmit={form.handleSubmit(onSubmit)} noValidate className="space-y-6">
+              <form
+                onSubmit={form.handleSubmit(onSubmit)}
+                method="post"
+                noValidate
+                className="space-y-6"
+              >
                 {error && (
                   <div className="flex items-start justify-between gap-2">
                     <p className="text-sm text-destructive">{error}</p>

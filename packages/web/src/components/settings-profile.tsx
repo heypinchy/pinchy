@@ -119,7 +119,11 @@ export function SettingsProfile({ userName, onDirtyChange }: SettingsProfileProp
         </CardHeader>
         <CardContent>
           <Form {...nameForm}>
-            <form onSubmit={nameForm.handleSubmit(onNameSubmit)} className="space-y-6">
+            <form
+              onSubmit={nameForm.handleSubmit(onNameSubmit)}
+              method="post"
+              className="space-y-6"
+            >
               <FormField
                 control={nameForm.control}
                 name="name"
@@ -150,7 +154,11 @@ export function SettingsProfile({ userName, onDirtyChange }: SettingsProfileProp
         </CardHeader>
         <CardContent>
           <Form {...passwordForm}>
-            <form onSubmit={passwordForm.handleSubmit(onPasswordSubmit)} className="space-y-6">
+            <form
+              onSubmit={passwordForm.handleSubmit(onPasswordSubmit)}
+              method="post"
+              className="space-y-6"
+            >
               <FormField
                 control={passwordForm.control}
                 name="currentPassword"

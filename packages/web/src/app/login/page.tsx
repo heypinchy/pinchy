@@ -86,7 +86,12 @@ function LoginForm() {
           </CardHeader>
           <CardContent>
             <Form {...form}>
-              <form onSubmit={form.handleSubmit(onSubmit)} noValidate className="space-y-6">
+              <form
+                onSubmit={form.handleSubmit(onSubmit)}
+                method="post"
+                noValidate
+                className="space-y-6"
+              >
                 {error && <p className="text-destructive">{error}</p>}
 
                 <FormField

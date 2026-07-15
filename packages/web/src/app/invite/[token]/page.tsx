@@ -211,7 +211,7 @@ function ClaimForm({ token, type }: { token: string; type: InviteType }) {
       </CardHeader>
       <CardContent>
         <Form {...form}>
-          <form onSubmit={form.handleSubmit(onSubmit)} className="space-y-6">
+          <form onSubmit={form.handleSubmit(onSubmit)} method="post" className="space-y-6">
             {!isReset && (
               <FormField
                 control={form.control}

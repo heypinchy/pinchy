@@ -87,6 +87,16 @@ describe("SettingsProfile", () => {
     });
   });
 
+  it("should submit both forms via POST so a native pre-hydration submit can't leak the password into the URL", () => {
+    const { container } = render(<SettingsProfile userName="Alice" />);
+
+    const forms = container.querySelectorAll("form");
+    expect(forms.length).toBe(2);
+    forms.forEach((form) => {
+      expect(form.getAttribute("method")).toBe("post");
+    });
+  });
+
   it("should render password change form", () => {
     render(<SettingsProfile userName="Alice" />);
 

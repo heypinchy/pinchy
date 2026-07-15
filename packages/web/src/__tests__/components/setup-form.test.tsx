@@ -46,6 +46,17 @@ describe("SetupForm", () => {
     );
   });
 
+  it("submits via POST so a native pre-hydration submit can't leak the password into the URL", async () => {
+    mockPreflightReady();
+    const { container } = render(<SetupForm />);
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: /create account/i })).toBeInTheDocument()
+    );
+    const form = container.querySelector("form");
+    expect(form).toBeInTheDocument();
+    expect(form?.getAttribute("method")).toBe("post");
+  });
+
   it("shows infrastructure error when services are unreachable", async () => {
     fetchSpy.mockResolvedValue({
       ok: true,
