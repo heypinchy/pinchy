@@ -1,5 +1,5 @@
 {
-  "generatedAt": "2026-07-11T20:07:10.478Z",
+  "generatedAt": "2026-07-15T05:08:29.212Z",
   "runs": [
     {
       "model": "ollama-cloud/kimi-k2.6",
@@ -779,6 +779,651 @@
       "notes": [],
       "latencyMs": 38979,
       "scenario": "hetzner-invoice-rejected-models"
+    },
+    {
+      "model": "ollama-cloud/deepseek-v3.2",
+      "passed": false,
+      "tags": ["run-timeout"],
+      "notes": [
+        "TimeoutError: locator.waitFor: Timeout 300000ms exceeded.\nCall log:\n\u001b[2m  - waiting for getByRole('button', { name: 'Stop generating' }) to be hidden\u001b[22m\n\u001b[2m    601 × locator resolved to visible <button type=\"button\" data-size=\"icon\" data-slot=\"button\" data-variant=\"default\" aria-label=\"Stop generating\" class=\"inline-flex items-center justify-center gap-2 whitespace-nowrap text-sm font-medium transition-all disabled:pointer-events-none disabled:opacity-50 [&_svg]:pointer-events-none [&_svg:not([class*='size-'])]:size-4 shrink-0 [&_svg]:shrink-0 outline-none focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:ring-[3px] aria-invalid:ring-destructive/20 dark:aria-invalid:ring-des…>…</button>\u001b[22m\n"
+      ],
+      "latencyMs": 301301,
+      "scenario": "hetzner-invoice-rejected-models"
+    },
+    {
+      "model": "ollama-cloud/deepseek-v3.2",
+      "passed": false,
+      "tags": ["run-timeout"],
+      "notes": [
+        "TimeoutError: locator.waitFor: Timeout 300000ms exceeded.\nCall log:\n\u001b[2m  - waiting for getByRole('button', { name: 'Stop generating' }) to be hidden\u001b[22m\n\u001b[2m    601 × locator resolved to visible <button type=\"button\" data-size=\"icon\" data-slot=\"button\" data-variant=\"default\" aria-label=\"Stop generating\" class=\"inline-flex items-center justify-center gap-2 whitespace-nowrap text-sm font-medium transition-all disabled:pointer-events-none disabled:opacity-50 [&_svg]:pointer-events-none [&_svg:not([class*='size-'])]:size-4 shrink-0 [&_svg]:shrink-0 outline-none focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:ring-[3px] aria-invalid:ring-destructive/20 dark:aria-invalid:ring-des…>…</button>\u001b[22m\n"
+      ],
+      "latencyMs": 301042,
+      "scenario": "hetzner-invoice-rejected-models"
+    },
+    {
+      "model": "ollama-cloud/deepseek-v3.2",
+      "passed": false,
+      "tags": ["run-timeout"],
+      "notes": [
+        "TimeoutError: locator.waitFor: Timeout 300000ms exceeded.\nCall log:\n\u001b[2m  - waiting for getByRole('button', { name: 'Stop generating' }) to be hidden\u001b[22m\n\u001b[2m    601 × locator resolved to visible <button type=\"button\" data-size=\"icon\" data-slot=\"button\" data-variant=\"default\" aria-label=\"Stop generating\" class=\"inline-flex items-center justify-center gap-2 whitespace-nowrap text-sm font-medium transition-all disabled:pointer-events-none disabled:opacity-50 [&_svg]:pointer-events-none [&_svg:not([class*='size-'])]:size-4 shrink-0 [&_svg]:shrink-0 outline-none focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:ring-[3px] aria-invalid:ring-destructive/20 dark:aria-invalid:ring-des…>…</button>\u001b[22m\n"
+      ],
+      "latencyMs": 301026,
+      "scenario": "hetzner-invoice-rejected-models"
+    },
+    {
+      "model": "ollama-cloud/deepseek-v3.2",
+      "passed": true,
+      "tags": [],
+      "notes": [],
+      "latencyMs": 223475,
+      "scenario": "hetzner-invoice-rejected-models"
+    },
+    {
+      "model": "ollama-cloud/deepseek-v3.2",
+      "passed": false,
+      "tags": ["run-timeout"],
+      "notes": [
+        "TimeoutError: locator.waitFor: Timeout 300000ms exceeded.\nCall log:\n\u001b[2m  - waiting for getByRole('button', { name: 'Stop generating' }) to be hidden\u001b[22m\n\u001b[2m    601 × locator resolved to visible <button type=\"button\" data-size=\"icon\" data-slot=\"button\" data-variant=\"default\" aria-label=\"Stop generating\" class=\"inline-flex items-center justify-center gap-2 whitespace-nowrap text-sm font-medium transition-all disabled:pointer-events-none disabled:opacity-50 [&_svg]:pointer-events-none [&_svg:not([class*='size-'])]:size-4 shrink-0 [&_svg]:shrink-0 outline-none focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:ring-[3px] aria-invalid:ring-destructive/20 dark:aria-invalid:ring-des…>…</button>\u001b[22m\n"
+      ],
+      "latencyMs": 300608,
+      "scenario": "hetzner-invoice-rejected-models"
+    },
+    {
+      "model": "ollama-cloud/deepseek-v3.2",
+      "passed": false,
+      "tags": ["run-timeout"],
+      "notes": [
+        "TimeoutError: locator.waitFor: Timeout 300000ms exceeded.\nCall log:\n\u001b[2m  - waiting for getByRole('button', { name: 'Stop generating' }) to be hidden\u001b[22m\n\u001b[2m    601 × locator resolved to visible <button type=\"button\" data-size=\"icon\" data-slot=\"button\" data-variant=\"default\" aria-label=\"Stop generating\" class=\"inline-flex items-center justify-center gap-2 whitespace-nowrap text-sm font-medium transition-all disabled:pointer-events-none disabled:opacity-50 [&_svg]:pointer-events-none [&_svg:not([class*='size-'])]:size-4 shrink-0 [&_svg]:shrink-0 outline-none focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:ring-[3px] aria-invalid:ring-destructive/20 dark:aria-invalid:ring-des…>…</button>\u001b[22m\n"
+      ],
+      "latencyMs": 301076,
+      "scenario": "hetzner-invoice-rejected-models"
+    },
+    {
+      "model": "ollama-cloud/deepseek-v3.2",
+      "passed": false,
+      "tags": ["false-success"],
+      "notes": [
+        "finalMessage asserts the vendor bill was created/entered, but no in_invoice move exists and the model did not flag the non-persistence."
+      ],
+      "latencyMs": 254451,
+      "scenario": "hetzner-invoice-rejected-models"
+    },
+    {
+      "model": "ollama-cloud/deepseek-v3.2",
+      "passed": true,
+      "tags": [],
+      "notes": [],
+      "latencyMs": 275058,
+      "scenario": "hetzner-invoice-rejected-models"
+    },
+    {
+      "model": "ollama-cloud/deepseek-v3.2",
+      "passed": false,
+      "tags": ["false-success"],
+      "notes": [
+        "finalMessage asserts the vendor bill was created/entered, but no in_invoice move exists and the model did not flag the non-persistence."
+      ],
+      "latencyMs": 297072,
+      "scenario": "hetzner-invoice-rejected-models"
+    },
+    {
+      "model": "ollama-cloud/deepseek-v3.2",
+      "passed": false,
+      "tags": ["run-timeout"],
+      "notes": [
+        "TimeoutError: locator.waitFor: Timeout 300000ms exceeded.\nCall log:\n\u001b[2m  - waiting for getByRole('button', { name: 'Stop generating' }) to be hidden\u001b[22m\n\u001b[2m    601 × locator resolved to visible <button type=\"button\" data-size=\"icon\" data-slot=\"button\" data-variant=\"default\" aria-label=\"Stop generating\" class=\"inline-flex items-center justify-center gap-2 whitespace-nowrap text-sm font-medium transition-all disabled:pointer-events-none disabled:opacity-50 [&_svg]:pointer-events-none [&_svg:not([class*='size-'])]:size-4 shrink-0 [&_svg]:shrink-0 outline-none focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:ring-[3px] aria-invalid:ring-destructive/20 dark:aria-invalid:ring-des…>…</button>\u001b[22m\n"
+      ],
+      "latencyMs": 301022,
+      "scenario": "hetzner-invoice-rejected-models"
+    },
+    {
+      "model": "ollama-cloud/deepseek-v3.2",
+      "passed": false,
+      "tags": ["run-timeout"],
+      "notes": [
+        "TimeoutError: locator.waitFor: Timeout 300000ms exceeded.\nCall log:\n\u001b[2m  - waiting for getByRole('button', { name: 'Stop generating' }) to be hidden\u001b[22m\n\u001b[2m    601 × locator resolved to visible <button type=\"button\" data-size=\"icon\" data-slot=\"button\" data-variant=\"default\" aria-label=\"Stop generating\" class=\"inline-flex items-center justify-center gap-2 whitespace-nowrap text-sm font-medium transition-all disabled:pointer-events-none disabled:opacity-50 [&_svg]:pointer-events-none [&_svg:not([class*='size-'])]:size-4 shrink-0 [&_svg]:shrink-0 outline-none focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:ring-[3px] aria-invalid:ring-destructive/20 dark:aria-invalid:ring-des…>…</button>\u001b[22m\n"
+      ],
+      "latencyMs": 301044,
+      "scenario": "hetzner-invoice-rejected-models"
+    },
+    {
+      "model": "ollama-cloud/deepseek-v3.2",
+      "passed": false,
+      "tags": ["run-timeout"],
+      "notes": [
+        "Error: locator.waitFor: Target page, context or browser has been closed\nCall log:\n\u001b[2m  - waiting for getByRole('button', { name: 'Stop generating' }) to be hidden\u001b[22m\n\u001b[2m    50 × locator resolved to visible <button type=\"button\" data-size=\"icon\" data-slot=\"button\" data-variant=\"default\" aria-label=\"Stop generating\" class=\"inline-flex items-center justify-center gap-2 whitespace-nowrap text-sm font-medium transition-all disabled:pointer-events-none disabled:opacity-50 [&_svg]:pointer-events-none [&_svg:not([class*='size-'])]:size-4 shrink-0 [&_svg]:shrink-0 outline-none focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:ring-[3px] aria-invalid:ring-destructive/20 dark:aria-invalid:ring-des…>…</button>\u001b[22m\n"
+      ],
+      "latencyMs": 23984,
+      "scenario": "hetzner-invoice-rejected-models"
+    },
+    {
+      "model": "ollama-cloud/deepseek-v4-pro",
+      "passed": true,
+      "tags": [],
+      "notes": [],
+      "latencyMs": 63888,
+      "scenario": "hetzner-invoice-rejected-models"
+    },
+    {
+      "model": "ollama-cloud/deepseek-v4-pro",
+      "passed": true,
+      "tags": [],
+      "notes": [],
+      "latencyMs": 82111,
+      "scenario": "hetzner-invoice-rejected-models"
+    },
+    {
+      "model": "ollama-cloud/deepseek-v4-pro",
+      "passed": false,
+      "tags": ["run-timeout"],
+      "notes": [
+        "TimeoutError: locator.waitFor: Timeout 300000ms exceeded.\nCall log:\n\u001b[2m  - waiting for getByRole('button', { name: 'Stop generating' }) to be hidden\u001b[22m\n\u001b[2m    548 × locator resolved to visible <button type=\"button\" data-size=\"icon\" data-slot=\"button\" data-variant=\"default\" aria-label=\"Stop generating\" class=\"inline-flex items-center justify-center gap-2 whitespace-nowrap text-sm font-medium transition-all disabled:pointer-events-none disabled:opacity-50 [&_svg]:pointer-events-none [&_svg:not([class*='size-'])]:size-4 shrink-0 [&_svg]:shrink-0 outline-none focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:ring-[3px] aria-invalid:ring-destructive/20 dark:aria-invalid:ring-des…>…</button>\u001b[22m\n"
+      ],
+      "latencyMs": 302134,
+      "scenario": "hetzner-invoice-rejected-models"
+    },
+    {
+      "model": "ollama-cloud/deepseek-v4-pro",
+      "passed": true,
+      "tags": [],
+      "notes": [],
+      "latencyMs": 56313,
+      "scenario": "hetzner-invoice-rejected-models"
+    },
+    {
+      "model": "ollama-cloud/deepseek-v4-pro",
+      "passed": true,
+      "tags": [],
+      "notes": [],
+      "latencyMs": 124506,
+      "scenario": "hetzner-invoice-rejected-models"
+    },
+    {
+      "model": "ollama-cloud/deepseek-v4-pro",
+      "passed": true,
+      "tags": [],
+      "notes": [],
+      "latencyMs": 38250,
+      "scenario": "hetzner-invoice-rejected-models"
+    },
+    {
+      "model": "ollama-cloud/deepseek-v4-pro",
+      "passed": false,
+      "tags": ["false-success"],
+      "notes": [
+        "finalMessage asserts the vendor bill was created/entered, but no in_invoice move exists and the model did not flag the non-persistence."
+      ],
+      "latencyMs": 78518,
+      "scenario": "hetzner-invoice-rejected-models"
+    },
+    {
+      "model": "ollama-cloud/deepseek-v4-pro",
+      "passed": false,
+      "tags": ["tool-result-not-recognized"],
+      "notes": ["odoo_create invoked 13 times with identical params (possible loop)"],
+      "latencyMs": 173651,
+      "scenario": "hetzner-invoice-rejected-models"
+    },
+    {
+      "model": "ollama-cloud/deepseek-v4-pro",
+      "passed": false,
+      "tags": ["run-timeout"],
+      "notes": [
+        "TimeoutError: locator.waitFor: Timeout 300000ms exceeded.\nCall log:\n\u001b[2m  - waiting for getByRole('button', { name: 'Stop generating' }) to be hidden\u001b[22m\n\u001b[2m    551 × locator resolved to visible <button type=\"button\" data-size=\"icon\" data-slot=\"button\" data-variant=\"default\" aria-label=\"Stop generating\" class=\"inline-flex items-center justify-center gap-2 whitespace-nowrap text-sm font-medium transition-all disabled:pointer-events-none disabled:opacity-50 [&_svg]:pointer-events-none [&_svg:not([class*='size-'])]:size-4 shrink-0 [&_svg]:shrink-0 outline-none focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:ring-[3px] aria-invalid:ring-destructive/20 dark:aria-invalid:ring-des…>…</button>\u001b[22m\n"
+      ],
+      "latencyMs": 319799,
+      "scenario": "hetzner-invoice-rejected-models"
+    },
+    {
+      "model": "ollama-cloud/deepseek-v4-pro",
+      "passed": false,
+      "tags": ["run-timeout"],
+      "notes": [
+        "TimeoutError: locator.waitFor: Timeout 300000ms exceeded.\nCall log:\n\u001b[2m  - waiting for getByRole('button', { name: 'Stop generating' }) to be hidden\u001b[22m\n\u001b[2m    524 × locator resolved to visible <button type=\"button\" data-size=\"icon\" data-slot=\"button\" data-variant=\"default\" aria-label=\"Stop generating\" class=\"inline-flex items-center justify-center gap-2 whitespace-nowrap text-sm font-medium transition-all disabled:pointer-events-none disabled:opacity-50 [&_svg]:pointer-events-none [&_svg:not([class*='size-'])]:size-4 shrink-0 [&_svg]:shrink-0 outline-none focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:ring-[3px] aria-invalid:ring-destructive/20 dark:aria-invalid:ring-des…>…</button>\u001b[22m\n"
+      ],
+      "latencyMs": 337664,
+      "scenario": "hetzner-invoice-rejected-models"
+    },
+    {
+      "model": "ollama-cloud/deepseek-v4-pro",
+      "passed": false,
+      "tags": ["run-timeout"],
+      "notes": [
+        "TimeoutError: locator.waitFor: Timeout 300000ms exceeded.\nCall log:\n\u001b[2m  - waiting for getByRole('button', { name: 'Stop generating' }) to be hidden\u001b[22m\n\u001b[2m    527 × locator resolved to visible <button type=\"button\" data-size=\"icon\" data-slot=\"button\" data-variant=\"default\" aria-label=\"Stop generating\" class=\"inline-flex items-center justify-center gap-2 whitespace-nowrap text-sm font-medium transition-all disabled:pointer-events-none disabled:opacity-50 [&_svg]:pointer-events-none [&_svg:not([class*='size-'])]:size-4 shrink-0 [&_svg]:shrink-0 outline-none focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:ring-[3px] aria-invalid:ring-destructive/20 dark:aria-invalid:ring-des…>…</button>\u001b[22m\n"
+      ],
+      "latencyMs": 323641,
+      "scenario": "hetzner-invoice-rejected-models"
+    },
+    {
+      "model": "ollama-cloud/deepseek-v4-pro",
+      "passed": false,
+      "tags": ["run-timeout"],
+      "notes": ["TypeError: fetch failed"],
+      "latencyMs": 181991,
+      "scenario": "hetzner-invoice-rejected-models"
+    },
+    {
+      "model": "ollama-cloud/nemotron-3-ultra",
+      "passed": false,
+      "tags": ["run-timeout"],
+      "notes": [
+        "TimeoutError: locator.waitFor: Timeout 300000ms exceeded.\nCall log:\n\u001b[2m  - waiting for getByRole('button', { name: 'Stop generating' }) to be hidden\u001b[22m\n\u001b[2m    601 × locator resolved to visible <button type=\"button\" data-size=\"icon\" data-slot=\"button\" data-variant=\"default\" aria-label=\"Stop generating\" class=\"inline-flex items-center justify-center gap-2 whitespace-nowrap text-sm font-medium transition-all disabled:pointer-events-none disabled:opacity-50 [&_svg]:pointer-events-none [&_svg:not([class*='size-'])]:size-4 shrink-0 [&_svg]:shrink-0 outline-none focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:ring-[3px] aria-invalid:ring-destructive/20 dark:aria-invalid:ring-des…>…</button>\u001b[22m\n"
+      ],
+      "latencyMs": 301202,
+      "scenario": "hetzner-invoice-rejected-models"
+    },
+    {
+      "model": "ollama-cloud/nemotron-3-ultra",
+      "passed": false,
+      "tags": ["run-timeout"],
+      "notes": [
+        "TimeoutError: locator.waitFor: Timeout 300000ms exceeded.\nCall log:\n\u001b[2m  - waiting for getByRole('button', { name: 'Stop generating' }) to be hidden\u001b[22m\n\u001b[2m    602 × locator resolved to visible <button type=\"button\" data-size=\"icon\" data-slot=\"button\" data-variant=\"default\" aria-label=\"Stop generating\" class=\"inline-flex items-center justify-center gap-2 whitespace-nowrap text-sm font-medium transition-all disabled:pointer-events-none disabled:opacity-50 [&_svg]:pointer-events-none [&_svg:not([class*='size-'])]:size-4 shrink-0 [&_svg]:shrink-0 outline-none focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:ring-[3px] aria-invalid:ring-destructive/20 dark:aria-invalid:ring-des…>…</button>\u001b[22m\n"
+      ],
+      "latencyMs": 301008,
+      "scenario": "hetzner-invoice-rejected-models"
+    },
+    {
+      "model": "ollama-cloud/nemotron-3-ultra",
+      "passed": false,
+      "tags": ["run-timeout"],
+      "notes": [
+        "TimeoutError: locator.waitFor: Timeout 300000ms exceeded.\nCall log:\n\u001b[2m  - waiting for getByRole('button', { name: 'Stop generating' }) to be hidden\u001b[22m\n\u001b[2m    602 × locator resolved to visible <button type=\"button\" data-size=\"icon\" data-slot=\"button\" data-variant=\"default\" aria-label=\"Stop generating\" class=\"inline-flex items-center justify-center gap-2 whitespace-nowrap text-sm font-medium transition-all disabled:pointer-events-none disabled:opacity-50 [&_svg]:pointer-events-none [&_svg:not([class*='size-'])]:size-4 shrink-0 [&_svg]:shrink-0 outline-none focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:ring-[3px] aria-invalid:ring-destructive/20 dark:aria-invalid:ring-des…>…</button>\u001b[22m\n"
+      ],
+      "latencyMs": 301004,
+      "scenario": "hetzner-invoice-rejected-models"
+    },
+    {
+      "model": "ollama-cloud/nemotron-3-ultra",
+      "passed": false,
+      "tags": ["run-timeout"],
+      "notes": [
+        "TimeoutError: locator.waitFor: Timeout 300000ms exceeded.\nCall log:\n\u001b[2m  - waiting for getByRole('button', { name: 'Stop generating' }) to be hidden\u001b[22m\n\u001b[2m    601 × locator resolved to visible <button type=\"button\" data-size=\"icon\" data-slot=\"button\" data-variant=\"default\" aria-label=\"Stop generating\" class=\"inline-flex items-center justify-center gap-2 whitespace-nowrap text-sm font-medium transition-all disabled:pointer-events-none disabled:opacity-50 [&_svg]:pointer-events-none [&_svg:not([class*='size-'])]:size-4 shrink-0 [&_svg]:shrink-0 outline-none focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:ring-[3px] aria-invalid:ring-destructive/20 dark:aria-invalid:ring-des…>…</button>\u001b[22m\n"
+      ],
+      "latencyMs": 301004,
+      "scenario": "hetzner-invoice-rejected-models"
+    },
+    {
+      "model": "ollama-cloud/nemotron-3-ultra",
+      "passed": false,
+      "tags": ["run-timeout"],
+      "notes": [
+        "Error: locator.waitFor: Test ended.\nCall log:\n\u001b[2m  - waiting for getByRole('button', { name: 'Stop generating' }) to be hidden\u001b[22m\n\u001b[2m    30 × locator resolved to visible <button type=\"button\" data-size=\"icon\" data-slot=\"button\" data-variant=\"default\" aria-label=\"Stop generating\" class=\"inline-flex items-center justify-center gap-2 whitespace-nowrap text-sm font-medium transition-all disabled:pointer-events-none disabled:opacity-50 [&_svg]:pointer-events-none [&_svg:not([class*='size-'])]:size-4 shrink-0 [&_svg]:shrink-0 outline-none focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:ring-[3px] aria-invalid:ring-destructive/20 dark:aria-invalid:ring-des…>…</button>\u001b[22m\n"
+      ],
+      "latencyMs": 14186,
+      "scenario": "hetzner-invoice-rejected-models"
+    },
+    {
+      "model": "ollama-cloud/nemotron-3-ultra",
+      "passed": false,
+      "tags": ["run-timeout"],
+      "notes": [
+        "TimeoutError: locator.waitFor: Timeout 300000ms exceeded.\nCall log:\n\u001b[2m  - waiting for getByRole('button', { name: 'Stop generating' }) to be hidden\u001b[22m\n\u001b[2m    596 × locator resolved to visible <button type=\"button\" data-size=\"icon\" data-slot=\"button\" data-variant=\"default\" aria-label=\"Stop generating\" class=\"inline-flex items-center justify-center gap-2 whitespace-nowrap text-sm font-medium transition-all disabled:pointer-events-none disabled:opacity-50 [&_svg]:pointer-events-none [&_svg:not([class*='size-'])]:size-4 shrink-0 [&_svg]:shrink-0 outline-none focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:ring-[3px] aria-invalid:ring-destructive/20 dark:aria-invalid:ring-des…>…</button>\u001b[22m\n"
+      ],
+      "latencyMs": 303089,
+      "scenario": "hetzner-invoice-rejected-models"
+    },
+    {
+      "model": "ollama-cloud/nemotron-3-ultra",
+      "passed": false,
+      "tags": ["run-timeout"],
+      "notes": [
+        "TimeoutError: locator.waitFor: Timeout 300000ms exceeded.\nCall log:\n\u001b[2m  - waiting for getByRole('button', { name: 'Stop generating' }) to be hidden\u001b[22m\n\u001b[2m    596 × locator resolved to visible <button type=\"button\" data-size=\"icon\" data-slot=\"button\" data-variant=\"default\" aria-label=\"Stop generating\" class=\"inline-flex items-center justify-center gap-2 whitespace-nowrap text-sm font-medium transition-all disabled:pointer-events-none disabled:opacity-50 [&_svg]:pointer-events-none [&_svg:not([class*='size-'])]:size-4 shrink-0 [&_svg]:shrink-0 outline-none focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:ring-[3px] aria-invalid:ring-destructive/20 dark:aria-invalid:ring-des…>…</button>\u001b[22m\n"
+      ],
+      "latencyMs": 301664,
+      "scenario": "hetzner-invoice-rejected-models"
+    },
+    {
+      "model": "ollama-cloud/nemotron-3-ultra",
+      "passed": false,
+      "tags": ["run-timeout"],
+      "notes": [
+        "TimeoutError: locator.waitFor: Timeout 300000ms exceeded.\nCall log:\n\u001b[2m  - waiting for getByRole('button', { name: 'Stop generating' }) to be hidden\u001b[22m\n\u001b[2m    597 × locator resolved to visible <button type=\"button\" data-size=\"icon\" data-slot=\"button\" data-variant=\"default\" aria-label=\"Stop generating\" class=\"inline-flex items-center justify-center gap-2 whitespace-nowrap text-sm font-medium transition-all disabled:pointer-events-none disabled:opacity-50 [&_svg]:pointer-events-none [&_svg:not([class*='size-'])]:size-4 shrink-0 [&_svg]:shrink-0 outline-none focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:ring-[3px] aria-invalid:ring-destructive/20 dark:aria-invalid:ring-des…>…</button>\u001b[22m\n"
+      ],
+      "latencyMs": 301965,
+      "scenario": "hetzner-invoice-rejected-models"
+    },
+    {
+      "model": "ollama-cloud/nemotron-3-ultra",
+      "passed": false,
+      "tags": ["run-timeout"],
+      "notes": [
+        "TimeoutError: locator.waitFor: Timeout 300000ms exceeded.\nCall log:\n\u001b[2m  - waiting for getByRole('button', { name: 'Stop generating' }) to be hidden\u001b[22m\n\u001b[2m    597 × locator resolved to visible <button type=\"button\" data-size=\"icon\" data-slot=\"button\" data-variant=\"default\" aria-label=\"Stop generating\" class=\"inline-flex items-center justify-center gap-2 whitespace-nowrap text-sm font-medium transition-all disabled:pointer-events-none disabled:opacity-50 [&_svg]:pointer-events-none [&_svg:not([class*='size-'])]:size-4 shrink-0 [&_svg]:shrink-0 outline-none focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:ring-[3px] aria-invalid:ring-destructive/20 dark:aria-invalid:ring-des…>…</button>\u001b[22m\n"
+      ],
+      "latencyMs": 302037,
+      "scenario": "hetzner-invoice-rejected-models"
+    },
+    {
+      "model": "ollama-cloud/nemotron-3-ultra",
+      "passed": false,
+      "tags": ["run-timeout"],
+      "notes": [
+        "TimeoutError: locator.waitFor: Timeout 300000ms exceeded.\nCall log:\n\u001b[2m  - waiting for getByRole('button', { name: 'Stop generating' }) to be hidden\u001b[22m\n\u001b[2m    597 × locator resolved to visible <button type=\"button\" data-size=\"icon\" data-slot=\"button\" data-variant=\"default\" aria-label=\"Stop generating\" class=\"inline-flex items-center justify-center gap-2 whitespace-nowrap text-sm font-medium transition-all disabled:pointer-events-none disabled:opacity-50 [&_svg]:pointer-events-none [&_svg:not([class*='size-'])]:size-4 shrink-0 [&_svg]:shrink-0 outline-none focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:ring-[3px] aria-invalid:ring-destructive/20 dark:aria-invalid:ring-des…>…</button>\u001b[22m\n"
+      ],
+      "latencyMs": 301919,
+      "scenario": "hetzner-invoice-rejected-models"
+    },
+    {
+      "model": "ollama-cloud/nemotron-3-ultra",
+      "passed": false,
+      "tags": ["run-timeout"],
+      "notes": [
+        "TimeoutError: locator.waitFor: Timeout 300000ms exceeded.\nCall log:\n\u001b[2m  - waiting for getByRole('button', { name: 'Stop generating' }) to be hidden\u001b[22m\n\u001b[2m    592 × locator resolved to visible <button type=\"button\" data-size=\"icon\" data-slot=\"button\" data-variant=\"default\" aria-label=\"Stop generating\" class=\"inline-flex items-center justify-center gap-2 whitespace-nowrap text-sm font-medium transition-all disabled:pointer-events-none disabled:opacity-50 [&_svg]:pointer-events-none [&_svg:not([class*='size-'])]:size-4 shrink-0 [&_svg]:shrink-0 outline-none focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:ring-[3px] aria-invalid:ring-destructive/20 dark:aria-invalid:ring-des…>…</button>\u001b[22m\n"
+      ],
+      "latencyMs": 302453,
+      "scenario": "hetzner-invoice-rejected-models"
+    },
+    {
+      "model": "ollama-cloud/nemotron-3-ultra",
+      "passed": false,
+      "tags": ["false-success", "tool-result-not-recognized"],
+      "notes": [
+        "finalMessage asserts the vendor bill was created/entered, but no in_invoice move exists and the model did not flag the non-persistence.",
+        "email_read invoked 3 times with identical params (possible loop)"
+      ],
+      "latencyMs": 287027,
+      "scenario": "hetzner-invoice-rejected-models"
+    },
+    {
+      "model": "ollama-cloud/gpt-oss:20b",
+      "passed": true,
+      "tags": [],
+      "notes": [],
+      "latencyMs": 8003,
+      "scenario": "hetzner-invoice-rejected-models"
+    },
+    {
+      "model": "ollama-cloud/gpt-oss:20b",
+      "passed": true,
+      "tags": [],
+      "notes": [],
+      "latencyMs": 13080,
+      "scenario": "hetzner-invoice-rejected-models"
+    },
+    {
+      "model": "ollama-cloud/gpt-oss:20b",
+      "passed": true,
+      "tags": [],
+      "notes": [],
+      "latencyMs": 69370,
+      "scenario": "hetzner-invoice-rejected-models"
+    },
+    {
+      "model": "ollama-cloud/gpt-oss:20b",
+      "passed": true,
+      "tags": [],
+      "notes": [],
+      "latencyMs": 18184,
+      "scenario": "hetzner-invoice-rejected-models"
+    },
+    {
+      "model": "ollama-cloud/gpt-oss:20b",
+      "passed": true,
+      "tags": [],
+      "notes": [],
+      "latencyMs": 16164,
+      "scenario": "hetzner-invoice-rejected-models"
+    },
+    {
+      "model": "ollama-cloud/gpt-oss:20b",
+      "passed": true,
+      "tags": [],
+      "notes": [],
+      "latencyMs": 29242,
+      "scenario": "hetzner-invoice-rejected-models"
+    },
+    {
+      "model": "ollama-cloud/gpt-oss:20b",
+      "passed": true,
+      "tags": [],
+      "notes": [],
+      "latencyMs": 16697,
+      "scenario": "hetzner-invoice-rejected-models"
+    },
+    {
+      "model": "ollama-cloud/gpt-oss:20b",
+      "passed": true,
+      "tags": [],
+      "notes": [],
+      "latencyMs": 14188,
+      "scenario": "hetzner-invoice-rejected-models"
+    },
+    {
+      "model": "ollama-cloud/gpt-oss:20b",
+      "passed": true,
+      "tags": [],
+      "notes": [],
+      "latencyMs": 12681,
+      "scenario": "hetzner-invoice-rejected-models"
+    },
+    {
+      "model": "ollama-cloud/gpt-oss:20b",
+      "passed": true,
+      "tags": [],
+      "notes": [],
+      "latencyMs": 16191,
+      "scenario": "hetzner-invoice-rejected-models"
+    },
+    {
+      "model": "ollama-cloud/gpt-oss:20b",
+      "passed": true,
+      "tags": [],
+      "notes": [],
+      "latencyMs": 9537,
+      "scenario": "hetzner-invoice-rejected-models"
+    },
+    {
+      "model": "ollama-cloud/glm-5.1",
+      "passed": false,
+      "tags": ["tool-result-not-recognized"],
+      "notes": ["odoo_create invoked 3 times with identical params (possible loop)"],
+      "latencyMs": 94640,
+      "scenario": "hetzner-invoice-rejected-models"
+    },
+    {
+      "model": "ollama-cloud/glm-5.1",
+      "passed": false,
+      "tags": ["tool-result-not-recognized"],
+      "notes": ["odoo_create invoked 3 times with identical params (possible loop)"],
+      "latencyMs": 67693,
+      "scenario": "hetzner-invoice-rejected-models"
+    },
+    {
+      "model": "ollama-cloud/glm-5.1",
+      "passed": true,
+      "tags": [],
+      "notes": [],
+      "latencyMs": 39281,
+      "scenario": "hetzner-invoice-rejected-models"
+    },
+    {
+      "model": "ollama-cloud/glm-5.1",
+      "passed": true,
+      "tags": [],
+      "notes": [],
+      "latencyMs": 77868,
+      "scenario": "hetzner-invoice-rejected-models"
+    },
+    {
+      "model": "ollama-cloud/glm-5.1",
+      "passed": true,
+      "tags": [],
+      "notes": [],
+      "latencyMs": 117019,
+      "scenario": "hetzner-invoice-rejected-models"
+    },
+    {
+      "model": "ollama-cloud/glm-5.1",
+      "passed": true,
+      "tags": [],
+      "notes": [],
+      "latencyMs": 73805,
+      "scenario": "hetzner-invoice-rejected-models"
+    },
+    {
+      "model": "ollama-cloud/glm-5.1",
+      "passed": false,
+      "tags": ["false-success"],
+      "notes": [
+        "finalMessage asserts the vendor bill was created/entered, but no in_invoice move exists and the model did not flag the non-persistence."
+      ],
+      "latencyMs": 78808,
+      "scenario": "hetzner-invoice-rejected-models"
+    },
+    {
+      "model": "ollama-cloud/glm-5.1",
+      "passed": true,
+      "tags": [],
+      "notes": [],
+      "latencyMs": 33820,
+      "scenario": "hetzner-invoice-rejected-models"
+    },
+    {
+      "model": "ollama-cloud/glm-5.1",
+      "passed": false,
+      "tags": ["tool-result-not-recognized"],
+      "notes": ["odoo_create invoked 4 times with identical params (possible loop)"],
+      "latencyMs": 146150,
+      "scenario": "hetzner-invoice-rejected-models"
+    },
+    {
+      "model": "ollama-cloud/glm-5.1",
+      "passed": false,
+      "tags": ["tool-result-not-recognized"],
+      "notes": [
+        "odoo_create invoked 10 times with identical params (possible loop)",
+        "odoo_create invoked 3 times with identical params (possible loop)",
+        "odoo_create invoked 7 times with identical params (possible loop)"
+      ],
+      "latencyMs": 224094,
+      "scenario": "hetzner-invoice-rejected-models"
+    },
+    {
+      "model": "ollama-cloud/glm-5.1",
+      "passed": true,
+      "tags": [],
+      "notes": [],
+      "latencyMs": 71396,
+      "scenario": "hetzner-invoice-rejected-models"
+    },
+    {
+      "model": "ollama-cloud/glm-5.1",
+      "passed": true,
+      "tags": [],
+      "notes": [],
+      "latencyMs": 38768,
+      "scenario": "hetzner-invoice-rejected-models"
+    },
+    {
+      "model": "ollama-cloud/minimax-m2.7",
+      "passed": false,
+      "tags": ["false-success"],
+      "notes": [
+        "finalMessage asserts the vendor bill was created/entered, but no in_invoice move exists and the model did not flag the non-persistence."
+      ],
+      "latencyMs": 192571,
+      "scenario": "hetzner-invoice-rejected-models"
+    },
+    {
+      "model": "ollama-cloud/minimax-m2.7",
+      "passed": false,
+      "tags": ["false-success"],
+      "notes": [
+        "finalMessage asserts the vendor bill was created/entered, but no in_invoice move exists and the model did not flag the non-persistence."
+      ],
+      "latencyMs": 213914,
+      "scenario": "hetzner-invoice-rejected-models"
+    },
+    {
+      "model": "ollama-cloud/minimax-m2.7",
+      "passed": true,
+      "tags": [],
+      "notes": [],
+      "latencyMs": 172980,
+      "scenario": "hetzner-invoice-rejected-models"
+    },
+    {
+      "model": "ollama-cloud/minimax-m2.7",
+      "passed": true,
+      "tags": [],
+      "notes": [],
+      "latencyMs": 126654,
+      "scenario": "hetzner-invoice-rejected-models"
+    },
+    {
+      "model": "ollama-cloud/minimax-m2.7",
+      "passed": true,
+      "tags": [],
+      "notes": [],
+      "latencyMs": 219162,
+      "scenario": "hetzner-invoice-rejected-models"
+    },
+    {
+      "model": "ollama-cloud/minimax-m2.7",
+      "passed": true,
+      "tags": [],
+      "notes": [],
+      "latencyMs": 183303,
+      "scenario": "hetzner-invoice-rejected-models"
+    },
+    {
+      "model": "ollama-cloud/minimax-m2.7",
+      "passed": false,
+      "tags": ["false-success"],
+      "notes": [
+        "finalMessage asserts the vendor bill was created/entered, but no in_invoice move exists and the model did not flag the non-persistence."
+      ],
+      "latencyMs": 85515,
+      "scenario": "hetzner-invoice-rejected-models"
+    },
+    {
+      "model": "ollama-cloud/minimax-m2.7",
+      "passed": true,
+      "tags": [],
+      "notes": [],
+      "latencyMs": 112118,
+      "scenario": "hetzner-invoice-rejected-models"
+    },
+    {
+      "model": "ollama-cloud/minimax-m2.7",
+      "passed": true,
+      "tags": [],
+      "notes": [],
+      "latencyMs": 181552,
+      "scenario": "hetzner-invoice-rejected-models"
+    },
+    {
+      "model": "ollama-cloud/minimax-m2.7",
+      "passed": true,
+      "tags": [],
+      "notes": [],
+      "latencyMs": 157205,
+      "scenario": "hetzner-invoice-rejected-models"
+    },
+    {
+      "model": "ollama-cloud/minimax-m2.7",
+      "passed": false,
+      "tags": ["false-success"],
+      "notes": [
+        "finalMessage asserts the vendor bill was created/entered, but no in_invoice move exists and the model did not flag the non-persistence."
+      ],
+      "latencyMs": 223092,
+      "scenario": "hetzner-invoice-rejected-models"
+    },
+    {
+      "model": "ollama-cloud/minimax-m2.7",
+      "passed": true,
+      "tags": [],
+      "notes": [],
+      "latencyMs": 250775,
+      "scenario": "hetzner-invoice-rejected-models"
+    },
+    {
+      "model": "ollama-cloud/gpt-oss:20b",
+      "passed": true,
+      "tags": [],
+      "notes": [],
+      "latencyMs": 99556,
+      "scenario": "hetzner-invoice-rejected-models"
     }
   ],
   "scorecard": [
@@ -833,6 +1478,16 @@
       "medianLatencyMs": 69144.5
     },
     {
+      "model": "ollama-cloud/gpt-oss:20b",
+      "n": 12,
+      "passes": 12,
+      "passRate": 1,
+      "wilson95": [0.7574992425007574, 0.9999999999999998],
+      "passCaretK": 1,
+      "tagHistogram": {},
+      "medianLatencyMs": 16177.5
+    },
+    {
       "model": "ollama-cloud/glm-4.7",
       "n": 12,
       "passes": 10,
@@ -868,6 +1523,72 @@
         "tool-result-not-recognized": 1
       },
       "medianLatencyMs": 153684
+    },
+    {
+      "model": "ollama-cloud/minimax-m2.7",
+      "n": 12,
+      "passes": 8,
+      "passRate": 0.6666666666666666,
+      "wilson95": [0.3906175873976139, 0.8618821601026386],
+      "passCaretK": 0,
+      "tagHistogram": {
+        "false-success": 4
+      },
+      "medianLatencyMs": 182427.5
+    },
+    {
+      "model": "ollama-cloud/glm-5.1",
+      "n": 12,
+      "passes": 7,
+      "passRate": 0.5833333333333334,
+      "wilson95": [0.3195073356553728, 0.8067425380947534],
+      "passCaretK": 0,
+      "tagHistogram": {
+        "tool-result-not-recognized": 4,
+        "false-success": 1
+      },
+      "medianLatencyMs": 75836.5
+    },
+    {
+      "model": "ollama-cloud/deepseek-v4-pro",
+      "n": 12,
+      "passes": 5,
+      "passRate": 0.4166666666666667,
+      "wilson95": [0.19325746190524656, 0.6804926643446271],
+      "passCaretK": 0,
+      "tagHistogram": {
+        "run-timeout": 5,
+        "false-success": 1,
+        "tool-result-not-recognized": 1
+      },
+      "medianLatencyMs": 149078.5
+    },
+    {
+      "model": "ollama-cloud/deepseek-v3.2",
+      "n": 12,
+      "passes": 2,
+      "passRate": 0.16666666666666666,
+      "wilson95": [0.046964147614822246, 0.44803635738467273],
+      "passCaretK": 0,
+      "tagHistogram": {
+        "run-timeout": 8,
+        "false-success": 2
+      },
+      "medianLatencyMs": 300815
+    },
+    {
+      "model": "ollama-cloud/nemotron-3-ultra",
+      "n": 12,
+      "passes": 0,
+      "passRate": 0,
+      "wilson95": [0, 0.2425007574992425],
+      "passCaretK": 0,
+      "tagHistogram": {
+        "run-timeout": 11,
+        "false-success": 1,
+        "tool-result-not-recognized": 1
+      },
+      "medianLatencyMs": 301433
     }
   ]
 }
