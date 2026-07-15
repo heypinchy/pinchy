@@ -134,20 +134,19 @@ export function ensureWorkspace(agentId: string): void {
   // OpenClaw feeds it back as recalled fact — a placeholder comment would
   // reach the agent as something it had remembered.
   //
-  // `wx` carries the correctness here, not the existsSync above it. This is the
-  // one file in this function an agent writes concurrently — regenerateOpenClawConfig
-  // calls ensureWorkspace on every settings mutation — so a bare check-then-write
-  // leaves a window where the agent creates MEMORY.md after the check and this
-  // truncates its memory back to "" (CodeQL js/file-system-race). The flag closes
-  // it: EEXIST means someone won the race, which is a success, not a failure. The
-  // existsSync is only a fast path around the syscall in the common case.
+  // Created with `wx` and NO existsSync guard, unlike the loop above. This is
+  // the one file here an agent writes concurrently — regenerateOpenClawConfig
+  // calls ensureWorkspace on every settings mutation — so a check-then-write
+  // leaves a window in which the agent creates MEMORY.md after the check and
+  // this truncates its memory back to "" (CodeQL js/file-system-race). One
+  // atomic create closes it: EEXIST means someone else won the race, which is
+  // success. Any other errno is a real failure and must surface, or a broken
+  // volume silently yields a memory-less agent — the bug this file is fixing.
   const memoryFile = join(workspacePath, "MEMORY.md");
-  if (!existsSync(memoryFile)) {
-    try {
-      writeFileSync(memoryFile, "", { encoding: "utf-8", flag: "wx" });
-    } catch (err) {
-      if ((err as NodeJS.ErrnoException).code !== "EEXIST") throw err;
-    }
+  try {
+    writeFileSync(memoryFile, "", { encoding: "utf-8", flag: "wx" });
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== "EEXIST") throw err;
   }
 }
 

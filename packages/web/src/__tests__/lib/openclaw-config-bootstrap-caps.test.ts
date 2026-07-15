@@ -145,8 +145,13 @@ function mockFsReads(agentsMdByAgent: Record<string, string>) {
 }
 
 function getAgentEntry(agentId: string) {
-  const written = mockedWriteFileSync.mock.calls[0][1] as string;
-  const config = JSON.parse(written);
+  // By path, not by ordinal: regenerateOpenClawConfig also writes workspace
+  // files (TOOLS.md, MEMORY.md, skills), so "the first write" is not the config
+  // and stops being it whenever the workspace layout gains a file.
+  // writeConfigAtomic writes `<path>.tmp` and renames, hence `includes`.
+  const call = mockedWriteFileSync.mock.calls.find((c) => String(c[0]).includes("openclaw.json"));
+  if (!call) throw new Error("openclaw.json was never written");
+  const config = JSON.parse(call[1] as string);
   return config.agents.list.find((a: { id: string }) => a.id === agentId);
 }
 
