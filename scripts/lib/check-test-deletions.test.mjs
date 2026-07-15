@@ -5,6 +5,7 @@ import {
   analyzeChanges,
   parseOverride,
   diffArgs,
+  commitLogArgs,
 } from "./check-test-deletions.mjs";
 
 test("diffArgs uses merge-base two-dot range when a merge-base is known", () => {
@@ -35,6 +36,43 @@ test("diffArgs treats an empty merge-base string as no merge-base", () => {
     "--name-status",
     "-M",
     "origin/main",
+    "HEAD",
+  ]);
+});
+
+test("commitLogArgs uses merge-base two-dot range when a merge-base is known", () => {
+  // Same range the diff walks — only commits introduced by the branch, so a
+  // trailer on the PR's own commit is the one that authorizes its deletions.
+  assert.deepEqual(commitLogArgs("abc123"), [
+    "log",
+    "--format=%B",
+    "abc123..HEAD",
+  ]);
+});
+
+test("commitLogArgs falls back to bounded HEAD history when no merge-base (shallow CI)", () => {
+  // The bug this guards against: with no merge-base, `origin/main..HEAD` can
+  // resolve empty in a shallow clone, silently dropping the very trailer that
+  // authorizes the deletion — so the diff sees removals but the override is
+  // missed and CI fails a PR that IS authorized. Reading HEAD's own recent
+  // history always contains the PR commit (and, for a PR merge ref, its
+  // feature-branch parent). Bounded to the CI fetch depth so a full-clone
+  // fallback can't walk all of history.
+  assert.deepEqual(commitLogArgs(null), [
+    "log",
+    "--format=%B",
+    "-n",
+    "200",
+    "HEAD",
+  ]);
+});
+
+test("commitLogArgs treats an empty merge-base string as no merge-base", () => {
+  assert.deepEqual(commitLogArgs(""), [
+    "log",
+    "--format=%B",
+    "-n",
+    "200",
     "HEAD",
   ]);
 });

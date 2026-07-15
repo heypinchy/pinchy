@@ -104,3 +104,36 @@ export function diffArgs(mergeBase, base) {
   }
   return [...head, base, "HEAD"];
 }
+
+// Bounded HEAD-history fallback depth for the no-merge-base case. Matches the
+// `--depth=200` the CI step fetches, so the shallow window we can see is the
+// window we read trailers from.
+const NO_MERGE_BASE_LOG_DEPTH = 200;
+
+/**
+ * Build the `git log` argument list for reading commit-trailer overrides.
+ *
+ * Must cover the SAME commits the diff attributes to this PR, so a valid
+ * `Allow-test-deletion` trailer on the PR's own commit is never missed. With a
+ * merge-base that's the `<merge-base>..HEAD` two-dot range.
+ *
+ * Without a merge-base (shallow CI clone, disjoint histories) the previous
+ * `<base>..HEAD` range was the bug: in that state git can resolve it empty, so
+ * the diff still reported removals but the authorizing trailer was silently
+ * dropped and CI failed an authorized PR. We fall back to reading HEAD's own
+ * bounded history instead — it always contains the PR commit (and, for a PR
+ * merge ref, its feature-branch parent). Bounded to the CI fetch depth so a
+ * full-clone fallback can't walk all of history. This mirrors `diffArgs`'
+ * merge-base-or-fallback shape so the diff and the override read the same
+ * commit window.
+ *
+ * @param {string|null|undefined} mergeBase
+ * @returns {string[]}
+ */
+export function commitLogArgs(mergeBase) {
+  const head = ["log", "--format=%B"];
+  if (mergeBase && mergeBase.trim()) {
+    return [...head, `${mergeBase.trim()}..HEAD`];
+  }
+  return [...head, "-n", String(NO_MERGE_BASE_LOG_DEPTH), "HEAD"];
+}

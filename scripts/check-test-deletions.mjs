@@ -28,6 +28,7 @@ import {
   analyzeChanges,
   parseOverride,
   diffArgs,
+  commitLogArgs,
 } from "./lib/check-test-deletions.mjs";
 
 function git(args) {
@@ -145,7 +146,10 @@ function main() {
     process.exit(0);
   }
 
-  const commitLog = gitSafe(["log", "--format=%B", `${base}..HEAD`]) || "";
+  // Read trailers from the SAME commit window the diff walked. `${base}..HEAD`
+  // was unreliable in a shallow no-merge-base clone: it could resolve empty and
+  // silently drop the `Allow-test-deletion` trailer that authorizes the removal.
+  const commitLog = gitSafe(commitLogArgs(mergeBase)) || "";
   const override = parseOverride({
     envValue: process.env.ALLOW_TEST_DELETION,
     messages: [commitLog],
