@@ -119,9 +119,68 @@ describe("mail lister — listDispatchableEmails", () => {
       },
     ]);
 
-    await expect(listDispatchableEmails(port, {})).rejects.toThrow(
-      /not-a-date.*id-baddate|id-baddate/
-    );
+    await expect(listDispatchableEmails(port, {})).rejects.toThrow(/"not-a-date".*id-baddate/);
+  });
+
+  it("keeps a quoted display name that contains a comma as a single recipient", async () => {
+    // RFC 5322 allows commas inside a quoted display name. A naive comma-split
+    // would shatter `"Doe, John" <john@..>` into a phantom `"doe` recipient and
+    // strand the real address — so the recipient set must respect quoting.
+    const port = fakePort([
+      {
+        id: "id-quoted",
+        from: '"Support" <support@x.test>',
+        to: '"Doe, John" <john@Acme.test>, jane@acme.test',
+        cc: "",
+        subject: "s",
+        date: "2026-07-10T00:00:00.000Z",
+        attachments: [],
+      },
+    ]);
+
+    const [email] = await listDispatchableEmails(port, {});
+
+    expect(email.to).toEqual(["john@acme.test", "jane@acme.test"]);
+  });
+
+  it("splits semicolon-separated recipients (Exchange/Graph legacy)", async () => {
+    // Exchange/Graph hand back `;`-separated recipient lists. Splitting on comma
+    // alone would collapse them into one garbage "address" token.
+    const port = fakePort([
+      {
+        id: "id-semi",
+        from: "sender@x.test",
+        to: "a@acme.test; b@acme.test",
+        cc: "",
+        subject: "s",
+        date: "2026-07-10T00:00:00.000Z",
+        attachments: [],
+      },
+    ]);
+
+    const [email] = await listDispatchableEmails(port, {});
+
+    expect(email.to).toEqual(["a@acme.test", "b@acme.test"]);
+  });
+
+  it("keeps the whole address when the angle bracket is unterminated", async () => {
+    // A corrupt `Display Name <addr` (no closing `>`) must not silently drop its
+    // last character — take the rest of the string rather than slice(-1).
+    const port = fakePort([
+      {
+        id: "id-openangle",
+        from: "Name <bad@y.test",
+        to: "r@acme.test",
+        cc: "",
+        subject: "s",
+        date: "2026-07-10T00:00:00.000Z",
+        attachments: [],
+      },
+    ]);
+
+    const [email] = await listDispatchableEmails(port, {});
+
+    expect(email.from).toBe("bad@y.test");
   });
 
   it("forwards the listing window (sinceDays/folder/limit) to the port and hydrates every candidate in order", async () => {

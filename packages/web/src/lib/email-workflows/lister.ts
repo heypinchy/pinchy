@@ -45,14 +45,43 @@ export interface EmailPort {
 /** Extract the bare, lower-cased address from `Display Name <addr>` or a raw `addr`. */
 function normalizeAddress(raw: string): string {
   const angle = raw.lastIndexOf("<");
-  const inner = angle >= 0 ? raw.slice(angle + 1, raw.indexOf(">", angle)) : raw;
+  if (angle < 0) return raw.trim().toLowerCase();
+  const close = raw.indexOf(">", angle);
+  // A corrupt, unterminated `<addr` must not drop its last char (slice(-1)); take
+  // the rest of the string instead.
+  const inner = close >= 0 ? raw.slice(angle + 1, close) : raw.slice(angle + 1);
   return inner.trim().toLowerCase();
 }
 
-/** Split a raw `To`/`Cc` header on commas and normalize each address, dropping blanks. */
+/**
+ * Split a raw `To`/`Cc` header into its individual addresses. Separators are
+ * `,` (RFC 5322) and `;` (Exchange/Graph legacy), but only outside a quoted
+ * display name or an `<addr>` bracket — so `"Doe, John" <john@x>` stays one
+ * address instead of shattering into a phantom `"doe` recipient.
+ */
+function splitAddressList(raw: string): string[] {
+  const parts: string[] = [];
+  let current = "";
+  let inQuotes = false;
+  let inAngle = false;
+  for (const ch of raw) {
+    if (ch === '"') inQuotes = !inQuotes;
+    else if (ch === "<") inAngle = true;
+    else if (ch === ">") inAngle = false;
+    else if ((ch === "," || ch === ";") && !inQuotes && !inAngle) {
+      parts.push(current);
+      current = "";
+      continue;
+    }
+    current += ch;
+  }
+  parts.push(current);
+  return parts;
+}
+
+/** Split a raw `To`/`Cc` header and normalize each address, dropping blanks. */
 function normalizeAddressList(raw: string): string[] {
-  return raw
-    .split(",")
+  return splitAddressList(raw)
     .map(normalizeAddress)
     .filter((a) => a.length > 0);
 }
