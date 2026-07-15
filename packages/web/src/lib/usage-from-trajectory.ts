@@ -25,6 +25,18 @@ export interface PerTurnUsage {
   outputTokens: number;
   cacheReadTokens: number;
   cacheWriteTokens: number;
+  /**
+   * Size of the prompt the model actually saw on this turn's LAST call —
+   * i.e. how full its context window got. Deliberately NOT `inputTokens`:
+   * one turn drives a whole tool loop (~11 LLM calls in the production
+   * samples), and `data.usage` sums all of them, so it over-reports the
+   * context by roughly that factor. `data.promptCache.lastCallUsage` carries
+   * the final call on its own.
+   *
+   * `null` when the event has no `promptCache` block — "unknown", which must
+   * not be conflated with 0 ("empty context", i.e. 0% utilization).
+   */
+  contextTokens: number | null;
 }
 
 function asRecord(value: unknown): Record<string, unknown> | undefined {
@@ -45,6 +57,20 @@ function qualifiedModel(provider: unknown, modelId: unknown): string | null {
   const p = asString(provider);
   const m = asString(modelId);
   return p && m ? `${p}/${m}` : (m ?? null);
+}
+
+/**
+ * Size of the prompt on the turn's last call, from `data.promptCache
+ * .lastCallUsage`. The cached prefix counts: it is still part of the prompt the
+ * model sees, only billed differently — excluding it would under-report
+ * utilization on exactly the caching providers that run the longest contexts.
+ * Returns null when the block is absent, so callers can tell "unknown" apart
+ * from "empty".
+ */
+function contextTokensOf(data: Record<string, unknown> | undefined): number | null {
+  const lastCall = asRecord(asRecord(data?.promptCache)?.lastCallUsage);
+  if (!lastCall) return null;
+  return asTokenCount(lastCall.input) + asTokenCount(lastCall.cacheRead);
 }
 
 /**
@@ -74,6 +100,7 @@ export function extractPerTurnUsage(events: JsonlEvent[]): PerTurnUsage[] {
       outputTokens: asTokenCount(usage.output),
       cacheReadTokens: asTokenCount(usage.cacheRead),
       cacheWriteTokens: asTokenCount(usage.cacheWrite),
+      contextTokens: contextTokensOf(data),
     });
   }
   return rows;

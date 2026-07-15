@@ -39,6 +39,7 @@ function turn(over: Partial<PerTurnUsage> = {}): PerTurnUsage {
     outputTokens: 630,
     cacheReadTokens: 32336,
     cacheWriteTokens: 16956,
+    contextTokens: null,
     ...over,
   };
 }
@@ -118,7 +119,10 @@ describe("recordSessionTurnsUsage cost wiring", () => {
     sessionKey: "agent:a1:direct:u1",
     provider: "ollama-cloud",
     modelId: "deepseek-v4-pro",
-    data: { usage: { input: 1000, output: 500, total: 1500 } },
+    data: {
+      usage: { input: 1000, output: 500, total: 1500 },
+      promptCache: { lastCallUsage: { input: 400, output: 500, cacheRead: 0, cacheWrite: 0 } },
+    },
   });
 
   // Pinchy emits models keyed by their bare id — see openclaw-config/build.ts.
@@ -167,6 +171,23 @@ describe("recordSessionTurnsUsage cost wiring", () => {
     expect(rows[0].estimatedCostUsd).not.toBeNull();
   });
 
+  it("records the turn's context size, distinct from the billed input tokens", () => {
+    // Guards the whole trajectory → DB-row path: the row must bill the summed
+    // 1000 while reporting the last call's 400 as context pressure. Collapsing
+    // the two is the mistake this column exists to prevent.
+    return recordSessionTurnsUsage({
+      openclawClient: client(),
+      agentId: "a1",
+      userId: "u1",
+      agentName: "Ada",
+      sessionKey: "agent:a1:direct:u1",
+    }).then(() => {
+      const rows = mockValues.mock.calls[0][0] as Array<Record<string, unknown>>;
+      expect(rows[0].inputTokens).toBe(1000);
+      expect(rows[0].contextTokens).toBe(400);
+    });
+  });
+
   it("still records the turn with a null cost when the model is unpriced", async () => {
     mockReadTrajectoryJsonl.mockResolvedValue(
       JSON.stringify({
@@ -192,5 +213,17 @@ describe("recordSessionTurnsUsage cost wiring", () => {
     expect(recorded).toBe(1);
     const rows = mockValues.mock.calls[0][0] as Array<Record<string, unknown>>;
     expect(rows[0].estimatedCostUsd).toBeNull();
+  });
+});
+
+describe("buildUsageRows context size", () => {
+  it("carries the turn's context size onto the row", () => {
+    const rows = buildUsageRows([turn({ contextTokens: 169592 })], ctx, () => null);
+    expect(rows[0].contextTokens).toBe(169592);
+  });
+
+  it("passes an unknown context size through as null, not 0", () => {
+    const rows = buildUsageRows([turn({ contextTokens: null })], ctx, () => null);
+    expect(rows[0].contextTokens).toBeNull();
   });
 });

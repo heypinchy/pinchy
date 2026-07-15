@@ -687,6 +687,24 @@ export const usageRecords = pgTable(
     // sink (plugin vision tokens) keep inserting without a run id.
     runId: text("run_id"),
     seq: integer("seq"),
+    // How full the model's context window got on this turn — the size of the
+    // prompt on the turn's LAST call, which is what the window has to hold.
+    // Deliberately distinct from input_tokens: a turn drives a whole tool loop
+    // and input_tokens sums every call in it (~11x larger in practice), so it
+    // says nothing about context pressure.
+    //
+    // Nullable: only the per-turn trajectory path can know it. The gauge poller
+    // and the /api/internal/usage/record sink leave it NULL, as do events with
+    // no promptCache block — NULL means "unknown", never "empty".
+    //
+    // This is the read-side of the 2026-07-15 "Piper" incident: the agent ran at
+    // ~170k context with compaction never firing (its window was configured at
+    // 1M, so OpenClaw's shouldCompact threshold sat at ~1.03M) and started
+    // fabricating tool results. Recovering those numbers meant SSHing into prod
+    // and parsing trajectory JSONL by hand; with this column it is one query.
+    // A drop between consecutive turns of a session is also how compaction
+    // becomes visible — OpenClaw emits no compaction trajectory event.
+    contextTokens: integer("context_tokens"),
   },
   (table) => [
     index("idx_usage_timestamp").on(table.timestamp),
