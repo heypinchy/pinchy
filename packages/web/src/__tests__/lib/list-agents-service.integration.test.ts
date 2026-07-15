@@ -1,11 +1,17 @@
-// Real-DB integration tests for the admin "see all" agent services
+// Real-DB integration tests for the org-scoped agent services
 // `listAgents` / `getAgent` (#572, Task 3.2).
 //
-// These back the key-authenticated `/api/v1/agents` surface (Phase 4), which is
-// admin-scoped and must see EVERY non-deleted agent — including personal agents
-// owned by other users that the session path (`getVisibleAgents`) deliberately
-// hides. The load-bearing assertion (design D4) is exactly that gap: an agent
-// the visibility filter hides is still returned by `{ scope: "all" }`.
+// These back the key-authenticated `/api/v1/agents` surface, which is
+// org-scoped rather than per-user: it ignores `visibility`/group membership,
+// so a key sees restricted agents it shares no group with. That is design D4
+// and the first two tests below pin it.
+//
+// The boundary D4 does NOT cross is personal agents. `agent-access.ts` states
+// the invariant plainly: personal agents are private to their owner, and that
+// applies to everyone — admins included. An API key is a machine identity for
+// the organization, so it has strictly less business there than an admin does.
+// `scope: "shared"` is the type-level expression of that: there is deliberately
+// no scope that returns personal agents, because nothing may.
 //
 // Provisioned by global-setup.ts (fresh migrated DB) and truncated between tests
 // (setup.ts). Everything runs for real — no mocks.
@@ -14,7 +20,6 @@ import { describe, it, expect } from "vitest";
 import { db } from "@/db";
 import { users, agents } from "@/db/schema";
 import { listAgents, getAgent } from "@/lib/agents";
-import { getVisibleAgents } from "@/lib/visible-agents";
 
 async function seedUser(overrides?: Partial<typeof users.$inferInsert>) {
   const [row] = await db
@@ -45,85 +50,93 @@ async function seedAgent(overrides: Partial<typeof agents.$inferInsert>) {
   return row;
 }
 
-describe("listAgents / getAgent — admin see-all scope (integration)", () => {
-  it("listAgents({ scope: 'all' }) returns agents that getVisibleAgents hides", async () => {
-    const userA = await seedUser();
-    const userB = await seedUser();
+describe("listAgents / getAgent — org-scoped 'shared' scope (integration)", () => {
+  // ── D4: the org scope ignores per-user visibility ────────────────────────
 
-    const shared = await seedAgent({
-      name: "Shared",
-      ownerId: userA.id,
-      isPersonal: false,
-      visibility: "all",
-    });
-    // A personal agent owned by A. getVisibleAgents hides this from everyone
-    // but A — even from an admin (the isPersonal branch runs before the admin
-    // check). This is the exact case scope:"all" must expose.
-    const personalOfA = await seedAgent({
-      name: "A's Personal",
-      ownerId: userA.id,
+  it("returns a restricted agent with no group grants (design D4: no visibility filter)", async () => {
+    const open = await seedAgent({ name: "Open", visibility: "all" });
+    // Restricted with no group grants — on an enterprise instance
+    // getVisibleAgents shows this to admins only. The org scope returns it
+    // regardless: it has no visibility WHERE clause, and structurally cannot
+    // filter per user, since it takes no userId at all. That is D4.
+    //
+    // Deliberately NOT asserted by comparing against getVisibleAgents: this
+    // DB is a community instance, where effectiveVisibility() downgrades
+    // "restricted" to "all", so both would return the same set and the
+    // comparison would prove nothing. (Which is worth knowing: the D4 test
+    // this replaced only "worked" because it used a PERSONAL agent as its
+    // example of something the filter hides — i.e. it demonstrated the very
+    // exposure B3 closes.)
+    const restricted = await seedAgent({ name: "Restricted", visibility: "restricted" });
+
+    const listed = await listAgents({ scope: "shared" });
+    expect(listed.map((a) => a.id).sort()).toEqual([open.id, restricted.id].sort());
+  });
+
+  // ── B3: the org scope does NOT cross the personal-agent boundary ─────────
+
+  it("EXCLUDES personal agents — the boundary an API key must not cross", async () => {
+    const owner = await seedUser();
+
+    const shared = await seedAgent({ name: "Shared", ownerId: owner.id, isPersonal: false });
+    const personal = await seedAgent({
+      name: "Owner's Personal",
+      ownerId: owner.id,
       isPersonal: true,
     });
 
-    const all = await listAgents({ scope: "all" });
-    expect(all.map((a) => a.id).sort()).toEqual([shared.id, personalOfA.id].sort());
-
-    // Prove the see-all mode returns what the visibility filter hides: admin
-    // user B sees only the shared agent, not A's personal one.
-    const visibleToB = await getVisibleAgents(userB.id, "admin");
-    expect(visibleToB.map((a) => a.id)).toEqual([shared.id]);
-    expect(visibleToB.map((a) => a.id)).not.toContain(personalOfA.id);
+    const ids = (await listAgents({ scope: "shared" })).map((a) => a.id);
+    expect(ids).toEqual([shared.id]);
+    expect(ids).not.toContain(personal.id);
   });
 
-  it("listAgents({ scope: 'all' }) excludes soft-deleted agents (active_agents view)", async () => {
+  it("getAgent returns undefined for a personal agent, so the route 404s instead of leaking it", async () => {
+    const owner = await seedUser();
+    const personal = await seedAgent({ name: "Private", ownerId: owner.id, isPersonal: true });
+
+    // Not "returns it but flagged" — undefined. The caller cannot accidentally
+    // forget to check `isPersonal`, because it never receives the row.
+    expect(await getAgent(personal.id, { scope: "shared" })).toBeUndefined();
+  });
+
+  // ── Soft-delete + fail-closed ───────────────────────────────────────────
+
+  it("excludes soft-deleted agents (active_agents view)", async () => {
     const owner = await seedUser();
     const live = await seedAgent({ name: "Live", ownerId: owner.id });
-    const deleted = await seedAgent({
-      name: "Deleted",
-      ownerId: owner.id,
-      deletedAt: new Date(),
-    });
+    const deleted = await seedAgent({ name: "Deleted", ownerId: owner.id, deletedAt: new Date() });
 
-    const ids = (await listAgents({ scope: "all" })).map((a) => a.id);
+    const ids = (await listAgents({ scope: "shared" })).map((a) => a.id);
     expect(ids).toContain(live.id);
     expect(ids).not.toContain(deleted.id);
   });
 
-  it("getAgent(id, { scope: 'all' }) returns a personal agent regardless of owner", async () => {
+  it("getAgent returns a shared agent by id", async () => {
     const owner = await seedUser();
-    const personal = await seedAgent({
-      name: "Private",
-      ownerId: owner.id,
-      isPersonal: true,
-    });
+    const shared = await seedAgent({ name: "Shared", ownerId: owner.id, isPersonal: false });
 
-    const found = await getAgent(personal.id, { scope: "all" });
-    expect(found?.id).toBe(personal.id);
-    expect(found?.isPersonal).toBe(true);
+    const found = await getAgent(shared.id, { scope: "shared" });
+    expect(found?.id).toBe(shared.id);
   });
 
   it("getAgent returns undefined when the agent does not exist", async () => {
-    const found = await getAgent("nonexistent-id", { scope: "all" });
-    expect(found).toBeUndefined();
+    expect(await getAgent("nonexistent-id", { scope: "shared" })).toBeUndefined();
   });
 
   it("getAgent does not return a soft-deleted agent", async () => {
     const owner = await seedUser();
-    const deleted = await seedAgent({
-      name: "Deleted",
-      ownerId: owner.id,
-      deletedAt: new Date(),
-    });
+    const deleted = await seedAgent({ name: "Deleted", ownerId: owner.id, deletedAt: new Date() });
 
-    const found = await getAgent(deleted.id, { scope: "all" });
-    expect(found).toBeUndefined();
+    expect(await getAgent(deleted.id, { scope: "shared" })).toBeUndefined();
   });
 
   it("fails closed on an unknown scope (TS forbids it; guards a JS/refactor caller)", async () => {
-    await expect(listAgents({ scope: "user" as unknown as "all" })).rejects.toThrow(
+    // Notably includes the retired "all" scope: a caller left over from before
+    // personal agents were excluded must throw, not silently see everything.
+    await expect(listAgents({ scope: "all" as unknown as "shared" })).rejects.toThrow(
       /unsupported scope/
     );
-    await expect(getAgent("some-id", { scope: "user" as unknown as "all" })).rejects.toThrow(
+    await expect(getAgent("some-id", { scope: "all" as unknown as "shared" })).rejects.toThrow(
       /unsupported scope/
     );
   });

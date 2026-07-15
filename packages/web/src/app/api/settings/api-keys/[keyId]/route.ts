@@ -24,10 +24,12 @@ type RouteContext = { params: Promise<{ keyId: string }> };
  * configures no `secondaryStorage` (and the `apiKey()` plugin options carry
  * no `storage` override), so the plugin's own default (`storage:
  * "database"`) applies — every `verifyApiKey` call reads the row directly.
- * Proven for real against Postgres in
- * settings-api-keys-revoke.integration.test.ts: create → verify valid:true →
- * delete this way → verify valid:false. That test is the actual safety
- * guarantee behind this bypass, not just this file's doc comment.
+ *
+ * The WHERE below is the only thing scoping this delete to one key — Drizzle
+ * offers no type-level guard against an unpinned or mis-pinned `db.delete()`,
+ * and either would wipe every key in the org while still answering 200. Both
+ * that pin and the no-cache claim above are proven against a real Postgres,
+ * through this route, in settings-api-keys-revoke.integration.test.ts.
  *
  * CRITICAL governance point (design D2), same as POST/GET on the parent
  * route: this is a session-authenticated admin action — a human admin

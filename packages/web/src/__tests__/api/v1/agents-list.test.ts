@@ -5,8 +5,14 @@ import { NextRequest } from "next/server";
  * GET /api/v1/agents — key-authenticated agent listing (#572, Task 4.1).
  *
  * Unlike the session `GET /api/agents` (which filters via `getVisibleAgents`),
- * this route is key/admin-scoped and returns EVERY non-deleted agent via
- * `listAgents({ scope: "all" })` — no visibility filtering (design D4).
+ * this route is org-scoped: no per-user visibility filtering (design D4). It
+ * delegates that — and the exclusion of personal agents — to
+ * `listAgents({ scope: "shared" })`, whose behavior is proven against a real
+ * database in lib/list-agents-service.integration.test.ts. Here `listAgents`
+ * is mocked, so the only thing this suite can prove about scoping is that the
+ * route ASKS for the right scope; the assertion below is deliberately exact
+ * about that literal, because passing "all" is precisely the regression that
+ * would re-expose personal agents.
  */
 
 const { mockVerifyApiKey } = vi.hoisted(() => ({
@@ -66,18 +72,11 @@ describe("GET /api/v1/agents", () => {
     vi.clearAllMocks();
   });
 
-  it("returns 200 with every agent for a valid agents:read key", async () => {
+  it("returns 200 with the org's shared agents for a valid agents:read key", async () => {
     mockVerifyApiKey.mockResolvedValue(verifiedKey());
     const agents = [
       { id: "a1", name: "Smithers", model: "anthropic/claude-sonnet-4-6" },
-      // Includes a personal agent owned by someone other than the key's
-      // issuer — proving the route uses the "sees everything" scope, not a
-      // visibility-filtered list (design D4).
-      {
-        id: "a2",
-        name: "Someone Else's Personal Agent",
-        model: "anthropic/claude-haiku-4-5-20251001",
-      },
+      { id: "a2", name: "Knowledge Base", model: "anthropic/claude-haiku-4-5-20251001" },
     ];
     vi.mocked(listAgents).mockResolvedValueOnce(agents as never);
 
@@ -85,7 +84,10 @@ describe("GET /api/v1/agents", () => {
 
     expect(response.status).toBe(200);
     expect(await response.json()).toEqual({ agents });
-    expect(listAgents).toHaveBeenCalledWith({ scope: "all" });
+    // Exact literal, not objectContaining: "shared" is what excludes personal
+    // agents. A regression to "all" would hand a machine credential every
+    // user's private agent, and this is the assertion that stops it.
+    expect(listAgents).toHaveBeenCalledWith({ scope: "shared" });
   });
 
   it("returns 403 Forbidden when the key is missing the agents:read scope", async () => {

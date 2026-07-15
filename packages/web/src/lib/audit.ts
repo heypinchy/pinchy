@@ -876,6 +876,12 @@ async function resolveActorId(actorType: AuditActorType, actorId: string): Promi
  * must match against this whole set instead of the bare id, or pseudonymized
  * rows silently vanish from their results.
  *
+ * Only meaningful for `actorType: "user"` rows. An `api_key` actorId is the
+ * key's own id and is never pseudonymized — it identifies a machine, not a
+ * person, so there's nothing to crypto-erase. Passing one here harmlessly
+ * returns just that id, which is what makes filtering the trail by key id
+ * work.
+ *
  * When the user no longer exists (already erased), only the raw id is
  * returned — there is no pseudonym left to look up, which is the intended
  * crypto-erasure outcome for post-erasure queries by the old id.

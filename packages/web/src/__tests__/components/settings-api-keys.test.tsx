@@ -33,6 +33,7 @@ const mockKeys = [
     expiresAt: null,
     lastRequest: null,
     enabled: true,
+    createdBy: { id: "admin-1", name: "Cara Admin", active: true },
   },
   {
     id: "key-2",
@@ -43,6 +44,7 @@ const mockKeys = [
     expiresAt: "2026-08-01T00:00:00.000Z",
     lastRequest: "2026-03-01T00:00:00.000Z",
     enabled: true,
+    createdBy: { id: "admin-2", name: "Dara Admin", active: true },
   },
 ];
 
@@ -81,6 +83,53 @@ describe("SettingsApiKeys", () => {
     // Scopes rendered as badges with friendly labels.
     expect(tableView.getAllByText("Read agents").length).toBeGreaterThanOrEqual(1);
     expect(tableView.getByText("Create agents")).toBeInTheDocument();
+    // Provenance: who created each key.
+    expect(tableView.getByText("Cara Admin")).toBeInTheDocument();
+    expect(tableView.getByText("Dara Admin")).toBeInTheDocument();
+  });
+
+  // ── The compensating control for Model-2 custody ─────────────────────────
+  //
+  // A key belongs to the org and keeps working after its creator leaves — by
+  // design. But only that creator ever saw the plaintext, so a departure is
+  // exactly when someone should decide whether to rotate. Nothing forces that
+  // decision; this column is what prompts it. If these tests go, so does the
+  // only thing making the custody trade-off visible.
+
+  it("flags keys whose creator is no longer active, and leaves serving admins' keys unflagged", async () => {
+    vi.mocked(apiGet).mockResolvedValue({
+      keys: [
+        mockKeys[0],
+        { ...mockKeys[1], createdBy: { id: "admin-2", name: "Dara Admin", active: false } },
+      ],
+    });
+    render(<SettingsApiKeys />);
+
+    await waitFor(() => {
+      expect(screen.getByText("Dara Admin")).toBeInTheDocument();
+    });
+
+    const rows = screen.getAllByRole("row");
+    const daraRow = rows.find((r) => within(r).queryByText("Dara Admin"));
+    const caraRow = rows.find((r) => within(r).queryByText("Cara Admin"));
+
+    expect(within(daraRow!).getByText(/consider rotating/i)).toBeInTheDocument();
+    // Exactly one flag — a departed creator must not smear onto every row.
+    expect(within(caraRow!).queryByText(/consider rotating/i)).not.toBeInTheDocument();
+  });
+
+  it("renders 'Unknown' rather than guessing when a key has no creator recorded", async () => {
+    // Keys issued before provenance was recorded. Honest beats plausible: the
+    // admin has to know this one can't be traced, not be shown a blank cell
+    // they'd read as "nobody".
+    vi.mocked(apiGet).mockResolvedValue({ keys: [{ ...mockKeys[0], createdBy: null }] });
+    render(<SettingsApiKeys />);
+
+    await waitFor(() => {
+      expect(screen.getByText("CI Deploy")).toBeInTheDocument();
+    });
+
+    expect(within(screen.getByRole("table")).getByText("Unknown")).toBeInTheDocument();
   });
 
   it("shows an empty state when there are no keys", async () => {

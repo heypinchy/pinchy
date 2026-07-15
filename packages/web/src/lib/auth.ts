@@ -215,12 +215,32 @@ export const auth = betterAuth({
       // D1 security: an API key must NEVER resolve to a full user session —
       // keys are scoped machine credentials, not login tokens. Defaults false;
       // set explicitly as belt-and-suspenders against a future default flip.
+      //
+      // ⚠️ Also load-bearing for key OWNERSHIP (lib/api-key-identity.ts):
+      // keys are issued against a constant service-account `referenceId`, not
+      // a user id. The plugin's session-from-key hook is the one place that
+      // resolves that column (`findUserById`, rejecting a miss with
+      // UNAUTHORIZED), and this flag is what stops that hook from ever being
+      // registered — the plugin gates its own matcher on it. Turning this on
+      // would therefore break every key at once: fail-closed, but baffling
+      // unless you've read this. D1 and the service-account id are one
+      // decision, not two.
       enableSessionForAPIKeys: false,
       // One-time key format: `pinchy_<random>`.
       defaultPrefix: "pinchy_",
+      // Defaults to false. Pinchy stores exactly one thing here: the
+      // `createdBy` provenance snapshot behind "whose key is this, and do we
+      // rotate it now that they've left?" (lib/api-key-identity.ts). Never
+      // secrets — the column is plain text to anything holding a DB
+      // connection, and GET /api/settings/api-keys masks it down to
+      // `createdBy` on the way out.
+      enableMetadata: true,
       // The plugin's built-in per-key limiter defaults to 10 requests / 24h,
-      // which would throttle a legitimately busy API client. We govern rate
-      // limiting at Pinchy's own layer, so disable the plugin's.
+      // which would throttle a legitimately busy API client, so it's off.
+      // NOTE: there is no Pinchy-side replacement — an authenticated key is
+      // currently unthrottled on /api/v1/*. Fine for the trusted-automation
+      // threat model these keys are for (an admin issued it deliberately),
+      // but it is a gap, not a delegation.
       rateLimit: { enabled: false },
     }),
   ],
@@ -232,11 +252,15 @@ export const auth = betterAuth({
     before: createAuthMiddleware(async (ctx) => {
       // C1 (#572 whole-branch review, CRITICAL): registering the apiKey()
       // plugin above mounts FIVE endpoints as ordinary Better Auth routes —
-      // /api-key/create|update|delete|get|list — because only /api-key/verify
-      // is declared `serverOnly` by the plugin itself. Since
-      // app/api/auth/[...all]/route.ts mounts the whole auth handler, those
-      // five are live at /api/auth/api-key/* for ANY authenticated session,
-      // not just admins — bypassing our audited, admin-gated
+      // /api-key/create|update|delete|get|list. Those are exactly the
+      // plugin's path-carrying endpoints; the two it declares via
+      // `createAuthEndpoint.serverOnly` (verifyApiKey and
+      // deleteAllExpiredApiKeys) carry no path, so they were never HTTP
+      // surface to begin with — see the ctx.path note below.
+      //
+      // Since app/api/auth/[...all]/route.ts mounts the whole auth handler,
+      // those five are live at /api/auth/api-key/* for ANY authenticated
+      // session, not just admins — bypassing our audited, admin-gated
       // /api/settings/api-keys route entirely (no admin check, no
       // api_key.created/deleted audit row).
       //
@@ -254,10 +278,11 @@ export const auth = betterAuth({
       // app/api/settings/api-keys/route.ts — passes neither `request` nor
       // `headers`, so it is unaffected by this guard. `ctx.path` for that
       // call is `"/api-key/create"`; for the server-only `verifyApiKey` call
-      // (used by every /api/v1 request via withApiKey) `ctx.path` is `"/"`
-      // (no path — server-only endpoints take none), so it never matches
-      // this prefix check either. Verified empirically against the real
-      // Better Auth dispatch pipeline, not just read from source.
+      // (used by every /api/v1 request via withApiKey) `ctx.path` is `"/"` —
+      // server-only endpoints take no path, which is also why they are not
+      // part of the HTTP surface above — so it never matches this prefix
+      // check either. Verified empirically against the real Better Auth
+      // dispatch pipeline, not just read from source.
       if (ctx.path.startsWith("/api-key/") && (ctx.request || ctx.headers)) {
         throw new APIError("NOT_FOUND", { message: "Not found" });
       }

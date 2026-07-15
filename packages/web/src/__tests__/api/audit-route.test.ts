@@ -72,6 +72,9 @@ vi.mock("drizzle-orm/pg-core", () => ({
 }));
 
 const mockResolveActorIdMatchSet = vi.fn();
+// Faked because it hits the DB. The api_key actor-name fallback deliberately
+// is NOT mocked — it lives in @/lib/api-key-identity precisely because it is
+// pure, so these tests exercise the real thing.
 vi.mock("@/lib/audit", () => ({
   resolveActorIdMatchSet: (...args: unknown[]) => mockResolveActorIdMatchSet(...args),
 }));
@@ -374,6 +377,118 @@ describe("GET /api/audit", () => {
     const res = await GET(req);
     const body = await res.json();
     expect(body.entries[0].actorName).toBe("Alice");
+  });
+
+  // ── api_key actors (#572) ───────────────────────────────────────────────
+
+  it("names an api_key actor from its detail snapshot, since the user join can't reach it", async () => {
+    const keyEntry = [
+      {
+        id: 1,
+        timestamp: new Date("2026-02-21T10:00:00.000Z"),
+        actorType: "api_key",
+        actorId: "key-77",
+        eventType: "agent.created",
+        resource: "agent:a1",
+        detail: { name: "HR Bot", apiKey: { id: "key-77", name: "CI Deploy" } },
+        rowHmac: "abc",
+        // The join is against `users`, and a key is not a user — so it always
+        // misses for these rows. Null here isn't an edge case; it's every
+        // api_key row there will ever be.
+        actorName: null,
+        actorBanned: null,
+        resourceAgentName: null,
+        resourceAgentDeleted: null,
+        resourceUserName: null,
+        resourceUserBanned: null,
+      },
+    ];
+
+    mockSelect.mockReturnValueOnce({ from: mockEntriesFrom });
+    mockEntriesOffset.mockResolvedValueOnce(keyEntry);
+    mockSelect.mockReturnValueOnce({ from: mockCountFrom });
+    mockCountWhere.mockResolvedValueOnce([{ count: 1 }]);
+
+    const req = new NextRequest("http://localhost/api/audit");
+    const res = await GET(req);
+    const body = await res.json();
+
+    // Without this fallback the UI renders "key-77…" — a truncated opaque id,
+    // in the one product surface whose entire job is telling an auditor who
+    // did what. The name comes from the detail snapshot rather than a join to
+    // `apikey`, so it still reads correctly after the key is revoked and its
+    // row is hard-deleted.
+    expect(body.entries[0].actorName).toBe("CI Deploy");
+  });
+
+  it("leaves actorName null for an api_key row whose detail carries no key snapshot", async () => {
+    const keyEntry = [
+      {
+        id: 1,
+        timestamp: new Date("2026-02-21T10:00:00.000Z"),
+        actorType: "api_key",
+        actorId: "key-77",
+        eventType: "agent.created",
+        resource: "agent:a1",
+        detail: { name: "HR Bot" },
+        rowHmac: "abc",
+        actorName: null,
+        actorBanned: null,
+        resourceAgentName: null,
+        resourceAgentDeleted: null,
+        resourceUserName: null,
+        resourceUserBanned: null,
+      },
+    ];
+
+    mockSelect.mockReturnValueOnce({ from: mockEntriesFrom });
+    mockEntriesOffset.mockResolvedValueOnce(keyEntry);
+    mockSelect.mockReturnValueOnce({ from: mockCountFrom });
+    mockCountWhere.mockResolvedValueOnce([{ count: 1 }]);
+
+    const req = new NextRequest("http://localhost/api/audit");
+    const res = await GET(req);
+    const body = await res.json();
+
+    // Degrade to the id rather than invent a name. The audit trail is
+    // evidence; a plausible-looking guess in it is worse than an honest gap.
+    expect(body.entries[0].actorName).toBeNull();
+  });
+
+  it("does not read a key name out of a USER row's detail", async () => {
+    const userEntry = [
+      {
+        id: 1,
+        timestamp: new Date("2026-02-21T10:00:00.000Z"),
+        actorType: "user",
+        actorId: "user-1",
+        eventType: "api_key.created",
+        resource: "api_key:key-77",
+        // An admin issuing a key: the detail legitimately mentions the key,
+        // but the ACTOR is the admin. Keying the fallback off actorType — not
+        // merely "is there an apiKey in detail?" — is what stops this row
+        // from being relabelled "CI Deploy".
+        detail: { id: "key-77", name: "CI Deploy", scopes: ["agents:read"] },
+        rowHmac: "abc",
+        actorName: null,
+        actorBanned: null,
+        resourceAgentName: null,
+        resourceAgentDeleted: null,
+        resourceUserName: null,
+        resourceUserBanned: null,
+      },
+    ];
+
+    mockSelect.mockReturnValueOnce({ from: mockEntriesFrom });
+    mockEntriesOffset.mockResolvedValueOnce(userEntry);
+    mockSelect.mockReturnValueOnce({ from: mockCountFrom });
+    mockCountWhere.mockResolvedValueOnce([{ count: 1 }]);
+
+    const req = new NextRequest("http://localhost/api/audit");
+    const res = await GET(req);
+    const body = await res.json();
+
+    expect(body.entries[0].actorName).toBeNull();
   });
 
   it("joins the actor's user row on EITHER auditPseudonym OR the raw id (dual-join, alt+neu)", async () => {

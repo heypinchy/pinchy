@@ -1,12 +1,17 @@
 // Security regression test for #572 whole-branch review finding C1
 // (CRITICAL): registering `apiKey()` in lib/auth.ts mounts FIVE ungoverned
-// HTTP endpoints — `/api-key/create|update|delete|get|list` — as ordinary
-// Better Auth endpoints. Only `/api-key/verify` is `serverOnly` (see
-// @better-auth/api-key/dist/index.mjs). Because
+// HTTP endpoints — `/api-key/create|update|delete|get|list`. Because
 // `app/api/auth/[...all]/route.ts` mounts the WHOLE auth handler, these are
 // live at `/api/auth/api-key/*` for ANY authenticated session — not just
 // admins, and not through Pinchy's own audited `withAdmin` route at
 // `/api/settings/api-keys`.
+//
+// Those five are exactly the plugin's path-carrying endpoints. It declares
+// two others via `createAuthEndpoint.serverOnly` — `verifyApiKey` and
+// `deleteAllExpiredApiKeys` — and NEITHER carries a path, so neither is
+// reachable over HTTP at all; they exist only as `auth.api.*` calls. (There
+// is no `/api-key/verify` route to speak of, despite the name.) All five
+// blocked below, one test each: an untested endpoint here is an open door.
 //
 // This is the mirror of session-routes-reject-api-key.integration.test.ts —
 // same real-auth, real-DB, no-mocks approach. That file asks "can a key open
@@ -135,5 +140,42 @@ describe("C1: the api-key plugin's HTTP endpoints are governed (#572 review)", (
 
     const rows = await db.select().from(apiKeys).where(eq(apiKeys.id, created.id));
     expect(rows).toHaveLength(1);
+  });
+
+  it("blocks a non-admin member from reading a key via GET /api-key/get (404)", async () => {
+    const { userId, cookieHeader } = await seedMemberSessionCookie();
+    const created = await auth.api.createApiKey({ body: { name: "pre-existing-key", userId } });
+
+    const res = await authGet(
+      apiKeyRequest(`/api-key/get?id=${created.id}`, { cookieHeader, method: "GET" })
+    );
+
+    expect(res.status).toBe(404);
+    // Belt-and-suspenders on the 404: a body that somehow carried the row
+    // would leak `start`/`prefix`/metadata past Pinchy's masking whitelist.
+    expect(await res.text()).not.toContain("pre-existing-key");
+  });
+
+  it("blocks a non-admin member from mutating a key via POST /api-key/update (404, key unchanged)", async () => {
+    const { userId, cookieHeader } = await seedMemberSessionCookie();
+    const created = await auth.api.createApiKey({
+      body: { name: "pre-existing-key", userId, enabled: true },
+    });
+
+    const res = await authPost(
+      apiKeyRequest("/api-key/update", {
+        cookieHeader,
+        body: { keyId: created.id, name: "renamed-by-member", enabled: false },
+      })
+    );
+
+    expect(res.status).toBe(404);
+
+    // The row is untouched. Renaming matters more than it looks: the name is
+    // what the settings list and every audit `detail` snapshot show, so a
+    // member who could rewrite it could disguise which key did what.
+    const [row] = await db.select().from(apiKeys).where(eq(apiKeys.id, created.id));
+    expect(row.name).toBe("pre-existing-key");
+    expect(row.enabled).toBe(true);
   });
 });

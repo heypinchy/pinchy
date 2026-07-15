@@ -60,7 +60,7 @@ A request whose key is missing a required scope gets **403 Forbidden**:
 
 ### `GET /api/v1/agents`
 
-List every agent in the organization. **Requires `agents:read`.**
+List the organization's shared agents. **Requires `agents:read`.**
 
 ```bash
 curl https://pinchy.example.com/api/v1/agents \
@@ -82,14 +82,20 @@ curl https://pinchy.example.com/api/v1/agents \
         "pinchy-files": { "allowed_paths": ["/data/hr-policies"] }
       },
       "isPersonal": false,
-      "ownerId": "user-uuid",
+      "ownerId": null,
       "createdAt": "2025-01-15T10:00:00.000Z"
     }
   ]
 }
 ```
 
-Unlike the session `GET /api/agents`, there's no per-user filtering — this always returns every non-deleted agent, including other users' personal agents. Read-only, so this call is not audited.
+`ownerId` is `null` for agents created through this API: a key acts for the organization, so there's no person to name as the owner. Agents created by an admin in the web UI carry that admin's id instead.
+
+Unlike the session `GET /api/agents`, there's no per-user filtering: restricted agents are returned whether or not the key's creator shares a group with them. An API key acts for the organization, not for a person, so per-person visibility doesn't apply to it.
+
+Personal agents are the exception, and they're never returned. They belong to the individual who owns them, which is a boundary Pinchy holds against everyone — admins included — so a machine credential doesn't get to cross it either. The same applies to the single-agent and delete endpoints below: a personal agent's id answers `404`, exactly as an unknown id does. If it answered differently, you could probe ids to find out who has a personal agent.
+
+Read-only, so this call is not audited.
 
 ### `POST /api/v1/agents`
 
@@ -166,11 +172,11 @@ curl https://pinchy.example.com/api/v1/agents/<agentId> \
 { "error": "Agent not found" }
 ```
 
-Read-only, so this call is not audited.
+A personal agent's id also answers `404` here — see [`GET /api/v1/agents`](#get-apiv1agents). Read-only, so this call is not audited.
 
 ### `DELETE /api/v1/agents/:agentId`
 
-Delete an agent. **Requires `agents:delete`.** Personal agents (auto-created Smithers instances) can't be deleted this way — same rule as the session API.
+Delete a shared agent. **Requires `agents:delete`.** Personal agents (auto-created Smithers instances) aren't reachable through this API at all, so deleting one isn't possible — the id answers `404`, the same as an unknown id.
 
 ```bash
 curl -X DELETE https://pinchy.example.com/api/v1/agents/<agentId> \
@@ -185,15 +191,9 @@ curl -X DELETE https://pinchy.example.com/api/v1/agents/<agentId> \
 
 **Errors:**
 
-- `400` — the agent is personal:
-
-  ```json
-  { "error": "Personal agents cannot be deleted" }
-  ```
-
 - `401` — missing or invalid key
 - `403` — key is missing the `agents:delete` scope
-- `404` — agent not found:
+- `404` — no such shared agent. Returned both for an id that doesn't exist and for a personal agent — deliberately indistinguishable, so the response can't be used to find out which ids are personal agents:
 
   ```json
   { "error": "Agent not found" }
@@ -218,6 +218,32 @@ Afterward, the key list shows only its name, first few characters, scopes, and d
 
 To revoke a key, click **Revoke** next to it in the list and confirm. Revocation is immediate: any client still using that key gets `401 Unauthorized` on its very next request.
 
+## Who owns a key
+
+A key belongs to **the organization**, not to the admin who created it. Its permissions are the [scopes](#scopes) it was issued with, and nothing else — it doesn't inherit its creator's admin rights, and it doesn't lose anything when they change roles.
+
+Concretely: **if the admin who created a key leaves, the key keeps working.** That's deliberate. A key exists so automation can run — resetting a staging instance on every release, provisioning agents from a script — and automation shouldn't break because somebody changed jobs. Any admin can see and revoke any key, so a key is never stranded with a departed colleague either.
+
+This is the same model as a GCP service account key or a Datadog org API key, and it comes with the same catch, which is worth being blunt about.
+
+### Offboarding: what to rotate
+
+The plaintext key was shown exactly once, to the person who created it. Pinchy has no copy and can't tell you where theirs ended up — a password manager, a CI secret store, a text file, all three. So when someone leaves, **assume they still have every key they created**, and decide what that's worth to you.
+
+The key list has a **Created by** column for exactly this. It shows who created each key and flags the ones whose creator is no longer active:
+
+1. Open **Settings → API Keys** and look for keys flagged **No longer active**.
+2. For each one, issue a replacement key with the same scopes, update whatever consumes it, then revoke the old one — in that order, so nothing goes dark in between.
+3. Keys with no flag are fine. Nothing expires or breaks on its own.
+
+The flag is a prompt, not an alarm: the key is still valid and still doing its job. Only you can judge whether a specific departure warrants a rotation.
+
+:::tip[Save the rotation]
+Store new keys somewhere the team can reach — a shared secret store, not a personal one. A key stored where only its creator can get to it is a key you'll have to rotate the day they leave, whether or not you wanted to.
+:::
+
+Setting an expiry when you create a key puts a ceiling on all of this: an expired key stops working regardless of who is holding it.
+
 ## Auditing
 
 Every provisioning action taken with a key, and every key lifecycle event, is written to the [audit trail](/concepts/audit-trail/).
@@ -230,7 +256,11 @@ Every provisioning action taken with a key, and every key lifecycle event, is wr
 | `api_key.created` | the admin   | A key is issued in Settings → API Keys                                                      |
 | `api_key.deleted` | the admin   | A key is revoked in Settings → API Keys                                                     |
 
-Actions taken **with** a key are logged with `actorType: "api_key"` and the key's own id as `actorId` — the key is its own accountable actor, not a stand-in for whoever issued it. The issuing admin is still captured, as delegation metadata inside the entry's `detail` (an `issuer: { id, name }` snapshot) — kept separate from the actor fields, so the trail stays attributable to the right key even after the issuing admin leaves the organization.
+Actions taken **with** a key are logged with `actorType: "api_key"` and the key's own id as `actorId` — the key is its own accountable actor, not a stand-in for a person. Each entry's `detail` also carries an `apiKey: { id, name }` snapshot, so the trail still names the key in plain language after the key itself has been revoked and its row is gone.
+
+There's no delegation field pointing back at the admin who created the key, because the key doesn't act on their behalf — [it belongs to the organization](#who-owns-a-key). Attributing a machine's 3am agent deletion to someone who issued its key eighteen months ago would put a name on an action they had nothing to do with. If you need to know who created the key, that's recorded once — on the key, in Settings → API Keys, and in its `api_key.created` entry, which survives the key's revocation.
+
+Filtering the audit trail by a person, then, won't surface actions taken by keys they created — correctly, since they didn't take them. To follow a key's own trail, filter by its id.
 
 Issuing and revoking keys, by contrast, are admin actions performed through the browser — they're logged with `actorType: "user"`, never `"api_key"`.
 

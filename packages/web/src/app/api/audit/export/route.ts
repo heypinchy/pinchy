@@ -6,6 +6,7 @@ import { desc, eq, and, or, inArray, gte, lte, sql } from "drizzle-orm";
 import { alias } from "drizzle-orm/pg-core";
 import { sanitizeDetail } from "@/lib/audit-sanitize";
 import { appendAuditLog, resolveActorIdMatchSet } from "@/lib/audit";
+import { apiKeyActorName } from "@/lib/api-key-identity";
 import { csvField } from "@/lib/csv";
 import { renderAuditPdf, buildFilterSummary, type AuditExportRow } from "@/lib/audit-pdf";
 
@@ -134,7 +135,10 @@ export async function GET(request: NextRequest) {
     timestamp: e.timestamp,
     actorType: e.actorType,
     actorId: e.actorId,
-    actorName: e.actorName ?? null,
+    // Same api_key fallback as /api/audit — and it matters more here: this is
+    // the artifact that gets handed to an auditor, so a bare key id in the
+    // Actor column is a question Pinchy has to answer by hand later.
+    actorName: e.actorName ?? apiKeyActorName(e.actorType, e.detail),
     eventType: e.eventType,
     resource: e.resource,
     resourceName: e.resourceAgentName ?? e.resourceUserName ?? null,

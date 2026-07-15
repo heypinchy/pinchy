@@ -6,10 +6,20 @@ import { NextRequest } from "next/server";
  *
  * `createAgent()` is mocked directly (not its DB internals) — the domain
  * logic is already covered by `create-agent-service.test.ts`; this suite
- * exercises the route's OWN job: scope auth, result → HTTP mapping, and —
- * the headline concern — the audit trail with a machine actor
- * (`actorType: "api_key"`) plus issuer delegation (design D2), mirroring the
- * payload-assertion style of `agents-audit.test.ts`.
+ * exercises the route's OWN job: scope auth, result → HTTP mapping, and — the
+ * headline concern — the audit trail with a machine actor
+ * (`actorType: "api_key"`, design D2), mirroring the payload-assertion style
+ * of `agents-audit.test.ts`.
+ *
+ * Two things this suite deliberately pins, because both are easy to
+ * "simplify" back into bugs:
+ *
+ *   - No issuer/delegation field. A key belongs to the org, not to the admin
+ *     who created it (lib/api-key-identity.ts), so there is no person to
+ *     attribute its actions to. The key's own snapshot is the attribution.
+ *   - The audit is registered from `createAgent`'s `onCreated` callback — the
+ *     moment the row exists — not after it returns. See the throw-mid-tail
+ *     test below for what that buys.
  */
 
 const { mockVerifyApiKey } = vi.hoisted(() => ({
@@ -50,17 +60,8 @@ vi.mock("@/lib/audit-deferred", () => ({
   deferAuditLog: vi.fn(),
 }));
 
-const { mockDbSelect } = vi.hoisted(() => ({
-  mockDbSelect: vi.fn(),
-}));
-vi.mock("@/db", () => ({
-  db: {
-    select: mockDbSelect,
-  },
-}));
-
 import { POST } from "@/app/api/v1/agents/route";
-import { createAgent } from "@/lib/agents";
+import { createAgent, type OnAgentCreated } from "@/lib/agents";
 import { appendAuditLog } from "@/lib/audit";
 import { deferAuditLog } from "@/lib/audit-deferred";
 import { revalidatePath } from "next/cache";
@@ -86,47 +87,11 @@ function verifiedKey(overrides: Record<string, unknown> = {}) {
     key: {
       id: "key-1",
       name: "Provisioning Key",
-      referenceId: "user-1",
+      referenceId: "pinchy:service-account",
       permissions: { agents: ["write"] },
       ...overrides,
     },
   };
-}
-
-/** Sets the PERSISTENT (not one-time) default for every
- * `db.select(...).from(...).where(...)` call (the issuer-name lookup) —
- * used by `beforeEach` so tests that don't care about the issuer lookup get
- * a stable resolvable user without needing to configure it themselves. */
-function setDefaultIssuerRow(row: { name: string } | undefined) {
-  mockDbSelect.mockReturnValue({
-    from: vi.fn().mockReturnValue({
-      where: vi.fn().mockResolvedValue(row ? [row] : []),
-    }),
-  });
-}
-
-/** Overrides ONLY the next `db.select(...)` call (the issuer-name lookup) to
- * resolve to `row`, or to an empty result set when `row` is undefined
- * (simulating a user that can no longer be found). `mockReturnValueOnce`
- * takes priority over the persistent default set by `setDefaultIssuerRow`,
- * and — because each test triggers at most one issuer lookup — is fully
- * consumed within the same test, so it can never leak into the next one. */
-function mockIssuerLookup(row: { name: string } | undefined) {
-  mockDbSelect.mockReturnValueOnce({
-    from: vi.fn().mockReturnValue({
-      where: vi.fn().mockResolvedValue(row ? [row] : []),
-    }),
-  });
-}
-
-/** Overrides ONLY the next issuer-name lookup to throw — proving the audit
- * path never lets a DB hiccup fail agent creation. */
-function mockIssuerLookupThrows() {
-  mockDbSelect.mockReturnValueOnce({
-    from: vi.fn().mockReturnValue({
-      where: vi.fn().mockRejectedValue(new Error("connection reset")),
-    }),
-  });
 }
 
 const mockAgent = {
@@ -134,40 +99,55 @@ const mockAgent = {
   name: "Provisioned Agent",
   model: "anthropic/claude-haiku-4-5-20251001",
   templateId: "custom",
-  ownerId: "user-1",
+  // Key-created agents are unowned: the key acts for the org, so naming the
+  // creating admin here would be a claim that outlives them.
+  ownerId: null,
+};
+
+const mockAuditInfo = {
+  templateSkills: [],
+  modelSelection: {
+    source: "provider-default" as const,
+    hint: null,
+    reason: "provider-default (anthropic)",
+  },
 };
 
 const successResult = {
   ok: true,
   agent: mockAgent,
-  audit: {
-    templateSkills: [],
-    modelSelection: {
-      source: "provider-default",
-      hint: null,
-      reason: "provider-default (anthropic)",
-    },
-  },
+  audit: mockAuditInfo,
   autoConfiguredPermissions: [],
 };
+
+/**
+ * Stands in for a real `createAgent`: fires `onCreated` (the row is now
+ * committed) and then resolves. Tests that assert on the audit MUST go
+ * through this rather than a bare `mockResolvedValueOnce`, because the route
+ * writes the audit from that callback — a mock that never calls it would make
+ * the audit assertions vacuous.
+ */
+function createAgentSucceeds(result: unknown = successResult) {
+  vi.mocked(createAgent).mockImplementationOnce((async (
+    _input: unknown,
+    _ownerId: unknown,
+    onCreated?: OnAgentCreated
+  ) => {
+    onCreated?.(mockAgent as never, mockAuditInfo);
+    return result;
+  }) as never);
+}
 
 const validBody = { name: "Provisioned Agent", templateId: "custom" };
 
 describe("POST /api/v1/agents", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    // Persistent (non-"Once") default: every test starts with a resolvable
-    // issuer unless it calls mockIssuerLookup()/mockIssuerLookupThrows() to
-    // override the single lookup call the route makes. Using a persistent
-    // default here (rather than mockReturnValueOnce) matters — mockReturnValueOnce
-    // queues FIFO, so a default queued in beforeEach would always be consumed
-    // before a same-test override queued afterwards.
-    setDefaultIssuerRow({ name: "Cara Admin" });
   });
 
   it("returns 201 with the created agent for a valid agents:write key", async () => {
     mockVerifyApiKey.mockResolvedValue(verifiedKey());
-    vi.mocked(createAgent).mockResolvedValueOnce(successResult as never);
+    createAgentSucceeds();
 
     const response = await POST(postRequest(validBody));
     const body = await response.json();
@@ -176,7 +156,12 @@ describe("POST /api/v1/agents", () => {
     expect(body).toEqual(mockAgent);
     expect(createAgent).toHaveBeenCalledWith(
       expect.objectContaining({ name: "Provisioned Agent", templateId: "custom" }),
-      "user-1" // key.issuerUserId — ownerId for a key-created agent
+      // ownerId: null — a key acts for the organization, so a key-created
+      // agent has no human owner. Passing a user id here (as this route once
+      // did, via the key's referenceId) would attribute the agent to someone
+      // who may since have left.
+      null,
+      expect.any(Function)
     );
     expect(revalidatePath).toHaveBeenCalledWith("/", "layout");
     // successResult.autoConfiguredPermissions is [] — the permission loop
@@ -186,13 +171,16 @@ describe("POST /api/v1/agents", () => {
 
   // ── Headline assertion: the audit surface Pinchy sells ──────────────────
 
-  it("audits agent.created with actorType 'api_key', the key snapshot, and issuer delegation", async () => {
+  it("audits agent.created with actorType 'api_key' and the key snapshot, and NO issuer", async () => {
     mockVerifyApiKey.mockResolvedValue(verifiedKey());
-    vi.mocked(createAgent).mockResolvedValueOnce(successResult as never);
+    createAgentSucceeds();
 
     const response = await POST(postRequest(validBody));
     expect(response.status).toBe(201);
 
+    // Exact-match: the absence of an `issuer` field is as load-bearing as the
+    // presence of `apiKey`. The key is the actor; nothing here may claim a
+    // human delegated this action.
     expect(appendAuditLog).toHaveBeenCalledWith({
       actorType: "api_key",
       actorId: "key-1",
@@ -210,67 +198,55 @@ describe("POST /api/v1/agents", () => {
           reason: "provider-default (anthropic)",
         },
         apiKey: { id: "key-1", name: "Provisioning Key" },
-        issuer: { id: "user-1", name: "Cara Admin" },
       },
     });
   });
 
-  it("writes no success audit when createAgent throws mid-creation", async () => {
-    // The after(() => appendAuditLog(...)) registration sits AFTER the
-    // `createAgent()` call in route.ts (comment: "Registered only after
-    // createAgent() fully succeeds") — a throw there (permissions/workspace/
-    // regen failure → 500) must mean that line never runs, so a
-    // partially-created agent can never emit a false "success" governance
-    // record. `createAgent` is mocked, so this is cheap to lock in.
+  // ── The audit-timing contract (see createAgent's onCreated docblock) ────
+
+  it("STILL audits the creation when createAgent throws after the row exists", async () => {
     mockVerifyApiKey.mockResolvedValue(verifiedKey());
-    vi.mocked(createAgent).mockRejectedValueOnce(new Error("regen failed"));
+    // The realistic 500: the insert commits, then the workspace write or the
+    // OpenClaw regen blows up. The agent EXISTS. Nothing rolls it back.
+    vi.mocked(createAgent).mockImplementationOnce((async (
+      _input: unknown,
+      _ownerId: unknown,
+      onCreated?: OnAgentCreated
+    ) => {
+      onCreated?.(mockAgent as never, mockAuditInfo);
+      throw new Error("regen failed");
+    }) as never);
+
+    await expect(POST(postRequest(validBody))).rejects.toThrow("regen failed");
+
+    // An agent that exists but was never written down is the one outcome an
+    // audit product cannot ship. Registering the after() only once
+    // createAgent RETURNED — as this route used to — lost exactly this record,
+    // while the comment there advertised it as preventing a "false success".
+    // The success was never false: the row is committed by this point.
+    expect(appendAuditLog).toHaveBeenCalledWith(
+      expect.objectContaining({
+        eventType: "agent.created",
+        outcome: "success",
+        resource: "agent:new-agent-id",
+      })
+    );
+  });
+
+  it("writes no audit when createAgent throws before the row exists", async () => {
+    mockVerifyApiKey.mockResolvedValue(verifiedKey());
+    // Threw during template resolution / model selection — onCreated never
+    // fires, so there is genuinely nothing to record.
+    vi.mocked(createAgent).mockRejectedValueOnce(new Error("provider unreachable"));
 
     await expect(POST(postRequest(validBody))).rejects.toThrow();
 
-    expect(appendAuditLog).not.toHaveBeenCalledWith(
-      expect.objectContaining({ outcome: "success" })
-    );
-  });
-
-  it("falls back to an empty issuer name when the issuing user can no longer be found", async () => {
-    mockVerifyApiKey.mockResolvedValue(verifiedKey());
-    vi.mocked(createAgent).mockResolvedValueOnce(successResult as never);
-    mockIssuerLookup(undefined); // overrides the beforeEach default: no row found
-
-    const response = await POST(postRequest(validBody));
-    expect(response.status).toBe(201);
-
-    expect(appendAuditLog).toHaveBeenCalledWith(
-      expect.objectContaining({
-        detail: expect.objectContaining({
-          issuer: { id: "user-1", name: "" },
-        }),
-      })
-    );
-  });
-
-  it("never fails agent creation when the issuer-name lookup throws (audit path must not throw)", async () => {
-    mockVerifyApiKey.mockResolvedValue(verifiedKey());
-    vi.mocked(createAgent).mockResolvedValueOnce(successResult as never);
-    mockIssuerLookupThrows(); // overrides the beforeEach default
-
-    const response = await POST(postRequest(validBody));
-    const body = await response.json();
-
-    expect(response.status).toBe(201);
-    expect(body).toEqual(mockAgent);
-    expect(appendAuditLog).toHaveBeenCalledWith(
-      expect.objectContaining({
-        detail: expect.objectContaining({
-          issuer: { id: "user-1", name: "" },
-        }),
-      })
-    );
+    expect(appendAuditLog).not.toHaveBeenCalled();
   });
 
   it("audits auto-configured integration permissions as config.changed with actorType 'api_key'", async () => {
     mockVerifyApiKey.mockResolvedValue(verifiedKey());
-    vi.mocked(createAgent).mockResolvedValueOnce({
+    createAgentSucceeds({
       ...successResult,
       autoConfiguredPermissions: [
         {
@@ -278,7 +254,7 @@ describe("POST /api/v1/agents", () => {
           permissions: [{ model: "sale.order", operation: "read" }],
         },
       ],
-    } as never);
+    });
 
     const response = await POST(postRequest(validBody));
     expect(response.status).toBe(201);
@@ -295,7 +271,6 @@ describe("POST /api/v1/agents", () => {
         connectionId: "conn-1",
         permissions: [{ model: "sale.order", operation: "read" }],
         apiKey: { id: "key-1", name: "Provisioning Key" },
-        issuer: { id: "user-1", name: "Cara Admin" },
       },
     });
   });
@@ -310,14 +285,12 @@ describe("POST /api/v1/agents", () => {
     expect(body.error).toBe("Validation failed");
     expect(createAgent).not.toHaveBeenCalled();
     expect(appendAuditLog).not.toHaveBeenCalled();
-    // The issuer lookup is only worth its DB round-trip when an audit entry
-    // is actually going to be written — a malformed body must short-circuit
-    // before it.
-    expect(mockDbSelect).not.toHaveBeenCalled();
   });
 
   it("returns 422 with template_capability_unavailable and audits the failure with actorType 'api_key'", async () => {
     mockVerifyApiKey.mockResolvedValue(verifiedKey());
+    // Returns before the insert, so onCreated never fires — hence a plain
+    // mockResolvedValueOnce rather than createAgentSucceeds().
     vi.mocked(createAgent).mockResolvedValueOnce({
       ok: false,
       error: {
@@ -359,9 +332,10 @@ describe("POST /api/v1/agents", () => {
         missingCapabilities: ["vision"],
         provider: "ollama-local",
         apiKey: { id: "key-1", name: "Provisioning Key" },
-        issuer: { id: "user-1", name: "Cara Admin" },
       },
     });
+    // Only the failure row — the success path never ran.
+    expect(appendAuditLog).toHaveBeenCalledTimes(1);
   });
 
   it("returns 400 without an audit entry when createAgent rejects on plain validation (parity with the session route)", async () => {
@@ -379,7 +353,7 @@ describe("POST /api/v1/agents", () => {
     expect(appendAuditLog).not.toHaveBeenCalled();
   });
 
-  it("returns 403 Forbidden when the key is missing the agents:write scope", async () => {
+  it("returns 403 Forbidden when the key is missing the agents:write scope, and creates nothing", async () => {
     mockVerifyApiKey.mockResolvedValue(verifiedKey({ permissions: { agents: ["read"] } }));
 
     const response = await POST(postRequest(validBody));
@@ -387,7 +361,12 @@ describe("POST /api/v1/agents", () => {
     expect(response.status).toBe(403);
     expect(await response.json()).toEqual({ error: "Forbidden" });
     expect(createAgent).not.toHaveBeenCalled();
-    expect(appendAuditLog).not.toHaveBeenCalled();
+    // The denial itself IS audited — by withApiKey, whose own suite pins the
+    // payload (with-api-key.test.ts). What must never appear is an
+    // agent.created row: nothing was created.
+    expect(appendAuditLog).not.toHaveBeenCalledWith(
+      expect.objectContaining({ eventType: "agent.created" })
+    );
   });
 
   it("returns 401 Unauthorized when no API key is present", async () => {

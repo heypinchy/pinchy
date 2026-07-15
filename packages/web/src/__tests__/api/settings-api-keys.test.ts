@@ -61,12 +61,13 @@ vi.mock("@/db", () => ({
 
 import { POST, GET } from "@/app/api/settings/api-keys/route";
 import { appendAuditLog } from "@/lib/audit";
-import { apiKeys } from "@/db/schema";
+import { apiKeys, users } from "@/db/schema";
+import { PINCHY_SERVICE_ACCOUNT_ID } from "@/lib/api-key-identity";
 
 // ── Helpers ─────────────────────────────────────────────────────────────
 
 function adminSession() {
-  return { user: { id: "admin-1", email: "admin@test.com", role: "admin" } };
+  return { user: { id: "admin-1", name: "Ada Admin", email: "admin@test.com", role: "admin" } };
 }
 
 function memberSession() {
@@ -110,7 +111,7 @@ describe("POST /api/settings/api-keys", () => {
     });
   });
 
-  it("calls auth.api.createApiKey with mapped permissions and the admin session as owner, no headers", async () => {
+  it("issues the key against the org service account, with the admin only as createdBy provenance", async () => {
     mockCreateApiKey.mockResolvedValue({
       id: "key-1",
       key: "pinchy_abc",
@@ -120,15 +121,28 @@ describe("POST /api/settings/api-keys", () => {
 
     await POST(postRequest({ name: "CI", scopes: ["agents:read", "agents:write"] }));
 
-    // No `headers`/`request` field: permissions/userId are server-only
-    // fields on this endpoint — passing headers would make better-auth treat
-    // this as a client request and throw SERVER_ONLY_PROPERTY.
+    // Two things are pinned here, and both are load-bearing:
+    //
+    // 1. `userId` (which the plugin stores verbatim as `referenceId`) is the
+    //    ORG service account, never "admin-1". The key must not claim to
+    //    carry a person's authority — it outlives them by design, so a user
+    //    id there would be a claim nothing keeps true. That the key really
+    //    does survive its creator's deletion is proven against a real DB in
+    //    settings-api-keys-ownership.integration.test.ts.
+    // 2. The admin lands in `metadata.createdBy` instead: provenance, so
+    //    admins can answer "whose key is this, do we rotate it now they've
+    //    left?" — the compensating control for one-time-plaintext custody.
+    //
+    // No `headers`/`request` field: permissions/userId are server-only fields
+    // on this endpoint — passing headers would make better-auth treat this as
+    // a client request and throw SERVER_ONLY_PROPERTY.
     expect(mockCreateApiKey).toHaveBeenCalledWith({
       body: {
         name: "CI",
         permissions: { agents: ["read", "write"] },
         expiresIn: undefined,
-        userId: "admin-1",
+        userId: PINCHY_SERVICE_ACCOUNT_ID,
+        metadata: { createdBy: { id: "admin-1", name: "Ada Admin" } },
       },
     });
   });
@@ -251,18 +265,36 @@ describe("GET /api/settings/api-keys", () => {
   });
 
   /**
-   * Sets up `db.select().from(apiKeys).orderBy(...)` to resolve to `rows`.
-   * Mirrors the route's actual chain — `.from()` returns an object whose
-   * ONLY chained method is `.orderBy()` (no `.where()`), so a route that
-   * regressed to filtering by the caller's own `referenceId` (i.e. went back
-   * to being per-admin, not org-wide) would call a `.where()` that doesn't
-   * exist on this mock and fail loudly rather than silently narrowing.
+   * Sets up the GET route's two queries:
+   *
+   *   1. `db.select().from(apiKeys).orderBy(...)` → `rows`.
+   *   2. `db.select().from(users).where(inArray(...))` → `creatorRows`, the
+   *      creator-liveness lookup. Defaults to "the fixture's creator is still
+   *      employed"; pass `[]` for a creator who is gone, or a `banned: true`
+   *      row for one who is deactivated.
+   *
+   * Dispatches on the TABLE rather than call order, deliberately. Query 2 is
+   * skipped entirely when no key has a recorded creator, so a call-order mock
+   * would leave a queued response behind and desync every later test in the
+   * file — a failure that surfaces nowhere near its cause.
+   *
+   * Dispatching this way also preserves the guard that motivated the original
+   * shape: `.from(apiKeys)` exposes ONLY `.orderBy()`, never `.where()`, so a
+   * route that regressed to filtering by the caller's own `referenceId` (i.e.
+   * went back to per-admin instead of org-wide) calls a method that doesn't
+   * exist here and fails loudly rather than silently narrowing.
    */
-  function mockKeyRows(rows: unknown[]) {
+  function mockKeyRows(
+    rows: unknown[],
+    creatorRows: { id: string; banned: boolean }[] = [{ id: "admin-1", banned: false }]
+  ) {
     const orderBy = vi.fn().mockResolvedValue(rows);
-    const from = vi.fn().mockReturnValue({ orderBy });
+    const creatorWhere = vi.fn().mockResolvedValue(creatorRows);
+    const from = vi.fn((table: unknown) =>
+      table === users ? { where: creatorWhere } : { orderBy }
+    );
     mockDbSelect.mockReturnValue({ from });
-    return { from, orderBy };
+    return { from, orderBy, creatorWhere };
   }
 
   // A full apiKey row shape (matches every column in db/schema.ts's
@@ -291,7 +323,7 @@ describe("GET /api/settings/api-keys", () => {
       createdAt: new Date("2026-01-01T00:00:00.000Z"),
       updatedAt: new Date("2026-01-01T00:00:00.000Z"),
       permissions: JSON.stringify({ agents: ["read", "write"] }),
-      metadata: null,
+      metadata: JSON.stringify({ createdBy: { id: "admin-1", name: "Ada Admin" } }),
       ...overrides,
     };
   }
@@ -314,9 +346,28 @@ describe("GET /api/settings/api-keys", () => {
           expiresAt: null,
           lastRequest: null,
           enabled: true,
+          // Parsed out of the raw `metadata` JSON string, never passed
+          // through wholesale — see the leak test below. `active` is resolved
+          // live, so this row prompts a rotation once Ada is gone.
+          createdBy: { id: "admin-1", name: "Ada Admin", active: true },
         },
       ],
     });
+  });
+
+  it("renders createdBy as null for a key with no or unparseable creator metadata", async () => {
+    mockKeyRows([
+      fullKeyRow({ id: "key-old", metadata: null }),
+      fullKeyRow({ id: "key-corrupt", metadata: "{not valid json" }),
+      fullKeyRow({ id: "key-partial", metadata: JSON.stringify({ createdBy: { id: "u1" } }) }),
+    ]);
+
+    const response = await GET(getRequest());
+    const body = await response.json();
+
+    // Degrade honestly rather than guess or throw: one bad row must not take
+    // the whole settings page down, and "unknown" must look like unknown.
+    expect(body.keys.map((k: { createdBy: unknown }) => k.createdBy)).toEqual([null, null, null]);
   });
 
   it("queries the apikey table directly, org-wide — no per-admin filter", async () => {
@@ -346,7 +397,14 @@ describe("GET /api/settings/api-keys", () => {
         // Defensive: even if a future refactor widened the select, the
         // route's whitelist must drop these regardless.
         key: "should-never-appear-in-response",
-        metadata: JSON.stringify({ secret: "nope" }),
+        // Metadata carrying BOTH the legitimate createdBy and an extra field.
+        // The route must project out createdBy and drop the rest — passing
+        // the parsed object through wholesale would leak whatever else a
+        // future writer (or a hand-edited row) put in this column.
+        metadata: JSON.stringify({
+          createdBy: { id: "admin-1", name: "Ada Admin" },
+          secret: "should-never-appear-in-response-either",
+        }),
       }),
     ]);
 
@@ -355,14 +413,26 @@ describe("GET /api/settings/api-keys", () => {
     const bodyText = JSON.stringify(body);
 
     expect(bodyText).not.toContain("should-never-appear-in-response");
+    expect(bodyText).not.toContain("should-never-appear-in-response-either");
     expect(body.keys[0]).not.toHaveProperty("key");
     expect(body.keys[0]).not.toHaveProperty("permissions");
     expect(body.keys[0]).not.toHaveProperty("metadata");
     expect(body.keys[0]).not.toHaveProperty("prefix");
     expect(body.keys[0]).not.toHaveProperty("referenceId");
-    // Whitelist is exhaustive: no field beyond the 8 documented safe ones.
+    expect(body.keys[0].createdBy).toEqual({ id: "admin-1", name: "Ada Admin", active: true });
+    // Whitelist is exhaustive: no field beyond the 9 documented safe ones.
     expect(Object.keys(body.keys[0]).sort()).toEqual(
-      ["createdAt", "enabled", "expiresAt", "id", "lastRequest", "name", "scopes", "start"].sort()
+      [
+        "createdAt",
+        "createdBy",
+        "enabled",
+        "expiresAt",
+        "id",
+        "lastRequest",
+        "name",
+        "scopes",
+        "start",
+      ].sort()
     );
   });
 

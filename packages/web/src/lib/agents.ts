@@ -9,7 +9,7 @@ import {
   type AgentPluginConfig,
 } from "@/db/schema";
 import type { AgentVisibility } from "@/db/enums";
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import { regenerateOpenClawConfig } from "@/lib/openclaw-config";
 import {
   deleteWorkspace,
@@ -54,49 +54,59 @@ export interface UpdateAgentInput {
 }
 
 /**
- * List every non-deleted agent for an admin / key-scoped caller.
+ * List every non-deleted SHARED agent, org-scoped rather than per-user.
  *
- * ⚠️ `{ scope: "all" }` DELIBERATELY BYPASSES all visibility and ownership
- * filtering. It returns personal agents owned by other users and restricted
- * agents the caller shares no group with — i.e. everything `getVisibleAgents`
- * hides. Use ONLY for admin / key-authenticated surfaces (the key API's
+ * Backs key-authenticated surfaces (the Agent Provisioning API's
  * `/api/v1/agents`, #572). Session routes MUST keep using `getVisibleAgents`,
  * which filters by the caller's identity.
  *
- * The literal `"all"` scope is an explicit "see everything" signal at the call
- * site and reserves room for a future filtered scope; until then this fails
- * closed on anything else so a mistyped/JS caller can't silently see all.
+ * ⚠️ `{ scope: "shared" }` DELIBERATELY BYPASSES per-user visibility: it
+ * returns restricted agents the caller shares no group with (design D4). What
+ * it does NOT bypass is the personal-agent boundary — see `agent-access.ts`,
+ * where the invariant is stated for the session path: personal agents are
+ * private to their owner, and that holds for everyone, admins included. An API
+ * key is a machine identity for the organization; it has strictly less claim
+ * there than an admin, so personal agents are filtered out at the query.
+ *
+ * There is deliberately NO scope that returns personal agents. The literal is
+ * an explicit signal at the call site, and this fails closed on anything else
+ * so a mistyped/JS caller — or one left over from the retired `"all"` scope —
+ * throws instead of silently widening.
  *
  * Reads from the `active_agents` view, so soft-deleted agents are excluded.
  */
 export async function listAgents(opts: {
-  scope: "all";
+  scope: "shared";
 }): Promise<(typeof activeAgents.$inferSelect)[]> {
   // audit-exempt: read-only query, no state change
-  if (opts.scope !== "all") {
+  if (opts.scope !== "shared") {
     throw new Error(`listAgents: unsupported scope "${opts.scope}"`);
   }
-  return db.select().from(activeAgents);
+  return db.select().from(activeAgents).where(eq(activeAgents.isPersonal, false));
 }
 
 /**
- * Fetch a single non-deleted agent by id for an admin / key-scoped caller.
+ * Fetch a single non-deleted SHARED agent by id, org-scoped rather than
+ * per-user. The single-agent counterpart to `listAgents` above — same scope
+ * semantics, same personal-agent exclusion.
  *
- * ⚠️ `{ scope: "all" }` DELIBERATELY BYPASSES the access control that
- * `getAgentWithAccess` applies: it returns the agent regardless of visibility
- * or ownership (including another user's personal agent). Use ONLY for admin /
- * key-authenticated surfaces (#572). Returns `undefined` when no non-deleted
- * agent has that id (the route maps that to 404).
+ * Returns `undefined` both when no non-deleted agent has that id AND when the
+ * agent is personal, so callers cannot tell the two apart and the route maps
+ * both to a plain 404. That symmetry is the point: a distinguishable response
+ * would let a key holder enumerate the existence of users' personal agents.
  */
 export async function getAgent(
   id: string,
-  opts: { scope: "all" }
+  opts: { scope: "shared" }
 ): Promise<typeof activeAgents.$inferSelect | undefined> {
   // audit-exempt: read-only query, no state change
-  if (opts.scope !== "all") {
+  if (opts.scope !== "shared") {
     throw new Error(`getAgent: unsupported scope "${opts.scope}"`);
   }
-  const rows = await db.select().from(activeAgents).where(eq(activeAgents.id, id));
+  const rows = await db
+    .select()
+    .from(activeAgents)
+    .where(and(eq(activeAgents.id, id), eq(activeAgents.isPersonal, false)));
   return rows[0];
 }
 
@@ -165,18 +175,31 @@ export interface AutoConfiguredConnection {
  * `/api/v1/agents`) can narrow to the exact body shape, and so illegal states —
  * a 400 carrying a `capabilityFailure`, or a 422 without one — don't typecheck.
  */
+/** The audit-relevant facts about a creation, known once the row exists. */
+export type CreateAgentAuditInfo = {
+  templateSkills: string[];
+  modelSelection: {
+    source: "template-hint" | "provider-default";
+    hint: ModelHint | null;
+    reason: string;
+  };
+};
+
+/**
+ * Called by `createAgent` the instant the agent row is committed, and before
+ * any of the work that can still throw. See `createAgent`'s `onCreated`
+ * parameter for why the timing matters.
+ */
+export type OnAgentCreated = (
+  agent: typeof agents.$inferSelect,
+  audit: CreateAgentAuditInfo
+) => void;
+
 export type CreateAgentResult =
   | {
       ok: true;
       agent: typeof agents.$inferSelect;
-      audit: {
-        templateSkills: string[];
-        modelSelection: {
-          source: "template-hint" | "provider-default";
-          hint: ModelHint | null;
-          reason: string;
-        };
-      };
+      audit: CreateAgentAuditInfo;
       autoConfiguredPermissions: AutoConfiguredConnection[];
       // Best-effort OpenClaw runtime apply (#880): the agent row is committed
       // regardless. On regen/runtime-wait failure the create still succeeds
@@ -215,12 +238,31 @@ export type CreateAgentResult =
  * it returns a discriminated result so each route can wrap it with its own auth,
  * its own audit actor (`user` vs `api_key`), and its own HTTP responses.
  *
- * `ownerId` is the id to record as the agent's owner (the session user for the
- * admin route; the key's issuer for the API route).
+ * `ownerId` is the id to record as the agent's owner: the session user for the
+ * admin route, and `null` for the key-authenticated API route — a key belongs
+ * to the organization rather than to any person (lib/api-key-identity.ts), so
+ * there is no honest owner to name. `agents.owner_id` is nullable, and an
+ * unowned SHARED agent is well-defined everywhere it matters: `visible-agents`
+ * only consults `ownerId` on the `isPersonal` branch, and this route never
+ * creates personal agents. Writing the creating admin's id here instead would
+ * be a lie that outlives them.
+ *
+ * `onCreated` fires the moment the agent row is committed — deliberately
+ * BEFORE the permission inserts, workspace materialization and OpenClaw
+ * regen, every one of which can throw, and none of which shares a transaction
+ * with the insert. A caller that instead waits for this function to RETURN
+ * before recording the creation will silently lose the record whenever that
+ * tail throws: the agent exists, the caller 500s, and nothing was written
+ * down. For an audit product that is the one outcome worse than a noisy log.
+ *
+ * This hook is why `createAgent` can stay audit-agnostic without giving up
+ * correct timing: it hands each route the moment, and each route brings its
+ * own actor (`user` vs `api_key`) and its own writer.
  */
 export async function createAgent(
   input: CreateAgentInput,
-  ownerId: string
+  ownerId: string | null,
+  onCreated?: OnAgentCreated
 ): Promise<CreateAgentResult> {
   const { name, templateId, tagline, pluginConfig, connectionId, defaultAllowedTools } = input;
 
@@ -355,6 +397,20 @@ export async function createAgent(
     })
     .returning();
 
+  const auditInfo: CreateAgentAuditInfo = {
+    templateSkills,
+    modelSelection: {
+      source: modelSelectionSource,
+      hint: template.modelHint ?? null,
+      reason: modelSelectionReason,
+    },
+  };
+
+  // The agent now exists and is committed. Everything below can throw, and
+  // none of it rolls this row back — so the creation gets recorded HERE, not
+  // after the function returns. See the docblock.
+  onCreated?.(agent, auditInfo);
+
   const autoConfiguredPermissions: AutoConfiguredConnection[] = [];
 
   // Auto-configure Odoo permissions when template has odooConfig
@@ -465,17 +521,13 @@ export async function createAgent(
     runtimeApplyError = err instanceof Error ? err.message : String(err);
   }
 
+  // Same object `onCreated` already received — one source of truth, so a
+  // caller using the callback and a caller using the return value can never
+  // disagree about what was created.
   return {
     ok: true,
     agent,
-    audit: {
-      templateSkills,
-      modelSelection: {
-        source: modelSelectionSource,
-        hint: template.modelHint ?? null,
-        reason: modelSelectionReason,
-      },
-    },
+    audit: auditInfo,
     autoConfiguredPermissions,
     runtimeWarning,
     runtimeApplyError,

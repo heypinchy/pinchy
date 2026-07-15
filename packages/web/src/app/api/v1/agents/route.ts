@@ -6,16 +6,18 @@ import { createAgent, listAgents } from "@/lib/agents";
 import { createAgentSchema } from "@/lib/schemas/agents";
 import { appendAuditLog } from "@/lib/audit";
 import { deferAuditLog } from "@/lib/audit-deferred";
-import { resolveIssuer } from "@/lib/api-key-audit";
 
 /**
- * List every non-deleted agent. Key-authenticated counterpart to the
- * session `GET /api/agents` — this route is admin/org-scoped and returns
- * ALL agents via `listAgents({ scope: "all" })`, with no per-user visibility
- * filtering (design D4). Read-only: no audit entry.
+ * List every non-deleted shared agent. Key-authenticated counterpart to the
+ * session `GET /api/agents` — org-scoped rather than per-user, so unlike
+ * `getVisibleAgents` it does not filter by the caller's group membership
+ * (design D4). Personal agents are excluded: they are private to their owner,
+ * and a key is a machine identity for the org, not for any human. That
+ * exclusion lives in `listAgents({ scope: "shared" })` — there is no scope
+ * that would return them. Read-only: no audit entry.
  */
 export const GET = withApiKey(["agents:read"], async () => {
-  const agents = await listAgents({ scope: "all" });
+  const agents = await listAgents({ scope: "shared" });
   return NextResponse.json({ agents });
 });
 
@@ -24,21 +26,54 @@ export const GET = withApiKey(["agents:read"], async () => {
  * counterpart to the session `POST /api/agents` — both wrap the same
  * auth-/audit-/HTTP-agnostic `createAgent()` service (#572) and map its
  * discriminated result onto identical response bodies. This route differs
- * only in auth (`withApiKey` instead of `withAdmin`) and audit actor:
- * `actorType: "api_key"` with an issuer-delegation snapshot in `detail`
- * (design D2), instead of `actorType: "user"`.
+ * only in auth (`withApiKey` instead of `withAdmin`) and audit actor: the KEY
+ * is the actor (`actorType: "api_key"`, design D2), not a user.
+ *
+ * There is deliberately no "issuer" or delegation field in the detail. A key
+ * belongs to the organization, not to the admin who created it
+ * (lib/api-key-identity.ts) — so it acts for itself, and claiming otherwise
+ * would attribute a machine's action to a person who may have left years ago
+ * and had no part in it. The key's own `{ id, name }` snapshot is the
+ * attribution, and it stays readable after the key is revoked. Who created
+ * the key is recorded once, on the key.
+ *
+ * The agent it creates has `ownerId: null` for the same reason.
  */
 export const POST = withApiKey(["agents:write"], async (req, _ctx, key) => {
   const parsed = await parseRequestBody(createAgentSchema, req);
   if ("error" in parsed) return parsed.error;
 
-  const result = await createAgent(parsed.data, key.issuerUserId);
+  const result = await createAgent(parsed.data, null, (agent, audit) =>
+    // Registered the instant the row exists — NOT after createAgent returns.
+    // Everything it still has to do (permissions, workspace, OpenClaw regen)
+    // can throw, and none of it rolls the insert back. after() fires on
+    // response close even when the handler threw, so a 500 here yields an
+    // agent that exists AND is audited. Waiting for the return value would
+    // instead lose the record precisely when something went wrong.
+    after(() =>
+      appendAuditLog({
+        actorType: "api_key",
+        actorId: key.keyId,
+        eventType: "agent.created",
+        resource: `agent:${agent.id}`,
+        detail: {
+          name: agent.name,
+          model: agent.model,
+          templateId: parsed.data.templateId,
+          skills: audit.templateSkills,
+          modelSelection: audit.modelSelection,
+          apiKey: { id: key.keyId, name: key.name },
+        },
+        outcome: "success",
+      })
+    )
+  );
 
   if (!result.ok) {
     // Only the capability path (422) is audited — parity with the session
     // route (plain 400 validation failures were never logged there either).
+    // Both return before the insert, so onCreated above never fired.
     if (result.error.status === 422) {
-      const issuer = await resolveIssuer(key.issuerUserId);
       await appendAuditLog({
         actorType: "api_key",
         actorId: key.keyId,
@@ -47,36 +82,13 @@ export const POST = withApiKey(["agents:write"], async (req, _ctx, key) => {
         detail: {
           ...result.error.capabilityFailure,
           apiKey: { id: key.keyId, name: key.name },
-          issuer,
         },
       });
     }
     return NextResponse.json(result.error.body, { status: result.error.status });
   }
 
-  const { agent, audit, autoConfiguredPermissions } = result;
-  const issuer = await resolveIssuer(key.issuerUserId);
-
-  // Registered only after createAgent() fully succeeds: a throw mid-creation
-  // (permissions/workspace/regen → 500) must NOT queue a false "success" audit.
-  after(() =>
-    appendAuditLog({
-      actorType: "api_key",
-      actorId: key.keyId,
-      eventType: "agent.created",
-      resource: `agent:${agent.id}`,
-      detail: {
-        name: agent.name,
-        model: agent.model,
-        templateId: parsed.data.templateId,
-        skills: audit.templateSkills,
-        modelSelection: audit.modelSelection,
-        apiKey: { id: key.keyId, name: key.name },
-        issuer,
-      },
-      outcome: "success",
-    })
-  );
+  const { agent, autoConfiguredPermissions } = result;
 
   for (const entry of autoConfiguredPermissions) {
     deferAuditLog({
@@ -90,7 +102,6 @@ export const POST = withApiKey(["agents:write"], async (req, _ctx, key) => {
         connectionId: entry.connectionId,
         permissions: entry.permissions,
         apiKey: { id: key.keyId, name: key.name },
-        issuer,
       },
       outcome: "success",
     });

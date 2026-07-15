@@ -36,8 +36,13 @@ vi.mock("next/headers", () => ({
   headers: mockHeaders,
 }));
 
+vi.mock("@/lib/audit", () => ({
+  appendAuditLog: vi.fn().mockResolvedValue(undefined),
+}));
+
 import { withApiKey, type ApiKeyContext } from "@/lib/api-auth";
 import { extractScopes } from "@/lib/api-key-scopes";
+import { appendAuditLog } from "@/lib/audit";
 
 // ── Helpers ─────────────────────────────────────────────────────────────
 
@@ -145,6 +150,9 @@ describe("withApiKey", () => {
       verified({
         id: "key-77",
         name: "Deploy Bot",
+        // The real value is the constant service-account id; a user-shaped
+        // string here is the harsher fixture, since it's what a regression
+        // would produce and what the assertion below must still refuse.
         referenceId: "user-99",
         permissions: { agents: ["read", "write"] },
       })
@@ -163,12 +171,16 @@ describe("withApiKey", () => {
     const [passedReq, passedCtx, apiKeyContext] = handler.mock.calls[0];
     expect(passedReq).toBe(req);
     expect(passedCtx).toBe(ctx);
+    // Exact-match, and the ABSENCE is what's load-bearing: the context carries
+    // no user, not even though `referenceId` is populated above. A key belongs
+    // to the org, not to whoever created it (lib/api-key-identity.ts), so
+    // there's no person for a route to attribute its actions to — the key is
+    // the actor (design D2). Passing a user field through here is what would
+    // let that attribution creep back into the audit trail.
     expect(apiKeyContext).toEqual({
       keyId: "key-77",
       name: "Deploy Bot",
       scopes: ["agents:read", "agents:write"],
-      // issuerUserId is the key owner — better-auth exposes it as referenceId.
-      issuerUserId: "user-99",
     });
   });
 
@@ -244,6 +256,131 @@ describe("withApiKey", () => {
     );
 
     expect(res.status).toBe(401);
+    expect(handler).not.toHaveBeenCalled();
+  });
+
+  // ── Keys the plugin rejects on its own terms ────────────────────────────
+
+  it("denies an EXPIRED key (401) and never calls the handler", async () => {
+    // What the plugin actually returns for an expired key: valid:false with a
+    // reason, not a throw. The wrapper keys off `valid`, so it denies — but
+    // nothing proved that until now, and "the expiry field is honoured" is
+    // the entire promise behind offering an expiry in the UI.
+    mockVerifyApiKey.mockResolvedValue({
+      valid: false,
+      error: { code: "KEY_EXPIRED", message: "API Key has expired" },
+      key: null,
+    });
+    const handler = vi.fn(OK);
+
+    const res = await withApiKey(["agents:read"], handler)(
+      reqWith({ Authorization: "Bearer pinchy_expired" }),
+      {}
+    );
+
+    expect(res.status).toBe(401);
+    expect(handler).not.toHaveBeenCalled();
+  });
+
+  it("denies a DISABLED key (401) and never calls the handler", async () => {
+    mockVerifyApiKey.mockResolvedValue({
+      valid: false,
+      error: { code: "KEY_DISABLED", message: "API Key is disabled" },
+      key: null,
+    });
+    const handler = vi.fn(OK);
+
+    const res = await withApiKey(["agents:read"], handler)(
+      reqWith({ Authorization: "Bearer pinchy_disabled" }),
+      {}
+    );
+
+    expect(res.status).toBe(401);
+    expect(handler).not.toHaveBeenCalled();
+  });
+
+  it("treats a vacuous 'Bearer ' header as no key at all, without calling verifyApiKey", async () => {
+    // `readApiKey` slices 7 chars off "Bearer ", yielding "". Empty string is
+    // falsy, so this must short-circuit to 401 rather than hand "" to the
+    // plugin — which would then be a length check away from who-knows-what.
+    const handler = vi.fn(OK);
+
+    const res = await withApiKey(["agents:read"], handler)(
+      reqWith({ Authorization: "Bearer " }),
+      {}
+    );
+
+    expect(res.status).toBe(401);
+    expect(mockVerifyApiKey).not.toHaveBeenCalled();
+    expect(handler).not.toHaveBeenCalled();
+  });
+
+  // ── Auditing denials (#572) ─────────────────────────────────────────────
+
+  it("audits a scope denial with the key as actor and what it tried to do", async () => {
+    mockVerifyApiKey.mockResolvedValue(
+      verified({ id: "key-9", name: "Read-only bot", permissions: { agents: ["read"] } })
+    );
+    const handler = vi.fn(OK);
+
+    const res = await withApiKey(["agents:delete"], handler)(
+      reqWith({ Authorization: "Bearer pinchy_readonly" }),
+      {}
+    );
+
+    expect(res.status).toBe(403);
+    // A key reaching for a scope it wasn't granted is exactly the signal a
+    // security team wants: either a misconfigured client or a stolen key
+    // being probed. Both worth a row.
+    expect(appendAuditLog).toHaveBeenCalledWith({
+      actorType: "api_key",
+      actorId: "key-9",
+      eventType: "auth.scope_denied",
+      outcome: "failure",
+      detail: {
+        apiKey: { id: "key-9", name: "Read-only bot" },
+        required: ["agents:delete"],
+        held: ["agents:read"],
+        path: "/api/agents",
+      },
+    });
+  });
+
+  it("does NOT audit an unauthenticated 401 — that's an unauthenticated write into the audit table", async () => {
+    mockVerifyApiKey.mockResolvedValue({ valid: false, error: null, key: null });
+    const handler = vi.fn(OK);
+
+    const noKey = await withApiKey(["agents:read"], handler)(reqWith({}), {});
+    const badKey = await withApiKey(["agents:read"], handler)(
+      reqWith({ Authorization: "Bearer pinchy_garbage" }),
+      {}
+    );
+
+    expect(noKey.status).toBe(401);
+    expect(badKey.status).toBe(401);
+    // DELIBERATE asymmetry with the 403 above, and the reason is the
+    // plugin's rate limiter being off (lib/auth.ts) with no Pinchy-side
+    // replacement: anyone on the internet can hit /api/v1/* with a garbage
+    // key, so auditing these would hand an unauthenticated attacker an
+    // unbounded write into the audit table — a log-flooding amplifier that
+    // buries the real 403s above. There's also nothing to attribute: a key
+    // that fails verification has no id. Revisit if a limiter lands.
+    expect(appendAuditLog).not.toHaveBeenCalled();
+  });
+
+  it("still denies when the audit write throws — logging must never gate authorization", async () => {
+    vi.mocked(appendAuditLog).mockRejectedValueOnce(new Error("audit db down"));
+    mockVerifyApiKey.mockResolvedValue(verified({ permissions: { agents: ["read"] } }));
+    const handler = vi.fn(OK);
+
+    const res = await withApiKey(["agents:delete"], handler)(
+      reqWith({ Authorization: "Bearer pinchy_readonly" }),
+      {}
+    );
+
+    // Fail closed in both directions: the audit failure must neither open the
+    // gate nor turn a clean 403 into an unhandled 500.
+    expect(res.status).toBe(403);
     expect(handler).not.toHaveBeenCalled();
   });
 });

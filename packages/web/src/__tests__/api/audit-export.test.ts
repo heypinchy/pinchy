@@ -8,6 +8,9 @@ vi.mock("@/lib/api-auth", () => ({
 }));
 
 const mockResolveActorIdMatchSet = vi.fn();
+// Faked because they hit the DB. The api_key actor-name fallback deliberately
+// is NOT mocked — it lives in @/lib/api-key-identity precisely because it is
+// pure, so these tests exercise the real thing.
 vi.mock("@/lib/audit", () => ({
   appendAuditLog: vi.fn().mockResolvedValue(undefined),
   resolveActorIdMatchSet: (...args: unknown[]) => mockResolveActorIdMatchSet(...args),
@@ -151,6 +154,44 @@ describe("GET /api/audit/export", () => {
     expect(body).toContain("user-1");
     expect(body).toContain("Alice");
     expect(body).toContain("abc123");
+  });
+
+  it("names an api_key actor in the CSV from its detail snapshot (#572)", async () => {
+    // The actor join is against `users`, which never matches an api_key row —
+    // so without the detail fallback this column would carry a bare opaque id.
+    // That matters more here than in the UI: the CSV is the artifact handed to
+    // an auditor, and a row nobody can attribute is a question Pinchy answers
+    // by hand later. The snapshot also survives the key's revocation, which
+    // hard-deletes its row.
+    mockOrderBy.mockResolvedValue([
+      {
+        id: 1,
+        timestamp: new Date("2026-02-21T10:00:00Z"),
+        actorType: "api_key",
+        actorId: "key-77",
+        eventType: "agent.deleted",
+        resource: "agent:a1",
+        detail: { name: "HR Bot", apiKey: { id: "key-77", name: "CI Deploy" } },
+        rowHmac: "abc123",
+        version: 2,
+        outcome: "success",
+        error: null,
+        actorName: null,
+        actorBanned: null,
+        resourceAgentName: null,
+        resourceAgentDeleted: null,
+        resourceUserName: null,
+        resourceUserBanned: null,
+      },
+    ]);
+
+    const { GET } = await import("@/app/api/audit/export/route");
+    const request = new Request("http://localhost/api/audit/export");
+    const response = await GET(request as unknown as Parameters<typeof GET>[0]);
+
+    const body = await response.text();
+    expect(body).toContain("api_key");
+    expect(body).toContain("CI Deploy");
   });
 
   it("neutralizes a formula-injection display name in the CSV output", async () => {

@@ -56,6 +56,22 @@ For Pinchy:
 
 The rejected alternative ("key acts as the admin") is exactly what Datadog and Okta are migrating *away from* — it breaks on staff turnover (orphaning) and gives poor attribution.
 
+> **Revised 2026-07-15 (PR review, finding B1) — the owner moved, and the issuer field went away.**
+>
+> The bullet above turned out to be the load-bearing one, and its "when real service accounts arrive" was not far enough away: the halfway state it described is **not a coherent model**, and review found it doesn't survive an offboarding.
+>
+> The industry ships exactly two: **(1) human-owned**, where the credential carries its holder's live authority and dies with their account (GitHub PAT, Okta API token, AWS access key); **(2) machine-owned**, where it belongs to a non-human principal and survives offboarding by design (GCP service account key, Datadog org API key). No vendor ships a third — human-owned but with frozen, independent permissions outliving the human — which is precisely where "`userId` = the issuing admin, scopes = the key's own" had put us. Model 1 is only coherent for a vendor that *also* offers service accounts, so it has an answer to "then how do I run CI?". Pinchy has no such escape hatch, and this API's own motivating use case is CI.
+>
+> So Pinchy takes (2) now rather than later:
+> - `referenceId` is a constant service-account id (`PINCHY_SERVICE_ACCOUNT_ID`), not any user's id. Becomes the org id under real multi-tenancy — same shape, new value.
+> - The creating admin is recorded as **provenance** in the key's `metadata`, not as authority: `{ createdBy: { id, name } }`.
+> - **The `issuer` delegation field in `detail` is removed.** With no human owner, there is no delegation to record — attributing a machine's 3am deletion to whoever issued its key eighteen months ago names someone who had no part in it. The actor model itself stands exactly as designed: the key is the actor, with its `{ id, name }` snapshot.
+> - Agents created via the key get `ownerId: null` for the same reason.
+>
+> **The cost, stated plainly:** this does *not* solve custody. The one-time plaintext was seen only by its creator, so a departed admin may still hold a working org credential — inherent to the model; GCP has the same property. It is answered operationally, and those answers ARE the control, not garnish: a **Created by** column flagging inactive creators, and an offboarding/rotation section in the docs.
+>
+> Coupling worth knowing: this works because of **D1**. `createApiKey` stores `referenceId` verbatim and `verifyApiKey` never resolves it; the plugin's session-from-key hook is the one place that would (`findUserById`, UNAUTHORIZED on a miss), and `enableSessionForAPIKeys: false` stops that hook from ever being registered. Turning D1 on would break every key at once. D1 and the service-account id are one decision.
+
 ### D3 — Scopes: **three, `agents:read` / `agents:write` / `agents:delete`**
 `delete` is split from `write` because deletion is irreversible and the highest-blast-radius operation on a leaked key — it deserves its own grant (least privilege, default-deny). Defining three scopes now is ~free (one extra constant; the DELETE route checks `agents:delete`) and avoids an unclean future breaking change (splitting `delete` out of `write` later would either silently grant it to existing keys or break them). The `<resource>:<action>` axis is the real extensibility mechanism (`connections:read`, `knowledge:write`, … later).
 
@@ -66,6 +82,14 @@ The rejected alternative ("key acts as the admin") is exactly what Datadog and O
 - **Reuse (non-negotiable, per issue):** extract the pure domain logic into service functions in `lib/agents.ts` (`createAgent()`, `listAgents()`, `getAgent()`; `deleteAgent()` already exists). Both auth worlds (session routes + key routes) call the same functions; each world does its own auth + audit *around* them. No parallel path, no duplicated logic.
 - **Namespace:** new `/api/v1/agents`, separate from the `/api/agents` session routes. **URL versioning ≠ stability guarantee** — `v1` in the path is cheap future-proofing; the documented-stable *contract* graduates later without a URL migration.
 - **Semantic difference to capture:** the session `GET /api/agents` filters by per-user visibility (`getVisibleAgents` / `getAgentWithAccess`). The key API is admin/org-scoped and sees **all** agents — the extracted `listAgents()`/`getAgent()` must support the "sees everything" case (no visibility filtering).
+
+> **Revised 2026-07-15 (PR review, finding B3) — "all" was one agent class too many.**
+>
+> Org-scoped stands: the key API still ignores `visibility`/group membership, because a key acts for the organization rather than any person, so per-person visibility is meaningless for it. But **personal agents are excluded**. `agent-access.ts` states the invariant for the session path — personal agents are private to their owner, and that applies to everyone, admins included — and a machine credential has strictly less claim there than an admin does. The `scope: "all"` literal is retired in favour of `scope: "shared"`; there is deliberately no scope that returns personal agents, so a route cannot ask for one.
+>
+> The exclusion lives in the query, not in a route branch: `getAgent` returns `undefined` for a personal agent, indistinguishable from an unknown id, so all three endpoints answer a plain `404`. That symmetry is the point — DELETE previously answered `400 "Personal agents cannot be deleted"`, which is fine on the session route (its admin caller can already enumerate every agent) but an oracle here: probe an id, read the status, learn who has a personal agent.
+>
+> Worth recording, because it says something about test design: the original D4 integration test proved "the key sees what the visibility filter hides" using **a personal agent** as its example — the only one that worked, since this DB is a community instance where `effectiveVisibility` downgrades `restricted` to `all`. The test demonstrating D4 *was* the B3 exposure.
 
 ### D5 — This-PR scope: **foundation + minimal admin UI; demo-reset separate**
 Minimal admin UI (Settings → API Keys: list, create with scope selection, revoke). The decisive reason is **security, not convenience**: the plaintext key may only be shown **once** (one-time display). Creating keys via `curl` against a backend leaks the plaintext into shell history and logs — a UI shows it once and forgets it. "Admins manage keys in the UI, every action audited" is also the governance story Pinchy sells.

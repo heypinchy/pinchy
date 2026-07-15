@@ -5,6 +5,7 @@ import { auditLog, users, agents } from "@/db/schema";
 import { desc, eq, and, or, inArray, gte, lte, count, sql } from "drizzle-orm";
 import { alias } from "drizzle-orm/pg-core";
 import { resolveActorIdMatchSet } from "@/lib/audit";
+import { apiKeyActorName } from "@/lib/api-key-identity";
 
 export async function GET(request: NextRequest) {
   const sessionOrError = await requireAdmin();
@@ -109,7 +110,7 @@ export async function GET(request: NextRequest) {
     timestamp: e.timestamp,
     actorType: e.actorType,
     actorId: e.actorId,
-    actorName: e.actorName ?? null,
+    actorName: e.actorName ?? apiKeyActorName(e.actorType, e.detail),
     actorDeleted: !!e.actorBanned,
     eventType: e.eventType,
     resource: e.resource,

@@ -53,6 +53,20 @@ function scopeLabel(scope: ApiKeyScope): string {
   return SCOPE_LABELS.get(scope) ?? scope;
 }
 
+/**
+ * Who created a key. Provenance, not authority — the key belongs to the org
+ * and keeps working after this person leaves, which is exactly why the column
+ * exists: it's how an admin answers "whose key is this, and do we rotate it
+ * now they're gone?" `name` is a snapshot (so it survives their user row
+ * being deleted); `active` is resolved live and is false once they're banned
+ * or gone.
+ */
+interface ApiKeyCreator {
+  id: string;
+  name: string;
+  active: boolean;
+}
+
 /** GET /api/settings/api-keys row shape (#572, Task 5.2) — masked, org-wide. */
 interface ApiKeyRow {
   id: string;
@@ -63,6 +77,8 @@ interface ApiKeyRow {
   expiresAt: string | null;
   lastRequest: string | null;
   enabled: boolean;
+  /** null for keys created before provenance was recorded. */
+  createdBy: ApiKeyCreator | null;
 }
 
 /** POST /api/settings/api-keys 201 response — carries the ONE-TIME plaintext key. */
@@ -230,6 +246,7 @@ export function SettingsApiKeys() {
                   <TableHead>Name</TableHead>
                   <TableHead>Key</TableHead>
                   <TableHead>Scopes</TableHead>
+                  <TableHead>Created by</TableHead>
                   <TableHead>Created</TableHead>
                   <TableHead>Expires</TableHead>
                   <TableHead>Last used</TableHead>
@@ -251,6 +268,27 @@ export function SettingsApiKeys() {
                           </Badge>
                         ))}
                       </div>
+                    </TableCell>
+                    <TableCell>
+                      {key.createdBy ? (
+                        <div className="flex flex-col gap-1">
+                          <span>{key.createdBy.name || "—"}</span>
+                          {!key.createdBy.active && (
+                            // The whole reason this column exists. The key
+                            // still works — it belongs to the org, not to
+                            // them — so nothing is broken and nothing forces
+                            // a decision. That's precisely why it needs
+                            // saying out loud: whoever left may still hold
+                            // the plaintext, and only a human can decide
+                            // whether that matters.
+                            <Badge variant="outline" className="w-fit text-xs font-normal">
+                              No longer active — consider rotating
+                            </Badge>
+                          )}
+                        </div>
+                      ) : (
+                        <span className="text-muted-foreground">Unknown</span>
+                      )}
                     </TableCell>
                     <TableCell>{formatDate(key.createdAt)}</TableCell>
                     <TableCell>{formatDate(key.expiresAt)}</TableCell>
@@ -359,7 +397,8 @@ export function SettingsApiKeys() {
             <DialogTitle>API key created</DialogTitle>
             <DialogDescription>
               This is the only time you&apos;ll see this key. Copy it now — you won&apos;t be able
-              to see it again.
+              to see it again. The key belongs to your organization, not to you: it keeps working if
+              you leave, so store it somewhere your team can reach.
             </DialogDescription>
           </DialogHeader>
           {newKey && (

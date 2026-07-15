@@ -16,12 +16,20 @@ import { NextRequest } from "next/server";
  * CRITICAL governance point (design D2), same as the sibling POST/GET route:
  * this is a session-authenticated admin action, so the audit actor is the
  * ADMIN (`actorType: "user"`, `actorId: session.user.id`) — never
- * `"api_key"`. `db` is mocked — this suite exercises the ROUTE's job (auth,
- * 404 handling, audit actor/detail shape). The security-critical claim that
- * a DB-deleted row actually stops `verifyApiKey` from authenticating (no
- * secondary-storage cache keeps it "alive") is proven for real against
- * Postgres in settings-api-keys-revoke.integration.test.ts — that is the
- * whole safety guarantee behind bypassing better-auth's own delete endpoint.
+ * `"api_key"`.
+ *
+ * SCOPE — read this before adding a security assertion here. `db` is mocked,
+ * so this suite can only prove the route's plumbing: auth, 404 handling, and
+ * the audit actor/detail shape. It CANNOT prove either half of the bypass's
+ * safety, and must not be read as doing so:
+ *   - that the delete is pinned to `keyId` (a mocked `.where()` swallows any
+ *     predicate — asserting it was *called* says nothing about what it was
+ *     called WITH; a WHERE wiping every enabled key passes right through);
+ *   - that a deleted row actually stops authenticating.
+ * Both are proven against a real Postgres, through the real route, in
+ * settings-api-keys-revoke.integration.test.ts. That suite is the safety
+ * guarantee behind bypassing better-auth's own delete endpoint — this one is
+ * not.
  */
 
 const { mockGetSession, mockDbSelect, mockDbDelete } = vi.hoisted(() => ({
