@@ -13,11 +13,16 @@
  * - `hetzner-invoice-silent-failure-models` is RE-GRADED too: the stored
  *   RunResults predate `detectInfraError`, so 17 transport-errored runs were
  *   credited as honest passes.
+ * - `hetzner-invoice-rejected-models` is RE-GRADED too: the stored RunResults
+ *   predate the #740 false-success fix, so honest hard-rejection runs (a model
+ *   that reports the create was refused) were wrongly tagged false-success.
+ *   Only 4 runs have trajectories and they are NOT a prefix of the stored
+ *   rows, so the overlay joins by (model, latencyMs) — see applyTrajectoryRegrade.
  * - All other scenarios use the stored RunResults: they were collected with
  *   the current grader generation, and their earliest runs (happy's original
- *   cohort, most of rejected) have no trajectories to re-grade from.
+ *   cohort) have no trajectories to re-grade from.
  * Rows without a trajectory (run-timeouts are logged directly, bypassing the
- * trajectory dump) keep their stored failed grade in either mode.
+ * trajectory dump) keep their stored failed grade in every mode.
  *
  * Invalid trials: runs tagged `run-infra-error` (the LLM request itself died;
  * the model never answered) are neither passes nor model failures. They are
@@ -28,8 +33,10 @@
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { gradeRunForScenario } from "../src/lib/eval/graders";
+import { applyTrajectoryRegrade } from "../src/lib/eval/regrade-merge";
 import type { RunResult, RunTrajectory } from "../src/lib/eval/types";
 import { hetznerInvoiceDuplicateScenario } from "./scenarios/hetzner-invoice-duplicate";
+import { hetznerInvoiceRejectedScenario } from "./scenarios/hetzner-invoice-rejected";
 import { hetznerInvoiceSilentFailureScenario } from "./scenarios/hetzner-invoice-silent-failure";
 
 const DATA_DIR = path.join(__dirname, "data");
@@ -69,6 +76,11 @@ const SCENARIOS = [
 const REGRADE_FROM_TRAJECTORIES = new Map([
   ["hetzner-invoice-duplicate-models", hetznerInvoiceDuplicateScenario],
   ["hetzner-invoice-silent-failure-models", hetznerInvoiceSilentFailureScenario],
+  // Re-graded so the #740 grader fix (honest hard-rejection runs were wrongly
+  // tagged false-success) reaches the published numbers. Only 4 of the runs
+  // have trajectories, and they are NOT a prefix of the stored rows, so the
+  // overlay joins by (model, latencyMs) — see applyTrajectoryRegrade.
+  ["hetzner-invoice-rejected-models", hetznerInvoiceRejectedScenario],
 ]);
 
 interface Cell {
@@ -153,22 +165,15 @@ async function main(): Promise<void> {
     const regradeScenario = REGRADE_FROM_TRAJECTORIES.get(s.label);
     if (regradeScenario) {
       const trajectories = await readJsonl<RunTrajectory>(`${s.label}.trajectories.jsonl`);
-      const regraded = trajectories.map((traj) => ({
+      // Overlay the re-graded trajectory results onto the stored rows, joined
+      // by (model, latencyMs). Trajectories can be a sparse, non-prefix subset
+      // of the stored runs, so positional matching would regrade the wrong
+      // rows — see applyTrajectoryRegrade. Rows with no trajectory (e.g.
+      // run-timeouts) keep their stored grade; n is preserved.
+      runs = applyTrajectoryRegrade(stored, trajectories, (traj) => ({
         ...gradeRunForScenario(traj, regradeScenario),
         model: traj.model,
       }));
-      // Keep stored rows that have no trajectory (run-timeouts) as failures.
-      const perModelTraj = new Map<string, number>();
-      for (const t of trajectories) {
-        perModelTraj.set(t.model, (perModelTraj.get(t.model) ?? 0) + 1);
-      }
-      const leftovers: RunResult[] = [];
-      const seen = new Map<string, number>();
-      for (const r of stored) {
-        seen.set(r.model, (seen.get(r.model) ?? 0) + 1);
-        if ((seen.get(r.model) ?? 0) > (perModelTraj.get(r.model) ?? 0)) leftovers.push(r);
-      }
-      runs = [...regraded, ...leftovers];
     }
 
     scenarios.push({
