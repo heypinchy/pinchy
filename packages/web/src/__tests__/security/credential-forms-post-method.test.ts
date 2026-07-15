@@ -46,8 +46,10 @@ import path from "node:path";
 const webSrcDir = path.resolve(__dirname, "../..");
 
 // Matches a full opening <form ...> tag, allowing attributes/newlines
-// between "<form" and the closing ">".
-const FORM_OPEN_TAG_RE = /<form\b[^>]*>/gs;
+// between "<form" and the closing ">". No /s: it only ever affects ".", which
+// this pattern doesn't use, and [^>] spans newlines on its own. The flag was
+// inert, and it needs target >= ES2018 (tsconfig targets ES2017).
+const FORM_OPEN_TAG_RE = /<form\b[^>]*>/g;
 
 const EXCLUDED_DIR_NAMES = new Set(["__tests__", "node_modules"]);
 

@@ -839,15 +839,11 @@ describe("Composer no longer gates attachments client-side", () => {
 describe("AssistantMessage footer height", () => {
   it("keeps the min-h-6 row that reserves the action bar's height", async () => {
     const { useMessage } = await import("@assistant-ui/react");
-    vi.mocked(useMessage).mockImplementation(
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      (selector: (state: any) => unknown) =>
-        selector({
-          metadata: { custom: { timestamp: "2026-07-15T09:39:00.000Z" } },
-          isLast: false,
-          id: "msg-footer-1",
-        })
-    );
+    stubUseMessage(useMessage, {
+      metadata: { custom: { timestamp: "2026-07-15T09:39:00.000Z" } },
+      isLast: false,
+      id: "msg-footer-1",
+    });
 
     const { AssistantMessage } = await import("@/components/assistant-ui/thread");
     const { container } = render(<AssistantMessage />);
