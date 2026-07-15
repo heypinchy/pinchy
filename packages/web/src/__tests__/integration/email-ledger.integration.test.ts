@@ -124,9 +124,9 @@ describe("email ledger — finalizeEmail", () => {
     const wf = await seedWorkflow(agent.id);
     const key = { workflowId: wf.id, connectionId: "conn-1", providerMessageId: "msg-1" };
 
-    await claimEmail(key);
+    const id = await claimEmail(key);
     await finalizeEmail({
-      ...key,
+      id: id!,
       status: "done",
       outcome: { odooModel: "account.move", odooId: 42 },
       runId: "run-1",
@@ -144,8 +144,8 @@ describe("email ledger — finalizeEmail", () => {
     const wf = await seedWorkflow(agent.id);
     const key = { workflowId: wf.id, connectionId: "conn-1", providerMessageId: "msg-1" };
 
-    await claimEmail(key);
-    await finalizeEmail({ ...key, status: "done" });
+    const id = await claimEmail(key);
+    await finalizeEmail({ id: id!, status: "done" });
 
     // Simulate the reconciliation sweep finding the same provider message again
     // after a cursor loss: the ledger — not the cursor — is the source of truth,
@@ -154,18 +154,10 @@ describe("email ledger — finalizeEmail", () => {
   });
 
   it("throws when finalizing an email that was never claimed", async () => {
-    const agent = await seedAgent();
-    const wf = await seedWorkflow(agent.id);
-
     // finalize-before-claim is always a bug: surface it loudly rather than
     // silently updating zero rows and leaving the (nonexistent) row unmarked.
     await expect(
-      finalizeEmail({
-        workflowId: wf.id,
-        connectionId: "conn-1",
-        providerMessageId: "never-claimed",
-        status: "done",
-      })
+      finalizeEmail({ id: "00000000-0000-0000-0000-000000000000", status: "done" })
     ).rejects.toThrow(/no processing ledger row/);
   });
 
@@ -174,13 +166,13 @@ describe("email ledger — finalizeEmail", () => {
     const wf = await seedWorkflow(agent.id);
     const key = { workflowId: wf.id, connectionId: "conn-1", providerMessageId: "msg-1" };
 
-    await claimEmail(key);
-    await finalizeEmail({ ...key, status: "done", outcome: { note: "first" } });
+    const id = await claimEmail(key);
+    await finalizeEmail({ id: id!, status: "done", outcome: { note: "first" } });
 
     // finalize only ever transitions processing → terminal. A duplicate finalize
     // (e.g. a buggy retry) must NOT silently overwrite the recorded outcome —
     // the WHERE clause no longer matches, so zero rows update and we throw.
-    await expect(finalizeEmail({ ...key, status: "failed" })).rejects.toThrow(
+    await expect(finalizeEmail({ id: id!, status: "failed" })).rejects.toThrow(
       /no processing ledger row/
     );
 
@@ -253,10 +245,10 @@ describe("email ledger — resetStuckProcessingEmails (reconciliation)", () => {
     const done = { workflowId: wf.id, connectionId: "conn-1", providerMessageId: "done-old" };
     const failed = { workflowId: wf.id, connectionId: "conn-1", providerMessageId: "failed-old" };
 
-    await claimEmail(done);
-    await finalizeEmail({ ...done, status: "done", outcome: { note: "kept" } });
-    await claimEmail(failed);
-    await finalizeEmail({ ...failed, status: "failed" });
+    const doneId = await claimEmail(done);
+    await finalizeEmail({ id: doneId!, status: "done", outcome: { note: "kept" } });
+    const failedId = await claimEmail(failed);
+    await finalizeEmail({ id: failedId!, status: "failed" });
     // Backdate both far past the grace window — age alone must not reset them.
     await backdateClaim(done, GRACE_MS * 100);
     await backdateClaim(failed, GRACE_MS * 100);
@@ -282,6 +274,36 @@ describe("email ledger — resetStuckProcessingEmails (reconciliation)", () => {
     // new id) instead of being rejected as already-claimed. This is what turns
     // #717's transient deferral into an actual retry.
     expect(await claimEmail(key)).toEqual(expect.any(String));
+  });
+
+  it("a late finalize from a superseded claim must not terminalize the fresh re-claim (#735)", async () => {
+    const agent = await seedAgent();
+    const wf = await seedWorkflow(agent.id);
+    const key = { workflowId: wf.id, connectionId: "conn-1", providerMessageId: "supersede-1" };
+
+    // Run A claims the email → row R1, then hangs (genuinely slow, not dead).
+    const r1 = await claimEmail(key);
+    await backdateClaim(key, GRACE_MS + 60_000);
+    // The sweep deletes the stuck R1 and re-lists; a fresh run re-claims → row R2.
+    await resetStuckProcessingEmails(GRACE_MS);
+    const r2 = await claimEmail(key);
+    expect(r2).toEqual(expect.any(String));
+    expect(r2).not.toBe(r1); // genuinely a different claim, same email
+
+    // Run A finally wakes and finalizes ITS claim (R1). R1 is gone, so finalize
+    // must hit zero rows and throw loudly — it must NOT graft Run A's stale
+    // outcome onto R2, which belongs to the fresh run and is still processing.
+    // This holds only because finalize is pinned to the claim's row id: the
+    // claim *tuple* is reusable and still matches R2.
+    await expect(
+      finalizeEmail({ id: r1!, status: "done", outcome: { note: "stale-run-A" } })
+    ).rejects.toThrow(/no processing ledger row/);
+
+    // R2 survives untouched: still processing, no stale outcome grafted on.
+    const row = await getProcessed(key);
+    expect(row.id).toBe(r2);
+    expect(row.status).toBe("processing");
+    expect(row.outcome).toBeNull();
   });
 });
 
@@ -336,8 +358,8 @@ describe("email ledger — durability across connection deletion", () => {
     const conn = await seedConnection("conn-survives");
     const key = { workflowId: wf.id, connectionId: conn.id, providerMessageId: "msg-1" };
 
-    await claimEmail(key);
-    await finalizeEmail({ ...key, status: "done" });
+    const id = await claimEmail(key);
+    await finalizeEmail({ id: id!, status: "done" });
 
     // processed_emails.connectionId is intentionally FK-less: the ledger is a
     // historical record of what was already handled. Deleting the connection

@@ -45,9 +45,8 @@ export async function claimEmail(input: ClaimInput): Promise<string | null> {
 export type FinalizeStatus = "done" | "no_action" | "failed";
 
 export interface FinalizeInput {
-  workflowId: string;
-  connectionId: string;
-  providerMessageId: string;
+  /** The claim's ledger row id, exactly as returned by {@link claimEmail}. */
+  id: string;
   status: FinalizeStatus;
   outcome?: ProcessedEmailOutcome;
   runId?: string;
@@ -56,12 +55,20 @@ export interface FinalizeInput {
 /**
  * Mark a claimed email's ledger row with its terminal status and outcome. Called
  * by the isolated agent run when it finishes (draft created / nothing to do /
- * failed). Keyed by the same claim tuple as {@link claimEmail}.
+ * failed). Pinned to the claim's **row id** — the id {@link claimEmail} handed
+ * the winning caller — not the reusable claim tuple.
  *
- * finalize only ever transitions `processing` → terminal: the WHERE clause pins
- * `status = 'processing'`, so a zero-row update means either finalize-before-claim
- * or a duplicate finalize of an already-terminal row. Both are bugs, and both must
- * NOT silently overwrite a recorded outcome — we surface them loudly instead.
+ * The row id (not the tuple) is load-bearing because the reconciliation sweep
+ * uses delete-and-reclaim (#735): a stuck row is DELETEd and its claim tuple is
+ * re-claimed as a *fresh* row. Matching finalize on the tuple would let a slow,
+ * superseded run terminalize that fresh claim with its stale outcome. Matching
+ * on the id instead means a superseded run's finalize hits zero rows and takes
+ * the loud-throw path below, leaving the live claim untouched.
+ *
+ * finalize only ever transitions `processing` → terminal: the WHERE clause also
+ * pins `status = 'processing'`, so a zero-row update means finalize-before-claim,
+ * a duplicate finalize of an already-terminal row, or a superseded claim. All are
+ * bugs and none may silently overwrite a recorded outcome — we throw instead.
  */
 export async function finalizeEmail(input: FinalizeInput): Promise<void> {
   const rows = await db
@@ -72,18 +79,11 @@ export async function finalizeEmail(input: FinalizeInput): Promise<void> {
       runId: input.runId ?? null,
       finalizedAt: new Date(),
     })
-    .where(
-      and(
-        eq(processedEmails.workflowId, input.workflowId),
-        eq(processedEmails.connectionId, input.connectionId),
-        eq(processedEmails.providerMessageId, input.providerMessageId),
-        eq(processedEmails.status, "processing")
-      )
-    )
+    .where(and(eq(processedEmails.id, input.id), eq(processedEmails.status, "processing")))
     .returning({ id: processedEmails.id });
   if (rows.length === 0) {
     throw new Error(
-      `finalizeEmail: no processing ledger row for (${input.workflowId}, ${input.connectionId}, ${input.providerMessageId}) — already finalized or never claimed?`
+      `finalizeEmail: no processing ledger row ${input.id} — already finalized, never claimed, or superseded by a reconciliation reset?`
     );
   }
 }

@@ -176,7 +176,7 @@ export async function dispatchEmails(params: {
           recipientUserIds: workflow.recipientUserIds,
         });
         await finalizeEmail({
-          ...claimKey,
+          id: ledgerId,
           status: result.status,
           outcome: result.outcome,
           runId: result.runId,
@@ -193,7 +193,7 @@ export async function dispatchEmails(params: {
           sourceId: ledgerId,
           recipientUserIds: workflow.recipientUserIds,
         });
-        await finalizeEmail({ ...claimKey, status: "failed" });
+        await finalizeEmail({ id: ledgerId, status: "failed" });
         summary.failed++;
       }
     } catch (err) {
