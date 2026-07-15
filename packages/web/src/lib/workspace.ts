@@ -114,12 +114,19 @@ export function ensureWorkspace(agentId: string): void {
   // left pinchy_write ENOENT'ing on fresh workspaces.
   mkdirSync(join(workspacePath, "uploads"), { recursive: true });
   mkdirSync(join(workspacePath, "workbench"), { recursive: true });
-  // memory/ holds OpenClaw's daily logs, MEMORY.md the curated long-term
-  // knowledge. build.ts grants both to every write-capable agent and
-  // memory-prompt.ts promises them to it by name, so they must exist for the
-  // same reason workbench/ does (#418) — with a sharper edge: pinchy-files
-  // reports a missing write root as "escapes the sandbox via a symlink", so
-  // the absent directory reached agents as an attack accusation.
+  // memory/ holds OpenClaw's daily memory logs. build.ts grants it to every
+  // write-capable agent and memory-prompt.ts promises it by name, so it exists
+  // on spawn for the same reason workbench/ does (#418), and so the
+  // memory-audit watcher has it in its tree from the start rather than having
+  // to discover it later.
+  //
+  // MEMORY.md is deliberately NOT created here. It is the agent's own file, and
+  // an empty one we create still trips the watcher into an `agent.memory_changed`
+  // audit entry attributed to the agent — a claim that it changed its memory,
+  // for a file Pinchy wrote and with a zero-line diff. The agent creates it on
+  // first write instead; pinchy-files allows that even though the file does not
+  // exist yet, because a missing write root resolves rather than reading as a
+  // sandbox escape (#761).
   mkdirSync(join(workspacePath, "memory"), { recursive: true });
 
   for (const file of ALLOWED_FILES) {
@@ -127,26 +134,6 @@ export function ensureWorkspace(agentId: string): void {
     if (!existsSync(filePath)) {
       writeFileSync(filePath, PLACEHOLDER_CONTENT[file], "utf-8");
     }
-  }
-
-  // Empty, and deliberately outside ALLOWED_FILES: those are the user's files
-  // and carry instructional placeholders. MEMORY.md is the agent's own, and
-  // OpenClaw feeds it back as recalled fact — a placeholder comment would
-  // reach the agent as something it had remembered.
-  //
-  // Created with `wx` and NO existsSync guard, unlike the loop above. This is
-  // the one file here an agent writes concurrently — regenerateOpenClawConfig
-  // calls ensureWorkspace on every settings mutation — so a check-then-write
-  // leaves a window in which the agent creates MEMORY.md after the check and
-  // this truncates its memory back to "" (CodeQL js/file-system-race). One
-  // atomic create closes it: EEXIST means someone else won the race, which is
-  // success. Any other errno is a real failure and must surface, or a broken
-  // volume silently yields a memory-less agent — the bug this file is fixing.
-  const memoryFile = join(workspacePath, "MEMORY.md");
-  try {
-    writeFileSync(memoryFile, "", { encoding: "utf-8", flag: "wx" });
-  } catch (err) {
-    if ((err as NodeJS.ErrnoException).code !== "EEXIST") throw err;
   }
 }
 

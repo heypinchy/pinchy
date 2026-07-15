@@ -1,14 +1,17 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 
-// Retrofit of the agent memory paths (MEMORY.md, memory/) onto workspaces that
-// already exist.
+// Retrofit of the agent memory directory onto workspaces that already exist.
 //
-// ensureWorkspace only runs at agent-create time, so teaching it to create the
-// memory paths fixes future agents and no existing one. Every agent already in
-// the field would keep hitting the denial. regenerateOpenClawConfig runs on
-// boot and on every agent/settings mutation, and is where the memory grants are
-// emitted in the first place — so it is where the paths those grants point at
-// get materialized.
+// ensureWorkspace only runs at agent-create time, so teaching it to create
+// memory/ fixes future agents and no existing one — every agent already in the
+// field would keep the workspace shape that produced the bug.
+// regenerateOpenClawConfig runs on boot and on every agent/settings mutation,
+// and is where the memory grants are emitted in the first place, so it is where
+// the path those grants point at gets materialized.
+//
+// MEMORY.md is NOT created — see the ensureWorkspace comment. These tests pin
+// that down, because creating it is the obvious-looking thing to do and it
+// quietly forges an audit entry.
 //
 // The fs mock is STATEFUL (fileStore + dirStore) because that is the whole
 // point: these tests assert against a workspace that already has content, which
@@ -22,19 +25,7 @@ const { fileStore, dirStore } = vi.hoisted(() => ({
 
 vi.mock("fs", async (importOriginal) => {
   const actual = await importOriginal<typeof import("fs")>();
-  // Honours the `wx` flag, because ensureWorkspace relies on it to create
-  // MEMORY.md without a check-then-write race. A mock that ignored the flag
-  // would let a clobbering implementation pass the no-overwrite test below.
-  const writeFileSyncMock = vi.fn((p: unknown, content: unknown, options?: unknown) => {
-    const flag =
-      options && typeof options === "object" && "flag" in options
-        ? (options as { flag?: string }).flag
-        : undefined;
-    if (flag === "wx" && fileStore.has(String(p))) {
-      const err = new Error(`EEXIST: file already exists, open '${String(p)}'`);
-      (err as NodeJS.ErrnoException).code = "EEXIST";
-      throw err;
-    }
+  const writeFileSyncMock = vi.fn((p: unknown, content: unknown) => {
     fileStore.set(String(p), String(content));
   });
   const readFileSyncMock = vi.fn();
@@ -202,25 +193,35 @@ describe("regenerateOpenClawConfig materializes the agent memory paths", () => {
     });
   });
 
-  it("creates memory/ and MEMORY.md on a workspace that predates the memory grants", async () => {
-    // The regression, exactly: build.ts grants these two paths to a
-    // write-capable agent and memory-prompt.ts tells the agent it may use
-    // them, but nothing ever created them, so pinchy-files rejected every
-    // memory write as a sandbox escape.
+  it("creates memory/ on a workspace that predates the memory grants", async () => {
+    // The regression, exactly: build.ts grants this path to a write-capable
+    // agent and memory-prompt.ts tells the agent it may use it, but nothing
+    // ever created it.
     seedLegacyWorkspace("scout");
     mockDb([agentRow("scout")]);
 
     await regenerateOpenClawConfig();
 
     expect(dirStore.has(memoryDir("scout"))).toBe(true);
-    expect(fileStore.get(memoryFile("scout"))).toBe("");
+  });
+
+  it("never writes MEMORY.md, so the memory-audit watcher stays quiet", async () => {
+    // An empty MEMORY.md created here reaches the audit log as
+    // `agent.memory_changed` attributed to the agent, with a zero-line diff,
+    // for a write the agent never made. The file is the agent's to create.
+    seedLegacyWorkspace("scout");
+    mockDb([agentRow("scout")]);
+
+    await regenerateOpenClawConfig();
+
+    expect(fileStore.has(memoryFile("scout"))).toBe(false);
   });
 
   it("leaves an existing MEMORY.md untouched", async () => {
     // The retrofit runs on every boot and every agent mutation, so a
-    // clobbering version of it would erase an agent's accumulated memory
-    // on the next restart rather than on first contact — the kind of data
-    // loss that surfaces long after the deploy that caused it.
+    // clobbering version of it would erase an agent's accumulated memory on
+    // the next restart rather than on first contact — the kind of data loss
+    // that surfaces long after the deploy that caused it.
     seedLegacyWorkspace("scout");
     fileStore.set(memoryFile("scout"), "- The user prefers concise answers.\n");
     mockDb([agentRow("scout")]);
@@ -230,9 +231,9 @@ describe("regenerateOpenClawConfig materializes the agent memory paths", () => {
     expect(fileStore.get(memoryFile("scout"))).toBe("- The user prefers concise answers.\n");
   });
 
-  it("grants and materializes the same paths, so the config never points at a missing directory", async () => {
-    // The bug was a disagreement between what the config promised and what
-    // existed on disk. Assert the two agree rather than assuming they do.
+  it("grants memory/ as a directory that exists, not one the config only promises", async () => {
+    // The bug was a disagreement between what the config granted and what was
+    // on disk. Assert the two agree rather than assuming it.
     seedLegacyWorkspace("scout");
     mockDb([agentRow("scout")]);
 
@@ -253,13 +254,10 @@ describe("regenerateOpenClawConfig materializes the agent memory paths", () => {
       p.replace("/root/.openclaw/workspaces", "/openclaw-config/workspaces")
     );
     expect(granted).toContain(memoryDir("scout"));
-    expect(granted).toContain(memoryFile("scout"));
-    for (const path of granted) {
-      expect(dirStore.has(path) || fileStore.has(path)).toBe(true);
-    }
+    expect(dirStore.has(memoryDir("scout"))).toBe(true);
   });
 
-  it("does not create memory paths for a soft-deleted agent", async () => {
+  it("does not create memory/ for a soft-deleted agent", async () => {
     // Tombstoned agents are excluded from every other emission for the same
     // reason (see the liveAgents note in build.ts); the retrofit must not
     // resurrect their workspaces.
