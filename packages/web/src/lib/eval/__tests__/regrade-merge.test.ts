@@ -140,11 +140,32 @@ describe("applyTrajectoryRegrade", () => {
       expect(() => applyTrajectoryRegrade(storedRuns, trajectories, gradeRun)).toThrow(/m::10/);
     });
 
-    it("throws on duplicate stored keys (one trajectory would regrade two runs)", () => {
+    it("throws on duplicate stored keys WHEN a trajectory matches them (it would re-grade two runs)", () => {
       const storedRuns = [stored("m", 10, false, []), stored("m", 10, false, [])];
       const trajectories = [traj("m", 10)];
 
       expect(() => applyTrajectoryRegrade(storedRuns, trajectories, gradeRun)).toThrow(/m::10/);
+    });
+
+    it("tolerates duplicate stored keys that no trajectory matches: timeouts all clamp to the same latency", () => {
+      // Real case, hard-rejection: two distinct nemotron-3-ultra runs both hung
+      // and were cut off by the same 300s cap, so both recorded latencyMs
+      // 301004. latencyMs does not identify a run for timeouts. It does not
+      // have to: a timeout never dumps a trajectory, so neither row is re-graded
+      // and the collision is inert. Throwing here would block a legitimate
+      // export over an ambiguity with no consequence.
+      const storedRuns = [
+        stored("m", 301004, false, ["run-timeout"]),
+        stored("m", 301004, false, ["run-timeout"]),
+        stored("m", 500, false, ["false-success"]),
+      ];
+      const trajectories = [traj("m", 500)];
+
+      const merged = applyTrajectoryRegrade(storedRuns, trajectories, gradeRun);
+
+      expect(merged).toHaveLength(3);
+      expect(merged.filter((r) => r.tags.includes("run-timeout"))).toHaveLength(2);
+      expect(merged.find((r) => r.latencyMs === 500)).toMatchObject({ passed: true, tags: [] });
     });
   });
 });
