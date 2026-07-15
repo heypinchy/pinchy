@@ -41,6 +41,30 @@ export function extractScopes(
 }
 
 /**
+ * Parse the raw JSON string better-auth stores in the `apikey.permissions`
+ * column (db/schema.ts: `permissions: text("permissions")` — deliberately
+ * NOT jsonb, see that column's comment) into the `Record<resource,
+ * action[]>` shape `extractScopes` expects.
+ *
+ * `auth.api.listApiKeys` auto-parses this column for its callers, but a
+ * direct Drizzle read does not. `GET /api/settings/api-keys` (#572, org-wide
+ * list) reads the table directly — bypassing that session-scoped endpoint —
+ * so it needs this parse step itself.
+ *
+ * Returns `null` for a null/empty column or invalid JSON — never throws, so
+ * one corrupt/legacy row degrades to "no scopes" (`extractScopes(null)` →
+ * `[]`) instead of crashing the whole list.
+ */
+export function parsePermissions(raw: string | null): Record<string, string[]> | null {
+  if (!raw) return null;
+  try {
+    return JSON.parse(raw) as Record<string, string[]>;
+  } catch {
+    return null;
+  }
+}
+
+/**
  * The inverse of `extractScopes`: fold Pinchy's flat scope strings into
  * better-auth's `permissions: Record<resource, action[]>` shape, so a route
  * can hand `auth.api.createApiKey` the grants it actually understands.

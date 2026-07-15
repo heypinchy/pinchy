@@ -1,11 +1,13 @@
 import { NextResponse, after } from "next/server";
-import { headers } from "next/headers";
+import { desc } from "drizzle-orm";
 import { withAdmin } from "@/lib/api-auth";
 import { auth } from "@/lib/auth";
+import { db } from "@/db";
+import { apiKeys } from "@/db/schema";
 import { parseRequestBody } from "@/lib/api-validation";
 import { appendAuditLog } from "@/lib/audit";
 import { createApiKeySchema } from "@/lib/schemas/api-keys";
-import { extractScopes, mapScopes } from "@/lib/api-key-scopes";
+import { extractScopes, mapScopes, parsePermissions } from "@/lib/api-key-scopes";
 
 /**
  * Issue an Agent Provisioning API key (#572, Task 5.1).
@@ -63,37 +65,44 @@ export const POST = withAdmin(async (request, _ctx, session) => {
 });
 
 /**
- * List Agent Provisioning API keys, masked (#572, Task 5.2).
+ * List ALL Agent Provisioning API keys org-wide, masked (#572).
  *
- * Scope decision: better-auth's `listApiKeys` endpoint has no server-side
- * `userId` override (unlike `createApiKey`) — it always resolves
- * `referenceId` from the caller's OWN session via `sessionMiddleware`, with
- * an org-wide alternative only when an `organizationId` is supplied AND the
- * `organization` plugin is registered. Pinchy does not register that plugin
- * (see lib/auth.ts's `plugins` array), so there is no supported way to list
- * every admin's keys in one call today. This route therefore returns the
- * CALLING ADMIN'S OWN keys, forwarding their session via `headers`. A future
- * org-wide view would need either the `organization` plugin or a direct
- * `db` query bypassing this endpoint — out of scope for #572 Tasks 5.1/5.2.
+ * Scope decision — org-wide, deliberately bypassing better-auth's endpoint:
+ * better-auth's `listApiKeys` has no server-side `userId` override (unlike
+ * `createApiKey`) — it always resolves `referenceId` from the CALLER'S OWN
+ * session via `sessionMiddleware`, with an org-wide alternative only when an
+ * `organizationId` is supplied AND the `organization` plugin is registered.
+ * Pinchy runs no `organization` plugin (see lib/auth.ts's `plugins` array),
+ * so that endpoint can only ever return the calling admin's own keys. That
+ * is a governance hole: if the admin who issued a key leaves, no other admin
+ * can see or revoke it. The product decision is org-wide — every admin sees
+ * and can revoke every key — so this route reads `schema.apiKeys` directly
+ * via Drizzle instead, with no `referenceId` filter. `DELETE
+ * /api-keys/[keyId]` makes the same bypass for revocation, for the same
+ * reason.
+ *
+ * `apiKeys.permissions` (db/schema.ts) is a `text` column holding a JSON
+ * string — `auth.api.listApiKeys` auto-parses it, but a raw Drizzle read
+ * does not, hence `parsePermissions` before `extractScopes`.
  *
  * Read-only: no audit entry (audit-exempt below).
  */
 // audit-exempt: read-only masked list, no state change
 export const GET = withAdmin(async () => {
-  const { apiKeys } = await auth.api.listApiKeys({ headers: await headers() });
+  const rows = await db.select().from(apiKeys).orderBy(desc(apiKeys.createdAt));
 
-  // Mask via WHITELIST — never spread the raw row. The hashed `key` never
-  // appears on this endpoint's row shape at all, but `permissions`/
-  // `metadata`/`referenceId`/`prefix` do, and must not leak either.
-  const keys = apiKeys.map((key) => ({
-    id: key.id,
-    name: key.name,
-    start: key.start ?? null,
-    scopes: extractScopes(key.permissions),
-    createdAt: key.createdAt,
-    expiresAt: key.expiresAt,
-    lastRequest: key.lastRequest,
-    enabled: key.enabled,
+  // Mask via WHITELIST — never spread the raw row. `key` (hashed), `prefix`,
+  // `referenceId`, `metadata`, and every other column not listed below must
+  // never leak onto this endpoint's response shape.
+  const keys = rows.map((k) => ({
+    id: k.id,
+    name: k.name,
+    start: k.start ?? null,
+    scopes: extractScopes(parsePermissions(k.permissions)),
+    createdAt: k.createdAt,
+    expiresAt: k.expiresAt,
+    lastRequest: k.lastRequest,
+    enabled: k.enabled,
   }));
 
   return NextResponse.json({ keys });
