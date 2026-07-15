@@ -37,7 +37,7 @@ export async function compressImageForChat(file: File): Promise<CompressionResul
       initialQuality: CLIENT_IMAGE_COMPRESSION_QUALITY,
       useWebWorker: true,
     });
-    return { ok: true, file: toNamedFile(compressed, file.name), skipped: false };
+    return { ok: true, file: toNamedFile(compressed, file), skipped: false };
   } catch (err) {
     // Compression can fail on HEIC, corrupt input, OOM, or worker crashes. We
     // hand the original back so the caller can decide between sending anyway
@@ -49,8 +49,15 @@ export async function compressImageForChat(file: File): Promise<CompressionResul
   }
 }
 
-/** Image extensions we replace with `.webp`; anything else is appended to. */
+/** Image extensions we replace with the output's own; anything else is appended to. */
 const IMAGE_EXTENSION = /\.(png|jpe?g|webp|gif|bmp|avif|tiff?|heic|heif)$/i;
+
+/** Every format a canvas can hand back. Compression re-encodes, so the name must follow. */
+const EXTENSION_FOR_TYPE: Record<string, string> = {
+  "image/webp": "webp",
+  "image/png": "png",
+  "image/jpeg": "jpg",
+};
 
 /**
  * Rebuild the compression output as a real `File` named after the original.
@@ -62,13 +69,17 @@ const IMAGE_EXTENSION = /\.(png|jpe?g|webp|gif|bmp|avif|tiff?|heic|heif)$/i;
  * property and labels any non-File Blob `"blob"` on the wire, so every
  * compressed image landed in the agent workspace as `blob`, `blob (1)`, ...
  */
-function toNamedFile(compressed: Blob, originalName: string): File {
-  const base = originalName.replace(IMAGE_EXTENSION, "");
-  // Compression converts to WebP, so the original extension would now lie about
-  // the bytes. Names without an image extension keep their dots and just gain one.
-  return new File([compressed], `${base}.webp`, {
+function toNamedFile(compressed: Blob, original: File): File {
+  const base = original.name.replace(IMAGE_EXTENSION, "");
+  // The extension follows the bytes we actually got, not the format we asked
+  // for: the library requests WebP from the canvas and reads the MIME back out
+  // of the result, so a canvas that can't encode WebP silently yields PNG.
+  // An unknown type means we learned nothing — WebP is what we requested.
+  const extension = EXTENSION_FOR_TYPE[compressed.type] ?? "webp";
+  // Names without an image extension keep their dots and just gain one.
+  return new File([compressed], `${base}.${extension}`, {
     type: compressed.type,
-    lastModified: Date.now(),
+    lastModified: original.lastModified,
   });
 }
 

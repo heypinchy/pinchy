@@ -173,6 +173,34 @@ describe("compressImageForChat — compression path", () => {
     expect(result.file.name).toBe("v1.2 mockup.webp");
   });
 
+  it("names the file after the bytes the browser produced, not the format we asked for", async () => {
+    // The library never checks whether the canvas can encode WebP: it calls
+    // toDataURL("image/webp") and reads the MIME back out of whatever data URL
+    // it gets. Where WebP encoding is unsupported (Safari < 14, iOS < 14, some
+    // OffscreenCanvas impls) the canvas silently falls back to PNG, so the
+    // result is PNG bytes. Hardcoding `.webp` there would re-introduce exactly
+    // the name-lies-about-content bug this module was fixed for.
+    mockedImageCompression.mockResolvedValueOnce(makeLibraryOutput(80 * 1024, "image/png", "x"));
+
+    const result = await compressImageForChat(makeFile(2 * 1024 * 1024, "image/png", "screenshot"));
+
+    expect(result.file.name).toBe("screenshot.png");
+    expect(result.file.type).toBe("image/png");
+  });
+
+  it("carries the original file's lastModified over to the compressed file", async () => {
+    mockedImageCompression.mockResolvedValueOnce(makeLibraryOutput(80 * 1024, "image/webp", "x"));
+
+    const original = new File([new Uint8Array(2 * 1024 * 1024)], "screenshot.png", {
+      type: "image/png",
+      lastModified: 1_600_000_000_000,
+    });
+    const result = await compressImageForChat(original);
+
+    // Compression re-encodes the pixels; it does not make them a new document.
+    expect(result.file.lastModified).toBe(1_600_000_000_000);
+  });
+
   it("logs a warning when compression fails so production logs surface the fallback", async () => {
     const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
     try {
