@@ -10,6 +10,31 @@ import { odooCredentialsSchema, odooConnectionDataSchema } from "@/lib/integrati
 import { validateExternalUrl } from "@/lib/integrations/url-validation";
 import { maskConnectionCredentials } from "@/lib/integrations/mask-credentials";
 import { parseRequestBody } from "@/lib/api-validation";
+import { listMcpTools, mcpErrorCodeFromError } from "@/lib/integrations/mcp-client";
+import { MCP_PRESETS, type McpPresetId } from "@/lib/integrations/mcp-presets";
+import { isMcpEnabled } from "@/lib/feature-flags";
+import type { McpIntegrationData } from "@/lib/integrations/types";
+
+// Single source of truth for the preset id enum — pulled from mcp-presets.ts
+// so adding a preset there automatically flows into request validation
+// without a second hardcoded list to keep in sync.
+const mcpPresetIds = MCP_PRESETS.map((p) => p.id) as [McpPresetId, ...McpPresetId[]];
+
+const mcpCreateSchema = z.object({
+  type: z.literal("mcp"),
+  name: z.string().min(1).max(100),
+  description: z.string().max(500).default(""),
+  preset: z.enum(mcpPresetIds),
+  transport: z.enum(["http", "sse"]),
+  url: z.string().url(),
+  token: z.string().min(1),
+  // Per-connection metadata the MCP credential proxy injects as HTTP headers
+  // alongside Authorization: Bearer <token> when forwarding to the upstream.
+  // Today only HighLevel needs this (locationId Sub-Account ID); other
+  // presets ignore it. Values are non-secret and stay in Pinchy's DB (never
+  // openclaw.json) — see AGENTS.md § Secret Handling, Pattern B.
+  extraHeaders: z.record(z.string(), z.string()).optional(),
+});
 
 const createIntegrationSchema = z.discriminatedUnion("type", [
   z.object({
@@ -25,6 +50,7 @@ const createIntegrationSchema = z.discriminatedUnion("type", [
     description: z.string().max(500).default(""),
     credentials: z.object({ apiKey: z.string().min(1) }),
   }),
+  mcpCreateSchema,
 ]);
 
 export const GET = withAdmin(async () => {
@@ -68,6 +94,87 @@ export const GET = withAdmin(async () => {
 export const POST = withAdmin(async (request, _ctx, session) => {
   const parsed = await parseRequestBody(createIntegrationSchema, request);
   if ("error" in parsed) return parsed.error;
+
+  // ── MCP branch ─────────────────────────────────────────────────────────
+  // Kept separate from the odoo/web-search branch below: mcp's request shape
+  // has no `credentials` field (the token is top-level) and needs a live
+  // tool-discovery round trip before anything is persisted.
+  if (parsed.data.type === "mcp") {
+    // Flag off → behave as if the type doesn't exist at all, not a 500.
+    if (!isMcpEnabled()) return NextResponse.json({ error: "Not found" }, { status: 404 });
+
+    const { name, description, preset, transport, url, token, extraHeaders } = parsed.data;
+
+    // HighLevel's MCP server 400s on tools/list without a locationId header
+    // identifying the Sub-Account — catch the missing field before we even
+    // try the upstream call.
+    if (preset === "highlevel" && !extraHeaders?.locationId) {
+      return NextResponse.json(
+        { error: "HighLevel requires a locationId (Sub-Account ID) in extraHeaders" },
+        { status: 400 }
+      );
+    }
+
+    // Discover tools synchronously. listMcpTools() already SSRF-validates the
+    // URL internally — no separate validateExternalUrl() call needed here.
+    let tools;
+    try {
+      tools = await listMcpTools({ url, transport, token, extraHeaders });
+    } catch (err) {
+      // Nothing was persisted — this is pre-save validation, not a state
+      // change, so (like the PATCH route's pre-persist probe failure) it is
+      // not audited. `code` lets the dialog render a human-friendly,
+      // preset-aware message (mcp-error-messages.ts) instead of the raw
+      // protocol error; `detail` keeps that raw error for custom-server
+      // debugging.
+      const detail = err instanceof Error ? err.message : String(err);
+      return NextResponse.json(
+        { error: "MCP discovery failed", detail, code: mcpErrorCodeFromError(err) },
+        { status: 502 }
+      );
+    }
+
+    const data: McpIntegrationData = {
+      type: "mcp",
+      preset,
+      transport,
+      url,
+      tools,
+      lastSyncAt: new Date().toISOString(),
+      // Only persist extraHeaders when non-empty so the JSON column stays lean.
+      ...(extraHeaders && Object.keys(extraHeaders).length > 0 ? { extraHeaders } : {}),
+    };
+
+    const [connection] = await db
+      .insert(integrationConnections)
+      .values({
+        type: "mcp",
+        name,
+        description,
+        credentials: encrypt(JSON.stringify({ token })),
+        data,
+      })
+      .returning();
+
+    deferAuditLog({
+      actorType: "user",
+      actorId: session.user.id!,
+      eventType: "integration.created",
+      resource: `integration:${connection.id}`,
+      detail: { type: "mcp", name, preset, transport, toolCount: tools.length },
+      outcome: "success",
+    });
+
+    return NextResponse.json(
+      {
+        ...connection,
+        credentials: maskConnectionCredentials("mcp", connection.credentials, decrypt),
+      },
+      { status: 201 }
+    );
+  }
+
+  // ── Odoo / web-search branch ──────────────────────────────────────────
   const { type, name, description, credentials } = parsed.data;
 
   // Singleton types: only one connection of this type allowed

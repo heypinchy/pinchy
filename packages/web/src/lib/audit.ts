@@ -478,6 +478,17 @@ export type AuditLogEntry =
         reason?: string;
         fields?: string[];
         modelCount?: number;
+        // MCP sync: added/removed tool names (or, past MAX_TOOL_NAMES_IN_AUDIT,
+        // a { count } summary so a chatty server can't blow the 2048-byte
+        // detail cap — see summarizeToolNames() in
+        // [connectionId]/sync/route.ts). "Log what changed, not only that
+        // something changed" (AGENTS.md), mirroring MembershipDetail's
+        // added/removed shape above.
+        tools?: {
+          added: string[] | { count: number };
+          removed: string[] | { count: number };
+          total: number;
+        };
         // Present instead of a plaintext `name` when the connection's
         // human-readable name is itself PII (an OAuth mailbox address).
         // See redactEmail(): GDPR Art. 17 forbids writing the raw address

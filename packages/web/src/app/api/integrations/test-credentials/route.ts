@@ -5,6 +5,8 @@ import { OdooClient } from "odoo-node";
 import { withAdmin } from "@/lib/api-auth";
 import { validateExternalUrl } from "@/lib/integrations/url-validation";
 import { parseRequestBody } from "@/lib/api-validation";
+import { listMcpTools, mcpErrorCodeFromError } from "@/lib/integrations/mcp-client";
+import { isMcpEnabled } from "@/lib/feature-flags";
 
 const testCredentialsSchema = z.discriminatedUnion("type", [
   z.object({
@@ -22,11 +24,42 @@ const testCredentialsSchema = z.discriminatedUnion("type", [
       apiKey: z.string().min(1),
     }),
   }),
+  z.object({
+    type: z.literal("mcp"),
+    transport: z.enum(["http", "sse"]),
+    url: z.string().url(),
+    token: z.string().min(1),
+    // Same shape as POST /api/integrations — used today by the HighLevel
+    // preset to send the required `locationId` header during pre-save
+    // discovery.
+    extraHeaders: z.record(z.string(), z.string()).optional(),
+  }),
 ]);
 
 export const POST = withAdmin(async (request) => {
   const parsed = await parseRequestBody(testCredentialsSchema, request);
   if ("error" in parsed) return parsed.error;
+
+  if (parsed.data.type === "mcp") {
+    // Flag off → behave as if the type doesn't exist, not a 500.
+    if (!isMcpEnabled()) return NextResponse.json({ error: "Not found" }, { status: 404 });
+
+    const { url, transport, token, extraHeaders } = parsed.data;
+    try {
+      const tools = await listMcpTools({ url, transport, token, extraHeaders });
+      return NextResponse.json({ success: true, tools });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      // `code` lets the dialog render a human-friendly, preset-aware message
+      // (mcp-error-messages.ts) instead of showing the raw protocol error;
+      // `error` stays available as a debugging detail for custom MCP servers.
+      return NextResponse.json({
+        success: false,
+        error: message,
+        code: mcpErrorCodeFromError(err),
+      });
+    }
+  }
 
   if (parsed.data.type === "web-search") {
     try {
