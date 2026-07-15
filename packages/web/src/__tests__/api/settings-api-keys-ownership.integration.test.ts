@@ -36,11 +36,6 @@ async function flushAfter(): Promise<void> {
     await Promise.allSettled(pendingAfter.splice(0));
   }
 }
-
-afterEach(async () => {
-  await flushAfter();
-});
-
 vi.mock("next/server", async (importOriginal) => {
   const actual = await importOriginal<typeof import("next/server")>();
   return {
@@ -101,6 +96,16 @@ describe("API key ownership (Model 2)", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     pendingAfter.length = 0;
+  });
+
+  // Drain each test's deferred audit writes (the route's `after()` →
+  // appendAuditLog) before the next test's beforeEach truncate. Resetting
+  // pendingAfter above only drops the references — the writes themselves are
+  // still in flight, and would otherwise land mid-truncate or in the next
+  // test's table state. No test here asserts on audit rows, so this is purely
+  // isolation hygiene; assert-on-audit suites additionally await it inline.
+  afterEach(async () => {
+    await flushAfter();
   });
 
   it("issues the key against the org service account, NOT the admin's user id", async () => {

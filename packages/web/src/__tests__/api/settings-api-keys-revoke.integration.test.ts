@@ -34,7 +34,7 @@
 // tests (setup.ts). Only the session and `after()` are faked; the DB, the key
 // plugin, and the audit chain all run for real.
 
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { NextRequest } from "next/server";
 import { eq } from "drizzle-orm";
 
@@ -110,6 +110,14 @@ describe("DELETE /api/settings/api-keys/[keyId] against a real database", () => 
   beforeEach(() => {
     vi.clearAllMocks();
     pendingAfter.length = 0;
+  });
+
+  // The revoke test below never awaits its own audit write, so without this
+  // the write stays in flight past the test and races the next test's
+  // beforeEach truncate. The audit-row test awaits flushAfter() inline because
+  // it asserts on the row; this hook covers the ones that don't.
+  afterEach(async () => {
+    await flushAfter();
   });
 
   it("revokes ONLY the targeted key: the bystander survives, still authenticates, and the victim is truly dead", async () => {
