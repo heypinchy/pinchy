@@ -26,6 +26,7 @@ import {
   getAgentBootstrapSizes,
   writeWorkspaceSkill,
   writeToolsFile,
+  ensureWorkspace,
 } from "@/lib/workspace";
 import { getSkillBody, isKnownSkill } from "@/lib/skills";
 import { resolveBootstrapCaps } from "./bootstrap-caps";
@@ -219,6 +220,18 @@ export async function regenerateOpenClawConfig() {
   // Prefer `liveAgents` everywhere an agent is emitted; `allAgents` is only for
   // cases that legitimately need tombstones (e.g. id-stability bookkeeping).
   const liveAgents = allAgents.filter((a) => !a.deletedAt);
+
+  // Bring every live agent's workspace up to the current layout before any of
+  // it is measured (getAgentBootstrapSizes) or granted (the pinchy-files
+  // write_paths below). ensureWorkspace only runs at agent-create time, so a
+  // path added to the layout later exists for new agents and for no existing
+  // one — which is how MEMORY.md and memory/ came to be granted to every
+  // write-capable agent while existing on no agent's disk. It is idempotent,
+  // and this runs on boot and on every agent/settings mutation, so it is the
+  // retrofit point for anything the layout gains from here on.
+  for (const agent of liveAgents) {
+    ensureWorkspace(agent.id);
+  }
 
   // Integration permissions joined with their connections, shared by the
   // Odoo and email config sections below. Queried BEFORE the agents list is

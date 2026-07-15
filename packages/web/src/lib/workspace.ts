@@ -114,12 +114,28 @@ export function ensureWorkspace(agentId: string): void {
   // left pinchy_write ENOENT'ing on fresh workspaces.
   mkdirSync(join(workspacePath, "uploads"), { recursive: true });
   mkdirSync(join(workspacePath, "workbench"), { recursive: true });
+  // memory/ holds OpenClaw's daily logs, MEMORY.md the curated long-term
+  // knowledge. build.ts grants both to every write-capable agent and
+  // memory-prompt.ts promises them to it by name, so they must exist for the
+  // same reason workbench/ does (#418) — with a sharper edge: pinchy-files
+  // reports a missing write root as "escapes the sandbox via a symlink", so
+  // the absent directory reached agents as an attack accusation.
+  mkdirSync(join(workspacePath, "memory"), { recursive: true });
 
   for (const file of ALLOWED_FILES) {
     const filePath = join(workspacePath, file);
     if (!existsSync(filePath)) {
       writeFileSync(filePath, PLACEHOLDER_CONTENT[file], "utf-8");
     }
+  }
+
+  // Empty, and deliberately outside ALLOWED_FILES: those are the user's files
+  // and carry instructional placeholders. MEMORY.md is the agent's own, and
+  // OpenClaw feeds it back as recalled fact — a placeholder comment would
+  // reach the agent as something it had remembered.
+  const memoryFile = join(workspacePath, "MEMORY.md");
+  if (!existsSync(memoryFile)) {
+    writeFileSync(memoryFile, "", "utf-8");
   }
 }
 

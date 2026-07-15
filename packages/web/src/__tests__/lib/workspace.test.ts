@@ -241,6 +241,46 @@ describe("ensureWorkspace", () => {
       { recursive: true }
     );
   });
+
+  // MEMORY.md and memory/ are granted to every write-capable agent in
+  // build.ts and promised to it by the memory system prompt, but nothing
+  // created them. pinchy-files then denied the write — its write-root check
+  // reads ENOENT as a sandbox escape — so agents lost every memory they were
+  // told they could keep. Same lesson as #418, one directory over.
+  it("creates a memory/ subdir for the agent's daily logs", () => {
+    ensureWorkspace("agent-123");
+
+    expect(mockedMkdirSync).toHaveBeenCalledWith("/openclaw-config/workspaces/agent-123/memory", {
+      recursive: true,
+    });
+  });
+
+  it("creates an empty MEMORY.md when missing", () => {
+    ensureWorkspace("agent-123");
+
+    const memoryCall = mockedWriteFileSync.mock.calls.find(
+      (call) => typeof call[0] === "string" && call[0].endsWith("/MEMORY.md")
+    );
+    expect(memoryCall).toBeDefined();
+    expect(memoryCall![0]).toBe("/openclaw-config/workspaces/agent-123/MEMORY.md");
+    // Empty, not a placeholder: unlike SOUL.md/AGENTS.md this file is the
+    // agent's own memory, and OpenClaw feeds it back as recalled fact. A
+    // placeholder comment would read as something the agent remembered.
+    expect(memoryCall![1]).toBe("");
+  });
+
+  it("does not overwrite an existing MEMORY.md", () => {
+    mockedExistsSync.mockImplementation((p) => {
+      return typeof p === "string" && p.endsWith("/MEMORY.md");
+    });
+
+    ensureWorkspace("agent-123");
+
+    const memoryCall = mockedWriteFileSync.mock.calls.find(
+      (call) => typeof call[0] === "string" && call[0].endsWith("/MEMORY.md")
+    );
+    expect(memoryCall).toBeUndefined();
+  });
 });
 
 describe("readWorkspaceFile", () => {
