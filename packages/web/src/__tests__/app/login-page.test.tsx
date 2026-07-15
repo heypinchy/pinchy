@@ -203,4 +203,65 @@ describe("Login Page", () => {
       expect(screen.getByText("Invalid email or password")).toBeInTheDocument();
     });
   });
+
+  // Better Auth answers a rate-limited sign-in with 429 and a real server
+  // failure with 5xx. Reporting either as "Invalid email or password" tells the
+  // user their (correct) password is wrong and hides the actual cause: with the
+  // production limit of 5 attempts/60s (see getAuthRateLimitConfig), a few
+  // typos lock the account out, every retry re-arms the window, and the user is
+  // told the whole time that their password is bad. Distinguish by status.
+  async function submitLogin(user: ReturnType<typeof userEvent.setup>) {
+    await user.type(screen.getByLabelText(/email/i), "user@example.com");
+    await user.type(screen.getByLabelText("Password"), "correct-password-123");
+    await user.click(screen.getByRole("button", { name: /sign in/i }));
+  }
+
+  it("reports rate limiting as such, not as a wrong password", async () => {
+    const user = userEvent.setup();
+    mockSignInEmail.mockResolvedValue({
+      error: { status: 429, statusText: "Too Many Requests", message: "Too many requests." },
+    });
+
+    render(<LoginPage />);
+    await submitLogin(user);
+
+    await waitFor(() => {
+      expect(screen.getByText(/too many sign-in attempts/i)).toBeInTheDocument();
+    });
+    expect(screen.queryByText("Invalid email or password")).not.toBeInTheDocument();
+  });
+
+  it("reports a server error as such, not as a wrong password", async () => {
+    const user = userEvent.setup();
+    mockSignInEmail.mockResolvedValue({
+      error: { status: 500, statusText: "Internal Server Error", message: "boom" },
+    });
+
+    render(<LoginPage />);
+    await submitLogin(user);
+
+    await waitFor(() => {
+      expect(screen.getByText(/login failed\. please try again/i)).toBeInTheDocument();
+    });
+    expect(screen.queryByText("Invalid email or password")).not.toBeInTheDocument();
+  });
+
+  it("still reports genuinely invalid credentials as a wrong password", async () => {
+    const user = userEvent.setup();
+    mockSignInEmail.mockResolvedValue({
+      error: {
+        status: 401,
+        statusText: "UNAUTHORIZED",
+        message: "Invalid email or password",
+        code: "INVALID_EMAIL_OR_PASSWORD",
+      },
+    });
+
+    render(<LoginPage />);
+    await submitLogin(user);
+
+    await waitFor(() => {
+      expect(screen.getByText("Invalid email or password")).toBeInTheDocument();
+    });
+  });
 });

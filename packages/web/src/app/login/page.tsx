@@ -27,6 +27,30 @@ const loginSchema = z.object({
 
 type LoginFormValues = z.infer<typeof loginSchema>;
 
+/**
+ * Turns a Better Auth sign-in failure into the message the user sees.
+ *
+ * Only a credential rejection may be reported as a wrong password. Better Auth
+ * answers a throttled sign-in with 429 (see `getAuthRateLimitConfig`: 5
+ * attempts / 60s, active whenever NODE_ENV=production) and a broken backend
+ * with 5xx. Reporting those as "Invalid email or password" sends the user
+ * hunting for a password that was right all along — and because every retry
+ * re-arms the rate-limit window, hammering the button keeps them locked out
+ * while the page insists their credentials are bad.
+ *
+ * A failure without a status is treated as a credential rejection: that is
+ * Better Auth's own default shape for a rejected sign-in.
+ */
+function loginErrorMessage(status: number | undefined): string {
+  if (status === 429) {
+    return "Too many sign-in attempts. Please wait a minute and try again.";
+  }
+  if (status === undefined || status === 401 || status === 403) {
+    return "Invalid email or password";
+  }
+  return "Login failed. Please try again.";
+}
+
 export default function LoginPage() {
   // useSearchParams() opts the render into a Suspense boundary (Next.js
   // requires one so the rest of the page can still be statically
@@ -61,7 +85,7 @@ function LoginForm() {
       });
 
       if (error) {
-        setError("Invalid email or password");
+        setError(loginErrorMessage(error.status));
       } else {
         const returnTo = searchParams.get("returnTo");
         router.push(isSafeReturnTo(returnTo) ? returnTo : "/");
