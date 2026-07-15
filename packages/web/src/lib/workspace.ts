@@ -1,4 +1,4 @@
-import { writeFileSync, readFileSync, existsSync, mkdirSync, rmSync } from "fs";
+import { writeFileSync, readFileSync, existsSync, mkdirSync, rmSync, readdirSync } from "fs";
 import { join } from "path";
 
 // =============================================================================
@@ -208,6 +208,28 @@ export function removeWorkspaceSkill(agentId: string, skillId: string): void {
 
   const dir = join(getWorkspacePath(agentId), "skills", skillId);
   rmSync(dir, { recursive: true, force: true });
+}
+
+// Lists the skill ids currently materialized on disk for an agent — the
+// directory names under <workspace>/skills/, NOT the config-side allowlist.
+// build.ts's dynamic MCP skill cleanup (T7, see mcp-skill.ts) uses this to
+// find `mcp-*` directories left behind by a connection or grant that no
+// longer exists, so a regenerate can removeWorkspaceSkill() them instead of
+// letting them accumulate as workspace litter. No existsSync pre-check (same
+// check-then-use race avoidance as getAgentBootstrapSizes above): a missing
+// skills/ directory just throws ENOENT, which we catch and treat as "no
+// skills materialized yet".
+export function listWorkspaceSkillIds(agentId: string): string[] {
+  assertValidAgentId(agentId);
+  const skillsDir = join(getWorkspacePath(agentId), "skills");
+
+  try {
+    return readdirSync(skillsDir, { withFileTypes: true })
+      .filter((entry) => entry.isDirectory())
+      .map((entry) => entry.name);
+  } catch {
+    return [];
+  }
 }
 
 // The files OpenClaw loads as prompt-bootstrap context for an agent
