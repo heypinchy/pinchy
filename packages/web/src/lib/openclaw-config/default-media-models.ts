@@ -147,6 +147,13 @@ export const OLLAMA_CLOUD_IMAGE_PREFERENCE: readonly OllamaCloudModelId[] = [
   // only for *tool* slots, fine for pure image description) and minimax-m3
   // (reads numbers + circle colors correctly across distinct images) lead,
   // with gemma4:31b behind them.
+  //
+  // minimax-m3 is now tools-blocked too, for the same shape of reason as the
+  // preview model: it mangles nested tool-call arguments (Penny, 2026-07-15 —
+  // see model-resolver/blocklist.ts). Both stay in THIS list on purpose. It
+  // ranks pure image-description quality, and `isBlocked` is consulted with the
+  // capabilities the slot actually needs — so a chat-only agent still gets the
+  // best eyes, while any tool-using turn skips them.
   "gemini-3-flash-preview",
   "minimax-m3",
   "gemma4:31b",

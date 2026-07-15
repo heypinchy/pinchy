@@ -25,6 +25,24 @@ const RULES: BlockRule[] = [
     reason:
       "Preview models (e.g. gemini-3-flash-preview) are unstable for tools+vision: silent hangs and schema-rejection errors observed in production (pinchy#344, pinchy#338)",
   },
+  // Observed in production 2026-07-15 (agent "Penny", ollama-cloud stack). The
+  // model emits structurally broken tool arguments: every NESTED array collapses
+  // into an {"item": ...} object, and some arrays arrive stringified ("[10, 20]").
+  // That destroys exactly the payloads bookkeeping needs — Odoo domain filters
+  // ("unhashable type: 'dict'") and account.move invoice_line_ids/tax_ids command
+  // triplets. It also emits positional instead of named arguments, so every field
+  // lands in the schema's first property. Measured over one session: 20 of 60
+  // minimax-m3 tool calls mangled, versus 0 of 112 on kimi-k2.6 and 0 of 68 on
+  // deepseek-v4-pro — model behavior, not a Pinchy serialization bug. Like the
+  // preview rule it is seeded tools:true, so it would otherwise win same-provider
+  // vision fallback for a text-only agent. Lifting this block requires a fresh
+  // multi-round tool probe with NESTED-array arguments against the live endpoint.
+  {
+    modelPattern: /minimax-m3/i,
+    forbiddenWhen: ["tools"],
+    reason:
+      'minimax-m3 mangles nested tool-call arguments (arrays collapse to {"item": ...}), breaking Odoo domain filters and invoice line commands (observed in production 2026-07-15)',
+  },
 ];
 
 export function isBlocked(modelId: string, requiredCapabilities: ModelCapability[]): boolean {

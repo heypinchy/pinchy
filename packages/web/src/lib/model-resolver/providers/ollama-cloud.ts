@@ -42,14 +42,30 @@ const BY_TIER_FAMILY: Record<
   },
   reasoning: {
     general: "ollama-cloud/deepseek-v4-pro",
-    // reasoning+vision+tools, 512K context. qwen3.5:397b was the previous pick
-    // but only claims vision — the live endpoint hallucinates image contents
-    // (see ollama-cloud-models.ts), so it is now flagged vision:false and can
-    // no longer fill a vision slot. minimax-m3's vision was confirmed against
-    // the live API (reads a random number + circle color correctly across
-    // distinct images). gemini-3-flash-preview is still blocked by the
-    // tools-blocklist (pinchy#344); kimi family avoided (v0.5.3 silent-500).
-    vision: "ollama-cloud/minimax-m3",
+    // qwen3.5:397b was the original pick but only claims vision — the live
+    // endpoint hallucinates image contents (see ollama-cloud-models.ts), so it
+    // is flagged vision:false and can no longer fill a vision slot.
+    // minimax-m3 replaced it on confirmed vision quality, then had to go too:
+    // it is now tools-blocked for mangling nested tool arguments (Penny,
+    // 2026-07-15 — see blocklist.ts). A vision slot always resolves alongside
+    // tools here, so a tools-blocked model cannot fill it, however good its
+    // eyes are — the ollama-cloud drift-guards enforce exactly that.
+    //
+    // That leaves gemma4:31b and kimi-k2.6. gemma4:31b is rejected on the
+    // balanced-tier evidence above: it corrupted a ~150-char Graph message ID
+    // across turns, and this slot's whole job is carrying invoice numbers and
+    // refs through a multi-turn tool loop. kimi-k2.6 is vision+tools with 256K
+    // context, already trusted for the balanced tier's vision+general slots,
+    // and emitted 0 malformed tool calls across 112 calls in the Penny session
+    // that minimax failed. The v0.5.3 kimi silent-500 note that previously kept
+    // the family out of this slot predates the k2.6 catalog entry.
+    //
+    // Trade-off, deliberate: kimi-k2.6 is a non-thinking-preferred tool-driver,
+    // so a reasoning-tier turn that ALSO needs vision loses thinking. Reliable
+    // tool calls beat reasoning here — a mangled invoice_line_ids payload fails
+    // the turn outright, which is what the reasoning was meant to serve.
+    // gemini-3-flash-preview remains blocked (pinchy#344).
+    vision: "ollama-cloud/kimi-k2.6",
   },
 };
 

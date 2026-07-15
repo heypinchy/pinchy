@@ -4620,7 +4620,7 @@ describe("ClientRouter", () => {
       mockMaterializeAttachments.mockResolvedValue(imageAttachment());
       mockListVisionModels.mockResolvedValue([
         { provider: "ollama-cloud", modelId: "gemini-3-flash-preview", vision: true, tools: true },
-        { provider: "ollama-cloud", modelId: "minimax-m3", vision: true, tools: true },
+        { provider: "ollama-cloud", modelId: "gemma4:31b", vision: true, tools: true },
       ]);
       mockChat.mockReturnValue(okStream());
 
@@ -4633,13 +4633,52 @@ describe("ClientRouter", () => {
 
       const [, options] = mockChat.mock.calls[0];
       expect(options.provider).toBe("ollama-cloud");
-      expect(options.model).toBe("minimax-m3");
+      expect(options.model).toBe("gemma4:31b");
 
       const audit = mockAppendAuditLog.mock.calls
         .map((c) => c[0])
         .find((e) => e.eventType === "chat.image_model_fallback");
       expect(audit).toBeDefined();
-      expect(audit.detail.fallbackModel).toBe("ollama-cloud/minimax-m3");
+      expect(audit.detail.fallbackModel).toBe("ollama-cloud/gemma4:31b");
+    });
+
+    it("does not route a tool-using agent's image turn to minimax-m3 — picks the next usable same-provider vision model", async () => {
+      // Penny's exact shape, 2026-07-15: a text-only agent (deepseek-v4-pro)
+      // using Odoo tools received a receipt photo. minimax-m3 is seeded
+      // tools:true AND outranks gemma4:31b in OLLAMA_CLOUD_IMAGE_PREFERENCE, so
+      // it won the fallback — then mangled every nested tool argument (Odoo
+      // domains arrived as {'item': [...]}, invoice_line_ids commands rejected).
+      // It must be skipped whenever the turn needs tools, even though it is the
+      // better pure-vision model.
+      mockFindFirst.mockResolvedValue({
+        ...defaultAgent,
+        model: "ollama-cloud/deepseek-v4-pro",
+        allowedTools: ["odoo_read", "odoo_create"],
+      });
+      mockIsModelVisionCapable.mockReturnValue(false);
+      mockMaterializeAttachments.mockResolvedValue(imageAttachment());
+      mockListVisionModels.mockResolvedValue([
+        { provider: "ollama-cloud", modelId: "minimax-m3", vision: true, tools: true },
+        { provider: "ollama-cloud", modelId: "gemma4:31b", vision: true, tools: true },
+      ]);
+      mockChat.mockReturnValue(okStream());
+
+      await router.handleMessage(createMockClientWs() as any, {
+        type: "message",
+        content: "Book this receipt",
+        attachmentIds: [ATTACHMENT_ID],
+        agentId: "agent-1",
+      });
+
+      const [, options] = mockChat.mock.calls[0];
+      expect(options.provider).toBe("ollama-cloud");
+      expect(options.model).toBe("gemma4:31b");
+
+      const audit = mockAppendAuditLog.mock.calls
+        .map((c) => c[0])
+        .find((e) => e.eventType === "chat.image_model_fallback");
+      expect(audit).toBeDefined();
+      expect(audit.detail.fallbackModel).toBe("ollama-cloud/gemma4:31b");
     });
 
     it("picks the highest-quality vision fallback, independent of catalog row order and alphabetical order", async () => {
@@ -4650,10 +4689,15 @@ describe("ClientRouter", () => {
       // so that both "first row" (gemma4:31b) and "alphabetically first"
       // (gemma4:31b < minimax-m3) would pick the WRONG model if quality were
       // ignored, so a minimax-m3 result proves the preference sort.
+      //
+      // The agent deliberately uses NO tools: minimax-m3 is tools-blocked (it
+      // mangles nested tool arguments), so a tool-using agent would skip it and
+      // land on gemma4:31b for the wrong reason, proving nothing about sorting.
+      // Pure image description is exactly where minimax-m3 is still preferred.
       mockFindFirst.mockResolvedValue({
         ...defaultAgent,
         model: "ollama-cloud/glm-5.2",
-        allowedTools: ["odoo_search_read"],
+        allowedTools: [],
       });
       mockIsModelVisionCapable.mockReturnValue(false);
       mockMaterializeAttachments.mockResolvedValue(imageAttachment());
