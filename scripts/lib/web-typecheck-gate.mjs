@@ -67,7 +67,18 @@ export function validateTypecheckScript(pkg) {
  */
 export function validateCiWiring(ciYaml) {
   if (typeof ciYaml !== "string") return ["ci.yml is unreadable"];
-  return ciYaml.includes("packages/web typecheck")
+  // Strip YAML comments before matching. A commented-out step
+  // (`# run: pnpm -C packages/web typecheck`) — or a step's prose comment that
+  // merely names the command — leaves the substring in the file while CI no
+  // longer runs the gate. That silent un-wiring is exactly what this check
+  // exists to catch, so only non-comment text counts. Conservative by design:
+  // `#` is only treated as a comment at line start or after whitespace, so a
+  // `#` inside a command string does not truncate the line.
+  const withoutComments = ciYaml
+    .split("\n")
+    .map((line) => line.replace(/(^|\s)#.*$/, "$1"))
+    .join("\n");
+  return withoutComments.includes("packages/web typecheck")
     ? []
     : ["CI (.github/workflows/ci.yml) must run `pnpm -C packages/web typecheck`"];
 }

@@ -84,6 +84,35 @@ test("validateCiWiring accepts a workflow that runs the gate", () => {
   assert.deepEqual(validateCiWiring("      - run: pnpm -C packages/web typecheck\n"), []);
 });
 
+test("validateCiWiring flags a gate that is only present as a comment", () => {
+  // The trap: commenting the step out (or merely naming the command in a
+  // step's explanatory comment) leaves the substring in ci.yml while CI stops
+  // running the gate — a substring match alone would stay green here.
+  const problems = validateCiWiring(
+    "jobs:\n  quality:\n    steps:\n      # run: pnpm -C packages/web typecheck\n",
+  );
+  assert.ok(problems.length > 0, "a commented-out gate must not satisfy the guard");
+});
+
+test("validateCiWiring accepts the gate inside a multi-line run block", () => {
+  // Stripping comments must not make the check brittle: the `run: |` block form
+  // is a legitimate way to wire the gate and has to keep passing.
+  assert.deepEqual(
+    validateCiWiring("      - run: |\n          pnpm -C packages/web typecheck\n"),
+    [],
+  );
+});
+
+test("validateCiWiring does not treat a '#' inside a command as a comment", () => {
+  // A naive /#.*$/ strip would truncate this line before the command and
+  // falsely report the gate as un-wired. Only a '#' at line start or after
+  // whitespace starts a YAML comment.
+  assert.deepEqual(
+    validateCiWiring('      - run: echo "#deps" && pnpm -C packages/web typecheck\n'),
+    [],
+  );
+});
+
 // ── Drift guards against the REAL repo files ──────────────────────────────
 
 test("packages/web/tsconfig.typecheck.json still covers test files", () => {
