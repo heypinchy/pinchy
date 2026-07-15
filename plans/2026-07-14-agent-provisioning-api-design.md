@@ -126,9 +126,12 @@ State-changing calls audited with `actorType:"api_key"`, `actorId:<keyId>`, `{id
 Extract from the inline POST handler: `createAgent()` (DB insert + OpenClaw config regen + runtime wait). Extract `listAgents()` / `getAgent()` supporting the admin "sees all" case. `deleteAgent()` exists. Session routes refactored to call the same functions (keeps them DRY and proves the extraction).
 
 ### 6.5 Key-management API (session/admin)
-- `POST /api/settings/api-keys` (`withAdmin`) — create; returns plaintext **once**. Audit `api_key.created`.
-- `GET /api/settings/api-keys` — list, masked (prefix + last-4).
-- `DELETE /api/settings/api-keys/[id]` — revoke (hard-deletes the key via better-auth `deleteApiKey`). Audit `api_key.deleted` (`DeleteDetail { name }`).
+
+> **Org-wide (decided during implementation, 2026-07-14):** admins manage ALL keys, not just their own. Better Auth's `listApiKeys`/`deleteApiKey` are session-scoped (no `userId`/org override; Pinchy runs no `organization` plugin), which would orphan a key once its issuing admin leaves — a governance hole. So **list + revoke run directly against the `apikey` Drizzle table** (`schema.apiKeys`), bypassing the session-scoped plugin endpoints; `create` still uses `auth.api.createApiKey` (its server-only `userId` sets the owner). Revoke = hard `db.delete`, proven to actually invalidate the key (no cache — Pinchy uses `storage: "database"`) in `settings-api-keys-revoke.integration.test.ts`.
+
+- `POST /api/settings/api-keys` (`withAdmin`) — create via `auth.api.createApiKey`; returns plaintext **once**. Audit `api_key.created` (actor = the admin, `actorType: "user"`).
+- `GET /api/settings/api-keys` — list ALL keys (direct `db.select`, org-wide), masked (prefix + last-4).
+- `DELETE /api/settings/api-keys/[id]` — revoke ANY key (hard `db.delete` on `apiKeys`, org-wide — NOT session-scoped `deleteApiKey`). Audit `api_key.deleted` (`DeleteDetail { name }`).
 
 ### 6.6 Minimal admin UI (Settings → API Keys)
 List (name, prefix+last-4, scopes, created, expiry, last-used) · Create dialog (name, scope checkboxes, optional expiry) · one-time-display modal · Revoke.

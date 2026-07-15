@@ -253,6 +253,8 @@ Same file. Guard `agent.isPersonal` → 400 (mirror the session DELETE). `await 
 
 ## Phase 5 — Key-management API (session/admin)
 
+> **✅ Org-wide list + revoke (decided 2026-07-14, supersedes the session-scoped `auth.api.listApiKeys`/`deleteApiKey` in Tasks 5.2/5.3 below):** those plugin endpoints only touch the calling admin's own keys (no `userId`/org override; no `organization` plugin), orphaning keys when an admin leaves. So **GET and DELETE run directly against `schema.apiKeys`** (Drizzle) — any admin sees/revokes any key. `POST` still uses `auth.api.createApiKey`. Revoke = hard `db.delete`, proven to actually invalidate the key (`storage: "database"`, no cache) in `settings-api-keys-revoke.integration.test.ts`. `GET` parses the JSON-string `permissions` column via a `parsePermissions` helper before `extractScopes`. Shipped as `feat: org-wide API key list + revoke (#572)`.
+
 ### Task 5.1: `POST /api/settings/api-keys` — issue a key (one-time plaintext)
 **Files:** Create `packages/web/src/app/api/settings/api-keys/route.ts`; `packages/web/src/lib/schemas/api-keys.ts` (`createApiKeySchema`: `{ name: string; scopes: ApiKeyScope[]; expiresInDays?: number }`); test `__tests__/api/api-keys-create.test.ts`.
 
