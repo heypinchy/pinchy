@@ -360,8 +360,16 @@ export function truncateDetail(detail: AuditDetail | null | undefined): AuditDet
   };
 }
 
+/**
+ * The actor kinds an audit row can attribute an action to. Mirrors the
+ * `actor_type` pgEnum in `db/schema.ts`. Named (rather than inlined at each
+ * use) so widening it can't drift between the entry type and the helpers that
+ * consume it — `api_key` (#572) was added here and to `resolveActorId` below.
+ */
+export type AuditActorType = "user" | "agent" | "system" | "api_key";
+
 type AuditLogBase = {
-  actorType: "user" | "agent" | "system" | "api_key";
+  actorType: AuditActorType;
   actorId: string;
   resource?: string | null;
   outcome: "success" | "failure";
@@ -822,10 +830,10 @@ export function resetAuditPseudonymCache(): void {
   auditPseudonymCache.clear();
 }
 
-async function resolveActorId(
-  actorType: "user" | "agent" | "system",
-  actorId: string
-): Promise<string> {
+async function resolveActorId(actorType: AuditActorType, actorId: string): Promise<string> {
+  // Only user actorIds are pseudonymised. An `api_key` actorId is a key id
+  // (#572), an `agent`/`system` id isn't a person either — all pass through
+  // unchanged, which is what this guard already did.
   if (actorType !== "user") return actorId;
 
   const cached = auditPseudonymCache.get(actorId);
