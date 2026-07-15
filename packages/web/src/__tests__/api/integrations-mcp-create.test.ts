@@ -217,11 +217,53 @@ describe("POST /api/integrations (type=mcp)", () => {
           name: validMcpBody.name,
           preset: validMcpBody.preset,
           transport: validMcpBody.transport,
+          url: validMcpBody.url,
           toolCount: mockTools.length,
         }),
         outcome: "success",
       })
     );
+  });
+
+  it("records the server URL in the create audit — for a generic server the URL IS the identity", async () => {
+    // What changes on create is that this deployment can now reach a specific
+    // external endpoint; the endpoint itself must be in the log (AGENTS.md:
+    // "log what changed, not only that something changed"). preset "generic"
+    // is the case that proves it — without the URL the audit row would read
+    // preset:"generic", transport:"http" and name nothing at all.
+    const { POST } = await import("@/app/api/integrations/route");
+
+    const request = makeRequest("/api/integrations", {
+      method: "POST",
+      body: JSON.stringify({
+        ...validMcpBody,
+        preset: "generic",
+        name: "Our internal MCP",
+        url: "https://mcp.internal.example.com/rpc",
+      }),
+    });
+    await POST(request);
+
+    const call = mockDeferAuditLog.mock.calls.find((c) => c[0].eventType === "integration.created");
+    expect(call).toBeDefined();
+    expect(call![0].detail).toMatchObject({
+      type: "mcp",
+      preset: "generic",
+      url: "https://mcp.internal.example.com/rpc",
+    });
+  });
+
+  it("never writes the token into the create audit detail", async () => {
+    const { POST } = await import("@/app/api/integrations/route");
+
+    const request = makeRequest("/api/integrations", {
+      method: "POST",
+      body: JSON.stringify(validMcpBody),
+    });
+    await POST(request);
+
+    const call = mockDeferAuditLog.mock.calls.find((c) => c[0].eventType === "integration.created");
+    expect(JSON.stringify(call![0].detail)).not.toContain(validMcpBody.token);
   });
 
   it("persists extraHeaders when provided (HighLevel locationId)", async () => {

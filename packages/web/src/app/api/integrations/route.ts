@@ -161,7 +161,13 @@ export const POST = withAdmin(async (request, _ctx, session) => {
       actorId: session.user.id!,
       eventType: "integration.created",
       resource: `integration:${connection.id}`,
-      detail: { type: "mcp", name, preset, transport, toolCount: tools.length },
+      // `url` is the point of this row: what changed is that this deployment
+      // can now reach a specific external endpoint. For preset "generic" the
+      // URL is the only thing that identifies the server at all. It is an
+      // admin-entered service address — not PII (no scrubbing needed) and not
+      // a secret (the token lives in the encrypted credentials blob and must
+      // never appear here).
+      detail: { type: "mcp", name, preset, transport, url, toolCount: tools.length },
       outcome: "success",
     });
 

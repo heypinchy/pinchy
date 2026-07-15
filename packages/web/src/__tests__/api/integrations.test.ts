@@ -785,6 +785,72 @@ describe("DELETE /api/integrations/[connectionId]", () => {
     );
   });
 
+  it("records the MCP server identity in the delete audit — the deleted row is the only other copy", async () => {
+    // AGENTS.md: "Include resource names in delete-event details because
+    // deleted rows may no longer be queryable." For an MCP connection the
+    // server URL is exactly that: once the row is gone the audit log is the
+    // only remaining record of which external endpoint this deployment could
+    // reach, and when that access was withdrawn.
+    const mcpConnection = {
+      ...mockConnection,
+      id: "conn-mcp-1",
+      type: "mcp",
+      name: "Our internal MCP",
+      data: {
+        type: "mcp",
+        preset: "generic",
+        transport: "http",
+        url: "https://mcp.internal.example.com/rpc",
+        tools: [],
+        lastSyncAt: "2026-01-01T00:00:00.000Z",
+      },
+    };
+    mockSelectFrom.mockImplementationOnce(() => {
+      const r = Promise.resolve([mcpConnection]) as Promise<unknown[]> & {
+        where: ReturnType<typeof vi.fn>;
+      };
+      r.where = vi.fn().mockResolvedValue([mcpConnection]);
+      return r;
+    });
+
+    const { DELETE } = await import("@/app/api/integrations/[connectionId]/route");
+    const response = await DELETE(
+      makeRequest("/api/integrations/conn-mcp-1", { method: "DELETE" }),
+      { params: Promise.resolve({ connectionId: "conn-mcp-1" }) }
+    );
+
+    expect(response.status).toBe(200);
+    expect(mockAppendAuditLog).toHaveBeenCalledWith(
+      expect.objectContaining({
+        eventType: "integration.deleted",
+        detail: expect.objectContaining({
+          id: "conn-mcp-1",
+          type: "mcp",
+          name: "Our internal MCP",
+          preset: "generic",
+          transport: "http",
+          url: "https://mcp.internal.example.com/rpc",
+        }),
+      })
+    );
+  });
+
+  it("leaves the delete audit detail of non-MCP connections untouched", async () => {
+    // Guards the generic path: the MCP branch above must not leak server
+    // fields onto every other connection type's delete event.
+    const { DELETE } = await import("@/app/api/integrations/[connectionId]/route");
+    await DELETE(makeRequest("/api/integrations/conn-1", { method: "DELETE" }), {
+      params: Promise.resolve({ connectionId: "conn-1" }),
+    });
+
+    const call = mockAppendAuditLog.mock.calls.find(
+      (c) => c[0].eventType === "integration.deleted"
+    );
+    expect(call).toBeDefined();
+    // Exact shape, not objectContaining — an added key must fail this.
+    expect(call![0].detail).toEqual({ id: "conn-1", type: "odoo", name: "Test Odoo" });
+  });
+
   it("should NOT clear OAuth settings when the last Google connection is deleted (independent app lifecycle)", async () => {
     // The OAuth app has an independent lifecycle: deleting the last connection of a
     // provider must leave the stored app credentials in place so admins can manage

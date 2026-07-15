@@ -12,6 +12,7 @@ import { maskConnectionCredentials } from "@/lib/integrations/mask-credentials";
 import { probeIntegrationCredentials } from "@/lib/integrations/probe";
 import { getOAuthProvider } from "@/lib/integrations/oauth-providers";
 import { clearIntegrationAuthError } from "@/lib/integrations/auth-state";
+import type { McpIntegrationData } from "@/lib/integrations/types";
 import { z } from "zod";
 import { parseRequestBody, formatValidationError } from "@/lib/api-validation";
 
@@ -239,12 +240,28 @@ export const DELETE = withAdmin<RouteContext>(async (_req, { params }, session) 
   // provider intentionally leaves the stored app credentials in place. Admins manage
   // the app explicitly via the "Connected apps" section (Edit/Reset).
 
+  // MCP: snapshot the server identity before it's unrecoverable. AGENTS.md
+  // requires delete events to carry what the deleted row can no longer answer
+  // — for an MCP connection that's *which external endpoint* the agents could
+  // reach, which is the whole question a CISO brings to this log. The URL is
+  // an admin-entered service address (not PII, not a secret); the token stays
+  // in the encrypted credentials blob and never lands here.
+  const mcpData = existing.type === "mcp" ? (existing.data as McpIntegrationData | null) : null;
+  const mcpIdentity = mcpData
+    ? { preset: mcpData.preset, transport: mcpData.transport, url: mcpData.url }
+    : undefined;
+
   await appendAuditLog({
     actorType: "user",
     actorId: session.user.id!,
     eventType: "integration.deleted",
     resource: `integration:${connectionId}`,
-    detail: { id: connectionId, name: scrubEmails(existing.name), type: existing.type },
+    detail: {
+      id: connectionId,
+      name: scrubEmails(existing.name),
+      type: existing.type,
+      ...mcpIdentity,
+    },
     outcome: "success",
   });
 
