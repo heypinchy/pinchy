@@ -1064,6 +1064,82 @@ describe("pinchy_write tool", () => {
 
     expect(realReadFileSync(filePath, "utf-8")).toBe("new content");
   });
+
+  it("creates missing parent directories on the create path (overwrite=false)", async () => {
+    const api = createMockApi({
+      "agent-1": { allowed_paths: [tmpDir], write_paths: [tmpDir] },
+    });
+    const { default: plugin } = await import("./index");
+    plugin.register!(api as any);
+
+    const factory = getWriteFactory();
+    const tool = factory({ agentId: "agent-1" });
+
+    // sub/dir does not exist yet — the daily-log convention (memory/<date>.md)
+    // writes into a fresh nested tree on the first write.
+    const filePath = join(tmpDir, "sub", "dir", "file.md");
+    const result = await tool.execute("call-1", {
+      path: filePath,
+      content: "hello nested",
+    });
+
+    expect(result.isError).toBeFalsy();
+    expect(realReadFileSync(filePath, "utf-8")).toBe("hello nested");
+  });
+
+  it("creates missing parent directories on the overwrite path (overwrite=true)", async () => {
+    const api = createMockApi({
+      "agent-1": { allowed_paths: [tmpDir], write_paths: [tmpDir] },
+    });
+    const { default: plugin } = await import("./index");
+    plugin.register!(api as any);
+
+    const factory = getWriteFactory();
+    const tool = factory({ agentId: "agent-1" });
+
+    // Distinct nested path from the create-path test above — overwrite=true
+    // goes through writeFile() rather than open(onDisk, "wx"), a separate
+    // code branch that needs its own coverage.
+    const filePath = join(tmpDir, "sub2", "dir2", "file.md");
+    const result = await tool.execute("call-1", {
+      path: filePath,
+      content: "hello nested overwrite",
+      overwrite: true,
+    });
+
+    expect(result.isError).toBeFalsy();
+    expect(realReadFileSync(filePath, "utf-8")).toBe("hello nested overwrite");
+  });
+
+  it("does not create any directories when the write is rejected (symlink escape)", async () => {
+    // Ordering proof: mkdir must run AFTER validateAccess/assertNoSymlinkEscape,
+    // never before. A pre-planted symlink whose parent escapes the sandbox,
+    // with a deep NON-existent tail beyond the symlink — if mkdir ran before
+    // the escape check (or used the unresolved requested path instead of the
+    // validated onDisk path), it would create these directories on the real,
+    // out-of-sandbox side by following the symlink.
+    const sandbox = join(tmpDir, "sandbox");
+    const outside = join(tmpDir, "outside");
+    mkdirSync(sandbox);
+    mkdirSync(outside);
+    symlinkSync(outside, join(sandbox, "link"));
+
+    const api = createMockApi({
+      "agent-1": { allowed_paths: [sandbox], write_paths: [sandbox] },
+    });
+    const { default: plugin } = await import("./index");
+    plugin.register!(api as any);
+    const tool = getWriteFactory()({ agentId: "agent-1" });
+
+    const result = await tool.execute("call-1", {
+      path: join(sandbox, "link", "new-sub", "deeper", "secret.txt"),
+      content: "x",
+    });
+
+    expect(result.isError).toBe(true);
+    expect(existsSync(join(outside, "new-sub"))).toBe(false);
+    expect(existsSync(join(outside, "new-sub", "deeper"))).toBe(false);
+  });
 });
 
 // ── pinchy_write: NFC/NFD normalization fallback ─────────────────────────────
