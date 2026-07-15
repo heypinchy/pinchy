@@ -231,10 +231,32 @@ export class ClientRouter {
   ): Promise<void> {
     const sessionKey = this.computeSessionKey(agent.id, chatId);
     const run = this.activeRuns.get(sessionKey);
+    // A PENDING run's runId is provisional — Pinchy's per-turn messageId, which
+    // the gateway has never seen (`registerPending`; reconciled to the real one
+    // by `markFirstChunk`). Handing it to `chatAbort` would name a run the
+    // gateway cannot find, so it would abort NOTHING while the stop button
+    // clears client-side: the reply streams on and the UI lies. Omitting it
+    // aborts the session's current run instead — what the user actually asked
+    // for. Same gate as `livenessRunId` in `handleHistory`.
+    const runId = run && run.firstChunkAt !== null ? run.runId : undefined;
 
     let outcome: "success" | "failure" = "success";
     try {
-      await this.openclawClient.chatAbort(sessionKey, run?.runId);
+      const res = await this.openclawClient.chatAbort(sessionKey, runId);
+      // The gateway answers `{ ok, aborted, runIds }`. `ok: true` only means it
+      // understood the call — `aborted: false` means it stopped NOTHING, which
+      // is the openclaw#42172 failure mode (the reply streams on while the
+      // composer clears). A non-throwing call is therefore NOT proof of an
+      // abort, and recording one as success made a lying stop button
+      // indistinguishable from a working one in the trail.
+      // A gateway that reports no payload (older builds) stays `success`: we
+      // cannot tell, and a made-up failure is as dishonest as a made-up success.
+      if (res?.aborted === false) {
+        outcome = "failure";
+        console.warn(
+          `[client-router] gateway reported no run aborted for ${sessionKey} (runId=${runId ?? "none"})`
+        );
+      }
     } catch (err) {
       outcome = "failure";
       console.warn(
@@ -253,7 +275,9 @@ export class ClientRouter {
       detail: {
         agent: { id: agent.id, name: agent.name },
         sessionKey,
-        runId: run.runId,
+        // Null while pending: the trail must not point at a runId the gateway
+        // never issued.
+        runId: runId ?? null,
         reason: "user_request",
       },
       outcome,

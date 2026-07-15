@@ -201,6 +201,60 @@ describe("ClientRouter user-triggered abort (#550)", () => {
     expect(mockAppendAuditLog).not.toHaveBeenCalled();
   });
 
+  /**
+   * A run is registered at DISPATCH time (`registerPending`) with a PROVISIONAL
+   * runId — Pinchy's per-turn messageId, which OpenClaw has never seen. It is
+   * reconciled to the real runId by `markFirstChunk`, on the first chunk that
+   * carries one.
+   *
+   * Passing that provisional id to `chatAbort` is worse than passing nothing:
+   * the gateway is told to abort a run it cannot find and aborts NOTHING, while
+   * the composer's stop button clears client-side. The user sees a stopped
+   * chat and the reply streams on — the exact openclaw#42172 failure this
+   * feature was rolled back for once already. Omitting the runId instead makes
+   * the gateway abort the session's current run, which is precisely what the
+   * user asked for.
+   *
+   * `handleHistory` already gates on `firstChunkAt !== null` for `livenessRunId`
+   * ("a pending run has no meaningful runId yet"); abort must use the same gate.
+   */
+  function registerPendingRun(activeRuns: ActiveRuns, ws: WebSocket, messageId = "msg-1") {
+    activeRuns.registerPending({
+      runId: messageId,
+      sessionKey: SESSION_KEY,
+      agentId: "agent-1",
+      userId: "user-1",
+      agentName: "Smithers",
+      currentMessageId: messageId,
+      submittedAt: 1000,
+      ws,
+    });
+  }
+
+  it("aborts a still-pending run by sessionKey alone — never with the provisional runId", async () => {
+    const ws = createMockWs();
+    registerPendingRun(activeRuns, ws, "msg-1");
+    const router = makeRouter();
+
+    await router.handleMessage(ws, { type: "abort", agentId: "agent-1" });
+
+    expect(mockChatAbort).toHaveBeenCalledWith(SESSION_KEY, undefined);
+  });
+
+  it("does not attribute a pending abort to the provisional runId in the audit trail", async () => {
+    // There IS a run to attribute, so the row is written — but claiming the
+    // messageId as the aborted runId would make the trail point at a run that
+    // never existed on the gateway.
+    const ws = createMockWs();
+    registerPendingRun(activeRuns, ws, "msg-1");
+    const router = makeRouter();
+
+    await router.handleMessage(ws, { type: "abort", agentId: "agent-1" });
+
+    expect(mockAppendAuditLog).toHaveBeenCalledTimes(1);
+    expect(mockAppendAuditLog.mock.calls[0]![0].detail.runId).toBeNull();
+  });
+
   it("targets the per-chat session key when a chatId is supplied (#508)", async () => {
     const ws = createMockWs();
     const router = makeRouter();
@@ -220,6 +274,45 @@ describe("ClientRouter user-triggered abort (#550)", () => {
 
     expect(mockAppendAuditLog).toHaveBeenCalledTimes(1);
     expect(mockAppendAuditLog.mock.calls[0]![0].outcome).toBe("failure");
+  });
+
+  /**
+   * `chat.abort` answers `{ ok, aborted, runIds }` — verified against a live
+   * gateway (OpenClaw 2026.7.1): aborting a session with nothing in flight
+   * returns `{ ok: true, aborted: false, runIds: [] }`.
+   *
+   * `ok: true` only means the RPC was understood; `aborted: false` means the
+   * gateway stopped NOTHING. That is precisely the openclaw#42172 failure this
+   * feature was rolled back for once: the reply keeps streaming while the
+   * composer clears. Treating a non-throwing call as success made that state
+   * indistinguishable from a real abort in the trail — the button lied and the
+   * audit agreed with it.
+   *
+   * A gateway that reports no payload at all (older builds) is NOT reported as
+   * a failure: we cannot tell, and inventing a failure would be as dishonest as
+   * inventing a success.
+   */
+  it("audits outcome=failure when the gateway reports it aborted nothing", async () => {
+    const ws = createMockWs();
+    registerActiveRun(activeRuns, ws, "run-xyz");
+    mockChatAbort.mockResolvedValueOnce({ ok: true, aborted: false, runIds: [] });
+    const router = makeRouter();
+
+    await router.handleMessage(ws, { type: "abort", agentId: "agent-1" });
+
+    expect(mockAppendAuditLog).toHaveBeenCalledTimes(1);
+    expect(mockAppendAuditLog.mock.calls[0]![0].outcome).toBe("failure");
+  });
+
+  it("audits outcome=success when the gateway confirms it aborted the run", async () => {
+    const ws = createMockWs();
+    registerActiveRun(activeRuns, ws, "run-xyz");
+    mockChatAbort.mockResolvedValueOnce({ ok: true, aborted: true, runIds: ["run-xyz"] });
+    const router = makeRouter();
+
+    await router.handleMessage(ws, { type: "abort", agentId: "agent-1" });
+
+    expect(mockAppendAuditLog.mock.calls[0]![0].outcome).toBe("success");
   });
 
   it("does not abort or audit when the user lacks access to the agent", async () => {
