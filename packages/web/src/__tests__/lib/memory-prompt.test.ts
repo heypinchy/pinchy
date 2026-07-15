@@ -41,4 +41,31 @@ describe("buildMemoryPromptBlock", () => {
     expect(buildMemoryPromptBlock([])).toBeNull();
     expect(buildMemoryPromptBlock(["pinchy_read"])).toBeNull();
   });
+
+  it("steers every write-capable agent to read its memory files with pinchy_read", () => {
+    // memory_search rides on an embedding index that can be unavailable (prod:
+    // default `openai` provider, no key → 0 chunks → the tool returns disabled).
+    // Without a fallback the agent confabulates ("memory index unavailable, tell
+    // me again"). A write-capable agent ALWAYS has pinchy_read/pinchy_ls with its
+    // MEMORY.md + memory/ dir in allowed_paths (computeAllowedTools emits them for
+    // every agent; build.ts grants the memory paths on write — verified in prod:
+    // Penny's tools.allow + allowed_paths), so reading the files is a recall path
+    // that always works. It must be told to use it.
+    const block = buildMemoryPromptBlock(["pinchy_write"]);
+    expect(block!).toContain("pinchy_read");
+  });
+
+  it("tells the agent to list memory/ with pinchy_ls to find topic notes", () => {
+    // Topic notes (e.g. memory/helmcraft_odoo.md) aren't guessable by name;
+    // the agent needs to list the directory to discover them.
+    const block = buildMemoryPromptBlock(["pinchy_write"]);
+    expect(block!).toContain("pinchy_ls");
+  });
+
+  it("frames memory_search as possibly unavailable so failure triggers the file fallback", () => {
+    // The behavioural fix for the reported symptom: a memory_search that returns
+    // 'unavailable' must route the agent to its files, not to a fabricated excuse.
+    const block = buildMemoryPromptBlock(["pinchy_write"]);
+    expect(block!.toLowerCase()).toContain("unavailable");
+  });
 });
