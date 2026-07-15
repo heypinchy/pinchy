@@ -1,4 +1,4 @@
-import { and, eq } from "drizzle-orm";
+import { and, eq, lt } from "drizzle-orm";
 import { db } from "@/db";
 import { processedEmails } from "@/db/schema";
 import type { ProcessedEmailOutcome } from "@/lib/email-workflows/types";
@@ -86,4 +86,45 @@ export async function finalizeEmail(input: FinalizeInput): Promise<void> {
       `finalizeEmail: no processing ledger row for (${input.workflowId}, ${input.connectionId}, ${input.providerMessageId}) — already finalized or never claimed?`
     );
   }
+}
+
+/** The claim tuple of a reset row, enough for the sweep to re-list and audit it. */
+export interface StuckClaimKey {
+  workflowId: string;
+  connectionId: string;
+  providerMessageId: string;
+}
+
+/**
+ * Un-stick claims that never reached a terminal status. A row is stuck in
+ * `processing` when its run deferred (a transient not-ready gap — #717's
+ * {@link RunDeferredError}) or the dispatch crashed after the claim but before
+ * finalize. Left alone, such a row is a permanent gap: the ledger's unique claim
+ * key blocks any re-claim, so the email is never retried.
+ *
+ * The fix is **delete-and-reclaim**: DELETE processing rows older than
+ * `graceMs`, freeing the claim key so the reconciliation sweep's re-list re-runs
+ * the email through the normal `claimEmail` path (design §8, "stuck `processing`
+ * past timeout reset by reconciliation"). We delete rather than flip status
+ * because `onConflictDoNothing` re-claims only when the key row is absent; a
+ * never-finalized claim carries no recorded outcome, so nothing is lost.
+ *
+ * `graceMs` MUST exceed the run timeout so a legitimately in-flight run is never
+ * reset out from under itself — at-least-once still permits a duplicate run on a
+ * genuinely-slow row, caught by the action layer's real-world dedup (design D4).
+ * Terminal rows (`done`/`no_action`/`failed`) are never touched, however old.
+ *
+ * Returns the deleted rows' claim tuples so the caller can re-list them and
+ * write one audit row per reset (with a shared `sweepId`).
+ */
+export async function resetStuckProcessingEmails(graceMs: number): Promise<StuckClaimKey[]> {
+  const cutoff = new Date(Date.now() - graceMs);
+  return db
+    .delete(processedEmails)
+    .where(and(eq(processedEmails.status, "processing"), lt(processedEmails.claimedAt, cutoff)))
+    .returning({
+      workflowId: processedEmails.workflowId,
+      connectionId: processedEmails.connectionId,
+      providerMessageId: processedEmails.providerMessageId,
+    });
 }

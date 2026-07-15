@@ -13,7 +13,11 @@ import {
   processedEmails,
   integrationConnections,
 } from "@/db/schema";
-import { claimEmail, finalizeEmail } from "@/lib/email-workflows/ledger";
+import {
+  claimEmail,
+  finalizeEmail,
+  resetStuckProcessingEmails,
+} from "@/lib/email-workflows/ledger";
 
 async function getProcessed(key: {
   workflowId: string;
@@ -184,6 +188,100 @@ describe("email ledger — finalizeEmail", () => {
     const row = await getProcessed(key);
     expect(row.status).toBe("done");
     expect(row.outcome).toEqual({ note: "first" });
+  });
+});
+
+describe("email ledger — resetStuckProcessingEmails (reconciliation)", () => {
+  // Backdate a claim's `claimedAt` so it looks like it has been stuck in
+  // `processing` for `ageMs`. A row is stuck when its run deferred (a transient
+  // not-ready gap, #717's RunDeferredError) or the dispatch crashed after the
+  // claim but before finalize — it never reached a terminal status.
+  async function backdateClaim(
+    key: { workflowId: string; connectionId: string; providerMessageId: string },
+    ageMs: number
+  ) {
+    await db
+      .update(processedEmails)
+      .set({ claimedAt: new Date(Date.now() - ageMs) })
+      .where(
+        and(
+          eq(processedEmails.workflowId, key.workflowId),
+          eq(processedEmails.connectionId, key.connectionId),
+          eq(processedEmails.providerMessageId, key.providerMessageId)
+        )
+      );
+  }
+
+  const GRACE_MS = 10 * 60_000; // 10 min — comfortably past the 5-min run timeout.
+
+  it("deletes a processing row stuck past the grace window and returns its key", async () => {
+    const agent = await seedAgent();
+    const wf = await seedWorkflow(agent.id);
+    const key = { workflowId: wf.id, connectionId: "conn-1", providerMessageId: "stuck-1" };
+
+    await claimEmail(key);
+    await backdateClaim(key, GRACE_MS + 60_000); // stuck 11 min → past grace
+
+    const reset = await resetStuckProcessingEmails(GRACE_MS);
+
+    // The caller (reconciliation sweep) needs the claim tuple to audit the
+    // reset and re-list the email — return it, don't just report a count.
+    expect(reset).toEqual([
+      { workflowId: wf.id, connectionId: "conn-1", providerMessageId: "stuck-1" },
+    ]);
+    // Deleted, not merely flagged: the unique claim key must be free again so
+    // onConflictDoNothing can re-claim on the next sweep (delete-and-reclaim).
+    expect(await getProcessed(key)).toBeUndefined();
+  });
+
+  it("leaves a freshly-claimed processing row untouched (a live run must not be reset)", async () => {
+    const agent = await seedAgent();
+    const wf = await seedWorkflow(agent.id);
+    const key = { workflowId: wf.id, connectionId: "conn-1", providerMessageId: "live-1" };
+
+    await claimEmail(key); // claimedAt = now, well inside the grace window
+
+    const reset = await resetStuckProcessingEmails(GRACE_MS);
+
+    expect(reset).toHaveLength(0);
+    expect(await getProcessed(key)).toBeDefined();
+  });
+
+  it("never touches terminal rows, however old — only processing is reset", async () => {
+    const agent = await seedAgent();
+    const wf = await seedWorkflow(agent.id);
+    const done = { workflowId: wf.id, connectionId: "conn-1", providerMessageId: "done-old" };
+    const failed = { workflowId: wf.id, connectionId: "conn-1", providerMessageId: "failed-old" };
+
+    await claimEmail(done);
+    await finalizeEmail({ ...done, status: "done", outcome: { note: "kept" } });
+    await claimEmail(failed);
+    await finalizeEmail({ ...failed, status: "failed" });
+    // Backdate both far past the grace window — age alone must not reset them.
+    await backdateClaim(done, GRACE_MS * 100);
+    await backdateClaim(failed, GRACE_MS * 100);
+
+    const reset = await resetStuckProcessingEmails(GRACE_MS);
+
+    expect(reset).toHaveLength(0);
+    expect((await getProcessed(done)).status).toBe("done");
+    expect((await getProcessed(failed)).status).toBe("failed");
+  });
+
+  it("makes a reset email re-claimable — the sweep can re-run it end to end", async () => {
+    const agent = await seedAgent();
+    const wf = await seedWorkflow(agent.id);
+    const key = { workflowId: wf.id, connectionId: "conn-1", providerMessageId: "retry-1" };
+
+    // Claim, get stuck (deferred not-ready run), then the sweep resets it.
+    await claimEmail(key);
+    await backdateClaim(key, GRACE_MS + 60_000);
+    await resetStuckProcessingEmails(GRACE_MS);
+
+    // The whole point of delete-and-reclaim: a fresh claim now WINS (returns a
+    // new id) instead of being rejected as already-claimed. This is what turns
+    // #717's transient deferral into an actual retry.
+    expect(await claimEmail(key)).toEqual(expect.any(String));
   });
 });
 
