@@ -26,6 +26,29 @@ function recordAdvertisedTools(payload: Record<string, unknown>): void {
     if (typeof name === "string") advertisedToolNames.add(name);
   }
 }
+
+// Raw text of the most recent request's `messages` array, joined. Exists so a
+// test can prove content OpenClaw assembles server-side (not something the
+// fake LLM ever sees echoed back to it) actually reached the model — the live
+// counterpart to a static "we read the OpenClaw source and it should do X"
+// claim. Concretely: the T7 dynamic-MCP-skill emitter (lib/skills/mcp-skill.ts)
+// was verified only by reading OpenClaw's bundled skill-loader source
+// (workspace-*.js's filterSkillEntries/formatSkillsForPrompt); that source
+// shows OpenClaw renders each eligible skill's frontmatter `name` +
+// `description` + file `location` into an `<available_skills>` block in the
+// prompt (full SKILL.md body is NOT inlined — it's loaded on demand via the
+// `read` tool only if the model chooses to, i.e. progressive disclosure), so
+// the MCP E2E round-trip polls this endpoint and asserts the dynamic skill's
+// id literally appears in what OpenClaw sent, closing the "static read, not
+// live proven" gap T7 flagged. Whole-payload text (not just role:"system")
+// because we don't want this helper to depend on exactly which message role
+// OpenClaw uses to carry the skills block.
+let lastRequestText = "";
+
+function recordRequestText(payload: Record<string, unknown>): void {
+  const messages = Array.isArray(payload.messages) ? payload.messages : [];
+  lastRequestText = messages.map((m) => messageContent(m)).join("\n");
+}
 // Default response asserted by the integration test suite. The setup-wizard
 // E2E container overrides this via FAKE_OLLAMA_RESPONSE so its spec can
 // assert the same canonical "Sure, happy to help..." reply as the other
@@ -357,6 +380,21 @@ interface TriggerConfig {
   response: string;
   toolName: string;
   arguments: Record<string, unknown>;
+}
+
+// Test-configurable dynamic tool triggers (see POST /control/tool-trigger).
+// Native MCP tool names are `<serverKey>__<tool>`, where serverKey is derived
+// from a runtime connectionId (UUID minted at connection-create time) — they
+// cannot be hard-coded in TOOL_TRIGGERS like every other plugin's tools,
+// whose names are static. The MCP E2E registers the trigger→tool mapping at
+// runtime, once it knows the connectionId, and clears it via POST /control/reset.
+const dynamicToolTriggers: TriggerConfig[] = [];
+
+function findActiveTrigger(content: string): TriggerConfig | undefined {
+  return (
+    dynamicToolTriggers.find(({ trigger }) => content.includes(trigger)) ??
+    TOOL_TRIGGERS.find(({ trigger }) => content.includes(trigger))
+  );
 }
 
 const TOOL_TRIGGERS: TriggerConfig[] = [
@@ -966,6 +1004,39 @@ export async function handleRequest(req: http.IncomingMessage, res: http.ServerR
     return;
   }
 
+  // Live proof that server-assembled prompt content (e.g. the T7 dynamic MCP
+  // skill's <available_skills> index entry) reached the model — see
+  // recordRequestText's doc comment above for why this exists.
+  if (method === "GET" && url === "/__pinchy_fake_ollama/last-request-text") {
+    res.writeHead(200, { "Content-Type": "application/json" });
+    res.end(JSON.stringify({ text: lastRequestText }));
+    return;
+  }
+
+  // Register a runtime tool trigger (used by the MCP E2E for dynamic
+  // `<serverKey>__<tool>` names that only exist once a connectionId is
+  // minted). Body: { trigger, toolName, arguments?, response? }.
+  if (method === "POST" && url === "/control/tool-trigger") {
+    const body = await readJsonBody(req);
+    dynamicToolTriggers.push({
+      trigger: String(body.trigger),
+      toolName: String(body.toolName),
+      arguments: (body.arguments ?? {}) as Record<string, unknown>,
+      response: typeof body.response === "string" ? body.response : FAKE_RESPONSE,
+    });
+    res.writeHead(200, { "Content-Type": "application/json" });
+    res.end(JSON.stringify({ ok: true, count: dynamicToolTriggers.length }));
+    return;
+  }
+
+  // Clear all registered dynamic tool triggers (per-test isolation).
+  if (method === "POST" && url === "/control/reset") {
+    dynamicToolTriggers.length = 0;
+    res.writeHead(200, { "Content-Type": "application/json" });
+    res.end(JSON.stringify({ ok: true }));
+    return;
+  }
+
   if (method === "GET" && url === "/api/tags") {
     res.writeHead(200, { "Content-Type": "application/json" });
     res.end(
@@ -1006,6 +1077,7 @@ export async function handleRequest(req: http.IncomingMessage, res: http.ServerR
   if (method === "POST" && url === "/api/chat") {
     const payload = await readJsonBody(req);
     recordAdvertisedTools(payload);
+    recordRequestText(payload);
     const messages = Array.isArray(payload.messages) ? payload.messages : [];
     const lastUserMessage = [...messages]
       .reverse()
@@ -1013,7 +1085,7 @@ export async function handleRequest(req: http.IncomingMessage, res: http.ServerR
     const hasToolResult = lastRoundHasToolResult(messages);
 
     const lastContent = messageContent(lastUserMessage);
-    const activeTrigger = TOOL_TRIGGERS.find(({ trigger }) => lastContent.includes(trigger));
+    const activeTrigger = findActiveTrigger(lastContent);
 
     if (activeTrigger && !hasToolResult) {
       const { promptTokens, completionTokens } = getUsageTokens(countUserMessages(messages));
@@ -1198,13 +1270,14 @@ export async function handleRequest(req: http.IncomingMessage, res: http.ServerR
   if (method === "POST" && url === "/v1/chat/completions") {
     const payload = await readJsonBody(req);
     recordAdvertisedTools(payload);
+    recordRequestText(payload);
     const messages = Array.isArray(payload.messages) ? payload.messages : [];
     const lastUserMessage = [...messages]
       .reverse()
       .find((message) => (message as { role?: unknown })?.role === "user");
     const hasToolResult = lastRoundHasToolResult(messages);
     const lastContent = messageContent(lastUserMessage);
-    const activeTrigger = TOOL_TRIGGERS.find(({ trigger }) => lastContent.includes(trigger));
+    const activeTrigger = findActiveTrigger(lastContent);
 
     if (activeTrigger && !hasToolResult) {
       streamOpenAiToolCalls(res, activeTrigger.toolName, activeTrigger.arguments);

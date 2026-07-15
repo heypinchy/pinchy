@@ -7,6 +7,16 @@ services:
       - DATABASE_URL=postgresql://pinchy:pinchy_dev@db:5432/pinchy
       - BETTER_AUTH_SECRET=dev-secret-do-not-use-in-production
       - PINCHY_ENTERPRISE_KEY=${PINCHY_ENTERPRISE_KEY-eyJhbGciOiJFUzI1NiJ9.eyJ0eXBlIjoicGFpZCIsImZlYXR1cmVzIjpbImVudGVycHJpc2UiXSwiaXNzIjoiaGV5cGluY2h5LmNvbSIsInN1YiI6InBpbmNoeS1kZXYiLCJpYXQiOjE3NzM0ODUyMzQsImV4cCI6MjA4ODg0NTIzNH0.h6stBWDrHP2LnXBv18RDk9_y71_b8FvFU6IodCBJkldlLoW6uxX6P7Hr_SL8OM-jhaNqUu7BIMaTYvbqW28buA}
+      # MCP integration is feature-flagged behind a single server-side runtime
+      # flag (src/lib/feature-flags.ts) — no build-time / NEXT_PUBLIC_
+      # counterpart, so passing it through here (default off) is enough for a
+      # developer to exercise the native-MCP + credential-proxy flow in the
+      # dev stack without a rebuild:
+      #   PINCHY_MCP_ENABLED=1 docker compose ... up --build
+      # ALLOW_PRIVATE_URLS opts out of the SSRF guard for internal/self-hosted
+      # MCP servers; leave it off to test the guard against external servers.
+      - PINCHY_MCP_ENABLED=${PINCHY_MCP_ENABLED:-}
+      - ALLOW_PRIVATE_URLS=${ALLOW_PRIVATE_URLS:-}
     volumes:
       - ./packages/web:/app/packages/web
       - /app/packages/web/node_modules
