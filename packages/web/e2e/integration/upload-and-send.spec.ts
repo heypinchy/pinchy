@@ -139,4 +139,73 @@ test.describe("upload and send — happy path", () => {
     const found = await pollAuditForTool(page, { toolName: "pinchy_read", agentId });
     expect(found).toBe(true);
   });
+
+  // The coverage gap that let the paste regression ship: the file-picker path
+  // above was re-wired onto the two-phase upload pipeline in #342 and stayed
+  // green, while paste — a first-class feature since 9fbb91e3c — silently
+  // broke, because no spec ever exercised it. Cmd+V and right-click → Paste
+  // both deliver the same native `paste` event with the bitmap in
+  // `clipboardData.files`, so dispatching that event covers both, against real
+  // Chromium rather than a jsdom approximation of the clipboard.
+  //
+  // Scope: this stops at the ready chip and deliberately does NOT send. Once
+  // `addPendingUpload` has the file, paste and the file picker are the same
+  // code — the upload → send → uploads-URL half is already covered by the
+  // happy path above, and re-asserting it here would buy nothing. It would
+  // also cost: every integration spec shares ONE OpenClaw session, so a second
+  // producer of fake-ollama's generic reply pollutes the specs that assert on
+  // it (agent-chat.spec.ts). The regression lives entirely in whether a paste
+  // reaches the pipeline at all, which is exactly what the chip proves.
+  test("pasted screenshot reaches the upload pipeline", async ({ page }) => {
+    const failedUploadFetches: string[] = [];
+    page.on("response", (response) => {
+      if (response.url().includes("/uploads/") && response.status() === 404) {
+        failedUploadFetches.push(response.url());
+      }
+    });
+
+    await login(page);
+    const agentId = await getSmithersAgentId(page);
+    await page.goto(`/chat/${agentId}`);
+    await expect(page).toHaveURL(`/chat/${agentId}`, { timeout: 10000 });
+    await waitForOpenClawConnected(page);
+
+    const input = page.getByLabel("Message input");
+    await expect(input).toBeVisible({ timeout: 10000 });
+
+    // Paste a real 1x1 PNG. Built in-page rather than read from a fixture
+    // because the bytes must live in a browser-side `File` inside a real
+    // DataTransfer to reach `clipboardData.files` — the shape the OS clipboard
+    // produces for a screenshot. The server content-sniffs uploads, so these
+    // have to be valid PNG magic bytes, not arbitrary filler.
+    await input.focus();
+    await page.evaluate(() => {
+      const PNG_1X1_BASE64 =
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==";
+      const bytes = Uint8Array.from(atob(PNG_1X1_BASE64), (c) => c.charCodeAt(0));
+      const file = new File([bytes], "screenshot.png", { type: "image/png" });
+      const dt = new DataTransfer();
+      dt.items.add(file);
+      const textarea = document.querySelector<HTMLTextAreaElement>(
+        'textarea[aria-label="Message input"]'
+      );
+      if (!textarea) throw new Error("composer textarea not found");
+      textarea.dispatchEvent(
+        new ClipboardEvent("paste", { clipboardData: dt, bubbles: true, cancelable: true })
+      );
+    });
+
+    // THE REGRESSION: the paste must produce an upload chip that reaches
+    // "ready" (green check = POST /uploads returned 200). Before the fix the
+    // paste was swallowed by assistant-ui's built-in handler — it threw "No
+    // matching adapter found for file" into its own try/catch and no chip ever
+    // appeared.
+    const readyChip = page
+      .locator(".text-green-600")
+      .locator("xpath=ancestor::*[@class and contains(@class,'rounded-lg')]")
+      .first();
+    await expect(readyChip).toBeVisible({ timeout: 20000 });
+
+    expect(failedUploadFetches).toHaveLength(0);
+  });
 });

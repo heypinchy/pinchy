@@ -1,6 +1,7 @@
 import { UserMessageAttachments, ComposerAttachments } from "@/components/assistant-ui/attachment";
 import { PinchyAttachmentButton } from "@/components/assistant-ui/pinchy-attachment-button";
 import { PinchyDropZone } from "@/components/assistant-ui/pinchy-drop-zone";
+import { PinchyComposerInput } from "@/components/assistant-ui/pinchy-composer-input";
 import {
   useSlashCommandMenu,
   SlashCommandMenuList,
@@ -483,7 +484,7 @@ export const Composer: FC = () => {
       <PinchyDropZone className="aui-composer-attachment-dropzone flex w-full flex-col rounded-2xl border border-input bg-background px-1 pt-2 outline-none transition-shadow has-[textarea:focus-visible]:border-ring has-[textarea:focus-visible]:ring-2 has-[textarea:focus-visible]:ring-ring/20">
         <PendingUploadChips />
         <ComposerAttachments />
-        <ComposerPrimitive.Input
+        <PinchyComposerInput
           placeholder="Send a message, or type / for commands"
           className="aui-composer-input mb-0.5 md:mb-1 max-h-32 min-h-10 md:min-h-14 w-full resize-none bg-transparent px-4 pt-2 pb-1 md:pb-3 text-sm outline-none placeholder:text-muted-foreground focus-visible:ring-0"
           rows={1}
