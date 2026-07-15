@@ -22,7 +22,19 @@ const { fileStore, dirStore } = vi.hoisted(() => ({
 
 vi.mock("fs", async (importOriginal) => {
   const actual = await importOriginal<typeof import("fs")>();
-  const writeFileSyncMock = vi.fn((p: unknown, content: unknown) => {
+  // Honours the `wx` flag, because ensureWorkspace relies on it to create
+  // MEMORY.md without a check-then-write race. A mock that ignored the flag
+  // would let a clobbering implementation pass the no-overwrite test below.
+  const writeFileSyncMock = vi.fn((p: unknown, content: unknown, options?: unknown) => {
+    const flag =
+      options && typeof options === "object" && "flag" in options
+        ? (options as { flag?: string }).flag
+        : undefined;
+    if (flag === "wx" && fileStore.has(String(p))) {
+      const err = new Error(`EEXIST: file already exists, open '${String(p)}'`);
+      (err as NodeJS.ErrnoException).code = "EEXIST";
+      throw err;
+    }
     fileStore.set(String(p), String(content));
   });
   const readFileSyncMock = vi.fn();

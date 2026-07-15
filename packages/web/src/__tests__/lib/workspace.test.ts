@@ -269,17 +269,48 @@ describe("ensureWorkspace", () => {
     expect(memoryCall![1]).toBe("");
   });
 
-  it("does not overwrite an existing MEMORY.md", () => {
-    mockedExistsSync.mockImplementation((p) => {
-      return typeof p === "string" && p.endsWith("/MEMORY.md");
-    });
-
+  it("creates MEMORY.md exclusively, so it can never truncate one written concurrently", () => {
+    // The agent writes MEMORY.md while this runs — regenerateOpenClawConfig
+    // calls ensureWorkspace on every settings mutation. A check-then-write
+    // would leave a window where the agent creates the file after the check
+    // and this truncates it back to "" (CodeQL js/file-system-race). `wx`
+    // closes the window: the kernel refuses the create instead.
     ensureWorkspace("agent-123");
 
     const memoryCall = mockedWriteFileSync.mock.calls.find(
       (call) => typeof call[0] === "string" && call[0].endsWith("/MEMORY.md")
     );
-    expect(memoryCall).toBeUndefined();
+    expect(memoryCall![2]).toEqual({ encoding: "utf-8", flag: "wx" });
+  });
+
+  it("does not overwrite an existing MEMORY.md", () => {
+    // The exclusive create is refused by the filesystem, not skipped by a
+    // pre-check — so this asserts the EEXIST is swallowed and the agent's
+    // memory survives, which is what the caller actually depends on.
+    mockedWriteFileSync.mockImplementation((p) => {
+      if (typeof p === "string" && p.endsWith("/MEMORY.md")) {
+        const err = new Error(`EEXIST: file already exists, open '${p}'`);
+        (err as NodeJS.ErrnoException).code = "EEXIST";
+        throw err;
+      }
+    });
+
+    expect(() => ensureWorkspace("agent-123")).not.toThrow();
+  });
+
+  it("propagates a MEMORY.md write failure that is not EEXIST", () => {
+    // EEXIST is the only expected failure. Swallowing the rest would turn a
+    // broken volume into a silently memory-less agent — the exact class of
+    // bug this whole change exists to fix.
+    mockedWriteFileSync.mockImplementation((p) => {
+      if (typeof p === "string" && p.endsWith("/MEMORY.md")) {
+        const err = new Error(`EACCES: permission denied, open '${p}'`);
+        (err as NodeJS.ErrnoException).code = "EACCES";
+        throw err;
+      }
+    });
+
+    expect(() => ensureWorkspace("agent-123")).toThrow("EACCES");
   });
 });
 

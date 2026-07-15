@@ -133,9 +133,21 @@ export function ensureWorkspace(agentId: string): void {
   // and carry instructional placeholders. MEMORY.md is the agent's own, and
   // OpenClaw feeds it back as recalled fact — a placeholder comment would
   // reach the agent as something it had remembered.
+  //
+  // `wx` carries the correctness here, not the existsSync above it. This is the
+  // one file in this function an agent writes concurrently — regenerateOpenClawConfig
+  // calls ensureWorkspace on every settings mutation — so a bare check-then-write
+  // leaves a window where the agent creates MEMORY.md after the check and this
+  // truncates its memory back to "" (CodeQL js/file-system-race). The flag closes
+  // it: EEXIST means someone won the race, which is a success, not a failure. The
+  // existsSync is only a fast path around the syscall in the common case.
   const memoryFile = join(workspacePath, "MEMORY.md");
   if (!existsSync(memoryFile)) {
-    writeFileSync(memoryFile, "", "utf-8");
+    try {
+      writeFileSync(memoryFile, "", { encoding: "utf-8", flag: "wx" });
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== "EEXIST") throw err;
+    }
   }
 }
 
