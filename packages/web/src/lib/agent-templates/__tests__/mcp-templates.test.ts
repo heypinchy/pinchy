@@ -11,7 +11,7 @@ import { linearTriage } from "../mcp/linear-triage";
 import type { AgentTemplate } from "../types";
 import { PERSONALITY_PRESETS } from "@/lib/personality-presets";
 import { TEMPLATE_ICON_COMPONENTS } from "@/lib/template-icons";
-import { getMcpPreset, MCP_PRESET_IDS } from "@/lib/integrations/mcp-presets";
+import { MCP_PRESET_IDS } from "@/lib/integrations/mcp-presets";
 
 // ---------------------------------------------------------------------------
 // Shared invariant helper
@@ -48,33 +48,53 @@ function assertMcpTemplate(template: AgentTemplate, name: string): void {
     expect(rt.tool.length, `${name}: tool must be non-empty`).toBeGreaterThan(0);
   }
 
-  // Drift guard: every recommended tool MUST be referenced in the agent's
-  // instructions. The 2026-06 Merlin breakage shipped because the template's
-  // tool names (and the prose telling the model to call them) had drifted from
-  // the GitHub MCP server's renamed tools — the agent then improvised a fake
-  // tool call. This is the cheap internal-consistency layer (prose ⊇
-  // recommendedTools); the template↔live-server contract is verified by the
-  // MCP E2E catalog check.
+  // ── Prompt ⟷ recommendedTools drift guard (bidirectional) ───────────────
+  //
+  // The tool names in `recommendedTools` are the RAW names the MCP server
+  // advertises: they're matched against `connection.data.tools` to mint the
+  // grants. The prompt must use those same raw names. It must NOT decorate
+  // them with a provider prefix: OpenClaw materializes an MCP tool as
+  // `<serverKey>__<rawName>` (nativeMcpToolName), where serverKey is derived
+  // per-connection at runtime — so a `github_`-style prefix matches nothing
+  // the model can see, and a prompt naming it either gets ignored or invites
+  // a hallucinated call. The serverKey is unknowable at template-authoring
+  // time, which is exactly why the prompt sticks to the raw suffix; the
+  // dynamic per-connection skill (T7) lists the fully materialized names.
+  //
+  // CONVENTION this guard enforces on MCP template prompts: a backticked bare
+  // snake_case identifier means "tool name". Reference request FIELDS either
+  // without backticks or inside a larger expression (e.g. `method: "get"`,
+  // `owner`, `pullNumber`) so they aren't mistaken for tools.
+  const backticked = [...template.defaultAgentsMd!.matchAll(/`([^`]+)`/g)].map((m) => m[1]);
+  // Bare lower_snake_case with at least one underscore. Written without a
+  // nested quantifier — the equivalent /^[a-z][a-z0-9]*(_[a-z0-9]+)+$/ trips
+  // eslint's detect-unsafe-regex heuristic (a false positive here, since
+  // [a-z0-9]+ can't match "_" so the group partition is unambiguous, but this
+  // form is both simpler and provably linear).
+  const TOOL_NAME_SHAPE = /^[a-z][a-z0-9_]*_[a-z0-9]+$/;
+  const grantedTools = new Set(template.recommendedTools!.map((rt) => rt.tool));
+
+  // Direction 1 — prose ⊇ recommendedTools: every granted tool is named.
+  // EXACT (backtick-delimited), not a substring: `.includes("pull_request_read")`
+  // is satisfied by "github_pull_request_read", which is how the wrong prefix
+  // shipped green in the first place.
   for (const rt of template.recommendedTools!) {
     expect(
-      template.defaultAgentsMd!.includes(rt.tool),
-      `${name}: defaultAgentsMd must reference recommended tool "${rt.tool}" — instructions and recommendedTools must not drift`
+      backticked.includes(rt.tool),
+      `${name}: defaultAgentsMd must reference granted tool \`${rt.tool}\` exactly (backtick-delimited) — a substring match would also accept a prefixed variant the model can never call`
     ).toBe(true);
   }
 
-  // Exposed-name guard: OpenClaw registers MCP tools as `${preset.toolPrefix}${tool}`
-  // (e.g. github_pull_request_read), so the AGENTS.md must name the PREFIXED tool.
-  // Instructing the bare name makes the model call a tool that "isn't available"
-  // (the 2026-06 incident: prose said pull_request_read, the model saw only
-  // github_pull_request_read).
-  for (const rt of template.recommendedTools!) {
-    const preset = getMcpPreset(rt.preset);
-    const exposed = `${preset.toolPrefix}${rt.tool}`;
-    expect(
-      template.defaultAgentsMd!.includes(exposed),
-      `${name}: defaultAgentsMd must reference the exposed tool name "${exposed}" (toolPrefix + tool) — the model can only call the prefixed name`
-    ).toBe(true);
-  }
+  // Direction 2 — prose ⊆ recommendedTools: the prompt names NO tool we don't
+  // grant. This is the direction that actually protects the user: telling the
+  // model to call something it doesn't have produces a fake tool call in a
+  // template that promises "works immediately".
+  const promptTools = backticked.filter((t) => TOOL_NAME_SHAPE.test(t));
+  const ungranted = [...new Set(promptTools)].filter((t) => !grantedTools.has(t));
+  expect(
+    ungranted,
+    `${name}: defaultAgentsMd names tool-shaped identifiers that are not in recommendedTools: ${ungranted.join(", ")}. The prompt must only name tools the template actually grants (raw server names, no provider prefix).`
+  ).toEqual([]);
 
   // modelHint present with valid tier
   expect(template.modelHint, `${name}: modelHint`).toBeDefined();

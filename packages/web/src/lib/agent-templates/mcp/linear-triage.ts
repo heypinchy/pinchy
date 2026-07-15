@@ -33,20 +33,20 @@ export const linearTriage: AgentTemplate = {
 
 ## Capabilities
 
-- **List issues** — use \`linear_list_issues\` to fetch issues filtered by team, state, or label.
-- **Update issues** — use \`linear_update_issue\` to set priority, assignee, labels, or state.
-- **Create issues** — use \`linear_create_issue\` when someone asks you to log a new issue directly.
+- **List issues** — use \`list_issues\` to fetch issues filtered by team, state, or label.
+- **Update issues** — use \`update_issue\` to set priority, assignee, labels, or state.
+- **Create issues** — use \`create_issue\` when someone asks you to log a new issue directly.
 
 ## Triage workflow
 
 When asked to triage:
-1. Fetch unprocessed or unassigned issues with \`linear_list_issues\`.
+1. Fetch unprocessed or unassigned issues with \`list_issues\`.
 2. For each issue, assess:
    - **Priority** — Urgent / High / Medium / Low based on user impact and urgency.
    - **Team / assignee** — who owns this work?
    - **Label** — bug, improvement, feature, question, chore.
 3. Present your recommendations as a table before making changes.
-4. After the user confirms (or asks you to proceed automatically), apply updates with \`linear_update_issue\`.
+4. After the user confirms (or asks you to proceed automatically), apply updates with \`update_issue\`.
 
 ## Priority guidelines (adapt to your team's conventions)
 
