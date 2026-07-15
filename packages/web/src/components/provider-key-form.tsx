@@ -303,7 +303,7 @@ export function ProviderKeyForm({
 
   return (
     <Form {...form}>
-      <form onSubmit={form.handleSubmit(onSubmit)} className="space-y-6">
+      <form onSubmit={form.handleSubmit(onSubmit)} method="post" className="space-y-6">
         <div className="space-y-2">
           <Label>Provider</Label>
           <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">

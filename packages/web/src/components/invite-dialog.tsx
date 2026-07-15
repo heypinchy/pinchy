@@ -179,7 +179,12 @@ export function InviteDialog({ open, onOpenChange }: InviteDialogProps) {
           </div>
         ) : (
           <Form {...form}>
-            <form onSubmit={form.handleSubmit(onSubmit)} noValidate className="space-y-4">
+            <form
+              onSubmit={form.handleSubmit(onSubmit)}
+              method="post"
+              noValidate
+              className="space-y-4"
+            >
               <FormField
                 control={form.control}
                 name="email"

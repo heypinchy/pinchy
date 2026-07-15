@@ -132,7 +132,7 @@ export function AgentSettingsGeneral({
   return (
     <div className="space-y-6">
       <Form {...form}>
-        <form className="space-y-6">
+        <form method="post" className="space-y-6">
           <FormField
             control={form.control}
             name="name"

@@ -469,13 +469,14 @@ export const Composer: FC = () => {
   // button reflects connection state.
   //
   // Slash-command menu (#611): the `/` autocomplete popover. Its capture-phase
-  // key handler sits on the Root <form> so it can intercept Enter/↑/↓ before the
-  // form submits when the menu is open.
+  // key handler sits on the Root form element so it can intercept Enter/↑/↓
+  // before the form submits when the menu is open.
   const slashMenu = useSlashCommandMenu();
   return (
     <ComposerPrimitive.Root
       className="aui-composer-root relative flex w-full flex-col"
       onKeyDownCapture={slashMenu.onKeyDownCapture}
+      method="post"
     >
       <DraftPersistence />
       <ShareIntake />
