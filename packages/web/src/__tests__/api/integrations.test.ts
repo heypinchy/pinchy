@@ -132,6 +132,11 @@ vi.mock("@/lib/integrations/auth-state", () => ({
   setIntegrationAuthFailed: (...args: unknown[]) => mockSetIntegrationAuthFailed(...args),
 }));
 
+const mockRegenerateOpenClawConfig = vi.fn().mockResolvedValue(undefined);
+vi.mock("@/lib/openclaw-config", () => ({
+  regenerateOpenClawConfig: (...args: unknown[]) => mockRegenerateOpenClawConfig(...args),
+}));
+
 import { NextRequest } from "next/server";
 import { routeContext } from "@/test-helpers/route";
 
@@ -783,6 +788,10 @@ describe("DELETE /api/integrations/[connectionId]", () => {
         }),
       })
     );
+    // Odoo's runtime gating is a plugin-side checkPermission, never baked
+    // into openclaw.json — deleting the connection doesn't need a regenerate
+    // (unlike MCP below, whose gating lives in the config itself).
+    expect(mockRegenerateOpenClawConfig).not.toHaveBeenCalled();
   });
 
   it("records the MCP server identity in the delete audit — the deleted row is the only other copy", async () => {
@@ -833,6 +842,13 @@ describe("DELETE /api/integrations/[connectionId]", () => {
         }),
       })
     );
+    // Unlike Odoo/email, MCP gating lives entirely in openclaw.json
+    // (mcp.servers + tools.allow). Without regenerating on delete, a stale
+    // mcp.servers entry (and any agent's tools.allow names for it) would
+    // linger until an unrelated regenerate happened to notice — the
+    // per-request proxy 404 (T4's Gone-Contract) is a safety net for that
+    // window, not a substitute for cleaning it up promptly.
+    expect(mockRegenerateOpenClawConfig).toHaveBeenCalledTimes(1);
   });
 
   it("leaves the delete audit detail of non-MCP connections untouched", async () => {

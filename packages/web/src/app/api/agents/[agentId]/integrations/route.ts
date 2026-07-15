@@ -7,6 +7,7 @@ import { appendAuditLog, type AuditLogEntry } from "@/lib/audit";
 import { recordAuditFailure } from "@/lib/audit-deferred";
 import { parseRequestBody } from "@/lib/api-validation";
 import { setAgentIntegrationsSchema } from "@/lib/schemas/agent-integrations";
+import { regenerateOpenClawConfig } from "@/lib/openclaw-config";
 import type { McpIntegrationData } from "@/lib/integrations/types";
 
 type RouteContext = { params: Promise<{ agentId: string }> };
@@ -184,9 +185,20 @@ export const PUT = withAdmin<RouteContext>(async (request, { params }, session) 
     );
   }
 
-  // Config regeneration is NOT done here — the caller (agent settings save flow)
-  // triggers it via the agent PATCH, which reads the already-updated permissions
-  // from the DB. This avoids double config writes and OpenClaw restarts.
+  // Config regeneration is NOT done here for Odoo/email — the caller (agent
+  // settings save flow) triggers it via the agent PATCH, which reads the
+  // already-updated permissions from the DB. This avoids double config
+  // writes and OpenClaw restarts for those types, whose gating is a runtime
+  // plugin checkPermission and never depends on config content.
+  //
+  // MCP is different (see docs/plans/2026-06-30-mcp-port-to-main.md task
+  // T6): its ENTIRE gating lives in openclaw.json (mcp.servers +
+  // tools.allow, build.ts). Without regenerating here, a freshly granted
+  // tool stays unusable — and worse, a REVOKED tool stays silently allowed
+  // — until some unrelated regenerate happens to notice. So this route
+  // regenerates immediately whenever an "mcp" row is touched on either side
+  // of the replace (added, removed, or both) — checking only the new
+  // `permissions` array would miss a pure revocation (permissions: []).
 
   // Build audit diff
   const oldSet = new Set(existingPerms.map((p) => `${p.model}:${p.operation}`));
@@ -227,6 +239,11 @@ export const PUT = withAdmin<RouteContext>(async (request, { params }, session) 
     recordAuditFailure(err, auditEntry);
   }
 
+  const touchesMcp = added.some((p) => p.model === "mcp") || removed.some((p) => p.model === "mcp");
+  if (touchesMcp) {
+    await regenerateOpenClawConfig();
+  }
+
   return NextResponse.json({ success: true });
 });
 
@@ -249,7 +266,10 @@ export const DELETE = withAdmin<RouteContext>(async (_req, { params }, session) 
     .delete(agentConnectionPermissions)
     .where(eq(agentConnectionPermissions.agentId, agentId));
 
-  // Config regeneration is NOT done here — see PUT handler comment.
+  // Config regeneration for Odoo/email is NOT done here — see PUT handler
+  // comment. For MCP it IS, below — clearing all permissions revokes any MCP
+  // grants too, and that must take effect immediately (same reasoning as the
+  // PUT handler's revocation case).
 
   // Audit log
   const removed = existingPerms.map((p) => ({ model: p.model, operation: p.operation }));
@@ -266,6 +286,10 @@ export const DELETE = withAdmin<RouteContext>(async (_req, { params }, session) 
     },
     outcome: "success",
   });
+
+  if (removed.some((p) => p.model === "mcp")) {
+    await regenerateOpenClawConfig();
+  }
 
   return NextResponse.json({ success: true });
 });

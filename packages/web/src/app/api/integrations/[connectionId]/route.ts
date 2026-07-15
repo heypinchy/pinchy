@@ -12,6 +12,7 @@ import { maskConnectionCredentials } from "@/lib/integrations/mask-credentials";
 import { probeIntegrationCredentials } from "@/lib/integrations/probe";
 import { getOAuthProvider } from "@/lib/integrations/oauth-providers";
 import { clearIntegrationAuthError } from "@/lib/integrations/auth-state";
+import { regenerateOpenClawConfig } from "@/lib/openclaw-config";
 import type { McpIntegrationData } from "@/lib/integrations/types";
 import { z } from "zod";
 import { parseRequestBody, formatValidationError } from "@/lib/api-validation";
@@ -213,6 +214,21 @@ export const PATCH = withAdmin<RouteContext>(async (request, { params }, session
       },
       outcome: "success",
     });
+
+    // MCP-only (T6, docs/plans/2026-06-30-mcp-port-to-main.md): a credential
+    // edit is how an admin recovers a connection from `auth_failed` (e.g. a
+    // rotated token) — clearIntegrationAuthError above just flipped status
+    // back to `active`. build.ts filters mcp.servers/tools.allow to
+    // status==="active" (auth_failed connections don't get a live config
+    // entry, since MCP has no runtime plugin to degrade gracefully the way
+    // Odoo/email do), so any grants an agent already had on this connection
+    // stay fail-closed until this regenerates. Odoo/email/imap deliberately
+    // do NOT get this call: their credential edits were never gated by
+    // connection status in the config in the first place, so there is
+    // nothing here for them to re-enable.
+    if (existing.type === "mcp") {
+      await regenerateOpenClawConfig();
+    }
   }
 
   return NextResponse.json({
@@ -264,6 +280,16 @@ export const DELETE = withAdmin<RouteContext>(async (_req, { params }, session) 
     },
     outcome: "success",
   });
+
+  // MCP-only (T6): unlike Odoo/email, MCP gating lives entirely in
+  // openclaw.json (mcp.servers + tools.allow). Without regenerating here, a
+  // deleted connection's server entry and any agent's tools.allow names for
+  // it would linger until an unrelated regenerate happened to notice — the
+  // per-request proxy 404 (T4's Gone-Contract) degrades that window
+  // gracefully, but is a safety net, not a substitute for prompt cleanup.
+  if (existing.type === "mcp") {
+    await regenerateOpenClawConfig();
+  }
 
   return NextResponse.json({ success: true });
 });

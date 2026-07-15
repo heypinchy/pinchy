@@ -53,6 +53,9 @@ import { resolveDefaultVisionModelChain } from "./default-media-models";
 import { deepMerge } from "./deep-merge";
 import { buildGatewayBlock } from "./gateway";
 import { EMAIL_CONNECTION_TYPES } from "@/lib/integrations/oauth-providers";
+import { isMcpEnabled } from "@/lib/feature-flags";
+import { buildNativeMcp, type NativeMcpConnectionInput } from "./native-mcp";
+import type { McpIntegrationData } from "@/lib/integrations/types";
 
 /**
  * Public docs URL configuration for the bundled `pinchy-docs` plugin.
@@ -977,6 +980,101 @@ export async function regenerateOpenClawConfig() {
         agents: emailAgentConfigs,
       },
     };
+  }
+
+  // Collect MCP integration configs (native OpenClaw mcp.servers + Pinchy's
+  // credential-injecting proxy — see native-mcp.ts's module doc for the full
+  // rationale). Unlike Odoo/email, MCP is NOT a Pinchy plugin: there is no
+  // runtime checkPermission gate inside a plugin, so `mcp.servers` +
+  // `tools.allow` in THIS config are the only enforcement point. Behind the
+  // feature flag (D3) so a disabled deployment never emits the section or any
+  // MCP tool name, even if grant rows still exist in the DB.
+  if (isMcpEnabled()) {
+    // Reuses `allPermissions` (already joined agent_connection_permissions +
+    // integration_connections above for the email/odoo sections) instead of a
+    // second query — MCP grants are ordinary rows with model:"mcp" (D1). A
+    // connection with zero surviving grants needs no mcp.servers entry at
+    // all: no agent would have a matching tools.allow name, so registering it
+    // would just be a wasted upstream connection attempt for OpenClaw's own
+    // dynamic tool discovery.
+    //
+    // Connections must be `status === "active"` — `allPermissions` only
+    // excludes `pending` (shared with email/odoo), but auth_failed is
+    // different for MCP than for Odoo/email: those fetch credentials lazily
+    // at tool-call time and let the upstream API produce its own error, so a
+    // stale connection degrades gracefully without any config change. MCP's
+    // gating lives IN this config — an auth_failed connection would still get
+    // a live mcp.servers entry, so OpenClaw would keep attempting (and
+    // failing) the initialize handshake on every reload. Filtering here keeps
+    // the config honest about what's actually reachable.
+    const mcpConnectionsById = new Map<string, typeof integrationConnections.$inferSelect>();
+    const mcpAgentToolsByConn = new Map<string, Record<string, string[]>>();
+
+    for (const row of allPermissions) {
+      const perm = row.agent_connection_permissions;
+      const conn = row.integration_connections;
+      if (perm.model !== "mcp") continue;
+      if (conn.type !== "mcp" || conn.status !== "active") continue;
+
+      mcpConnectionsById.set(conn.id, conn);
+
+      // DRIFT FILTER: a grant only survives into tools.allow if the tool is
+      // STILL present in the connection's most recently synced data.tools. A
+      // re-sync (POST .../sync) can remove a tool from data.tools after the
+      // grant row was written — the permissions route's own tool-existence
+      // check (T5) only guards the moment of granting, not later drift.
+      // Without this intersection, a revoked tool would stay silently
+      // allowed until some unrelated regenerate happened to notice — this IS
+      // that check, on every regenerate.
+      const syncedTools = new Set(
+        ((conn.data as McpIntegrationData | null)?.tools ?? []).map((t) => t.name)
+      );
+      if (!syncedTools.has(perm.operation)) continue;
+
+      if (!mcpAgentToolsByConn.has(conn.id)) mcpAgentToolsByConn.set(conn.id, {});
+      const agentTools = mcpAgentToolsByConn.get(conn.id)!;
+      if (!agentTools[perm.agentId]) agentTools[perm.agentId] = [];
+      agentTools[perm.agentId].push(perm.operation);
+    }
+
+    // Every entry in mcpAgentToolsByConn was only created immediately before
+    // pushing its first surviving tool above, so by construction it always
+    // has at least one agent with at least one tool — a connection whose
+    // every grant drift-filtered out simply never got an entry at all,
+    // which is exactly what keeps it out of mcp.servers below.
+    const nativeInputs: NativeMcpConnectionInput[] = [];
+    for (const [connId, agentTools] of mcpAgentToolsByConn) {
+      const conn = mcpConnectionsById.get(connId)!;
+      const data = (conn.data ?? {}) as McpIntegrationData;
+      nativeInputs.push({
+        id: connId,
+        transport: data.transport ?? "http",
+        agentTools,
+      });
+    }
+
+    if (nativeInputs.length > 0) {
+      const proxyBaseUrl =
+        process.env.PINCHY_INTERNAL_URL || `http://pinchy:${process.env.PORT || "7777"}`;
+      const native = buildNativeMcp(nativeInputs, {
+        proxyBaseUrl,
+        gatewayToken: gatewayTokenString,
+      });
+      config.mcp = { servers: native.servers };
+
+      // Merge the per-agent MCP tool allowlist into agents.list[].tools.allow,
+      // APPENDED after computeAllowedTools()'s fail-closed base — never
+      // replacing it. agentsList is the SAME array referenced by
+      // config.agents.list above (deepMerge assigns arrays by reference), so
+      // mutating the entries here is reflected in the emitted config.
+      for (const agentEntry of agentsList as Array<Record<string, unknown>>) {
+        const allow = native.toolAllowByAgent[agentEntry.id as string];
+        if (!allow || allow.length === 0) continue;
+        const tools = (agentEntry.tools as Record<string, unknown>) ?? {};
+        const existingAllow = (tools.allow as string[] | undefined) ?? [];
+        agentEntry.tools = { ...tools, allow: [...existingAllow, ...allow] };
+      }
+    }
   }
 
   // Build the allow list. Two requirements:

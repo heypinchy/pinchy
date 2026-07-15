@@ -134,6 +134,11 @@ vi.mock("@/lib/integrations/oauth-settings", () => ({
   deleteOAuthSettings: vi.fn().mockResolvedValue(undefined),
 }));
 
+const mockRegenerateOpenClawConfig = vi.fn().mockResolvedValue(undefined);
+vi.mock("@/lib/openclaw-config", () => ({
+  regenerateOpenClawConfig: (...args: unknown[]) => mockRegenerateOpenClawConfig(...args),
+}));
+
 import { NextRequest } from "next/server";
 
 function makeRequest(path: string, options?: ConstructorParameters<typeof NextRequest>[1]) {
@@ -204,6 +209,10 @@ describe("PATCH /api/integrations/[connectionId] — credential probe", () => {
     expect(mockAppendAuditLog).not.toHaveBeenCalledWith(
       expect.objectContaining({ eventType: "integration.updated" })
     );
+    // Odoo's gating is a runtime plugin checkPermission, never baked into
+    // openclaw.json — rotating its credentials doesn't need a regenerate
+    // (unlike MCP, see the "mcp connections" describe block below).
+    expect(mockRegenerateOpenClawConfig).not.toHaveBeenCalled();
   });
 
   it("PATCH with both name AND credentials emits BOTH integration.updated and integration.credentials_updated", async () => {
@@ -605,6 +614,12 @@ describe("PATCH /api/integrations/[connectionId] — credential probe", () => {
       );
       const encryptedPayload = mockEncrypt.mock.calls[0]?.[0] as string;
       expect(JSON.parse(encryptedPayload).token).toBe("new-token");
+      // MCP-only (T6): a credential edit is how an admin recovers a
+      // connection from auth_failed (rotated token) — clearIntegrationAuthError
+      // above just flipped status back to active, and build.ts filters
+      // mcp.servers/tools.allow to status==="active", so any grants this
+      // connection already had stay fail-closed until this regenerates.
+      expect(mockRegenerateOpenClawConfig).toHaveBeenCalledTimes(1);
     });
 
     it("PATCH with an unknown key in credentials is rejected by mcpEditSchema (strict) before probing", async () => {
@@ -643,6 +658,7 @@ describe("PATCH /api/integrations/[connectionId] — credential probe", () => {
       expect(response.status).toBe(400);
       expect(body.error).toMatch(/rejected this token/);
       expect(mockUpdateSet).not.toHaveBeenCalled();
+      expect(mockRegenerateOpenClawConfig).not.toHaveBeenCalled();
     });
   });
 

@@ -637,6 +637,30 @@ describe("MCP permissions via the generic agent_connection_permissions path", ()
         }),
       })
     );
+    // Unlike Odoo/email (delegated to the follow-up agent PATCH — see the
+    // "does not call regenerateOpenClawConfig" test above), MCP gating lives
+    // in openclaw.json itself. A freshly granted tool must become reachable
+    // immediately, not "whenever something else happens to regenerate".
+    expect(regenerateOpenClawConfig).toHaveBeenCalledTimes(1);
+  });
+
+  it("calls regenerateOpenClawConfig when an MCP grant is REVOKED (permissions: []), not only when one is added", async () => {
+    mockSelectWhere.mockResolvedValueOnce([{ id: AGENT_ID }]); // agent exists
+    mockSelectWhere.mockResolvedValueOnce([MCP_CONNECTION]); // connection exists
+    mockTxSelectWhere.mockResolvedValueOnce([{ model: "mcp", operation: "list_issues" }]);
+
+    const req = new NextRequest(`http://localhost:7777/api/agents/${AGENT_ID}/integrations`, {
+      method: "PUT",
+      body: JSON.stringify({ connectionId: CONNECTION_ID, permissions: [] }),
+    });
+    const res = await PUT(req, makeParams(AGENT_ID));
+
+    expect(res.status).toBe(200);
+    // The new permissions array itself carries no "mcp" rows — only the
+    // REPLACED (existing) set does. Without checking existingPerms too, a
+    // revoked MCP tool would stay silently allowed in openclaw.json until an
+    // unrelated regenerate happened to notice.
+    expect(regenerateOpenClawConfig).toHaveBeenCalledTimes(1);
   });
 
   it("is idempotent: resubmitting the same MCP grants yields an empty added/removed diff", async () => {
@@ -661,6 +685,10 @@ describe("MCP permissions via the generic agent_connection_permissions path", ()
         }),
       })
     );
+    // The trigger keys off the added/removed DIFF, not "did the request
+    // merely mention mcp" — a true no-op resubmit must not force an
+    // unnecessary regenerate.
+    expect(regenerateOpenClawConfig).not.toHaveBeenCalled();
   });
 
   it("GET returns the raw MCP tool name as operation (modelName fallback is cosmetic, T8 scope)", async () => {
@@ -721,6 +749,10 @@ describe("MCP permissions via the generic agent_connection_permissions path", ()
         }),
       })
     );
+    // Clearing ALL of an agent's permissions on a connection is a revocation
+    // too — an MCP tool must stop being reachable immediately, same as the
+    // PUT revocation case above.
+    expect(regenerateOpenClawConfig).toHaveBeenCalledTimes(1);
   });
 });
 

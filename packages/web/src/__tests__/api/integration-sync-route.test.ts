@@ -76,6 +76,11 @@ vi.mock("@/lib/audit-deferred", () => ({
   deferAuditLog: vi.fn(),
 }));
 
+const mockRegenerateOpenClawConfig = vi.fn().mockResolvedValue(undefined);
+vi.mock("@/lib/openclaw-config", () => ({
+  regenerateOpenClawConfig: (...args: unknown[]) => mockRegenerateOpenClawConfig(...args),
+}));
+
 import { NextRequest } from "next/server";
 
 const adminSession = { user: { id: "user-1", email: "admin@test.com", role: "admin" } };
@@ -135,6 +140,24 @@ describe("POST /api/integrations/[connectionId]/sync — auth state flipping", (
       actor: { type: "user", id: "user-1" },
     });
     expect(mockSetIntegrationAuthFailed).not.toHaveBeenCalled();
+  });
+
+  it("does NOT call regenerateOpenClawConfig for an Odoo sync — Odoo's gating is a runtime plugin check, not config-baked", async () => {
+    mockFetchOdooSchema.mockResolvedValue({
+      success: true,
+      models: 5,
+      lastSyncAt: "2026-05-11T00:00:00.000Z",
+      categories: [],
+      data: { models: [], lastSyncAt: "2026-05-11T00:00:00.000Z" },
+    });
+
+    const { POST } = await import("@/app/api/integrations/[connectionId]/sync/route");
+
+    await POST(makeRequest("/api/integrations/conn-1/sync"), {
+      params: Promise.resolve({ connectionId: "conn-1" }),
+    });
+
+    expect(mockRegenerateOpenClawConfig).not.toHaveBeenCalled();
   });
 
   it("calls setIntegrationAuthFailed when fetchOdooSchema returns failure with isAuthError: true", async () => {

@@ -96,6 +96,11 @@ vi.mock("@/lib/audit-deferred", () => ({
   deferAuditLog: (...args: unknown[]) => mockDeferAuditLog(...args),
 }));
 
+const mockRegenerateOpenClawConfig = vi.fn().mockResolvedValue(undefined);
+vi.mock("@/lib/openclaw-config", () => ({
+  regenerateOpenClawConfig: (...args: unknown[]) => mockRegenerateOpenClawConfig(...args),
+}));
+
 function makeRequest(path: string) {
   return new NextRequest(`http://localhost:7777${path}`, { method: "POST" });
 }
@@ -150,6 +155,7 @@ describe("POST /api/integrations/[connectionId]/sync (type=mcp)", () => {
       params: Promise.resolve({ connectionId: "conn-mcp-1" }),
     });
     expect(response.status).toBe(404);
+    expect(mockRegenerateOpenClawConfig).not.toHaveBeenCalled();
   });
 
   it("returns 404 when PINCHY_MCP_ENABLED is not set, before calling listMcpTools", async () => {
@@ -162,6 +168,7 @@ describe("POST /api/integrations/[connectionId]/sync (type=mcp)", () => {
 
     expect(response.status).toBe(404);
     expect(mockListMcpTools).not.toHaveBeenCalled();
+    expect(mockRegenerateOpenClawConfig).not.toHaveBeenCalled();
   });
 
   it("re-discovers tools, persists the diff, clears auth error, and audits added/removed names", async () => {
@@ -223,6 +230,13 @@ describe("POST /api/integrations/[connectionId]/sync (type=mcp)", () => {
         outcome: "success",
       })
     );
+
+    // MCP gating lives in openclaw.json itself (mcp.servers + tools.allow) —
+    // unlike Odoo, there is no runtime plugin checkPermission to fall back
+    // on. A tool removed by this sync (close_issue) must stop being
+    // reachable promptly, not "whenever something else happens to
+    // regenerate" — see docs/plans/2026-06-30-mcp-port-to-main.md task T6.
+    expect(mockRegenerateOpenClawConfig).toHaveBeenCalledTimes(1);
   });
 
   it("reuses stored extraHeaders (e.g. HighLevel locationId) during re-discovery", async () => {
@@ -260,6 +274,7 @@ describe("POST /api/integrations/[connectionId]/sync (type=mcp)", () => {
     expect(mockClearIntegrationAuthError).not.toHaveBeenCalled();
     expect(mockUpdateSet).not.toHaveBeenCalled();
     expect(mockDeferAuditLog).not.toHaveBeenCalled();
+    expect(mockRegenerateOpenClawConfig).not.toHaveBeenCalled();
   });
 
   it("does NOT flip to auth_failed on a 5xx (McpServerError) — a healthy connection must survive a server hiccup", async () => {
@@ -277,6 +292,7 @@ describe("POST /api/integrations/[connectionId]/sync (type=mcp)", () => {
     expect(mockSetIntegrationAuthFailed).not.toHaveBeenCalled();
     expect(mockClearIntegrationAuthError).not.toHaveBeenCalled();
     expect(mockUpdateSet).not.toHaveBeenCalled();
+    expect(mockRegenerateOpenClawConfig).not.toHaveBeenCalled();
   });
 
   it("does NOT flip to auth_failed on a malformed response (McpSchemaError)", async () => {
@@ -293,6 +309,7 @@ describe("POST /api/integrations/[connectionId]/sync (type=mcp)", () => {
     expect(body.success).toBe(false);
     expect(mockSetIntegrationAuthFailed).not.toHaveBeenCalled();
     expect(mockClearIntegrationAuthError).not.toHaveBeenCalled();
+    expect(mockRegenerateOpenClawConfig).not.toHaveBeenCalled();
   });
 
   it("does NOT flip to auth_failed on a network/timeout error", async () => {
@@ -308,6 +325,7 @@ describe("POST /api/integrations/[connectionId]/sync (type=mcp)", () => {
     expect(body.success).toBe(false);
     expect(mockSetIntegrationAuthFailed).not.toHaveBeenCalled();
     expect(mockClearIntegrationAuthError).not.toHaveBeenCalled();
+    expect(mockRegenerateOpenClawConfig).not.toHaveBeenCalled();
   });
 
   it("summarizes a large tool diff in the audit detail instead of listing every name (2048-byte cap)", async () => {
