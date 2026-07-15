@@ -89,7 +89,8 @@ export type AuditEventType =
   | "file.upload.expired"
   | "retrieval.query"
   | "knowledge.source_viewed"
-  | "knowledge.reindex";
+  | "knowledge.reindex"
+  | "inbox.claim_reset";
 
 interface HmacFieldsV1 {
   timestamp: Date;
@@ -614,6 +615,23 @@ export type AuditLogEntry =
         skipped: number;
         removed: number;
         reason?: string;
+      };
+    })
+  | (AuditLogBase & {
+      eventType: "inbox.claim_reset";
+      detail: {
+        // The reconciliation sweep freed a stuck `processing` claim by deleting
+        // its ledger row (delete-and-reclaim, #735), so the email is listed and
+        // processed again. This is the sweep's only destructive act and the only
+        // way an email is processed twice — it has to be attributable.
+        //
+        // No PII: the claim tuple is opaque provider/DB ids, never an address.
+        workflow: EntityRef;
+        connectionId: string;
+        /** Provider immutable id (Graph id / Gmail message id). */
+        providerMessageId: string;
+        /** Correlates every row emitted by a single sweep run. */
+        sweepId: string;
       };
     });
 

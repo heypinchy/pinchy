@@ -13,6 +13,8 @@ export interface DispatchableWorkflow {
   workflow: WorkflowForDispatch;
   /** email_workflow_connections.since_ts — the per-connection listing floor. */
   sinceTs: Date;
+  /** email_workflows.sweep_window_days — how far back the sweep re-lists (design §5). */
+  sweepWindowDays: number;
 }
 
 /**
@@ -45,6 +47,7 @@ export async function loadDispatchableWorkflows(): Promise<DispatchableWorkflow[
       name: emailWorkflows.name,
       filter: emailWorkflows.filter,
       action: emailWorkflows.action,
+      sweepWindowDays: emailWorkflows.sweepWindowDays,
       createdBy: emailWorkflows.createdBy,
       isPersonal: agents.isPersonal,
       ownerId: agents.ownerId,
@@ -71,6 +74,7 @@ export async function loadDispatchableWorkflows(): Promise<DispatchableWorkflow[
         recipientUserIds,
       },
       sinceTs: row.sinceTs,
+      sweepWindowDays: row.sweepWindowDays,
     });
   }
   return result;

@@ -47,7 +47,12 @@ export interface OpenClawRunAgentDeps {
   timeoutMs?: number;
 }
 
-const DEFAULT_TIMEOUT_MS = 5 * 60_000;
+/**
+ * Watchdog for a single inbox run. Exported because the reconciliation sweep's
+ * stuck-claim grace period is derived from it: the grace MUST exceed the run
+ * timeout, so the two must not drift apart (see `DEFAULT_STUCK_GRACE_MS`).
+ */
+export const DEFAULT_RUN_TIMEOUT_MS = 5 * 60_000;
 
 const REPORT_CONTRACT = `You are executing an automated inbox workflow run. No human reads this conversation or can answer questions — decide and act using your tools.
 End your reply with exactly one fenced \`\`\`json code block of this shape:
@@ -55,7 +60,7 @@ End your reply with exactly one fenced \`\`\`json code block of this shape:
 Use "status": "no_action" when the email needs nothing done. "outcome" is optional — include it when you created or changed a record. The JSON block must be the last thing in your reply.`;
 
 export function createOpenClawRunAgent(deps: OpenClawRunAgentDeps): RunAgent {
-  const timeoutMs = deps.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+  const timeoutMs = deps.timeoutMs ?? DEFAULT_RUN_TIMEOUT_MS;
 
   return async ({ workflow, email, ledgerId }) => {
     const model = await deps.loadAgentModel(workflow.agentId);

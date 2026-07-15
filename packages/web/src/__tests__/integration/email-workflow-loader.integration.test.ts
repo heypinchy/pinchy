@@ -109,6 +109,10 @@ describe("email workflow loader — loadDispatchableWorkflows", () => {
           recipientUserIds: [owner.id],
         },
         sinceTs: since,
+        // The sweep's listing window (design §5 default). Carried per workflow
+        // so the reconciliation sweep can bound its re-list without re-reading
+        // the row.
+        sweepWindowDays: 14,
       },
     ]);
   });
