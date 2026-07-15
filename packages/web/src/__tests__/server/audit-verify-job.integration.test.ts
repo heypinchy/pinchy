@@ -22,7 +22,10 @@ async function appendRow(actorId: string) {
     actorId,
     eventType: "auth.login",
     resource: `user:${actorId}`,
-    detail: null,
+    // `detail` is optional for `auth.*` events (Record<string, unknown> |
+    // undefined — not `null`). appendAuditLog itself falls back to `null`
+    // internally (`entry.detail ?? null`), so omitting it stores the same
+    // `null` detail as before without a type error.
     outcome: "success",
   });
 }

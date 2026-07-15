@@ -62,7 +62,11 @@ describe("oauth-token", () => {
     });
 
     it("throws when expires_in is undefined (field missing from token response)", () => {
-      expect(() => computeExpiresAt(undefined)).toThrow(/expires_in/);
+      // Every provider parses its token response with a type assertion, not
+      // runtime validation (see computeExpiresAt's own comment), so a real
+      // response missing expires_in reaches this call as undefined despite
+      // the `number` parameter type. Simulate that boundary explicitly.
+      expect(() => computeExpiresAt(undefined as unknown as number)).toThrow(/expires_in/);
     });
 
     it("throws when expires_in is not a number", () => {

@@ -36,6 +36,8 @@ vi.mock("@/db", () => ({
 
 import { auth } from "@/lib/auth";
 import { db } from "@/db";
+import { mockSession } from "@/test-helpers/auth";
+import { routeContext } from "@/test-helpers/route";
 
 // ── PATCH /api/users/me ─────────────────────────────────────────────────
 
@@ -60,7 +62,7 @@ describe("PATCH /api/users/me", () => {
 
     const request = makeRequest({ name: "New Name" });
 
-    const response = await PATCH(request);
+    const response = await PATCH(request, routeContext());
     expect(response.status).toBe(401);
 
     const body = await response.json();
@@ -68,14 +70,13 @@ describe("PATCH /api/users/me", () => {
   });
 
   it("returns 400 when name is empty", async () => {
-    vi.mocked(auth.api.getSession).mockResolvedValueOnce({
-      user: { id: "user-1", role: "member" },
-      expires: "",
-    } as any);
+    vi.mocked(auth.api.getSession).mockResolvedValueOnce(
+      mockSession({ user: { id: "user-1", role: "member" } })
+    );
 
     const request = makeRequest({ name: "" });
 
-    const response = await PATCH(request);
+    const response = await PATCH(request, routeContext());
     expect(response.status).toBe(400);
 
     const body = await response.json();
@@ -84,14 +85,13 @@ describe("PATCH /api/users/me", () => {
   });
 
   it("returns 400 when name is whitespace only", async () => {
-    vi.mocked(auth.api.getSession).mockResolvedValueOnce({
-      user: { id: "user-1", role: "member" },
-      expires: "",
-    } as any);
+    vi.mocked(auth.api.getSession).mockResolvedValueOnce(
+      mockSession({ user: { id: "user-1", role: "member" } })
+    );
 
     const request = makeRequest({ name: "   " });
 
-    const response = await PATCH(request);
+    const response = await PATCH(request, routeContext());
     expect(response.status).toBe(400);
 
     const body = await response.json();
@@ -100,14 +100,13 @@ describe("PATCH /api/users/me", () => {
   });
 
   it("returns 200 and updates user name on success", async () => {
-    vi.mocked(auth.api.getSession).mockResolvedValueOnce({
-      user: { id: "user-1", role: "member" },
-      expires: "",
-    } as any);
+    vi.mocked(auth.api.getSession).mockResolvedValueOnce(
+      mockSession({ user: { id: "user-1", role: "member" } })
+    );
 
     const request = makeRequest({ name: "Updated Name" });
 
-    const response = await PATCH(request);
+    const response = await PATCH(request, routeContext());
     expect(response.status).toBe(200);
 
     const body = await response.json();
@@ -118,14 +117,13 @@ describe("PATCH /api/users/me", () => {
   });
 
   it("trims the name before saving", async () => {
-    vi.mocked(auth.api.getSession).mockResolvedValueOnce({
-      user: { id: "user-1", role: "member" },
-      expires: "",
-    } as any);
+    vi.mocked(auth.api.getSession).mockResolvedValueOnce(
+      mockSession({ user: { id: "user-1", role: "member" } })
+    );
 
     const request = makeRequest({ name: "  Trimmed Name  " });
 
-    const response = await PATCH(request);
+    const response = await PATCH(request, routeContext());
     expect(response.status).toBe(200);
 
     // Verify the set() call received the trimmed name

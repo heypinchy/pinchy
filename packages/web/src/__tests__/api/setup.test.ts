@@ -104,6 +104,48 @@ import { markOpenClawConfigReady, isOpenClawConfigReady } from "@/lib/openclaw-c
 
 import { db } from "@/db";
 
+// Full `db.query.users.findFirst()` / `db.query.agents.findFirst()` row
+// shapes. Only the fields each test cares about vary; the rest are filled
+// with realistic defaults so the fixtures stay in sync with the schema.
+function makeDbUserRow(overrides: {
+  id: string;
+  email: string;
+  name: string;
+  role: "admin" | "member";
+}) {
+  return {
+    ...overrides,
+    emailVerified: true,
+    image: null,
+    banned: false,
+    banReason: null,
+    banExpires: null,
+    context: null,
+    auditPseudonym: "pseudonym-1",
+    createdAt: new Date("2026-01-01T00:00:00.000Z"),
+    updatedAt: new Date("2026-01-01T00:00:00.000Z"),
+  };
+}
+
+function makeDbAgentRow(overrides: { id: string; name: string; model: string; createdAt: Date }) {
+  return {
+    ...overrides,
+    templateId: null,
+    pluginConfig: null,
+    allowedTools: [],
+    skills: [],
+    ownerId: null,
+    isPersonal: false,
+    visibility: "restricted" as const,
+    greetingMessage: "Hi, I'm Smithers.",
+    tagline: null,
+    starterPrompts: [],
+    avatarSeed: null,
+    personalityPresetId: null,
+    deletedAt: null,
+  };
+}
+
 describe("createAdmin", () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -139,12 +181,9 @@ describe("createAdmin", () => {
   });
 
   it("should reject if admin already exists", async () => {
-    vi.mocked(db.query.users.findFirst).mockResolvedValue({
-      id: "1",
-      email: "admin@test.com",
-      name: "Admin",
-      role: "admin",
-    });
+    vi.mocked(db.query.users.findFirst).mockResolvedValue(
+      makeDbUserRow({ id: "1", email: "admin@test.com", name: "Admin", role: "admin" })
+    );
 
     await expect(createAdmin("New User", "new@test.com", "pass")).rejects.toThrow(
       "Setup already complete"
@@ -283,12 +322,9 @@ describe("POST /api/setup", () => {
   });
 
   it("should return 403 when setup is already complete and config is in place", async () => {
-    vi.mocked(db.query.users.findFirst).mockResolvedValue({
-      id: "1",
-      email: "admin@test.com",
-      name: "Admin",
-      role: "admin",
-    });
+    vi.mocked(db.query.users.findFirst).mockResolvedValue(
+      makeDbUserRow({ id: "1", email: "admin@test.com", name: "Admin", role: "admin" })
+    );
     // Config was already written, so a retry is genuinely a no-op.
     vi.mocked(isOpenClawConfigReady).mockReturnValue(true);
 
@@ -307,12 +343,9 @@ describe("POST /api/setup", () => {
   it("recovers in-process when the admin exists but the config was never written", async () => {
     // Prior setup POST created the admin + agent, but its regenerate threw, so
     // the config was never written and isOpenClawConfigReady is false.
-    vi.mocked(db.query.users.findFirst).mockResolvedValue({
-      id: "1",
-      email: "admin@test.com",
-      name: "Admin",
-      role: "admin",
-    });
+    vi.mocked(db.query.users.findFirst).mockResolvedValue(
+      makeDbUserRow({ id: "1", email: "admin@test.com", name: "Admin", role: "admin" })
+    );
     vi.mocked(isOpenClawConfigReady).mockReturnValue(false);
     vi.mocked(regenerateOpenClawConfig).mockResolvedValueOnce(undefined);
 
@@ -334,12 +367,9 @@ describe("POST /api/setup", () => {
     // not each kick off its own regenerateOpenClawConfig — that's an
     // unauthenticated resource-exhaustion vector. Concurrent recoveries share
     // one in-flight regeneration.
-    vi.mocked(db.query.users.findFirst).mockResolvedValue({
-      id: "1",
-      email: "admin@test.com",
-      name: "Admin",
-      role: "admin",
-    });
+    vi.mocked(db.query.users.findFirst).mockResolvedValue(
+      makeDbUserRow({ id: "1", email: "admin@test.com", name: "Admin", role: "admin" })
+    );
     vi.mocked(isOpenClawConfigReady).mockReturnValue(false);
     // Each regeneration stays pending for a tick so all three POSTs reach the
     // recovery branch before any resolves — that's the window in which a guard
@@ -379,12 +409,14 @@ describe("seedDefaultAgent", () => {
   });
 
   it("should return existing agent if one exists", async () => {
-    vi.mocked(db.query.agents.findFirst).mockResolvedValue({
-      id: "existing-agent",
-      name: "Smithers",
-      model: "anthropic/claude-sonnet-4-20250514",
-      createdAt: new Date(),
-    });
+    vi.mocked(db.query.agents.findFirst).mockResolvedValue(
+      makeDbAgentRow({
+        id: "existing-agent",
+        name: "Smithers",
+        model: "anthropic/claude-sonnet-4-20250514",
+        createdAt: new Date(),
+      })
+    );
 
     const agent = await seedDefaultAgent();
     expect(agent.name).toBe("Smithers");

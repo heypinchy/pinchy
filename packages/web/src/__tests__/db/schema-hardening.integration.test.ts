@@ -97,7 +97,12 @@ describe("schema-hardening CHECK constraints (#259)", () => {
         name: "C",
         model: "anthropic/claude-sonnet-4-6",
         greetingMessage: "hi",
-        visibility: "private",
+        // Deliberately outside the AGENT_VISIBILITIES union — proving the DB
+        // CHECK constraint (not just Drizzle's `.$type<...>()` column type)
+        // rejects it. `sql` keeps this a real, parameterized value (part of
+        // the column's declared `... | SQL<unknown> | ...` type) instead of
+        // a cast around the union.
+        visibility: sql`${"private"}`,
       })
     ).rejects.toSatisfy(constraintViolation(/agents_visibility_check/));
   });
@@ -115,7 +120,9 @@ describe("schema-hardening CHECK constraints (#259)", () => {
     await expect(
       db
         .insert(integrationConnections)
-        .values({ type: "shopify", name: "Shopify", credentials: "enc" })
+        // Deliberately outside INTEGRATION_CONNECTION_TYPES — see the
+        // `sql` note on the visibility test above.
+        .values({ type: sql`${"shopify"}`, name: "Shopify", credentials: "enc" })
     ).rejects.toSatisfy(constraintViolation(/integration_connections_type_check/));
   });
 
@@ -123,7 +130,7 @@ describe("schema-hardening CHECK constraints (#259)", () => {
     await expect(
       db
         .insert(integrationConnections)
-        .values({ type: "odoo", name: "Odoo", credentials: "enc", status: "archived" })
+        .values({ type: "odoo", name: "Odoo", credentials: "enc", status: sql`${"archived"}` })
     ).rejects.toSatisfy(constraintViolation(/integration_connections_status_check/));
   });
 
@@ -148,7 +155,9 @@ describe("schema-hardening CHECK constraints (#259)", () => {
     await expect(
       db.insert(invites).values({
         tokenHash: `tok-${suffix}-2`,
-        role: "owner",
+        // Deliberately outside INVITE_ROLES — see the `sql` note on the
+        // visibility test above.
+        role: sql`${"owner"}`,
         type: "invite",
         createdBy: creator.id,
         expiresAt: new Date(Date.now() + 86400000),
@@ -162,7 +171,8 @@ describe("schema-hardening CHECK constraints (#259)", () => {
       db.insert(invites).values({
         tokenHash: `tok-${suffix}-3`,
         role: "member",
-        type: "lifetime",
+        // Deliberately outside INVITE_TYPES — see the `sql` note above.
+        type: sql`${"lifetime"}`,
         createdBy: creator.id,
         expiresAt: new Date(Date.now() + 86400000),
       })

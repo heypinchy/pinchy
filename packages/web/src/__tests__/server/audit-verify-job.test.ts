@@ -49,7 +49,7 @@ const {
   // snapshot) and .where().orderBy().limit() (last-scanned-row lookup). They're
   // distinguished by which chain method is called first, exactly like the real
   // query builder — this mock never calls .where() with no follow-on chain.
-  const mockSelect = vi.fn(() => ({
+  const mockSelect = vi.fn((..._args: unknown[]) => ({
     from: (table: unknown) => {
       const isCheckpointTable =
         typeof table === "object" &&

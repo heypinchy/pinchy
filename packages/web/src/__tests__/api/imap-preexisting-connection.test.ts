@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { NextRequest } from "next/server";
+import { makeNextRequest, routeContext } from "@/test-helpers/route";
 
 // ─────────────────────────────────────────────────────────────────────────
 // MIGRATION TEST (AGENTS.md § "Test Migrations Against Pre-Existing Data")
@@ -181,7 +182,7 @@ describe("Pre-existing IMAP connection — cross-route invariant (listed ⟹ rea
       // existed as pre-seeded data, exactly as a pre-upgrade row would.
       const { GET } = await import("@/app/api/integrations/route");
 
-      const response = await GET();
+      const response = await GET(makeNextRequest(), routeContext());
       expect(response.status).toBe(200);
 
       const body = (await response.json()) as Array<{

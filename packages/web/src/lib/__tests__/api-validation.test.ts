@@ -4,7 +4,14 @@ import { z } from "zod";
 import { parseRequestBody } from "../api-validation";
 
 function makeRequest(body: string | object | undefined, contentType = "application/json") {
-  const init: RequestInit = { method: "POST", headers: { "content-type": contentType } };
+  // NextRequest's constructor takes Next's own RequestInit (not the global
+  // lib.dom one — its `signal` is `AbortSignal | undefined`, not
+  // `AbortSignal | null | undefined`), so derive the exact param type from the
+  // constructor rather than the ambient DOM type.
+  const init: ConstructorParameters<typeof NextRequest>[1] = {
+    method: "POST",
+    headers: { "content-type": contentType },
+  };
   if (body !== undefined) {
     init.body = typeof body === "string" ? body : JSON.stringify(body);
   }

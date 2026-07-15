@@ -27,6 +27,7 @@ vi.mock("@/lib/avatar", () => ({
 }));
 
 import { AgentsPageContent } from "@/app/(app)/agents/agents-page-content";
+import { makeAgent } from "@/test-helpers/fixtures";
 
 describe("AgentsPageContent", () => {
   beforeEach(() => {
@@ -40,22 +41,22 @@ describe("AgentsPageContent", () => {
 
   it("renders the agent list with agents", () => {
     const agents = [
-      {
+      makeAgent({
         id: "agent-1",
         name: "Smithers",
         model: "gpt-4",
         isPersonal: false,
         tagline: "Your helpful butler",
         avatarSeed: null,
-      },
-      {
+      }),
+      makeAgent({
         id: "agent-2",
         name: "My Agent",
         model: "claude-3",
         isPersonal: true,
         tagline: null,
         avatarSeed: "seed-123",
-      },
+      }),
     ];
 
     render(<AgentsPageContent agents={agents} />);
@@ -67,14 +68,14 @@ describe("AgentsPageContent", () => {
 
   it("renders agent links pointing to chat pages", () => {
     const agents = [
-      {
+      makeAgent({
         id: "agent-1",
         name: "Smithers",
         model: "gpt-4",
         isPersonal: false,
         tagline: null,
         avatarSeed: null,
-      },
+      }),
     ];
 
     render(<AgentsPageContent agents={agents} />);

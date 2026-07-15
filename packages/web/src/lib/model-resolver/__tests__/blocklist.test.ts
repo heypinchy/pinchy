@@ -71,17 +71,26 @@ describe("getBlockReason", () => {
   });
 });
 
+// markToolBlockedModels<M, P>'s M is inferred from the argument's own shape;
+// a literal that never mentions `incompatibleReason` infers M without that
+// key at all (not merely `undefined`), so the OUTPUT type can't be read back
+// for it either — even though the optional field lets the input satisfy the
+// generic constraint either way. Type the fixtures with it present-but-
+// optional so the field flows through to the inferred return type.
+type BlocklistModel = {
+  id: string;
+  name: string;
+  compatible: boolean;
+  incompatibleReason?: string;
+};
+
 describe("markToolBlockedModels", () => {
   it("marks a tools-blocklisted model incompatible with the block reason, leaving others untouched", () => {
-    const out = markToolBlockedModels([
-      {
-        id: "ollama-cloud",
-        models: [
-          { id: "ollama-cloud/gemini-3-flash-preview", name: "gemini", compatible: true },
-          { id: "ollama-cloud/qwen3-vl:235b", name: "qwen", compatible: true },
-        ],
-      },
-    ]);
+    const models: BlocklistModel[] = [
+      { id: "ollama-cloud/gemini-3-flash-preview", name: "gemini", compatible: true },
+      { id: "ollama-cloud/qwen3-vl:235b", name: "qwen", compatible: true },
+    ];
+    const out = markToolBlockedModels([{ id: "ollama-cloud", models }]);
     expect(out[0].models[0].compatible).toBe(false);
     expect(out[0].models[0].incompatibleReason).toContain("Preview models");
     expect(out[0].models[1].compatible).toBe(true);
@@ -106,12 +115,10 @@ describe("markToolBlockedModels", () => {
   });
 
   it("leaves reliable models untouched", () => {
-    const out = markToolBlockedModels([
-      {
-        id: "anthropic",
-        models: [{ id: "anthropic/claude-opus-4-8", name: "c", compatible: true }],
-      },
-    ]);
+    const models: BlocklistModel[] = [
+      { id: "anthropic/claude-opus-4-8", name: "c", compatible: true },
+    ];
+    const out = markToolBlockedModels([{ id: "anthropic", models }]);
     expect(out[0].models[0].compatible).toBe(true);
     expect(out[0].models[0].incompatibleReason).toBeUndefined();
   });

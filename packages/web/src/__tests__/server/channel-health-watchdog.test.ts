@@ -9,7 +9,7 @@
  *   degraded (sustained N ticks)      emit one `channel.polling_failed`
  *   degraded → healthy                emit one `channel.recovered`
  */
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, type Mock } from "vitest";
 import {
   ChannelHealthMonitor,
   type ChannelHealthDeps,
@@ -27,22 +27,28 @@ import {
 } from "./channel-health.fixtures";
 
 describe("ChannelHealthMonitor", () => {
-  let writeAudit: ReturnType<typeof vi.fn>;
-  let getChannelStatus: ReturnType<typeof vi.fn>;
-  let autoDisableConflictedAccount: ReturnType<typeof vi.fn>;
-  let restartConflictedAccount: ReturnType<typeof vi.fn>;
-  let getConnectionAgeMs: ReturnType<typeof vi.fn>;
+  let writeAudit: Mock<ChannelHealthDeps["writeAudit"]>;
+  let getChannelStatus: Mock<ChannelHealthDeps["getChannelStatus"]>;
+  let autoDisableConflictedAccount: Mock<ChannelHealthDeps["autoDisableConflictedAccount"]>;
+  let restartConflictedAccount: Mock<ChannelHealthDeps["restartConflictedAccount"]>;
+  let getConnectionAgeMs: Mock<ChannelHealthDeps["getConnectionAgeMs"]>;
   let monitor: ChannelHealthMonitor;
   let clock: number;
   let deps: ChannelHealthDeps;
 
   beforeEach(() => {
-    writeAudit = vi.fn().mockResolvedValue(undefined);
-    getChannelStatus = vi.fn();
-    autoDisableConflictedAccount = vi.fn().mockResolvedValue(undefined);
-    restartConflictedAccount = vi.fn().mockResolvedValue(undefined);
+    writeAudit = vi.fn<ChannelHealthDeps["writeAudit"]>().mockResolvedValue(undefined);
+    getChannelStatus = vi.fn<ChannelHealthDeps["getChannelStatus"]>();
+    autoDisableConflictedAccount = vi
+      .fn<ChannelHealthDeps["autoDisableConflictedAccount"]>()
+      .mockResolvedValue(undefined);
+    restartConflictedAccount = vi
+      .fn<ChannelHealthDeps["restartConflictedAccount"]>()
+      .mockResolvedValue(undefined);
     // Default: recently-added (1 hour old), well inside the 24h window.
-    getConnectionAgeMs = vi.fn().mockResolvedValue(60 * 60 * 1000);
+    getConnectionAgeMs = vi
+      .fn<ChannelHealthDeps["getConnectionAgeMs"]>()
+      .mockResolvedValue(60 * 60 * 1000);
     clock = 1_000_000;
     monitor = new ChannelHealthMonitor();
     deps = {

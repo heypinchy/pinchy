@@ -136,7 +136,7 @@ vi.mock("@/lib/integrations/oauth-settings", () => ({
 
 import { NextRequest } from "next/server";
 
-function makeRequest(path: string, options?: RequestInit) {
+function makeRequest(path: string, options?: ConstructorParameters<typeof NextRequest>[1]) {
   return new NextRequest(`http://localhost:7777${path}`, options);
 }
 

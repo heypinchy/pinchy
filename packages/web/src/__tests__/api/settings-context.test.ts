@@ -33,6 +33,8 @@ vi.mock("@/lib/context-sync", () => ({
 import { auth } from "@/lib/auth";
 import { GET, PUT } from "@/app/api/settings/context/route";
 import { NextRequest } from "next/server";
+import { mockSession } from "@/test-helpers/auth";
+import { routeContext } from "@/test-helpers/route";
 
 function makeGetRequest() {
   return new NextRequest("http://localhost/api/settings/context", { method: "GET" });
@@ -49,33 +51,31 @@ function makePutRequest(body: Record<string, unknown>) {
 describe("GET /api/settings/context", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    vi.mocked(auth.api.getSession).mockResolvedValue({
-      user: { id: "admin-1", email: "admin@test.com", role: "admin" },
-      expires: "",
-    });
+    vi.mocked(auth.api.getSession).mockResolvedValue(
+      mockSession({ user: { id: "admin-1", email: "admin@test.com", role: "admin" } })
+    );
   });
 
   it("should return 401 when unauthenticated", async () => {
     vi.mocked(auth.api.getSession).mockResolvedValueOnce(null);
 
-    const response = await GET(makeGetRequest());
+    const response = await GET(makeGetRequest(), routeContext());
     expect(response.status).toBe(401);
   });
 
   it("should return 403 for non-admin", async () => {
-    vi.mocked(auth.api.getSession).mockResolvedValueOnce({
-      user: { id: "user-1", email: "user@test.com", role: "member" },
-      expires: "",
-    });
+    vi.mocked(auth.api.getSession).mockResolvedValueOnce(
+      mockSession({ user: { id: "user-1", email: "user@test.com", role: "member" } })
+    );
 
-    const response = await GET(makeGetRequest());
+    const response = await GET(makeGetRequest(), routeContext());
     expect(response.status).toBe(403);
   });
 
   it("should return org context from settings", async () => {
     mockGetSetting.mockResolvedValueOnce("Organization context");
 
-    const response = await GET(makeGetRequest());
+    const response = await GET(makeGetRequest(), routeContext());
     expect(response.status).toBe(200);
     const data = await response.json();
     expect(data.content).toBe("Organization context");
@@ -85,7 +85,7 @@ describe("GET /api/settings/context", () => {
   it("should return empty string when not set", async () => {
     mockGetSetting.mockResolvedValueOnce(null);
 
-    const response = await GET(makeGetRequest());
+    const response = await GET(makeGetRequest(), routeContext());
     expect(response.status).toBe(200);
     const data = await response.json();
     expect(data.content).toBe("");
@@ -95,31 +95,29 @@ describe("GET /api/settings/context", () => {
 describe("PUT /api/settings/context", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    vi.mocked(auth.api.getSession).mockResolvedValue({
-      user: { id: "admin-1", email: "admin@test.com", role: "admin" },
-      expires: "",
-    });
+    vi.mocked(auth.api.getSession).mockResolvedValue(
+      mockSession({ user: { id: "admin-1", email: "admin@test.com", role: "admin" } })
+    );
   });
 
   it("should return 401 when unauthenticated", async () => {
     vi.mocked(auth.api.getSession).mockResolvedValueOnce(null);
 
-    const response = await PUT(makePutRequest({ content: "test" }));
+    const response = await PUT(makePutRequest({ content: "test" }), routeContext());
     expect(response.status).toBe(401);
   });
 
   it("should return 403 for non-admin", async () => {
-    vi.mocked(auth.api.getSession).mockResolvedValueOnce({
-      user: { id: "user-1", email: "user@test.com", role: "member" },
-      expires: "",
-    });
+    vi.mocked(auth.api.getSession).mockResolvedValueOnce(
+      mockSession({ user: { id: "user-1", email: "user@test.com", role: "member" } })
+    );
 
-    const response = await PUT(makePutRequest({ content: "test" }));
+    const response = await PUT(makePutRequest({ content: "test" }), routeContext());
     expect(response.status).toBe(403);
   });
 
   it("should save org context via setSetting", async () => {
-    const response = await PUT(makePutRequest({ content: "New org context" }));
+    const response = await PUT(makePutRequest({ content: "New org context" }), routeContext());
 
     expect(response.status).toBe(200);
     const data = await response.json();
@@ -128,13 +126,13 @@ describe("PUT /api/settings/context", () => {
   });
 
   it("should call syncOrgContextToWorkspaces", async () => {
-    await PUT(makePutRequest({ content: "New org context" }));
+    await PUT(makePutRequest({ content: "New org context" }), routeContext());
 
     expect(mockSyncOrgContextToWorkspaces).toHaveBeenCalled();
   });
 
   it("should return 400 when content is not a string", async () => {
-    const response = await PUT(makePutRequest({ content: 42 }));
+    const response = await PUT(makePutRequest({ content: 42 }), routeContext());
 
     expect(response.status).toBe(400);
     const data = await response.json();
@@ -143,7 +141,7 @@ describe("PUT /api/settings/context", () => {
   });
 
   it("should return 400 when content is missing", async () => {
-    const response = await PUT(makePutRequest({}));
+    const response = await PUT(makePutRequest({}), routeContext());
 
     expect(response.status).toBe(400);
     const data = await response.json();

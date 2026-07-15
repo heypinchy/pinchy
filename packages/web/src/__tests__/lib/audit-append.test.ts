@@ -99,6 +99,7 @@ describe("appendAuditLog", () => {
       actorType: "system",
       actorId: "sys-1",
       eventType: "config.changed",
+      detail: { setting: "audit_hmac_secret" },
       outcome: "success",
     });
 
@@ -395,25 +396,24 @@ describe("appendAuditLog", () => {
     expect(inserted.prevHmac).toBeNull();
   });
 
-  it("accepts attachment.uploaded with the required detail shape", async () => {
+  // `attachment.uploaded` was removed as a dead AuditEventType (see
+  // efa9cbc4); `file.upload.staged` is its current surviving analog for "a
+  // file was uploaded" — same round-trip intent, real event shape.
+  it("accepts file.upload.staged with the required detail shape", async () => {
     await expect(
       appendAuditLog({
-        eventType: "attachment.uploaded",
+        eventType: "file.upload.staged",
         actorType: "user",
         actorId: "user-123",
         resource: "agent-1",
         outcome: "success",
         detail: {
+          uploadId: "upload-1",
+          filename: "invoice.pdf",
+          mimeType: "application/pdf",
+          sizeBytes: 245_000,
+          contentHash: "abc123",
           agent: { id: "agent-1", name: "Smithers" },
-          uploader: { id: "user-123", name: "Alice Carter" },
-          attachment: {
-            filename: "invoice.pdf",
-            detectedMimeType: "application/pdf",
-            sizeBytes: 245_000,
-            contentHash: "abc123",
-            reused: false,
-          },
-          sessionKey: "agent:agent-1:direct:user-123",
         },
       })
     ).resolves.toBeDefined();
@@ -490,6 +490,7 @@ describe("appendAuditLog", () => {
         actorType: "system",
         actorId: "upload-gc",
         eventType: "config.changed",
+        detail: { setting: "test" },
         outcome: "success",
       });
 

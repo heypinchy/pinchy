@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen } from "@testing-library/react";
 import "@testing-library/jest-dom";
 import { Chat } from "@/components/chat";
-import type { Agent } from "@/components/agent-list";
+import { makeAgent } from "@/test-helpers/fixtures";
 
 const { mockGetAgent, mockUseChatStatus, mockUseChatSession, mockRecordLastChat } = vi.hoisted(
   () => ({
@@ -258,14 +258,14 @@ describe("Chat", () => {
   });
 
   describe("live agent data from context", () => {
-    const liveAgent: Agent = {
+    const liveAgent = makeAgent({
       id: "agent-1",
       name: "Renamed Agent",
       model: "anthropic/claude-sonnet-4-6",
       isPersonal: true,
       tagline: "New tagline",
       avatarSeed: "new-seed",
-    };
+    });
 
     it("should use live agent name instead of SSR prop", () => {
       mockGetAgent.mockReturnValue(liveAgent);

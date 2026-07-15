@@ -3,6 +3,7 @@ import { render, screen, renderHook } from "@testing-library/react";
 import "@testing-library/jest-dom";
 import { AgentsProvider, useAgentsContext } from "@/components/agents-provider";
 import type { Agent } from "@/components/agent-list";
+import { makeAgent } from "@/test-helpers/fixtures";
 
 const { mockUseAgents, mockUsePathname, mockRouterPush, mockToast } = vi.hoisted(() => ({
   mockUseAgents: vi.fn((agents: Agent[]) => ({ agents, refresh: vi.fn() })),
@@ -25,16 +26,30 @@ vi.mock("sonner", () => ({
 }));
 
 const agents: Agent[] = [
-  {
+  makeAgent({
     id: "a1",
     name: "Smithers",
     model: "gpt-4",
     isPersonal: true,
     tagline: "Assistant",
     avatarSeed: "seed1",
-  },
-  { id: "a2", name: "Alpha", model: "gpt-4", isPersonal: false, tagline: null, avatarSeed: null },
-  { id: "a3", name: "Beta", model: "gpt-4", isPersonal: false, tagline: null, avatarSeed: "seed3" },
+  }),
+  makeAgent({
+    id: "a2",
+    name: "Alpha",
+    model: "gpt-4",
+    isPersonal: false,
+    tagline: null,
+    avatarSeed: null,
+  }),
+  makeAgent({
+    id: "a3",
+    name: "Beta",
+    model: "gpt-4",
+    isPersonal: false,
+    tagline: null,
+    avatarSeed: "seed3",
+  }),
 ];
 
 function wrapper({ children }: { children: React.ReactNode }) {
@@ -130,22 +145,22 @@ describe("AgentsProvider", () => {
       mockUsePathname.mockReturnValue("/chat/a3");
       // Only non-personal agents left
       const nonPersonal: Agent[] = [
-        {
+        makeAgent({
           id: "a3-zeta",
           name: "Zeta",
           model: "gpt-4",
           isPersonal: false,
           tagline: null,
           avatarSeed: null,
-        },
-        {
+        }),
+        makeAgent({
           id: "a3-alpha",
           name: "Alpha",
           model: "gpt-4",
           isPersonal: false,
           tagline: null,
           avatarSeed: null,
-        },
+        }),
       ];
       mockUseAgents.mockReturnValue({ agents: nonPersonal, refresh: vi.fn() });
 

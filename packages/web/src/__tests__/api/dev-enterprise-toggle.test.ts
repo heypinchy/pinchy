@@ -20,29 +20,30 @@ vi.mock("@/lib/settings", () => ({
 }));
 
 import { requireAdmin } from "@/lib/api-auth";
+import { mockSession } from "@/test-helpers/auth";
 
 describe("POST /api/dev/enterprise-toggle", () => {
-  const originalEnv = process.env.NODE_ENV;
   const originalKey = process.env.PINCHY_ENTERPRISE_KEY;
 
   let POST: typeof import("@/app/api/dev/enterprise-toggle/route").POST;
 
   beforeEach(async () => {
     vi.clearAllMocks();
-    process.env.NODE_ENV = "development";
+    // NODE_ENV is typed readonly by Next's global.d.ts — vi.stubEnv is the
+    // vitest-native way to set it (and vi.unstubAllEnvs() below restores it).
+    vi.stubEnv("NODE_ENV", "development");
     delete process.env.PINCHY_ENTERPRISE_KEY;
 
-    vi.mocked(requireAdmin).mockResolvedValue({
-      user: { id: "admin-1", role: "admin" },
-      expires: "",
-    } as ReturnType<typeof requireAdmin> extends Promise<infer T> ? T : never);
+    vi.mocked(requireAdmin).mockResolvedValue(
+      mockSession({ user: { id: "admin-1", role: "admin" } })
+    );
 
     const mod = await import("@/app/api/dev/enterprise-toggle/route");
     POST = mod.POST;
   });
 
   afterEach(() => {
-    process.env.NODE_ENV = originalEnv;
+    vi.unstubAllEnvs();
     if (originalKey !== undefined) {
       process.env.PINCHY_ENTERPRISE_KEY = originalKey;
     } else {
@@ -51,7 +52,7 @@ describe("POST /api/dev/enterprise-toggle", () => {
   });
 
   it("returns 404 in production", async () => {
-    process.env.NODE_ENV = "production";
+    vi.stubEnv("NODE_ENV", "production");
     const response = await POST();
     expect(response.status).toBe(404);
   });

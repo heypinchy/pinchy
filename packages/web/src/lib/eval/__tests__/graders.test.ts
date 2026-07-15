@@ -200,7 +200,16 @@ describe("gradeTaskCompletion", () => {
 
   it("matches a bare display-name-string partner_id", () => {
     const traj = baseTrajectory({
-      odooMoves: [{ ...MATCHING_MOVE, partner_id: "Hetzner Online GmbH" }],
+      odooMoves: [
+        {
+          ...MATCHING_MOVE,
+          // Odoo's many2one read-back can also arrive as a bare display-name
+          // string (see partnerMatches' unknown-typed param and its docstring);
+          // OdooMove's declared partner_id type doesn't model that shape, so
+          // simulate it with a boundary cast instead of widening the type.
+          partner_id: "Hetzner Online GmbH" as unknown as [number, string],
+        },
+      ],
     });
     const result = gradeTaskCompletion(traj, EXPECTED);
     expect(result.passed).toBe(true);

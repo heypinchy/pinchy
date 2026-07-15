@@ -21,7 +21,15 @@ describe("Odoo template tool references", () => {
 
   for (const template of odooTemplates) {
     it(`${template.name}: only references registered odoo_* tools`, () => {
-      const referenced = [...new Set(template.defaultAgentsMd.match(/odoo_[a-z_]+/g) ?? [])];
+      // Every Odoo template is built via createOdooTemplate(), which always
+      // sets a non-null defaultAgentsMd; only the type-level AgentTemplate
+      // (shared with the null-bodied `custom` template) allows null. Guard
+      // honestly instead of silently treating a regression as "no tools".
+      const agentsMd = template.defaultAgentsMd;
+      if (agentsMd === null) {
+        throw new Error(`${template.name} has no defaultAgentsMd`);
+      }
+      const referenced = [...new Set(agentsMd.match(/odoo_[a-z_]+/g) ?? [])];
       const invalid = referenced.filter((name) => !validOdooTools.has(name));
       expect(invalid).toEqual([]);
     });

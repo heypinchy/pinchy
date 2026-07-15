@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { NextRequest } from "next/server";
+import { routeContext } from "@/test-helpers/route";
 
 const { mockGetSession } = vi.hoisted(() => ({ mockGetSession: vi.fn() }));
 vi.mock("@/lib/auth", () => ({
@@ -38,7 +39,7 @@ describe("GET /api/agents", () => {
     } as never);
 
     const request = new NextRequest("http://localhost:7777/api/agents");
-    const response = await GET(request);
+    const response = await GET(request, routeContext());
 
     expect(response.status).toBe(200);
     expect(response.headers.get("Cache-Control")).toBe("private, max-age=5, must-revalidate");

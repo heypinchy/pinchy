@@ -98,7 +98,11 @@ function mockFetchResponses() {
 }
 
 describe("AgentSettingsPage", () => {
-  let fetchSpy: ReturnType<typeof vi.spyOn>;
+  // `ReturnType<typeof vi.spyOn>` erases the concrete `fetch` signature (spyOn
+  // is generic/overloaded), which made every `fetchSpy.mock.calls` element
+  // implicitly `any`. `mockFetchResponses` is a concrete (non-generic) call to
+  // `vi.spyOn(global, "fetch")`, so its return type carries the real signature.
+  let fetchSpy: ReturnType<typeof mockFetchResponses>;
 
   beforeEach(() => {
     capturedOnChangeGeneral = undefined;

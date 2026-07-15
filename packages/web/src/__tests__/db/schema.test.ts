@@ -124,10 +124,19 @@ describe("JSON column types — compile-time contracts", () => {
   });
 
   it("AgentPluginConfig is namespaced by plugin ID", () => {
-    expectTypeOf<AgentPluginConfig>().toMatchObjectType<{
-      "pinchy-files"?: { allowed_paths: string[] };
-      "pinchy-web"?: { allowedDomains?: string[] };
-    }>();
+    // Top-level keys are plugin IDs — the namespacing this test guards. Catches
+    // a renamed/removed plugin key, unlike the old toMatchObjectType assertion
+    // which silently drifted once pinchy-files/pinchy-web grew extra fields.
+    expectTypeOf<keyof AgentPluginConfig>().toEqualTypeOf<"pinchy-files" | "pinchy-web">();
+    // Each plugin's key config field keeps its type. Asserting the specific
+    // fields (not the whole object) stays green when a plugin gains new optional
+    // config, while still catching a type change on the fields that matter.
+    expectTypeOf<NonNullable<AgentPluginConfig["pinchy-files"]>["allowed_paths"]>().toEqualTypeOf<
+      string[]
+    >();
+    expectTypeOf<NonNullable<AgentPluginConfig["pinchy-web"]>["allowedDomains"]>().toEqualTypeOf<
+      string[] | undefined
+    >();
   });
 
   it("auditLog.detail is typed AuditDetail | null (not unknown)", () => {

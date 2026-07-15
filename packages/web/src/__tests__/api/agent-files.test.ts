@@ -40,9 +40,20 @@ const defaultAgent = {
   id: "agent-1",
   name: "Smithers",
   model: "anthropic/claude-sonnet-4-20250514",
+  templateId: null,
+  pluginConfig: null,
+  allowedTools: [],
+  skills: [],
   ownerId: null,
   isPersonal: false,
+  visibility: "restricted" as const,
+  greetingMessage: "Hi, I'm Smithers.",
+  tagline: null,
+  starterPrompts: [],
+  avatarSeed: null,
+  personalityPresetId: null,
   createdAt: new Date(),
+  deletedAt: null,
 };
 
 function makeGetRequest(agentId: string, filename: string) {

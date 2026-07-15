@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import type { Mock } from "vitest";
 import { render, screen, waitFor, act } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import "@testing-library/jest-dom";
@@ -48,7 +49,10 @@ const mockTemplates = [
 ];
 
 describe("NewAgentForm — name max length", () => {
-  let fetchSpy: ReturnType<typeof vi.spyOn>;
+  // `ReturnType<typeof vi.spyOn>` erases the concrete `fetch` signature
+  // (spyOn is generic/overloaded), leaving every mock-callback parameter
+  // implicitly `any`. Annotate with the real global `fetch` signature instead.
+  let fetchSpy: Mock<typeof fetch>;
 
   beforeEach(() => {
     mockSearchParams.current = new URLSearchParams();
@@ -83,7 +87,10 @@ describe("NewAgentForm — name max length", () => {
 });
 
 describe("NewAgentForm — cancel button", () => {
-  let fetchSpy: ReturnType<typeof vi.spyOn>;
+  // `ReturnType<typeof vi.spyOn>` erases the concrete `fetch` signature
+  // (spyOn is generic/overloaded), leaving every mock-callback parameter
+  // implicitly `any`. Annotate with the real global `fetch` signature instead.
+  let fetchSpy: Mock<typeof fetch>;
 
   beforeEach(() => {
     mockSearchParams.current = new URLSearchParams();
@@ -131,7 +138,10 @@ describe("NewAgentForm — cancel button", () => {
 });
 
 describe("NewAgentForm — URL history", () => {
-  let fetchSpy: ReturnType<typeof vi.spyOn>;
+  // `ReturnType<typeof vi.spyOn>` erases the concrete `fetch` signature
+  // (spyOn is generic/overloaded), leaving every mock-callback parameter
+  // implicitly `any`. Annotate with the real global `fetch` signature instead.
+  let fetchSpy: Mock<typeof fetch>;
 
   beforeEach(() => {
     mockPush.mockClear();
@@ -195,7 +205,10 @@ describe("NewAgentForm — URL history", () => {
 });
 
 describe("NewAgentForm — tagline field", () => {
-  let fetchSpy: ReturnType<typeof vi.spyOn>;
+  // `ReturnType<typeof vi.spyOn>` erases the concrete `fetch` signature
+  // (spyOn is generic/overloaded), leaving every mock-callback parameter
+  // implicitly `any`. Annotate with the real global `fetch` signature instead.
+  let fetchSpy: Mock<typeof fetch>;
 
   beforeEach(() => {
     mockSearchParams.current = new URLSearchParams();
@@ -382,7 +395,10 @@ describe("NewAgentForm — tagline field", () => {
 });
 
 describe("NewAgentForm — email mailbox picker", () => {
-  let fetchSpy: ReturnType<typeof vi.spyOn>;
+  // `ReturnType<typeof vi.spyOn>` erases the concrete `fetch` signature
+  // (spyOn is generic/overloaded), leaving every mock-callback parameter
+  // implicitly `any`. Annotate with the real global `fetch` signature instead.
+  let fetchSpy: Mock<typeof fetch>;
 
   const emailTemplates = [
     ...mockTemplates,
@@ -519,7 +535,10 @@ describe("NewAgentForm — email mailbox picker", () => {
 });
 
 describe("NewAgentForm — intro text", () => {
-  let fetchSpy: ReturnType<typeof vi.spyOn>;
+  // `ReturnType<typeof vi.spyOn>` erases the concrete `fetch` signature
+  // (spyOn is generic/overloaded), leaving every mock-callback parameter
+  // implicitly `any`. Annotate with the real global `fetch` signature instead.
+  let fetchSpy: Mock<typeof fetch>;
 
   beforeEach(() => {
     mockSearchParams.current = new URLSearchParams();
@@ -548,7 +567,10 @@ describe("NewAgentForm — intro text", () => {
 });
 
 describe("NewAgentForm — tagline helper", () => {
-  let fetchSpy: ReturnType<typeof vi.spyOn>;
+  // `ReturnType<typeof vi.spyOn>` erases the concrete `fetch` signature
+  // (spyOn is generic/overloaded), leaving every mock-callback parameter
+  // implicitly `any`. Annotate with the real global `fetch` signature instead.
+  let fetchSpy: Mock<typeof fetch>;
 
   beforeEach(() => {
     mockSearchParams.current = new URLSearchParams();
@@ -583,7 +605,10 @@ describe("NewAgentForm — tagline helper", () => {
 });
 
 describe("NewAgentForm — permission preview", () => {
-  let fetchSpy: ReturnType<typeof vi.spyOn>;
+  // `ReturnType<typeof vi.spyOn>` erases the concrete `fetch` signature
+  // (spyOn is generic/overloaded), leaving every mock-callback parameter
+  // implicitly `any`. Annotate with the real global `fetch` signature instead.
+  let fetchSpy: Mock<typeof fetch>;
 
   const odooTemplates = [
     ...mockTemplates,
@@ -697,7 +722,10 @@ describe("NewAgentForm — permission preview", () => {
 });
 
 describe("NewAgentForm — no connections link", () => {
-  let fetchSpy: ReturnType<typeof vi.spyOn>;
+  // `ReturnType<typeof vi.spyOn>` erases the concrete `fetch` signature
+  // (spyOn is generic/overloaded), leaving every mock-callback parameter
+  // implicitly `any`. Annotate with the real global `fetch` signature instead.
+  let fetchSpy: Mock<typeof fetch>;
 
   const odooTemplates = [
     ...mockTemplates,
@@ -761,7 +789,10 @@ describe("NewAgentForm — no connections link", () => {
 });
 
 describe("NewAgentForm — suggested name", () => {
-  let fetchSpy: ReturnType<typeof vi.spyOn>;
+  // `ReturnType<typeof vi.spyOn>` erases the concrete `fetch` signature
+  // (spyOn is generic/overloaded), leaving every mock-callback parameter
+  // implicitly `any`. Annotate with the real global `fetch` signature instead.
+  let fetchSpy: Mock<typeof fetch>;
 
   beforeEach(() => {
     mockSearchParams.current = new URLSearchParams();
@@ -876,7 +907,10 @@ describe("NewAgentForm — optional Odoo models do not block creation", () => {
   // lists `approval.request` and `approval.category` (Odoo Enterprise's
   // Approvals module) as optional, so a Community connection that lacks
   // those models must still allow agent creation.
-  let fetchSpy: ReturnType<typeof vi.spyOn>;
+  // `ReturnType<typeof vi.spyOn>` erases the concrete `fetch` signature
+  // (spyOn is generic/overloaded), leaving every mock-callback parameter
+  // implicitly `any`. Annotate with the real global `fetch` signature instead.
+  let fetchSpy: Mock<typeof fetch>;
 
   const approvalManagerInList = [
     ...mockTemplates,

@@ -36,6 +36,7 @@ vi.mock("@/lib/pairing-candidates", () => ({
 }));
 
 import { GET } from "@/app/api/settings/telegram/bots/route";
+import { makeNextRequest, routeContext } from "@/test-helpers/route";
 
 const adminSession = {
   user: { id: "user-1", email: "admin@test.com", role: "admin" },
@@ -63,7 +64,7 @@ describe("GET /api/settings/telegram/bots", () => {
   it("returns 401 when not authenticated", async () => {
     mockGetSession.mockResolvedValueOnce(null);
 
-    const response = await GET();
+    const response = await GET(makeNextRequest(), routeContext());
     expect(response.status).toBe(401);
   });
 
@@ -72,7 +73,7 @@ describe("GET /api/settings/telegram/bots", () => {
       { id: "a1", name: "Smithers", isPersonal: false, visibility: "all" },
     ]);
 
-    const response = await GET();
+    const response = await GET(makeNextRequest(), routeContext());
     const data = await response.json();
 
     expect(response.status).toBe(200);
@@ -86,7 +87,7 @@ describe("GET /api/settings/telegram/bots", () => {
     ]);
     mockSettings.set("telegram_bot_username:a1", "acme_smithers_bot");
 
-    const response = await GET();
+    const response = await GET(makeNextRequest(), routeContext());
     const data = await response.json();
 
     expect(response.status).toBe(200);
@@ -103,7 +104,7 @@ describe("GET /api/settings/telegram/bots", () => {
     mockSettings.set("telegram_bot_username:a1", "silvia_bot");
     mockSettings.set("telegram_bot_username:a2", "smithers_bot");
 
-    const response = await GET();
+    const response = await GET(makeNextRequest(), routeContext());
     const data = await response.json();
 
     expect(data.bots[0].botUsername).toBe("smithers_bot");
@@ -113,7 +114,7 @@ describe("GET /api/settings/telegram/bots", () => {
   it("calls getVisibleAgents with the session user id and role for filtering", async () => {
     mockGetSession.mockResolvedValueOnce(memberSession);
 
-    await GET();
+    await GET(makeNextRequest(), routeContext());
 
     expect(mockGetVisibleAgents).toHaveBeenCalledWith("user-2", "member");
   });
@@ -126,7 +127,7 @@ describe("GET /api/settings/telegram/bots", () => {
     mockSettings.set("telegram_bot_username:a1", "acme_smithers_bot");
     mockSettings.set("telegram_bot_username:a2", "hr_bot");
 
-    const response = await GET();
+    const response = await GET(makeNextRequest(), routeContext());
     const data = await response.json();
 
     expect(response.status).toBe(200);
@@ -141,7 +142,7 @@ describe("GET /api/settings/telegram/bots", () => {
     mockSettings.set("telegram_bot_username:a-self", "self_smithers_bot");
     mockSettings.set("telegram_bot_username:a-admin", "admin_smithers_bot");
 
-    const response = await GET();
+    const response = await GET(makeNextRequest(), routeContext());
     const data = await response.json();
 
     expect(response.status).toBe(200);
@@ -166,7 +167,7 @@ describe("GET /api/settings/telegram/bots", () => {
     mockSettings.set("telegram_bot_username:a2", "support_bot");
     mockSettings.set("telegram_bot_username:a3", "hr_bot");
 
-    const response = await GET();
+    const response = await GET(makeNextRequest(), routeContext());
     const data = await response.json();
 
     expect(response.status).toBe(200);
@@ -195,7 +196,7 @@ describe("GET /api/settings/telegram/bots", () => {
     ]);
     mockSettings.set("telegram_bot_username:admin-smithers-real-uuid", "acme_smithers_bot");
 
-    const response = await GET();
+    const response = await GET(makeNextRequest(), routeContext());
     const data = await response.json();
 
     expect(response.status).toBe(200);
@@ -214,7 +215,7 @@ describe("GET /api/settings/telegram/bots", () => {
       { id: "a2", name: "Support", isPersonal: false, visibility: "all" },
     ]);
 
-    await GET();
+    await GET(makeNextRequest(), routeContext());
 
     expect(mockGetOrgPairingSmithers).toHaveBeenCalledWith(new Set(["a1", "a2"]));
   });
@@ -229,7 +230,7 @@ describe("GET /api/settings/telegram/bots", () => {
     mockSettings.set("telegram_bot_username:a2", "b_bot");
     mockSettings.set("telegram_bot_username:a3", "c_bot");
 
-    const response = await GET();
+    const response = await GET(makeNextRequest(), routeContext());
     const data = await response.json();
 
     // One batched call — not one per candidate.

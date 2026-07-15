@@ -36,6 +36,7 @@ vi.mock("@/lib/encryption", () => ({
 }));
 
 import { NextRequest } from "next/server";
+import { routeContext } from "@/test-helpers/route";
 
 const adminSession = { user: { id: "u1", email: "admin@test.com", role: "admin" } };
 
@@ -65,7 +66,7 @@ describe("GET /api/integrations/health", () => {
       conn({ status: "active", credentials: "BAD-encrypted" }), // cannot decrypt
     ]);
     const { GET } = await import("@/app/api/integrations/health/route");
-    const res = await GET(makeRequest());
+    const res = await GET(makeRequest(), routeContext());
     const body = await res.json();
     expect(res.status).toBe(200);
     expect(body.authFailedCount).toBe(1);
@@ -78,7 +79,7 @@ describe("GET /api/integrations/health", () => {
       conn({ status: "auth_failed", credentials: "BAD-encrypted" }),
     ]);
     const { GET } = await import("@/app/api/integrations/health/route");
-    const res = await GET(makeRequest());
+    const res = await GET(makeRequest(), routeContext());
     const body = await res.json();
     expect(body.authFailedCount).toBe(1);
     expect(body.cannotDecryptCount).toBe(1);
@@ -88,7 +89,7 @@ describe("GET /api/integrations/health", () => {
   it("returns zero counts when all connections are healthy", async () => {
     mockSelectFrom.mockResolvedValue([conn({ status: "active" }), conn({ status: "pending" })]);
     const { GET } = await import("@/app/api/integrations/health/route");
-    const res = await GET(makeRequest());
+    const res = await GET(makeRequest(), routeContext());
     const body = await res.json();
     expect(body).toEqual({
       authFailedCount: 0,
@@ -100,14 +101,14 @@ describe("GET /api/integrations/health", () => {
   it("returns 403 for non-admin authenticated user", async () => {
     mockGetSession.mockResolvedValue({ user: { id: "u2", role: "user" } });
     const { GET } = await import("@/app/api/integrations/health/route");
-    const res = await GET(makeRequest());
+    const res = await GET(makeRequest(), routeContext());
     expect(res.status).toBe(403);
   });
 
   it("returns 401 for unauthenticated request", async () => {
     mockGetSession.mockResolvedValue(null);
     const { GET } = await import("@/app/api/integrations/health/route");
-    const res = await GET(makeRequest());
+    const res = await GET(makeRequest(), routeContext());
     expect(res.status).toBe(401);
   });
 });

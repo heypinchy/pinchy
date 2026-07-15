@@ -9,7 +9,10 @@
  * One mocking strategy throughout: real WebSocket via `vi.stubGlobal` +
  * the hook's `result.current.runtime` exposes the config that was passed to
  * `useExternalStoreRuntime` (the mock is the identity function), so tests
- * call `result.current.runtime.onNew(...)` and read `runtime.messages`.
+ * call `store(result.current.runtime).onNew(...)` and read `.messages` —
+ * `store()` is the single typed boundary cast documented next to its
+ * definition below, bridging the statically-declared `AssistantRuntime`
+ * return type to what the mocked runtime actually is at test time.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { renderHook, act } from "@testing-library/react";
@@ -20,6 +23,8 @@ import {
   CLIENT_MAX_ATTACHMENT_SIZE_BYTES,
 } from "@/lib/limits";
 import * as imageCompression from "@/lib/image-compression";
+import type { ChatError } from "@/components/assistant-ui/chat-error-message";
+import type { MessageStatus } from "@/hooks/message-status-reducer";
 
 // Mock image compression module — real Canvas API is unavailable in jsdom.
 // Default returns the new CompressionResult shape: ok=true with skipped=true
@@ -68,6 +73,11 @@ class MockWebSocket {
   simulateClose(code = 1006) {
     this.onclose?.(new CloseEvent("close", { code }));
   }
+
+  /** Trigger onerror (the WS impl always fires onclose right after — see onerror below) */
+  simulateError() {
+    this.onerror?.(new Event("error"));
+  }
 }
 
 vi.stubGlobal("WebSocket", MockWebSocket);
@@ -77,6 +87,65 @@ function latestWs(): MockWebSocket {
   const ws = wsInstances[wsInstances.length - 1];
   if (!ws) throw new Error("No MockWebSocket instance created yet");
   return ws;
+}
+
+/**
+ * A single content part of a rendered message, as produced by the hook's
+ * `convertMessage` (see `use-ws-runtime.ts`) — either a text part or a file
+ * chip. Modeled as one flattened shape (rather than a discriminated union)
+ * because that's how every test in this file narrows it: `.find(p => p.type
+ * === "text")` and reads `.text`, or `.find(p => p.type === "file")` and
+ * reads `.filename`/`.mimeType`.
+ */
+interface ExternalStoreMessagePart {
+  type: string;
+  text?: string;
+  filename?: string;
+  mimeType?: string;
+}
+
+/**
+ * Shape of one entry in `runtime.messages`, mirroring what `convertMessage`
+ * in `use-ws-runtime.ts` actually builds from a `WsMessage`.
+ */
+interface ExternalStoreMessage {
+  id: string;
+  role: "user" | "assistant";
+  content: ExternalStoreMessagePart[];
+  metadata?: {
+    custom: {
+      timestamp?: string;
+      status?: MessageStatus;
+      retryable?: boolean;
+      retryReason?: "orphan" | "partial_stream_failure" | "send_failure";
+      error?: ChatError;
+    };
+  };
+}
+
+/**
+ * The config object passed to `useExternalStoreRuntime` — see the
+ * `@assistant-ui/react` mock below, which returns that config unchanged
+ * (`(config) => config`). So at test time `result.current.runtime` (typed
+ * `AssistantRuntime` by `useWsRuntime`'s real return type) IS this config
+ * object; `AssistantRuntime` just doesn't expose these members statically.
+ */
+interface ExternalStoreConfig {
+  messages: ExternalStoreMessage[];
+  isRunning: boolean;
+  onNew(message: unknown): void | Promise<void>;
+  onCancel(): void | Promise<void>;
+  adapters: { attachments: { accept: string } };
+}
+
+/**
+ * The single documented boundary cast bridging `useWsRuntime`'s declared
+ * `runtime: AssistantRuntime` to its real (mocked) shape described above.
+ * Call as `store(result.current.runtime)` (or `store(x.runtime)` for a
+ * runtime reached through a composed hook's result).
+ */
+function store(runtime: unknown): ExternalStoreConfig {
+  return runtime as unknown as ExternalStoreConfig;
 }
 
 /** Minimal AppendMessage shape that onNew expects for a simple text message */
@@ -138,7 +207,7 @@ describe("useWsRuntime", () => {
 
   it("should return a runtime and connection status", () => {
     const { result } = renderHook(() => useWsRuntime("agent-1"));
-    expect(result.current.runtime).toBeDefined();
+    expect(store(result.current.runtime)).toBeDefined();
     expect(result.current.isConnected).toBe(false);
   });
 
@@ -153,22 +222,19 @@ describe("useWsRuntime", () => {
     const ws = wsInstances[0];
 
     act(() => {
-      ws.onopen?.();
+      ws.simulateOpen();
     });
     act(() => {
       // Block body: do NOT return onNew's promise to act() (that would trip the
       // async-act warning). The user message + in-flight placeholder are added
       // synchronously before onNew's first await, which is all this test needs.
-      result.current.runtime.onNew(makeUserMessage("Hello"));
+      store(result.current.runtime).onNew(makeUserMessage("Hello"));
     });
     act(() => {
-      ws.onmessage?.({
-        data: JSON.stringify({ type: "chunk", content: "Hi there", messageId: "msg-1" }),
-      } as MessageEvent);
+      ws.simulateMessage({ type: "chunk", content: "Hi there", messageId: "msg-1" });
     });
 
-    const msgs = (result.current.runtime as { messages: { role: string; content: unknown }[] })
-      .messages;
+    const msgs = store(result.current.runtime).messages;
     const assistant = msgs.filter((m) => m.role === "assistant").pop();
     expect(assistant).toBeDefined();
     expect(JSON.stringify(assistant!.content)).toContain("Hi there");
@@ -180,11 +246,11 @@ describe("useWsRuntime", () => {
 
     // Connect and send a user message to set isRunning=true
     act(() => {
-      ws.onopen?.();
+      ws.simulateOpen();
     });
 
     act(() => {
-      result.current.runtime.onNew({
+      store(result.current.runtime).onNew({
         content: [{ type: "text", text: "Hello" }],
         parentId: "root",
       });
@@ -192,36 +258,30 @@ describe("useWsRuntime", () => {
 
     // Receive a chunk (isRunning should still be true)
     act(() => {
-      ws.onmessage?.({
-        data: JSON.stringify({
-          type: "chunk",
-          content: "Hi there",
-          messageId: "msg-1",
-        }),
+      ws.simulateMessage({
+        type: "chunk",
+        content: "Hi there",
+        messageId: "msg-1",
       });
     });
 
-    expect(result.current.runtime.isRunning).toBe(true);
+    expect(store(result.current.runtime).isRunning).toBe(true);
 
     // Per-turn done — must NOT stop the spinner. The agent might still be
     // running another turn (tool-use loops), and only "complete" tells us
     // the entire stream is over.
     act(() => {
-      ws.onmessage?.({
-        data: JSON.stringify({ type: "done", messageId: "msg-1" }),
-      });
+      ws.simulateMessage({ type: "done", messageId: "msg-1" });
     });
 
-    expect(result.current.runtime.isRunning).toBe(true);
+    expect(store(result.current.runtime).isRunning).toBe(true);
 
     // Stream-terminating complete event — now the spinner can stop.
     act(() => {
-      ws.onmessage?.({
-        data: JSON.stringify({ type: "complete" }),
-      });
+      ws.simulateMessage({ type: "complete" });
     });
 
-    expect(result.current.runtime.isRunning).toBe(false);
+    expect(store(result.current.runtime).isRunning).toBe(false);
   });
 
   it("should keep running across long pauses between chunks (no debounce false-positive)", () => {
@@ -229,27 +289,25 @@ describe("useWsRuntime", () => {
     const ws = wsInstances[0];
 
     act(() => {
-      ws.onopen?.();
+      ws.simulateOpen();
     });
 
     act(() => {
-      result.current.runtime.onNew({
+      store(result.current.runtime).onNew({
         content: [{ type: "text", text: "Hello" }],
         parentId: "root",
       });
     });
 
     act(() => {
-      ws.onmessage?.({
-        data: JSON.stringify({
-          type: "chunk",
-          content: "Let me think...",
-          messageId: "msg-1",
-        }),
+      ws.simulateMessage({
+        type: "chunk",
+        content: "Let me think...",
+        messageId: "msg-1",
       });
     });
 
-    expect(result.current.runtime.isRunning).toBe(true);
+    expect(store(result.current.runtime).isRunning).toBe(true);
 
     // Simulate a long pause where the local LLM is generating the next turn
     // but no chunks arrive. The previous implementation debounced isRunning
@@ -258,7 +316,7 @@ describe("useWsRuntime", () => {
       vi.advanceTimersByTime(30_000);
     });
 
-    expect(result.current.runtime.isRunning).toBe(true);
+    expect(store(result.current.runtime).isRunning).toBe(true);
   });
 
   it("should stop running immediately when an error message is received", () => {
@@ -266,33 +324,31 @@ describe("useWsRuntime", () => {
     const ws = wsInstances[0];
 
     act(() => {
-      ws.onopen?.();
+      ws.simulateOpen();
     });
 
     act(() => {
-      result.current.runtime.onNew({
+      store(result.current.runtime).onNew({
         content: [{ type: "text", text: "Hello" }],
         parentId: "root",
       });
     });
 
-    expect(result.current.runtime.isRunning).toBe(true);
+    expect(store(result.current.runtime).isRunning).toBe(true);
 
     // Receive error message - should immediately stop running
     act(() => {
-      ws.onmessage?.({
-        data: JSON.stringify({
-          type: "error",
-          message: "Something went wrong",
-          messageId: "msg-1",
-        }),
+      ws.simulateMessage({
+        type: "error",
+        message: "Something went wrong",
+        messageId: "msg-1",
       });
     });
 
-    expect(result.current.runtime.isRunning).toBe(false);
+    expect(store(result.current.runtime).isRunning).toBe(false);
 
     // Should show the error as an assistant message with structured error in metadata
-    const messages = result.current.runtime.messages;
+    const messages = store(result.current.runtime).messages;
     const errorMsg = messages.find(
       (m: any) =>
         m.role === "assistant" && m.metadata?.custom?.error?.message === "Something went wrong"
@@ -305,31 +361,29 @@ describe("useWsRuntime", () => {
     const ws = wsInstances[0];
 
     act(() => {
-      ws.onopen?.();
+      ws.simulateOpen();
     });
     act(() => {
-      result.current.runtime.onNew({
+      store(result.current.runtime).onNew({
         content: [{ type: "text", text: "Hello" }],
         parentId: "root",
       });
     });
 
     act(() => {
-      ws.onmessage?.({
-        data: JSON.stringify({
-          type: "error",
-          agentName: "Smithers",
-          providerError: "Your credit balance is too low.",
-          hint: "Please contact your administrator.",
-          messageId: "msg-1",
-        }),
+      ws.simulateMessage({
+        type: "error",
+        agentName: "Smithers",
+        providerError: "Your credit balance is too low.",
+        hint: "Please contact your administrator.",
+        messageId: "msg-1",
       });
     });
 
-    const messages = result.current.runtime.messages;
+    const messages = store(result.current.runtime).messages;
     const errorMsg = messages.find((m: any) => m.role === "assistant" && m.metadata?.custom?.error);
     expect(errorMsg).toBeDefined();
-    expect(errorMsg.metadata.custom.error).toEqual({
+    expect(errorMsg!.metadata!.custom.error).toEqual({
       agentName: "Smithers",
       providerError: "Your credit balance is too low.",
       hint: "Please contact your administrator.",
@@ -341,29 +395,27 @@ describe("useWsRuntime", () => {
     const ws = wsInstances[0];
 
     act(() => {
-      ws.onopen?.();
+      ws.simulateOpen();
     });
     act(() => {
-      result.current.runtime.onNew({
+      store(result.current.runtime).onNew({
         content: [{ type: "text", text: "Hello" }],
         parentId: "root",
       });
     });
 
     act(() => {
-      ws.onmessage?.({
-        data: JSON.stringify({
-          type: "error",
-          message: "Access denied",
-          messageId: "msg-1",
-        }),
+      ws.simulateMessage({
+        type: "error",
+        message: "Access denied",
+        messageId: "msg-1",
       });
     });
 
-    const messages = result.current.runtime.messages;
+    const messages = store(result.current.runtime).messages;
     const errorMsg = messages.find((m: any) => m.role === "assistant" && m.metadata?.custom?.error);
     expect(errorMsg).toBeDefined();
-    expect(errorMsg.metadata.custom.error).toEqual({
+    expect(errorMsg!.metadata!.custom.error).toEqual({
       message: "Access denied",
     });
   });
@@ -373,36 +425,34 @@ describe("useWsRuntime", () => {
     const ws = wsInstances[0];
 
     act(() => {
-      ws.onopen?.();
+      ws.simulateOpen();
     });
     act(() => {
-      result.current.runtime.onNew({
+      store(result.current.runtime).onNew({
         content: [{ type: "text", text: "Hello" }],
         parentId: "root",
       });
     });
 
     act(() => {
-      ws.onmessage?.({
-        data: JSON.stringify({
-          type: "error",
-          agentName: "Smithers",
-          providerError: "rawError=503 the model is overloaded",
-          messageId: "msg-1",
-          modelUnavailable: {
-            kind: "model_unavailable",
-            model: "ollama-cloud/glm-4.6",
-            httpStatus: 503,
-            ref: "abc-123",
-          },
-        }),
+      ws.simulateMessage({
+        type: "error",
+        agentName: "Smithers",
+        providerError: "rawError=503 the model is overloaded",
+        messageId: "msg-1",
+        modelUnavailable: {
+          kind: "model_unavailable",
+          model: "ollama-cloud/glm-4.6",
+          httpStatus: 503,
+          ref: "abc-123",
+        },
       });
     });
 
-    const messages = result.current.runtime.messages;
+    const messages = store(result.current.runtime).messages;
     const errorMsg = messages.find((m: any) => m.role === "assistant" && m.metadata?.custom?.error);
     expect(errorMsg).toBeDefined();
-    expect(errorMsg.metadata.custom.error.modelUnavailable).toEqual({
+    expect(errorMsg!.metadata!.custom.error!.modelUnavailable).toEqual({
       kind: "model_unavailable",
       model: "ollama-cloud/glm-4.6",
       httpStatus: 503,
@@ -419,44 +469,42 @@ describe("useWsRuntime", () => {
     const ws = wsInstances[0];
 
     act(() => {
-      ws.onopen?.();
+      ws.simulateOpen();
     });
     act(() => {
-      result.current.runtime.onNew({
+      store(result.current.runtime).onNew({
         content: [{ type: "text", text: "Hello" }],
         parentId: "root",
       });
     });
 
     act(() => {
-      ws.onmessage?.({
-        data: JSON.stringify({
-          type: "error",
-          agentName: "Smithers",
-          providerError: "Some upstream error",
-          messageId: "msg-1",
-          modelUnavailable: {
-            kind: "model_unavailable",
-            httpStatus: "not-a-number",
-          },
-        }),
+      ws.simulateMessage({
+        type: "error",
+        agentName: "Smithers",
+        providerError: "Some upstream error",
+        messageId: "msg-1",
+        modelUnavailable: {
+          kind: "model_unavailable",
+          httpStatus: "not-a-number",
+        },
       });
     });
 
-    const messages = result.current.runtime.messages;
+    const messages = store(result.current.runtime).messages;
     const errorMsg = messages.find((m: any) => m.role === "assistant" && m.metadata?.custom?.error);
     expect(errorMsg).toBeDefined();
-    expect(errorMsg.metadata.custom.error.modelUnavailable).toBeUndefined();
-    expect(errorMsg.metadata.custom.error.providerError).toBe("Some upstream error");
+    expect(errorMsg!.metadata!.custom.error!.modelUnavailable).toBeUndefined();
+    expect(errorMsg!.metadata!.custom.error!.providerError).toBe("Some upstream error");
   });
 
   describe("authoritative liveness frames", () => {
-    function sendAndOpen(result: ReturnType<typeof renderHook>["result"], ws: MockWebSocket) {
+    function sendAndOpen(result: { current: ReturnType<typeof useWsRuntime> }, ws: MockWebSocket) {
       act(() => {
-        ws.onopen?.();
+        ws.simulateOpen();
       });
       act(() => {
-        result.current.runtime.onNew({
+        store(result.current.runtime).onNew({
           content: [{ type: "text", text: "Hello" }],
           parentId: "root",
         });
@@ -467,28 +515,26 @@ describe("useWsRuntime", () => {
       const { result } = renderHook(() => useWsRuntime("agent-1"));
       const ws = wsInstances[0];
       sendAndOpen(result, ws);
-      expect(result.current.runtime.isRunning).toBe(true);
+      expect(store(result.current.runtime).isRunning).toBe(true);
 
       act(() => {
-        ws.onmessage?.({
-          data: JSON.stringify({
-            type: "liveness",
-            state: "failed",
-            reason: "the agent run ended without a response",
-          }),
+        ws.simulateMessage({
+          type: "liveness",
+          state: "failed",
+          reason: "the agent run ended without a response",
         });
       });
 
       // Spinner stops and a retryable bubble carrying the server reason shows.
-      expect(result.current.runtime.isRunning).toBe(false);
-      const messages = result.current.runtime.messages;
+      expect(store(result.current.runtime).isRunning).toBe(false);
+      const messages = store(result.current.runtime).messages;
       const failureMsg = messages.find(
         (m: any) =>
           m.role === "assistant" &&
           m.metadata?.custom?.error?.message === "the agent run ended without a response"
       );
       expect(failureMsg).toBeDefined();
-      expect(failureMsg.metadata.custom.retryable).toBe(true);
+      expect(failureMsg!.metadata!.custom.retryable).toBe(true);
     });
 
     it("falls back to a generic reason when liveness:failed omits one", () => {
@@ -497,15 +543,15 @@ describe("useWsRuntime", () => {
       sendAndOpen(result, ws);
 
       act(() => {
-        ws.onmessage?.({ data: JSON.stringify({ type: "liveness", state: "failed" }) });
+        ws.simulateMessage({ type: "liveness", state: "failed" });
       });
 
-      const messages = result.current.runtime.messages;
+      const messages = store(result.current.runtime).messages;
       const failureMsg = messages.find(
         (m: any) => m.role === "assistant" && m.metadata?.custom?.error?.message
       );
       expect(failureMsg).toBeDefined();
-      expect(failureMsg.metadata.custom.error.message).toBe(
+      expect(failureMsg!.metadata!.custom.error!.message).toBe(
         "The agent run ended without a response."
       );
     });
@@ -519,36 +565,32 @@ describe("useWsRuntime", () => {
       // `liveness: failed` verdict. The generic liveness bubble must NOT
       // clobber the detailed provider-error bubble.
       act(() => {
-        ws.onmessage?.({
-          data: JSON.stringify({
-            type: "error",
-            agentName: "Smithers",
-            providerError: "Your credit balance is too low.",
-            hint: "Please contact your administrator.",
-            messageId: "msg-1",
-          }),
+        ws.simulateMessage({
+          type: "error",
+          agentName: "Smithers",
+          providerError: "Your credit balance is too low.",
+          hint: "Please contact your administrator.",
+          messageId: "msg-1",
         });
       });
       act(() => {
-        ws.onmessage?.({
-          data: JSON.stringify({
-            type: "liveness",
-            state: "failed",
-            reason: "Your credit balance is too low.",
-          }),
+        ws.simulateMessage({
+          type: "liveness",
+          state: "failed",
+          reason: "Your credit balance is too low.",
         });
       });
 
-      const messages = result.current.runtime.messages;
+      const messages = store(result.current.runtime).messages;
       const errorMsgs = messages.filter(
         (m: any) => m.role === "assistant" && m.metadata?.custom?.error
       );
       // Exactly one bubble, and it is the rich provider-error one.
       expect(errorMsgs).toHaveLength(1);
-      expect(errorMsgs[0].metadata.custom.error.providerError).toBe(
+      expect(errorMsgs[0].metadata!.custom.error!.providerError).toBe(
         "Your credit balance is too low."
       );
-      expect(errorMsgs[0].metadata.custom.error.message).toBeUndefined();
+      expect(errorMsgs[0].metadata!.custom.error!.message).toBeUndefined();
     });
 
     it("liveness:responding keeps the run going and liveness:completed stops it without a bubble", () => {
@@ -557,16 +599,16 @@ describe("useWsRuntime", () => {
       sendAndOpen(result, ws);
 
       act(() => {
-        ws.onmessage?.({ data: JSON.stringify({ type: "liveness", state: "responding" }) });
+        ws.simulateMessage({ type: "liveness", state: "responding" });
       });
-      expect(result.current.runtime.isRunning).toBe(true);
+      expect(store(result.current.runtime).isRunning).toBe(true);
 
       // A completed verdict does not itself stop the spinner — `complete` is the
       // genuine terminator — but it must never produce a failure bubble.
       act(() => {
-        ws.onmessage?.({ data: JSON.stringify({ type: "liveness", state: "completed" }) });
+        ws.simulateMessage({ type: "liveness", state: "completed" });
       });
-      const messages = result.current.runtime.messages;
+      const messages = store(result.current.runtime).messages;
       const errorMsg = messages.find(
         (m: any) => m.role === "assistant" && m.metadata?.custom?.error
       );
@@ -584,13 +626,13 @@ describe("useWsRuntime", () => {
       sendAndOpen(result, ws);
 
       act(() => {
-        ws.onmessage?.({ data: JSON.stringify({ type: "liveness", state: "responding" }) });
+        ws.simulateMessage({ type: "liveness", state: "responding" });
       });
       act(() => {
         vi.advanceTimersByTime(300_000);
       });
 
-      const failureMsg = result.current.runtime.messages.find(
+      const failureMsg = store(result.current.runtime).messages.find(
         (m: any) =>
           m.role === "assistant" &&
           (m.metadata?.custom?.error?.message ||
@@ -609,49 +651,43 @@ describe("useWsRuntime", () => {
     const ws = wsInstances[0];
 
     act(() => {
-      ws.onopen?.();
+      ws.simulateOpen();
     });
 
     act(() => {
-      result.current.runtime.onNew({
+      store(result.current.runtime).onNew({
         content: [{ type: "text", text: "Hello" }],
         parentId: "root",
       });
     });
 
     act(() => {
-      ws.onmessage?.({
-        data: JSON.stringify({
-          type: "chunk",
-          content: "Hi",
-          messageId: "msg-1",
-        }),
+      ws.simulateMessage({
+        type: "chunk",
+        content: "Hi",
+        messageId: "msg-1",
       });
     });
 
     // Per-turn done — does NOT terminate the spinner
     act(() => {
-      ws.onmessage?.({
-        data: JSON.stringify({ type: "done", messageId: "msg-1" }),
-      });
+      ws.simulateMessage({ type: "done", messageId: "msg-1" });
     });
 
-    expect(result.current.runtime.isRunning).toBe(true);
+    expect(store(result.current.runtime).isRunning).toBe(true);
 
     // Stream-terminating complete — now spinner stops
     act(() => {
-      ws.onmessage?.({
-        data: JSON.stringify({ type: "complete" }),
-      });
+      ws.simulateMessage({ type: "complete" });
     });
 
-    expect(result.current.runtime.isRunning).toBe(false);
+    expect(store(result.current.runtime).isRunning).toBe(false);
 
     // Advance past any old debounce window — must stay false
     act(() => {
       vi.advanceTimersByTime(2000);
     });
-    expect(result.current.runtime.isRunning).toBe(false);
+    expect(store(result.current.runtime).isRunning).toBe(false);
   });
 
   it("should create separate messages for each turn in a multi-turn stream", () => {
@@ -659,12 +695,12 @@ describe("useWsRuntime", () => {
     const ws = wsInstances[0];
 
     act(() => {
-      ws.onopen?.();
+      ws.simulateOpen();
     });
 
     // User sends a message
     act(() => {
-      result.current.runtime.onNew({
+      store(result.current.runtime).onNew({
         content: [{ type: "text", text: "How big is the house?" }],
         parentId: "root",
       });
@@ -672,54 +708,44 @@ describe("useWsRuntime", () => {
 
     // Turn 1: agent searches
     act(() => {
-      ws.onmessage?.({
-        data: JSON.stringify({ type: "chunk", content: "Let me search...", messageId: "turn-1" }),
-      });
+      ws.simulateMessage({ type: "chunk", content: "Let me search...", messageId: "turn-1" });
     });
 
-    expect(result.current.runtime.isRunning).toBe(true);
+    expect(store(result.current.runtime).isRunning).toBe(true);
 
     // Turn 1 done
     act(() => {
-      ws.onmessage?.({
-        data: JSON.stringify({ type: "done", messageId: "turn-1" }),
-      });
+      ws.simulateMessage({ type: "done", messageId: "turn-1" });
     });
 
     // Turn 2: agent responds with new messageId
     act(() => {
-      ws.onmessage?.({
-        data: JSON.stringify({
-          type: "chunk",
-          content: "The house is 231m².",
-          messageId: "turn-2",
-        }),
+      ws.simulateMessage({
+        type: "chunk",
+        content: "The house is 231m².",
+        messageId: "turn-2",
       });
     });
 
     // isRunning should be true again when new chunks arrive
-    expect(result.current.runtime.isRunning).toBe(true);
+    expect(store(result.current.runtime).isRunning).toBe(true);
 
     // Turn 2 done — still not finished from the spinner's perspective
     act(() => {
-      ws.onmessage?.({
-        data: JSON.stringify({ type: "done", messageId: "turn-2" }),
-      });
+      ws.simulateMessage({ type: "done", messageId: "turn-2" });
     });
 
-    expect(result.current.runtime.isRunning).toBe(true);
+    expect(store(result.current.runtime).isRunning).toBe(true);
 
     // Stream complete — spinner stops
     act(() => {
-      ws.onmessage?.({
-        data: JSON.stringify({ type: "complete" }),
-      });
+      ws.simulateMessage({ type: "complete" });
     });
 
-    expect(result.current.runtime.isRunning).toBe(false);
+    expect(store(result.current.runtime).isRunning).toBe(false);
 
     // Should have 3 messages: user + 2 assistant turns
-    const messages = result.current.runtime.messages;
+    const messages = store(result.current.runtime).messages;
     expect(messages).toHaveLength(3);
     expect(messages[0].role).toBe("user");
     expect(messages[1].role).toBe("assistant");
@@ -733,11 +759,11 @@ describe("useWsRuntime", () => {
     const ws = wsInstances[0];
 
     act(() => {
-      ws.onopen?.();
+      ws.simulateOpen();
     });
 
     act(() => {
-      result.current.runtime.onNew({
+      store(result.current.runtime).onNew({
         content: [{ type: "text", text: "Hello" }],
         parentId: "root",
       });
@@ -753,7 +779,7 @@ describe("useWsRuntime", () => {
 
   it("registers a code/docx-only attachment adapter (everything else goes via two-phase upload)", () => {
     const { result } = renderHook(() => useWsRuntime("agent-1"));
-    const runtime = result.current.runtime;
+    const runtime = store(result.current.runtime);
 
     expect(runtime.adapters).toBeDefined();
     expect(runtime.adapters.attachments).toBeDefined();
@@ -785,11 +811,11 @@ describe("useWsRuntime", () => {
     const ws = wsInstances[0];
 
     act(() => {
-      ws.onopen?.();
+      ws.simulateOpen();
     });
 
     act(() => {
-      result.current.runtime.onNew({
+      store(result.current.runtime).onNew({
         content: [{ type: "text", text: "Hello plain" }],
         parentId: "root",
       });
@@ -813,7 +839,7 @@ describe("useWsRuntime", () => {
     const ws = wsInstances[0];
 
     act(() => {
-      ws.onopen?.();
+      ws.simulateOpen();
     });
 
     expect(ws.send).toHaveBeenCalledWith(JSON.stringify({ type: "history", agentId: "agent-1" }));
@@ -830,7 +856,7 @@ describe("useWsRuntime", () => {
       const ws = wsInstances[0];
 
       act(() => {
-        ws.onopen?.();
+        ws.simulateOpen();
       });
 
       const historyFrame = JSON.parse(ws.send.mock.calls[0][0]);
@@ -844,7 +870,7 @@ describe("useWsRuntime", () => {
       const ws = wsInstances[0];
 
       act(() => {
-        ws.onopen?.();
+        ws.simulateOpen();
       });
 
       const historyFrame = JSON.parse(ws.send.mock.calls[0][0]);
@@ -858,10 +884,10 @@ describe("useWsRuntime", () => {
       const ws = wsInstances[0];
 
       act(() => {
-        ws.onopen?.();
+        ws.simulateOpen();
       });
       act(() => {
-        result.current.runtime.onNew({
+        store(result.current.runtime).onNew({
           content: [{ type: "text", text: "Hello" }],
           parentId: "root",
         });
@@ -880,10 +906,10 @@ describe("useWsRuntime", () => {
       const ws = wsInstances[0];
 
       act(() => {
-        ws.onopen?.();
+        ws.simulateOpen();
       });
       act(() => {
-        result.current.runtime.onNew({
+        store(result.current.runtime).onNew({
           content: [{ type: "text", text: "Hello" }],
           parentId: "root",
         });
@@ -900,22 +926,20 @@ describe("useWsRuntime", () => {
     const ws = wsInstances[0];
 
     act(() => {
-      ws.onopen?.();
+      ws.simulateOpen();
     });
 
     act(() => {
-      ws.onmessage?.({
-        data: JSON.stringify({
-          type: "history",
-          messages: [
-            { role: "user", content: "Hello", timestamp: "2026-01-01T00:00:00Z" },
-            { role: "assistant", content: "Hi!", timestamp: "2026-01-01T00:00:01Z" },
-          ],
-        }),
+      ws.simulateMessage({
+        type: "history",
+        messages: [
+          { role: "user", content: "Hello", timestamp: "2026-01-01T00:00:00Z" },
+          { role: "assistant", content: "Hi!", timestamp: "2026-01-01T00:00:01Z" },
+        ],
       });
     });
 
-    const messages = result.current.runtime.messages;
+    const messages = store(result.current.runtime).messages;
     expect(messages).toHaveLength(2);
     expect(messages[0].role).toBe("user");
     expect(messages[0].content[0].text).toBe("Hello");
@@ -928,21 +952,17 @@ describe("useWsRuntime", () => {
     const ws = wsInstances[0];
 
     act(() => {
-      ws.onopen?.();
+      ws.simulateOpen();
     });
 
     act(() => {
-      ws.onmessage?.({
-        data: JSON.stringify({
-          type: "history",
-          messages: [
-            { role: "system", content: "System prompt", timestamp: "2026-01-01T00:00:00Z" },
-          ],
-        }),
+      ws.simulateMessage({
+        type: "history",
+        messages: [{ role: "system", content: "System prompt", timestamp: "2026-01-01T00:00:00Z" }],
       });
     });
 
-    const messages = result.current.runtime.messages;
+    const messages = store(result.current.runtime).messages;
     expect(messages).toHaveLength(1);
     expect(messages[0].role).toBe("assistant");
   });
@@ -952,12 +972,12 @@ describe("useWsRuntime", () => {
     const ws = wsInstances[0];
 
     act(() => {
-      ws.onopen?.();
+      ws.simulateOpen();
     });
 
     // User sends a message first (creating a non-empty messages array)
     act(() => {
-      result.current.runtime.onNew({
+      store(result.current.runtime).onNew({
         content: [{ type: "text", text: "New message" }],
         parentId: "root",
       });
@@ -965,18 +985,16 @@ describe("useWsRuntime", () => {
 
     // History arrives after user already started chatting
     act(() => {
-      ws.onmessage?.({
-        data: JSON.stringify({
-          type: "history",
-          messages: [
-            { role: "user", content: "Old message" },
-            { role: "assistant", content: "Old response" },
-          ],
-        }),
+      ws.simulateMessage({
+        type: "history",
+        messages: [
+          { role: "user", content: "Old message" },
+          { role: "assistant", content: "Old response" },
+        ],
       });
     });
 
-    const messages = result.current.runtime.messages;
+    const messages = store(result.current.runtime).messages;
     // Should still have the user's new message, not the history
     expect(messages[0].content[0].text).toBe("New message");
   });
@@ -986,67 +1004,61 @@ describe("useWsRuntime", () => {
     const ws1 = wsInstances[0];
 
     act(() => {
-      ws1.onopen?.();
+      ws1.simulateOpen();
     });
 
     act(() => {
-      ws1.onmessage?.({
-        data: JSON.stringify({
-          type: "history",
-          messages: [
-            { role: "user", content: "Hi" },
-            { role: "assistant", content: "Hallo!" },
-          ],
-        }),
+      ws1.simulateMessage({
+        type: "history",
+        messages: [
+          { role: "user", content: "Hi" },
+          { role: "assistant", content: "Hallo!" },
+        ],
       });
     });
 
     act(() => {
-      result.current.runtime.onNew({
+      store(result.current.runtime).onNew({
         content: [{ type: "text", text: "Wie ist die Vacation Policy?" }],
         parentId: "root",
       });
     });
 
     act(() => {
-      ws1.onmessage?.({
-        data: JSON.stringify({
-          type: "chunk",
-          content: "Ich schaue nach. Urlaub**: 25 Tage",
-          messageId: "assistant-1",
-        }),
+      ws1.simulateMessage({
+        type: "chunk",
+        content: "Ich schaue nach. Urlaub**: 25 Tage",
+        messageId: "assistant-1",
       });
     });
 
-    let messages = result.current.runtime.messages;
+    let messages = store(result.current.runtime).messages;
     expect(messages[messages.length - 1].content[0].text).toContain("Urlaub**");
 
     // Simulate a disconnect and reconnect cycle.
     act(() => {
-      ws1.onclose?.();
+      ws1.simulateClose();
       vi.advanceTimersByTime(1000);
     });
 
     const ws2 = wsInstances[1];
     act(() => {
-      ws2.onopen?.();
+      ws2.simulateOpen();
     });
 
     act(() => {
-      ws2.onmessage?.({
-        data: JSON.stringify({
-          type: "history",
-          messages: [
-            { role: "user", content: "Hi" },
-            { role: "assistant", content: "Hallo!" },
-            { role: "user", content: "Wie ist die Vacation Policy?" },
-            { role: "assistant", content: "Ich schaue nach. **Urlaubsanspruch:** 25 Tage" },
-          ],
-        }),
+      ws2.simulateMessage({
+        type: "history",
+        messages: [
+          { role: "user", content: "Hi" },
+          { role: "assistant", content: "Hallo!" },
+          { role: "user", content: "Wie ist die Vacation Policy?" },
+          { role: "assistant", content: "Ich schaue nach. **Urlaubsanspruch:** 25 Tage" },
+        ],
       });
     });
 
-    messages = result.current.runtime.messages;
+    messages = store(result.current.runtime).messages;
     expect(messages[messages.length - 1].content[0].text).toBe(
       "Ich schaue nach. **Urlaubsanspruch:** 25 Tage"
     );
@@ -1057,22 +1069,20 @@ describe("useWsRuntime", () => {
     const ws = wsInstances[0];
 
     act(() => {
-      ws.onopen?.();
+      ws.simulateOpen();
     });
 
     act(() => {
-      ws.onmessage?.({
-        data: JSON.stringify({
-          type: "history",
-          messages: [
-            { role: "user", content: "Hello", timestamp: "2026-02-20T21:30:00Z" },
-            { role: "assistant", content: "Hi!", timestamp: "2026-02-20T21:30:05Z" },
-          ],
-        }),
+      ws.simulateMessage({
+        type: "history",
+        messages: [
+          { role: "user", content: "Hello", timestamp: "2026-02-20T21:30:00Z" },
+          { role: "assistant", content: "Hi!", timestamp: "2026-02-20T21:30:05Z" },
+        ],
       });
     });
 
-    const messages = result.current.runtime.messages;
+    const messages = store(result.current.runtime).messages;
     expect(messages[0].metadata).toEqual({ custom: { timestamp: "2026-02-20T21:30:00Z" } });
     expect(messages[1].metadata).toEqual({ custom: { timestamp: "2026-02-20T21:30:05Z" } });
   });
@@ -1082,19 +1092,17 @@ describe("useWsRuntime", () => {
     const ws = wsInstances[0];
 
     act(() => {
-      ws.onopen?.();
+      ws.simulateOpen();
     });
 
     act(() => {
-      ws.onmessage?.({
-        data: JSON.stringify({
-          type: "history",
-          messages: [{ role: "user", content: "Hello" }],
-        }),
+      ws.simulateMessage({
+        type: "history",
+        messages: [{ role: "user", content: "Hello" }],
       });
     });
 
-    const messages = result.current.runtime.messages;
+    const messages = store(result.current.runtime).messages;
     expect(messages[0].metadata).toBeUndefined();
   });
 
@@ -1105,17 +1113,17 @@ describe("useWsRuntime", () => {
     const ws = wsInstances[0];
 
     act(() => {
-      ws.onopen?.();
+      ws.simulateOpen();
     });
 
     act(() => {
-      result.current.runtime.onNew({
+      store(result.current.runtime).onNew({
         content: [{ type: "text", text: "Hello" }],
         parentId: "root",
       });
     });
 
-    const messages = result.current.runtime.messages;
+    const messages = store(result.current.runtime).messages;
     expect(messages[0].metadata).toEqual({
       custom: { timestamp: "2026-03-15T10:30:00.000Z", status: "sending" },
     });
@@ -1128,11 +1136,11 @@ describe("useWsRuntime", () => {
     const ws = wsInstances[0];
 
     act(() => {
-      ws.onopen?.();
+      ws.simulateOpen();
     });
 
     act(() => {
-      result.current.runtime.onNew({
+      store(result.current.runtime).onNew({
         content: [{ type: "text", text: "Hello" }],
         parentId: "root",
       });
@@ -1141,18 +1149,16 @@ describe("useWsRuntime", () => {
     vi.setSystemTime(new Date("2026-03-15T10:30:10Z"));
 
     act(() => {
-      ws.onmessage?.({
-        data: JSON.stringify({
-          type: "chunk",
-          content: "Hi there!",
-          messageId: "msg-1",
-        }),
+      ws.simulateMessage({
+        type: "chunk",
+        content: "Hi there!",
+        messageId: "msg-1",
       });
     });
 
-    const messages = result.current.runtime.messages;
+    const messages = store(result.current.runtime).messages;
     const assistantMsg = messages.find((m: any) => m.role === "assistant");
-    expect(assistantMsg.metadata).toEqual({
+    expect(assistantMsg!.metadata).toEqual({
       custom: { timestamp: "2026-03-15T10:30:10.000Z" },
     });
   });
@@ -1175,11 +1181,11 @@ describe("useWsRuntime", () => {
       const ws = wsInstances[0];
 
       act(() => {
-        ws.onopen?.();
+        ws.simulateOpen();
       });
 
       act(() => {
-        result.current.runtime.onNew({
+        store(result.current.runtime).onNew({
           content: [{ type: "text", text: "Hello" }],
           parentId: "root",
         });
@@ -1205,11 +1211,11 @@ describe("useWsRuntime", () => {
       const ws = wsInstances[0];
 
       act(() => {
-        ws.onopen?.();
+        ws.simulateOpen();
       });
 
       act(() => {
-        result.current.runtime.onNew({
+        store(result.current.runtime).onNew({
           content: [{ type: "text", text: "Hello" }],
           parentId: "root",
         });
@@ -1223,12 +1229,10 @@ describe("useWsRuntime", () => {
 
       // Chunk arrives — should reset
       act(() => {
-        ws.onmessage?.({
-          data: JSON.stringify({
-            type: "chunk",
-            content: "Hi",
-            messageId: "msg-1",
-          }),
+        ws.simulateMessage({
+          type: "chunk",
+          content: "Hi",
+          messageId: "msg-1",
         });
       });
       expect(result.current.isDelayed).toBe(false);
@@ -1239,11 +1243,11 @@ describe("useWsRuntime", () => {
       const ws = wsInstances[0];
 
       act(() => {
-        ws.onopen?.();
+        ws.simulateOpen();
       });
 
       act(() => {
-        result.current.runtime.onNew({
+        store(result.current.runtime).onNew({
           content: [{ type: "text", text: "Hello" }],
           parentId: "root",
         });
@@ -1254,12 +1258,10 @@ describe("useWsRuntime", () => {
         vi.advanceTimersByTime(5000);
       });
       act(() => {
-        ws.onmessage?.({
-          data: JSON.stringify({
-            type: "chunk",
-            content: "Hi",
-            messageId: "msg-1",
-          }),
+        ws.simulateMessage({
+          type: "chunk",
+          content: "Hi",
+          messageId: "msg-1",
         });
       });
 
@@ -1275,11 +1277,11 @@ describe("useWsRuntime", () => {
       const ws = wsInstances[0];
 
       act(() => {
-        ws.onopen?.();
+        ws.simulateOpen();
       });
 
       act(() => {
-        result.current.runtime.onNew({
+        store(result.current.runtime).onNew({
           content: [{ type: "text", text: "Hello" }],
           parentId: "root",
         });
@@ -1291,19 +1293,15 @@ describe("useWsRuntime", () => {
       expect(result.current.isDelayed).toBe(true);
 
       act(() => {
-        ws.onmessage?.({
-          data: JSON.stringify({
-            type: "chunk",
-            content: "Response",
-            messageId: "msg-1",
-          }),
+        ws.simulateMessage({
+          type: "chunk",
+          content: "Response",
+          messageId: "msg-1",
         });
       });
 
       act(() => {
-        ws.onmessage?.({
-          data: JSON.stringify({ type: "done", messageId: "msg-1" }),
-        });
+        ws.simulateMessage({ type: "done", messageId: "msg-1" });
       });
 
       expect(result.current.isDelayed).toBe(false);
@@ -1314,11 +1312,11 @@ describe("useWsRuntime", () => {
       const ws = wsInstances[0];
 
       act(() => {
-        ws.onopen?.();
+        ws.simulateOpen();
       });
 
       act(() => {
-        result.current.runtime.onNew({
+        store(result.current.runtime).onNew({
           content: [{ type: "text", text: "Hello" }],
           parentId: "root",
         });
@@ -1330,12 +1328,10 @@ describe("useWsRuntime", () => {
       expect(result.current.isDelayed).toBe(true);
 
       act(() => {
-        ws.onmessage?.({
-          data: JSON.stringify({
-            type: "error",
-            message: "Something went wrong",
-            messageId: "msg-1",
-          }),
+        ws.simulateMessage({
+          type: "error",
+          message: "Something went wrong",
+          messageId: "msg-1",
         });
       });
 
@@ -1347,7 +1343,7 @@ describe("useWsRuntime", () => {
       const ws = wsInstances[0];
 
       act(() => {
-        ws.onopen?.();
+        ws.simulateOpen();
       });
 
       // Advance time without sending a message
@@ -1370,15 +1366,13 @@ describe("useWsRuntime", () => {
       const ws = wsInstances[0];
 
       act(() => {
-        ws.onopen?.();
+        ws.simulateOpen();
       });
 
       act(() => {
-        ws.onmessage?.({
-          data: JSON.stringify({
-            type: "history",
-            messages: [],
-          }),
+        ws.simulateMessage({
+          type: "history",
+          messages: [],
         });
       });
 
@@ -1390,15 +1384,13 @@ describe("useWsRuntime", () => {
       const ws = wsInstances[0];
 
       act(() => {
-        ws.onopen?.();
+        ws.simulateOpen();
       });
 
       act(() => {
-        ws.onmessage?.({
-          data: JSON.stringify({
-            type: "history",
-            messages: [{ role: "assistant", content: "Hello!" }],
-          }),
+        ws.simulateMessage({
+          type: "history",
+          messages: [{ role: "assistant", content: "Hello!" }],
         });
       });
 
@@ -1410,19 +1402,17 @@ describe("useWsRuntime", () => {
       const ws = wsInstances[0];
 
       act(() => {
-        ws.onopen?.();
+        ws.simulateOpen();
       });
 
       act(() => {
-        ws.onmessage?.({
-          data: JSON.stringify({ type: "history", messages: [] }),
-        });
+        ws.simulateMessage({ type: "history", messages: [] });
       });
 
       expect(result.current.isHistoryLoaded).toBe(true);
 
       act(() => {
-        ws.onclose?.();
+        ws.simulateClose();
       });
 
       expect(result.current.isHistoryLoaded).toBe(false);
@@ -1443,12 +1433,10 @@ describe("useWsRuntime", () => {
       const ws = wsInstances[0];
 
       act(() => {
-        ws.onopen?.();
+        ws.simulateOpen();
       });
       act(() => {
-        ws.onmessage?.({
-          data: JSON.stringify({ type: "history", messages: [] }),
-        });
+        ws.simulateMessage({ type: "history", messages: [] });
       });
 
       expect(result.current.hasInitialContent).toBe(false);
@@ -1459,14 +1447,12 @@ describe("useWsRuntime", () => {
       const ws = wsInstances[0];
 
       act(() => {
-        ws.onopen?.();
+        ws.simulateOpen();
       });
       act(() => {
-        ws.onmessage?.({
-          data: JSON.stringify({
-            type: "history",
-            messages: [{ role: "assistant", content: "Hello!" }],
-          }),
+        ws.simulateMessage({
+          type: "history",
+          messages: [{ role: "assistant", content: "Hello!" }],
         });
       });
 
@@ -1480,15 +1466,13 @@ describe("useWsRuntime", () => {
       const ws = wsInstances[0];
 
       act(() => {
-        ws.onopen?.();
+        ws.simulateOpen();
       });
       act(() => {
-        ws.onmessage?.({
-          data: JSON.stringify({
-            type: "history",
-            messages: [],
-            sessionKnown: true,
-          }),
+        ws.simulateMessage({
+          type: "history",
+          messages: [],
+          sessionKnown: true,
         });
       });
 
@@ -1518,22 +1502,18 @@ describe("useWsRuntime", () => {
       const ws = wsInstances[0];
 
       act(() => {
-        ws.onopen?.();
-        ws.onmessage?.({
-          data: JSON.stringify({ type: "openclaw_status", connected: true }),
-        });
+        ws.simulateOpen();
+        ws.simulateMessage({ type: "openclaw_status", connected: true });
       });
 
       // Connected upstream + downstream, but no content yet → still "starting".
       expect(result.current.status).toEqual({ kind: "starting" });
-      expect(result.current.ws.runtime.messages).toHaveLength(0);
+      expect(store(result.current.ws.runtime).messages).toHaveLength(0);
 
       act(() => {
-        ws.onmessage?.({
-          data: JSON.stringify({
-            type: "history",
-            messages: [{ role: "assistant", content: "Hello!" }],
-          }),
+        ws.simulateMessage({
+          type: "history",
+          messages: [{ role: "assistant", content: "Hello!" }],
         });
       });
 
@@ -1542,7 +1522,7 @@ describe("useWsRuntime", () => {
       // is no intermediate snapshot where the indicator is green but the
       // chat is empty.
       expect(result.current.status).toEqual({ kind: "ready" });
-      expect(result.current.ws.runtime.messages).toHaveLength(1);
+      expect(store(result.current.ws.runtime).messages).toHaveLength(1);
     });
 
     it("clears the knownEmptyHistory signal on disconnect", () => {
@@ -1553,17 +1533,15 @@ describe("useWsRuntime", () => {
       const ws = wsInstances[0];
 
       act(() => {
-        ws.onopen?.();
+        ws.simulateOpen();
       });
       act(() => {
-        ws.onmessage?.({
-          data: JSON.stringify({ type: "history", messages: [], sessionKnown: true }),
-        });
+        ws.simulateMessage({ type: "history", messages: [], sessionKnown: true });
       });
       expect(result.current.hasInitialContent).toBe(true);
 
       act(() => {
-        ws.onclose?.();
+        ws.simulateClose();
       });
 
       expect(result.current.hasInitialContent).toBe(false);
@@ -1576,12 +1554,12 @@ describe("useWsRuntime", () => {
       const ws = wsInstances[0];
 
       act(() => {
-        ws.onopen?.();
+        ws.simulateOpen();
       });
       expect(wsInstances).toHaveLength(1);
 
       act(() => {
-        ws.onclose?.();
+        ws.simulateClose();
       });
 
       // Advance past first reconnect delay (1 second)
@@ -1596,12 +1574,12 @@ describe("useWsRuntime", () => {
       const ws1 = wsInstances[0];
 
       act(() => {
-        ws1.onopen?.();
+        ws1.simulateOpen();
       });
 
       // First disconnect -> 1s delay
       act(() => {
-        ws1.onclose?.();
+        ws1.simulateClose();
       });
       act(() => {
         vi.advanceTimersByTime(1000);
@@ -1611,7 +1589,7 @@ describe("useWsRuntime", () => {
       // Second disconnect -> 2s delay
       const ws2 = wsInstances[1];
       act(() => {
-        ws2.onclose?.();
+        ws2.simulateClose();
       });
       act(() => {
         vi.advanceTimersByTime(1000);
@@ -1628,7 +1606,7 @@ describe("useWsRuntime", () => {
       const ws = wsInstances[0];
 
       act(() => {
-        ws.onopen?.();
+        ws.simulateOpen();
       });
 
       unmount();
@@ -1646,12 +1624,12 @@ describe("useWsRuntime", () => {
       const ws1 = wsInstances[0];
 
       act(() => {
-        ws1.onopen?.();
+        ws1.simulateOpen();
       });
 
       // Disconnect and reconnect
       act(() => {
-        ws1.onclose?.();
+        ws1.simulateClose();
       });
       act(() => {
         vi.advanceTimersByTime(1000);
@@ -1661,12 +1639,12 @@ describe("useWsRuntime", () => {
       // Successful reconnect resets counter
       const ws2 = wsInstances[1];
       act(() => {
-        ws2.onopen?.();
+        ws2.simulateOpen();
       });
 
       // Disconnect again - should use 1s delay (not 2s)
       act(() => {
-        ws2.onclose?.();
+        ws2.simulateClose();
       });
       act(() => {
         vi.advanceTimersByTime(1000);
@@ -1679,14 +1657,14 @@ describe("useWsRuntime", () => {
       const ws1 = wsInstances[0];
 
       act(() => {
-        ws1.onopen?.();
+        ws1.simulateOpen();
       });
 
       // Disconnect 4 times: delays are 1s, 2s, 4s, 5s (capped)
       for (let i = 0; i < 4; i++) {
         const ws = wsInstances[wsInstances.length - 1];
         act(() => {
-          ws.onclose?.();
+          ws.simulateClose();
         });
         act(() => {
           vi.advanceTimersByTime(5000);
@@ -1696,7 +1674,7 @@ describe("useWsRuntime", () => {
       // 5th disconnect: should still reconnect after 5s (not 16s or 32s)
       const ws5 = wsInstances[wsInstances.length - 1];
       act(() => {
-        ws5.onclose?.();
+        ws5.simulateClose();
       });
 
       // After 5s the next reconnect should happen (capped, not 16s)
@@ -1710,14 +1688,14 @@ describe("useWsRuntime", () => {
       renderHook(() => useWsRuntime("agent-1"));
       const ws1 = wsInstances[0];
       act(() => {
-        ws1.onopen?.();
+        ws1.simulateOpen();
       });
 
       // Simulate 10 disconnects without successful reconnect
       for (let i = 0; i < 10; i++) {
         const ws = wsInstances[wsInstances.length - 1];
         act(() => {
-          ws.onclose?.();
+          ws.simulateClose();
         });
         act(() => {
           vi.advanceTimersByTime(5000);
@@ -1729,7 +1707,7 @@ describe("useWsRuntime", () => {
       // 11th disconnect should NOT reconnect
       const lastWs = wsInstances[wsInstances.length - 1];
       act(() => {
-        lastWs.onclose?.();
+        lastWs.simulateClose();
       });
       act(() => {
         vi.advanceTimersByTime(60000);
@@ -1747,21 +1725,19 @@ describe("useWsRuntime", () => {
 
       // Connect and load history for agent-1
       act(() => {
-        ws1.onopen?.();
+        ws1.simulateOpen();
       });
       act(() => {
-        ws1.onmessage?.({
-          data: JSON.stringify({
-            type: "history",
-            messages: [
-              { role: "user", content: "Hello" },
-              { role: "assistant", content: "Hi from agent 1!" },
-            ],
-          }),
+        ws1.simulateMessage({
+          type: "history",
+          messages: [
+            { role: "user", content: "Hello" },
+            { role: "assistant", content: "Hi from agent 1!" },
+          ],
         });
       });
 
-      expect(result.current.runtime.messages).toHaveLength(2);
+      expect(store(result.current.runtime).messages).toHaveLength(2);
 
       // Switch to agent-2
       rerender({ agentId: "agent-2" });
@@ -1769,21 +1745,19 @@ describe("useWsRuntime", () => {
 
       // Connect to new agent
       act(() => {
-        ws2.onopen?.();
+        ws2.simulateOpen();
       });
 
       // History from agent-2 arrives
       act(() => {
-        ws2.onmessage?.({
-          data: JSON.stringify({
-            type: "history",
-            messages: [{ role: "assistant", content: "Welcome to agent 2!" }],
-          }),
+        ws2.simulateMessage({
+          type: "history",
+          messages: [{ role: "assistant", content: "Welcome to agent 2!" }],
         });
       });
 
       // Should show agent-2's history, NOT agent-1's
-      const messages = result.current.runtime.messages;
+      const messages = store(result.current.runtime).messages;
       expect(messages).toHaveLength(1);
       expect(messages[0].content[0].text).toBe("Welcome to agent 2!");
     });
@@ -1796,10 +1770,10 @@ describe("useWsRuntime", () => {
 
       // Chat with agent-1
       act(() => {
-        ws1.onopen?.();
+        ws1.simulateOpen();
       });
       act(() => {
-        result.current.runtime.onNew({
+        store(result.current.runtime).onNew({
           content: [{ type: "text", text: "Hello agent 1" }],
           parentId: "root",
         });
@@ -1810,21 +1784,19 @@ describe("useWsRuntime", () => {
       const ws2 = wsInstances[1];
 
       act(() => {
-        ws2.onopen?.();
+        ws2.simulateOpen();
       });
 
       // Agent-2 has empty history
       act(() => {
-        ws2.onmessage?.({
-          data: JSON.stringify({
-            type: "history",
-            messages: [],
-          }),
+        ws2.simulateMessage({
+          type: "history",
+          messages: [],
         });
       });
 
       // Should be empty — agent-1's messages must not leak into agent-2
-      expect(result.current.runtime.messages).toHaveLength(0);
+      expect(store(result.current.runtime).messages).toHaveLength(0);
     });
   });
 
@@ -1838,7 +1810,7 @@ describe("useWsRuntime", () => {
 
       // User sends a message before connection is open
       act(() => {
-        result.current.runtime.onNew({
+        store(result.current.runtime).onNew({
           content: [{ type: "text", text: "Hello while connecting" }],
           parentId: "root",
         });
@@ -1853,7 +1825,7 @@ describe("useWsRuntime", () => {
       // User message should still appear optimistically in messages, followed
       // by the in-flight assistant placeholder the send path appends (the
       // tab-refocus crash fix — list always ends in assistant while running).
-      const messages = result.current.runtime.messages;
+      const messages = store(result.current.runtime).messages;
       expect(messages).toHaveLength(2);
       expect(messages[0].role).toBe("user");
       expect(messages[0].content[0].text).toBe("Hello while connecting");
@@ -1862,7 +1834,7 @@ describe("useWsRuntime", () => {
       // Now the connection opens
       ws.readyState = 1;
       act(() => {
-        ws.onopen?.();
+        ws.simulateOpen();
       });
 
       // The queued message should now be sent
@@ -1880,18 +1852,18 @@ describe("useWsRuntime", () => {
       // Connect first
       ws1.readyState = 1;
       act(() => {
-        ws1.onopen?.();
+        ws1.simulateOpen();
       });
 
       // Disconnect
       ws1.readyState = 3; // CLOSED
       act(() => {
-        ws1.onclose?.();
+        ws1.simulateClose();
       });
 
       // User sends message while disconnected
       act(() => {
-        result.current.runtime.onNew({
+        store(result.current.runtime).onNew({
           content: [{ type: "text", text: "Sent while offline" }],
           parentId: "root",
         });
@@ -1905,7 +1877,7 @@ describe("useWsRuntime", () => {
       const ws2 = wsInstances[1];
       ws2.readyState = 1;
       act(() => {
-        ws2.onopen?.();
+        ws2.simulateOpen();
       });
 
       // The queued message should be sent on the new connection
@@ -1921,13 +1893,13 @@ describe("useWsRuntime", () => {
       const ws1 = wsInstances[0];
 
       act(() => {
-        ws1.onopen?.();
+        ws1.simulateOpen();
       });
 
       ws1.readyState = MockWebSocket.CLOSING;
 
       act(() => {
-        result.current.runtime.onNew({
+        store(result.current.runtime).onNew({
           content: [{ type: "text", text: "Sent while closing" }],
           parentId: "root",
         });
@@ -1943,7 +1915,7 @@ describe("useWsRuntime", () => {
       const ws2 = wsInstances[1];
       ws2.readyState = MockWebSocket.OPEN;
       act(() => {
-        ws2.onopen?.();
+        ws2.simulateOpen();
       });
 
       const sentMessages = ws2.send.mock.calls.filter(
@@ -1964,22 +1936,22 @@ describe("useWsRuntime", () => {
       const ws = wsInstances[0];
 
       act(() => {
-        ws.onopen?.();
+        ws.simulateOpen();
       });
 
       act(() => {
-        result.current.runtime.onNew({
+        store(result.current.runtime).onNew({
           content: [{ type: "text", text: "Hello" }],
           parentId: "root",
         });
       });
 
-      expect(result.current.runtime.isRunning).toBe(true);
+      expect(store(result.current.runtime).isRunning).toBe(true);
 
       // Real browser behavior: onerror always fires before onclose.
       act(() => {
-        ws.onerror?.();
-        ws.onclose?.();
+        ws.simulateError();
+        ws.simulateClose();
       });
 
       // Advance well past every former guess window — no failure bubble appears.
@@ -1987,8 +1959,8 @@ describe("useWsRuntime", () => {
         vi.advanceTimersByTime(120_000);
       });
 
-      expect(result.current.runtime.isRunning).toBe(false);
-      const disconnectError = result.current.runtime.messages.find(
+      expect(store(result.current.runtime).isRunning).toBe(false);
+      const disconnectError = store(result.current.runtime).messages.find(
         (m: any) =>
           m.role === "assistant" &&
           (m.metadata?.custom?.error?.disconnected === true ||
@@ -2005,20 +1977,18 @@ describe("useWsRuntime", () => {
       const ws1 = wsInstances[0];
 
       act(() => {
-        ws1.onopen?.();
+        ws1.simulateOpen();
       });
 
       // Start a stream on agent-1
       act(() => {
-        result.current.runtime.onNew({
+        store(result.current.runtime).onNew({
           content: [{ type: "text", text: "Hello" }],
           parentId: "root",
         });
       });
       act(() => {
-        ws1.onmessage?.({
-          data: JSON.stringify({ type: "chunk", content: "Hi", messageId: "msg-1" }),
-        });
+        ws1.simulateMessage({ type: "chunk", content: "Hi", messageId: "msg-1" });
       });
 
       // Switch to agent-2 while stream is active
@@ -2026,11 +1996,11 @@ describe("useWsRuntime", () => {
 
       // Old connection closes (triggered by cleanup calling ws.close())
       act(() => {
-        ws1.onclose?.();
+        ws1.simulateClose();
       });
 
       // Agent-2's messages must be empty — no spurious disconnect error
-      expect(result.current.runtime.messages).toHaveLength(0);
+      expect(store(result.current.runtime).messages).toHaveLength(0);
     });
 
     it("should not add a disconnect error message when idle (no active stream)", () => {
@@ -2038,23 +2008,21 @@ describe("useWsRuntime", () => {
       const ws = wsInstances[0];
 
       act(() => {
-        ws.onopen?.();
+        ws.simulateOpen();
       });
 
       act(() => {
-        ws.onmessage?.({
-          data: JSON.stringify({ type: "history", messages: [] }),
-        });
+        ws.simulateMessage({ type: "history", messages: [] });
       });
 
-      const messagesBefore = result.current.runtime.messages.length;
+      const messagesBefore = store(result.current.runtime).messages.length;
 
       // Disconnect while idle
       act(() => {
-        ws.onclose?.();
+        ws.simulateClose();
       });
 
-      expect(result.current.runtime.messages).toHaveLength(messagesBefore);
+      expect(store(result.current.runtime).messages).toHaveLength(messagesBefore);
     });
 
     // A mid-stream disconnect followed by a successful reconnect+history-reconcile
@@ -2067,39 +2035,35 @@ describe("useWsRuntime", () => {
       const ws = wsInstances[0];
 
       act(() => {
-        ws.onopen?.();
+        ws.simulateOpen();
       });
       act(() => {
-        ws.onmessage?.({
-          data: JSON.stringify({
-            type: "history",
-            messages: [{ role: "assistant", content: "Hi" }],
-          }),
+        ws.simulateMessage({
+          type: "history",
+          messages: [{ role: "assistant", content: "Hi" }],
         });
       });
 
       // User sends → partial chunk → close mid-stream
       act(() => {
-        result.current.runtime.onNew({
+        store(result.current.runtime).onNew({
           content: [{ type: "text", text: "Wie ist die Vacation Policy?" }],
           parentId: "root",
         });
       });
       act(() => {
-        ws.onmessage?.({
-          data: JSON.stringify({
-            type: "chunk",
-            content: "Ich schaue nach. Urlaub**:",
-            messageId: "asst-1",
-          }),
+        ws.simulateMessage({
+          type: "chunk",
+          content: "Ich schaue nach. Urlaub**:",
+          messageId: "asst-1",
         });
       });
       act(() => {
-        ws.onclose?.();
+        ws.simulateClose();
       });
 
       // No failure bubble on close — the client doesn't guess failure.
-      const beforeReconnect = result.current.runtime.messages;
+      const beforeReconnect = store(result.current.runtime).messages;
       expect(
         beforeReconnect.find(
           (m: any) => m.role === "assistant" && m.metadata?.custom?.error?.disconnected === true
@@ -2112,21 +2076,19 @@ describe("useWsRuntime", () => {
       });
       const ws2 = wsInstances[1];
       act(() => {
-        ws2.onopen?.();
+        ws2.simulateOpen();
       });
       act(() => {
-        ws2.onmessage?.({
-          data: JSON.stringify({
-            type: "history",
-            messages: [
-              { role: "assistant", content: "Hi" },
-              { role: "user", content: "Wie ist die Vacation Policy?" },
-              {
-                role: "assistant",
-                content: "Ich schaue nach. **Urlaubsanspruch:** 25 Tage",
-              },
-            ],
-          }),
+        ws2.simulateMessage({
+          type: "history",
+          messages: [
+            { role: "assistant", content: "Hi" },
+            { role: "user", content: "Wie ist die Vacation Policy?" },
+            {
+              role: "assistant",
+              content: "Ich schaue nach. **Urlaubsanspruch:** 25 Tage",
+            },
+          ],
         });
       });
 
@@ -2135,7 +2097,7 @@ describe("useWsRuntime", () => {
         vi.advanceTimersByTime(2000);
       });
 
-      const finalMessages = result.current.runtime.messages;
+      const finalMessages = store(result.current.runtime).messages;
       expect(
         finalMessages.find(
           (m: any) => m.role === "assistant" && m.metadata?.custom?.error?.disconnected === true
@@ -2153,12 +2115,12 @@ describe("useWsRuntime", () => {
       const ws1 = wsInstances[0];
 
       act(() => {
-        ws1.onopen?.();
-        ws1.onmessage?.({ data: JSON.stringify({ type: "history", messages: [] }) });
+        ws1.simulateOpen();
+        ws1.simulateMessage({ type: "history", messages: [] });
       });
 
       act(() => {
-        result.current.runtime.onNew({
+        store(result.current.runtime).onNew({
           content: [{ type: "text", text: "Summarize this profile" }],
           parentId: "root",
         });
@@ -2168,25 +2130,21 @@ describe("useWsRuntime", () => {
       // fire when local state carries an error bubble (the #199 index-shrink
       // guard), so we drive that state via the new liveness mechanism.
       act(() => {
-        ws1.onmessage?.({
-          data: JSON.stringify({
-            type: "chunk",
-            messageId: "asst-late",
-            content: "Partial summary",
-          }),
+        ws1.simulateMessage({
+          type: "chunk",
+          messageId: "asst-late",
+          content: "Partial summary",
         });
-        ws1.onmessage?.({
-          data: JSON.stringify({ type: "liveness", state: "failed", reason: "stream dropped" }),
-        });
-        ws1.onclose?.();
+        ws1.simulateMessage({ type: "liveness", state: "failed", reason: "stream dropped" });
+        ws1.simulateClose();
       });
 
-      const localLength = result.current.runtime.messages.length;
+      const localLength = store(result.current.runtime).messages.length;
       // user + error bubble (the partial chunk's placeholder is replaced by the
       // failure bubble) → length 2, and crucially one carries an error.
-      expect(result.current.runtime.messages.some((m: any) => m.metadata?.custom?.error)).toBe(
-        true
-      );
+      expect(
+        store(result.current.runtime).messages.some((m: any) => m.metadata?.custom?.error)
+      ).toBe(true);
 
       // Reconnect backoff fires after 1s, creating a fresh WebSocket.
       act(() => {
@@ -2195,27 +2153,25 @@ describe("useWsRuntime", () => {
 
       const ws2 = wsInstances[1];
       act(() => {
-        ws2.onopen?.();
-        ws2.onmessage?.({
-          data: JSON.stringify({
-            type: "history",
-            messages: [
-              { role: "user", content: "Summarize this profile" },
-              { role: "assistant", content: "Final summary" },
-            ],
-          }),
+        ws2.simulateOpen();
+        ws2.simulateMessage({
+          type: "history",
+          messages: [
+            { role: "user", content: "Summarize this profile" },
+            { role: "assistant", content: "Final summary" },
+          ],
         });
       });
 
       expect(result.current.isReconcilingMessages).toBe(true);
-      expect(result.current.runtime.messages).toHaveLength(localLength);
+      expect(store(result.current.runtime).messages).toHaveLength(localLength);
 
       act(() => {
         vi.advanceTimersByTime(0);
       });
 
-      expect(result.current.runtime.messages).toHaveLength(2);
-      expect(result.current.runtime.messages[1].content[0].text).toBe("Final summary");
+      expect(store(result.current.runtime).messages).toHaveLength(2);
+      expect(store(result.current.runtime).messages[1].content[0].text).toBe("Final summary");
       expect(result.current.isReconcilingMessages).toBe(true);
 
       act(() => {
@@ -2230,23 +2186,21 @@ describe("useWsRuntime", () => {
       const ws = wsInstances[0];
 
       act(() => {
-        ws.onopen?.();
-        ws.onmessage?.({ data: JSON.stringify({ type: "history", messages: [] }) });
+        ws.simulateOpen();
+        ws.simulateMessage({ type: "history", messages: [] });
       });
 
       act(() => {
-        result.current.runtime.onNew({
+        store(result.current.runtime).onNew({
           content: [{ type: "text", text: "Keep working while I close my laptop" }],
           parentId: "root",
         });
       });
       act(() => {
-        ws.onmessage?.({
-          data: JSON.stringify({
-            type: "chunk",
-            messageId: "asst-sleep",
-            content: "Working on it...",
-          }),
+        ws.simulateMessage({
+          type: "chunk",
+          messageId: "asst-sleep",
+          content: "Working on it...",
         });
       });
 
@@ -2256,7 +2210,7 @@ describe("useWsRuntime", () => {
           value: "hidden",
         });
         document.dispatchEvent(new Event("visibilitychange"));
-        ws.onclose?.();
+        ws.simulateClose();
       });
 
       act(() => {
@@ -2264,7 +2218,7 @@ describe("useWsRuntime", () => {
       });
 
       expect(
-        result.current.runtime.messages.find(
+        store(result.current.runtime).messages.find(
           (m: any) => m.role === "assistant" && m.metadata?.custom?.error?.disconnected === true
         )
       ).toBeUndefined();
@@ -2285,13 +2239,13 @@ describe("useWsRuntime", () => {
       const ws = wsInstances[0];
 
       act(() => {
-        ws.onopen?.();
-        ws.onmessage?.({ data: JSON.stringify({ type: "history", messages: [] }) });
+        ws.simulateOpen();
+        ws.simulateMessage({ type: "history", messages: [] });
       });
 
       // Send a message — 1009 is only meaningful in the context of a recent send
       act(() => {
-        result.current.runtime.onNew({
+        store(result.current.runtime).onNew({
           content: [{ type: "text", text: "here's a huge image" }],
           parentId: "root",
         });
@@ -2302,7 +2256,7 @@ describe("useWsRuntime", () => {
         ws.simulateClose(1009);
       });
 
-      const messages = result.current.runtime.messages;
+      const messages = store(result.current.runtime).messages;
       const lastMsg = messages[messages.length - 1] as {
         role: string;
         metadata?: {
@@ -2338,13 +2292,13 @@ describe("useWsRuntime", () => {
       const ws = wsInstances[0];
 
       act(() => {
-        ws.onopen?.();
-        ws.onmessage?.({ data: JSON.stringify({ type: "openclaw_status", connected: true }) });
-        ws.onmessage?.({ data: JSON.stringify({ type: "history", messages: [] }) });
+        ws.simulateOpen();
+        ws.simulateMessage({ type: "openclaw_status", connected: true });
+        ws.simulateMessage({ type: "history", messages: [] });
       });
 
       act(() => {
-        result.current.ws.runtime.onNew({
+        store(result.current.ws.runtime).onNew({
           content: [{ type: "text", text: "here's a huge image" }],
           parentId: "root",
         });
@@ -2368,12 +2322,12 @@ describe("useWsRuntime", () => {
       const firstWs = wsInstances[0];
 
       act(() => {
-        firstWs.onopen?.();
-        firstWs.onmessage?.({ data: JSON.stringify({ type: "history", messages: [] }) });
+        firstWs.simulateOpen();
+        firstWs.simulateMessage({ type: "history", messages: [] });
       });
 
       act(() => {
-        result.current.runtime.onNew({
+        store(result.current.runtime).onNew({
           content: [{ type: "text", text: "oversized image" }],
           parentId: "root",
         });
@@ -2387,7 +2341,7 @@ describe("useWsRuntime", () => {
       expect(wsInstances).toHaveLength(1);
 
       act(() => {
-        result.current.runtime.onNew({
+        store(result.current.runtime).onNew({
           content: [{ type: "text", text: "smaller image" }],
           parentId: "root",
         });
@@ -2398,7 +2352,7 @@ describe("useWsRuntime", () => {
 
       const nextWs = wsInstances[1];
       act(() => {
-        nextWs.onopen?.();
+        nextWs.simulateOpen();
       });
 
       expect(nextWs.send).toHaveBeenCalledWith(
@@ -2414,11 +2368,11 @@ describe("useWsRuntime", () => {
       const ws = wsInstances[0];
 
       act(() => {
-        ws.onopen?.();
+        ws.simulateOpen();
       });
 
       act(() => {
-        result.current.runtime.onNew({
+        store(result.current.runtime).onNew({
           content: [{ type: "text", text: "Hello" }],
           parentId: "root",
         });
@@ -2432,7 +2386,7 @@ describe("useWsRuntime", () => {
 
       // Disconnect — isDelayed must clear
       act(() => {
-        ws.onclose?.();
+        ws.simulateClose();
       });
       expect(result.current.isDelayed).toBe(false);
     });
@@ -2449,14 +2403,14 @@ describe("useWsRuntime", () => {
       const ws1 = wsInstances[0];
 
       act(() => {
-        ws1.onopen?.();
+        ws1.simulateOpen();
       });
 
       // Exhaust all MAX_RECONNECT_ATTEMPTS (10) + the original connection
       for (let i = 0; i < 10; i++) {
         const ws = wsInstances[wsInstances.length - 1];
         act(() => {
-          ws.onclose?.();
+          ws.simulateClose();
         });
         act(() => {
           vi.advanceTimersByTime(5000);
@@ -2466,7 +2420,7 @@ describe("useWsRuntime", () => {
       // 11th disconnect — no more reconnect attempts
       const lastWs = wsInstances[wsInstances.length - 1];
       act(() => {
-        lastWs.onclose?.();
+        lastWs.simulateClose();
       });
 
       expect(result.current.reconnectExhausted).toBe(true);
@@ -2477,14 +2431,14 @@ describe("useWsRuntime", () => {
       const ws1 = wsInstances[0];
 
       act(() => {
-        ws1.onopen?.();
+        ws1.simulateOpen();
       });
 
       // Fail a few times (but not all)
       for (let i = 0; i < 3; i++) {
         const ws = wsInstances[wsInstances.length - 1];
         act(() => {
-          ws.onclose?.();
+          ws.simulateClose();
         });
         act(() => {
           vi.advanceTimersByTime(5000);
@@ -2494,7 +2448,7 @@ describe("useWsRuntime", () => {
       // Successful reconnect
       const ws4 = wsInstances[wsInstances.length - 1];
       act(() => {
-        ws4.onopen?.();
+        ws4.simulateOpen();
       });
 
       expect(result.current.reconnectExhausted).toBe(false);
@@ -2507,13 +2461,11 @@ describe("useWsRuntime", () => {
       const ws = wsInstances[0];
 
       act(() => {
-        ws.onopen?.();
+        ws.simulateOpen();
       });
 
       act(() => {
-        ws.onmessage?.({
-          data: JSON.stringify({ type: "openclaw:restarting" }),
-        });
+        ws.simulateMessage({ type: "openclaw:restarting" });
       });
 
       expect(mockTriggerRestart).toHaveBeenCalledOnce();
@@ -2524,14 +2476,12 @@ describe("useWsRuntime", () => {
       const ws = wsInstances[0];
 
       act(() => {
-        ws.onopen?.();
+        ws.simulateOpen();
       });
 
       // Should not throw or cause issues
       act(() => {
-        ws.onmessage?.({
-          data: JSON.stringify({ type: "openclaw:ready" }),
-        });
+        ws.simulateMessage({ type: "openclaw:ready" });
       });
 
       // triggerRestart should NOT be called for ready messages
@@ -2545,7 +2495,7 @@ describe("useWsRuntime", () => {
       const ws = wsInstances[0];
 
       act(() => {
-        ws.onopen?.();
+        ws.simulateOpen();
       });
 
       // Push 250 messages via a single history frame — the fastest path into
@@ -2557,12 +2507,10 @@ describe("useWsRuntime", () => {
       }));
 
       act(() => {
-        ws.onmessage?.({
-          data: JSON.stringify({ type: "history", messages: historyPayload }),
-        });
+        ws.simulateMessage({ type: "history", messages: historyPayload });
       });
 
-      const messages = result.current.runtime.messages;
+      const messages = store(result.current.runtime).messages;
       expect(messages).toHaveLength(200);
       // The oldest 50 must be gone; the newest 200 must be retained.
       expect(messages[0].content[0].text).toBe("message-50");
@@ -2579,19 +2527,15 @@ describe("useWsRuntime", () => {
       // upstream readiness — required since the client default is now false,
       // see issue #198), and load history.
       act(() => {
-        ws.onopen?.();
+        ws.simulateOpen();
       });
       act(() => {
-        ws.onmessage?.({
-          data: JSON.stringify({ type: "openclaw_status", connected: true }),
-        });
+        ws.simulateMessage({ type: "openclaw_status", connected: true });
       });
       act(() => {
-        ws.onmessage?.({
-          data: JSON.stringify({
-            type: "history",
-            messages: [{ role: "assistant", content: "Hello!" }],
-          }),
+        ws.simulateMessage({
+          type: "history",
+          messages: [{ role: "assistant", content: "Hello!" }],
         });
       });
 
@@ -2600,9 +2544,7 @@ describe("useWsRuntime", () => {
 
       // Step 2: OpenClaw goes unavailable (fullyConnected: true → false)
       act(() => {
-        ws.onmessage?.({
-          data: JSON.stringify({ type: "openclaw_status", connected: false }),
-        });
+        ws.simulateMessage({ type: "openclaw_status", connected: false });
       });
       expect(result.current.isOpenClawConnected).toBe(false);
 
@@ -2611,9 +2553,7 @@ describe("useWsRuntime", () => {
 
       // Step 3: OpenClaw comes back (fullyConnected: false → true — rising edge)
       act(() => {
-        ws.onmessage?.({
-          data: JSON.stringify({ type: "openclaw_status", connected: true }),
-        });
+        ws.simulateMessage({ type: "openclaw_status", connected: true });
       });
       expect(result.current.isOpenClawConnected).toBe(true);
 
@@ -2632,7 +2572,7 @@ describe("useWsRuntime", () => {
 
       // Connect for the first time — ws.onopen already sends history
       act(() => {
-        ws.onopen?.();
+        ws.simulateOpen();
       });
 
       // Only one history request should have been sent (from onopen), not two
@@ -2648,7 +2588,7 @@ describe("useWsRuntime", () => {
 
       // Connect but do NOT send history response yet (isHistoryLoaded stays false)
       act(() => {
-        ws.onopen?.();
+        ws.simulateOpen();
       });
 
       // isOpenClawConnected starts false (issue #198); simulate a false → true
@@ -2657,9 +2597,7 @@ describe("useWsRuntime", () => {
       const sendsBefore = ws.send.mock.calls.length;
 
       act(() => {
-        ws.onmessage?.({
-          data: JSON.stringify({ type: "openclaw_status", connected: true }),
-        });
+        ws.simulateMessage({ type: "openclaw_status", connected: true });
       });
 
       // isHistoryLoaded is still false — must NOT send another history request
@@ -2676,29 +2614,27 @@ describe("useWsRuntime", () => {
     const ws = wsInstances[0];
 
     act(() => {
-      ws.onopen?.();
+      ws.simulateOpen();
     });
     act(() => {
-      result.current.runtime.onNew({
+      store(result.current.runtime).onNew({
         content: [{ type: "text", text: "Hello" }],
         parentId: "root",
       });
     });
 
     act(() => {
-      ws.onmessage?.({
-        data: JSON.stringify({
-          type: "error",
-          code: "attachment_invalid",
-          message: "File type mismatch: claimed application/pdf, content is image/png",
-        }),
+      ws.simulateMessage({
+        type: "error",
+        code: "attachment_invalid",
+        message: "File type mismatch: claimed application/pdf, content is image/png",
       });
     });
 
-    const messages = result.current.runtime.messages;
+    const messages = store(result.current.runtime).messages;
     const errorMsg = messages.find((m: any) => m.role === "assistant" && m.metadata?.custom?.error);
     expect(errorMsg).toBeDefined();
-    expect(errorMsg.metadata.custom.error).toEqual({
+    expect(errorMsg!.metadata!.custom.error).toEqual({
       attachmentInvalid: true,
       message: "File type mismatch: claimed application/pdf, content is image/png",
     });
@@ -2715,28 +2651,26 @@ describe("useWsRuntime", () => {
       const ws = wsInstances[0];
 
       act(() => {
-        ws.onopen?.();
+        ws.simulateOpen();
       });
       act(() => {
-        result.current.runtime.onNew({
+        store(result.current.runtime).onNew({
           content: [{ type: "text", text: "Send a file" }],
           parentId: "root",
         });
       });
 
       act(() => {
-        ws.onmessage?.({
-          data: JSON.stringify({ type: "error", code, message }),
-        });
+        ws.simulateMessage({ type: "error", code, message });
       });
 
-      const messages = result.current.runtime.messages;
+      const messages = store(result.current.runtime).messages;
       const errorMsg = messages.find(
         (m: any) => m.role === "assistant" && m.metadata?.custom?.error
       );
       expect(errorMsg).toBeDefined();
-      expect(errorMsg.metadata.custom.error.attachmentInvalid).toBe(true);
-      expect(errorMsg.metadata.custom.error.message).toBe(message);
+      expect(errorMsg!.metadata!.custom.error!.attachmentInvalid).toBe(true);
+      expect(errorMsg!.metadata!.custom.error!.message).toBe(message);
     }
   );
 
@@ -2751,7 +2685,7 @@ describe("useWsRuntime", () => {
       });
 
       await act(async () => {
-        result.current.runtime.onNew(makeUserMessage("test message"));
+        store(result.current.runtime).onNew(makeUserMessage("test message"));
       });
 
       const ws = latestWs();
@@ -2788,12 +2722,7 @@ describe("useWsRuntime", () => {
         await vi.advanceTimersByTimeAsync(15_000);
       });
 
-      const historyUserMsg = (
-        result.current.runtime.messages as Array<{
-          role: string;
-          metadata?: { custom?: { status?: string } };
-        }>
-      ).find((m) => m.role === "user");
+      const historyUserMsg = store(result.current.runtime).messages.find((m) => m.role === "user");
       expect(historyUserMsg).toBeDefined();
       // History messages have no status (server payload didn't include one),
       // and crucially they did NOT transition to "failed".
@@ -2812,7 +2741,7 @@ describe("useWsRuntime", () => {
       });
 
       await act(async () => {
-        result.current.runtime.onNew(makeUserMessage("hello"));
+        store(result.current.runtime).onNew(makeUserMessage("hello"));
       });
 
       const ws = latestWs();
@@ -2825,13 +2754,9 @@ describe("useWsRuntime", () => {
         await vi.advanceTimersByTimeAsync(10_000);
       });
 
-      const failedMsg = (
-        result.current.runtime.messages as Array<{
-          id?: string;
-          role: string;
-          metadata?: { custom?: { status?: string } };
-        }>
-      ).find((m) => m.role === "user" && m.id === sentPayload.clientMessageId);
+      const failedMsg = store(result.current.runtime).messages.find(
+        (m) => m.role === "user" && m.id === sentPayload.clientMessageId
+      );
       expect(failedMsg?.metadata?.custom?.status).toBe("failed");
     });
 
@@ -2844,7 +2769,7 @@ describe("useWsRuntime", () => {
       });
 
       await act(async () => {
-        result.current.runtime.onNew(makeUserMessage("hello"));
+        store(result.current.runtime).onNew(makeUserMessage("hello"));
       });
 
       const ws = latestWs();
@@ -2865,13 +2790,9 @@ describe("useWsRuntime", () => {
         await vi.advanceTimersByTimeAsync(5_000);
       });
 
-      const sentMsg = (
-        result.current.runtime.messages as Array<{
-          id?: string;
-          role: string;
-          metadata?: { custom?: { status?: string } };
-        }>
-      ).find((m) => m.role === "user" && m.id === sentPayload.clientMessageId);
+      const sentMsg = store(result.current.runtime).messages.find(
+        (m) => m.role === "user" && m.id === sentPayload.clientMessageId
+      );
       expect(sentMsg?.metadata?.custom?.status).toBe("sent");
     });
 
@@ -2884,7 +2805,7 @@ describe("useWsRuntime", () => {
       });
 
       await act(async () => {
-        result.current.runtime.onNew(makeUserMessage("hello"));
+        store(result.current.runtime).onNew(makeUserMessage("hello"));
       });
 
       const ws = latestWs();
@@ -2903,13 +2824,9 @@ describe("useWsRuntime", () => {
         ws.simulateMessage({ type: "complete" });
       });
 
-      const lateMsg = (
-        result.current.runtime.messages as Array<{
-          id?: string;
-          role: string;
-          metadata?: { custom?: { status?: string } };
-        }>
-      ).find((m) => m.role === "user" && m.id === sentPayload.clientMessageId);
+      const lateMsg = store(result.current.runtime).messages.find(
+        (m) => m.role === "user" && m.id === sentPayload.clientMessageId
+      );
       expect(lateMsg?.metadata?.custom?.status).toBe("failed");
     });
   });
@@ -2925,7 +2842,7 @@ describe("useWsRuntime", () => {
       });
 
       await act(async () => {
-        result.current.runtime.onNew(makeUserMessage("hello"));
+        store(result.current.runtime).onNew(makeUserMessage("hello"));
       });
 
       expect(result.current.isRunning).toBe(true);
@@ -2948,7 +2865,7 @@ describe("useWsRuntime", () => {
       });
 
       await act(async () => {
-        result.current.runtime.onNew(makeUserMessage("hello"));
+        store(result.current.runtime).onNew(makeUserMessage("hello"));
       });
 
       expect(result.current.isRunning).toBe(true);
@@ -2971,7 +2888,7 @@ describe("useWsRuntime", () => {
       });
 
       await act(async () => {
-        result.current.runtime.onNew(makeUserMessage("hello"));
+        store(result.current.runtime).onNew(makeUserMessage("hello"));
       });
 
       // Simulate chunk arriving (stream started), then WS closes
@@ -3006,7 +2923,7 @@ describe("useWsRuntime", () => {
       });
 
       await act(async () => {
-        result.current.runtime.onNew(makeUserMessage("hello"));
+        store(result.current.runtime).onNew(makeUserMessage("hello"));
       });
 
       expect(result.current.isRunning).toBe(true);
@@ -3027,7 +2944,7 @@ describe("useWsRuntime", () => {
       });
 
       expect(result.current.isRunning).toBe(true);
-      const failureBubble = result.current.runtime.messages.find(
+      const failureBubble = store(result.current.runtime).messages.find(
         (m: any) =>
           m.role === "assistant" &&
           (m.metadata?.custom?.error?.timedOut === true || m.metadata?.custom?.error?.message)
@@ -3051,7 +2968,7 @@ describe("useWsRuntime", () => {
 
       // Case 1: failure before any chunk → send_failure.
       await act(async () => {
-        result.current.runtime.onNew(makeUserMessage("hello"));
+        store(result.current.runtime).onNew(makeUserMessage("hello"));
       });
       await act(async () => {
         latestWs().simulateMessage({
@@ -3062,10 +2979,7 @@ describe("useWsRuntime", () => {
       });
 
       expect(result.current.isRunning).toBe(false);
-      let messages = result.current.runtime.messages as Array<{
-        role: string;
-        metadata?: { custom?: { retryable?: boolean; retryReason?: string } };
-      }>;
+      let messages = store(result.current.runtime).messages;
       let lastMsg = messages[messages.length - 1];
       expect(lastMsg.role).toBe("assistant");
       expect(lastMsg.metadata?.custom?.retryable).toBe(true);
@@ -3073,7 +2987,7 @@ describe("useWsRuntime", () => {
 
       // Case 2: a fresh turn that streams a chunk, then fails → partial_stream_failure.
       await act(async () => {
-        result.current.runtime.onNew(makeUserMessage("again"));
+        store(result.current.runtime).onNew(makeUserMessage("again"));
       });
       await act(async () => {
         latestWs().simulateMessage({ type: "chunk", messageId: "m1", content: "Partial..." });
@@ -3084,10 +2998,7 @@ describe("useWsRuntime", () => {
         });
       });
 
-      messages = result.current.runtime.messages as Array<{
-        role: string;
-        metadata?: { custom?: { retryable?: boolean; retryReason?: string } };
-      }>;
+      messages = store(result.current.runtime).messages;
       lastMsg = messages[messages.length - 1];
       expect(lastMsg.role).toBe("assistant");
       expect(lastMsg.metadata?.custom?.retryable).toBe(true);
@@ -3103,7 +3014,7 @@ describe("useWsRuntime", () => {
       });
 
       await act(async () => {
-        result.current.runtime.onNew(makeUserMessage("hello"));
+        store(result.current.runtime).onNew(makeUserMessage("hello"));
       });
 
       expect(result.current.isRunning).toBe(true);
@@ -3116,10 +3027,7 @@ describe("useWsRuntime", () => {
 
       expect(result.current.isRunning).toBe(false);
 
-      const messages = result.current.runtime.messages as Array<{
-        role: string;
-        metadata?: { custom?: { retryable?: boolean; retryReason?: string } };
-      }>;
+      const messages = store(result.current.runtime).messages;
       const lastMsg = messages[messages.length - 1];
       expect(lastMsg.role).toBe("assistant");
       expect(lastMsg.metadata?.custom?.retryable).toBe(true);
@@ -3139,7 +3047,7 @@ describe("useWsRuntime", () => {
 
       // Build a completed turn: user → ack → assistant chunk → complete
       await act(async () => {
-        result.current.runtime.onNew(makeUserMessage("hello"));
+        store(result.current.runtime).onNew(makeUserMessage("hello"));
       });
       const ws = latestWs();
       const sentPayload = JSON.parse(ws.send.mock.calls.at(-1)![0] as string) as {
@@ -3151,7 +3059,7 @@ describe("useWsRuntime", () => {
         ws.simulateMessage({ type: "complete" });
       });
 
-      const beforeDisconnect = (result.current.runtime.messages as Array<{ role: string }>).length;
+      const beforeDisconnect = store(result.current.runtime).messages.length;
       expect(beforeDisconnect).toBeGreaterThanOrEqual(2);
 
       // Disconnect (no stream in progress, no error bubble injected)
@@ -3171,7 +3079,7 @@ describe("useWsRuntime", () => {
       });
 
       // Messages from before the disconnect must still be present
-      const messages = result.current.runtime.messages as Array<{ role: string }>;
+      const messages = store(result.current.runtime).messages;
       const userMessages = messages.filter((m) => m.role === "user");
       expect(userMessages).toHaveLength(1);
       const assistantMessages = messages.filter((m) => m.role === "assistant");
@@ -3191,7 +3099,7 @@ describe("useWsRuntime", () => {
       // frame produces a local error bubble (the case that used to be the
       // deferred disconnect bubble).
       await act(async () => {
-        result.current.runtime.onNew(makeUserMessage("hello"));
+        store(result.current.runtime).onNew(makeUserMessage("hello"));
       });
 
       const ws = latestWs();
@@ -3219,10 +3127,7 @@ describe("useWsRuntime", () => {
         latestWs().simulateMessage({ type: "history", messages: [] });
       });
 
-      const messages = result.current.runtime.messages as Array<{
-        role: string;
-        metadata?: { custom?: { error?: unknown } };
-      }>;
+      const messages = store(result.current.runtime).messages;
       expect(messages.length).toBeGreaterThanOrEqual(2); // user + error bubble
 
       // Local state must be preserved — empty server history can't be canonical
@@ -3246,7 +3151,7 @@ describe("useWsRuntime", () => {
       });
 
       await act(async () => {
-        result.current.runtime.onNew(makeUserMessage("write a story"));
+        store(result.current.runtime).onNew(makeUserMessage("write a story"));
       });
 
       const ws = latestWs();
@@ -3263,9 +3168,7 @@ describe("useWsRuntime", () => {
 
       // Pre-retry: 2 assistant entries (partial + error bubble)
       expect(
-        (result.current.runtime.messages as Array<{ role: string }>).filter(
-          (m) => m.role === "assistant"
-        )
+        store(result.current.runtime).messages.filter((m) => m.role === "assistant")
       ).toHaveLength(2);
 
       await act(async () => {
@@ -3277,7 +3180,7 @@ describe("useWsRuntime", () => {
 
       // After the retry's first chunk: only user + new assistant remain.
       // The previous partial response and the error bubble are both gone.
-      const finalMessages = result.current.runtime.messages as Array<{ role: string }>;
+      const finalMessages = store(result.current.runtime).messages;
       expect(finalMessages.filter((m) => m.role === "user")).toHaveLength(1);
       expect(finalMessages.filter((m) => m.role === "assistant")).toHaveLength(1);
     });
@@ -3291,7 +3194,7 @@ describe("useWsRuntime", () => {
       });
 
       await act(async () => {
-        result.current.runtime.onNew(makeUserMessage("hello"));
+        store(result.current.runtime).onNew(makeUserMessage("hello"));
       });
 
       const ws = latestWs();
@@ -3300,12 +3203,9 @@ describe("useWsRuntime", () => {
       });
 
       // Confirm the error bubble exists at this point
-      const beforeRetry = (
-        result.current.runtime.messages as Array<{
-          role: string;
-          metadata?: { custom?: { error?: unknown } };
-        }>
-      ).filter((m) => m.role === "assistant" && m.metadata?.custom?.error);
+      const beforeRetry = store(result.current.runtime).messages.filter(
+        (m) => m.role === "assistant" && m.metadata?.custom?.error
+      );
       expect(beforeRetry).toHaveLength(1);
 
       // Simulate a successful retry: chunk arrives
@@ -3314,12 +3214,9 @@ describe("useWsRuntime", () => {
       });
 
       // Error bubble must be gone — only the successful assistant chunk remains
-      const afterChunk = (
-        result.current.runtime.messages as Array<{
-          role: string;
-          metadata?: { custom?: { error?: unknown } };
-        }>
-      ).filter((m) => m.role === "assistant" && m.metadata?.custom?.error);
+      const afterChunk = store(result.current.runtime).messages.filter(
+        (m) => m.role === "assistant" && m.metadata?.custom?.error
+      );
       expect(afterChunk).toHaveLength(0);
     });
 
@@ -3332,7 +3229,7 @@ describe("useWsRuntime", () => {
       });
 
       await act(async () => {
-        result.current.runtime.onNew(makeUserMessage("hello"));
+        store(result.current.runtime).onNew(makeUserMessage("hello"));
       });
 
       const ws = latestWs();
@@ -3341,29 +3238,23 @@ describe("useWsRuntime", () => {
       });
 
       // After first error: 1 user message + 1 error bubble = 2 messages
-      const errorBubblesAfterFirst = (
-        result.current.runtime.messages as Array<{
-          role: string;
-          metadata?: { custom?: { error?: unknown } };
-        }>
-      ).filter((m) => m.role === "assistant" && m.metadata?.custom?.error);
+      const errorBubblesAfterFirst = store(result.current.runtime).messages.filter(
+        (m) => m.role === "assistant" && m.metadata?.custom?.error
+      );
       expect(errorBubblesAfterFirst).toHaveLength(1);
 
       // Simulate another send + error (e.g. user retried, server failed again)
       await act(async () => {
-        result.current.runtime.onNew(makeUserMessage("retry attempt"));
+        store(result.current.runtime).onNew(makeUserMessage("retry attempt"));
       });
       await act(async () => {
         ws.simulateMessage({ type: "error", message: "Second error" });
       });
 
       // Only ONE error bubble must exist — the new one replaced the old one
-      const errorBubblesAfterSecond = (
-        result.current.runtime.messages as Array<{
-          role: string;
-          metadata?: { custom?: { error?: { message?: string } } };
-        }>
-      ).filter((m) => m.role === "assistant" && m.metadata?.custom?.error);
+      const errorBubblesAfterSecond = store(result.current.runtime).messages.filter(
+        (m) => m.role === "assistant" && m.metadata?.custom?.error
+      );
       expect(errorBubblesAfterSecond).toHaveLength(1);
       expect(errorBubblesAfterSecond[0].metadata?.custom?.error?.message).toBe("Second error");
     });
@@ -3377,7 +3268,7 @@ describe("useWsRuntime", () => {
       });
 
       await act(async () => {
-        result.current.runtime.onNew(makeUserMessage("hello"));
+        store(result.current.runtime).onNew(makeUserMessage("hello"));
       });
 
       const ws = latestWs();
@@ -3398,10 +3289,7 @@ describe("useWsRuntime", () => {
 
       expect(result.current.isRunning).toBe(false);
 
-      const messages = result.current.runtime.messages as Array<{
-        role: string;
-        metadata?: { custom?: { retryable?: boolean; retryReason?: string } };
-      }>;
+      const messages = store(result.current.runtime).messages;
       const lastMsg = messages[messages.length - 1];
       expect(lastMsg.role).toBe("assistant");
       expect(lastMsg.metadata?.custom?.retryable).toBe(true);
@@ -3460,7 +3348,7 @@ describe("useWsRuntime", () => {
       });
 
       await act(async () => {
-        result.current.runtime.onNew(makeUserMessage("hello world"));
+        store(result.current.runtime).onNew(makeUserMessage("hello world"));
       });
 
       const ws = latestWs();
@@ -3496,7 +3384,7 @@ describe("useWsRuntime", () => {
       });
 
       await act(async () => {
-        result.current.runtime.onNew(makeUserMessage("write a story"));
+        store(result.current.runtime).onNew(makeUserMessage("write a story"));
       });
 
       const ws = latestWs();
@@ -3533,7 +3421,7 @@ describe("useWsRuntime", () => {
       });
 
       await act(async () => {
-        result.current.runtime.onNew(makeUserMessage("are you there?"));
+        store(result.current.runtime).onNew(makeUserMessage("are you there?"));
       });
 
       const ws = latestWs();
@@ -3569,7 +3457,7 @@ describe("useWsRuntime", () => {
 
       // The retry path resends the last user message, so a message must exist.
       await act(async () => {
-        result.current.runtime.onNew(makeUserMessage("hello"));
+        store(result.current.runtime).onNew(makeUserMessage("hello"));
       });
 
       // isRunning is true after sending; let it settle by completing the turn
@@ -3604,7 +3492,7 @@ describe("useWsRuntime", () => {
 
       // Send a user message
       await act(async () => {
-        result.current.runtime.onNew(makeUserMessage("hello retry"));
+        store(result.current.runtime).onNew(makeUserMessage("hello retry"));
       });
 
       const ws = latestWs();
@@ -3622,10 +3510,9 @@ describe("useWsRuntime", () => {
       });
 
       // Verify message is now "failed" by checking the metadata.custom.status
-      const failedMsg = (result.current.runtime.messages as Array<unknown>).find((m) => {
-        const msg = m as { id?: string; metadata?: { custom?: { status?: string } } };
-        return msg.id === messageId && msg.metadata?.custom?.status === "failed";
-      });
+      const failedMsg = store(result.current.runtime).messages.find(
+        (m) => m.id === messageId && m.metadata?.custom?.status === "failed"
+      );
       expect(failedMsg).toBeDefined();
 
       // Clear send call history so we can assert the retry re-send
@@ -3637,10 +3524,9 @@ describe("useWsRuntime", () => {
       });
 
       // Message status should now be "sending" again
-      const retriedMsg = (result.current.runtime.messages as Array<unknown>).find((m) => {
-        const msg = m as { id?: string; metadata?: { custom?: { status?: string } } };
-        return msg.id === messageId && msg.metadata?.custom?.status === "sending";
-      });
+      const retriedMsg = store(result.current.runtime).messages.find(
+        (m) => m.id === messageId && m.metadata?.custom?.status === "sending"
+      );
       expect(retriedMsg).toBeDefined();
 
       // WS send was called again with the SAME clientMessageId and content
@@ -3669,7 +3555,7 @@ describe("useWsRuntime", () => {
       });
 
       await act(async () => {
-        result.current.runtime.onNew(makeUserMessage("hello"));
+        store(result.current.runtime).onNew(makeUserMessage("hello"));
       });
 
       const ws = latestWs();
@@ -3701,7 +3587,7 @@ describe("useWsRuntime", () => {
       });
 
       await act(async () => {
-        result.current.runtime.onNew(makeUserMessage("hello retry running"));
+        store(result.current.runtime).onNew(makeUserMessage("hello retry running"));
       });
 
       const ws = latestWs();
@@ -3747,7 +3633,7 @@ describe("useWsRuntime", () => {
       });
 
       await act(async () => {
-        result.current.runtime.onNew(makeUserMessage("timer test"));
+        store(result.current.runtime).onNew(makeUserMessage("timer test"));
       });
 
       const ws = latestWs();
@@ -3772,10 +3658,9 @@ describe("useWsRuntime", () => {
       });
 
       // After second timeout: message should be "failed" again
-      const failedMsg = (result.current.runtime.messages as Array<unknown>).find((m) => {
-        const msg = m as { id?: string; metadata?: { custom?: { status?: string } } };
-        return msg.id === messageId && msg.metadata?.custom?.status === "failed";
-      });
+      const failedMsg = store(result.current.runtime).messages.find(
+        (m) => m.id === messageId && m.metadata?.custom?.status === "failed"
+      );
       expect(failedMsg).toBeDefined();
     });
   });
@@ -3793,7 +3678,7 @@ describe("useWsRuntime", () => {
 
       // Send a user message — it will have status "sending"
       await act(async () => {
-        result.current.runtime.onNew(makeUserMessage("hello from user"));
+        store(result.current.runtime).onNew(makeUserMessage("hello from user"));
       });
 
       // Simulate a history reload that contains the user message (it was persisted).
@@ -3817,12 +3702,7 @@ describe("useWsRuntime", () => {
 
       // The reconcile upgraded the in-flight user message from "sending" → "sent"
       // because its content appears in the reloaded history.
-      const userMsg = (
-        result.current.runtime.messages as Array<{
-          role: string;
-          metadata?: { custom?: { status?: string } };
-        }>
-      ).find((m) => m.role === "user");
+      const userMsg = store(result.current.runtime).messages.find((m) => m.role === "user");
       expect(userMsg?.metadata?.custom?.status).toBe("sent");
     });
 
@@ -3837,7 +3717,7 @@ describe("useWsRuntime", () => {
 
       // Send a user message — it will have status "sending"
       await act(async () => {
-        result.current.runtime.onNew(makeUserMessage("persisted message"));
+        store(result.current.runtime).onNew(makeUserMessage("persisted message"));
       });
 
       // History reload: contains the user message but no assistant reply yet
@@ -3857,12 +3737,7 @@ describe("useWsRuntime", () => {
       // The user message is reconciled from history → status "sent". (No
       // client-side orphan guess any more — the server's liveness verdict is
       // authoritative for whether the run is still going / failed.)
-      const userMsg = (
-        result.current.runtime.messages as Array<{
-          role: string;
-          metadata?: { custom?: { status?: string } };
-        }>
-      ).find((m) => m.role === "user");
+      const userMsg = store(result.current.runtime).messages.find((m) => m.role === "user");
       expect(userMsg?.metadata?.custom?.status).toBe("sent");
     });
 
@@ -3877,7 +3752,7 @@ describe("useWsRuntime", () => {
 
       // Send a user message — it will have status "sending"
       await act(async () => {
-        result.current.runtime.onNew(makeUserMessage("lost message"));
+        store(result.current.runtime).onNew(makeUserMessage("lost message"));
       });
 
       // Simulate a history reload that does NOT contain the message
@@ -3896,12 +3771,7 @@ describe("useWsRuntime", () => {
 
       // The sending message should now be "failed" — it never appeared in
       // history, so the reducer marks it as not delivered.
-      const userMsg = (
-        result.current.runtime.messages as Array<{
-          role: string;
-          metadata?: { custom?: { status?: string } };
-        }>
-      ).find((m) => m.role === "user");
+      const userMsg = store(result.current.runtime).messages.find((m) => m.role === "user");
       expect(userMsg?.metadata?.custom?.status).toBe("failed");
     });
 
@@ -3922,7 +3792,7 @@ describe("useWsRuntime", () => {
 
       // User sends; receive ack but NO chunk yet
       await act(async () => {
-        result.current.runtime.onNew(makeUserMessage("what's the vacation policy?"));
+        store(result.current.runtime).onNew(makeUserMessage("what's the vacation policy?"));
       });
       const ws = latestWs();
       const sentPayload = JSON.parse(ws.send.mock.calls.at(-1)![0] as string) as {
@@ -3959,11 +3829,7 @@ describe("useWsRuntime", () => {
         await vi.advanceTimersByTimeAsync(50);
       });
 
-      const messages = result.current.runtime.messages as Array<{
-        role: string;
-        content: Array<{ text: string }>;
-        metadata?: { custom?: { error?: unknown } };
-      }>;
+      const messages = store(result.current.runtime).messages;
 
       // No failure bubble — reconcile replaced local state with canonical history
       const errorBubbles = messages.filter(
@@ -4008,12 +3874,7 @@ describe("useWsRuntime", () => {
           });
         });
 
-        const userMsg = (
-          result.current.runtime.messages as Array<{
-            role: string;
-            content: Array<{ type: string; filename?: string; mimeType?: string; text?: string }>;
-          }>
-        ).find((m) => m.role === "user");
+        const userMsg = store(result.current.runtime).messages.find((m) => m.role === "user");
         expect(userMsg).toBeDefined();
         // Text content must be the user's typed text — without the markup block.
         const textPart = userMsg!.content.find((p) => p.type === "text");
@@ -4041,12 +3902,7 @@ describe("useWsRuntime", () => {
             ],
           });
         });
-        const userMsg = (
-          result.current.runtime.messages as Array<{
-            role: string;
-            content: Array<{ type: string; mimeType?: string; filename?: string }>;
-          }>
-        ).find((m) => m.role === "user");
+        const userMsg = store(result.current.runtime).messages.find((m) => m.role === "user");
         expect(userMsg).toBeDefined();
         const filePart = userMsg!.content.find((p) => p.type === "file");
         expect(filePart?.mimeType).toBe("image/jpeg");
@@ -4068,7 +3924,7 @@ describe("useWsRuntime", () => {
 
       // User sends a message → reaches "sending" status.
       await act(async () => {
-        result.current.runtime.onNew(makeUserMessage("what's the policy?"));
+        store(result.current.runtime).onNew(makeUserMessage("what's the policy?"));
       });
 
       // Drop the connection mid-stream — server-side OC continues but
@@ -4096,8 +3952,8 @@ describe("useWsRuntime", () => {
       // message carries "25 days vacation." yet. (The empty in-flight
       // placeholder from the send path is allowed to exist; only the chunk
       // CONTENT must still be absent.)
-      const midwayMessages = result.current.runtime.messages;
-      const appliedBefore = (midwayMessages as Array<{ role: string; content: unknown }>).find(
+      const midwayMessages = store(result.current.runtime).messages;
+      const appliedBefore = midwayMessages.find(
         (m) => m.role === "assistant" && JSON.stringify(m.content).includes("25 days vacation.")
       );
       expect(appliedBefore).toBeUndefined();
@@ -4119,10 +3975,7 @@ describe("useWsRuntime", () => {
 
       // After drain, the assistant message anchored to msg-server-1 has
       // received the chunk's content.
-      const afterMessages = result.current.runtime.messages as Array<{
-        role: string;
-        content: unknown;
-      }>;
+      const afterMessages = store(result.current.runtime).messages;
       const assistantAfter = afterMessages.find((m) => m.role === "assistant");
       expect(assistantAfter).toBeDefined();
       // assistant-ui content shape: array of parts. We expect the chunk
@@ -4130,7 +3983,7 @@ describe("useWsRuntime", () => {
       const flat = JSON.stringify(assistantAfter!.content);
       expect(flat).toContain("25 days vacation.");
       // isRunning preserved across reconnect via the activeRun signal.
-      expect(result.current.runtime.isRunning).toBe(true);
+      expect(store(result.current.runtime).isRunning).toBe(true);
     });
 
     it("does NOT buffer chunks on the very first connect (no recovery context, no race window)", async () => {
@@ -4152,7 +4005,7 @@ describe("useWsRuntime", () => {
       // The chunk was applied (not buffered then drained — that's still
       // visible to the user the same way, but observably isRunning
       // transitions immediately rather than only after history).
-      expect(result.current.runtime.isRunning).toBe(true);
+      expect(store(result.current.runtime).isRunning).toBe(true);
     });
 
     // PR #442 review fix: when shouldStageReplace would normally fire (local
@@ -4189,7 +4042,7 @@ describe("useWsRuntime", () => {
 
       // User retries.
       await act(async () => {
-        result.current.runtime.onNew(makeUserMessage("retry"));
+        store(result.current.runtime).onNew(makeUserMessage("retry"));
       });
 
       // WS drops mid-stream — server-side OC continues.
@@ -4229,16 +4082,11 @@ describe("useWsRuntime", () => {
       // The buffered chunk's text must be present in the in-flight assistant
       // message — proving drain landed on the post-reconcile state, not the
       // pre-stage state that the staged path would have wiped.
-      const messages = result.current.runtime.messages as Array<{
-        role: string;
-        content: unknown;
-      }>;
+      const messages = store(result.current.runtime).messages;
       const flat = JSON.stringify(messages);
       expect(flat).toContain("retry-answer");
       // No lingering error bubble — reconcile wiped it.
-      const errorBubbles = messages.filter(
-        (m) => (m as { metadata?: { custom?: { error?: unknown } } }).metadata?.custom?.error
-      );
+      const errorBubbles = messages.filter((m) => m.metadata?.custom?.error);
       expect(errorBubbles).toHaveLength(0);
     });
   });
@@ -4288,13 +4136,15 @@ describe("Two-phase upload: attachmentIds in WS payload", () => {
     vi.mocked(uploadModule.uploadAttachment).mockResolvedValue({
       id: "upload-id-1",
       filename: "test.pdf",
+      mimeType: "application/pdf",
+      sizeBytes: 4,
     });
 
     const { result } = renderHook(() => useWsRuntime("agent-1"));
     const ws = wsInstances[0];
 
     act(() => {
-      ws.onopen?.();
+      ws.simulateOpen();
     });
 
     // Add a file via addPendingUpload and wait for it to reach "ready"
@@ -4305,7 +4155,7 @@ describe("Two-phase upload: attachmentIds in WS payload", () => {
     expect(result.current.pendingUploads[0]?.state).toBe("ready");
 
     act(() => {
-      result.current.runtime.onNew({
+      store(result.current.runtime).onNew({
         content: [{ type: "text", text: "see this" }],
         parentId: "root",
       });
@@ -4321,13 +4171,15 @@ describe("Two-phase upload: attachmentIds in WS payload", () => {
     vi.mocked(uploadModule.uploadAttachment).mockResolvedValue({
       id: "upload-id-2",
       filename: "doc.pdf",
+      mimeType: "application/pdf",
+      sizeBytes: 4,
     });
 
     const { result } = renderHook(() => useWsRuntime("agent-1"));
     const ws = wsInstances[0];
 
     act(() => {
-      ws.onopen?.();
+      ws.simulateOpen();
     });
 
     await act(async () => {
@@ -4337,7 +4189,7 @@ describe("Two-phase upload: attachmentIds in WS payload", () => {
     expect(result.current.pendingUploads).toHaveLength(1);
 
     act(() => {
-      result.current.runtime.onNew({
+      store(result.current.runtime).onNew({
         content: [{ type: "text", text: "send it" }],
         parentId: "root",
       });
@@ -4353,7 +4205,7 @@ describe("Two-phase upload: attachmentIds in WS payload", () => {
     const ws = wsInstances[0];
 
     act(() => {
-      ws.onopen?.();
+      ws.simulateOpen();
     });
 
     // calls[0] is the history request — clear it
@@ -4365,7 +4217,7 @@ describe("Two-phase upload: attachmentIds in WS payload", () => {
 
     // File is still "uploading" (promise never resolves) — send with empty text
     act(() => {
-      result.current.runtime.onNew({
+      store(result.current.runtime).onNew({
         content: [{ type: "text", text: "" }],
         parentId: "root",
       });
@@ -4394,11 +4246,11 @@ describe("PROTOCOL_OUTDATED error handling", () => {
     const ws = wsInstances[0];
 
     act(() => {
-      ws.onopen?.();
+      ws.simulateOpen();
     });
 
     act(() => {
-      result.current.runtime.onNew({
+      store(result.current.runtime).onNew({
         content: [{ type: "text", text: "Hello" }],
         parentId: "root",
       });
@@ -4407,9 +4259,7 @@ describe("PROTOCOL_OUTDATED error handling", () => {
     expect(result.current.isRunning).toBe(true);
 
     act(() => {
-      ws.onmessage?.({
-        data: JSON.stringify({ type: "error", code: "PROTOCOL_OUTDATED" }),
-      });
+      ws.simulateMessage({ type: "error", code: "PROTOCOL_OUTDATED" });
     });
 
     expect(result.current.isRunning).toBe(false);
@@ -4427,25 +4277,23 @@ describe("PROTOCOL_OUTDATED error handling", () => {
     const ws = wsInstances[0];
 
     act(() => {
-      ws.onopen?.();
+      ws.simulateOpen();
     });
 
     act(() => {
-      result.current.runtime.onNew({
+      store(result.current.runtime).onNew({
         content: [{ type: "text", text: "Hello" }],
         parentId: "root",
       });
     });
 
-    const messagesBefore = result.current.runtime.messages.length;
+    const messagesBefore = store(result.current.runtime).messages.length;
 
     act(() => {
-      ws.onmessage?.({
-        data: JSON.stringify({ type: "error", code: "PROTOCOL_OUTDATED" }),
-      });
+      ws.simulateMessage({ type: "error", code: "PROTOCOL_OUTDATED" });
     });
 
-    expect(result.current.runtime.messages).toHaveLength(messagesBefore);
+    expect(store(result.current.runtime).messages).toHaveLength(messagesBefore);
   });
 });
 
@@ -4496,15 +4344,15 @@ describe("user-triggered abort (onCancel) (#550)", () => {
       ws.onopen?.(new Event("open"));
     });
     act(() => {
-      result.current.runtime.onNew({
+      store(result.current.runtime).onNew({
         content: [{ type: "text", text: "Hello" }],
         parentId: "root",
       });
     });
-    expect(result.current.runtime.isRunning).toBe(true);
+    expect(store(result.current.runtime).isRunning).toBe(true);
 
     act(() => {
-      result.current.runtime.onCancel?.();
+      store(result.current.runtime).onCancel?.();
     });
 
     const abortFrames = sentFramesOfType(ws, "abort");
@@ -4520,14 +4368,14 @@ describe("user-triggered abort (onCancel) (#550)", () => {
       ws.onopen?.(new Event("open"));
     });
     act(() => {
-      result.current.runtime.onNew({
+      store(result.current.runtime).onNew({
         content: [{ type: "text", text: "Hello" }],
         parentId: "root",
       });
     });
 
     act(() => {
-      result.current.runtime.onCancel?.();
+      store(result.current.runtime).onCancel?.();
     });
 
     const abortFrames = sentFramesOfType(ws, "abort");
@@ -4543,18 +4391,18 @@ describe("user-triggered abort (onCancel) (#550)", () => {
       ws.onopen?.(new Event("open"));
     });
     act(() => {
-      result.current.runtime.onNew({
+      store(result.current.runtime).onNew({
         content: [{ type: "text", text: "Hello" }],
         parentId: "root",
       });
     });
-    expect(result.current.runtime.isRunning).toBe(true);
+    expect(store(result.current.runtime).isRunning).toBe(true);
 
     act(() => {
-      result.current.runtime.onCancel?.();
+      store(result.current.runtime).onCancel?.();
     });
 
-    expect(result.current.runtime.isRunning).toBe(false);
+    expect(store(result.current.runtime).isRunning).toBe(false);
   });
 });
 
@@ -4710,7 +4558,7 @@ describe("useWsRuntime — multi-device live-sync (poke + focus)", () => {
       });
     });
 
-    const messages = result.current.runtime.messages as { role: string }[];
+    const messages = store(result.current.runtime).messages;
     expect(JSON.stringify(messages)).toContain("a2-from-device-A");
     expect(messages.filter((m) => m.role === "assistant")).toHaveLength(2);
   });
@@ -4724,7 +4572,7 @@ describe("useWsRuntime — multi-device live-sync (poke + focus)", () => {
     });
     // Stream a full assistant turn locally (Lane A), like the sending device.
     act(() => {
-      result.current.runtime.onNew({
+      store(result.current.runtime).onNew({
         content: [{ type: "text", text: "Hello" }],
         parentId: "root",
       });
@@ -4752,7 +4600,7 @@ describe("useWsRuntime — multi-device live-sync (poke + focus)", () => {
         ],
       });
     });
-    const messages = result.current.runtime.messages as { role: string; content: unknown }[];
+    const messages = store(result.current.runtime).messages;
     const dupes = messages.filter(
       (m) =>
         m.role === "assistant" && JSON.stringify(m.content).includes("Integration test response.")
@@ -4769,7 +4617,7 @@ describe("useWsRuntime — multi-device live-sync (poke + focus)", () => {
     });
     // Start streaming a turn — isRunning=true, no `complete` yet.
     act(() => {
-      result.current.runtime.onNew({
+      store(result.current.runtime).onNew({
         content: [{ type: "text", text: "Hello" }],
         parentId: "root",
       });

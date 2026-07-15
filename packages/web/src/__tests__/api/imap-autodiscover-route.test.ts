@@ -11,6 +11,7 @@ vi.mock("@/lib/auth", () => ({
 }));
 
 import { NextRequest } from "next/server";
+import { routeContext } from "@/test-helpers/route";
 
 const adminSession = { user: { id: "user-1", email: "admin@test.com", role: "admin" } };
 const nonAdminSession = { user: { id: "user-2", email: "member@test.com", role: "member" } };
@@ -31,7 +32,7 @@ describe("GET /api/integrations/imap/autodiscover", () => {
     mockGetSession.mockResolvedValue(null);
 
     const { GET } = await import("@/app/api/integrations/imap/autodiscover/route");
-    const response = await GET(makeRequest("email=someone@gmail.com"));
+    const response = await GET(makeRequest("email=someone@gmail.com"), routeContext());
 
     expect(response.status).toBe(401);
   });
@@ -40,7 +41,7 @@ describe("GET /api/integrations/imap/autodiscover", () => {
     mockGetSession.mockResolvedValue(nonAdminSession);
 
     const { GET } = await import("@/app/api/integrations/imap/autodiscover/route");
-    const response = await GET(makeRequest("email=someone@gmail.com"));
+    const response = await GET(makeRequest("email=someone@gmail.com"), routeContext());
 
     expect(response.status).toBe(403);
   });
@@ -52,7 +53,7 @@ describe("GET /api/integrations/imap/autodiscover", () => {
 
     it("returns the bundled provider-table config for a known provider email", async () => {
       const { GET } = await import("@/app/api/integrations/imap/autodiscover/route");
-      const response = await GET(makeRequest("email=someone@gmail.com"));
+      const response = await GET(makeRequest("email=someone@gmail.com"), routeContext());
       const body = await response.json();
 
       expect(response.status).toBe(200);
@@ -68,7 +69,7 @@ describe("GET /api/integrations/imap/autodiscover", () => {
 
     it("returns { config: {}, source: 'none' } when the email query param is missing", async () => {
       const { GET } = await import("@/app/api/integrations/imap/autodiscover/route");
-      const response = await GET(makeRequest());
+      const response = await GET(makeRequest(), routeContext());
       const body = await response.json();
 
       expect(response.status).toBe(200);
@@ -77,7 +78,7 @@ describe("GET /api/integrations/imap/autodiscover", () => {
 
     it("returns { config: {}, source: 'none' } for an empty email query param", async () => {
       const { GET } = await import("@/app/api/integrations/imap/autodiscover/route");
-      const response = await GET(makeRequest("email="));
+      const response = await GET(makeRequest("email="), routeContext());
       const body = await response.json();
 
       expect(response.status).toBe(200);
@@ -86,7 +87,7 @@ describe("GET /api/integrations/imap/autodiscover", () => {
 
     it("returns { config: {}, source: 'none' } for an unparseable email", async () => {
       const { GET } = await import("@/app/api/integrations/imap/autodiscover/route");
-      const response = await GET(makeRequest("email=not-an-email"));
+      const response = await GET(makeRequest("email=not-an-email"), routeContext());
       const body = await response.json();
 
       expect(response.status).toBe(200);

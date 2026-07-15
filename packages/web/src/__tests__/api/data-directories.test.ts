@@ -25,6 +25,7 @@ vi.mock("fs", () => {
 
 import { readFileSync } from "fs";
 import { GET } from "@/app/api/data-directories/route";
+import { makeNextRequest, routeContext } from "@/test-helpers/route";
 
 describe("GET /api/data-directories", () => {
   beforeEach(() => {
@@ -41,7 +42,7 @@ describe("GET /api/data-directories", () => {
       })
     );
 
-    const response = await GET();
+    const response = await GET(makeNextRequest(), routeContext());
     const body = await response.json();
 
     expect(readFileSync).toHaveBeenCalledWith("/openclaw-config/data-directories.json", "utf-8");
@@ -56,7 +57,7 @@ describe("GET /api/data-directories", () => {
       throw new Error("ENOENT: no such file or directory");
     });
 
-    const response = await GET();
+    const response = await GET(makeNextRequest(), routeContext());
     const body = await response.json();
 
     expect(body.directories).toEqual([]);
@@ -72,7 +73,7 @@ describe("GET /api/data-directories", () => {
       throw err;
     });
 
-    const response = await GET();
+    const response = await GET(makeNextRequest(), routeContext());
     const body = await response.json();
 
     expect(body.directories).toEqual([]);
@@ -88,7 +89,7 @@ describe("GET /api/data-directories", () => {
     const { auth } = await import("@/lib/auth");
     vi.mocked(auth.api.getSession).mockResolvedValueOnce(null);
 
-    const response = await GET();
+    const response = await GET(makeNextRequest(), routeContext());
 
     expect(response.status).toBe(401);
   });

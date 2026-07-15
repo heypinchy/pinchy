@@ -24,7 +24,10 @@ async function appendRow(actorId: string) {
     actorId,
     eventType: "auth.login",
     resource: `user:${actorId}`,
-    detail: null,
+    // `auth.*` entries carry an optional detail (Record<string, unknown> |
+    // undefined, no `null` member) — appendAuditLog itself normalizes a
+    // missing detail to null before writing, so omitting it here has the
+    // exact same runtime effect as the old `detail: null`.
     outcome: "success",
   });
 }

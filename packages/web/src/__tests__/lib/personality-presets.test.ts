@@ -3,9 +3,18 @@ import {
   PERSONALITY_PRESETS,
   getPersonalityPreset,
   resolveGreetingMessage,
+  type PersonalityPresetId,
 } from "@/lib/personality-presets";
 
-const EXPECTED_IDS = ["the-butler", "the-professor", "the-pilot", "the-coach"];
+// Typed as PersonalityPresetId[] (not inferred string[]) so `it.each` binds
+// `id` to the real key type — PERSONALITY_PRESETS is a Record keyed by that
+// union, and a bare `string` can't index it.
+const EXPECTED_IDS: PersonalityPresetId[] = [
+  "the-butler",
+  "the-professor",
+  "the-pilot",
+  "the-coach",
+];
 
 describe("PERSONALITY_PRESETS", () => {
   it("has exactly 4 presets", () => {

@@ -61,7 +61,11 @@ describe("Invite Claim Page", () => {
         const method = init?.method ?? "GET";
         if (method === "GET" && url.startsWith("/api/invite/")) {
           if (getResponse === "pending") return new Promise(() => {});
-          return Promise.resolve({ ok: getResponse.ok, json: async () => getResponse.body });
+          // Capture the narrowed (non-"pending") value in a `const`: TS
+          // widens `getResponse` back to `MockResponse | "pending"` inside
+          // the `json` closure below since it's a reassignable outer `let`.
+          const response = getResponse;
+          return Promise.resolve({ ok: response.ok, json: async () => response.body });
         }
         if (method === "POST" && url === "/api/invite/claim") {
           return Promise.resolve({ ok: postResponse.ok, json: async () => postResponse.body });

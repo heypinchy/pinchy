@@ -32,6 +32,7 @@ vi.mock("@/lib/agent-access", () => ({
 import { getSession } from "@/lib/auth";
 import { appendAuditLog } from "@/lib/audit";
 import { POST } from "@/app/api/internal/audit/background-run/route";
+import { routeContext } from "@/test-helpers/route";
 
 function makeRequest(body: Record<string, unknown>) {
   return new NextRequest("http://localhost/api/internal/audit/background-run", {
@@ -53,7 +54,7 @@ describe("POST /api/internal/audit/background-run", () => {
   it("returns 401 when the user is not authenticated", async () => {
     vi.mocked(getSession).mockResolvedValue(null);
 
-    const res = await POST(makeRequest({ agentId: "agent-1", durationMs: 1500 }));
+    const res = await POST(makeRequest({ agentId: "agent-1", durationMs: 1500 }), routeContext());
 
     expect(res.status).toBe(401);
     expect(appendAuditLog).not.toHaveBeenCalled();
@@ -64,7 +65,7 @@ describe("POST /api/internal/audit/background-run", () => {
       NextResponse.json({ error: "Agent not found" }, { status: 404 })
     );
 
-    const res = await POST(makeRequest({ agentId: "agent-1", durationMs: 1500 }));
+    const res = await POST(makeRequest({ agentId: "agent-1", durationMs: 1500 }), routeContext());
 
     expect(res.status).toBe(404);
     expect(appendAuditLog).not.toHaveBeenCalled();
@@ -73,7 +74,7 @@ describe("POST /api/internal/audit/background-run", () => {
   it("returns 204 and writes a chat.background_run_completed audit log on success", async () => {
     mockGetAgentWithAccess.mockResolvedValue({ id: "agent-1", name: "Smithers" });
 
-    const res = await POST(makeRequest({ agentId: "agent-1", durationMs: 1500 }));
+    const res = await POST(makeRequest({ agentId: "agent-1", durationMs: 1500 }), routeContext());
 
     expect(res.status).toBe(204);
     expect(appendAuditLog).toHaveBeenCalledWith({
@@ -87,21 +88,24 @@ describe("POST /api/internal/audit/background-run", () => {
   });
 
   it("returns 400 when agentId is missing", async () => {
-    const res = await POST(makeRequest({ durationMs: 500 }));
+    const res = await POST(makeRequest({ durationMs: 500 }), routeContext());
 
     expect(res.status).toBe(400);
     expect(appendAuditLog).not.toHaveBeenCalled();
   });
 
   it("returns 400 when durationMs is not a number", async () => {
-    const res = await POST(makeRequest({ agentId: "agent-1", durationMs: "notanumber" }));
+    const res = await POST(
+      makeRequest({ agentId: "agent-1", durationMs: "notanumber" }),
+      routeContext()
+    );
 
     expect(res.status).toBe(400);
     expect(appendAuditLog).not.toHaveBeenCalled();
   });
 
   it("returns 400 when durationMs is negative", async () => {
-    const res = await POST(makeRequest({ agentId: "agent-1", durationMs: -1 }));
+    const res = await POST(makeRequest({ agentId: "agent-1", durationMs: -1 }), routeContext());
 
     expect(res.status).toBe(400);
     expect(appendAuditLog).not.toHaveBeenCalled();
@@ -109,7 +113,10 @@ describe("POST /api/internal/audit/background-run", () => {
 
   it("returns 400 when durationMs exceeds 10 minutes (telemetry sanity bound)", async () => {
     const tenMinutesPlusOne = 10 * 60 * 1000 + 1;
-    const res = await POST(makeRequest({ agentId: "agent-1", durationMs: tenMinutesPlusOne }));
+    const res = await POST(
+      makeRequest({ agentId: "agent-1", durationMs: tenMinutesPlusOne }),
+      routeContext()
+    );
 
     expect(res.status).toBe(400);
     expect(appendAuditLog).not.toHaveBeenCalled();
@@ -117,7 +124,10 @@ describe("POST /api/internal/audit/background-run", () => {
 
   it("accepts durationMs at exactly 10 minutes (boundary)", async () => {
     const tenMinutes = 10 * 60 * 1000;
-    const res = await POST(makeRequest({ agentId: "agent-1", durationMs: tenMinutes }));
+    const res = await POST(
+      makeRequest({ agentId: "agent-1", durationMs: tenMinutes }),
+      routeContext()
+    );
 
     expect(res.status).toBe(204);
     expect(appendAuditLog).toHaveBeenCalled();

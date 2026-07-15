@@ -2,30 +2,31 @@ import { describe, it, expect, vi } from "vitest";
 import { render, screen, fireEvent } from "@testing-library/react";
 import "@testing-library/jest-dom";
 import { TemplateSelector } from "@/components/template-selector";
+import { makeTemplateItem } from "@/test-helpers/fixtures";
 
 describe("TemplateSelector", () => {
   const templates = [
-    {
+    makeTemplateItem({
       id: "knowledge-base",
       name: "Knowledge Base",
       description: "Answer questions from your docs",
       requiresDirectories: true,
       available: true,
-    },
-    {
+    }),
+    makeTemplateItem({
       id: "contract-analyzer",
       name: "Contract Analyzer",
       description: "Review and analyze contracts",
       requiresDirectories: true,
       available: true,
-    },
-    {
+    }),
+    makeTemplateItem({
       id: "custom",
       name: "Custom Agent",
       description: "Start from scratch",
       requiresDirectories: false,
       available: true,
-    },
+    }),
   ];
 
   it("renders templates in thematic categories", () => {
@@ -88,7 +89,7 @@ describe("TemplateSelector", () => {
   it("renders Odoo template in its thematic category, not in separate Odoo section", () => {
     const withOdoo = [
       ...templates,
-      {
+      makeTemplateItem({
         id: "odoo-sales-analyst",
         name: "Sales Analyst",
         description: "Analyze revenue",
@@ -96,7 +97,7 @@ describe("TemplateSelector", () => {
         requiresOdooConnection: true,
         odooAccessLevel: "read-only",
         available: true,
-      },
+      }),
     ];
 
     render(<TemplateSelector templates={withOdoo} onSelect={vi.fn()} />);
@@ -107,7 +108,7 @@ describe("TemplateSelector", () => {
 
   it("renders access badge on read-only Odoo template card", () => {
     const odooTemplates = [
-      {
+      makeTemplateItem({
         id: "odoo-sales-analyst",
         name: "Sales Analyst",
         description: "Analyze revenue",
@@ -115,7 +116,7 @@ describe("TemplateSelector", () => {
         requiresOdooConnection: true,
         odooAccessLevel: "read-only",
         available: true,
-      },
+      }),
     ];
 
     render(<TemplateSelector templates={odooTemplates} onSelect={vi.fn()} />);
@@ -124,7 +125,7 @@ describe("TemplateSelector", () => {
 
   it("renders access badge on read-write Odoo template card", () => {
     const odooTemplates = [
-      {
+      makeTemplateItem({
         id: "odoo-crm-assistant",
         name: "CRM Assistant",
         description: "Manage leads",
@@ -132,7 +133,7 @@ describe("TemplateSelector", () => {
         requiresOdooConnection: true,
         odooAccessLevel: "read-write",
         available: true,
-      },
+      }),
     ];
 
     render(<TemplateSelector templates={odooTemplates} onSelect={vi.fn()} />);
@@ -141,13 +142,13 @@ describe("TemplateSelector", () => {
 
   it("renders access badge on documents template card", () => {
     const docTemplates = [
-      {
+      makeTemplateItem({
         id: "knowledge-base",
         name: "Knowledge Base",
         description: "Answer questions",
         requiresDirectories: true,
         available: true,
-      },
+      }),
     ];
 
     render(<TemplateSelector templates={docTemplates} onSelect={vi.fn()} />);
@@ -156,7 +157,7 @@ describe("TemplateSelector", () => {
 
   it("hides unavailable templates behind collapsible trigger", () => {
     const mixedTemplates = [
-      {
+      makeTemplateItem({
         id: "odoo-sales-analyst",
         name: "Sales Analyst",
         description: "Analyze revenue",
@@ -164,8 +165,8 @@ describe("TemplateSelector", () => {
         requiresDirectories: false,
         odooAccessLevel: "read-only",
         available: true,
-      },
-      {
+      }),
+      makeTemplateItem({
         id: "odoo-crm-assistant",
         name: "CRM Assistant",
         description: "Manage leads",
@@ -174,8 +175,8 @@ describe("TemplateSelector", () => {
         odooAccessLevel: "read-write",
         available: false,
         unavailableReason: "missing-modules" as const,
-      },
-      {
+      }),
+      makeTemplateItem({
         id: "odoo-customer-service",
         name: "Customer Service",
         description: "Handle support",
@@ -184,7 +185,7 @@ describe("TemplateSelector", () => {
         odooAccessLevel: "read-only",
         available: false,
         unavailableReason: "missing-modules" as const,
-      },
+      }),
     ];
 
     render(<TemplateSelector templates={mixedTemplates} onSelect={vi.fn()} />);
@@ -198,7 +199,7 @@ describe("TemplateSelector", () => {
 
   it("shows 'Set up connection' trigger when unavailable reason is no-connection", () => {
     const noConnTemplates = [
-      {
+      makeTemplateItem({
         id: "odoo-sales-analyst",
         name: "Sales Analyst",
         description: "Analyze revenue",
@@ -207,8 +208,8 @@ describe("TemplateSelector", () => {
         odooAccessLevel: "read-only",
         available: false,
         unavailableReason: "no-connection" as const,
-      },
-      {
+      }),
+      makeTemplateItem({
         id: "odoo-crm-assistant",
         name: "CRM Assistant",
         description: "Manage leads",
@@ -217,7 +218,7 @@ describe("TemplateSelector", () => {
         odooAccessLevel: "read-write",
         available: false,
         unavailableReason: "no-connection" as const,
-      },
+      }),
     ];
 
     render(<TemplateSelector templates={noConnTemplates} onSelect={vi.fn()} />);
@@ -229,7 +230,7 @@ describe("TemplateSelector", () => {
 
   it("expands to show unavailable template cards on trigger click", () => {
     const mixedTemplates = [
-      {
+      makeTemplateItem({
         id: "odoo-sales-analyst",
         name: "Sales Analyst",
         description: "Analyze revenue",
@@ -237,8 +238,8 @@ describe("TemplateSelector", () => {
         requiresDirectories: false,
         odooAccessLevel: "read-only",
         available: true,
-      },
-      {
+      }),
+      makeTemplateItem({
         id: "odoo-crm-assistant",
         name: "CRM Assistant",
         description: "Manage leads",
@@ -247,7 +248,7 @@ describe("TemplateSelector", () => {
         odooAccessLevel: "read-write",
         available: false,
         unavailableReason: "missing-modules" as const,
-      },
+      }),
     ];
 
     render(<TemplateSelector templates={mixedTemplates} onSelect={vi.fn()} />);
@@ -263,7 +264,7 @@ describe("TemplateSelector", () => {
 
   it("shows all templates in collapsible when entire category is unavailable", () => {
     const allUnavailable = [
-      {
+      makeTemplateItem({
         id: "odoo-sales-analyst",
         name: "Sales Analyst",
         description: "Analyze revenue",
@@ -272,8 +273,8 @@ describe("TemplateSelector", () => {
         odooAccessLevel: "read-only",
         available: false,
         unavailableReason: "missing-modules" as const,
-      },
-      {
+      }),
+      makeTemplateItem({
         id: "odoo-crm-assistant",
         name: "CRM Assistant",
         description: "Manage leads",
@@ -282,7 +283,7 @@ describe("TemplateSelector", () => {
         odooAccessLevel: "read-write",
         available: false,
         unavailableReason: "missing-modules" as const,
-      },
+      }),
     ];
 
     render(<TemplateSelector templates={allUnavailable} onSelect={vi.fn()} />);
@@ -301,7 +302,7 @@ describe("TemplateSelector", () => {
   it("should call onSelect for unavailable templates after expanding", () => {
     const onSelect = vi.fn();
     const mixedTemplates = [
-      {
+      makeTemplateItem({
         id: "odoo-sales-analyst",
         name: "Available Agent",
         description: "Works",
@@ -309,8 +310,8 @@ describe("TemplateSelector", () => {
         requiresDirectories: false,
         odooAccessLevel: "read-only",
         available: true,
-      },
-      {
+      }),
+      makeTemplateItem({
         id: "odoo-crm-assistant",
         name: "Unavailable Agent",
         description: "Missing modules",
@@ -319,7 +320,7 @@ describe("TemplateSelector", () => {
         odooAccessLevel: "read-write",
         available: false,
         unavailableReason: "missing-modules" as const,
-      },
+      }),
     ];
 
     render(<TemplateSelector templates={mixedTemplates} onSelect={onSelect} />);

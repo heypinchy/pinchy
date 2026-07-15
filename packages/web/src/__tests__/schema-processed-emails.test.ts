@@ -1,7 +1,22 @@
 import { describe, it, expect } from "vitest";
-import { getTableColumns } from "drizzle-orm";
-import { getTableConfig } from "drizzle-orm/pg-core";
+import { getTableColumns, type SQL } from "drizzle-orm";
+import { getTableConfig, type IndexedColumn } from "drizzle-orm/pg-core";
 import { processedEmails } from "@/db/schema";
+
+/**
+ * `IndexConfig.columns` is `Partial<IndexedColumn | SQL>[]` — an index can
+ * mix plain columns and raw SQL expressions, so drizzle's own type only
+ * guarantees the properties common to both (effectively none). Every column
+ * in this unique index is a plain column reference, never a raw SQL
+ * expression, so this narrows to that real case instead of asserting `name`
+ * exists via a cast.
+ */
+function indexedColumnName(col: Partial<IndexedColumn | SQL>): string {
+  if (!("name" in col) || typeof col.name !== "string") {
+    throw new Error("expected a plain IndexedColumn with a string name, not a raw SQL expression");
+  }
+  return col.name;
+}
 
 describe("processed_emails schema", () => {
   it("has exactly the expected columns", () => {
@@ -34,7 +49,7 @@ describe("processed_emails schema", () => {
     const claim = indexes.find((i) => i.config.name === "processed_emails_claim_uniq");
     expect(claim).toBeDefined();
     expect(claim!.config.unique).toBe(true);
-    expect(claim!.config.columns.map((col: { name: string }) => col.name)).toEqual([
+    expect(claim!.config.columns.map(indexedColumnName)).toEqual([
       "workflow_id",
       "connection_id",
       "provider_message_id",

@@ -84,7 +84,7 @@ import { GET, POST, DELETE } from "@/app/api/agents/[agentId]/channels/telegram/
 import { getSetting, setSetting, deleteSetting } from "@/lib/settings";
 import { appendAuditLog } from "@/lib/audit";
 import { db } from "@/db";
-import { NextResponse } from "next/server";
+import { NextRequest, NextResponse } from "next/server";
 
 const adminSession = {
   user: { id: "user-1", email: "admin@test.com", role: "admin" },
@@ -94,7 +94,7 @@ const mockParams = Promise.resolve({ agentId: "agent-1" });
 const mockAgent = { id: "agent-1", name: "Test Agent" };
 
 function makeRequest(body?: object) {
-  return new Request("http://localhost/api/agents/agent-1/channels/telegram", {
+  return new NextRequest("http://localhost/api/agents/agent-1/channels/telegram", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     ...(body && { body: JSON.stringify(body) }),
@@ -110,7 +110,7 @@ describe("GET /api/agents/[agentId]/channels/telegram", () => {
   it("returns configured: false when no token exists", async () => {
     vi.mocked(getSetting).mockResolvedValueOnce(null);
 
-    const response = await GET(new Request("http://localhost"), {
+    const response = await GET(new NextRequest("http://localhost"), {
       params: mockParams,
     });
     const data = await response.json();
@@ -122,7 +122,7 @@ describe("GET /api/agents/[agentId]/channels/telegram", () => {
   it("returns configured: true with hint when token exists", async () => {
     vi.mocked(getSetting).mockResolvedValueOnce("123456:ABC-some-token-xY9z");
 
-    const response = await GET(new Request("http://localhost"), {
+    const response = await GET(new NextRequest("http://localhost"), {
       params: mockParams,
     });
     const data = await response.json();
@@ -148,7 +148,7 @@ describe("GET /api/agents/[agentId]/channels/telegram", () => {
       return null;
     });
 
-    const response = await GET(new Request("http://localhost"), {
+    const response = await GET(new NextRequest("http://localhost"), {
       params: mockParams,
     });
     const data = await response.json();
@@ -163,7 +163,7 @@ describe("GET /api/agents/[agentId]/channels/telegram", () => {
     mockHasMainTelegramBot.mockResolvedValueOnce(true);
     vi.mocked(getSetting).mockResolvedValueOnce(null);
 
-    const response = await GET(new Request("http://localhost"), {
+    const response = await GET(new NextRequest("http://localhost"), {
       params: mockParams,
     });
     const data = await response.json();
@@ -176,7 +176,7 @@ describe("GET /api/agents/[agentId]/channels/telegram", () => {
     mockHasMainTelegramBot.mockResolvedValueOnce(false);
     vi.mocked(getSetting).mockResolvedValueOnce(null);
 
-    const response = await GET(new Request("http://localhost"), {
+    const response = await GET(new NextRequest("http://localhost"), {
       params: mockParams,
     });
     const data = await response.json();
@@ -192,7 +192,7 @@ describe("GET /api/agents/[agentId]/channels/telegram", () => {
       return null;
     });
 
-    const response = await GET(new Request("http://localhost"), {
+    const response = await GET(new NextRequest("http://localhost"), {
       params: mockParams,
     });
     const data = await response.json();
@@ -211,7 +211,7 @@ describe("GET /api/agents/[agentId]/channels/telegram", () => {
       NextResponse.json({ error: "Unauthorized" }, { status: 401 })
     );
 
-    const response = await GET(new Request("http://localhost"), {
+    const response = await GET(new NextRequest("http://localhost"), {
       params: mockParams,
     });
 
@@ -226,7 +226,7 @@ describe("GET /api/agents/[agentId]/channels/telegram", () => {
     } as any);
     vi.mocked(getSetting).mockResolvedValueOnce(null);
 
-    const response = await GET(new Request("http://localhost"), {
+    const response = await GET(new NextRequest("http://localhost"), {
       params: mockParams,
     });
     const data = await response.json();
@@ -539,7 +539,7 @@ describe("DELETE /api/agents/[agentId]/channels/telegram", () => {
   });
 
   it("removes token, clears account store, patches config, logs audit event", async () => {
-    const response = await DELETE(new Request("http://localhost"), {
+    const response = await DELETE(new NextRequest("http://localhost"), {
       params: mockParams,
     });
     const data = await response.json();
@@ -572,7 +572,7 @@ describe("DELETE /api/agents/[agentId]/channels/telegram", () => {
       }),
     } as any);
 
-    const response = await DELETE(new Request("http://localhost"), {
+    const response = await DELETE(new NextRequest("http://localhost"), {
       params: mockParams,
     });
     expect(response.status).toBe(200);
@@ -599,7 +599,7 @@ describe("DELETE /api/agents/[agentId]/channels/telegram", () => {
       }),
     } as any);
 
-    const response = await DELETE(new Request("http://localhost"), {
+    const response = await DELETE(new NextRequest("http://localhost"), {
       params: mockParams,
     });
     expect(response.status).toBe(200);
@@ -621,7 +621,7 @@ describe("DELETE /api/agents/[agentId]/channels/telegram", () => {
       ownerId: "someone-else",
     } as any);
 
-    const response = await DELETE(new Request("http://localhost"), {
+    const response = await DELETE(new NextRequest("http://localhost"), {
       params: mockParams,
     });
     expect(response.status).toBe(200);
@@ -638,7 +638,7 @@ describe("DELETE /api/agents/[agentId]/channels/telegram", () => {
       user: { id: "user-2", role: "member" },
     });
 
-    const response = await DELETE(new Request("http://localhost"), {
+    const response = await DELETE(new NextRequest("http://localhost"), {
       params: mockParams,
     });
     expect(response.status).toBe(200);
@@ -655,7 +655,7 @@ describe("DELETE /api/agents/[agentId]/channels/telegram", () => {
       user: { id: "user-3", role: "member" },
     });
 
-    const response = await DELETE(new Request("http://localhost"), {
+    const response = await DELETE(new NextRequest("http://localhost"), {
       params: mockParams,
     });
     expect(response.status).toBe(403);
@@ -671,7 +671,7 @@ describe("DELETE /api/agents/[agentId]/channels/telegram", () => {
       user: { id: "user-3", role: "member" },
     });
 
-    const response = await DELETE(new Request("http://localhost"), {
+    const response = await DELETE(new NextRequest("http://localhost"), {
       params: mockParams,
     });
     expect(response.status).toBe(403);
@@ -681,7 +681,7 @@ describe("DELETE /api/agents/[agentId]/channels/telegram", () => {
   it("returns 404 for non-existent agent", async () => {
     vi.mocked(db.query.agents.findFirst).mockResolvedValueOnce(undefined as any);
 
-    const response = await DELETE(new Request("http://localhost"), {
+    const response = await DELETE(new NextRequest("http://localhost"), {
       params: mockParams,
     });
     const data = await response.json();
@@ -693,7 +693,7 @@ describe("DELETE /api/agents/[agentId]/channels/telegram", () => {
   it("returns 401 when not authenticated", async () => {
     mockGetSession.mockResolvedValueOnce(null);
 
-    const response = await DELETE(new Request("http://localhost"), {
+    const response = await DELETE(new NextRequest("http://localhost"), {
       params: mockParams,
     });
 

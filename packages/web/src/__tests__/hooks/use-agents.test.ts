@@ -2,29 +2,14 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { renderHook, act, waitFor } from "@testing-library/react";
 import { useAgents } from "@/hooks/use-agents";
 import type { Agent } from "@/components/agent-list";
+import { makeAgent } from "@/test-helpers/fixtures";
 
 const mockAgents: Agent[] = [
-  {
-    id: "a1",
-    name: "Smithers",
-    model: "gpt-4",
-    isPersonal: false,
-    tagline: null,
-    avatarSeed: null,
-  },
-  { id: "a2", name: "Helper", model: "gpt-4", isPersonal: true, tagline: null, avatarSeed: null },
+  makeAgent({ id: "a1", name: "Smithers", model: "gpt-4" }),
+  makeAgent({ id: "a2", name: "Helper", model: "gpt-4", isPersonal: true }),
 ];
 
-const updatedAgents: Agent[] = [
-  {
-    id: "a1",
-    name: "Smithers",
-    model: "gpt-4",
-    isPersonal: false,
-    tagline: null,
-    avatarSeed: null,
-  },
-];
+const updatedAgents: Agent[] = [makeAgent({ id: "a1", name: "Smithers", model: "gpt-4" })];
 
 describe("useAgents", () => {
   let fetchSpy: ReturnType<typeof vi.spyOn>;
@@ -107,9 +92,7 @@ describe("useAgents", () => {
 
     expect(result.current.agents).toEqual(mockAgents);
 
-    const newAgents: Agent[] = [
-      { id: "a3", name: "New", model: "gpt-4", isPersonal: false, tagline: null, avatarSeed: null },
-    ];
+    const newAgents: Agent[] = [makeAgent({ id: "a3", name: "New", model: "gpt-4" })];
     rerender({ agents: newAgents });
 
     expect(result.current.agents).toEqual(newAgents);

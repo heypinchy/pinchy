@@ -1,9 +1,20 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 
+// Real row shapes the mocked `db.select().from(...)` chain resolves to.
+type AgentRow = { id: string; name: string };
+type UserRow = { id: string };
+
 const mockRecordUsage = vi.fn();
 const mockRecordSessionTurns = vi.fn();
 const mockSelect = vi.fn();
-const mockFrom = vi.fn();
+// `_agentResult`/`_userResult` are real, typed properties on the mock (via
+// Object.assign) rather than stashed untyped fields — they let each test
+// drive what the mocked `from()`/`where()` chain returns per table without a
+// `Mock<Procedure>` type violation.
+const mockFrom = Object.assign(vi.fn(), {
+  _agentResult: [] as AgentRow[],
+  _userResult: [] as UserRow[],
+});
 
 vi.mock("@/lib/usage", () => ({
   recordUsage: (...args: unknown[]) => mockRecordUsage(...args),

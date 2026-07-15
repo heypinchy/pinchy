@@ -6,78 +6,91 @@ import {
   type TemplateItem,
 } from "../template-grouping";
 import { AGENT_TEMPLATES } from "@/lib/agent-templates";
+import { makeTemplateItem } from "@/test-helpers/fixtures";
 
 describe("getAccessBadgeProps", () => {
   it("returns green 'Documents · Read-only' for a documents template", () => {
-    const result = getAccessBadgeProps({
-      id: "knowledge-base",
-      name: "Knowledge Base",
-      description: "Answer questions",
-      requiresDirectories: true,
-      defaultTagline: null,
-    });
+    const result = getAccessBadgeProps(
+      makeTemplateItem({
+        id: "knowledge-base",
+        name: "Knowledge Base",
+        description: "Answer questions",
+        requiresDirectories: true,
+        defaultTagline: null,
+      })
+    );
     expect(result).toEqual({ label: "Documents · Read-only", variant: "green" });
   });
 
   it("returns green 'Odoo · Read-only' for Odoo read-only template", () => {
-    const result = getAccessBadgeProps({
-      id: "odoo-sales-analyst",
-      name: "Sales Analyst",
-      description: "Analyze revenue",
-      requiresDirectories: false,
-      requiresOdooConnection: true,
-      odooAccessLevel: "read-only",
-      defaultTagline: null,
-    });
+    const result = getAccessBadgeProps(
+      makeTemplateItem({
+        id: "odoo-sales-analyst",
+        name: "Sales Analyst",
+        description: "Analyze revenue",
+        requiresDirectories: false,
+        requiresOdooConnection: true,
+        odooAccessLevel: "read-only",
+        defaultTagline: null,
+      })
+    );
     expect(result).toEqual({ label: "Odoo · Read-only", variant: "green" });
   });
 
   it("returns amber 'Odoo · Read & Write' for Odoo read-write template", () => {
-    const result = getAccessBadgeProps({
-      id: "odoo-crm-assistant",
-      name: "CRM Assistant",
-      description: "Manage leads",
-      requiresDirectories: false,
-      requiresOdooConnection: true,
-      odooAccessLevel: "read-write",
-      defaultTagline: null,
-    });
+    const result = getAccessBadgeProps(
+      makeTemplateItem({
+        id: "odoo-crm-assistant",
+        name: "CRM Assistant",
+        description: "Manage leads",
+        requiresDirectories: false,
+        requiresOdooConnection: true,
+        odooAccessLevel: "read-write",
+        defaultTagline: null,
+      })
+    );
     expect(result).toEqual({ label: "Odoo · Read & Write", variant: "amber" });
   });
 
   it("returns red 'Odoo · Full Access' for Odoo full-access template", () => {
-    const result = getAccessBadgeProps({
-      id: "odoo-full",
-      name: "Full Agent",
-      description: "Full access",
-      requiresDirectories: false,
-      requiresOdooConnection: true,
-      odooAccessLevel: "full",
-      defaultTagline: null,
-    });
+    const result = getAccessBadgeProps(
+      makeTemplateItem({
+        id: "odoo-full",
+        name: "Full Agent",
+        description: "Full access",
+        requiresDirectories: false,
+        requiresOdooConnection: true,
+        odooAccessLevel: "full",
+        defaultTagline: null,
+      })
+    );
     expect(result).toEqual({ label: "Odoo · Full Access", variant: "red" });
   });
 
   it("returns null for custom template", () => {
-    const result = getAccessBadgeProps({
-      id: "custom",
-      name: "Custom Agent",
-      description: "Start from scratch",
-      requiresDirectories: false,
-      defaultTagline: null,
-    });
+    const result = getAccessBadgeProps(
+      makeTemplateItem({
+        id: "custom",
+        name: "Custom Agent",
+        description: "Start from scratch",
+        requiresDirectories: false,
+        defaultTagline: null,
+      })
+    );
     expect(result).toBeNull();
   });
 
   it("returns green 'Email · Read & Draft' for email template", () => {
-    const result = getAccessBadgeProps({
-      id: "email-assistant",
-      name: "Email Assistant",
-      description: "Read and draft emails",
-      requiresDirectories: false,
-      requiresEmailConnection: true,
-      defaultTagline: null,
-    });
+    const result = getAccessBadgeProps(
+      makeTemplateItem({
+        id: "email-assistant",
+        name: "Email Assistant",
+        description: "Read and draft emails",
+        requiresDirectories: false,
+        requiresEmailConnection: true,
+        defaultTagline: null,
+      })
+    );
     expect(result).toEqual({ label: "Email · Read & Draft", variant: "green" });
   });
 });

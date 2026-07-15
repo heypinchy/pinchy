@@ -25,6 +25,10 @@ function makeBundle(overrides: Partial<RuntimeBundle> = {}): RuntimeBundle {
     ) => void,
     onRetryResend: vi.fn(),
     lastError: null,
+    pendingUploads: [],
+    addPendingUpload: vi.fn(),
+    removePendingUpload: vi.fn(),
+    retryPendingUpload: vi.fn(),
     ...overrides,
   };
 }

@@ -367,6 +367,11 @@ describe("EditCredentialsDialog", () => {
       type: "imap",
       name: "Team Mailbox",
       description: "",
+      // `IntegrationConnection.credentials` only models the Odoo shape
+      // (url/db/login); IMAP connections store a differently-shaped object at
+      // runtime. Production reads (e.g. ImapForm in edit-credentials-dialog.tsx)
+      // already cast this field to the IMAP shape at the point of use — this
+      // fixture mirrors that same boundary cast to construct one.
       credentials: {
         imapHost: "imap.example.com",
         imapPort: "993",
@@ -375,7 +380,7 @@ describe("EditCredentialsDialog", () => {
         username: "team@example.com",
         security: "tls",
         senderName: "Team Mailbox Sender",
-      },
+      } as unknown as IntegrationConnection["credentials"],
       data: null,
       status: "auth_failed",
       lastError: "IMAP authentication failed",
@@ -547,10 +552,11 @@ describe("EditCredentialsDialog", () => {
       const noSenderNameConnection: IntegrationConnection = {
         ...authFailedImapConnection,
         id: "conn-imap-2",
+        // Same IMAP-shape boundary cast as authFailedImapConnection above.
         credentials: {
           ...(authFailedImapConnection.credentials as Record<string, unknown>),
           senderName: undefined,
-        },
+        } as unknown as IntegrationConnection["credentials"],
       };
 
       render(

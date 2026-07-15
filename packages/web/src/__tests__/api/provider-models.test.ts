@@ -23,21 +23,22 @@ vi.mock("@/lib/provider-models", () => ({
 import { GET } from "@/app/api/providers/models/route";
 import { auth } from "@/lib/auth";
 import { fetchProviderModels } from "@/lib/provider-models";
+import { mockSession } from "@/test-helpers/auth";
+import { makeNextRequest, routeContext } from "@/test-helpers/route";
 
 describe("GET /api/providers/models", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    vi.mocked(auth.api.getSession).mockResolvedValue({
-      user: { id: "1", email: "admin@test.com" },
-      expires: "",
-    });
+    vi.mocked(auth.api.getSession).mockResolvedValue(
+      mockSession({ user: { id: "1", email: "admin@test.com" } })
+    );
     vi.mocked(fetchProviderModels).mockResolvedValue([]);
   });
 
   it("returns 401 when not authenticated", async () => {
     vi.mocked(auth.api.getSession).mockResolvedValueOnce(null);
 
-    const response = await GET();
+    const response = await GET(makeNextRequest(), routeContext());
 
     expect(response.status).toBe(401);
     const data = await response.json();
@@ -53,7 +54,7 @@ describe("GET /api/providers/models", () => {
       },
     ]);
 
-    const response = await GET();
+    const response = await GET(makeNextRequest(), routeContext());
 
     expect(response.status).toBe(200);
     const data = await response.json();

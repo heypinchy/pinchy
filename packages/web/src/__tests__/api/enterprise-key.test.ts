@@ -38,6 +38,7 @@ import { getSession } from "@/lib/auth";
 import { setSetting, deleteSetting } from "@/lib/settings";
 import { clearLicenseCache, getLicenseStatus } from "@/lib/enterprise";
 import { appendAuditLog } from "@/lib/audit";
+import { makeNextRequest } from "@/test-helpers/route";
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -47,7 +48,7 @@ describe("PUT /api/enterprise/key", () => {
   it("returns 401 for unauthenticated requests", async () => {
     vi.mocked(getSession).mockResolvedValueOnce(null);
     const { PUT } = await import("@/app/api/enterprise/key/route");
-    const req = new Request("http://localhost/api/enterprise/key", {
+    const req = makeNextRequest("http://localhost/api/enterprise/key", {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ key: "test" }),
@@ -61,7 +62,7 @@ describe("PUT /api/enterprise/key", () => {
       user: { id: "u1", role: "member", name: "User" },
     } as any);
     const { PUT } = await import("@/app/api/enterprise/key/route");
-    const req = new Request("http://localhost/api/enterprise/key", {
+    const req = makeNextRequest("http://localhost/api/enterprise/key", {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ key: "test" }),
@@ -75,7 +76,7 @@ describe("PUT /api/enterprise/key", () => {
       user: { id: "u1", role: "admin", name: "Admin" },
     } as any);
     const { PUT } = await import("@/app/api/enterprise/key/route");
-    const req = new Request("http://localhost/api/enterprise/key", {
+    const req = makeNextRequest("http://localhost/api/enterprise/key", {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({}),
@@ -95,10 +96,12 @@ describe("PUT /api/enterprise/key", () => {
       features: ["enterprise"],
       expiresAt: new Date("2027-01-01"),
       daysRemaining: 300,
+      ver: 1,
+      maxUsers: 10,
     });
 
     const { PUT } = await import("@/app/api/enterprise/key/route");
-    const req = new Request("http://localhost/api/enterprise/key", {
+    const req = makeNextRequest("http://localhost/api/enterprise/key", {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ key: "eyJ.valid.token" }),
@@ -128,7 +131,7 @@ describe("PUT /api/enterprise/key", () => {
     } as any);
 
     const { PUT } = await import("@/app/api/enterprise/key/route");
-    const req = new Request("http://localhost/api/enterprise/key", {
+    const req = makeNextRequest("http://localhost/api/enterprise/key", {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ key: "invalid-token" }),
@@ -159,7 +162,7 @@ describe("PUT /api/enterprise/key", () => {
     vi.mocked(getLicenseStatus).mockResolvedValueOnce({ active: false, features: [] } as any);
 
     const { PUT } = await import("@/app/api/enterprise/key/route");
-    const req = new Request("http://localhost/api/enterprise/key", {
+    const req = makeNextRequest("http://localhost/api/enterprise/key", {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ key: "super-secret-invalid-token" }),

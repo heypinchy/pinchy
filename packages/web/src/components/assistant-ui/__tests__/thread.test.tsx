@@ -3,6 +3,7 @@ import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 import React from "react";
 import "@testing-library/jest-dom";
 import { sendingOpacityClass } from "@/components/assistant-ui/thread";
+import type { MessageState } from "@assistant-ui/react";
 
 // Mutable AuiIf state — lets individual tests flip thread.isRunning so we can
 // exercise the Send/Cancel mutual-exclusion path covered by issue #207.
@@ -211,6 +212,33 @@ vi.mock("@/components/chat", async () => {
   };
 });
 
+type MockedUseMessage = typeof import("@assistant-ui/react").useMessage;
+type MessageSelector = (state: MessageState) => unknown;
+
+/**
+ * Configures the mocked `useMessage` to run whatever selector `thread.tsx`
+ * passes it against `fixture`. `useMessage`'s real export is a heavily
+ * overloaded const (bare selector OR an `{ optional?, selector? }` options
+ * object); `vi.mocked(useMessage).mockImplementation(...)` resolves the
+ * required implementation type to the LAST overload only — the
+ * options-object shape. Every real call site in thread.tsx uses the bare
+ * selector form (`useMessage((state) => ...)`), never the options form, so
+ * the union parameter below satisfies mockImplementation's type while the
+ * body always dispatches as a callable selector, matching actual usage.
+ * `fixture` intentionally models only the fields each test reads, not the
+ * whole MessageState — hence the one boundary cast, isolated here instead of
+ * scattered across every call site.
+ */
+function stubUseMessage(useMessage: MockedUseMessage, fixture: Record<string, unknown>): void {
+  vi.mocked(useMessage).mockImplementation(
+    (arg: MessageSelector | { selector?: MessageSelector }) => {
+      const selector = typeof arg === "function" ? arg : arg.selector;
+      const state = fixture as MessageState;
+      return selector ? selector(state) : state;
+    }
+  );
+}
+
 describe("sendingOpacityClass", () => {
   it("returns 'opacity-60' when status is 'sending'", () => {
     expect(sendingOpacityClass("sending")).toBe("opacity-60");
@@ -232,11 +260,11 @@ describe("sendingOpacityClass", () => {
 describe("UserMessage component", () => {
   it("applies opacity-60 to the content wrapper when status is 'sending'", async () => {
     const { useMessage } = await import("@assistant-ui/react");
-    vi.mocked(useMessage).mockImplementation(
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      (selector: (state: any) => unknown) =>
-        selector({ metadata: { custom: { status: "sending" } }, isLast: false, id: "msg-1" })
-    );
+    stubUseMessage(useMessage, {
+      metadata: { custom: { status: "sending" } },
+      isLast: false,
+      id: "msg-1",
+    });
 
     const { UserMessage } = await import("@/components/assistant-ui/thread");
     const { container } = render(<UserMessage />);
@@ -250,11 +278,11 @@ describe("UserMessage component", () => {
 describe("UserMessage failed state", () => {
   it("shows 'Couldn't deliver' and Retry button for the last failed user message", async () => {
     const { useMessage } = await import("@assistant-ui/react");
-    vi.mocked(useMessage).mockImplementation(
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      (selector: (state: any) => unknown) =>
-        selector({ metadata: { custom: { status: "failed" } }, isLast: true, id: "msg-1" })
-    );
+    stubUseMessage(useMessage, {
+      metadata: { custom: { status: "failed" } },
+      isLast: true,
+      id: "msg-1",
+    });
 
     const { UserMessage } = await import("@/components/assistant-ui/thread");
     render(<UserMessage />);
@@ -265,11 +293,11 @@ describe("UserMessage failed state", () => {
 
   it("does NOT show Retry on a non-last failed message", async () => {
     const { useMessage } = await import("@assistant-ui/react");
-    vi.mocked(useMessage).mockImplementation(
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      (selector: (state: any) => unknown) =>
-        selector({ metadata: { custom: { status: "failed" } }, isLast: false, id: "msg-1" })
-    );
+    stubUseMessage(useMessage, {
+      metadata: { custom: { status: "failed" } },
+      isLast: false,
+      id: "msg-1",
+    });
 
     const { UserMessage } = await import("@/components/assistant-ui/thread");
     render(<UserMessage />);
@@ -280,11 +308,11 @@ describe("UserMessage failed state", () => {
 
   it("calls onRetryResend with the message id when Retry is clicked", async () => {
     const { useMessage } = await import("@assistant-ui/react");
-    vi.mocked(useMessage).mockImplementation(
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      (selector: (state: any) => unknown) =>
-        selector({ metadata: { custom: { status: "failed" } }, isLast: true, id: "msg-1" })
-    );
+    stubUseMessage(useMessage, {
+      metadata: { custom: { status: "failed" } },
+      isLast: true,
+      id: "msg-1",
+    });
 
     const mockRetryResend = vi.fn();
     const { RetryResendContext } = await import("@/components/chat");
@@ -302,11 +330,11 @@ describe("UserMessage failed state", () => {
 
   it("disables Retry button when ChatStatusContext is responding", async () => {
     const { useMessage } = await import("@assistant-ui/react");
-    vi.mocked(useMessage).mockImplementation(
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      (selector: (state: any) => unknown) =>
-        selector({ metadata: { custom: { status: "failed" } }, isLast: true, id: "msg-1" })
-    );
+    stubUseMessage(useMessage, {
+      metadata: { custom: { status: "failed" } },
+      isLast: true,
+      id: "msg-1",
+    });
 
     const { ChatStatusContext } = await import("@/components/chat");
     const { UserMessage } = await import("@/components/assistant-ui/thread");
@@ -322,11 +350,11 @@ describe("UserMessage failed state", () => {
 
   it("disables Retry button and sets tooltip when ChatStatusContext is unavailable", async () => {
     const { useMessage } = await import("@assistant-ui/react");
-    vi.mocked(useMessage).mockImplementation(
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      (selector: (state: any) => unknown) =>
-        selector({ metadata: { custom: { status: "failed" } }, isLast: true, id: "msg-1" })
-    );
+    stubUseMessage(useMessage, {
+      metadata: { custom: { status: "failed" } },
+      isLast: true,
+      id: "msg-1",
+    });
 
     const { ChatStatusContext } = await import("@/components/chat");
     const { UserMessage } = await import("@/components/assistant-ui/thread");
@@ -402,15 +430,11 @@ describe("Thread reconciling state", () => {
 describe("AssistantMessage retryable error bubble", () => {
   it("shows Retry button on last assistant error bubble with retryable: true", async () => {
     const { useMessage } = await import("@assistant-ui/react");
-    vi.mocked(useMessage).mockImplementation(
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      (selector: (state: any) => unknown) =>
-        selector({
-          metadata: { custom: { error: { disconnected: true }, retryable: true } },
-          isLast: true,
-          id: "msg-err-1",
-        })
-    );
+    stubUseMessage(useMessage, {
+      metadata: { custom: { error: { disconnected: true }, retryable: true } },
+      isLast: true,
+      id: "msg-err-1",
+    });
 
     const { AssistantMessage } = await import("@/components/assistant-ui/thread");
     render(<AssistantMessage />);
@@ -420,15 +444,11 @@ describe("AssistantMessage retryable error bubble", () => {
 
   it("does NOT show Retry button on non-last assistant error bubble", async () => {
     const { useMessage } = await import("@assistant-ui/react");
-    vi.mocked(useMessage).mockImplementation(
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      (selector: (state: any) => unknown) =>
-        selector({
-          metadata: { custom: { error: { disconnected: true }, retryable: true } },
-          isLast: false,
-          id: "msg-err-2",
-        })
-    );
+    stubUseMessage(useMessage, {
+      metadata: { custom: { error: { disconnected: true }, retryable: true } },
+      isLast: false,
+      id: "msg-err-2",
+    });
 
     const { AssistantMessage } = await import("@/components/assistant-ui/thread");
     render(<AssistantMessage />);
@@ -438,15 +458,11 @@ describe("AssistantMessage retryable error bubble", () => {
 
   it("disables Retry button when ChatStatusContext is responding", async () => {
     const { useMessage } = await import("@assistant-ui/react");
-    vi.mocked(useMessage).mockImplementation(
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      (selector: (state: any) => unknown) =>
-        selector({
-          metadata: { custom: { error: { disconnected: true }, retryable: true } },
-          isLast: true,
-          id: "msg-err-3",
-        })
-    );
+    stubUseMessage(useMessage, {
+      metadata: { custom: { error: { disconnected: true }, retryable: true } },
+      isLast: true,
+      id: "msg-err-3",
+    });
 
     const { ChatStatusContext } = await import("@/components/chat");
     const { AssistantMessage } = await import("@/components/assistant-ui/thread");
@@ -461,20 +477,16 @@ describe("AssistantMessage retryable error bubble", () => {
 
   it("gates the live Retry behind a duplicate-write confirm when the error has sideEffects", async () => {
     const { useMessage } = await import("@assistant-ui/react");
-    vi.mocked(useMessage).mockImplementation(
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      (selector: (state: any) => unknown) =>
-        selector({
-          metadata: {
-            custom: {
-              error: { providerError: "rate limit", agentName: "Penny", sideEffects: true },
-              retryable: true,
-            },
-          },
-          isLast: true,
-          id: "msg-err-se",
-        })
-    );
+    stubUseMessage(useMessage, {
+      metadata: {
+        custom: {
+          error: { providerError: "rate limit", agentName: "Penny", sideEffects: true },
+          retryable: true,
+        },
+      },
+      isLast: true,
+      id: "msg-err-se",
+    });
 
     const mockRetryContinue = vi.fn();
     const { RetryContinueContext } = await import("@/components/chat");
@@ -497,20 +509,16 @@ describe("AssistantMessage retryable error bubble", () => {
 
   it("retries directly (no confirm) when the error has no sideEffects", async () => {
     const { useMessage } = await import("@assistant-ui/react");
-    vi.mocked(useMessage).mockImplementation(
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      (selector: (state: any) => unknown) =>
-        selector({
-          metadata: {
-            custom: {
-              error: { providerError: "rate limit", agentName: "Penny" },
-              retryable: true,
-            },
-          },
-          isLast: true,
-          id: "msg-err-nose",
-        })
-    );
+    stubUseMessage(useMessage, {
+      metadata: {
+        custom: {
+          error: { providerError: "rate limit", agentName: "Penny" },
+          retryable: true,
+        },
+      },
+      isLast: true,
+      id: "msg-err-nose",
+    });
 
     const mockRetryContinue = vi.fn();
     const { RetryContinueContext } = await import("@/components/chat");
@@ -528,15 +536,11 @@ describe("AssistantMessage retryable error bubble", () => {
 
   it("disables Retry button and sets tooltip when ChatStatusContext is unavailable", async () => {
     const { useMessage } = await import("@assistant-ui/react");
-    vi.mocked(useMessage).mockImplementation(
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      (selector: (state: any) => unknown) =>
-        selector({
-          metadata: { custom: { error: { disconnected: true }, retryable: true } },
-          isLast: true,
-          id: "msg-err-5",
-        })
-    );
+    stubUseMessage(useMessage, {
+      metadata: { custom: { error: { disconnected: true }, retryable: true } },
+      isLast: true,
+      id: "msg-err-5",
+    });
 
     const { ChatStatusContext } = await import("@/components/chat");
     const { AssistantMessage } = await import("@/components/assistant-ui/thread");
@@ -554,15 +558,11 @@ describe("AssistantMessage retryable error bubble", () => {
 
   it("calls onRetryContinue when Retry is clicked", async () => {
     const { useMessage } = await import("@assistant-ui/react");
-    vi.mocked(useMessage).mockImplementation(
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      (selector: (state: any) => unknown) =>
-        selector({
-          metadata: { custom: { error: { disconnected: true }, retryable: true } },
-          isLast: true,
-          id: "msg-err-4",
-        })
-    );
+    stubUseMessage(useMessage, {
+      metadata: { custom: { error: { disconnected: true }, retryable: true } },
+      isLast: true,
+      id: "msg-err-4",
+    });
 
     const mockRetryContinue = vi.fn();
     const { RetryContinueContext } = await import("@/components/chat");

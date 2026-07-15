@@ -62,6 +62,8 @@ vi.mock("drizzle-orm", async (importOriginal) => {
 // ── Import route handlers ────────────────────────────────────────────────
 
 import { GET, POST, DELETE } from "@/app/api/settings/telegram/route";
+import { NextRequest } from "next/server";
+import { makeNextRequest, routeContext } from "@/test-helpers/route";
 
 // ── Helpers ──────────────────────────────────────────────────────────────
 
@@ -70,7 +72,7 @@ const userSession = {
 };
 
 function makePostRequest(body: object) {
-  return new Request("http://localhost/api/settings/telegram", {
+  return new NextRequest("http://localhost/api/settings/telegram", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
@@ -88,7 +90,7 @@ describe("GET /api/settings/telegram", () => {
   it("returns 401 when unauthenticated", async () => {
     mockGetSession.mockResolvedValueOnce(null);
 
-    const response = await GET();
+    const response = await GET(makeNextRequest(), routeContext());
     expect(response.status).toBe(401);
   });
 
@@ -99,7 +101,7 @@ describe("GET /api/settings/telegram", () => {
       channelUserId: "8734062810",
     });
 
-    const response = await GET();
+    const response = await GET(makeNextRequest(), routeContext());
     expect(response.status).toBe(200);
     const data = await response.json();
     expect(data).toEqual({ linked: true, channelUserId: "8734062810" });
@@ -108,7 +110,7 @@ describe("GET /api/settings/telegram", () => {
   it("returns not linked when no link exists", async () => {
     mockFindFirst.mockResolvedValueOnce(undefined);
 
-    const response = await GET();
+    const response = await GET(makeNextRequest(), routeContext());
     expect(response.status).toBe(200);
     const data = await response.json();
     expect(data).toEqual({ linked: false, channelUserId: null });
@@ -130,17 +132,17 @@ describe("POST /api/settings/telegram", () => {
   it("returns 401 when unauthenticated", async () => {
     mockGetSession.mockResolvedValueOnce(null);
 
-    const response = await POST(makePostRequest({ code: "ABC123" }));
+    const response = await POST(makePostRequest({ code: "ABC123" }), routeContext());
     expect(response.status).toBe(401);
   });
 
   it("returns 400 when code is missing", async () => {
-    const response = await POST(makePostRequest({}));
+    const response = await POST(makePostRequest({}), routeContext());
     expect(response.status).toBe(400);
   });
 
   it("resolves pairing code, stores link in DB, regenerates config", async () => {
-    const response = await POST(makePostRequest({ code: "FMSVEN7M" }));
+    const response = await POST(makePostRequest({ code: "FMSVEN7M" }), routeContext());
     expect(response.status).toBe(200);
 
     const data = await response.json();
@@ -162,7 +164,7 @@ describe("POST /api/settings/telegram", () => {
   it("returns 400 when pairing code is invalid", async () => {
     mockResolvePairingCode.mockReturnValueOnce({ found: false });
 
-    const response = await POST(makePostRequest({ code: "BADCODE" }));
+    const response = await POST(makePostRequest({ code: "BADCODE" }), routeContext());
     expect(response.status).toBe(400);
 
     const data = await response.json();
@@ -172,7 +174,7 @@ describe("POST /api/settings/telegram", () => {
   it("still succeeds when OpenClaw client is not connected", async () => {
     // queueConfigPatch is fire-and-forget — route always returns success
     // since DB is source of truth
-    const response = await POST(makePostRequest({ code: "ABC123" }));
+    const response = await POST(makePostRequest({ code: "ABC123" }), routeContext());
     expect(response.status).toBe(200);
 
     // DB was still written
@@ -197,12 +199,12 @@ describe("DELETE /api/settings/telegram", () => {
   it("returns 401 when unauthenticated", async () => {
     mockGetSession.mockResolvedValueOnce(null);
 
-    const response = await DELETE();
+    const response = await DELETE(makeNextRequest(), routeContext());
     expect(response.status).toBe(401);
   });
 
   it("removes link from DB, updates allow store, and regenerates config", async () => {
-    const response = await DELETE();
+    const response = await DELETE(makeNextRequest(), routeContext());
     expect(response.status).toBe(200);
 
     const data = await response.json();

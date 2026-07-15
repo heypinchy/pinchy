@@ -6,13 +6,16 @@ import { SettingsLicense } from "@/components/settings-license";
 
 const noLicenseStatus = {
   enterprise: false,
+  state: "community" as const,
   type: null,
   org: null,
   expiresAt: null,
+  paidUntil: null,
   daysRemaining: null,
   managedByEnv: false,
   maxUsers: 0,
   seatsUsed: 0,
+  hasGatedConfig: false,
 };
 
 const statusOkResponse = (data: object) =>
@@ -57,13 +60,16 @@ describe("SettingsLicense", () => {
       <SettingsLicense
         initialLicense={{
           enterprise: false,
+          state: "community",
           type: null,
           org: null,
           expiresAt: null,
+          paidUntil: null,
           daysRemaining: null,
           managedByEnv: false,
           maxUsers: 0,
           seatsUsed: 0,
+          hasGatedConfig: false,
         }}
       />
     );
@@ -292,13 +298,16 @@ describe("SettingsLicense", () => {
       <SettingsLicense
         initialLicense={{
           enterprise: true,
+          state: "paid",
           type: "paid",
           org: "Acme Corp",
           expiresAt: "2027-01-01T00:00:00Z",
+          paidUntil: null,
           daysRemaining: 365,
           managedByEnv: false,
           maxUsers: 0,
           seatsUsed: 0,
+          hasGatedConfig: false,
         }}
       />
     );
@@ -312,13 +321,16 @@ describe("SettingsLicense", () => {
       <SettingsLicense
         initialLicense={{
           enterprise: true,
+          state: "trial",
           type: "trial",
           org: null,
           expiresAt: null,
+          paidUntil: null,
           daysRemaining: null,
           managedByEnv: false,
           maxUsers: 0,
           seatsUsed: 0,
+          hasGatedConfig: false,
         }}
       />
     );
@@ -330,13 +342,16 @@ describe("SettingsLicense", () => {
       <SettingsLicense
         initialLicense={{
           enterprise: true,
+          state: "paid",
           type: "paid",
           org: "Acme Corp",
           expiresAt: null,
+          paidUntil: null,
           daysRemaining: null,
           managedByEnv: true,
           maxUsers: 0,
           seatsUsed: 0,
+          hasGatedConfig: false,
         }}
       />
     );
@@ -349,13 +364,16 @@ describe("SettingsLicense", () => {
       <SettingsLicense
         initialLicense={{
           enterprise: true,
+          state: "paid",
           type: "paid",
           org: "Acme",
           expiresAt: null,
+          paidUntil: null,
           daysRemaining: null,
           managedByEnv: false,
           maxUsers: 0,
           seatsUsed: 0,
+          hasGatedConfig: false,
         }}
       />
     );
@@ -431,13 +449,16 @@ describe("SettingsLicense", () => {
   it("shows seats line when maxUsers > 0", () => {
     const license = {
       enterprise: true,
+      state: "paid" as const,
       type: "paid",
       org: "TestCo",
       expiresAt: "2027-01-01T00:00:00Z",
+      paidUntil: null,
       daysRemaining: 250,
       managedByEnv: false,
       maxUsers: 10,
       seatsUsed: 7,
+      hasGatedConfig: false,
     };
     render(<SettingsLicense initialLicense={license} />);
     expect(screen.getByText(/Seats: 7 \/ 10 used/)).toBeInTheDocument();
@@ -446,13 +467,16 @@ describe("SettingsLicense", () => {
   it("hides seats line when license is unlimited (maxUsers=0)", () => {
     const license = {
       enterprise: true,
+      state: "trial" as const,
       type: "trial",
       org: "TestCo",
       expiresAt: "2027-01-01T00:00:00Z",
+      paidUntil: null,
       daysRemaining: 14,
       managedByEnv: false,
       maxUsers: 0,
       seatsUsed: 5,
+      hasGatedConfig: false,
     };
     render(<SettingsLicense initialLicense={license} />);
     expect(screen.queryByText(/Seats:/)).not.toBeInTheDocument();
@@ -461,13 +485,16 @@ describe("SettingsLicense", () => {
   it("does not refetch status when initialLicense is provided", () => {
     const license = {
       enterprise: true,
+      state: "paid" as const,
       type: "paid",
       org: "TestCo",
       expiresAt: null,
+      paidUntil: null,
       daysRemaining: null,
       managedByEnv: false,
       maxUsers: 0,
       seatsUsed: 0,
+      hasGatedConfig: false,
     };
     render(<SettingsLicense initialLicense={license} />);
     expect(fetchSpy).not.toHaveBeenCalledWith("/api/enterprise/status");

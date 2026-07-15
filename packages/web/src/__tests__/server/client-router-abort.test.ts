@@ -35,7 +35,7 @@ const {
   mockRecordAuditFailure: vi.fn(),
   mockGetUserGroupIds: vi.fn().mockResolvedValue([]),
   mockGetAgentGroupIds: vi.fn().mockResolvedValue([]),
-  mockAssertAgentAccess: vi.fn(() => {}),
+  mockAssertAgentAccess: vi.fn<(...args: unknown[]) => void>(() => {}),
 }));
 
 vi.mock("@/db", () => ({

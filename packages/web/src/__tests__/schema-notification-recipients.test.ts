@@ -1,7 +1,22 @@
 import { describe, it, expect } from "vitest";
-import { getTableColumns } from "drizzle-orm";
-import { getTableConfig } from "drizzle-orm/pg-core";
+import { getTableColumns, type SQL } from "drizzle-orm";
+import { getTableConfig, type IndexedColumn } from "drizzle-orm/pg-core";
 import { notificationRecipients } from "@/db/schema";
+
+/**
+ * `IndexConfig.columns` is `Partial<IndexedColumn | SQL>[]` — an index can
+ * mix plain columns and raw SQL expressions, so drizzle's own type only
+ * guarantees the properties common to both (effectively none). Every column
+ * in this index is a plain column reference, never a raw SQL expression, so
+ * this narrows to that real case instead of asserting `name` exists via a
+ * cast.
+ */
+function indexedColumnName(col: Partial<IndexedColumn | SQL>): string {
+  if (!("name" in col) || typeof col.name !== "string") {
+    throw new Error("expected a plain IndexedColumn with a string name, not a raw SQL expression");
+  }
+  return col.name;
+}
 
 describe("notification_recipients schema", () => {
   it("has exactly the expected columns", () => {
@@ -28,9 +43,6 @@ describe("notification_recipients schema", () => {
     const { indexes } = getTableConfig(notificationRecipients);
     const idx = indexes.find((i) => i.config.name === "notification_recipients_user_unread_idx");
     expect(idx).toBeDefined();
-    expect(idx!.config.columns.map((col: { name: string }) => col.name)).toEqual([
-      "user_id",
-      "read_at",
-    ]);
+    expect(idx!.config.columns.map(indexedColumnName)).toEqual(["user_id", "read_at"]);
   });
 });

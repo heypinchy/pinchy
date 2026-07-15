@@ -1,5 +1,3 @@
-import type { OpenClawClient } from "openclaw-node";
-
 /**
  * A "the OpenClaw socket just dropped" notification that in-flight stream loops
  * race their iteration against. See `iterateUntilAborted` for why a dropped
@@ -9,6 +7,19 @@ import type { OpenClawClient } from "openclaw-node";
 export interface DisconnectSignal {
   /** Resolves the next time OpenClaw disconnects. */
   whenDisconnected(): Promise<void>;
+}
+
+/**
+ * The minimal client surface OpenClawDisconnectSignal depends on: the two
+ * connection-lifecycle events. Declared structurally rather than
+ * `Pick<OpenClawClient, "on">` because OpenClawClient extends EventEmitter, so
+ * its `on` returns `this` — which binds to the concrete class (and its private
+ * fields). A `Pick` of that is unsatisfiable by any test double (or any other
+ * object) without an unsafe cast; a structural `on` keeps the dependency honest
+ * AND unit-testable. The real OpenClawClient satisfies this interface.
+ */
+export interface DisconnectEventSource {
+  on(event: "disconnected" | "connected", listener: () => void): unknown;
 }
 
 /**
@@ -24,7 +35,7 @@ export class OpenClawDisconnectSignal implements DisconnectSignal {
   private resolveCurrent: () => void = () => {};
   private current: Promise<void> = Promise.resolve();
 
-  constructor(client: Pick<OpenClawClient, "on">) {
+  constructor(client: DisconnectEventSource) {
     this.arm();
     // openclaw-node fires "disconnected" on every failed reconnect attempt
     // (~1s); resolving the same already-settled promise again is a no-op, so

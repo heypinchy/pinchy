@@ -52,6 +52,7 @@ vi.mock("drizzle-orm", () => {
 
 import { requireAdmin } from "@/lib/api-auth";
 import { eq, gte } from "drizzle-orm";
+import { mockSession } from "@/test-helpers/auth";
 
 // ── Tests ────────────────────────────────────────────────────────────────
 
@@ -75,10 +76,9 @@ describe("GET /api/usage/timeseries", () => {
 
   beforeEach(async () => {
     vi.clearAllMocks();
-    vi.mocked(requireAdmin).mockResolvedValue({
-      user: { id: "admin-1", role: "admin" },
-      expires: "",
-    } as ReturnType<typeof requireAdmin> extends Promise<infer T> ? T : never);
+    vi.mocked(requireAdmin).mockResolvedValue(
+      mockSession({ user: { id: "admin-1", role: "admin" } })
+    );
 
     // Reset chainable mock defaults
     mockSelect.mockReturnValue({ from: mockFrom });

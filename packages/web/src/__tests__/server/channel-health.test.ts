@@ -49,7 +49,13 @@ describe("classifyChannelStatus", () => {
 
   it("treats a non-null lastError as degraded even if connected somehow reads true", () => {
     const s = healthyTelegramStatus();
-    s.channelAccounts.telegram[0].lastError = "boom";
+    // healthyTelegramStatus()'s inferred type pins lastError to the literal
+    // `null` (it never assigns a string in that function), so a direct
+    // property assignment of a string is a type error. Object.assign — the
+    // same mutation idiom degradedTelegramStatus() itself uses to overlay a
+    // conflict lastError — merges the type instead of checking it against the
+    // existing field type, and mutates the same object in place.
+    Object.assign(s.channelAccounts.telegram[0], { lastError: "boom" });
     expect(classifyChannelStatus(s)[0].state).toBe("degraded");
   });
 

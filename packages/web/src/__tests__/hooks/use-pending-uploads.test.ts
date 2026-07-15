@@ -199,6 +199,8 @@ describe("PendingUpload state machine", () => {
     vi.mocked(uploadModule.uploadAttachment).mockResolvedValue({
       id: "upload-id-123",
       filename: "test.pdf",
+      mimeType: "application/pdf",
+      sizeBytes: 1024,
     });
 
     const { result } = renderHook(() => useWsRuntime("agent-1"));
@@ -295,6 +297,8 @@ describe("PendingUpload state machine", () => {
     vi.mocked(uploadModule.uploadAttachment).mockResolvedValueOnce({
       id: "upload-id-456",
       filename: "retry.pdf",
+      mimeType: "application/pdf",
+      sizeBytes: 1024,
     });
 
     const { result } = renderHook(() => useWsRuntime("agent-1"));
@@ -395,6 +399,8 @@ describe("PendingUpload state machine", () => {
     vi.mocked(uploadModule.uploadAttachment).mockResolvedValue({
       id: "x",
       filename: "photo.webp",
+      mimeType: "image/webp",
+      sizeBytes: 128,
     });
 
     const { result } = renderHook(() => useWsRuntime("agent-1"));
@@ -463,6 +469,8 @@ describe("PendingUpload state machine", () => {
     vi.mocked(uploadModule.uploadAttachment).mockResolvedValue({
       id: "x",
       filename: "small.jpg",
+      mimeType: "image/jpeg",
+      sizeBytes: 100 * 1024,
     });
 
     const { result } = renderHook(() => useWsRuntime("agent-1"));

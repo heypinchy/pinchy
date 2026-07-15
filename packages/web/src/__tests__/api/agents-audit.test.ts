@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { NextRequest } from "next/server";
+import { routeContext } from "@/test-helpers/route";
 
 // ── Mocks ────────────────────────────────────────────────────────────────
 
@@ -169,7 +170,7 @@ describe("POST /api/agents audit logging", () => {
       }),
     });
 
-    const response = await POST(request);
+    const response = await POST(request, routeContext());
     expect(response.status).toBe(201);
 
     expect(appendAuditLog).toHaveBeenCalledWith({

@@ -38,7 +38,9 @@ function makeRes(): ServerResponse & {
   _body?: string;
 } {
   const res = {
+    _statusCode: undefined as number | undefined,
     _headers: {} as Record<string, string>,
+    _body: undefined as string | undefined,
     writeHead(status: number, headers: Record<string, string>) {
       this._statusCode = status;
       this._headers = headers;

@@ -61,6 +61,7 @@ vi.mock("nodemailer", () => ({
 }));
 
 import { NextRequest } from "next/server";
+import { routeContext } from "@/test-helpers/route";
 
 const adminSession = { user: { id: "user-1", email: "admin@test.com", role: "admin" } };
 const nonAdminSession = { user: { id: "user-2", email: "member@test.com", role: "member" } };
@@ -95,7 +96,7 @@ describe("POST /api/integrations/imap/test", () => {
     mockGetSession.mockResolvedValue(null);
 
     const { POST } = await import("@/app/api/integrations/imap/test/route");
-    const response = await POST(makeRequest(validBody));
+    const response = await POST(makeRequest(validBody), routeContext());
 
     expect(response.status).toBe(401);
     expect(ImapFlowMock).not.toHaveBeenCalled();
@@ -107,7 +108,7 @@ describe("POST /api/integrations/imap/test", () => {
     mockGetSession.mockResolvedValue(nonAdminSession);
 
     const { POST } = await import("@/app/api/integrations/imap/test/route");
-    const response = await POST(makeRequest(validBody));
+    const response = await POST(makeRequest(validBody), routeContext());
 
     expect(response.status).toBe(403);
     expect(ImapFlowMock).not.toHaveBeenCalled();
@@ -130,7 +131,8 @@ describe("POST /api/integrations/imap/test", () => {
           username: "mailbox@example.com",
           password: "pw",
           security: "carrier-pigeon",
-        })
+        }),
+        routeContext()
       );
       const body = await response.json();
 
@@ -144,7 +146,7 @@ describe("POST /api/integrations/imap/test", () => {
 
     it("returns 200 { ok: true } and writes a success audit entry when both probes succeed", async () => {
       const { POST } = await import("@/app/api/integrations/imap/test/route");
-      const response = await POST(makeRequest(validBody));
+      const response = await POST(makeRequest(validBody), routeContext());
       const body = await response.json();
 
       expect(response.status).toBe(200);
@@ -180,7 +182,7 @@ describe("POST /api/integrations/imap/test", () => {
       );
 
       const { POST } = await import("@/app/api/integrations/imap/test/route");
-      const response = await POST(makeRequest(validBody));
+      const response = await POST(makeRequest(validBody), routeContext());
       const body = await response.json();
 
       expect(response.status).toBe(400);
@@ -205,7 +207,7 @@ describe("POST /api/integrations/imap/test", () => {
       mockTransport.verify.mockRejectedValue(new Error("connect ECONNREFUSED 127.0.0.1:587"));
 
       const { POST } = await import("@/app/api/integrations/imap/test/route");
-      const response = await POST(makeRequest(validBody));
+      const response = await POST(makeRequest(validBody), routeContext());
       const body = await response.json();
 
       expect(response.status).toBe(400);
@@ -227,9 +229,9 @@ describe("POST /api/integrations/imap/test", () => {
     it("never includes the plaintext password in the audit detail across success and failure paths", async () => {
       const { POST } = await import("@/app/api/integrations/imap/test/route");
 
-      await POST(makeRequest(validBody));
+      await POST(makeRequest(validBody), routeContext());
       mockImapClient.connect.mockRejectedValueOnce(new Error("bad credentials"));
-      await POST(makeRequest(validBody));
+      await POST(makeRequest(validBody), routeContext());
 
       expect(mockAppendAuditLog).toHaveBeenCalledTimes(2);
       for (const call of mockAppendAuditLog.mock.calls) {

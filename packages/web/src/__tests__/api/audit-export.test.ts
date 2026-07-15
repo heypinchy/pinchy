@@ -89,6 +89,7 @@ import { requireAdmin } from "@/lib/api-auth";
 import { appendAuditLog } from "@/lib/audit";
 import { sanitizeDetail } from "@/lib/audit-sanitize";
 import { renderAuditPdf } from "@/lib/audit-pdf";
+import { mockSession } from "@/test-helpers/auth";
 
 const HEADER =
   "id,timestamp,actorType,actorId,actorName,eventType,resource,resourceName,detail,version,outcome,error,rowHmac";
@@ -96,10 +97,9 @@ const HEADER =
 describe("GET /api/audit/export", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    vi.mocked(requireAdmin).mockResolvedValue({
-      user: { id: "admin-1", role: "admin" },
-      expires: "",
-    } as ReturnType<typeof requireAdmin> extends Promise<infer T> ? T : never);
+    vi.mocked(requireAdmin).mockResolvedValue(
+      mockSession({ user: { id: "admin-1", role: "admin" } })
+    );
     mockResolveActorIdMatchSet.mockResolvedValue(["user-1"]);
   });
 

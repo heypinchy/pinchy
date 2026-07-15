@@ -115,6 +115,15 @@ describe("POST /api/users/[userId]/reset", () => {
       name: "Alice",
       email: "alice@test.com",
       role: "member",
+      emailVerified: true,
+      image: null,
+      banned: false,
+      banReason: null,
+      banExpires: null,
+      context: null,
+      auditPseudonym: "pseudo-1",
+      createdAt: new Date(),
+      updatedAt: new Date(),
     });
 
     const fakeInvite = {
@@ -152,6 +161,15 @@ describe("POST /api/users/[userId]/reset", () => {
       name: "Alice",
       email: "alice@test.com",
       role: "member",
+      emailVerified: true,
+      image: null,
+      banned: false,
+      banReason: null,
+      banExpires: null,
+      context: null,
+      auditPseudonym: "pseudo-1",
+      createdAt: new Date(),
+      updatedAt: new Date(),
     });
 
     const fakeInvite = {
@@ -190,8 +208,20 @@ describe("POST /api/users/[userId]/reset", () => {
     vi.mocked(db.query.users.findFirst).mockResolvedValueOnce({
       id: "user-1",
       name: "Alice",
-      email: null,
+      // Schema types email as NOT NULL, but the route defensively falls back
+      // via `user.email ?? undefined` for legacy/corrupt rows — the boundary
+      // cast below simulates that otherwise-unrepresentable runtime shape.
+      email: null as unknown as string,
       role: "member",
+      emailVerified: true,
+      image: null,
+      banned: false,
+      banReason: null,
+      banExpires: null,
+      context: null,
+      auditPseudonym: "pseudo-1",
+      createdAt: new Date(),
+      updatedAt: new Date(),
     });
 
     const fakeInvite = {

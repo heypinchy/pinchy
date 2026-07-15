@@ -3,6 +3,7 @@ import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import "@testing-library/jest-dom";
 import { AgentList, type Agent } from "@/components/agent-list";
+import { makeAgent } from "@/test-helpers/fixtures";
 
 vi.mock("@/lib/chat-list-cache", () => ({
   prefetchChatList: vi.fn(),
@@ -10,15 +11,8 @@ vi.mock("@/lib/chat-list-cache", () => ({
 import { prefetchChatList } from "@/lib/chat-list-cache";
 
 const agents: Agent[] = [
-  { id: "a1", name: "Smithers", model: "m", isPersonal: false, tagline: null, avatarSeed: null },
-  {
-    id: "a2",
-    name: "Odoo Operator",
-    model: "m",
-    isPersonal: false,
-    tagline: null,
-    avatarSeed: null,
-  },
+  makeAgent({ id: "a1", name: "Smithers", model: "m", isPersonal: false }),
+  makeAgent({ id: "a2", name: "Odoo Operator", model: "m", isPersonal: false }),
 ];
 
 beforeEach(() => vi.clearAllMocks());

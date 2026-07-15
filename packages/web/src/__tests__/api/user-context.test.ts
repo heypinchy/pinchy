@@ -50,6 +50,8 @@ vi.mock("@/lib/context-sync", () => ({
 import { auth } from "@/lib/auth";
 import { GET, PUT } from "@/app/api/users/me/context/route";
 import { NextRequest } from "next/server";
+import { mockSession } from "@/test-helpers/auth";
+import { routeContext } from "@/test-helpers/route";
 
 function makeGetRequest() {
   return new NextRequest("http://localhost/api/users/me/context", { method: "GET" });
@@ -66,23 +68,22 @@ function makePutRequest(body: Record<string, unknown>) {
 describe("GET /api/users/me/context", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    vi.mocked(auth.api.getSession).mockResolvedValue({
-      user: { id: "user-1", email: "user@test.com", role: "member" },
-      expires: "",
-    });
+    vi.mocked(auth.api.getSession).mockResolvedValue(
+      mockSession({ user: { id: "user-1", email: "user@test.com", role: "member" } })
+    );
   });
 
   it("should return 401 when unauthenticated", async () => {
     vi.mocked(auth.api.getSession).mockResolvedValueOnce(null);
 
-    const response = await GET(makeGetRequest());
+    const response = await GET(makeGetRequest(), routeContext());
     expect(response.status).toBe(401);
   });
 
   it("should return user context from database", async () => {
     mockFindFirst.mockResolvedValueOnce({ id: "user-1", context: "My personal context" });
 
-    const response = await GET(makeGetRequest());
+    const response = await GET(makeGetRequest(), routeContext());
     expect(response.status).toBe(200);
     const data = await response.json();
     expect(data.content).toBe("My personal context");
@@ -91,7 +92,7 @@ describe("GET /api/users/me/context", () => {
   it("should return empty string when context is null", async () => {
     mockFindFirst.mockResolvedValueOnce({ id: "user-1", context: null });
 
-    const response = await GET(makeGetRequest());
+    const response = await GET(makeGetRequest(), routeContext());
     expect(response.status).toBe(200);
     const data = await response.json();
     expect(data.content).toBe("");
@@ -101,10 +102,9 @@ describe("GET /api/users/me/context", () => {
 describe("PUT /api/users/me/context", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    vi.mocked(auth.api.getSession).mockResolvedValue({
-      user: { id: "user-1", email: "user@test.com", role: "member" },
-      expires: "",
-    });
+    vi.mocked(auth.api.getSession).mockResolvedValue(
+      mockSession({ user: { id: "user-1", email: "user@test.com", role: "member" } })
+    );
     mockUpdate.mockReturnValue({ set: mockSet });
     mockSet.mockReturnValue({ where: mockWhere });
     mockWhere.mockResolvedValue(undefined);
@@ -113,12 +113,12 @@ describe("PUT /api/users/me/context", () => {
   it("should return 401 when unauthenticated", async () => {
     vi.mocked(auth.api.getSession).mockResolvedValueOnce(null);
 
-    const response = await PUT(makePutRequest({ content: "test" }));
+    const response = await PUT(makePutRequest({ content: "test" }), routeContext());
     expect(response.status).toBe(401);
   });
 
   it("should update user context in database", async () => {
-    const response = await PUT(makePutRequest({ content: "Updated context" }));
+    const response = await PUT(makePutRequest({ content: "Updated context" }), routeContext());
 
     expect(response.status).toBe(200);
     const data = await response.json();
@@ -127,13 +127,13 @@ describe("PUT /api/users/me/context", () => {
   });
 
   it("should call syncUserContextToWorkspaces", async () => {
-    await PUT(makePutRequest({ content: "Updated context" }));
+    await PUT(makePutRequest({ content: "Updated context" }), routeContext());
 
     expect(mockSyncUserContextToWorkspaces).toHaveBeenCalledWith("user-1");
   });
 
   it("should return 400 when content is not a string", async () => {
-    const response = await PUT(makePutRequest({ content: 123 }));
+    const response = await PUT(makePutRequest({ content: 123 }), routeContext());
 
     expect(response.status).toBe(400);
     const data = await response.json();
@@ -142,7 +142,7 @@ describe("PUT /api/users/me/context", () => {
   });
 
   it("should return 400 when content is missing", async () => {
-    const response = await PUT(makePutRequest({}));
+    const response = await PUT(makePutRequest({}), routeContext());
 
     expect(response.status).toBe(400);
     const data = await response.json();

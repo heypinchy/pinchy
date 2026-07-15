@@ -21,6 +21,10 @@ const item = (chatId: string | null, title: string): ChatListItem => ({
   sessionId: `session-${chatId ?? "default"}`,
   title,
   origin: "web",
+  // Web-origin chats are always writable from the web UI (classify-sessions.ts
+  // pairs origin: "web" with writable: true); only the read-only Telegram
+  // mirror carries writable: false.
+  writable: true,
   lastInteractionAt: 1_700_000_000_000,
 });
 

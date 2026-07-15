@@ -114,6 +114,16 @@ jobs:
         # (run by `pnpm test:scripts`) keeps every plugin wired for this gate.
         run: pnpm typecheck:plugins
 
+      - name: Typecheck web (incl. tests)
+        # `next build` (the Build step) type-checks packages/web, but its
+        # tsconfig EXCLUDES *.test.ts(x) — so test files, and the dormant
+        # expectTypeOf/assertType assertions inside them, were never
+        # type-checked anywhere in CI. This runs `tsc --noEmit` over
+        # tsconfig.typecheck.json, which INCLUDES the test files, closing that
+        # gap. The drift guard (scripts/lib/web-typecheck-gate.test.mjs, run by
+        # `pnpm test:scripts`) keeps the tsconfig/script/CI wiring in place.
+        run: pnpm -C packages/web typecheck
+
       - name: Smoke-load plugins (production deps only)
         # Runtime complement to typecheck:plugins: tsc sees devDependencies'
         # type declarations, so a dependency that's missing from a plugin's

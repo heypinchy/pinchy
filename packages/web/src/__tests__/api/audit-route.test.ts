@@ -78,6 +78,7 @@ vi.mock("@/lib/audit", () => ({
 
 import { requireAdmin } from "@/lib/api-auth";
 import { eq, inArray } from "drizzle-orm";
+import { mockSession } from "@/test-helpers/auth";
 
 // ── Tests ────────────────────────────────────────────────────────────────
 
@@ -131,10 +132,9 @@ describe("GET /api/audit", () => {
 
   beforeEach(async () => {
     vi.clearAllMocks();
-    vi.mocked(requireAdmin).mockResolvedValue({
-      user: { id: "admin-1", role: "admin" },
-      expires: "",
-    } as ReturnType<typeof requireAdmin> extends Promise<infer T> ? T : never);
+    vi.mocked(requireAdmin).mockResolvedValue(
+      mockSession({ user: { id: "admin-1", role: "admin" } })
+    );
     // Default: no pseudonym found (simplest case — filter degrades to the
     // bare id). Individual tests override this to assert the dual-match set.
     mockResolveActorIdMatchSet.mockResolvedValue(["user-1"]);

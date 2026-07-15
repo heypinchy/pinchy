@@ -570,7 +570,9 @@ describe("AddIntegrationDialog", () => {
 
       expect(createBody).not.toBeNull();
       expect(createBody).not.toHaveProperty("name");
-      expect((createBody as Record<string, unknown>).senderName).toBe("Clemens Helm");
+      // Non-null assertion: the `not.toBeNull()` check above is a runtime
+      // assertion only and does not narrow `createBody`'s static type.
+      expect(createBody!.senderName).toBe("Clemens Helm");
 
       fetchSpy.mockRestore();
     });

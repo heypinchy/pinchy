@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { NextRequest } from "next/server";
+import { routeContext } from "@/test-helpers/route";
 
 vi.mock("next/headers", () => ({
   headers: vi.fn().mockResolvedValue(new Headers()),
@@ -132,7 +133,7 @@ describe("GET /api/templates", () => {
     mockLimit.mockResolvedValue([{ id: "conn-1" }]);
 
     const request = new NextRequest("http://localhost:7777/api/templates");
-    const response = await GET(request);
+    const response = await GET(request, routeContext());
     const body = await response.json();
 
     expect(body.templates).toEqual(
@@ -161,7 +162,7 @@ describe("GET /api/templates", () => {
     vi.mocked(auth.api.getSession).mockResolvedValueOnce(null);
 
     const request = new NextRequest("http://localhost:7777/api/templates");
-    const response = await GET(request);
+    const response = await GET(request, routeContext());
 
     expect(response.status).toBe(401);
   });
@@ -170,7 +171,7 @@ describe("GET /api/templates", () => {
     mockLimit.mockResolvedValue([{ id: "conn-1" }]);
 
     const request = new NextRequest("http://localhost:7777/api/templates");
-    const response = await GET(request);
+    const response = await GET(request, routeContext());
     const body = await response.json();
 
     const odooTemplates = body.templates.filter(
@@ -191,7 +192,7 @@ describe("GET /api/templates", () => {
     mockLimit.mockResolvedValue([]);
 
     const request = new NextRequest("http://localhost:7777/api/templates");
-    const response = await GET(request);
+    const response = await GET(request, routeContext());
     const body = await response.json();
 
     const odooTemplates = body.templates.filter(
@@ -235,7 +236,7 @@ describe("GET /api/templates", () => {
     ]);
 
     const request = new NextRequest("http://localhost:7777/api/templates");
-    const response = await GET(request);
+    const response = await GET(request, routeContext());
     const body = await response.json();
 
     const salesAnalyst = body.templates.find((t: { id: string }) => t.id === "odoo-sales-analyst");
@@ -255,7 +256,7 @@ describe("GET /api/templates", () => {
     ]);
 
     const request = new NextRequest("http://localhost:7777/api/templates");
-    const response = await GET(request);
+    const response = await GET(request, routeContext());
     const body = await response.json();
 
     const salesAnalyst = body.templates.find((t: { id: string }) => t.id === "odoo-sales-analyst");
@@ -265,7 +266,7 @@ describe("GET /api/templates", () => {
 
   it("marks non-odoo templates as always available", async () => {
     const request = new NextRequest("http://localhost:7777/api/templates");
-    const response = await GET(request);
+    const response = await GET(request, routeContext());
     const body = await response.json();
 
     const kb = body.templates.find((t: { id: string }) => t.id === "knowledge-base");
@@ -290,7 +291,7 @@ describe("GET /api/templates", () => {
     });
 
     const request = new NextRequest("http://localhost:7777/api/templates");
-    const response = await GET(request);
+    const response = await GET(request, routeContext());
     const body = await response.json();
 
     const contract = body.templates.find((t: { id: string }) => t.id === "contract-analyzer");
@@ -307,7 +308,7 @@ describe("GET /api/templates", () => {
     mockLimit.mockResolvedValue([]);
 
     const request = new NextRequest("http://localhost:7777/api/templates");
-    const response = await GET(request);
+    const response = await GET(request, routeContext());
     const body = await response.json();
 
     const ids = body.templates.map((t: { id: string }) => t.id);
@@ -317,7 +318,10 @@ describe("GET /api/templates", () => {
     // With Odoo connection
     mockLimit.mockResolvedValue([{ id: "conn-1" }]);
 
-    const response2 = await GET(new NextRequest("http://localhost:7777/api/templates"));
+    const response2 = await GET(
+      new NextRequest("http://localhost:7777/api/templates"),
+      routeContext()
+    );
     const body2 = await response2.json();
 
     const ids2 = body2.templates.map((t: { id: string }) => t.id);
@@ -330,7 +334,7 @@ describe("GET /api/templates", () => {
     mockLimit.mockResolvedValue([]);
 
     const request = new NextRequest("http://localhost:7777/api/templates");
-    const response = await GET(request);
+    const response = await GET(request, routeContext());
     const body = await response.json();
 
     const emailTemplates = body.templates.filter(
@@ -348,7 +352,7 @@ describe("GET /api/templates", () => {
     mockLimit.mockResolvedValueOnce([]).mockResolvedValueOnce([{ id: "email-conn-1" }]);
 
     const request = new NextRequest("http://localhost:7777/api/templates");
-    const response = await GET(request);
+    const response = await GET(request, routeContext());
     const body = await response.json();
 
     const emailAssistant = body.templates.find((t: { id: string }) => t.id === "email-assistant");
@@ -378,7 +382,7 @@ describe("GET /api/templates", () => {
     // so it naturally resolves to [] via the same condition-matching logic.
 
     const request = new NextRequest("http://localhost:7777/api/templates");
-    const response = await GET(request);
+    const response = await GET(request, routeContext());
     const body = await response.json();
 
     const emailAssistant = body.templates.find((t: { id: string }) => t.id === "email-assistant");
@@ -391,7 +395,7 @@ describe("GET /api/templates", () => {
     mockLimit.mockResolvedValueOnce([]).mockResolvedValueOnce([]);
 
     const request = new NextRequest("http://localhost:7777/api/templates");
-    await GET(request);
+    await GET(request, routeContext());
 
     // The second where() call is the email-availability check (the first is Odoo).
     const emailWhereCall = mockWhere.mock.calls[1][0];
@@ -404,7 +408,7 @@ describe("GET /api/templates", () => {
     mockLimit.mockResolvedValue([]);
 
     const request = new NextRequest("http://localhost:7777/api/templates");
-    const response = await GET(request);
+    const response = await GET(request, routeContext());
     const body = await response.json();
 
     const emailAssistant = body.templates.find((t: { id: string }) => t.id === "email-assistant");
@@ -416,7 +420,7 @@ describe("GET /api/templates", () => {
     mockLimit.mockResolvedValue([]);
 
     const request = new NextRequest("http://localhost:7777/api/templates");
-    const response = await GET(request);
+    const response = await GET(request, routeContext());
     const body = await response.json();
 
     for (const id of ["email-assistant", "email-sales-assistant", "email-support-assistant"]) {

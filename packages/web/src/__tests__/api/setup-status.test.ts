@@ -44,6 +44,15 @@ describe("setup status", () => {
       email: "admin@test.com",
       name: "Admin",
       role: "admin",
+      emailVerified: true,
+      image: null,
+      banned: false,
+      banReason: null,
+      banExpires: null,
+      context: null,
+      auditPseudonym: "pseudonym-1",
+      createdAt: new Date("2026-01-01T00:00:00.000Z"),
+      updatedAt: new Date("2026-01-01T00:00:00.000Z"),
     });
     const result = await isSetupComplete();
     expect(result).toBe(true);

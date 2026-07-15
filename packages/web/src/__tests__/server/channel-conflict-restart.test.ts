@@ -6,24 +6,31 @@
  * action as `channel.restarted`, so a Telegram bot stuck in OpenClaw's
  * dormant post-409 ingress backoff resumes polling under Pinchy's control.
  */
-import { describe, it, expect, vi, beforeEach } from "vitest";
-import { createConflictRestartHandler } from "@/server/channel-conflict-restart";
+import { describe, it, expect, vi, beforeEach, type Mock } from "vitest";
+import {
+  createConflictRestartHandler,
+  type ConflictRestartDeps,
+} from "@/server/channel-conflict-restart";
 
 const ACCOUNT = "29ea51b1-67af-4fad-8864-f550c7543333";
 const CONFLICT =
   "Conflict: terminated by other getUpdates request; make sure that only one bot instance is running";
 
 describe("createConflictRestartHandler", () => {
-  let request: ReturnType<typeof vi.fn>;
-  let isConflictDisabled: ReturnType<typeof vi.fn>;
-  let resolveAccountName: ReturnType<typeof vi.fn>;
-  let writeAudit: ReturnType<typeof vi.fn>;
+  let request: Mock<ConflictRestartDeps["request"]>;
+  let isConflictDisabled: Mock<ConflictRestartDeps["isConflictDisabled"]>;
+  let resolveAccountName: Mock<ConflictRestartDeps["resolveAccountName"]>;
+  let writeAudit: Mock<ConflictRestartDeps["writeAudit"]>;
 
   beforeEach(() => {
-    request = vi.fn().mockResolvedValue({ ok: true });
-    isConflictDisabled = vi.fn().mockResolvedValue(false);
-    resolveAccountName = vi.fn().mockResolvedValue("Penny");
-    writeAudit = vi.fn().mockResolvedValue(undefined);
+    request = vi.fn<ConflictRestartDeps["request"]>().mockResolvedValue({ ok: true });
+    isConflictDisabled = vi
+      .fn<ConflictRestartDeps["isConflictDisabled"]>()
+      .mockResolvedValue(false);
+    resolveAccountName = vi
+      .fn<ConflictRestartDeps["resolveAccountName"]>()
+      .mockResolvedValue("Penny");
+    writeAudit = vi.fn<ConflictRestartDeps["writeAudit"]>().mockResolvedValue(undefined);
   });
 
   function handler() {

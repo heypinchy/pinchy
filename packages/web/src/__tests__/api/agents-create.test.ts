@@ -178,6 +178,8 @@ vi.mock("@/lib/integrations/odoo-template-validation", () => ({
 
 import { POST } from "@/app/api/agents/route";
 import { NextRequest } from "next/server";
+import { routeContext } from "@/test-helpers/route";
+import { mockSession } from "@/test-helpers/auth";
 import { auth } from "@/lib/auth";
 import { AGENT_TEMPLATES } from "@/lib/agent-templates";
 import { validateAllowedPaths } from "@/lib/path-validation";
@@ -209,7 +211,7 @@ describe("POST /api/agents", () => {
       body: JSON.stringify({ name: "Race Guard", templateId: "custom" }),
     });
 
-    const response = await POST(request);
+    const response = await POST(request, routeContext());
     expect(response.status).toBe(201);
 
     expect(regenerateOpenClawConfig).toHaveBeenCalled();
@@ -225,10 +227,9 @@ describe("POST /api/agents", () => {
   });
 
   it("should return 403 for non-admin users", async () => {
-    vi.mocked(auth.api.getSession).mockResolvedValueOnce({
-      user: { id: "2", email: "user@test.com", role: "member" },
-      expires: "",
-    });
+    vi.mocked(auth.api.getSession).mockResolvedValueOnce(
+      mockSession({ user: { id: "2", email: "user@test.com", role: "member" } })
+    );
 
     const request = new NextRequest("http://localhost:7777/api/agents", {
       method: "POST",
@@ -238,7 +239,7 @@ describe("POST /api/agents", () => {
       }),
     });
 
-    const response = await POST(request);
+    const response = await POST(request, routeContext());
     expect(response.status).toBe(403);
     const body = await response.json();
     expect(body.error).toBe("Forbidden");
@@ -256,7 +257,7 @@ describe("POST /api/agents", () => {
       }),
     });
 
-    const response = await POST(request);
+    const response = await POST(request, routeContext());
     const body = await response.json();
 
     expect(response.status).toBe(201);
@@ -280,7 +281,7 @@ describe("POST /api/agents", () => {
       }),
     });
 
-    await POST(request);
+    await POST(request, routeContext());
 
     expect(insertValuesMock).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -301,7 +302,7 @@ describe("POST /api/agents", () => {
       }),
     });
 
-    await POST(request);
+    await POST(request, routeContext());
 
     expect(insertValuesMock).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -322,7 +323,7 @@ describe("POST /api/agents", () => {
       }),
     });
 
-    await POST(request);
+    await POST(request, routeContext());
 
     const expected = AGENT_TEMPLATES["knowledge-base"].defaultStarterPrompts;
     expect(expected, "knowledge-base must define defaultStarterPrompts").toBeDefined();
@@ -339,7 +340,7 @@ describe("POST /api/agents", () => {
       body: JSON.stringify({ name: "Blank", templateId: "custom" }),
     });
 
-    await POST(request);
+    await POST(request, routeContext());
 
     expect(insertValuesMock).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -354,7 +355,7 @@ describe("POST /api/agents", () => {
       body: JSON.stringify({ name: "   ", templateId: "custom" }),
     });
 
-    const response = await POST(request);
+    const response = await POST(request, routeContext());
     expect(response.status).toBe(400);
     const body = await response.json();
     expect(body.error).toBe("Validation failed");
@@ -371,7 +372,7 @@ describe("POST /api/agents", () => {
       }),
     });
 
-    const response = await POST(request);
+    const response = await POST(request, routeContext());
     expect(response.status).toBe(400);
     const body = await response.json();
     expect(body.error).toBe("Validation failed");
@@ -386,7 +387,7 @@ describe("POST /api/agents", () => {
       }),
     });
 
-    const response = await POST(request);
+    const response = await POST(request, routeContext());
     expect(response.status).toBe(400);
     const body = await response.json();
     expect(body.error).toBe("Validation failed");
@@ -402,7 +403,7 @@ describe("POST /api/agents", () => {
       }),
     });
 
-    const response = await POST(request);
+    const response = await POST(request, routeContext());
     expect(response.status).toBe(201);
   });
 
@@ -416,7 +417,7 @@ describe("POST /api/agents", () => {
       }),
     });
 
-    const response = await POST(request);
+    const response = await POST(request, routeContext());
     expect(response.status).toBe(400);
   });
 
@@ -433,7 +434,7 @@ describe("POST /api/agents", () => {
       }),
     });
 
-    const response = await POST(request);
+    const response = await POST(request, routeContext());
     expect(response.status).toBe(400);
     const body = await response.json();
     expect(body.error).toMatch(/domain/i);
@@ -452,7 +453,7 @@ describe("POST /api/agents", () => {
       }),
     });
 
-    const response = await POST(request);
+    const response = await POST(request, routeContext());
     expect(response.status).toBe(400);
     const body = await response.json();
     expect(body.error).toMatch(/domain/i);
@@ -467,7 +468,7 @@ describe("POST /api/agents", () => {
       }),
     });
 
-    const response = await POST(request);
+    const response = await POST(request, routeContext());
     expect(response.status).toBe(400);
     const body = await response.json();
     expect(body.error).toBe("At least one directory must be selected");
@@ -482,7 +483,7 @@ describe("POST /api/agents", () => {
       }),
     });
 
-    const response = await POST(request);
+    const response = await POST(request, routeContext());
     expect(response.status).toBe(201);
     expect(validateAllowedPaths).not.toHaveBeenCalled();
   });
@@ -499,7 +500,7 @@ describe("POST /api/agents", () => {
       }),
     });
 
-    await POST(request);
+    await POST(request, routeContext());
 
     expect(insertValuesMock).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -527,7 +528,7 @@ describe("POST /api/agents", () => {
       }),
     });
 
-    await POST(request);
+    await POST(request, routeContext());
 
     const insertedValues = insertValuesMock.mock.calls[0]?.[0];
     // Template greeting should win over preset greeting
@@ -550,7 +551,7 @@ describe("POST /api/agents", () => {
       }),
     });
 
-    await POST(request);
+    await POST(request, routeContext());
 
     expect(insertValuesMock).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -571,7 +572,7 @@ describe("POST /api/agents", () => {
       }),
     });
 
-    await POST(request);
+    await POST(request, routeContext());
 
     expect(writeWorkspaceFile).toHaveBeenCalledWith(
       "new-agent-id",
@@ -590,7 +591,7 @@ describe("POST /api/agents", () => {
       }),
     });
 
-    await POST(request);
+    await POST(request, routeContext());
 
     expect(insertValuesMock).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -611,7 +612,7 @@ describe("POST /api/agents", () => {
       }),
     });
 
-    await POST(request);
+    await POST(request, routeContext());
 
     expect(writeIdentityFile).toHaveBeenCalledWith("new-agent-id", {
       name: "HR Knowledge Base",
@@ -631,7 +632,7 @@ describe("POST /api/agents", () => {
       }),
     });
 
-    await POST(request);
+    await POST(request, routeContext());
 
     expect(writeWorkspaceFile).toHaveBeenCalledWith(
       "new-agent-id",
@@ -652,7 +653,7 @@ describe("POST /api/agents", () => {
       }),
     });
 
-    await POST(request);
+    await POST(request, routeContext());
 
     expect(writeWorkspaceFile).toHaveBeenCalledWith(
       "new-agent-id",
@@ -673,7 +674,7 @@ describe("POST /api/agents", () => {
       }),
     });
 
-    await POST(request);
+    await POST(request, routeContext());
 
     expect(writeWorkspaceFile).toHaveBeenCalledWith(
       "new-agent-id",
@@ -691,7 +692,7 @@ describe("POST /api/agents", () => {
       }),
     });
 
-    await POST(request);
+    await POST(request, routeContext());
 
     expect(writeWorkspaceFile).not.toHaveBeenCalledWith(
       expect.anything(),
@@ -714,7 +715,7 @@ describe("POST /api/agents", () => {
       }),
     });
 
-    await POST(request);
+    await POST(request, routeContext());
 
     expect(mockGetContextForAgent).toHaveBeenCalledWith({
       isPersonal: false,
@@ -738,7 +739,7 @@ describe("POST /api/agents", () => {
       }),
     });
 
-    await POST(request);
+    await POST(request, routeContext());
 
     expect(writeWorkspaceFileInternal).toHaveBeenCalledWith("new-agent-id", "USER.md", "");
   });
@@ -752,7 +753,7 @@ describe("POST /api/agents", () => {
       }),
     });
 
-    await POST(request);
+    await POST(request, routeContext());
 
     // The POST handler does not explicitly set visibility, so Drizzle uses the
     // schema default ("restricted"). Verify the insert call does NOT include a
@@ -772,7 +773,7 @@ describe("POST /api/agents", () => {
       }),
     });
 
-    await POST(request);
+    await POST(request, routeContext());
 
     expect(getDefaultModel).toHaveBeenCalledWith("anthropic");
     expect(insertValuesMock).toHaveBeenCalledWith(
@@ -794,7 +795,7 @@ describe("POST /api/agents", () => {
       }),
     });
 
-    await POST(request);
+    await POST(request, routeContext());
 
     expect(insertValuesMock).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -861,7 +862,7 @@ describe("POST /api/agents", () => {
       }),
     });
 
-    const response = await POST(request);
+    const response = await POST(request, routeContext());
     expect(response.status).toBe(201);
 
     // Verify permissions were inserted
@@ -901,7 +902,7 @@ describe("POST /api/agents", () => {
       }),
     });
 
-    const response = await POST(request);
+    const response = await POST(request, routeContext());
     expect(response.status).toBe(201);
     expect(validateAllowedPaths).not.toHaveBeenCalled();
   });
@@ -915,7 +916,7 @@ describe("POST /api/agents", () => {
       }),
     });
 
-    const response = await POST(request);
+    const response = await POST(request, routeContext());
     expect(response.status).toBe(400);
     const body = await response.json();
     expect(body.error).toMatch(/connection/i);
@@ -931,7 +932,7 @@ describe("POST /api/agents", () => {
       }),
     });
 
-    const response = await POST(request);
+    const response = await POST(request, routeContext());
     expect(response.status).toBe(201);
 
     // Email templates use semantic operations (read, draft, send) — not per-tool
@@ -961,7 +962,7 @@ describe("POST /api/agents", () => {
       }),
     });
 
-    const response = await POST(request);
+    const response = await POST(request, routeContext());
     expect(response.status).toBe(400);
     const body = await response.json();
     expect(body.error).toMatch(/connection/i);
@@ -976,7 +977,7 @@ describe("POST /api/agents", () => {
       }),
     });
 
-    await POST(request);
+    await POST(request, routeContext());
 
     expect(permissionsInsertValuesMock).not.toHaveBeenCalled();
   });
@@ -994,7 +995,7 @@ describe("POST /api/agents", () => {
       }),
     });
 
-    const response = await POST(request);
+    const response = await POST(request, routeContext());
     expect(response.status).toBe(201);
 
     expect(insertValuesMock).toHaveBeenCalledWith(
@@ -1020,7 +1021,7 @@ describe("POST /api/agents", () => {
       }),
     });
 
-    const response = await POST(request);
+    const response = await POST(request, routeContext());
     expect(response.status).toBe(201);
 
     // Custom template has pluginId: null, so pluginConfig is set to null
@@ -1057,7 +1058,7 @@ describe("POST /api/agents", () => {
       where: vi.fn().mockResolvedValue([{ id: "conn-1", name: "Odoo", type: "odoo", data: {} }]),
     });
 
-    await POST(request);
+    await POST(request, routeContext());
 
     expect(mockResolveModelForTemplate).toHaveBeenCalledWith(
       expect.objectContaining({ hint: expect.objectContaining({ tier: "reasoning" }) })
@@ -1075,7 +1076,7 @@ describe("POST /api/agents", () => {
       body: JSON.stringify({ name: "My Agent", templateId: "custom" }),
     });
 
-    await POST(request);
+    await POST(request, routeContext());
 
     expect(mockResolveModelForTemplate).not.toHaveBeenCalled();
     expect(getDefaultModel).toHaveBeenCalledWith("anthropic");
@@ -1102,7 +1103,7 @@ describe("POST /api/agents", () => {
       }),
     });
 
-    const response = await POST(request);
+    const response = await POST(request, routeContext());
     expect(response.status).toBe(422);
     const body = await response.json();
     expect(body.error).toBe("template_capability_unavailable");
@@ -1133,7 +1134,7 @@ describe("POST /api/agents", () => {
       }),
     });
 
-    await POST(request);
+    await POST(request, routeContext());
 
     // Template has []; defaultAllowedTools adds "pinchy_write"
     expect(insertValuesMock).toHaveBeenCalledWith(
@@ -1158,7 +1159,7 @@ describe("POST /api/agents", () => {
       }),
     });
 
-    await POST(request);
+    await POST(request, routeContext());
 
     const insertedValues = insertValuesMock.mock.calls[0]?.[0] as { allowedTools: string[] };
     expect(insertedValues.allowedTools.filter((t) => t === "pinchy_write").length).toBe(1);
@@ -1176,7 +1177,7 @@ describe("POST /api/agents", () => {
       }),
     });
 
-    await POST(request);
+    await POST(request, routeContext());
 
     expect(insertValuesMock).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -1204,7 +1205,7 @@ describe("POST /api/agents", () => {
       }),
     });
 
-    await POST(request);
+    await POST(request, routeContext());
 
     // after() defers the audit log — find the call
     const call = spy.mock.calls.find(

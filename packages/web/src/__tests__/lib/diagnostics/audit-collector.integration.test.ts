@@ -75,7 +75,10 @@ describe("fetchAuditEntriesForSession (integration)", () => {
     const rows = await fetchAuditEntriesForSession(agentId, userId);
     expect(rows).toHaveLength(2);
 
-    const row = rows[0] as Record<string, unknown>;
+    // CollectedAuditEntry already declares every field this test reads — no
+    // cast to a generic Record needed (TS2352: it doesn't structurally
+    // overlap with an index-signature type anyway).
+    const row = rows[0];
     expect(row.eventType).toMatch(/^tool\./);
     expect(row.actorType).toBe("user");
     expect(row.outcome).toBe("success");
@@ -110,7 +113,7 @@ describe("fetchAuditEntriesForSession (integration)", () => {
 
     const rows = await fetchAuditEntriesForSession(agentId, userId);
     expect(rows).toHaveLength(1);
-    const row = rows[0] as Record<string, unknown>;
+    const row = rows[0];
     expect(row.actorId).toBe(userId);
   });
 
@@ -138,7 +141,7 @@ describe("fetchAuditEntriesForSession (integration)", () => {
 
     const rows = await fetchAuditEntriesForSession(agentId, userId);
     expect(rows).toHaveLength(1);
-    expect((rows[0] as Record<string, unknown>).resource).toBe(`agent:${agentId}`);
+    expect(rows[0].resource).toBe(`agent:${agentId}`);
   });
 
   it("returns an empty array when no rows match", async () => {

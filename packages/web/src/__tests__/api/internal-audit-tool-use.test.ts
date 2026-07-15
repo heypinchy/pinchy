@@ -670,13 +670,14 @@ describe("POST /api/internal/audit/tool-use", () => {
       expect(res.status).toBe(200);
 
       const call = vi.mocked(appendAuditLog).mock.calls[0][0];
-      expect(call.detail.toolName).toBe("pinchy_write");
+      const detail = call.detail as Record<string, unknown>;
+      expect(detail.toolName).toBe("pinchy_write");
       // details fields merged into audit detail
-      expect(call.detail.path).toBe("uploads/secret.txt");
-      expect(call.detail.contentHash).toBe("abc123");
-      expect(call.detail.mode).toBe("create");
+      expect(detail.path).toBe("uploads/secret.txt");
+      expect(detail.contentHash).toBe("abc123");
+      expect(detail.mode).toBe("create");
       // raw params must NOT appear
-      expect(call.detail).not.toHaveProperty("params");
+      expect(detail).not.toHaveProperty("params");
       // raw content string must NOT appear anywhere in audit detail
       expect(JSON.stringify(call.detail)).not.toContain("PRIVATE PERSONAL");
     });
@@ -696,8 +697,9 @@ describe("POST /api/internal/audit/tool-use", () => {
       );
 
       const call = vi.mocked(appendAuditLog).mock.calls[0][0];
-      expect(call.detail).toHaveProperty("params");
-      expect((call.detail.params as Record<string, unknown>).path).toBe("/data/kb/report.md");
+      const detail = call.detail as Record<string, unknown>;
+      expect(detail).toHaveProperty("params");
+      expect((detail.params as Record<string, unknown>).path).toBe("/data/kb/report.md");
     });
 
     it("keeps params on failure when details carries only an error (no curated fields to suppress)", async () => {
@@ -764,8 +766,9 @@ describe("POST /api/internal/audit/tool-use", () => {
       );
 
       const call = vi.mocked(appendAuditLog).mock.calls[0][0];
-      expect(call.detail.toolName).toBe("pinchy_write");
-      expect(call.detail.success).toBe(true);
+      const detail = call.detail as Record<string, unknown>;
+      expect(detail.toolName).toBe("pinchy_write");
+      expect(detail.success).toBe(true);
     });
   });
 

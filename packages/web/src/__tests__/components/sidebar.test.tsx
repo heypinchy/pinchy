@@ -8,6 +8,7 @@ import { SidebarProvider } from "@/components/ui/sidebar";
 import { ChatSessionProvider } from "@/components/chat-session-provider";
 import type { Agent } from "@/components/agent-list";
 import { sortAgents } from "@/components/agent-list";
+import { makeAgent } from "@/test-helpers/fixtures";
 
 const { mockSignOut, mockRouterPush, mockUsePathname, mockAgentsContextValue } = vi.hoisted(() => ({
   mockSignOut: vi.fn().mockResolvedValue(undefined),
@@ -105,14 +106,14 @@ describe("AppSidebar", () => {
 
   it("should render agent names", () => {
     setAgents([
-      {
+      makeAgent({
         id: "1",
         name: "Smithers",
         model: "anthropic/claude-sonnet-4-6",
         isPersonal: false,
         tagline: null,
         avatarSeed: null,
-      },
+      }),
     ]);
     renderSidebar(false);
     expect(screen.getByText("Smithers")).toBeInTheDocument();
@@ -154,14 +155,14 @@ describe("AppSidebar", () => {
   describe("avatar rendering", () => {
     it("should render avatar image for agents", () => {
       setAgents([
-        {
+        makeAgent({
           id: "1",
           name: "Test Agent",
           model: "anthropic/claude-sonnet-4-6",
           isPersonal: false,
           tagline: null,
           avatarSeed: "my-seed",
-        },
+        }),
       ]);
       const { container } = renderSidebar(false);
       const avatar = container.querySelector('img[src="data:image/svg+xml;utf8,mock-my-seed"]');
@@ -171,14 +172,14 @@ describe("AppSidebar", () => {
 
     it("should render Smithers avatar for __smithers__ seed", () => {
       setAgents([
-        {
+        makeAgent({
           id: "1",
           name: "Smithers",
           model: "anthropic/claude-sonnet-4-6",
           isPersonal: true,
           tagline: null,
           avatarSeed: "__smithers__",
-        },
+        }),
       ]);
       const { container } = renderSidebar(false);
       const avatar = container.querySelector('img[src="/images/smithers-avatar.png"]');
@@ -189,14 +190,14 @@ describe("AppSidebar", () => {
   describe("tagline rendering", () => {
     it("should render tagline when present", () => {
       setAgents([
-        {
+        makeAgent({
           id: "1",
           name: "HR Bot",
           model: "anthropic/claude-sonnet-4-6",
           isPersonal: false,
           tagline: "Answers HR questions",
           avatarSeed: null,
-        },
+        }),
       ]);
       renderSidebar(false);
       expect(screen.getByText("Answers HR questions")).toBeInTheDocument();
@@ -204,14 +205,14 @@ describe("AppSidebar", () => {
 
     it("should show title tooltip on tagline for hover", () => {
       setAgents([
-        {
+        makeAgent({
           id: "1",
           name: "HR Bot",
           model: "anthropic/claude-sonnet-4-6",
           isPersonal: false,
           tagline: "Answers HR questions from your documents",
           avatarSeed: null,
-        },
+        }),
       ]);
       renderSidebar(false);
       const tagline = screen.getByText("Answers HR questions from your documents");
@@ -220,14 +221,14 @@ describe("AppSidebar", () => {
 
     it("should show title tooltip on agent name for hover", () => {
       setAgents([
-        {
+        makeAgent({
           id: "1",
           name: "A Very Long Agent Name That Gets Truncated",
           model: "anthropic/claude-sonnet-4-6",
           isPersonal: false,
           tagline: null,
           avatarSeed: null,
-        },
+        }),
       ]);
       renderSidebar(false);
       const name = screen.getByText("A Very Long Agent Name That Gets Truncated");
@@ -236,14 +237,14 @@ describe("AppSidebar", () => {
 
     it("should not render tagline when null", () => {
       setAgents([
-        {
+        makeAgent({
           id: "1",
           name: "HR Bot",
           model: "anthropic/claude-sonnet-4-6",
           isPersonal: false,
           tagline: null,
           avatarSeed: null,
-        },
+        }),
       ]);
       renderSidebar(false);
       const link = screen.getByRole("link", { name: /hr bot/i });
@@ -271,22 +272,22 @@ describe("AppSidebar", () => {
 
   describe("active agent highlighting", () => {
     const agents: Agent[] = [
-      {
+      makeAgent({
         id: "agent-1",
         name: "Alpha",
         model: "anthropic/claude-sonnet-4-6",
         isPersonal: false,
         tagline: null,
         avatarSeed: null,
-      },
-      {
+      }),
+      makeAgent({
         id: "agent-2",
         name: "Beta",
         model: "anthropic/claude-sonnet-4-6",
         isPersonal: false,
         tagline: null,
         avatarSeed: null,
-      },
+      }),
     ];
 
     it("should mark the current agent's menu button as active", () => {
@@ -333,14 +334,14 @@ describe("AppSidebar", () => {
 
   describe("last-viewed chat link (#508)", () => {
     const agents: Agent[] = [
-      {
+      makeAgent({
         id: "agent-1",
         name: "Alpha",
         model: "anthropic/claude-sonnet-4-6",
         isPersonal: false,
         tagline: null,
         avatarSeed: null,
-      },
+      }),
     ];
 
     it("links the agent to the chat last viewed on this device", async () => {
@@ -464,22 +465,22 @@ describe("AppSidebar", () => {
   describe("agent ordering", () => {
     it("should render personal agents before non-personal agents", () => {
       setAgents([
-        {
+        makeAgent({
           id: "1",
           name: "Shared Agent",
           model: "anthropic/claude-sonnet-4-6",
           isPersonal: false,
           tagline: null,
           avatarSeed: null,
-        },
-        {
+        }),
+        makeAgent({
           id: "2",
           name: "My Personal Agent",
           model: "anthropic/claude-sonnet-4-6",
           isPersonal: true,
           tagline: null,
           avatarSeed: null,
-        },
+        }),
       ]);
       renderSidebar(false);
       const links = screen.getAllByRole("link").filter((link) => {
@@ -493,38 +494,38 @@ describe("AppSidebar", () => {
 
     it("should sort non-personal agents alphabetically by name", () => {
       setAgents([
-        {
+        makeAgent({
           id: "1",
           name: "Smithers",
           model: "anthropic/claude-sonnet-4-6",
           isPersonal: true,
           tagline: null,
           avatarSeed: "__smithers__",
-        },
-        {
+        }),
+        makeAgent({
           id: "2",
           name: "Zara",
           model: "anthropic/claude-sonnet-4-6",
           isPersonal: false,
           tagline: null,
           avatarSeed: null,
-        },
-        {
+        }),
+        makeAgent({
           id: "3",
           name: "Ada",
           model: "anthropic/claude-sonnet-4-6",
           isPersonal: false,
           tagline: null,
           avatarSeed: null,
-        },
-        {
+        }),
+        makeAgent({
           id: "4",
           name: "Maya",
           model: "anthropic/claude-sonnet-4-6",
           isPersonal: false,
           tagline: null,
           avatarSeed: null,
-        },
+        }),
       ]);
       renderSidebar(false);
       const links = screen.getAllByRole("link").filter((link) => {

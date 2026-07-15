@@ -3,7 +3,11 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 // Mock postgres-js so importing db/index doesn't open a real connection.
 const { endMock, postgresMock, drizzleMock } = vi.hoisted(() => {
   const endMock = vi.fn().mockResolvedValue(undefined);
-  const postgresMock = vi.fn(() => ({ end: endMock }));
+  // Real `postgres(connectionString, options)` takes two args; declaring both
+  // params here (even though the fake body ignores them) keeps
+  // `postgresMock.mock.calls[0]` a 2-element tuple so the test can read back
+  // the options object passed at import time.
+  const postgresMock = vi.fn((_connectionString: string, _options: unknown) => ({ end: endMock }));
   const drizzleMock = vi.fn((client: unknown, opts: unknown) => ({ client, opts }));
   return { endMock, postgresMock, drizzleMock };
 });

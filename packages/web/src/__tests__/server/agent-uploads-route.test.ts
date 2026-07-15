@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { mkdtempSync, writeFileSync, rmSync, mkdirSync } from "fs";
 import { join } from "path";
 import { tmpdir } from "os";
+import { makeNextRequest, routeContext } from "@/test-helpers/route";
 
 // Hoisted mocks for getSession + agent access — same pattern as
 // other route tests (see e.g. agent-access.test.ts).
@@ -58,15 +59,10 @@ function writeUpload(agentId: string, filename: string, bytes: Buffer) {
 
 async function callGET(agentId: string, filename: string) {
   const { GET } = await import("@/app/api/agents/[agentId]/uploads/[filename]/route");
-  const req = new Request(
+  const req = makeNextRequest(
     `http://localhost/api/agents/${agentId}/uploads/${encodeURIComponent(filename)}`
   );
-  return GET(
-    req as unknown as Request,
-    {
-      params: Promise.resolve({ agentId, filename }),
-    } as unknown as Parameters<typeof GET>[1]
-  );
+  return GET(req, routeContext({ agentId, filename }));
 }
 
 describe("GET /api/agents/[agentId]/uploads/[filename]", () => {

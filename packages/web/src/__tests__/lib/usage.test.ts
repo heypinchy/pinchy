@@ -1,10 +1,22 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 
+// Matches usage.ts's `sum(usageRecords.*Tokens)` select shape — Postgres SUM
+// comes back as text (string) or null when there are no prior rows.
+type PrevSumRow = {
+  totalInput: string | null;
+  totalOutput: string | null;
+  totalCacheRead: string | null;
+  totalCacheWrite: string | null;
+};
+
 const mockInsert = vi.fn();
 const mockValues = vi.fn();
 const mockSelect = vi.fn();
 const mockFrom = vi.fn();
-const mockWhere = vi.fn();
+// `_result` is a real, typed property on the mock (via Object.assign) rather
+// than a stashed untyped field — it lets each test drive what the mocked
+// `where()` call returns without a `Mock<Procedure>` type violation.
+const mockWhere = Object.assign(vi.fn(), { _result: [] as PrevSumRow[] });
 
 vi.mock("@/db", () => ({
   db: {

@@ -31,6 +31,10 @@ function fakeBundle(overrides: Partial<RuntimeBundle> = {}): RuntimeBundle {
     onRetryContinue: vi.fn(),
     onRetryResend: vi.fn(),
     lastError: null,
+    pendingUploads: [],
+    addPendingUpload: vi.fn(),
+    removePendingUpload: vi.fn(),
+    retryPendingUpload: vi.fn(),
     ...overrides,
   };
 }

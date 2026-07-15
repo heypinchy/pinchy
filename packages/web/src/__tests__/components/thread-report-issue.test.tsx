@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, fireEvent } from "@testing-library/react";
 import React from "react";
 import "@testing-library/jest-dom";
+import type { MessageState } from "@assistant-ui/react";
 
 // We mock @assistant-ui/react so the ActionBar primitives render their
 // children inline (no portals, no popovers). That way the menu entry is
@@ -183,12 +184,24 @@ vi.mock("@/components/diagnostics-export-dialog", () => ({
 describe("Per-message Report issue menu entry", () => {
   beforeEach(async () => {
     const { useMessage } = await import("@assistant-ui/react");
-    vi.mocked(useMessage).mockImplementation((selector: (state: unknown) => unknown) =>
-      selector({
-        id: "msg-assistant-1",
-        isLast: true,
-        metadata: { custom: {} },
-      })
+    type UseMessageSelector = (state: MessageState) => unknown;
+    // Fake message state: only the fields this suite's selectors read
+    // (id/isLast/metadata). `MessageState` (a `ThreadMessage` union) requires many
+    // more fields than a per-message-menu test cares about, so a full literal
+    // would be noise; bridge via `unknown` rather than shape the whole message.
+    const fakeMessageState = {
+      id: "msg-assistant-1",
+      isLast: true,
+      metadata: { custom: {} },
+    } as unknown as MessageState;
+    vi.mocked(useMessage).mockImplementation(
+      // `useMessage` is overloaded (plain selector fn OR `{ optional, selector }`
+      // options); production code (thread.tsx) only ever calls the plain-selector
+      // form. `Parameters<typeof useMessage>` collapses overloads to the LAST
+      // signature (the options-object form) for `mockImplementation`'s type, so the
+      // actually-exercised plain-selector implementation needs this boundary cast
+      // back to the real hook type.
+      ((selector: UseMessageSelector) => selector(fakeMessageState)) as typeof useMessage
     );
   });
 

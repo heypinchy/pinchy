@@ -284,6 +284,7 @@ describe("ChatErrorMessage", () => {
   it("renders 'File too large' heading and detail message for payloadTooLarge variant", () => {
     render(
       <ChatErrorMessage
+        agentId="agent-1"
         error={{
           payloadTooLarge: true,
           message: "The file you attached is too large to send.",
@@ -301,6 +302,7 @@ describe("ChatErrorMessage", () => {
   it("renders 'Invalid file' heading and detail message for attachmentInvalid variant", () => {
     render(
       <ChatErrorMessage
+        agentId="agent-1"
         error={{
           attachmentInvalid: true,
           message: "File type mismatch: claimed application/pdf, content is image/png",

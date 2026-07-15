@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { NextResponse } from "next/server";
+import { mockSession } from "@/test-helpers/auth";
 
 vi.mock("@/lib/api-auth", () => ({
   requireAdmin: vi.fn(),
@@ -15,10 +16,9 @@ import { requireAdmin } from "@/lib/api-auth";
 describe("GET /api/audit/verify", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    vi.mocked(requireAdmin).mockResolvedValue({
-      user: { id: "admin-1", role: "admin" },
-      expires: "",
-    } as Awaited<ReturnType<typeof requireAdmin>>);
+    vi.mocked(requireAdmin).mockResolvedValue(
+      mockSession({ user: { id: "admin-1", role: "admin" } })
+    );
   });
 
   it("should return 403 for non-admin users", async () => {

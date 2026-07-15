@@ -23,6 +23,9 @@ import {
   useExternalStoreRuntime,
   type ThreadMessageLike,
   type ComposerRuntime,
+  type AttachmentAdapter,
+  type PendingAttachment,
+  type CompleteAttachment,
 } from "@assistant-ui/react";
 import { DraftPersistence } from "@/components/assistant-ui/thread";
 import { AgentIdContext, ChatIdContext } from "@/components/chat";
@@ -33,9 +36,9 @@ const AGENT = "agent-1";
 // Minimal attachment adapter so the runtime accepts addAttachment during restore.
 // Mirrors the shape of Pinchy's real adapter: a composer attachment that carries
 // the original File and is ready to send.
-const testAttachmentAdapter = {
+const testAttachmentAdapter: AttachmentAdapter = {
   accept: "*",
-  async add({ file }: { file: File }) {
+  async add({ file }: { file: File }): Promise<PendingAttachment> {
     return {
       id: file.name,
       type: "document" as const,
@@ -45,8 +48,10 @@ const testAttachmentAdapter = {
       status: { type: "requires-action" as const, reason: "composer-send" as const },
     };
   },
-  async send(attachment: { id: string; name: string; file: File }) {
-    return { ...attachment, status: { type: "complete" as const } };
+  async send(attachment: PendingAttachment): Promise<CompleteAttachment> {
+    // No test in this file inspects the sent content, only name/text — an
+    // empty part list is a valid, minimal CompleteAttachment.
+    return { ...attachment, status: { type: "complete" as const }, content: [] };
   },
   async remove() {},
 };

@@ -15,11 +15,16 @@ vi.mock("@/db/schema", () => ({
   settings: { key: "key" },
 }));
 
-vi.mock("drizzle-orm", () => ({
-  eq: vi.fn((a, b) => ({ field: a, value: b })),
-}));
+vi.mock("drizzle-orm", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("drizzle-orm")>();
+  return {
+    ...actual,
+    eq: vi.fn((a, b) => ({ field: a, value: b })),
+  };
+});
 
 import { db } from "@/db";
+import { sql } from "drizzle-orm";
 
 describe("domain-reset logic", () => {
   beforeEach(() => {
@@ -62,7 +67,13 @@ describe("domain-reset logic", () => {
     });
 
     if (existing) {
-      await db.delete({} as any).where({});
+      // `.where()` is only ever reached through the fully-mocked `db.delete`
+      // above (its `where` is `vi.fn()` and never inspects its argument), but
+      // the REAL `db.delete(...)` builder's `.where()` still statically
+      // requires a `SQL<unknown>` condition. A real (unmocked, see the
+      // `drizzle-orm` mock's `importOriginal` above) `sql` fragment satisfies
+      // that without an `any` cast.
+      await db.delete({} as any).where(sql`1=1`);
       console.log(`Domain lock removed (was: ${existing.value}).`);
       console.log("Pinchy is now accessible via any host. Restart the container to apply.");
     }

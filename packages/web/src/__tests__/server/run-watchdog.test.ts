@@ -19,7 +19,7 @@
  * client-side timer firing — which doesn't fire if the tab is backgrounded. The
  * watchdog is the server-side belt to that suspenders.
  */
-import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach, type Mock } from "vitest";
 import type { WebSocket } from "ws";
 import { ActiveRuns, type ActiveRun } from "@/server/active-runs";
 import { runWatchdogTick, startRunWatchdog, type WatchdogDeps } from "@/server/run-watchdog";
@@ -43,16 +43,16 @@ const basePending = {
 
 describe("runWatchdogTick", () => {
   let runs: ActiveRuns;
-  let chatAbort: ReturnType<typeof vi.fn>;
-  let writeAudit: ReturnType<typeof vi.fn>;
-  let broadcastNoFirstChunk: ReturnType<typeof vi.fn>;
+  let chatAbort: Mock<WatchdogDeps["chatAbort"]>;
+  let writeAudit: Mock<WatchdogDeps["writeAudit"]>;
+  let broadcastNoFirstChunk: Mock<WatchdogDeps["broadcastNoFirstChunk"]>;
   let deps: WatchdogDeps;
 
   beforeEach(() => {
     runs = new ActiveRuns();
-    chatAbort = vi.fn().mockResolvedValue(undefined);
-    writeAudit = vi.fn().mockResolvedValue(undefined);
-    broadcastNoFirstChunk = vi.fn();
+    chatAbort = vi.fn<WatchdogDeps["chatAbort"]>().mockResolvedValue(undefined);
+    writeAudit = vi.fn<WatchdogDeps["writeAudit"]>().mockResolvedValue(undefined);
+    broadcastNoFirstChunk = vi.fn<WatchdogDeps["broadcastNoFirstChunk"]>();
     deps = {
       activeRuns: runs,
       chatAbort,

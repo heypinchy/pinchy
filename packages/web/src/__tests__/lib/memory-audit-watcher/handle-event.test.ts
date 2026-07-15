@@ -1,5 +1,13 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, type Mock } from "vitest";
 import { handleMemoryFileEvent } from "@/lib/memory-audit-watcher/handle-event";
+import type { AuditLogEntry } from "@/lib/audit";
+
+// Bare `vi.fn()` types as `Mock<Procedure | Constructable>` (ReturnType of a
+// generic function instantiates the type param at its constraint, not its
+// default), which isn't assignable to HandleMemoryEventDeps' concrete
+// function-typed fields. Bind the real signatures explicitly instead.
+type LookupAgentFn = (agentId: string) => Promise<{ id: string; name: string } | null>;
+type AppendAuditLogFn = (entry: AuditLogEntry) => Promise<unknown>;
 
 describe("handleMemoryFileEvent", () => {
   // Workspace base: agents live at `<root>/<agentId>/` (no `agents/` prefix —
@@ -7,14 +15,14 @@ describe("handleMemoryFileEvent", () => {
   const root = "/openclaw-config/workspaces";
   let snapshots: Map<string, string>;
   let inflight: Map<string, Promise<void>>;
-  let mockAppend: ReturnType<typeof vi.fn>;
-  let mockLookupAgent: ReturnType<typeof vi.fn>;
+  let mockAppend: Mock<AppendAuditLogFn>;
+  let mockLookupAgent: Mock<LookupAgentFn>;
 
   beforeEach(() => {
     snapshots = new Map();
     inflight = new Map();
-    mockAppend = vi.fn().mockResolvedValue(undefined);
-    mockLookupAgent = vi.fn().mockResolvedValue({ id: "agent-1", name: "Smithers" });
+    mockAppend = vi.fn<AppendAuditLogFn>().mockResolvedValue(undefined);
+    mockLookupAgent = vi.fn<LookupAgentFn>().mockResolvedValue({ id: "agent-1", name: "Smithers" });
   });
 
   it("emits audit on first change (file added post-ready)", async () => {

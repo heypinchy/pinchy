@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { GET } from "@/app/api/version/route";
 
 const ENV_KEYS = [
@@ -26,7 +26,7 @@ describe("GET /api/version", () => {
       if (value === undefined) {
         delete process.env[key];
       } else {
-        process.env[key] = value;
+        vi.stubEnv(key, value);
       }
     }
   }
@@ -80,7 +80,7 @@ describe("GET /api/version", () => {
   });
 
   it("returns nodeEnv from NODE_ENV", async () => {
-    process.env.NODE_ENV = "production";
+    vi.stubEnv("NODE_ENV", "production");
     const response = await GET();
     const data = await response.json();
     expect(data.nodeEnv).toBe("production");

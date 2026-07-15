@@ -110,6 +110,8 @@ import { resetCache } from "@/lib/provider-models";
 import { regenerateOpenClawConfig } from "@/lib/openclaw-config";
 import { db } from "@/db";
 import { appendAuditLog } from "@/lib/audit";
+import { mockSession } from "@/test-helpers/auth";
+import { makeNextRequest, routeContext } from "@/test-helpers/route";
 
 describe("GET /api/settings/providers", () => {
   beforeEach(() => {
@@ -120,7 +122,7 @@ describe("GET /api/settings/providers", () => {
   it("should return 401 when not authenticated", async () => {
     vi.mocked(auth.api.getSession).mockResolvedValueOnce(null);
 
-    const response = await GET();
+    const response = await GET(makeNextRequest(), routeContext());
 
     expect(response.status).toBe(401);
     const data = await response.json();
@@ -128,7 +130,7 @@ describe("GET /api/settings/providers", () => {
   });
 
   it("should return all providers as not configured when nothing is set", async () => {
-    const response = await GET();
+    const response = await GET(makeNextRequest(), routeContext());
 
     expect(response.status).toBe(200);
     const data = await response.json();
@@ -150,7 +152,7 @@ describe("GET /api/settings/providers", () => {
       return null;
     });
 
-    const response = await GET();
+    const response = await GET(makeNextRequest(), routeContext());
 
     expect(response.status).toBe(200);
     const data = await response.json();
@@ -165,7 +167,7 @@ describe("GET /api/settings/providers", () => {
       return null;
     });
 
-    const response = await GET();
+    const response = await GET(makeNextRequest(), routeContext());
     const data = await response.json();
 
     expect(data.providers.anthropic.hint).toBe("xY9z");
@@ -174,15 +176,15 @@ describe("GET /api/settings/providers", () => {
   });
 
   it("should not return hints for non-admin users", async () => {
-    vi.mocked(auth.api.getSession).mockResolvedValueOnce({
-      user: { id: "2", email: "user@test.com", role: "member" },
-    } as any);
+    vi.mocked(auth.api.getSession).mockResolvedValueOnce(
+      mockSession({ user: { id: "2", email: "user@test.com", role: "member" } })
+    );
     vi.mocked(getSetting).mockImplementation(async (key: string) => {
       if (key === "anthropic_api_key") return "sk-ant-secret-key-xY9z";
       return null;
     });
 
-    const response = await GET();
+    const response = await GET(makeNextRequest(), routeContext());
 
     expect(response.status).toBe(200);
     const data = await response.json();
@@ -197,7 +199,7 @@ describe("GET /api/settings/providers", () => {
       return null;
     });
 
-    const response = await GET();
+    const response = await GET(makeNextRequest(), routeContext());
 
     expect(response.status).toBe(200);
     const data = await response.json();
@@ -210,7 +212,7 @@ describe("GET /api/settings/providers", () => {
       return null;
     });
 
-    const response = await GET();
+    const response = await GET(makeNextRequest(), routeContext());
     const data = await response.json();
     expect(data.providers["ollama-local"].configured).toBe(true);
     expect(data.providers["ollama-local"].hint).toBe("http://host.docker.internal:11434");
@@ -224,7 +226,7 @@ describe("DELETE /api/settings/providers", () => {
   });
 
   function makeRequest(body: object) {
-    return new Request("http://localhost/api/settings/providers", {
+    return makeNextRequest("http://localhost/api/settings/providers", {
       method: "DELETE",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
@@ -234,17 +236,17 @@ describe("DELETE /api/settings/providers", () => {
   it("should return 401 when not authenticated", async () => {
     vi.mocked(auth.api.getSession).mockResolvedValueOnce(null);
 
-    const response = await DELETE(makeRequest({ provider: "anthropic" }));
+    const response = await DELETE(makeRequest({ provider: "anthropic" }), routeContext());
 
     expect(response.status).toBe(401);
   });
 
   it("should return 403 when non-admin user tries to delete", async () => {
-    vi.mocked(auth.api.getSession).mockResolvedValueOnce({
-      user: { id: "2", email: "user@test.com", role: "member" },
-    } as any);
+    vi.mocked(auth.api.getSession).mockResolvedValueOnce(
+      mockSession({ user: { id: "2", email: "user@test.com", role: "member" } })
+    );
 
-    const response = await DELETE(makeRequest({ provider: "anthropic" }));
+    const response = await DELETE(makeRequest({ provider: "anthropic" }), routeContext());
 
     expect(response.status).toBe(403);
     const data = await response.json();
@@ -252,7 +254,7 @@ describe("DELETE /api/settings/providers", () => {
   });
 
   it("should return 400 for invalid provider name", async () => {
-    const response = await DELETE(makeRequest({ provider: "invalid" }));
+    const response = await DELETE(makeRequest({ provider: "invalid" }), routeContext());
 
     expect(response.status).toBe(400);
     const data = await response.json();
@@ -267,7 +269,7 @@ describe("DELETE /api/settings/providers", () => {
       return null;
     });
 
-    const response = await DELETE(makeRequest({ provider: "anthropic" }));
+    const response = await DELETE(makeRequest({ provider: "anthropic" }), routeContext());
 
     expect(response.status).toBe(400);
     const data = await response.json();
@@ -282,7 +284,7 @@ describe("DELETE /api/settings/providers", () => {
       return null;
     });
 
-    const response = await DELETE(makeRequest({ provider: "anthropic" }));
+    const response = await DELETE(makeRequest({ provider: "anthropic" }), routeContext());
 
     expect(response.status).toBe(200);
     expect(deleteSetting).toHaveBeenCalledWith("anthropic_api_key");
@@ -296,7 +298,7 @@ describe("DELETE /api/settings/providers", () => {
       return null;
     });
 
-    const response = await DELETE(makeRequest({ provider: "anthropic" }));
+    const response = await DELETE(makeRequest({ provider: "anthropic" }), routeContext());
 
     expect(response.status).toBe(200);
     expect(deleteSetting).toHaveBeenCalledWith("anthropic_api_key");
@@ -311,7 +313,7 @@ describe("DELETE /api/settings/providers", () => {
       return null;
     });
 
-    const response = await DELETE(makeRequest({ provider: "openai" }));
+    const response = await DELETE(makeRequest({ provider: "openai" }), routeContext());
 
     expect(response.status).toBe(200);
     expect(deleteSetting).toHaveBeenCalledWith("openai_api_key");
@@ -326,7 +328,7 @@ describe("DELETE /api/settings/providers", () => {
       return null;
     });
 
-    await DELETE(makeRequest({ provider: "openai" }));
+    await DELETE(makeRequest({ provider: "openai" }), routeContext());
 
     expect(resetCache).toHaveBeenCalled();
   });
@@ -344,7 +346,7 @@ describe("DELETE /api/settings/providers", () => {
       { id: "agent-3", model: "anthropic/claude-haiku-4-5-20251001" },
     ] as any[]);
 
-    await DELETE(makeRequest({ provider: "openai" }));
+    await DELETE(makeRequest({ provider: "openai" }), routeContext());
 
     // Only the 2 openai agents should be migrated, not the anthropic one
     expect(db.update).toHaveBeenCalledTimes(2);
@@ -361,7 +363,7 @@ describe("DELETE /api/settings/providers", () => {
       { id: "agent-1", name: "Smithers", model: "anthropic/claude-haiku-4-5-20251001" },
     ] as any[]);
 
-    await DELETE(makeRequest({ provider: "openai" }));
+    await DELETE(makeRequest({ provider: "openai" }), routeContext());
 
     expect(db.update).not.toHaveBeenCalled();
     // Audit log still fires with empty migratedAgents — proves the call is
@@ -388,7 +390,7 @@ describe("DELETE /api/settings/providers", () => {
       return null;
     });
 
-    await DELETE(makeRequest({ provider: "openai" }));
+    await DELETE(makeRequest({ provider: "openai" }), routeContext());
 
     expect(regenerateOpenClawConfig).toHaveBeenCalled();
   });
@@ -405,7 +407,7 @@ describe("DELETE /api/settings/providers", () => {
       { id: "agent-2", name: "Smithers", model: "anthropic/claude-haiku-4-5-20251001" },
     ] as any[]);
 
-    await DELETE(makeRequest({ provider: "ollama-local" }));
+    await DELETE(makeRequest({ provider: "ollama-local" }), routeContext());
 
     // Only the ollama agent should be migrated, not the anthropic one
     expect(db.update).toHaveBeenCalledTimes(1);
@@ -451,7 +453,7 @@ describe("DELETE /api/settings/providers", () => {
     }));
     vi.mocked(db.query.agents.findMany).mockResolvedValueOnce(manyAgents as any[]);
 
-    await DELETE(makeRequest({ provider: "openai" }));
+    await DELETE(makeRequest({ provider: "openai" }), routeContext());
 
     const call = vi.mocked(appendAuditLog).mock.calls[0]?.[0];
     expect(call?.detail).toMatchObject({
@@ -473,7 +475,7 @@ describe("DELETE /api/settings/providers", () => {
       { id: "agent-2", name: "Smithers", model: "anthropic/claude-haiku-4-5-20251001" },
     ] as any[]);
 
-    const response = await DELETE(makeRequest({ provider: "openai" }));
+    const response = await DELETE(makeRequest({ provider: "openai" }), routeContext());
 
     expect(response.status).toBe(200);
     expect(appendAuditLog).toHaveBeenCalledTimes(1);
@@ -509,7 +511,7 @@ describe("DELETE /api/settings/providers", () => {
     });
     vi.mocked(db.query.agents.findMany).mockResolvedValueOnce([] as any[]);
 
-    await DELETE(makeRequest({ provider: "anthropic" }));
+    await DELETE(makeRequest({ provider: "anthropic" }), routeContext());
 
     expect(appendAuditLog).toHaveBeenCalledWith({
       actorType: "user",
@@ -529,11 +531,11 @@ describe("DELETE /api/settings/providers", () => {
   });
 
   it("should not write an audit log when the request is rejected", async () => {
-    vi.mocked(auth.api.getSession).mockResolvedValueOnce({
-      user: { id: "2", email: "user@test.com", role: "member" },
-    } as any);
+    vi.mocked(auth.api.getSession).mockResolvedValueOnce(
+      mockSession({ user: { id: "2", email: "user@test.com", role: "member" } })
+    );
 
-    await DELETE(makeRequest({ provider: "anthropic" }));
+    await DELETE(makeRequest({ provider: "anthropic" }), routeContext());
 
     expect(appendAuditLog).not.toHaveBeenCalled();
   });
@@ -545,7 +547,7 @@ describe("DELETE /api/settings/providers", () => {
       return null;
     });
 
-    await DELETE(makeRequest({ provider: "anthropic" }));
+    await DELETE(makeRequest({ provider: "anthropic" }), routeContext());
 
     expect(appendAuditLog).not.toHaveBeenCalled();
   });

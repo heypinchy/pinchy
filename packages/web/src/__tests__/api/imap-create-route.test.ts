@@ -62,6 +62,7 @@ vi.mock("@/db/schema", () => ({
 }));
 
 import { NextRequest } from "next/server";
+import { routeContext } from "@/test-helpers/route";
 
 function makeRequest(body: unknown) {
   return new NextRequest("http://localhost:7777/api/integrations/imap", {
@@ -95,7 +96,7 @@ describe("POST /api/integrations/imap", () => {
     mockGetSession.mockResolvedValueOnce(null);
     const { POST } = await import("@/app/api/integrations/imap/route");
 
-    const response = await POST(makeRequest(validBody));
+    const response = await POST(makeRequest(validBody), routeContext());
 
     expect(response.status).toBe(401);
     expect(mockInsertValues).not.toHaveBeenCalled();
@@ -106,7 +107,7 @@ describe("POST /api/integrations/imap", () => {
     mockGetSession.mockResolvedValueOnce(memberSession);
     const { POST } = await import("@/app/api/integrations/imap/route");
 
-    const response = await POST(makeRequest(validBody));
+    const response = await POST(makeRequest(validBody), routeContext());
 
     expect(response.status).toBe(403);
     expect(mockInsertValues).not.toHaveBeenCalled();
@@ -116,7 +117,7 @@ describe("POST /api/integrations/imap", () => {
   it("creates an IMAP connection, encrypts credentials, and returns a summary", async () => {
     const { POST } = await import("@/app/api/integrations/imap/route");
 
-    const response = await POST(makeRequest(validBody));
+    const response = await POST(makeRequest(validBody), routeContext());
     const body = await response.json();
 
     expect(response.status).toBe(201);
@@ -162,7 +163,7 @@ describe("POST /api/integrations/imap", () => {
   it("writes an integration.created audit entry with {id, name} and no password", async () => {
     const { POST } = await import("@/app/api/integrations/imap/route");
 
-    await POST(makeRequest(validBody));
+    await POST(makeRequest(validBody), routeContext());
 
     expect(mockAppendAuditLog).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -191,7 +192,7 @@ describe("POST /api/integrations/imap", () => {
     const { name: _name, ...rest } = validBody;
     mockInsertReturning.mockResolvedValueOnce([{ ...insertedConnection, name: rest.username }]);
 
-    const response = await POST(makeRequest(rest));
+    const response = await POST(makeRequest(rest), routeContext());
     const body = await response.json();
 
     expect(response.status).toBe(201);
@@ -211,7 +212,7 @@ describe("POST /api/integrations/imap", () => {
   it("returns 400 and does not insert or audit when name is blank", async () => {
     const { POST } = await import("@/app/api/integrations/imap/route");
 
-    const response = await POST(makeRequest({ ...validBody, name: "" }));
+    const response = await POST(makeRequest({ ...validBody, name: "" }), routeContext());
 
     expect(response.status).toBe(400);
     expect(mockInsertValues).not.toHaveBeenCalled();
@@ -222,7 +223,7 @@ describe("POST /api/integrations/imap", () => {
     const { POST } = await import("@/app/api/integrations/imap/route");
 
     const { imapHost: _imapHost, ...rest } = validBody;
-    const response = await POST(makeRequest(rest));
+    const response = await POST(makeRequest(rest), routeContext());
 
     expect(response.status).toBe(400);
     expect(mockInsertValues).not.toHaveBeenCalled();
@@ -232,7 +233,7 @@ describe("POST /api/integrations/imap", () => {
   it("returns 400 and does not insert or audit when the port is out of range", async () => {
     const { POST } = await import("@/app/api/integrations/imap/route");
 
-    const response = await POST(makeRequest({ ...validBody, imapPort: 999999 }));
+    const response = await POST(makeRequest({ ...validBody, imapPort: 999999 }), routeContext());
 
     expect(response.status).toBe(400);
     expect(mockInsertValues).not.toHaveBeenCalled();
@@ -243,7 +244,7 @@ describe("POST /api/integrations/imap", () => {
     mockInsertReturning.mockRejectedValueOnce(new Error("DB unreachable"));
     const { POST } = await import("@/app/api/integrations/imap/route");
 
-    const response = await POST(makeRequest(validBody));
+    const response = await POST(makeRequest(validBody), routeContext());
 
     expect(response.status).toBe(500);
     expect(mockRecordAuditFailure).toHaveBeenCalled();
@@ -262,7 +263,7 @@ describe("POST /api/integrations/imap", () => {
     // Name omitted → defaults to the mailbox address, which must not leak into
     // the append-only audit failure row.
     const { name: _name, ...rest } = validBody;
-    await POST(makeRequest(rest));
+    await POST(makeRequest(rest), routeContext());
 
     const [, failureEntry] = mockRecordAuditFailure.mock.calls[0];
     expect(JSON.stringify(failureEntry.detail)).not.toContain(rest.username);
@@ -273,7 +274,7 @@ describe("POST /api/integrations/imap", () => {
     it("stores senderName inside the encrypted credentials blob", async () => {
       const { POST } = await import("@/app/api/integrations/imap/route");
 
-      await POST(makeRequest({ ...validBody, senderName: "Support Team" }));
+      await POST(makeRequest({ ...validBody, senderName: "Support Team" }), routeContext());
 
       expect(mockEncrypt).toHaveBeenCalledWith(
         JSON.stringify({
@@ -292,7 +293,7 @@ describe("POST /api/integrations/imap", () => {
     it("never puts senderName in the plaintext data column or audit detail", async () => {
       const { POST } = await import("@/app/api/integrations/imap/route");
 
-      await POST(makeRequest({ ...validBody, senderName: "Support Team" }));
+      await POST(makeRequest({ ...validBody, senderName: "Support Team" }), routeContext());
 
       const insertedRow = mockInsertValues.mock.calls[0][0];
       expect(JSON.stringify(insertedRow.data)).not.toContain("Support Team");
@@ -305,7 +306,8 @@ describe("POST /api/integrations/imap", () => {
       const { POST } = await import("@/app/api/integrations/imap/route");
 
       const response = await POST(
-        makeRequest({ ...validBody, senderName: "x\r\nBcc: evil@example.com" })
+        makeRequest({ ...validBody, senderName: "x\r\nBcc: evil@example.com" }),
+        routeContext()
       );
 
       expect(response.status).toBe(400);

@@ -23,7 +23,10 @@ vi.mock("fs", async (importOriginal) => {
 });
 
 import * as fs from "fs";
-import { writeAgentAuthProfiles } from "@/lib/openclaw-config/agent-auth-profiles";
+import {
+  writeAgentAuthProfiles,
+  type WriteAgentAuthProfilesParams,
+} from "@/lib/openclaw-config/agent-auth-profiles";
 
 describe("writeAgentAuthProfiles", () => {
   let tmpDir: string;
@@ -79,7 +82,13 @@ describe("writeAgentAuthProfiles", () => {
   });
 
   it("is idempotent — writing the same input twice produces identical bytes", async () => {
-    const params = { configRoot: tmpDir, agentId: "a", providers: ["anthropic"] as const };
+    // Explicit param type (not `as const`) — `providers` must stay the mutable
+    // AuthProfilesProvider[] the function expects, not a readonly tuple.
+    const params: WriteAgentAuthProfilesParams = {
+      configRoot: tmpDir,
+      agentId: "a",
+      providers: ["anthropic"],
+    };
     await writeAgentAuthProfiles(params);
     const first = fs.readFileSync(path.join(tmpDir, "agents", "a", "agent", "auth-profiles.json"));
     await writeAgentAuthProfiles(params);

@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { NextRequest } from "next/server";
+import { mockSession } from "@/test-helpers/auth";
 
 vi.mock("next/headers", () => ({
   headers: vi.fn().mockResolvedValue(new Headers()),
@@ -18,7 +19,7 @@ vi.mock("@/lib/auth", () => {
 });
 
 vi.mock("@/lib/integrations/oauth-settings", async (importOriginal) => {
-  const actual = await importOriginal();
+  const actual = await importOriginal<typeof import("@/lib/integrations/oauth-settings")>();
   return {
     ...actual,
     getOAuthSettings: vi.fn(),
@@ -56,13 +57,9 @@ import {
 import { appendAuditLog } from "@/lib/audit";
 import { validateMicrosoftTenant } from "@/lib/integrations/oauth-preflight";
 
-const adminSession = {
-  user: { id: "admin-1", name: "Admin", role: "admin" },
-};
+const adminSession = mockSession({ user: { id: "admin-1", name: "Admin", role: "admin" } });
 
-const userSession = {
-  user: { id: "user-1", name: "User", role: "member" },
-};
+const userSession = mockSession({ user: { id: "user-1", name: "User", role: "member" } });
 
 describe("GET /api/settings/oauth", () => {
   let GET: typeof import("@/app/api/settings/oauth/route").GET;

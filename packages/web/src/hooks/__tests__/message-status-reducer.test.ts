@@ -54,7 +54,7 @@ describe("reduceMessages", () => {
 
   // Regression for #227: the reducer is invoked from use-ws-runtime with the
   // hook's superset WsMessage shape (optional status, string timestamp, plus
-  // images / error / retryable). The reducer must preserve all extra fields
+  // files / error / retryable). The reducer must preserve all extra fields
   // verbatim — the type-level guarantee lives in message-status-reducer.test-d.ts.
   it("preserves hook-shaped extra fields when transitioning status", () => {
     const initial: WsMessage[] = [
@@ -64,14 +64,14 @@ describe("reduceMessages", () => {
         content: "hi",
         status: "sending",
         timestamp: "2026-05-01T00:00:00Z",
-        images: ["data:image/png;base64,AAA"],
+        files: [{ filename: "photo.png", mimeType: "image/png" }],
       },
     ];
 
     const next = reduceMessages(initial, { type: "ack", clientMessageId: "1" });
 
     expect(next[0].status).toBe("sent");
-    expect(next[0].images).toEqual(["data:image/png;base64,AAA"]);
+    expect(next[0].files).toEqual([{ filename: "photo.png", mimeType: "image/png" }]);
     expect(next[0].timestamp).toBe("2026-05-01T00:00:00Z");
   });
 

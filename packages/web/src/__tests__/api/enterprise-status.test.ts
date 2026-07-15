@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
+import { makeNextRequest, routeContext } from "@/test-helpers/route";
 
 vi.mock("@/lib/auth", () => ({
   getSession: vi.fn(),
@@ -49,7 +50,7 @@ describe("GET /api/enterprise/status", () => {
       pendingInvites: 2,
     });
     const { GET } = await import("@/app/api/enterprise/status/route");
-    const res = await GET();
+    const res = await GET(makeNextRequest(), routeContext());
     const body = await res.json();
     expect(body.seatsUsed).toBe(7);
     expect(body.maxUsers).toBe(10);
@@ -71,7 +72,7 @@ describe("GET /api/enterprise/status", () => {
       pendingInvites: 0,
     });
     const { GET } = await import("@/app/api/enterprise/status/route");
-    const res = await GET();
+    const res = await GET(makeNextRequest(), routeContext());
     const body = await res.json();
     expect(body.seatsUsed).toBe(12);
     expect(body.maxUsers).toBe(0);
@@ -85,7 +86,7 @@ describe("GET /api/enterprise/status", () => {
       features: [],
     });
     const { GET } = await import("@/app/api/enterprise/status/route");
-    const res = await GET();
+    const res = await GET(makeNextRequest(), routeContext());
     const body = await res.json();
     expect(body.enterprise).toBe(false);
     expect(body.seatsUsed).toBe(0);
@@ -102,7 +103,7 @@ describe("GET /api/enterprise/status", () => {
     });
     (hasGatedConfig as ReturnType<typeof vi.fn>).mockResolvedValue(false);
     const { GET } = await import("@/app/api/enterprise/status/route");
-    const res = await GET();
+    const res = await GET(makeNextRequest(), routeContext());
     const body = await res.json();
     expect(body.state).toBe("community");
     expect(body.paidUntil).toBeNull();
@@ -130,7 +131,7 @@ describe("GET /api/enterprise/status", () => {
       pendingInvites: 2,
     });
     const { GET } = await import("@/app/api/enterprise/status/route");
-    const res = await GET();
+    const res = await GET(makeNextRequest(), routeContext());
     const body = await res.json();
     expect(body.state).toBe("paid");
     expect(body.paidUntil).toBe(paidUntilAt.toISOString());
@@ -156,7 +157,7 @@ describe("GET /api/enterprise/status", () => {
       pendingInvites: 0,
     });
     const { GET } = await import("@/app/api/enterprise/status/route");
-    const res = await GET();
+    const res = await GET(makeNextRequest(), routeContext());
     const body = await res.json();
     expect(body.state).toBe("grace");
   });
@@ -177,7 +178,7 @@ describe("GET /api/enterprise/status", () => {
     });
     (hasGatedConfig as ReturnType<typeof vi.fn>).mockResolvedValue(true);
     const { GET } = await import("@/app/api/enterprise/status/route");
-    const res = await GET();
+    const res = await GET(makeNextRequest(), routeContext());
     const body = await res.json();
     expect(body.enterprise).toBe(false);
     expect(body.state).toBe("expired");
@@ -200,7 +201,7 @@ describe("GET /api/enterprise/status", () => {
       expiresAt: new Date(Date.now() - 86400000),
     });
     const { GET } = await import("@/app/api/enterprise/status/route");
-    const res = await GET();
+    const res = await GET(makeNextRequest(), routeContext());
     const body = await res.json();
     expect(body.hasGatedConfig).toBe(false);
     expect(hasGatedConfig).not.toHaveBeenCalled();
@@ -218,7 +219,7 @@ describe("GET /api/enterprise/status", () => {
     });
     (hasGatedConfig as ReturnType<typeof vi.fn>).mockResolvedValue(false);
     const { GET } = await import("@/app/api/enterprise/status/route");
-    const res = await GET();
+    const res = await GET(makeNextRequest(), routeContext());
     const body = await res.json();
     expect(body.state).toBe("trial-expired");
   });

@@ -36,6 +36,20 @@ async function collect(gen: AsyncGenerator<ChatChunk>): Promise<ChatChunk[]> {
 }
 
 /**
+ * Asserts (and narrows) that a chunk is the "error" variant. `ChatChunk` is a
+ * discriminated union where `userMessagePersisted` has no `text` field, so
+ * TypeScript rejects a bare `.text` read on an unnarrowed `ChatChunk`. Fails
+ * the test exactly as the previous `expect(chunk.type).toBe("error")` did
+ * when the type doesn't match, while also narrowing for the `.text` reads
+ * that follow.
+ */
+function assertErrorChunk(
+  chunk: ChatChunk
+): asserts chunk is Extract<ChatChunk, { type: "error" }> {
+  expect(chunk.type).toBe("error");
+}
+
+/**
  * Fake clock: `delay(ms)` advances `now` by `ms` synchronously (resolving
  * immediately) so backoff/budget logic is exercised deterministically without
  * real timers.
@@ -143,7 +157,7 @@ describe("chatWithDispatchRaceRetry", () => {
 
     // The final error IS yielded so the caller surfaces "Smithers couldn't respond".
     expect(got).toHaveLength(1);
-    expect(got[0].type).toBe("error");
+    assertErrorChunk(got[0]);
     expect(DISPATCH_RACE_PATTERN.test(got[0].text)).toBe(true);
     // Never slept past the budget.
     expect(clock.now()).toBeLessThanOrEqual(3000);
@@ -325,7 +339,7 @@ describe("chatWithDispatchRaceRetry", () => {
 
       // Terminates and surfaces the race error rather than looping forever.
       expect(got).toHaveLength(1);
-      expect(got[0].type).toBe("error");
+      assertErrorChunk(got[0]);
       expect(DISPATCH_RACE_PATTERN.test(got[0].text)).toBe(true);
       expect(clock.now()).toBeLessThanOrEqual(3000);
     });
@@ -467,7 +481,7 @@ describe("chatWithDispatchRaceRetry", () => {
       );
 
       expect(got).toHaveLength(1);
-      expect(got[0].type).toBe("error");
+      assertErrorChunk(got[0]);
       expect(MODEL_DISPATCH_RACE_PATTERN.test(got[0].text)).toBe(true);
       expect(clock.now()).toBeLessThanOrEqual(3000);
     });

@@ -19,11 +19,30 @@
  */
 
 import { describe, it, expect } from "vitest";
+import type { PendingAttachment } from "@assistant-ui/react";
 import { attachmentAdapter } from "@/hooks/use-ws-runtime";
 
 function fakeFile({ name, type }: { name: string; type: string }): File {
   // Small size so any size check downstream passes.
   return { size: 1024, name, type } as unknown as File;
+}
+
+/**
+ * `AttachmentAdapter.add()` is declared to return
+ * `Promise<PendingAttachment> | AsyncGenerator<PendingAttachment, void>` (the
+ * library supports streaming adapters), so `result` is still a union after
+ * `await`ing it — `AsyncGenerator` has no `.type`. Every adapter Pinchy wires
+ * into this composite (CodeTextAttachmentAdapter / OfficeDocumentAttachmentAdapter)
+ * resolves a plain PendingAttachment, never a generator; this guard makes that
+ * a real assertion instead of an unchecked cast.
+ */
+function expectPendingAttachment(
+  value: PendingAttachment | AsyncGenerator<PendingAttachment, void, unknown>
+): PendingAttachment {
+  if (!("type" in value)) {
+    throw new Error("expected a PendingAttachment, got an AsyncGenerator");
+  }
+  return value;
 }
 
 const UPLOAD_PIPELINE_CASES = [
@@ -68,7 +87,9 @@ describe("attachment routing (issue #392)", () => {
   it.each(INLINE_CODE_CASES)(
     "keeps $name ($type) on the inline code-text adapter (type 'document')",
     async ({ name, type }) => {
-      const result = await attachmentAdapter.add({ file: fakeFile({ name, type }) });
+      const result = expectPendingAttachment(
+        await attachmentAdapter.add({ file: fakeFile({ name, type }) })
+      );
       expect(result.type).toBe("document");
     }
   );

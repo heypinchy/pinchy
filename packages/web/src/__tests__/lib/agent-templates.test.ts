@@ -14,6 +14,19 @@ import { MAX_STARTER_PROMPT_LENGTH } from "@/lib/schemas/starter-prompts";
 import { TEMPLATE_ICON_COMPONENTS } from "@/lib/template-icons";
 import { getOdooToolsForAccessLevel } from "@/lib/tool-registry";
 
+/**
+ * Real (non-`custom`) templates always ship a non-null `defaultAgentsMd` —
+ * only `AgentTemplate`'s shared type (also covering the null-bodied `custom`
+ * template) allows null. Narrow honestly instead of silently treating a
+ * regression as an empty string.
+ */
+function requireAgentsMd(template: { defaultAgentsMd: string | null }, label: string): string {
+  if (template.defaultAgentsMd === null) {
+    throw new Error(`${label} has no defaultAgentsMd`);
+  }
+  return template.defaultAgentsMd;
+}
+
 describe("implicit-tool guard", () => {
   it("no template references implicit tools pinchy_ls or pinchy_read in allowedTools", () => {
     for (const [id, tpl] of Object.entries(AGENT_TEMPLATES)) {
@@ -117,7 +130,11 @@ describe("agent-templates", () => {
   });
 
   it("should not have old defaultSoulMd or defaultGreeting fields", () => {
-    const kb = AGENT_TEMPLATES["knowledge-base"] as Record<string, unknown>;
+    // Boundary cast: this regression guard deliberately probes for legacy
+    // keys that AgentTemplate no longer declares at all (that's the point —
+    // proving they're gone), so it can't be typed as a normal AgentTemplate
+    // read. AgentTemplate has no index signature, hence the `unknown` step.
+    const kb = AGENT_TEMPLATES["knowledge-base"] as unknown as Record<string, unknown>;
     expect(kb.defaultSoulMd).toBeUndefined();
     expect(kb.defaultGreeting).toBeUndefined();
   });
@@ -274,7 +291,7 @@ describe("agent-templates", () => {
       // Persona-only AGENTS.md: Capabilities/Workflow Guidelines sections that
       // just re-describe the shared tools belong in the email skill now.
       for (const id of emailTemplateIds) {
-        const md = AGENT_TEMPLATES[id].defaultAgentsMd.toLowerCase();
+        const md = requireAgentsMd(AGENT_TEMPLATES[id], id).toLowerCase();
         expect(md, `${id} should not have a Capabilities section`).not.toMatch(/## capabilities/);
         expect(md, `${id} should not have a Workflow Guidelines section`).not.toMatch(
           /## workflow guidelines/
@@ -785,8 +802,9 @@ describe("Additional Odoo templates (10 new)", () => {
     expect(grantedModels).not.toContain("sale.subscription");
 
     // If sale.subscription is mentioned at all, it must be guarded
-    if (/sale\.subscription/.test(t.defaultAgentsMd)) {
-      expect(t.defaultAgentsMd).toMatch(
+    const agentsMd = requireAgentsMd(t, "odoo-subscription-manager");
+    if (/sale\.subscription/.test(agentsMd)) {
+      expect(agentsMd).toMatch(
         /may not exist|if available|if (the )?model exists|check.*odoo_schema|not granted|legacy.*may/i
       );
     }
@@ -1627,8 +1645,9 @@ describe("Odoo CRM & Sales Assistant template — quotation-ready model coverage
     // LLM actually reads at runtime. If someone reworks AGENTS.md and drops
     // the boundary sentence, this fails.
     const t = getTemplate(id)!;
-    expect(t.defaultAgentsMd).toMatch(/never.*(draft|post|amend).*invoic/i);
-    expect(t.defaultAgentsMd.toLowerCase()).toContain("bookkeeper");
+    const agentsMd = requireAgentsMd(t, id);
+    expect(agentsMd).toMatch(/never.*(draft|post|amend).*invoic/i);
+    expect(agentsMd.toLowerCase()).toContain("bookkeeper");
   });
 
   it("AGENTS.md warns about the sale.order confirmation → invoice path explicitly", () => {
@@ -1640,7 +1659,7 @@ describe("Odoo CRM & Sales Assistant template — quotation-ready model coverage
     // the AGENTS.md must name the confirmation path so the LLM understands
     // *why* this is a separate restriction from generic account.move writes.
     const t = getTemplate(id)!;
-    const lower = t.defaultAgentsMd.toLowerCase();
+    const lower = requireAgentsMd(t, id).toLowerCase();
     expect(lower).toContain("confirm"); // mentions sale order confirmation
     expect(lower).toMatch(/_create_invoices|create invoice/); // names the forbidden action
   });

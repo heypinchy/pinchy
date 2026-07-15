@@ -139,7 +139,7 @@ const refreshedMicrosoftCreds = {
   expiresAt: new Date(Date.now() + 3_600_000).toISOString(),
 };
 
-function makeRequest(path: string, options?: RequestInit) {
+function makeRequest(path: string, options?: ConstructorParameters<typeof NextRequest>[1]) {
   return new NextRequest(`http://localhost:7777${path}`, options);
 }
 

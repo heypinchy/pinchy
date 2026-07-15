@@ -24,7 +24,7 @@ describe("isInFlightPlaceholder", () => {
   it("rejects error bubbles, user messages, and assistants with content", () => {
     expect(isInFlightPlaceholder(errorBubble)).toBe(false);
     expect(isInFlightPlaceholder(user)).toBe(false);
-    expect(isInFlightPlaceholder({ id: "a", role: "assistant", content: "x" })).toBe(false);
+    expect(isInFlightPlaceholder({ role: "assistant", content: "x" })).toBe(false);
   });
 });
 

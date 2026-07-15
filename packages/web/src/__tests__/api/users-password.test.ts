@@ -31,6 +31,8 @@ vi.mock("@/lib/audit", () => ({
 
 import { auth } from "@/lib/auth";
 import { appendAuditLog } from "@/lib/audit";
+import { mockSession } from "@/test-helpers/auth";
+import { routeContext } from "@/test-helpers/route";
 
 // ── Helpers ──────────────────────────────────────────────────────────────
 
@@ -52,24 +54,23 @@ describe("POST /api/users/me/password", () => {
     const mod = await import("@/app/api/users/me/password/route");
     POST = mod.POST;
 
-    vi.mocked(auth.api.getSession).mockResolvedValue({
-      user: { id: "user-1", email: "user@test.com", role: "member" },
-      expires: "",
-    } as any);
+    vi.mocked(auth.api.getSession).mockResolvedValue(
+      mockSession({ user: { id: "user-1", email: "user@test.com", role: "member" } })
+    );
     vi.mocked(auth.api.changePassword).mockResolvedValue(undefined as any);
   });
 
   it("should return 401 when unauthenticated", async () => {
-    vi.mocked(auth.api.getSession).mockResolvedValueOnce(null as any);
+    vi.mocked(auth.api.getSession).mockResolvedValueOnce(null);
 
-    const response = await POST(makePostRequest({}));
+    const response = await POST(makePostRequest({}), routeContext());
     expect(response.status).toBe(401);
     const data = await response.json();
     expect(data.error).toBe("Unauthorized");
   });
 
   it("should return 400 when currentPassword is missing", async () => {
-    const response = await POST(makePostRequest({ newPassword: "Br1ghtNova!2" }));
+    const response = await POST(makePostRequest({ newPassword: "Br1ghtNova!2" }), routeContext());
     expect(response.status).toBe(400);
     const data = await response.json();
     expect(data.error).toBe("Validation failed");
@@ -80,7 +81,8 @@ describe("POST /api/users/me/password", () => {
     // "short" is a valid string (passes Zod), then validatePassword() rejects
     // it post-parse — that's where the freeform 12-char message comes from.
     const response = await POST(
-      makePostRequest({ currentPassword: "oldpass1234567", newPassword: "short" })
+      makePostRequest({ currentPassword: "oldpass1234567", newPassword: "short" }),
+      routeContext()
     );
     expect(response.status).toBe(400);
     const data = await response.json();
@@ -89,7 +91,8 @@ describe("POST /api/users/me/password", () => {
 
   it("should return 400 when newPassword is exactly 11 characters (just below new minimum)", async () => {
     const response = await POST(
-      makePostRequest({ currentPassword: "oldpass1234567", newPassword: "elevenchar1" })
+      makePostRequest({ currentPassword: "oldpass1234567", newPassword: "elevenchar1" }),
+      routeContext()
     );
     expect(response.status).toBe(400);
     const data = await response.json();
@@ -98,7 +101,8 @@ describe("POST /api/users/me/password", () => {
 
   it("should return 400 when newPassword has no letter", async () => {
     const response = await POST(
-      makePostRequest({ currentPassword: "oldpass1234567", newPassword: "918273645091" })
+      makePostRequest({ currentPassword: "oldpass1234567", newPassword: "918273645091" }),
+      routeContext()
     );
     expect(response.status).toBe(400);
     const data = await response.json();
@@ -107,7 +111,8 @@ describe("POST /api/users/me/password", () => {
 
   it("should return 400 when newPassword has no number", async () => {
     const response = await POST(
-      makePostRequest({ currentPassword: "oldpass1234567", newPassword: "abcdefghijkl" })
+      makePostRequest({ currentPassword: "oldpass1234567", newPassword: "abcdefghijkl" }),
+      routeContext()
     );
     expect(response.status).toBe(400);
     const data = await response.json();
@@ -116,7 +121,8 @@ describe("POST /api/users/me/password", () => {
 
   it("should return 400 when newPassword is in the common-password list", async () => {
     const response = await POST(
-      makePostRequest({ currentPassword: "oldpass1234567", newPassword: "password1234" })
+      makePostRequest({ currentPassword: "oldpass1234567", newPassword: "password1234" }),
+      routeContext()
     );
     expect(response.status).toBe(400);
     const data = await response.json();
@@ -125,7 +131,10 @@ describe("POST /api/users/me/password", () => {
 
   it("should return 400 when newPassword is missing", async () => {
     // newPassword absent → caught by Zod (parseRequestBody) before validatePassword runs.
-    const response = await POST(makePostRequest({ currentPassword: "oldpass1234567" }));
+    const response = await POST(
+      makePostRequest({ currentPassword: "oldpass1234567" }),
+      routeContext()
+    );
     expect(response.status).toBe(400);
     const data = await response.json();
     expect(data.error).toBe("Validation failed");
@@ -136,7 +145,8 @@ describe("POST /api/users/me/password", () => {
     vi.mocked(auth.api.changePassword).mockRejectedValueOnce(new Error("Invalid credentials"));
 
     const response = await POST(
-      makePostRequest({ currentPassword: "wrongpass1234", newPassword: "Br1ghtNova!2" })
+      makePostRequest({ currentPassword: "wrongpass1234", newPassword: "Br1ghtNova!2" }),
+      routeContext()
     );
     expect(response.status).toBe(403);
     const data = await response.json();
@@ -145,7 +155,8 @@ describe("POST /api/users/me/password", () => {
 
   it("should return 200 on successful password change", async () => {
     const response = await POST(
-      makePostRequest({ currentPassword: "oldpass1234567", newPassword: "Br1ghtNova!2" })
+      makePostRequest({ currentPassword: "oldpass1234567", newPassword: "Br1ghtNova!2" }),
+      routeContext()
     );
     expect(response.status).toBe(200);
     const data = await response.json();
@@ -155,7 +166,8 @@ describe("POST /api/users/me/password", () => {
 
   it("should accept valid passwords with exactly 12 characters", async () => {
     const response = await POST(
-      makePostRequest({ currentPassword: "oldpass1234567", newPassword: "Br1ghtNova!2" })
+      makePostRequest({ currentPassword: "oldpass1234567", newPassword: "Br1ghtNova!2" }),
+      routeContext()
     );
     expect(response.status).toBe(200);
   });
@@ -165,7 +177,8 @@ describe("POST /api/users/me/password", () => {
   // audited regardless of who triggers it — self-service is not an exemption.
   it("writes an auth.password_changed audit row with outcome success", async () => {
     const response = await POST(
-      makePostRequest({ currentPassword: "oldpass1234567", newPassword: "Br1ghtNova!2" })
+      makePostRequest({ currentPassword: "oldpass1234567", newPassword: "Br1ghtNova!2" }),
+      routeContext()
     );
     expect(response.status).toBe(200);
     expect(appendAuditLog).toHaveBeenCalledWith(
@@ -183,7 +196,8 @@ describe("POST /api/users/me/password", () => {
     vi.mocked(auth.api.changePassword).mockRejectedValueOnce(new Error("Invalid credentials"));
 
     const response = await POST(
-      makePostRequest({ currentPassword: "wrongpass1234", newPassword: "Br1ghtNova!2" })
+      makePostRequest({ currentPassword: "wrongpass1234", newPassword: "Br1ghtNova!2" }),
+      routeContext()
     );
     expect(response.status).toBe(403);
     expect(appendAuditLog).toHaveBeenCalledWith(
@@ -198,7 +212,10 @@ describe("POST /api/users/me/password", () => {
   });
 
   it("never logs the password value in the audit detail", async () => {
-    await POST(makePostRequest({ currentPassword: "oldpass1234567", newPassword: "Br1ghtNova!2" }));
+    await POST(
+      makePostRequest({ currentPassword: "oldpass1234567", newPassword: "Br1ghtNova!2" }),
+      routeContext()
+    );
     const serialized = JSON.stringify(vi.mocked(appendAuditLog).mock.calls);
     expect(serialized).not.toContain("Br1ghtNova!2");
     expect(serialized).not.toContain("oldpass1234567");

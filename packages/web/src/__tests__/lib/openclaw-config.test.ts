@@ -426,7 +426,7 @@ describe("regenerateOpenClawConfig", () => {
     // removed → restart-class change → SIGUSR1 cascade that delays agents.list
     // hot-reload (the setup-wizard "unknown agent id" / #193 flake on 2026.5.28).
     // Pinchy must always emit the same origins OC seeds.
-    mockedReadFileSync.mockReturnValue("" as unknown as Buffer); // cold start: no existing config
+    mockedReadFileSync.mockReturnValue(""); // cold start: no existing config
     mockedGetSetting.mockImplementation(async (key: string) => {
       if (key === "anthropic_api_key") return "sk-ant-key";
       if (key === "default_provider") return "anthropic";
@@ -457,7 +457,7 @@ describe("regenerateOpenClawConfig", () => {
         controlUi: { enabled: false, allowedOrigins: ["http://oc-enriched.example:18789"] },
       },
     });
-    mockedReadFileSync.mockReturnValue(ocEnriched as unknown as Buffer);
+    mockedReadFileSync.mockReturnValue(ocEnriched);
     mockedGetSetting.mockImplementation(async (key: string) => {
       if (key === "anthropic_api_key") return "sk-ant-key";
       if (key === "default_provider") return "anthropic";
@@ -580,7 +580,7 @@ describe("regenerateOpenClawConfig", () => {
     mockedReadFileSync.mockReturnValue(
       JSON.stringify({
         media: { ttlHours: 12, someOtherEnrichedField: "keep-me" },
-      }) as unknown as Buffer
+      })
     );
 
     await regenerateOpenClawConfig();
@@ -2877,7 +2877,7 @@ describe("regenerateOpenClawConfig", () => {
           defaults: { heartbeat: { mode: "visible" } },
           telegram: { enabled: true, dmPolicy: "pairing", accounts: { "stale-agent": {} } },
         },
-      }) as unknown as Buffer
+      })
     );
 
     await regenerateOpenClawConfig();
@@ -3469,7 +3469,7 @@ describe("regenerateOpenClawConfig", () => {
         JSON.stringify({
           meta: metaBlock,
           gateway: { mode: "local" },
-        }) as unknown as Buffer
+        })
       );
 
       await regenerateOpenClawConfig();
@@ -3700,7 +3700,7 @@ describe("regenerateOpenClawConfig", () => {
       mockedReadFileSync.mockReturnValue(
         JSON.stringify({
           gateway: { mode: "local" },
-        }) as unknown as Buffer
+        })
       );
 
       await regenerateOpenClawConfig();
@@ -3881,7 +3881,7 @@ describe("regenerateOpenClawConfig", () => {
           JSON.stringify({
             meta: { version: "5.3.0", lastTouchedAt: "2026-01-01T00:00:00Z" },
             gateway: { mode: "local", bind: "lan", auth: { token: "tok" } },
-          }) as unknown as Buffer
+          })
         );
 
         // Start coroutine 1 (OLD). Its first config.get() rejects on the next
@@ -3941,7 +3941,7 @@ describe("regenerateOpenClawConfig", () => {
         mockGetClient.mockReturnValue({
           config: { get: mockConfigGet, apply: mockConfigApply },
         });
-        mockedReadFileSync.mockReturnValue(JSON.stringify(existingOcConfig) as unknown as Buffer);
+        mockedReadFileSync.mockReturnValue(JSON.stringify(existingOcConfig));
 
         pushConfigInBackground(JSON.stringify({ env: { X: "1" } }));
 
@@ -4258,7 +4258,7 @@ describe("seedRestartClassOverridesIfMissing", () => {
       update: { checkOnStart: false },
       canvasHost: { enabled: false },
     };
-    mockedReadFileSync.mockReturnValue(JSON.stringify(existing) as unknown as Buffer);
+    mockedReadFileSync.mockReturnValue(JSON.stringify(existing));
 
     const changed = seedRestartClassOverridesIfMissing();
 
@@ -4280,7 +4280,7 @@ describe("seedRestartClassOverridesIfMissing", () => {
       update: { checkOnStart: false },
       canvasHost: { enabled: false },
     };
-    mockedReadFileSync.mockReturnValue(JSON.stringify(existing) as unknown as Buffer);
+    mockedReadFileSync.mockReturnValue(JSON.stringify(existing));
 
     const changed = seedRestartClassOverridesIfMissing();
 
@@ -4314,7 +4314,7 @@ describe("seedRestartClassOverridesIfMissing", () => {
       update: { checkOnStart: false },
       canvasHost: { enabled: false },
     };
-    mockedReadFileSync.mockReturnValue(JSON.stringify(existing) as unknown as Buffer);
+    mockedReadFileSync.mockReturnValue(JSON.stringify(existing));
 
     const changed = seedRestartClassOverridesIfMissing();
 
@@ -4343,7 +4343,7 @@ describe("seedRestartClassOverridesIfMissing", () => {
       agents: { list: [{ id: "preserved-agent", name: "Preserved" }] },
       plugins: { allow: ["pinchy-audit"], entries: { "pinchy-audit": { enabled: true } } },
     };
-    mockedReadFileSync.mockReturnValue(JSON.stringify(existing) as unknown as Buffer);
+    mockedReadFileSync.mockReturnValue(JSON.stringify(existing));
 
     seedRestartClassOverridesIfMissing();
 
@@ -4424,7 +4424,7 @@ describe("seedGatewayTokenIfMissing", () => {
     const existing = {
       gateway: { mode: "local", bind: "lan", auth: { token: "already-seeded-xyz" } },
     };
-    mockedReadFileSync.mockReturnValue(JSON.stringify(existing) as unknown as Buffer);
+    mockedReadFileSync.mockReturnValue(JSON.stringify(existing));
 
     const changed = await seedGatewayTokenIfMissing();
 
@@ -4449,7 +4449,7 @@ describe("seedGatewayTokenIfMissing", () => {
       update: { checkOnStart: false },
       canvasHost: { enabled: false },
     };
-    mockedReadFileSync.mockReturnValue(JSON.stringify(existing) as unknown as Buffer);
+    mockedReadFileSync.mockReturnValue(JSON.stringify(existing));
 
     await seedGatewayTokenIfMissing();
 

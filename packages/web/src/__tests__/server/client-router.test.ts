@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { EventEmitter } from "events";
+import type { LicenseState } from "@/lib/license-state";
 
 const {
   mockChat,
@@ -53,14 +54,14 @@ vi.mock("@/lib/agent-access", async (importOriginal) => {
         userRole: string,
         userGroupIds: string[] = [],
         agentGroupIds: string[] = [],
-        enterprise: boolean = true
+        licenseState: LicenseState = "paid"
       ) => {
         if (userRole === "admin") return;
         if (agent.isPersonal) {
           if (agent.ownerId === userId) return;
           throw new Error("Access denied");
         }
-        const vis = actual.effectiveVisibility(agent.visibility, enterprise);
+        const vis = actual.effectiveVisibility(agent.visibility, licenseState);
         if (vis === "restricted") {
           if (userGroupIds.some((gId: string) => agentGroupIds.includes(gId))) return;
           throw new Error("Access denied");

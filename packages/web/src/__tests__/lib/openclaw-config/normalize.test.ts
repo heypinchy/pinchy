@@ -33,7 +33,7 @@ describe("supplementPayloadWithFileFields", () => {
     const file = JSON.stringify({
       plugins: { allow: ["pinchy-audit", "anthropic", "telegram"] },
     });
-    mockedReadFileSync.mockReturnValue(file as unknown as Buffer);
+    mockedReadFileSync.mockReturnValue(file);
 
     const payload = JSON.stringify({ plugins: { allow: ["pinchy-audit"] } });
     const result = JSON.parse(supplementPayloadWithFileFields(payload));
@@ -48,7 +48,7 @@ describe("supplementPayloadWithFileFields", () => {
     const file = JSON.stringify({
       plugins: { allow: ["pinchy-files", "anthropic"] },
     });
-    mockedReadFileSync.mockReturnValue(file as unknown as Buffer);
+    mockedReadFileSync.mockReturnValue(file);
 
     const payload = JSON.stringify({ plugins: { allow: [] } });
     const result = JSON.parse(supplementPayloadWithFileFields(payload));
@@ -65,7 +65,7 @@ describe("supplementPayloadWithFileFields", () => {
         entries: { anthropic: { enabled: true } },
       },
     });
-    mockedReadFileSync.mockReturnValue(file as unknown as Buffer);
+    mockedReadFileSync.mockReturnValue(file);
 
     const payload = JSON.stringify({
       plugins: { allow: ["pinchy-audit"], entries: { "pinchy-audit": { enabled: true } } },
@@ -82,7 +82,7 @@ describe("supplementPayloadWithFileFields", () => {
         entries: { "pinchy-audit": { enabled: false, staleField: "old" } },
       },
     });
-    mockedReadFileSync.mockReturnValue(file as unknown as Buffer);
+    mockedReadFileSync.mockReturnValue(file);
 
     const payload = JSON.stringify({
       plugins: { allow: [], entries: { "pinchy-audit": { enabled: true } } },
@@ -101,7 +101,7 @@ describe("supplementPayloadWithFileFields", () => {
         controlUi: { allowedOrigins: ["http://localhost:18789"] },
       },
     });
-    mockedReadFileSync.mockReturnValue(file as unknown as Buffer);
+    mockedReadFileSync.mockReturnValue(file);
 
     const payload = JSON.stringify({ gateway: { mode: "local", auth: { token: "tok" } } });
     const result = JSON.parse(supplementPayloadWithFileFields(payload));
@@ -114,7 +114,7 @@ describe("supplementPayloadWithFileFields", () => {
     const file = JSON.stringify({
       gateway: { controlUi: { allowedOrigins: ["old"] } },
     });
-    mockedReadFileSync.mockReturnValue(file as unknown as Buffer);
+    mockedReadFileSync.mockReturnValue(file);
 
     const payload = JSON.stringify({
       gateway: { controlUi: { allowedOrigins: ["new"] } },
@@ -126,7 +126,7 @@ describe("supplementPayloadWithFileFields", () => {
 
   it("returns payload unchanged when file has nothing to supplement", () => {
     const file = JSON.stringify({ agents: { list: [] } });
-    mockedReadFileSync.mockReturnValue(file as unknown as Buffer);
+    mockedReadFileSync.mockReturnValue(file);
 
     const payload = JSON.stringify({
       gateway: { mode: "local" },
@@ -244,7 +244,7 @@ describe("supplementPayloadWithOcConfig", () => {
         providers: { anthropic: { baseUrl: "https://mock.api:443", apiKey: "sk-ant-resolved" } },
       },
     });
-    mockedReadFileSync.mockReturnValue(file as unknown as Buffer);
+    mockedReadFileSync.mockReturnValue(file);
 
     const payload = JSON.stringify({
       models: {
@@ -361,7 +361,7 @@ describe("supplementPayloadWithOcConfig", () => {
       update: { checkOnStart: false, lastCheckedAt: "T1" },
       canvasHost: { enabled: false, port: 18790 },
     });
-    mockedReadFileSync.mockReturnValue(file as unknown as Buffer);
+    mockedReadFileSync.mockReturnValue(file);
 
     const payload = JSON.stringify({
       discovery: { mdns: { mode: "off" } },

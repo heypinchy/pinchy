@@ -10,10 +10,14 @@ describe("diagnostics.exported audit event", () => {
       resource: "diagnostics:agt_1",
       detail: {
         agent: { id: "agt_1", name: "Smithers" },
+        // null: the default/legacy chat (#639) — this fixture isn't exercising
+        // the Telegram-peer-export path.
+        chatId: null,
         scope: { anchorTurnIndex: 5, includedTurnRange: [2, 5] },
         byteSize: 4321,
         droppedTurns: 0,
         truncated: false,
+        trajectoryMissing: false,
       },
       outcome: "success",
     };

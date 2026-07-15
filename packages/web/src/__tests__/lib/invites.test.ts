@@ -132,7 +132,7 @@ describe("createInvite", () => {
       id: "inv-2",
       tokenHash: "hash",
       email: "user@test.com",
-      role: "editor",
+      role: "admin",
       type: "invite",
       createdBy: "admin-1",
       expiresAt: new Date(),
@@ -145,14 +145,14 @@ describe("createInvite", () => {
     const { createInvite } = await import("@/lib/invites");
     await createInvite({
       email: "user@test.com",
-      role: "editor",
+      role: "admin",
       createdBy: "admin-1",
     });
 
     expect(valuesMock).toHaveBeenCalledWith(
       expect.objectContaining({
         email: "user@test.com",
-        role: "editor",
+        role: "admin",
         type: "invite",
         createdBy: "admin-1",
         tokenHash: expect.any(String),

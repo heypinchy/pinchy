@@ -138,6 +138,20 @@ describe("POST /api/setup/provider", () => {
       id: "agent-1",
       name: "Smithers",
       model: "anthropic/claude-sonnet-4-20250514",
+      templateId: null,
+      pluginConfig: null,
+      allowedTools: [],
+      skills: [],
+      ownerId: null,
+      isPersonal: false,
+      visibility: "restricted",
+      greetingMessage: "Hi, I'm Smithers.",
+      tagline: null,
+      starterPrompts: [],
+      avatarSeed: null,
+      personalityPresetId: null,
+      createdAt: new Date("2026-01-01T00:00:00.000Z"),
+      deletedAt: null,
     });
   });
 

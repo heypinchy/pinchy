@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { NextRequest, NextResponse } from "next/server";
+import { mockSession } from "@/test-helpers/auth";
 
 // ── Mocks ────────────────────────────────────────────────────────────────
 
@@ -67,10 +68,9 @@ describe("POST /api/users/invite — seat cap", () => {
 
   beforeEach(async () => {
     vi.clearAllMocks();
-    vi.mocked(requireAdmin).mockResolvedValue({
-      user: { id: "admin-1", role: "admin" },
-      expires: "",
-    } as ReturnType<typeof requireAdmin> extends Promise<infer T> ? T : never);
+    vi.mocked(requireAdmin).mockResolvedValue(
+      mockSession({ user: { id: "admin-1", role: "admin" } })
+    );
     vi.mocked(createInvite).mockResolvedValue({
       id: "inv-1",
       tokenHash: "h",

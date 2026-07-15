@@ -121,11 +121,11 @@ import { appendAuditLog } from "@/lib/audit";
 import { requireAdmin } from "@/lib/api-auth";
 import { createInvite } from "@/lib/invites";
 import { db } from "@/db";
+import { mockSession } from "@/test-helpers/auth";
 
-const adminSession = {
+const adminSession = mockSession({
   user: { id: "admin-1", email: "admin@test.com", role: "admin" },
-  expires: "",
-};
+});
 
 // ── user.invited: POST /api/users/invite ─────────────────────────────────
 
@@ -134,9 +134,7 @@ describe("audit: POST /api/users/invite", () => {
 
   beforeEach(async () => {
     vi.clearAllMocks();
-    vi.mocked(requireAdmin).mockResolvedValue(
-      adminSession as Awaited<ReturnType<typeof requireAdmin>>
-    );
+    vi.mocked(requireAdmin).mockResolvedValue(adminSession);
 
     vi.mocked(createInvite).mockResolvedValue({
       id: "invite-1",
@@ -195,9 +193,7 @@ describe("audit: DELETE /api/users/[userId]", () => {
 
   beforeEach(async () => {
     vi.clearAllMocks();
-    vi.mocked(requireAdmin).mockResolvedValue(
-      adminSession as Awaited<ReturnType<typeof requireAdmin>>
-    );
+    vi.mocked(requireAdmin).mockResolvedValue(adminSession);
 
     const mod = await import("@/app/api/users/[userId]/route");
     DELETE = mod.DELETE;
@@ -276,10 +272,9 @@ describe("audit: POST /api/setup/provider", () => {
   beforeEach(async () => {
     vi.clearAllMocks();
     // setup/provider uses requireAdmin directly — mock it to return session
-    vi.mocked(requireAdmin).mockResolvedValue({
-      user: { id: "admin-1", email: "admin@test.com", role: "admin" },
-      expires: "",
-    } as Awaited<ReturnType<typeof requireAdmin>>);
+    vi.mocked(requireAdmin).mockResolvedValue(
+      mockSession({ user: { id: "admin-1", email: "admin@test.com", role: "admin" } })
+    );
 
     const mod = await import("@/app/api/setup/provider/route");
     POST = mod.POST;
@@ -330,9 +325,7 @@ describe("audit: POST /api/settings", () => {
 
   beforeEach(async () => {
     vi.clearAllMocks();
-    vi.mocked(requireAdmin).mockResolvedValue(
-      adminSession as Awaited<ReturnType<typeof requireAdmin>>
-    );
+    vi.mocked(requireAdmin).mockResolvedValue(adminSession);
 
     const mod = await import("@/app/api/settings/route");
     POST = mod.POST;

@@ -3,6 +3,7 @@ import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import "@testing-library/jest-dom";
 import { AgentList } from "@/components/agent-list";
+import { makeAgent } from "@/test-helpers/fixtures";
 
 vi.mock("@/lib/avatar", () => ({
   getAgentAvatarSvg: vi.fn((agent: { avatarSeed: string | null; name: string }) => {
@@ -12,30 +13,30 @@ vi.mock("@/lib/avatar", () => ({
 }));
 
 const agents = [
-  {
+  makeAgent({
     id: "agent-1",
     name: "Smithers",
     model: "anthropic/claude-sonnet-4-6",
     isPersonal: true,
     tagline: "Your personal assistant",
     avatarSeed: "__smithers__",
-  },
-  {
+  }),
+  makeAgent({
     id: "agent-2",
     name: "Zara",
     model: "anthropic/claude-sonnet-4-6",
     isPersonal: false,
     tagline: null,
     avatarSeed: "zara-seed",
-  },
-  {
+  }),
+  makeAgent({
     id: "agent-3",
     name: "Ada",
     model: "anthropic/claude-sonnet-4-6",
     isPersonal: false,
     tagline: "Code review expert",
     avatarSeed: null,
-  },
+  }),
 ];
 
 describe("AgentList", () => {

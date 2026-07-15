@@ -95,6 +95,7 @@ import { resolveSessionId, readTrajectoryJsonl } from "@/lib/diagnostics/jsonl-r
 import { listUserAgentChats } from "@/lib/chats/list-user-agent-chats";
 import { TrajectoryFileNotFoundError } from "@/lib/diagnostics/jsonl-reader";
 import { POST } from "@/app/api/diagnostics/export/route";
+import { routeContext } from "@/test-helpers/route";
 
 function sessionKeyHash(key: string) {
   return "sha256:" + createHash("sha256").update(key).digest("hex");
@@ -166,14 +167,14 @@ describe("POST /api/diagnostics/export (integration)", () => {
 
   it("returns 401 when there is no session", async () => {
     vi.mocked(getSession).mockResolvedValue(null);
-    const response = await POST(makeRequest({ agentId: "agt_x" }));
+    const response = await POST(makeRequest({ agentId: "agt_x" }), routeContext());
     expect(response.status).toBe(401);
   });
 
   it("returns 400 for an invalid body", async () => {
     const owner = await seedUser();
     mockSession(owner);
-    const response = await POST(makeRequest({}));
+    const response = await POST(makeRequest({}), routeContext());
     expect(response.status).toBe(400);
     const body = await response.json();
     expect(body.error).toBe("Validation failed");
@@ -184,7 +185,7 @@ describe("POST /api/diagnostics/export (integration)", () => {
     mockSession(owner);
     const agent = await seedPersonalAgent(owner.id);
 
-    const response = await POST(makeRequest({ agentId: agent.id }));
+    const response = await POST(makeRequest({ agentId: agent.id }), routeContext());
     expect(response.status).toBe(200);
     const bundle = await response.json();
     expect(bundle.schemaVersion).toBe("pinchy.bugreport.v1");
@@ -211,7 +212,7 @@ describe("POST /api/diagnostics/export (integration)", () => {
 
     mockSession(intruder);
 
-    const response = await POST(makeRequest({ agentId: agent.id }));
+    const response = await POST(makeRequest({ agentId: agent.id }), routeContext());
     // getAgentWithAccess returns 403 for personal agents owned by someone else.
     expect(response.status).toBe(403);
   });
@@ -222,7 +223,8 @@ describe("POST /api/diagnostics/export (integration)", () => {
     const agent = await seedPersonalAgent(owner.id);
 
     const response = await POST(
-      makeRequest({ agentId: agent.id, userDescription: "Stuck on tool error" })
+      makeRequest({ agentId: agent.id, userDescription: "Stuck on tool error" }),
+      routeContext()
     );
     expect(response.status).toBe(200);
     await flushAfter();
@@ -255,7 +257,7 @@ describe("POST /api/diagnostics/export (integration)", () => {
     const agent = await seedPersonalAgent(owner.id);
     vi.mocked(resolveSessionId).mockResolvedValue(null);
 
-    const response = await POST(makeRequest({ agentId: agent.id }));
+    const response = await POST(makeRequest({ agentId: agent.id }), routeContext());
     expect(response.status).toBe(404);
   });
 
@@ -295,7 +297,7 @@ describe("POST /api/diagnostics/export (integration)", () => {
       },
     ]);
 
-    const response = await POST(makeRequest({ agentId: agent.id }));
+    const response = await POST(makeRequest({ agentId: agent.id }), routeContext());
     expect(response.status).toBe(200);
     const bundle = await response.json();
     const toolEntries = (bundle.auditEntries as Array<{ eventType: string }>).filter((e) =>
@@ -312,7 +314,7 @@ describe("POST /api/diagnostics/export (integration)", () => {
     const agent = await seedPersonalAgent(owner.id);
     vi.mocked(readTrajectoryJsonl).mockResolvedValue("");
 
-    const response = await POST(makeRequest({ agentId: agent.id }));
+    const response = await POST(makeRequest({ agentId: agent.id }), routeContext());
     expect(response.status).toBe(200);
     const bundle = await response.json();
     expect(bundle.spans).toEqual([]);
@@ -353,7 +355,10 @@ describe("POST /api/diagnostics/export (integration)", () => {
       vi.mocked(resolveSessionId).mockResolvedValue("s-legacy");
       vi.mocked(readTrajectoryJsonl).mockResolvedValue(FIXTURE);
 
-      const response = await POST(makeRequest({ agentId: agent.id, sessionId: "s-named" }));
+      const response = await POST(
+        makeRequest({ agentId: agent.id, sessionId: "s-named" }),
+        routeContext()
+      );
       expect(response.status).toBe(200);
       const bundle = await response.json();
 
@@ -385,7 +390,10 @@ describe("POST /api/diagnostics/export (integration)", () => {
       });
       vi.mocked(readTrajectoryJsonl).mockResolvedValue(FIXTURE);
 
-      const response = await POST(makeRequest({ agentId: agent.id, sessionId: "s-tg" }));
+      const response = await POST(
+        makeRequest({ agentId: agent.id, sessionId: "s-tg" }),
+        routeContext()
+      );
       expect(response.status).toBe(200);
       const bundle = await response.json();
       expect(vi.mocked(readTrajectoryJsonl)).toHaveBeenCalledWith(agent.id, "s-tg");
@@ -398,7 +406,10 @@ describe("POST /api/diagnostics/export (integration)", () => {
       const agent = await seedPersonalAgent(owner.id);
       vi.mocked(listUserAgentChats).mockResolvedValue({ chats: [], labelByKey: new Map() });
 
-      const response = await POST(makeRequest({ agentId: agent.id, sessionId: "s-someone-else" }));
+      const response = await POST(
+        makeRequest({ agentId: agent.id, sessionId: "s-someone-else" }),
+        routeContext()
+      );
       expect(response.status).toBe(404);
       expect(vi.mocked(readTrajectoryJsonl)).not.toHaveBeenCalled();
     });
@@ -437,7 +448,10 @@ describe("POST /api/diagnostics/export (integration)", () => {
         timestamp: new Date("2026-05-19T12:15:00Z"),
       });
 
-      const response = await POST(makeRequest({ agentId: agent.id, sessionId: "s-named" }));
+      const response = await POST(
+        makeRequest({ agentId: agent.id, sessionId: "s-named" }),
+        routeContext()
+      );
       expect(response.status).toBe(200);
       const bundle = await response.json();
       expect(bundle.scope.trajectoryMissing).toBe(true);
@@ -457,7 +471,7 @@ describe("POST /api/diagnostics/export (integration)", () => {
         new TrajectoryFileNotFoundError("/gone.jsonl")
       );
 
-      const response = await POST(makeRequest({ agentId: agent.id }));
+      const response = await POST(makeRequest({ agentId: agent.id }), routeContext());
       expect(response.status).toBe(200);
       const bundle = await response.json();
       expect(bundle.scope.trajectoryMissing).toBe(true);
@@ -483,7 +497,10 @@ describe("POST /api/diagnostics/export (integration)", () => {
       });
       vi.mocked(readTrajectoryJsonl).mockResolvedValue(FIXTURE);
 
-      const response = await POST(makeRequest({ agentId: agent.id, sessionId: "s-named" }));
+      const response = await POST(
+        makeRequest({ agentId: agent.id, sessionId: "s-named" }),
+        routeContext()
+      );
       expect(response.status).toBe(200);
       await flushAfter();
 
@@ -529,11 +546,17 @@ describe("POST /api/diagnostics/export (integration)", () => {
       });
       vi.mocked(readTrajectoryJsonl).mockResolvedValue(FIXTURE);
 
-      const legacyRes = await POST(makeRequest({ agentId: agent.id, sessionId: "s-legacy" }));
+      const legacyRes = await POST(
+        makeRequest({ agentId: agent.id, sessionId: "s-legacy" }),
+        routeContext()
+      );
       expect(legacyRes.status).toBe(200);
       expect((await legacyRes.json()).scope.sessionKeyHash).toBe(sessionKeyHash(legacyKey));
 
-      const namedRes = await POST(makeRequest({ agentId: agent.id, sessionId: "s-named" }));
+      const namedRes = await POST(
+        makeRequest({ agentId: agent.id, sessionId: "s-named" }),
+        routeContext()
+      );
       expect(namedRes.status).toBe(200);
       expect((await namedRes.json()).scope.sessionKeyHash).toBe(sessionKeyHash(namedKey));
     });

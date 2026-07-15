@@ -1,6 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { GET } from "@/app/api/health/route";
-import { NextRequest } from "next/server";
 import { openClawConnectionState } from "@/server/openclaw-connection-state";
 
 describe("GET /api/health", () => {
@@ -16,16 +15,14 @@ describe("GET /api/health", () => {
   });
 
   it("should return 200 with status ok", async () => {
-    const request = new NextRequest("http://localhost/api/health", { method: "GET" });
-    const response = await GET(request);
+    const response = await GET();
     expect(response.status).toBe(200);
     const data = await response.json();
     expect(data).toMatchObject({ status: "ok" });
   });
 
   it("should return JSON content type", async () => {
-    const request = new NextRequest("http://localhost/api/health", { method: "GET" });
-    const response = await GET(request);
+    const response = await GET();
     const contentType = response.headers.get("content-type");
     expect(contentType).toContain("application/json");
   });
@@ -38,8 +35,7 @@ describe("GET /api/health", () => {
     vi.stubEnv("BETTER_AUTH_SECRET", "super-secret-auth-value");
     vi.stubEnv("DATABASE_URL", "postgresql://pinchy:pinchy_dev@db:5432/pinchy");
 
-    const request = new NextRequest("http://localhost/api/health", { method: "GET" });
-    const response = await GET(request);
+    const response = await GET();
     const data = await response.json();
 
     expect(data.secrets).toEqual({
@@ -63,8 +59,7 @@ describe("GET /api/health", () => {
     it("reports openclaw.connected: true when the gateway client is connected", async () => {
       openClawConnectionState.connected = true;
 
-      const request = new NextRequest("http://localhost/api/health", { method: "GET" });
-      const response = await GET(request);
+      const response = await GET();
       const data = await response.json();
 
       expect(data.openclaw).toEqual({ connected: true });
@@ -73,8 +68,7 @@ describe("GET /api/health", () => {
     it("reports openclaw.connected: false when the gateway client is disconnected", async () => {
       openClawConnectionState.connected = false;
 
-      const request = new NextRequest("http://localhost/api/health", { method: "GET" });
-      const response = await GET(request);
+      const response = await GET();
       const data = await response.json();
 
       expect(data.openclaw).toEqual({ connected: false });
@@ -86,8 +80,7 @@ describe("GET /api/health", () => {
       // healthcheck restart-loop the container during normal operation.
       openClawConnectionState.connected = false;
 
-      const request = new NextRequest("http://localhost/api/health", { method: "GET" });
-      const response = await GET(request);
+      const response = await GET();
       const data = await response.json();
 
       expect(response.status).toBe(200);

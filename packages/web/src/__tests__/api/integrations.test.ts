@@ -133,8 +133,9 @@ vi.mock("@/lib/integrations/auth-state", () => ({
 }));
 
 import { NextRequest } from "next/server";
+import { routeContext } from "@/test-helpers/route";
 
-function makeRequest(path: string, options?: RequestInit) {
+function makeRequest(path: string, options?: ConstructorParameters<typeof NextRequest>[1]) {
   return new NextRequest(`http://localhost:7777${path}`, options);
 }
 
@@ -159,7 +160,7 @@ describe("GET /api/integrations", () => {
     mockGetSession.mockResolvedValueOnce(null);
     const { GET } = await import("@/app/api/integrations/route");
 
-    const response = await GET();
+    const response = await GET(makeRequest("/api/integrations"), routeContext());
     expect(response.status).toBe(401);
   });
 
@@ -167,14 +168,14 @@ describe("GET /api/integrations", () => {
     mockGetSession.mockResolvedValueOnce(memberSession);
     const { GET } = await import("@/app/api/integrations/route");
 
-    const response = await GET();
+    const response = await GET(makeRequest("/api/integrations"), routeContext());
     expect(response.status).toBe(403);
   });
 
   it("should return connections with masked credentials", async () => {
     const { GET } = await import("@/app/api/integrations/route");
 
-    const response = await GET();
+    const response = await GET(makeRequest("/api/integrations"), routeContext());
     const body = await response.json();
 
     expect(response.status).toBe(200);
@@ -193,7 +194,7 @@ describe("GET /api/integrations", () => {
   it("should include status field in each connection", async () => {
     const { GET } = await import("@/app/api/integrations/route");
 
-    const response = await GET();
+    const response = await GET(makeRequest("/api/integrations"), routeContext());
     const body = await response.json();
 
     expect(response.status).toBe(200);
@@ -211,7 +212,7 @@ describe("GET /api/integrations", () => {
     });
 
     const { GET } = await import("@/app/api/integrations/route");
-    const response = await GET();
+    const response = await GET(makeRequest("/api/integrations"), routeContext());
     const body = await response.json();
 
     expect(response.status).toBe(200);
@@ -240,7 +241,7 @@ describe("GET /api/integrations", () => {
     });
 
     const { GET } = await import("@/app/api/integrations/route");
-    const response = await GET();
+    const response = await GET(makeRequest("/api/integrations"), routeContext());
     const body = await response.json();
 
     expect(response.status).toBe(200);
@@ -279,7 +280,7 @@ describe("GET /api/integrations", () => {
     });
 
     const { GET } = await import("@/app/api/integrations/route");
-    const response = await GET();
+    const response = await GET(makeRequest("/api/integrations"), routeContext());
     const body = await response.json();
 
     expect(response.status).toBe(200);
@@ -304,7 +305,7 @@ describe("POST /api/integrations", () => {
       method: "POST",
       body: JSON.stringify({ type: "odoo", name: "Test", credentials: validCredentials }),
     });
-    const response = await POST(request);
+    const response = await POST(request, routeContext());
     expect(response.status).toBe(401);
   });
 
@@ -316,7 +317,7 @@ describe("POST /api/integrations", () => {
       method: "POST",
       body: JSON.stringify({ type: "odoo", name: "Test", credentials: validCredentials }),
     });
-    const response = await POST(request);
+    const response = await POST(request, routeContext());
     expect(response.status).toBe(403);
   });
 
@@ -327,7 +328,7 @@ describe("POST /api/integrations", () => {
       method: "POST",
       body: JSON.stringify({ type: "shopify", name: "Test", credentials: validCredentials }),
     });
-    const response = await POST(request);
+    const response = await POST(request, routeContext());
     expect(response.status).toBe(400);
   });
 
@@ -338,7 +339,7 @@ describe("POST /api/integrations", () => {
       method: "POST",
       body: JSON.stringify({ type: "odoo", name: "", credentials: validCredentials }),
     });
-    const response = await POST(request);
+    const response = await POST(request, routeContext());
     expect(response.status).toBe(400);
   });
 
@@ -353,7 +354,7 @@ describe("POST /api/integrations", () => {
         credentials: { url: "not-a-url", db: "", login: "", apiKey: "", uid: -1 },
       }),
     });
-    const response = await POST(request);
+    const response = await POST(request, routeContext());
     expect(response.status).toBe(400);
   });
 
@@ -369,7 +370,7 @@ describe("POST /api/integrations", () => {
         credentials: validCredentials,
       }),
     });
-    const response = await POST(request);
+    const response = await POST(request, routeContext());
     const body = await response.json();
 
     expect(response.status).toBe(201);
@@ -411,7 +412,7 @@ describe("POST /api/integrations", () => {
         credentials: { apiKey: "BSA-test-key" },
       }),
     });
-    const response = await POST(request);
+    const response = await POST(request, routeContext());
     const body = await response.json();
 
     expect(response.status).toBe(409);
@@ -429,7 +430,7 @@ describe("POST /api/integrations", () => {
         credentials: validCredentials,
       }),
     });
-    await POST(request);
+    await POST(request, routeContext());
 
     expect(mockAppendAuditLog).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -460,7 +461,7 @@ describe("POST /api/integrations", () => {
         credentials: validCredentials,
       }),
     });
-    const response = await POST(request);
+    const response = await POST(request, routeContext());
     // Flush the deferred after() callback's microtasks.
     await new Promise((r) => setImmediate(r));
 
@@ -510,7 +511,7 @@ describe("GET /api/integrations/[connectionId]", () => {
 
   it("should return 404 when connection not found", async () => {
     mockSelectFrom.mockImplementationOnce(() => {
-      const result = Promise.resolve([]) as Promise<unknown[]> & {
+      const result = Promise.resolve<unknown[]>([]) as Promise<unknown[]> & {
         where: ReturnType<typeof vi.fn>;
       };
       result.where = vi.fn().mockResolvedValue([]);
@@ -580,7 +581,7 @@ describe("PATCH /api/integrations/[connectionId]", () => {
 
   it("should return 404 when connection not found", async () => {
     mockSelectFrom.mockImplementationOnce(() => {
-      const result = Promise.resolve([]) as Promise<unknown[]> & {
+      const result = Promise.resolve<unknown[]>([]) as Promise<unknown[]> & {
         where: ReturnType<typeof vi.fn>;
       };
       result.where = vi.fn().mockResolvedValue([]);
@@ -746,7 +747,7 @@ describe("DELETE /api/integrations/[connectionId]", () => {
 
   it("should return 404 when connection not found", async () => {
     mockSelectFrom.mockImplementationOnce(() => {
-      const result = Promise.resolve([]) as Promise<unknown[]> & {
+      const result = Promise.resolve<unknown[]>([]) as Promise<unknown[]> & {
         where: ReturnType<typeof vi.fn>;
       };
       result.where = vi.fn().mockResolvedValue([]);
@@ -879,7 +880,7 @@ describe("POST /api/integrations/[connectionId]/test", () => {
 
   it("should return 404 when connection not found", async () => {
     mockSelectFrom.mockImplementationOnce(() => {
-      const result = Promise.resolve([]) as Promise<unknown[]> & {
+      const result = Promise.resolve<unknown[]>([]) as Promise<unknown[]> & {
         where: ReturnType<typeof vi.fn>;
       };
       result.where = vi.fn().mockResolvedValue([]);
@@ -1064,7 +1065,8 @@ describe("POST /api/integrations/test-credentials", () => {
             apiKey: "key",
           },
         }),
-      })
+      }),
+      routeContext()
     );
     expect(response.status).toBe(401);
   });
@@ -1085,7 +1087,8 @@ describe("POST /api/integrations/test-credentials", () => {
             apiKey: "key",
           },
         }),
-      })
+      }),
+      routeContext()
     );
     expect(response.status).toBe(403);
   });
@@ -1105,7 +1108,8 @@ describe("POST /api/integrations/test-credentials", () => {
             apiKey: "key",
           },
         }),
-      })
+      }),
+      routeContext()
     );
     expect(response.status).toBe(400);
   });
@@ -1120,7 +1124,8 @@ describe("POST /api/integrations/test-credentials", () => {
           type: "odoo",
           credentials: { url: "not-a-url" },
         }),
-      })
+      }),
+      routeContext()
     );
     expect(response.status).toBe(400);
   });
@@ -1140,7 +1145,8 @@ describe("POST /api/integrations/test-credentials", () => {
             apiKey: "key",
           },
         }),
-      })
+      }),
+      routeContext()
     );
     const body = await response.json();
 
@@ -1173,7 +1179,8 @@ describe("POST /api/integrations/test-credentials", () => {
             apiKey: "bad-key",
           },
         }),
-      })
+      }),
+      routeContext()
     );
     const body = await response.json();
 
@@ -1184,14 +1191,20 @@ describe("POST /api/integrations/test-credentials", () => {
 });
 
 describe("POST /api/integrations/test-credentials (web-search)", () => {
-  let mockFetch: ReturnType<typeof vi.fn>;
+  // The route only reads `.ok`/`.status` off the fetch response, so tests
+  // resolve minimal partial fakes rather than full `Response` objects — type
+  // the mock's return value as `Partial<Response>` to match, and cast once at
+  // the `global.fetch` assignment (the only place the two shapes must meet).
+  let mockFetch: ReturnType<
+    typeof vi.fn<(...args: Parameters<typeof fetch>) => Promise<Partial<Response>>>
+  >;
   const originalFetch = global.fetch;
 
   beforeEach(() => {
     vi.clearAllMocks();
     mockGetSession.mockResolvedValue(adminSession);
     mockFetch = vi.fn();
-    global.fetch = mockFetch;
+    global.fetch = mockFetch as unknown as typeof fetch;
   });
 
   afterEach(() => {
@@ -1209,7 +1222,8 @@ describe("POST /api/integrations/test-credentials (web-search)", () => {
           type: "web-search",
           credentials: { apiKey: "BSAxxxxxxxxxxxxxxxxxxxxxxxx" },
         }),
-      })
+      }),
+      routeContext()
     );
     const body = await response.json();
 
@@ -1232,7 +1246,8 @@ describe("POST /api/integrations/test-credentials (web-search)", () => {
           type: "web-search",
           credentials: { apiKey: "invalid-key" },
         }),
-      })
+      }),
+      routeContext()
     );
     const body = await response.json();
 
@@ -1252,7 +1267,8 @@ describe("POST /api/integrations/test-credentials (web-search)", () => {
           type: "web-search",
           credentials: { apiKey: "BSAxxxxxxxxxxxxxxxxxxxxxxxx" },
         }),
-      })
+      }),
+      routeContext()
     );
     const body = await response.json();
 
@@ -1271,7 +1287,8 @@ describe("POST /api/integrations/test-credentials (web-search)", () => {
           type: "web-search",
           credentials: {},
         }),
-      })
+      }),
+      routeContext()
     );
     expect(response.status).toBe(400);
   });
@@ -1281,7 +1298,7 @@ describe("POST /api/integrations (web-search)", () => {
   // Helper: mock the duplicate-check select to return empty (no existing web-search)
   function mockNoDuplicateWebSearch() {
     mockSelectFrom.mockImplementationOnce(() => {
-      const result = Promise.resolve([]) as Promise<unknown[]> & {
+      const result = Promise.resolve<unknown[]>([]) as Promise<unknown[]> & {
         where: ReturnType<typeof vi.fn>;
       };
       result.where = vi.fn().mockResolvedValue([]);
@@ -1306,7 +1323,7 @@ describe("POST /api/integrations (web-search)", () => {
         credentials: { apiKey: "BSAxxxxxxxxxxxxxxxxxxxxxxxx" },
       }),
     });
-    const response = await POST(request);
+    const response = await POST(request, routeContext());
     const body = await response.json();
 
     expect(response.status).toBe(201);
@@ -1338,7 +1355,7 @@ describe("POST /api/integrations (web-search)", () => {
         credentials: { apiKey: "BSAxxxxxxxxxxxxxxxxxxxxxxxx" },
       }),
     });
-    await POST(request);
+    await POST(request, routeContext());
 
     expect(mockAppendAuditLog).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -1365,7 +1382,7 @@ describe("POST /api/integrations (web-search)", () => {
         credentials: {},
       }),
     });
-    const response = await POST(request);
+    const response = await POST(request, routeContext());
     expect(response.status).toBe(400);
   });
 });
@@ -1394,7 +1411,7 @@ describe("GET /api/integrations (lastError/lastErrorAt)", () => {
     });
 
     const { GET } = await import("@/app/api/integrations/route");
-    const response = await GET();
+    const response = await GET(makeRequest("/api/integrations"), routeContext());
     const body = await response.json();
 
     expect(response.status).toBe(200);
@@ -1415,7 +1432,7 @@ describe("GET /api/integrations (lastError/lastErrorAt)", () => {
     });
 
     const { GET } = await import("@/app/api/integrations/route");
-    const response = await GET();
+    const response = await GET(makeRequest("/api/integrations"), routeContext());
     const body = await response.json();
 
     expect(response.status).toBe(200);
@@ -1480,7 +1497,7 @@ describe("GET /api/integrations (web-search masking)", () => {
 
     const { GET } = await import("@/app/api/integrations/route");
 
-    const response = await GET();
+    const response = await GET(makeRequest("/api/integrations"), routeContext());
     const body = await response.json();
 
     expect(response.status).toBe(200);
@@ -1490,14 +1507,20 @@ describe("GET /api/integrations (web-search masking)", () => {
 });
 
 describe("POST /api/integrations/list-databases", () => {
-  let mockFetch: ReturnType<typeof vi.fn>;
+  // The route only reads `response.json()`, so tests resolve minimal partial
+  // fakes rather than full `Response` objects — type the mock's return value
+  // as `Partial<Response>` to match, and cast once at the `global.fetch`
+  // assignment (the only place the two shapes must meet).
+  let mockFetch: ReturnType<
+    typeof vi.fn<(...args: Parameters<typeof fetch>) => Promise<Partial<Response>>>
+  >;
   const originalFetch = global.fetch;
 
   beforeEach(() => {
     vi.clearAllMocks();
     mockGetSession.mockResolvedValue(adminSession);
     mockFetch = vi.fn();
-    global.fetch = mockFetch;
+    global.fetch = mockFetch as unknown as typeof fetch;
   });
 
   afterEach(() => {
@@ -1512,7 +1535,8 @@ describe("POST /api/integrations/list-databases", () => {
       makeRequest("/api/integrations/list-databases", {
         method: "POST",
         body: JSON.stringify({ url: "https://odoo.example.com" }),
-      })
+      }),
+      routeContext()
     );
     expect(response.status).toBe(401);
   });
@@ -1525,7 +1549,8 @@ describe("POST /api/integrations/list-databases", () => {
       makeRequest("/api/integrations/list-databases", {
         method: "POST",
         body: JSON.stringify({ url: "https://odoo.example.com" }),
-      })
+      }),
+      routeContext()
     );
     expect(response.status).toBe(403);
   });
@@ -1537,7 +1562,8 @@ describe("POST /api/integrations/list-databases", () => {
       makeRequest("/api/integrations/list-databases", {
         method: "POST",
         body: JSON.stringify({}),
-      })
+      }),
+      routeContext()
     );
     expect(response.status).toBe(400);
   });
@@ -1549,7 +1575,8 @@ describe("POST /api/integrations/list-databases", () => {
       makeRequest("/api/integrations/list-databases", {
         method: "POST",
         body: JSON.stringify({ url: "not-a-url" }),
-      })
+      }),
+      routeContext()
     );
     expect(response.status).toBe(400);
   });
@@ -1565,7 +1592,8 @@ describe("POST /api/integrations/list-databases", () => {
       makeRequest("/api/integrations/list-databases", {
         method: "POST",
         body: JSON.stringify({ url: "https://odoo.example.com" }),
-      })
+      }),
+      routeContext()
     );
     const body = await response.json();
 
@@ -1587,7 +1615,8 @@ describe("POST /api/integrations/list-databases", () => {
       makeRequest("/api/integrations/list-databases", {
         method: "POST",
         body: JSON.stringify({ url: "https://odoo.example.com" }),
-      })
+      }),
+      routeContext()
     );
     const body = await response.json();
 
@@ -1611,7 +1640,8 @@ describe("POST /api/integrations/list-databases", () => {
       makeRequest("/api/integrations/list-databases", {
         method: "POST",
         body: JSON.stringify({ url: "https://odoo.example.com" }),
-      })
+      }),
+      routeContext()
     );
     const body = await response.json();
 
@@ -1647,7 +1677,7 @@ describe("POST /api/integrations/[connectionId]/sync", () => {
 
   it("should return 404 when connection not found", async () => {
     mockSelectFrom.mockImplementationOnce(() => {
-      const result = Promise.resolve([]) as Promise<unknown[]> & {
+      const result = Promise.resolve<unknown[]>([]) as Promise<unknown[]> & {
         where: ReturnType<typeof vi.fn>;
       };
       result.where = vi.fn().mockResolvedValue([]);
