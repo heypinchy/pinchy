@@ -999,9 +999,13 @@ describe("POST /api/integrations/[connectionId]/test (web-search)", () => {
 
     expect(response.status).toBe(200);
     expect(body.success).toBe(true);
-    expect(mockProbeIntegrationCredentials).toHaveBeenCalledWith("web-search", {
-      apiKey: "BSA-valid-key",
-    });
+    expect(mockProbeIntegrationCredentials).toHaveBeenCalledWith(
+      "web-search",
+      {
+        apiKey: "BSA-valid-key",
+      },
+      null
+    );
   });
 
   it("should return error when probe fails for an invalid Brave API key", async () => {

@@ -4,6 +4,7 @@ import { probeBraveApiKey } from "@/lib/integrations/brave-probe";
 import { odooCredentialsSchema } from "@/lib/integrations/odoo-schema";
 import { testImapLogin, testSmtpVerify, friendlyError } from "@/lib/integrations/imap-probe";
 import { imapTestSchema } from "@/lib/schemas/imap";
+import { listMcpTools, McpAuthError } from "@/lib/integrations/mcp-client";
 
 /**
  * Verify that credentials work for the given integration type.
@@ -21,9 +22,18 @@ export type ProbeResult =
   | { success: true; freshCredentials?: Record<string, unknown> }
   | { success: false; reason: string; transient?: boolean };
 
+/**
+ * @param data  Type-specific connection metadata (the `integration_connections.data`
+ *   column). Only the mcp branch reads it (it needs `url`/`transport`/
+ *   `extraHeaders`, which live outside `credentials`); every other branch
+ *   ignores it. Callers pass the connection row's `data` column through
+ *   unchanged — see [connectionId]/route.ts (PATCH) and
+ *   [connectionId]/test/route.ts.
+ */
 export async function probeIntegrationCredentials(
   type: string,
-  credentials: Record<string, unknown>
+  credentials: Record<string, unknown>,
+  data?: Record<string, unknown> | null
 ): Promise<ProbeResult> {
   if (type === "odoo") {
     const parsed = odooCredentialsSchema.safeParse(credentials);
@@ -116,6 +126,45 @@ export async function probeIntegrationCredentials(
       return isAuthFailure
         ? { success: false, reason }
         : { success: false, transient: true, reason };
+    }
+  }
+
+  if (type === "mcp") {
+    const url = data?.url;
+    const transport = data?.transport;
+    if (typeof url !== "string" || !url || (transport !== "http" && transport !== "sse")) {
+      // This is a format problem with the stored connection, not a network
+      // hiccup — reconnecting won't help until the connection itself is
+      // fixed, so it must never be transient.
+      return { success: false, reason: "This connection is missing its server details." };
+    }
+    const token = credentials.token;
+    if (typeof token !== "string" || !token) {
+      return { success: false, reason: "A token is required." };
+    }
+    const extraHeaders = data?.extraHeaders as Record<string, string> | undefined;
+
+    try {
+      await listMcpTools({ url, transport, token, extraHeaders });
+      return { success: true };
+    } catch (err) {
+      // McpAuthError (401/403) is the only mcp failure that is real evidence
+      // the stored token is bad — everything else (5xx/429 McpServerError, a
+      // malformed McpSchemaError response, DNS/timeout/abort) is fail-safe
+      // transient: a broken or slow server is not proof the token is wrong,
+      // and a healthy connection must never be flipped to auth_failed on a
+      // hiccup. Mirrors the imap/microsoft branches' fail-safe default above.
+      if (err instanceof McpAuthError) {
+        return {
+          success: false,
+          reason: "The server rejected this token. Check that it's still valid, then reconnect.",
+        };
+      }
+      return {
+        success: false,
+        transient: true,
+        reason: "Couldn't reach the server right now. Try again in a moment.",
+      };
     }
   }
 

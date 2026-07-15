@@ -1,3 +1,34 @@
+export type McpTool = {
+  name: string;
+  description?: string;
+  inputSchema: Record<string, unknown>;
+};
+
+export type McpIntegrationData = {
+  type: "mcp";
+  preset:
+    | "github"
+    | "linear"
+    | "atlassian"
+    | "stripe"
+    | "cloudflare"
+    | "intercom"
+    | "highlevel"
+    | "generic";
+  transport: "http" | "sse";
+  url: string;
+  tools: McpTool[];
+  lastSyncAt: string; // ISO 8601
+  // Per-connection metadata (NOT a secret) the MCP credential proxy injects as
+  // extra request headers when forwarding to the upstream. Today only HighLevel
+  // uses this (`locationId` Sub-Account ID, required header alongside
+  // Authorization: Bearer pit-…). Generic shape so future presets can extend
+  // without another schema change.
+  extraHeaders?: Record<string, string>;
+};
+
+export type IntegrationData = McpIntegrationData;
+
 export interface IntegrationConnection {
   id: string;
   type: string;
@@ -18,6 +49,8 @@ export interface IntegrationConnection {
     emailAddress?: string;
     provider?: string;
     connectedAt?: string;
+    /** MCP connections: provider preset discriminator (github, linear, …). */
+    preset?: string;
   } | null;
   status: "active" | "pending" | "auth_failed";
   lastError: string | null;

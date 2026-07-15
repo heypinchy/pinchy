@@ -6,7 +6,7 @@ import { integrationConnections } from "@/db/schema";
 import { encrypt, decrypt } from "@/lib/encryption";
 import { appendAuditLog, scrubEmails } from "@/lib/audit";
 import { odooCredentialsSchema } from "@/lib/integrations/odoo-schema";
-import { imapEditSchema } from "@/lib/schemas/integration-edit";
+import { imapEditSchema, mcpEditSchema } from "@/lib/schemas/integration-edit";
 import { validateExternalUrl } from "@/lib/integrations/url-validation";
 import { maskConnectionCredentials } from "@/lib/integrations/mask-credentials";
 import { probeIntegrationCredentials } from "@/lib/integrations/probe";
@@ -33,6 +33,9 @@ const credentialSchemas: Record<string, z.ZodType> = {
   // drift. Ports coerce to number so the merged blob keeps numeric ports — the
   // pinchy-email plugin asserts a strict `typeof number` shape.
   imap: imapEditSchema,
+  // MCP credential edit = token rotation. extraHeaders (e.g. HighLevel's
+  // locationId) stays on connection.data and is reused during re-discovery.
+  mcp: mcpEditSchema,
 };
 
 type RouteContext = { params: Promise<{ connectionId: string }> };
@@ -131,8 +134,14 @@ export const PATCH = withAdmin<RouteContext>(async (request, { params }, session
     const existingDecoded = JSON.parse(decrypt(existing.credentials)) as Record<string, unknown>;
     const merged = { ...existingDecoded, ...parsedCredentials };
 
-    // Probe before persisting.
-    const probe = await probeIntegrationCredentials(existing.type, merged);
+    // Probe before persisting. `existing.data` is passed through so the mcp
+    // branch can read the stored url/transport/extraHeaders — every other
+    // branch ignores the third argument.
+    const probe = await probeIntegrationCredentials(
+      existing.type,
+      merged,
+      existing.data as Record<string, unknown> | null
+    );
     if (!probe.success) {
       return NextResponse.json({ error: probe.reason }, { status: 400 });
     }

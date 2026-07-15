@@ -122,6 +122,7 @@ const mockMicrosoftConnection = {
   type: "microsoft",
   name: "Test Mailbox",
   credentials: "encrypted-ms-creds",
+  data: null,
   status: "active",
   createdAt: new Date("2026-01-01"),
   updatedAt: new Date("2026-01-01"),
@@ -220,7 +221,8 @@ describe("POST /api/integrations/[connectionId]/test — auth state flipping", (
       // The probe must run against the freshly refreshed credentials, not the stale ones.
       expect(mockProbeIntegrationCredentials).toHaveBeenCalledWith(
         "microsoft",
-        expect.objectContaining({ accessToken: "refreshed-access-token" })
+        expect.objectContaining({ accessToken: "refreshed-access-token" }),
+        null
       );
       expect(response.status).toBe(200);
       expect(body.success).toBe(true);
@@ -309,6 +311,7 @@ describe("POST /api/integrations/[connectionId]/test — auth state flipping", (
       type: "imap",
       name: "Company Mailbox",
       credentials: "encrypted-imap-creds",
+      data: null,
       status: "active",
       createdAt: new Date("2026-01-01"),
       updatedAt: new Date("2026-01-01"),
@@ -342,7 +345,8 @@ describe("POST /api/integrations/[connectionId]/test — auth state flipping", (
 
       expect(mockProbeIntegrationCredentials).toHaveBeenCalledWith(
         "imap",
-        expect.objectContaining(storedImapCreds)
+        expect.objectContaining(storedImapCreds),
+        null
       );
       expect(response.status).toBe(200);
       expect(body.success).toBe(true);
@@ -378,6 +382,22 @@ describe("POST /api/integrations/[connectionId]/test — auth state flipping", (
       expect(mockClearIntegrationAuthError).not.toHaveBeenCalled();
     });
 
+    it("passes the connection's data column through to probeIntegrationCredentials as the third arg (imap ignores it, but the route must pass it uniformly)", async () => {
+      mockProbeIntegrationCredentials.mockResolvedValue({ success: true });
+
+      const { POST } = await import("@/app/api/integrations/[connectionId]/test/route");
+
+      await POST(makeRequest("/api/integrations/conn-imap/test", { method: "POST" }), {
+        params: Promise.resolve({ connectionId: "conn-imap" }),
+      });
+
+      expect(mockProbeIntegrationCredentials).toHaveBeenCalledWith(
+        "imap",
+        expect.objectContaining(storedImapCreds),
+        null
+      );
+    });
+
     it("does not flip to auth_failed when the imap probe reports a transient/connection error", async () => {
       mockProbeIntegrationCredentials.mockResolvedValue({
         success: false,
@@ -396,6 +416,103 @@ describe("POST /api/integrations/[connectionId]/test — auth state flipping", (
       expect(response.status).toBe(200);
       expect(body.success).toBe(false);
       expect(body.error).toMatch(/could not connect/i);
+      expect(mockSetIntegrationAuthFailed).not.toHaveBeenCalled();
+      expect(mockClearIntegrationAuthError).not.toHaveBeenCalled();
+    });
+  });
+
+  describe("mcp: Test Connection on an existing connection", () => {
+    const mockMcpData = {
+      type: "mcp",
+      preset: "github",
+      transport: "http",
+      url: "https://api.githubcopilot.com/mcp/",
+      tools: [],
+      lastSyncAt: "2026-01-01T00:00:00.000Z",
+    };
+    const mockMcpConnection = {
+      id: "conn-mcp",
+      type: "mcp",
+      name: "GitHub",
+      credentials: "encrypted-mcp-creds",
+      data: mockMcpData,
+      status: "active",
+      createdAt: new Date("2026-01-01"),
+      updatedAt: new Date("2026-01-01"),
+    };
+
+    const storedMcpCreds = { token: "pat-current-token" };
+
+    beforeEach(() => {
+      mockSelectWhere.mockResolvedValue([mockMcpConnection]);
+      mockDecrypt.mockReturnValue(JSON.stringify(storedMcpCreds));
+    });
+
+    it("passes connection.data (url/transport/tools) through to probeIntegrationCredentials and clears the auth error on success", async () => {
+      mockProbeIntegrationCredentials.mockResolvedValue({ success: true });
+
+      const { POST } = await import("@/app/api/integrations/[connectionId]/test/route");
+
+      const response = await POST(
+        makeRequest("/api/integrations/conn-mcp/test", { method: "POST" }),
+        { params: Promise.resolve({ connectionId: "conn-mcp" }) }
+      );
+      const body = await response.json();
+
+      expect(mockProbeIntegrationCredentials).toHaveBeenCalledWith(
+        "mcp",
+        expect.objectContaining(storedMcpCreds),
+        mockMcpData
+      );
+      expect(response.status).toBe(200);
+      expect(body.success).toBe(true);
+      expect(mockClearIntegrationAuthError).toHaveBeenCalledWith({
+        connectionId: "conn-mcp",
+        actor: { type: "user", id: "user-1" },
+      });
+      expect(mockSetIntegrationAuthFailed).not.toHaveBeenCalled();
+    });
+
+    it("flips to auth_failed on a genuine mcp auth failure (rejected token)", async () => {
+      mockProbeIntegrationCredentials.mockResolvedValue({
+        success: false,
+        reason: "The server rejected this token. Check that it's still valid, then reconnect.",
+      });
+
+      const { POST } = await import("@/app/api/integrations/[connectionId]/test/route");
+
+      const response = await POST(
+        makeRequest("/api/integrations/conn-mcp/test", { method: "POST" }),
+        { params: Promise.resolve({ connectionId: "conn-mcp" }) }
+      );
+      const body = await response.json();
+
+      expect(response.status).toBe(200);
+      expect(body.success).toBe(false);
+      expect(mockSetIntegrationAuthFailed).toHaveBeenCalledWith({
+        connectionId: "conn-mcp",
+        reason: "The server rejected this token. Check that it's still valid, then reconnect.",
+        actor: { type: "user", id: "user-1" },
+      });
+    });
+
+    it("does not flip to auth_failed when the mcp probe reports a transient failure (5xx/schema/network)", async () => {
+      mockProbeIntegrationCredentials.mockResolvedValue({
+        success: false,
+        transient: true,
+        reason: "Couldn't reach the server right now. Try again in a moment.",
+      });
+
+      const { POST } = await import("@/app/api/integrations/[connectionId]/test/route");
+
+      const response = await POST(
+        makeRequest("/api/integrations/conn-mcp/test", { method: "POST" }),
+        { params: Promise.resolve({ connectionId: "conn-mcp" }) }
+      );
+      const body = await response.json();
+
+      expect(response.status).toBe(200);
+      expect(body.success).toBe(false);
       expect(mockSetIntegrationAuthFailed).not.toHaveBeenCalled();
       expect(mockClearIntegrationAuthError).not.toHaveBeenCalled();
     });

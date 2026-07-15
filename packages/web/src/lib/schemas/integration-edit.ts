@@ -41,3 +41,14 @@ export const imapEditSchema = z
       .optional(),
   })
   .strict();
+
+// MCP credential edit = token rotation only. extraHeaders (e.g. HighLevel's
+// locationId) lives on connection.data, not on the credentials blob, and is
+// reused as-is during re-discovery — so it deliberately has no place in this
+// schema. `.min(1)` + `.strict()` follow imapEditSchema's convention: a field
+// that IS present must be non-empty, and stray keys can't sneak through.
+export const mcpEditSchema = z
+  .object({
+    token: z.string().min(1).optional(),
+  })
+  .strict();

@@ -91,7 +91,13 @@ export const POST = withAdmin<RouteContext>(async (_req, { params }, session) =>
       }
     }
 
-    const probe = await probeIntegrationCredentials(connection.type, decrypted);
+    // `connection.data` is passed through so the mcp branch can read the
+    // stored url/transport/extraHeaders — every other branch ignores it.
+    const probe = await probeIntegrationCredentials(
+      connection.type,
+      decrypted,
+      connection.data as Record<string, unknown> | null
+    );
 
     if (probe.success) {
       await clearIntegrationAuthError({ connectionId, actor });

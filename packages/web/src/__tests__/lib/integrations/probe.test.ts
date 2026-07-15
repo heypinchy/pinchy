@@ -34,9 +34,24 @@ vi.mock("@/lib/integrations/imap-probe", async (importActual) => {
   };
 });
 
+const mockListMcpTools = vi.fn();
+// Only the network I/O (listMcpTools) is mocked; the typed error classes come
+// from the REAL module via importActual, exactly like the imap-probe pattern
+// above. The mcp branch of probe.ts classifies transient-vs-auth via
+// `instanceof McpAuthError` etc., so re-implementing fakes here would let the
+// real classes drift from the classification silently.
+vi.mock("@/lib/integrations/mcp-client", async (importActual) => {
+  const actual = await importActual<typeof import("@/lib/integrations/mcp-client")>();
+  return {
+    ...actual,
+    listMcpTools: (...args: unknown[]) => mockListMcpTools(...args),
+  };
+});
+
 import { fetchOdooSchema } from "@/lib/integrations/odoo-sync";
 import { probeBraveApiKey } from "@/lib/integrations/brave-probe";
 import { probeIntegrationCredentials } from "@/lib/integrations/probe";
+import { McpAuthError, McpServerError, McpSchemaError } from "@/lib/integrations/mcp-client";
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -363,6 +378,113 @@ describe("probeIntegrationCredentials", () => {
       expect(res.success).toBe(false);
       if (res.success) return;
       expect(res.reason).not.toContain(validImapCreds.password);
+    });
+  });
+
+  describe("mcp", () => {
+    const validData = {
+      type: "mcp" as const,
+      preset: "github" as const,
+      transport: "http" as const,
+      url: "https://api.githubcopilot.com/mcp/",
+      tools: [],
+      lastSyncAt: new Date().toISOString(),
+    };
+    const validCreds = { token: "pat-fresh-token" };
+
+    it("returns success and calls listMcpTools with url/transport/token/extraHeaders from data+credentials", async () => {
+      mockListMcpTools.mockResolvedValue([{ name: "create_issue", inputSchema: {} }]);
+      const dataWithHeaders = { ...validData, extraHeaders: { locationId: "loc_1" } };
+
+      const res = await probeIntegrationCredentials("mcp", validCreds, dataWithHeaders);
+
+      expect(res).toEqual({ success: true });
+      expect(mockListMcpTools).toHaveBeenCalledWith({
+        url: validData.url,
+        transport: validData.transport,
+        token: "pat-fresh-token",
+        extraHeaders: { locationId: "loc_1" },
+      });
+    });
+
+    it("returns non-transient failure without probing when data is missing (connection.data was never persisted)", async () => {
+      const res = await probeIntegrationCredentials("mcp", validCreds, null);
+
+      expect(res.success).toBe(false);
+      if (res.success) return;
+      expect(res.transient).toBeFalsy();
+      expect(mockListMcpTools).not.toHaveBeenCalled();
+    });
+
+    it("returns non-transient failure without probing when data is missing url/transport", async () => {
+      const res = await probeIntegrationCredentials("mcp", validCreds, { preset: "github" });
+
+      expect(res.success).toBe(false);
+      if (res.success) return;
+      expect(res.transient).toBeFalsy();
+      expect(mockListMcpTools).not.toHaveBeenCalled();
+    });
+
+    it("returns non-transient failure without probing when the token is missing", async () => {
+      const res = await probeIntegrationCredentials("mcp", {}, validData);
+
+      expect(res.success).toBe(false);
+      if (res.success) return;
+      expect(res.transient).toBeFalsy();
+      expect(mockListMcpTools).not.toHaveBeenCalled();
+    });
+
+    it("returns non-transient failure on McpAuthError — the only mcp failure allowed to flip a connection to auth_failed", async () => {
+      mockListMcpTools.mockRejectedValue(new McpAuthError());
+
+      const res = await probeIntegrationCredentials("mcp", validCreds, validData);
+
+      expect(res.success).toBe(false);
+      if (res.success) return;
+      expect(res.transient).toBeFalsy();
+      expect(res.reason).not.toMatch(/MCP|401/);
+    });
+
+    it("returns transient:true on McpServerError (5xx/429) — a provider hiccup, not proof the token is bad", async () => {
+      mockListMcpTools.mockRejectedValue(new McpServerError(503, "boom"));
+
+      const res = await probeIntegrationCredentials("mcp", validCreds, validData);
+
+      expect(res.success).toBe(false);
+      if (res.success) return;
+      expect(res.transient).toBe(true);
+    });
+
+    it("returns transient:true on McpSchemaError (fail-safe: a broken response is not evidence the token is bad)", async () => {
+      mockListMcpTools.mockRejectedValue(new McpSchemaError("tool missing name"));
+
+      const res = await probeIntegrationCredentials("mcp", validCreds, validData);
+
+      expect(res.success).toBe(false);
+      if (res.success) return;
+      expect(res.transient).toBe(true);
+    });
+
+    it("returns transient:true for a network/DNS/timeout/abort failure (fail-safe default)", async () => {
+      mockListMcpTools.mockRejectedValue(new Error("This operation was aborted"));
+
+      const res = await probeIntegrationCredentials("mcp", validCreds, validData);
+
+      expect(res.success).toBe(false);
+      if (res.success) return;
+      expect(res.transient).toBe(true);
+    });
+
+    it("never includes the plaintext token in the returned reason", async () => {
+      mockListMcpTools.mockRejectedValue(
+        new Error(`connect ECONNREFUSED, sent token ${validCreds.token}`)
+      );
+
+      const res = await probeIntegrationCredentials("mcp", validCreds, validData);
+
+      expect(res.success).toBe(false);
+      if (res.success) return;
+      expect(res.reason).not.toContain(validCreds.token);
     });
   });
 });
