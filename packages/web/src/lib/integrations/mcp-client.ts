@@ -94,9 +94,15 @@ export interface ListMcpToolsOptions {
 // Headers the client owns — caller-supplied values with these names are
 // silently dropped to avoid foot-guns (e.g. a caller forcing a different
 // Content-Type that breaks JSON-RPC parsing).
-const RESERVED_HEADERS = new Set(["authorization", "content-type", "accept"]);
+//
+// Exported and reused by the MCP credential proxy route
+// (api/internal/mcp-proxy/[connectionId]/route.ts), which applies the exact
+// same sanitisation to connection.data.extraHeaders before injecting the
+// real bearer token — one rule, one definition, so "what was tested at
+// Test Connection" and "what goes out at runtime" can't drift apart.
+export const RESERVED_HEADERS = new Set(["authorization", "content-type", "accept"]);
 
-function sanitiseExtraHeaders(extra?: Record<string, string>): Record<string, string> {
+export function sanitiseExtraHeaders(extra?: Record<string, string>): Record<string, string> {
   if (!extra) return {};
   const out: Record<string, string> = {};
   for (const [k, v] of Object.entries(extra)) {

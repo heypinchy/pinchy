@@ -27,7 +27,11 @@ vi.mock("@/lib/audit-deferred", () => ({
 }));
 
 const mockListMcpTools = vi.fn();
-vi.mock("@/lib/integrations/mcp-client", () => ({
+vi.mock("@/lib/integrations/mcp-client", async (importOriginal) => ({
+  // RESERVED_HEADERS is pulled from the real module (not re-declared here) so
+  // the schema-level guard test below exercises the actual set the proxy
+  // route enforces at runtime, instead of a copy that could drift from it.
+  ...(await importOriginal<typeof import("@/lib/integrations/mcp-client")>()),
   listMcpTools: (...args: unknown[]) => mockListMcpTools(...args),
   McpAuthError: class McpAuthError extends Error {
     constructor(message = "MCP server rejected the token") {
@@ -337,6 +341,30 @@ describe("POST /api/integrations (type=mcp)", () => {
     const response = await POST(request);
 
     expect(response.status).toBe(400);
+    expect(mockListMcpTools).not.toHaveBeenCalled();
+    expect(mockInsertValues).not.toHaveBeenCalled();
+  });
+
+  it("rejects extraHeaders that try to override a reserved header name, before calling discovery", async () => {
+    const { POST } = await import("@/app/api/integrations/route");
+
+    const request = makeRequest("/api/integrations", {
+      method: "POST",
+      body: JSON.stringify({
+        ...validMcpBody,
+        // The proxy (api/internal/mcp-proxy/[connectionId]/route.ts) always
+        // strips these — silently accepting them here would let an admin
+        // believe a header applies when the proxy actually drops it at
+        // request time. Reject at create time instead so the admin finds
+        // out immediately (case-insensitive, mirrors RESERVED_HEADERS).
+        extraHeaders: { Authorization: "Bearer should-not-be-allowed" },
+      }),
+    });
+    const response = await POST(request);
+    const body = await response.json();
+
+    expect(response.status).toBe(400);
+    expect(JSON.stringify(body)).toMatch(/reserved/i);
     expect(mockListMcpTools).not.toHaveBeenCalled();
     expect(mockInsertValues).not.toHaveBeenCalled();
   });
