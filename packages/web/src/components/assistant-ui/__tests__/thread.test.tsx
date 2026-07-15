@@ -112,6 +112,29 @@ vi.mock("@assistant-ui/react", () => ({
     });
     return show ? <>{children}</> : null;
   },
+  ErrorPrimitive: {
+    Root: ({ children, ...props }: { children?: React.ReactNode; [key: string]: unknown }) => (
+      <div {...props}>{children}</div>
+    ),
+    Message: () => null,
+  },
+  ActionBarPrimitive: {
+    Root: ({ children, ...props }: { children?: React.ReactNode; [key: string]: unknown }) => (
+      <div data-testid="assistant-action-bar" {...props}>
+        {children}
+      </div>
+    ),
+    Copy: ({ children }: { children?: React.ReactNode }) => <>{children}</>,
+    ExportMarkdown: ({ children }: { children?: React.ReactNode }) => <>{children}</>,
+  },
+  ActionBarMorePrimitive: {
+    Root: ({ children }: { children?: React.ReactNode }) => <>{children}</>,
+    Trigger: ({ children }: { children?: React.ReactNode }) => <>{children}</>,
+    Content: ({ children }: { children?: React.ReactNode }) => <>{children}</>,
+    Item: ({ children, ...props }: { children?: React.ReactNode; [key: string]: unknown }) => (
+      <div {...props}>{children}</div>
+    ),
+  },
   useMessage: vi.fn(),
   useComposerRuntime: vi.fn(() => null),
   useMessagePartFile: vi.fn(() => ({
@@ -188,6 +211,10 @@ vi.mock("@/components/assistant-ui/attachment", () => ({
   ComposerAddAttachment: () => null,
 }));
 
+vi.mock("@/components/diagnostics-export-dialog", () => ({
+  DiagnosticsExportDialog: () => null,
+}));
+
 vi.mock("@/components/assistant-ui/chat-error-message", () => ({
   ChatErrorMessage: ({ actionSlot }: { actionSlot?: React.ReactNode }) => (
     <div data-testid="chat-error-message">{actionSlot}</div>
@@ -199,6 +226,7 @@ vi.mock("@/components/chat", async () => {
   return {
     AgentAvatarContext: React.createContext<string | null>(null),
     AgentIdContext: React.createContext<string | null>(null),
+    AgentNameContext: React.createContext<string | null>(null),
     ChatIdContext: React.createContext<string | null>(null),
     AgentModelContext: React.createContext<string | null>(null),
     RetryResendContext: React.createContext<(messageId: string) => void>(() => {}),
@@ -794,5 +822,33 @@ describe("Composer no longer gates attachments client-side", () => {
     );
 
     expect(screen.queryByRole("region", { name: /can't be sent/i })).not.toBeInTheDocument();
+  });
+});
+
+// The action bar mounts on hover (assistant-ui unmounts it while hidden), so the
+// footer row must already reserve the bar's height. Otherwise the row grows from
+// the timestamp's line-height to the button height and every message below it
+// jumps down on hover.
+describe("AssistantMessage footer height", () => {
+  it("reserves the action bar's height so hovering does not shift messages", async () => {
+    const { useMessage } = await import("@assistant-ui/react");
+    vi.mocked(useMessage).mockImplementation(
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      (selector: (state: any) => unknown) =>
+        selector({
+          metadata: { custom: { timestamp: "2026-07-15T09:39:00.000Z" } },
+          isLast: false,
+          id: "msg-footer-1",
+        })
+    );
+
+    const { AssistantMessage } = await import("@/components/assistant-ui/thread");
+    const { container } = render(<AssistantMessage />);
+
+    const footer = container.querySelector(".aui-assistant-message-footer")!;
+    expect(footer).toBeTruthy();
+
+    // size-6 (1.5rem) is the TooltipIconButton height used by the action bar.
+    expect(footer.className).toContain("min-h-6");
   });
 });

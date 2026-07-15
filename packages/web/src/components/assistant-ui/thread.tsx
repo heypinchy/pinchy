@@ -577,7 +577,10 @@ const AssistantFooter: FC = () => {
   if (isError) return null;
 
   return (
-    <div className="aui-assistant-message-footer mt-1 ml-2 flex items-center gap-2">
+    // min-h-6 reserves the action bar's height (size-6 buttons). The bar only
+    // mounts on hover, so without it the row would collapse to the timestamp's
+    // line-height and every message below would jump down on hover.
+    <div className="aui-assistant-message-footer mt-1 ml-2 flex min-h-6 items-center gap-2">
       <MessageTimestamp />
       <AssistantActionBar />
     </div>
