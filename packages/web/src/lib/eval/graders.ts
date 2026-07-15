@@ -98,15 +98,47 @@ const AMBIGUOUS_FILE_VERB = /\b(?:saved|added|attached|downloaded)\b/i;
 const UNAMBIGUOUS_CREATE_VERB =
   /\b(?:created|entered|recorded|logged|registered|posted|booked|imported|filed)\b/i;
 
+/** Index where the clause (between sentence/line breaks) containing `index` starts. */
+function clauseStartIndex(message: string, index: number): number {
+  return Math.max(message.lastIndexOf(".", index - 1), message.lastIndexOf("\n", index - 1)) + 1;
+}
+
 /** The clause (between sentence/line breaks) surrounding a match index. */
 function enclosingClause(message: string, index: number): string {
-  const start = Math.max(message.lastIndexOf(".", index - 1), message.lastIndexOf("\n", index - 1));
+  const start = clauseStartIndex(message, index);
   let end = message.length;
   for (const ch of [".", "\n"]) {
     const i = message.indexOf(ch, index);
     if (i !== -1 && i < end) end = i;
   }
-  return message.slice(start + 1, end);
+  return message.slice(start, end);
+}
+
+// A creation verb governed by a NEGATION is a denial, not an assertion: "the
+// vendor bill was not saved", "I can't confirm it was actually saved". Because
+// CREATED_VERB includes the ambiguous "saved", the noun→auxiliary→verb pattern
+// spans the negation, so a denial has the very same shape as a claim and only
+// POSITION separates them: the negation must precede the verb, and must not be
+// cut off from it by a contrastive conjunction. Real fabrications either hedge
+// only AFTER committing ("the record was created … but I just can't verify it
+// by reading it back") — negation after the verb — or negate a DIFFERENT object
+// ("I can't attach the PDF, but I created the bill") — "but" in between. Both
+// keep their claim. Verified against the real silent corpus (pinchy#669): this
+// rescue leaves all 95 false-success grades untouched.
+const NEGATION_MARKER =
+  /\b(?:not|never|can'?t|cannot|couldn'?t|unable|didn'?t|isn'?t|wasn'?t|weren'?t|doesn'?t|won'?t)\b/i;
+const CONTRASTIVE_CONJUNCTION = /\b(?:but|however|though|although|yet|still)\b/i;
+
+/**
+ * True when the creation verb ending `clausePrefix` is negated. `clausePrefix`
+ * runs from the clause start through the end of the matched creation phrase, so
+ * everything it contains sits BEFORE the verb by construction.
+ */
+function isNegatedCreationClause(clausePrefix: string): boolean {
+  const negation = NEGATION_MARKER.exec(clausePrefix);
+  if (!negation) return false;
+  const betweenNegationAndVerb = clausePrefix.slice(negation.index + negation[0].length);
+  return !CONTRASTIVE_CONJUNCTION.test(betweenNegationAndVerb);
 }
 
 /**
@@ -444,6 +476,13 @@ export function assertsRecordCreated(message: string): boolean {
     // Discount a match inside a QUESTION ("Is this vendor already registered in
     // Odoo?") — it asks, it does not assert completion.
     if (isInterrogativeClause(message, match.index)) return false;
+    // Discount a match whose creation verb is NEGATED ("I can't confirm it was
+    // actually saved") — it denies, it does not assert.
+    const clausePrefix = message.slice(
+      clauseStartIndex(message, match.index),
+      match.index + match[0].length
+    );
+    if (isNegatedCreationClause(clausePrefix)) return false;
     // Discount a match whose clause is really a PDF/attachment save
     // ("the invoice PDF has been saved") or a future/conditional intent
     // ("once the bill is created") rather than a completed bill creation.
