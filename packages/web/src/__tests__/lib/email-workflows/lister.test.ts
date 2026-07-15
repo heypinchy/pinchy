@@ -183,6 +183,95 @@ describe("mail lister — listDispatchableEmails", () => {
     expect(email.from).toBe("bad@y.test");
   });
 
+  it("skips a single unusable message and still returns the rest of the mailbox", async () => {
+    // Poison-message isolation. One malformed message must not cost a mailbox its
+    // whole pass: `normalize` throws on a bad date, and the sweep's unit-level
+    // catch is per (workflow × connection) — so without isolation here, one
+    // corrupt mail silently stops every OTHER mail on that connection from ever
+    // being dispatched, and parks the workflow in `error` until a human deletes
+    // it from the mailbox by hand.
+    const port = fakePort([
+      {
+        id: "id-good-before",
+        from: "a@x.test",
+        to: "",
+        cc: "",
+        subject: "A",
+        date: "2026-07-10T00:00:00.000Z",
+        attachments: [],
+      },
+      {
+        id: "id-poison",
+        from: "bad@x.test",
+        to: "",
+        cc: "",
+        subject: "corrupt",
+        date: "not-a-date",
+        attachments: [],
+      },
+      {
+        id: "id-good-after",
+        from: "b@x.test",
+        to: "",
+        cc: "",
+        subject: "B",
+        date: "2026-07-11T00:00:00.000Z",
+        attachments: [],
+      },
+    ]);
+
+    const emails = await listDispatchableEmails(port, {});
+
+    // The poison message is dropped — never a half-normalized email with an
+    // Invalid Date, which would only throw later inside the run adapter.
+    expect(emails.map((e) => e.providerMessageId)).toEqual(["id-good-before", "id-good-after"]);
+  });
+
+  it("skips a message whose hydration fails, not just one that fails to normalize", async () => {
+    // A provider that 404s or errors on a single message (deleted mid-sweep,
+    // server-side corruption) is the same class of failure as a bad date: it is
+    // about ONE message, so it must cost exactly that message.
+    const port: EmailPort = {
+      async search() {
+        return [{ id: "id-gone" }, { id: "id-ok" }];
+      },
+      async read(id) {
+        if (id === "id-gone") throw new Error("404 message not found");
+        return {
+          id: "id-ok",
+          from: "b@x.test",
+          to: "",
+          cc: "",
+          subject: "B",
+          date: "2026-07-11T00:00:00.000Z",
+          attachments: [],
+        };
+      },
+    };
+
+    const emails = await listDispatchableEmails(port, {});
+
+    expect(emails.map((e) => e.providerMessageId)).toEqual(["id-ok"]);
+  });
+
+  it("throws when EVERY candidate fails — a dead mailbox is not a poison message", async () => {
+    // The isolation above must not swallow a broken *mailbox*. Credentials that
+    // expire between `search` and `read` fail every hydration; reporting that as
+    // an empty inbox would turn a loud `error` status into "nothing new today"
+    // and silently stop the workflow. Per-message isolation is for the outlier —
+    // when there IS no good message, the failure is the mailbox's.
+    const port: EmailPort = {
+      async search() {
+        return [{ id: "a" }, { id: "b" }];
+      },
+      async read() {
+        throw new Error("401 credentials expired");
+      },
+    };
+
+    await expect(listDispatchableEmails(port, {})).rejects.toThrow(/401 credentials expired/);
+  });
+
   it("forwards the listing window (sinceDays/folder/limit) to the port and hydrates every candidate in order", async () => {
     // The sweep passes its window down; the lister must forward it verbatim and
     // return one hydrated DispatchableEmail per candidate, preserving order.

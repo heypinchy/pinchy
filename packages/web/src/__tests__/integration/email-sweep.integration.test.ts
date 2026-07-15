@@ -16,7 +16,7 @@
 // between tests, and the sweep deliberately loads EVERY enabled workflow — so
 // each test scopes its assertions to the rows it seeded itself, and its fake port
 // hands back an empty mailbox for any connection it does not own.
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 import { and, eq } from "drizzle-orm";
 
 import { db } from "@/db";
@@ -30,7 +30,7 @@ import {
   processedEmails,
 } from "@/db/schema";
 import { claimEmail, finalizeEmail } from "@/lib/email-workflows/ledger";
-import { runReconciliationSweep } from "@/lib/email-workflows/sweep";
+import { runReconciliationSweep, SWEEP_LIST_LIMIT } from "@/lib/email-workflows/sweep";
 import type { EmailPort, EmailReadResult } from "@/lib/email-workflows/lister";
 import type { RunAgent } from "@/lib/email-workflows/dispatch";
 
@@ -223,6 +223,48 @@ describe("reconciliation sweep — listing window", () => {
 
     expect(searchCalls).toHaveLength(1);
     expect(searchCalls[0].sinceDays).toBe(3);
+  });
+
+  it("bounds how much mail one pass hydrates", async () => {
+    // The lister hydrates EVERY candidate with a sequential read() — an N+1 whose
+    // N is whatever the mailbox happens to hold in the window. `sweepWindowDays`
+    // bounds the window in time, not in volume: a busy mailbox can hold thousands
+    // of messages in 14 days, and the sweep would read them all, every cadence,
+    // before the filter drops almost all of them.
+    const { connection } = await seedDispatchableWorkflow();
+    const { createPort, searchCalls } = portFor(connection.id, [message()]);
+
+    await runReconciliationSweep({ createPort, runAgent: doneRun });
+
+    expect(searchCalls[0].limit).toBe(SWEEP_LIST_LIMIT);
+  });
+
+  it("warns loudly when a pass fills its listing limit instead of truncating in silence", async () => {
+    // The limit is a safety valve, and it has a real cost: `search` cannot filter
+    // by the ledger, so the mail beyond the limit is not merely "deferred to the
+    // next pass" — if the provider keeps returning the same saturated page, the
+    // overflow is never dispatched at all. That risk is acceptable only while it
+    // is VISIBLE, so saturation has to say so. Silent truncation in the component
+    // whose entire job is "never lose an email" is the worst possible failure.
+    const { connection } = await seedDispatchableWorkflow();
+    const saturated = Array.from({ length: SWEEP_LIST_LIMIT }, (_, i) =>
+      message({ id: `bulk-${i}` })
+    );
+    const { createPort } = portFor(connection.id, saturated);
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    let warned: string[] = [];
+    try {
+      await runReconciliationSweep({ createPort, runAgent: doneRun });
+      // Read the calls BEFORE restoring: mockRestore() also clears mock.calls.
+      warned = warn.mock.calls.map((call) => String(call[0]));
+    } finally {
+      warn.mockRestore();
+    }
+
+    expect(
+      warned.some((msg) => msg.includes("listing limit") && msg.includes(connection.id)),
+      `a saturated listing must name the connection that overflowed; warnings seen: ${JSON.stringify(warned)}`
+    ).toBe(true);
   });
 
   it("narrows the provider query to the filter's folder", async () => {

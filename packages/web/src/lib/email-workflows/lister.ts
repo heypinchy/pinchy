@@ -105,11 +105,31 @@ export async function listDispatchableEmails(
   port: EmailPort,
   opts: { sinceDays?: number; folder?: string; limit?: number }
 ): Promise<DispatchableEmail[]> {
+  // `search` is the mailbox-level probe: if it throws, nothing was listed and the
+  // failure is the connection's, so it propagates to the sweep's unit-level catch
+  // and surfaces as the workflow's `error` status.
   const candidates = await port.search(opts);
   const emails: DispatchableEmail[] = [];
+  const failures: unknown[] = [];
   for (const candidate of candidates) {
-    const msg = await port.read(candidate.id);
-    emails.push(normalize(msg));
+    // Isolate per message: one unusable mail (unparseable date, a read that 404s
+    // on a message deleted mid-sweep) must cost exactly that mail, not the whole
+    // mailbox's pass. Without this, a single corrupt message stops every other
+    // message on the connection from ever being dispatched — indefinitely, since
+    // the sweep re-lists the same window every cadence.
+    try {
+      emails.push(normalize(await port.read(candidate.id)));
+    } catch (err) {
+      failures.push(err);
+      console.warn(`mail lister: skipping unusable message ${candidate.id}`, err);
+    }
+  }
+  // But isolation must not swallow a dead mailbox. Credentials expiring between
+  // `search` and `read` fail EVERY hydration; reported as an empty inbox that
+  // would read as "nothing new" and silently retire the workflow while its status
+  // stayed `active`. No usable message at all is a mailbox failure, not an outlier.
+  if (failures.length > 0 && emails.length === 0) {
+    throw failures[0];
   }
   return emails;
 }

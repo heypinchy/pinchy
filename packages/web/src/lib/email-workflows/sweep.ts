@@ -24,6 +24,22 @@ import type { RunAgent } from "@/lib/email-workflows/dispatch";
  */
 export const DEFAULT_STUCK_GRACE_MS = 3 * DEFAULT_RUN_TIMEOUT_MS;
 
+/**
+ * How many messages one (workflow × connection) pass may hydrate.
+ *
+ * `sweepWindowDays` bounds the re-list in *time*, not in volume — a busy mailbox
+ * holds thousands of messages in 14 days, and the lister hydrates every candidate
+ * with a sequential `read()` before the filter drops nearly all of them. This is
+ * the volume bound that keeps one noisy mailbox from stalling the whole cadence.
+ *
+ * It is a safety valve, not a page size: `search` cannot filter by the ledger, so
+ * mail beyond the limit is NOT reliably "picked up next pass" — a mailbox that
+ * stays saturated may never surface its overflow at all. That is why saturation
+ * warns (see below) instead of truncating quietly. The value is deliberately far
+ * above a realistic filtered window.
+ */
+export const SWEEP_LIST_LIMIT = 200;
+
 export interface SweepDeps {
   /** Builds a mailbox port for one connection, from its decrypted credentials. */
   createPort: (connectionId: string) => Promise<EmailPort>;
@@ -63,7 +79,17 @@ export async function runReconciliationSweep(deps: SweepDeps): Promise<void> {
       const emails = await listDispatchableEmails(port, {
         sinceDays: unit.sweepWindowDays,
         folder: unit.workflow.filter.folder,
+        limit: SWEEP_LIST_LIMIT,
       });
+      // A full page means the window held at least as much mail as we are willing
+      // to hydrate, so this pass saw a truncated mailbox. Say so: the overflow is
+      // not merely deferred (see SWEEP_LIST_LIMIT), and a component whose whole
+      // job is "never lose an email" must not truncate in silence.
+      if (emails.length >= SWEEP_LIST_LIMIT) {
+        console.warn(
+          `reconciliation sweep: hit the listing limit of ${SWEEP_LIST_LIMIT} for workflow ${unit.workflow.id} on connection ${unit.workflow.connectionId} — mail beyond it was not seen this pass`
+        );
+      }
       // The sweep re-lists a whole window, so it is the only place the per-
       // (workflow × connection) watermark can be enforced: the lister speaks
       // `sinceDays` and nothing downstream reads `receivedAt`. Without this gate
