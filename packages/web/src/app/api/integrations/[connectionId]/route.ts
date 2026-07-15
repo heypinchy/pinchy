@@ -215,25 +215,15 @@ export const PATCH = withAdmin<RouteContext>(async (request, { params }, session
       outcome: "success",
     });
 
-    // MCP-only (T6, docs/plans/2026-06-30-mcp-port-to-main.md). A credential
-    // edit is how an admin recovers a connection from `auth_failed` (rotated
-    // token), and build.ts filters mcp.servers/tools.allow to
-    // status==="active" — so the recovery has to reach the config or the
-    // agent's existing grants stay fail-closed.
-    //
-    // That recovery regen is now performed by clearIntegrationAuthError above
-    // (see auth-state.ts: the trigger sits at the status transition, where it
-    // can tell a real flip from a no-op). This call is therefore a belt-and-
-    // braces duplicate on the recovery path, and a no-op otherwise: for MCP a
-    // PATCH can only change the token (mcpEditSchema is token-only), which
-    // never enters openclaw.json — the proxy fetches it per request — so the
-    // emitted config is byte-identical unless the status moved. Kept because
-    // regenerate is idempotent and skips the write when nothing changed; a
-    // follow-up may drop it once the auth-state trigger has proven itself.
-    // Odoo/email/imap deliberately never get this call.
-    if (existing.type === "mcp") {
-      await regenerateOpenClawConfig();
-    }
+    // No config regenerate here, for any type. The only config-relevant thing
+    // a credential edit can do is recover an MCP connection from auth_failed
+    // (build.ts filters mcp.servers/tools.allow to status==="active"), and
+    // clearIntegrationAuthError above already triggers that at the status
+    // transition itself — see auth-state.ts. Nothing else in a credential edit
+    // reaches openclaw.json: for MCP, mcpEditSchema is token-only and the
+    // token is fetched by the proxy per request rather than emitted into the
+    // config; for every other type, credentials were never in the config
+    // either.
   }
 
   return NextResponse.json({

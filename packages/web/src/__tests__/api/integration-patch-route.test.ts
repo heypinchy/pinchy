@@ -614,12 +614,16 @@ describe("PATCH /api/integrations/[connectionId] — credential probe", () => {
       );
       const encryptedPayload = mockEncrypt.mock.calls[0]?.[0] as string;
       expect(JSON.parse(encryptedPayload).token).toBe("new-token");
-      // MCP-only (T6): a credential edit is how an admin recovers a
-      // connection from auth_failed (rotated token) — clearIntegrationAuthError
-      // above just flipped status back to active, and build.ts filters
-      // mcp.servers/tools.allow to status==="active", so any grants this
-      // connection already had stay fail-closed until this regenerates.
-      expect(mockRegenerateOpenClawConfig).toHaveBeenCalledTimes(1);
+      // The PATCH itself must NOT regenerate openclaw.json. For MCP a
+      // credential edit can only change the token (mcpEditSchema is
+      // token-only), and the token never enters the config — the proxy
+      // fetches it per request — so the emitted config is byte-identical.
+      // The one config-relevant thing a credential edit CAN do is recover the
+      // connection from auth_failed, and that regen is triggered by
+      // clearIntegrationAuthError at the status transition itself (see
+      // auth-state.ts + auth-state.test.ts). auth-state is mocked here, so
+      // this asserts the route adds nothing of its own on top.
+      expect(mockRegenerateOpenClawConfig).not.toHaveBeenCalled();
     });
 
     it("PATCH with an unknown key in credentials is rejected by mcpEditSchema (strict) before probing", async () => {
