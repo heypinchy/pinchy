@@ -136,10 +136,19 @@ test.describe("message action-bar layout shift", () => {
         .boundingBox()
         .then((box) => box!.height);
 
+    // Sub-pixel tolerance, not bit-exact equality: the reserved height comes
+    // from `min-h-6` (24px) while the last message's footer is sized by the
+    // action bar it actually contains. Two different layout computations that
+    // agree only to within float noise — CI has produced both 23.999984 and
+    // 24.000015 against an expected 24, i.e. it drifts in BOTH directions, so
+    // this is rounding, not a height difference. The regression being guarded
+    // is the 8px action-bar row, which a sub-pixel tolerance still catches by
+    // three orders of magnitude. Same tolerance as the message-height
+    // assertion below, which had it right from the start.
     expect(
-      await footerHeight(nonLast),
+      Math.abs((await footerHeight(nonLast)) - (await footerHeight(last))),
       "footer row of a non-last message must already reserve the action bar's height"
-    ).toBe(await footerHeight(last));
+    ).toBeLessThan(1);
 
     const nonLastBox = (await nonLast.boundingBox())!;
     const lastBox = (await last.boundingBox())!;
