@@ -50,6 +50,36 @@ test("commitLogArgs uses merge-base two-dot range when a merge-base is known", (
   ]);
 });
 
+test("commitLogArgs reads the explicit PR head ref, bypassing the shallow merge-commit graft", () => {
+  // The real CI failure: actions/checkout gives a shallow PR *merge* commit as
+  // HEAD, whose feature-side parent (carrying the Allow-test-deletion trailer)
+  // is a graft — so `git log HEAD` never reaches it and a valid override is
+  // dropped. The PR head sha's OWN history is ungrafted, so reading trailers
+  // from it is deterministic. Head ref wins over any merge-base range.
+  assert.deepEqual(commitLogArgs("abc123", "deadbeef"), [
+    "log",
+    "--format=%B",
+    "-n",
+    "200",
+    "deadbeef",
+  ]);
+  assert.deepEqual(commitLogArgs(null, "deadbeef"), [
+    "log",
+    "--format=%B",
+    "-n",
+    "200",
+    "deadbeef",
+  ]);
+});
+
+test("commitLogArgs ignores an empty head ref and falls back to the merge-base range", () => {
+  assert.deepEqual(commitLogArgs("abc123", ""), [
+    "log",
+    "--format=%B",
+    "abc123..HEAD",
+  ]);
+});
+
 test("commitLogArgs falls back to bounded HEAD history when no merge-base (shallow CI)", () => {
   // The bug this guards against: with no merge-base, `origin/main..HEAD` can
   // resolve empty in a shallow clone, silently dropping the very trailer that
@@ -204,4 +234,36 @@ test("parseOverride rejects a trailer without an issue reference", () => {
     "chore: cleanup\n\nAllow-test-deletion: yes because reasons",
   ];
   assert.equal(parseOverride({ envValue: "", messages }).allowed, false);
+});
+
+test("parseOverride ignores an inline prose mention of the trailer phrase", () => {
+  // A commit body may *talk about* the trailer (docs, a placeholder like
+  // `Allow-test-deletion: #NNN`) without being one. Only a real trailer at the
+  // start of a line counts, so prose can't accidentally authorize — or, worse,
+  // an invalid-ref prose mention can't mask a real trailer elsewhere.
+  const messages = [
+    "fix: explain the guard\n\nA valid `Allow-test-deletion: #NNN` trailer was dropped.",
+  ];
+  assert.equal(parseOverride({ envValue: "", messages }).allowed, false);
+});
+
+test("parseOverride finds a real trailer even when an earlier line mentions the phrase without a valid ref", () => {
+  // Combined-commit-log case: `git log` concatenates every commit's message, so
+  // an earlier commit's prose mention (or an invalid-ref trailer) precedes the
+  // real one. The scan must not stop at the first match — it must find the
+  // authorizing trailer wherever it is.
+  const messages = [
+    "fix: explain\n\nMentions `Allow-test-deletion: #NNN` in prose.\n\n" +
+      "refactor: remove dead tests\n\nAllow-test-deletion: #338",
+  ];
+  const result = parseOverride({ envValue: "", messages });
+  assert.equal(result.allowed, true);
+  assert.match(result.reason, /#338/);
+});
+
+test("parseOverride scans past an invalid-ref trailer to a later valid one", () => {
+  const messages = ["Allow-test-deletion: soon\nAllow-test-deletion: #77"];
+  const result = parseOverride({ envValue: "", messages });
+  assert.equal(result.allowed, true);
+  assert.match(result.reason, /#77/);
 });

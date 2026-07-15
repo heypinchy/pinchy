@@ -156,6 +156,12 @@ jobs:
         env:
           # The `allow-test-deletion` PR label is the deliberate, visible override.
           ALLOW_TEST_DELETION: ${{ contains(github.event.pull_request.labels.*.name, 'allow-test-deletion') }}
+          # The PR head sha lets the guard read override trailers from the PR's
+          # OWN (ungrafted) history. actions/checkout leaves HEAD as a shallow
+          # merge commit whose feature-side parent is a graft, so `git log HEAD`
+          # can't see the trailer commit — the diff still counts removals, so an
+          # authorized PR would fail. Reading the head sha's history is robust.
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
           # Fail if the PR removes test cases on net — deleted test files or
           # removed it()/test() blocks — without an explicit, tracked override.
@@ -164,9 +170,11 @@ jobs:
           #
           # Fetch base + deepen HEAD so a merge-base resolves (correct PR-diff
           # semantics). The guard falls back to a tip-to-tip diff if it can't,
-          # so a shallow clone never crashes it.
+          # so a shallow clone never crashes it. Also fetch the PR head sha so
+          # its ungrafted history is present for the trailer lookup above.
           git fetch --no-tags --depth=200 origin "${{ github.base_ref }}"
           git fetch --no-tags --deepen=200 origin || true
+          git fetch --no-tags --depth=200 origin "$PR_HEAD_SHA" || true
           node scripts/check-test-deletions.mjs --base "origin/${{ github.base_ref }}"
 
       - name: Drizzle snapshot integrity

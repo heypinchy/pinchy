@@ -61,7 +61,14 @@ export function analyzeChanges(files) {
 // no-untracked-skips contract where "tracked separately" is not tracking.
 const ISSUE_REF_RE =
   /#\d+|https:\/\/github\.com\/[^/\s]+\/[^/\s]+\/issues\/\d+/;
-const TRAILER_RE = /Allow-test-deletion:\s*(.+)/i;
+// Anchored at line start (m flag) so an inline prose mention of the phrase in a
+// commit body — e.g. a `Allow-test-deletion: #NNN` placeholder in docs — is not
+// mistaken for a trailer. Global (g) so the scan considers EVERY trailer in the
+// combined commit log, not just the first: `git log` concatenates all commit
+// messages, so a real trailer can be preceded by an earlier commit's prose
+// mention or an invalid-ref trailer, and stopping at the first match would miss
+// the authorizing one.
+const TRAILER_RE = /^[ \t]*Allow-test-deletion:[ \t]*(.+)$/gim;
 
 /**
  * Decide whether removing tests is explicitly authorized.
@@ -74,10 +81,14 @@ export function parseOverride({ envValue, messages = [] } = {}) {
     return { allowed: true, reason: "allow-test-deletion label" };
   }
   for (const message of messages) {
-    const match = message.match(TRAILER_RE);
-    if (match && ISSUE_REF_RE.test(match[1])) {
-      const ref = match[1].match(ISSUE_REF_RE)[0];
-      return { allowed: true, reason: `Allow-test-deletion trailer (${ref})` };
+    for (const match of message.matchAll(TRAILER_RE)) {
+      const ref = match[1].match(ISSUE_REF_RE);
+      if (ref) {
+        return {
+          allowed: true,
+          reason: `Allow-test-deletion trailer (${ref[0]})`,
+        };
+      }
     }
   }
   return { allowed: false, reason: "" };
@@ -113,25 +124,33 @@ const NO_MERGE_BASE_LOG_DEPTH = 200;
 /**
  * Build the `git log` argument list for reading commit-trailer overrides.
  *
- * Must cover the SAME commits the diff attributes to this PR, so a valid
- * `Allow-test-deletion` trailer on the PR's own commit is never missed. With a
- * merge-base that's the `<merge-base>..HEAD` two-dot range.
+ * Must reach the PR's own commits, so a valid `Allow-test-deletion` trailer is
+ * never missed. Resolution order:
  *
- * Without a merge-base (shallow CI clone, disjoint histories) the previous
- * `<base>..HEAD` range was the bug: in that state git can resolve it empty, so
- * the diff still reported removals but the authorizing trailer was silently
- * dropped and CI failed an authorized PR. We fall back to reading HEAD's own
- * bounded history instead — it always contains the PR commit (and, for a PR
- * merge ref, its feature-branch parent). Bounded to the CI fetch depth so a
- * full-clone fallback can't walk all of history. This mirrors `diffArgs`'
- * merge-base-or-fallback shape so the diff and the override read the same
- * commit window.
+ * 1. An explicit PR head ref (CI passes the pull-request head sha). This is the
+ *    robust path and the one the CI failure demanded: `actions/checkout` leaves
+ *    HEAD as a *shallow merge commit* whose feature-side parent — the commit
+ *    that carries the trailer — is a graft, so `git log HEAD` never reaches it
+ *    (the diff still works because it only needs trees, which is why removals
+ *    were counted but the override was dropped and CI failed an authorized PR).
+ *    The head sha's own history is ungrafted, so reading its bounded log finds
+ *    the trailer deterministically, regardless of `--deepen` luck.
+ * 2. A known merge-base: the `<merge-base>..HEAD` two-dot range (local/full
+ *    clone, where HEAD is the real branch tip).
+ * 3. Neither: HEAD's own bounded history as a last resort.
+ *
+ * Bounded to the CI fetch depth so a full-clone fallback can't walk all of
+ * history.
  *
  * @param {string|null|undefined} mergeBase
+ * @param {string|null|undefined} headRef  Explicit PR head sha/ref (CI).
  * @returns {string[]}
  */
-export function commitLogArgs(mergeBase) {
+export function commitLogArgs(mergeBase, headRef) {
   const head = ["log", "--format=%B"];
+  if (headRef && headRef.trim()) {
+    return [...head, "-n", String(NO_MERGE_BASE_LOG_DEPTH), headRef.trim()];
+  }
   if (mergeBase && mergeBase.trim()) {
     return [...head, `${mergeBase.trim()}..HEAD`];
   }

@@ -146,10 +146,12 @@ function main() {
     process.exit(0);
   }
 
-  // Read trailers from the SAME commit window the diff walked. `${base}..HEAD`
-  // was unreliable in a shallow no-merge-base clone: it could resolve empty and
-  // silently drop the `Allow-test-deletion` trailer that authorizes the removal.
-  const commitLog = gitSafe(commitLogArgs(mergeBase)) || "";
+  // Read override trailers from the PR's own commits. In CI, HEAD is a shallow
+  // merge commit whose feature-side parent (carrying the trailer) is a graft,
+  // so we prefer the explicit PR head sha ($PR_HEAD_SHA) whose history is
+  // ungrafted; locally we fall back to the merge-base range / HEAD.
+  const commitLog =
+    gitSafe(commitLogArgs(mergeBase, process.env.PR_HEAD_SHA)) || "";
   const override = parseOverride({
     envValue: process.env.ALLOW_TEST_DELETION,
     messages: [commitLog],
