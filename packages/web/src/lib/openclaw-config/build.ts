@@ -85,6 +85,26 @@ export const MEMORY_EMBEDDING_MODEL_PATH =
   "/opt/embedding-models/embeddinggemma-300m-qat-Q8_0.gguf";
 
 /**
+ * The base URL OpenClaw uses to call back into Pinchy: every `pinchy-*` plugin
+ * entry's `apiBaseUrl` (credentials fetch, usage reporting, audit, transcript)
+ * and the `mcp.servers.<key>.url` proxy target all resolve through here.
+ *
+ * `PINCHY_INTERNAL_URL` is the operator override (used when Pinchy isn't
+ * reachable at the compose service name, e.g. split hosts or the E2E stacks);
+ * otherwise we address the `pinchy` compose service on `PORT`, defaulting to
+ * 7777.
+ *
+ * Single source of truth ON PURPOSE: this exact fallback chain was previously
+ * inlined verbatim at 8 separate emission sites in this file. Changing the
+ * default port or the env-var name meant editing all 8, and a missed one would
+ * only surface at runtime as a plugin that can't reach Pinchy. Exported for
+ * unit testing, same rationale as `rewriteOllamaHostForOpenClaw` below.
+ */
+export function internalApiBaseUrl(): string {
+  return process.env.PINCHY_INTERNAL_URL || `http://pinchy:${process.env.PORT || "7777"}`;
+}
+
+/**
  * Rewrites the user-supplied Ollama URL so OpenClaw's `isLocalBaseUrl` check
  * passes. Container-host aliases (see `DOCKER_HOST_ALIASES`) get normalized to
  * `ollama.local` — which clears the check via the rock-stable `.local` rule and
@@ -752,8 +772,7 @@ export async function regenerateOpenClawConfig() {
     entries["pinchy-files"] = {
       enabled: true,
       config: {
-        apiBaseUrl:
-          process.env.PINCHY_INTERNAL_URL || `http://pinchy:${process.env.PORT || "7777"}`,
+        apiBaseUrl: internalApiBaseUrl(),
         gatewayToken: gatewayTokenString,
         ...(visionModel ? { visionModel } : {}),
         agents: pluginConfigs["pinchy-files"],
@@ -802,8 +821,7 @@ export async function regenerateOpenClawConfig() {
     entries["pinchy-context"] = {
       enabled: true,
       config: {
-        apiBaseUrl:
-          process.env.PINCHY_INTERNAL_URL || `http://pinchy:${process.env.PORT || "7777"}`,
+        apiBaseUrl: internalApiBaseUrl(),
         gatewayToken: gatewayTokenString,
         agents: contextPluginAgents,
       },
@@ -815,7 +833,7 @@ export async function regenerateOpenClawConfig() {
   entries["pinchy-audit"] = {
     enabled: true,
     config: {
-      apiBaseUrl: process.env.PINCHY_INTERNAL_URL || `http://pinchy:${process.env.PORT || "7777"}`,
+      apiBaseUrl: internalApiBaseUrl(),
       gatewayToken: gatewayTokenString,
     },
   };
@@ -827,7 +845,7 @@ export async function regenerateOpenClawConfig() {
   entries["pinchy-transcript"] = {
     enabled: true,
     config: {
-      apiBaseUrl: process.env.PINCHY_INTERNAL_URL || `http://pinchy:${process.env.PORT || "7777"}`,
+      apiBaseUrl: internalApiBaseUrl(),
       gatewayToken: gatewayTokenString,
     },
   };
@@ -916,8 +934,7 @@ export async function regenerateOpenClawConfig() {
     entries["pinchy-odoo"] = {
       enabled: true,
       config: {
-        apiBaseUrl:
-          process.env.PINCHY_INTERNAL_URL || `http://pinchy:${process.env.PORT || "7777"}`,
+        apiBaseUrl: internalApiBaseUrl(),
         gatewayToken: gatewayTokenString,
         agents: odooAgentConfigs,
       },
@@ -957,8 +974,7 @@ export async function regenerateOpenClawConfig() {
       entries["pinchy-web"] = {
         enabled: true,
         config: {
-          apiBaseUrl:
-            process.env.PINCHY_INTERNAL_URL || `http://pinchy:${process.env.PORT || "7777"}`,
+          apiBaseUrl: internalApiBaseUrl(),
           gatewayToken: gatewayTokenString,
           connectionId: webConn.id,
           agents: webAgentConfigs,
@@ -974,8 +990,7 @@ export async function regenerateOpenClawConfig() {
     entries["pinchy-email"] = {
       enabled: true,
       config: {
-        apiBaseUrl:
-          process.env.PINCHY_INTERNAL_URL || `http://pinchy:${process.env.PORT || "7777"}`,
+        apiBaseUrl: internalApiBaseUrl(),
         gatewayToken: gatewayTokenString,
         agents: emailAgentConfigs,
       },
@@ -1054,8 +1069,7 @@ export async function regenerateOpenClawConfig() {
     }
 
     if (nativeInputs.length > 0) {
-      const proxyBaseUrl =
-        process.env.PINCHY_INTERNAL_URL || `http://pinchy:${process.env.PORT || "7777"}`;
+      const proxyBaseUrl = internalApiBaseUrl();
       const native = buildNativeMcp(nativeInputs, {
         proxyBaseUrl,
         gatewayToken: gatewayTokenString,

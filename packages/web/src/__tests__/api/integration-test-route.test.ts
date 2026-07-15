@@ -95,6 +95,11 @@ vi.mock("@/lib/integrations/microsoft-refresh", () => ({
   OAuthSettingsMissingError: FakeOAuthSettingsMissingError,
 }));
 
+const mockRegenerateOpenClawConfig = vi.fn().mockResolvedValue(undefined);
+vi.mock("@/lib/openclaw-config", () => ({
+  regenerateOpenClawConfig: (...args: unknown[]) => mockRegenerateOpenClawConfig(...args),
+}));
+
 import { NextRequest } from "next/server";
 
 const adminSession = { user: { id: "user-1", email: "admin@test.com", role: "admin" } };
@@ -171,6 +176,10 @@ describe("POST /api/integrations/[connectionId]/test — auth state flipping", (
       actor: { type: "user", id: "user-1" },
     });
     expect(mockSetIntegrationAuthFailed).not.toHaveBeenCalled();
+    // Odoo (and every other non-MCP type) gates at runtime inside its plugin,
+    // so its status never reaches openclaw.json — this generic route must not
+    // start regenerating for them just because MCP needs it.
+    expect(mockRegenerateOpenClawConfig).not.toHaveBeenCalled();
   });
 
   it("calls setIntegrationAuthFailed with connectionId, reason, and actor when probe fails", async () => {
@@ -195,6 +204,7 @@ describe("POST /api/integrations/[connectionId]/test — auth state flipping", (
       actor: { type: "user", id: "user-1" },
     });
     expect(mockClearIntegrationAuthError).not.toHaveBeenCalled();
+    expect(mockRegenerateOpenClawConfig).not.toHaveBeenCalled();
   });
 
   describe("Microsoft: pre-refresh expired tokens + transient-failure handling", () => {
@@ -471,6 +481,12 @@ describe("POST /api/integrations/[connectionId]/test — auth state flipping", (
         actor: { type: "user", id: "user-1" },
       });
       expect(mockSetIntegrationAuthFailed).not.toHaveBeenCalled();
+      // "Test Connection" is a recovery path for MCP: a previously
+      // auth_failed connection flips back to active here, and build.ts only
+      // emits mcp.servers/tools.allow for active connections — so without a
+      // regen the agent's existing grants stay fail-closed even though the
+      // UI now shows the connection as healthy.
+      expect(mockRegenerateOpenClawConfig).toHaveBeenCalledTimes(1);
     });
 
     it("flips to auth_failed on a genuine mcp auth failure (rejected token)", async () => {
@@ -494,6 +510,36 @@ describe("POST /api/integrations/[connectionId]/test — auth state flipping", (
         reason: "The server rejected this token. Check that it's still valid, then reconnect.",
         actor: { type: "user", id: "user-1" },
       });
+      // Same config-honesty reasoning as the sync route's auth-failure path:
+      // active → auth_failed must drop the server out of the emitted config.
+      expect(mockRegenerateOpenClawConfig).toHaveBeenCalledTimes(1);
+    });
+
+    it("does NOT flip a healthy connection to auth_failed when the config regenerate itself fails", async () => {
+      // Regression guard for the hazard that shaped mcp-config-regen.ts: this
+      // handler's catch-all turns ANY throw into
+      // setIntegrationAuthFailed(reason: <the error>). An unguarded regen
+      // throw on the probe-success path would therefore mark a perfectly
+      // healthy MCP connection as auth_failed purely because openclaw.json
+      // couldn't be written — turning a config-write blip into a fake
+      // credentials problem the admin would go chase. The regen failure must
+      // stay contained: status untouched, Test Connection still reports
+      // success.
+      mockProbeIntegrationCredentials.mockResolvedValue({ success: true });
+      mockRegenerateOpenClawConfig.mockRejectedValueOnce(new Error("EACCES: openclaw.json"));
+
+      const { POST } = await import("@/app/api/integrations/[connectionId]/test/route");
+
+      const response = await POST(
+        makeRequest("/api/integrations/conn-mcp/test", { method: "POST" }),
+        { params: Promise.resolve({ connectionId: "conn-mcp" }) }
+      );
+      const body = await response.json();
+
+      expect(response.status).toBe(200);
+      expect(body.success).toBe(true);
+      expect(mockClearIntegrationAuthError).toHaveBeenCalledTimes(1);
+      expect(mockSetIntegrationAuthFailed).not.toHaveBeenCalled();
     });
 
     it("does not flip to auth_failed when the mcp probe reports a transient failure (5xx/schema/network)", async () => {
@@ -515,6 +561,10 @@ describe("POST /api/integrations/[connectionId]/test — auth state flipping", (
       expect(body.success).toBe(false);
       expect(mockSetIntegrationAuthFailed).not.toHaveBeenCalled();
       expect(mockClearIntegrationAuthError).not.toHaveBeenCalled();
+      // No status transition ⟹ nothing in the emitted config changed ⟹ no
+      // regen. The trigger keys off the status flip, not off "an MCP route
+      // ran".
+      expect(mockRegenerateOpenClawConfig).not.toHaveBeenCalled();
     });
   });
 });

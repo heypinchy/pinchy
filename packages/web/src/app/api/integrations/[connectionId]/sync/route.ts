@@ -13,6 +13,7 @@ import { listMcpTools, McpAuthError } from "@/lib/integrations/mcp-client";
 import { diffMcpTools } from "@/lib/integrations/mcp-tool-diff";
 import { isMcpEnabled } from "@/lib/feature-flags";
 import { regenerateOpenClawConfig } from "@/lib/openclaw-config";
+import { regenerateAfterMcpAuthTransition } from "@/lib/integrations/mcp-config-regen";
 import type { McpIntegrationData } from "@/lib/integrations/types";
 
 type RouteContext = { params: Promise<{ connectionId: string }> };
@@ -65,6 +66,11 @@ export const POST = withAdmin<RouteContext>(async (_req, { params }, session) =>
           const reason =
             "The server rejected this token. Check that it hasn't expired and has the permissions it needs, then reconnect.";
           await setIntegrationAuthFailed({ connectionId, reason, actor });
+          // The flip to auth_failed is config-relevant: build.ts emits
+          // mcp.servers/tools.allow only for active connections, so this
+          // connection must drop out of the config now rather than whenever
+          // something unrelated happens to regenerate.
+          await regenerateAfterMcpAuthTransition(connection.type);
           return NextResponse.json({ success: false, error: reason }, { status: 200 });
         }
         // McpServerError (5xx/429), McpSchemaError, or a network/timeout

@@ -12,6 +12,7 @@ import { decrypt, encrypt } from "@/lib/encryption";
 import { odooCredentialsSchema } from "@/lib/integrations/odoo-schema";
 import { probeIntegrationCredentials } from "@/lib/integrations/probe";
 import { clearIntegrationAuthError, setIntegrationAuthFailed } from "@/lib/integrations/auth-state";
+import { regenerateAfterMcpAuthTransition } from "@/lib/integrations/mcp-config-regen";
 import { isTokenExpired } from "@/lib/integrations/oauth-token";
 import {
   refreshMicrosoftCredentials,
@@ -99,21 +100,32 @@ export const POST = withAdmin<RouteContext>(async (_req, { params }, session) =>
       connection.data as Record<string, unknown> | null
     );
 
+    // For MCP, this route is a status *transition* point in both directions,
+    // and MCP's gating lives in openclaw.json (build.ts emits mcp.servers +
+    // tools.allow only for active connections) — so each flip below has to be
+    // reflected in the config right away. Non-MCP types are a no-op; see
+    // regenerateAfterMcpAuthTransition for why it also swallows regen
+    // failures (this handler's catch-all would otherwise convert them into a
+    // bogus auth_failed on a healthy connection).
     if (probe.success) {
       await clearIntegrationAuthError({ connectionId, actor });
+      await regenerateAfterMcpAuthTransition(connection.type);
       return NextResponse.json({ success: true });
     } else if (probe.transient) {
       // A transient provider hiccup is not evidence the credentials are
       // bad — report the failure to the client but leave the connection's
-      // status untouched so it isn't falsely flagged auth_failed.
+      // status untouched so it isn't falsely flagged auth_failed. No status
+      // change ⟹ nothing for the config to catch up on ⟹ no regenerate.
       return NextResponse.json({ success: false, error: probe.reason }, { status: 200 });
     } else {
       await setIntegrationAuthFailed({ connectionId, reason: probe.reason, actor });
+      await regenerateAfterMcpAuthTransition(connection.type);
       return NextResponse.json({ success: false, error: probe.reason }, { status: 200 });
     }
   } catch (error) {
     const message = error instanceof Error ? error.message : "Connection failed";
     await setIntegrationAuthFailed({ connectionId, reason: message, actor });
+    await regenerateAfterMcpAuthTransition(connection.type);
     return NextResponse.json({ success: false, error: message }, { status: 200 });
   }
 });
