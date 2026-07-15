@@ -304,6 +304,10 @@ export default defineConfig({
           items: [
             { label: "API Reference", slug: "reference/api" },
             {
+              label: "Agent Provisioning API",
+              slug: "reference/agent-provisioning-api",
+            },
+            {
               label: "Organization Timezone",
               slug: "reference/organization-timezone",
             },

@@ -1,0 +1,236 @@
+---
+title: Agent Provisioning API
+description: Programmatic, key-authenticated agent creation, listing, and deletion — built for infrastructure-as-code provisioning and reproducible resets.
+---
+
+## Overview
+
+The Agent Provisioning API is a programmatic, non-browser way to create, list, get, and delete agents. It's a separate surface from the rest of Pinchy's [REST API](/reference/api/): instead of a session cookie, every request is authenticated with an **API key**.
+
+It's built for scripts, CI/CD pipelines, and infrastructure-as-code — not for the browser. The motivating use case is resetting a demo or staging instance to a known state on every release, without depending on database snapshots that break across schema migrations. The same foundation works for provisioning agents per team or organization as part of a deployment pipeline.
+
+|                  | [Session API](/reference/api/)                                       | Agent Provisioning API                                     |
+| ---------------- | -------------------------------------------------------------------- | ---------------------------------------------------------- |
+| Auth             | Session cookie, set by logging in through the web UI                 | API key, sent in a header on every request                 |
+| URL prefix       | `/api/*`                                                             | `/api/v1/*`                                                |
+| Agent visibility | Per-user — `GET /api/agents` returns what the signed-in user can see | Org-wide — `GET /api/v1/agents` always returns every agent |
+| Typical caller   | The Pinchy web UI                                                    | Scripts, CI/CD, infrastructure-as-code                     |
+
+Only agent create/list/get/delete are covered by API keys today. Updating an agent and listing templates remain session-only — see the [`POST /api/v1/agents`](#post-apiv1agents) notes below.
+
+## Authentication
+
+Every request must carry an API key, in either header:
+
+```
+Authorization: Bearer pinchy_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+```
+
+```
+x-api-key: pinchy_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+```
+
+If both are present, `Authorization: Bearer` is used. Keys are always prefixed `pinchy_`, so they're easy to recognize in logs, shell history, and secret scanners.
+
+A missing key, an unrecognized key, or a key that's expired, disabled, or revoked all get the same response — **401 Unauthorized**. The error never reveals which of those it was:
+
+```json
+{ "error": "Unauthorized" }
+```
+
+## Scopes
+
+A key can only do what it's explicitly scoped for — default-deny, the same allow-list principle Pinchy applies everywhere else (see [Agent Permissions](/concepts/agent-permissions/)).
+
+| Scope           | Grants                          |
+| --------------- | ------------------------------- |
+| `agents:read`   | List agents, get a single agent |
+| `agents:write`  | Create agents                   |
+| `agents:delete` | Delete agents                   |
+
+`agents:delete` is deliberately its own scope, separate from `agents:write` — deletion is irreversible and the highest-impact thing a leaked key could do. A key that only needs to provision agents doesn't have to also be able to remove them.
+
+A request whose key is missing a required scope gets **403 Forbidden**:
+
+```json
+{ "error": "Forbidden" }
+```
+
+## Agents
+
+### `GET /api/v1/agents`
+
+List every agent in the organization. **Requires `agents:read`.**
+
+```bash
+curl https://pinchy.example.com/api/v1/agents \
+  -H "Authorization: Bearer pinchy_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+```
+
+**Response:** `200 OK`
+
+```json
+{
+  "agents": [
+    {
+      "id": "uuid",
+      "name": "HR Policy Assistant",
+      "model": "anthropic/claude-haiku-4-5-20251001",
+      "templateId": "knowledge-base",
+      "allowedTools": ["pinchy_ls", "pinchy_read"],
+      "pluginConfig": {
+        "pinchy-files": { "allowed_paths": ["/data/hr-policies"] }
+      },
+      "isPersonal": false,
+      "ownerId": "user-uuid",
+      "createdAt": "2025-01-15T10:00:00.000Z"
+    }
+  ]
+}
+```
+
+Unlike the session `GET /api/agents`, there's no per-user filtering — this always returns every non-deleted agent, including other users' personal agents. Read-only, so this call is not audited.
+
+### `POST /api/v1/agents`
+
+Create a new agent from a template. **Requires `agents:write`.** The agent inherits its tool permissions from the template; changing them afterward is session-only (`PATCH /api/agents/:id` in the [API Reference](/reference/api/)) — there's no key-authenticated update endpoint.
+
+**Request body:**
+
+| Field                 | Type     | Required | Description                                                                                                                                          |
+| --------------------- | -------- | -------- | ---------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `name`                | string   | Yes      | Display name for the agent (30 characters max)                                                                                                       |
+| `templateId`          | string   | Yes      | Template to use. There's no key-authenticated template listing yet — discover IDs via the session [`GET /api/templates`](/reference/api/#templates). |
+| `tagline`             | string   | No       | Short subtitle shown under the agent name                                                                                                            |
+| `pluginConfig`        | object   | No       | Plugin configuration keyed by plugin id, e.g. `{ "pinchy-files": { "allowed_paths": ["/data/hr"] } }`. Required for file-access templates.           |
+| `connectionId`        | string   | No       | Integration connection to attach. Required for Odoo and email templates.                                                                             |
+| `defaultAllowedTools` | string[] | No       | Extra tool IDs to allow on creation, merged with the template's defaults                                                                             |
+
+```bash
+curl -X POST https://pinchy.example.com/api/v1/agents \
+  -H "Authorization: Bearer pinchy_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx" \
+  -H "Content-Type: application/json" \
+  -d '{ "name": "Demo Sales Assistant", "templateId": "custom" }'
+```
+
+**Response:** `201 Created` with the created agent — the same object shape as the list above, returned bare (not wrapped in an envelope).
+
+**Errors:**
+
+- `400` — the request body fails schema validation:
+
+  ```json
+  {
+    "error": "Validation failed",
+    "details": {
+      "formErrors": [],
+      "fieldErrors": {
+        "name": ["Invalid input: expected string, received undefined"],
+        "templateId": ["Invalid input: expected string, received undefined"]
+      }
+    }
+  }
+  ```
+
+- `400` — the body is well-formed but a template requirement isn't met (an unknown `templateId`, a file-access template with no directory selected, or an Odoo/email template with no `connectionId`):
+
+  ```json
+  { "error": "An Odoo connection is required for this template" }
+  ```
+
+- `401` — missing or invalid key
+- `403` — key is missing the `agents:write` scope
+- `422` — `template_capability_unavailable`: the default provider has no model with the capabilities the template requires:
+
+  ```json
+  {
+    "error": "template_capability_unavailable",
+    "message": "Template requires vision but provider ollama-local has no matching model.",
+    "missingCapabilities": ["vision"],
+    "docsUrl": "https://docs.heypinchy.com/guides/ollama-setup#models-for-agent-templates"
+  }
+  ```
+
+### `GET /api/v1/agents/:agentId`
+
+Get a single agent by ID. **Requires `agents:read`.**
+
+```bash
+curl https://pinchy.example.com/api/v1/agents/<agentId> \
+  -H "Authorization: Bearer pinchy_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+```
+
+**Response:** `200 OK` with the agent object, or `404`:
+
+```json
+{ "error": "Agent not found" }
+```
+
+Read-only, so this call is not audited.
+
+### `DELETE /api/v1/agents/:agentId`
+
+Delete an agent. **Requires `agents:delete`.** Personal agents (auto-created Smithers instances) can't be deleted this way — same rule as the session API.
+
+```bash
+curl -X DELETE https://pinchy.example.com/api/v1/agents/<agentId> \
+  -H "Authorization: Bearer pinchy_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+```
+
+**Response:** `200 OK`
+
+```json
+{ "success": true }
+```
+
+**Errors:**
+
+- `400` — the agent is personal:
+
+  ```json
+  { "error": "Personal agents cannot be deleted" }
+  ```
+
+- `401` — missing or invalid key
+- `403` — key is missing the `agents:delete` scope
+- `404` — agent not found:
+
+  ```json
+  { "error": "Agent not found" }
+  ```
+
+## Managing Keys
+
+Keys are issued and revoked by an admin in **Settings → API Keys**, in the web UI — there's no way to manage keys through the Agent Provisioning API itself. A key can provision agents, but it can't create or revoke other keys, so a leaked key can never be used to escalate itself.
+
+To create a key:
+
+1. Open **Settings → API Keys** and click **New API Key**.
+2. Give it a name (up to 32 characters) and pick one or more [scopes](#scopes).
+3. Optionally set an expiry in days — leave it blank for a key that never expires.
+4. Click **Create**.
+
+:::caution[Shown once]
+The plaintext key is displayed exactly once, right after creation. Copy it before closing the dialog — Pinchy never stores or displays it again. If you lose it, revoke the key and issue a new one.
+:::
+
+Afterward, the key list shows only its name, first few characters, scopes, and status — never the secret itself.
+
+To revoke a key, click **Revoke** next to it in the list and confirm. Revocation is immediate: any client still using that key gets `401 Unauthorized` on its very next request.
+
+## Auditing
+
+Every provisioning action taken with a key, and every key lifecycle event, is written to the [audit trail](/concepts/audit-trail/).
+
+| Event             | Actor       | When                                                |
+| ----------------- | ----------- | --------------------------------------------------- |
+| `agent.created`   | the API key | `POST /api/v1/agents` succeeds, or fails with `422` |
+| `agent.deleted`   | the API key | `DELETE /api/v1/agents/:agentId` succeeds           |
+| `api_key.created` | the admin   | A key is issued in Settings → API Keys              |
+| `api_key.deleted` | the admin   | A key is revoked in Settings → API Keys             |
+
+Actions taken **with** a key are logged with `actorType: "api_key"` and the key's own id as `actorId` — the key is its own accountable actor, not a stand-in for whoever issued it. The issuing admin is still captured, as delegation metadata inside the entry's `detail` (an `issuer: { id, name }` snapshot) — kept separate from the actor fields, so the trail stays attributable to the right key even after the issuing admin leaves the organization.
+
+Issuing and revoking keys, by contrast, are admin actions performed through the browser — they're logged with `actorType: "user"`, never `"api_key"`.
+
+`GET` requests are read-only and aren't audited, same as the rest of Pinchy's API.
