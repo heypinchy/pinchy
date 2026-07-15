@@ -9,6 +9,7 @@ let capturedOnChangeGeneral: ((v: unknown, isDirty: boolean) => void) | undefine
 let capturedOnChangePersonality: ((v: unknown, isDirty: boolean) => void) | undefined;
 let capturedOnChangeInstructions: ((v: string, isDirty: boolean) => void) | undefined;
 let _capturedOnChangePermissions: ((v: unknown, isDirty: boolean) => void) | undefined;
+let capturedMcpEnabled: boolean | undefined;
 
 vi.mock("@/components/agent-settings-general", () => ({
   AgentSettingsGeneral: (props: { onChange: (v: unknown, isDirty: boolean) => void }) => {
@@ -32,8 +33,12 @@ vi.mock("@/components/agent-settings-file", () => ({
 }));
 
 vi.mock("@/components/agent-settings-permissions", () => ({
-  AgentSettingsPermissions: (props: { onChange: (v: unknown, isDirty: boolean) => void }) => {
+  AgentSettingsPermissions: (props: {
+    onChange: (v: unknown, isDirty: boolean) => void;
+    mcpEnabled?: boolean;
+  }) => {
     _capturedOnChangePermissions = props.onChange;
+    capturedMcpEnabled = props.mcpEnabled;
     return <div data-testid="permissions-tab">Permissions</div>;
   },
 }));
@@ -109,6 +114,7 @@ describe("AgentSettingsPage", () => {
     capturedOnChangePersonality = undefined;
     capturedOnChangeInstructions = undefined;
     _capturedOnChangePermissions = undefined;
+    capturedMcpEnabled = undefined;
     mockTriggerRestart.mockClear();
     fetchSpy = mockFetchResponses();
   });
@@ -491,6 +497,22 @@ describe("AgentSettingsPage", () => {
 
     await waitFor(() => {
       expect(screen.getByText(/leave without saving/i)).toBeInTheDocument();
+    });
+  });
+
+  describe("mcpEnabled prop threading", () => {
+    it("defaults mcpEnabled to false when the caller doesn't pass it (fail closed)", async () => {
+      render(<AgentSettingsPage />);
+      await waitFor(() => screen.getByText("Agent Settings"));
+
+      expect(capturedMcpEnabled).toBe(false);
+    });
+
+    it("passes mcpEnabled through to AgentSettingsPermissions when the caller sets it", async () => {
+      render(<AgentSettingsPage mcpEnabled={true} />);
+      await waitFor(() => screen.getByText("Agent Settings"));
+
+      expect(capturedMcpEnabled).toBe(true);
     });
   });
 });

@@ -12,6 +12,10 @@ import {
 import { OdooPermissionSection } from "@/components/odoo-permission-section";
 import { EmailPermissionSection } from "@/components/email-permission-section";
 import { WebSearchPermissionSection } from "@/components/web-search-permission-section";
+import {
+  McpPermissionSection,
+  type McpIntegrationValue,
+} from "@/components/mcp-permission-section";
 import type { Connection as OdooConnection } from "@/hooks/use-odoo-permissions";
 import type { AgentPluginConfig } from "@/db/schema";
 import { EMAIL_CONNECTION_TYPES } from "@/lib/integrations/oauth-providers";
@@ -45,6 +49,14 @@ interface AgentSettingsPermissionsProps {
   directories: Array<{ path: string; name: string }>;
   connections: Connection[];
   isAdmin: boolean;
+  /**
+   * Server-gated MCP feature flag (PINCHY_MCP_ENABLED), threaded down as a
+   * prop from the settings page's server component — never read from a
+   * NEXT_PUBLIC_ env var or process.env directly in this "use client" tree.
+   * Defaults to false (fail closed) so existing callers that don't pass it
+   * keep the MCP section hidden.
+   */
+  mcpEnabled?: boolean;
   onChange: (values: PermissionsValues, isDirty: boolean) => void;
 }
 
@@ -53,6 +65,7 @@ export function AgentSettingsPermissions({
   directories,
   connections,
   isAdmin,
+  mcpEnabled = false,
   onChange,
 }: AgentSettingsPermissionsProps) {
   // KB tools: non-integration safe tools (pinchy_ls / pinchy_read are now implicit — not shown)
@@ -83,6 +96,14 @@ export function AgentSettingsPermissions({
     permissions: Array<{ model: string; operation: string }>;
   } | null>(null);
   const [emailIsDirty, setEmailIsDirty] = useState(false);
+  // MCP supports several simultaneous connections (unlike Odoo/Email's
+  // single-connection dropdown), so its section reports a whole ARRAY of
+  // integration entries rather than at most one — see
+  // mcp-permission-section.tsx for why an entry can carry an empty
+  // `permissions` array (explicit revoke-to-zero for one connection while
+  // others are untouched).
+  const [mcpIntegrations, setMcpIntegrations] = useState<McpIntegrationValue[]>([]);
+  const [mcpIsDirty, setMcpIsDirty] = useState(false);
   const [webSearchConfig, setWebSearchConfig] = useState<AgentPluginConfig["pinchy-web"]>(
     agent.pluginConfig?.["pinchy-web"] ?? {}
   );
@@ -115,18 +136,28 @@ export function AgentSettingsPermissions({
   const showSecurityWarning = hasWebToolChecked && hasSensitiveDataAccess;
 
   // Partition active (non-pending) connections by integration type
-  const { odooConnections, emailConnections, webSearchConnections } = useMemo(() => {
-    const active = connections.filter((c) => c.status !== "pending");
-    return {
-      odooConnections: active.filter((c) => c.type === "odoo") as OdooConnection[],
-      emailConnections: active.filter((c) => EMAIL_CONNECTION_TYPE_SET.has(c.type)),
-      webSearchConnections: active.filter((c) => c.type === "web-search"),
-    };
-  }, [connections]);
+  const { odooConnections, emailConnections, webSearchConnections, mcpConnections } =
+    useMemo(() => {
+      const active = connections.filter((c) => c.status !== "pending");
+      return {
+        odooConnections: active.filter((c) => c.type === "odoo") as OdooConnection[],
+        emailConnections: active.filter((c) => EMAIL_CONNECTION_TYPE_SET.has(c.type)),
+        webSearchConnections: active.filter((c) => c.type === "web-search"),
+        // MCP is stricter than "not pending": build.ts (T6) only emits
+        // mcp.servers/tools.allow for connections whose status is exactly
+        // "active", NOT "auth_failed" (unlike Odoo/Email, whose gating is a
+        // runtime plugin check, not baked into config). Showing the grant UI
+        // for an auth_failed connection would let an admin check tools that
+        // silently do nothing until the connection recovers — so this section
+        // mirrors build.ts's own filter instead of reusing "not pending".
+        mcpConnections: active.filter((c) => c.type === "mcp" && c.status === "active"),
+      };
+    }, [connections]);
 
   const showOdoo = odooConnections.length > 0;
   const showEmail = emailConnections.length > 0;
   const hasWebSearchApiKey = webSearchConnections.length > 0;
+  const showMcp = mcpEnabled && mcpConnections.length > 0;
 
   // Compute the combined allowedTools array (KB tools + web tools + odoo tools + email tools)
   const computeAllowedTools = useCallback(
@@ -184,7 +215,7 @@ export function AgentSettingsPermissions({
         JSON.stringify([...initialAllowedPaths.current].sort());
     const webConfigDirty =
       JSON.stringify(webSearchConfig) !== JSON.stringify(initialWebSearchConfig.current);
-    const isDirty = kbDirty || odooIsDirty || emailIsDirty || webConfigDirty;
+    const isDirty = kbDirty || odooIsDirty || emailIsDirty || webConfigDirty || mcpIsDirty;
     // Collect all active integrations
     const integrations: Array<{
       connectionId: string;
@@ -192,6 +223,12 @@ export function AgentSettingsPermissions({
     }> = [];
     if (odooIntegration) integrations.push(odooIntegration);
     if (emailIntegration) integrations.push(emailIntegration);
+    // MCP tools are NOT part of allowedTools (they don't map to static tool
+    // IDs the way odoo_*/email_* do) — build.ts derives tools.allow directly
+    // from agent_connection_permissions where model="mcp" (T6). This section
+    // only needs to contribute its permission rows to the generic
+    // integrations array so the existing save flow PUTs them.
+    integrations.push(...mcpIntegrations);
     onChange(
       {
         allowedTools: allAllowedTools,
@@ -208,6 +245,8 @@ export function AgentSettingsPermissions({
     odooIsDirty,
     emailIntegration,
     emailIsDirty,
+    mcpIntegrations,
+    mcpIsDirty,
     webSearchConfig,
     onChange,
     computeAllowedTools,
@@ -243,6 +282,11 @@ export function AgentSettingsPermissions({
   ) {
     setEmailIntegration(values);
     setEmailIsDirty(isDirty);
+  }
+
+  function handleMcpChange(values: McpIntegrationValue[], isDirty: boolean) {
+    setMcpIntegrations(values);
+    setMcpIsDirty(isDirty);
   }
 
   function handleWebSearchConfigChange(config: AgentPluginConfig["pinchy-web"]) {
@@ -355,6 +399,18 @@ export function AgentSettingsPermissions({
             agentId={agent.id}
             connections={emailConnections}
             onChange={handleEmailChange}
+          />
+        </section>
+      )}
+
+      {/* MCP section — flag-gated, only when at least one active MCP connection exists */}
+      {showMcp && (
+        <section className="space-y-4">
+          <h3 className="text-lg font-semibold">MCP</h3>
+          <McpPermissionSection
+            agentId={agent.id}
+            connections={mcpConnections}
+            onChange={handleMcpChange}
           />
         </section>
       )}

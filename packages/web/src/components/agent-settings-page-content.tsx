@@ -107,7 +107,19 @@ function DirtyDot() {
   );
 }
 
-export function AgentSettingsPageContent({ initialTab }: { initialTab?: string }) {
+export function AgentSettingsPageContent({
+  initialTab,
+  mcpEnabled = false,
+}: {
+  initialTab?: string;
+  /**
+   * Server-gated MCP feature flag (PINCHY_MCP_ENABLED), read by the settings
+   * route's server component via `isMcpEnabled()` and passed down here as a
+   * plain prop — see app/(app)/chat/[agentId]/settings/page.tsx. Defaults to
+   * false (fail closed) so this remains a purely additive prop.
+   */
+  mcpEnabled?: boolean;
+}) {
   const params = useParams();
   const router = useRouter();
   const agentId = params.agentId as string;
@@ -484,6 +496,7 @@ export function AgentSettingsPageContent({ initialTab }: { initialTab?: string }
                 directories={directories}
                 connections={connections}
                 isAdmin={isAdmin}
+                mcpEnabled={mcpEnabled}
                 onChange={handlePermissionsChange}
               />
             </TabsContent>
