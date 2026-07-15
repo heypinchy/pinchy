@@ -290,8 +290,10 @@ Create `.../api-keys/[keyId]/route.ts`; `auth.api.deleteApiKey(...)`; audit `api
 ### Task 7.1: Docs reference page
 Add a reference page under `docs/` (Astro Starlight, Diataxis "reference") for the agent-provisioning API: auth (API key header), scopes, the four `/api/v1/agents` endpoints with request/response examples, and how to issue/revoke keys in Settings. Read `PERSONALITY.md` first (English, "we" voice). Commit `docs: agent provisioning API reference (#572)`.
 
-### Task 7.2: Update Smithers
-Update `packages/web/src/lib/smithers-soul.ts` so Smithers knows Pinchy gained a programmatic, API-key-authenticated agent-provisioning API. Commit `docs: teach Smithers about the provisioning API (#572)`.
+### Task 7.2: Update Smithers — ❌ DROPPED, not needed (verified 2026-07-15)
+**Task 7.1 IS the Smithers update.** `smithers-soul.ts` contains NO feature list — it is purely personality plus a docs-driven procedure, and explicitly instructs Smithers: *"You do NOT know Pinchy's features from memory… never assume an API or endpoint exists"*, mandating `docs_list` → `docs_read` for ANY platform question and answering "based ONLY on what you read". The `pinchy-docs` plugin (`packages/plugins/pinchy-docs/index.ts`) implements `docs_list` by scanning the docs directory **dynamically** (`readdirSync`, ~line 97) and exposing each page's frontmatter — so Task 7.1's `reference/agent-provisioning-api.mdx` is discoverable with no code change. Hardcoding the API into the soul prompt would directly contradict that prompt's own core instruction and re-introduce the "describing features from memory" failure mode it exists to prevent.
+
+> CLAUDE.md's rule *"update smithers-soul.ts when user-facing features change"* is stale for the same reason — tracked as a separate follow-up, out of scope for #572.
 
 ---
 
@@ -302,7 +304,7 @@ Update `packages/web/src/lib/smithers-soul.ts` so Smithers knows Pinchy gained a
 - [ ] Shared `createAgentSchema` / `createApiKeySchema` imported by route *and* client; client uses `lib/api-client.ts` helpers.
 - [ ] No untracked `.skip`/`.todo`; no net test deletions.
 - [ ] Design doc §7 updated with Task 0.1 findings.
-- [ ] Docs page + Smithers updated.
+- [x] Docs page shipped (`docs/.../reference/agent-provisioning-api.mdx`). Smithers needs no soul change — he discovers it via `docs_list`/`docs_read` (see Task 7.2).
 
 ## Deliberately out of scope (see design §3 / §9)
 demo-reset consumer · `PATCH`/update over key API · non-agent resources · public stability guarantee · rate limiting · rotation UI.

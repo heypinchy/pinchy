@@ -207,7 +207,7 @@ Installed `@better-auth/api-key@1.6.23` (pinned to match `better-auth`). All evi
 ## 8. Docs-first tasks (same PR, per CLAUDE.md)
 
 - New reference page on docs.heypinchy.com for the agent-provisioning API (auth, scopes, endpoints, examples).
-- Update `packages/web/src/lib/smithers-soul.ts` so Smithers knows the platform gained a programmatic agent API.
+- ~~Update `packages/web/src/lib/smithers-soul.ts`~~ — **not needed** (verified 2026-07-15). The soul prompt holds no feature list and mandates `docs_list`/`docs_read` for every platform question; the `pinchy-docs` plugin scans the docs dir dynamically, so the reference page above is what teaches Smithers. Hardcoding features into the soul would violate its own core instruction ("never describe features from prior knowledge").
 
 ## 9. Follow-up (separate design)
 
