@@ -119,10 +119,11 @@ vi.mock("@assistant-ui/react", () => ({
     Message: () => null,
   },
   ActionBarPrimitive: {
+    // NOTE: the real Root returns null while the bar is hidden and only renders
+    // in flow on the last message. This mock always renders it, so no jsdom test
+    // can observe the mount/unmount layout shift — see e2e/19-message-hover-layout-shift.
     Root: ({ children, ...props }: { children?: React.ReactNode; [key: string]: unknown }) => (
-      <div data-testid="assistant-action-bar" {...props}>
-        {children}
-      </div>
+      <div {...props}>{children}</div>
     ),
     Copy: ({ children }: { children?: React.ReactNode }) => <>{children}</>,
     ExportMarkdown: ({ children }: { children?: React.ReactNode }) => <>{children}</>,
@@ -825,12 +826,18 @@ describe("Composer no longer gates attachments client-side", () => {
   });
 });
 
-// The action bar mounts on hover (assistant-ui unmounts it while hidden), so the
-// footer row must already reserve the bar's height. Otherwise the row grows from
-// the timestamp's line-height to the button height and every message below it
-// jumps down on hover.
+// assistant-ui unmounts the action bar rather than hiding it, and mounts it in
+// flow on the LAST message only (autohide="not-last"). The footer row therefore
+// has to reserve the bar's height, or a message is 8px taller while it is last
+// and shrinks as soon as the next reply arrives.
+//
+// This is a cheap smoke test for the class being present — it cannot prove the
+// heights match, because jsdom has no layout engine (every element here reports
+// height 0) and it would stay green if TooltipIconButton's size-6 grew. The real
+// guard is e2e/19-message-hover-layout-shift.spec.ts, which measures both
+// messages in Chromium.
 describe("AssistantMessage footer height", () => {
-  it("reserves the action bar's height so hovering does not shift messages", async () => {
+  it("keeps the min-h-6 row that reserves the action bar's height", async () => {
     const { useMessage } = await import("@assistant-ui/react");
     vi.mocked(useMessage).mockImplementation(
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -848,7 +855,7 @@ describe("AssistantMessage footer height", () => {
     const footer = container.querySelector(".aui-assistant-message-footer")!;
     expect(footer).toBeTruthy();
 
-    // size-6 (1.5rem) is the TooltipIconButton height used by the action bar.
+    // min-h-6 mirrors TooltipIconButton's size-6 (1.5rem).
     expect(footer.className).toContain("min-h-6");
   });
 });

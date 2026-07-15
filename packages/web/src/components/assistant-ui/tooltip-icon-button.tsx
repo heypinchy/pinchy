@@ -27,6 +27,9 @@ export function TooltipIconButton({
           variant="ghost"
           size="icon"
           {...rest}
+          // size-6 is mirrored by min-h-6 on the assistant message footer
+          // (thread.tsx), which reserves this height so messages don't resize
+          // when their action bar mounts. Change both together.
           className={cn("aui-button-icon size-6 p-1", className)}
           ref={ref}
         >

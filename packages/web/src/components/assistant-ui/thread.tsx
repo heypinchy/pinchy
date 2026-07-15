@@ -577,9 +577,12 @@ const AssistantFooter: FC = () => {
   if (isError) return null;
 
   return (
-    // min-h-6 reserves the action bar's height (size-6 buttons). The bar only
-    // mounts on hover, so without it the row would collapse to the timestamp's
-    // line-height and every message below would jump down on hover.
+    // min-h-6 reserves the height of the action bar's size-6 buttons. assistant-ui
+    // mounts the bar in flow on the LAST message only (autohide="not-last"), and
+    // unmounts it entirely elsewhere, so without a reserved height a message is
+    // 8px taller while it is last and shrinks the moment the next reply arrives.
+    // Keep in sync with TooltipIconButton's size-6; e2e/19-message-hover-layout-shift
+    // measures this in a real browser.
     <div className="aui-assistant-message-footer mt-1 ml-2 flex min-h-6 items-center gap-2">
       <MessageTimestamp />
       <AssistantActionBar />
