@@ -199,6 +199,40 @@ describe("POST /api/settings/api-keys", () => {
     expect(mockCreateApiKey).not.toHaveBeenCalled();
   });
 
+  it("returns a clean 400 (not an uncaught 500) for expiresInDays beyond the plugin's 365-day cap", async () => {
+    // @better-auth/api-key's `keyExpiration.maxExpiresIn` defaults to 365
+    // (unconfigured by lib/auth.ts's `apiKey()` setup) and throws
+    // EXPIRES_IN_IS_TOO_LARGE past it. Without a matching cap in THIS schema,
+    // 366 would sail past validation and only fail inside
+    // auth.api.createApiKey — an uncaught APIError the route doesn't handle,
+    // surfacing as a 500. The schema must reject it first, same reasoning as
+    // the sibling `name` cap (max 32) a few lines up.
+    const response = await POST(
+      postRequest({ name: "CI", scopes: ["agents:read"], expiresInDays: 366 })
+    );
+
+    expect(response.status).toBe(400);
+    expect(mockCreateApiKey).not.toHaveBeenCalled();
+  });
+
+  it("accepts expiresInDays at exactly the 365-day cap", async () => {
+    mockCreateApiKey.mockResolvedValue({
+      id: "key-1",
+      key: "pinchy_abc",
+      name: "CI",
+      expiresAt: new Date("2027-07-15T00:00:00.000Z"),
+    });
+
+    const response = await POST(
+      postRequest({ name: "CI", scopes: ["agents:read"], expiresInDays: 365 })
+    );
+
+    expect(response.status).toBe(201);
+    expect(mockCreateApiKey).toHaveBeenCalledWith(
+      expect.objectContaining({ body: expect.objectContaining({ expiresIn: 365 * 86400 }) })
+    );
+  });
+
   it("returns 403 Forbidden for a non-admin session and never creates a key", async () => {
     mockGetSession.mockResolvedValue(memberSession());
 

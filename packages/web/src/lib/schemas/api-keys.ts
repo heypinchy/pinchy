@@ -23,6 +23,12 @@ export const createApiKeySchema = z.object({
   // (accidentally) grants nothing, which is confusing, but requiring >=1
   // forces the issuer to make an explicit choice up front.
   scopes: z.array(z.enum(API_KEY_SCOPES)).min(1),
-  expiresInDays: z.number().int().positive().optional(),
+  // Matches @better-auth/api-key's own `keyExpiration.maxExpiresIn` default
+  // (365 days, unconfigured by Pinchy's `apiKey()` plugin setup in
+  // lib/auth.ts) — same reasoning as `name`'s cap above: without this, a
+  // value that passes this schema but exceeds the plugin's own cap would
+  // fail inside auth.api.createApiKey with an uncaught EXPIRES_IN_IS_TOO_LARGE
+  // APIError (500) instead of a clean 400.
+  expiresInDays: z.number().int().positive().max(365).optional(),
 });
 export type CreateApiKeyInput = z.infer<typeof createApiKeySchema>;

@@ -1,6 +1,6 @@
 import { betterAuth, type BetterAuthRateLimitOptions } from "better-auth";
 import { drizzleAdapter } from "better-auth/adapters/drizzle";
-import { createAuthMiddleware } from "better-auth/api";
+import { createAuthMiddleware, APIError } from "better-auth/api";
 import { admin } from "better-auth/plugins";
 import { apiKey } from "@better-auth/api-key";
 import { verifyPassword as verifyScrypt } from "better-auth/crypto";
@@ -229,6 +229,39 @@ export const auth = betterAuth({
     updateAge: 60 * 60 * 24, // refresh after 1 day
   },
   hooks: {
+    before: createAuthMiddleware(async (ctx) => {
+      // C1 (#572 whole-branch review, CRITICAL): registering the apiKey()
+      // plugin above mounts FIVE endpoints as ordinary Better Auth routes —
+      // /api-key/create|update|delete|get|list — because only /api-key/verify
+      // is declared `serverOnly` by the plugin itself. Since
+      // app/api/auth/[...all]/route.ts mounts the whole auth handler, those
+      // five are live at /api/auth/api-key/* for ANY authenticated session,
+      // not just admins — bypassing our audited, admin-gated
+      // /api/settings/api-keys route entirely (no admin check, no
+      // api_key.created/deleted audit row).
+      //
+      // Pinchy issues/revokes keys ONLY via /api/settings/api-keys (withAdmin
+      // + audited). Block every CLIENT request to /api-key/* here — a 404,
+      // not a 403/401, so the mounted-but-forbidden sub-path stays invisible
+      // rather than confirming a governed route exists.
+      //
+      // `ctx.request || ctx.headers` is the SAME discriminator the plugin's
+      // own create/update handlers use internally (see
+      // @better-auth/api-key/dist/index.mjs: `isClientRequest = ctx.request
+      // || ctx.headers`) to tell a browser/HTTP client request apart from a
+      // trusted server-side call. Our own server-side call —
+      // `auth.api.createApiKey({ body })` in
+      // app/api/settings/api-keys/route.ts — passes neither `request` nor
+      // `headers`, so it is unaffected by this guard. `ctx.path` for that
+      // call is `"/api-key/create"`; for the server-only `verifyApiKey` call
+      // (used by every /api/v1 request via withApiKey) `ctx.path` is `"/"`
+      // (no path — server-only endpoints take none), so it never matches
+      // this prefix check either. Verified empirically against the real
+      // Better Auth dispatch pipeline, not just read from source.
+      if (ctx.path.startsWith("/api-key/") && (ctx.request || ctx.headers)) {
+        throw new APIError("NOT_FOUND", { message: "Not found" });
+      }
+    }),
     after: auditAfterHook,
   },
 });

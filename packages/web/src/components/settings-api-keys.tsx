@@ -233,7 +233,6 @@ export function SettingsApiKeys() {
                   <TableHead>Created</TableHead>
                   <TableHead>Expires</TableHead>
                   <TableHead>Last used</TableHead>
-                  <TableHead>Status</TableHead>
                   <TableHead>Actions</TableHead>
                 </TableRow>
               </TableHeader>
@@ -256,11 +255,6 @@ export function SettingsApiKeys() {
                     <TableCell>{formatDate(key.createdAt)}</TableCell>
                     <TableCell>{formatDate(key.expiresAt)}</TableCell>
                     <TableCell>{formatDate(key.lastRequest)}</TableCell>
-                    <TableCell>
-                      <Badge variant={key.enabled ? "secondary" : "outline"}>
-                        {key.enabled ? "Active" : "Disabled"}
-                      </Badge>
-                    </TableCell>
                     <TableCell>
                       <Button variant="destructive" size="sm" onClick={() => setRevokeTarget(key)}>
                         Revoke
@@ -327,6 +321,7 @@ export function SettingsApiKeys() {
                 id="apikey-expires"
                 type="number"
                 min={1}
+                max={365}
                 step={1}
                 value={formExpiresInDays}
                 onChange={(e) => setFormExpiresInDays(e.target.value)}

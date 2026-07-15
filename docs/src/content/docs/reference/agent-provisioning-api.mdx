@@ -207,14 +207,14 @@ To create a key:
 
 1. Open **Settings → API Keys** and click **New API Key**.
 2. Give it a name (up to 32 characters) and pick one or more [scopes](#scopes).
-3. Optionally set an expiry in days — leave it blank for a key that never expires.
+3. Optionally set an expiry in days (up to 365) — leave it blank for a key that never expires.
 4. Click **Create**.
 
 :::caution[Shown once]
 The plaintext key is displayed exactly once, right after creation. Copy it before closing the dialog — Pinchy never stores or displays it again. If you lose it, revoke the key and issue a new one.
 :::
 
-Afterward, the key list shows only its name, first few characters, scopes, and status — never the secret itself.
+Afterward, the key list shows only its name, first few characters, scopes, and dates — never the secret itself.
 
 To revoke a key, click **Revoke** next to it in the list and confirm. Revocation is immediate: any client still using that key gets `401 Unauthorized` on its very next request.
 
@@ -222,12 +222,13 @@ To revoke a key, click **Revoke** next to it in the list and confirm. Revocation
 
 Every provisioning action taken with a key, and every key lifecycle event, is written to the [audit trail](/concepts/audit-trail/).
 
-| Event             | Actor       | When                                                |
-| ----------------- | ----------- | --------------------------------------------------- |
-| `agent.created`   | the API key | `POST /api/v1/agents` succeeds, or fails with `422` |
-| `agent.deleted`   | the API key | `DELETE /api/v1/agents/:agentId` succeeds           |
-| `api_key.created` | the admin   | A key is issued in Settings → API Keys              |
-| `api_key.deleted` | the admin   | A key is revoked in Settings → API Keys             |
+| Event             | Actor       | When                                                                                        |
+| ----------------- | ----------- | ------------------------------------------------------------------------------------------- |
+| `agent.created`   | the API key | `POST /api/v1/agents` succeeds, or fails with `422`                                         |
+| `agent.deleted`   | the API key | `DELETE /api/v1/agents/:agentId` succeeds                                                   |
+| `config.changed`  | the API key | `POST /api/v1/agents` auto-configures an integration connection's permissions for the agent |
+| `api_key.created` | the admin   | A key is issued in Settings → API Keys                                                      |
+| `api_key.deleted` | the admin   | A key is revoked in Settings → API Keys                                                     |
 
 Actions taken **with** a key are logged with `actorType: "api_key"` and the key's own id as `actorId` — the key is its own accountable actor, not a stand-in for whoever issued it. The issuing admin is still captured, as delegation metadata inside the entry's `detail` (an `issuer: { id, name }` snapshot) — kept separate from the actor fields, so the trail stays attributable to the right key even after the issuing admin leaves the organization.
 
