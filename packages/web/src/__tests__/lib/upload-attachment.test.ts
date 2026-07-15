@@ -133,6 +133,25 @@ describe("uploadAttachment", () => {
     await promise;
   });
 
+  it("sends the file's own name as the multipart filename, not 'blob'", async () => {
+    const { MockXHRClass, instance: xhr } = createMockXHRClass();
+    vi.stubGlobal("XMLHttpRequest", MockXHRClass);
+
+    const { uploadAttachment } = await import("@/lib/upload-attachment");
+
+    // The server names the workspace file after the multipart filename. FormData
+    // only preserves it for a real File — a Blob with a monkey-patched `.name`
+    // (what browser-image-compression returns) silently becomes "blob" here.
+    const file = new File(["png-bytes"], "screenshot.webp", { type: "image/webp" });
+    const promise = uploadAttachment("agent-abc", "3fa85f64-5717-4562-b3fc-2c963f66afa6", file);
+
+    const formData = xhr.send.mock.calls[0][0] as FormData;
+    expect((formData.get("file") as File).name).toBe("screenshot.webp");
+
+    xhr.simulateLoad();
+    await promise;
+  });
+
   it("calls onProgress with percent values during upload", async () => {
     const { MockXHRClass, instance: xhr } = createMockXHRClass();
     vi.stubGlobal("XMLHttpRequest", MockXHRClass);
