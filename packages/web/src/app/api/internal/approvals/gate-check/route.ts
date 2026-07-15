@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { eq } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import { validateGatewayToken } from "@/lib/gateway-auth";
 import { parseRequestBody } from "@/lib/api-validation";
 import { gateCheckSchema } from "@/lib/schemas/approvals";
@@ -18,9 +18,32 @@ import { agents, users } from "@/db/schema";
  * or records a pending confirmation (block). The acting user approves their
  * own request via the session-authed decision route.
  */
-function deriveRequesterId(senderId: string | undefined, sessionKey: string): string | undefined {
+function deriveRequesterPrincipal(
+  senderId: string | undefined,
+  sessionKey: string
+): string | undefined {
   if (senderId) return senderId;
-  return /^agent:[^:]+:direct:(.+)$/.exec(sessionKey)?.[1];
+  // Non-greedy: a userId never contains a colon, but a `:<chatId>` segment can
+  // follow it. Mirrors extractUserIdFromSessionKey in the tool-use audit route —
+  // a greedy `(.+)$` would swallow `<userId>:<chatId>` and mis-attribute.
+  return /^agent:[^:]+:direct:([^:]+)/.exec(sessionKey)?.[1];
+}
+
+/**
+ * OpenClaw normalizes session keys to lowercase, so the principal we read back
+ * from `ctx.sessionKey` is `lower(user.id)` — it never equals the mixed-case
+ * `session.user.id` the decision route and the inbox compare against. (Same
+ * reason `audit_log` logs "no user found for actorId" and falls back to the raw
+ * value.) Resolve it case-insensitively to the real, case-preserved user id so
+ * requester and approver compare equal.
+ */
+async function resolveRequesterUserId(principal: string): Promise<string | undefined> {
+  const [row] = await db
+    .select({ id: users.id })
+    .from(users)
+    .where(sql`lower(${users.id}) = ${principal.toLowerCase()}`)
+    .limit(1);
+  return row?.id;
 }
 
 export async function POST(request: NextRequest) {
@@ -44,9 +67,11 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ decision: "allow" });
   }
 
-  const requesterId = deriveRequesterId(senderId, sessionKey);
+  const principal = deriveRequesterPrincipal(senderId, sessionKey);
+  const requesterId = principal ? await resolveRequesterUserId(principal) : undefined;
   if (!requesterId) {
-    // Fail closed: a gated tool must not run for an unidentifiable user.
+    // Fail closed: a gated tool must not run for an unidentifiable user — only
+    // a real Pinchy user can confirm it.
     return NextResponse.json({
       decision: "block",
       reason: `Confirmation required for "${toolName}", but the requesting user could not be identified.`,

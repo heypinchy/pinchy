@@ -98,6 +98,46 @@ describe("approval routes (integration, real DB)", () => {
     expect(res.status).toBe(401);
   });
 
+  it("resolves the lowercased session-key principal back to the real (mixed-case) user id", async () => {
+    // OpenClaw normalizes session keys to lowercase, so the gate reads back
+    // lower(user.id) — never the mixed-case id Better Auth generates. The stored
+    // requesterId must be the REAL casing, or the decision route
+    // (session.user.id) and the inbox can never match it (403 / empty inbox).
+    const mixedCaseId = "kG5kQuhkQbRpCPm9XHSt3FR1m5KZiHnO";
+    await db.insert(users).values({
+      id: mixedCaseId,
+      name: "Mixed Case",
+      email: `mc${emailSeq++}@example.com`,
+      emailVerified: true,
+      role: "member",
+    });
+    const [a] = await db
+      .insert(agents)
+      .values({
+        name: "S",
+        model: "anthropic/claude-haiku-4-5-20251001",
+        greetingMessage: "Hi",
+        ownerId: mixedCaseId,
+        pluginConfig: { "pinchy-approvals": { confirmTools: ["odoo_write"] } },
+      })
+      .returning();
+
+    const res = await (
+      await gateCheck(
+        gateReq({
+          agentId: a.id,
+          sessionKey: `agent:${a.id}:direct:${mixedCaseId.toLowerCase()}`,
+          toolName: "odoo_write",
+          params: { recordId: 5 },
+        })
+      )
+    ).json();
+    expect(res.decision).toBe("block");
+
+    const [row] = await db.select().from(toolApproval).where(eq(toolApproval.id, res.requestId));
+    expect(row.requesterId).toBe(mixedCaseId);
+  });
+
   it("allows an ungated tool without creating a pending request", async () => {
     const res = await (await gateCheck(gateReq(gateBody({ toolName: "odoo_list_models" })))).json();
     expect(res.decision).toBe("allow");
