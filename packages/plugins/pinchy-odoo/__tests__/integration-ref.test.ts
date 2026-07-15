@@ -3,7 +3,12 @@ import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
 import { mkdtempSync, writeFileSync, rmSync, mkdirSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
-import { decodeRef, encodeRef, _resetKeyCacheForTest } from "../integration-ref";
+import {
+  decodeRef,
+  encodeRef,
+  _resetKeyCacheForTest,
+  MalformedIntegrationRefError,
+} from "../integration-ref";
 
 describe("integration refs", () => {
   it("roundtrips an opaque Odoo reference", () => {
@@ -191,6 +196,64 @@ describe("integration refs", () => {
     const tampered = ref.slice(0, idx) + flipped + ref.slice(idx + 1);
 
     expect(() => decodeRef(tampered)).toThrow(/Invalid integration reference/);
+  });
+
+  // Bug B (2026-07-15 prod incident): `decodeTargetRef` in index.ts used to
+  // swallow every decode failure behind a bare `catch {}` and always report
+  // "does not belong to this Odoo connection" — even when the real cause was
+  // a corrupted/truncated ref, not a cross-connection ref. Distinguishing
+  // the two requires a typed error rather than string-matching the generic
+  // "Invalid integration reference" message, since every decode failure
+  // shares that same text.
+  describe("MalformedIntegrationRefError", () => {
+    beforeEach(() => {
+      _resetKeyCacheForTest();
+      vi.stubEnv("PINCHY_REF_TOKEN_KEY", "a".repeat(64));
+    });
+
+    it("is thrown (not a bare Error) for a ref with the wrong prefix", () => {
+      expect(() => decodeRef("not-a-pinchy-ref-at-all")).toThrow(
+        MalformedIntegrationRefError,
+      );
+    });
+
+    it("is thrown for a truncated ref (correct prefix, corrupted payload)", () => {
+      const ref = encodeRef({
+        integrationType: "odoo",
+        connectionId: "conn-test-1",
+        model: "res.country",
+        id: 14,
+        label: "Austria",
+      });
+      const truncated = ref.slice(0, -8);
+
+      expect(() => decodeRef(truncated)).toThrow(MalformedIntegrationRefError);
+    });
+
+    it("is thrown for a tampered ref that fails the AES-GCM auth tag check", () => {
+      const ref = encodeRef({
+        integrationType: "odoo",
+        connectionId: "conn-test-1",
+        model: "res.country",
+        id: 14,
+        label: "Austria",
+      });
+      const idx = ref.length - 10;
+      const flipped = ref[idx] === "a" ? "b" : "a";
+      const tampered = ref.slice(0, idx) + flipped + ref.slice(idx + 1);
+
+      expect(() => decodeRef(tampered)).toThrow(MalformedIntegrationRefError);
+    });
+
+    it("still carries the generic, non-leaking message (no key material or ref cleartext)", () => {
+      expect.assertions(2);
+      try {
+        decodeRef("not-a-pinchy-ref-at-all");
+      } catch (err) {
+        expect(err).toBeInstanceOf(MalformedIntegrationRefError);
+        expect((err as Error).message).toBe("Invalid integration reference");
+      }
+    });
   });
 
   describe("optional company fields", () => {
