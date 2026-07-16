@@ -40,11 +40,34 @@ runs:
         )
         if [ -z "$images" ]; then
           echo "::warning::No docker.io library images discovered in docker-compose*.yml — pre-pull skipped. If your stack pulls library images, the daemon mirror is your only line of defense."
-          exit 0
+        else
+          # shellcheck disable=SC2086 # word-splitting is intentional here
+          echo "Pre-pulling docker.io library image(s) via mirror.gcr.io:" $images
+          while IFS= read -r image; do
+            docker pull "mirror.gcr.io/library/${image}"
+            docker tag "mirror.gcr.io/library/${image}" "${image}"
+          done <<< "$images"
         fi
-        # shellcheck disable=SC2086 # word-splitting is intentional here
-        echo "Pre-pulling docker.io library image(s) via mirror.gcr.io:" $images
-        while IFS= read -r image; do
-          docker pull "mirror.gcr.io/library/${image}"
-          docker tag "mirror.gcr.io/library/${image}" "${image}"
-        done <<< "$images"
+
+        # Same idea for docker.io *namespaced* (non-library) images, e.g.
+        # pgvector/pgvector:pg17 (docker-compose.yml's `db` service — a
+        # drop-in postgres:17 replacement bundling the pgvector extension).
+        # The namespace segment is required to contain no dot/colon so this
+        # doesn't false-match registry-hosted refs like
+        # ghcr.io/heypinchy/pinchy:${PINCHY_VERSION} (which also carries
+        # `${...}` interpolation the tag group can't match anyway).
+        namespaced_images=$(
+          grep -hE '^[[:space:]]+image:[[:space:]]+[a-z0-9_-]+/[a-z0-9._-]+:[a-z0-9_.-]+[[:space:]]*$' docker-compose*.yml \
+            | awk '{print $NF}' \
+            | sort -u
+        )
+        if [ -z "$namespaced_images" ]; then
+          echo "::warning::No docker.io namespaced images discovered in docker-compose*.yml — pre-pull skipped. If your stack pulls namespaced Docker Hub images, the daemon mirror is your only line of defense."
+        else
+          # shellcheck disable=SC2086 # word-splitting is intentional here
+          echo "Pre-pulling docker.io namespaced image(s) via mirror.gcr.io:" $namespaced_images
+          while IFS= read -r image; do
+            docker pull "mirror.gcr.io/${image}"
+            docker tag "mirror.gcr.io/${image}" "${image}"
+          done <<< "$namespaced_images"
+        fi

@@ -304,9 +304,10 @@ describe("POST /api/agents", () => {
 
     await POST(request, routeContext());
 
+    // knowledge-base grants knowledge_search (Task 11 of the KB plan).
     expect(insertValuesMock).toHaveBeenCalledWith(
       expect.objectContaining({
-        allowedTools: [],
+        allowedTools: ["knowledge_search"],
       })
     );
   });
@@ -1179,9 +1180,11 @@ describe("POST /api/agents", () => {
 
     await POST(request, routeContext());
 
+    // knowledge-base's template allowedTools is ["knowledge_search"] (Task 11
+    // of the KB plan) — this test asserts it passes through unmodified.
     expect(insertValuesMock).toHaveBeenCalledWith(
       expect.objectContaining({
-        allowedTools: [],
+        allowedTools: ["knowledge_search"],
       })
     );
   });

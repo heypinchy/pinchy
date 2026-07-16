@@ -9,9 +9,23 @@ vi.mock("node:dns/promises", () => ({
   },
 }));
 
+// webFetch dispatches through undici's own fetch, never the global one: the
+// Agent it pins comes from the undici npm package, and Node's global fetch is
+// backed by a different, bundled undici that rejects it (see
+// web-fetch-dispatcher.test.ts). So mock the module, not the global — a
+// vi.stubGlobal("fetch", …) here would intercept nothing and every assertion
+// below would silently drift onto the real network.
+vi.mock("undici", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("undici")>();
+  // Keep the real Agent: webFetch constructs one per request, and these tests
+  // assert it gets attached as `init.dispatcher`.
+  return { ...actual, fetch: vi.fn() };
+});
+
 // Import after mock setup
 const { webFetch, pinnedLookup, readBodyCapped, extractReadableContent, visibleTextFromHtml } =
   await import("./web-fetch.js");
+const { fetch: undiciFetchMock } = await import("undici");
 
 // Build a Response whose body streams the given byte chunks, to exercise
 // readBodyCapped's streaming cap path (the text() fallback is used elsewhere).
@@ -50,15 +64,14 @@ describe("webFetch", () => {
   const resolve6Mock = dns.resolve6 as ReturnType<typeof vi.fn>;
 
   beforeEach(() => {
-    fetchMock = vi.fn();
-    vi.stubGlobal("fetch", fetchMock);
+    fetchMock = undiciFetchMock as unknown as ReturnType<typeof vi.fn>;
+    fetchMock.mockReset();
     // Default: resolve to public IPs
     resolve4Mock.mockResolvedValue(["93.184.216.34"]);
     resolve6Mock.mockResolvedValue(["2606:2800:220:1:248:1893:25c8:1946"]);
   });
 
   afterEach(() => {
-    vi.unstubAllGlobals();
     vi.restoreAllMocks();
   });
 
@@ -496,6 +509,44 @@ describe("webFetch", () => {
 
       expect(result.isError).toBe(true);
       expect(result.content).toContain("fetch failed");
+    });
+
+    // undici collapses every transport failure — DNS, TCP, TLS, a dispatcher it
+    // won't accept — into a bare `TypeError: fetch failed` and hangs the real
+    // reason off `.cause`. Reporting only `.message` is what made the undici
+    // handler-contract bug (web-fetch-dispatcher.test.ts) indistinguishable from
+    // an unreachable website: the agent, and its user, had nothing to act on.
+    it("surfaces the cause behind an opaque 'fetch failed'", async () => {
+      const cause = Object.assign(new Error("getaddrinfo ENOTFOUND example.com"), {
+        code: "ENOTFOUND",
+      });
+      fetchMock.mockRejectedValue(new TypeError("fetch failed", { cause }));
+
+      const result = await webFetch("https://example.com/dns-dead");
+
+      expect(result.isError).toBe(true);
+      expect(result.content).toContain("ENOTFOUND");
+      expect(result.content).toContain("getaddrinfo ENOTFOUND example.com");
+    });
+
+    it("falls back to the cause's message when it carries no errno code", async () => {
+      fetchMock.mockRejectedValue(
+        new TypeError("fetch failed", { cause: new Error("Client network socket disconnected") }),
+      );
+
+      const result = await webFetch("https://example.com/tls-dead");
+
+      expect(result.isError).toBe(true);
+      expect(result.content).toContain("Client network socket disconnected");
+    });
+
+    it("reports plainly when there is no cause to unwrap", async () => {
+      fetchMock.mockRejectedValue(new Error("boom"));
+
+      const result = await webFetch("https://example.com/plain");
+
+      expect(result.isError).toBe(true);
+      expect(result.content).toBe("Failed to fetch URL: boom");
     });
 
     it("handles non-HTML content gracefully (returns raw text)", async () => {

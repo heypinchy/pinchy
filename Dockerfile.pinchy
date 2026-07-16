@@ -77,6 +77,7 @@ COPY packages/plugins/pinchy-docs/openclaw.plugin.json packages/plugins/pinchy-d
 COPY packages/plugins/pinchy-email/openclaw.plugin.json packages/plugins/pinchy-email/
 COPY packages/plugins/pinchy-odoo/openclaw.plugin.json packages/plugins/pinchy-odoo/
 COPY packages/plugins/pinchy-web/openclaw.plugin.json packages/plugins/pinchy-web/
+COPY packages/plugins/pinchy-knowledge/openclaw.plugin.json packages/plugins/pinchy-knowledge/
 
 RUN cd packages/web && pnpm build
 
@@ -175,6 +176,7 @@ COPY packages/plugins/pinchy-docs /app/pinchy-plugins/pinchy-docs
 COPY packages/plugins/pinchy-odoo /app/pinchy-plugins/pinchy-odoo
 COPY packages/plugins/pinchy-web /app/pinchy-plugins/pinchy-web
 COPY packages/plugins/pinchy-email /app/pinchy-plugins/pinchy-email
+COPY packages/plugins/pinchy-knowledge /app/pinchy-plugins/pinchy-knowledge
 
 WORKDIR /app/packages/web
 

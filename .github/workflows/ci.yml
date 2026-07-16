@@ -327,10 +327,13 @@ jobs:
     services:
       postgres:
         # Pulled from mirror.gcr.io to bypass docker.io's rate limit (same
-        # pattern as the e2e job above). Pinned to 17 so the test DB matches
-        # docker-compose.yml's `db` service — drift would risk masking
-        # version-specific bugs (parser, planner, locking).
-        image: mirror.gcr.io/library/postgres:17
+        # pattern as the e2e job above). Pinned to the same
+        # pgvector/pgvector:pg17-trixie tag as docker-compose.yml's `db`
+        # service (see its comment for why `-trixie` specifically); drift
+        # would risk masking version-specific bugs (parser, planner,
+        # locking) or, since 0049_enable_pgvector.sql, failing outright on
+        # `CREATE EXTENSION vector`.
+        image: mirror.gcr.io/pgvector/pgvector:pg17-trixie
         env:
           POSTGRES_DB: pinchy
           POSTGRES_USER: pinchy
@@ -366,10 +369,13 @@ jobs:
         # avoid docker.io is to point the image reference at the mirror
         # directly. mirror.gcr.io is anonymous, so no credentials are needed.
         #
-        # Version pinned to 17 to match docker-compose.yml's `db` service.
-        # Drift between CI's test DB and production's DB risks masking
-        # version-specific bugs (different parser, planner, locking).
-        image: mirror.gcr.io/library/postgres:17
+        # Pinned to the same pgvector/pgvector:pg17-trixie tag as
+        # docker-compose.yml's `db` service (see its comment for why
+        # `-trixie` specifically). Drift between CI's test DB and
+        # production's DB risks masking version-specific bugs (different
+        # parser, planner, locking) or failing outright on the
+        # `CREATE EXTENSION vector` migration (0049_enable_pgvector.sql).
+        image: mirror.gcr.io/pgvector/pgvector:pg17-trixie
         env:
           POSTGRES_DB: pinchy
           POSTGRES_USER: pinchy

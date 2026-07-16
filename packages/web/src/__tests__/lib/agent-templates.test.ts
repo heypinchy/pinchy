@@ -45,7 +45,10 @@ describe("agent-templates", () => {
     expect(AGENT_TEMPLATES["knowledge-base"]).toBeDefined();
     expect(AGENT_TEMPLATES["knowledge-base"].name).toBe("Knowledge Base");
     expect(AGENT_TEMPLATES["knowledge-base"].pluginId).toBe("pinchy-files");
-    expect(AGENT_TEMPLATES["knowledge-base"].allowedTools).toEqual([]);
+    // knowledge_search (Task 11 of the KB plan) lets the agent retrieve
+    // citable passages via pinchy-knowledge; see knowledge-base.test.ts for
+    // the cite-then-answer/abstention prompt coverage.
+    expect(AGENT_TEMPLATES["knowledge-base"].allowedTools).toEqual(["knowledge_search"]);
   });
 
   it("should have a custom template with no allowed tools", () => {

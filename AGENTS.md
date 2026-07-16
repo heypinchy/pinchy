@@ -147,9 +147,6 @@ Common host commands from the repository root:
 ```bash
 pnpm test
 pnpm build
-pnpm lint
-pnpm format
-pnpm db:generate
 pnpm test:scripts
 pnpm typecheck:plugins
 pnpm test:plugins
@@ -158,6 +155,9 @@ pnpm test:plugins
 Useful web package commands:
 
 ```bash
+pnpm -C packages/web lint
+pnpm -C packages/web format
+pnpm -C packages/web db:generate
 pnpm -C packages/web test
 pnpm -C packages/web test:db
 pnpm -C packages/web test:e2e

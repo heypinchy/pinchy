@@ -1,7 +1,7 @@
 import { readdirSync, statSync, realpathSync, existsSync } from "fs";
-import { readFile, open, writeFile } from "fs/promises";
+import { readFile, open, writeFile, mkdir } from "fs/promises";
 import { createHash } from "crypto";
-import { join, extname, basename } from "path";
+import { join, extname, basename, dirname } from "path";
 import { validateAccess, assertNoSymlinkEscape, MAX_FILE_SIZE, MAX_PDF_FILE_SIZE, MAX_DOCX_FILE_SIZE, type AgentFileConfig } from "./validate";
 import { extractDocxText } from "./docx-extract";
 import { extractPdfText } from "./pdf-extract";
@@ -575,6 +575,17 @@ const plugin = {
                   `Content too large (${buffer.byteLength} bytes). Maximum: ${MAX_FILE_SIZE} bytes.`
                 );
               }
+
+              // Ensure the parent directory chain exists before writing. Must run
+              // AFTER validateAccess and assertNoSymlinkEscape above — never
+              // before — so a rejected write (outside the allow-list, or escaping
+              // via a symlink) never leaves directories on disk as a side effect
+              // of the failure path. Uses `onDisk`, the symlink-resolved and
+              // already-validated form that is actually written to (not
+              // `requestedPath`/`resolved`), so `{ recursive: true }` can only
+              // instantiate the literal, already-checked non-existent tail —
+              // it cannot itself escape the sandbox.
+              await mkdir(dirname(onDisk), { recursive: true });
 
               let mode: "create" | "overwrite";
               let previousContentHash: string | undefined;

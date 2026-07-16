@@ -15,6 +15,14 @@ services:
       - pinchy-workspaces:/openclaw-config/workspaces
       - openclaw-extensions:/openclaw-extensions
       - pinchy-secrets:/app/secrets
+      # KB corpus, read-only. The knowledge-base ingest pipeline and the
+      # workspace-file serve route (packages/web) read source documents from
+      # /data — the SAME path the openclaw service mounts, so an agent's
+      # allowed_paths (/data/...) resolve identically in both containers.
+      # Read-only: web only reads the corpus (it never writes it; user uploads
+      # land in a separate store), which also keeps the corpus tamper-proof
+      # from the web tier.
+      - pinchy-data:/data:ro
     restart: unless-stopped
     depends_on:
       db:
@@ -77,7 +85,23 @@ services:
     cpus: ${OPENCLAW_CPUS:-2}
 
   db:
-    image: postgres:17
+    # pgvector/pgvector:pg17-trixie bundles the pgvector extension's shared
+    # library on top of postgres:17 so `CREATE EXTENSION vector` (see
+    # packages/web/drizzle/0049_enable_pgvector.sql) succeeds. Powers the
+    # knowledge-base RAG index (kb_documents/kb_chunks, vector(1024) columns).
+    #
+    # Pinned to the `-trixie` variant, NOT the bare `pg17` tag: the plain
+    # `pgvector/pgvector:pg17` tag is built on Debian 12 (bookworm), while
+    # the `postgres:17` image it replaces here currently resolves to Debian
+    # 13 (trixie). Swapping to a different glibc base on an EXISTING data
+    # volume (any real dev/prod install doing `docker compose pull && up`,
+    # not just a fresh `initdb`) trips Postgres's collation-version guard —
+    # `CREATE DATABASE` on the mismatched template1 errors outright
+    # ("template database ... has a collation version mismatch"), verified
+    # locally by swapping images in place on a volume initialized under
+    # postgres:17. `-trixie` matches postgres:17's current base exactly, so
+    # in-place upgrades of existing volumes don't hit this.
+    image: pgvector/pgvector:pg17-trixie
     volumes:
       - pgdata:/var/lib/postgresql/data
     environment:

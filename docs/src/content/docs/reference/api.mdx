@@ -112,9 +112,9 @@ List agents visible to the current user. Admins see all agents. Non-admin users 
     "name": "HR Policy Assistant",
     "model": "anthropic/claude-haiku-4-5-20251001",
     "templateId": "knowledge-base",
-    "allowedTools": ["pinchy_ls", "pinchy_read"],
+    "allowedTools": ["knowledge_search"],
     "pluginConfig": {
-      "allowed_paths": ["/data/hr-policies"]
+      "pinchy-files": { "allowed_paths": ["/data/hr-policies"] }
     },
     "isPersonal": false,
     "ownerId": "user-uuid",
@@ -267,6 +267,39 @@ Send `id` in the chat message's `attachmentIds` (up to **10** attachments per me
 - `403` / `404` — no access to the agent
 - `413` — file exceeds the 15 MB limit
 - `415` — unsupported or mismatched file type
+
+## Knowledge Base
+
+See [Create a Knowledge Base Agent](/guides/create-knowledge-base-agent/) for the end-to-end setup flow.
+
+### `POST /api/agents/:agentId/knowledge/reindex`
+
+(Re)index the agent's granted knowledge-base folders. **Admin only.** Reads the agent's `pinchy-files` `allowed_paths`, extracts text from each PDF, chunks and embeds it with the fixed `bge-m3` model, and stores the result in Pinchy's Postgres knowledge-base index. Idempotent: unchanged files are skipped, changed files are replaced, and files removed from disk are dropped from the index.
+
+**Request body:**
+
+| Field   | Type     | Required | Description                                                                                                                                                        |
+| ------- | -------- | -------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `paths` | string[] | No       | Subset of the agent's granted folders to reindex. Can only narrow the granted set — any path not already granted is ignored. Omit to reindex every granted folder. |
+
+**Response:**
+
+```json
+{ "indexed": 3, "skipped": 12, "removed": 1, "pathCount": 2 }
+```
+
+**Errors:**
+
+- `401` — not authenticated
+- `403` — not an admin
+- `404` — agent not found
+- `503` — the local Ollama embedding endpoint isn't configured (see [Set Up Local Ollama](/guides/ollama-setup/))
+
+### `POST /api/internal/knowledge/search`
+
+**Internal** — authenticated with the shared OpenClaw gateway token, not a user session. Called by the `pinchy-knowledge` plugin's `knowledge_search` tool, never by the browser.
+
+Runs a hybrid (vector + full-text) search over the requesting agent's indexed, granted documents and returns numbered, citable passages. The raw query is never persisted — only a one-way hash, since a knowledge-base question can itself carry PII.
 
 ## Templates
 

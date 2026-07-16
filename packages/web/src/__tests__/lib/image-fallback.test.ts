@@ -46,6 +46,7 @@ describe("resolveVisionFallbackModel", () => {
     tools: true,
   };
   const MINIMAX = { id: "ollama-cloud/minimax-m3", provider: "ollama-cloud", tools: true };
+  const KIMI = { id: "ollama-cloud/kimi-k2.6", provider: "ollama-cloud", tools: true };
 
   it("skips a tools-blocked preview model when the agent uses tools and picks the next usable same-provider candidate", () => {
     // The whole bug: gemini-3-flash-preview is seeded tools:true but is on the
@@ -54,10 +55,48 @@ describe("resolveVisionFallbackModel", () => {
     const model = resolveVisionFallbackModel({
       agentModel: "ollama-cloud/glm-5.2",
       agentUsesTools: true,
-      candidates: [PREVIEW, MINIMAX],
+      candidates: [PREVIEW, KIMI],
+      globalDefault: null,
+    });
+    expect(model).toBe("ollama-cloud/kimi-k2.6");
+  });
+
+  it("skips minimax-m3 for a tool-using agent and picks the next usable same-provider candidate", () => {
+    // Regression, Penny/2026-07-15: a text-only agent model (deepseek-v4-pro)
+    // received a receipt photo, so the turn was routed to a vision fallback.
+    // minimax-m3 is seeded tools:true and won on same-provider preference, then
+    // mangled every nested array in the tool arguments — Odoo domains arrived as
+    // {'item': [...]} ("unhashable type: 'dict'") and account.move
+    // invoice_line_ids/tax_ids command triplets were rejected outright. 12 failed
+    // bookings, context blown to 24M input tokens, turn aborted. Same class of
+    // defect as the preview rule: nominal tools:true, unusable in practice.
+    const model = resolveVisionFallbackModel({
+      agentModel: "ollama-cloud/deepseek-v4-pro",
+      agentUsesTools: true,
+      candidates: [MINIMAX, KIMI],
+      globalDefault: null,
+    });
+    expect(model).toBe("ollama-cloud/kimi-k2.6");
+  });
+
+  it("still allows minimax-m3 when the agent does NOT use tools — the arg mangling only bites tool calls", () => {
+    const model = resolveVisionFallbackModel({
+      agentModel: "ollama-cloud/deepseek-v4-pro",
+      agentUsesTools: false,
+      candidates: [MINIMAX],
       globalDefault: null,
     });
     expect(model).toBe("ollama-cloud/minimax-m3");
+  });
+
+  it("does not fall back to minimax-m3 as global default for a tool-using agent", () => {
+    const model = resolveVisionFallbackModel({
+      agentModel: "ollama-cloud/deepseek-v4-pro",
+      agentUsesTools: true,
+      candidates: [],
+      globalDefault: "ollama-cloud/minimax-m3",
+    });
+    expect(model).toBeNull();
   });
 
   it("still allows a preview model when the agent does NOT use tools — preview is fine for pure image description", () => {

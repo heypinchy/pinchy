@@ -95,12 +95,20 @@ export async function getModelPricing(
   };
   const providers = result?.config?.models?.providers ?? {};
 
+  // Key every model under BOTH shapes its callers ask with. The config itself
+  // only carries the bare id, but the per-turn recorder asks with the
+  // trajectory's `<provider>/<modelId>` (model.completed events keep provider
+  // and modelId in separate fields). Keying bare-only silently priced every
+  // chat turn at null. Where two providers share a bare id, the last one wins —
+  // unchanged from before; the qualified key disambiguates those callers that
+  // supply it.
   const pricingMap = new Map<string, { input: number; output: number }>();
-  for (const provider of Object.values(providers) as Array<{
-    models?: Array<{ id: string; cost?: { input: number; output: number } }>;
-  }>) {
+  for (const [providerName, provider] of Object.entries(providers) as Array<
+    [string, { models?: Array<{ id: string; cost?: { input: number; output: number } }> }]
+  >) {
     for (const model of provider.models ?? []) {
       if (model.cost) {
+        pricingMap.set(`${providerName}/${model.id}`, model.cost);
         pricingMap.set(model.id, model.cost);
       }
     }

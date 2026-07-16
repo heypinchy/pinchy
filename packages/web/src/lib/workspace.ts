@@ -114,6 +114,20 @@ export function ensureWorkspace(agentId: string): void {
   // left pinchy_write ENOENT'ing on fresh workspaces.
   mkdirSync(join(workspacePath, "uploads"), { recursive: true });
   mkdirSync(join(workspacePath, "workbench"), { recursive: true });
+  // memory/ holds OpenClaw's daily memory logs. build.ts grants it to every
+  // write-capable agent and memory-prompt.ts promises it by name, so it exists
+  // on spawn for the same reason workbench/ does (#418), and so the
+  // memory-audit watcher has it in its tree from the start rather than having
+  // to discover it later.
+  //
+  // MEMORY.md is deliberately NOT created here. It is the agent's own file, and
+  // an empty one we create still trips the watcher into an `agent.memory_changed`
+  // audit entry attributed to the agent — a claim that it changed its memory,
+  // for a file Pinchy wrote and with a zero-line diff. The agent creates it on
+  // first write instead; pinchy-files allows that even though the file does not
+  // exist yet, because a missing write root resolves rather than reading as a
+  // sandbox escape (#761).
+  mkdirSync(join(workspacePath, "memory"), { recursive: true });
 
   for (const file of ALLOWED_FILES) {
     const filePath = join(workspacePath, file);
