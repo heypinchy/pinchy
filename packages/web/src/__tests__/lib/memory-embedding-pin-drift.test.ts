@@ -60,6 +60,25 @@ describe("memory embedding pin drift guard", () => {
     expect(DOCKERFILE_OPENCLAW).toMatch(/[0-9a-f]{64}\s+\S+\.gguf/);
   });
 
+  it("retries the GGUF download on transient HTTP failures", () => {
+    // A single HuggingFace 504 must not turn an unrelated PR red: the download
+    // is a ~300 MB blob with no cache, so curl's retry is the only thing between
+    // a passing build and a flaky-red one (PR #768 fell over twice this way on
+    // 2026-07-16). --retry already covers the transient HTTP codes (incl. 504);
+    // --retry-all-errors widens that to 4xx / non-HTTP errors as a safety net.
+    //
+    // Anchor on the actual download command — `curl -fsSL … huggingface…gguf` —
+    // NOT on the first `curl` token (that's `apt-get install … curl`). Anchoring
+    // loosely would let the flag text in the *explanatory comment* above satisfy
+    // these assertions and mask a real removal of the flags from the command. The
+    // comment sits before `curl -fsSL`, so it is outside this span. The curl is
+    // backslash-continued across lines, hence [\s\S] up to the HF URL.
+    const download =
+      DOCKERFILE_OPENCLAW.match(/curl -fsSL[\s\S]*?huggingface\.co\S+\.gguf/)?.[0] ?? "";
+    expect(download).toMatch(/--retry\s+\d+/);
+    expect(download).toMatch(/--retry-all-errors/);
+  });
+
   it("the CI smoke test checks the same model path", () => {
     const smokePath = VERIFY_SCRIPT.match(/MODEL_PATH="([^"]+\.gguf)"/)?.[1];
     expect(smokePath).toBe(MEMORY_EMBEDDING_MODEL_PATH);

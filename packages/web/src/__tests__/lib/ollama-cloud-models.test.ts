@@ -157,6 +157,16 @@ describe("Ollama Cloud model catalog — empirically verified capabilities", () 
     expect(VISION_OLLAMA_CLOUD_MODEL_IDS.has("kimi-k2.7-code")).toBe(false);
   });
 
+  it("keeps the deepseek-v4 pair's context windows split: pro 512K, flash 1M", () => {
+    // These two look like they should match — same family, and both library
+    // pages claim 1M — but `ollama show` splits them: pro reports 524288,
+    // flash 1048576. So this guards against a well-meant "fix" in either
+    // direction. Rationale and the production incident behind pro's value:
+    // see ollama-cloud-models.ts.
+    expect(byId("deepseek-v4-pro")?.contextWindow).toBe(524288);
+    expect(byId("deepseek-v4-flash")?.contextWindow).toBe(1048576);
+  });
+
   it("every model declares vision and carries no dead capability fields", () => {
     for (const m of TOOL_CAPABLE_OLLAMA_CLOUD_MODELS) {
       expect(typeof m.vision).toBe("boolean");
