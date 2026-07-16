@@ -132,7 +132,13 @@ export const CURRENT_SOUL_HASH = hashSoul(SMITHERS_SOUL_MD);
 
 /**
  * True when `content` byte-matches a soul Pinchy shipped at some point — i.e.
- * it came from `createSmithersAgent` and the user has never edited it.
+ * the CONTENT is text we wrote, and nothing else can produce those bytes by
+ * accident.
+ *
+ * Note what this does NOT say: it is no proof that the user never touched the
+ * file. Someone who pastes an older shipped soul back byte-for-byte matches
+ * too. That is the accepted limit of the design — see the provenance note at
+ * the top of this file.
  *
  * The current soul counts as shipped. Callers that want "stale and pristine"
  * must check `hash !== CURRENT_SOUL_HASH` themselves.

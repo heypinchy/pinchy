@@ -105,7 +105,7 @@ You don't need to worry about these — Pinchy handles them on every startup:
 - **Database migrations** — Drizzle ORM tracks which migrations have been applied and only runs new ones. This is idempotent and safe to run repeatedly.
 - **OpenClaw configuration** — Rebuilt from your database state (agents, providers, permissions) every time Pinchy starts. Config format changes between versions are handled transparently.
 - **Plugins** — Copied from the source code into the OpenClaw extensions volume during the Docker build.
-- **Smithers' instructions** — Smithers answers questions about Pinchy by reading the documentation on demand, and we refresh the underlying instructions on startup so a long-running instance keeps pace with new releases. We only replace a `SOUL.md` that still matches one we shipped, so anything you've written in Agent Settings stays exactly as you left it.
+- **Smithers' instructions** — Smithers answers questions about Pinchy by reading the documentation on demand, and we refresh the underlying instructions on startup so a long-running instance keeps pace with new releases. We only replace a `SOUL.md` whose text still matches one we shipped — the moment you change a personality in Agent Settings, it's yours and we leave it alone. The flip side: a `SOUL.md` that matches one of our older versions word for word gets refreshed even if you put it there on purpose, and that applies to any agent, not just Smithers. To keep our text as a starting point, change a line — a single edit is enough to opt out for good.
 
 ## What you might need to check
 

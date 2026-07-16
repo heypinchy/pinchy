@@ -83,6 +83,42 @@ describe("migrateSmithersSoul", () => {
     expect(written).toContain("You do NOT know Pinchy's features from memory");
   });
 
+  // ── The accepted limit of the hash selector, pinned so it stays a decision
+  //    rather than a surprise. The migration matches OUR TEXT, wherever it
+  //    sits — it asks nothing about the agent row. Both cases below are
+  //    therefore upgrades, not skips, and docs/guides/upgrading.mdx is worded
+  //    to match ("we only replace a SOUL.md that still matches one we
+  //    shipped") rather than promising that everything typed in Agent Settings
+  //    survives. Change this behavior only with the collision guard in
+  //    smithers-soul-history.test.ts in view.
+  it("upgrades an unrelated agent whose SOUL.md was copied from Smithers", async () => {
+    // Someone builds a second assistant and pastes Smithers' soul in as a
+    // starting point, unchanged. The bytes are ours, so the sweep takes it.
+    findManyMock.mockResolvedValue([agentRow("copycat-1", "Research Buddy")]);
+    readWorkspaceFileMock.mockReturnValue(SOUL_2026_04_09);
+
+    await runMigration();
+
+    expect(writeWorkspaceFileMock).toHaveBeenCalledWith("copycat-1", "SOUL.md", SMITHERS_SOUL_MD);
+    // findMany is mocked, so the assertion above would stay green if someone
+    // narrowed the query to `where: eq(agents.isPersonal, true)` — the sweep
+    // would simply never see this agent in production. Pin the absence of a
+    // row filter here, where the reason for it is written down.
+    expect(findManyMock.mock.calls[0][0]).not.toHaveProperty("where");
+  });
+
+  it("upgrades a soul the user deliberately pasted back from an older release", async () => {
+    // The user preferred the old behavior and restored the file by hand. A
+    // byte match cannot distinguish that from a file we wrote ourselves, so
+    // they get upgraded anyway. Documented, not fixable by hashing alone.
+    findManyMock.mockResolvedValue([agentRow("smithers-1")]);
+    readWorkspaceFileMock.mockReturnValue(SOUL_2026_04_09);
+
+    await runMigration();
+
+    expect(writeWorkspaceFileMock).toHaveBeenCalledOnce();
+  });
+
   it("never touches a soul the user has customized", async () => {
     findManyMock.mockResolvedValue([agentRow("custom-1")]);
     readWorkspaceFileMock.mockReturnValue(SMITHERS_SOUL_MD + "\n\nAlways answer in haiku.\n");
@@ -215,6 +251,11 @@ describe("migrateSmithersSoul", () => {
   });
 
   it("keeps the sweep going when one agent's SOUL.md is unreadable", async () => {
+    // Guards the catch, not a reachable production path: the real
+    // readWorkspaceFile swallows fs errors and returns "" (covered by the
+    // missing-SOUL.md test above), so nothing but its agentId assertion can
+    // throw. This pins the loop's structure — one bad agent must not strand
+    // the rest — against a future readWorkspaceFile that propagates EIO.
     findManyMock.mockResolvedValue([agentRow("broken-1"), agentRow("smithers-2")]);
     readWorkspaceFileMock.mockImplementationOnce(() => {
       throw new Error("EIO");
