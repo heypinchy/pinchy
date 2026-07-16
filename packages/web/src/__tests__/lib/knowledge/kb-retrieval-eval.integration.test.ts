@@ -32,30 +32,51 @@ import type { GoldQuery } from "@/lib/eval/kb/types";
 const ORG_ID = "org-kb-eval";
 
 /**
- * Floors chosen from OBSERVED aggregate numbers on this frozen corpus +
- * committed bge-m3 fixture (`KB_EVAL_VERBOSE=1 pnpm test:db ...` prints the
- * same JSON this comment is transcribed from), rounded DOWN to the nearest
- * 0.05 and capped at the plan's suggested ceiling (0.9 recall / 0.7 MRR) so
- * the gate trips on a real regression but tolerates normal noise (e.g. an
- * HNSW `ef_search` tweak nudging candidate order by one rank).
+ * Floors chosen from OBSERVED aggregate + per-axis numbers on this frozen
+ * corpus + committed bge-m3 fixture (`KB_EVAL_VERBOSE=1 pnpm test:db ...`
+ * prints the same JSON this comment is transcribed from), rounded DOWN and
+ * set strictly BELOW observed so the gate trips on a real regression but
+ * tolerates normal noise (e.g. an HNSW `ef_search` tweak nudging candidate
+ * order by one rank).
  *
- * Observed (n=24): recallAt10 = 1.0, mrr = 0.9167, ndcgAt10 = 0.9385.
+ * Observed aggregate (n=24): recallAt10 = 1.0, mrr = 0.9167, ndcgAt10 = 0.9385.
  *
- * Per-axis (n=4 each): recallAt10 is a perfect 1.0 on EVERY axis, including
- * cross-lingual — bge-m3 bridges DE/EN cleanly on this corpus, so there is
- * no cross-lingual retrieval gap to flag. mrr/ndcgAt10 are a perfect 1.0/1.0
- * on happy, dedup, multi-hop, and distractor; path-citation and
- * cross-lingual are the only two axes below that, both at mrr = 0.75,
- * ndcgAt10 ≈ 0.8155 — the relevant chunk is still always recalled, just not
- * always ranked strictly first (e.g. a same-topic sibling chunk edges into
- * rank 1 on some path-citation/cross-lingual queries). This is expected
- * noise for those harder axes, not a correctness bug: recall is perfect, so
- * nothing relevant is ever missed, only occasionally out-ranked.
- *   recallAt10 floor: min(0.9, floor(1.0, 0.05)) = min(0.9, 1.0) = 0.9
- *   mrr floor: min(0.7, floor(0.9167, 0.05)) = min(0.7, 0.90) = 0.7
+ * Observed per-axis (n=4 each):
+ *   happy         recall 1.0  mrr 1.0   ndcg 1.0
+ *   path-citation recall 1.0  mrr 0.75  ndcg 0.8155
+ *   dedup         recall 1.0  mrr 1.0   ndcg 1.0
+ *   multi-hop     recall 1.0  mrr 1.0   ndcg 1.0
+ *   distractor    recall 1.0  mrr 1.0   ndcg 1.0
+ *   cross-lingual recall 1.0  mrr 0.75  ndcg 0.8155
+ *
+ * recall@10 is a perfect 1.0 on EVERY axis, including cross-lingual — bge-m3
+ * bridges DE/EN cleanly on this corpus, so there is no cross-lingual retrieval
+ * gap to flag. path-citation and cross-lingual are the only two axes below a
+ * perfect MRR (both 0.75): the relevant chunk is always recalled, just not
+ * always ranked strictly first (a same-topic sibling chunk edges into rank 1
+ * on some queries). Expected noise on those harder axes, not a correctness
+ * bug: recall is perfect, so nothing relevant is ever missed, only sometimes
+ * out-ranked.
+ *
+ * WHY per-axis floors matter (this is what gives the gate teeth): a ranking
+ * regression confined to ONE axis — a relevant chunk still recalled in top-10
+ * but shoved from rank 1 to rank 5+ — barely moves the n=24 aggregate MRR and
+ * would slip past an aggregate-only assertion. Asserting a per-axis MRR floor
+ * on every axis catches a single-axis collapse the aggregate hides.
+ *
+ * Floor derivation (all strictly below the corresponding observed minimum):
+ *   RECALL_FLOOR         = 0.9   (observed aggregate + per-axis min both 1.0)
+ *   MRR_FLOOR            = 0.7   (observed aggregate 0.9167)
+ *   NDCG_FLOOR           = 0.85  (observed aggregate 0.9385)
+ *   PER_AXIS_RECALL_FLOOR= 0.9   (observed per-axis min 1.0)
+ *   PER_AXIS_MRR_FLOOR   = 0.6   (observed per-axis min 0.75, on path-citation
+ *                                 & cross-lingual; 0.6 leaves headroom below)
  */
 const RECALL_FLOOR = 0.9;
 const MRR_FLOOR = 0.7;
+const NDCG_FLOOR = 0.85;
+const PER_AXIS_RECALL_FLOOR = 0.9;
+const PER_AXIS_MRR_FLOOR = 0.6;
 
 /**
  * Seeds the corpus and returns the mapping from the manifest's stable
@@ -134,10 +155,26 @@ it("achieves recall@10 and MRR floors over the gold set", async () => {
   const agg = aggregate(scores);
 
   if (process.env.KB_EVAL_VERBOSE) {
-    // eslint-disable-next-line no-console -- opt-in diagnostic, not CI noise
     console.log("KB eval Layer-1 aggregate:", JSON.stringify(agg, null, 2));
   }
 
+  // Aggregate floors.
   expect(agg.recallAt10).toBeGreaterThanOrEqual(RECALL_FLOOR);
   expect(agg.mrr).toBeGreaterThanOrEqual(MRR_FLOOR);
+  expect(agg.ndcgAt10).toBeGreaterThanOrEqual(NDCG_FLOOR);
+
+  // Per-axis floors: the aggregate can stay high while one axis quietly
+  // regresses (a relevant chunk shoved from rank 1 to rank 5+ within top-10).
+  // Assert EVERY axis clears its floor so a single-axis collapse can't hide.
+  for (const [axis, score] of Object.entries(agg.perAxis)) {
+    if (score.n === 0) continue; // no queries on this axis today, but guard it
+    expect(
+      score.recallAt10,
+      `axis ${axis}: recall@10 ${score.recallAt10} below floor ${PER_AXIS_RECALL_FLOOR}`
+    ).toBeGreaterThanOrEqual(PER_AXIS_RECALL_FLOOR);
+    expect(
+      score.mrr,
+      `axis ${axis}: MRR ${score.mrr} below floor ${PER_AXIS_MRR_FLOOR}`
+    ).toBeGreaterThanOrEqual(PER_AXIS_MRR_FLOOR);
+  }
 });

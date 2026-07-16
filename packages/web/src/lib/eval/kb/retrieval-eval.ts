@@ -6,6 +6,7 @@
  * scores those rankings against `metrics.ts` and averages them.
  */
 import { ndcgAtK, reciprocalRank, recallAtK } from "./metrics";
+import { KB_EVAL_AXES } from "./types";
 import type { GoldQuery, KbEvalAxis } from "./types";
 
 const K = 10;
@@ -36,15 +37,6 @@ export interface AggregateScore {
   perAxis: Record<KbEvalAxis, AxisScore>;
   n: number;
 }
-
-const ALL_AXES: KbEvalAxis[] = [
-  "happy",
-  "path-citation",
-  "dedup",
-  "multi-hop",
-  "distractor",
-  "cross-lingual",
-];
 
 /**
  * Runs `retrievalFn` for every gold query, in order, and scores each result
@@ -88,11 +80,17 @@ function summarize(scores: PerQueryScore[]): { recallAt10: number; mrr: number; 
  * not contributing any scores.
  */
 export function aggregate(scores: PerQueryScore[]): AggregateScore {
-  const perAxis = {} as Record<KbEvalAxis, AxisScore>;
-  for (const axis of ALL_AXES) {
-    const axisScores = scores.filter((s) => s.axis === axis);
-    perAxis[axis] = { ...summarize(axisScores), n: axisScores.length };
-  }
+  // Reduce over KB_EVAL_AXES so the Record is complete by construction — no
+  // `{} as Record<KbEvalAxis, AxisScore>` cast that would silently tolerate a
+  // missing axis if the union grew.
+  const perAxis = KB_EVAL_AXES.reduce(
+    (acc, axis) => {
+      const axisScores = scores.filter((s) => s.axis === axis);
+      acc[axis] = { ...summarize(axisScores), n: axisScores.length };
+      return acc;
+    },
+    {} as Record<KbEvalAxis, AxisScore>
+  );
 
   return {
     ...summarize(scores),

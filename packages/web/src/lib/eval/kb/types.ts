@@ -42,6 +42,36 @@ export interface GoldQuery {
 export type KbEvalAxis =
   "happy" | "path-citation" | "dedup" | "multi-hop" | "distractor" | "cross-lingual";
 
+/**
+ * The single source of truth for the KB eval axes as a runtime-iterable list
+ * (the `KbEvalAxis` union above is compile-time only). Consumers that need to
+ * loop over every axis — the Layer-1 scorecard's per-axis breakdown, per-axis
+ * gate assertions — import THIS rather than re-declaring their own array, so a
+ * new axis is added in exactly one place.
+ *
+ * `satisfies readonly KbEvalAxis[]` rejects a typo'd/removed member, and the
+ * `_Exhaustive` sentinel below rejects the other direction: if `KbEvalAxis`
+ * grows a member that is NOT listed here, `Exclude<...>` is a non-`never`
+ * union, so the conditional resolves to `never` and the `true` assignment is a
+ * compile error. (Verified by temporarily adding a fake union member — it
+ * errors — during review of the KB eval gate.)
+ */
+export const KB_EVAL_AXES = [
+  "happy",
+  "path-citation",
+  "dedup",
+  "multi-hop",
+  "distractor",
+  "cross-lingual",
+] as const satisfies readonly KbEvalAxis[];
+
+type _Exhaustive = Exclude<KbEvalAxis, (typeof KB_EVAL_AXES)[number]> extends never ? true : never;
+// Instantiated so the compile-time check is not dead code: if a KbEvalAxis
+// member is missing from KB_EVAL_AXES, `_Exhaustive` is `never` and this
+// `true` assignment fails to typecheck.
+const _exhaustiveCheck: _Exhaustive = true;
+void _exhaustiveCheck;
+
 /** A gold Q/A item for Layer 3 (groundedness). Extends GoldQuery with an answer key. */
 export interface GoldQA extends GoldQuery {
   /** A reference answer (for answer-relevance). Not string-matched — judged. */
