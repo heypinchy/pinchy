@@ -83,7 +83,21 @@ export function realpathWriteTarget(requestedPath: string): string {
  */
 export function assertNoSymlinkEscape(requestedPath: string, writePaths: string[]): void {
   const realTarget = realpathWriteTarget(requestedPath);
-  const contained = writePaths.some((p) => isUnderPath(realTarget, realpathWriteTarget(p)));
+  const contained = writePaths.some((p) => {
+    let realRoot: string;
+    try {
+      realRoot = realpathWriteTarget(p);
+    } catch {
+      // A root that exists but cannot be resolved at all (ELOOP, EACCES on a
+      // mount): it can never contain the target, so skip it. `some()`
+      // short-circuits in list order, so letting this propagate would let one
+      // broken root deny a write that a later valid root allows, and make the
+      // verdict depend on write_paths ordering. ENOENT is not handled here —
+      // realpathWriteTarget resolves a missing root rather than throwing.
+      return false;
+    }
+    return isUnderPath(realTarget, realRoot);
+  });
   if (!contained) {
     // Only state what is actually known: the resolved target isn't under any
     // configured write root. The previous message asserted "via a symlink"

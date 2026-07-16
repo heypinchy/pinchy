@@ -427,4 +427,46 @@ describe("assertNoSymlinkEscape (write-path symlink containment)", () => {
       rmSync(base, { recursive: true, force: true });
     }
   });
+
+  it("allows a write under a later valid root when an earlier root cannot be resolved", () => {
+    // A root that exists but cannot be resolved (here ELOOP; EACCES on a
+    // mount behaves the same) must not decide the outcome for the OTHER
+    // roots. `some()` short-circuits in list order, so letting the error
+    // propagate would make an unrelated broken root deny a legitimate write
+    // and make the verdict depend on write_paths ordering.
+    const base = mkdtempSync(join(tmpdir(), "pinchy-escape-"));
+    try {
+      const loopRoot = join(base, "loop-a");
+      symlinkSync(join(base, "loop-b"), loopRoot);
+      symlinkSync(loopRoot, join(base, "loop-b"));
+      const sandbox = join(base, "sandbox");
+      mkdirSync(sandbox);
+
+      expect(() =>
+        assertNoSymlinkEscape(join(sandbox, "ok.txt"), [loopRoot, sandbox])
+      ).not.toThrow();
+    } finally {
+      rmSync(base, { recursive: true, force: true });
+    }
+  });
+
+  it("denies with the normal access message when a write root cannot be resolved", () => {
+    // An unresolvable root is skipped, not swallowed into a raw fs error:
+    // the caller still gets the actionable allow-list message it can retry
+    // against, and the write stays denied.
+    const base = mkdtempSync(join(tmpdir(), "pinchy-escape-"));
+    try {
+      const loopRoot = join(base, "loop-a");
+      symlinkSync(join(base, "loop-b"), loopRoot);
+      symlinkSync(loopRoot, join(base, "loop-b"));
+      const sandbox = join(base, "sandbox");
+      mkdirSync(sandbox);
+
+      expect(() => assertNoSymlinkEscape(join(sandbox, "ok.txt"), [loopRoot])).toThrow(
+        /not under any configured write path/
+      );
+    } finally {
+      rmSync(base, { recursive: true, force: true });
+    }
+  });
 });
