@@ -47,14 +47,14 @@ import {
   pinchyPost,
   pinchyPatch,
   pinchyDelete,
-} from "../e2e/odoo/helpers";
-import { getAdminEmail, getAdminPassword } from "../e2e/email/helpers";
+} from "../../e2e/odoo/helpers";
+import { getAdminEmail, getAdminPassword } from "../../e2e/email/helpers";
 import {
   loginViaUI,
   waitForOpenClawStable,
   waitForAgentDispatchable,
-} from "../e2e/shared/dispatch-probe";
-import { stackDbUrl } from "../e2e/shared/stack-db";
+} from "../../e2e/shared/dispatch-probe";
+import { stackDbUrl } from "../../e2e/shared/stack-db";
 import { dispatchAndScrape } from "../run-eval";
 import {
   requireOllamaCloudApiKey,
@@ -254,7 +254,7 @@ async function setupKbSweepAgent(cookie: string): Promise<{ agentId: string }> {
 
   await waitForOpenClawStable(() => pinchyGet("/api/health/openclaw", cookie));
   await waitForAgentDispatchable(
-    (id) => pinchyGet(`/api/health/openclaw?agentId=${id}`, cookie),
+    (id: string) => pinchyGet(`/api/health/openclaw?agentId=${id}`, cookie),
     agentId,
     {
       deadlineMs: 120_000,
@@ -381,7 +381,7 @@ test.describe("KB Eval Harness Layer 3: groundedness sweep (real Ollama Cloud)",
             await pinAgentModel(cookie, agentId, model);
             await waitForOpenClawStable(() => pinchyGet("/api/health/openclaw", cookie));
             await waitForAgentDispatchable(
-              (id) => pinchyGet(`/api/health/openclaw?agentId=${id}`, cookie),
+              (id: string) => pinchyGet(`/api/health/openclaw?agentId=${id}`, cookie),
               agentId
             );
           }, `setup ${model}`);

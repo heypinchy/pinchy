@@ -200,7 +200,7 @@ export type KbEvalCorpus = "synthetic" | "noack";
  * silent fall-through to synthetic).
  */
 export function corpusFromEnv(
-  env: NodeJS.ProcessEnv = process.env,
+  env: Record<string, string | undefined> = process.env,
   argv: string[] = process.argv
 ): KbEvalCorpus {
   const argFlag = argv
@@ -293,7 +293,7 @@ export function retrievedSourcesFromAuditEntries(
  * doc comment for why this must be an explicit opt-in, never a guessed
  * default path.
  */
-export function noackCorpusDir(env: NodeJS.ProcessEnv = process.env): string {
+export function noackCorpusDir(env: Record<string, string | undefined> = process.env): string {
   const dir = env.KB_EVAL_CORPUS_DIR?.trim();
   if (!dir) {
     throw new Error(
