@@ -2,7 +2,7 @@ import { Readability } from "@mozilla/readability";
 import { parseHTML } from "linkedom";
 import dns from "node:dns/promises";
 import net from "node:net";
-import { Agent } from "undici";
+import { Agent, fetch as undiciFetch } from "undici";
 
 export interface WebFetchConfig {
   allowedDomains?: string[];
@@ -83,28 +83,54 @@ async function resolveHost(hostname: string): Promise<ResolvedHost> {
 // Custom undici lookup hook that returns the pre-resolved address. This
 // closes the DNS-rebinding TOCTOU window between the SSRF guard's resolve
 // and fetch's own connect-time resolve — both now use the same IP.
+type LookupAddress = { address: string; family: number };
 type LookupCallback = (
   err: Error | null,
-  address: string,
-  family: number,
+  address: string | LookupAddress[],
+  family?: number,
 ) => void;
+type LookupOptions = { all?: boolean };
 type LookupFunction = (
   hostname: string,
-  options: object,
+  options: LookupOptions,
   callback: LookupCallback,
 ) => void;
 
 export function pinnedLookup(address: string, family: 4 | 6): LookupFunction {
-  return (_hostname, _options, callback) => {
-    callback(null, address, family);
+  return (_hostname, options, callback) => {
+    // Honour both halves of Node's dns.lookup contract. With `all: true` the
+    // callback takes an array of {address, family}; otherwise the flat
+    // (address, family) form. undici's connector asks for `all`, and answering
+    // it in the flat form leaves it reading `undefined` as the address —
+    // ERR_INVALID_IP_ADDRESS, surfaced only as an opaque "fetch failed".
+    if (options?.all) callback(null, [{ address, family }]);
+    else callback(null, address, family);
   };
 }
 
-function buildPinnedAgent(address: string, family: 4 | 6): Agent {
+export function buildPinnedAgent(address: string, family: 4 | 6): Agent {
   return new Agent({
     connect: { lookup: pinnedLookup(address, family) },
   });
 }
+
+// MUST come from the same undici as `Agent` above. Node's global fetch is backed
+// by Node's own bundled undici, whose request handlers fail the npm package's
+// `assertRequestHandler` — handing it an Agent from here dies with
+// UND_ERR_INVALID_ARG on every dispatch, reported only as `TypeError: fetch
+// failed`. Do not "simplify" this back to the global fetch.
+//
+// The cast keeps this module on the DOM lib's fetch types: undici's fetch is the
+// same WHATWG implementation Node re-exports, and every member used here
+// (status, statusText, ok, headers.get, body.getReader, text) is identical on
+// both — only the nominal declarations differ.
+//
+// Exported so web-fetch-dispatcher.test.ts can drive this pair against a real
+// server; the mocked-fetch suite cannot see whether undici accepts the Agent.
+export const httpFetch = undiciFetch as unknown as (
+  url: string,
+  init: RequestInit,
+) => Promise<Response>;
 
 // Normalize a hostname so our allow/deny comparison is case-insensitive and
 // tolerates the trailing dot that DNS uses for fully-qualified names. Node's
@@ -137,6 +163,19 @@ function checkDomainAllowed(
     }
   }
   return null;
+}
+
+// undici collapses every transport-level failure into a bare `TypeError: fetch
+// failed` and hangs the actual reason off `.cause` — the DNS/TCP/TLS errno, or an
+// InvalidArgumentError when it rejects the dispatcher. Without the cause an agent
+// cannot tell "this site is unreachable" from "our HTTP client is broken", so
+// both reach the user as the same dead end.
+function describeFetchError(err: unknown): string {
+  if (!(err instanceof Error)) return String(err);
+  const cause = err.cause;
+  if (!(cause instanceof Error)) return err.message;
+  const code = (cause as NodeJS.ErrnoException).code;
+  return `${err.message} (${code ? `${code}: ${cause.message}` : cause.message})`;
 }
 
 // Read a response body but stop once `maxBytes` have been read, so a huge or
@@ -302,7 +341,7 @@ export async function webFetch(
     let res: Response | undefined;
 
     for (let i = 0; i <= MAX_REDIRECT_HOPS; i++) {
-      res = await fetch(currentUrl, {
+      res = await httpFetch(currentUrl, {
         headers: { "User-Agent": "PinchyBot/1.0" },
         signal: AbortSignal.timeout(30000),
         redirect: "manual",
@@ -378,8 +417,7 @@ export async function webFetch(
 
     return extractReadableContent(text, contentType, maxChars);
   } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
-    return { content: `Failed to fetch URL: ${message}`, isError: true };
+    return { content: `Failed to fetch URL: ${describeFetchError(err)}`, isError: true };
   } finally {
     dispatcher?.close().catch(() => {});
   }

@@ -42,6 +42,7 @@ function row(over: Partial<InsertableUsageRow>): InsertableUsageRow {
     estimatedCostUsd: null,
     runId: "run-1",
     seq: 5,
+    contextTokens: null,
     ...over,
   };
 }
@@ -139,8 +140,13 @@ describe("per-turn usage accounting (#483) — real Postgres", () => {
           config: {
             models: {
               providers: {
+                // Bare id, exactly as openclaw-config/build.ts emits it. This
+                // fixture used to say "anthropic/claude-sonnet-4-6" — a shape
+                // the real config never produces — which made the pricing
+                // lookup match for the wrong reason and hid the fact that the
+                // per-turn path asks with a qualified id.
                 anthropic: {
-                  models: [{ id: "anthropic/claude-sonnet-4-6", cost: { input: 3, output: 15 } }],
+                  models: [{ id: "claude-sonnet-4-6", cost: { input: 3, output: 15 } }],
                 },
               },
             },

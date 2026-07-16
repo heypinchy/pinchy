@@ -32,6 +32,8 @@ export interface InsertableUsageRow {
   estimatedCostUsd: string | null;
   runId: string;
   seq: number;
+  /** Context-window pressure for this turn — see PerTurnUsage.contextTokens. */
+  contextTokens: number | null;
 }
 
 export interface UsageRowContext {
@@ -78,6 +80,7 @@ export function buildUsageRows(
         : null,
       runId: t.runId,
       seq: t.seq,
+      contextTokens: t.contextTokens,
     };
   });
 }

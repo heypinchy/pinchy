@@ -2174,11 +2174,13 @@ describe("regenerateOpenClawConfig", () => {
     expect(ctx["qwen3.5:397b"]).toBe(262144);
     // 384K
     expect(ctx["devstral-small-2:24b"]).toBe(393216);
+    // 512K — deepseek-v4-pro belongs here, not with flash below, despite its
+    // library page claiming 1M (see ollama-cloud-models.ts)
+    expect(ctx["deepseek-v4-pro"]).toBe(524288);
     // 512K — minimax-m3's guaranteed minimum (library page: "up to 1M")
     expect(ctx["minimax-m3"]).toBe(524288);
     // 1M
     expect(ctx["deepseek-v4-flash"]).toBe(1048576);
-    expect(ctx["deepseek-v4-pro"]).toBe(1048576);
     expect(ctx["gemini-3-flash-preview"]).toBe(1048576);
     expect(ctx["nemotron-3-nano:30b"]).toBe(1048576);
   });
