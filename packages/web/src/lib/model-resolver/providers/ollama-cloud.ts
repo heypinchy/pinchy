@@ -57,8 +57,12 @@ const BY_TIER_FAMILY: Record<
     // refs through a multi-turn tool loop. kimi-k2.6 is vision+tools with 256K
     // context, already trusted for the balanced tier's vision+general slots,
     // and emitted 0 malformed tool calls across 112 calls in the Penny session
-    // that minimax failed. The v0.5.3 kimi silent-500 note that previously kept
-    // the family out of this slot predates the k2.6 catalog entry.
+    // that minimax failed. The eval-v1 sweep agrees on aggregate (scorecard
+    // table in blocklist.ts): kimi beats gemma4:31b on duplicate, distractor and
+    // silent-failure, with gemma4 marginally ahead only on lineitems (11/12 vs
+    // 10/12) — an aggregate call, not a rout. The v0.5.3 kimi silent-500 note
+    // that previously kept the family out of this slot predates the k2.6
+    // catalog entry.
     //
     // Trade-off, deliberate: kimi-k2.6 is a non-thinking-preferred tool-driver,
     // so a reasoning-tier turn that ALSO needs vision loses thinking. Reliable
