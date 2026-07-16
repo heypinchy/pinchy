@@ -38,7 +38,7 @@ describe("TOOL_REGISTRY", () => {
 
   it("contains powerful tools", () => {
     const powerful = TOOL_REGISTRY.filter((t) => t.category === "powerful");
-    expect(powerful.length).toBe(17);
+    expect(powerful.length).toBe(18);
     expect(powerful.map((t) => t.id)).toEqual([
       "pinchy_web_search",
       "pinchy_web_fetch",
@@ -51,6 +51,7 @@ describe("TOOL_REGISTRY", () => {
       "odoo_validate_picking",
       "odoo_mark_mo_done",
       "odoo_set_approval",
+      "odoo_reconcile",
       "odoo_write",
       "odoo_delete",
       "odoo_attach_file",
@@ -317,8 +318,8 @@ describe("allow-list drift guard vs OpenClaw built-in tool groups", () => {
 describe("Odoo access level helpers", () => {
   it("all odoo tools have integration: 'odoo'", () => {
     const odooTools = TOOL_REGISTRY.filter((t) => t.id.startsWith("odoo_"));
-    // 17 active tools + 1 deprecated alias (odoo_schema) = 18.
-    expect(odooTools.length).toBe(18);
+    // 18 active tools + 1 deprecated alias (odoo_schema) = 19.
+    expect(odooTools.length).toBe(19);
     for (const tool of odooTools) {
       expect(tool.integration).toBe("odoo");
     }
@@ -380,7 +381,7 @@ describe("Odoo access level helpers", () => {
     ]);
   });
 
-  it("getOdooToolsForAccessLevel('read-write') returns 16 tools", () => {
+  it("getOdooToolsForAccessLevel('read-write') returns 17 tools", () => {
     const tools = getOdooToolsForAccessLevel("read-write");
     expect(tools).toEqual([
       "odoo_list_models",
@@ -397,12 +398,13 @@ describe("Odoo access level helpers", () => {
       "odoo_validate_picking",
       "odoo_mark_mo_done",
       "odoo_set_approval",
+      "odoo_reconcile",
       "odoo_write",
       "odoo_attach_file",
     ]);
   });
 
-  it("getOdooToolsForAccessLevel('full') returns all 17 tools", () => {
+  it("getOdooToolsForAccessLevel('full') returns all 18 tools", () => {
     const tools = getOdooToolsForAccessLevel("full");
     expect(tools).toEqual([
       "odoo_list_models",
@@ -419,6 +421,7 @@ describe("Odoo access level helpers", () => {
       "odoo_validate_picking",
       "odoo_mark_mo_done",
       "odoo_set_approval",
+      "odoo_reconcile",
       "odoo_write",
       "odoo_attach_file",
       "odoo_delete",
@@ -430,9 +433,9 @@ describe("Odoo access level helpers", () => {
     expect(tools).toEqual(["odoo_list_models", "odoo_describe_model"]);
   });
 
-  it("getOdooTools() returns exactly 18 tools (17 active + 1 deprecated alias)", () => {
+  it("getOdooTools() returns exactly 19 tools (18 active + 1 deprecated alias)", () => {
     const tools = getOdooTools();
-    expect(tools).toHaveLength(18);
+    expect(tools).toHaveLength(19);
     expect(tools.every((t) => t.integration === "odoo")).toBe(true);
   });
 

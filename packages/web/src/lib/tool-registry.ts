@@ -157,6 +157,14 @@ export const TOOL_REGISTRY: readonly ToolDefinition[] = [
     integration: "odoo",
   },
   {
+    id: "odoo_reconcile",
+    label: "Odoo: Reconcile payment",
+    description:
+      "Match a posted bill or invoice against a bank transaction or payment, and verify the result on the document",
+    category: "powerful",
+    integration: "odoo",
+  },
+  {
     id: "odoo_write",
     label: "Odoo: Update records",
     description: "Modify existing records in Odoo",
@@ -375,6 +383,7 @@ const ODOO_WRITE_TOOLS = [
   "odoo_validate_picking",
   "odoo_mark_mo_done",
   "odoo_set_approval",
+  "odoo_reconcile",
   "odoo_write",
   "odoo_attach_file",
 ] as const;
@@ -394,6 +403,7 @@ const ODOO_ADDITIVE_TOOLS = new Set<string>([
   "odoo_validate_picking",
   "odoo_mark_mo_done",
   "odoo_set_approval",
+  "odoo_reconcile",
 ]);
 
 /** Returns all Odoo tool definitions from the registry. */
