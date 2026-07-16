@@ -9,12 +9,12 @@ The Agent Provisioning API is a programmatic, non-browser way to create, list, g
 
 It's built for scripts, CI/CD pipelines, and infrastructure-as-code — not for the browser. The motivating use case is resetting a demo or staging instance to a known state on every release, without depending on database snapshots that break across schema migrations. The same foundation works for provisioning agents per team or organization as part of a deployment pipeline.
 
-|                  | [Session API](/reference/api/)                                       | Agent Provisioning API                                     |
-| ---------------- | -------------------------------------------------------------------- | ---------------------------------------------------------- |
-| Auth             | Session cookie, set by logging in through the web UI                 | API key, sent in a header on every request                 |
-| URL prefix       | `/api/*`                                                             | `/api/v1/*`                                                |
-| Agent visibility | Per-user — `GET /api/agents` returns what the signed-in user can see | Org-wide — `GET /api/v1/agents` always returns every agent |
-| Typical caller   | The Pinchy web UI                                                    | Scripts, CI/CD, infrastructure-as-code                     |
+|                  | [Session API](/reference/api/)                                       | Agent Provisioning API                                                                                            |
+| ---------------- | -------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------- |
+| Auth             | Session cookie, set by logging in through the web UI                 | API key, sent in a header on every request                                                                        |
+| URL prefix       | `/api/*`                                                             | `/api/v1/*`                                                                                                       |
+| Agent visibility | Per-user — `GET /api/agents` returns what the signed-in user can see | Org-wide for shared agents — `GET /api/v1/agents` returns every shared agent; personal agents are always excluded |
+| Typical caller   | The Pinchy web UI                                                    | Scripts, CI/CD, infrastructure-as-code                                                                            |
 
 Only agent create/list/get/delete are covered by API keys today. Updating an agent and listing templates remain session-only — see the [`POST /api/v1/agents`](#post-apiv1agents) notes below.
 
@@ -244,17 +244,28 @@ Store new keys somewhere the team can reach — a shared secret store, not a per
 
 Setting an expiry when you create a key puts a ceiling on all of this: an expired key stops working regardless of who is holding it.
 
+## Rate limiting
+
+There is no rate limit on `/api/v1/*`. A key that authenticates can call any endpoint it's [scoped](#scopes) for as fast as the client sends requests.
+
+Better Auth's API key plugin ships a per-key limiter, but its default — 10 requests per 24 hours — would throttle a legitimately busy CI pipeline or provisioning script, so Pinchy turns it off. Better Auth's own general-purpose rate limiter doesn't step in either: it guards Better Auth's router, and `/api/v1/*` never passes through it — key verification happens through a direct server-side call instead.
+
+This is a known gap, not a feature. If you expose this API outside a trusted network, put rate limiting in front of it yourself — a reverse proxy is the usual place. The one thing that's bounded regardless is the audit trail itself: a request denied for a missing scope is throttled to one row per key per minute (see [Auditing](#auditing) below), so a client hammering the API can't also turn the audit log into a flood.
+
 ## Auditing
 
-Every provisioning action taken with a key, and every key lifecycle event, is written to the [audit trail](/concepts/audit-trail/).
+Every provisioning action taken with a key is written to the [audit trail](/concepts/audit-trail/). So is key lifecycle when an admin drives it — issuing and revoking a key through Settings → API Keys.
 
-| Event             | Actor       | When                                                                                        |
-| ----------------- | ----------- | ------------------------------------------------------------------------------------------- |
-| `agent.created`   | the API key | `POST /api/v1/agents` succeeds, or fails with `422`                                         |
-| `agent.deleted`   | the API key | `DELETE /api/v1/agents/:agentId` succeeds                                                   |
-| `config.changed`  | the API key | `POST /api/v1/agents` auto-configures an integration connection's permissions for the agent |
-| `api_key.created` | the admin   | A key is issued in Settings → API Keys                                                      |
-| `api_key.deleted` | the admin   | A key is revoked in Settings → API Keys                                                     |
+| Event               | Actor       | When                                                                                                  |
+| ------------------- | ----------- | ----------------------------------------------------------------------------------------------------- |
+| `agent.created`     | the API key | `POST /api/v1/agents` succeeds, or fails with `422`                                                   |
+| `agent.deleted`     | the API key | `DELETE /api/v1/agents/:agentId` succeeds                                                             |
+| `config.changed`    | the API key | `POST /api/v1/agents` auto-configures an integration connection's permissions for the agent           |
+| `auth.scope_denied` | the API key | A verified key is missing a required [scope](#scopes) (403) — throttled to one row per key per minute |
+| `api_key.created`   | the admin   | A key is issued in Settings → API Keys                                                                |
+| `api_key.deleted`   | the admin   | A key is revoked in Settings → API Keys                                                               |
+
+A denial that lands inside an open one-minute window isn't dropped, either — the next `auth.scope_denied` row that does get written carries a `suppressedSinceLastEntry` count of how many were folded into it, so the trail still shows the volume even though it isn't writing a row per attempt.
 
 Actions taken **with** a key are logged with `actorType: "api_key"` and the key's own id as `actorId` — the key is its own accountable actor, not a stand-in for a person. Each entry's `detail` also carries an `apiKey: { id, name }` snapshot, so the trail still names the key in plain language after the key itself has been revoked and its row is gone.
 
@@ -263,5 +274,7 @@ There's no delegation field pointing back at the admin who created the key, beca
 Filtering the audit trail by a person, then, won't surface actions taken by keys they created — correctly, since they didn't take them. To follow a key's own trail, filter by its id.
 
 Issuing and revoking keys, by contrast, are admin actions performed through the browser — they're logged with `actorType: "user"`, never `"api_key"`.
+
+Expiry isn't one of these lifecycle events. When a key expires, Better Auth deletes its row itself — either the next time the key is used, or during a periodic sweep that runs whenever any key is created — and neither path writes an audit row. There's nothing at risk in that: the key was already refusing every request from the moment it expired. But it does mean an expired key can disappear from Settings → API Keys with only its `api_key.created` entry in the trail — there's no matching `api_key.deleted` unless an admin revoked it first.
 
 `GET` requests are read-only and aren't audited, same as the rest of Pinchy's API.

@@ -68,6 +68,7 @@ exports too.
 | `auth.csrf_blocked`             | A state-changing request was rejected because its `Origin` / `Referer` headers didn't match the locked domain. Detail captures `method`, `pathname`, `origin`, `referer`, and `remoteAddress` — see [Hardening › CSRF gate](/guides/hardening/#cross-site-request-forgery-csrf-protection).                                                                                             |
 | `auth.password_reset_completed` | A user finished a password-reset invite. On success, detail snapshots the target `{id, name}` and the invite id; all of that user's existing sessions are revoked in the same transaction. On failure (rare — e.g. DB error mid-flow), `outcome: failure` is written with the error message and the entire reset rolls back so the old password and the reset token both remain usable. |
 | `auth.password_changed`         | A signed-in user changed their own password from their profile. Distinct from `auth.password_reset_completed`, which is the invite-token flow — this one required knowing the current password. A wrong current password writes `outcome: failure`.                                                                                                                                     |
+| `auth.scope_denied`             | A verified [Agent Provisioning API](/reference/agent-provisioning-api/) key made a request without a required scope (403). Actor is the key itself (`actorType: "api_key"`), throttled to one row per key per minute — see [Auditing](/reference/agent-provisioning-api/#auditing) for the `suppressedSinceLastEntry` detail.                                                           |
 
 ### Agent management
 
@@ -213,6 +214,15 @@ Before Pinchy 0.5.4, integration lifecycle events were logged under `config.chan
 | `settings.updated`            | The locked domain was changed. Resource is `settings:domain`. Detail records a `changes` diff (`{ domain: { from, to } }`); unlocking the domain writes `to: null`.                                                                                                                                                                                                                                                             |
 | `settings.deleted`            | A provider was removed from the settings. Resource is `settings:provider:<provider>`. Detail records the provider `name`, the `provider` id, `wasDefault`, `agentCount` (how many agents were reassigned to the remaining provider's default model), the `migratedAgents` list (capped at 10 inline, with `migratedAgentsTruncated` set when there were more), and `newDefault` when the removed provider had been the default. |
 
+### API keys
+
+| Event Type        | Description                                                                                                                                                                 |
+| ----------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `api_key.created` | An [Agent Provisioning API](/reference/agent-provisioning-api/) key was issued. Detail records the key's `id`, `name`, `scopes`, and `expiresAt` — never the plaintext key. |
+| `api_key.deleted` | An Agent Provisioning API key was revoked. The key's own row is hard-deleted immediately, so detail snapshots its `name` — the only place it survives afterward.            |
+
+Both events are logged with `actorType: "user"` — a human admin issues and revokes a key through the browser. The key itself acts as `api_key` for everything it does afterward; see [Agent Provisioning API › Auditing](/reference/agent-provisioning-api/#auditing) for that side of the lifecycle, including what happens (and what isn't logged) when a key expires without ever being revoked.
+
 ### Audit trail access
 
 | Event Type              | Description                                                                                                                                                                                                                                                                                                                                                                                |
@@ -263,7 +273,9 @@ Hash determinism depends on every Pinchy instance using the **same** `audit_hmac
 
 Every row logged for a signed-in user carries `actorType: "user"` and an `actorId`. Because that id identifies a person, and the audit log is HMAC-signed and append-only, a raw `users.id` written into `actorId` would — like a raw email address — survive every right-to-erasure request.
 
-Pinchy avoids this with **pseudonymisation**: each user has a random `auditPseudonym` stored on their (mutable) `users` row. When a row is written for that user, Pinchy substitutes the pseudonym for the raw id in `actorId` — before the row is signed, so the hash chain covers the pseudonym consistently. The audit log itself therefore carries no direct identifier: a human-readable name is resolvable only by joining the separate `users` table (matching either the pseudonym or, for rows written before this feature shipped, the raw id). The admin UI and CSV/PDF exports do that join.
+Pinchy avoids this with **pseudonymisation**: each user has a random `auditPseudonym` stored on their (mutable) `users` row. When a row is written for that user, Pinchy substitutes the pseudonym for the raw id in `actorId` — before the row is signed, so the hash chain covers the pseudonym consistently. The audit log itself therefore carries no direct identifier: for a `user` row, a human-readable name is resolvable only by joining the separate `users` table (matching either the pseudonym or, for rows written before this feature shipped, the raw id). The admin UI and CSV/PDF exports do that join.
+
+An `api_key` row works differently, and deliberately doesn't join at all. Its name is snapshotted into `detail.apiKey.name` at the moment the row is written, so it survives the key's own revocation — which hard-deletes the key's row outright, leaving nothing left to join against. See [Agent Provisioning API › Auditing](/reference/agent-provisioning-api/#auditing) for the full key lifecycle.
 
 This is what makes **crypto-erasure** possible. Because the only link from a pseudonym back to a person is the `auditPseudonym` value on the mutable `users` row, removing that row (or clearing the column) makes every audit row written for that user unlinkable — the immutable trail stays intact, but nothing in the database can resolve the pseudonym to a name anymore. The admin UI then shows the raw `actorId` as an opaque token, which is the intended erased state, not a display bug.
 
@@ -334,7 +346,7 @@ EU AI Act Article 12 (record-keeping for high-risk AI systems, applicable from 2
 Every export — regardless of format — contains:
 
 - **Timestamp** (UTC, ISO 8601)
-- **Actor** — name (snapshotted) and ID, plus type (user, agent, system)
+- **Actor** — name (snapshotted) and ID, plus type (user, agent, system, api_key — a key acting for the organization; the key itself is the actor, not the admin who created it)
 - **Event type** — what happened (`auth.login`, `agent.updated`, `tool.pinchy_read`, …)
 - **Resource** — name (snapshotted) and ID of the affected entity, where applicable
 - **Status** — `success` or `failure` (legacy entries before status tracking show empty)
