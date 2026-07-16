@@ -1,17 +1,17 @@
 # Prettier check for docs & workflow files.
 #
-# The main CI workflow (`ci.yml`) is deliberately `paths-ignore: [docs/**,
-# **/*.md, ...]` so its heavy build/test/e2e matrix does not run on docs-only
-# changes. But that also meant its "Format check (docs & workflows)" step never
-# ran on the docs PRs it exists to guard — it only fired as collateral on
-# unrelated code PRs, where a pre-existing docs-formatting slip surfaced as a
-# confusing failure attributed to unrelated code (observed: an unformatted
-# .mdx merged via a docs-only PR, then reddened a plugin PR's CI).
+# `ci.yml` skips its heavy build/test/e2e matrix on docs-only changes (its
+# `changes` job gates every expensive job). Its old "Format check (docs &
+# workflows)" step therefore never ran on the docs PRs it existed to guard —
+# it only fired as collateral on unrelated code PRs, where a pre-existing
+# docs-formatting slip surfaced as a confusing failure attributed to unrelated
+# code (observed: an unformatted .mdx merged via a docs-only PR, then reddened
+# a plugin PR's CI).
 #
 # This dedicated workflow closes that gap: it runs the exact same prettier
-# check, but triggers on the docs/workflow paths themselves (the inverse of
-# ci.yml's ignore), so docs formatting is validated on the PR that changes it.
-# It is intentionally lightweight (checkout + setup + one prettier run).
+# check, but triggers on the docs/workflow paths themselves, so docs formatting
+# is validated on the PR that changes it. It is intentionally lightweight
+# (checkout + setup + one prettier run).
 name: Docs & Workflow Format
 
 on:
