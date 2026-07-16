@@ -133,4 +133,27 @@ describe("openclaw config: internal hooks for the memory group filter", () => {
     expect(config.hooks.internal.load.extraDirs).toContain("/opt/pinchy-hooks");
     expect(config.hooks.internal.load.extraDirs).toContain("/somewhere/else");
   });
+
+  it("does not duplicate /opt/pinchy-hooks when it is already present", async () => {
+    // A repeated regenerate reads back its own previous output, so the merge
+    // must stay idempotent — no growing extraDirs list across restarts.
+    mockedReadFileSync.mockReturnValue(
+      JSON.stringify({
+        ...gatewayConfig,
+        hooks: {
+          internal: {
+            enabled: true,
+            load: { extraDirs: ["/opt/pinchy-hooks", "/somewhere/else"] },
+          },
+        },
+      })
+    );
+
+    await regenerateOpenClawConfig();
+    const config = writtenConfig();
+
+    const dirs: string[] = config.hooks.internal.load.extraDirs;
+    expect(dirs.filter((d) => d === "/opt/pinchy-hooks")).toHaveLength(1);
+    expect(dirs).toContain("/somewhere/else");
+  });
 });

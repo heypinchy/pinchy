@@ -1,6 +1,19 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 
+/** Runs `fn` with console.warn captured; returns the array of warning arg-lists. */
+async function captureWarnings(fn) {
+  const warnings = [];
+  const original = console.warn;
+  console.warn = (...args) => warnings.push(args);
+  try {
+    await fn();
+  } finally {
+    console.warn = original;
+  }
+  return warnings;
+}
+
 import {
   isGroupSessionKey,
   filterGroupBootstrap,
@@ -93,9 +106,57 @@ test("hook handler: leaves a DM session bootstrap untouched", async () => {
   );
 });
 
-test("hook handler: tolerates a non-bootstrap event shape", async () => {
-  // Not an agent:bootstrap event (no bootstrapFiles array) — must no-op, not throw.
-  await bootstrapMemoryGroupFilterHook({ context: { sessionKey: GROUP_KEY } });
-  await bootstrapMemoryGroupFilterHook({});
-  await bootstrapMemoryGroupFilterHook(undefined);
+test("hook handler: normal group/DM events run silently (no contract warning)", async () => {
+  const groupWarnings = await captureWarnings(() =>
+    bootstrapMemoryGroupFilterHook({
+      context: {
+        sessionKey: GROUP_KEY,
+        bootstrapFiles: [file("AGENTS.md"), file("MEMORY.md")],
+      },
+    }),
+  );
+  const dmWarnings = await captureWarnings(() =>
+    bootstrapMemoryGroupFilterHook({
+      context: { sessionKey: DM_KEY, bootstrapFiles: [file("MEMORY.md")] },
+    }),
+  );
+  assert.deepEqual(groupWarnings, []);
+  assert.deepEqual(dmWarnings, []);
+});
+
+test("hook handler: warns instead of failing open when bootstrapFiles is missing", async () => {
+  // We're wired to agent:bootstrap only, so a missing bootstrapFiles array means
+  // the OpenClaw event contract changed. A silent no-op would re-open #369, so the
+  // handler must surface the anomaly loudly — and still not throw.
+  const warnings = await captureWarnings(() =>
+    bootstrapMemoryGroupFilterHook({ context: { sessionKey: GROUP_KEY } }),
+  );
+  assert.equal(warnings.length, 1);
+  assert.match(String(warnings[0][0]), /bootstrap-memory-group-filter/);
+});
+
+test("hook handler: warns when sessionKey is missing (cannot classify session)", async () => {
+  // Without a sessionKey we cannot tell a group from a DM, so we must not filter —
+  // but a real bootstrap event always carries one, so its absence is a contract
+  // anomaly that must warn rather than silently skip the filter.
+  const files = [file("AGENTS.md"), file("MEMORY.md")];
+  const event = { context: { bootstrapFiles: files } };
+  const warnings = await captureWarnings(() =>
+    bootstrapMemoryGroupFilterHook(event),
+  );
+  assert.equal(warnings.length, 1);
+  // Files are left untouched — we cannot safely decide to strip without the key.
+  assert.deepEqual(
+    event.context.bootstrapFiles.map((f) => f.name),
+    ["AGENTS.md", "MEMORY.md"],
+  );
+});
+
+test("hook handler: stays silent and no-throws on context-less events", async () => {
+  const warnings = await captureWarnings(async () => {
+    await bootstrapMemoryGroupFilterHook({});
+    await bootstrapMemoryGroupFilterHook(undefined);
+    await bootstrapMemoryGroupFilterHook({ context: null });
+  });
+  assert.deepEqual(warnings, []);
 });

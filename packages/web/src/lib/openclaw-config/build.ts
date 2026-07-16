@@ -778,6 +778,11 @@ export async function regenerateOpenClawConfig() {
     // managed dir), because ~/.openclaw is a persisted volume that would shadow
     // anything the image bakes into it. extraDirs is deduped and merged with any
     // OpenClaw-enriched hooks state so a regenerate is idempotent and lossless.
+    //
+    // `enabled: true` is a deliberate OVERRIDE, not a merge: the #369 leak
+    // protection depends on the internal-hook loader being on, so Pinchy forces
+    // it back on every regenerate even if something set it to false. Sibling
+    // fields (entries, other load.* keys) are preserved via the spreads.
     hooks: {
       ...existingHooks,
       internal: {

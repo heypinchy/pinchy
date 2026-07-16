@@ -68,14 +68,36 @@ export function filterGroupBootstrap(files, sessionKey) {
 
 /**
  * `agent:bootstrap` hook entry point. Mutates the event's bootstrap set in
- * place (by reassignment) so the caller sees the filtered list. No-ops for any
- * event that isn't a bootstrap event carrying a bootstrapFiles array.
+ * place (by reassignment) so the caller sees the filtered list.
+ *
+ * This is a data-disclosure mitigation, so it must FAIL LOUD, not fail open.
+ * The handler is only ever wired to `agent:bootstrap`, so once an event carries
+ * a `context` object it MUST also carry a `bootstrapFiles` array and a string
+ * `sessionKey`. If either is absent, OpenClaw changed the event contract out
+ * from under us — a silent no-op there would re-open the MEMORY.md leak (#369)
+ * with no signal, so we `console.warn` (OpenClaw surfaces hook stdout/stderr)
+ * instead. Context-less/degenerate shapes stay silent — they are not a routed
+ * bootstrap event.
  *
  * @param {any} event
  */
 export default async function bootstrapMemoryGroupFilterHook(event) {
   const context = event?.context;
-  if (!context || !Array.isArray(context.bootstrapFiles)) return;
+  if (!context || typeof context !== "object") return;
+
+  if (
+    !Array.isArray(context.bootstrapFiles) ||
+    typeof context.sessionKey !== "string"
+  ) {
+    console.warn(
+      "[bootstrap-memory-group-filter] agent:bootstrap event was missing " +
+        "bootstrapFiles[] or a string sessionKey; the MEMORY.md group filter " +
+        "did NOT run. The OpenClaw event contract may have changed — verify " +
+        "and update this hook (heypinchy/pinchy#369).",
+    );
+    return;
+  }
+
   context.bootstrapFiles = filterGroupBootstrap(
     context.bootstrapFiles,
     context.sessionKey,
