@@ -21,7 +21,7 @@ import type { RetrievedSource } from "./attribution-graders";
 import { gradeGroundednessForGold, isAbstention } from "./groundedness-grader";
 import type { GroundednessOptions } from "./groundedness-grader";
 import type { NliClient } from "./nli";
-import type { GoldQA, KbFailureTag, KbGraderResult } from "./types";
+import type { GoldQA, KbFailureTag, KbGraderResult, RunResult } from "./types";
 
 /**
  * Scores how well `answer` addresses `query`, in [0, 1]. Dependency-injected
@@ -130,25 +130,20 @@ export interface KbRunTrajectory {
   /** The TEXT of the retrieved passages the answer cited (groundedness premise material). */
   citedPassageTexts: string[];
   latencyMs: number;
-  tokens?: number;
+  /** prompt/completion token usage, same shape as `../types`'s `RunResult.tokens`. */
+  tokens?: { prompt: number; completion: number };
 }
 
 /**
- * KB-scoped run result — structurally like `../types`'s `RunResult`, except
- * `tags` is `KbFailureTag[]`, not the invoice `FailureTag[]`. Deliberately a
- * separate interface (not extending `RunResult`) rather than reusing it: the
- * `tags` field's element type actually differs, so extending would force an
- * unsound override. `buildScorecard` (`../scorecard.ts`) is left untouched
- * here — a scorecard adapter for `KbRunResult[]` is Task 3.4's job.
+ * KB-scoped run result. `RunResult<Tag>` (`../types`) is generic over its
+ * failure-tag union specifically so this can be a true alias — not a
+ * structurally-similar copy — with `tags: KbFailureTag[]` instead of the
+ * invoice `FailureTag[]`. This is what lets `buildScorecard<KbFailureTag>`
+ * (`../scorecard.ts`) accept `KbRunResult[]` directly, with no cast (Task
+ * 3.5, export-kb-scorecard.ts, and the groundedness-pipeline self-test all
+ * rely on this).
  */
-export interface KbRunResult {
-  model: string;
-  passed: boolean;
-  tags: KbFailureTag[];
-  notes: string[];
-  latencyMs: number;
-  tokens?: number;
-}
+export type KbRunResult = RunResult<KbFailureTag>;
 
 /**
  * Composes the full Layer-2 + Layer-3 verdict for one KB agent run:

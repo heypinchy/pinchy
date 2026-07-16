@@ -158,7 +158,7 @@ describe("gradeKbRun", () => {
       retrieved: [src(1, "/data/handbook/policy.md")],
       citedPassageTexts: ["Records must be retained for seven years per policy."],
       latencyMs: 120,
-      tokens: 42,
+      tokens: { prompt: 30, completion: 12 },
       ...overrides,
     };
   }
@@ -177,12 +177,16 @@ describe("gradeKbRun", () => {
       tags: [],
       notes: [],
       latencyMs: 120,
-      tokens: 42,
+      tokens: { prompt: 30, completion: 12 },
     });
   });
 
   it("carries model/latencyMs/tokens through from the trajectory even on failure", async () => {
-    const traj = baseTraj({ model: "other-model", latencyMs: 999, tokens: 7 });
+    const traj = baseTraj({
+      model: "other-model",
+      latencyMs: 999,
+      tokens: { prompt: 5, completion: 2 },
+    });
 
     const result = await gradeKbRun(traj, baseGold, {
       nli: highScoreNli(),
@@ -191,7 +195,7 @@ describe("gradeKbRun", () => {
 
     expect(result.model).toBe("other-model");
     expect(result.latencyMs).toBe(999);
-    expect(result.tokens).toBe(7);
+    expect(result.tokens).toEqual({ prompt: 5, completion: 2 });
     expect(result.passed).toBe(false);
   });
 
@@ -249,7 +253,7 @@ describe("gradeKbRun", () => {
       tags: [],
       notes: [],
       latencyMs: 120,
-      tokens: 42,
+      tokens: { prompt: 30, completion: 12 },
     });
     expect(relevanceJudgeCalled).toBe(false);
   });

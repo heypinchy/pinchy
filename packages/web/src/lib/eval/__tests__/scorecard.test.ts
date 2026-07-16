@@ -186,3 +186,42 @@ describe("computePassCaretK (pure helper)", () => {
     expect(computePassCaretK([])).toBe(0);
   });
 });
+
+describe("buildScorecard<Tag> generic boundary", () => {
+  // Proves buildScorecard/computePassCaretK genuinely work with a
+  // NON-invoice tag union with no cast — the type boundary a non-invoice
+  // caller (e.g. the KB eval harness) relies on. Uses a synthetic tag union
+  // here to prove the mechanism in isolation, decoupled from KbFailureTag's
+  // vocabulary; the KB harness itself is exercised end-to-end in
+  // groundedness-pipeline.test.ts.
+  type CustomTag = "custom-a" | "custom-b";
+
+  function customRun(overrides: Partial<RunResult<CustomTag>> = {}): RunResult<CustomTag> {
+    return {
+      model: "model-a",
+      passed: true,
+      tags: [],
+      notes: [],
+      latencyMs: 1000,
+      ...overrides,
+    };
+  }
+
+  it("groups and grades runs typed on a custom tag union with no cast", () => {
+    const runs: RunResult<CustomTag>[] = [
+      customRun({ passed: true }),
+      customRun({ passed: false, tags: ["custom-a"] }),
+      customRun({ passed: false, tags: ["custom-a", "custom-b"] }),
+    ];
+
+    const scorecard = buildScorecard<CustomTag>(runs);
+    const a = scorecard.find((e) => e.model === "model-a")!;
+
+    expect(a.n).toBe(3);
+    expect(a.passes).toBe(1);
+    expect(a.tagHistogram["custom-a"]).toBe(2);
+    expect(a.tagHistogram["custom-b"]).toBe(1);
+    expect(a.passCaretK).toBe(0);
+    expect(computePassCaretK<CustomTag>(runs)).toBe(0);
+  });
+});

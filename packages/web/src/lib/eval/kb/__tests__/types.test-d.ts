@@ -9,6 +9,7 @@ import type {
   RunResult,
 } from "../types";
 import type { RunResult as InvoiceRunResult } from "../../types";
+import type { KbRunResult } from "../answer-graders";
 
 test("KbGraderResult.tags is exactly KbFailureTag[], not the invoice FailureTag[]", () => {
   expectTypeOf<KbGraderResult["tags"]>().toEqualTypeOf<KbFailureTag[]>();
@@ -16,8 +17,17 @@ test("KbGraderResult.tags is exactly KbFailureTag[], not the invoice FailureTag[
   expectTypeOf<KbGraderResult["notes"]>().toEqualTypeOf<string[]>();
 });
 
-test("RunResult is re-exported unchanged from the shared invoice eval types", () => {
+test("RunResult (no type argument, the default) is re-exported unchanged from the shared invoice eval types", () => {
   expectTypeOf<RunResult>().toEqualTypeOf<InvoiceRunResult>();
+});
+
+test("RunResult<Tag> is generic over its failure-tag union — KbRunResult is RunResult<KbFailureTag> with no cast", () => {
+  expectTypeOf<RunResult<KbFailureTag>["tags"]>().toEqualTypeOf<KbFailureTag[]>();
+  expectTypeOf<KbRunResult>().toEqualTypeOf<RunResult<KbFailureTag>>();
+  expectTypeOf<KbRunResult["tags"]>().toEqualTypeOf<KbFailureTag[]>();
+  // The invoice default is unaffected: RunResult<FailureTag> (explicit) still
+  // equals the no-argument default used by the invoice harness.
+  expectTypeOf<RunResult<KbFailureTag>>().not.toEqualTypeOf<InvoiceRunResult>();
 });
 
 test("GoldQA extends GoldQuery plus an answer key", () => {

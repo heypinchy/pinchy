@@ -133,7 +133,15 @@ export type ExpectedOutcome =
   // the default where it's a soft derived-field signal. See gradeTaskCompletion.
   | "vendor-bill-with-amount";
 
-export interface RunResult {
+/**
+ * One graded run. Generic over its failure-tag union so `scorecard.ts`'s
+ * aggregation (grouping, pass-rate, Wilson interval, pass^k, tag histogram)
+ * is reusable outside the invoice eval without a cast — the KB eval harness
+ * (`kb/answer-graders.ts`'s `KbRunResult`) is `RunResult<KbFailureTag>`.
+ * `Tag` defaults to the invoice `FailureTag` union, so every existing
+ * call site that writes plain `RunResult` (no type argument) is unaffected.
+ */
+export interface RunResult<Tag extends string = FailureTag> {
   model: string;
   /**
    * Which scenario produced this run, e.g. "hetzner-invoice" or
@@ -143,7 +151,7 @@ export interface RunResult {
    */
   scenario?: string;
   passed: boolean;
-  tags: FailureTag[];
+  tags: Tag[];
   notes: string[];
   latencyMs: number;
   tokens?: { prompt: number; completion: number };

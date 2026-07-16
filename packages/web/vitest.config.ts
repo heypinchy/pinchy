@@ -19,8 +19,8 @@ export default defineConfig({
       "../plugins/pinchy-*/**/*.{test,spec}.?(c|m)[jt]s?(x)",
       // The eval harness's own guards over the CHECKED-IN dataset (they read
       // eval/data — no docker stack, no API keys, unlike `pnpm eval:models`).
-      // `.test.ts` on purpose: playwright.eval.config.ts matches only
-      // /eval-(models|selftest)\.spec\.ts/, so the two runners never collide.
+      // `.test.ts` on purpose: playwright.eval.config.ts matches only the
+      // Playwright specs, so the two runners never collide.
       "eval/**/*.test.ts",
     ],
     // Integration tests run against a real PostgreSQL database via

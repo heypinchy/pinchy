@@ -38,7 +38,7 @@ export interface ScorecardEntry {
  * `buildScorecard`'s per-model grouping never produces (a model only gets an
  * entry when it has >= 1 run).
  */
-export function computePassCaretK(runs: RunResult[]): number {
+export function computePassCaretK<Tag extends string = FailureTag>(runs: RunResult<Tag>[]): number {
   if (runs.length === 0) return 0;
   return runs.every((r) => r.passed) ? 1 : 0;
 }
@@ -78,9 +78,18 @@ function median(values: number[]): number {
  * the all-k consistency measure — 1 only if every run passed), a failure-tag
  * histogram, median latency, and median total tokens (prompt + completion).
  * One entry per model, sorted by passRate descending.
+ *
+ * Generic over the run's failure-tag union (see `RunResult<Tag>` in
+ * `./types`) so a non-invoice caller — e.g. the KB eval harness's
+ * `buildScorecard<KbFailureTag>(kbRuns)` — gets full type safety on
+ * `runs` with no cast. `Tag` defaults to the invoice `FailureTag` union,
+ * so every existing invoice call site (`buildScorecard(runs)`, no type
+ * argument) is unaffected.
  */
-export function buildScorecard(runs: RunResult[]): ScorecardEntry[] {
-  const byModel = new Map<string, RunResult[]>();
+export function buildScorecard<Tag extends string = FailureTag>(
+  runs: RunResult<Tag>[]
+): ScorecardEntry[] {
+  const byModel = new Map<string, RunResult<Tag>[]>();
   for (const run of runs) {
     const existing = byModel.get(run.model);
     if (existing) {
@@ -98,7 +107,7 @@ export function buildScorecard(runs: RunResult[]): ScorecardEntry[] {
     const tagHistogram: Record<string, number> = {};
     for (const run of modelRuns) {
       for (const tag of run.tags) {
-        tagHistogram[tag as FailureTag] = (tagHistogram[tag as FailureTag] ?? 0) + 1;
+        tagHistogram[tag] = (tagHistogram[tag] ?? 0) + 1;
       }
     }
 
