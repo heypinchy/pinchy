@@ -95,9 +95,12 @@ model was doing** — otherwise, discarding those runs quietly filters out the
 hard cases and flatters the model. Two things support the assumption and are
 stated here so a reader can weigh them rather than take our word: the failure is
 the HTTP request dying with no answer of any kind (never a model output we
-disliked), and the discarded runs' latencies (11–31 s) sit mid-distribution, with
-no skew toward the long runs that a "hard cases break more often" effect would
-produce. The alternative — publishing a cell at n=6 — would have been worse and
+disliked), and gpt-oss:20b's discarded runs' latencies (11–31 s) sit
+mid-distribution, with no skew toward the long runs that a "hard cases break more
+often" effect would produce. The same holds for the other three re-run cells:
+their discards land short-to-mid (minimax-m3 3–21 s, gpt-oss:120b 18–63 s,
+gemma4:31b 31 s), never in the long tail. The alternative — publishing a cell at
+n=6 — would have been worse and
 less honest, not more.
 
 ## Reproduce
