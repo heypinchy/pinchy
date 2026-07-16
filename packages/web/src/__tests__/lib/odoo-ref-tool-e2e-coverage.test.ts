@@ -178,4 +178,28 @@ describe("odoo ref-based tool E2E coverage (pinchy#791)", () => {
       "no ref-based odoo tool has E2E dispatch coverage — the ref-dispatch harness is unproven"
     ).toBeGreaterThan(0);
   });
+
+  // The fake-LLM matches refs with a LOCAL copy of the wire prefix (it is copied
+  // into a standalone container and must not import the plugin). That duplication
+  // silently rots if the plugin ever versions the prefix (v1 → v2): the harness
+  // would stop finding refs and every ref-dispatch probe would false-fail. Pin
+  // the two together so a prefix bump forces both sides to move.
+  it("fake-ollama's ref regex tracks integration-ref's wire prefix", () => {
+    const pluginSrc = readFileSync(join(PLUGINS_DIR, "pinchy-odoo", "integration-ref.ts"), "utf8");
+    const prefixMatch = pluginSrc.match(/const PREFIX\s*=\s*"([^"]+)"/);
+    expect(prefixMatch, 'integration-ref.ts must define `const PREFIX = "…"`').not.toBeNull();
+    const prefix = prefixMatch![1];
+
+    const fakeOllamaSrc = readFileSync(
+      join(E2E_DIR, "shared", "fake-ollama", "fake-ollama-server.ts"),
+      "utf8"
+    );
+    const reMatch = fakeOllamaSrc.match(/const PINCHY_REF_RE\s*=\s*\/([^/]+)\//);
+    expect(reMatch, "fake-ollama-server.ts must define `const PINCHY_REF_RE = /…/`").not.toBeNull();
+
+    expect(
+      reMatch![1],
+      `PINCHY_REF_RE must start with integration-ref's PREFIX "${prefix}" — bump both together`
+    ).toContain(prefix);
+  });
 });
