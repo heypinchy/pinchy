@@ -226,6 +226,64 @@ describe("odoo_read — {item: …} array-wrapping", () => {
   });
 });
 
+describe("odoo_write — {item: …} array-wrapping", () => {
+  it("refuses item-wrapped values with an actionable message, before touching Odoo", async () => {
+    const tool = findTool(createApi({ [agentId]: cfg() }), "odoo_write", agentId)!;
+    const result = await tool.execute("c", {
+      model: "account.move",
+      ids: [42],
+      values: {
+        invoice_line_ids: { item: { item: ["1", "10", { price_unit: "8.33" }] } },
+      },
+    });
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toMatch(/item/i);
+    expect(result.content[0].text).toMatch(/\[\[0, 0,/); // the correct o2m shape
+    expect(mockWrite).not.toHaveBeenCalled();
+    expect(mockFields).not.toHaveBeenCalled();
+  });
+
+  it("still writes normally when arrays are well-formed", async () => {
+    mockWrite.mockResolvedValue(true);
+    const tool = findTool(createApi({ [agentId]: cfg() }), "odoo_write", agentId)!;
+    const result = await tool.execute("c", {
+      model: "res.partner",
+      ids: [1],
+      values: { category_id: [[6, 0, [1, 2]]] },
+    });
+    expect(result.isError).toBeFalsy();
+    expect(mockWrite).toHaveBeenCalled();
+  });
+});
+
+describe("odoo_count — {item: …} array-wrapping", () => {
+  it("refuses an item-wrapped domain before querying Odoo", async () => {
+    const tool = findTool(createApi({ [agentId]: cfg() }), "odoo_count", agentId)!;
+    const result = await tool.execute("c", {
+      model: "account.move",
+      filters: { item: { item: ["state", "=", "posted"] } },
+    });
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toMatch(/item/i);
+    expect(mockSearchCount).not.toHaveBeenCalled();
+  });
+});
+
+describe("odoo_aggregate — {item: …} array-wrapping", () => {
+  it("refuses an item-wrapped domain before querying Odoo", async () => {
+    const tool = findTool(createApi({ [agentId]: cfg() }), "odoo_aggregate", agentId)!;
+    const result = await tool.execute("c", {
+      model: "account.move",
+      filters: { item: { item: ["state", "=", "posted"] } },
+      fields: ["amount_total:sum"],
+      groupby: ["partner_id"],
+    });
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toMatch(/item/i);
+    expect(mockReadGroup).not.toHaveBeenCalled();
+  });
+});
+
 describe("relation-field name string — Postgres integer error is translated", () => {
   it("turns a raw 'invalid input syntax for type integer' into actionable guidance", async () => {
     mockCreate.mockRejectedValue(
@@ -249,6 +307,12 @@ describe("relation-field name string — Postgres integer error is translated", 
 describe("tool descriptions carry a correct-shape example", () => {
   it("odoo_create description shows the plain-array command shape and warns against {item}", () => {
     const tool = findTool(createApi({ [agentId]: cfg() }), "odoo_create", agentId)!;
+    expect(tool.description).toMatch(/\[\[0, 0,/);
+    expect(tool.description).toMatch(/item/i);
+  });
+
+  it("odoo_write description shows the plain-array command shape and warns against {item}", () => {
+    const tool = findTool(createApi({ [agentId]: cfg() }), "odoo_write", agentId)!;
     expect(tool.description).toMatch(/\[\[0, 0,/);
     expect(tool.description).toMatch(/item/i);
   });

@@ -2702,6 +2702,11 @@ const plugin = {
               if (!checkPermission(config.permissions, model, "read")) {
                 return permissionDenied("read", model);
               }
+              // Reject the {item: …} array-serialization artifact in the domain
+              // before querying (see hasItemWrappedArray / odoo_read).
+              if (hasItemWrappedArray(params.filters)) {
+                throw itemWrappedError("filters");
+              }
 
               const count = await withAuthRetry(agentId, config, (client) =>
                 client.searchCount(model, asDomain(params.filters)),
@@ -2774,6 +2779,12 @@ const plugin = {
               const model = params.model as string;
               if (!checkPermission(config.permissions, model, "read")) {
                 return permissionDenied("read", model);
+              }
+
+              // Reject the {item: …} array-serialization artifact in the domain
+              // before querying (see hasItemWrappedArray / odoo_read).
+              if (hasItemWrappedArray(params.filters)) {
+                throw itemWrappedError("filters");
               }
 
               const fields = prepareAggregateFields(params.fields, "fields");
@@ -4178,7 +4189,7 @@ const plugin = {
           name: "odoo_write",
           label: "Odoo Write",
           description:
-            "Update an existing record in Odoo. For many2one fields, do not pass raw numeric IDs; use an opaque ref from odoo_read, an exact display name, or a supported lookup such as a country code. Note: in invoice/order line models (e.g. `account.move.line`, `sale.order.line`, `purchase.order.line`), `price_unit` is tax-exclusive (net); Odoo computes gross totals from `tax_ids`. Convert receipt gross amounts to net before writing.",
+            'Update an existing record in Odoo. For many2one fields, do not pass raw numeric IDs; use an opaque ref from odoo_read, an exact display name, or a supported lookup such as a country code. One2many and many2many fields use Odoo command tuples emitted as plain JSON arrays: a new line is invoice_line_ids: [[0, 0, {…}]] and a tag link is tax_ids: [[6, 0, [<taxId>]]] — never wrap arrays as {"item": …}. Note: in invoice/order line models (e.g. `account.move.line`, `sale.order.line`, `purchase.order.line`), `price_unit` is tax-exclusive (net); Odoo computes gross totals from `tax_ids`. Convert receipt gross amounts to net before writing.',
           parameters: {
             type: "object",
             properties: {
@@ -4201,6 +4212,13 @@ const plugin = {
               const model = params.model as string;
               if (!checkPermission(config.permissions, model, "write")) {
                 return permissionDenied("write", model);
+              }
+              // Reject the {item: …} array-serialization artifact before any
+              // Odoo round-trip — `values` carries the same one2many/many2many
+              // command tuples as odoo_create, so it hits the identical opaque
+              // "unhashable type: 'dict'" if forwarded (see hasItemWrappedArray).
+              if (hasItemWrappedArray(params.values)) {
+                throw itemWrappedError("values");
               }
 
               const success = await withAuthRetry(
