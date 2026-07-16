@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  citedSourcePaths,
   composeKbGraderResults,
   gradeAttribution,
   gradeCitationResolution,
@@ -528,5 +529,43 @@ describe("gradePathCitation page-suffix robustness", () => {
     };
 
     expect(gradePathCitation(input)).toEqual<KbGraderResult>({ passed: true, tags: [], notes: [] });
+  });
+});
+
+describe("citedSourcePaths", () => {
+  it("returns the deduplicated, resolved (inline-cited AND listed) source paths, in Sources-list order", () => {
+    const answer = `Fact one [1]. Fact two [2]. Fact one again [1].
+
+**Sources:**
+
+- [1] /data/a.md — p. 1
+- [2] /data/b.md — p. 2`;
+
+    expect(citedSourcePaths(answer)).toEqual(["/data/a.md", "/data/b.md"]);
+  });
+
+  it("excludes a Sources entry that was never cited inline (source-uncited)", () => {
+    const answer = `Fact one [1].
+
+**Sources:**
+
+- [1] /data/a.md — p. 1
+- [2] /data/b.md — p. 2`;
+
+    expect(citedSourcePaths(answer)).toEqual(["/data/a.md"]);
+  });
+
+  it("excludes an inline citation with no matching Sources entry (citation-unresolved)", () => {
+    const answer = `Fact one [1]. Fact two [4].
+
+**Sources:**
+
+- [1] /data/a.md — p. 1`;
+
+    expect(citedSourcePaths(answer)).toEqual(["/data/a.md"]);
+  });
+
+  it("returns an empty array for an answer with no Sources list (e.g. an abstention)", () => {
+    expect(citedSourcePaths("I couldn't find this in the knowledge base.")).toEqual([]);
   });
 });

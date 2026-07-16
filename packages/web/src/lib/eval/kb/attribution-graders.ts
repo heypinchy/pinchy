@@ -210,6 +210,32 @@ export function answerBody(answer: string): string {
   return parseAnswer(answer).body;
 }
 
+/**
+ * Public accessor for the source paths the answer both cited inline AND
+ * listed in its Sources list — the "resolved" citations (the intersection
+ * `gradeCitationResolution` checks both halves of), deduplicated, in Sources-
+ * list order. Reused by the real Layer-3 sweep (`eval/kb/kb-eval-models.spec.ts`,
+ * Task 3.4) to build the groundedness premise material (`citedPassageTexts`)
+ * from exactly the sources the answer claims to have used — not the full
+ * retrieved set, which would let any retrieved-but-unused passage ground any
+ * claim. A citation number with no Sources entry (`citation-unresolved`) or a
+ * Sources entry never cited inline (`source-uncited`) is deliberately
+ * excluded here — those are integrity failures `gradeCitationResolution`
+ * already flags, not sources this grader should trust as premise material.
+ */
+export function citedSourcePaths(answer: string): string[] {
+  const { citedNumbers, entries } = parseAnswer(answer);
+  const paths: string[] = [];
+  const seen = new Set<string>();
+  for (const entry of entries) {
+    if (!citedNumbers.has(entry.n)) continue;
+    if (seen.has(entry.path)) continue;
+    seen.add(entry.path);
+    paths.push(entry.path);
+  }
+  return paths;
+}
+
 function passKb(): KbGraderResult {
   return { passed: true, tags: [], notes: [] };
 }

@@ -28,6 +28,7 @@
     "eval:models": "CI=true ENCRYPTION_KEY=00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff EVAL_MODE=models PINCHY_URL=http://localhost:7781 MOCK_ODOO_URL=http://localhost:9502 GRAPH_MOCK_URL=http://localhost:9505 DATABASE_URL=postgresql://pinchy:${DB_PASSWORD:-eval_dev_pw}@localhost:5437/pinchy playwright test --config eval/playwright.eval.config.ts",
     "kb-eval:reembed": "tsx eval/kb/reembed.ts",
     "kb-eval:selftest": "playwright test --config playwright.integration.config.ts e2e/integration/kb-attribution.spec.ts",
+    "kb-eval:models": "CI=true ENCRYPTION_KEY=00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff EVAL_MODE=kb-models PINCHY_URL=http://localhost:7781 MOCK_ODOO_URL=http://localhost:9502 GRAPH_MOCK_URL=http://localhost:9505 DATABASE_URL=postgresql://pinchy:${DB_PASSWORD:-eval_dev_pw}@localhost:5437/pinchy playwright test --config eval/playwright.eval.config.ts",
     "db:generate": "drizzle-kit generate",
     "db:migrate": "drizzle-kit migrate",
     "db:studio": "drizzle-kit studio",
