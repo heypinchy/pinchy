@@ -157,27 +157,14 @@ describe("Ollama Cloud model catalog — empirically verified capabilities", () 
     expect(VISION_OLLAMA_CLOUD_MODEL_IDS.has("kimi-k2.7-code")).toBe(false);
   });
 
-  it("flags deepseek-v4-pro with a 512K context window despite its library page", () => {
-    // ollama.com/library/deepseek-v4-pro and its registry manifest both claim
-    // 1M (1048576), and that's the value Pinchy shipped with. But Ollama's own
-    // /api/show for this model reports 524288 (512K) — a real contradiction on
-    // Ollama's side, not a typo in this file. /api/show is the runtime truth,
-    // so it wins over the library/marketing page (see file header).
-    //
-    // This isn't cosmetic: Pinchy writes contextWindow into OpenClaw config,
-    // and OpenClaw's shouldCompact() is `contextTokens > contextWindow -
-    // reserveTokens` (reserveTokens=16384). At 1048576 compaction would only
-    // fire past 1,032,192 tokens on a model that actually tops out at 524288
-    // — i.e. never. Production incident 2026-07-15: agent "Piper" on
-    // deepseek-v4-pro ran with compactionCount:0 up to 171K context and began
-    // confabulating tool results (reported an Odoo API outage while all 10
-    // Odoo calls in the window had succeeded). Manual compaction fixed it.
-    //
-    // deepseek-v4-flash sits right above this entry with the same 1048576 —
-    // do not "fix" it to match; its value is being verified separately.
-    const m = byId("deepseek-v4-pro");
-    expect(m).toBeDefined();
-    expect(m!.contextWindow).toBe(524288);
+  it("keeps the deepseek-v4 pair's context windows split: pro 512K, flash 1M", () => {
+    // These two look like they should match — same family, and both library
+    // pages claim 1M — but `ollama show` splits them: pro reports 524288,
+    // flash 1048576. So this guards against a well-meant "fix" in either
+    // direction. Rationale and the production incident behind pro's value:
+    // see ollama-cloud-models.ts.
+    expect(byId("deepseek-v4-pro")?.contextWindow).toBe(524288);
+    expect(byId("deepseek-v4-flash")?.contextWindow).toBe(1048576);
   });
 
   it("every model declares vision and carries no dead capability fields", () => {

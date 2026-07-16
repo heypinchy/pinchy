@@ -14,13 +14,17 @@
  * hints into the OpenClaw config so context pruning can kick in before
  * requests bump into the real provider limit.
  *
- * Source priority for contextWindow: Ollama's own `/api/show` endpoint beats
- * the ollama.com/library/<name> page and the registry manifest when they
+ * Source priority for contextWindow: Ollama's own `/api/show` beats the
+ * ollama.com/library/<name> page and the registry manifest when they
  * disagree. The library page is a marketing figure; `/api/show` is what the
- * runtime actually enforces. deepseek-v4-pro is the confirmed example — its
- * library page and manifest both say 1M, but `/api/show` says 524288, and
- * that's the value here (see the inline comment on that entry). Don't
- * "reconcile" a `/api/show`-sourced value back to the library page.
+ * runtime enforces. Check a value with:
+ *
+ *     ollama show <id>:cloud     # "context length" row
+ *
+ * deepseek-v4-pro is the confirmed example: library page and manifest both
+ * say 1M, `/api/show` says 524288, and 524288 is the value here (see the
+ * inline comment on that entry). Don't "reconcile" a `/api/show`-sourced
+ * value back to the library page — re-run the command instead.
  *
  * Cost is always zero: Ollama Cloud uses subscription pricing (Free / Pro /
  * Max plans — see ollama.com/pricing), not per-token billing. A fabricated
@@ -35,7 +39,9 @@
 export interface OllamaCloudModel {
   /** ID exactly as returned by https://ollama.com/v1/models (no ":cloud" suffix). */
   id: string;
-  /** Native context window in tokens (from ollama.com/library/<name>). */
+  /** Native context window in tokens. Source: `ollama show <name>:cloud`
+   * (i.e. `/api/show`), which wins over the library page when they disagree —
+   * see the source-priority note in the file header. */
   contextWindow: number;
   /** Pinchy's max output tokens hint. Ollama doesn't publish this, so we use
    * the output-heavy value for Gemini Flash and a conservative 8192 elsewhere. */
@@ -67,6 +73,10 @@ export const TOOL_CAPABLE_OLLAMA_CLOUD_MODELS = [
     vision: false,
   },
   {
+    // The 1M here is real, unlike deepseek-v4-pro below: `ollama show
+    // deepseek-v4-flash:cloud` reports 1048576, matching its library page
+    // (checked 2026-07-16). Same family and same claimed size as pro, so it
+    // looks like it should carry pro's correction — it must not.
     id: "deepseek-v4-flash",
     contextWindow: 1048576,
     maxTokens: 8192,
@@ -74,22 +84,19 @@ export const TOOL_CAPABLE_OLLAMA_CLOUD_MODELS = [
     vision: false,
   },
   {
-    // ollama.com/library/deepseek-v4-pro and its registry manifest both
-    // claim 1M (1048576) — same as deepseek-v4-flash above. But Ollama's own
-    // /api/show for this model reports 524288, confirmed empirically. That's
-    // a genuine contradiction on Ollama's side, not a typo here: /api/show is
-    // the runtime truth Pinchy writes into OpenClaw config, and the library
-    // page is the marketing figure. Do not "correct" this back to 1048576 by
-    // re-checking the library page.
+    // 512K, NOT the 1M its library page and registry manifest both claim:
+    // `ollama show deepseek-v4-pro:cloud` reports 524288 (checked
+    // 2026-07-16). That's a contradiction on Ollama's side, not a typo here,
+    // and /api/show is the side that binds. Do not "correct" this back to
+    // 1048576 from the library page — re-run the command instead.
     //
-    // The distinction matters because OpenClaw's shouldCompact() is
-    // `contextTokens > contextWindow - reserveTokens` (reserveTokens=16384).
-    // At 1048576, compaction would only fire past 1,032,192 tokens on a model
-    // that actually tops out at 524288 — i.e. never. Production incident
-    // 2026-07-15: agent "Piper" on deepseek-v4-pro ran with
-    // compactionCount:0 up to 171K context and began confabulating tool
-    // results (reported an Odoo API outage while all 10 Odoo calls in the
-    // window had succeeded). Manual compaction fixed it.
+    // It matters because OpenClaw's shouldCompact() is `contextTokens >
+    // contextWindow - reserveTokens` (reserveTokens=16384). At 1048576,
+    // compaction would only fire past 1,032,192 tokens on a model that tops
+    // out at 524288 — i.e. never. Production incident 2026-07-15: agent
+    // "Piper" on this model ran to 171K context with compactionCount:0 and
+    // began confabulating tool results (reported an Odoo API outage while
+    // all 10 Odoo calls in the window had succeeded).
     id: "deepseek-v4-pro",
     contextWindow: 524288,
     maxTokens: 8192,
