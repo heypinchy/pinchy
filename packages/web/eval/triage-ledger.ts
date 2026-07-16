@@ -45,7 +45,10 @@ interface BlockedEntry extends BaseEntry {
   /**
    * The capabilities the block covers. The guard asserts `blocklist.ts`
    * actually refuses this model for them — so a rule that gets softened or
-   * dropped cannot leave a "blocked" claim behind that means nothing.
+   * dropped cannot leave a "blocked" claim behind that means nothing. The
+   * `ModelCapability` type is checked in CI because `tsconfig.typecheck.json`
+   * includes `eval/` (vitest strips these types without looking); a bogus
+   * capability fails typecheck rather than silently meaning nothing.
    */
   blockedFor: ModelCapability[];
 }
