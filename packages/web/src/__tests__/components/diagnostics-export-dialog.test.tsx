@@ -155,6 +155,49 @@ describe("DiagnosticsExportDialog", () => {
     await waitFor(() => expect(onClose).toHaveBeenCalled());
   });
 
+  // The download itself is silent — the browser may drop the file straight into
+  // the downloads folder with no visible tab. Name the file we produced so the
+  // user can find it, on both surfaces (inline, nothing closes at all).
+  it("confirms the download with a toast naming the file", async () => {
+    const { toast } = await import("sonner");
+    render(
+      <DiagnosticsExportDialog open agentId="agt_1" agentName="Smithers" onClose={() => {}} />
+    );
+    fireEvent.click(screen.getByRole("button", { name: /generate/i }));
+    await waitFor(() =>
+      expect(toast.success).toHaveBeenCalledWith("Diagnostics export downloaded", {
+        description: "pinchy-bugreport-smithers-19700101-0000.json",
+      })
+    );
+  });
+
+  // The whole point of the form's `onSubmittingChange` plumbing: an export in
+  // flight must not be closed out from under itself, or the download is lost
+  // with no explanation. Nothing else covers this.
+  it("refuses to close on Escape while an export is in flight", async () => {
+    const { apiPost } = await import("@/lib/api-client");
+    const onClose = vi.fn();
+    let resolveExport: (bundle: unknown) => void = () => {};
+    vi.mocked(apiPost).mockReturnValueOnce(
+      new Promise((resolve) => {
+        resolveExport = resolve;
+      })
+    );
+
+    render(<DiagnosticsExportDialog open agentId="agt_1" agentName="Smithers" onClose={onClose} />);
+    fireEvent.click(screen.getByRole("button", { name: /generate/i }));
+    // Wait for the in-flight state to reach the dialog, otherwise Escape would
+    // race the click and pass for the wrong reason.
+    await waitFor(() => expect(screen.getByRole("button", { name: /generating/i })).toBeDisabled());
+
+    fireEvent.keyDown(document, { key: "Escape" });
+    expect(onClose).not.toHaveBeenCalled();
+
+    // Once it lands, the dialog closes on its own — the guard must not be sticky.
+    resolveExport({ schemaVersion: "pinchy.bugreport.v1" });
+    await waitFor(() => expect(onClose).toHaveBeenCalled());
+  });
+
   // ── #639: chat picker + context-aware default selection ──────────────────
 
   const CHATS = [

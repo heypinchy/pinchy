@@ -510,9 +510,11 @@ export function AgentSettingsPageContent({ initialTab }: { initialTab?: string }
             </TabsContent>
           )}
 
-          {/* No `keepMounted`: unlike the editing tabs, this one holds no
-              unsaved state to preserve across tab switches, and mounting it
-              lazily keeps its chat-list fetch off every Settings page load. */}
+          {/* No `keepMounted`, unlike the editing tabs: mounting lazily keeps
+              this tab's chat-list fetch off every Settings page load, including
+              the vast majority that never open Diagnostics. The trade-off is
+              real but small — a half-typed description is lost when switching
+              tabs mid-report. Worth revisiting if anyone actually hits it. */}
           <TabsContent value="diagnostics">
             <AgentSettingsDiagnostics agentId={agentId} agentName={agent.name} />
           </TabsContent>

@@ -44,11 +44,13 @@ describe("AgentSettingsDiagnostics", () => {
   beforeEach(async () => {
     const { apiPost, apiGet } = await import("@/lib/api-client");
     const { downloadBundle } = await import("@/lib/diagnostics/download");
+    const { toast } = await import("sonner");
     vi.mocked(apiPost).mockReset();
     vi.mocked(apiPost).mockResolvedValue({ schemaVersion: "pinchy.bugreport.v1" });
     vi.mocked(apiGet).mockReset();
     vi.mocked(apiGet).mockResolvedValue({ chats: CHATS });
     vi.mocked(downloadBundle).mockClear();
+    vi.mocked(toast.success).mockClear();
   });
 
   it("renders the export form inline, not behind a modal", async () => {
@@ -99,6 +101,23 @@ describe("AgentSettingsDiagnostics", () => {
     expect(
       screen.getByRole("button", { name: /generate diagnostics export/i })
     ).toBeInTheDocument();
+  });
+
+  // Inline there is no dialog whose closing signals success, and the download
+  // itself is silent. Without this the form just blanks its description and the
+  // user is left guessing whether anything happened.
+  it("confirms a successful export with a toast, since nothing closes inline", async () => {
+    const { toast } = await import("sonner");
+    render(<AgentSettingsDiagnostics agentId="agt_1" agentName="Smithers" />);
+
+    await screen.findByRole("combobox", { name: /chat to export/i });
+    fireEvent.click(screen.getByRole("button", { name: /generate diagnostics export/i }));
+
+    await waitFor(() =>
+      expect(toast.success).toHaveBeenCalledWith("Diagnostics export downloaded", {
+        description: "pinchy-bugreport-smithers-19700101-0000.json",
+      })
+    );
   });
 
   it("offers no Cancel button inline — there is nothing to cancel back to", async () => {

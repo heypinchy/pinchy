@@ -162,10 +162,16 @@ export function DiagnosticsExportForm({
         "/api/diagnostics/export",
         body
       );
-      downloadBundle(bundle, buildBundleFilename(agentName, new Date()));
+      const filename = buildBundleFilename(agentName, new Date());
+      downloadBundle(bundle, filename);
       updateSubmitting(false);
       setUserDescription("");
       setValidationError(null);
+      // The download is silent — the browser may drop the file straight into
+      // the downloads folder with nothing visible. Inline there isn't even a
+      // dialog whose closing would signal success, only a description quietly
+      // blanking itself. Name the file so it can be found.
+      toast.success("Diagnostics export downloaded", { description: filename });
       onExported?.();
     } catch (e) {
       updateSubmitting(false);
