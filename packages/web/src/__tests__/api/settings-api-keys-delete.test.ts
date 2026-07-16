@@ -32,9 +32,8 @@ import { NextRequest } from "next/server";
  * not.
  */
 
-const { mockGetSession, mockDbSelect, mockDbDelete } = vi.hoisted(() => ({
+const { mockGetSession, mockDbDelete } = vi.hoisted(() => ({
   mockGetSession: vi.fn(),
-  mockDbSelect: vi.fn(),
   mockDbDelete: vi.fn(),
 }));
 
@@ -57,7 +56,6 @@ vi.mock("@/lib/audit", () => ({
 
 vi.mock("@/db", () => ({
   db: {
-    select: mockDbSelect,
     delete: mockDbDelete,
   },
 }));
@@ -86,19 +84,22 @@ function ctx(keyId = "key-1") {
   return { params: Promise.resolve({ keyId }) };
 }
 
-/** Sets up the pre-delete existence lookup: `db.select({name}).from(apiKeys).where(...)`. */
-function mockExistingKey(row: { name: string | null } | undefined) {
-  const where = vi.fn().mockResolvedValue(row ? [row] : []);
-  const from = vi.fn().mockReturnValue({ where });
-  mockDbSelect.mockReturnValue({ from });
-  return { from, where };
-}
-
-/** Sets up `db.delete(apiKeys).where(...)`. */
-function mockDeleteChain() {
-  const where = vi.fn().mockResolvedValue(undefined);
+/**
+ * Sets up `db.delete(apiKeys).where(...).returning(...)`.
+ *
+ * `row` is what the DELETE actually removed — `null` means it matched nothing.
+ * The route derives BOTH its 404 and its audit name from this one result,
+ * which is the point: a separate existence check would let two concurrent
+ * revokes each believe they were the one that deleted the key.
+ */
+function mockDeleteChain(row: { name: string | null } | null) {
+  // `null`, not `undefined`, for "matched nothing" — a default parameter would
+  // swallow an explicit `undefined` and hand back the row instead, quietly
+  // turning every 404 test into a 200 test.
+  const returning = vi.fn().mockResolvedValue(row ? [row] : []);
+  const where = vi.fn().mockReturnValue({ returning });
   mockDbDelete.mockReturnValue({ where });
-  return { where };
+  return { where, returning };
 }
 
 describe("DELETE /api/settings/api-keys/[keyId]", () => {
@@ -108,8 +109,7 @@ describe("DELETE /api/settings/api-keys/[keyId]", () => {
   });
 
   it("returns 200 with { success: true } and deletes the key from the apikey table", async () => {
-    mockExistingKey({ name: "CI Deploy" });
-    const { where: deleteWhere } = mockDeleteChain();
+    const { where: deleteWhere } = mockDeleteChain({ name: "CI Deploy" });
 
     const response = await DELETE(deleteRequest(), ctx("key-1"));
     const body = await response.json();
@@ -123,8 +123,7 @@ describe("DELETE /api/settings/api-keys/[keyId]", () => {
   // ── Headline assertion: the audit surface Pinchy sells ──────────────────
 
   it("audits api_key.deleted with actorType 'user' (the admin), resource api_key:<id>, and DeleteDetail{name} captured pre-delete", async () => {
-    mockExistingKey({ name: "CI Deploy" });
-    mockDeleteChain();
+    mockDeleteChain({ name: "CI Deploy" });
 
     const response = await DELETE(deleteRequest(), ctx("key-77"));
     expect(response.status).toBe(200);
@@ -142,32 +141,39 @@ describe("DELETE /api/settings/api-keys/[keyId]", () => {
   });
 
   it("coalesces a null name to an empty string in the audit detail (name can be null in the DB)", async () => {
-    mockExistingKey({ name: null });
-    mockDeleteChain();
+    mockDeleteChain({ name: null });
 
     await DELETE(deleteRequest(), ctx("key-1"));
 
     expect(appendAuditLog).toHaveBeenCalledWith(expect.objectContaining({ detail: { name: "" } }));
   });
 
-  it("returns 404 when the key does not exist, without deleting or auditing", async () => {
-    mockExistingKey(undefined);
+  it("404s on an unknown key, deciding from what the DELETE removed", async () => {
+    // The route used to SELECT, decide, then DELETE. Two admins revoking the
+    // same key would both find it, both answer 200, and both write an
+    // `api_key.deleted` row — two revocations recorded for one revoke, in the
+    // table that exists to be evidence. Now the DELETE runs unconditionally
+    // and `returning` decides: exactly one caller gets the row, the loser gets
+    // nothing and 404s truthfully. So "no delete was attempted" is deliberately
+    // NOT asserted here — attempting it is the fix.
+    const { returning } = mockDeleteChain(null);
 
     const response = await DELETE(deleteRequest(), ctx("nonexistent"));
 
     expect(response.status).toBe(404);
     expect(await response.json()).toEqual({ error: "API key not found" });
-    expect(mockDbDelete).not.toHaveBeenCalled();
+    expect(mockDbDelete).toHaveBeenCalledWith(apiKeys);
+    expect(returning).toHaveBeenCalled();
+    // Nothing was removed, so nothing is recorded as removed.
     expect(appendAuditLog).not.toHaveBeenCalled();
   });
 
-  it("returns 403 Forbidden for a non-admin session and never looks up or deletes", async () => {
+  it("returns 403 Forbidden for a non-admin session and never touches the table", async () => {
     mockGetSession.mockResolvedValue(memberSession());
 
     const response = await DELETE(deleteRequest(), ctx("key-1"));
 
     expect(response.status).toBe(403);
-    expect(mockDbSelect).not.toHaveBeenCalled();
     expect(mockDbDelete).not.toHaveBeenCalled();
     expect(appendAuditLog).not.toHaveBeenCalled();
   });

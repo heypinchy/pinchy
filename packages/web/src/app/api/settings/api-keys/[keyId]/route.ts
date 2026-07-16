@@ -39,15 +39,21 @@ type RouteContext = { params: Promise<{ keyId: string }> };
 export const DELETE = withAdmin<RouteContext>(async (_req, { params }, session) => {
   const { keyId } = await params;
 
-  const [existing] = await db
-    .select({ name: apiKeys.name })
-    .from(apiKeys)
-    .where(eq(apiKeys.id, keyId));
-  if (!existing) {
+  // One statement, not a SELECT then a DELETE. Two admins clicking Revoke on
+  // the same key within the same second would both pass a separate existence
+  // check, both delete (the second matching zero rows), both answer 200, and
+  // both append an `api_key.deleted` row — two revocations recorded for a key
+  // revoked once, in the table whose whole job is being evidence. `returning`
+  // makes "it existed" and "I removed it" one indivisible fact, so exactly one
+  // caller sees the row, and the 404 is decided by what was actually deleted
+  // rather than by what was there a moment earlier.
+  const [deleted] = await db
+    .delete(apiKeys)
+    .where(eq(apiKeys.id, keyId))
+    .returning({ name: apiKeys.name });
+  if (!deleted) {
     return NextResponse.json({ error: "API key not found" }, { status: 404 });
   }
-
-  await db.delete(apiKeys).where(eq(apiKeys.id, keyId));
 
   after(() =>
     appendAuditLog({
@@ -55,10 +61,10 @@ export const DELETE = withAdmin<RouteContext>(async (_req, { params }, session) 
       actorId: session.user.id!,
       eventType: "api_key.deleted",
       resource: `api_key:${keyId}`,
-      // name captured BEFORE the delete (`existing`, above) — the row is
-      // gone by the time this runs. Can be null in the DB (name is a
-      // nullable column) — coalesce so DeleteDetail always gets a string.
-      detail: { name: existing.name ?? "" },
+      // Name comes back from the DELETE's own `returning`, so it survives the
+      // row it describes. Nullable column — coalesce so DeleteDetail always
+      // gets a string.
+      detail: { name: deleted.name ?? "" },
       outcome: "success",
     })
   );

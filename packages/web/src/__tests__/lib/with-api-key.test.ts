@@ -11,7 +11,7 @@
  * (header parsing, scope gating, context shaping, fail-closed behavior) — not
  * better-auth's key verification.
  */
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { NextRequest, NextResponse } from "next/server";
 
 const { mockVerifyApiKey, mockHeaders } = vi.hoisted(() => ({
@@ -36,11 +36,17 @@ vi.mock("next/headers", () => ({
   headers: mockHeaders,
 }));
 
-vi.mock("@/lib/audit", () => ({
-  appendAuditLog: vi.fn().mockResolvedValue(undefined),
-}));
+vi.mock("@/lib/audit", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/lib/audit")>();
+  return {
+    ...actual,
+    // safeAuditPath stays REAL: it's pure, and the path-cap test below asserts
+    // its actual output. Stubbing it would assert the stub.
+    appendAuditLog: vi.fn().mockResolvedValue(undefined),
+  };
+});
 
-import { withApiKey, type ApiKeyContext } from "@/lib/api-auth";
+import { withApiKey, resetScopeDenialWindows, type ApiKeyContext } from "@/lib/api-auth";
 import { extractScopes } from "@/lib/api-key-scopes";
 import { appendAuditLog } from "@/lib/audit";
 
@@ -70,6 +76,14 @@ const OK = () => NextResponse.json({ ok: true });
 describe("withApiKey", () => {
   beforeEach(() => {
     vi.resetAllMocks();
+    // The scope-denial windows are process-global, so a previous test's key
+    // would otherwise still hold an open window and swallow this one's row.
+    resetScopeDenialWindows();
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
   });
 
   it("returns 401 Unauthorized when no key header is present", async () => {
@@ -344,6 +358,111 @@ describe("withApiKey", () => {
         path: "/api/agents",
       },
     });
+  });
+
+  // The comment this replaces claimed the denial row was "bounded, too — the
+  // caller holds a real key, so this can't be spammed by just anyone", then
+  // three lines later used the opposite argument to refuse auditing 401s.
+  // Holding a real key bounds nothing: the schema's floor is ONE scope, so an
+  // agents:read key can loop DELETE forever, and nothing throttles /api/v1/*.
+
+  it("writes ONE denial row per key per window, however hard the key is probed", async () => {
+    mockVerifyApiKey.mockResolvedValue(
+      verified({ id: "key-flood", name: "Read-only bot", permissions: { agents: ["read"] } })
+    );
+    const handler = vi.fn(OK);
+    const probe = () =>
+      withApiKey(["agents:delete"], handler)(reqWith({ Authorization: "Bearer pinchy_ro" }), {});
+
+    for (let i = 0; i < 50; i++) {
+      expect((await probe()).status).toBe(403);
+    }
+
+    // Every request is still denied — throttling the RECORD must never soften
+    // the DECISION.
+    expect(handler).not.toHaveBeenCalled();
+    // ...but 50 probes are one row, not 50. Otherwise a stolen read-only key
+    // buries the very denials this row exists to surface.
+    expect(appendAuditLog).toHaveBeenCalledTimes(1);
+  });
+
+  it("reports the denials it collapsed rather than dropping them silently", async () => {
+    mockVerifyApiKey.mockResolvedValue(
+      verified({ id: "key-flood", name: "Read-only bot", permissions: { agents: ["read"] } })
+    );
+    const probe = () =>
+      withApiKey(["agents:delete"], vi.fn(OK))(reqWith({ Authorization: "Bearer pinchy_ro" }), {});
+
+    await probe(); // opens the window, writes row 1
+    await probe();
+    await probe(); // two suppressed
+
+    vi.advanceTimersByTime(61_000); // the window elapses
+    await probe(); // writes row 2
+
+    const [, second] = vi.mocked(appendAuditLog).mock.calls;
+    // A cap nobody can see reads as "one stray call" when it was a flood.
+    expect((second[0] as { detail: Record<string, unknown> }).detail).toMatchObject({
+      suppressedSinceLastEntry: 2,
+    });
+  });
+
+  it("omits the suppressed count when nothing was suppressed", async () => {
+    mockVerifyApiKey.mockResolvedValue(
+      verified({ id: "key-quiet", name: "Read-only bot", permissions: { agents: ["read"] } })
+    );
+
+    await withApiKey(["agents:delete"], vi.fn(OK))(
+      reqWith({ Authorization: "Bearer pinchy_ro" }),
+      {}
+    );
+
+    const detail = vi.mocked(appendAuditLog).mock.calls[0][0].detail as Record<string, unknown>;
+    expect(detail).not.toHaveProperty("suppressedSinceLastEntry");
+  });
+
+  it("throttles per key, so one noisy key can't mask another's denial", async () => {
+    const handler = vi.fn(OK);
+    mockVerifyApiKey.mockResolvedValue(
+      verified({ id: "key-noisy", name: "Noisy", permissions: { agents: ["read"] } })
+    );
+    await withApiKey(["agents:delete"], handler)(reqWith({ Authorization: "Bearer a" }), {});
+    await withApiKey(["agents:delete"], handler)(reqWith({ Authorization: "Bearer a" }), {});
+
+    mockVerifyApiKey.mockResolvedValue(
+      verified({ id: "key-other", name: "Other", permissions: { agents: ["read"] } })
+    );
+    await withApiKey(["agents:delete"], handler)(reqWith({ Authorization: "Bearer b" }), {});
+
+    // A shared window would let a flood from one key swallow the first — and
+    // only — denial from another. Two keys, two rows.
+    expect(appendAuditLog).toHaveBeenCalledTimes(2);
+    expect(vi.mocked(appendAuditLog).mock.calls.map(([e]) => e.actorId)).toEqual([
+      "key-noisy",
+      "key-other",
+    ]);
+  });
+
+  it("caps the caller-controlled path so truncation can't strip the row's actor", async () => {
+    mockVerifyApiKey.mockResolvedValue(
+      verified({ id: "key-long", name: "Read-only bot", permissions: { agents: ["read"] } })
+    );
+
+    const longPath = "/api/v1/agents/" + "A".repeat(4000);
+    await withApiKey(["agents:delete"], vi.fn(OK))(
+      new NextRequest(`http://localhost${longPath}`, {
+        headers: { Authorization: "Bearer pinchy_ro" },
+      }),
+      {}
+    );
+
+    const detail = vi.mocked(appendAuditLog).mock.calls[0][0].detail as Record<string, unknown>;
+    // truncateDetail replaces the WHOLE detail object once it's over budget —
+    // it does not trim the offending field. An uncapped path would take the
+    // apiKey snapshot with it, blanking the Actor column on exactly the rows
+    // that document a key being probed. Capping at the source keeps it.
+    expect((detail.path as string).length).toBeLessThanOrEqual(256);
+    expect(detail.apiKey).toEqual({ id: "key-long", name: "Read-only bot" });
   });
 
   it("does NOT audit an unauthenticated 401 — that's an unauthenticated write into the audit table", async () => {

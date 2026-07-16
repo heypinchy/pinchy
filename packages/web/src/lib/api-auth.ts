@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { headers } from "next/headers";
 import { getSession, auth, type Session } from "@/lib/auth";
 import { extractScopes, type ApiKeyScope } from "@/lib/api-key-scopes";
-import { appendAuditLog } from "@/lib/audit";
+import { appendAuditLog, safeAuditPath } from "@/lib/audit";
 
 /**
  * Standardized API auth error responses. Use these instead of inline
@@ -111,6 +111,51 @@ function readApiKey(req: NextRequest): string | null {
 }
 
 /**
+ * One `auth.scope_denied` row per key per minute, with the attempts it stood
+ * in for counted on the next row rather than dropped.
+ *
+ * A scope denial is worth recording, but recording every one of them isn't
+ * bounded by anything: `createApiKeySchema` requires only one scope, so the
+ * weakest issuable key — `agents:read` — can loop `DELETE /api/v1/agents/x`
+ * and mint an audit row per request. Nothing stops it. The plugin's per-key
+ * limiter is off (lib/auth.ts), and Better Auth's own limiter lives in its
+ * router's onRequest, which `/api/v1/*` never enters: `withApiKey` reaches
+ * `verifyApiKey` through `auth.api.*`, bypassing the router.
+ *
+ * That is the same unbounded-write problem the 401 branch below refuses to
+ * take on, one authentication step later — and it buries the same thing: the
+ * genuine denials. A stolen read-only key being probed is precisely what this
+ * row exists to catch, and precisely what a flood would drown.
+ *
+ * Per-process state, like `audit-deferred`'s failure counter, and bounded by
+ * the number of keys the process has seen rather than by request volume.
+ * Pinchy runs a single Node process per container; a restart just re-opens
+ * every window, which costs one extra row per key.
+ */
+const SCOPE_DENIAL_WINDOW_MS = 60_000;
+const scopeDenialWindows = new Map<string, { openedAt: number; suppressed: number }>();
+
+/** Test seam — windows are process-global, so suites must start from zero. */
+export function resetScopeDenialWindows(): void {
+  scopeDenialWindows.clear();
+}
+
+/**
+ * Claims the window's single write slot. Returns how many denials were
+ * suppressed since the last row when it grants one, so the trail reports the
+ * volume it collapsed instead of quietly losing it.
+ */
+function claimScopeDenialSlot(keyId: string, now: number): { write: boolean; suppressed: number } {
+  const open = scopeDenialWindows.get(keyId);
+  if (open && now - open.openedAt < SCOPE_DENIAL_WINDOW_MS) {
+    open.suppressed++;
+    return { write: false, suppressed: open.suppressed };
+  }
+  scopeDenialWindows.set(keyId, { openedAt: now, suppressed: 0 });
+  return { write: true, suppressed: open?.suppressed ?? 0 };
+}
+
+/**
  * Wraps a route handler behind API-key authentication + scope authorization.
  * Programmatic clients (Agent Provisioning API, #572) present a `pinchy_`
  * key instead of a session cookie.
@@ -150,39 +195,47 @@ export function withApiKey<C = unknown>(
     if (!required.every((s) => scopes.includes(s))) {
       // A verified key reaching past its grants is worth a row: it's either a
       // misconfigured client or a stolen key being probed, and telling those
-      // apart later needs the attempt on record. Bounded, too — the caller
-      // holds a real key, so this can't be spammed by just anyone.
+      // apart later needs the attempt on record. Rate-limited per key — see
+      // claimScopeDenialSlot for why a real key bounds nothing on its own.
       //
-      // The 401s above get no such row, deliberately. Anyone on the internet
-      // can present a garbage key, the plugin's rate limiter is off (see
-      // lib/auth.ts) and Pinchy has no replacement — so auditing them would
-      // hand an unauthenticated attacker an unbounded write into the audit
-      // table, burying exactly the denials below. And a key that fails
-      // verification has no id to attribute anyway. Worth revisiting if a
-      // limiter ever lands.
+      // The 401s above get no row at all, deliberately. Anyone on the internet
+      // can present a garbage key, so auditing them would hand an
+      // unauthenticated attacker a write into the audit table — and unlike
+      // here there is no id to throttle on, or to attribute the row to.
       //
       // Awaited, not fire-and-forget: `after()` isn't available on every
       // runtime path this wrapper serves, and a denial is cheap. try/catch
       // (the same shape lib/auth.ts uses for auth.failed) keeps a broken
       // audit DB from turning a clean 403 into an unhandled 500 — logging
       // must never gate authorization, in either direction.
-      try {
-        await appendAuditLog({
-          actorType: "api_key",
-          actorId: res.key.id,
-          eventType: "auth.scope_denied",
-          outcome: "failure",
-          detail: {
-            // Snapshot the name: the key may be revoked by the time anyone
-            // reads this, and its row hard-deleted with it.
-            apiKey: { id: res.key.id, name: res.key.name ?? "" },
-            required: [...required],
-            held: scopes,
-            path: new URL(req.url).pathname,
-          },
-        });
-      } catch {
-        // Don't break authorization if audit logging fails.
+      const slot = claimScopeDenialSlot(res.key.id, Date.now());
+      if (slot.write) {
+        try {
+          await appendAuditLog({
+            actorType: "api_key",
+            actorId: res.key.id,
+            eventType: "auth.scope_denied",
+            outcome: "failure",
+            detail: {
+              // Snapshot the name: the key may be revoked by the time anyone
+              // reads this, and its row hard-deleted with it.
+              apiKey: { id: res.key.id, name: res.key.name ?? "" },
+              required: [...required],
+              held: scopes,
+              // Capped: this is the one field a caller sizes. truncateDetail
+              // replaces the WHOLE detail object rather than trimming a field,
+              // so an over-long path would take the apiKey snapshot with it and
+              // leave the row unattributable — on exactly the rows that
+              // document a key being probed.
+              path: safeAuditPath(new URL(req.url).pathname),
+              // What this row stands in for. A silent cap would read as "one
+              // stray call" when it was a thousand.
+              ...(slot.suppressed > 0 ? { suppressedSinceLastEntry: slot.suppressed } : {}),
+            },
+          });
+        } catch {
+          // Don't break authorization if audit logging fails.
+        }
       }
       return forbidden();
     }

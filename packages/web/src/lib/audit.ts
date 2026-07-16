@@ -72,6 +72,12 @@ export type AuditEventType =
   | "auth.csrf_blocked"
   | "auth.password_reset_completed"
   | "auth.password_changed"
+  // Written by withApiKey (lib/api-auth.ts) when a verified key reaches past
+  // its scopes. Listed here because this union is the curated vocabulary, and
+  // the `auth.${string}` arm above means an omission still compiles — the
+  // types test only asserts this union is a SUBSET of what's writable, so it
+  // cannot catch a missing entry in this direction.
+  | "auth.scope_denied"
   | "agent.created"
   | "agent.updated"
   | "agent.deleted"
@@ -341,6 +347,22 @@ function truncateUtf8(text: string, maxBytes: number): string {
 const PROVIDER_ERROR_MAX_BYTES = 1024;
 export function safeProviderError(text: string): string {
   return truncateUtf8(scrubEmails(text), PROVIDER_ERROR_MAX_BYTES);
+}
+
+const AUDIT_PATH_MAX_BYTES = 256;
+/**
+ * Cap a request path before it goes into a `detail`.
+ *
+ * Same reasoning as `safeProviderError`, different attacker: a URL path is
+ * sized by whoever sent the request. Left uncapped it can push a detail past
+ * MAX_DETAIL_BYTES, and `truncateDetail` does not trim the offending field —
+ * it replaces the entire object with a summary blob. Every other key in that
+ * detail, including the `{ id, name }` actor snapshot, is gone. So the one
+ * field a caller controls can silently strip a row of its attribution, on the
+ * rows most worth attributing.
+ */
+export function safeAuditPath(path: string): string {
+  return truncateUtf8(path, AUDIT_PATH_MAX_BYTES);
 }
 
 const MAX_DETAIL_BYTES = 2048;
