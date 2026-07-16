@@ -194,6 +194,16 @@ COPY --from=builder /opt/pinchy-email-deps /opt/pinchy-email-deps
 COPY --from=builder /opt/llama-cpp-deps /opt/llama-cpp-deps
 COPY --from=builder /opt/embedding-models /opt/embedding-models
 
+# Pinchy-shipped OpenClaw internal-hook packages, loaded via the generated
+# config's hooks.internal.load.extraDirs = ["/opt/pinchy-hooks"] (see build.ts).
+# /opt (image, never volume-mounted) so it can't be shadowed by the persisted
+# ~/.openclaw config volume across upgrades — same reasoning as the bundles
+# above. Currently one hook: bootstrap-memory-group-filter, which keeps a shared
+# agent's MEMORY.md out of channel group sessions (heypinchy/pinchy#369; upstream
+# openclaw/openclaw#108881). Plain .mjs — internal hooks load via native
+# import(), not the jiti path plugins use, so no transpile/deps step is needed.
+COPY config/pinchy-hooks /opt/pinchy-hooks
+
 # Pre-warm the bundled-plugin runtime-deps cache. Rationale and full
 # behaviour live in config/prewarm-openclaw.sh; in short: boot the
 # gateway once at build time so the npm install of ~15 plugin runtime

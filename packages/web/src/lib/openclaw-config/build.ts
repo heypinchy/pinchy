@@ -658,6 +658,12 @@ export async function regenerateOpenClawConfig() {
   const existingUpdate = (existing.update as Record<string, unknown>) || {};
   const existingCanvasHost = (existing.canvasHost as Record<string, unknown>) || {};
   const existingMedia = (existing.media as Record<string, unknown>) || {};
+  const existingHooks = (existing.hooks as Record<string, unknown>) || {};
+  const existingHooksInternal = (existingHooks.internal as Record<string, unknown>) || {};
+  const existingHooksInternalLoad = (existingHooksInternal.load as Record<string, unknown>) || {};
+  const existingHooksExtraDirs = Array.isArray(existingHooksInternalLoad.extraDirs)
+    ? (existingHooksInternalLoad.extraDirs as string[])
+    : [];
 
   // #508: identityLinks is no longer Pinchy-owned. Purge any stale value left by
   // a pre-per-task version so UPGRADES actually un-unify Telegram. We only
@@ -756,6 +762,32 @@ export async function regenerateOpenClawConfig() {
     session: {
       ...existingSessionPurged,
       reset: { mode: "idle" as const, idleMinutes: 525600 },
+    },
+    // Enable OpenClaw's internal-hook loader and point it at the hook package
+    // Pinchy ships in the OpenClaw image at /opt/pinchy-hooks. Today that dir
+    // holds one hook, bootstrap-memory-group-filter, which strips MEMORY.md
+    // from the bootstrap set for channel GROUP sessions so a shared agent's
+    // per-user memory is never pushed into a group (heypinchy/pinchy#369).
+    //
+    // Immediate mitigation for the upstream defect openclaw/openclaw#108881
+    // (filterBootstrapFilesForSession special-cases subagent + cron but not
+    // channel-group sessions). Remove this block — and the hook package — once
+    // that upstream fix ships.
+    //
+    // /opt (image, never volume-mounted) not /root/.openclaw/hooks (the default
+    // managed dir), because ~/.openclaw is a persisted volume that would shadow
+    // anything the image bakes into it. extraDirs is deduped and merged with any
+    // OpenClaw-enriched hooks state so a regenerate is idempotent and lossless.
+    hooks: {
+      ...existingHooks,
+      internal: {
+        ...existingHooksInternal,
+        enabled: true,
+        load: {
+          ...existingHooksInternalLoad,
+          extraDirs: Array.from(new Set([...existingHooksExtraDirs, "/opt/pinchy-hooks"])),
+        },
+      },
     },
   };
 
