@@ -26,30 +26,46 @@ export const POST = withAdmin(async (request, _ctx, session) => {
   // service (#572) so the key-authenticated POST /api/v1/agents route can
   // reuse it. This route owns auth (withAdmin), audit (actorType: "user"),
   // and HTTP — mapping the service's discriminated result onto responses.
-  const result = await createAgent(parsed.data, session.user.id!, (agent, audit) =>
-    // Registered the instant the row exists — NOT after createAgent returns.
-    // Everything it still has to do (permissions, workspace, OpenClaw regen)
-    // can throw, and none of it rolls the insert back. after() fires on
-    // response close even when the handler threw, so a 500 here yields an
-    // agent that exists AND is audited. Waiting for the return value would
-    // instead lose the record precisely when something went wrong.
-    after(() =>
-      appendAuditLog({
+  //
+  // Both audits are registered the instant their rows exist — NOT after
+  // createAgent returns. Everything it still has to do (workspace, OpenClaw
+  // regen) can throw, and none of it rolls the committed writes back. after()
+  // fires on response close even when the handler threw, so a 500 here yields
+  // an agent and grants that exist AND are audited. Reading the return value
+  // instead would lose both records precisely when something went wrong.
+  const result = await createAgent(parsed.data, session.user.id!, {
+    onCreated: (agent, audit) =>
+      after(() =>
+        appendAuditLog({
+          actorType: "user",
+          actorId: session.user.id!,
+          eventType: "agent.created",
+          resource: `agent:${agent.id}`,
+          detail: {
+            name: agent.name,
+            model: agent.model,
+            templateId: parsed.data.templateId,
+            skills: audit.templateSkills,
+            modelSelection: audit.modelSelection,
+          },
+          outcome: "success",
+        })
+      ),
+    onPermissionsConfigured: (agent, entry) =>
+      deferAuditLog({
         actorType: "user",
         actorId: session.user.id!,
-        eventType: "agent.created",
+        eventType: "config.changed",
         resource: `agent:${agent.id}`,
         detail: {
-          name: agent.name,
-          model: agent.model,
-          templateId: parsed.data.templateId,
-          skills: audit.templateSkills,
-          modelSelection: audit.modelSelection,
+          action: "agent_integration_permissions_auto_configured",
+          agentId: agent.id,
+          connectionId: entry.connectionId,
+          permissions: entry.permissions,
         },
         outcome: "success",
-      })
-    )
-  );
+      }),
+  });
 
   if (!result.ok) {
     // Only the capability path (422) is audited (parity with the pre-extraction
@@ -69,23 +85,7 @@ export const POST = withAdmin(async (request, _ctx, session) => {
     return NextResponse.json(result.error.body, { status: result.error.status });
   }
 
-  const { agent, autoConfiguredPermissions, runtimeWarning, runtimeApplyError } = result;
-
-  for (const entry of autoConfiguredPermissions) {
-    deferAuditLog({
-      actorType: "user",
-      actorId: session.user.id!,
-      eventType: "config.changed",
-      resource: `agent:${agent.id}`,
-      detail: {
-        action: "agent_integration_permissions_auto_configured",
-        agentId: agent.id,
-        connectionId: entry.connectionId,
-        permissions: entry.permissions,
-      },
-      outcome: "success",
-    });
-  }
+  const { agent, runtimeWarning, runtimeApplyError } = result;
 
   // The agent row is committed (audited success above) but never reached the
   // runtime (#880). Record a distinct failure event so the trail shows "created

@@ -62,7 +62,7 @@ vi.mock("@/lib/audit-deferred", () => ({
 }));
 
 import { POST } from "@/app/api/v1/agents/route";
-import { createAgent, type OnAgentCreated } from "@/lib/agents";
+import { createAgent, type CreateAgentHooks } from "@/lib/agents";
 import { appendAuditLog } from "@/lib/audit";
 import { deferAuditLog } from "@/lib/audit-deferred";
 import { revalidatePath } from "next/cache";
@@ -122,19 +122,26 @@ const successResult = {
 };
 
 /**
- * Stands in for a real `createAgent`: fires `onCreated` (the row is now
- * committed) and then resolves. Tests that assert on the audit MUST go
- * through this rather than a bare `mockResolvedValueOnce`, because the route
- * writes the audit from that callback — a mock that never calls it would make
- * the audit assertions vacuous.
+ * Stands in for a real `createAgent`: fires the hooks in the order the real
+ * service fires them (the row commits, then each connection's grants commit),
+ * and resolves. Tests that assert on the audit MUST go through this rather
+ * than a bare `mockResolvedValueOnce`, because the route writes every audit
+ * from these callbacks — a mock that never calls them would make the audit
+ * assertions vacuous.
  */
 function createAgentSucceeds(result: unknown = successResult) {
   vi.mocked(createAgent).mockImplementationOnce((async (
     _input: unknown,
     _ownerId: unknown,
-    onCreated?: OnAgentCreated
+    hooks?: CreateAgentHooks
   ) => {
-    onCreated?.(mockAgent as never, mockAuditInfo);
+    hooks?.onCreated?.(mockAgent as never, mockAuditInfo);
+    const { autoConfiguredPermissions = [] } = result as {
+      autoConfiguredPermissions?: { connectionId: string; permissions: unknown[] }[];
+    };
+    for (const entry of autoConfiguredPermissions) {
+      hooks?.onPermissionsConfigured?.(mockAgent as never, entry as never);
+    }
     return result;
   }) as never);
 }
@@ -162,7 +169,13 @@ describe("POST /api/v1/agents", () => {
       // did, via the key's referenceId) would attribute the agent to someone
       // who may since have left.
       null,
-      expect.any(Function)
+      // The audit-timing contract, asserted at the call site: the route has to
+      // hand the service BOTH hooks. Passing only onCreated is what left the
+      // permission grants unaudited on a failing tail.
+      expect.objectContaining({
+        onCreated: expect.any(Function),
+        onPermissionsConfigured: expect.any(Function),
+      })
     );
     expect(revalidatePath).toHaveBeenCalledWith("/", "layout");
     // successResult.autoConfiguredPermissions is [] — the permission loop
@@ -212,9 +225,9 @@ describe("POST /api/v1/agents", () => {
     vi.mocked(createAgent).mockImplementationOnce((async (
       _input: unknown,
       _ownerId: unknown,
-      onCreated?: OnAgentCreated
+      hooks?: CreateAgentHooks
     ) => {
-      onCreated?.(mockAgent as never, mockAuditInfo);
+      hooks?.onCreated?.(mockAgent as never, mockAuditInfo);
       throw new Error("regen failed");
     }) as never);
 
@@ -230,6 +243,46 @@ describe("POST /api/v1/agents", () => {
         eventType: "agent.created",
         outcome: "success",
         resource: "agent:new-agent-id",
+      })
+    );
+  });
+
+  it("STILL audits config.changed when createAgent throws after the grants exist", async () => {
+    mockVerifyApiKey.mockResolvedValue(verifiedKey());
+    // Same 500 as above, one step later: the agent row AND the Odoo permission
+    // rows are committed, then the workspace write or the regen blows up.
+    vi.mocked(createAgent).mockImplementationOnce((async (
+      _input: unknown,
+      _ownerId: unknown,
+      hooks?: CreateAgentHooks
+    ) => {
+      hooks?.onCreated?.(mockAgent as never, mockAuditInfo);
+      hooks?.onPermissionsConfigured?.(mockAgent as never, {
+        connectionId: "conn-1",
+        permissions: [{ model: "sale.order", operation: "write" }],
+      });
+      throw new Error("regen failed");
+    }) as never);
+
+    await expect(POST(postRequest(validBody), routeContext())).rejects.toThrow("regen failed");
+
+    // Granting an agent write access to sale.order is exactly the kind of
+    // change Pinchy exists to record. Reading `autoConfiguredPermissions` off
+    // the RETURN value — as this route used to — loses it precisely here,
+    // because there is no return value: the grants are live and nothing says
+    // who made them. The sibling agent.created audit had already been moved
+    // onto a callback for this reason; the grants were left behind.
+    expect(deferAuditLog).toHaveBeenCalledWith(
+      expect.objectContaining({
+        eventType: "config.changed",
+        actorType: "api_key",
+        actorId: "key-1",
+        resource: "agent:new-agent-id",
+        outcome: "success",
+        detail: expect.objectContaining({
+          connectionId: "conn-1",
+          permissions: [{ model: "sale.order", operation: "write" }],
+        }),
       })
     );
   });

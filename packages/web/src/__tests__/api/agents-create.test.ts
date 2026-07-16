@@ -1318,4 +1318,52 @@ describe("POST /api/agents", () => {
       reason: expect.stringContaining("balanced"),
     });
   });
+
+  // ── config.changed, on a failing tail ───────────────────────────────────
+  //
+  // This route's permission grants had NO test at all — which is how they came
+  // to be read off createAgent's return value, a value that does not exist
+  // when the tail throws. The grant commits, the request 500s, and nothing
+  // records who gave an agent access to the mailbox. Both halves are asserted
+  // here: that the entry is written, and that it survives the throw.
+  it("STILL audits config.changed when the OpenClaw regen throws after the grants exist", async () => {
+    const { appendAuditLog } = await import("@/lib/audit");
+    const { regenerateOpenClawConfig } = await import("@/lib/openclaw-config");
+    const spy = vi.mocked(appendAuditLog);
+
+    vi.mocked(regenerateOpenClawConfig).mockRejectedValueOnce(new Error("openclaw unreachable"));
+
+    const request = new NextRequest("http://localhost:7777/api/agents", {
+      method: "POST",
+      body: JSON.stringify({
+        // email-assistant requires a connection and carries email_read /
+        // email_draft, so this genuinely reaches the permission insert.
+        name: "Mail Bot",
+        templateId: "email-assistant",
+        connectionId: "conn-1",
+      }),
+    });
+
+    await expect(POST(request, routeContext())).rejects.toThrow("openclaw unreachable");
+
+    const call = spy.mock.calls.find(
+      ([arg]) => (arg as { eventType: string }).eventType === "config.changed"
+    );
+    expect(call).toBeDefined();
+    expect(call![0]).toMatchObject({
+      actorType: "user",
+      eventType: "config.changed",
+      resource: "agent:new-agent-id",
+      outcome: "success",
+      detail: {
+        action: "agent_integration_permissions_auto_configured",
+        agentId: "new-agent-id",
+        connectionId: "conn-1",
+        permissions: [
+          { model: "email", operation: "read" },
+          { model: "email", operation: "draft" },
+        ],
+      },
+    });
+  });
 });

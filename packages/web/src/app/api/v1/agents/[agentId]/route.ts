@@ -44,26 +44,29 @@ export const DELETE = withApiKey<RouteContext>(["agents:delete"], async (_req, {
   const agent = await getAgent(agentId, { scope: "shared" });
   if (!agent) return NextResponse.json({ error: "Agent not found" }, { status: 404 });
 
-  await deleteAgent(agentId);
-
-  // Safe to register after the await, unlike the sibling POST: deleteAgent()
-  // is a single committed soft-delete with no throwing tail behind it, so
-  // there is no window where the agent is gone but the record isn't queued.
-  after(() =>
-    appendAuditLog({
-      actorType: "api_key",
-      actorId: key.keyId,
-      eventType: "agent.deleted",
-      resource: `agent:${agentId}`,
-      // The key is the actor and its own snapshot is the attribution — no
-      // issuer/delegation field, see the POST route's docblock. `name` is
-      // captured pre-delete; the row is soft-deleted by the time this runs.
-      detail: {
-        name: agent.name,
-        apiKey: { id: key.keyId, name: key.name },
-      },
-      outcome: "success",
-    })
+  // Registered the instant the soft-delete commits — NOT after deleteAgent
+  // returns. Its cleanup tail (workspace removal, grant delete, Telegram
+  // settings, the OpenClaw regen) runs outside that transaction and can throw,
+  // and a key deletes agents unattended, so "the agent is gone and nobody
+  // knows who did it" is a real outcome rather than a theoretical one. Same
+  // contract as the sibling POST's onCreated; see deleteAgent.
+  await deleteAgent(agentId, () =>
+    after(() =>
+      appendAuditLog({
+        actorType: "api_key",
+        actorId: key.keyId,
+        eventType: "agent.deleted",
+        resource: `agent:${agentId}`,
+        // The key is the actor and its own snapshot is the attribution — no
+        // issuer/delegation field, see the POST route's docblock. `name` is
+        // read off the pre-delete lookup, so it survives the soft-delete.
+        detail: {
+          name: agent.name,
+          apiKey: { id: key.keyId, name: key.name },
+        },
+        outcome: "success",
+      })
+    )
   );
 
   revalidatePath("/", "layout");

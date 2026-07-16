@@ -296,17 +296,21 @@ export const DELETE = withAdmin<RouteContext>(async (_req, { params }, session) 
     return NextResponse.json({ error: "Personal agents cannot be deleted" }, { status: 400 });
   }
 
-  await deleteAgent(agentId);
-
-  after(() =>
-    appendAuditLog({
-      actorType: "user",
-      actorId: session.user.id!,
-      eventType: "agent.deleted",
-      resource: `agent:${agentId}`,
-      detail: { name: agent.name },
-      outcome: "success",
-    })
+  // Registered the instant the soft-delete commits — NOT after deleteAgent
+  // returns. Its cleanup tail runs outside that transaction and can throw; see
+  // deleteAgent for why awaiting it first loses the record of a deletion that
+  // genuinely happened.
+  await deleteAgent(agentId, () =>
+    after(() =>
+      appendAuditLog({
+        actorType: "user",
+        actorId: session.user.id!,
+        eventType: "agent.deleted",
+        resource: `agent:${agentId}`,
+        detail: { name: agent.name },
+        outcome: "success",
+      })
+    )
   );
 
   revalidatePath("/", "layout");

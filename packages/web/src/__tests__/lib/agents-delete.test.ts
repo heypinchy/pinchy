@@ -97,6 +97,45 @@ describe("deleteAgent", () => {
     expect(deleteWorkspace).not.toHaveBeenCalled();
     expect(regenerateOpenClawConfig).not.toHaveBeenCalled();
   });
+
+  // ── The onDeleted timing contract ───────────────────────────────────────
+  //
+  // Same contract as createAgent's onCreated, and it exists for the same
+  // reason: the soft-delete commits on line one, and everything after it —
+  // the workspace removal, the grant cleanup, two deleteSetting calls, the
+  // OpenClaw regen — can throw without rolling it back. A route that awaits
+  // this function before registering its audit loses the record of every
+  // deletion whose cleanup failed: the agent is gone, the caller 500s, and
+  // nothing says who removed it.
+
+  it("fires onDeleted BEFORE the cleanup tail, so a failing tail still gets audited", async () => {
+    const calls: string[] = [];
+    const onDeleted = vi.fn(() => void calls.push("onDeleted"));
+    vi.mocked(regenerateOpenClawConfig).mockImplementationOnce(async () => {
+      calls.push("regen");
+      throw new Error("openclaw unreachable");
+    });
+
+    await expect(deleteAgent("agent-1", onDeleted)).rejects.toThrow("openclaw unreachable");
+
+    expect(onDeleted).toHaveBeenCalledWith(expect.objectContaining({ id: "agent-1" }));
+    expect(calls).toEqual(["onDeleted", "regen"]);
+  });
+
+  it("does not fire onDeleted when no agent matched", async () => {
+    const onDeleted = vi.fn();
+    vi.mocked(db.update).mockReturnValueOnce({
+      set: vi.fn().mockReturnThis(),
+      where: vi.fn().mockReturnValue({
+        returning: vi.fn().mockResolvedValue([]),
+      }),
+    } as never);
+
+    await deleteAgent("nonexistent", onDeleted);
+
+    // Nothing was deleted, so there is nothing to record.
+    expect(onDeleted).not.toHaveBeenCalled();
+  });
 });
 
 describe("deleteAgent — soft-delete", () => {

@@ -90,6 +90,22 @@ const mockAgent = {
   isPersonal: false,
 };
 
+/**
+ * Stands in for a real `deleteAgent`: fires `onDeleted` (the soft-delete is now
+ * committed) and then resolves. Audit assertions MUST go through this rather
+ * than a bare `mockResolvedValueOnce`, because the route writes the audit from
+ * that callback — a mock that never calls it makes them vacuous.
+ */
+function deleteAgentSucceeds() {
+  vi.mocked(deleteAgent).mockImplementationOnce((async (
+    _id: unknown,
+    onDeleted?: (agent: unknown) => void
+  ) => {
+    onDeleted?.(mockAgent);
+    return mockAgent;
+  }) as never);
+}
+
 describe("DELETE /api/v1/agents/[agentId]", () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -98,14 +114,14 @@ describe("DELETE /api/v1/agents/[agentId]", () => {
   it("returns 200 with { success: true } and deletes the agent for a valid agents:delete key", async () => {
     mockVerifyApiKey.mockResolvedValue(verifiedKey());
     vi.mocked(getAgent).mockResolvedValueOnce(mockAgent as never);
-    vi.mocked(deleteAgent).mockResolvedValueOnce(mockAgent as never);
+    deleteAgentSucceeds();
 
     const response = await DELETE(deleteRequest(), ctx("agent-1"));
     const body = await response.json();
 
     expect(response.status).toBe(200);
     expect(body).toEqual({ success: true });
-    expect(deleteAgent).toHaveBeenCalledWith("agent-1");
+    expect(deleteAgent).toHaveBeenCalledWith("agent-1", expect.any(Function));
     expect(revalidatePath).toHaveBeenCalledWith("/", "layout");
   });
 
@@ -114,7 +130,7 @@ describe("DELETE /api/v1/agents/[agentId]", () => {
   it("audits agent.deleted with actorType 'api_key', the key snapshot, the pre-delete name, and NO issuer", async () => {
     mockVerifyApiKey.mockResolvedValue(verifiedKey());
     vi.mocked(getAgent).mockResolvedValueOnce(mockAgent as never);
-    vi.mocked(deleteAgent).mockResolvedValueOnce(mockAgent as never);
+    deleteAgentSucceeds();
 
     const response = await DELETE(deleteRequest(), ctx("agent-1"));
     expect(response.status).toBe(200);
@@ -154,7 +170,7 @@ describe("DELETE /api/v1/agents/[agentId]", () => {
   it("asks for the 'shared' scope, which is what keeps personal agents unreachable", async () => {
     mockVerifyApiKey.mockResolvedValue(verifiedKey());
     vi.mocked(getAgent).mockResolvedValueOnce(mockAgent as never);
-    vi.mocked(deleteAgent).mockResolvedValueOnce(mockAgent as never);
+    deleteAgentSucceeds();
 
     await DELETE(deleteRequest(), ctx("agent-1"));
 

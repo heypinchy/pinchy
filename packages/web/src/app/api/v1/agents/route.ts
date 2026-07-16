@@ -43,31 +43,47 @@ export const POST = withApiKey(["agents:write"], async (req, _ctx, key) => {
   const parsed = await parseRequestBody(createAgentSchema, req);
   if ("error" in parsed) return parsed.error;
 
-  const result = await createAgent(parsed.data, null, (agent, audit) =>
-    // Registered the instant the row exists — NOT after createAgent returns.
-    // Everything it still has to do (permissions, workspace, OpenClaw regen)
-    // can throw, and none of it rolls the insert back. after() fires on
-    // response close even when the handler threw, so a 500 here yields an
-    // agent that exists AND is audited. Waiting for the return value would
-    // instead lose the record precisely when something went wrong.
-    after(() =>
-      appendAuditLog({
+  // Both audits are registered the instant their rows exist — NOT after
+  // createAgent returns. Everything it still has to do (workspace, OpenClaw
+  // regen) can throw, and none of it rolls the committed writes back. after()
+  // fires on response close even when the handler threw, so a 500 here yields
+  // an agent and grants that exist AND are audited. Reading the return value
+  // instead would lose both records precisely when something went wrong.
+  const result = await createAgent(parsed.data, null, {
+    onCreated: (agent, audit) =>
+      after(() =>
+        appendAuditLog({
+          actorType: "api_key",
+          actorId: key.keyId,
+          eventType: "agent.created",
+          resource: `agent:${agent.id}`,
+          detail: {
+            name: agent.name,
+            model: agent.model,
+            templateId: parsed.data.templateId,
+            skills: audit.templateSkills,
+            modelSelection: audit.modelSelection,
+            apiKey: { id: key.keyId, name: key.name },
+          },
+          outcome: "success",
+        })
+      ),
+    onPermissionsConfigured: (agent, entry) =>
+      deferAuditLog({
         actorType: "api_key",
         actorId: key.keyId,
-        eventType: "agent.created",
+        eventType: "config.changed",
         resource: `agent:${agent.id}`,
         detail: {
-          name: agent.name,
-          model: agent.model,
-          templateId: parsed.data.templateId,
-          skills: audit.templateSkills,
-          modelSelection: audit.modelSelection,
+          action: "agent_integration_permissions_auto_configured",
+          agentId: agent.id,
+          connectionId: entry.connectionId,
+          permissions: entry.permissions,
           apiKey: { id: key.keyId, name: key.name },
         },
         outcome: "success",
-      })
-    )
-  );
+      }),
+  });
 
   if (!result.ok) {
     // Only the capability path (422) is audited — parity with the session
@@ -88,24 +104,7 @@ export const POST = withApiKey(["agents:write"], async (req, _ctx, key) => {
     return NextResponse.json(result.error.body, { status: result.error.status });
   }
 
-  const { agent, autoConfiguredPermissions } = result;
-
-  for (const entry of autoConfiguredPermissions) {
-    deferAuditLog({
-      actorType: "api_key",
-      actorId: key.keyId,
-      eventType: "config.changed",
-      resource: `agent:${agent.id}`,
-      detail: {
-        action: "agent_integration_permissions_auto_configured",
-        agentId: agent.id,
-        connectionId: entry.connectionId,
-        permissions: entry.permissions,
-        apiKey: { id: key.keyId, name: key.name },
-      },
-      outcome: "success",
-    });
-  }
+  const { agent } = result;
 
   // A key-created agent must appear in the admin UI immediately, same as a
   // session-created one.

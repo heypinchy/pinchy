@@ -576,10 +576,16 @@ describe("DELETE /api/agents/[agentId] audit logging", () => {
       isPersonal: false,
     });
 
-    vi.mocked(deleteAgent).mockResolvedValueOnce({
-      id: "agent-1",
-      name: "Shared Agent",
-    } as never);
+    // Fires onDeleted — the route registers its audit from that callback the
+    // moment the soft-delete commits, so a mock that skips it proves nothing.
+    vi.mocked(deleteAgent).mockImplementationOnce((async (
+      _id: unknown,
+      onDeleted?: (agent: unknown) => void
+    ) => {
+      const row = { id: "agent-1", name: "Shared Agent" };
+      onDeleted?.(row);
+      return row;
+    }) as never);
 
     const request = new NextRequest("http://localhost:7777/api/agents/agent-1", {
       method: "DELETE",

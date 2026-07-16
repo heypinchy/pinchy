@@ -110,7 +110,25 @@ export async function getAgent(
   return rows[0];
 }
 
-export async function deleteAgent(id: string) {
+/**
+ * Called by `deleteAgent` the instant the soft-delete is committed, and before
+ * the cleanup tail that can still throw. Same contract as `CreateAgentHooks`,
+ * for the same reason — see `deleteAgent`.
+ */
+export type OnAgentDeleted = (agent: typeof agents.$inferSelect) => void;
+
+/**
+ * Soft-delete an agent and clean up everything hanging off it.
+ *
+ * `onDeleted` fires the moment the soft-delete is committed. That timing is
+ * the contract: the UPDATE below commits on its own, and every step after it —
+ * workspace removal, the grant delete, two `deleteSetting` calls, the OpenClaw
+ * regen, the Telegram recalculation — runs outside that transaction and can
+ * throw. A caller that awaits this function before registering its audit
+ * loses the record of exactly those deletions: the agent is gone, the request
+ * 500s, and nothing says who removed it. Pinned by agents-delete.test.ts.
+ */
+export async function deleteAgent(id: string, onDeleted?: OnAgentDeleted) {
   const [updated] = await db
     .update(agents)
     .set({ deletedAt: new Date() })
@@ -118,6 +136,8 @@ export async function deleteAgent(id: string) {
     .returning();
 
   if (updated) {
+    // Committed, and everything below can throw. Record it now.
+    onDeleted?.(updated);
     deleteWorkspace(id);
     // Remove the agent's integration grants at the DB level so they can't be
     // re-emitted into the runtime config (the Odoo/email permission loops key
@@ -162,19 +182,6 @@ export interface AutoConfiguredConnection {
   permissions: Array<{ model: string; operation: string }>;
 }
 
-/**
- * Discriminated result of `createAgent()`. The service performs the domain work
- * and returns structured data; it is auth-, audit-, and HTTP-agnostic. On
- * success it hands back the created agent plus everything the route needs to
- * write the success/permission audits and respond 201. On a validation or
- * capability failure it hands back the exact HTTP status + body the route
- * should return (byte-identical to the pre-extraction inline route), plus — for
- * the capability case — the detail the route needs to write the failure audit.
- *
- * The failure arm is split on `status` so a consumer (this route, and Phase 4's
- * `/api/v1/agents`) can narrow to the exact body shape, and so illegal states —
- * a 400 carrying a `capabilityFailure`, or a 422 without one — don't typecheck.
- */
 /** The audit-relevant facts about a creation, known once the row exists. */
 export type CreateAgentAuditInfo = {
   templateSkills: string[];
@@ -187,14 +194,66 @@ export type CreateAgentAuditInfo = {
 
 /**
  * Called by `createAgent` the instant the agent row is committed, and before
- * any of the work that can still throw. See `createAgent`'s `onCreated`
- * parameter for why the timing matters.
+ * any of the work that can still throw. See `CreateAgentHooks` for why the
+ * timing matters.
  */
 export type OnAgentCreated = (
   agent: typeof agents.$inferSelect,
   audit: CreateAgentAuditInfo
 ) => void;
 
+/**
+ * Called by `createAgent` the instant one connection's permission grants are
+ * committed, and before any of the work that can still throw. Carries the agent
+ * rather than making the caller stash it from `onCreated` — that would be a
+ * silent ordering dependency between two hooks.
+ */
+export type OnPermissionsConfigured = (
+  agent: typeof agents.$inferSelect,
+  entry: AutoConfiguredConnection
+) => void;
+
+/**
+ * The auditable moments inside `createAgent`, handed to the caller as they
+ * happen rather than reported once the function returns.
+ *
+ * That distinction is the whole point. Every write below commits on its own —
+ * nothing here shares a transaction — and the tail after them (workspace
+ * materialization, OpenClaw regen, the runtime wait) can throw. A caller that
+ * waits for `createAgent` to RETURN before recording anything silently loses
+ * the record of every write that already committed: the rows exist, the caller
+ * 500s, and nothing was written down. For an audit product that is the one
+ * outcome worse than a noisy log.
+ *
+ * So the service hands each route the moment, and each route brings its own
+ * actor (`user` vs `api_key`) and its own writer — which is how `createAgent`
+ * stays audit-agnostic without giving up correct timing.
+ *
+ * Both hooks are pinned by ordering tests in create-agent-service.test.ts; the
+ * route-level consequence is pinned in agents-create.test.ts.
+ */
+export type CreateAgentHooks = {
+  onCreated?: OnAgentCreated;
+  onPermissionsConfigured?: OnPermissionsConfigured;
+};
+
+/**
+ * Discriminated result of `createAgent()`. The service performs the domain work
+ * and returns structured data; it is auth-, audit-, and HTTP-agnostic. On
+ * success it hands back the created agent plus everything the route needs to
+ * respond 201. On a validation or capability failure it hands back the exact
+ * HTTP status + body the route should return (byte-identical to the
+ * pre-extraction inline route), plus — for the capability case — the detail the
+ * route needs to write the failure audit.
+ *
+ * The failure arm is split on `status` so each consumer can narrow to the exact
+ * body shape, and so illegal states — a 400 carrying a `capabilityFailure`, or
+ * a 422 without one — don't typecheck.
+ *
+ * `autoConfiguredPermissions` is the same data `onPermissionsConfigured`
+ * already delivered, kept here for the return contract. Audit from the hook,
+ * not from this field: this field only exists on the path where nothing threw.
+ */
 export type CreateAgentResult =
   | {
       ok: true;
@@ -241,28 +300,26 @@ export type CreateAgentResult =
  * `ownerId` is the id to record as the agent's owner: the session user for the
  * admin route, and `null` for the key-authenticated API route — a key belongs
  * to the organization rather than to any person (lib/api-key-identity.ts), so
- * there is no honest owner to name. `agents.owner_id` is nullable, and an
- * unowned SHARED agent is well-defined everywhere it matters: `visible-agents`
- * only consults `ownerId` on the `isPersonal` branch, and this route never
- * creates personal agents. Writing the creating admin's id here instead would
- * be a lie that outlives them.
+ * there is no honest owner to name. `agents.owner_id` is nullable, and this
+ * function never creates personal agents. Writing the creating admin's id here
+ * instead would be a lie that outlives them.
  *
- * `onCreated` fires the moment the agent row is committed — deliberately
- * BEFORE the permission inserts, workspace materialization and OpenClaw
- * regen, every one of which can throw, and none of which shares a transaction
- * with the insert. A caller that instead waits for this function to RETURN
- * before recording the creation will silently lose the record whenever that
- * tail throws: the agent exists, the caller 500s, and nothing was written
- * down. For an audit product that is the one outcome worse than a noisy log.
+ * Two consumers read `ownerId` off a shared agent, and both were checked:
+ * `visible-agents` and `agent-access` only consult it on the `isPersonal`
+ * branch, so they are unaffected. `openclaw-config/build.ts` does NOT — it
+ * gates the `pinchy-context` plugin's per-agent config on a truthy `ownerId`,
+ * so an unowned agent carrying a `pinchy_save_*` tool would be offered a tool
+ * the plugin has no config for. Unreachable today (no template ships those
+ * tools, so it takes an explicit `defaultAllowedTools`), and accepted: the
+ * degradation is a missing context entry, not a wrong one. Named here because
+ * "unowned is fine" is only true for the consumers that were actually read.
  *
- * This hook is why `createAgent` can stay audit-agnostic without giving up
- * correct timing: it hands each route the moment, and each route brings its
- * own actor (`user` vs `api_key`) and its own writer.
+ * See `CreateAgentHooks` for the audit-timing contract.
  */
 export async function createAgent(
   input: CreateAgentInput,
   ownerId: string | null,
-  onCreated?: OnAgentCreated
+  hooks?: CreateAgentHooks
 ): Promise<CreateAgentResult> {
   const { name, templateId, tagline, pluginConfig, connectionId, defaultAllowedTools } = input;
 
@@ -408,8 +465,8 @@ export async function createAgent(
 
   // The agent now exists and is committed. Everything below can throw, and
   // none of it rolls this row back — so the creation gets recorded HERE, not
-  // after the function returns. See the docblock.
-  onCreated?.(agent, auditInfo);
+  // after the function returns. See CreateAgentHooks.
+  hooks?.onCreated?.(agent, auditInfo);
 
   const autoConfiguredPermissions: AutoConfiguredConnection[] = [];
 
@@ -444,10 +501,14 @@ export async function createAgent(
 
         await db.insert(agentConnectionPermissions).values(permissionRows);
 
-        autoConfiguredPermissions.push({
+        // Committed, and the tail below can still throw — record it now, for
+        // the same reason onCreated fires early. See CreateAgentHooks.
+        const entry: AutoConfiguredConnection = {
           connectionId,
           permissions: permissionRows.map((p) => ({ model: p.model, operation: p.operation })),
-        });
+        };
+        autoConfiguredPermissions.push(entry);
+        hooks?.onPermissionsConfigured?.(agent, entry);
       }
     }
   }
@@ -466,10 +527,12 @@ export async function createAgent(
 
       await db.insert(agentConnectionPermissions).values(permissionRows);
 
-      autoConfiguredPermissions.push({
+      const entry: AutoConfiguredConnection = {
         connectionId,
         permissions: permissionRows.map((p) => ({ model: p.model, operation: p.operation })),
-      });
+      };
+      autoConfiguredPermissions.push(entry);
+      hooks?.onPermissionsConfigured?.(agent, entry);
     }
   }
 

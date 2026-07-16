@@ -125,11 +125,9 @@ describe("createAgent() service", () => {
   it("fires onCreated with the agent and audit info on the happy path", async () => {
     const onCreated = vi.fn();
 
-    const result = await createAgent(
-      { name: "Test Agent", templateId: "custom" },
-      "user-1",
-      onCreated
-    );
+    const result = await createAgent({ name: "Test Agent", templateId: "custom" }, "user-1", {
+      onCreated,
+    });
 
     expect(result.ok).toBe(true);
     if (!result.ok) throw new Error("expected success");
@@ -148,7 +146,7 @@ describe("createAgent() service", () => {
     });
 
     await expect(
-      createAgent({ name: "Test Agent", templateId: "custom" }, "user-1", onCreated)
+      createAgent({ name: "Test Agent", templateId: "custom" }, "user-1", { onCreated })
     ).rejects.toThrow("openclaw unreachable");
 
     // The agent row was inserted and is committed — nothing here rolls it
@@ -159,15 +157,62 @@ describe("createAgent() service", () => {
     expect(calls).toEqual(["onCreated", "regen"]);
   });
 
+  // ── The onPermissionsConfigured timing contract ─────────────────────────
+  //
+  // The same contract as onCreated, one step later, and it earns its own test
+  // because it was the half that got missed: agent.created was moved onto a
+  // callback while the permission grants kept being read off the RETURN value
+  // — which, on a throwing tail, does not exist. Granting an agent access to a
+  // connection is the most audit-relevant thing this service does.
+
+  it("fires onPermissionsConfigured BEFORE the OpenClaw regen, so a failing tail still gets audited", async () => {
+    const calls: string[] = [];
+    const onPermissionsConfigured = vi.fn(() => void calls.push("permissions"));
+    // email-assistant carries a modelHint, unlike `custom`, so the resolver is
+    // actually consulted on this path.
+    mockResolveModelForTemplate.mockResolvedValueOnce({
+      model: "anthropic/claude-haiku-4-5-20251001",
+      reason: "template-hint (balanced)",
+    });
+    vi.mocked(regenerateOpenClawConfig).mockImplementationOnce(async () => {
+      calls.push("regen");
+      throw new Error("openclaw unreachable");
+    });
+
+    await expect(
+      createAgent(
+        // email-assistant carries email_read/email_draft and requires a
+        // connection — the shortest real path to a permission grant.
+        { name: "Mail Bot", templateId: "email-assistant", connectionId: "conn-1" },
+        "user-1",
+        { onPermissionsConfigured }
+      )
+    ).rejects.toThrow("openclaw unreachable");
+
+    // The grants are committed and nothing rolls them back, so the callback
+    // MUST already have fired. If it hasn't, an agent is walking around with
+    // read+draft access to a mailbox and no record of who gave it that.
+    expect(onPermissionsConfigured).toHaveBeenCalledTimes(1);
+    expect(onPermissionsConfigured).toHaveBeenCalledWith(
+      expect.objectContaining({ id: "new-agent-id" }),
+      {
+        connectionId: "conn-1",
+        permissions: [
+          { model: "email", operation: "read" },
+          { model: "email", operation: "draft" },
+        ],
+      }
+    );
+    expect(calls).toEqual(["permissions", "regen"]);
+  });
+
   it("does not fire onCreated when it fails before inserting", async () => {
     const onCreated = vi.fn();
 
     // Unknown template: returns { ok: false } before any insert.
-    const result = await createAgent(
-      { name: "Test", templateId: "nonexistent" },
-      "user-1",
-      onCreated
-    );
+    const result = await createAgent({ name: "Test", templateId: "nonexistent" }, "user-1", {
+      onCreated,
+    });
 
     expect(result.ok).toBe(false);
     expect(insertValuesMock).not.toHaveBeenCalled();
@@ -175,7 +220,7 @@ describe("createAgent() service", () => {
     expect(onCreated).not.toHaveBeenCalled();
   });
 
-  it("works without an onCreated callback (it's optional)", async () => {
+  it("works without any hooks (they're optional)", async () => {
     const result = await createAgent({ name: "Test Agent", templateId: "custom" }, "user-1");
     expect(result.ok).toBe(true);
   });
