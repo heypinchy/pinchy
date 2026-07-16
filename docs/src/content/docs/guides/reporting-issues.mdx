@@ -22,9 +22,9 @@ Secrets are filtered out before the file is generated. API keys, Bearer tokens, 
 
 ## Choosing which chat to export
 
-If you have more than one conversation with an agent, the dialog lets you pick which one to export. The selector lists all of your own chats with that agent — including named chats and read-only Telegram conversations linked to your account. You can only export your own chats.
+If you have more than one conversation with an agent, you can pick which one to export. The selector lists all of your own chats with that agent — including named chats and read-only Telegram conversations linked to your account. You can only export your own chats.
 
-When you open the dialog from a specific conversation, that chat is preselected; from Settings, the agent's default chat is preselected. If a chat's transcript is no longer on disk, we still produce a valid file from the audit-log entries alone and flag it (`scope.trajectoryMissing`), so support can tell an absent transcript apart from an empty one.
+When you start from a specific conversation, that chat is preselected; from Settings, the agent's default chat is preselected. If a chat's transcript is no longer on disk, we still produce a valid file from the audit-log entries alone and flag it (`scope.trajectoryMissing`), so support can tell an absent transcript apart from an empty one.
 
 For Telegram chats the export includes the conversation transcript, but the audit-log section is currently limited — audit entries are attributed to your web account, so a Telegram chat's file may ship without them. The transcript is still the primary signal for debugging.
 
@@ -45,10 +45,10 @@ The dialog opens with that message as the anchor. In this first version, the exp
 If the issue isn't tied to one reply — say the agent feels generally slow, or a tool keeps failing — start from the agent's Settings:
 
 1. Open the agent, then go to its **Settings → Diagnostics** tab.
-2. Click **Generate diagnostics export**.
-3. Choose the chat to export in the dialog (the default chat is preselected).
+2. Choose the chat to export (the default chat is preselected).
+3. Click **Generate diagnostics export**.
 
-The export is per-agent, so the agent is already in context here — there's no agent to pick. The same dialog appears as the per-message flow.
+The form sits right in the tab, so there's nothing to open first. The export is per-agent, so the agent is already in context here — there's no agent to pick.
 
 (Looking under general **Settings → Support**? It now just points you here.)
 

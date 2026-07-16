@@ -41,18 +41,21 @@ import { FAKE_OLLAMA_RESPONSE } from "../shared/fake-ollama/fake-ollama-server";
 import { login, getSmithersAgentId, waitForOpenClawConnected } from "./helpers";
 
 /**
- * Clicks the dialog's Generate button, asserts the API returned 200, and
- * returns the download promise. Surfaces the API status + body on non-200
- * — much more informative than the default 120s "waiting for download"
- * timeout when something upstream fails.
+ * Clicks the form's submit button, asserts the API returned 200, and returns
+ * the download promise. Surfaces the API status + body on non-200 — much more
+ * informative than the default 120s "waiting for download" timeout when
+ * something upstream fails.
+ *
+ * The button's label differs per surface: the Settings tab renders the form
+ * inline with its own descriptive label, the chat flow renders it in a dialog.
  */
-async function clickDialogGenerateAndAwaitDownload(page: Page) {
+async function clickGenerateAndAwaitDownload(page: Page, name: RegExp = /^generate$/i) {
   const apiResponsePromise = page.waitForResponse(
     (r) => r.url().includes("/api/diagnostics/export") && r.request().method() === "POST",
     { timeout: 60000 }
   );
   const downloadPromise = page.waitForEvent("download", { timeout: 60000 });
-  await page.getByRole("button", { name: /^generate$/i }).click();
+  await page.getByRole("button", { name }).click();
 
   const apiResponse = await apiResponsePromise;
   if (apiResponse.status() !== 200) {
@@ -99,18 +102,17 @@ test.describe.serial("Self-service diagnostics export", () => {
     // the agent is already in context here — no agent picker. No chat-turn
     // either; the beforeAll already primed the session.
     await page.goto(`/chat/${smithersAgentId}/settings?tab=diagnostics`);
-    const openDialogButton = page.getByRole("button", { name: /generate diagnostics export/i });
-    await expect(openDialogButton).toBeVisible({ timeout: 10000 });
-    await openDialogButton.click();
 
-    // The chat picker (#639) renders once the user's chats load — at minimum the
-    // default chat the seed turn created. Waiting for it also makes the export
-    // deterministic (the default chat is preselected and its sessionId sent).
+    // The form is inline on this tab — no modal to open first. The chat picker
+    // (#639) renders once the user's chats load — at minimum the default chat
+    // the seed turn created. Waiting for it also makes the export deterministic
+    // (the default chat is preselected and its sessionId sent).
     await expect(page.getByRole("combobox", { name: /chat to export/i })).toBeVisible({
       timeout: 10000,
     });
+    expect(await page.getByRole("dialog").count()).toBe(0);
 
-    const download = await clickDialogGenerateAndAwaitDownload(page);
+    const download = await clickGenerateAndAwaitDownload(page, /generate diagnostics export/i);
     expect(download.suggestedFilename()).toMatch(/^pinchy-bugreport-.+\.json$/);
 
     const downloadPath = await download.path();
@@ -151,7 +153,7 @@ test.describe.serial("Self-service diagnostics export", () => {
     await page.getByTestId("assistant-action-bar-more-trigger").last().click();
     await page.getByTestId("report-issue-menu-item").click();
 
-    const download = await clickDialogGenerateAndAwaitDownload(page);
+    const download = await clickGenerateAndAwaitDownload(page);
     expect(download.suggestedFilename()).toMatch(/^pinchy-bugreport-.+\.json$/);
 
     const downloadPath = await download.path();

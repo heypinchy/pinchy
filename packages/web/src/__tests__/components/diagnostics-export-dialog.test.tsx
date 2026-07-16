@@ -194,6 +194,24 @@ describe("DiagnosticsExportDialog", () => {
     expect(apiGet).toHaveBeenCalledWith("/api/agents/agt_1/chats");
   });
 
+  it("constrains the chat picker to the dialog width so a long title can't stretch it", async () => {
+    const { apiGet } = await import("@/lib/api-client");
+    vi.mocked(apiGet).mockResolvedValue({
+      chats: [{ ...CHATS[0], title: "Sind jetzt alle gebuchten Rechnungen mit Bankbuchungen " }],
+    });
+    render(
+      <DiagnosticsExportDialog open agentId="agt_1" agentName="Smithers" onClose={() => {}} />
+    );
+    // The shadcn trigger defaults to `w-fit` + `whitespace-nowrap`, so a long
+    // chat title used to push the trigger — and with it the dialog's grid
+    // column — far past the dialog's own max-width, spilling the picker and the
+    // textarea out of the modal. jsdom computes no layout, so guard the classes
+    // that make the trigger shrinkable.
+    const trigger = await screen.findByRole("combobox", { name: /chat/i });
+    expect(trigger).toHaveClass("w-full");
+    expect(trigger).toHaveClass("min-w-0");
+  });
+
   it("exports the default chat's sessionId when launched from Settings (no chat context)", async () => {
     const { apiGet, apiPost } = await import("@/lib/api-client");
     vi.mocked(apiGet).mockResolvedValue({ chats: CHATS });

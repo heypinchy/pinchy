@@ -510,7 +510,10 @@ export function AgentSettingsPageContent({ initialTab }: { initialTab?: string }
             </TabsContent>
           )}
 
-          <TabsContent value="diagnostics" keepMounted>
+          {/* No `keepMounted`: unlike the editing tabs, this one holds no
+              unsaved state to preserve across tab switches, and mounting it
+              lazily keeps its chat-list fetch off every Settings page load. */}
+          <TabsContent value="diagnostics">
             <AgentSettingsDiagnostics agentId={agentId} agentName={agent.name} />
           </TabsContent>
         </Tabs>

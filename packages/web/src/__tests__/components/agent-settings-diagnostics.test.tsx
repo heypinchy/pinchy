@@ -1,60 +1,109 @@
-import { describe, it, expect, vi } from "vitest";
-import { render, screen, fireEvent } from "@testing-library/react";
+import { describe, it, expect, vi, beforeEach } from "vitest";
+import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 import "@testing-library/jest-dom";
 import { AgentSettingsDiagnostics } from "@/components/agent-settings-diagnostics";
 
-// Mirror the mock used by settings-support.test.tsx so we can assert *which*
-// agent the dialog opens for without exercising the real export flow.
-vi.mock("@/components/diagnostics-export-dialog", () => ({
-  DiagnosticsExportDialog: ({
-    open,
-    agentId,
-    agentName,
-    anchorMessageId,
-  }: {
-    open: boolean;
-    agentId: string;
-    agentName: string;
-    anchorMessageId?: string;
-    onClose: () => void;
-  }) =>
-    open ? (
-      <div role="dialog" aria-label="diagnostics-export" data-anchor={anchorMessageId ?? "none"}>
-        Export dialog for {agentName} ({agentId})
-      </div>
-    ) : null,
+// The tab renders the real export form inline (no modal), so these tests
+// exercise it end to end against mocked transport.
+vi.mock("@/lib/api-client", () => ({
+  apiPost: vi.fn(async () => ({ schemaVersion: "pinchy.bugreport.v1" })),
+  apiGet: vi.fn(async () => ({ chats: [] })),
+  ApiError: class ApiError extends Error {
+    constructor(
+      public readonly status: number,
+      message: string,
+      public readonly details?: unknown
+    ) {
+      super(message);
+      this.name = "ApiError";
+    }
+  },
 }));
 
+vi.mock("@/lib/diagnostics/download", () => ({
+  downloadBundle: vi.fn(),
+  buildBundleFilename: vi.fn(() => "pinchy-bugreport-smithers-19700101-0000.json"),
+}));
+
+vi.mock("sonner", () => ({
+  toast: { error: vi.fn(), success: vi.fn() },
+}));
+
+const CHATS = [
+  {
+    chatId: null,
+    sessionId: "s-default",
+    origin: "web" as const,
+    writable: true,
+    title: "Default chat",
+    lastInteractionAt: 1000,
+  },
+];
+
 describe("AgentSettingsDiagnostics", () => {
-  it("renders the export entry point for the in-context agent without an agent picker", () => {
+  beforeEach(async () => {
+    const { apiPost, apiGet } = await import("@/lib/api-client");
+    const { downloadBundle } = await import("@/lib/diagnostics/download");
+    vi.mocked(apiPost).mockReset();
+    vi.mocked(apiPost).mockResolvedValue({ schemaVersion: "pinchy.bugreport.v1" });
+    vi.mocked(apiGet).mockReset();
+    vi.mocked(apiGet).mockResolvedValue({ chats: CHATS });
+    vi.mocked(downloadBundle).mockClear();
+  });
+
+  it("renders the export form inline, not behind a modal", async () => {
     render(<AgentSettingsDiagnostics agentId="agt_1" agentName="Smithers" />);
 
+    // The tab is already the dedicated surface for this one task — the fields
+    // must be reachable without opening anything.
+    expect(await screen.findByRole("combobox", { name: /chat to export/i })).toBeInTheDocument();
+    expect(screen.getByPlaceholderText(/what went wrong/i)).toBeInTheDocument();
     expect(
       screen.getByRole("button", { name: /generate diagnostics export/i })
     ).toBeInTheDocument();
-    // The agent is already in context here — there must be no agent picker.
-    expect(screen.queryByRole("combobox")).not.toBeInTheDocument();
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
   });
 
-  it("opens the export dialog for the in-context agent when Generate is clicked", () => {
+  it("exports the in-context agent's chat on submit", async () => {
+    const { apiPost, apiGet } = await import("@/lib/api-client");
     render(<AgentSettingsDiagnostics agentId="agt_42" agentName="Smithers" />);
 
-    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    await screen.findByRole("combobox", { name: /chat to export/i });
+    expect(apiGet).toHaveBeenCalledWith("/api/agents/agt_42/chats");
 
-    fireEvent.click(screen.getByRole("button", { name: /generate diagnostics export/i }));
-
-    const dialog = screen.getByRole("dialog");
-    expect(dialog).toBeInTheDocument();
-    expect(dialog).toHaveTextContent("agt_42");
-    expect(dialog).toHaveTextContent("Smithers");
-  });
-
-  it("triggers a full-session export, not a per-message one (no anchorMessageId)", () => {
-    render(<AgentSettingsDiagnostics agentId="agt_1" agentName="Smithers" />);
     fireEvent.click(screen.getByRole("button", { name: /generate diagnostics export/i }));
 
     // Settings-triggered exports must NOT anchor on a specific message — that
     // affordance lives on the per-message action bar in chat.
-    expect(screen.getByRole("dialog")).toHaveAttribute("data-anchor", "none");
+    await waitFor(() =>
+      expect(apiPost).toHaveBeenCalledWith("/api/diagnostics/export", {
+        agentId: "agt_42",
+        sessionId: "s-default",
+      })
+    );
+  });
+
+  it("keeps the form usable and clears the description after a successful export", async () => {
+    const { downloadBundle } = await import("@/lib/diagnostics/download");
+    render(<AgentSettingsDiagnostics agentId="agt_1" agentName="Smithers" />);
+
+    await screen.findByRole("combobox", { name: /chat to export/i });
+    const description = screen.getByPlaceholderText(/what went wrong/i);
+    fireEvent.change(description, { target: { value: "stream stopped" } });
+    fireEvent.click(screen.getByRole("button", { name: /generate diagnostics export/i }));
+
+    await waitFor(() => expect(downloadBundle).toHaveBeenCalled());
+    // Nothing closes inline, so the form must reset itself rather than leave a
+    // stale description to be resubmitted with the next export.
+    await waitFor(() => expect(description).toHaveValue(""));
+    expect(
+      screen.getByRole("button", { name: /generate diagnostics export/i })
+    ).toBeInTheDocument();
+  });
+
+  it("offers no Cancel button inline — there is nothing to cancel back to", async () => {
+    render(<AgentSettingsDiagnostics agentId="agt_1" agentName="Smithers" />);
+    await screen.findByRole("combobox", { name: /chat to export/i });
+    expect(screen.queryByRole("button", { name: /^cancel$/i })).not.toBeInTheDocument();
   });
 });
