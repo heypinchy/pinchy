@@ -1,6 +1,7 @@
 import { test, expect } from "@playwright/test";
 import {
   seedProviderConfig,
+  apiSignInAsAdmin,
   loginAsAdmin,
   loginAs,
   createSecondUserViaInvite,
@@ -13,21 +14,27 @@ const AUDIT_TEST_GROUP = `AuditTestGroup-${Date.now()}`;
 test.describe.serial("Audit log", () => {
   test.beforeAll(async ({ browser }) => {
     await seedProviderConfig();
-    const page = await browser.newPage();
-    await loginAsAdmin(page);
+
+    // Pure data-setup hook — only uses the request context, never the page UI.
+    // Authenticate over the API (not the UI `loginAsAdmin`, which waits up to
+    // 15 s for hydration) so the hook stays inside its 30 s budget under CI
+    // load. See `apiSignIn`.
+    const context = await browser.newContext();
+    const request = context.request;
+    await apiSignInAsAdmin(request);
 
     // Enable enterprise mode so group routes are accessible (idempotent)
-    const status = await page.request.get("/api/enterprise/status");
+    const status = await request.get("/api/enterprise/status");
     const statusJson = await status.json();
     if (!statusJson.enterprise) {
-      await page.request.post("/api/dev/enterprise-toggle");
+      await request.post("/api/dev/enterprise-toggle");
     }
 
-    await createSecondUserViaInvite(page.context().request).catch(() => {
+    await createSecondUserViaInvite(request).catch(() => {
       // Idempotent: ignore if already created by an earlier spec
     });
 
-    await page.close();
+    await context.close();
   });
 
   test.beforeEach(async ({ page }) => {

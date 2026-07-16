@@ -1,6 +1,7 @@
 import { test, expect } from "@playwright/test";
 import {
   seedProviderConfig,
+  apiSignInAsAdmin,
   loginAsAdmin,
   switchUser,
   createSecondUserViaInvite,
@@ -24,21 +25,27 @@ test.describe.serial("Knowledge base file editing", () => {
 
   test.beforeAll(async ({ browser }) => {
     await seedProviderConfig();
-    const page = await browser.newPage();
-    await loginAsAdmin(page);
+
+    // Pure data-setup hook — only uses the request context, never the page UI.
+    // Authenticate over the API (not the UI `loginAsAdmin`, which waits up to
+    // 15 s for hydration) so the hook stays inside its 30 s budget under CI
+    // load. See `apiSignIn`.
+    const context = await browser.newContext();
+    const request = context.request;
+    await apiSignInAsAdmin(request);
 
     // Create second user idempotently — ignore errors if already exists
-    await createSecondUserViaInvite(page.context().request).catch(() => {});
+    await createSecondUserViaInvite(request).catch(() => {});
 
     // Find the Smithers agent, or create a fresh one if it doesn't exist yet
-    const agentsRes = await page.context().request.get("/api/agents");
+    const agentsRes = await request.get("/api/agents");
     const agents: Array<{ id: string; name: string }> = await agentsRes.json();
     const smithers = agents.find((a) => /smithers/i.test(a.name));
 
     if (smithers) {
       agentId = smithers.id;
     } else {
-      const createRes = await page.context().request.post("/api/agents", {
+      const createRes = await request.post("/api/agents", {
         data: {
           name: "KB Test Agent",
           templateId: "custom",
@@ -54,7 +61,7 @@ test.describe.serial("Knowledge base file editing", () => {
       agentId = created.id;
     }
 
-    await page.close();
+    await context.close();
   });
 
   test.beforeEach(async ({ page }) => {

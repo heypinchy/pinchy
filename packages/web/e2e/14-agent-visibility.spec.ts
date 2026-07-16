@@ -1,8 +1,9 @@
 import { test, expect } from "@playwright/test";
 import {
   seedProviderConfig,
+  apiSignInAsAdmin,
+  apiSignIn,
   loginAsAdmin,
-  loginAs,
   switchUser,
   ADMIN_USER,
   createSecondUserViaInvite,
@@ -30,14 +31,19 @@ test.describe.serial("Agent visibility — personal vs shared", () => {
 
   test.beforeAll(async ({ browser }) => {
     await seedProviderConfig();
-    const page = await browser.newPage();
-    await loginAsAdmin(page);
+
+    // Pure data-setup hook — only uses request contexts, never the page UI.
+    // Authenticate over the API (not the UI logins, which each wait up to 15 s
+    // for hydration) so the hook — which signs in as two different users —
+    // stays inside its 30 s budget under CI load. See `apiSignIn`.
+    const adminContext = await browser.newContext();
+    await apiSignInAsAdmin(adminContext.request);
 
     // Create second user via invite (idempotent: catch if already exists)
-    await createSecondUserViaInvite(page.context().request).catch(() => {});
+    await createSecondUserViaInvite(adminContext.request).catch(() => {});
 
     // Resolve the admin's personal Smithers ID
-    const agentsRes = await page.context().request.get("/api/agents");
+    const agentsRes = await adminContext.request.get("/api/agents");
     expect(agentsRes.ok()).toBeTruthy();
     const adminAgents = await agentsRes.json();
     const adminSmithers = (
@@ -46,12 +52,12 @@ test.describe.serial("Agent visibility — personal vs shared", () => {
     if (!adminSmithers) throw new Error("Admin's personal Smithers not found in /api/agents");
     adminSmithersId = adminSmithers.id;
 
-    await page.close();
+    await adminContext.close();
 
-    // Log in as second user to resolve their personal Smithers ID
-    const secondPage = await browser.newPage();
-    await loginAs(secondPage, SECOND_USER.email, SECOND_USER.password);
-    const secondAgentsRes = await secondPage.context().request.get("/api/agents");
+    // Sign in as second user to resolve their personal Smithers ID
+    const secondContext = await browser.newContext();
+    await apiSignIn(secondContext.request, SECOND_USER.email, SECOND_USER.password);
+    const secondAgentsRes = await secondContext.request.get("/api/agents");
     expect(secondAgentsRes.ok()).toBeTruthy();
     const secondAgents = await secondAgentsRes.json();
     const secondSmithers = (
@@ -61,7 +67,7 @@ test.describe.serial("Agent visibility — personal vs shared", () => {
       throw new Error("Second user's personal Smithers not found in /api/agents");
     secondUserSmithersId = secondSmithers.id;
 
-    await secondPage.close();
+    await secondContext.close();
   });
 
   test("admin's personal agent is not visible to a different user", async ({ page }) => {
