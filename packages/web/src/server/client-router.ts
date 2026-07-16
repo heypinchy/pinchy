@@ -430,6 +430,22 @@ export class ClientRouter {
       // the agent's model the way the old recovery dialog did.
       const turnModel = await resolveImageTurnModel({
         agentModel: agent.model,
+        // PROXY, not ground truth: this is "has admin-configured tools", which is
+        // narrower than "will make tool calls this turn". `computeAllowedTools()`
+        // takes no agent argument — every agent, including one with an empty
+        // `allowedTools`, is emitted the read-only built-ins (memory_search,
+        // memory_get, session_status). So `false` here does NOT mean the turn is
+        // tool-free; it means the turn only has built-ins.
+        //
+        // That is why the false branch may still route to a tools-blocked model
+        // (gemini-3-flash-preview, minimax-m3) and is accepted for now: those
+        // built-ins have flat, few-property schemas, which is exactly the shape
+        // both models get right — the flat tool probe in
+        // scripts/lib/ollama-cloud-tool-probe.mjs passes on minimax-m3. The
+        // defects bite nested arrays (and, for minimax, positional args in
+        // multi-property schemas). If a built-in ever gains a nested-array
+        // argument, this proxy becomes wrong and the required capabilities have
+        // to be derived from the tools actually registered for the agent.
         agentUsesTools: ((agent.allowedTools as string[] | null) ?? []).length > 0,
         attachmentMimeTypes: chatAttachments.map((a) => a.mimeType ?? ""),
         deps: {

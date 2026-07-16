@@ -10,6 +10,7 @@ import {
 } from "@/lib/openclaw-config";
 import { isSetupComplete } from "@/lib/setup";
 import { migrateExistingSmithers } from "@/lib/migrate-onboarding";
+import { migrateSmithersSoul } from "@/lib/migrate-smithers-soul";
 import { markOpenClawConfigReady } from "@/lib/openclaw-config-ready";
 import { seedBuiltinModels } from "@/lib/model-capabilities/seed";
 import { loadModelCapabilityCache } from "@/lib/model-capabilities/cache";
@@ -140,6 +141,19 @@ export async function bootInits(): Promise<boolean> {
   try {
     if (await isSetupComplete()) {
       await migrateExistingSmithers();
+
+      // Bring un-customized Smithers souls up to the soul this build ships.
+      // Own try/catch: SOUL.md drift must never cost the instance its config
+      // regeneration below. Idempotent — one file read per agent once current.
+      try {
+        await migrateSmithersSoul();
+      } catch (err) {
+        console.error(
+          "[pinchy] Failed to migrate Smithers souls:",
+          err instanceof Error ? err.message : err
+        );
+      }
+
       await regenerateOpenClawConfig();
       console.log("[pinchy] OpenClaw config regenerated from DB state");
       setupWasComplete = true;
