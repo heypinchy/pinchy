@@ -15,6 +15,11 @@ import { deferAuditLog } from "@/lib/audit-deferred";
  * and a key is a machine identity for the org, not for any human. That
  * exclusion lives in `listAgents({ scope: "shared" })` — there is no scope
  * that would return them. Read-only: no audit entry.
+ *
+ * Unpaginated, deliberately: a Pinchy org has tens of agents, not thousands,
+ * and a cursor nobody needs is a contract we'd owe forever. The `{ agents }`
+ * envelope is the hedge — `nextCursor` can join it later without breaking a
+ * single client, which is why the response isn't a bare array.
  */
 export const GET = withApiKey(["agents:read"], async () => {
   const agents = await listAgents({ scope: "shared" });

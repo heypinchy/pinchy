@@ -99,14 +99,24 @@ type ApiKeyHandler<C> = (
   key: ApiKeyContext
 ) => Promise<NextResponse> | NextResponse;
 
+const BEARER_PREFIX = "bearer ";
+
 /**
  * Reads the API key from the request. Prefers `Authorization: Bearer <key>`,
  * falling back to the `x-api-key` header (better-auth's default). Returns
  * `null` when neither carries a key.
+ *
+ * The scheme match is case-insensitive: RFC 7235 §2.1 defines auth-scheme as a
+ * case-insensitive token, so `bearer x` is the same request as `Bearer x`.
+ * Matching it case-sensitively failed CLOSED — it fell through to x-api-key,
+ * found nothing and answered 401 — so this was never a security bug, but a
+ * correct request got told its credential was bad.
  */
 function readApiKey(req: NextRequest): string | null {
   const h = req.headers.get("Authorization");
-  if (h?.startsWith("Bearer ")) return h.slice(7);
+  if (h && h.slice(0, BEARER_PREFIX.length).toLowerCase() === BEARER_PREFIX) {
+    return h.slice(BEARER_PREFIX.length);
+  }
   return req.headers.get("x-api-key");
 }
 

@@ -313,6 +313,22 @@ describe("withApiKey", () => {
     expect(handler).not.toHaveBeenCalled();
   });
 
+  it("accepts the Bearer scheme in any case — RFC 7235 makes it case-insensitive", async () => {
+    mockVerifyApiKey.mockResolvedValue(verified());
+    const handler = vi.fn(OK);
+
+    const res = await withApiKey(["agents:read"], handler)(
+      reqWith({ Authorization: "bearer pinchy_lowercase" }),
+      {}
+    );
+
+    // Matching "Bearer " case-sensitively failed closed — it fell through to
+    // x-api-key, found nothing, and 401'd — so this was never unsafe. It just
+    // told someone hand-writing curl that their key was bad when it wasn't.
+    expect(res.status).toBe(200);
+    expect(mockVerifyApiKey).toHaveBeenCalledWith({ body: { key: "pinchy_lowercase" } });
+  });
+
   it("treats a vacuous 'Bearer ' header as no key at all, without calling verifyApiKey", async () => {
     // `readApiKey` slices 7 chars off "Bearer ", yielding "". Empty string is
     // falsy, so this must short-circuit to 401 rather than hand "" to the

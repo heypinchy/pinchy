@@ -37,7 +37,7 @@
   "dependencies": {
     "@assistant-ui/react": "^0.14.24",
     "@assistant-ui/react-markdown": "^0.14.5",
-    "@better-auth/api-key": "1.6.23",
+    "@better-auth/api-key": "^1.6.23",
     "@dicebear/core": "^9.4.2",
     "@dicebear/notionists": "^9.4.2",
     "@hookform/resolvers": "^5.5.7",

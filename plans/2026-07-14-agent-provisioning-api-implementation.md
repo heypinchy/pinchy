@@ -22,7 +22,7 @@
 
 **Steps (spike, not TDD — it answers design questions):**
 
-1. `pnpm -C packages/web add @better-auth/api-key@1.6.23` (pin to match `better-auth`).
+1. `pnpm -C packages/web add @better-auth/api-key@^1.6.23` — the SAME range as `better-auth`, so `pnpm update` moves them together and the lockfile pins the resolution. An exact pin here would have frozen the only side that can't drift: `better-auth` floats on `^1.6.23`, the plugin's peer range accepts every 1.x, so a bump would take better-auth ahead of the plugin with no warning — and the plugin hooks internals this API's security model depends on.
 2. **Hashing method:** inspect the installed package source for how it stores keys.
    Run: `grep -rniE "hash|sha256|scrypt|bcrypt|createHash|subtle" node_modules/.pnpm/@better-auth+api-key@*/node_modules/@better-auth/api-key/dist/ | head -40`
    Decide: (a) if it uses a fast deterministic hash (SHA-256) → accept it, our design §6.8 is satisfied; (b) if it exposes a custom-hash option → configure `HMAC-SHA256(getOrCreateSecret("api_key_pepper"), key)`; (c) if it uses a slow/opaque hash with no override → record the tradeoff in the design doc and proceed (still hashed-at-rest, just no pepper/index benefit).
