@@ -1,14 +1,13 @@
 import { describe, it, expect, expectTypeOf, vi, beforeEach } from "vitest";
 import { createAdmin } from "@/lib/setup";
-import { seedDefaultAgent } from "@/db/seed";
+import { seedAdminSmithers } from "@/db/seed";
 import { POST } from "@/app/api/setup/route";
 
-// Rows handed to `db.insert(agents).values(...)`, newest last. Hoisted out of
-// the insert mock so a test can assert the SHAPE of the agent it creates —
-// without it, `values` is a fresh spy per call and unreachable from the test,
-// which is why the seedDefaultAgent tests below could only ever assert "some
-// insert happened". vi.hoisted because vi.mock's factory is lifted above the
-// imports and would otherwise read this before initialization.
+// Rows handed to `db.insert(agents).values(...)`, newest last. `values` is a
+// fresh spy per call and therefore unreachable from a test, so the row has to
+// be captured here to assert the shape of the agent being created. vi.hoisted
+// because vi.mock's factory is lifted above the imports and would otherwise
+// read this before initialization.
 const { agentInsertRows } = vi.hoisted(() => ({
   agentInsertRows: [] as Record<string, unknown>[],
 }));
@@ -183,7 +182,7 @@ describe("createAdmin", () => {
     expect(db.update).toHaveBeenCalled();
   });
 
-  it("should pass user id to seedDefaultAgent", async () => {
+  it("should pass user id to seedAdminSmithers", async () => {
     vi.mocked(db.query.users.findFirst).mockResolvedValue(undefined);
     vi.mocked(db.query.agents.findFirst).mockResolvedValue(undefined);
 
@@ -402,7 +401,7 @@ describe("POST /api/setup", () => {
   });
 });
 
-describe("seedDefaultAgent", () => {
+describe("seedAdminSmithers", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     agentInsertRows.length = 0;
@@ -411,14 +410,14 @@ describe("seedDefaultAgent", () => {
   it("should create Smithers agent", async () => {
     vi.mocked(db.query.agents.findFirst).mockResolvedValue(undefined);
 
-    const agent = await seedDefaultAgent("admin-1");
+    const agent = await seedAdminSmithers("admin-1");
     expect(agent.name).toBe("Smithers");
   });
 
   it("should call ensureWorkspace when creating a new agent", async () => {
     vi.mocked(db.query.agents.findFirst).mockResolvedValue(undefined);
 
-    await seedDefaultAgent("admin-1");
+    await seedAdminSmithers("admin-1");
     expect(ensureWorkspace).toHaveBeenCalledWith("agent-1");
   });
 
@@ -432,7 +431,7 @@ describe("seedDefaultAgent", () => {
       })
     );
 
-    const agent = await seedDefaultAgent("admin-1");
+    const agent = await seedAdminSmithers("admin-1");
     expect(agent.name).toBe("Smithers");
     expect(agent.id).toBe("existing-agent");
     expect(db.insert).not.toHaveBeenCalled();
@@ -442,7 +441,7 @@ describe("seedDefaultAgent", () => {
   it("owns the agent it creates by the id it was given", async () => {
     vi.mocked(db.query.agents.findFirst).mockResolvedValue(undefined);
 
-    const agent = await seedDefaultAgent("user-1");
+    const agent = await seedAdminSmithers("user-1");
 
     expect(agent.name).toBe("Smithers");
     expect(agentInsertRows).toHaveLength(1);
@@ -450,14 +449,9 @@ describe("seedDefaultAgent", () => {
   });
 
   it("creates the admin's Smithers as a personal agent", async () => {
-    // Was "should set isPersonal to false when no ownerId is provided", which
-    // pinned a shape production has never produced: seedDefaultAgent runs once,
-    // from the setup wizard, always with the freshly created admin's id. Its
-    // body never checked isPersonal at all — it asserted only that *some*
-    // insert had happened, so it would have passed for any shape whatsoever.
     vi.mocked(db.query.agents.findFirst).mockResolvedValue(undefined);
 
-    await seedDefaultAgent("admin-1");
+    await seedAdminSmithers("admin-1");
 
     expect(agentInsertRows).toHaveLength(1);
     expect(agentInsertRows[0]).toMatchObject({
@@ -467,17 +461,9 @@ describe("seedDefaultAgent", () => {
   });
 
   it("takes ownerId as a required parameter", () => {
-    // Replaces "should set isPersonal to false when no ownerId is provided".
-    // That test called seedDefaultAgent() with no argument and asserted only
-    // that *some* insert had happened — it never checked isPersonal, so it
-    // passed for any shape, and what it actually pinned was a branch no
-    // production path can reach (lib/setup.ts, the sole caller, always passes
-    // the new admin's id). The ownerless shape it implied got cited as real
-    // behavior during PR #754's review before anyone read the code.
-    //
-    // A compile-time check is the honest replacement: it holds the contract
-    // that made the dead branch impossible, and re-adding the `?` breaks the
-    // build rather than quietly resurrecting the trap.
-    expectTypeOf(seedDefaultAgent).parameters.toEqualTypeOf<[string]>();
+    // Runtime cannot see this: making ownerId optional again would resurrect an
+    // ownerless-Smithers branch that no caller reaches, and every runtime test
+    // here would stay green. The typecheck gate is what catches it.
+    expectTypeOf(seedAdminSmithers).parameters.toEqualTypeOf<[string]>();
   });
 });

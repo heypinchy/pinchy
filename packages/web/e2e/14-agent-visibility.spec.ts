@@ -21,7 +21,7 @@ import {
  * 2. SECOND_USER's Smithers (personal) is NOT visible to admin
  *
  * Both Smithers agents are seeded automatically:
- * - Admin's: by seedDefaultAgent() during the setup wizard (isPersonal: true)
+ * - Admin's: by seedAdminSmithers() during the setup wizard (isPersonal: true)
  * - Second user's: by seedPersonalAgent() during invite claim (isPersonal: true)
  */
 test.describe.serial("Agent visibility — personal vs shared", () => {
