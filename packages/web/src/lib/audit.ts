@@ -86,7 +86,10 @@ export type AuditEventType =
   | "integration.credentials_updated"
   | "file.upload.staged"
   | "file.upload.attached"
-  | "file.upload.expired";
+  | "file.upload.expired"
+  | "retrieval.query"
+  | "knowledge.source_viewed"
+  | "knowledge.reindex";
 
 interface HmacFieldsV1 {
   timestamp: Date;
@@ -558,6 +561,60 @@ export type AuditLogEntry =
             sweepId: string;
             reason: string;
           };
+    })
+  | (AuditLogBase & {
+      // Knowledge-base retrieval (Task 8 of the KB implementation plan): the
+      // internal /api/internal/knowledge/search route audits every retrieval
+      // deliberately, even though it's read-only — this is the record of
+      // which documents an agent's answer drew on. `query` is intentionally
+      // NOT here: a KB question can carry PII (a name, a case number), so
+      // only a one-way `queryHash` is logged. `reason` is present on failure
+      // rows only (agent not found, retrieval/embedding error).
+      eventType: "retrieval.query";
+      detail: {
+        agent: EntityRef;
+        queryHash: string;
+        resultCount: number;
+        returnedDocumentIds: EntityRef[];
+        reason?: string;
+      };
+    })
+  | (AuditLogBase & {
+      // GET /api/agents/[agentId]/workspace-file: a browser-facing,
+      // access-controlled read of a file under an agent's allowed_paths
+      // (KB citation source PDFs today; the shared "agent, give me file X"
+      // serve mechanism later). Audited deliberately even though it's
+      // read-only (governance: which documents did a user actually open).
+      // `userId` mirrors the top-level `actorId` for detail-query
+      // convenience (same redundancy as `retrieval.query`'s `agent` field).
+      // `document.name` is a basename ONLY — never the full path, which
+      // could embed a username (AGENTS.md PII rule). `reason` is present on
+      // failure rows only (outside allowed_paths, traversal/symlink escape,
+      // missing file, not a regular file, oversized).
+      eventType: "knowledge.source_viewed";
+      detail: {
+        userId: string;
+        agent: EntityRef;
+        document: { name: string };
+        reason?: string;
+      };
+    })
+  | (AuditLogBase & {
+      // POST /api/agents/[agentId]/knowledge/reindex: an admin manually
+      // (re)ingests the agent's granted knowledge-base folders. Audited as an
+      // index-management action. `pathCount` is the number of granted folders
+      // reindexed — NOT the folder paths themselves, which can embed a
+      // username (AGENTS.md PII rule). `reason` is present on failure rows
+      // only (embedding endpoint unconfigured, ingest error).
+      eventType: "knowledge.reindex";
+      detail: {
+        agent: EntityRef;
+        pathCount: number;
+        indexed: number;
+        skipped: number;
+        removed: number;
+        reason?: string;
+      };
     });
 
 // ── GDPR crypto-erasure: actorId → auditPseudonym substitution ─────────────

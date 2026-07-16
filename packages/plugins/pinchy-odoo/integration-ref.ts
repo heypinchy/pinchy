@@ -21,6 +21,31 @@ export interface IntegrationRefPayload {
   companyLabel?: string;
 }
 
+/**
+ * Thrown by {@link decodeRef} whenever the ref string itself cannot be
+ * decoded — bad prefix, truncated/corrupted base64url payload, a failed
+ * AES-GCM auth tag check, unparsable JSON, or a payload that fails shape
+ * validation. Distinct from "decoded fine but doesn't match this deployment"
+ * (see `decodeOdooRefForConnection` in index.ts), which throws a plain
+ * `Error` instead. Callers that need to tell a corrupted ref apart from a
+ * cross-connection ref (e.g. `decodeTargetRef`) check `instanceof` this
+ * class rather than matching on message text — every decode failure shares
+ * the same generic message, so type is the only signal.
+ *
+ * Why the distinction earns a class: on 2026-07-15 agent "Piper" reported
+ * all 11 of its failed calls as "ref does not belong to this Odoo
+ * connection", which sent the investigation down a connection-config and
+ * key-rotation trail. 111 other calls decoded fine against that same
+ * connectionId. The refs were simply garbled by the model — a different
+ * problem with a different, model-actionable fix.
+ */
+export class MalformedIntegrationRefError extends Error {
+  constructor(message = "Invalid integration reference") {
+    super(message);
+    this.name = "MalformedIntegrationRefError";
+  }
+}
+
 let cachedKey: Buffer | null = null;
 
 /**
@@ -151,7 +176,7 @@ export function encodeRef(payload: IntegrationRefPayload): string {
 
 export function decodeRef(ref: string): IntegrationRefPayload {
   if (!ref.startsWith(PREFIX)) {
-    throw new Error("Invalid integration reference");
+    throw new MalformedIntegrationRefError();
   }
 
   try {
@@ -174,7 +199,7 @@ export function decodeRef(ref: string): IntegrationRefPayload {
     }
     return payload;
   } catch {
-    throw new Error("Invalid integration reference");
+    throw new MalformedIntegrationRefError();
   }
 }
 

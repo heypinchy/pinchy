@@ -204,6 +204,8 @@ const WORKSPACE_WRITE_RESPONSE = "File written: coverage probe complete.";
 // because it resolves only against the per-agent catalog (v0.5.8 finding).
 const PDF_ATTACHMENT_READ_TRIGGER = "E2E_PDF_ATTACHMENT_READ_TOOL";
 const PDF_ATTACHMENT_READ_RESPONSE = "PDF read: coverage probe complete.";
+const KNOWLEDGE_SEARCH_TRIGGER = "E2E_KNOWLEDGE_SEARCH_TOOL";
+const KNOWLEDGE_SEARCH_RESPONSE = "Knowledge base searched: coverage probe complete.";
 
 // ── Eval-v1 Hetzner-scenario self-test triggers (pinchy#669) ────────────────
 // A deterministic (no paid API) stand-in for the real 4-tool Hetzner-invoice
@@ -473,6 +475,12 @@ const TOOL_TRIGGERS: TriggerConfig[] = [
     response: PDF_ATTACHMENT_READ_RESPONSE,
     toolName: "pinchy_read",
     arguments: { path: "uploads/test.pdf" },
+  },
+  {
+    trigger: KNOWLEDGE_SEARCH_TRIGGER,
+    response: KNOWLEDGE_SEARCH_RESPONSE,
+    toolName: "knowledge_search",
+    arguments: { query: "E2E coverage probe" },
   },
 ];
 
@@ -1390,6 +1398,8 @@ export const FAKE_OLLAMA_WORKSPACE_WRITE_TOOL_TRIGGER = WORKSPACE_WRITE_TRIGGER;
 export const FAKE_OLLAMA_WORKSPACE_WRITE_TOOL_RESPONSE = WORKSPACE_WRITE_RESPONSE;
 export const FAKE_OLLAMA_PDF_ATTACHMENT_READ_TOOL_TRIGGER = PDF_ATTACHMENT_READ_TRIGGER;
 export const FAKE_OLLAMA_PDF_ATTACHMENT_READ_TOOL_RESPONSE = PDF_ATTACHMENT_READ_RESPONSE;
+export const FAKE_OLLAMA_KNOWLEDGE_SEARCH_TOOL_TRIGGER = KNOWLEDGE_SEARCH_TRIGGER;
+export const FAKE_OLLAMA_KNOWLEDGE_SEARCH_TOOL_RESPONSE = KNOWLEDGE_SEARCH_RESPONSE;
 // Eval-v1 Hetzner-scenario self-test triggers (pinchy#669) — see
 // packages/web/eval/run-eval.ts (mode "selftest") and
 // packages/web/eval/scenarios/hetzner-invoice.ts for the matching

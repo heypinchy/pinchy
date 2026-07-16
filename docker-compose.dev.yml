@@ -15,6 +15,20 @@ services:
       # ../../../../plugins/<name>/ relative to web/src/lib/openclaw-config/.
       # Mount read-only so the dev server can import them without a rebuild.
       - ./packages/plugins:/app/packages/plugins:ro
+      # Re-declare /data WRITABLE for dev, overriding the base compose's
+      # `pinchy-data:/data:ro` (Compose merges service volumes by target, so
+      # this same-target entry wins). Required because the sample-docs bind
+      # below nests UNDER /data: Docker must create the `/data/sample-docs`
+      # mountpoint inside the /data volume, which a read-only parent mount
+      # forbids ("read-only file system" — fatal under Linux runc in CI, though
+      # tolerated by macOS/OrbStack locally). Production keeps /data read-only
+      # (it has no nested bind); only dev needs it writable.
+      - pinchy-data:/data
+      # Dev KB corpus, read-only, at the SAME /data/sample-docs path the
+      # openclaw service mounts it — so the knowledge-base ingest pipeline and
+      # the workspace-file serve route in web resolve the same paths an agent's
+      # allowed_paths reference.
+      - ./sample-data:/data/sample-docs:ro
   openclaw:
     build:
       context: .
@@ -37,6 +51,7 @@ services:
       - ./packages/plugins/pinchy-web:/root/.openclaw/extensions/pinchy-web
       - ./packages/plugins/pinchy-email:/root/.openclaw/extensions/pinchy-email
       - ./packages/plugins/pinchy-docs:/root/.openclaw/extensions/pinchy-docs
+      - ./packages/plugins/pinchy-knowledge:/root/.openclaw/extensions/pinchy-knowledge
       - ./sample-data:/data/sample-docs
       # Shadow volumes: mounted ON TOP of the node_modules path of the four
       # plugins that have baked /opt/<plugin>-deps bundles (pinchy-files,
@@ -51,9 +66,9 @@ services:
       # keeps the container's node_modules physically separate from the
       # host's, so config/install-plugin-deps.sh (mountpoint-safe — see its
       # header comment) and host `pnpm install` stop clobbering each other.
-      # context/audit/transcript/docs are intentionally excluded: they have
-      # no /opt/*-deps bundle, so their (host-managed) node_modules must stay
-      # visible through the bind mount above.
+      # context/audit/transcript/docs/knowledge are intentionally excluded:
+      # they have no /opt/*-deps bundle, so their (host-managed) node_modules
+      # must stay visible through the bind mount above.
       - dev-pinchy-files-node-modules:/root/.openclaw/extensions/pinchy-files/node_modules
       - dev-pinchy-odoo-node-modules:/root/.openclaw/extensions/pinchy-odoo/node_modules
       - dev-pinchy-web-node-modules:/root/.openclaw/extensions/pinchy-web/node_modules

@@ -17,7 +17,10 @@
  *
  * What to do manually first (see CONTRIBUTING.md):
  *   - Update docs/src/content/docs/guides/upgrading.mdx (enforced)
- *   - Update packages/web/src/lib/smithers-soul.ts if user-facing features changed
+ *   - Check docs/ covers this release's user-facing features — Smithers reads them on
+ *     demand via the pinchy-docs plugin (docs_list / docs_read) and treats anything
+ *     not in the docs as non-existent. Do NOT hardcode feature descriptions into
+ *     smithers-soul.ts; it is deliberately docs-driven.
  */
 
 import { execSync } from "node:child_process";

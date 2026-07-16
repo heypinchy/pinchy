@@ -25,7 +25,7 @@ vi.mock("@/lib/settings", () => ({
   getSetting: (...args: unknown[]) => getSettingMock(...args),
 }));
 
-describe("seedDefaultAgent", () => {
+describe("seedAdminSmithers", () => {
   beforeEach(() => {
     vi.clearAllMocks();
   });
@@ -34,8 +34,8 @@ describe("seedDefaultAgent", () => {
     const existingAgent = { id: "existing-1", name: "Smithers" };
     findFirstMock.mockResolvedValue(existingAgent);
 
-    const { seedDefaultAgent } = await import("@/db/seed");
-    const agent = await seedDefaultAgent();
+    const { seedAdminSmithers } = await import("@/db/seed");
+    const agent = await seedAdminSmithers("admin-1");
 
     expect(agent).toEqual(existingAgent);
     expect(createSmithersAgentMock).not.toHaveBeenCalled();
@@ -48,22 +48,19 @@ describe("seedDefaultAgent", () => {
       id: "agent-new",
       name: "Smithers",
       model: "anthropic/claude-sonnet-4-6",
-      ownerId: null,
-      isPersonal: false,
+      ownerId: "admin-1",
+      isPersonal: true,
       createdAt: new Date(),
     };
     createSmithersAgentMock.mockResolvedValue(fakeAgent);
 
-    const { seedDefaultAgent } = await import("@/db/seed");
-    const agent = await seedDefaultAgent();
+    const { seedAdminSmithers } = await import("@/db/seed");
+    const agent = await seedAdminSmithers("admin-1");
 
     expect(agent.name).toBe("Smithers");
-    expect(createSmithersAgentMock).toHaveBeenCalledWith({
-      model: "anthropic/claude-sonnet-4-6",
-      ownerId: null,
-      isPersonal: false,
-      isAdmin: false,
-    });
+    expect(createSmithersAgentMock).toHaveBeenCalledWith(
+      expect.objectContaining({ model: "anthropic/claude-sonnet-4-6" })
+    );
   });
 
   it("uses the configured default_provider's default model", async () => {
@@ -73,40 +70,42 @@ describe("seedDefaultAgent", () => {
       id: "agent-new",
       name: "Smithers",
       model: "ollama/llama3.2",
-      ownerId: null,
-      isPersonal: false,
+      ownerId: "admin-1",
+      isPersonal: true,
       createdAt: new Date(),
     };
     createSmithersAgentMock.mockResolvedValue(fakeAgent);
 
-    const { seedDefaultAgent } = await import("@/db/seed");
-    await seedDefaultAgent();
+    const { seedAdminSmithers } = await import("@/db/seed");
+    await seedAdminSmithers("admin-1");
 
     expect(createSmithersAgentMock).toHaveBeenCalledWith(
       expect.objectContaining({ model: "ollama/llama3.2" })
     );
   });
 
-  it("passes ownerId and isPersonal when ownerId is provided", async () => {
+  it("always creates a personal, admin-owned Smithers", async () => {
+    // The agent shape is pinned here and nowhere else, so a change to it fails
+    // one test rather than every test that happens to seed an agent.
     findFirstMock.mockResolvedValue(undefined);
     getSettingMock.mockResolvedValue(null);
     const fakeAgent = {
       id: "agent-owned",
       name: "Smithers",
       model: "anthropic/claude-sonnet-4-6",
-      ownerId: "user-1",
+      ownerId: "admin-1",
       isPersonal: true,
       createdAt: new Date(),
     };
     createSmithersAgentMock.mockResolvedValue(fakeAgent);
 
-    const { seedDefaultAgent } = await import("@/db/seed");
-    const agent = await seedDefaultAgent("user-1");
+    const { seedAdminSmithers } = await import("@/db/seed");
+    const agent = await seedAdminSmithers("admin-1");
 
-    expect(agent.ownerId).toBe("user-1");
+    expect(agent.ownerId).toBe("admin-1");
     expect(createSmithersAgentMock).toHaveBeenCalledWith({
       model: "anthropic/claude-sonnet-4-6",
-      ownerId: "user-1",
+      ownerId: "admin-1",
       isPersonal: true,
       isAdmin: true,
     });
@@ -116,8 +115,8 @@ describe("seedDefaultAgent", () => {
     const existingAgent = { id: "existing-1", name: "Smithers" };
     findFirstMock.mockResolvedValue(existingAgent);
 
-    const { seedDefaultAgent } = await import("@/db/seed");
-    await seedDefaultAgent();
+    const { seedAdminSmithers } = await import("@/db/seed");
+    await seedAdminSmithers("admin-1");
 
     expect(createSmithersAgentMock).not.toHaveBeenCalled();
   });

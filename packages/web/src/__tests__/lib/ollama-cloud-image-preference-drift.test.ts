@@ -45,4 +45,33 @@ describe("OLLAMA_CLOUD_IMAGE_PREFERENCE drift guard (#416)", () => {
   it("preference list is non-empty (otherwise ollama-cloud-only stacks lose imageModel)", () => {
     expect(OLLAMA_CLOUD_IMAGE_PREFERENCE.length).toBeGreaterThan(0);
   });
+
+  it("ranks kimi-k2.6 ahead of gemma4:31b so a tool-using image turn never lands on gemma4", () => {
+    // Penny, 2026-07-15. This list is a RANKING, not a filter: uncurated vision
+    // models rank behind every curated one (intraProviderVisionRank), so the
+    // last curated entry is what a tool-using agent falls back to once the
+    // tools-blocked entries (gemini-3-flash-preview, minimax-m3) are skipped.
+    //
+    // gemma4:31b must not be that model: it corrupts long identifiers across
+    // turns (~150-char Graph message ID — see providers/ollama-cloud.ts), and
+    // Pinchy's opaque refs are ~230 chars. Blocking minimax-m3 without kimi-k2.6
+    // ahead of gemma4:31b just swaps mangled tool args for corrupted refs.
+    //
+    // Deliberately asserted as ORDER, not as "some entry is unblocked": gemma4
+    // is not on any blocklist (its defect is unreliability, not a hard error),
+    // so an "at least one usable entry" guard would have passed even in the
+    // broken arrangement this test exists to prevent.
+    const kimi = OLLAMA_CLOUD_IMAGE_PREFERENCE.indexOf("kimi-k2.6");
+    const gemma = OLLAMA_CLOUD_IMAGE_PREFERENCE.indexOf("gemma4:31b");
+
+    expect(kimi, "kimi-k2.6 dropped out of OLLAMA_CLOUD_IMAGE_PREFERENCE").toBeGreaterThanOrEqual(
+      0
+    );
+    if (gemma >= 0) {
+      expect(
+        kimi,
+        "gemma4:31b now outranks kimi-k2.6 in OLLAMA_CLOUD_IMAGE_PREFERENCE. A tool-using agent whose model is text-only would have its image turn routed to gemma4:31b, which corrupts the ~230-char opaque refs Pinchy passes through tool loops. Keep kimi-k2.6 first, or remove gemma4:31b."
+      ).toBeLessThan(gemma);
+    }
+  });
 });

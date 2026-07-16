@@ -38,6 +38,7 @@ import {
   type NotificationStatus,
 } from "./enums";
 import type { EmailWorkflowFilter, ProcessedEmailOutcome } from "@/lib/email-workflows/types";
+import { vector } from "./vector";
 
 // Render `IN ('a', 'b')` from an enum const (db/enums.ts) so a CHECK constraint
 // and its TypeScript source of truth can never drift. The values are enum-safe
@@ -857,3 +858,68 @@ export const auditVerifyState = pgTable("audit_verify_state", {
   lastStatus: text("last_status"),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
 });
+
+// ── Knowledge Base (RAG) ─────────────────────────────────────────────
+//
+// kb_documents is the per-org, per-file source of truth for ingested
+// knowledge-base content. (org_id, source_path) is the identity/idempotency
+// key — re-ingesting the same path updates one row. content_hash is a
+// change-detection column (same hash => skip, different hash => re-ingest),
+// NOT an identity key. status lets later freshness work (Task 5+) archive
+// stale docs without deleting history.
+export const kbDocuments = pgTable(
+  "kb_documents",
+  {
+    id: text("id")
+      .primaryKey()
+      .$defaultFn(() => crypto.randomUUID()),
+    orgId: text("org_id").notNull(),
+    contentHash: text("content_hash").notNull(),
+    sourcePath: text("source_path").notNull(),
+    status: text("status", { enum: ["active", "archived"] })
+      .notNull()
+      .default("active"),
+    lang: text("lang"),
+    pageCount: integer("page_count"),
+    mtime: timestamp("mtime"),
+    createdAt: timestamp("created_at").notNull().defaultNow(),
+  },
+  (t) => [
+    // A document is keyed by its PATH: (org_id, source_path) is unique, so
+    // re-ingesting the same path updates one row. content_hash is a
+    // non-unique change-detection column — two different paths with
+    // byte-identical content (e.g. an OLD/ archive copy) are DISTINCT
+    // documents, which per-path allowed_paths filtering (Task 7) requires;
+    // cross-path content dedup would break that filtering. The plain
+    // (org_id, content_hash) index just speeds change-detection lookups.
+    uniqueIndex("uq_kb_doc_org_path").on(t.orgId, t.sourcePath),
+    index("idx_kb_doc_org_hash").on(t.orgId, t.contentHash),
+  ]
+);
+
+// kb_chunks denormalizes org_id and source_path from the parent document so
+// retrieval (Task 7) can filter by allowed_paths without a join. embedding
+// is vector(1024) (bge-m3, see ./vector); the FTS tsv generated column +
+// GIN index and the HNSW vector index are hand-added raw SQL in the
+// generated migration (drizzle-kit cannot express either).
+export const kbChunks = pgTable(
+  "kb_chunks",
+  {
+    id: text("id")
+      .primaryKey()
+      .$defaultFn(() => crypto.randomUUID()),
+    documentId: text("document_id")
+      .notNull()
+      .references(() => kbDocuments.id, { onDelete: "cascade" }),
+    orgId: text("org_id").notNull(),
+    sourcePath: text("source_path").notNull(),
+    chunkText: text("chunk_text").notNull(),
+    page: integer("page"),
+    lang: text("lang"),
+    embedding: vector("embedding"),
+  },
+  (t) => [
+    index("idx_kb_chunks_doc").on(t.documentId),
+    index("idx_kb_chunks_org_path").on(t.orgId, t.sourcePath),
+  ]
+);

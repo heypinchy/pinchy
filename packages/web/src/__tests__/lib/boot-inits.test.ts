@@ -8,6 +8,7 @@ const mocks = vi.hoisted(() => ({
   sanitizeOpenClawConfig: vi.fn().mockReturnValue(false),
   isSetupComplete: vi.fn().mockResolvedValue(true),
   migrateExistingSmithers: vi.fn().mockResolvedValue(undefined),
+  migrateSmithersSoul: vi.fn().mockResolvedValue(undefined),
   regenerateOpenClawConfig: vi.fn().mockResolvedValue(undefined),
   markOpenClawConfigReady: vi.fn(),
 }));
@@ -26,6 +27,9 @@ vi.mock("@/lib/setup", () => ({ isSetupComplete: mocks.isSetupComplete }));
 vi.mock("@/lib/migrate-onboarding", () => ({
   migrateExistingSmithers: mocks.migrateExistingSmithers,
 }));
+vi.mock("@/lib/migrate-smithers-soul", () => ({
+  migrateSmithersSoul: mocks.migrateSmithersSoul,
+}));
 vi.mock("@/lib/openclaw-config-ready", () => ({
   markOpenClawConfigReady: mocks.markOpenClawConfigReady,
 }));
@@ -38,6 +42,7 @@ describe("bootInits", () => {
     mocks.sanitizeOpenClawConfig.mockReturnValue(false);
     mocks.isSetupComplete.mockResolvedValue(true);
     mocks.migrateExistingSmithers.mockResolvedValue(undefined);
+    mocks.migrateSmithersSoul.mockResolvedValue(undefined);
     mocks.regenerateOpenClawConfig.mockResolvedValue(undefined);
   });
 
@@ -52,6 +57,7 @@ describe("bootInits", () => {
     expect(mocks.migrateGatewayTokenToDb).toHaveBeenCalledOnce();
     expect(mocks.sanitizeOpenClawConfig).toHaveBeenCalledOnce();
     expect(mocks.migrateExistingSmithers).toHaveBeenCalledOnce();
+    expect(mocks.migrateSmithersSoul).toHaveBeenCalledOnce();
     expect(mocks.regenerateOpenClawConfig).toHaveBeenCalledOnce();
     expect(mocks.markOpenClawConfigReady).toHaveBeenCalledOnce();
   });
@@ -61,6 +67,9 @@ describe("bootInits", () => {
     mocks.migrateExistingSmithers.mockImplementation(async () => {
       callOrder.push("migrateExistingSmithers");
     });
+    mocks.migrateSmithersSoul.mockImplementation(async () => {
+      callOrder.push("migrateSmithersSoul");
+    });
     mocks.regenerateOpenClawConfig.mockImplementation(async () => {
       callOrder.push("regenerateOpenClawConfig");
     });
@@ -68,7 +77,26 @@ describe("bootInits", () => {
     const { bootInits } = await import("@/lib/boot-inits");
     await bootInits();
 
-    expect(callOrder).toEqual(["migrateExistingSmithers", "regenerateOpenClawConfig"]);
+    expect(callOrder).toEqual([
+      "migrateExistingSmithers",
+      "migrateSmithersSoul",
+      "regenerateOpenClawConfig",
+    ]);
+  });
+
+  it("still regenerates the config when the soul migration throws", async () => {
+    // SOUL.md drift is cosmetic next to a stale openclaw.json. The soul
+    // migration gets its own try/catch precisely so a broken workspace volume
+    // cannot cost the instance its config regeneration — and with it a working
+    // OpenClaw. Without the nested catch, `result` here would be false.
+    mocks.migrateSmithersSoul.mockRejectedValue(new Error("workspace volume gone"));
+
+    const { bootInits } = await import("@/lib/boot-inits");
+    const result = await bootInits();
+
+    expect(result).toBe(true);
+    expect(mocks.regenerateOpenClawConfig).toHaveBeenCalledOnce();
+    expect(mocks.markOpenClawConfigReady).toHaveBeenCalledOnce();
   });
 
   it("calls regenerateOpenClawConfig exactly once", async () => {
@@ -89,6 +117,7 @@ describe("bootInits", () => {
 
     expect(result).toBe(false);
     expect(mocks.migrateExistingSmithers).not.toHaveBeenCalled();
+    expect(mocks.migrateSmithersSoul).not.toHaveBeenCalled();
     expect(mocks.regenerateOpenClawConfig).not.toHaveBeenCalled();
     expect(mocks.markOpenClawConfigReady).toHaveBeenCalledOnce();
   });

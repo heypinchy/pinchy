@@ -25,6 +25,66 @@ const RULES: BlockRule[] = [
     reason:
       "Preview models (e.g. gemini-3-flash-preview) are unstable for tools+vision: silent hangs and schema-rejection errors observed in production (pinchy#344, pinchy#338)",
   },
+  // Observed in production 2026-07-15 (agent "Penny", ollama-cloud stack). The
+  // model emits structurally broken tool arguments: every NESTED array collapses
+  // into an {"item": ...} object, and some arrays arrive stringified ("[10, 20]").
+  // That destroys exactly the payloads bookkeeping needs — Odoo domain filters
+  // ("unhashable type: 'dict'") and account.move invoice_line_ids/tax_ids command
+  // triplets. It also emits positional instead of named arguments, so every field
+  // lands in the schema's first property. Measured over one session: 20 of 60
+  // minimax-m3 tool calls mangled, versus 0 of 112 on kimi-k2.6 and 0 of 68 on
+  // deepseek-v4-pro — model behavior, not a Pinchy serialization bug. Like the
+  // preview rule it is seeded tools:true, so it would otherwise win same-provider
+  // vision fallback for a text-only agent. Lifting this block requires a fresh
+  // multi-round tool probe with NESTED-array arguments against the live endpoint.
+  //
+  // CORROBORATED by the eval-v1 model sweep (pinchy#669), which predates the
+  // Penny incident by four days — the signal was already in the repo when
+  // production hit it; nothing wires eval results to this list. Per model per
+  // scenario, 12 runs (eval/data/hetzner-invoice-*-models.json, 2026-07-11):
+  //
+  //   scenario      minimax-m3   kimi-k2.6   gemma4:31b
+  //   lineitems       0 / 12      10 / 12     11 / 12
+  //   conflict        5 / 12      12 / 12     12 / 12
+  //   distractor     10 / 12      12 / 12     10 / 12
+  //   rejected       12 / 12      12 / 12     12 / 12
+  //
+  // `lineitems` is the scenario needing account.move invoice_line_ids command
+  // triplets — nested arrays — and minimax-m3 scores a clean zero there while
+  // passing `rejected` 12/12 and `distractor` 10/12, where nothing nests.
+  //
+  // Read that as OUTCOME evidence, NOT mechanism proof. The sweep scores end
+  // state and never inspects tool-call payloads; it tags these runs
+  // `wrong-field-extraction`, which is arguably a mis-tag. Its failure notes say
+  // "amount_total: expected 47.6, got 0" and "No in_invoice move found" — a move
+  // that landed with no lines, or was rejected outright, which is exactly what a
+  // mangled invoice_line_ids produces. It agrees with the session payloads
+  // above; those payloads remain the evidence for WHY.
+  //
+  // The sweep cannot gate: CI runs eval-selftest only, and `eval:models` needs a
+  // docker stack plus live API keys at ~72s/run. A cheap nested-array probe in
+  // scripts/lib/ollama-cloud-tool-probe.mjs is what would fail fast in CI, and
+  // is tracked separately — the two are complements, not substitutes.
+  //
+  // The pattern has NO trailing boundary on purpose, so it also covers point
+  // releases of the same line: the catalog names them `minimax-m2.1`, `m2.5`,
+  // `m2.7`, so a future `minimax-m3.5` is the expected shape, and a substring
+  // match blocks it too. That is the fail-safe direction and it is not silent —
+  // the catalog is hand-curated, so adding `minimax-m3.5` means editing
+  // ollama-cloud-models.ts and meeting this rule. A release claiming the fix
+  // still has to earn the unblock with a nested-array probe, which the current
+  // flat probe cannot give (scripts/lib/ollama-cloud-tool-probe.mjs).
+  //
+  // A new major line (`minimax-m4`) deliberately does NOT match. There is no
+  // evidence about it, and this blocklist is an evidence-based denylist — every
+  // model not named here is allowed. Blocking an unseen model by guessing at its
+  // name would be a different policy than the other two rules follow.
+  {
+    modelPattern: /minimax-m3/i,
+    forbiddenWhen: ["tools"],
+    reason:
+      'minimax-m3 mangles nested tool-call arguments (arrays collapse to {"item": ...}), breaking Odoo domain filters and invoice line commands (observed in production 2026-07-15)',
+  },
 ];
 
 export function isBlocked(modelId: string, requiredCapabilities: ModelCapability[]): boolean {
