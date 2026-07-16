@@ -74,15 +74,20 @@ Go back to the agent's chat and start asking questions. The agent calls `knowled
 
 ### Cite-then-answer
 
-Every grounded answer cites its sources inline, like `[1]` and `[2]`, and ends with a **Sources** list mapping each number to its document name and page:
+Every grounded answer cites its sources inline, like `[1]` and `[2]`, and ends with a **Sources** list mapping each number to its document path and page:
 
 ```
-Sources:
-[1] Employee Handbook — p. 12
-[2] Employee Handbook — p. 14
+**Sources:**
+
+- [1] /data/handbook/policies/Employee Handbook.pdf — p. 12
+- [2] /data/handbook/policies/Employee Handbook.pdf — p. 14
 ```
 
 That makes every claim in the answer traceable back to a specific document and page, even though the underlying search results aren't shown in the chat.
+
+Sources are named by their full path, not just the filename. In a real document tree a bare filename is often impossible to act on — you can't tell which of several folders it lives in, and two folders may hold files with the same name. The path is what lets you open the document and check the claim for yourself.
+
+The list resolves exactly the numbers the answer cites — no more and no fewer. A number with no entry would be a dead end, and an entry the answer never cited would make a single source look like several.
 
 ### Honest when it doesn't know
 
@@ -97,7 +102,7 @@ The agent answers in the language you asked in, even if the source documents are
 Phase 1 of the knowledge base is deliberately narrow:
 
 - Only **text-based PDFs** are indexed and searchable via `knowledge_search`. Scanned/image-only PDFs and Office documents (`.docx`, etc.) are on the roadmap, not indexed today.
-- There's no clickable link from a citation into the PDF viewer yet — citations are text (document name + page), not a jump-to-passage link.
+- There's no clickable link from a citation into the PDF viewer yet — citations are text (document path + page), not a jump-to-passage link.
 - Indexing is a manual, synchronous admin action (step 7). A scheduled sweep and progress UI are planned for a later phase.
 
 Every retrieval and every reindex is recorded in the [audit trail](/concepts/audit-trail/) — reindex as `knowledge.reindex`, and each `knowledge_search` call as `retrieval.query` with the documents it drew on. The search query text itself is never stored in plaintext, only a one-way hash.
