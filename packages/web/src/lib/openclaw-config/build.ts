@@ -19,7 +19,11 @@ import {
   EMAIL_OPERATION_DISPLAY_ORDER,
 } from "@/lib/tool-registry";
 import type { AgentPluginConfig } from "@/db/schema";
-import { TOOL_CAPABLE_OLLAMA_CLOUD_MODELS, OLLAMA_CLOUD_COST } from "@/lib/ollama-cloud-models";
+import {
+  TOOL_CAPABLE_OLLAMA_CLOUD_MODELS,
+  OLLAMA_CLOUD_COST,
+  type OllamaCloudModel,
+} from "@/lib/ollama-cloud-models";
 import { getModelCatalogForProvider } from "@/lib/openclaw-builtin-models";
 import {
   getOpenClawWorkspacePath,
@@ -1215,10 +1219,15 @@ export async function regenerateOpenClawConfig() {
       // ModelDefinitionConfig. Cost is zero because Ollama Cloud bills by
       // subscription plan, not per token — a fabricated rate would mislead
       // users reading the Usage dashboard.
-      models: TOOL_CAPABLE_OLLAMA_CLOUD_MODELS.map((m) => ({
+      models: TOOL_CAPABLE_OLLAMA_CLOUD_MODELS.map((m: OllamaCloudModel) => ({
         id: m.id,
         name: m.id,
         contextWindow: m.contextWindow,
+        // Pinchy policy cap on the effective runtime context budget, emitted
+        // only where a model sets one. OpenClaw budgets compaction against
+        // contextTokens (< contextWindow) so long-context quality knees don't
+        // cause silent confabulation. See ollama-cloud-models.ts (deepseek-v4-pro).
+        ...(m.contextTokens !== undefined ? { contextTokens: m.contextTokens } : {}),
         maxTokens: m.maxTokens,
         reasoning: m.reasoning,
         input: m.vision ? ["text", "image"] : ["text"],

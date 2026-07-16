@@ -2185,6 +2185,37 @@ describe("regenerateOpenClawConfig", () => {
     expect(ctx["nemotron-3-nano:30b"]).toBe(1048576);
   });
 
+  it("emits deepseek-v4-pro's context cap as contextTokens, and nothing for uncapped models", async () => {
+    // Path B (2026-07-15 Piper incident): contextWindow stays the honest native
+    // size and a separate contextTokens carries Pinchy's policy cap. OpenClaw
+    // reads models.providers.*.models[].contextTokens and budgets compaction
+    // against it (< contextWindow), so preemptive compaction fires well before
+    // the model's long-context quality knee instead of never. The field must be
+    // absent for uncapped models so the config doesn't imply a limit that the
+    // native window doesn't have.
+    mockedGetSetting.mockImplementation(async (key: string) => {
+      if (key === "ollama_cloud_api_key") return "sk-ollama-test";
+      return null;
+    });
+
+    await regenerateOpenClawConfig();
+
+    const written = mockedWriteFileSync.mock.calls[0][1] as string;
+    const config = JSON.parse(written);
+    const models = config.models.providers["ollama-cloud"].models as Array<{
+      id: string;
+      contextWindow: number;
+      contextTokens?: number;
+    }>;
+    const byId = Object.fromEntries(models.map((m) => [m.id, m]));
+
+    expect(byId["deepseek-v4-pro"].contextWindow).toBe(524288);
+    expect(byId["deepseek-v4-pro"].contextTokens).toBe(131072);
+    // Uncapped models must not carry the field at all.
+    expect(byId["deepseek-v4-flash"].contextTokens).toBeUndefined();
+    expect("contextTokens" in byId["deepseek-v4-flash"]).toBe(false);
+  });
+
   it("writes reasoning, input (vision), and cost fields for every Ollama Cloud model", async () => {
     // OpenClaw's ModelDefinitionConfig requires `reasoning`, `input`, and
     // `cost` alongside contextWindow/maxTokens/compat. Without these the

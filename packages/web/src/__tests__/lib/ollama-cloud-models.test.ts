@@ -3,6 +3,7 @@ import {
   TOOL_CAPABLE_OLLAMA_CLOUD_MODELS,
   TOOL_CAPABLE_OLLAMA_CLOUD_MODEL_IDS,
   VISION_OLLAMA_CLOUD_MODEL_IDS,
+  type OllamaCloudModel,
 } from "@/lib/ollama-cloud-models";
 
 /**
@@ -21,7 +22,8 @@ import {
  *  - Tools were probed by offering a function schema and checking for a
  *    structured `tool_calls` response.
  */
-const byId = (id: string) => TOOL_CAPABLE_OLLAMA_CLOUD_MODELS.find((m) => m.id === id);
+const byId = (id: string): OllamaCloudModel | undefined =>
+  TOOL_CAPABLE_OLLAMA_CLOUD_MODELS.find((m) => m.id === id);
 
 describe("Ollama Cloud model catalog — empirically verified capabilities", () => {
   it("includes minimax-m3 with vision and reasoning", () => {
@@ -165,6 +167,21 @@ describe("Ollama Cloud model catalog — empirically verified capabilities", () 
     // see ollama-cloud-models.ts.
     expect(byId("deepseek-v4-pro")?.contextWindow).toBe(524288);
     expect(byId("deepseek-v4-flash")?.contextWindow).toBe(1048576);
+  });
+
+  it("caps deepseek-v4-pro's effective runtime context at 128K while keeping the native window honest", () => {
+    // Path B (2026-07-15 Piper incident): contextWindow stays the honest native
+    // size (512K, guarded above), and a separate contextTokens field carries
+    // Pinchy's policy cap. OpenClaw budgets compaction against contextTokens
+    // (< contextWindow, resolveContextWindowInfo source "modelsConfig"), so the
+    // model's long-context quality knee (~0.92 recall @128K → ~0.66 @512K) can't
+    // cause the silent confabulation the incident traced to context bloat past
+    // ~170K with compaction never firing. Only deepseek-v4-pro is capped —
+    // flash and every other model stay uncapped (no field at all).
+    const pro = byId("deepseek-v4-pro");
+    expect(pro?.contextWindow).toBe(524288);
+    expect(pro?.contextTokens).toBe(131072);
+    expect(byId("deepseek-v4-flash")?.contextTokens).toBeUndefined();
   });
 
   it("every model declares vision and carries no dead capability fields", () => {

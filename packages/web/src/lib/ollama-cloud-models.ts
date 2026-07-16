@@ -43,6 +43,13 @@ export interface OllamaCloudModel {
    * (i.e. `/api/show`), which wins over the library page when they disagree —
    * see the source-priority note in the file header. */
   contextWindow: number;
+  /** Optional Pinchy policy cap on the *effective* runtime context budget,
+   * below the native contextWindow. Emitted as OpenClaw's
+   * `models.providers.*.models[].contextTokens`, which the runtime budgets
+   * compaction against (resolveContextWindowInfo, source "modelsConfig") while
+   * contextWindow stays the honest native size. Set ONLY where a model's
+   * quality degrades well before its advertised window — see deepseek-v4-pro. */
+  contextTokens?: number;
   /** Pinchy's max output tokens hint. Ollama doesn't publish this, so we use
    * the output-heavy value for Gemini Flash and a conservative 8192 elsewhere. */
   maxTokens: number;
@@ -99,6 +106,14 @@ export const TOOL_CAPABLE_OLLAMA_CLOUD_MODELS = [
     // all 10 Odoo calls in the window had succeeded).
     id: "deepseek-v4-pro",
     contextWindow: 524288,
+    // Pinchy caps the effective runtime context at 128K. The 512K window above
+    // is the honest native size, but DeepSeek V4 Pro's long-context quality
+    // knees well before it (~0.92 recall @128K → ~0.66 @512K), and the
+    // 2026-07-15 Piper incident traced a confabulated Odoo "outage" to context
+    // bloat past ~170K with compaction never firing. Budgeting compaction
+    // against 128K instead of 512K makes OpenClaw's preemptive compaction fire
+    // in time. Cap only this model — its knee, not a global policy.
+    contextTokens: 131072,
     maxTokens: 8192,
     reasoning: true,
     vision: false,
