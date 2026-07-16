@@ -141,6 +141,8 @@ const BULLET_LINE = /^[ \t]*[-*][ \t]+\[(\d+)\]\s*(.+)$/gm;
 const PAGE_SUFFIX = /^(.*?)\s*[—-]\s*pp?\.?\s*(\d+(?:\s*[-–]\s*\d+)?)\s*$/i;
 
 interface ParsedAnswer {
+  /** Raw text BEFORE the Sources heading (or the whole answer if there is none). */
+  body: string;
   /** Distinct inline-cited numbers found in the answer BODY (before the Sources heading). */
   citedNumbers: Set<number>;
   /** Parsed Sources-list bullets, in document order. */
@@ -188,7 +190,24 @@ function parseAnswer(answer: string): ParsedAnswer {
     citedNumbers.add(Number(match[1]));
   }
 
-  return { citedNumbers, entries: parseSourcesEntries(sourcesText), hasSourcesList, sourcesText };
+  return {
+    body,
+    citedNumbers,
+    entries: parseSourcesEntries(sourcesText),
+    hasSourcesList,
+    sourcesText,
+  };
+}
+
+/**
+ * Public accessor for the answer BODY only — the prose the model wrote,
+ * minus the trailing Sources list. Reused by the Layer-3 groundedness grader
+ * (`groundedness-grader.ts`), which needs the same "where does the Sources
+ * list start" heuristic as `gradeSourcesFormat` etc. so that a Sources
+ * bullet is never mistaken for a claim sentence to entailment-check.
+ */
+export function answerBody(answer: string): string {
+  return parseAnswer(answer).body;
 }
 
 function passKb(): KbGraderResult {
