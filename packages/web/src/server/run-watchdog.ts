@@ -57,7 +57,7 @@ export interface WatchdogDeps {
    * Abort the OpenClaw-side run. Implementations should swallow internal
    * errors and resolve (or throw — the watchdog catches and continues).
    */
-  chatAbort: (sessionKey: string, runId: string) => Promise<void>;
+  chatAbort: (sessionKey: string, runId?: string) => Promise<void>;
   /**
    * Write the terminal audit row. The watchdog awaits this BEFORE the
    * broadcast and registry-delete so a forwarding error can't lose the
@@ -140,7 +140,13 @@ export async function runWatchdogTick(deps: WatchdogDeps): Promise<void> {
     // began streaming (OpenClaw now owns liveness for started runs).
     if (deps.activeRuns.get(run.sessionKey) !== run || run.firstChunkAt !== null) continue;
     try {
-      await deps.chatAbort(run.sessionKey, run.runId);
+      // A pending run's `runId` is PROVISIONAL — Pinchy's per-turn messageId,
+      // which the gateway has never seen (scanForUnstartedRuns only returns
+      // firstChunkAt===null runs, reconciled to the real id by markFirstChunk).
+      // Passing it names a run the gateway cannot find, so it aborts NOTHING.
+      // Omit it to abort the session's current run instead — same gate as the
+      // user-triggered abort in client-router (#550).
+      await deps.chatAbort(run.sessionKey, undefined);
     } catch (err) {
       console.warn(
         `[run-watchdog] chatAbort (no_first_chunk) failed for ${run.sessionKey} (run ${run.runId}):`,

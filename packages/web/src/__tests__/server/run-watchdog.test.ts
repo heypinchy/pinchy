@@ -120,8 +120,16 @@ describe("runWatchdogTick", () => {
       // No PII in detail.
       expect(JSON.stringify(audit.detail)).not.toContain("@");
 
+      // A pending run's runId is PROVISIONAL — Pinchy's per-turn messageId,
+      // which the gateway has never seen (scanForUnstartedRuns only returns
+      // firstChunkAt===null runs). Handing it to chatAbort names a run the
+      // gateway cannot find, so it aborts NOTHING while we tear the entry down
+      // and tell the user to retry. Omitting it aborts the session's current
+      // run instead — the same gate handleAbort uses (#550). The forensic audit
+      // row above keeps the provisional id (it identifies the Pinchy-side run
+      // that never started); only the abort RPC must not claim it.
       expect(chatAbort).toHaveBeenCalledTimes(1);
-      expect(chatAbort).toHaveBeenCalledWith(basePending.sessionKey, "provisional-1");
+      expect(chatAbort).toHaveBeenCalledWith(basePending.sessionKey, undefined);
 
       // Retryable broadcast.
       expect(broadcastNoFirstChunk).toHaveBeenCalledTimes(1);

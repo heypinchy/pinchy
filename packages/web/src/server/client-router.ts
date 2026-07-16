@@ -251,7 +251,11 @@ export class ClientRouter {
       // indistinguishable from a working one in the trail.
       // A gateway that reports no payload (older builds) stays `success`: we
       // cannot tell, and a made-up failure is as dishonest as a made-up success.
-      if (res?.aborted === false) {
+      // Gated on `run`: a stop click with nothing in flight answers
+      // `aborted: false` too, and this method deliberately neither audits nor
+      // logs that (see the docstring) — warning here would reopen exactly the
+      // "aborted nothing" spam vector a buggy or hostile client could exploit.
+      if (run && res?.aborted === false) {
         outcome = "failure";
         console.warn(
           `[client-router] gateway reported no run aborted for ${sessionKey} (runId=${runId ?? "none"})`

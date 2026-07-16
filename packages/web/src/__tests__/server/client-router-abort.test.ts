@@ -304,6 +304,29 @@ describe("ClientRouter user-triggered abort (#550)", () => {
     expect(mockAppendAuditLog.mock.calls[0]![0].outcome).toBe("failure");
   });
 
+  /**
+   * A stop click with nothing in flight is a safe no-op the method
+   * deliberately does NOT audit — an unbounded "aborted nothing" write is
+   * noise a buggy or hostile client could spam (see handleAbort's docstring).
+   * A live gateway answers such a call `{ ok: true, aborted: false }`, so the
+   * aborted-nothing branch must key its warning on there having BEEN a run to
+   * abort — otherwise the exact log-spam vector the no-audit rule guards
+   * against reopens one level down, at the log.
+   */
+  it("does not warn about 'aborted nothing' when a stop click finds no run in flight", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const ws = createMockWs();
+    // No run registered.
+    mockChatAbort.mockResolvedValueOnce({ ok: true, aborted: false, runIds: [] });
+    const router = makeRouter();
+
+    await router.handleMessage(ws, { type: "abort", agentId: "agent-1" });
+
+    expect(mockAppendAuditLog).not.toHaveBeenCalled();
+    expect(warn).not.toHaveBeenCalled();
+    warn.mockRestore();
+  });
+
   it("audits outcome=success when the gateway confirms it aborted the run", async () => {
     const ws = createMockWs();
     registerActiveRun(activeRuns, ws, "run-xyz");
