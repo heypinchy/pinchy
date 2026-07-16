@@ -174,7 +174,11 @@ vi.mock("@/server/openclaw-client", () => ({
 }));
 
 import { writeFileSync, readFileSync, existsSync, mkdirSync } from "fs";
-import { writtenOpenClawConfig } from "../helpers/openclaw-config-write";
+import {
+  writtenOpenClawConfig,
+  findOpenClawConfigWrite,
+  isOpenClawConfigWrite,
+} from "../helpers/openclaw-config-write";
 import {
   regenerateOpenClawConfig,
   sanitizeOpenClawConfig,
@@ -391,8 +395,7 @@ describe("regenerateOpenClawConfig", () => {
 
     // The scenario must actually put a non-config write first, otherwise the
     // guard would pass trivially and prove nothing about call order.
-    const firstPath = mockedWriteFileSync.mock.calls[0]?.[0];
-    expect(typeof firstPath === "string" && firstPath.includes("openclaw.json.tmp")).toBe(false);
+    expect(isOpenClawConfigWrite(mockedWriteFileSync.mock.calls[0] ?? [])).toBe(false);
 
     const config = JSON.parse(writtenOpenClawConfig(mockedWriteFileSync));
     expect(config.agents.list.map((a: { id: string }) => a.id)).toContain("a1");
@@ -2912,9 +2915,7 @@ describe("regenerateOpenClawConfig", () => {
 
     await regenerateOpenClawConfig();
 
-    const written = mockedWriteFileSync.mock.calls.find(
-      (c) => typeof c[0] === "string" && (c[0] as string).includes("openclaw.json.tmp")
-    );
+    const written = findOpenClawConfigWrite(mockedWriteFileSync);
     expect(written).toBeDefined();
     const config = JSON.parse(String(written![1]));
     // The OC-enriched sibling sub-block survives the regenerate even though
@@ -3256,9 +3257,7 @@ describe("regenerateOpenClawConfig", () => {
 
     await regenerateOpenClawConfig();
 
-    const written = mockedWriteFileSync.mock.calls.find(
-      (call) => typeof call[0] === "string" && call[0].includes("openclaw.json")
-    );
+    const written = findOpenClawConfigWrite(mockedWriteFileSync);
     expect(written).toBeDefined();
     const config = JSON.parse(String(written![1]));
     expect(config.models.providers.ollama.apiKey).toEqual({
@@ -3320,9 +3319,7 @@ describe("regenerateOpenClawConfig", () => {
       await vi.advanceTimersByTimeAsync(300);
       await promise;
 
-      const openclaw = mockedWriteFileSync.mock.calls.find(
-        (c) => typeof c[0] === "string" && (c[0] as string).includes("openclaw.json")
-      );
+      const openclaw = findOpenClawConfigWrite(mockedWriteFileSync);
       expect(openclaw).toBeDefined();
       const config = JSON.parse(openclaw![1] as string);
       // meta must be preserved from the retry read, not absent due to empty first read
@@ -3370,9 +3367,7 @@ describe("regenerateOpenClawConfig", () => {
 
       // No write to openclaw.json — proceeding with `existing = {}` would
       // have produced the bad thin payload from #314.
-      const openclawWrites = mockedWriteFileSync.mock.calls.filter(
-        (c) => typeof c[0] === "string" && (c[0] as string).includes("openclaw.json")
-      );
+      const openclawWrites = mockedWriteFileSync.mock.calls.filter(isOpenClawConfigWrite);
       expect(openclawWrites).toEqual([]);
       // The skip must be loud — silent skips hide the underlying race.
       expect(errorSpy).toHaveBeenCalled();
@@ -3425,9 +3420,7 @@ describe("regenerateOpenClawConfig", () => {
 
       // config.apply was used for the write — writeFileSync must NOT have been
       // called with the openclaw.json path (only auth-profiles.json is written).
-      const openclawWrite = mockedWriteFileSync.mock.calls.find(
-        (c) => typeof c[0] === "string" && (c[0] as string).includes("openclaw.json")
-      );
+      const openclawWrite = findOpenClawConfigWrite(mockedWriteFileSync);
       expect(openclawWrite).toBeUndefined();
     });
 
@@ -3870,9 +3863,7 @@ describe("regenerateOpenClawConfig", () => {
         // config.apply succeeded after the 4th config.get() resolved —
         // delivered via WS, no inotify file write.
         expect(mockConfigApply).toHaveBeenCalledTimes(1);
-        const openclawWrite = mockedWriteFileSync.mock.calls.find(
-          (c) => typeof c[0] === "string" && (c[0] as string).includes("openclaw.json")
-        );
+        const openclawWrite = findOpenClawConfigWrite(mockedWriteFileSync);
         expect(
           openclawWrite,
           "writeFileSync must NOT be called for openclaw.json when WS reconnects within the 30 s budget"
@@ -3931,9 +3922,7 @@ describe("regenerateOpenClawConfig", () => {
 
         // Find every openclaw.json file write (the atomic rename target;
         // .tmp writes show up as separate calls).
-        const openclawWrites = mockedWriteFileSync.mock.calls.filter(
-          (c) => typeof c[0] === "string" && (c[0] as string).includes("openclaw.json")
-        );
+        const openclawWrites = mockedWriteFileSync.mock.calls.filter(isOpenClawConfigWrite);
 
         // The .tmp + final path each show up — but only from ONE coroutine.
         // If the cancellation broke, we would see writes from both coroutines.
@@ -3986,9 +3975,7 @@ describe("regenerateOpenClawConfig", () => {
         // config.apply was never called — every config.get() rejected.
         expect(mockConfigApply).not.toHaveBeenCalled();
         // After the budget exhausted, the file fallback fired.
-        const openclawWrite = mockedWriteFileSync.mock.calls.find(
-          (c) => typeof c[0] === "string" && (c[0] as string).includes("openclaw.json")
-        );
+        const openclawWrite = findOpenClawConfigWrite(mockedWriteFileSync);
         expect(
           openclawWrite,
           "writeFileSync MUST be called for openclaw.json once the 30 s budget is exhausted (OC is genuinely down)"
@@ -4031,9 +4018,7 @@ describe("regenerateOpenClawConfig", () => {
 
         // No file write yet — we wait out the window on the clean WS path,
         // we do NOT fall back to disk (which would cause inotify drift).
-        let openclawWrite = mockedWriteFileSync.mock.calls.find(
-          (c) => typeof c[0] === "string" && (c[0] as string).includes("openclaw.json")
-        );
+        let openclawWrite = findOpenClawConfigWrite(mockedWriteFileSync);
         expect(
           openclawWrite,
           "must NOT file-write before the WS retry budget is exhausted"
@@ -4045,9 +4030,7 @@ describe("regenerateOpenClawConfig", () => {
 
         expect(mockConfigApply).toHaveBeenCalledTimes(2);
         // Still no file write — the change was delivered cleanly over WS.
-        openclawWrite = mockedWriteFileSync.mock.calls.find(
-          (c) => typeof c[0] === "string" && (c[0] as string).includes("openclaw.json")
-        );
+        openclawWrite = findOpenClawConfigWrite(mockedWriteFileSync);
         expect(
           openclawWrite,
           "writeFileSync must NOT be called when the WS retry succeeds"
@@ -4085,9 +4068,7 @@ describe("regenerateOpenClawConfig", () => {
         }
 
         // The change was NOT lost — it landed on disk for the file-watcher.
-        const openclawWrite = mockedWriteFileSync.mock.calls.find(
-          (c) => typeof c[0] === "string" && (c[0] as string).includes("openclaw.json")
-        );
+        const openclawWrite = findOpenClawConfigWrite(mockedWriteFileSync);
         expect(
           openclawWrite,
           "writeConfigAtomic must run as the last-resort fallback so the change is not lost"
@@ -4249,9 +4230,7 @@ describe("seedRestartClassOverridesIfMissing", () => {
     const changed = seedRestartClassOverridesIfMissing();
 
     expect(changed).toBe(true);
-    const writtenAtomic = mockedWriteFileSync.mock.calls.find(
-      (c) => typeof c[0] === "string" && (c[0] as string).includes("openclaw.json.tmp")
-    );
+    const writtenAtomic = findOpenClawConfigWrite(mockedWriteFileSync);
     expect(writtenAtomic).toBeDefined();
     const written = JSON.parse(String(writtenAtomic![1]));
     expect(written.gateway?.controlUi?.enabled).toBe(false);
@@ -4293,9 +4272,7 @@ describe("seedRestartClassOverridesIfMissing", () => {
     const changed = seedRestartClassOverridesIfMissing();
 
     expect(changed).toBe(false);
-    const writtenAtomic = mockedWriteFileSync.mock.calls.find(
-      (c) => typeof c[0] === "string" && (c[0] as string).includes("openclaw.json.tmp")
-    );
+    const writtenAtomic = findOpenClawConfigWrite(mockedWriteFileSync);
     expect(writtenAtomic).toBeUndefined();
   });
 
@@ -4315,9 +4292,7 @@ describe("seedRestartClassOverridesIfMissing", () => {
     const changed = seedRestartClassOverridesIfMissing();
 
     expect(changed).toBe(true);
-    const writtenAtomic = mockedWriteFileSync.mock.calls.find(
-      (c) => typeof c[0] === "string" && (c[0] as string).includes("openclaw.json.tmp")
-    );
+    const writtenAtomic = findOpenClawConfigWrite(mockedWriteFileSync);
     const written = JSON.parse(String(writtenAtomic![1]));
     expect(written.gateway.controlUi.enabled).toBe(false);
     expect(written.gateway.controlUi.allowedOrigins).toEqual([
@@ -4349,9 +4324,7 @@ describe("seedRestartClassOverridesIfMissing", () => {
     const changed = seedRestartClassOverridesIfMissing();
 
     expect(changed).toBe(true);
-    const writtenAtomic = mockedWriteFileSync.mock.calls.find(
-      (c) => typeof c[0] === "string" && (c[0] as string).includes("openclaw.json.tmp")
-    );
+    const writtenAtomic = findOpenClawConfigWrite(mockedWriteFileSync);
     const written = JSON.parse(String(writtenAtomic![1]));
     expect(written.gateway.terminal.enabled).toBe(false);
   });
@@ -4377,9 +4350,7 @@ describe("seedRestartClassOverridesIfMissing", () => {
 
     seedRestartClassOverridesIfMissing();
 
-    const writtenAtomic = mockedWriteFileSync.mock.calls.find(
-      (c) => typeof c[0] === "string" && (c[0] as string).includes("openclaw.json.tmp")
-    );
+    const writtenAtomic = findOpenClawConfigWrite(mockedWriteFileSync);
     const written = JSON.parse(String(writtenAtomic![1]));
 
     // Restart-class overrides flipped to Pinchy values:
@@ -4437,9 +4408,7 @@ describe("seedGatewayTokenIfMissing", () => {
     const changed = await seedGatewayTokenIfMissing();
 
     expect(changed).toBe(true);
-    const writtenAtomic = mockedWriteFileSync.mock.calls.find(
-      (c) => typeof c[0] === "string" && (c[0] as string).includes("openclaw.json.tmp")
-    );
+    const writtenAtomic = findOpenClawConfigWrite(mockedWriteFileSync);
     expect(writtenAtomic).toBeDefined();
     const written = JSON.parse(String(writtenAtomic![1]));
     expect(typeof written.gateway?.auth?.token).toBe("string");
@@ -4459,9 +4428,7 @@ describe("seedGatewayTokenIfMissing", () => {
     const changed = await seedGatewayTokenIfMissing();
 
     expect(changed).toBe(false);
-    const writtenAtomic = mockedWriteFileSync.mock.calls.find(
-      (c) => typeof c[0] === "string" && (c[0] as string).includes("openclaw.json.tmp")
-    );
+    const writtenAtomic = findOpenClawConfigWrite(mockedWriteFileSync);
     expect(writtenAtomic).toBeUndefined();
   });
 
@@ -4483,9 +4450,7 @@ describe("seedGatewayTokenIfMissing", () => {
 
     await seedGatewayTokenIfMissing();
 
-    const writtenAtomic = mockedWriteFileSync.mock.calls.find(
-      (c) => typeof c[0] === "string" && (c[0] as string).includes("openclaw.json.tmp")
-    );
+    const writtenAtomic = findOpenClawConfigWrite(mockedWriteFileSync);
     const written = JSON.parse(String(writtenAtomic![1]));
 
     // Token landed with full auth shape (mode + token) to avoid the
@@ -4522,9 +4487,7 @@ describe("seedGatewayTokenIfMissing", () => {
     const changed = await seedGatewayTokenIfMissing();
 
     expect(changed).toBe(false);
-    const writtenAtomic = mockedWriteFileSync.mock.calls.find(
-      (c) => typeof c[0] === "string" && (c[0] as string).includes("openclaw.json.tmp")
-    );
+    const writtenAtomic = findOpenClawConfigWrite(mockedWriteFileSync);
     expect(writtenAtomic).toBeUndefined();
   });
 });
@@ -4901,9 +4864,7 @@ describe("pinchy-web: credentials fetched on demand via Pinchy API (#209)", () =
 
     // openclaw.json must NOT contain the apiKey at all (#209): the plugin
     // fetches it on demand from /api/internal/integrations/<id>/credentials.
-    const written = mockedWriteFileSync.mock.calls.find(
-      (c) => typeof c[0] === "string" && (c[0] as string).includes("openclaw.json")
-    );
+    const written = findOpenClawConfigWrite(mockedWriteFileSync);
     expect(written).toBeDefined();
     const config = JSON.parse(written![1] as string);
 
@@ -4995,9 +4956,7 @@ describe("pinchy-odoo config size", () => {
 
     await regenerateOpenClawConfig();
 
-    const writtenCall = mockedWriteFileSync.mock.calls.find(
-      (c) => typeof c[0] === "string" && (c[0] as string).includes("openclaw.json")
-    );
+    const writtenCall = findOpenClawConfigWrite(mockedWriteFileSync);
     expect(writtenCall).toBeDefined();
     const config = JSON.parse(writtenCall![1] as string);
 
@@ -5069,9 +5028,7 @@ describe("pinchy-odoo config size", () => {
 
     await expect(regenerateOpenClawConfig()).resolves.toBeUndefined();
 
-    const writtenCall = mockedWriteFileSync.mock.calls.find(
-      (c) => typeof c[0] === "string" && (c[0] as string).includes("openclaw.json")
-    );
+    const writtenCall = findOpenClawConfigWrite(mockedWriteFileSync);
     expect(writtenCall).toBeDefined();
     const config = JSON.parse(writtenCall![1] as string);
     const odooAgents = config.plugins?.entries?.["pinchy-odoo"]?.config?.agents ?? {};
@@ -5158,9 +5115,7 @@ describe("pinchy-odoo: credentials fetched on demand via Pinchy API (#209)", () 
 
     await regenerateOpenClawConfig();
 
-    const written = mockedWriteFileSync.mock.calls.find(
-      (c) => typeof c[0] === "string" && (c[0] as string).includes("openclaw.json")
-    );
+    const written = findOpenClawConfigWrite(mockedWriteFileSync);
     expect(written).toBeDefined();
     const config = JSON.parse(written![1] as string);
 
@@ -5307,9 +5262,7 @@ describe("restart-state integration", () => {
       );
       // No direct openclaw.json file write — config.apply's inner
       // writeConfigFile is responsible for persisting to disk.
-      const openclawWrite = mockedWriteFileSync.mock.calls.find(
-        (c) => typeof c[0] === "string" && (c[0] as string).includes("openclaw.json")
-      );
+      const openclawWrite = findOpenClawConfigWrite(mockedWriteFileSync);
       expect(openclawWrite).toBeUndefined();
     });
 
@@ -6183,9 +6136,7 @@ describe("restart-state integration", () => {
 
     await regenerateOpenClawConfig();
 
-    const written = mockedWriteFileSync.mock.calls.find(
-      (c) => typeof c[0] === "string" && (c[0] as string).includes("openclaw.json")
-    );
+    const written = findOpenClawConfigWrite(mockedWriteFileSync);
     expect(written).toBeDefined();
     const config = JSON.parse(written![1] as string);
 
@@ -6236,9 +6187,7 @@ describe("restart-state integration", () => {
 
     await regenerateOpenClawConfig();
 
-    const written = mockedWriteFileSync.mock.calls.find(
-      (c) => typeof c[0] === "string" && (c[0] as string).includes("openclaw.json")
-    );
+    const written = findOpenClawConfigWrite(mockedWriteFileSync);
     expect(written).toBeDefined();
     const config = JSON.parse(written![1] as string);
 
@@ -6275,9 +6224,7 @@ describe("restart-state integration", () => {
 
     await regenerateOpenClawConfig();
 
-    const written = mockedWriteFileSync.mock.calls.find(
-      (c) => typeof c[0] === "string" && (c[0] as string).includes("openclaw.json")
-    );
+    const written = findOpenClawConfigWrite(mockedWriteFileSync);
     expect(written).toBeDefined();
     const config = JSON.parse(written![1] as string);
 
@@ -6323,9 +6270,7 @@ describe("restart-state integration", () => {
 
     await regenerateOpenClawConfig();
 
-    const written = mockedWriteFileSync.mock.calls.find(
-      (c) => typeof c[0] === "string" && (c[0] as string).includes("openclaw.json")
-    );
+    const written = findOpenClawConfigWrite(mockedWriteFileSync);
     expect(written).toBeDefined();
     const config = JSON.parse(written![1] as string);
 
@@ -6395,9 +6340,7 @@ describe("restart-state integration", () => {
 
     await regenerateOpenClawConfig();
 
-    const written = mockedWriteFileSync.mock.calls.find(
-      (c) => typeof c[0] === "string" && (c[0] as string).includes("openclaw.json")
-    );
+    const written = findOpenClawConfigWrite(mockedWriteFileSync);
     expect(written).toBeDefined();
     const config = JSON.parse(written![1] as string);
 
@@ -6460,9 +6403,7 @@ describe("restart-state integration", () => {
 
     await regenerateOpenClawConfig();
 
-    const written = mockedWriteFileSync.mock.calls.find(
-      (c) => typeof c[0] === "string" && (c[0] as string).includes("openclaw.json")
-    );
+    const written = findOpenClawConfigWrite(mockedWriteFileSync);
     expect(written).toBeDefined();
     const config = JSON.parse(written![1] as string);
 
@@ -6510,9 +6451,7 @@ describe("restart-state integration", () => {
     });
 
     await regenerateOpenClawConfig();
-    const firstWrite = mockedWriteFileSync.mock.calls.find(
-      (c) => typeof c[0] === "string" && (c[0] as string).includes("openclaw.json")
-    );
+    const firstWrite = findOpenClawConfigWrite(mockedWriteFileSync);
     expect(firstWrite).toBeDefined();
     const firstContent = firstWrite![1] as string;
     const firstConfig = JSON.parse(firstContent);
@@ -6536,9 +6475,7 @@ describe("restart-state integration", () => {
     mockedReadFileSync.mockReturnValue(JSON.stringify(openClawRewritten, null, 2));
 
     await regenerateOpenClawConfig();
-    const secondWrite = mockedWriteFileSync.mock.calls.find(
-      (c) => typeof c[0] === "string" && (c[0] as string).includes("openclaw.json")
-    );
+    const secondWrite = findOpenClawConfigWrite(mockedWriteFileSync);
 
     // Two acceptable outcomes: (a) early-return because content is byte-
     // identical (best case, no restart trigger at all), or (b) a write
@@ -6610,9 +6547,7 @@ describe("restart-state integration", () => {
     await drainBackgroundCoroutine();
 
     // No openclaw.json write (the only diff was OpenClaw-managed metadata).
-    const secondConfigWrite = mockedWriteFileSync.mock.calls.find(
-      (c) => typeof c[0] === "string" && (c[0] as string).includes("openclaw.json")
-    );
+    const secondConfigWrite = findOpenClawConfigWrite(mockedWriteFileSync);
     expect(secondConfigWrite).toBeUndefined();
 
     // No NEW config.apply RPC. Without the workaround, sending the RPC would
@@ -6746,9 +6681,7 @@ describe("restart-state integration", () => {
 
     // First generate: no existing file (cold start).
     await regenerateOpenClawConfig();
-    const firstWrite = mockedWriteFileSync.mock.calls.find(
-      (c) => typeof c[0] === "string" && (c[0] as string).includes("openclaw.json")
-    );
+    const firstWrite = findOpenClawConfigWrite(mockedWriteFileSync);
     expect(firstWrite).toBeDefined();
     const firstContent = firstWrite![1] as string;
 
@@ -6762,9 +6695,7 @@ describe("restart-state integration", () => {
     // Two outcomes are acceptable: (a) early-return because content is
     // identical (no second write at all — best case), or (b) a write whose
     // content equals the first. Either proves idempotency.
-    const secondWrite = mockedWriteFileSync.mock.calls.find(
-      (c) => typeof c[0] === "string" && (c[0] as string).includes("openclaw.json")
-    );
+    const secondWrite = findOpenClawConfigWrite(mockedWriteFileSync);
     if (secondWrite) {
       expect(secondWrite[1]).toBe(firstContent);
     }
@@ -6839,9 +6770,7 @@ describe("restart-state integration", () => {
 
     await regenerateOpenClawConfig();
 
-    const write = mockedWriteFileSync.mock.calls.find(
-      (c) => typeof c[0] === "string" && (c[0] as string).includes("openclaw.json")
-    );
+    const write = findOpenClawConfigWrite(mockedWriteFileSync);
     if (write) {
       const written = JSON.parse(write[1] as string);
       // Same set, same order. Without the fix, telegram migrates to position 0
@@ -6888,9 +6817,7 @@ describe("writeConfigAtomic plaintext secret guard", () => {
 
     await expect(regenerateOpenClawConfig()).resolves.toBeUndefined();
 
-    const written = mockedWriteFileSync.mock.calls.find(
-      (c) => typeof c[0] === "string" && (c[0] as string).includes("openclaw.json")
-    );
+    const written = findOpenClawConfigWrite(mockedWriteFileSync);
     expect(written).toBeDefined();
     const config = JSON.parse(written![1] as string);
     // SecretRef (not plaintext, not env-template) written to openclaw.json
@@ -6933,9 +6860,7 @@ describe("regenerateOpenClawConfig — env secrets", () => {
 
     await regenerateOpenClawConfig();
 
-    const written = mockedWriteFileSync.mock.calls.find(
-      (c) => typeof c[0] === "string" && (c[0] as string).includes("openclaw.json")
-    );
+    const written = findOpenClawConfigWrite(mockedWriteFileSync);
     expect(written).toBeDefined();
     const config = JSON.parse(written![1] as string);
 
@@ -7009,9 +6934,7 @@ describe("regenerateOpenClawConfig — env secrets", () => {
 
     // First call writes the config — capture what was written
     await regenerateOpenClawConfig();
-    const firstWrite = mockedWriteFileSync.mock.calls.find(
-      (c) => typeof c[0] === "string" && (c[0] as string).includes("openclaw.json")
-    )![1] as string;
+    const firstWrite = findOpenClawConfigWrite(mockedWriteFileSync)![1] as string;
 
     vi.clearAllMocks();
     // Simulate openclaw.json already containing the same content — triggers early return
@@ -7032,9 +6955,7 @@ describe("regenerateOpenClawConfig — env secrets", () => {
     expect(mockWriteSecretsFile).toHaveBeenCalledOnce();
 
     // openclaw.json must NOT be written (early return)
-    const configWrite = mockedWriteFileSync.mock.calls.find(
-      (c) => typeof c[0] === "string" && (c[0] as string).includes("openclaw.json")
-    );
+    const configWrite = findOpenClawConfigWrite(mockedWriteFileSync);
     expect(configWrite).toBeUndefined();
   });
 
@@ -7047,9 +6968,7 @@ describe("regenerateOpenClawConfig — env secrets", () => {
     await regenerateOpenClawConfig();
 
     // openclaw.json must contain a SecretRef, not the plaintext key
-    const written = mockedWriteFileSync.mock.calls.find(
-      (c) => typeof c[0] === "string" && (c[0] as string).includes("openclaw.json")
-    );
+    const written = findOpenClawConfigWrite(mockedWriteFileSync);
     expect(written).toBeDefined();
     const config = JSON.parse(written![1] as string);
     expect(config.models.providers["ollama-cloud"].apiKey).toEqual({
@@ -7090,9 +7009,7 @@ describe("pinchy-* plugin gatewayToken as SecretRef", () => {
 
     await regenerateOpenClawConfig();
 
-    const written = mockedWriteFileSync.mock.calls.find(
-      (c) => typeof c[0] === "string" && (c[0] as string).includes("openclaw.json")
-    );
+    const written = findOpenClawConfigWrite(mockedWriteFileSync);
     const config = JSON.parse(written![1] as string);
 
     // gateway.auth.token comes from getOrCreateGatewayToken() (DB) as a plain string
@@ -7136,9 +7053,7 @@ describe("pinchy-* plugin gatewayToken as SecretRef", () => {
 
     await regenerateOpenClawConfig();
 
-    const written = mockedWriteFileSync.mock.calls.find(
-      (c) => typeof c[0] === "string" && (c[0] as string).includes("openclaw.json")
-    );
+    const written = findOpenClawConfigWrite(mockedWriteFileSync);
     const config = JSON.parse(written![1] as string);
     expect(config.plugins.entries["pinchy-files"].config.gatewayToken).toBe("gw-secret-token");
   });
@@ -7166,9 +7081,7 @@ describe("pinchy-* plugin gatewayToken as SecretRef", () => {
 
     await regenerateOpenClawConfig();
 
-    const written = mockedWriteFileSync.mock.calls.find(
-      (c) => typeof c[0] === "string" && (c[0] as string).includes("openclaw.json")
-    );
+    const written = findOpenClawConfigWrite(mockedWriteFileSync);
     const config = JSON.parse(written![1] as string);
     expect(config.plugins.entries["pinchy-context"].config.gatewayToken).toBe("gw-secret-token");
   });
@@ -7181,9 +7094,7 @@ describe("pinchy-* plugin gatewayToken as SecretRef", () => {
 
     await regenerateOpenClawConfig();
 
-    const written = mockedWriteFileSync.mock.calls.find(
-      (c) => typeof c[0] === "string" && (c[0] as string).includes("openclaw.json")
-    );
+    const written = findOpenClawConfigWrite(mockedWriteFileSync);
     const config = JSON.parse(written![1] as string);
     expect(config.plugins.entries["pinchy-audit"].config.gatewayToken).toBe("gw-secret-token");
   });
@@ -7238,9 +7149,7 @@ describe("pinchy-* plugin gatewayToken as SecretRef", () => {
 
     await regenerateOpenClawConfig();
 
-    const written = mockedWriteFileSync.mock.calls.find(
-      (c) => typeof c[0] === "string" && (c[0] as string).includes("openclaw.json")
-    );
+    const written = findOpenClawConfigWrite(mockedWriteFileSync);
     const config = JSON.parse(written![1] as string);
     expect(config.plugins.entries["pinchy-email"].config.gatewayToken).toBe("gw-secret-token");
   });
@@ -7287,9 +7196,7 @@ describe("secrets provider config block", () => {
   it("writes secrets.providers.pinchy pointing at /openclaw-secrets/secrets.json", async () => {
     await regenerateOpenClawConfig();
 
-    const written = mockedWriteFileSync.mock.calls.find(
-      (c) => typeof c[0] === "string" && (c[0] as string).includes("openclaw.json")
-    );
+    const written = findOpenClawConfigWrite(mockedWriteFileSync);
     expect(written).toBeDefined();
     const config = JSON.parse(written![1] as string);
 
@@ -7344,9 +7251,7 @@ describe("telegram botToken plain string (OpenClaw 2026.4.26 does not support Se
 
     await regenerateOpenClawConfig();
 
-    const written = mockedWriteFileSync.mock.calls.find(
-      (c) => typeof c[0] === "string" && (c[0] as string).includes("openclaw.json")
-    );
+    const written = findOpenClawConfigWrite(mockedWriteFileSync);
     expect(written).toBeDefined();
     const config = JSON.parse(written![1] as string);
 
@@ -7553,9 +7458,7 @@ describe("regenerateOpenClawConfig size-drop guard (#311)", () => {
     // canonical .tmp suffix that writeConfigAtomic uses so we don't
     // accidentally count the postmortem `.regenerate-rejected.<ts>` dump
     // (which legitimately writes the rejected payload for debugging).
-    const canonicalWrites = mockedWriteFileSync.mock.calls.filter(
-      (c) => typeof c[0] === "string" && (c[0] as string).endsWith("openclaw.json.tmp")
-    );
+    const canonicalWrites = mockedWriteFileSync.mock.calls.filter(isOpenClawConfigWrite);
     expect(
       canonicalWrites,
       `expected 0 canonical openclaw.json writes, got ${canonicalWrites.length}: ` +
