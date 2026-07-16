@@ -87,6 +87,7 @@ vi.mock("@/lib/provider-models", () => ({
 }));
 
 import { writeFileSync, readFileSync, existsSync } from "fs";
+import { writtenOpenClawConfig } from "../helpers/openclaw-config-write";
 import { regenerateOpenClawConfig } from "@/lib/openclaw-config";
 import { db } from "@/db";
 import {
@@ -145,7 +146,7 @@ function mockFsReads(agentsMdByAgent: Record<string, string>) {
 }
 
 function getAgentEntry(agentId: string) {
-  const written = mockedWriteFileSync.mock.calls[0][1] as string;
+  const written = writtenOpenClawConfig(mockedWriteFileSync);
   const config = JSON.parse(written);
   return config.agents.list.find((a: { id: string }) => a.id === agentId);
 }

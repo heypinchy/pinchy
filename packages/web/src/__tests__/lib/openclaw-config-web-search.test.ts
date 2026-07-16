@@ -88,6 +88,7 @@ vi.mock("@/lib/provider-models", () => {
 });
 
 import { writeFileSync, readFileSync, existsSync } from "fs";
+import { writtenOpenClawConfig } from "../helpers/openclaw-config-write";
 import { regenerateOpenClawConfig } from "@/lib/openclaw-config";
 import { db } from "@/db";
 import { getSetting } from "@/lib/settings";
@@ -160,7 +161,7 @@ describe("pinchy-web config generation", () => {
 
     await regenerateOpenClawConfig();
 
-    const written = mockedWriteFileSync.mock.calls[0][1] as string;
+    const written = writtenOpenClawConfig(mockedWriteFileSync);
     const config = JSON.parse(written);
 
     expect(config.plugins?.entries?.["pinchy-web"]).toBeDefined();
@@ -197,7 +198,7 @@ describe("pinchy-web config generation", () => {
 
     await regenerateOpenClawConfig();
 
-    const written = mockedWriteFileSync.mock.calls[0][1] as string;
+    const written = writtenOpenClawConfig(mockedWriteFileSync);
     const config = JSON.parse(written);
 
     const webPluginConfig = config.plugins.entries["pinchy-web"].config;
@@ -243,7 +244,7 @@ describe("pinchy-web config generation", () => {
 
     await regenerateOpenClawConfig();
 
-    const written = mockedWriteFileSync.mock.calls[0][1] as string;
+    const written = writtenOpenClawConfig(mockedWriteFileSync);
     const config = JSON.parse(written);
 
     const agentConfig = config.plugins.entries["pinchy-web"].config.agents["search-only-agent"];
@@ -280,7 +281,7 @@ describe("pinchy-web config generation", () => {
 
     await regenerateOpenClawConfig();
 
-    const written = mockedWriteFileSync.mock.calls[0][1] as string;
+    const written = writtenOpenClawConfig(mockedWriteFileSync);
     const config = JSON.parse(written);
 
     const agentConfig = config.plugins.entries["pinchy-web"].config.agents["fetch-only-agent"];
@@ -325,7 +326,7 @@ describe("pinchy-web config generation", () => {
 
     await regenerateOpenClawConfig();
 
-    const written = mockedWriteFileSync.mock.calls[0][1] as string;
+    const written = writtenOpenClawConfig(mockedWriteFileSync);
     const config = JSON.parse(written);
 
     const agents = config.plugins.entries["pinchy-web"].config.agents;
@@ -360,7 +361,7 @@ describe("pinchy-web config generation", () => {
 
     await regenerateOpenClawConfig();
 
-    const written = mockedWriteFileSync.mock.calls[0][1] as string;
+    const written = writtenOpenClawConfig(mockedWriteFileSync);
     const config = JSON.parse(written);
 
     expect(config.plugins?.entries?.["pinchy-web"]).toBeUndefined();
@@ -405,7 +406,7 @@ describe("pinchy-web config generation", () => {
 
     await regenerateOpenClawConfig();
 
-    const written = mockedWriteFileSync.mock.calls[0][1] as string;
+    const written = writtenOpenClawConfig(mockedWriteFileSync);
     const config = JSON.parse(written);
 
     // Plugin IS registered with the connectionId — the failure surface
@@ -444,7 +445,7 @@ describe("pinchy-web config generation", () => {
 
     await regenerateOpenClawConfig();
 
-    const written = mockedWriteFileSync.mock.calls[0][1] as string;
+    const written = writtenOpenClawConfig(mockedWriteFileSync);
     const config = JSON.parse(written);
 
     expect(config.plugins?.entries?.["pinchy-web"]).toBeUndefined();
@@ -480,7 +481,7 @@ describe("pinchy-web config generation", () => {
 
     await regenerateOpenClawConfig();
 
-    const written = mockedWriteFileSync.mock.calls[0][1] as string;
+    const written = writtenOpenClawConfig(mockedWriteFileSync);
     const config = JSON.parse(written);
 
     const agentConfig = config.plugins.entries["pinchy-web"].config.agents["ws-agent"];

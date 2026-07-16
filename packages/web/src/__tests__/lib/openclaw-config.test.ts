@@ -174,6 +174,7 @@ vi.mock("@/server/openclaw-client", () => ({
 }));
 
 import { writeFileSync, readFileSync, existsSync, mkdirSync } from "fs";
+import { writtenOpenClawConfig } from "../helpers/openclaw-config-write";
 import {
   regenerateOpenClawConfig,
   sanitizeOpenClawConfig,
@@ -362,12 +363,39 @@ describe("regenerateOpenClawConfig", () => {
 
     await regenerateOpenClawConfig();
 
-    const config = JSON.parse(mockedWriteFileSync.mock.calls[0][1] as string);
+    const config = JSON.parse(writtenOpenClawConfig(mockedWriteFileSync));
     for (const agent of config.agents.list) {
       expect(agent.heartbeat).toEqual({ every: "0m" });
     }
     // Must NOT be in agents.defaults (would cause hot-reload loops)
     expect(config.agents.defaults?.heartbeat).toBeUndefined();
+  });
+
+  it("reads the config by path, not by call order, when workspace writes precede it", async () => {
+    // Regression guard for the writtenOpenClawConfig helper. regenerate
+    // materializes each live agent's workspace (SOUL.md/AGENTS.md via
+    // ensureWorkspace) BEFORE it writes openclaw.json, so writeFileSync
+    // mock.calls[0] is a workspace file — not the config. existsSync=true
+    // normally short-circuits those writes and masks the ordering; forcing
+    // it false exposes the exact fragility that `mock.calls[0][1]` used to
+    // assume away. The helper must still return the openclaw.json content.
+    mockedExistsSync.mockReturnValue(false);
+    const agentsData = [
+      { id: "a1", name: "Smithers", model: "anthropic/claude-opus-4-7", createdAt: new Date() },
+    ];
+    mockedDb.select.mockReturnValue({
+      from: mockFrom(agentsData),
+    } as never);
+
+    await regenerateOpenClawConfig();
+
+    // The scenario must actually put a non-config write first, otherwise the
+    // guard would pass trivially and prove nothing about call order.
+    const firstPath = mockedWriteFileSync.mock.calls[0]?.[0];
+    expect(typeof firstPath === "string" && firstPath.includes("openclaw.json.tmp")).toBe(false);
+
+    const config = JSON.parse(writtenOpenClawConfig(mockedWriteFileSync));
+    expect(config.agents.list.map((a: { id: string }) => a.id)).toContain("a1");
   });
 
   it("should disable OpenClaw features that have no purpose in a containerized Pinchy deployment", async () => {
@@ -407,7 +435,7 @@ describe("regenerateOpenClawConfig", () => {
     // startup avoids any SIGUSR1 on the first Pinchy regenerate.
     await regenerateOpenClawConfig();
 
-    const written = mockedWriteFileSync.mock.calls[0][1] as string;
+    const written = writtenOpenClawConfig(mockedWriteFileSync);
     const config = JSON.parse(written) as {
       update?: { checkOnStart?: boolean };
       gateway?: { controlUi?: { enabled?: boolean }; terminal?: { enabled?: boolean } };
@@ -434,7 +462,7 @@ describe("regenerateOpenClawConfig", () => {
     });
 
     await regenerateOpenClawConfig();
-    const written = mockedWriteFileSync.mock.calls[0][1] as string;
+    const written = writtenOpenClawConfig(mockedWriteFileSync);
     const config = JSON.parse(written) as {
       gateway?: { controlUi?: { enabled?: boolean; allowedOrigins?: string[] } };
     };
@@ -465,7 +493,7 @@ describe("regenerateOpenClawConfig", () => {
     });
 
     await regenerateOpenClawConfig();
-    const written = mockedWriteFileSync.mock.calls[0][1] as string;
+    const written = writtenOpenClawConfig(mockedWriteFileSync);
     const config = JSON.parse(written) as {
       gateway?: { controlUi?: { allowedOrigins?: string[] } };
     };
@@ -495,7 +523,7 @@ describe("regenerateOpenClawConfig", () => {
     // auto-rotation.
     await regenerateOpenClawConfig();
 
-    const config = JSON.parse(mockedWriteFileSync.mock.calls[0][1] as string);
+    const config = JSON.parse(writtenOpenClawConfig(mockedWriteFileSync));
     expect(config.session?.reset).toEqual({ mode: "idle", idleMinutes: 525600 });
   });
 
@@ -524,7 +552,7 @@ describe("regenerateOpenClawConfig", () => {
 
     await regenerateOpenClawConfig();
 
-    const written = mockedWriteFileSync.mock.calls[0][1] as string;
+    const written = writtenOpenClawConfig(mockedWriteFileSync);
     const config = JSON.parse(written) as {
       discovery?: {
         mdns?: { mode?: string; lastAnnouncedAt?: string };
@@ -564,7 +592,7 @@ describe("regenerateOpenClawConfig", () => {
     // millisecond-scale mirror, covering mirror outages/retries.
     await regenerateOpenClawConfig();
 
-    const config = JSON.parse(mockedWriteFileSync.mock.calls[0][1] as string) as {
+    const config = JSON.parse(writtenOpenClawConfig(mockedWriteFileSync)) as {
       media?: { ttlHours?: number };
     };
     expect(config.media?.ttlHours).toBe(48);
@@ -585,7 +613,7 @@ describe("regenerateOpenClawConfig", () => {
 
     await regenerateOpenClawConfig();
 
-    const config = JSON.parse(mockedWriteFileSync.mock.calls[0][1] as string) as {
+    const config = JSON.parse(writtenOpenClawConfig(mockedWriteFileSync)) as {
       media?: { ttlHours?: number; someOtherEnrichedField?: string };
     };
     expect(config.media?.ttlHours).toBe(48);
@@ -612,7 +640,7 @@ describe("regenerateOpenClawConfig", () => {
     //   discovery.mdns.mode: "off" | "minimal" | "full"
     await regenerateOpenClawConfig();
 
-    const written = mockedWriteFileSync.mock.calls[0][1] as string;
+    const written = writtenOpenClawConfig(mockedWriteFileSync);
     const config = JSON.parse(written) as { discovery?: { mdns?: { mode?: string } } };
     expect(config.discovery?.mdns?.mode).toBe("off");
   });
@@ -679,7 +707,7 @@ describe("regenerateOpenClawConfig", () => {
 
     await regenerateOpenClawConfig();
 
-    const written = mockedWriteFileSync.mock.calls[0][1] as string;
+    const written = writtenOpenClawConfig(mockedWriteFileSync);
     const config = JSON.parse(written) as {
       plugins?: {
         allow?: string[];
@@ -744,7 +772,7 @@ describe("regenerateOpenClawConfig", () => {
 
     await regenerateOpenClawConfig();
 
-    const written = mockedWriteFileSync.mock.calls[0][1] as string;
+    const written = writtenOpenClawConfig(mockedWriteFileSync);
     const config = JSON.parse(written);
 
     expect(config.agents.list).toHaveLength(2);
@@ -799,7 +827,7 @@ describe("regenerateOpenClawConfig", () => {
 
     await regenerateOpenClawConfig();
 
-    const config = JSON.parse(mockedWriteFileSync.mock.calls[0][1] as string);
+    const config = JSON.parse(writtenOpenClawConfig(mockedWriteFileSync));
     const ids = config.agents.list.map((a: { id: string }) => a.id);
     expect(ids).toContain("live-1");
     // A tombstoned agent must not be a live, addressable agent in the runtime
@@ -817,7 +845,7 @@ describe("regenerateOpenClawConfig", () => {
     );
     await regenerateOpenClawConfig();
 
-    const config = JSON.parse(mockedWriteFileSync.mock.calls[0][1] as string);
+    const config = JSON.parse(writtenOpenClawConfig(mockedWriteFileSync));
     expect(config.plugins.allow).toContain("document-extract");
   });
 
@@ -835,7 +863,7 @@ describe("regenerateOpenClawConfig", () => {
 
     await regenerateOpenClawConfig();
 
-    const config = JSON.parse(mockedWriteFileSync.mock.calls[0][1] as string);
+    const config = JSON.parse(writtenOpenClawConfig(mockedWriteFileSync));
     const agentEntry = config.agents.list.find((a: { id: string }) => a.id === "ws-agent-1");
     expect(agentEntry.tools.fs).toEqual({ workspaceOnly: true });
   });
@@ -881,7 +909,7 @@ describe("regenerateOpenClawConfig", () => {
 
     await regenerateOpenClawConfig();
 
-    const config = JSON.parse(mockedWriteFileSync.mock.calls[0][1] as string);
+    const config = JSON.parse(writtenOpenClawConfig(mockedWriteFileSync));
     const agentEntry = config.agents.list.find(
       (a: { id: string }) => a.id === "security-contract-agent"
     );
@@ -914,7 +942,7 @@ describe("regenerateOpenClawConfig", () => {
 
     await regenerateOpenClawConfig();
 
-    const config = JSON.parse(mockedWriteFileSync.mock.calls[0][1] as string);
+    const config = JSON.parse(writtenOpenClawConfig(mockedWriteFileSync));
     // DB-sourced token must override whatever is in the existing config file
     expect(config.gateway.auth.token).toBe("new-db-token-xyz");
   });
@@ -938,7 +966,7 @@ describe("regenerateOpenClawConfig", () => {
 
     await regenerateOpenClawConfig();
 
-    const written = mockedWriteFileSync.mock.calls[0][1] as string;
+    const written = writtenOpenClawConfig(mockedWriteFileSync);
     const config = JSON.parse(written);
 
     // gateway.auth.token comes from getOrCreateGatewayToken() (DB)
@@ -963,7 +991,7 @@ describe("regenerateOpenClawConfig", () => {
 
     await regenerateOpenClawConfig();
 
-    const written = mockedWriteFileSync.mock.calls[0][1] as string;
+    const written = writtenOpenClawConfig(mockedWriteFileSync);
     const config = JSON.parse(written);
 
     // Provider API keys now use SecretRef in models.providers.* — not env-templates.
@@ -1001,7 +1029,7 @@ describe("regenerateOpenClawConfig", () => {
 
     await regenerateOpenClawConfig();
 
-    const written = mockedWriteFileSync.mock.calls[0][1] as string;
+    const written = writtenOpenClawConfig(mockedWriteFileSync);
     const config = JSON.parse(written);
     const providers = config?.models?.providers ?? {};
 
@@ -1024,7 +1052,7 @@ describe("regenerateOpenClawConfig", () => {
     });
 
     await regenerateOpenClawConfig();
-    const written = mockedWriteFileSync.mock.calls[0][1] as string;
+    const written = writtenOpenClawConfig(mockedWriteFileSync);
     const config = JSON.parse(written);
     expect(config?.models?.providers?.anthropic?.baseUrl).toBe("https://api.anthropic.com");
   });
@@ -1039,7 +1067,7 @@ describe("regenerateOpenClawConfig", () => {
 
     try {
       await regenerateOpenClawConfig();
-      const written = mockedWriteFileSync.mock.calls[0][1] as string;
+      const written = writtenOpenClawConfig(mockedWriteFileSync);
       const config = JSON.parse(written);
       expect(config?.models?.providers?.anthropic?.baseUrl).toBe(
         "https://custom-proxy.example.com:443"
@@ -1062,7 +1090,7 @@ describe("regenerateOpenClawConfig", () => {
     });
 
     await regenerateOpenClawConfig();
-    const written = mockedWriteFileSync.mock.calls[0][1] as string;
+    const written = writtenOpenClawConfig(mockedWriteFileSync);
     const config = JSON.parse(written);
     expect(config?.models?.providers?.anthropic?.baseUrl).toBe("https://api.anthropic.com");
   });
@@ -1076,7 +1104,7 @@ describe("regenerateOpenClawConfig", () => {
     });
 
     await regenerateOpenClawConfig();
-    const written = mockedWriteFileSync.mock.calls[0][1] as string;
+    const written = writtenOpenClawConfig(mockedWriteFileSync);
     const config = JSON.parse(written);
     expect(config?.models?.providers?.openai?.baseUrl).toBe("https://api.openai.com/v1");
   });
@@ -1091,7 +1119,7 @@ describe("regenerateOpenClawConfig", () => {
 
     try {
       await regenerateOpenClawConfig();
-      const written = mockedWriteFileSync.mock.calls[0][1] as string;
+      const written = writtenOpenClawConfig(mockedWriteFileSync);
       const config = JSON.parse(written);
       expect(config?.models?.providers?.openai?.baseUrl).toBe(
         "https://openai-proxy.example.com/v1"
@@ -1110,7 +1138,7 @@ describe("regenerateOpenClawConfig", () => {
     });
 
     await regenerateOpenClawConfig();
-    const written = mockedWriteFileSync.mock.calls[0][1] as string;
+    const written = writtenOpenClawConfig(mockedWriteFileSync);
     const config = JSON.parse(written);
     expect(config?.models?.providers?.google?.baseUrl).toBe(
       "https://generativelanguage.googleapis.com/v1beta"
@@ -1144,7 +1172,7 @@ describe("regenerateOpenClawConfig", () => {
     });
 
     await regenerateOpenClawConfig();
-    const written = mockedWriteFileSync.mock.calls[0][1] as string;
+    const written = writtenOpenClawConfig(mockedWriteFileSync);
     const config = JSON.parse(written);
     expect(config?.models?.providers?.anthropic?.api).toBe("anthropic-messages");
     // Chat Completions, not the Responses API — maximally compatible with
@@ -1176,7 +1204,7 @@ describe("regenerateOpenClawConfig", () => {
       });
 
       await regenerateOpenClawConfig();
-      const written = mockedWriteFileSync.mock.calls[0][1] as string;
+      const written = writtenOpenClawConfig(mockedWriteFileSync);
       const config = JSON.parse(written);
       // OpenAI's baseUrl emitted into OC config includes the /v1 suffix
       // (pi-ai appends /chat/completions to it).
@@ -1240,7 +1268,7 @@ describe("regenerateOpenClawConfig", () => {
         });
 
         await regenerateOpenClawConfig();
-        const written = mockedWriteFileSync.mock.calls[0][1] as string;
+        const written = writtenOpenClawConfig(mockedWriteFileSync);
         const config = JSON.parse(written);
         expect(config?.models?.providers?.[provider]?.baseUrl).toBe(expectedBaseUrl);
       }
@@ -1255,7 +1283,7 @@ describe("regenerateOpenClawConfig", () => {
       });
 
       await regenerateOpenClawConfig();
-      const written = mockedWriteFileSync.mock.calls[0][1] as string;
+      const written = writtenOpenClawConfig(mockedWriteFileSync);
       const config = JSON.parse(written);
       // SDK env-var value comes through verbatim (no double-suffix).
       expect(config?.models?.providers?.openai?.baseUrl).toBe("https://sdk-proxy.example.com/v1");
@@ -1269,7 +1297,7 @@ describe("regenerateOpenClawConfig", () => {
       });
 
       await regenerateOpenClawConfig();
-      const written = mockedWriteFileSync.mock.calls[0][1] as string;
+      const written = writtenOpenClawConfig(mockedWriteFileSync);
       const config = JSON.parse(written);
       // Anthropic default is "https://api.anthropic.com" (no /v1); the
       // override stays bare too.
@@ -1284,7 +1312,7 @@ describe("regenerateOpenClawConfig", () => {
       });
 
       await regenerateOpenClawConfig();
-      const written = mockedWriteFileSync.mock.calls[0][1] as string;
+      const written = writtenOpenClawConfig(mockedWriteFileSync);
       const config = JSON.parse(written);
       expect(config?.models?.providers?.google?.baseUrl).toBe("http://llm-mock:9100/google/v1beta");
     });
@@ -1297,7 +1325,7 @@ describe("regenerateOpenClawConfig", () => {
       });
 
       await regenerateOpenClawConfig();
-      const written = mockedWriteFileSync.mock.calls[0][1] as string;
+      const written = writtenOpenClawConfig(mockedWriteFileSync);
       const config = JSON.parse(written);
       expect(config?.models?.providers?.["ollama-cloud"]?.baseUrl).toBe(
         "http://llm-mock:9100/ollama-cloud/v1"
@@ -1314,7 +1342,7 @@ describe("regenerateOpenClawConfig", () => {
 
     await regenerateOpenClawConfig();
 
-    const written = mockedWriteFileSync.mock.calls[0][1] as string;
+    const written = writtenOpenClawConfig(mockedWriteFileSync);
     const config = JSON.parse(written);
 
     expect(config.agents.defaults.model.primary).toBe("openai/gpt-5.4-mini");
@@ -1333,7 +1361,7 @@ describe("regenerateOpenClawConfig", () => {
     // OpenClaw), so this is the single lever available.
     await regenerateOpenClawConfig();
 
-    const written = mockedWriteFileSync.mock.calls[0][1] as string;
+    const written = writtenOpenClawConfig(mockedWriteFileSync);
     const config = JSON.parse(written);
 
     expect(config.agents.defaults.compaction.memoryFlush.enabled).toBe(false);
@@ -1348,7 +1376,7 @@ describe("regenerateOpenClawConfig", () => {
     const resolveFlushPlan = await loadOpenClawFlushResolver();
 
     await regenerateOpenClawConfig();
-    const config = JSON.parse(mockedWriteFileSync.mock.calls[0][1] as string);
+    const config = JSON.parse(writtenOpenClawConfig(mockedWriteFileSync));
 
     // Pinchy's emitted config disables the flush.
     expect(resolveFlushPlan({ cfg: config })).toBeNull();
@@ -1372,7 +1400,7 @@ describe("regenerateOpenClawConfig", () => {
     // works offline, with no key, on every install.
     await regenerateOpenClawConfig();
 
-    const config = JSON.parse(mockedWriteFileSync.mock.calls[0][1] as string);
+    const config = JSON.parse(writtenOpenClawConfig(mockedWriteFileSync));
     expect(config.agents.defaults.memorySearch.provider).toBe("local");
     expect(config.agents.defaults.memorySearch.local.modelPath).toMatch(/\.gguf$/);
   });
@@ -1389,7 +1417,7 @@ describe("regenerateOpenClawConfig", () => {
     );
     await regenerateOpenClawConfig();
 
-    const config = JSON.parse(mockedWriteFileSync.mock.calls[0][1] as string);
+    const config = JSON.parse(writtenOpenClawConfig(mockedWriteFileSync));
     expect(config.plugins.allow).toContain("llama-cpp");
   });
 
@@ -1400,7 +1428,7 @@ describe("regenerateOpenClawConfig", () => {
 
     await regenerateOpenClawConfig();
 
-    const written = mockedWriteFileSync.mock.calls[0][1] as string;
+    const written = writtenOpenClawConfig(mockedWriteFileSync);
     const config = JSON.parse(written);
 
     expect(config.agents.list).toEqual([]);
@@ -1411,7 +1439,7 @@ describe("regenerateOpenClawConfig", () => {
 
     await regenerateOpenClawConfig();
 
-    const written = mockedWriteFileSync.mock.calls[0][1] as string;
+    const written = writtenOpenClawConfig(mockedWriteFileSync);
     const config = JSON.parse(written);
 
     // No env block when no provider keys are configured
@@ -1447,7 +1475,7 @@ describe("regenerateOpenClawConfig", () => {
 
     await regenerateOpenClawConfig();
 
-    const written = mockedWriteFileSync.mock.calls[0][1] as string;
+    const written = writtenOpenClawConfig(mockedWriteFileSync);
     const config = JSON.parse(written);
     const kbAgent = config.agents.list.find((a: { id: string }) => a.id === "kb-agent-id");
 
@@ -1481,7 +1509,7 @@ describe("regenerateOpenClawConfig", () => {
 
     await regenerateOpenClawConfig();
 
-    const written = mockedWriteFileSync.mock.calls[0][1] as string;
+    const written = writtenOpenClawConfig(mockedWriteFileSync);
     const config = JSON.parse(written);
     const customAgent = config.agents.list.find((a: { id: string }) => a.id === "custom-agent-id");
 
@@ -1514,7 +1542,7 @@ describe("regenerateOpenClawConfig", () => {
 
     await regenerateOpenClawConfig();
 
-    const written = mockedWriteFileSync.mock.calls[0][1] as string;
+    const written = writtenOpenClawConfig(mockedWriteFileSync);
     const config = JSON.parse(written);
 
     expect(config.plugins.entries["pinchy-files"]).toBeDefined();
@@ -1551,7 +1579,7 @@ describe("regenerateOpenClawConfig", () => {
 
     await regenerateOpenClawConfig();
 
-    const written = mockedWriteFileSync.mock.calls[0][1] as string;
+    const written = writtenOpenClawConfig(mockedWriteFileSync);
     const config = JSON.parse(written);
 
     // apiBaseUrl and gatewayToken live at the plugin-level config (alongside `agents`),
@@ -1629,7 +1657,7 @@ describe("regenerateOpenClawConfig", () => {
 
     await regenerateOpenClawConfig();
 
-    const written = mockedWriteFileSync.mock.calls[0][1] as string;
+    const written = writtenOpenClawConfig(mockedWriteFileSync);
     const config = JSON.parse(written);
     const agentConfig = config.plugins.entries["pinchy-files"]?.config?.agents?.["agent-1"];
 
@@ -1654,7 +1682,7 @@ describe("regenerateOpenClawConfig", () => {
 
     await regenerateOpenClawConfig();
 
-    const written = mockedWriteFileSync.mock.calls[0][1] as string;
+    const written = writtenOpenClawConfig(mockedWriteFileSync);
     const config = JSON.parse(written);
     const agentConfig = config.plugins.entries["pinchy-files"]?.config?.agents?.["agent-2"];
 
@@ -1678,7 +1706,7 @@ describe("regenerateOpenClawConfig", () => {
 
     await regenerateOpenClawConfig();
 
-    const written = mockedWriteFileSync.mock.calls[0][1] as string;
+    const written = writtenOpenClawConfig(mockedWriteFileSync);
     const config = JSON.parse(written);
     const agentConfig = config.plugins.entries["pinchy-files"]?.config?.agents?.["writer"];
 
@@ -1711,7 +1739,7 @@ describe("regenerateOpenClawConfig", () => {
 
     await regenerateOpenClawConfig();
 
-    const written = mockedWriteFileSync.mock.calls[0][1] as string;
+    const written = writtenOpenClawConfig(mockedWriteFileSync);
     const config = JSON.parse(written);
     const agentConfig = config.plugins.entries["pinchy-files"]?.config?.agents?.["writer"];
 
@@ -1736,7 +1764,7 @@ describe("regenerateOpenClawConfig", () => {
 
     await regenerateOpenClawConfig();
 
-    const written = mockedWriteFileSync.mock.calls[0][1] as string;
+    const written = writtenOpenClawConfig(mockedWriteFileSync);
     const config = JSON.parse(written);
     const agentConfig = config.plugins.entries["pinchy-files"]?.config?.agents?.["reader"];
 
@@ -1768,7 +1796,7 @@ describe("regenerateOpenClawConfig", () => {
 
     await regenerateOpenClawConfig();
 
-    const written = mockedWriteFileSync.mock.calls[0][1] as string;
+    const written = writtenOpenClawConfig(mockedWriteFileSync);
     const config = JSON.parse(written);
     const agentConfig = config.plugins.entries["pinchy-files"]?.config?.agents?.["writer"];
 
@@ -1821,7 +1849,7 @@ describe("regenerateOpenClawConfig", () => {
 
     await regenerateOpenClawConfig();
 
-    const written = mockedWriteFileSync.mock.calls[0][1] as string;
+    const written = writtenOpenClawConfig(mockedWriteFileSync);
     const config = JSON.parse(written);
     const agentConfig = config.plugins.entries["pinchy-files"]?.config?.agents?.["rooted"];
 
@@ -1856,7 +1884,7 @@ describe("regenerateOpenClawConfig", () => {
 
     await regenerateOpenClawConfig();
 
-    const written = mockedWriteFileSync.mock.calls[0][1] as string;
+    const written = writtenOpenClawConfig(mockedWriteFileSync);
     const config = JSON.parse(written);
 
     // Provider keys now use SecretRef in models.providers.* — no env block
@@ -1892,7 +1920,7 @@ describe("regenerateOpenClawConfig", () => {
 
     await regenerateOpenClawConfig();
 
-    const written = mockedWriteFileSync.mock.calls[0][1] as string;
+    const written = writtenOpenClawConfig(mockedWriteFileSync);
     const config = JSON.parse(written);
 
     expect(config.plugins.entries["pinchy-context"]).toBeDefined();
@@ -1914,7 +1942,7 @@ describe("regenerateOpenClawConfig", () => {
 
     await regenerateOpenClawConfig();
 
-    const written = mockedWriteFileSync.mock.calls[0][1] as string;
+    const written = writtenOpenClawConfig(mockedWriteFileSync);
     const config = JSON.parse(written);
 
     expect(config.plugins.entries["pinchy-audit"]).toBeDefined();
@@ -1952,7 +1980,7 @@ describe("regenerateOpenClawConfig", () => {
 
       await regenerateOpenClawConfig();
 
-      const written = mockedWriteFileSync.mock.calls[0][1] as string;
+      const written = writtenOpenClawConfig(mockedWriteFileSync);
       const config = JSON.parse(written);
 
       expect(config.plugins.entries["pinchy-audit"].config.apiBaseUrl).toBe("http://pinchy:7778");
@@ -1999,7 +2027,7 @@ describe("regenerateOpenClawConfig", () => {
 
     await regenerateOpenClawConfig();
 
-    const written = mockedWriteFileSync.mock.calls[0][1] as string;
+    const written = writtenOpenClawConfig(mockedWriteFileSync);
     const config = JSON.parse(written);
 
     expect(config.plugins.entries["pinchy-files"]).toBeDefined();
@@ -2029,7 +2057,7 @@ describe("regenerateOpenClawConfig", () => {
 
     await regenerateOpenClawConfig();
 
-    const written = mockedWriteFileSync.mock.calls[0][1] as string;
+    const written = writtenOpenClawConfig(mockedWriteFileSync);
     const config = JSON.parse(written);
 
     expect(config.plugins.entries["pinchy-context"].config.agents["admin-smithers"]).toEqual({
@@ -2046,7 +2074,7 @@ describe("regenerateOpenClawConfig", () => {
 
     await regenerateOpenClawConfig();
 
-    const written = mockedWriteFileSync.mock.calls[0][1] as string;
+    const written = writtenOpenClawConfig(mockedWriteFileSync);
     const config = JSON.parse(written);
 
     expect(config.models).toBeDefined();
@@ -2075,7 +2103,7 @@ describe("regenerateOpenClawConfig", () => {
 
     await regenerateOpenClawConfig();
 
-    const written = mockedWriteFileSync.mock.calls[0][1] as string;
+    const written = writtenOpenClawConfig(mockedWriteFileSync);
     const config = JSON.parse(written);
     const modelIds = (config.models.providers["ollama-cloud"].models as Array<{ id: string }>).map(
       (m) => m.id
@@ -2131,7 +2159,7 @@ describe("regenerateOpenClawConfig", () => {
 
     await regenerateOpenClawConfig();
 
-    const written = mockedWriteFileSync.mock.calls[0][1] as string;
+    const written = writtenOpenClawConfig(mockedWriteFileSync);
     const config = JSON.parse(written);
     const models = config.models.providers["ollama-cloud"].models as Array<{
       id: string;
@@ -2199,7 +2227,7 @@ describe("regenerateOpenClawConfig", () => {
 
     await regenerateOpenClawConfig();
 
-    const written = mockedWriteFileSync.mock.calls[0][1] as string;
+    const written = writtenOpenClawConfig(mockedWriteFileSync);
     const config = JSON.parse(written);
     const models = config.models.providers["ollama-cloud"].models as Array<{
       id: string;
@@ -2319,7 +2347,7 @@ describe("regenerateOpenClawConfig", () => {
 
     await regenerateOpenClawConfig();
 
-    const written = mockedWriteFileSync.mock.calls[0][1] as string;
+    const written = writtenOpenClawConfig(mockedWriteFileSync);
     const config = JSON.parse(written);
     const models = config.models.providers["ollama-cloud"].models as Array<{
       id: string;
@@ -2336,7 +2364,7 @@ describe("regenerateOpenClawConfig", () => {
 
     await regenerateOpenClawConfig();
 
-    const written = mockedWriteFileSync.mock.calls[0][1] as string;
+    const written = writtenOpenClawConfig(mockedWriteFileSync);
     const config = JSON.parse(written);
 
     expect(config.models).toBeUndefined();
@@ -2366,7 +2394,7 @@ describe("regenerateOpenClawConfig", () => {
 
     await regenerateOpenClawConfig();
 
-    const written = mockedWriteFileSync.mock.calls[0][1] as string;
+    const written = writtenOpenClawConfig(mockedWriteFileSync);
     const config = JSON.parse(written);
 
     expect(config.models.providers["ollama"]).toBeDefined();
@@ -2429,7 +2457,7 @@ describe("regenerateOpenClawConfig", () => {
 
     await regenerateOpenClawConfig();
 
-    const written = mockedWriteFileSync.mock.calls[0][1] as string;
+    const written = writtenOpenClawConfig(mockedWriteFileSync);
     const config = JSON.parse(written);
 
     const models = config.models.providers["ollama"].models;
@@ -2463,7 +2491,7 @@ describe("regenerateOpenClawConfig", () => {
 
     await regenerateOpenClawConfig();
 
-    const written = mockedWriteFileSync.mock.calls[0][1] as string;
+    const written = writtenOpenClawConfig(mockedWriteFileSync);
     const config = JSON.parse(written);
 
     const models = config.models.providers["ollama"].models;
@@ -2491,7 +2519,7 @@ describe("regenerateOpenClawConfig", () => {
 
     await regenerateOpenClawConfig();
 
-    const written = mockedWriteFileSync.mock.calls[0][1] as string;
+    const written = writtenOpenClawConfig(mockedWriteFileSync);
     const config = JSON.parse(written);
 
     expect(config.models.providers["ollama-cloud"]).toBeDefined();
@@ -2515,7 +2543,7 @@ describe("regenerateOpenClawConfig", () => {
 
     await regenerateOpenClawConfig();
 
-    const written = mockedWriteFileSync.mock.calls[0][1] as string;
+    const written = writtenOpenClawConfig(mockedWriteFileSync);
     const config = JSON.parse(written);
 
     expect(config.models.providers["ollama"].baseUrl).toBe("http://ollama.local:11434/v1");
@@ -2538,7 +2566,7 @@ describe("regenerateOpenClawConfig", () => {
 
     await regenerateOpenClawConfig();
 
-    const written = mockedWriteFileSync.mock.calls[0][1] as string;
+    const written = writtenOpenClawConfig(mockedWriteFileSync);
     const config = JSON.parse(written);
 
     expect(config.models.providers["ollama"].baseUrl).toBe("http://ollama.local:11434/v1");
@@ -2578,7 +2606,7 @@ describe("regenerateOpenClawConfig", () => {
 
       await regenerateOpenClawConfig();
 
-      const written = mockedWriteFileSync.mock.calls[0][1] as string;
+      const written = writtenOpenClawConfig(mockedWriteFileSync);
       const config = JSON.parse(written);
       expect(config.models.providers["ollama"].baseUrl).toBe("http://ollama.local:11434/v1");
     }
@@ -2601,7 +2629,7 @@ describe("regenerateOpenClawConfig", () => {
 
     await regenerateOpenClawConfig();
 
-    const written = mockedWriteFileSync.mock.calls[0][1] as string;
+    const written = writtenOpenClawConfig(mockedWriteFileSync);
     const config = JSON.parse(written);
 
     expect(config.models.providers["ollama"].baseUrl).toBe("http://192.168.1.50:11434/v1");
@@ -2637,7 +2665,7 @@ describe("regenerateOpenClawConfig", () => {
 
       await regenerateOpenClawConfig();
 
-      const written = mockedWriteFileSync.mock.calls[0][1] as string;
+      const written = writtenOpenClawConfig(mockedWriteFileSync);
       const config = JSON.parse(written);
       expect(config.models.providers["ollama"].baseUrl).toBe(expected);
     }
@@ -2664,7 +2692,7 @@ describe("regenerateOpenClawConfig", () => {
 
     await regenerateOpenClawConfig();
 
-    const written = mockedWriteFileSync.mock.calls[0][1] as string;
+    const written = writtenOpenClawConfig(mockedWriteFileSync);
     const config = JSON.parse(written);
 
     expect(config.models.providers["ollama"].baseUrl).toBe("http://ollama.local:11434/v1");
@@ -2701,7 +2729,7 @@ describe("regenerateOpenClawConfig", () => {
 
     await regenerateOpenClawConfig();
 
-    const written = mockedWriteFileSync.mock.calls[0][1] as string;
+    const written = writtenOpenClawConfig(mockedWriteFileSync);
     const config = JSON.parse(written);
     const baseUrl = config.models.providers["ollama"].baseUrl;
 
@@ -2739,7 +2767,7 @@ describe("regenerateOpenClawConfig", () => {
 
     await regenerateOpenClawConfig();
 
-    const written = mockedWriteFileSync.mock.calls[0][1] as string;
+    const written = writtenOpenClawConfig(mockedWriteFileSync);
     const config = JSON.parse(written);
     const baseUrl = config.models.providers["ollama"].baseUrl;
 
@@ -2767,7 +2795,7 @@ describe("regenerateOpenClawConfig", () => {
 
     await regenerateOpenClawConfig();
 
-    const written = mockedWriteFileSync.mock.calls[0][1] as string;
+    const written = writtenOpenClawConfig(mockedWriteFileSync);
     const config = JSON.parse(written);
 
     // ollama-local is URL-based — no env block and no models.providers.anthropic
@@ -2801,7 +2829,7 @@ describe("regenerateOpenClawConfig", () => {
 
     await regenerateOpenClawConfig();
 
-    const written = mockedWriteFileSync.mock.calls[0][1] as string;
+    const written = writtenOpenClawConfig(mockedWriteFileSync);
     const config = JSON.parse(written);
     // Pinchy emits the local Ollama provider under the OC-native key
     // `ollama` (not `ollama-local`) so pi-ai's built-in openai-completions
@@ -2831,7 +2859,7 @@ describe("regenerateOpenClawConfig", () => {
 
     await regenerateOpenClawConfig();
 
-    const written = mockedWriteFileSync.mock.calls[0][1] as string;
+    const written = writtenOpenClawConfig(mockedWriteFileSync);
     const config = JSON.parse(written);
     const providers = config?.models?.providers ?? {};
     for (const name of ["anthropic", "openai", "google", "ollama-cloud"] as const) {
@@ -2911,7 +2939,7 @@ describe("regenerateOpenClawConfig", () => {
 
     await regenerateOpenClawConfig();
 
-    const written = mockedWriteFileSync.mock.calls[0][1] as string;
+    const written = writtenOpenClawConfig(mockedWriteFileSync);
     const config = JSON.parse(written);
 
     expect(config.models.providers["ollama"]).toBeDefined();
@@ -2934,7 +2962,7 @@ describe("regenerateOpenClawConfig", () => {
 
     await regenerateOpenClawConfig();
 
-    const written = mockedWriteFileSync.mock.calls[0][1] as string;
+    const written = writtenOpenClawConfig(mockedWriteFileSync);
     const config = JSON.parse(written);
 
     // pinchy-context and pinchy-docs are still omitted when no agents use them
@@ -2979,7 +3007,7 @@ describe("regenerateOpenClawConfig", () => {
 
     await regenerateOpenClawConfig();
 
-    const written = mockedWriteFileSync.mock.calls[0][1] as string;
+    const written = writtenOpenClawConfig(mockedWriteFileSync);
     const config = JSON.parse(written);
 
     // pinchy-files now always has entries (workspace inject) — it should stay in allow
@@ -3018,7 +3046,7 @@ describe("regenerateOpenClawConfig", () => {
 
     await regenerateOpenClawConfig();
 
-    const written = mockedWriteFileSync.mock.calls[0][1] as string;
+    const written = writtenOpenClawConfig(mockedWriteFileSync);
     const config = JSON.parse(written);
 
     expect(config.plugins.entries["pinchy-docs"]).toBeDefined();
@@ -3056,7 +3084,7 @@ describe("regenerateOpenClawConfig", () => {
 
     await regenerateOpenClawConfig();
 
-    const written = mockedWriteFileSync.mock.calls[0][1] as string;
+    const written = writtenOpenClawConfig(mockedWriteFileSync);
     const config = JSON.parse(written);
 
     expect(config.plugins.entries["pinchy-docs"].config.publicBaseUrl).toBe(
@@ -3085,7 +3113,7 @@ describe("regenerateOpenClawConfig", () => {
 
     await regenerateOpenClawConfig();
 
-    const written = mockedWriteFileSync.mock.calls[0][1] as string;
+    const written = writtenOpenClawConfig(mockedWriteFileSync);
     const config = JSON.parse(written);
 
     expect(config.plugins.entries["pinchy-docs"].config.publicBaseUrl).toBe(
@@ -3114,7 +3142,7 @@ describe("regenerateOpenClawConfig", () => {
 
     await regenerateOpenClawConfig();
 
-    const written = mockedWriteFileSync.mock.calls[0][1] as string;
+    const written = writtenOpenClawConfig(mockedWriteFileSync);
     const config = JSON.parse(written);
 
     expect("publicBaseUrl" in config.plugins.entries["pinchy-docs"].config).toBe(false);
@@ -4168,7 +4196,7 @@ describe("sanitizeOpenClawConfig", () => {
     const changed = sanitizeOpenClawConfig();
 
     expect(changed).toBe(true);
-    const written = JSON.parse(mockedWriteFileSync.mock.calls[0][1] as string);
+    const written = JSON.parse(writtenOpenClawConfig(mockedWriteFileSync));
     expect(written.plugins.allow).toContain("pinchy-audit");
     expect(written.plugins.allow).toContain("telegram");
     expect(written.plugins.allow).not.toContain("pinchy-files");
@@ -4570,7 +4598,7 @@ describe("pinchy-web config", () => {
 
     await regenerateOpenClawConfig();
 
-    const written = mockedWriteFileSync.mock.calls[0][1] as string;
+    const written = writtenOpenClawConfig(mockedWriteFileSync);
     const config = JSON.parse(written);
 
     expect(config.plugins.entries["pinchy-web"]).toBeDefined();
@@ -4621,7 +4649,7 @@ describe("pinchy-web config", () => {
 
     await regenerateOpenClawConfig();
 
-    const written = mockedWriteFileSync.mock.calls[0][1] as string;
+    const written = writtenOpenClawConfig(mockedWriteFileSync);
     const config = JSON.parse(written);
 
     expect(config.plugins.entries["pinchy-web"]).toBeUndefined();
@@ -4676,7 +4704,7 @@ describe("pinchy-web config", () => {
 
     await regenerateOpenClawConfig();
 
-    const written = mockedWriteFileSync.mock.calls[0][1] as string;
+    const written = writtenOpenClawConfig(mockedWriteFileSync);
     const config = JSON.parse(written);
 
     expect(config.plugins.entries["pinchy-web"]).toBeUndefined();
@@ -4731,7 +4759,7 @@ describe("pinchy-web config", () => {
 
     await regenerateOpenClawConfig();
 
-    const written = mockedWriteFileSync.mock.calls[0][1] as string;
+    const written = writtenOpenClawConfig(mockedWriteFileSync);
     const config = JSON.parse(written);
 
     expect(config.plugins.entries["pinchy-web"]).toBeDefined();
@@ -4797,7 +4825,7 @@ describe("pinchy-web config", () => {
 
     await regenerateOpenClawConfig();
 
-    const written = mockedWriteFileSync.mock.calls[0][1] as string;
+    const written = writtenOpenClawConfig(mockedWriteFileSync);
     const config = JSON.parse(written);
 
     const agentConfig = config.plugins.entries["pinchy-web"].config.agents["filtered-agent"];
@@ -5184,7 +5212,7 @@ describe("restart-state integration", () => {
 
     // First call writes the config
     await regenerateOpenClawConfig();
-    const firstWrite = mockedWriteFileSync.mock.calls[0][1] as string;
+    const firstWrite = writtenOpenClawConfig(mockedWriteFileSync);
 
     vi.clearAllMocks();
     // Mock readFileSync to return what was just written
@@ -5224,7 +5252,7 @@ describe("restart-state integration", () => {
     // First write produces canonical content
     mockedReadFileSync.mockReturnValue(JSON.stringify({ gateway: { mode: "local", bind: "lan" } }));
     updateTelegramChannelConfig("agent-99", { botToken: "tg-secret-token" });
-    const firstWrite = mockedWriteFileSync.mock.calls[0][1] as string;
+    const firstWrite = writtenOpenClawConfig(mockedWriteFileSync);
 
     vi.clearAllMocks();
     // Second call with identical resulting content — dedup should kick in
@@ -5375,7 +5403,7 @@ describe("restart-state integration", () => {
       updateTelegramChannelConfig("agent-99", { botToken: "tg-secret-token" });
 
       expect(mockedWriteFileSync).toHaveBeenCalled();
-      const written = mockedWriteFileSync.mock.calls[0][1] as string;
+      const written = writtenOpenClawConfig(mockedWriteFileSync);
       const config = JSON.parse(written) as {
         channels?: { telegram?: { accounts?: Record<string, { botToken: string }> } };
       };
@@ -5403,7 +5431,7 @@ describe("restart-state integration", () => {
       updateTelegramChannelConfig("agent-99", null);
 
       expect(mockedWriteFileSync).toHaveBeenCalled();
-      const written = mockedWriteFileSync.mock.calls[0][1] as string;
+      const written = writtenOpenClawConfig(mockedWriteFileSync);
       const config = JSON.parse(written) as { channels?: unknown };
       // Last account removed — entire telegram channel block goes away.
       expect(config.channels).toBeUndefined();
@@ -5545,7 +5573,7 @@ describe("restart-state integration", () => {
 
     await regenerateOpenClawConfig();
 
-    const written = mockedWriteFileSync.mock.calls[0][1] as string;
+    const written = writtenOpenClawConfig(mockedWriteFileSync);
     const config = JSON.parse(written);
 
     expect(config.channels.telegram).toEqual({
@@ -5588,7 +5616,7 @@ describe("restart-state integration", () => {
 
     await regenerateOpenClawConfig();
 
-    const written = mockedWriteFileSync.mock.calls[0][1] as string;
+    const written = writtenOpenClawConfig(mockedWriteFileSync);
     const config = JSON.parse(written);
     expect(config.channels.telegram.network).toBeUndefined();
   });
@@ -5614,7 +5642,7 @@ describe("restart-state integration", () => {
     try {
       await regenerateOpenClawConfig();
 
-      const written = mockedWriteFileSync.mock.calls[0][1] as string;
+      const written = writtenOpenClawConfig(mockedWriteFileSync);
       const config = JSON.parse(written);
       expect(config.channels.telegram.network).toEqual({ dangerouslyAllowPrivateNetwork: true });
     } finally {
@@ -5646,7 +5674,7 @@ describe("restart-state integration", () => {
     process.env.PINCHY_E2E_ALLOW_PRIVATE_TELEGRAM_MEDIA = "1";
     try {
       await regenerateOpenClawConfig();
-      const firstWritten = mockedWriteFileSync.mock.calls[0][1] as string;
+      const firstWritten = writtenOpenClawConfig(mockedWriteFileSync);
       const firstConfig = JSON.parse(firstWritten);
       expect(firstConfig.channels.telegram.network).toEqual({
         dangerouslyAllowPrivateNetwork: true,
@@ -5692,7 +5720,7 @@ describe("restart-state integration", () => {
 
     await regenerateOpenClawConfig();
 
-    const written = mockedWriteFileSync.mock.calls[0][1] as string;
+    const written = writtenOpenClawConfig(mockedWriteFileSync);
     const config = JSON.parse(written);
 
     expect(config.channels.telegram.accounts).toEqual({
@@ -5738,7 +5766,7 @@ describe("restart-state integration", () => {
 
     await regenerateOpenClawConfig();
 
-    const written = mockedWriteFileSync.mock.calls[0][1] as string;
+    const written = writtenOpenClawConfig(mockedWriteFileSync);
     const config = JSON.parse(written);
 
     expect(config.channels?.telegram?.accounts?.["agent-1"]).toBeUndefined();
@@ -5771,7 +5799,7 @@ describe("restart-state integration", () => {
 
     await regenerateOpenClawConfig();
 
-    const written = mockedWriteFileSync.mock.calls[0][1] as string;
+    const written = writtenOpenClawConfig(mockedWriteFileSync);
     const config = JSON.parse(written);
 
     expect(config.channels.telegram.accounts).toEqual({
@@ -5818,7 +5846,7 @@ describe("restart-state integration", () => {
     );
     expect(telegramPrefixCalls).toHaveLength(1);
 
-    const written = mockedWriteFileSync.mock.calls[0][1] as string;
+    const written = writtenOpenClawConfig(mockedWriteFileSync);
     const config = JSON.parse(written);
     expect(config.channels.telegram.accounts).toEqual({
       "agent-1": { botToken: "token-1" },
@@ -5883,7 +5911,7 @@ describe("restart-state integration", () => {
 
     await regenerateOpenClawConfig();
 
-    const written = mockedWriteFileSync.mock.calls[0][1] as string;
+    const written = writtenOpenClawConfig(mockedWriteFileSync);
     const config = JSON.parse(written);
 
     // One account for the bot
@@ -5936,7 +5964,7 @@ describe("restart-state integration", () => {
 
     await regenerateOpenClawConfig();
 
-    const written = mockedWriteFileSync.mock.calls[0][1] as string;
+    const written = writtenOpenClawConfig(mockedWriteFileSync);
     const config = JSON.parse(written);
 
     expect(config.channels).toBeUndefined();
@@ -6000,7 +6028,7 @@ describe("restart-state integration", () => {
 
     await regenerateOpenClawConfig();
 
-    const written = mockedWriteFileSync.mock.calls[0][1] as string;
+    const written = writtenOpenClawConfig(mockedWriteFileSync);
     const config = JSON.parse(written);
 
     // identityLinks must NOT be emitted (#508).
@@ -6092,7 +6120,7 @@ describe("restart-state integration", () => {
 
     await regenerateOpenClawConfig();
 
-    const written = mockedWriteFileSync.mock.calls[0][1] as string;
+    const written = writtenOpenClawConfig(mockedWriteFileSync);
     const config = JSON.parse(written);
 
     // The stale identityLinks must be GONE — this is the upgrade fix.
@@ -7334,7 +7362,7 @@ describe("telegram botToken plain string (OpenClaw 2026.4.26 does not support Se
 
     updateTelegramChannelConfig("agent-99", { botToken: "tg-secret-token" });
 
-    const written = mockedWriteFileSync.mock.calls[0][1] as string;
+    const written = writtenOpenClawConfig(mockedWriteFileSync);
     const config = JSON.parse(written);
     expect(config.channels.telegram.accounts["agent-99"].botToken).toBe("tg-secret-token");
   });
@@ -7355,7 +7383,7 @@ describe("telegram botToken plain string (OpenClaw 2026.4.26 does not support Se
 
     updateTelegramChannelConfig("agent-99", { botToken: "tg-secret-token" });
 
-    const written = mockedWriteFileSync.mock.calls[0][1] as string;
+    const written = writtenOpenClawConfig(mockedWriteFileSync);
     const config = JSON.parse(written);
     expect(config.channels.telegram.enabled).toBe(true);
   });
@@ -7381,7 +7409,7 @@ describe("telegram botToken plain string (OpenClaw 2026.4.26 does not support Se
 
     updateTelegramChannelConfig("agent-99", { botToken: "tg-secret-token" });
 
-    const written = mockedWriteFileSync.mock.calls[0][1] as string;
+    const written = writtenOpenClawConfig(mockedWriteFileSync);
     const config = JSON.parse(written);
     // Stale identityLinks gone.
     expect(config.session.identityLinks).toBeUndefined();
@@ -7612,7 +7640,7 @@ describe("regenerateOpenClawConfig size-drop guard (#311)", () => {
     );
     await regenerateOpenClawConfig();
 
-    const config = JSON.parse(mockedWriteFileSync.mock.calls[0][1] as string);
+    const config = JSON.parse(writtenOpenClawConfig(mockedWriteFileSync));
     expect(config.agents.defaults.pdfModel).toEqual({
       primary: "anthropic/claude-haiku-4-5-20251001",
     });
@@ -7625,7 +7653,7 @@ describe("regenerateOpenClawConfig size-drop guard (#311)", () => {
     );
     await regenerateOpenClawConfig();
 
-    const config = JSON.parse(mockedWriteFileSync.mock.calls[0][1] as string);
+    const config = JSON.parse(writtenOpenClawConfig(mockedWriteFileSync));
     expect(config.agents.defaults.pdfModel).toBeDefined();
     expect(config.agents.defaults.pdfModel.primary).toBe("ollama-cloud/gemini-3-flash-preview");
   });
@@ -7635,7 +7663,7 @@ describe("regenerateOpenClawConfig size-drop guard (#311)", () => {
     mockedGetSetting.mockResolvedValue(null);
     await regenerateOpenClawConfig();
 
-    const config = JSON.parse(mockedWriteFileSync.mock.calls[0][1] as string);
+    const config = JSON.parse(writtenOpenClawConfig(mockedWriteFileSync));
     expect(config.agents?.defaults?.pdfModel).toBeUndefined();
   });
 
@@ -7657,7 +7685,7 @@ describe("regenerateOpenClawConfig size-drop guard (#311)", () => {
     });
     await regenerateOpenClawConfig();
 
-    const config = JSON.parse(mockedWriteFileSync.mock.calls[0][1] as string);
+    const config = JSON.parse(writtenOpenClawConfig(mockedWriteFileSync));
     expect(config.agents.defaults.pdfModel.primary).toBe("openai/gpt-5.4-mini");
   });
 
@@ -7669,7 +7697,7 @@ describe("regenerateOpenClawConfig size-drop guard (#311)", () => {
     });
     await regenerateOpenClawConfig();
 
-    const config = JSON.parse(mockedWriteFileSync.mock.calls[0][1] as string);
+    const config = JSON.parse(writtenOpenClawConfig(mockedWriteFileSync));
     expect(config.agents.defaults.pdfModel.primary).toBe("anthropic/claude-haiku-4-5-20251001");
   });
 
@@ -7683,7 +7711,7 @@ describe("regenerateOpenClawConfig size-drop guard (#311)", () => {
     });
     await regenerateOpenClawConfig();
 
-    const config = JSON.parse(mockedWriteFileSync.mock.calls[0][1] as string);
+    const config = JSON.parse(writtenOpenClawConfig(mockedWriteFileSync));
     expect(config.agents.defaults.pdfModel.primary).toBe("google/gemini-2.5-flash");
   });
 });
@@ -7720,7 +7748,7 @@ describe("regenerateOpenClawConfig imageModel.primary (#416)", () => {
     );
     await regenerateOpenClawConfig();
 
-    const config = JSON.parse(mockedWriteFileSync.mock.calls[0][1] as string);
+    const config = JSON.parse(writtenOpenClawConfig(mockedWriteFileSync));
     expect(config.agents.defaults.imageModel).toEqual({
       primary: "anthropic/claude-haiku-4-5-20251001",
     });
@@ -7730,7 +7758,7 @@ describe("regenerateOpenClawConfig imageModel.primary (#416)", () => {
     mockedGetSetting.mockResolvedValue(null);
     await regenerateOpenClawConfig();
 
-    const config = JSON.parse(mockedWriteFileSync.mock.calls[0][1] as string);
+    const config = JSON.parse(writtenOpenClawConfig(mockedWriteFileSync));
     expect(config.agents?.defaults?.imageModel).toBeUndefined();
   });
 
@@ -7742,7 +7770,7 @@ describe("regenerateOpenClawConfig imageModel.primary (#416)", () => {
     });
     await regenerateOpenClawConfig();
 
-    const config = JSON.parse(mockedWriteFileSync.mock.calls[0][1] as string);
+    const config = JSON.parse(writtenOpenClawConfig(mockedWriteFileSync));
     expect(config.agents.defaults.imageModel.primary).toBe("anthropic/claude-haiku-4-5-20251001");
   });
 
@@ -7754,7 +7782,7 @@ describe("regenerateOpenClawConfig imageModel.primary (#416)", () => {
     });
     await regenerateOpenClawConfig();
 
-    const config = JSON.parse(mockedWriteFileSync.mock.calls[0][1] as string);
+    const config = JSON.parse(writtenOpenClawConfig(mockedWriteFileSync));
     expect(config.agents.defaults.imageModel.primary).toBe("openai/gpt-5.4-mini");
   });
 
@@ -7775,7 +7803,7 @@ describe("regenerateOpenClawConfig imageModel.primary (#416)", () => {
     );
     await regenerateOpenClawConfig();
 
-    const config = JSON.parse(mockedWriteFileSync.mock.calls[0][1] as string);
+    const config = JSON.parse(writtenOpenClawConfig(mockedWriteFileSync));
     expect(config.agents.defaults.imageModel.primary).toBe("ollama-cloud/gemini-3-flash-preview");
   });
 
@@ -7787,7 +7815,7 @@ describe("regenerateOpenClawConfig imageModel.primary (#416)", () => {
     });
     await regenerateOpenClawConfig();
 
-    const config = JSON.parse(mockedWriteFileSync.mock.calls[0][1] as string);
+    const config = JSON.parse(writtenOpenClawConfig(mockedWriteFileSync));
     expect(config.agents.defaults.imageModel.primary).toBe("google/gemini-2.5-flash");
   });
 
@@ -7811,7 +7839,7 @@ describe("regenerateOpenClawConfig imageModel.primary (#416)", () => {
     ]);
     await regenerateOpenClawConfig();
 
-    const config = JSON.parse(mockedWriteFileSync.mock.calls[0][1] as string);
+    const config = JSON.parse(writtenOpenClawConfig(mockedWriteFileSync));
     expect(config.agents.defaults.imageModel.primary).toBe("ollama-cloud/minimax-m3");
   });
 
@@ -7827,7 +7855,7 @@ describe("regenerateOpenClawConfig imageModel.primary (#416)", () => {
     ]);
     await regenerateOpenClawConfig();
 
-    const config = JSON.parse(mockedWriteFileSync.mock.calls[0][1] as string);
+    const config = JSON.parse(writtenOpenClawConfig(mockedWriteFileSync));
     expect(config.agents?.defaults?.imageModel).toBeUndefined();
   });
 
@@ -7840,7 +7868,7 @@ describe("regenerateOpenClawConfig imageModel.primary (#416)", () => {
     mockedFetchProviderModels.mockResolvedValueOnce([]);
     await regenerateOpenClawConfig();
 
-    const config = JSON.parse(mockedWriteFileSync.mock.calls[0][1] as string);
+    const config = JSON.parse(writtenOpenClawConfig(mockedWriteFileSync));
     expect(config.agents?.defaults?.imageModel).toBeUndefined();
   });
 
@@ -7856,7 +7884,7 @@ describe("regenerateOpenClawConfig imageModel.primary (#416)", () => {
     );
     await regenerateOpenClawConfig();
 
-    const config = JSON.parse(mockedWriteFileSync.mock.calls[0][1] as string);
+    const config = JSON.parse(writtenOpenClawConfig(mockedWriteFileSync));
     const expected = {
       primary: "openai/gpt-5.4-mini",
       fallbacks: ["ollama-cloud/gemini-3-flash-preview"],
