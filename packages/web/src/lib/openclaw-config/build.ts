@@ -26,6 +26,7 @@ import {
   getAgentBootstrapSizes,
   writeWorkspaceSkill,
   writeToolsFile,
+  ensureWorkspace,
 } from "@/lib/workspace";
 import { getSkillBody, isKnownSkill } from "@/lib/skills";
 import { resolveBootstrapCaps } from "./bootstrap-caps";
@@ -219,6 +220,37 @@ export async function regenerateOpenClawConfig() {
   // Prefer `liveAgents` everywhere an agent is emitted; `allAgents` is only for
   // cases that legitimately need tombstones (e.g. id-stability bookkeeping).
   const liveAgents = allAgents.filter((a) => !a.deletedAt);
+
+  // Bring every live agent's workspace up to the current layout before any of
+  // it is measured (getAgentBootstrapSizes) or granted (the pinchy-files
+  // write_paths below). ensureWorkspace only runs at agent-create time, so a
+  // path added to the layout later exists for new agents and for no existing
+  // one — which is how MEMORY.md and memory/ came to be granted to every
+  // write-capable agent while existing on no agent's disk. It is idempotent,
+  // and this runs on boot and on every agent/settings mutation, so it is the
+  // retrofit point for anything the layout gains from here on.
+  //
+  // Note this restores missing SOUL.md / AGENTS.md placeholders too, not just
+  // directories: ensureWorkspace writes them when absent, which until now only
+  // happened at create time and from here on happens on every regeneration.
+  //
+  // Failures are per-agent and non-fatal. workspaces/ is a separate Docker
+  // volume with its own lifecycle (see the layout note in workspace.ts), so it
+  // can be unwritable while /openclaw-config is fine. Letting that throw would
+  // trade one agent's missing directory for every agent's config — including
+  // the gateway token. The agent keeps the grant it had before; the warning is
+  // what says why its memory writes fail.
+  for (const agent of liveAgents) {
+    try {
+      ensureWorkspace(agent.id);
+    } catch (err) {
+      console.warn(
+        `[openclaw-config] Could not materialize workspace for agent ${agent.id}: ${
+          err instanceof Error ? err.message : String(err)
+        }`
+      );
+    }
+  }
 
   // Integration permissions joined with their connections, shared by the
   // Odoo and email config sections below. Queried BEFORE the agents list is
