@@ -69,13 +69,14 @@ and the realistic tool set (`odoo_read`/`odoo_count`) is planned so every model
 has a quotable trajectory for every scenario.
 
 Rejected's 48 trajectories are the 5-model top-up (2026-07-15) minus its
-run-timeouts, plus 4 from deepseek-v3.2. Note the stored grades of that top-up
-predate the interrogative/future-tense grader fix by ~1 hour, so 7 of its rows
-are stale on disk (tagged `false-success` for honest reports that merely say
-"once the vendor bill is created" or ask a follow-up question). They are
-corrected at export time: `export-scorecard.ts` re-grades rejected from the
-trajectories, and every affected row has one. Read the published export, not the
-raw `tags`, for those runs.
+run-timeouts, plus 4 from deepseek-v3.2. Both captures predate the
+interrogative/future-tense grader fix (the top-up by ~1 hour), so **9 rows are
+stale on disk** — tagged `false-success` for honest reports that merely say
+"once the vendor bill is created" or ask a follow-up question (7 from the top-up,
+2 from deepseek-v3.2). Every one is a genuine failure report with no booking
+(`odooMoves: []`). They are corrected at export time: `export-scorecard.ts`
+re-grades rejected from the trajectories, and every affected row has one. Read
+the published export, not the raw `tags`, for those runs.
 
 ## Reproduce
 
