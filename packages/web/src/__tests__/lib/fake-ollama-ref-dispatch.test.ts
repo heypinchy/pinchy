@@ -114,4 +114,52 @@ describe("buildOdooRefDispatchScript", () => {
     if (script.kind !== "text") throw new Error("unreachable");
     expect(script.text).toBe(FAKE_OLLAMA_ODOO_SCHEDULE_ACTIVITY_REF_RESPONSE);
   });
+
+  // Regression (pinchy#791): the odoo dispatch-probe E2E block shares ONE OpenClaw
+  // session (same agent + user → key `agent:<id>:direct:<userId>`) across three
+  // serially-run tests. odoo_list_models and odoo_read(denied) dispatch BEFORE
+  // this ref probe, so by the time its trigger fires the session history already
+  // carries their tool-result messages — OC re-sends prior rounds' tool messages
+  // (that is exactly why `lastRoundHasToolResult` scopes to the current round).
+  // Step selection MUST therefore count tool results in the CURRENT round only,
+  // like ref extraction does; counting the whole history skips straight to the
+  // final-text branch and the ref tool never dispatches.
+  describe("shared session with stale prior-turn tool results", () => {
+    // Two completed prior turns (list_models happy-path + read denied), each
+    // leaving a tool-result message — plus a stale ref that must NOT be reused.
+    const priorTurns = [
+      { role: "user", content: "E2E_ODOO_LIST_MODELS: list" },
+      { role: "assistant", content: "", tool_calls: [{ function: { name: "odoo_list_models" } }] },
+      toolResult([{ model: "sale.order" }]),
+      { role: "assistant", content: "Here are the models." },
+      { role: "user", content: "E2E_ODOO_READ_DENIED: read partners" },
+      { role: "assistant", content: "", tool_calls: [{ function: { name: "odoo_read" } }] },
+      { role: "tool", content: JSON.stringify({ error: "permissionDenied" }) },
+      { role: "assistant", content: "That was denied." },
+    ];
+
+    it("round 1 still reads crm.lead despite 2 stale tool results in history", () => {
+      const script = buildOdooRefDispatchScript([...priorTurns, trigger]);
+      expect(script.kind).toBe("tool");
+      if (script.kind !== "tool") throw new Error("unreachable");
+      expect(script.toolName).toBe("odoo_read");
+      expect(script.arguments.model).toBe("crm.lead");
+    });
+
+    it("round 2 schedules on the CURRENT round's ref, ignoring stale history", () => {
+      const staleRef = "pinchy_ref:v1:STALE_prior_round_ref";
+      const messages = [
+        ...priorTurns,
+        toolResult([{ id: 1, _pinchy_ref: staleRef }]), // stale ref, before trigger
+        trigger,
+        { role: "assistant", content: "", tool_calls: [{ function: { name: "odoo_read" } }] },
+        toolResult([{ id: 5, name: "Acme Lead", _pinchy_ref: REF }]),
+      ];
+      const script = buildOdooRefDispatchScript(messages);
+      expect(script.kind).toBe("tool");
+      if (script.kind !== "tool") throw new Error("unreachable");
+      expect(script.toolName).toBe("odoo_schedule_activity");
+      expect(script.arguments.target).toBe(REF);
+    });
+  });
 });

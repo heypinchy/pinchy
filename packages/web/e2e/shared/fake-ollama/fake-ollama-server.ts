@@ -651,14 +651,13 @@ function hasToolRole(message: unknown): boolean {
   );
 }
 
-// Detect whether the LAST exchange in the message history is a tool result —
-// i.e. the assistant emitted a tool_call in the previous step and the runtime
-// has now sent us back the tool's output to summarise. We split on the most
-// recent user message and only look at messages AFTER it. Looking at the whole
-// history was wrong: a long-lived chat session that called a tool once would
-// then never receive another tool_call response, because `messages.some` saw
-// the stale tool message from a previous round.
-function lastRoundHasToolResult(messages: unknown[]): boolean {
+// The messages belonging to the CURRENT round — everything after the most
+// recent user message. A long-lived chat session re-sends prior rounds' tool
+// messages, so any "what step am I on" decision that looks at the whole history
+// is wrong: it would see stale tool messages from a previous round (or, in the
+// odoo dispatch-probe E2E block, from a previous test sharing the same session
+// key). Callers that must ignore that stale tail scope through this helper.
+function lastRoundMessages(messages: unknown[]): unknown[] {
   let lastUserIndex = -1;
   for (let i = messages.length - 1; i >= 0; i--) {
     if ((messages[i] as { role?: unknown })?.role === "user") {
@@ -666,16 +665,30 @@ function lastRoundHasToolResult(messages: unknown[]): boolean {
       break;
     }
   }
-  if (lastUserIndex === -1) return messages.some(hasToolRole);
-  return messages.slice(lastUserIndex + 1).some(hasToolRole);
+  return lastUserIndex === -1 ? messages : messages.slice(lastUserIndex + 1);
 }
 
-// Total count of tool-result messages (role: "tool") across the WHOLE
-// conversation. Used by multi-step handlers (e.g. the Hetzner scenario
-// triggers below) to know which step of a >2-step tool chain they are on:
+// Detect whether the LAST exchange in the message history is a tool result —
+// i.e. the assistant emitted a tool_call in the previous step and the runtime
+// has now sent us back the tool's output to summarise.
+function lastRoundHasToolResult(messages: unknown[]): boolean {
+  return lastRoundMessages(messages).some(hasToolRole);
+}
+
+// Count tool-result messages (role: "tool") in the CURRENT round only. Used by
+// multi-step handlers to know which step of a >2-step tool chain they are on:
 // `lastRoundHasToolResult` only distinguishes "was the previous turn a tool
 // result" (fine for a single tool-call-then-followup shape like
 // TOOL_THEN_RATE_LIMIT) but cannot tell step 2 of 4 from step 3 of 4.
+function countToolResultsInLastRound(messages: unknown[]): number {
+  return lastRoundMessages(messages).filter(hasToolRole).length;
+}
+
+// Total count of tool-result messages (role: "tool") across the WHOLE
+// conversation. Correct only for handlers whose session is guaranteed fresh
+// (e.g. the Hetzner eval self-test, where the trigger is always the first
+// message). Prefer `countToolResultsInLastRound` for anything that can run in a
+// shared/long-lived session.
 function countToolResults(messages: unknown[]): number {
   return messages.filter(hasToolRole).length;
 }
@@ -699,20 +712,12 @@ const PINCHY_REF_RE = /pinchy_ref:v1:[A-Za-z0-9_-]+/;
 
 /**
  * Extract the first `_pinchy_ref` token from the CURRENT round's tool-result
- * messages (those after the last user message), mirroring
- * `lastRoundHasToolResult`'s scoping so a stale ref from an earlier round in a
- * shared session can't leak in. Returns null if none is present.
+ * messages (those after the last user message, via `lastRoundMessages`) so a
+ * stale ref from an earlier round in a shared session can't leak in. Returns
+ * null if none is present.
  */
 export function extractPinchyRefFromToolResults(messages: unknown[]): string | null {
-  let lastUserIndex = -1;
-  for (let i = messages.length - 1; i >= 0; i--) {
-    if ((messages[i] as { role?: unknown })?.role === "user") {
-      lastUserIndex = i;
-      break;
-    }
-  }
-  const scope = lastUserIndex === -1 ? messages : messages.slice(lastUserIndex + 1);
-  for (const message of scope) {
+  for (const message of lastRoundMessages(messages)) {
     if (!hasToolRole(message)) continue;
     const match = messageContent(message).match(PINCHY_REF_RE);
     if (match) return match[0];
@@ -729,11 +734,14 @@ type RefDispatchScript =
  *   round 1 → odoo_read crm.lead (its result carries a real `_pinchy_ref`)
  *   round 2 → odoo_schedule_activity on that ref (the tool under test)
  *   round 3 → final completion text
- * The step is chosen by how many tool results have round-tripped so far, like
- * the Hetzner sequence.
+ * The step is chosen by how many tool results have round-tripped IN THE CURRENT
+ * round. Unlike the Hetzner sequence (fresh eval session), this probe runs in
+ * the shared odoo dispatch-probe session after odoo_list_models/odoo_read have
+ * already dispatched, so counting the whole history would start at step 3 and
+ * never dispatch the ref tool — hence `countToolResultsInLastRound`.
  */
 export function buildOdooRefDispatchScript(messages: unknown[]): RefDispatchScript {
-  const toolResults = countToolResults(messages);
+  const toolResults = countToolResultsInLastRound(messages);
   if (toolResults === 0) {
     return {
       kind: "tool",
