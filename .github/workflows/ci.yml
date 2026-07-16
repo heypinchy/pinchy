@@ -12,6 +12,18 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+  # Merge queue. GitHub tests each queued PR on a `gh-readonly-queue/main/...`
+  # merge ref (main + the PR, and speculatively + the entries ahead of it), so
+  # the required checks run against the exact post-merge state. This is what lets
+  # us drop "Require branches to be up to date" from branch protection: the queue
+  # provides the same freshness guarantee without every PR author hand-rebasing
+  # and burning a full CI run each time. Without this trigger the workflow never
+  # starts for a queued PR and the required checks never report — the queue would
+  # hang forever. The `changes` job below deliberately answers code=false for
+  # merge_group, so only the required checks (which are ungated) run on the merge
+  # ref; the heavy Docker/E2E matrix already ran on the PR and, being non-required,
+  # would not gate the queue anyway — it still runs post-merge on the main push.
+  merge_group:
   # Manual trigger: lets a maintainer re-run the full CI (incl. osv-scan) on a
   # ref on demand — e.g. to clear a stale red main after a docs-lockfile
   # security bump (osv-scan reads docs/pnpm-lock.yaml), which the `changes`
@@ -56,6 +68,19 @@ jobs:
           BASE_REF: ${{ github.base_ref }}
           BEFORE: ${{ github.event.before }}
         run: |
+          if [ "$EVENT_NAME" = "merge_group" ]; then
+            # In the merge queue, only the required checks (quality,
+            # vitest-integration, e2e) need to run on the merge ref — they are
+            # ungated and run regardless of this output. The heavy Docker/E2E
+            # matrix is gated on code, and we skip it here on purpose: it already
+            # ran on the PR, and being non-required it would not gate the queue
+            # anyway, so re-running it (×5 with speculative entries) would only
+            # burn minutes and slow the queue. It still runs post-merge on the
+            # main push. Hence code=false — "the gated matrix need not run".
+            echo "Merge queue — required checks only, skipping the gated matrix."
+            echo "code=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
           if [ "$EVENT_NAME" = "pull_request" ]; then
             BASE="origin/$BASE_REF"
           elif [ "$EVENT_NAME" = "push" ]; then

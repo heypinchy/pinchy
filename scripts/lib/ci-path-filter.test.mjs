@@ -23,7 +23,10 @@ test("a source change is a code change", () => {
 });
 
 test("docs-only, markdown-only and sample-data-only changes are not code changes", () => {
-  assert.equal(hasCodeChanges(["docs/src/content/docs/guides/agents.mdx"]), false);
+  assert.equal(
+    hasCodeChanges(["docs/src/content/docs/guides/agents.mdx"]),
+    false,
+  );
   assert.equal(hasCodeChanges(["README.md"]), false);
   assert.equal(hasCodeChanges(["PERSONALITY.md"]), false);
   assert.equal(hasCodeChanges(["packages/web/README.md"]), false);
@@ -33,7 +36,10 @@ test("docs-only, markdown-only and sample-data-only changes are not code changes
 });
 
 test("one code file among many docs files still makes it a code change", () => {
-  assert.equal(hasCodeChanges(["docs/a.mdx", "README.md", "packages/web/src/x.ts"]), true);
+  assert.equal(
+    hasCodeChanges(["docs/a.mdx", "README.md", "packages/web/src/x.ts"]),
+    true,
+  );
 });
 
 // A workflow edit changes CI itself — it must never skip the matrix that would
@@ -88,7 +94,27 @@ test("ci.yml has no paths-ignore — it must always start so required checks rep
     .join("\n");
   assert.ok(
     !/paths-ignore:/.test(uncommented),
-    "ci.yml must not use paths-ignore: it hosts required status checks, and a workflow that never starts blocks the PR forever. Gate individual jobs on the `changes` job instead."
+    "ci.yml must not use paths-ignore: it hosts required status checks, and a workflow that never starts blocks the PR forever. Gate individual jobs on the `changes` job instead.",
+  );
+});
+
+// The merge-queue counterpart of the paths-ignore guard above. main's required
+// checks live in this workflow, and the merge queue tests each entry on a
+// `gh-readonly-queue/...` merge ref via the `merge_group` event. Without that
+// trigger the workflow never starts for a queued PR, the required checks never
+// report on the merge ref, and the queue sits forever waiting for a status that
+// can't arrive — the same "stuck forever" failure mode, just one level up. If
+// the queue is ever abandoned, dropping the trigger is a deliberate act; this
+// guard makes it one.
+test("ci.yml triggers on merge_group so required checks report to the merge queue", () => {
+  const yaml = readFileSync(CI_WORKFLOW, "utf8");
+  const uncommented = yaml
+    .split("\n")
+    .map((line) => line.replace(/(^|\s)#.*$/, "$1"))
+    .join("\n");
+  assert.ok(
+    /^ {2}merge_group:/m.test(uncommented),
+    "ci.yml must list `merge_group:` under `on:` — without it the merge queue never gets a status from the required checks and every queued PR hangs indefinitely.",
   );
 });
 
@@ -101,17 +127,24 @@ test("every job listed as ungated really is ungated", () => {
   const jobs = splitWorkflowIntoJobs(CI_WORKFLOW);
   for (const [name, reason] of Object.entries(UNGATED_JOBS)) {
     const job = jobs.find((j) => j.jobName === name);
-    assert.ok(job, `ci.yml must define the job "${name}" listed in UNGATED_JOBS`);
+    assert.ok(
+      job,
+      `ci.yml must define the job "${name}" listed in UNGATED_JOBS`,
+    );
     assert.ok(
       !job.body.includes("needs.changes"),
-      `"${name}" is listed in UNGATED_JOBS (${reason}) but is gated on the changes job in ci.yml — either drop the gate or drop the listing`
+      `"${name}" is listed in UNGATED_JOBS (${reason}) but is gated on the changes job in ci.yml — either drop the gate or drop the listing`,
     );
   }
 });
 
 test("REQUIRED_JOBS is the branch-protection subset of UNGATED_JOBS", () => {
   for (const name of REQUIRED_JOBS) {
-    assert.equal(UNGATED_JOBS[name], "required", `"${name}" must be listed as required in UNGATED_JOBS`);
+    assert.equal(
+      UNGATED_JOBS[name],
+      "required",
+      `"${name}" must be listed as required in UNGATED_JOBS`,
+    );
   }
 });
 
@@ -127,7 +160,7 @@ test("every other job is gated on the changes job", () => {
   assert.deepEqual(
     offenders,
     [],
-    `these ci.yml jobs must be skipped on docs-only PRs — add \`needs: changes\` and \`if: ${GATE_EXPRESSION}\`: ${offenders.join(", ")}`
+    `these ci.yml jobs must be skipped on docs-only PRs — add \`needs: changes\` and \`if: ${GATE_EXPRESSION}\`: ${offenders.join(", ")}`,
   );
 });
 
@@ -137,16 +170,23 @@ test("every other job is gated on the changes job", () => {
 // fires if someone adds a --lockfile under an ignored path (e.g. a second docs
 // site) without teaching the filter about it.
 test("every lockfile vuln-scan reads counts as a code change", () => {
-  const vulnScan = splitWorkflowIntoJobs(CI_WORKFLOW).find((j) => j.jobName === "vuln-scan");
+  const vulnScan = splitWorkflowIntoJobs(CI_WORKFLOW).find(
+    (j) => j.jobName === "vuln-scan",
+  );
   assert.ok(vulnScan, "ci.yml must define the vuln-scan job");
 
-  const lockfiles = [...vulnScan.body.matchAll(/--lockfile=\.\/(\S+)/g)].map((m) => m[1]);
-  assert.ok(lockfiles.length > 0, "expected vuln-scan to scan at least one lockfile");
+  const lockfiles = [...vulnScan.body.matchAll(/--lockfile=\.\/(\S+)/g)].map(
+    (m) => m[1],
+  );
+  assert.ok(
+    lockfiles.length > 0,
+    "expected vuln-scan to scan at least one lockfile",
+  );
 
   const invisible = lockfiles.filter((path) => !hasCodeChanges([path]));
   assert.deepEqual(
     invisible,
     [],
-    `vuln-scan reads these lockfiles, but the filter treats them as docs — a security bump there would skip the scan: ${invisible.join(", ")}`
+    `vuln-scan reads these lockfiles, but the filter treats them as docs — a security bump there would skip the scan: ${invisible.join(", ")}`,
   );
 });
