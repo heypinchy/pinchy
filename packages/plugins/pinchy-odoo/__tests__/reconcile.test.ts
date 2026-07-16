@@ -482,6 +482,39 @@ describe("odoo_reconcile — bank transaction against a posted bill", () => {
     expect(mockCallMethod).not.toHaveBeenCalled();
   });
 
+  it("refuses a statement move that carries an extra line beyond liquidity + suspense", async () => {
+    // The rewrite clears every line ([5,0,0]) and recreates only liquidity +
+    // counterpart. A third line (e.g. a split bank fee on its own account)
+    // passes the exactly-one-liquidity / exactly-one-suspense guards but would
+    // be silently dropped, so a move that isn't the plain two-line shape must
+    // be refused rather than restated.
+    const FEE_ACC = 99;
+    stubReads({
+      stMoveLines: [
+        ...ST_MOVE_LINES,
+        {
+          id: 65,
+          account_id: [FEE_ACC, "Bank Fees"],
+          debit: 1.5,
+          credit: 0,
+          amount_currency: 1.5,
+          partner_id: [PARTNER, "Gemini Furniture"],
+          name: "Fee",
+        },
+      ],
+    });
+    const tool = findTool(createApi({ [agentId]: cfg() }), "odoo_reconcile", agentId)!;
+
+    const result = await tool.execute("c", {
+      invoice: ref("account.move", INVOICE_ID),
+      counterpart: ref("account.bank.statement.line", ST_LINE_ID),
+    });
+
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toMatch(/line|Reconcile it in Odoo/i);
+    expect(mockCallMethod).not.toHaveBeenCalled();
+  });
+
   it("requires write on account.move.line", async () => {
     stubReads();
     const tool = findTool(
@@ -547,6 +580,18 @@ describe("odoo_reconcile — invoice against an existing payment", () => {
     expect(data.reconciled).toBe(true);
   });
 
+  it("refuses a canceled payment before writing anything", async () => {
+    stubReads({ payment: { ...PAYMENT_ROW, state: "canceled" } });
+    const tool = findTool(createApi({ [agentId]: cfg() }), "odoo_reconcile", agentId)!;
+    const result = await tool.execute("c", {
+      invoice: ref("account.move", INVOICE_ID),
+      counterpart: ref("account.payment", PAYMENT_ID),
+    });
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toMatch(/cancel|reject/i);
+    expect(mockCallMethod).not.toHaveBeenCalled();
+  });
+
   it("refuses when the payment has no line on the invoice's account", async () => {
     stubReads({ paymentLines: [] });
     const tool = findTool(createApi({ [agentId]: cfg() }), "odoo_reconcile", agentId)!;
@@ -600,5 +645,10 @@ describe("odoo_reconcile — ref validation", () => {
     });
     expect(result.isError).toBe(true);
     expect(result.content[0].text).toMatch(/connection/i);
+    // The message must name the offending parameter, not a generic default —
+    // decodeTargetRef is called with the `invoice` label, so a foreign
+    // `invoice` ref reports `invoice`, never `target`.
+    expect(result.content[0].text).toMatch(/invoice/i);
+    expect(result.content[0].text).not.toMatch(/target/i);
   });
 });

@@ -3622,14 +3622,15 @@ const plugin = {
                 );
               }
 
-              const inv = decodeTargetRef(config.connectionId, invoiceRef);
-              if (inv === null) {
-                return errorResult(
-                  new Error(
-                    "`invoice` ref does not belong to this Odoo connection.",
-                  ),
-                );
-              }
+              // decodeTargetRef throws (never returns null) on a malformed or
+              // foreign ref; the throw is caught below and surfaced with the
+              // parameter name we pass here, so the user is told which ref was
+              // wrong rather than a generic "target".
+              const inv = decodeTargetRef(
+                config.connectionId,
+                invoiceRef,
+                "invoice",
+              );
               if (inv.model !== "account.move") {
                 return errorResult(
                   new Error(
@@ -3637,14 +3638,11 @@ const plugin = {
                   ),
                 );
               }
-              const cp = decodeTargetRef(config.connectionId, counterpartRef);
-              if (cp === null) {
-                return errorResult(
-                  new Error(
-                    "`counterpart` ref does not belong to this Odoo connection.",
-                  ),
-                );
-              }
+              const cp = decodeTargetRef(
+                config.connectionId,
+                counterpartRef,
+                "counterpart",
+              );
               if (
                 cp.model !== "account.bank.statement.line" &&
                 cp.model !== "account.payment"
@@ -3797,7 +3795,7 @@ const plugin = {
                 const payment = (
                   await withAuthRetry(agentId, config, (client) =>
                     client.searchRead("account.payment", [["id", "=", cp.id]], {
-                      fields: ["move_id", "state", "company_id", "amount"],
+                      fields: ["move_id", "state", "company_id"],
                       limit: 1,
                     }),
                   )
@@ -3805,6 +3803,16 @@ const plugin = {
                 if (!payment) {
                   return errorResult(
                     new Error(`account.payment ${cp.id} was not found in Odoo.`),
+                  );
+                }
+                // A canceled or rejected payment has no live journal entry to
+                // match against; reconcile() would silently no-op, so refuse it
+                // up front with a message the agent can act on.
+                if (payment.state === "canceled" || payment.state === "rejected") {
+                  return errorResult(
+                    new Error(
+                      `This payment is in state "${String(payment.state)}", so there is nothing to reconcile against. Use a payment that is in process or paid.`,
+                    ),
                   );
                 }
                 const paymentCompanyId = relationId(payment.company_id);
@@ -3874,8 +3882,6 @@ const plugin = {
                         "journal_id",
                         "is_reconciled",
                         "company_id",
-                        "partner_id",
-                        "amount",
                       ],
                       limit: 1,
                     },
@@ -3972,6 +3978,18 @@ const plugin = {
                 return errorResult(
                   new Error(
                     "This bank transaction has no suspense line to replace — it is probably already matched to something else. Reset it in Odoo first.",
+                  ),
+                );
+              }
+              // The rewrite below clears every line ([5,0,0]) and recreates only
+              // the liquidity + counterpart pair. A move carrying any additional
+              // line (e.g. a split bank fee on its own account) would have that
+              // line silently dropped, so refuse anything that isn't the plain
+              // two-line liquidity/suspense shape and let a human handle it.
+              if (stMoveLines.length !== 2) {
+                return errorResult(
+                  new Error(
+                    `This bank transaction's journal entry has ${stMoveLines.length} lines, not the expected two (one bank line, one suspense line). It carries an extra line this tool would drop on rewrite — reconcile it in Odoo.`,
                   ),
                 );
               }
