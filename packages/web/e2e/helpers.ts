@@ -31,6 +31,32 @@ export async function loginAsAdmin(page: Page) {
   await expect(page).toHaveURL(/\/chat\//, { timeout: 15000 });
 }
 
+/**
+ * Authenticate an admin session directly against the auth API, no UI.
+ *
+ * Use this in data-setup hooks (`beforeAll`) that only ever touch
+ * `context.request` and never drive the page. The UI `loginAsAdmin` navigates
+ * to `/login` and waits up to 15 s for the `/chat/` redirect + hydration; that
+ * cost is pure waste in a hook that does nothing but API calls, and under CI
+ * load it can push the whole hook past its 30 s budget — at which point
+ * Playwright tears the context down and the next `browser.newPage()` /
+ * `context.request` call fails with "Target page, context or browser has been
+ * closed." Signing in over the API removes that variable-latency UI step
+ * entirely.
+ *
+ * The returned request context carries the admin session cookie for all
+ * subsequent state-changing calls.
+ */
+export async function apiSignInAsAdmin(request: APIRequestContext): Promise<void> {
+  const res = await request.post("/api/auth/sign-in/email", {
+    data: { email: ADMIN_USER.email, password: ADMIN_USER.password },
+    headers: { "Content-Type": "application/json" },
+  });
+  if (!res.ok()) {
+    throw new Error(`Admin API sign-in failed: ${res.status()} ${await res.text()}`);
+  }
+}
+
 export const SECOND_USER = {
   name: "Second User",
   email: "second@test.local",

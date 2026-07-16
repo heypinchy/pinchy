@@ -1,6 +1,7 @@
 import { test, expect } from "@playwright/test";
 import {
   seedProviderConfig,
+  apiSignInAsAdmin,
   loginAsAdmin,
   loginAs,
   switchUser,
@@ -15,21 +16,27 @@ test.describe.serial("Agent permissions — restricted visibility", () => {
 
   test.beforeAll(async ({ browser }) => {
     await seedProviderConfig();
-    const page = await browser.newPage();
-    await loginAsAdmin(page);
+
+    // This hook is pure data setup — it only ever uses the request context,
+    // never the page UI. Authenticate over the API (not the UI `loginAsAdmin`,
+    // which navigates and waits up to 15 s for hydration) so the hook stays
+    // well inside its 30 s budget under CI load. See `apiSignInAsAdmin`.
+    const context = await browser.newContext();
+    const request = context.request;
+    await apiSignInAsAdmin(request);
 
     // Enable enterprise mode (same pattern as 09-groups.spec.ts)
-    const status = await page.request.get("/api/enterprise/status");
+    const status = await request.get("/api/enterprise/status");
     const { enterprise } = await status.json();
     if (!enterprise) {
-      await page.request.post("/api/dev/enterprise-toggle");
+      await request.post("/api/dev/enterprise-toggle");
     }
 
     // Create second user (idempotent: ignore if already exists)
-    await createSecondUserViaInvite(page.context().request).catch(() => {});
+    await createSecondUserViaInvite(request).catch(() => {});
 
     // Resolve second user's ID from the users list
-    const usersRes = await page.context().request.get("/api/users");
+    const usersRes = await request.get("/api/users");
     const { users } = await usersRes.json();
     const secondUser = users.find(
       (u: { email: string; id: string }) => u.email === SECOND_USER.email
@@ -38,7 +45,7 @@ test.describe.serial("Agent permissions — restricted visibility", () => {
     secondUserId = secondUser.id;
 
     // Create a group with no members yet
-    const groupRes = await page.context().request.post("/api/groups", {
+    const groupRes = await request.post("/api/groups", {
       data: { name: "Restricted Group", description: null },
     });
     const groupData = await groupRes.json();
@@ -49,7 +56,7 @@ test.describe.serial("Agent permissions — restricted visibility", () => {
 
     // Create an agent using the "custom" template (no extra config required).
     // Note: the DB default for visibility is "restricted", so we explicitly PATCH to "all" below.
-    const agentRes = await page.context().request.post("/api/agents", {
+    const agentRes = await request.post("/api/agents", {
       data: {
         name: "Permissions Test Agent",
         templateId: "custom",
@@ -63,7 +70,7 @@ test.describe.serial("Agent permissions — restricted visibility", () => {
     agentId = agentData.id;
 
     // Set initial visibility to "all" so tests 1+2 can verify non-admin access
-    const patchRes = await page.context().request.patch(`/api/agents/${agentId}`, {
+    const patchRes = await request.patch(`/api/agents/${agentId}`, {
       data: { visibility: "all" },
     });
     if (!patchRes.ok()) {
@@ -72,7 +79,7 @@ test.describe.serial("Agent permissions — restricted visibility", () => {
       );
     }
 
-    await page.close();
+    await context.close();
   });
 
   test("admin sees the agent (visibility: all)", async ({ page }) => {
