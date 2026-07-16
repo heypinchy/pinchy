@@ -11,7 +11,7 @@ import {
 } from "./ollama-cloud-tool-probe.mjs";
 
 // Helper: wrap `arguments` the way the API does — a JSON *string*.
-function nestedResponse(args) {
+function nestedResponse(args, name = "search_records") {
   return {
     choices: [
       {
@@ -22,7 +22,7 @@ function nestedResponse(args) {
               id: "call_1",
               type: "function",
               function: {
-                name: "search_records",
+                name,
                 arguments:
                   typeof args === "string" ? args : JSON.stringify(args),
               },
@@ -192,9 +192,12 @@ test("buildNestedToolProbeRequest declares a tool whose schema requires an array
   assert.deepEqual(fn.parameters.required, ["model", "filters", "fields"]);
 
   // A user turn concrete enough to pin the expected domain, and bounded cost.
+  // The ceiling is deliberately roomier than the flat probe's: a thinking model
+  // spends budget before it ever emits the call, and a truncated call would be
+  // reported as a capability defect it doesn't have.
   assert.equal(body.messages.at(-1).role, "user");
   assert.match(body.messages.at(-1).content, /posted/i);
-  assert.ok(body.max_tokens > 0 && body.max_tokens <= 256);
+  assert.ok(body.max_tokens >= 512 && body.max_tokens <= 1024);
 });
 
 test("genuine nested arrays with named arguments pass the nested probe", () => {
@@ -316,6 +319,95 @@ test("a flat filters array (strings, not triplets) fails the nested probe", () =
   );
   assert.equal(result.nestedOk, false);
   assert.equal(result.failure, "wrong-shape");
+});
+
+test("a list value inside a triplet is legitimate nesting, not a defect", () => {
+  // ["state", "in", ["posted", "draft"]] is a perfectly valid Odoo domain: the
+  // deepest correct nesting a model can produce. Rejecting it would fail the
+  // very models this probe exists to keep.
+  const result = classifyNestedToolResponse(
+    nestedResponse({
+      ...CLEAN_NESTED_ARGS,
+      filters: [["state", "in", ["posted", "draft"]]],
+    }),
+  );
+  assert.equal(result.nestedOk, true);
+  assert.equal(result.failure, null);
+});
+
+test("a stringified array inside a triplet's list value still fails", () => {
+  const result = classifyNestedToolResponse(
+    nestedResponse({
+      ...CLEAN_NESTED_ARGS,
+      filters: [["amount", "in", ["[10, 20]"]]],
+    }),
+  );
+  assert.equal(result.nestedOk, false);
+  assert.equal(result.failure, "stringified-array");
+  assert.match(result.detail, /filters\[0\]\[2\]\[0\]/);
+});
+
+test("an item wrapper inside a triplet's list value still fails", () => {
+  const result = classifyNestedToolResponse(
+    nestedResponse({
+      ...CLEAN_NESTED_ARGS,
+      filters: [["state", "in", [{ item: "posted" }]]],
+    }),
+  );
+  assert.equal(result.nestedOk, false);
+  assert.equal(result.failure, "item-wrapper");
+});
+
+test("a triplet member nested deeper than a list value is the wrong shape", () => {
+  const result = classifyNestedToolResponse(
+    nestedResponse({
+      ...CLEAN_NESTED_ARGS,
+      filters: [["state", "in", [["posted"]]]],
+    }),
+  );
+  assert.equal(result.nestedOk, false);
+  assert.equal(result.failure, "wrong-shape");
+});
+
+test('an {"items": …} wrapper is caught like the {"item": …} one', () => {
+  const result = classifyNestedToolResponse(
+    nestedResponse({
+      ...CLEAN_NESTED_ARGS,
+      filters: { items: [["state", "=", "posted"]] },
+    }),
+  );
+  assert.equal(result.nestedOk, false);
+  assert.equal(result.failure, "item-wrapper");
+  assert.match(result.detail, /items/);
+});
+
+test("calling a tool the probe never offered is reported as such, not as bad arguments", () => {
+  // Misattributing this as wrong-shape would make the probe lie about the
+  // defect class, which is the one thing it produces.
+  const result = classifyNestedToolResponse(
+    nestedResponse({ city: "Paris" }, "get_weather"),
+  );
+  assert.equal(result.nestedOk, false);
+  assert.equal(result.failure, "wrong-tool");
+  assert.match(result.detail, /get_weather/);
+});
+
+test("a non-string field reports that a string was expected, not an array", () => {
+  const result = classifyNestedToolResponse(
+    nestedResponse({ ...CLEAN_NESTED_ARGS, fields: ["name", 42] }),
+  );
+  assert.equal(result.nestedOk, false);
+  assert.equal(result.failure, "wrong-shape");
+  assert.match(result.detail, /fields\[1\].*expected a string/);
+});
+
+test("a field that is an array reports the wrong shape against a string", () => {
+  const result = classifyNestedToolResponse(
+    nestedResponse({ ...CLEAN_NESTED_ARGS, fields: [["name"]] }),
+  );
+  assert.equal(result.nestedOk, false);
+  assert.equal(result.failure, "wrong-shape");
+  assert.match(result.detail, /expected a string/);
 });
 
 test("arguments already parsed into an object (not a JSON string) are accepted", () => {

@@ -130,6 +130,8 @@ const NESTED_PROBE_PROMPT =
 
 const NESTED_REQUIRED_ARGS = ["model", "filters", "fields"];
 
+const NESTED_TOOL_NAME = "search_records";
+
 // Keys a model wraps a collapsed array in instead of emitting the array.
 const ITEM_WRAPPER_KEYS = ["item", "items"];
 
@@ -140,13 +142,16 @@ const ITEM_WRAPPER_KEYS = ["item", "items"];
 export function buildNestedToolProbeRequest(id) {
   return {
     model: id,
-    max_tokens: 256,
+    // Roomier than the flat probe's 128: a thinking model spends budget before
+    // it emits the call, and a truncated call would read as a defect it hasn't
+    // got. The payload itself is ~40 tokens, so the headroom is nearly free.
+    max_tokens: 512,
     tool_choice: "auto",
     tools: [
       {
         type: "function",
         function: {
-          name: "search_records",
+          name: NESTED_TOOL_NAME,
           description: "Search business records with a filter domain.",
           parameters: {
             type: "object",
@@ -216,8 +221,45 @@ function arrayDefect(value, path) {
   }
   return fail(
     "wrong-shape",
-    `${path} arrived as ${Array.isArray(value) ? "array" : typeof value}, expected an array`,
+    `${path} arrived as ${typeof value}, expected an array`,
   );
+}
+
+// Why `value` is not the scalar a domain triplet holds, or null if it is one.
+// A triplet's third member may legitimately be a list — ["state", "in",
+// ["posted", "draft"]] is a valid domain — so lists are checked, not rejected.
+function scalarDefect(value, path) {
+  if (looksStringified(value)) {
+    return fail(
+      "stringified-array",
+      `${path} arrived as a stringified array: ${value}`,
+    );
+  }
+  if (value === null || typeof value !== "object") return null;
+  const wrapper = itemWrapperKey(value);
+  if (wrapper) {
+    return fail(
+      "item-wrapper",
+      `${path} collapsed into a {"${wrapper}": …} wrapper object`,
+    );
+  }
+  if (!Array.isArray(value)) {
+    return fail(
+      "wrong-shape",
+      `${path} arrived as an object, expected a scalar`,
+    );
+  }
+  for (const [i, member] of value.entries()) {
+    const defect = scalarDefect(member, `${path}[${i}]`);
+    if (defect) return defect;
+    if (Array.isArray(member)) {
+      return fail(
+        "wrong-shape",
+        `${path}[${i}] arrived as a nested array, expected a scalar`,
+      );
+    }
+  }
+  return null;
 }
 
 /**
@@ -232,6 +274,17 @@ export function classifyNestedToolResponse(parsed) {
   const toolCalls = Array.isArray(message.tool_calls) ? message.tool_calls : [];
   if (toolCalls.length === 0) {
     return fail("no-tool-call", "no structured tool_calls on the nested probe");
+  }
+
+  // A call to a tool that was never offered says nothing about nesting. Naming
+  // it plainly beats reporting it as mangled arguments — the defect class is
+  // the only thing this probe produces, so it must not lie about it.
+  const called = toolCalls[0]?.function?.name;
+  if (called !== NESTED_TOOL_NAME) {
+    return fail(
+      "wrong-tool",
+      `the model called "${called}" instead of ${NESTED_TOOL_NAME}`,
+    );
   }
 
   const raw = toolCalls[0]?.function?.arguments;
@@ -289,24 +342,8 @@ export function classifyNestedToolResponse(parsed) {
     const defect = arrayDefect(triplet, `filters[${i}]`);
     if (defect) return defect;
     for (const [j, member] of triplet.entries()) {
-      if (looksStringified(member)) {
-        return fail(
-          "stringified-array",
-          `filters[${i}][${j}] arrived as a stringified array: ${member}`,
-        );
-      }
-      if (member !== null && typeof member === "object") {
-        const wrapper = itemWrapperKey(member);
-        return wrapper
-          ? fail(
-              "item-wrapper",
-              `filters[${i}][${j}] collapsed into a {"${wrapper}": …} wrapper object`,
-            )
-          : fail(
-              "wrong-shape",
-              `filters[${i}][${j}] arrived as ${Array.isArray(member) ? "a nested array" : "an object"}, expected a scalar`,
-            );
-      }
+      const memberDefect = scalarDefect(member, `filters[${i}][${j}]`);
+      if (memberDefect) return memberDefect;
     }
   }
 
@@ -314,18 +351,24 @@ export function classifyNestedToolResponse(parsed) {
   if (fieldsDefect) return fieldsDefect;
 
   for (const [i, field] of args.fields.entries()) {
-    if (typeof field !== "string") {
-      const defect = arrayDefect(field, `fields[${i}]`);
-      // A non-string field is only an array defect if it looks like one;
-      // anything else is simply the wrong shape.
-      return defect ?? fail("wrong-shape", `fields[${i}] is not a string`);
-    }
     if (looksStringified(field)) {
       return fail(
         "stringified-array",
         `fields[${i}] arrived as a stringified array: ${field}`,
       );
     }
+    if (typeof field === "string") continue;
+    const wrapper = itemWrapperKey(field);
+    if (wrapper) {
+      return fail(
+        "item-wrapper",
+        `fields[${i}] collapsed into a {"${wrapper}": …} wrapper object`,
+      );
+    }
+    return fail(
+      "wrong-shape",
+      `fields[${i}] arrived as ${Array.isArray(field) ? "an array" : typeof field}, expected a string`,
+    );
   }
 
   return {

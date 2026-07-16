@@ -90,11 +90,13 @@ async function postChat(body, apiKey, attempts = 5) {
   return last; // exhausted retries — still transient
 }
 
-// Probe a model across two rounds. A model is only OK if it emits a structured
-// tool_call AND survives the multi-turn follow-up (HTTP 200 once the history
-// carries a tool result). Single-turn alone is a false-positive trap: gemma3
-// emits a clean single-turn call but HTTP 500s on the follow-up, which is why
-// gemma3 stays out of the catalog (see ollama-cloud-models.test.ts).
+// Probe a model across three rounds. A model is only OK if it emits a
+// structured tool_call, survives the multi-turn follow-up (HTTP 200 once the
+// history carries a tool result), AND fills a nested array-of-arrays argument
+// without mangling it. Each round is a false-positive trap the others miss:
+// gemma3 emits a clean single-turn call but HTTP 500s on the follow-up, which
+// is why it stays out of the catalog (see ollama-cloud-models.test.ts), while
+// minimax-m3 passes both of those and still collapses nested arrays.
 async function probeModel(id, apiKey) {
   // Re-assert the safe-ID allowlist right at the network sink. The shared
   // parser already validates, but co-locating the barrier with the fetch keeps
@@ -221,7 +223,7 @@ async function main() {
     if (result.stage === "round3-verdict") {
       // Clean flat call, clean multi-turn, mangled nesting — the minimax-m3
       // failure mode. Structurally valid tool_calls, unusable arguments.
-      process.stdout.write(`DRIFT (nested args: ${result.nested.failure})\n`);
+      process.stdout.write(`DRIFT (nested probe: ${result.nested.failure})\n`);
       drift.push({
         id: model.id,
         stage: result.stage,
