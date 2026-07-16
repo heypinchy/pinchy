@@ -54,8 +54,21 @@ describe("knowledge-base template", () => {
     // appearance of two independent sources to a single-source claim, which is
     // exactly the over-trust the design doc warns about (§ "Zitate erhöhen
     // Vertrauen auch wenn sie falsch sind").
-    expect(md).toMatch(/only the sources you actually cited/i);
-    expect(md).toMatch(/did ?n[o']?t use|not used|uncited/i);
+    expect(md).toMatch(/must NOT have one|must NOT appear/i);
+    expect(md).toMatch(/did ?n[o']?t (use|cite)|not used|uncited/i);
+  });
+
+  it("requires the Sources list to resolve every number cited inline", () => {
+    // Live Block-E regression (2026-07-16): the answer cited "[1][4]" inline
+    // but the Sources list held only [1], [2], [5], [8] — [4] was unresolvable,
+    // so that claim could not be checked at all. This is the mirror of the
+    // uncited-source bug and the worse half: a listed-but-unused source is
+    // misleading, a cited-but-unlisted source is a dead end.
+    //
+    // The rule has to bind in BOTH directions. The earlier wording leaned on
+    // "no more" and the model duly dropped one instead.
+    expect(md).toMatch(/every (source )?number you cite|each number you cite/i);
+    expect(md).toMatch(/no more and no fewer|nothing else|and nothing more/i);
   });
 
   it("demonstrates the Sources list as markdown so entries render one per line", () => {
