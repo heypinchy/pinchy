@@ -40,6 +40,19 @@ describe("eval scorecard triage guard", () => {
     ]);
   });
 
+  // vitest's `it.each([])` registers zero tests and reports success — it is not
+  // an error (checked against 4.1.10). So an empty `flagged` would silently
+  // reduce all three per-cell blocks below to nothing and leave this guard
+  // green while guarding nothing at all.
+  it("has cells to guard at all", () => {
+    expect(
+      flagged.length,
+      `findCatastrophicCells returned nothing, which turns the per-cell blocks in this file into zero tests.\n` +
+        `If a re-sweep really did clear every catastrophic cell, that is good news — but delete those blocks and this one deliberately.\n` +
+        `More likely the dataset moved or buildPublishedScenarios stopped finding it: check packages/web/eval/data first.`
+    ).toBeGreaterThan(0);
+  });
+
   it.each(flagged.map((c) => [key(c), c] as const))(
     "%s carries a committed verdict",
     (_label, cell) => {
@@ -59,6 +72,11 @@ describe("eval scorecard triage guard", () => {
 
   // A "blocked" verdict is a claim about blocklist.ts. If a rule is softened or
   // dropped, the ledger must not keep asserting a protection that is gone.
+  //
+  // The `ollama-cloud/` prefix is hardcoded because every model this sweep
+  // covers is an ollama-cloud one. A ledger entry for a model from elsewhere
+  // would look up an id that does not exist and fail here — loudly, which is
+  // the right way for this assumption to end.
   it.each(TRIAGE_LEDGER.filter((e) => e.verdict === "blocked"))(
     "$scenario / $model is really blocked for $blockedFor",
     (entry) => {

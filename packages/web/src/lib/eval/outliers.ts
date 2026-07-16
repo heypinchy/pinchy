@@ -12,7 +12,9 @@
  * These functions are pure over the PUBLISHED scorecards (see
  * `eval/export-scorecard.ts`); `eval/__tests__/scorecard-triage-guard.test.ts`
  * turns their output into a CI failure unless every flagged cell carries a
- * committed verdict in `eval/triage-ledger.ts`.
+ * committed verdict in `eval/triage-ledger.ts`. Pure eval logic lives here
+ * rather than under `eval/` by the convention its siblings follow (graders,
+ * scorecard, normalize — see eval/README.md's layout section).
  *
  * WHAT A FLAG MEANS, AND WHAT IT DOES NOT. A flag says "a capable model never
  * once succeeded here — someone must look and record what they concluded". It
@@ -69,9 +71,11 @@ export const CAPABILITY_SCENARIO_SLUGS = [
  * A model must clear this median pass rate across the capability scenarios
  * before its zero counts as an outlier worth a human's time. Set at 0.5 from
  * the 2026-07-11 sweep: it separates the models whose zeros carry information
- * (minimax-m3 0.83, gemma4:31b 0.92, qwen3.5 1.0) from the ones that are
+ * (minimax-m3 0.83, gemma4:31b 0.92, qwen3.5:397b 0.96) from the ones that are
  * simply weak everywhere (deepseek-v3.2 0.08, gpt-oss:20b and mistral-large-3
- * both 0.0), with no cell anywhere near the line.
+ * both 0.0). Nothing lands between 0.08 and 0.83, so the constant is placed in
+ * a wide gap rather than fitted to the data — anywhere in that range flags the
+ * same four cells.
  */
 export const CAPABILITY_FLOOR = 0.5;
 

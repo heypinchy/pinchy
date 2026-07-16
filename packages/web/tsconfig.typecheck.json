@@ -3,6 +3,9 @@
   "compilerOptions": {
     "types": ["node", "vitest/globals", "@testing-library/jest-dom"]
   },
-  "include": ["src/**/*.ts", "src/**/*.tsx", "src/**/*.mts"],
+  // `eval/` is in here because the triage ledger's types are load-bearing:
+  // a `blocked` verdict names ModelCapability values that blocklist.ts must
+  // really refuse, and vitest strips those types without checking them.
+  "include": ["src/**/*.ts", "src/**/*.tsx", "src/**/*.mts", "eval/**/*.ts"],
   "exclude": ["node_modules", "e2e"]
 }
