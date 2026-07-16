@@ -119,11 +119,12 @@ vi.mock("@/lib/provider-models", () => ({
   getDefaultModel: vi.fn(async () => "anthropic/claude-haiku-4-5-20251001"),
 }));
 
-import { readFileSync } from "fs";
+import { readFileSync, mkdirSync } from "fs";
 import { regenerateOpenClawConfig } from "@/lib/openclaw-config";
 import { db } from "@/db";
 
 const mockedReadFileSync = vi.mocked(readFileSync);
+const mockedMkdirSync = vi.mocked(mkdirSync);
 const mockedDb = vi.mocked(db);
 
 const CONFIG_PATH = "/openclaw-config/openclaw.json";
@@ -182,6 +183,12 @@ describe("regenerateOpenClawConfig materializes the agent memory paths", () => {
     vi.clearAllMocks();
     fileStore.clear();
     dirStore.clear();
+    // Restored per test because the failure test below replaces it with one
+    // that throws; vi.clearAllMocks() clears calls but keeps implementations.
+    mockedMkdirSync.mockImplementation((p) => {
+      dirStore.add(String(p));
+      return undefined;
+    });
     mockedReadFileSync.mockImplementation((p) => {
       const path = String(p);
       const stored = fileStore.get(path);
@@ -255,6 +262,48 @@ describe("regenerateOpenClawConfig materializes the agent memory paths", () => {
     );
     expect(granted).toContain(memoryDir("scout"));
     expect(dirStore.has(memoryDir("scout"))).toBe(true);
+  });
+
+  it("creates memory/ for an agent that has no write grant", async () => {
+    // memory/ belongs to the workspace layout, not to the grant: uploads/ and
+    // workbench/ exist for every agent regardless of tools, and a later grant
+    // of pinchy_write must not depend on a regeneration having run since. The
+    // config still only grants the path to write-capable agents (build.ts).
+    seedLegacyWorkspace("reader");
+    mockDb([agentRow("reader", { allowedTools: ["pinchy_read"] })]);
+
+    await regenerateOpenClawConfig();
+
+    expect(dirStore.has(memoryDir("reader"))).toBe(true);
+  });
+
+  it("still regenerates when one agent's workspace cannot be materialized", async () => {
+    // workspaces/ is its own Docker volume with its own lifecycle (see the
+    // layout note in workspace.ts), so it can fail while /openclaw-config is
+    // perfectly writable. An unhandled throw here would take the whole config
+    // down — gateway token, plugin entries, every other agent — over one bad
+    // directory. Degrade to skipping that agent instead.
+    seedLegacyWorkspace("broken");
+    seedLegacyWorkspace("healthy");
+    mockDb([agentRow("broken"), agentRow("healthy")]);
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    mockedMkdirSync.mockImplementation((p) => {
+      if (String(p) === memoryDir("broken")) {
+        const err = new Error("EROFS: read-only file system, mkdir");
+        (err as NodeJS.ErrnoException).code = "EROFS";
+        throw err;
+      }
+      dirStore.add(String(p));
+      return undefined;
+    });
+
+    await regenerateOpenClawConfig();
+
+    expect(fileStore.has(CONFIG_PATH)).toBe(true);
+    expect(dirStore.has(memoryDir("healthy"))).toBe(true);
+    // Silence would strand the agent with a grant it cannot use and no trace.
+    expect(warn.mock.calls.some((call) => call.join(" ").includes("broken"))).toBe(true);
+    warn.mockRestore();
   });
 
   it("does not create memory/ for a soft-deleted agent", async () => {

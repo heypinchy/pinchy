@@ -229,8 +229,27 @@ export async function regenerateOpenClawConfig() {
   // write-capable agent while existing on no agent's disk. It is idempotent,
   // and this runs on boot and on every agent/settings mutation, so it is the
   // retrofit point for anything the layout gains from here on.
+  //
+  // Note this restores missing SOUL.md / AGENTS.md placeholders too, not just
+  // directories: ensureWorkspace writes them when absent, which until now only
+  // happened at create time and from here on happens on every regeneration.
+  //
+  // Failures are per-agent and non-fatal. workspaces/ is a separate Docker
+  // volume with its own lifecycle (see the layout note in workspace.ts), so it
+  // can be unwritable while /openclaw-config is fine. Letting that throw would
+  // trade one agent's missing directory for every agent's config — including
+  // the gateway token. The agent keeps the grant it had before; the warning is
+  // what says why its memory writes fail.
   for (const agent of liveAgents) {
-    ensureWorkspace(agent.id);
+    try {
+      ensureWorkspace(agent.id);
+    } catch (err) {
+      console.warn(
+        `[openclaw-config] Could not materialize workspace for agent ${agent.id}: ${
+          err instanceof Error ? err.message : String(err)
+        }`
+      );
+    }
   }
 
   // Integration permissions joined with their connections, shared by the
