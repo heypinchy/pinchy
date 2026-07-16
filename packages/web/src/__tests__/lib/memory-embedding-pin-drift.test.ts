@@ -62,14 +62,19 @@ describe("memory embedding pin drift guard", () => {
 
   it("retries the GGUF download on transient HTTP failures", () => {
     // A single HuggingFace 504 must not turn an unrelated PR red: the download
-    // is a ~300 MB blob with no cache, so the ONLY thing between a passing build
-    // and a flaky-red one is curl's retry behaviour. `--retry-all-errors` is the
-    // load-bearing flag — plain `--retry` skips 4xx/5xx *responses* (it only
-    // retries connection-level errors), which is exactly the HF 504 class that
-    // took down PR #768 twice on 2026-07-16.
-    // The curl invocation is backslash-continued across lines, so span newlines
-    // up to the downloaded .gguf path.
-    const download = DOCKERFILE_OPENCLAW.match(/curl[\s\S]*?\.gguf/)?.[0] ?? "";
+    // is a ~300 MB blob with no cache, so curl's retry is the only thing between
+    // a passing build and a flaky-red one (PR #768 fell over twice this way on
+    // 2026-07-16). --retry already covers the transient HTTP codes (incl. 504);
+    // --retry-all-errors widens that to 4xx / non-HTTP errors as a safety net.
+    //
+    // Anchor on the actual download command — `curl -fsSL … huggingface…gguf` —
+    // NOT on the first `curl` token (that's `apt-get install … curl`). Anchoring
+    // loosely would let the flag text in the *explanatory comment* above satisfy
+    // these assertions and mask a real removal of the flags from the command. The
+    // comment sits before `curl -fsSL`, so it is outside this span. The curl is
+    // backslash-continued across lines, hence [\s\S] up to the HF URL.
+    const download =
+      DOCKERFILE_OPENCLAW.match(/curl -fsSL[\s\S]*?huggingface\.co\S+\.gguf/)?.[0] ?? "";
     expect(download).toMatch(/--retry\s+\d+/);
     expect(download).toMatch(/--retry-all-errors/);
   });

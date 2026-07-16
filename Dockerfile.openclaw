@@ -83,13 +83,15 @@ RUN openclaw plugins install @openclaw/llama-cpp-provider \
 # together when updating the model (the memory-embedding-pin-drift unit test
 # enforces that both stay present).
 #
-# --retry-all-errors + --retry: a single HuggingFace 504 must not turn an
+# --retry + --retry-all-errors: a single HuggingFace 504 must not turn an
 # unrelated PR red. This is a ~300 MB uncached blob, so curl's retry is the only
 # thing between a passing build and a flaky one (PR #768 fell over twice on a
-# transient HF hiccup, 2026-07-16). Plain --retry only retries connection-level
-# errors; --retry-all-errors is what covers the 5xx *responses* HF serves under
-# load. Integrity is still enforced by the sha256sum -c below — a truncated or
-# tampered download fails the build regardless of how many retries it took.
+# transient HF hiccup, 2026-07-16). --retry already covers the transient HTTP
+# codes (408, 429, 500, 502, 503, 504) — the 504 that hit #768 is in that set;
+# --retry-all-errors widens it to 4xx and non-HTTP errors too, as a safety net
+# for whatever HF returns under load. Integrity is still enforced by the
+# sha256sum -c below — a truncated or tampered download fails the build
+# regardless of how many retries it took.
 RUN mkdir -p /opt/embedding-models \
     && curl -fsSL --retry 5 --retry-all-errors --retry-delay 5 \
        -o /opt/embedding-models/embeddinggemma-300m-qat-Q8_0.gguf \
