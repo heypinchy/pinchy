@@ -27,7 +27,7 @@ import {
   FAKE_OLLAMA_ABORT_STREAM_TRIGGER,
   FAKE_OLLAMA_RESPONSE,
   FAKE_OLLAMA_ABORT_STREAM_RESPONSE,
-  FAKE_OLLAMA_SLOW_STREAM_DELAY_MS,
+  FAKE_OLLAMA_ABORT_STREAM_DELAY_MS,
 } from "../shared/fake-ollama/fake-ollama-server";
 import { login, getSmithersAgentId, waitForOpenClawConnected } from "./helpers";
 
@@ -84,7 +84,11 @@ test.describe("Chat stop button — user-triggered abort (#550)", () => {
     //    provably had the time to finish. (The previous fixed 4000ms was
     //    shorter than the 4500ms it was meant to outlast, which would have let
     //    a no-op abort slip through green.)
-    await page.waitForTimeout(FAKE_OLLAMA_SLOW_STREAM_DELAY_MS * STREAM_WORDS.length);
+    await page.waitForTimeout(FAKE_OLLAMA_ABORT_STREAM_DELAY_MS * STREAM_WORDS.length);
+    //    Re-assert presence first: `not.toContainText` is also satisfied by a
+    //    locator that matches NOTHING, so a reply that vanished from the DOM
+    //    would make the assertion below pass without proving anything.
+    await expect(assistantMessage).toBeVisible();
     await expect(assistantMessage).not.toContainText(STREAM_LAST_WORD);
 
     // 6. The abort is audited as chat.run_aborted (actor = user, success).

@@ -84,11 +84,14 @@ const SLOW_STREAM_DELAY_MS = 500;
 // 15-18 leave completed "one … ten" replies in the history that spec 19 then
 // re-reads. Sharing SLOW_STREAM_RESPONSE with them let spec 19's
 // "the first word streamed" gate match a STALE reply while this run's bubble
-// had not been appended yet: the gate passed ~350ms after send (the first token
-// cannot exist before SLOW_STREAM_DELAY_MS), so it clicked stop on a zero-token
-// run and then asserted the last word's absence against the old message —
-// which of course still contained it. A private word list makes both the gate
-// and the final assertion provably about the run under test.
+// had not been appended yet: `.last()` resolved to a finished reply from an
+// earlier spec, so the gate never proved that THIS run had streamed anything.
+// It then clicked stop and asserted the last word's absence against that old
+// message — which of course still contained it. What pinned it down was the
+// timestamp: the message the assertion failed on was rendered 03:13 PM, a full
+// minute BEFORE this run sent its prompt at 03:14:03, so it could not have
+// belonged to the run under test. A private word list makes both the gate and
+// the final assertion provably about the run under test.
 const ABORT_STREAM_TRIGGER = "E2E_ABORT_STREAM";
 const ABORT_STREAM_RESPONSE = "lima mike november oscar papa quebec romeo sierra tango whiskey";
 
@@ -1127,6 +1130,9 @@ export async function handleRequest(req: http.IncomingMessage, res: http.ServerR
       return;
     }
 
+    // Abort-stream trigger: same slow per-word stream, private word list. See
+    // the ABORT_STREAM_TRIGGER declaration for why spec 19 cannot share the
+    // slow trigger above.
     if (lastContent.includes(ABORT_STREAM_TRIGGER) && !hasToolResult) {
       await streamTextResponseSlow(res, ABORT_STREAM_RESPONSE);
       return;
@@ -1374,8 +1380,14 @@ export const FAKE_OLLAMA_SLOW_STREAM_TRIGGER = SLOW_STREAM_TRIGGER;
 export const FAKE_OLLAMA_SLOW_STREAM_RESPONSE = SLOW_STREAM_RESPONSE;
 export const FAKE_OLLAMA_SLOW_STREAM_DELAY_MS = SLOW_STREAM_DELAY_MS;
 // Stop-button trigger (#550): slow stream with a word list private to spec 19.
+// The per-word delay is the slow stream's, because both surfaces dispatch this
+// trigger through the shared streamTextResponseSlow/streamOpenAiTextSlow
+// helpers. Export it under its own name so spec 19 states the timing it
+// depends on: give this trigger a dedicated delay and the constant moves with
+// it, instead of the spec's wait silently drifting off the slow stream's.
 export const FAKE_OLLAMA_ABORT_STREAM_TRIGGER = ABORT_STREAM_TRIGGER;
 export const FAKE_OLLAMA_ABORT_STREAM_RESPONSE = ABORT_STREAM_RESPONSE;
+export const FAKE_OLLAMA_ABORT_STREAM_DELAY_MS = SLOW_STREAM_DELAY_MS;
 // Chat-liveness triggers (slow "taking longer" + dying provider failure).
 export const FAKE_OLLAMA_LIVENESS_SLOW_TRIGGER = LIVENESS_SLOW_TRIGGER;
 export const FAKE_OLLAMA_LIVENESS_SLOW_RESPONSE = LIVENESS_SLOW_RESPONSE;
