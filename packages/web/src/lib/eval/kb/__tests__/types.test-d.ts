@@ -73,7 +73,7 @@ test("KbEvalAxis is exactly the six behavioral axes", () => {
   >();
 });
 
-test("KbFailureTag is exactly the ten KB failure modes", () => {
+test("KbFailureTag is exactly the eleven KB failure modes", () => {
   expectTypeOf<KbFailureTag>().toEqualTypeOf<
     | "recall-miss"
     | "dedup-inflation"
@@ -85,5 +85,6 @@ test("KbFailureTag is exactly the ten KB failure modes", () => {
     | "off-topic-grounded"
     | "false-abstention"
     | "missed-abstention"
+    | "run-infra-error"
   >();
 });

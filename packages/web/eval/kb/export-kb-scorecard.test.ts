@@ -86,4 +86,46 @@ describe("aggregateKbResults", () => {
     const cells = aggregateKbResults([]);
     expect(cells.every((c) => c.totalRuns === 0 && c.models.length === 0)).toBe(true);
   });
+
+  it("excludes run-infra-error rows from a cell's n (invalid trials, not model failures)", () => {
+    // 2 clean runs (1 pass, 1 genuine model failure) + 1 harness flake tagged
+    // run-infra-error. The infra row must NOT count toward n, passes, or the
+    // tag histogram — otherwise a harness timeout would depress passRate and
+    // zero passCaretK, conflating harness reliability with model quality.
+    const rows: KbRunResultRow[] = [
+      row({ axis: "happy", model: "model-a", passed: true }),
+      row({ axis: "happy", model: "model-a", passed: false, tags: ["ungrounded-claim"] }),
+      row({ axis: "happy", model: "model-a", passed: false, tags: ["run-infra-error"] }),
+    ];
+    const cells = aggregateKbResults(rows);
+    const happy = cells.find((c) => c.axis === "happy")!;
+
+    // n = 2 (the two valid trials), NOT 3 — the infra row is excluded.
+    expect(happy.totalRuns).toBe(2);
+    expect(happy.excludedInfraErrors).toBe(1);
+
+    const modelA = happy.models.find((m) => m.model === "model-a")!;
+    expect(modelA.n).toBe(2);
+    expect(modelA.passes).toBe(1);
+    expect(modelA.passRate).toBeCloseTo(0.5, 5);
+    // The run-infra-error tag never reaches the histogram (row excluded).
+    expect(modelA.tagHistogram["run-infra-error"]).toBeUndefined();
+    expect(modelA.tagHistogram["ungrounded-claim"]).toBe(1);
+  });
+
+  it("a model whose every run is run-infra-error yields no scorecard entry (n would be 0)", () => {
+    // A cell where the only runs are invalid trials must not manufacture a
+    // 0/0 model row — buildScorecard only sees valid trials, and there are
+    // none, so the model simply does not appear.
+    const rows: KbRunResultRow[] = [
+      row({ axis: "happy", model: "flaky-model", passed: false, tags: ["run-infra-error"] }),
+      row({ axis: "happy", model: "flaky-model", passed: false, tags: ["run-infra-error"] }),
+    ];
+    const cells = aggregateKbResults(rows);
+    const happy = cells.find((c) => c.axis === "happy")!;
+
+    expect(happy.totalRuns).toBe(0);
+    expect(happy.excludedInfraErrors).toBe(2);
+    expect(happy.models).toEqual([]);
+  });
 });

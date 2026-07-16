@@ -23,13 +23,15 @@
  * reimplementation and no cast.
  *
  * Invalid trials: the invoice exporter excludes `run-infra-error`-tagged runs
- * from a cell's n (the LLM request itself died — not a graded model
- * behavior). `KbFailureTag` (`../../src/lib/eval/kb/types.ts`) has NO
- * equivalent tag today — every KB failure mode is a genuine grading outcome
- * (retrieval, attribution, groundedness, or relevance), not a dead transport
- * call — so there is nothing to filter here. If a future KB harness change
- * introduces an infra-failure marker tag, add the same exclusion this
- * comment describes, mirroring `../export-scorecard.ts`'s `aggregate()`.
+ * from a cell's n (a harness/transport failure — the model never produced a
+ * gradeable answer, so the run is neither a pass nor a model failure).
+ * `KbFailureTag` (`../../src/lib/eval/kb/types.ts`) now carries the same
+ * `run-infra-error` marker (Task 3.4's sweep tags a timeout/capture/dispatch
+ * failure with it), so `aggregateKbResults` filters those rows out before
+ * `buildScorecard` sees them — otherwise every harness flake would depress a
+ * model's passRate and zero its passCaretK, conflating harness reliability
+ * with model quality. This mirrors `../export-scorecard.ts`'s `aggregate()`
+ * exactly.
  */
 import { readFile, readdir } from "node:fs/promises";
 import path from "node:path";
@@ -48,7 +50,14 @@ export interface KbRunResultRow extends KbRunResult {
 
 export interface KbAxisCell {
   axis: KbEvalAxis;
+  /**
+   * Rows in this axis that count toward the scorecard — i.e. valid trials,
+   * AFTER excluding `run-infra-error` invalid trials. This is the `n` the
+   * per-model `models` entries are computed over, NOT the raw row count.
+   */
   totalRuns: number;
+  /** `run-infra-error` rows excluded from `totalRuns`/`models` as invalid trials (harness flakes, not model failures). */
+  excludedInfraErrors: number;
   /** Per-model scorecard entries within this axis — see `ScorecardEntry` (../../src/lib/eval/scorecard.ts). */
   models: ScorecardEntry[];
 }
@@ -59,14 +68,23 @@ export interface KbAxisCell {
  * each axis via `buildScorecard<KbFailureTag>`. Pure — no I/O — so it is
  * unit-testable directly with hand-built fixtures (see
  * `export-kb-scorecard.test.ts`).
+ *
+ * Invalid trials (`run-infra-error`) are filtered out BEFORE `buildScorecard`
+ * so they never inflate n or count as model failures — see the module doc
+ * comment and `../export-scorecard.ts`'s identical exclusion. `totalRuns` is
+ * the post-exclusion valid-trial count; `excludedInfraErrors` reports how
+ * many were dropped so a reader can tell an honestly-thin cell from a
+ * flake-riddled one.
  */
 export function aggregateKbResults(rows: KbRunResultRow[]): KbAxisCell[] {
   return KB_EVAL_AXES.map((axis) => {
     const axisRows = rows.filter((r) => r.axis === axis);
-    const kbRuns: KbRunResult[] = axisRows.map(({ axis: _axis, ...rest }) => rest);
+    const validRows = axisRows.filter((r) => !r.tags.includes("run-infra-error"));
+    const kbRuns: KbRunResult[] = validRows.map(({ axis: _axis, ...rest }) => rest);
     return {
       axis,
-      totalRuns: axisRows.length,
+      totalRuns: validRows.length,
+      excludedInfraErrors: axisRows.length - validRows.length,
       models: buildScorecard<KbFailureTag>(kbRuns),
     };
   });

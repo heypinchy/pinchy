@@ -91,7 +91,14 @@ export type KbFailureTag =
   | "ungrounded-claim" // an answer sentence not entailed by any cited passage
   | "off-topic-grounded" // grounded but does not answer the question (relevance fail)
   | "false-abstention" // abstained though the corpus contained the answer
-  | "missed-abstention"; // answered though the corpus could not support it
+  | "missed-abstention" // answered though the corpus could not support it
+  // A run-level infra failure (dispatch idle-timeout, raw-text capture error,
+  // any harness/transport error) — NOT a model-quality signal. The sweep
+  // records it so a hung/broken run becomes a data point instead of crashing,
+  // but the scorecard exporter EXCLUDES these from a cell's n (they are
+  // neither passes nor model failures), mirroring the invoice harness's
+  // identical `run-infra-error` exclusion in `../export-scorecard.ts`.
+  | "run-infra-error";
 
 export interface KbGraderResult extends Omit<GraderResult, "tags"> {
   tags: KbFailureTag[];

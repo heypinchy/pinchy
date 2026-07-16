@@ -431,27 +431,30 @@ test.describe("KB Eval Harness Layer 3: groundedness sweep (real Ollama Cloud)",
         );
       } catch (err) {
         // A hung/looping run, a capture failure, or any per-run error must
-        // NOT abort the whole sweep — record it as a graded run-timeout row
-        // and keep going, mirroring ../eval-models.spec.ts's run-timeout
-        // handling. No dedicated KbFailureTag exists for this today (see
-        // export-kb-scorecard.ts's "Invalid trials" comment) — encoded in
-        // `notes` with a greppable "[run-timeout]" prefix rather than adding
-        // a new tag, to avoid silently changing Task 3.5's aggregation
-        // contract from this task. Flagged for the orchestrator/Task 3.5.
+        // NOT abort the whole sweep — record it as a graded `run-infra-error`
+        // row and keep going, mirroring ../eval-models.spec.ts's run-timeout
+        // handling. The TAG is what the scorecard reads: `run-infra-error` is
+        // an invalid trial (harness/transport failure, not model behavior), so
+        // export-kb-scorecard.ts EXCLUDES it from a cell's n — exactly as the
+        // invoice ../export-scorecard.ts excludes its own `run-infra-error`.
+        // The descriptive note is kept for the trajectory/forensics, but a run
+        // left untagged would be silently counted as a model failure in
+        // passRate and would zero passCaretK, conflating harness flakiness
+        // with model quality.
         const latencyMs = Date.now() - runStart;
         console.warn(
-          `[kb-eval] run for ${model}/${goldId} recorded as run-timeout: ${String(err)}`
+          `[kb-eval] run for ${model}/${goldId} recorded as run-infra-error: ${String(err)}`
         );
-        const timeoutResult: KbRunResult = {
+        const infraErrorResult: KbRunResult = {
           model,
           scenario: goldId,
           passed: false,
-          tags: [],
-          notes: [`[run-timeout] ${String(err)}`],
+          tags: ["run-infra-error"],
+          notes: [`[run-infra-error] ${String(err)}`],
           latencyMs,
         };
-        allRuns.push(timeoutResult);
-        await appendRunResult(RESULT_LABEL, timeoutResult);
+        allRuns.push(infraErrorResult);
+        await appendRunResult(RESULT_LABEL, infraErrorResult);
       }
     }
 
