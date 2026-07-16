@@ -38,10 +38,10 @@ export function reciprocalRank(retrieved: string[], relevant: string[]): number 
 
 /**
  * Binary-gain nDCG at `k`: relevance is 1 (in `relevant`) or 0, so
- * `DCG = Σ rel_i / log2(i+2)` for the top-`k` (0-indexed position `i`,
- * `+2` because rank 1 sits at `log2(2) = 1`, giving the top slot a
- * discount of exactly 1 rather than the undefined `log2(1+1)=1`... i.e.
- * the `+2` shift avoids `log2(1) = 0` — a rank-1 divisor of zero).
+ * `DCG = Σ rel_i / log2(i+2)` for the top-`k` (0-indexed position `i`).
+ * The `+2` (rather than the textbook `+1`) shifts rank 1 (`i=0`) to
+ * `log2(2) = 1` — a plain `log2(i+1)` would divide the top rank by
+ * `log2(1) = 0`, which is undefined.
  * `IDCG` is the DCG of the best-possible ranking: `min(|relevant|, k)`
  * hits placed first. `nDCG = DCG/IDCG`, and 0 when `IDCG` is 0 (no
  * relevant ids, or `k <= 0`) rather than dividing by zero.
