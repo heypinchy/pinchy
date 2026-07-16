@@ -89,6 +89,10 @@ Sources are named by their full path, not just the filename. In a real document 
 
 The list resolves exactly the numbers the answer cites — no more and no fewer. A number with no entry would be a dead end, and an entry the answer never cited would make a single source look like several.
 
+### Regression-protected
+
+Citation accuracy isn't just a goal here — it's tested. Every change to the knowledge base runs against an automated test suite that checks retrieval quality (the right passages come back for a query) and citation integrity (every `[N]` in an answer resolves to a real, correctly-formatted source, and vice versa). A change that broke either would fail before it ships. We also track groundedness — whether an answer's claims are actually backed by what it cites — against a reference set of questions, so accuracy is measured over time, not just assumed.
+
 ### Honest when it doesn't know
 
 If the indexed documents don't contain the answer, the agent says so instead of guessing. If only part of a question is answered by the sources, it answers what's supported and flags what's missing rather than padding the rest.
