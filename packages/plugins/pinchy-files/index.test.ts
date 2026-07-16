@@ -1112,12 +1112,17 @@ describe("pinchy_write tool", () => {
   });
 
   it("does not create any directories when the write is rejected (symlink escape)", async () => {
-    // Ordering proof: mkdir must run AFTER validateAccess/assertNoSymlinkEscape,
-    // never before. A pre-planted symlink whose parent escapes the sandbox,
-    // with a deep NON-existent tail beyond the symlink — if mkdir ran before
-    // the escape check (or used the unresolved requested path instead of the
-    // validated onDisk path), it would create these directories on the real,
+    // Ordering proof: mkdir must run AFTER assertNoSymlinkEscape, never before.
+    // A pre-planted symlink whose parent escapes the sandbox, with a deep
+    // NON-existent tail beyond the symlink — if mkdir ran before the escape
+    // check (or used the unresolved requested path instead of the validated
+    // onDisk path), it would create these directories on the real,
     // out-of-sandbox side by following the symlink.
+    //
+    // This covers only the escape check: validateAccess is mocked to a
+    // pass-through for the whole file (see the vi.mock at the top), so the
+    // allow-list rejection cannot be exercised here. It is the tighter of the
+    // two guards anyway — it runs last, immediately before the mkdir.
     const sandbox = join(tmpDir, "sandbox");
     const outside = join(tmpDir, "outside");
     mkdirSync(sandbox);
@@ -1138,7 +1143,6 @@ describe("pinchy_write tool", () => {
 
     expect(result.isError).toBe(true);
     expect(existsSync(join(outside, "new-sub"))).toBe(false);
-    expect(existsSync(join(outside, "new-sub", "deeper"))).toBe(false);
   });
 });
 
