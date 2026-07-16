@@ -31,10 +31,41 @@ describe("knowledge-base template", () => {
     // traceable unless the model restates each source's identity in its
     // visible answer (same pattern as OpenClaw's native "Source: <path>"
     // memory citations). The template must teach a trailing Sources list that
-    // maps each cited number to its document name + page.
+    // maps each cited number to its document path + page.
     expect(md).toMatch(/Sources:/);
-    expect(md).toMatch(/document name/i);
     expect(md).toMatch(/page/i);
+  });
+
+  it("teaches citing the document PATH, not the bare filename", () => {
+    // knowledge_search hands the model a full sourcePath (see
+    // pinchy-knowledge's formatWithCitations). A filename alone cannot be
+    // found in a deep corpus and cannot disambiguate same-named files in
+    // different folders, so the reader cannot verify the claim. Found in the
+    // 2026-07-16 live Block-A test.
+    expect(md).toMatch(/document path/i);
+    expect(md).not.toMatch(/<document name>/i);
+  });
+
+  it("forbids listing a retrieved-but-uncited source", () => {
+    // Live Block-A regression (2026-07-16): the answer cited only [1] inline
+    // but the Sources list also carried "[2] Quality File 2012_4.pdf — p. 169",
+    // a chunk that knowledge_search returned and the answer never used (it was
+    // a table-of-contents page). That is worse than noise: it lends the
+    // appearance of two independent sources to a single-source claim, which is
+    // exactly the over-trust the design doc warns about (§ "Zitate erhöhen
+    // Vertrauen auch wenn sie falsch sind").
+    expect(md).toMatch(/only the sources you actually cited/i);
+    expect(md).toMatch(/did ?n[o']?t use|not used|uncited/i);
+  });
+
+  it("does not demonstrate a multi-entry Sources list as the default shape", () => {
+    // The template's own example used to show BOTH "[1] …" and "[2] …". A
+    // few-shot example teaches shape more strongly than a prose rule contradicts
+    // it, so the model reproduced a two-entry list even when it had cited only
+    // [1] — the rule "list only what you cited" was already present and lost.
+    // Keep the example single-entry so the demonstrated shape and the rule agree.
+    const example = md.slice(md.indexOf("Sources:"));
+    expect(example).not.toMatch(/\[2\]/);
   });
 
   it("instructs the agent to answer in the user's question language", () => {

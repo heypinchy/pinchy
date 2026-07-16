@@ -136,8 +136,11 @@ describe("pinchy-knowledge plugin", () => {
     );
 
     expect(result.content).toEqual([
-      { type: "text", text: '[1] a.pdf (p. 3): "Snippet one."' },
+      { type: "text", text: '[1] /data/kb/a.pdf (p. 3): "Snippet one."' },
     ]);
+    // details keeps the human-readable docName: an audit reviewer wants to
+    // read WHICH document was returned, while the model needs a locator it
+    // can cite. Different consumers, deliberately different fields.
     expect(result.details).toEqual({
       toolName: "knowledge_search",
       returnedDocumentIds: [{ id: "/data/kb/a.pdf", name: "a.pdf" }],
@@ -245,10 +248,44 @@ describe("formatWithCitations", () => {
     { chunkId: "c2", text: "Snippet two.", sourcePath: "/data/kb/b.pdf", page: null, docName: "b.pdf" },
   ];
 
-  it("formats results as numbered, citable sources with docName and page", () => {
+  it("formats results as numbered, citable sources with sourcePath and page", () => {
     expect(formatWithCitations(results)).toBe(
-      '[1] a.pdf (p. 3): "Snippet one."\n\n[2] b.pdf: "Snippet two."'
+      '[1] /data/kb/a.pdf (p. 3): "Snippet one."\n\n[2] /data/kb/b.pdf: "Snippet two."'
     );
+  });
+
+  it("identifies a source by its full path, not its bare filename", () => {
+    // A real corpus nests documents many levels deep and reuses filenames
+    // across folders (the 3M/Noack corpus has ~194 docs under
+    // /data/noack/OLD/QF_2012/PrintingFiles_QF/...). The model can only cite
+    // what it is shown, so a bare basename leaves the reader unable to FIND
+    // the document and verify the claim — which is the entire point of
+    // cite-then-answer. Found in the 2026-07-16 live Block-A test: the answer
+    // was fully grounded, but the citation "PI_EColi-Coliform_Count_Plate.pdf"
+    // was unfindable in a 194-document tree.
+    const nested: KnowledgeSearchResult[] = [
+      {
+        chunkId: "c1",
+        text: "Incubate 24 h.",
+        sourcePath: "/data/noack/OLD/QF_2012/PrintingFiles_QF/PI_EColi.pdf",
+        page: 2,
+        docName: "PI_EColi.pdf",
+      },
+    ];
+    const out = formatWithCitations(nested);
+    expect(out).toContain("/data/noack/OLD/QF_2012/PrintingFiles_QF/PI_EColi.pdf");
+  });
+
+  it("distinguishes same-named documents in different folders", () => {
+    // The failure a basename cannot express at all: two distinct documents
+    // collapse into one indistinguishable citation.
+    const collision: KnowledgeSearchResult[] = [
+      { chunkId: "c1", text: "A.", sourcePath: "/data/kb/2011/spec.pdf", page: 1, docName: "spec.pdf" },
+      { chunkId: "c2", text: "B.", sourcePath: "/data/kb/2012/spec.pdf", page: 1, docName: "spec.pdf" },
+    ];
+    const out = formatWithCitations(collision);
+    expect(out).toContain("/data/kb/2011/spec.pdf");
+    expect(out).toContain("/data/kb/2012/spec.pdf");
   });
 
   it("returns a deterministic empty-state message for no results", () => {

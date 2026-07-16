@@ -96,6 +96,15 @@ export function returnedDocumentIds(results: KnowledgeSearchResult[]): DocumentR
  * can cite-then-answer against a closed set of ids (the knowledge-base
  * agent template teaches this pattern in its AGENTS.md). Deterministic and
  * unit-tested: the same input always yields the same output string.
+ *
+ * Sources are identified by full `sourcePath`, not `docName`. A citation only
+ * earns trust if the reader can FIND the document and check it: a bare
+ * basename is unfindable in a deep corpus and, worse, collapses same-named
+ * files from different folders into one indistinguishable citation. The model
+ * can only cite what it is shown, so the path has to be in this string — the
+ * tool result never reaches the browser. `docName` stays in the response shape
+ * for `returnedDocumentIds`, which wants a human-readable name for the audit
+ * row, not a locator.
  */
 export function formatWithCitations(results: KnowledgeSearchResult[]): string {
   if (results.length === 0) {
@@ -104,7 +113,7 @@ export function formatWithCitations(results: KnowledgeSearchResult[]): string {
   return results
     .map((result, index) => {
       const pageSuffix = result.page != null ? ` (p. ${result.page})` : "";
-      return `[${index + 1}] ${result.docName}${pageSuffix}: "${result.text}"`;
+      return `[${index + 1}] ${result.sourcePath}${pageSuffix}: "${result.text}"`;
     })
     .join("\n\n");
 }
