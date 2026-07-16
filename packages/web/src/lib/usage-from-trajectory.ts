@@ -33,8 +33,12 @@ export interface PerTurnUsage {
    * context by roughly that factor. `data.promptCache.lastCallUsage` carries
    * the final call on its own.
    *
-   * `null` when the event has no `promptCache` block — "unknown", which must
-   * not be conflated with 0 ("empty context", i.e. 0% utilization).
+   * Counts every prompt class of that call — `input + cacheRead + cacheWrite`
+   * — because all three are tokens the model read; they only differ in billing.
+   *
+   * `null` when the event carries no usable `promptCache.lastCallUsage` —
+   * "unknown", which must not be conflated with 0 ("empty context", i.e. 0%
+   * utilization).
    */
   contextTokens: number | null;
 }
@@ -61,16 +65,30 @@ function qualifiedModel(provider: unknown, modelId: unknown): string | null {
 
 /**
  * Size of the prompt on the turn's last call, from `data.promptCache
- * .lastCallUsage`. The cached prefix counts: it is still part of the prompt the
- * model sees, only billed differently — excluding it would under-report
- * utilization on exactly the caching providers that run the longest contexts.
- * Returns null when the block is absent, so callers can tell "unknown" apart
- * from "empty".
+ * .lastCallUsage` — the sum of its three PROMPT classes.
+ *
+ * `input`, `cacheRead` and `cacheWrite` are disjoint, which the usage payload
+ * proves arithmetically: a live event reporting 5 / 630 / 32336 / 16956 carries
+ * `total: 49927` — the plain sum, no class counted twice. So the prompt the
+ * model read is `input + cacheRead + cacheWrite`; only `output` is not part of
+ * it. Cached tokens are still tokens the model sees, they are merely billed at
+ * a different rate (see estimateTurnCostUsd), and that holds for the freshly
+ * written ones too: on the turn where the context GROWS, the new tail arrives
+ * as `cacheWrite`. Dropping either cache class would under-report utilization
+ * on exactly the caching providers that run the longest contexts.
+ *
+ * Returns null when the block is missing, or when it carries none of the three
+ * classes, so callers can tell "unknown" apart from "empty" — a 0 here would
+ * read as 0% utilization, which is undetectable downstream.
  */
 function contextTokensOf(data: Record<string, unknown> | undefined): number | null {
   const lastCall = asRecord(asRecord(data?.promptCache)?.lastCallUsage);
   if (!lastCall) return null;
-  return asTokenCount(lastCall.input) + asTokenCount(lastCall.cacheRead);
+  const promptTokens =
+    asTokenCount(lastCall.input) +
+    asTokenCount(lastCall.cacheRead) +
+    asTokenCount(lastCall.cacheWrite);
+  return promptTokens > 0 ? promptTokens : null;
 }
 
 /**

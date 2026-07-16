@@ -693,9 +693,13 @@ export const usageRecords = pgTable(
     // and input_tokens sums every call in it (~11x larger in practice), so it
     // says nothing about context pressure.
     //
+    // Counts every prompt class of that call — input + cacheRead + cacheWrite,
+    // which the usage payload shows to be disjoint — since all three are tokens
+    // the model read, differing only in how they are billed.
+    //
     // Nullable: only the per-turn trajectory path can know it. The gauge poller
     // and the /api/internal/usage/record sink leave it NULL, as do events with
-    // no promptCache block — NULL means "unknown", never "empty".
+    // no usable promptCache — NULL means "unknown", never "empty".
     //
     // This is the read-side of the 2026-07-15 "Piper" incident: the agent ran at
     // ~170k context with compaction never firing (its window was configured at

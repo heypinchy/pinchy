@@ -172,21 +172,21 @@ describe("recordSessionTurnsUsage cost wiring", () => {
     expect(rows[0].estimatedCostUsd).not.toBeNull();
   });
 
-  it("records the turn's context size, distinct from the billed input tokens", () => {
+  it("records the turn's context size, distinct from the billed input tokens", async () => {
     // Guards the whole trajectory → DB-row path: the row must bill the summed
     // 1000 while reporting the last call's 400 as context pressure. Collapsing
     // the two is the mistake this column exists to prevent.
-    return recordSessionTurnsUsage({
+    await recordSessionTurnsUsage({
       openclawClient: client(),
       agentId: "a1",
       userId: "u1",
       agentName: "Ada",
       sessionKey: "agent:a1:direct:u1",
-    }).then(() => {
-      const rows = mockValues.mock.calls[0][0] as Array<Record<string, unknown>>;
-      expect(rows[0].inputTokens).toBe(1000);
-      expect(rows[0].contextTokens).toBe(400);
     });
+
+    const rows = mockValues.mock.calls[0][0] as Array<Record<string, unknown>>;
+    expect(rows[0].inputTokens).toBe(1000);
+    expect(rows[0].contextTokens).toBe(400);
   });
 
   it("still records the turn with a null cost when the model is unpriced", async () => {

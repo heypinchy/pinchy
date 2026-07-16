@@ -147,11 +147,54 @@ describe("extractPerTurnUsage context size", () => {
     expect(row.contextTokens).toBe(100000);
   });
 
+  it("counts freshly cached prompt tokens toward the context size", () => {
+    // cacheWrite is the same argument as cacheRead, one call earlier: tokens
+    // being written to the cache are prompt tokens the model reads on THIS
+    // call — they are just billed at the write rate. The four classes are
+    // disjoint, which `data.usage` proves arithmetically: the fixture's
+    // 5 + 630 + 32336 + 16956 is exactly its `total` of 49927. So the prompt
+    // is input + cacheRead + cacheWrite.
+    //
+    // Omitting cacheWrite under-reports precisely where the column earns its
+    // keep: on the turn where the context GROWS, the new tail is cacheWrite.
+    // A cold turn (nothing cached yet) would report ~0 context — the same
+    // "reads as 0% utilization" failure the null-vs-0 rule exists to prevent.
+    const [row] = extractPerTurnUsage([
+      modelCompleted({
+        data: {
+          usage: { input: 5, output: 630, cacheRead: 0, cacheWrite: 150000, total: 150635 },
+          promptCache: {
+            lastCallUsage: { input: 4000, output: 630, cacheRead: 0, cacheWrite: 96000 },
+          },
+        },
+      }),
+    ]);
+
+    expect(row.contextTokens).toBe(100000);
+  });
+
   it("reports a null context size when the event carries no promptCache", () => {
     // Null, not 0 — "we don't know" must never render as "the context is empty",
     // which would silently read as 0% utilization.
     const [row] = extractPerTurnUsage([
       modelCompleted({ data: { usage: { input: 100, output: 20, total: 120 } } }),
+    ]);
+
+    expect(row.contextTokens).toBeNull();
+  });
+
+  it("reports null, not 0, when lastCallUsage carries no prompt token classes", () => {
+    // Hanging the "unknown" signal on the mere PRESENCE of the block leaks a 0
+    // through whenever the shape is empty or unrecognized — and 0 is a lie the
+    // dashboard cannot detect, because "context was empty" is a legal reading.
+    // No prompt classes we understand ⇒ we do not know the context size.
+    const [row] = extractPerTurnUsage([
+      modelCompleted({
+        data: {
+          usage: { input: 100, output: 20, total: 120 },
+          promptCache: { lastCallUsage: { output: 20 } },
+        },
+      }),
     ]);
 
     expect(row.contextTokens).toBeNull();
