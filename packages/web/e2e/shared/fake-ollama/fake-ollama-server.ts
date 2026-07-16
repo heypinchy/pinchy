@@ -79,6 +79,19 @@ const SLOW_STREAM_TRIGGER = "E2E_SLOW_STREAM";
 const SLOW_STREAM_RESPONSE = "one two three four five six seven eight nine ten";
 const SLOW_STREAM_DELAY_MS = 500;
 
+// Same slow per-word stream as SLOW_STREAM, but with a word list no other spec
+// can produce. The integration suite shares ONE OpenClaw session, so specs
+// 15-18 leave completed "one … ten" replies in the history that spec 19 then
+// re-reads. Sharing SLOW_STREAM_RESPONSE with them let spec 19's
+// "the first word streamed" gate match a STALE reply while this run's bubble
+// had not been appended yet: the gate passed ~350ms after send (the first token
+// cannot exist before SLOW_STREAM_DELAY_MS), so it clicked stop on a zero-token
+// run and then asserted the last word's absence against the old message —
+// which of course still contained it. A private word list makes both the gate
+// and the final assertion provably about the run under test.
+const ABORT_STREAM_TRIGGER = "E2E_ABORT_STREAM";
+const ABORT_STREAM_RESPONSE = "lima mike november oscar papa quebec romeo sierra tango whiskey";
+
 // ── Chat-liveness triggers ─────────────────────────────────────────────────
 // Building blocks for the chat-liveness E2E specs (asserted in a later task).
 //
@@ -1114,6 +1127,11 @@ export async function handleRequest(req: http.IncomingMessage, res: http.ServerR
       return;
     }
 
+    if (lastContent.includes(ABORT_STREAM_TRIGGER) && !hasToolResult) {
+      await streamTextResponseSlow(res, ABORT_STREAM_RESPONSE);
+      return;
+    }
+
     if (lastContent.includes(LIVENESS_DYING_TRIGGER) && !hasToolResult) {
       streamTextResponseDying(res, LIVENESS_DYING_PARTIAL);
       return;
@@ -1285,6 +1303,13 @@ export async function handleRequest(req: http.IncomingMessage, res: http.ServerR
       return;
     }
 
+    // Abort-stream trigger: same slow per-word stream, private word list. Lives
+    // on this surface for the same reason as the slow trigger above.
+    if (lastContent.includes(ABORT_STREAM_TRIGGER) && !hasToolResult) {
+      await streamOpenAiTextSlow(res, ABORT_STREAM_RESPONSE);
+      return;
+    }
+
     // Liveness DYING: abruptly-ended stream (provider death). Checked before the
     // slow trigger because both are independent prompts; order is for clarity.
     if (lastContent.includes(LIVENESS_DYING_TRIGGER) && !hasToolResult) {
@@ -1348,6 +1373,9 @@ export const FAKE_OLLAMA_DOMAIN_LOCK_TOOL_RESPONSE = DOMAIN_LOCK_TOOL_RESPONSE;
 export const FAKE_OLLAMA_SLOW_STREAM_TRIGGER = SLOW_STREAM_TRIGGER;
 export const FAKE_OLLAMA_SLOW_STREAM_RESPONSE = SLOW_STREAM_RESPONSE;
 export const FAKE_OLLAMA_SLOW_STREAM_DELAY_MS = SLOW_STREAM_DELAY_MS;
+// Stop-button trigger (#550): slow stream with a word list private to spec 19.
+export const FAKE_OLLAMA_ABORT_STREAM_TRIGGER = ABORT_STREAM_TRIGGER;
+export const FAKE_OLLAMA_ABORT_STREAM_RESPONSE = ABORT_STREAM_RESPONSE;
 // Chat-liveness triggers (slow "taking longer" + dying provider failure).
 export const FAKE_OLLAMA_LIVENESS_SLOW_TRIGGER = LIVENESS_SLOW_TRIGGER;
 export const FAKE_OLLAMA_LIVENESS_SLOW_RESPONSE = LIVENESS_SLOW_RESPONSE;

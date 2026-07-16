@@ -16,15 +16,22 @@
 //   2. The SAME session is immediately reusable — a second message gets a real
 //      reply. This is the session-lane-release regression guard; if the
 //      upstream fix ever regresses, this is the assertion that goes red.
+//
+// Both the mid-stream gate and the final assertion are deliberately scoped to
+// THIS run's reply via a word list only this spec can trigger. The integration
+// suite shares one OpenClaw session, so the generic E2E_SLOW_STREAM reply is
+// already in the history from specs 15-18 — see the comment on
+// FAKE_OLLAMA_ABORT_STREAM_TRIGGER for the flake that cost us.
 import { test, expect } from "@playwright/test";
 import {
-  FAKE_OLLAMA_SLOW_STREAM_TRIGGER,
+  FAKE_OLLAMA_ABORT_STREAM_TRIGGER,
   FAKE_OLLAMA_RESPONSE,
-  FAKE_OLLAMA_SLOW_STREAM_RESPONSE,
+  FAKE_OLLAMA_ABORT_STREAM_RESPONSE,
+  FAKE_OLLAMA_SLOW_STREAM_DELAY_MS,
 } from "../shared/fake-ollama/fake-ollama-server";
 import { login, getSmithersAgentId, waitForOpenClawConnected } from "./helpers";
 
-const STREAM_WORDS = FAKE_OLLAMA_SLOW_STREAM_RESPONSE.split(" ");
+const STREAM_WORDS = FAKE_OLLAMA_ABORT_STREAM_RESPONSE.split(" ");
 const STREAM_FIRST_WORD = STREAM_WORDS[0]!;
 const STREAM_LAST_WORD = STREAM_WORDS[STREAM_WORDS.length - 1]!;
 
@@ -43,16 +50,24 @@ test.describe("Chat stop button — user-triggered abort (#550)", () => {
     // 1. Kick off a genuinely incremental reply (~500ms/word, ten words). Keep
     //    the prompt free of the response's words so the last-word assertion in
     //    step 5 can never be satisfied by the echoed user message.
-    await input.fill(`${FAKE_OLLAMA_SLOW_STREAM_TRIGGER}: please respond slowly`);
+    await input.fill(`${FAKE_OLLAMA_ABORT_STREAM_TRIGGER}: please respond slowly`);
     await input.press("Enter");
 
     // 2. The run is STARTED (not merely pending): the stop button is showing
     //    AND the first word has streamed. The openclaw#42172 bug was about
     //    started runs, so we deliberately abort one mid-stream.
+    //
+    //    Scope the reply by its first word rather than taking `.last()` of all
+    //    assistant messages: only this run can produce STREAM_FIRST_WORD, so a
+    //    match cannot be an earlier spec's reply sitting in the shared session.
+    //    `.last()` could — and did — resolve to one while this run's bubble was
+    //    not in the DOM yet, passing the gate before a single token existed.
     const stopButton = page.getByRole("button", { name: "Stop generating" });
     await expect(stopButton).toBeVisible({ timeout: 15000 });
-    const assistantMessage = page.locator('[data-role="assistant"]').last();
-    await expect(assistantMessage).toContainText(STREAM_FIRST_WORD, { timeout: 15000 });
+    const assistantMessage = page
+      .locator('[data-role="assistant"]')
+      .filter({ hasText: STREAM_FIRST_WORD });
+    await expect(assistantMessage).toBeVisible({ timeout: 15000 });
 
     // 3. Click stop.
     await stopButton.click();
@@ -62,9 +77,14 @@ test.describe("Chat stop button — user-triggered abort (#550)", () => {
     await expect(stopButton).toBeHidden({ timeout: 10000 });
 
     // 5. The stream actually stopped server-side: the final word never lands.
-    //    With the old no-op abort the reply would run to completion ("ten").
-    //    Give it well over the remaining stream time to be sure.
-    await page.waitForTimeout(4000);
+    //    With the old no-op abort the reply would run to completion.
+    //    We aborted right after word one, so the nine remaining words would
+    //    take DELAY_MS * 9 to arrive. Wait out the whole response length —
+    //    a full word longer than that — so a stream that was NOT stopped has
+    //    provably had the time to finish. (The previous fixed 4000ms was
+    //    shorter than the 4500ms it was meant to outlast, which would have let
+    //    a no-op abort slip through green.)
+    await page.waitForTimeout(FAKE_OLLAMA_SLOW_STREAM_DELAY_MS * STREAM_WORDS.length);
     await expect(assistantMessage).not.toContainText(STREAM_LAST_WORD);
 
     // 6. The abort is audited as chat.run_aborted (actor = user, success).
