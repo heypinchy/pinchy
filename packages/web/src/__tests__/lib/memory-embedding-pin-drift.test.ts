@@ -60,6 +60,20 @@ describe("memory embedding pin drift guard", () => {
     expect(DOCKERFILE_OPENCLAW).toMatch(/[0-9a-f]{64}\s+\S+\.gguf/);
   });
 
+  it("retries the GGUF download on transient HTTP failures", () => {
+    // A single HuggingFace 504 must not turn an unrelated PR red: the download
+    // is a ~300 MB blob with no cache, so the ONLY thing between a passing build
+    // and a flaky-red one is curl's retry behaviour. `--retry-all-errors` is the
+    // load-bearing flag — plain `--retry` skips 4xx/5xx *responses* (it only
+    // retries connection-level errors), which is exactly the HF 504 class that
+    // took down PR #768 twice on 2026-07-16.
+    // The curl invocation is backslash-continued across lines, so span newlines
+    // up to the downloaded .gguf path.
+    const download = DOCKERFILE_OPENCLAW.match(/curl[\s\S]*?\.gguf/)?.[0] ?? "";
+    expect(download).toMatch(/--retry\s+\d+/);
+    expect(download).toMatch(/--retry-all-errors/);
+  });
+
   it("the CI smoke test checks the same model path", () => {
     const smokePath = VERIFY_SCRIPT.match(/MODEL_PATH="([^"]+\.gguf)"/)?.[1];
     expect(smokePath).toBe(MEMORY_EMBEDDING_MODEL_PATH);

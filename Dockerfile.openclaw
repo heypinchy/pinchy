@@ -82,8 +82,17 @@ RUN openclaw plugins install @openclaw/llama-cpp-provider \
 # LOUD instead of silently shipping in the image. Bump the revision + digest
 # together when updating the model (the memory-embedding-pin-drift unit test
 # enforces that both stay present).
+#
+# --retry-all-errors + --retry: a single HuggingFace 504 must not turn an
+# unrelated PR red. This is a ~300 MB uncached blob, so curl's retry is the only
+# thing between a passing build and a flaky one (PR #768 fell over twice on a
+# transient HF hiccup, 2026-07-16). Plain --retry only retries connection-level
+# errors; --retry-all-errors is what covers the 5xx *responses* HF serves under
+# load. Integrity is still enforced by the sha256sum -c below — a truncated or
+# tampered download fails the build regardless of how many retries it took.
 RUN mkdir -p /opt/embedding-models \
-    && curl -fsSL -o /opt/embedding-models/embeddinggemma-300m-qat-Q8_0.gguf \
+    && curl -fsSL --retry 5 --retry-all-errors --retry-delay 5 \
+       -o /opt/embedding-models/embeddinggemma-300m-qat-Q8_0.gguf \
        https://huggingface.co/ggml-org/embeddinggemma-300m-qat-q8_0-GGUF/resolve/66f974f8cd48cc3b9c41c516b95508e75b4bee64/embeddinggemma-300m-qat-Q8_0.gguf \
     && echo "6fa0c02a9c302be6f977521d399b4de3a46310a4f2621ee0063747881b673f67  /opt/embedding-models/embeddinggemma-300m-qat-Q8_0.gguf" | sha256sum -c -
 
