@@ -280,7 +280,12 @@ it("only retrieves chunks for the given org (ignores another org's data even und
 
   const ids = results.map((r) => r.chunkId);
   expect(ids).toContain(mine.chunkId);
-  expect(ids).not.toContain(otherChunk.chunkId);
+  // otherChunk is a raw kbChunks row, so its primary key is `id` — `seedChunk`
+  // (used for `mine` above) is what returns a `chunkId`. Reading `.chunkId`
+  // here yielded undefined, and `not.toContain(undefined)` passes against a
+  // list of strings no matter what retrieve() does: this org-isolation
+  // assertion was vacuous until the test typecheck gate caught it.
+  expect(ids).not.toContain(otherChunk.id);
 
   // Sanity: the row really exists for the other org (guards against a typo
   // making this test vacuously pass).
