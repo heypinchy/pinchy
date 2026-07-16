@@ -345,6 +345,14 @@ Every plugin tool must be covered at three layers:
 
 Follow the Plugin Integration Contract above, then apply the tool dispatch coverage recipe for each tool the plugin registers.
 
+#### Ref-based tools (opaque `_pinchy_ref` inputs)
+
+A static `TriggerConfig` cannot cover a tool whose primary argument is an opaque `_pinchy_ref` (pinchy-odoo's `odoo_reconcile`, `odoo_schedule_activity`, `odoo_attach_file`, the record-action tools, …). The ref is minted at runtime (per connection, per record) and is unknowable when the trigger is authored, so a hard-coded ref only ever exercises the plugin's decode-rejection path — not real dispatch.
+
+The fake-LLM instead resolves the ref **dynamically**, exactly like a real model: it first dispatches `odoo_read`, then reads the real `_pinchy_ref` back out of that tool-result message and reuses it in the ref-based tool. The reusable primitive is `buildOdooRefDispatchScript` / `extractPinchyRefFromToolResults` in `fake-ollama-server.ts` (unit-tested in `fake-ollama-ref-dispatch.test.ts`). `odoo_schedule_activity` is the worked example (`odoo-agent-chat.spec.ts` dispatch-probe block); assert `outcome=success` via `pollAuditForEvent`, not just that a row exists — a broken ref still dispatches (audited `failure`).
+
+A dedicated guard, `odoo-ref-tool-e2e-coverage.test.ts` (pinchy#791), enforces this per-tool: it auto-detects every ref-based odoo tool from the plugin source and requires each to be either E2E-covered or carry a `PENDING_E2E` exemption citing the tracking issue. A **new** ref-based odoo tool with neither fails CI. To cover the next one: script its round-2 tool call in `buildOdooRefDispatchScript` (or a sibling), add the spec assertion, then delete its `PENDING_E2E` entry (the guard fails if a covered tool stays exempted).
+
 ## Documentation
 
 - Docs live in `docs/`, use Astro Starlight, and follow the Diataxis framework.

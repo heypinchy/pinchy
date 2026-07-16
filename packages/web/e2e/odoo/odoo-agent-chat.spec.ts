@@ -17,6 +17,7 @@ import {
 import {
   FAKE_OLLAMA_ODOO_LIST_MODELS_TOOL_TRIGGER,
   FAKE_OLLAMA_ODOO_READ_DENIED_TRIGGER,
+  FAKE_OLLAMA_ODOO_SCHEDULE_ACTIVITY_REF_TRIGGER,
   FAKE_OLLAMA_PORT,
   startFakeOllama,
   stopFakeOllama,
@@ -24,6 +25,7 @@ import {
 import {
   loginViaUI,
   pollAuditForTool,
+  pollAuditForEvent,
   seedDefaultProviderToOllama,
   waitForOpenClawStable,
   waitForAgentDispatchable,
@@ -329,16 +331,22 @@ test.describe("Odoo dispatch probe (pinchy-odoo plugin coverage)", () => {
 
     // 6. Grant Odoo permissions → triggers regenerateOpenClawConfig() which now
     //    reads default_provider=ollama-local and emits the Ollama provider block.
+    //    sale.order read → odoo_list_models probe; crm.lead read + mail.activity
+    //    create → the ref-dispatch probe (odoo_read crm.lead → schedule_activity).
+    //    res.partner is deliberately NOT granted so the failure probe below still
+    //    hits permissionDenied on odoo_read res.partner.
     await setAgentPermissions(dispatchCookie, dispatchAgentId, dispatchConnectionId, [
       { model: "sale.order", operation: "read" },
+      { model: "crm.lead", operation: "read" },
+      { model: "mail.activity", operation: "create" },
     ]);
 
-    // 7. Allow odoo_list_models (happy-path probe) + odoo_read (failure probe:
-    //    the agent only holds sale.order read, so an odoo_read on res.partner
-    //    hits permissionDenied inside the plugin).
+    // 7. Allow odoo_list_models (happy-path probe), odoo_read (failure probe +
+    //    the read half of the ref-dispatch chain), and odoo_schedule_activity
+    //    (the ref-based tool under test, pinchy#791).
     const patchRes = await pinchyPatch(
       `/api/agents/${dispatchAgentId}`,
-      { allowedTools: ["odoo_list_models", "odoo_read"] },
+      { allowedTools: ["odoo_list_models", "odoo_read", "odoo_schedule_activity"] },
       dispatchCookie
     );
     expect(patchRes.status).toBe(200);
@@ -452,5 +460,45 @@ test.describe("Odoo dispatch probe (pinchy-odoo plugin coverage)", () => {
       await new Promise((r) => setTimeout(r, 500));
     }
     expect(foundFailure).toBe(true);
+  });
+
+  test("a ref-based tool (odoo_schedule_activity) dispatches on a runtime-minted _pinchy_ref", async ({
+    page,
+  }, testInfo) => {
+    // pinchy#791: ref-based odoo tools take an opaque `_pinchy_ref` minted at
+    // runtime, so a static tool_call can never carry a valid one. The fake-LLM
+    // resolves it dynamically — round 1 dispatches odoo_read on crm.lead, then
+    // reads the real `_pinchy_ref` back out of that tool result and reuses it in
+    // odoo_schedule_activity (round 2). This proves the whole ref chain runs
+    // end-to-end against the real plugin + Odoo mock, not just the read half.
+    testInfo.setTimeout(180_000);
+
+    await loginViaUI(page, getAdminEmail(), getAdminPassword());
+
+    await page.goto(`/chat/${dispatchAgentId}`);
+    await expect(page).toHaveURL(`/chat/${dispatchAgentId}`, { timeout: 10_000 });
+
+    // Capture the cutoff BEFORE dispatch so the poll cannot match a stale row.
+    const since = new Date().toISOString();
+
+    const input = page.getByPlaceholder(/send a message/i);
+    await expect(input).toBeVisible({ timeout: 10_000 });
+    await input.fill(
+      `${FAKE_OLLAMA_ODOO_SCHEDULE_ACTIVITY_REF_TRIGGER}: schedule a follow-up on a lead`
+    );
+    await input.press("Enter");
+
+    // Assert the SECOND-round tool (the ref-based one) not only dispatched but
+    // SUCCEEDED. outcome=success is the whole point: it proves the runtime
+    // `_pinchy_ref` decoded, the crm.lead target was read, and mail.activity was
+    // created — the full ref chain end-to-end. A broken ref would still dispatch
+    // (audited outcome=failure), so a dispatch-only assertion could false-pass.
+    const entry = await pollAuditForEvent(page, {
+      eventType: "tool.odoo_schedule_activity",
+      predicate: (e) => e.resource === `agent:${dispatchAgentId}`,
+      since,
+      deadlineMs: 160_000,
+    });
+    expect(entry.outcome).toBe("success");
   });
 });

@@ -680,6 +680,116 @@ function countToolResults(messages: unknown[]): number {
   return messages.filter(hasToolRole).length;
 }
 
+// ── Dynamic ref-resolution primitive (pinchy#791) ───────────────────────────
+// Ref-based odoo tools (odoo_schedule_activity, odoo_reconcile, …) take an
+// opaque `_pinchy_ref` that is minted at RUNTIME (per connection, per record)
+// and is therefore unknowable when a static trigger is authored. Rather than
+// forge a ref, the fake-LLM does what a real model does: it first calls
+// odoo_read, then reads the real `_pinchy_ref` back out of that tool-result
+// message and reuses it in the ref-based tool. This is the reusable mechanism
+// that lets any ref-based odoo tool get genuine E2E dispatch coverage — the
+// first consumer is the odoo_schedule_activity probe below.
+const ODOO_SCHEDULE_ACTIVITY_REF_TRIGGER = "E2E_ODOO_SCHEDULE_ACTIVITY_REF";
+const ODOO_SCHEDULE_ACTIVITY_REF_RESPONSE = "Activity scheduled via ref: coverage probe complete.";
+
+// Wire form of an integration ref (integration-ref.ts PREFIX `pinchy_ref:v1:`
+// + base64url payload). Kept local — this server is copied into a standalone
+// container and must not import the plugin.
+const PINCHY_REF_RE = /pinchy_ref:v1:[A-Za-z0-9_-]+/;
+
+/**
+ * Extract the first `_pinchy_ref` token from the CURRENT round's tool-result
+ * messages (those after the last user message), mirroring
+ * `lastRoundHasToolResult`'s scoping so a stale ref from an earlier round in a
+ * shared session can't leak in. Returns null if none is present.
+ */
+export function extractPinchyRefFromToolResults(messages: unknown[]): string | null {
+  let lastUserIndex = -1;
+  for (let i = messages.length - 1; i >= 0; i--) {
+    if ((messages[i] as { role?: unknown })?.role === "user") {
+      lastUserIndex = i;
+      break;
+    }
+  }
+  const scope = lastUserIndex === -1 ? messages : messages.slice(lastUserIndex + 1);
+  for (const message of scope) {
+    if (!hasToolRole(message)) continue;
+    const match = messageContent(message).match(PINCHY_REF_RE);
+    if (match) return match[0];
+  }
+  return null;
+}
+
+type RefDispatchScript =
+  | { kind: "tool"; toolName: string; arguments: Record<string, unknown> }
+  | { kind: "text"; text: string };
+
+/**
+ * Drive the two-tool ref-dispatch chain for the odoo_schedule_activity probe:
+ *   round 1 → odoo_read crm.lead (its result carries a real `_pinchy_ref`)
+ *   round 2 → odoo_schedule_activity on that ref (the tool under test)
+ *   round 3 → final completion text
+ * The step is chosen by how many tool results have round-tripped so far, like
+ * the Hetzner sequence.
+ */
+export function buildOdooRefDispatchScript(messages: unknown[]): RefDispatchScript {
+  const toolResults = countToolResults(messages);
+  if (toolResults === 0) {
+    return {
+      kind: "tool",
+      toolName: "odoo_read",
+      arguments: { model: "crm.lead", filters: [], fields: ["name"] },
+    };
+  }
+  if (toolResults === 1) {
+    const ref = extractPinchyRefFromToolResults(messages);
+    if (!ref) {
+      // Surface the harness failure as text so the audit poll for
+      // tool.odoo_schedule_activity times out LOUDLY instead of false-passing.
+      return {
+        kind: "text",
+        text: "Harness error: no _pinchy_ref found in the odoo_read result.",
+      };
+    }
+    return {
+      kind: "tool",
+      toolName: "odoo_schedule_activity",
+      arguments: {
+        target: ref,
+        summary: "E2E ref-dispatch follow-up",
+        dueDate: "2030-01-01",
+      },
+    };
+  }
+  return { kind: "text", text: ODOO_SCHEDULE_ACTIVITY_REF_RESPONSE };
+}
+
+/** Emit one assistant tool_call turn on the Ollama-native NDJSON surface. */
+function writeNdjsonToolCall(
+  res: http.ServerResponse,
+  toolName: string,
+  args: Record<string, unknown>,
+  messages: unknown[]
+) {
+  const { promptTokens, completionTokens } = getUsageTokens(countUserMessages(messages));
+  writeNdjson(res, [
+    {
+      model: MODEL_NAME,
+      created_at: new Date().toISOString(),
+      message: {
+        role: "assistant",
+        content: "",
+        tool_calls: [{ function: { name: toolName, arguments: args } }],
+      },
+      done: true,
+      done_reason: "stop",
+      total_duration: 1000000,
+      prompt_eval_count: promptTokens,
+      eval_count: completionTokens,
+    },
+  ]);
+}
+
 // ── OpenAI-compatible SSE helpers ──────────────────────────────────────────
 // Real Ollama exposes both /api/chat (Ollama-native NDJSON) and
 // /v1/chat/completions (OpenAI-style SSE). When Pinchy emits OpenClaw's ollama
@@ -1132,6 +1242,19 @@ export async function handleRequest(req: http.IncomingMessage, res: http.ServerR
       return;
     }
 
+    // Ref-dispatch probe (pinchy#791): odoo_read → reuse the runtime `_pinchy_ref`
+    // → odoo_schedule_activity → final text. Multi-round, driven by
+    // countToolResults, so the trigger check must NOT be gated on !hasToolResult.
+    if (lastContent.includes(ODOO_SCHEDULE_ACTIVITY_REF_TRIGGER)) {
+      const script = buildOdooRefDispatchScript(messages);
+      if (script.kind === "tool") {
+        writeNdjsonToolCall(res, script.toolName, script.arguments, messages);
+      } else {
+        streamTextResponse(res, script.text, countUserMessages(messages));
+      }
+      return;
+    }
+
     const isSlowStreamPrompt = lastContent.includes(SLOW_STREAM_TRIGGER);
     if (isSlowStreamPrompt && !hasToolResult) {
       await streamTextResponseSlow(res, SLOW_STREAM_RESPONSE);
@@ -1307,6 +1430,20 @@ export async function handleRequest(req: http.IncomingMessage, res: http.ServerR
       return;
     }
 
+    // Ref-dispatch probe (pinchy#791) — primary surface (pi-ai uses
+    // /v1/chat/completions). odoo_read → reuse the runtime `_pinchy_ref` →
+    // odoo_schedule_activity → final text; driven by countToolResults, so NOT
+    // gated on !hasToolResult.
+    if (lastContent.includes(ODOO_SCHEDULE_ACTIVITY_REF_TRIGGER)) {
+      const script = buildOdooRefDispatchScript(messages);
+      if (script.kind === "tool") {
+        streamOpenAiToolCalls(res, script.toolName, script.arguments);
+      } else {
+        streamOpenAiText(res, script.text);
+      }
+      return;
+    }
+
     // Slow-stream trigger: Pinchy emits ollama as api: "openai-completions" so
     // OC's pi-ai uses /v1/chat/completions, not /api/chat. The slow-stream
     // handler must live on this path too or stream-persistence tests never
@@ -1418,6 +1555,11 @@ export const FAKE_OLLAMA_CONTEXT_SAVE_USER_TOOL_RESPONSE = CONTEXT_SAVE_USER_RES
 export const FAKE_OLLAMA_ODOO_LIST_MODELS_TOOL_TRIGGER = ODOO_LIST_MODELS_TRIGGER;
 export const FAKE_OLLAMA_ODOO_LIST_MODELS_TOOL_RESPONSE = ODOO_LIST_MODELS_RESPONSE;
 export const FAKE_OLLAMA_ODOO_READ_DENIED_TRIGGER = ODOO_READ_DENIED_TRIGGER;
+// Ref-dispatch probe (pinchy#791): drives a real runtime `_pinchy_ref` through
+// odoo_read → odoo_schedule_activity. The trigger is multi-round; the response
+// constant is the final completion text asserted after the activity is scheduled.
+export const FAKE_OLLAMA_ODOO_SCHEDULE_ACTIVITY_REF_TRIGGER = ODOO_SCHEDULE_ACTIVITY_REF_TRIGGER;
+export const FAKE_OLLAMA_ODOO_SCHEDULE_ACTIVITY_REF_RESPONSE = ODOO_SCHEDULE_ACTIVITY_REF_RESPONSE;
 export const FAKE_OLLAMA_ODOO_CREATE_NESTED_LINES_TRIGGER = ODOO_CREATE_NESTED_LINES_TRIGGER;
 export const FAKE_OLLAMA_ODOO_CREATE_NESTED_LINES_RESPONSE = ODOO_CREATE_NESTED_LINES_RESPONSE;
 export const FAKE_OLLAMA_EMAIL_LIST_TOOL_TRIGGER = EMAIL_LIST_TRIGGER;
