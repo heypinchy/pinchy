@@ -16,6 +16,15 @@
  * in OUR SQL/RRF/scoping logic, not in the model. `embeddings-drift.test.ts`
  * is the separate guard that keeps the committed fixture honest against the
  * corpus text.
+ *
+ * This IS the gate — no separate CI job. As an `*.integration.test.ts` under
+ * `src/`, it is picked up by `pnpm test:db` (vitest.integration.config.ts's
+ * `src/**` include) and therefore runs in the required `vitest-integration` CI
+ * job against a pgvector Postgres service. A PR that regresses recall@10 / MRR
+ * / nDCG@10 below the floors below (overall or per-axis) turns that required
+ * check red and cannot merge — the "regression-protected retrieval" product
+ * promise made literal for the deterministic half. See
+ * docs/plans/2026-07-16-kb-eval-harness.md, Milestone 1 / Task 1.6.
  */
 import { describe, expect, it } from "vitest";
 
