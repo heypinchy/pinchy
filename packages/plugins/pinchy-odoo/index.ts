@@ -6,6 +6,7 @@ import {
   decodeRef,
   encodeRef,
   isIntegrationRef,
+  MalformedIntegrationRefError,
   type IntegrationRefPayload,
 } from "./integration-ref";
 
@@ -547,6 +548,86 @@ export function augmentFieldsWithCompanyId(
   return [...requested, "company_id"];
 }
 
+/**
+ * Field names the plugin invents in `odoo_read` output that do not exist on
+ * the underlying Odoo model — currently only `_pinchy_ref` (see
+ * `wrapReadResult`). Single source of truth so the set can grow without
+ * scattering string literals across every call site that strips it.
+ *
+ * These exist because the plugin teaches the model a vocabulary Odoo does
+ * not share: the tool prompt tells it to work with `_pinchy_ref`, so it
+ * inevitably asks for the field back in a later `fields`/`groupby` list, and
+ * Odoo hard-errors on the unknown column (2026-07-15, agent "Piper"). Any
+ * field the plugin invents on the way out has to be swallowed on the way
+ * back in — teaching a name and then rejecting it is the plugin's bug, not
+ * the model's.
+ */
+export const SYNTHETIC_FIELD_NAMES: ReadonlySet<string> = new Set([
+  "_pinchy_ref",
+]);
+
+/**
+ * Remove synthetic (plugin-invented) field names from a model-supplied
+ * `fields`/`groupby` list before it reaches Odoo. Entries may carry an
+ * aggregation or date-granularity suffix (`odoo_aggregate`'s `field:agg` /
+ * `field:month` syntax) — matched by base name, not exact string, so
+ * `_pinchy_ref:count_distinct` is stripped too.
+ *
+ * Mirrors the `undefined`/`[]` "didn't ask" convention from
+ * `augmentFieldsWithCompanyId` (empty stays empty, not "return nothing").
+ * Preserves referential equality when nothing was stripped, so callers that
+ * pass the result straight into `augmentFieldsWithCompanyId` don't lose that
+ * function's own referential-equality guarantee for the common case.
+ *
+ * Deliberately separate from `augmentFieldsWithCompanyId`: that function's
+ * other caller (`lookupFields`) builds its field list internally from Odoo
+ * metadata and never sees model-supplied input, so it must not go through
+ * this stripping.
+ */
+export function stripSyntheticFields<T extends string[] | undefined>(
+  requested: T,
+): T {
+  if (!requested || requested.length === 0) return requested;
+  const filtered = requested.filter(
+    (entry) => !SYNTHETIC_FIELD_NAMES.has(entry.split(":")[0]),
+  );
+  return (filtered.length === requested.length ? requested : filtered) as T;
+}
+
+/**
+ * `odoo_aggregate` entry point for the two model-supplied lists it forwards
+ * verbatim to `readGroup`. Validates the shape (both are declared `required`
+ * in the tool schema but arrive as whatever the model sent), then strips
+ * synthetic names — and refuses a list that strips down to NOTHING.
+ *
+ * The refusal is the point: an empty `groupby` means "one global aggregate"
+ * to Odoo and an empty `fields` means "counts only", so silently forwarding
+ * either answers a different question than the model asked. A wrong answer
+ * that looks right is worse than an error the model can act on, and
+ * `_pinchy_ref` is never a legitimate thing to group by — it is per-record
+ * by construction, so `id` is what the model actually wants.
+ */
+export function prepareAggregateFields(
+  value: unknown,
+  paramName: "fields" | "groupby",
+): string[] {
+  if (!Array.isArray(value) || value.some((e) => typeof e !== "string")) {
+    throw new Error(`\`${paramName}\` must be an array of field-name strings.`);
+  }
+  const stripped = stripSyntheticFields(value as string[]);
+  if (value.length > 0 && stripped.length === 0) {
+    const synthetic = [...SYNTHETIC_FIELD_NAMES]
+      .map((name) => `\`${name}\``)
+      .join(", ");
+    throw new Error(
+      `\`${paramName}\` contained only synthetic field names (${synthetic}), ` +
+        `which do not exist on the Odoo model. Use a real column — to count ` +
+        `or group per record, use \`id\`.`,
+    );
+  }
+  return stripped;
+}
+
 function getSearchReadRecords(result: unknown): OdooRecord[] {
   if (Array.isArray(result)) return result.filter(isRecord);
   if (isRecord(result) && Array.isArray(result.records)) {
@@ -832,22 +913,58 @@ function decodeOdooRefForConnection(
 }
 
 /**
+ * Turn a caught decode failure into a caller-facing error, naming the
+ * parameter the model actually passed so it knows which ref to re-fetch.
+ *
+ * A {@link MalformedIntegrationRefError} means the string never decoded at
+ * all. The model garbling a long base64url token is the common cause, but a
+ * rotated `PINCHY_REF_TOKEN_KEY` is indistinguishable from here — every ref
+ * minted under the old key fails the same auth-tag check. So the message
+ * names the remedy (re-fetch, which is correct either way) and claims
+ * nothing about the cause. Anything else already carries a specific message
+ * and passes through untouched.
+ */
+function refDecodeError(err: unknown, paramName: string): Error {
+  if (err instanceof MalformedIntegrationRefError) {
+    return new Error(
+      `\`${paramName}\` ref could not be decoded — it looks corrupted or ` +
+        `truncated. Re-fetch the record with \`odoo_read\` and pass the ` +
+        `fresh \`_pinchy_ref\` exactly as returned.`,
+    );
+  }
+  return err instanceof Error ? err : new Error(String(err));
+}
+
+/**
  * Decode a `target`/`targetRef` for a tool that acts on an arbitrary target
  * model (schedule/complete/reschedule activity, record-action tools,
- * attach_file). Returns the payload on success, or null when the ref is
- * malformed or belongs to a different connection — the caller surfaces a
- * consistent "does not belong to this Odoo connection" error. No model
- * check: these tools accept any target model and gate it through the
- * permissions map instead.
+ * attach_file). Returns the payload on success, or throws a descriptive
+ * error otherwise. No model check: these tools accept any target model and
+ * gate it through the permissions map instead.
+ *
+ * The two failure causes must stay distinguishable: `decodeRef` throws a
+ * typed {@link MalformedIntegrationRefError} for "this string doesn't decode
+ * at all", while `decodeOdooRefForConnection` throws a plain `Error` for
+ * "decoded fine, but wrong integration type or connectionId". Both share the
+ * generic "Invalid integration reference" text, so `instanceof` — not string
+ * matching — is what tells them apart. Collapsing them again sends a garbled
+ * ref down a connection-config trail; that is the 2026-07-15 prod incident
+ * the `odoo_schedule_activity` "Cause 1 / Cause 2" tests pin.
  */
 function decodeTargetRef(
   connectionId: string,
   refString: string,
-): IntegrationRefPayload | null {
+  paramName = "target",
+): IntegrationRefPayload {
   try {
     return decodeOdooRefForConnection(connectionId, refString);
-  } catch {
-    return null;
+  } catch (err) {
+    if (err instanceof MalformedIntegrationRefError) {
+      throw refDecodeError(err, paramName);
+    }
+    throw new Error(
+      `\`${paramName}\` ref does not belong to this Odoo connection.`,
+    );
   }
 }
 
@@ -870,7 +987,12 @@ function decodeAndValidateRef(
   field: OdooField,
   refString: string,
 ): number {
-  const ref = decodeOdooRefForConnection(connectionId, refString);
+  let ref: IntegrationRefPayload;
+  try {
+    ref = decodeOdooRefForConnection(connectionId, refString);
+  } catch (err) {
+    throw refDecodeError(err, field.name);
+  }
   if (ref.model !== field.relation) {
     throw new Error(
       `Invalid ref for ${field.name}: expected ${field.relation}, got ${ref.model}.`,
@@ -1657,7 +1779,12 @@ async function resolveAssigneeUserId(
   assignee: string,
 ): Promise<number> {
   if (isIntegrationRef(assignee)) {
-    const ref = decodeOdooRefForConnection(connectionId, assignee);
+    let ref: IntegrationRefPayload;
+    try {
+      ref = decodeOdooRefForConnection(connectionId, assignee);
+    } catch (err) {
+      throw refDecodeError(err, "assignee");
+    }
     if (ref.model !== "res.users") {
       throw new Error("`assignee` ref must point to a res.users record.");
     }
@@ -2382,7 +2509,7 @@ const plugin = {
                     await client.fields(model),
                   );
                   const effectiveFields = augmentFieldsWithCompanyId(
-                    params.fields as string[] | undefined,
+                    stripSyntheticFields(params.fields as string[] | undefined),
                     modelFields,
                   );
                   const records = await client.searchRead(
@@ -2528,12 +2655,15 @@ const plugin = {
                 return permissionDenied("read", model);
               }
 
+              const fields = prepareAggregateFields(params.fields, "fields");
+              const groupby = prepareAggregateFields(params.groupby, "groupby");
+
               const result = await withAuthRetry(agentId, config, (client) =>
                 client.readGroup(
                   model,
                   asDomain(params.filters),
-                  params.fields as string[],
-                  params.groupby as string[],
+                  fields,
+                  groupby,
                   {
                     limit: params.limit as number | undefined,
                     offset: params.offset as number | undefined,
@@ -2805,13 +2935,6 @@ const plugin = {
               }
 
               const decoded = decodeTargetRef(config.connectionId, target);
-              if (decoded === null) {
-                return errorResult(
-                  new Error(
-                    "`target` ref does not belong to this Odoo connection.",
-                  ),
-                );
-              }
               const targetModel = decoded.model;
               const targetId = decoded.id;
 
@@ -2954,13 +3077,6 @@ const plugin = {
                 );
               }
               const decoded = decodeTargetRef(config.connectionId, target);
-              if (decoded === null) {
-                return errorResult(
-                  new Error(
-                    "`target` ref does not belong to this Odoo connection.",
-                  ),
-                );
-              }
               if (decoded.model !== "mail.activity") {
                 return errorResult(
                   new Error(
@@ -3078,13 +3194,6 @@ const plugin = {
               }
 
               const decoded = decodeTargetRef(config.connectionId, target);
-              if (decoded === null) {
-                return errorResult(
-                  new Error(
-                    "`target` ref does not belong to this Odoo connection.",
-                  ),
-                );
-              }
               if (decoded.model !== "mail.activity") {
                 return errorResult(
                   new Error(
@@ -3178,13 +3287,6 @@ const plugin = {
                 );
               }
               const decoded = decodeTargetRef(config.connectionId, target);
-              if (decoded === null) {
-                return errorResult(
-                  new Error(
-                    "`target` ref does not belong to this Odoo connection.",
-                  ),
-                );
-              }
               if (decoded.model !== spec.model) {
                 return errorResult(
                   new Error(`\`target\` must be a ${spec.model} ref.`),
@@ -3338,13 +3440,6 @@ const plugin = {
                 );
               }
               const decoded = decodeTargetRef(config.connectionId, target);
-              if (decoded === null) {
-                return errorResult(
-                  new Error(
-                    "`target` ref does not belong to this Odoo connection.",
-                  ),
-                );
-              }
               const route = APPROVAL_ROUTES[decoded.model];
               if (!route) {
                 return errorResult(
@@ -3598,14 +3693,11 @@ const plugin = {
               // connection decodes validly under this deployment's single ref
               // key, so reject it before acting — same gate every other
               // ref-consuming Odoo tool applies (decodeTargetRef).
-              const decoded = decodeTargetRef(config.connectionId, targetRef);
-              if (decoded === null) {
-                return errorResult(
-                  new Error(
-                    "`targetRef` ref does not belong to this Odoo connection.",
-                  ),
-                );
-              }
+              const decoded = decodeTargetRef(
+                config.connectionId,
+                targetRef,
+                "targetRef",
+              );
 
               if (
                 !checkPermission(config.permissions, "ir.attachment", "create")

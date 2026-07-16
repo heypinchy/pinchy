@@ -3,7 +3,12 @@ import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
 import { mkdtempSync, writeFileSync, rmSync, mkdirSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
-import { decodeRef, encodeRef, _resetKeyCacheForTest } from "../integration-ref";
+import {
+  decodeRef,
+  encodeRef,
+  _resetKeyCacheForTest,
+  MalformedIntegrationRefError,
+} from "../integration-ref";
 
 describe("integration refs", () => {
   it("roundtrips an opaque Odoo reference", () => {
@@ -191,6 +196,81 @@ describe("integration refs", () => {
     const tampered = ref.slice(0, idx) + flipped + ref.slice(idx + 1);
 
     expect(() => decodeRef(tampered)).toThrow(/Invalid integration reference/);
+  });
+
+  // Every decode failure shares the same generic message text, so callers
+  // can only tell "undecodable" apart from "decoded, wrong connection" by
+  // type. That distinction is the whole point of the class — see its doc
+  // comment for the incident that motivated it.
+  describe("MalformedIntegrationRefError", () => {
+    beforeEach(() => {
+      _resetKeyCacheForTest();
+      vi.stubEnv("PINCHY_REF_TOKEN_KEY", "a".repeat(64));
+    });
+
+    it("is thrown (not a bare Error) for a ref with the wrong prefix", () => {
+      expect(() => decodeRef("not-a-pinchy-ref-at-all")).toThrow(
+        MalformedIntegrationRefError,
+      );
+    });
+
+    it("is thrown for a truncated ref (correct prefix, corrupted payload)", () => {
+      const ref = encodeRef({
+        integrationType: "odoo",
+        connectionId: "conn-test-1",
+        model: "res.country",
+        id: 14,
+        label: "Austria",
+      });
+      const truncated = ref.slice(0, -8);
+
+      expect(() => decodeRef(truncated)).toThrow(MalformedIntegrationRefError);
+    });
+
+    it("is thrown for a tampered ref that fails the AES-GCM auth tag check", () => {
+      const ref = encodeRef({
+        integrationType: "odoo",
+        connectionId: "conn-test-1",
+        model: "res.country",
+        id: 14,
+        label: "Austria",
+      });
+      const idx = ref.length - 10;
+      const flipped = ref[idx] === "a" ? "b" : "a";
+      const tampered = ref.slice(0, idx) + flipped + ref.slice(idx + 1);
+
+      expect(() => decodeRef(tampered)).toThrow(MalformedIntegrationRefError);
+    });
+
+    // Key rotation lands here too: every ref minted under the old key fails
+    // the auth-tag check and is indistinguishable from a garbled one. That
+    // is why the caller-facing message must not claim to have ruled any
+    // cause out — it can only name the remedy (re-fetch), which happens to
+    // be correct for both.
+    it("is thrown for a ref minted under a different PINCHY_REF_TOKEN_KEY (rotation)", () => {
+      const ref = encodeRef({
+        integrationType: "odoo",
+        connectionId: "conn-test-1",
+        model: "res.country",
+        id: 14,
+        label: "Austria",
+      });
+
+      _resetKeyCacheForTest();
+      vi.stubEnv("PINCHY_REF_TOKEN_KEY", "b".repeat(64));
+
+      expect(() => decodeRef(ref)).toThrow(MalformedIntegrationRefError);
+    });
+
+    it("still carries the generic, non-leaking message (no key material or ref cleartext)", () => {
+      expect.assertions(2);
+      try {
+        decodeRef("not-a-pinchy-ref-at-all");
+      } catch (err) {
+        expect(err).toBeInstanceOf(MalformedIntegrationRefError);
+        expect((err as Error).message).toBe("Invalid integration reference");
+      }
+    });
   });
 
   describe("optional company fields", () => {
