@@ -97,6 +97,10 @@ function formatDate(value: string | null): string {
 export function SettingsApiKeys() {
   const [keys, setKeys] = useState<ApiKeyRow[]>([]);
   const [loading, setLoading] = useState(true);
+  // Distinct from `keys.length === 0`. A failed load leaves the list empty too,
+  // and rendering "No API keys yet." for it would be the UI asserting something
+  // it doesn't know — see fetchKeys.
+  const [loadError, setLoadError] = useState(false);
   const [createOpen, setCreateOpen] = useState(false);
   const [revokeTarget, setRevokeTarget] = useState<ApiKeyRow | null>(null);
   // The ONE-TIME plaintext secret lives ONLY here, only while its dedicated
@@ -116,9 +120,16 @@ export function SettingsApiKeys() {
 
   const fetchKeys = useCallback(async () => {
     try {
+      setLoadError(false);
       const data = await apiGet<{ keys: ApiKeyRow[] }>("/api/settings/api-keys");
       setKeys(data.keys);
     } catch (e) {
+      // The toast alone was not enough: it disappears, and what stayed on
+      // screen was "No API keys yet." — the UI stating there are no keys when
+      // the request to find out had failed. An admin who believes that and
+      // issues a "replacement" has just added a second live org credential
+      // while the first is still valid and unlisted.
+      setLoadError(true);
       toast.error(e instanceof ApiError ? e.message : "Failed to load API keys");
     } finally {
       setLoading(false);
@@ -235,7 +246,17 @@ export function SettingsApiKeys() {
           <Button onClick={openCreateDialog}>New API Key</Button>
         </CardHeader>
         <CardContent>
-          {keys.length === 0 ? (
+          {loadError ? (
+            <div className="space-y-3">
+              <p className="text-sm text-muted-foreground">
+                We couldn&apos;t load your API keys. They&apos;re still there — this is a problem
+                reading them, not a sign that anything is missing.
+              </p>
+              <Button variant="outline" size="sm" onClick={() => void fetchKeys()}>
+                Try again
+              </Button>
+            </div>
+          ) : keys.length === 0 ? (
             <p className="text-sm text-muted-foreground">
               No API keys yet. Create one to let external tools provision agents through the API.
             </p>
@@ -334,14 +355,30 @@ export function SettingsApiKeys() {
               )}
             </div>
             <div className="space-y-2">
-              <Label>Scopes</Label>
-              <div className="space-y-2">
+              {/*
+                A checkbox group has no single control to hang a label or an
+                error on, so it needs role="group" + aria-labelledby to be named
+                and aria-describedby to carry the error — which the name and
+                expires fields get for free from htmlFor/aria-describedby on
+                their input. Without it the <Label> below was an orphan pointing
+                at nothing, and a screen-reader user tabbing the boxes after a
+                rejected submit heard no error at all: the form just appeared to
+                refuse to submit.
+              */}
+              <Label id="apikey-scopes-label">Scopes</Label>
+              <div
+                role="group"
+                aria-labelledby="apikey-scopes-label"
+                aria-describedby={fieldErrors.scopes ? "apikey-scopes-error" : undefined}
+                className="space-y-2"
+              >
                 {API_KEY_SCOPES.map((scope) => (
                   <div key={scope} className="flex items-center space-x-2">
                     <Checkbox
                       id={`scope-${scope}`}
                       checked={formScopes.includes(scope)}
                       onCheckedChange={() => toggleScope(scope)}
+                      aria-invalid={fieldErrors.scopes ? true : undefined}
                     />
                     <Label htmlFor={`scope-${scope}`} className="cursor-pointer text-sm">
                       {scopeLabel(scope)}
@@ -350,7 +387,9 @@ export function SettingsApiKeys() {
                 ))}
               </div>
               {fieldErrors.scopes && (
-                <p className="text-sm text-destructive">{fieldErrors.scopes}</p>
+                <p id="apikey-scopes-error" className="text-sm text-destructive">
+                  {fieldErrors.scopes}
+                </p>
               )}
             </div>
             <div className="space-y-2">

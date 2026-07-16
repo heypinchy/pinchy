@@ -350,4 +350,85 @@ describe("SettingsApiKeys", () => {
     expect(toast.error).not.toHaveBeenCalled();
     expect(screen.getByLabelText("Name")).toBeInTheDocument();
   });
+  // ── A failed load must not masquerade as an empty list ───────────────────
+
+  it("shows a load failure instead of claiming there are no keys", async () => {
+    vi.mocked(apiGet).mockRejectedValueOnce(new ApiError(500, "Database unreachable"));
+
+    render(<SettingsApiKeys />);
+
+    await waitFor(() => {
+      expect(toast.error).toHaveBeenCalledWith("Database unreachable");
+    });
+
+    // THE assertion. The toast is transient; what stays on screen is what the
+    // admin acts on. "No API keys yet." would be the UI stating a fact it does
+    // not have — and an admin who believes it and issues a "replacement" has
+    // added a second live org credential while the first is still valid and
+    // unlisted.
+    expect(screen.queryByText(/No API keys yet/)).not.toBeInTheDocument();
+    expect(screen.getByText(/couldn't load your API keys/i)).toBeInTheDocument();
+  });
+
+  it("recovers when the retry succeeds", async () => {
+    const user = userEvent.setup();
+    vi.mocked(apiGet).mockRejectedValueOnce(new ApiError(500, "Database unreachable"));
+
+    render(<SettingsApiKeys />);
+    await waitFor(() => {
+      expect(screen.getByRole("button", { name: /try again/i })).toBeInTheDocument();
+    });
+
+    vi.mocked(apiGet).mockResolvedValue({ keys: mockKeys });
+    await user.click(screen.getByRole("button", { name: /try again/i }));
+
+    // A dead end would leave a reload as the only way out.
+    await waitFor(() => {
+      expect(screen.getByText("CI Deploy")).toBeInTheDocument();
+    });
+    expect(screen.queryByText(/couldn't load your API keys/i)).not.toBeInTheDocument();
+  });
+
+  it("still shows the empty state when the list is genuinely empty", async () => {
+    vi.mocked(apiGet).mockResolvedValue({ keys: [] });
+
+    render(<SettingsApiKeys />);
+
+    // The other half of the distinction: an empty list is a fact worth stating.
+    await waitFor(() => {
+      expect(screen.getByText(/No API keys yet/)).toBeInTheDocument();
+    });
+    expect(screen.queryByText(/couldn't load your API keys/i)).not.toBeInTheDocument();
+  });
+
+  // ── The scopes error has to reach a screen reader ────────────────────────
+
+  it("wires the scopes validation error to the checkbox group", async () => {
+    const user = userEvent.setup();
+    vi.mocked(apiPost).mockRejectedValueOnce(
+      new ApiError(400, "Validation failed", {
+        fieldErrors: { scopes: ["Pick at least one scope"] },
+      })
+    );
+
+    render(<SettingsApiKeys />);
+    await openCreateDialog(user);
+    await user.type(screen.getByLabelText("Name"), "CI");
+    // A scope has to be selected or Create stays disabled, so in practice this
+    // error arrives from the SERVER — client/server skew, e.g. a scope the enum
+    // no longer accepts. (handleCreate also sets it defensively.) Skew is
+    // exactly the case where the user cannot guess what went wrong, so the
+    // error has to be announced rather than merely displayed nearby.
+    await user.click(screen.getByRole("checkbox", { name: "Read agents" }));
+    await user.click(screen.getByRole("button", { name: "Create" }));
+
+    const group = await screen.findByRole("group", { name: "Scopes" });
+    // The name and expires fields both wire aria-describedby to their error.
+    // A checkbox group has no single control to hang one on, so without an
+    // explicit group it was an orphan <Label> and an error the assistive tree
+    // never reached: the form just appeared to refuse to submit.
+    const errorId = group.getAttribute("aria-describedby");
+    expect(errorId).toBeTruthy();
+    expect(document.getElementById(errorId!)).toHaveTextContent("Pick at least one scope");
+  });
 });
