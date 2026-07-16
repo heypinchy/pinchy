@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { aggregate, runRetrievalEval } from "../retrieval-eval";
+import { aggregate, nearDuplicateSourcePaths, runRetrievalEval } from "../retrieval-eval";
 import type { GoldQuery } from "../types";
 
 function gq(id: string, axis: GoldQuery["axis"], relevantChunkIds: string[]): GoldQuery {
@@ -100,5 +100,35 @@ describe("aggregate", () => {
     for (const axis of Object.values(agg.perAxis)) {
       expect(axis).toEqual({ recallAt10: 0, mrr: 0, ndcgAt10: 0, n: 0 });
     }
+  });
+});
+
+describe("nearDuplicateSourcePaths", () => {
+  it("returns distinct source paths, in order of first appearance, for chunks in forChunkIds", () => {
+    const retrieved = [
+      { chunkId: "product-insert#c2", sourcePath: "/data/product-insert.md" },
+      { chunkId: "quality-file#c2", sourcePath: "/data/quality-file.md" },
+      { chunkId: "product-insert#c1", sourcePath: "/data/product-insert.md" }, // not wanted
+    ];
+    const result = nearDuplicateSourcePaths(retrieved, ["product-insert#c2", "quality-file#c2"]);
+    expect(result).toEqual(["/data/product-insert.md", "/data/quality-file.md"]);
+  });
+
+  it("ignores retrieved chunks whose chunkId is not in forChunkIds", () => {
+    const retrieved = [{ chunkId: "unrelated#c1", sourcePath: "/data/unrelated.md" }];
+    expect(nearDuplicateSourcePaths(retrieved, ["product-insert#c2"])).toEqual([]);
+  });
+
+  it("collapses repeated appearances of the same source path to one entry", () => {
+    const retrieved = [
+      { chunkId: "product-insert#c2", sourcePath: "/data/product-insert.md" },
+      { chunkId: "product-insert#c2b", sourcePath: "/data/product-insert.md" },
+    ];
+    const result = nearDuplicateSourcePaths(retrieved, ["product-insert#c2", "product-insert#c2b"]);
+    expect(result).toEqual(["/data/product-insert.md"]);
+  });
+
+  it("returns an empty array when nothing in forChunkIds was retrieved", () => {
+    expect(nearDuplicateSourcePaths([], ["product-insert#c2"])).toEqual([]);
   });
 });

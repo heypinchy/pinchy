@@ -73,6 +73,45 @@ function summarize(scores: PerQueryScore[]): { recallAt10: number; mrr: number; 
   };
 }
 
+/** Minimal shape `nearDuplicateSourcePaths` needs — deliberately not `RetrievedChunk` from `../../knowledge/retrieve`, to keep this pure scoring module DB-import-free (see file header). */
+export interface SourcePathChunk {
+  chunkId: string;
+  sourcePath: string;
+}
+
+/**
+ * Dedup-axis TELEMETRY, not a gate: returns the distinct `sourcePath`s, in
+ * order of first appearance, among `retrieved` entries whose `chunkId` is in
+ * `forChunkIds`.
+ *
+ * This exists to make the near-duplicate rate in retrieved chunks visible
+ * (how many distinct source paths carry a shared/reworded passage), NOT to
+ * assert a collapse ceiling. `kb_documents` are keyed by
+ * `(org_id, source_path)` (see `db/schema.ts`'s `uq_kb_doc_org_path`
+ * comment), so retrieval deliberately keeps near-duplicate passages from
+ * different paths independently retrievable — collapsing them would break
+ * per-path `allowed_paths` access-control scoping. The
+ * "don't let a reworded duplicate look like independent corroboration"
+ * concern belongs to the attribution layer (Layer 2, unique-docs-per-answer
+ * on what the LLM actually cites), not to retrieval. See the "dedup axis"
+ * describe block in `kb-retrieval-eval.integration.test.ts` for the full
+ * rationale and the gate this function feeds.
+ */
+export function nearDuplicateSourcePaths(
+  retrieved: SourcePathChunk[],
+  forChunkIds: string[]
+): string[] {
+  const wanted = new Set(forChunkIds);
+  const seen = new Set<string>();
+  const distinctPaths: string[] = [];
+  for (const chunk of retrieved) {
+    if (!wanted.has(chunk.chunkId) || seen.has(chunk.sourcePath)) continue;
+    seen.add(chunk.sourcePath);
+    distinctPaths.push(chunk.sourcePath);
+  }
+  return distinctPaths;
+}
+
 /**
  * Aggregates per-query scores into overall means plus a per-axis breakdown.
  * An axis with no queries reports `n: 0` and all-zero scores rather than

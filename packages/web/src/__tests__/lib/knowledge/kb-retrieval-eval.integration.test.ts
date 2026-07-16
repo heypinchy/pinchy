@@ -17,12 +17,16 @@
  * is the separate guard that keeps the committed fixture honest against the
  * corpus text.
  */
-import { expect, it } from "vitest";
+import { describe, expect, it } from "vitest";
 
 import { db } from "@/db";
 import { kbChunks, kbDocuments } from "@/db/schema";
 import { retrieve, type RetrieveDeps } from "@/lib/knowledge/retrieve";
-import { aggregate, runRetrievalEval } from "@/lib/eval/kb/retrieval-eval";
+import {
+  aggregate,
+  nearDuplicateSourcePaths,
+  runRetrievalEval,
+} from "@/lib/eval/kb/retrieval-eval";
 import type { CorpusDoc } from "../../../../eval/kb/corpus/manifest";
 import { KB_EVAL_CORPUS } from "../../../../eval/kb/corpus/manifest";
 import { GOLD_QUERIES } from "../../../../eval/kb/corpus/gold-queries";
@@ -177,4 +181,82 @@ it("achieves recall@10 and MRR floors over the gold set", async () => {
       `axis ${axis}: MRR ${score.mrr} below floor ${PER_AXIS_MRR_FLOOR}`
     ).toBeGreaterThanOrEqual(PER_AXIS_MRR_FLOOR);
   }
+});
+
+describe("dedup axis — cross-path provenance is preserved, not collapsed", () => {
+  // WHY THIS IS NOT A COLLAPSE GATE (read before "fixing" this into one):
+  //
+  // `kb_documents` are keyed by `(org_id, source_path)` — see db/schema.ts's
+  // `uq_kb_doc_org_path` comment: "two different paths with byte-identical
+  // content ... are DISTINCT documents, which per-path allowed_paths
+  // filtering requires; cross-path content dedup would break that
+  // filtering." That's an intentional access-control decision: an org can
+  // grant an agent /data/product-insert.md without granting
+  // /data/quality-file.md (or vice versa), so retrieval MUST keep
+  // near-duplicate passages from different paths independently retrievable.
+  // Collapsing them into one canonical source here would silently strip
+  // access-control granularity from whichever path "lost" the collapse.
+  //
+  // The invariant under test below is therefore PROVENANCE (both source
+  // paths stay retrievable), not attribution. "Don't let a reworded
+  // duplicate look like independent corroboration" is a real concern, but it
+  // belongs to the attribution layer — Layer 2 / Task 2.1 — which judges
+  // what the LLM actually CITES in its answer, not what retrieve() returns.
+  // "Near-duplicate rate in retrieved chunks" is tracked as a metric
+  // (telemetry, below), not enforced as a hard retrieval ceiling here.
+  //
+  // Complementary to, not redundant with, the recall floors above: Task
+  // 1.4's per-axis recall gate already requires BOTH product-insert#c2 and
+  // quality-file#c2 to be retrieved for the dedup axis (chunk-level), but
+  // says nothing about which *source paths* they came from. This test adds
+  // the explicit source-path/provenance-level assertion plus non-gating
+  // near-duplicate telemetry.
+
+  it("keeps both /data/product-insert.md and /data/quality-file.md retrievable for the shared cartridge-life passage", async () => {
+    const embeddings = loadEmbeddings();
+    const logicalIdByDbId = await seedCorpus(KB_EVAL_CORPUS, embeddings);
+
+    const dedupQuery = GOLD_QUERIES.find((q) => q.id === "gq-dedup-1");
+    if (!dedupQuery) {
+      throw new Error("gq-dedup-1 not found in GOLD_QUERIES — dedup axis fixture drifted");
+    }
+    // Sanity: this is the gold query whose relevant set spans both near-dup
+    // chunks. If this ever stops holding, the query below is scoring the
+    // wrong axis.
+    expect(dedupQuery.relevantChunkIds).toEqual(["product-insert#c2", "quality-file#c2"]);
+
+    const deps = embedderFor(dedupQuery, embeddings);
+    const results = await retrieve(ORG_ID, ["/data"], dedupQuery.query, deps, { k: 10 });
+
+    const translated = results.map((r) => {
+      const logicalId = logicalIdByDbId.get(r.chunkId);
+      if (!logicalId) {
+        throw new Error(`retrieve() returned unseeded chunk id ${r.chunkId}`);
+      }
+      return { chunkId: logicalId, sourcePath: r.sourcePath };
+    });
+
+    // (b) TELEMETRY — visibility only, not a gate. Logs how many distinct
+    // source paths carry the shared passage in the top-10 band.
+    const distinctPaths = nearDuplicateSourcePaths(translated, dedupQuery.relevantChunkIds);
+    if (process.env.KB_EVAL_VERBOSE) {
+      console.log(
+        "KB eval dedup-axis telemetry: distinct source paths carrying the shared passage:",
+        distinctPaths
+      );
+    }
+
+    // (a) GATE — provenance/distinctness preserved. Both paths must appear
+    // among the top-10 results: a regression that starts collapsing
+    // cross-path near-duplicates would break allowed_paths access scoping,
+    // so this is a real access-control guard, not a ranking-quality check.
+    expect(
+      distinctPaths,
+      `expected retrieval to keep BOTH /data/product-insert.md and /data/quality-file.md ` +
+        `independently retrievable for the shared cartridge-life passage (query "${dedupQuery.query}"), ` +
+        `but only found source paths ${JSON.stringify(distinctPaths)} in the top-10. ` +
+        `If retrieval started deduping cross-path near-duplicates, allowed_paths access-control ` +
+        `scoping would silently break for whichever path lost the collapse.`
+    ).toEqual(expect.arrayContaining(["/data/product-insert.md", "/data/quality-file.md"]));
+  });
 });
