@@ -184,6 +184,21 @@ describe("Ollama Cloud model catalog — empirically verified capabilities", () 
     expect(byId("deepseek-v4-flash")?.contextTokens).toBeUndefined();
   });
 
+  it("never sets a contextTokens cap above the native contextWindow", () => {
+    // The whole point of contextTokens is a budget *below* the native window,
+    // which OpenClaw budgets compaction against. A cap above contextWindow is
+    // nonsense OpenClaw would swallow silently, so guard every current and
+    // future cap in one place — a typo on the next capped model fails here.
+    // Widen off the `as const` literals so the optional field is visible (same
+    // satisfies-based widening as byId, no cast).
+    const models: readonly OllamaCloudModel[] = TOOL_CAPABLE_OLLAMA_CLOUD_MODELS;
+    for (const m of models) {
+      if (m.contextTokens !== undefined) {
+        expect(m.contextTokens).toBeLessThanOrEqual(m.contextWindow);
+      }
+    }
+  });
+
   it("every model declares vision and carries no dead capability fields", () => {
     for (const m of TOOL_CAPABLE_OLLAMA_CLOUD_MODELS) {
       expect(typeof m.vision).toBe("boolean");

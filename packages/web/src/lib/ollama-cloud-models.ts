@@ -48,7 +48,12 @@ export interface OllamaCloudModel {
    * `models.providers.*.models[].contextTokens`, which the runtime budgets
    * compaction against (resolveContextWindowInfo, source "modelsConfig") while
    * contextWindow stays the honest native size. Set ONLY where a model's
-   * quality degrades well before its advertised window — see deepseek-v4-pro. */
+   * quality degrades well before its advertised window — see deepseek-v4-pro.
+   *
+   * NOTE: this is a *static budget cap* (config input) and is a different
+   * concept from the per-turn `context_tokens` / `contextTokens` in
+   * usage-per-turn.ts / db/schema.ts, which is the *measured* context size of a
+   * turn (#767 observability). Same word, opposite direction — don't conflate. */
   contextTokens?: number;
   /** Pinchy's max output tokens hint. Ollama doesn't publish this, so we use
    * the output-heavy value for Gemini Flash and a conservative 8192 elsewhere. */
