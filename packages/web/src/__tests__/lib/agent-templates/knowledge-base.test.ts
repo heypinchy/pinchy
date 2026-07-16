@@ -58,6 +58,17 @@ describe("knowledge-base template", () => {
     expect(md).toMatch(/did ?n[o']?t use|not used|uncited/i);
   });
 
+  it("demonstrates the Sources list as markdown so entries render one per line", () => {
+    // The answer text is rendered as markdown. Consecutive plain lines
+    // collapse into ONE paragraph, so a multi-source list ran together into an
+    // unreadable wall: "Sources: [1] /data/…/Quality File 2012_4.pdf — p. 169
+    // [4] /data/…/Quality File 2012_4.pdf — p. 194". Long absolute paths (which
+    // the sibling fix deliberately introduced) make that far worse. A list
+    // marker forces one entry per rendered line.
+    const example = md.slice(md.indexOf("Sources:"));
+    expect(example).toMatch(/^\s*- \[1\]/m);
+  });
+
   it("does not demonstrate a multi-entry Sources list as the default shape", () => {
     // The template's own example used to show BOTH "[1] …" and "[2] …". A
     // few-shot example teaches shape more strongly than a prose rule contradicts
