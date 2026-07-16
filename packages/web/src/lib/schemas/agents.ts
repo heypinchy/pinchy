@@ -4,8 +4,8 @@ import { pluginConfigSchema } from "@/lib/domain-validation";
 
 /**
  * Request schema for creating an agent. Shared between the session-authenticated
- * POST /api/agents route and the future key-authenticated POST /api/v1/agents
- * route (#572) so both validate identical input.
+ * POST /api/agents route and the key-authenticated POST /api/v1/agents route
+ * (#572) so both validate identical input.
  */
 export const createAgentSchema = z.object({
   name: z

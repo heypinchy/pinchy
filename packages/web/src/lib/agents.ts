@@ -78,7 +78,6 @@ export interface UpdateAgentInput {
 export async function listAgents(opts: {
   scope: "shared";
 }): Promise<(typeof activeAgents.$inferSelect)[]> {
-  // audit-exempt: read-only query, no state change
   if (opts.scope !== "shared") {
     throw new Error(`listAgents: unsupported scope "${opts.scope}"`);
   }
@@ -99,7 +98,6 @@ export async function getAgent(
   id: string,
   opts: { scope: "shared" }
 ): Promise<typeof activeAgents.$inferSelect | undefined> {
-  // audit-exempt: read-only query, no state change
   if (opts.scope !== "shared") {
     throw new Error(`getAgent: unsupported scope "${opts.scope}"`);
   }
@@ -174,8 +172,10 @@ export async function updateAgent(id: string, data: UpdateAgentInput) {
 
 /**
  * One integration connection that had permissions auto-configured during agent
- * creation. Returned by `createAgent()` so the calling route can write the
- * `config.changed` audit entries (audit is route-owned, see #572).
+ * creation. Delivered to the calling route through `onPermissionsConfigured`
+ * the moment the grants commit, so the route can write its `config.changed`
+ * entry then rather than after `createAgent` returns — see `CreateAgentHooks`.
+ * Also carried on the success result, for callers that only need the summary.
  */
 export interface AutoConfiguredConnection {
   connectionId: string;

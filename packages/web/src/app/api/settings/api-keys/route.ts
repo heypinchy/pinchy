@@ -91,9 +91,13 @@ export const POST = withAdmin(async (request, _ctx, session) => {
  * columns holding JSON strings — `auth.api.listApiKeys` auto-parses them, but
  * a raw Drizzle read does not, hence `parsePermissions` / `parseCreator`.
  *
- * Read-only: no audit entry (audit-exempt below).
+ * Read-only: no audit entry, and deliberately NO `audit-exempt:` marker. The
+ * require-audit-log rule only asks for one on POST/PUT/PATCH/DELETE — a GET
+ * never needed it — and the marker is FILE-scoped: any occurrence makes the
+ * rule skip the whole file. So the one placed here for this GET was switching
+ * off the guard on the POST above, the one that issues credentials. Verified:
+ * with the marker present, stripping appendAuditLog out of POST lints clean.
  */
-// audit-exempt: read-only masked list, no state change
 export const GET = withAdmin(async () => {
   const rows = await db.select().from(apiKeys).orderBy(desc(apiKeys.createdAt));
 

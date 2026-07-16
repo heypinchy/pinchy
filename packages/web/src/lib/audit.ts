@@ -130,8 +130,7 @@ export type AuditEventType =
   // Agent-provisioning API key lifecycle (#572). Issuance → api_key.created with
   // { id, name, scopes, expiresAt }; revocation → api_key.deleted (better-auth
   // hard-deletes the row) with DeleteDetail { name }. No api_key.updated: PATCH
-  // over keys is an explicit Non-Goal for #572. audit-exempt: infrastructure
-  // (audit resource + event-type vocabulary; no state-changing endpoint here).
+  // over keys is an explicit Non-Goal for #572.
   | "api_key.created"
   | "api_key.deleted"
   | "file.upload.staged"

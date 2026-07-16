@@ -17,10 +17,24 @@
 // behavior under test. So we mint a genuine, valid key through Better Auth and
 // present it exactly as a client would.
 //
-// Teeth (verified during development, then reverted — never committed): flipping
-// `enableSessionForAPIKeys` to `true` in src/lib/auth.ts makes this file FAIL —
-// the x-api-key key resolves to a session and GET /api/users stops returning
-// 401. That the test can fail is what makes its green state meaningful.
+// Teeth, measured rather than assumed: flipping `enableSessionForAPIKeys` to
+// `true` in src/lib/auth.ts fails BOTH tests below — the x-api-key key resolves
+// to a session, and GET /api/users stops returning 401. That the tests can fail
+// is what makes their green state meaningful.
+//
+// This file used to carry a third test: the same assertion against an
+// `Authorization: Bearer` header. It was deleted because it could not fail.
+// Better Auth's `apiKeyHeaders` defaults to the string "x-api-key", and
+// `getApiKeyFromConfig` reads only that header, so Bearer is never consulted
+// for session resolution at all — `expect(session).toBeNull()` was green
+// because of a header Better Auth doesn't look at, not because of D1. It would
+// have passed with D1 off, with a garbage key, and with no api-key plugin
+// installed. Worse, it read as a second D1 proof and inflated this file's
+// apparent coverage from one real assertion to two.
+//
+// Bearer does reach the provisioning API — `readApiKey` in lib/api-auth.ts
+// prefers it and hands the raw string to `verifyApiKey`, which is what the docs
+// promise. That path is covered in with-api-key.test.ts, where it can fail.
 //
 // Provisioned by global-setup.ts (fresh migrated DB), truncated between tests
 // (setup.ts). audit-exempt: test-only.
@@ -94,15 +108,6 @@ describe("D1: API keys do not open session-protected routes (integration)", () =
     expect(verified.valid).toBe(true);
 
     const session = await getSession({ headers: new Headers({ "x-api-key": key }) });
-    expect(session).toBeNull();
-  });
-
-  it("getSession returns null for a valid key presented as Authorization: Bearer", async () => {
-    const { key } = await seedAdminWithKey();
-
-    const session = await getSession({
-      headers: new Headers({ authorization: `Bearer ${key}` }),
-    });
     expect(session).toBeNull();
   });
 

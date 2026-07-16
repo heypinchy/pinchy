@@ -2,10 +2,9 @@ import { z } from "zod";
 import { API_KEY_SCOPES } from "@/lib/api-key-scopes";
 
 /**
- * Request schema for issuing an Agent Provisioning API key (#572, Task 5.1).
- * Shared by the admin-authenticated POST /api/settings/api-keys route today;
- * Phase 6's admin key-management UI imports it too, so both validate
- * identical input.
+ * Request schema for issuing an Agent Provisioning API key (#572).
+ * Shared by the admin-authenticated POST /api/settings/api-keys route and the
+ * admin key-management UI, so both validate identical input.
  */
 export const createApiKeySchema = z.object({
   name: z

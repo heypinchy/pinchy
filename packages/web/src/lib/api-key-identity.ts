@@ -48,9 +48,10 @@
  * verbatim without validating it, and `verifyApiKey` never resolves it. The
  * ONE path that would is the plugin's session-from-key hook, which calls
  * `findUserById(apiKey.referenceId)` and throws UNAUTHORIZED on a miss — and
- * that hook is not merely skipped but never registered, because the plugin
- * gates its own matcher on `enableSessionForAPIKeys`
- * (`findApiKeyAndConfig`: `if (!config.enableSessionForAPIKeys) continue`).
+ * that hook's matcher never matches: the plugin registers the hook
+ * unconditionally, then gates the matcher on `enableSessionForAPIKeys`
+ * (`findApiKeyAndConfig`: `if (!config.enableSessionForAPIKeys) continue`),
+ * which returns null for every request and leaves the handler unreached.
  *
  * So: turning D1 on would break EVERY key at once. That fails closed, which
  * is the right direction, but it would be a mystifying failure — hence this
