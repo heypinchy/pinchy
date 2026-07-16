@@ -228,6 +228,16 @@ export const auth = betterAuth({
       enableSessionForAPIKeys: false,
       // One-time key format: `pinchy_<random>`.
       defaultPrefix: "pinchy_",
+      // MUST stay longer than `defaultPrefix`. The plugin stores
+      // `start = key.substring(0, charactersLength)` as the masked identifier,
+      // and its default is 6 — one character SHORTER than `pinchy_`. Left
+      // alone, every key's `start` is the constant "pinchy": the Settings →
+      // API Keys column that exists to tell keys apart would show `pinchy…` on
+      // every row. That column is the only handle an admin has, because the
+      // plaintext is shown once and never stored — so 7 for the prefix + 6 real
+      // characters, matching the plugin's own intent for the field.
+      // Locked in by auth-apikey.integration.test.ts, against a real key.
+      startingCharactersConfig: { charactersLength: "pinchy_".length + 6 },
       // Defaults to false. Pinchy stores exactly one thing here: the
       // `createdBy` provenance snapshot behind "whose key is this, and do we
       // rotate it now that they've left?" (lib/api-key-identity.ts). Never

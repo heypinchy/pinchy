@@ -325,7 +325,7 @@ describe("GET /api/settings/api-keys", () => {
     return {
       id: "key-1",
       name: "CI Deploy",
-      start: "pinchy_abc",
+      start: "pinchy_a1b2c3",
       prefix: "pinchy_",
       key: "should-never-appear-in-response",
       referenceId: "admin-1",
@@ -361,7 +361,7 @@ describe("GET /api/settings/api-keys", () => {
         {
           id: "key-1",
           name: "CI Deploy",
-          start: "pinchy_abc",
+          start: "pinchy_a1b2c3",
           scopes: ["agents:read", "agents:write"],
           createdAt: "2026-01-01T00:00:00.000Z",
           expiresAt: null,

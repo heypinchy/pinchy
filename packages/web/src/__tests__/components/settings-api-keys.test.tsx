@@ -27,7 +27,7 @@ const mockKeys = [
   {
     id: "key-1",
     name: "CI Deploy",
-    start: "pinchy_abc",
+    start: "pinchy_a1b2c3",
     scopes: ["agents:read", "agents:write"],
     createdAt: "2026-01-01T00:00:00.000Z",
     expiresAt: null,
@@ -38,7 +38,7 @@ const mockKeys = [
   {
     id: "key-2",
     name: "Read-only bot",
-    start: "pinchy_xyz",
+    start: "pinchy_x9y8z7",
     scopes: ["agents:read"],
     createdAt: "2026-02-01T00:00:00.000Z",
     expiresAt: "2026-08-01T00:00:00.000Z",
@@ -77,9 +77,15 @@ describe("SettingsApiKeys", () => {
     const tableView = within(table);
     expect(tableView.getByText("CI Deploy")).toBeInTheDocument();
     expect(tableView.getByText("Read-only bot")).toBeInTheDocument();
-    // Masked `start`, never a full secret.
-    expect(tableView.getByText(/pinchy_abc/)).toBeInTheDocument();
-    expect(tableView.getByText(/pinchy_xyz/)).toBeInTheDocument();
+    // Masked `start`, never a full secret. The two rows must read DIFFERENTLY:
+    // this column's whole job is telling keys apart, and it silently stopped
+    // doing it once (the plugin's default masked away the random part, leaving
+    // every key as "pinchy"). Fixtures can't prove the value is real — that's
+    // auth-apikey.integration.test.ts's job, against a genuinely created key —
+    // but they can at least pin that the component renders per-row values
+    // rather than something constant.
+    expect(tableView.getByText(/pinchy_a1b2c3/)).toBeInTheDocument();
+    expect(tableView.getByText(/pinchy_x9y8z7/)).toBeInTheDocument();
     // Scopes rendered as badges with friendly labels.
     expect(tableView.getAllByText("Read agents").length).toBeGreaterThanOrEqual(1);
     expect(tableView.getByText("Create agents")).toBeInTheDocument();

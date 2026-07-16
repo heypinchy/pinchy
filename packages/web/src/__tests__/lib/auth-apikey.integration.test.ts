@@ -59,4 +59,38 @@ describe("@better-auth/api-key plugin (integration)", () => {
     expect(result.error).toBeNull();
     expect(result.key?.id).toBe(created.id);
   });
+
+  // `start` is the only field that can tie a credential sitting in a CI secret
+  // store back to a row in Settings → API Keys: the plaintext is shown once and
+  // never stored, so the masked identifier is all an admin has to match against
+  // when deciding which key to revoke. That makes its VALUE load-bearing, and
+  // this asserts the value against a genuinely created key.
+  //
+  // The trap it guards: the plugin computes `key.substring(0, charactersLength)`
+  // with `charactersLength` defaulting to 6, while our `defaultPrefix` is
+  // `pinchy_` — 7 characters. Left at the default, `start` is the constant
+  // "pinchy" for every key ever issued and the column disambiguates nothing.
+  // lib/auth.ts sets `startingCharactersConfig` past the prefix for that reason.
+  //
+  // Fixtures cannot catch this: a hand-written `start` is whatever the author
+  // wishes it were. Only a key from the real plugin can fail here.
+  it("stores a start that reaches past the prefix, so two keys are told apart", async () => {
+    const userId = await seedUser();
+
+    const a = await auth.api.createApiKey({ body: { name: "key-a", userId } });
+    const b = await auth.api.createApiKey({ body: { name: "key-b", userId } });
+
+    const [rowA] = await db.select().from(apiKeys).where(eq(apiKeys.id, a.id));
+    const [rowB] = await db.select().from(apiKeys).where(eq(apiKeys.id, b.id));
+
+    // A real prefix of the plaintext — this is what an admin eyeballs against
+    // the key in their secret store.
+    expect(rowA.start).toBeTruthy();
+    expect(a.key.startsWith(rowA.start!)).toBe(true);
+    expect(b.key.startsWith(rowB.start!)).toBe(true);
+
+    // THE assertion. Both are "pinchy" at the plugin's default, and the whole
+    // identify-then-revoke workflow quietly stops working.
+    expect(rowA.start).not.toBe(rowB.start);
+  });
 });
