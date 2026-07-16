@@ -268,6 +268,48 @@ function unquoteFieldKeysDeep(value: unknown): unknown {
   return out;
 }
 
+// A second, distinct model-serialization quirk (observed: ollama-cloud/
+// deepseek-v4-pro in production, pinchy-bugreport-penny-20260716): array-valued
+// tool arguments arrive wrapped as single-key `{item: …}` objects, nested for
+// nested arrays — e.g. `tax_ids: [[6, 0, [172]]]` becomes
+// `{item: {item: ["6", "0", {item: "172"}]}}`. This is the XML-style array
+// serialization certain tool-calling transports produce (documented across
+// runtimes, e.g. llama.cpp ggml-org/llama.cpp#21384), and it is upstream of us.
+//
+// Unlike the quoted-key quirk above, this one is LOSSY: single-element arrays
+// collapse to scalars and ints stringify, so it cannot be reconstructed here
+// without Odoo's schema (which command position is an id list). Silently
+// guessing would forward wrong data. So we DETECT it and return an actionable
+// error naming the artifact and the correct plain-array shape — best-practice
+// for tool robustness (typed, self-correcting error over hidden coercion) —
+// instead of letting Odoo reject it with an opaque "unhashable type: 'dict'" or
+// "Wrong value for …: {'item': …}" that the model cannot act on.
+export function hasItemWrappedArray(value: unknown, depth = 0): boolean {
+  if (depth > 8) return false;
+  if (Array.isArray(value)) {
+    return value.some((v) => hasItemWrappedArray(v, depth + 1));
+  }
+  if (isRecord(value)) {
+    const keys = Object.keys(value);
+    if (keys.length === 1 && keys[0] === "item") return true;
+    return Object.values(value).some((v) => hasItemWrappedArray(v, depth + 1));
+  }
+  return false;
+}
+
+/**
+ * Error for the `{item: …}` array-wrapping quirk, naming the artifact and
+ * showing the correct plain-array shape so the model can re-issue the call.
+ */
+function itemWrappedError(paramName: string): Error {
+  return new Error(
+    `Your \`${paramName}\` arrived with arrays wrapped as {"item": …} objects instead of plain JSON arrays — a serialization artifact from the model, not a value Odoo can accept. ` +
+      `Re-issue the call with plain arrays. For example, a one2many field is invoice_line_ids: [[0, 0, {…}]], ` +
+      `a many2many is tax_ids: [[6, 0, [<id>]]], and a domain is [["state", "=", "posted"]] — ` +
+      `never {"item": {"item": [...]}}.`,
+  );
+}
+
 function unquoteFieldKeys(
   values: Record<string, unknown>,
 ): Record<string, unknown> {
@@ -2216,6 +2258,16 @@ function errorResult(
     );
   }
   const message = error instanceof Error ? error.message : "Unknown error";
+  // A relation field (many2one) that received a display name instead of an id
+  // surfaces from Postgres as "invalid input syntax for type integer: <text>".
+  // That raw DB error is not actionable for the model, so append what to do:
+  // resolve the name to an id/ref first (production: Penny repeatedly sent
+  // account_id: "7600 Office supplies …" and got only the bare Postgres error).
+  if (/invalid input syntax for type integer:/i.test(message)) {
+    return toolError(
+      `Error: ${message.trim()}\n\nThis usually means a relation field (e.g. account_id, partner_id, journal_id) was given a display name or text instead of a numeric id. Look the record up with odoo_read to get its id, then pass that id or the _pinchy_ref it returns — never the display name.`,
+    );
+  }
   return toolError(`Error: ${message}`);
 }
 
@@ -2532,7 +2584,7 @@ const plugin = {
                     "A [field, operator, value] tuple, e.g. ['state', '=', 'sale']",
                 },
                 description:
-                  "Odoo domain filter. Array of [field, operator, value] tuples. Operators: =, !=, >, >=, <, <=, in, not in, like, ilike. Optional — omit or pass [] to match all records.",
+                  'Odoo domain filter. A plain array of [field, operator, value] tuples, e.g. [["state", "=", "posted"]] — never wrap it as {"item": …}. Operators: =, !=, >, >=, <, <=, in, not in, like, ilike. Optional — omit or pass [] to match all records.',
               },
               fields: {
                 type: "array",
@@ -2559,6 +2611,15 @@ const plugin = {
               const model = params.model as string;
               if (!checkPermission(config.permissions, model, "read")) {
                 return permissionDenied("read", model);
+              }
+              // Reject the {item: …} array-serialization artifact in the domain
+              // or field list before querying — Odoo otherwise fails it with an
+              // opaque "unhashable type: 'dict'" (see hasItemWrappedArray).
+              if (hasItemWrappedArray(params.filters)) {
+                throw itemWrappedError("filters");
+              }
+              if (hasItemWrappedArray(params.fields)) {
+                throw itemWrappedError("fields");
               }
 
               const result = await withAuthRetry(
@@ -2759,7 +2820,7 @@ const plugin = {
           name: "odoo_create",
           label: "Odoo Create",
           description:
-            "Create a new record in Odoo. Returns `{id, _pinchy_ref}` — pass the `_pinchy_ref` verbatim to any tool that takes an opaque reference (e.g. `odoo_attach_file.targetRef`). For many2one fields, do not pass raw numeric IDs; use an opaque ref from odoo_read, an exact display name, or a supported lookup such as a country code. Note: in invoice/order line models (e.g. `account.move.line`, `sale.order.line`, `purchase.order.line`), `price_unit` is tax-exclusive (net); Odoo computes gross totals from `tax_ids`. Convert receipt gross amounts to net before writing.",
+            'Create a new record in Odoo. Returns `{id, _pinchy_ref}` — pass the `_pinchy_ref` verbatim to any tool that takes an opaque reference (e.g. `odoo_attach_file.targetRef`). For many2one fields, do not pass raw numeric IDs; use an opaque ref from odoo_read, an exact display name, or a supported lookup such as a country code. One2many and many2many fields use Odoo command tuples emitted as plain JSON arrays: a new line is invoice_line_ids: [[0, 0, {…}]] and a tag link is tax_ids: [[6, 0, [<taxId>]]] — never wrap arrays as {"item": …}. Note: in invoice/order line models (e.g. `account.move.line`, `sale.order.line`, `purchase.order.line`), `price_unit` is tax-exclusive (net); Odoo computes gross totals from `tax_ids`. Convert receipt gross amounts to net before writing.',
           parameters: {
             type: "object",
             properties: {
@@ -2777,6 +2838,12 @@ const plugin = {
               const model = params.model as string;
               if (!checkPermission(config.permissions, model, "create")) {
                 return permissionDenied("create", model);
+              }
+              // Reject the {item: …} array-serialization artifact before any
+              // Odoo round-trip — forwarding it produces opaque server errors
+              // the model cannot recover from (see hasItemWrappedArray).
+              if (hasItemWrappedArray(params.values)) {
+                throw itemWrappedError("values");
               }
 
               const id = await withAuthRetry(
