@@ -156,8 +156,27 @@ function aggregate(runs: RunResult[]): Cell[] {
     .sort((a, b) => b.passRate - a.passRate || a.model.localeCompare(b.model));
 }
 
-async function main(): Promise<void> {
-  const scenarios = [];
+export interface PublishedScenario {
+  label: string;
+  slug: string;
+  axis: string;
+  totalRuns: number;
+  models: Cell[];
+}
+
+/**
+ * The published scorecards: exactly what the CLI prints and the /reliability
+ * hub renders, re-grades and all.
+ *
+ * Exported so the triage guard (`eval/__tests__/scorecard-triage-guard.test.ts`)
+ * judges the SAME numbers we publish. The stored `data/<scenario>.json`
+ * scorecards are not those numbers — three scenarios are re-graded here from
+ * their trajectories, and the two disagree materially (deepseek-v3.2 on
+ * duplicate-guard: 12/12 stored, 0/12 re-graded). A guard reading the stored
+ * file would police cells that no reader ever sees.
+ */
+export async function buildPublishedScenarios(): Promise<PublishedScenario[]> {
+  const scenarios: PublishedScenario[] = [];
   for (const s of SCENARIOS) {
     const stored = await readJsonl<RunResult>(`${s.label}.jsonl`);
     let runs: RunResult[] = stored;
@@ -187,12 +206,17 @@ async function main(): Promise<void> {
       models: aggregate(runs),
     });
   }
+  return scenarios;
+}
 
+async function main(): Promise<void> {
   const out = {
     generatedFrom: "packages/web/eval/data (heypinchy/pinchy)",
-    scenarios,
+    scenarios: await buildPublishedScenarios(),
   };
   process.stdout.write(`${JSON.stringify(out, null, 2)}\n`);
 }
 
-void main();
+// Only when run as the CLI: importers (the triage guard) want the data, not a
+// dump on their stdout.
+if (require.main === module) void main();

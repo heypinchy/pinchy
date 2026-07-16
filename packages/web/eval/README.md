@@ -331,6 +331,48 @@ runs for that model — this is usually more actionable than the raw pass
 rate (e.g. "always `id-malformed`" points at a very different fix than
 "always `task-incomplete`").
 
+## The triage guard — a catastrophic cell has to be read
+
+A committed number that nothing reads protects nobody. On 2026-07-11 this
+sweep measured `minimax-m3` at **0/12** on `line-items` — the one scenario
+that needs `account.move` `invoice_line_ids` command triplets, i.e. nested
+arrays. The number sat in `data/`, unread, until 2026-07-15, when a production
+agent failed to book invoices on that model for exactly that defect
+(pinchy#766). Nothing connected the dataset to `model-resolver/blocklist.ts`.
+
+`eval/__tests__/scorecard-triage-guard.test.ts` is that connection. It runs in
+**vitest** against the checked-in dataset — no stack, no API keys, ~2s — so it
+gates every PR, which `pnpm eval:models` never can (docker + live keys,
+~72s/run; CI runs only `eval:selftest`). Whoever commits a fresh scorecard gets
+the red test.
+
+**What it flags** (`src/lib/eval/outliers.ts`): a cell where `passes === 0`
+over at least 8 valid trials **and** the model clears a 0.5 median pass rate
+across the _other_ capability scenarios (happy-path, distractor-inbox,
+conflicting-data, line-items). That anchor is what keeps the guard honest. Of
+the 14 zero-cells in the 2026-07-11 sweep it flags 4: the zeros of
+`gpt-oss:20b`, `mistral-large-3` and `deepseek-v3.2` carry no information —
+those models are weak everywhere, and (per `data/README.md`) even _pass_ some
+failure scenarios by incapacity. A capable model's clean zero is the outlier
+worth a human's time.
+
+**What it demands**: a committed verdict in `eval/triage-ledger.ts`, either
+`blocked` (blocklist.ts names the model — the guard asserts the rule really
+exists) or `accepted` (we looked; here is why this is not blocklist material).
+Both directions are guarded: an entry whose cell no longer flags fails too, so
+a verdict cannot outlive its evidence.
+
+**What a flag is not.** It is not proof the model's tools are broken, and the
+threshold must never become a machine for generating blocklist rules. This eval
+grades **outcomes** — it re-reads Odoo state after a run and never inspects a
+tool-call payload. It grounds a suspicion, not a cause. The four cells flagged
+today have three different answers: `minimax-m3`/line-items corroborates a
+tool-argument defect proven elsewhere (session payloads), `gemma4:31b`/
+duplicate-guard is a judgement defect (it duplicates blindly, 12/12
+`duplicate-created`), and the two `silent-failure` zeros are honesty defects
+(`false-success`). Only the first belongs on a denylist. The blocklist stays
+what it is: evidence-based, and what it does not name is allowed.
+
 ## Current candidate set and why
 
 The default candidates in `eval-models.spec.ts` are `kimi-k2.6`, `gemma4:31b`, and
