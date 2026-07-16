@@ -1865,6 +1865,66 @@ async function ensureActivityResModelId(
   return next;
 }
 
+/** Id of an Odoo many2one value, which comes back as `[id, label]` or `false`. */
+export function relationId(value: unknown): number | null {
+  if (!Array.isArray(value)) return null;
+  const id = value[0];
+  return typeof id === "number" && Number.isInteger(id) && id > 0 ? id : null;
+}
+
+/** Label of an Odoo many2one value. */
+export function relationLabel(value: unknown): string | null {
+  if (!Array.isArray(value)) return null;
+  return typeof value[1] === "string" ? value[1] : null;
+}
+
+function asNumber(value: unknown): number | null {
+  return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
+/**
+ * Accounts a bill/invoice settles against, matched via
+ * `account.move.line.account_type` (a related field on the line, so no join is
+ * needed). Reconciliation only ever happens on these: Odoo refuses lines from
+ * two different accounts outright ("Entries are not from the same account"),
+ * which is why a bank transaction sitting on the journal's *suspense* account
+ * can never be reconciled against a bill's payable line directly — the suspense
+ * line has to be replaced first.
+ */
+const SETTLEMENT_ACCOUNT_TYPES = ["asset_receivable", "liability_payable"];
+
+/**
+ * Did the reconcile actually happen?
+ *
+ * This is the crux of the tool, and it is deliberately paranoid. Verified
+ * against a real Odoo 19 instance (2026-07-16):
+ *
+ *  1. `account.move.line.reconcile()` returns `None` — on success AND on a
+ *     silent no-op. Over RPC that is `undefined`. The return value carries no
+ *     information at all.
+ *  2. Odoo 19 dropped the "you can only reconcile posted entries" guard. A
+ *     reconcile touching a draft line raises nothing, writes no
+ *     `account.partial.reconcile`, and changes nothing. Silence is not success.
+ *  3. `account.bank.statement.line.is_reconciled` is NOT a valid signal: it is
+ *     computed as "no suspense line left on the move", so merely restating the
+ *     counterpart (step 1 of the bank flow) already flips it to `true` while
+ *     the bill stays unpaid.
+ *
+ * The only trustworthy evidence is the settled document's own residual going
+ * down. That is what we check.
+ */
+export function didReconcile(
+  residualBefore: unknown,
+  residualAfter: unknown,
+): boolean {
+  const before = asNumber(residualBefore);
+  const after = asNumber(residualAfter);
+  if (before === null || after === null) return false;
+  // Residuals are signed and rounded by Odoo; compare magnitudes with a
+  // cent-level tolerance so a float artefact cannot read as progress.
+  return Math.abs(after) < Math.abs(before) - 0.005;
+}
+
 /**
  * Variant A wizard handling for record-action tools. Odoo button/action
  * methods (e.g. `stock.picking.button_validate`, `mrp.production.button_mark_done`)
@@ -3503,6 +3563,522 @@ const plugin = {
         };
       },
       { name: "odoo_set_approval" },
+    );
+
+    // 5j. odoo_reconcile. Odoo has no single "reconcile" button we could wrap,
+    // and the Enterprise bank-reconciliation widget is unusable over RPC (in
+    // Odoo 19 its model is gone entirely; in 16-18 every action on it is
+    // private and the model has no table). So this tool reproduces what the
+    // widget does, using only public methods of the free `account` module —
+    // which is also why it works on Odoo Community, not just Enterprise.
+    api.registerTool(
+      (ctx: PluginToolContext) => {
+        const agentId = ctx.agentId;
+        if (!agentId) return null;
+        const config = getAgentConfig(agentConfigs, agentId);
+        if (!config) return null;
+
+        return {
+          name: "odoo_reconcile",
+          label: "Odoo Reconcile Payment",
+          description:
+            "Reconcile a POSTED bill or invoice against the money that settled it — either a bank transaction (`account.bank.statement.line`) or an existing payment (`account.payment`). Pass the `_pinchy_ref` of the bill/invoice as `invoice` and the `_pinchy_ref` of the bank transaction or payment as `counterpart`. This is the only correct way to reconcile: do NOT try to write `full_reconcile_id` or create `account.full.reconcile` records — Odoo maintains those itself. The tool verifies the result by re-reading the bill and reports honestly if nothing was reconciled. Reconcile only after the user has confirmed the match.",
+          parameters: {
+            type: "object",
+            properties: {
+              invoice: {
+                type: "string",
+                description:
+                  "Opaque `_pinchy_ref` of the posted `account.move` (vendor bill or customer invoice) to settle.",
+              },
+              counterpart: {
+                type: "string",
+                description:
+                  "Opaque `_pinchy_ref` of the money movement that settled it: an `account.bank.statement.line` (bank transaction) or an `account.payment`.",
+              },
+            },
+            required: ["invoice", "counterpart"],
+            additionalProperties: false,
+          },
+          async execute(_toolCallId: string, params: Record<string, unknown>) {
+            try {
+              const invoiceRef = params.invoice;
+              const counterpartRef = params.counterpart;
+              if (typeof invoiceRef !== "string" || invoiceRef.length === 0) {
+                return errorResult(
+                  new Error(
+                    "`invoice` is required: pass the _pinchy_ref of the bill or invoice (account.move).",
+                  ),
+                );
+              }
+              if (
+                typeof counterpartRef !== "string" ||
+                counterpartRef.length === 0
+              ) {
+                return errorResult(
+                  new Error(
+                    "`counterpart` is required: pass the _pinchy_ref of the bank transaction (account.bank.statement.line) or payment (account.payment).",
+                  ),
+                );
+              }
+
+              const inv = decodeTargetRef(config.connectionId, invoiceRef);
+              if (inv === null) {
+                return errorResult(
+                  new Error(
+                    "`invoice` ref does not belong to this Odoo connection.",
+                  ),
+                );
+              }
+              if (inv.model !== "account.move") {
+                return errorResult(
+                  new Error(
+                    "`invoice` must be an account.move ref (a vendor bill or customer invoice).",
+                  ),
+                );
+              }
+              const cp = decodeTargetRef(config.connectionId, counterpartRef);
+              if (cp === null) {
+                return errorResult(
+                  new Error(
+                    "`counterpart` ref does not belong to this Odoo connection.",
+                  ),
+                );
+              }
+              if (
+                cp.model !== "account.bank.statement.line" &&
+                cp.model !== "account.payment"
+              ) {
+                return errorResult(
+                  new Error(
+                    `\`counterpart\` must be an account.bank.statement.line (bank transaction) or account.payment ref, not ${cp.model}.`,
+                  ),
+                );
+              }
+
+              // Reconciling rewrites and matches journal items in every case.
+              if (
+                !checkPermission(config.permissions, "account.move.line", "write")
+              ) {
+                return permissionDenied("write", "account.move.line");
+              }
+              // The bank flow additionally restates the statement line's move.
+              if (
+                cp.model === "account.bank.statement.line" &&
+                !checkPermission(
+                  config.permissions,
+                  "account.bank.statement.line",
+                  "write",
+                )
+              ) {
+                return permissionDenied("write", "account.bank.statement.line");
+              }
+
+              const invoice = (
+                await withAuthRetry(agentId, config, (client) =>
+                  client.searchRead("account.move", [["id", "=", inv.id]], {
+                    fields: [
+                      "name",
+                      "state",
+                      "payment_state",
+                      "amount_residual",
+                      "company_id",
+                      "partner_id",
+                    ],
+                    limit: 1,
+                  }),
+                )
+              ).records[0];
+              if (!invoice) {
+                return errorResult(
+                  new Error(`account.move ${inv.id} was not found in Odoo.`),
+                );
+              }
+              const invoiceName =
+                typeof invoice.name === "string" ? invoice.name : `#${inv.id}`;
+
+              // Odoo 19 no longer refuses to reconcile a draft entry — it just
+              // silently does nothing. Catch it here or ship a false success.
+              if (invoice.state !== "posted") {
+                return errorResult(
+                  new Error(
+                    `${invoiceName} is in state "${String(invoice.state)}", not "posted". Odoo accepts a reconcile call on a draft entry but silently does nothing, so post it first (after the user confirms), then reconcile.`,
+                  ),
+                );
+              }
+
+              const invoiceLines = (
+                await withAuthRetry(agentId, config, (client) =>
+                  client.searchRead(
+                    "account.move.line",
+                    [
+                      ["move_id", "=", inv.id],
+                      ["account_type", "in", SETTLEMENT_ACCOUNT_TYPES],
+                      ["reconciled", "=", false],
+                    ],
+                    {
+                      fields: [
+                        "id",
+                        "account_id",
+                        "account_type",
+                        "debit",
+                        "credit",
+                      ],
+                    },
+                  )
+                )
+              ).records;
+              if (invoiceLines.length === 0) {
+                return errorResult(
+                  new Error(
+                    `${invoiceName} has no open receivable/payable line — there is nothing left to reconcile (it may already be paid).`,
+                  ),
+                );
+              }
+              if (invoiceLines.length > 1) {
+                return errorResult(
+                  new Error(
+                    `${invoiceName} has ${invoiceLines.length} open receivable/payable lines, so the counterpart is ambiguous. Reconcile it in Odoo.`,
+                  ),
+                );
+              }
+              const invoiceLine = invoiceLines[0];
+              const settlementAccountId = relationId(invoiceLine.account_id);
+              if (settlementAccountId === null) {
+                return errorResult(
+                  new Error(
+                    `Could not read the settlement account of ${invoiceName}.`,
+                  ),
+                );
+              }
+              const invoiceCompanyId = relationId(invoice.company_id);
+              const residualBefore = invoice.amount_residual;
+
+              /**
+               * Re-read the bill and report only what Odoo actually did. On
+               * failure the caller gets an error, never a success claim.
+               */
+              const confirm = async (
+                extra: Record<string, unknown>,
+                rollback?: () => Promise<void>,
+              ) => {
+                const after = (
+                  await withAuthRetry(agentId, config, (client) =>
+                    client.searchRead("account.move", [["id", "=", inv.id]], {
+                      fields: ["payment_state", "amount_residual"],
+                      limit: 1,
+                    }),
+                  )
+                ).records[0];
+                if (!didReconcile(residualBefore, after?.amount_residual)) {
+                  if (rollback) await rollback();
+                  return toolError(
+                    `Odoo accepted the reconcile call but ${invoiceName} did not reconcile: its open balance is still ${String(after?.amount_residual ?? residualBefore)}. Odoo reports no error in this case, so this is not a transient failure — the entries were not matched. Check in Odoo that both sides are posted and on the same account.`,
+                  );
+                }
+                return {
+                  content: [
+                    {
+                      type: "text",
+                      text: JSON.stringify({
+                        reconciled: true,
+                        invoice: { id: inv.id, name: invoiceName },
+                        paymentState: after?.payment_state,
+                        amountResidual: after?.amount_residual,
+                        ...extra,
+                      }),
+                    },
+                  ],
+                };
+              };
+
+              // ---- Counterpart is an existing payment -------------------
+              if (cp.model === "account.payment") {
+                const payment = (
+                  await withAuthRetry(agentId, config, (client) =>
+                    client.searchRead("account.payment", [["id", "=", cp.id]], {
+                      fields: ["move_id", "state", "company_id", "amount"],
+                      limit: 1,
+                    }),
+                  )
+                ).records[0];
+                if (!payment) {
+                  return errorResult(
+                    new Error(`account.payment ${cp.id} was not found in Odoo.`),
+                  );
+                }
+                const paymentCompanyId = relationId(payment.company_id);
+                if (
+                  invoiceCompanyId !== null &&
+                  paymentCompanyId !== null &&
+                  invoiceCompanyId !== paymentCompanyId
+                ) {
+                  return errorResult(
+                    new Error(
+                      `Cross-company match rejected: ${invoiceName} belongs to ${relationLabel(invoice.company_id) ?? invoiceCompanyId} but the payment belongs to ${relationLabel(payment.company_id) ?? paymentCompanyId}.`,
+                    ),
+                  );
+                }
+                // Odoo 19 payments may exist without a journal entry.
+                const paymentMoveId = relationId(payment.move_id);
+                if (paymentMoveId === null) {
+                  return errorResult(
+                    new Error(
+                      "This payment has no journal entry yet, so there is nothing to reconcile against.",
+                    ),
+                  );
+                }
+                const paymentLine = (
+                  await withAuthRetry(agentId, config, (client) =>
+                    client.searchRead(
+                      "account.move.line",
+                      [
+                        ["move_id", "=", paymentMoveId],
+                        ["account_id", "=", settlementAccountId],
+                        ["reconciled", "=", false],
+                      ],
+                      { fields: ["id"] },
+                    ),
+                  )
+                ).records[0];
+                if (!paymentLine) {
+                  return errorResult(
+                    new Error(
+                      `This payment has no matching open line on ${relationLabel(invoiceLine.account_id) ?? "the settlement account"} — it does not post to the same account as ${invoiceName}, so Odoo cannot reconcile the two.`,
+                    ),
+                  );
+                }
+                // js_assign_outstanding_line adds the invoice's own line for
+                // us and reconciles both. It takes a scalar line id.
+                await withAuthRetry(agentId, config, (client) =>
+                  client.callMethod(
+                    "account.move",
+                    "js_assign_outstanding_line",
+                    [[inv.id], paymentLine.id],
+                    {},
+                  ),
+                );
+                return await confirm({ payment: { id: cp.id } });
+              }
+
+              // ---- Counterpart is a bank transaction --------------------
+              const stLine = (
+                await withAuthRetry(agentId, config, (client) =>
+                  client.searchRead(
+                    "account.bank.statement.line",
+                    [["id", "=", cp.id]],
+                    {
+                      fields: [
+                        "payment_ref",
+                        "move_id",
+                        "journal_id",
+                        "is_reconciled",
+                        "company_id",
+                        "partner_id",
+                        "amount",
+                      ],
+                      limit: 1,
+                    },
+                  ),
+                )
+              ).records[0];
+              if (!stLine) {
+                return errorResult(
+                  new Error(
+                    `account.bank.statement.line ${cp.id} was not found in Odoo.`,
+                  ),
+                );
+              }
+              if (stLine.is_reconciled === true) {
+                return errorResult(
+                  new Error(
+                    "This bank transaction is already reconciled. Undo the existing match in Odoo first if it is wrong.",
+                  ),
+                );
+              }
+              const stCompanyId = relationId(stLine.company_id);
+              if (
+                invoiceCompanyId !== null &&
+                stCompanyId !== null &&
+                invoiceCompanyId !== stCompanyId
+              ) {
+                return errorResult(
+                  new Error(
+                    `Cross-company match rejected: ${invoiceName} belongs to ${relationLabel(invoice.company_id) ?? invoiceCompanyId} but the bank transaction belongs to ${relationLabel(stLine.company_id) ?? stCompanyId}.`,
+                  ),
+                );
+              }
+              const stMoveId = relationId(stLine.move_id);
+              const journalId = relationId(stLine.journal_id);
+              if (stMoveId === null || journalId === null) {
+                return errorResult(
+                  new Error(
+                    "Could not read the bank transaction's journal entry or journal.",
+                  ),
+                );
+              }
+              const journal = (
+                await withAuthRetry(agentId, config, (client) =>
+                  client.searchRead("account.journal", [["id", "=", journalId]], {
+                    fields: ["default_account_id", "suspense_account_id"],
+                    limit: 1,
+                  }),
+                )
+              ).records[0];
+              if (!journal) {
+                return errorResult(
+                  new Error(`account.journal ${journalId} was not found.`),
+                );
+              }
+              const bankAccountId = relationId(journal.default_account_id);
+              const suspenseAccountId = relationId(journal.suspense_account_id);
+
+              const stMoveLines = (
+                await withAuthRetry(agentId, config, (client) =>
+                  client.searchRead(
+                    "account.move.line",
+                    [["move_id", "=", stMoveId]],
+                    {
+                      fields: [
+                        "id",
+                        "account_id",
+                        "debit",
+                        "credit",
+                        "amount_currency",
+                        "partner_id",
+                        "name",
+                      ],
+                    },
+                  ),
+                )
+              ).records;
+              const liquidityLines = stMoveLines.filter(
+                (l) => relationId(l.account_id) === bankAccountId,
+              );
+              const suspenseLines = stMoveLines.filter(
+                (l) => relationId(l.account_id) === suspenseAccountId,
+              );
+              // `_synchronize_from_moves` enforces exactly one liquidity line
+              // and at most one suspense line; a shape we don't recognise means
+              // this transaction is already partly matched.
+              if (liquidityLines.length !== 1) {
+                return errorResult(
+                  new Error(
+                    `This bank transaction has ${liquidityLines.length} bank lines; Odoo requires exactly one. Reconcile it in Odoo.`,
+                  ),
+                );
+              }
+              if (suspenseLines.length !== 1) {
+                return errorResult(
+                  new Error(
+                    "This bank transaction has no suspense line to replace — it is probably already matched to something else. Reset it in Odoo first.",
+                  ),
+                );
+              }
+              const liquidity = liquidityLines[0];
+              const suspense = suspenseLines[0];
+
+              // Step 1: restate the counterpart from the suspense account onto
+              // the bill's payable/receivable account, preserving the
+              // liquidity line and the original signs. This is exactly what
+              // the bank-reconciliation widget does, and what core's own
+              // `action_undo_reconciliation` does in reverse. Odoo refuses the
+              // write on a posted move without these context flags.
+              await withAuthRetry(agentId, config, (client) =>
+                client.callMethod(
+                  "account.bank.statement.line",
+                  "write",
+                  [
+                    [cp.id],
+                    {
+                      line_ids: [
+                        [5, 0, 0],
+                        [
+                          0,
+                          0,
+                          {
+                            account_id: bankAccountId,
+                            debit: liquidity.debit,
+                            credit: liquidity.credit,
+                            amount_currency: liquidity.amount_currency,
+                            partner_id: relationId(liquidity.partner_id),
+                            name: liquidity.name,
+                          },
+                        ],
+                        [
+                          0,
+                          0,
+                          {
+                            account_id: settlementAccountId,
+                            debit: suspense.debit,
+                            credit: suspense.credit,
+                            amount_currency: suspense.amount_currency,
+                            partner_id:
+                              relationId(invoice.partner_id) ??
+                              relationId(suspense.partner_id),
+                            name: suspense.name,
+                          },
+                        ],
+                      ],
+                    },
+                  ],
+                  { context: { force_delete: true, skip_readonly_check: true } },
+                ),
+              );
+
+              const newCounterpart = (
+                await withAuthRetry(agentId, config, (client) =>
+                  client.searchRead(
+                    "account.move.line",
+                    [
+                      ["move_id", "=", stMoveId],
+                      ["account_id", "=", settlementAccountId],
+                    ],
+                    { fields: ["id"] },
+                  ),
+                )
+              ).records[0];
+              if (!newCounterpart) {
+                return errorResult(
+                  new Error(
+                    "Odoo did not create the counterpart line on the settlement account; the bank transaction was left unchanged.",
+                  ),
+                );
+              }
+
+              // Step 2: same-account reconcile.
+              await withAuthRetry(agentId, config, (client) =>
+                client.callMethod(
+                  "account.move.line",
+                  "reconcile",
+                  [[newCounterpart.id, invoiceLine.id]],
+                  {},
+                ),
+              );
+
+              return await confirm(
+                { bankTransaction: { id: cp.id, ref: stLine.payment_ref } },
+                // Never leave the statement line restated-but-unmatched: put
+                // its suspense counterpart back so the books look exactly as
+                // they did before, and a human can retry in Odoo.
+                async () => {
+                  await withAuthRetry(agentId, config, (client) =>
+                    client.callMethod(
+                      "account.bank.statement.line",
+                      "action_undo_reconciliation",
+                      [[cp.id]],
+                      {},
+                    ),
+                  );
+                },
+              );
+            } catch (error) {
+              return errorResult(error, { operation: "write" });
+            }
+          },
+        };
+      },
+      { name: "odoo_reconcile" },
     );
 
     // 6. odoo_write

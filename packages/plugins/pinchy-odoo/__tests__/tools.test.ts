@@ -1093,9 +1093,9 @@ describe("odoo_list_models", () => {
 });
 
 describe("tool registration", () => {
-  it("registers all 18 tools (including the deprecated odoo_schema alias)", () => {
+  it("registers all 19 tools (including the deprecated odoo_schema alias)", () => {
     const tools = createApi({ [agentId]: agentConfig });
-    expect(tools).toHaveLength(18);
+    expect(tools).toHaveLength(19);
     const names = tools.map((t) => t.name);
     expect(names).toContain("odoo_list_models");
     expect(names).toContain("odoo_describe_model");
@@ -1112,6 +1112,7 @@ describe("tool registration", () => {
     expect(names).toContain("odoo_validate_picking");
     expect(names).toContain("odoo_mark_mo_done");
     expect(names).toContain("odoo_set_approval");
+    expect(names).toContain("odoo_reconcile");
     expect(names).toContain("odoo_write");
     expect(names).toContain("odoo_delete");
     expect(names).toContain("odoo_attach_file");

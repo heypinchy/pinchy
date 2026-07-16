@@ -74,6 +74,7 @@ export const MODEL_CATEGORIES: ModelCategory[] = [
       { model: "account.move", name: "Invoices & Entries" },
       { model: "account.move.line", name: "Journal Items" },
       { model: "account.payment", name: "Payments" },
+      { model: "account.bank.statement.line", name: "Bank Transactions" },
       { model: "account.journal", name: "Journals" },
       { model: "account.account", name: "Accounts" },
       { model: "account.tax", name: "Taxes" },

@@ -114,6 +114,7 @@ When you connect Odoo and grant an agent access to it, Pinchy automatically enab
 | **Validate picking**      | `odoo_validate_picking`    | Validate a stock transfer (`button_validate`); hands off if Odoo needs a backorder decision                    | Read & Write          |
 | **Mark MO done**          | `odoo_mark_mo_done`        | Mark a manufacturing order done (`button_mark_done`); hands off if Odoo needs a backorder/consumption decision | Read & Write          |
 | **Set approval decision** | `odoo_set_approval`        | Approve/refuse an expense report, purchase order, leave request, or approval request via its blessed method    | Read & Write          |
+| **Reconcile payment**     | `odoo_reconcile`           | Match a posted bill/invoice against a bank transaction or payment, and verify the result on the document       | Read & Write          |
 | **Update records**        | `odoo_write`               | Modify existing records                                                                                        | Read & Write          |
 | **Attach file**           | `odoo_attach_file`         | Attach an uploaded file to an existing record as `ir.attachment`                                               | Read & Write          |
 | **Delete records**        | `odoo_delete`              | Delete records                                                                                                 | Full                  |
