@@ -223,6 +223,86 @@ const PDF_ATTACHMENT_READ_RESPONSE = "PDF read: coverage probe complete.";
 const KNOWLEDGE_SEARCH_TRIGGER = "E2E_KNOWLEDGE_SEARCH_TOOL";
 const KNOWLEDGE_SEARCH_RESPONSE = "Knowledge base searched: coverage probe complete.";
 
+// ── KB Eval Harness attribution self-test triggers (Task 2.2) ──────────────
+// Five deterministic `knowledge_search` scripted answers for the Layer-2
+// attribution self-test (Task 2.3, `attribution-graders.ts`). One is
+// well-formed (passes every grader); the other four each trip exactly ONE
+// `KbFailureTag` so Task 2.3 can assert `gradeAttribution` catches it in
+// isolation. Every cited path is a REAL corpus source path from
+// `packages/web/eval/kb/corpus/manifest.ts` (KB_EVAL_CORPUS) — never a
+// fabricated path — so a future path-existence cross-check stays valid.
+//
+//   constant                        | defect tag           | path(s) cited
+//   -------------------------------- | --------------------- | -----------------------------------
+//   KB_WELL_FORMED_TRIGGER           | (none — passes)       | /data/vacation-policy-en.md
+//   KB_UNLISTED_CITATION_TRIGGER     | citation-unresolved   | /data/vacation-policy-en.md
+//   KB_UNCITED_SOURCE_TRIGGER        | source-uncited        | /data/vacation-policy-en.md,
+//                                     |                       | /data/quality-file.md
+//   KB_BARE_FILENAME_TRIGGER         | path-not-cited        | product-insert.md (bare filename;
+//                                     |                       | full path would be
+//                                     |                       | /data/product-insert.md)
+//   KB_RUNON_FORMAT_TRIGGER          | sources-format (+     | /data/handbook-2012/policy.md
+//                                     | citation-unresolved,  |
+//                                     | see note below)       |
+//
+// Task 2.3's `retrieved: RetrievedSource[]` fixture must be built so that
+// ONLY the intended tag(s) fire (gradePathCitation and
+// gradeCitationResolution run independently, so an unrelated `retrieved` gap
+// would spuriously trip a second grader):
+//   - KB_WELL_FORMED and KB_UNCITED_SOURCE: `retrieved` MUST contain every
+//     path the response cites in its Sources list (vacation-policy-en.md for
+//     both; quality-file.md additionally for KB_UNCITED_SOURCE) so
+//     `gradePathCitation` passes and only the intended grader (none, or
+//     `source-uncited`) fires.
+//   - KB_UNLISTED_CITATION: `retrieved` MUST contain
+//     /data/vacation-policy-en.md — the one path the response's Sources list
+//     actually cites — so `gradePathCitation` passes and only
+//     `citation-unresolved` fires.
+//   - KB_BARE_FILENAME: `gradePathCitation` fires on the bare filename
+//     regardless of what `retrieved` contains (no `/` in the cited entry is
+//     sufficient on its own).
+//   - KB_RUNON_FORMAT: `retrieved` should contain
+//     /data/handbook-2012/policy.md, but note this does NOT isolate a single
+//     tag. Verified against the real `gradeAttribution` (not assumed): a
+//     run-on Sources list has no bulleted "- [N] ..." line at all, so
+//     `parseSourcesEntries` extracts ZERO entries — which means the inline
+//     `[1]` ALSO fails to resolve against the (empty) Sources list. This
+//     response therefore always grades as
+//     `["citation-unresolved", "sources-format"]`, never `sources-format`
+//     alone — an inherent interaction between the two graders on a run-on
+//     list, not a fixture bug. Task 2.3 must assert
+//     `tags.includes("sources-format")` for this case, not exact-tag
+//     equality.
+const KB_WELL_FORMED_TRIGGER = "E2E_KB_WELL_FORMED";
+const KB_WELL_FORMED_RESPONSE =
+  "The vacation policy grants 2.5 days of leave per month, capped at 30 days annually [1].\n\n" +
+  "**Sources:**\n\n" +
+  "- [1] /data/vacation-policy-en.md — p. 1";
+
+const KB_UNLISTED_CITATION_TRIGGER = "E2E_KB_UNLISTED_CITATION";
+const KB_UNLISTED_CITATION_RESPONSE =
+  "Employees accrue 2.5 days per month [1], and unused days carry over for one year [2].\n\n" +
+  "**Sources:**\n\n" +
+  "- [1] /data/vacation-policy-en.md — p. 1";
+
+const KB_UNCITED_SOURCE_TRIGGER = "E2E_KB_UNCITED_SOURCE";
+const KB_UNCITED_SOURCE_RESPONSE =
+  "Employees accrue 2.5 days of leave per month [1].\n\n" +
+  "**Sources:**\n\n" +
+  "- [1] /data/vacation-policy-en.md — p. 1\n" +
+  "- [2] /data/quality-file.md — p. 2";
+
+const KB_BARE_FILENAME_TRIGGER = "E2E_KB_BARE_FILENAME";
+const KB_BARE_FILENAME_RESPONSE =
+  "The filter cartridge should be replaced every six months [1].\n\n" +
+  "**Sources:**\n\n" +
+  "- [1] product-insert.md — p. 2";
+
+const KB_RUNON_FORMAT_TRIGGER = "E2E_KB_RUNON_FORMAT";
+const KB_RUNON_FORMAT_RESPONSE =
+  "The employee handbook requires an annual policy review [1].\n\n" +
+  "**Sources:** [1] /data/handbook-2012/policy.md — p. 1";
+
 // ── Eval-v1 Hetzner-scenario self-test triggers (pinchy#669) ────────────────
 // A deterministic (no paid API) stand-in for the real 4-tool Hetzner-invoice
 // chain: email_list -> email_read -> email_get_attachment -> odoo_create ->
@@ -497,6 +577,39 @@ const TOOL_TRIGGERS: TriggerConfig[] = [
     response: KNOWLEDGE_SEARCH_RESPONSE,
     toolName: "knowledge_search",
     arguments: { query: "E2E coverage probe" },
+  },
+  // KB Eval Harness attribution self-test triggers (Task 2.2) — see the
+  // docblock above KB_WELL_FORMED_TRIGGER for the full trigger→defect→paths
+  // mapping.
+  {
+    trigger: KB_WELL_FORMED_TRIGGER,
+    response: KB_WELL_FORMED_RESPONSE,
+    toolName: "knowledge_search",
+    arguments: { query: KB_WELL_FORMED_TRIGGER },
+  },
+  {
+    trigger: KB_UNLISTED_CITATION_TRIGGER,
+    response: KB_UNLISTED_CITATION_RESPONSE,
+    toolName: "knowledge_search",
+    arguments: { query: KB_UNLISTED_CITATION_TRIGGER },
+  },
+  {
+    trigger: KB_UNCITED_SOURCE_TRIGGER,
+    response: KB_UNCITED_SOURCE_RESPONSE,
+    toolName: "knowledge_search",
+    arguments: { query: KB_UNCITED_SOURCE_TRIGGER },
+  },
+  {
+    trigger: KB_BARE_FILENAME_TRIGGER,
+    response: KB_BARE_FILENAME_RESPONSE,
+    toolName: "knowledge_search",
+    arguments: { query: KB_BARE_FILENAME_TRIGGER },
+  },
+  {
+    trigger: KB_RUNON_FORMAT_TRIGGER,
+    response: KB_RUNON_FORMAT_RESPONSE,
+    toolName: "knowledge_search",
+    arguments: { query: KB_RUNON_FORMAT_TRIGGER },
   },
 ];
 
@@ -1440,6 +1553,20 @@ export const FAKE_OLLAMA_PDF_ATTACHMENT_READ_TOOL_TRIGGER = PDF_ATTACHMENT_READ_
 export const FAKE_OLLAMA_PDF_ATTACHMENT_READ_TOOL_RESPONSE = PDF_ATTACHMENT_READ_RESPONSE;
 export const FAKE_OLLAMA_KNOWLEDGE_SEARCH_TOOL_TRIGGER = KNOWLEDGE_SEARCH_TRIGGER;
 export const FAKE_OLLAMA_KNOWLEDGE_SEARCH_TOOL_RESPONSE = KNOWLEDGE_SEARCH_RESPONSE;
+// KB Eval Harness attribution self-test triggers (Task 2.2) — one well-formed
+// answer plus one per `KbFailureTag` defect (see the docblock above
+// KB_WELL_FORMED_TRIGGER for the trigger→defect→paths mapping). Consumed by
+// Task 2.3's attribution self-test.
+export const FAKE_OLLAMA_KB_WELL_FORMED_TRIGGER = KB_WELL_FORMED_TRIGGER;
+export const FAKE_OLLAMA_KB_WELL_FORMED_RESPONSE = KB_WELL_FORMED_RESPONSE;
+export const FAKE_OLLAMA_KB_UNLISTED_CITATION_TRIGGER = KB_UNLISTED_CITATION_TRIGGER;
+export const FAKE_OLLAMA_KB_UNLISTED_CITATION_RESPONSE = KB_UNLISTED_CITATION_RESPONSE;
+export const FAKE_OLLAMA_KB_UNCITED_SOURCE_TRIGGER = KB_UNCITED_SOURCE_TRIGGER;
+export const FAKE_OLLAMA_KB_UNCITED_SOURCE_RESPONSE = KB_UNCITED_SOURCE_RESPONSE;
+export const FAKE_OLLAMA_KB_BARE_FILENAME_TRIGGER = KB_BARE_FILENAME_TRIGGER;
+export const FAKE_OLLAMA_KB_BARE_FILENAME_RESPONSE = KB_BARE_FILENAME_RESPONSE;
+export const FAKE_OLLAMA_KB_RUNON_FORMAT_TRIGGER = KB_RUNON_FORMAT_TRIGGER;
+export const FAKE_OLLAMA_KB_RUNON_FORMAT_RESPONSE = KB_RUNON_FORMAT_RESPONSE;
 // Eval-v1 Hetzner-scenario self-test triggers (pinchy#669) — see
 // packages/web/eval/run-eval.ts (mode "selftest") and
 // packages/web/eval/scenarios/hetzner-invoice.ts for the matching
