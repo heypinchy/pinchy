@@ -4,12 +4,15 @@
 // https://ollama.com/v1/chat/completions for each curated model and checks the
 // reply. Every model in TOOL_CAPABLE_OLLAMA_CLOUD_MODELS is, by definition,
 // expected to emit a *structured* tool_call — a model that silently skips the
-// call (qwen3-next's empty-content failure) or leaks the call as plain text
-// (gemini-3-flash-preview's `default_api` signature) must not be surfaced as
+// call (qwen3-next's empty-content failure), leaks the call as plain text
+// (gemini-3-flash-preview's `default_api` signature), or emits a structurally
+// valid call with mangled nested arguments (minimax-m3) must not be surfaced as
 // tool-capable, because every Pinchy agent relies on tools (files/context/docs).
 //
-// These two functions are the request shape and the response classifier, kept
-// pure so the network wrapper stays thin and this logic is unit-tested.
+// These functions are the request shapes and the response classifiers, kept
+// pure so the network wrapper stays thin and this logic is unit-tested. There
+// are two probes: a flat one (get_weather) and a nested one (search_records),
+// and they catch different defect classes — keep both.
 
 // Signatures of a tool call that a model rendered into plain text instead of
 // returning a structured `tool_calls` array. `get_weather` is the probe's own
@@ -105,6 +108,230 @@ export function buildToolFollowupRequest(id, assistantMessage) {
         content: "It is 22°C and sunny in Paris.",
       },
     ],
+  };
+}
+
+// --- Round 3: nested arguments -------------------------------------------
+//
+// The flat get_weather probe above only proves a model can fill in one string.
+// minimax-m3 passes it cleanly and still mangles NESTED arrays: they collapse
+// into {"item": …} objects, and some arrive stringified ("[10, 20]"). On
+// 2026-07-15 that broke the production agent "Penny" against Odoo — domain
+// filters died with "unhashable type: 'dict'" and account.move
+// invoice_line_ids/tax_ids command triplets were rejected (20 of 60 tool calls
+// mangled, vs 0/112 on kimi-k2.6 and 0/68 on deepseek-v4-pro). Pinchy's Odoo
+// tools are array-of-arrays all the way down, so this round asks for exactly
+// that shape and insists the arguments parse back to genuine arrays.
+
+const NESTED_PROBE_PROMPT =
+  "Find the posted invoices worth more than 10 EUR. Use the search_records " +
+  'tool on the "account.move" model with the filters state = posted and ' +
+  "amount > 10, and return the name and amount fields.";
+
+const NESTED_REQUIRED_ARGS = ["model", "filters", "fields"];
+
+// Keys a model wraps a collapsed array in instead of emitting the array.
+const ITEM_WRAPPER_KEYS = ["item", "items"];
+
+/**
+ * Build the nested-argument probe request for a model id.
+ * @param {string} id
+ */
+export function buildNestedToolProbeRequest(id) {
+  return {
+    model: id,
+    max_tokens: 256,
+    tool_choice: "auto",
+    tools: [
+      {
+        type: "function",
+        function: {
+          name: "search_records",
+          description: "Search business records with a filter domain.",
+          parameters: {
+            type: "object",
+            properties: {
+              model: {
+                type: "string",
+                description: 'Model name, e.g. "account.move"',
+              },
+              filters: {
+                type: "array",
+                description:
+                  'A filter domain: a list of [field, operator, value] triplets, e.g. [["state", "=", "posted"], ["amount", ">", 10]].',
+                items: {
+                  type: "array",
+                  description:
+                    'One [field, operator, value] triplet, e.g. ["state", "=", "posted"].',
+                  items: {},
+                },
+              },
+              fields: {
+                type: "array",
+                description: 'Field names to return, e.g. ["name", "amount"].',
+                items: { type: "string" },
+              },
+            },
+            required: NESTED_REQUIRED_ARGS,
+          },
+        },
+      },
+    ],
+    messages: [{ role: "user", content: NESTED_PROBE_PROMPT }],
+  };
+}
+
+const fail = (failure, detail) => ({ nestedOk: false, failure, detail });
+
+// A scalar the model rendered as "[…]" — the array survived the model's head
+// but left it as text, so the tool receives a string where a list belongs.
+function looksStringified(value) {
+  if (typeof value !== "string") return false;
+  const trimmed = value.trim();
+  return trimmed.startsWith("[") && trimmed.endsWith("]");
+}
+
+function itemWrapperKey(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  return ITEM_WRAPPER_KEYS.find((k) =>
+    Object.prototype.hasOwnProperty.call(value, k),
+  );
+}
+
+// Why `value` is not the array it was asked to be, or null if it is one.
+function arrayDefect(value, path) {
+  if (Array.isArray(value)) return null;
+  if (looksStringified(value)) {
+    return fail(
+      "stringified-array",
+      `${path} arrived as a stringified array: ${JSON.stringify(value)}`,
+    );
+  }
+  const wrapper = itemWrapperKey(value);
+  if (wrapper) {
+    return fail(
+      "item-wrapper",
+      `${path} collapsed into a {"${wrapper}": …} wrapper object instead of an array`,
+    );
+  }
+  return fail(
+    "wrong-shape",
+    `${path} arrived as ${Array.isArray(value) ? "array" : typeof value}, expected an array`,
+  );
+}
+
+/**
+ * Classify the nested-argument probe response: the tool_call must carry named
+ * arguments whose `filters` is a genuine array of arrays and whose `fields` is
+ * a genuine array of strings — no {"item": …} wrappers, no stringified arrays.
+ * @param {any} parsed - the JSON-parsed response body
+ * @returns {{ nestedOk: boolean, failure: string|null, detail: string }}
+ */
+export function classifyNestedToolResponse(parsed) {
+  const message = parsed?.choices?.[0]?.message ?? {};
+  const toolCalls = Array.isArray(message.tool_calls) ? message.tool_calls : [];
+  if (toolCalls.length === 0) {
+    return fail("no-tool-call", "no structured tool_calls on the nested probe");
+  }
+
+  const raw = toolCalls[0]?.function?.arguments;
+  let args = raw;
+  if (typeof raw === "string") {
+    try {
+      args = JSON.parse(raw);
+    } catch {
+      return fail(
+        "unparseable-arguments",
+        `arguments are not valid JSON: ${JSON.stringify(raw.slice(0, 120))}`,
+      );
+    }
+  }
+
+  // Positional arguments: a bare array, or an object keyed "0"/"1"/"2". Pinchy's
+  // plugins dispatch on names, so position-only args land in the wrong fields.
+  if (Array.isArray(args)) {
+    return fail(
+      "positional-arguments",
+      "arguments arrived as a positional array, not a named object",
+    );
+  }
+  if (!args || typeof args !== "object") {
+    return fail(
+      "unparseable-arguments",
+      `arguments parsed to ${typeof args}, expected an object`,
+    );
+  }
+  const keys = Object.keys(args);
+  if (keys.length > 0 && keys.every((k) => /^\d+$/.test(k))) {
+    return fail(
+      "positional-arguments",
+      `arguments are keyed positionally (${keys.join(", ")}), not by name`,
+    );
+  }
+
+  for (const name of NESTED_REQUIRED_ARGS) {
+    if (!(name in args)) {
+      return fail("wrong-shape", `missing named argument "${name}"`);
+    }
+  }
+  if (typeof args.model !== "string") {
+    return fail("wrong-shape", `model arrived as ${typeof args.model}`);
+  }
+
+  const filtersDefect = arrayDefect(args.filters, "filters");
+  if (filtersDefect) return filtersDefect;
+
+  if (args.filters.length === 0) {
+    return fail("wrong-shape", "filters is empty — the domain was dropped");
+  }
+
+  for (const [i, triplet] of args.filters.entries()) {
+    const defect = arrayDefect(triplet, `filters[${i}]`);
+    if (defect) return defect;
+    for (const [j, member] of triplet.entries()) {
+      if (looksStringified(member)) {
+        return fail(
+          "stringified-array",
+          `filters[${i}][${j}] arrived as a stringified array: ${member}`,
+        );
+      }
+      if (member !== null && typeof member === "object") {
+        const wrapper = itemWrapperKey(member);
+        return wrapper
+          ? fail(
+              "item-wrapper",
+              `filters[${i}][${j}] collapsed into a {"${wrapper}": …} wrapper object`,
+            )
+          : fail(
+              "wrong-shape",
+              `filters[${i}][${j}] arrived as ${Array.isArray(member) ? "a nested array" : "an object"}, expected a scalar`,
+            );
+      }
+    }
+  }
+
+  const fieldsDefect = arrayDefect(args.fields, "fields");
+  if (fieldsDefect) return fieldsDefect;
+
+  for (const [i, field] of args.fields.entries()) {
+    if (typeof field !== "string") {
+      const defect = arrayDefect(field, `fields[${i}]`);
+      // A non-string field is only an array defect if it looks like one;
+      // anything else is simply the wrong shape.
+      return defect ?? fail("wrong-shape", `fields[${i}] is not a string`);
+    }
+    if (looksStringified(field)) {
+      return fail(
+        "stringified-array",
+        `fields[${i}] arrived as a stringified array: ${field}`,
+      );
+    }
+  }
+
+  return {
+    nestedOk: true,
+    failure: null,
+    detail: `nested arguments intact (${args.filters.length} domain triplet(s), ${args.fields.length} field(s))`,
   };
 }
 

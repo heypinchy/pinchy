@@ -4,9 +4,44 @@ import assert from "node:assert/strict";
 import {
   buildToolProbeRequest,
   buildToolFollowupRequest,
+  buildNestedToolProbeRequest,
   classifyToolResponse,
+  classifyNestedToolResponse,
   isTransientStatus,
 } from "./ollama-cloud-tool-probe.mjs";
+
+// Helper: wrap `arguments` the way the API does — a JSON *string*.
+function nestedResponse(args) {
+  return {
+    choices: [
+      {
+        message: {
+          content: "",
+          tool_calls: [
+            {
+              id: "call_1",
+              type: "function",
+              function: {
+                name: "search_records",
+                arguments:
+                  typeof args === "string" ? args : JSON.stringify(args),
+              },
+            },
+          ],
+        },
+      },
+    ],
+  };
+}
+
+const CLEAN_NESTED_ARGS = {
+  model: "account.move",
+  filters: [
+    ["state", "=", "posted"],
+    ["amount", ">", 10],
+  ],
+  fields: ["name", "amount"],
+};
 
 test("isTransientStatus flags retriable infra errors, not capability verdicts", () => {
   // 429/5xx are infra noise → retry, never report as "model lost tools".
@@ -123,4 +158,185 @@ test("a plain prose answer with no call and no leak is just not tool-capable her
   });
   assert.equal(result.supportsTools, false);
   assert.equal(result.leakedAsText, false);
+});
+
+// ---------------------------------------------------------------------------
+// Round 3: the nested-argument probe.
+//
+// minimax-m3 passes the flat get_weather probe cleanly but mangles NESTED
+// arrays: they collapse into {"item": …} objects and some arrive stringified
+// ("[10, 20]"). In production (2026-07-15, agent "Penny") that broke Odoo
+// domain filters ("unhashable type: 'dict'") and account.move command
+// triplets — 20 of 60 tool calls mangled, vs 0/112 on kimi-k2.6 and 0/68 on
+// deepseek-v4-pro. A flat schema cannot see this defect class at all.
+// ---------------------------------------------------------------------------
+
+test("buildNestedToolProbeRequest declares a tool whose schema requires an array of arrays", () => {
+  const body = buildNestedToolProbeRequest("minimax-m3");
+  assert.equal(body.model, "minimax-m3");
+  assert.ok(Array.isArray(body.tools) && body.tools.length === 1);
+
+  const fn = body.tools[0].function;
+  assert.equal(body.tools[0].type, "function");
+  assert.equal(fn.name, "search_records");
+
+  const props = fn.parameters.properties;
+  assert.equal(props.model.type, "string");
+  // The load-bearing bit: filters is array-of-arrays, shaped like an Odoo
+  // domain. If this ever flattens to a plain array of strings, the probe stops
+  // testing the thing it exists to test.
+  assert.equal(props.filters.type, "array");
+  assert.equal(props.filters.items.type, "array");
+  assert.equal(props.fields.type, "array");
+  assert.equal(props.fields.items.type, "string");
+  assert.deepEqual(fn.parameters.required, ["model", "filters", "fields"]);
+
+  // A user turn concrete enough to pin the expected domain, and bounded cost.
+  assert.equal(body.messages.at(-1).role, "user");
+  assert.match(body.messages.at(-1).content, /posted/i);
+  assert.ok(body.max_tokens > 0 && body.max_tokens <= 256);
+});
+
+test("genuine nested arrays with named arguments pass the nested probe", () => {
+  const result = classifyNestedToolResponse(nestedResponse(CLEAN_NESTED_ARGS));
+  assert.equal(result.nestedOk, true);
+  assert.equal(result.failure, null);
+});
+
+test("no tool_call at all fails the nested probe", () => {
+  const result = classifyNestedToolResponse({
+    choices: [
+      { message: { content: "Sure, I'll look that up.", tool_calls: [] } },
+    ],
+  });
+  assert.equal(result.nestedOk, false);
+  assert.equal(result.failure, "no-tool-call");
+});
+
+test("arguments that are not valid JSON fail the nested probe", () => {
+  const result = classifyNestedToolResponse(
+    nestedResponse("{model: account.move,"),
+  );
+  assert.equal(result.nestedOk, false);
+  assert.equal(result.failure, "unparseable-arguments");
+});
+
+test('an {"item": …} wrapper around the filters array is the minimax-m3 defect', () => {
+  const result = classifyNestedToolResponse(
+    nestedResponse({
+      ...CLEAN_NESTED_ARGS,
+      filters: { item: [["state", "=", "posted"]] },
+    }),
+  );
+  assert.equal(result.nestedOk, false);
+  assert.equal(result.failure, "item-wrapper");
+  assert.match(result.detail, /filters/);
+});
+
+test('an {"item": …} wrapper around an inner domain triplet is caught too', () => {
+  // The outer array survives, each triplet collapses into a dict — this is the
+  // exact shape behind Odoo's "unhashable type: 'dict'".
+  const result = classifyNestedToolResponse(
+    nestedResponse({
+      ...CLEAN_NESTED_ARGS,
+      filters: [
+        { item: ["state", "=", "posted"] },
+        { item: ["amount", ">", 10] },
+      ],
+    }),
+  );
+  assert.equal(result.nestedOk, false);
+  assert.equal(result.failure, "item-wrapper");
+  assert.match(result.detail, /filters\[0\]/);
+});
+
+test("a stringified filters array fails even though it parses back to an array", () => {
+  const result = classifyNestedToolResponse(
+    nestedResponse({
+      ...CLEAN_NESTED_ARGS,
+      filters: '[["state", "=", "posted"]]',
+    }),
+  );
+  assert.equal(result.nestedOk, false);
+  assert.equal(result.failure, "stringified-array");
+});
+
+test('a stringified array nested inside a domain triplet fails (the "[10, 20]" defect)', () => {
+  const result = classifyNestedToolResponse(
+    nestedResponse({
+      ...CLEAN_NESTED_ARGS,
+      filters: [["amount", "in", "[10, 20]"]],
+    }),
+  );
+  assert.equal(result.nestedOk, false);
+  assert.equal(result.failure, "stringified-array");
+  assert.match(result.detail, /\[10, 20\]/);
+});
+
+test("a stringified fields array fails", () => {
+  const result = classifyNestedToolResponse(
+    nestedResponse({ ...CLEAN_NESTED_ARGS, fields: '["name", "amount"]' }),
+  );
+  assert.equal(result.nestedOk, false);
+  assert.equal(result.failure, "stringified-array");
+  assert.match(result.detail, /fields/);
+});
+
+test("positional arguments fail even when the nesting itself is intact", () => {
+  const result = classifyNestedToolResponse(
+    nestedResponse(["account.move", [["state", "=", "posted"]], ["name"]]),
+  );
+  assert.equal(result.nestedOk, false);
+  assert.equal(result.failure, "positional-arguments");
+});
+
+test("named arguments faked with numeric keys are still positional", () => {
+  const result = classifyNestedToolResponse(
+    nestedResponse({
+      0: "account.move",
+      1: [["state", "=", "posted"]],
+      2: ["name"],
+    }),
+  );
+  assert.equal(result.nestedOk, false);
+  assert.equal(result.failure, "positional-arguments");
+});
+
+test("a missing required argument fails the nested probe", () => {
+  const { filters: _dropped, ...withoutFilters } = CLEAN_NESTED_ARGS;
+  const result = classifyNestedToolResponse(nestedResponse(withoutFilters));
+  assert.equal(result.nestedOk, false);
+  assert.equal(result.failure, "wrong-shape");
+  assert.match(result.detail, /filters/);
+});
+
+test("a flat filters array (strings, not triplets) fails the nested probe", () => {
+  const result = classifyNestedToolResponse(
+    nestedResponse({ ...CLEAN_NESTED_ARGS, filters: ["state", "=", "posted"] }),
+  );
+  assert.equal(result.nestedOk, false);
+  assert.equal(result.failure, "wrong-shape");
+});
+
+test("arguments already parsed into an object (not a JSON string) are accepted", () => {
+  // Some gateways hand back `arguments` pre-parsed; that is not a defect.
+  const result = classifyNestedToolResponse({
+    choices: [
+      {
+        message: {
+          tool_calls: [
+            {
+              id: "call_1",
+              type: "function",
+              function: {
+                name: "search_records",
+                arguments: CLEAN_NESTED_ARGS,
+              },
+            },
+          ],
+        },
+      },
+    ],
+  });
+  assert.equal(result.nestedOk, true);
 });

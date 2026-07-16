@@ -3,14 +3,17 @@
 //
 // Every model in TOOL_CAPABLE_OLLAMA_CLOUD_MODELS is, by its name, expected to
 // be tool-capable. For each one this script POSTs a function-tool probe to
-// https://ollama.com/v1/chat/completions across TWO rounds: round 1 must carry
-// a structured `tool_calls` array, and a round-2 follow-up (the same history
-// plus a tool result) must return HTTP 200. A model is reported as drift if it
-// returns empty content (qwen3-next's failure mode), leaks the call as plain
-// text (gemini-3-flash-preview's `default_api` signature), or HTTP 500s on the
-// follow-up once the history carries a tool result (gemma3 / kimi-k2-thinking).
-// Every Pinchy agent runs multi-turn tool loops, so a model that fails any of
-// these must not be surfaced as tool-capable.
+// https://ollama.com/v1/chat/completions across THREE rounds: round 1 must
+// carry a structured `tool_calls` array, a round-2 follow-up (the same history
+// plus a tool result) must return HTTP 200, and round 3 must fill a nested
+// array-of-arrays argument without mangling it. A model is reported as drift if
+// it returns empty content (qwen3-next's failure mode), leaks the call as plain
+// text (gemini-3-flash-preview's `default_api` signature), HTTP 500s on the
+// follow-up once the history carries a tool result (gemma3 / kimi-k2-thinking),
+// or collapses nested arrays into {"item": …} objects and stringified lists
+// (minimax-m3). Every Pinchy agent runs multi-turn tool loops and the Odoo
+// tools pass array-of-arrays domains, so a model that fails any round must not
+// be surfaced as tool-capable.
 //
 // NOTE: a single passing run is a smoke test, not a reliability proof — some
 // models are intermittent (qwen3-next 3/4, gemma3 flip-flopped between days).
@@ -39,7 +42,9 @@ import {
 import {
   buildToolProbeRequest,
   buildToolFollowupRequest,
+  buildNestedToolProbeRequest,
   classifyToolResponse,
+  classifyNestedToolResponse,
   isTransientStatus,
 } from "./lib/ollama-cloud-tool-probe.mjs";
 
@@ -120,7 +125,21 @@ async function probeModel(id, apiKey) {
     const stage = isTransientStatus(r2.status) ? "inconclusive" : "round2-fail";
     return { stage, status: r2.status, r2status: r2.status, body: r2.body };
   }
-  return { stage: "ok", detail: verdict.detail };
+
+  // Round 3: nested arguments. Rounds 1-2 only prove the model can fill in one
+  // string — minimax-m3 passes both and still mangles array-of-arrays, which is
+  // what Pinchy's Odoo tools are made of.
+  const r3 = await postChat(buildNestedToolProbeRequest(id), apiKey);
+  if (r3.status !== 200 || !r3.parsed) {
+    const stage = isTransientStatus(r3.status) ? "inconclusive" : "round3-http";
+    return { stage, status: r3.status, body: r3.body };
+  }
+  const nested = classifyNestedToolResponse(r3.parsed);
+  if (!nested.nestedOk) {
+    return { stage: "round3-verdict", nested, body: r3.body };
+  }
+
+  return { stage: "ok", detail: verdict.detail, nestedDetail: nested.detail };
 }
 
 async function main() {
@@ -158,7 +177,9 @@ async function main() {
     }
 
     if (result.stage === "ok") {
-      process.stdout.write(`OK (${result.detail} + clean multi-turn)\n`);
+      process.stdout.write(
+        `OK (${result.detail} + clean multi-turn + ${result.nestedDetail})\n`,
+      );
       continue;
     }
 
@@ -171,8 +192,9 @@ async function main() {
       continue;
     }
 
-    if (result.stage === "round1-http") {
-      process.stdout.write(`DRIFT (round 1 HTTP ${result.status})\n`);
+    if (result.stage === "round1-http" || result.stage === "round3-http") {
+      const round = result.stage === "round1-http" ? 1 : 3;
+      process.stdout.write(`DRIFT (round ${round} HTTP ${result.status})\n`);
       drift.push({
         id: model.id,
         stage: result.stage,
@@ -192,6 +214,20 @@ async function main() {
         leakedAsText: result.verdict.leakedAsText,
         detail: result.verdict.detail,
         bodySnippet: result.body.slice(0, 200),
+      });
+      continue;
+    }
+
+    if (result.stage === "round3-verdict") {
+      // Clean flat call, clean multi-turn, mangled nesting — the minimax-m3
+      // failure mode. Structurally valid tool_calls, unusable arguments.
+      process.stdout.write(`DRIFT (nested args: ${result.nested.failure})\n`);
+      drift.push({
+        id: model.id,
+        stage: result.stage,
+        failure: result.nested.failure,
+        detail: result.nested.detail,
+        bodySnippet: result.body.slice(0, 400),
       });
       continue;
     }
