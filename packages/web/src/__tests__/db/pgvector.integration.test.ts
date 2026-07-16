@@ -1,5 +1,5 @@
 /**
- * Verifies the pgvector extension (migration 0049_enable_pgvector) is
+ * Verifies the pgvector extension (migration 0054_safe_vision) is
  * actually installed and usable against the real integration Postgres —
  * not just that the migration file exists.
  *

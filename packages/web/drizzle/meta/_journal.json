@@ -379,6 +379,13 @@
       "when": 1784141245727,
       "tag": "0053_flaky_iron_monger",
       "breakpoints": true
+    },
+    {
+      "idx": 54,
+      "version": "7",
+      "when": 1784188851340,
+      "tag": "0054_safe_vision",
+      "breakpoints": true
     }
   ]
 }

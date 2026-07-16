@@ -2,7 +2,7 @@ import { customType } from "drizzle-orm/pg-core";
 
 /**
  * Drizzle `vector(1024)` column type backed by the pgvector extension
- * (`CREATE EXTENSION vector`, packages/web/drizzle/0049_enable_pgvector.sql).
+ * (`CREATE EXTENSION vector`, packages/web/drizzle/0054_safe_vision.sql).
  * drizzle-orm has no built-in pgvector support, so this is a hand-rolled
  * `customType` mapping application-side `number[]` embeddings to Postgres's
  * `vector` wire format.
