@@ -198,13 +198,10 @@ describe("integration refs", () => {
     expect(() => decodeRef(tampered)).toThrow(/Invalid integration reference/);
   });
 
-  // Bug B (2026-07-15 prod incident): `decodeTargetRef` in index.ts used to
-  // swallow every decode failure behind a bare `catch {}` and always report
-  // "does not belong to this Odoo connection" — even when the real cause was
-  // a corrupted/truncated ref, not a cross-connection ref. Distinguishing
-  // the two requires a typed error rather than string-matching the generic
-  // "Invalid integration reference" message, since every decode failure
-  // shares that same text.
+  // Every decode failure shares the same generic message text, so callers
+  // can only tell "undecodable" apart from "decoded, wrong connection" by
+  // type. That distinction is the whole point of the class — see its doc
+  // comment for the incident that motivated it.
   describe("MalformedIntegrationRefError", () => {
     beforeEach(() => {
       _resetKeyCacheForTest();
@@ -243,6 +240,26 @@ describe("integration refs", () => {
       const tampered = ref.slice(0, idx) + flipped + ref.slice(idx + 1);
 
       expect(() => decodeRef(tampered)).toThrow(MalformedIntegrationRefError);
+    });
+
+    // Key rotation lands here too: every ref minted under the old key fails
+    // the auth-tag check and is indistinguishable from a garbled one. That
+    // is why the caller-facing message must not claim to have ruled any
+    // cause out — it can only name the remedy (re-fetch), which happens to
+    // be correct for both.
+    it("is thrown for a ref minted under a different PINCHY_REF_TOKEN_KEY (rotation)", () => {
+      const ref = encodeRef({
+        integrationType: "odoo",
+        connectionId: "conn-test-1",
+        model: "res.country",
+        id: 14,
+        label: "Austria",
+      });
+
+      _resetKeyCacheForTest();
+      vi.stubEnv("PINCHY_REF_TOKEN_KEY", "b".repeat(64));
+
+      expect(() => decodeRef(ref)).toThrow(MalformedIntegrationRefError);
     });
 
     it("still carries the generic, non-leaking message (no key material or ref cleartext)", () => {

@@ -706,17 +706,8 @@ describe("augmentFieldsWithCompanyId", () => {
   });
 });
 
-// Bug A (2026-07-15 prod incident, agent "Piper"): `_pinchy_ref` is a
-// synthetic field the plugin invents in `odoo_read` output (wrapReadResult)
-// and the tool prompt actively teaches the model to work with it. The model
-// then asks for it back via `odoo_read({ fields: [..., "_pinchy_ref"] })`,
-// which used to go straight through `augmentFieldsWithCompanyId` to Odoo and
-// hard-error, because that field does not exist on the actual model.
-// `stripSyntheticFields` removes plugin-invented field names before a
-// model-supplied `fields`/`groupby` list reaches Odoo. It is deliberately
-// separate from `augmentFieldsWithCompanyId`, whose other caller
-// (`lookupFields`) builds its field list internally and never sees
-// model-supplied input.
+// Why the plugin has to strip its own invented field names at all:
+// SYNTHETIC_FIELD_NAMES in index.ts.
 describe("stripSyntheticFields", () => {
   it("returns undefined unchanged", () => {
     expect(stripSyntheticFields(undefined)).toBeUndefined();
@@ -1384,12 +1375,8 @@ describe("odoo_read", () => {
     );
   });
 
-  // Bug A (2026-07-15 prod incident, agent "Piper"): the tool prompt teaches
-  // the model to work with `_pinchy_ref` (a field the plugin invents in read
-  // output, see wrapReadResult), so the model asks for it back in a
-  // subsequent read. Odoo has no such column and hard-errors. The plugin
-  // must strip its own synthetic field names before forwarding the request,
-  // not teach a field it then rejects.
+  // The read side of the same trap: the tool prompt teaches `_pinchy_ref`,
+  // so the model asks for it back here first. Odoo has no such column.
   it("strips the synthetic `_pinchy_ref` field before forwarding to Odoo", async () => {
     mockSearchRead.mockResolvedValue({
       records: [{ id: 1, name: "Acme Corp" }],
@@ -2002,11 +1989,8 @@ describe("odoo_aggregate", () => {
     );
   });
 
-  // Bug A, odoo_aggregate side: `fields` and `groupby` are both
-  // model-supplied lists forwarded verbatim to `client.readGroup`, exactly
-  // like odoo_read's `fields` — so a model that thinks `_pinchy_ref` is a
-  // real field (see the odoo_read strip test above) can trip the same
-  // hard-error here, including via the `field:agg` aggregation suffix.
+  // Same trap, two more model-supplied lists — `groupby` additionally
+  // accepts the `field:agg` suffix form, which must strip by base name.
   it("strips synthetic `_pinchy_ref` entries from both `fields` and `groupby` before forwarding to Odoo", async () => {
     mockReadGroup.mockResolvedValue({ groups: [] });
 
@@ -2029,6 +2013,73 @@ describe("odoo_aggregate", () => {
       expect.any(Object),
     );
   });
+
+  // Stripping a list down to NOTHING is not the same as never asking. An
+  // empty `groupby` means "one global aggregate" to Odoo, so silently
+  // forwarding it answers a different question than the model asked —
+  // plausible, wrong, and invisible to the model. Refuse instead, and name
+  // the real column to group by.
+  it("rejects a `groupby` that consisted only of synthetic fields instead of silently aggregating globally", async () => {
+    const tools = createApi({ [agentId]: agentConfig });
+    const tool = findTool(tools, "odoo_aggregate", agentId)!;
+
+    const result = await tool.execute("call-ref", {
+      model: "sale.order",
+      filters: [],
+      fields: ["amount_total:sum"],
+      groupby: ["_pinchy_ref"],
+    });
+
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain("_pinchy_ref");
+    expect(result.content[0].text).toContain("groupby");
+    expect(mockReadGroup).not.toHaveBeenCalled();
+  });
+
+  it("rejects a `fields` list that consisted only of synthetic fields", async () => {
+    const tools = createApi({ [agentId]: agentConfig });
+    const tool = findTool(tools, "odoo_aggregate", agentId)!;
+
+    const result = await tool.execute("call-ref", {
+      model: "sale.order",
+      filters: [],
+      fields: ["_pinchy_ref:count_distinct"],
+      groupby: ["partner_id"],
+    });
+
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain("_pinchy_ref");
+    expect(result.content[0].text).toContain("fields");
+    expect(mockReadGroup).not.toHaveBeenCalled();
+  });
+
+  // `params.fields`/`params.groupby` are cast to string[] but arrive as
+  // whatever the model sent. A bare string used to reach Odoo as garbage;
+  // once stripSyntheticFields runs over it, it would instead die on
+  // `.filter is not a function` — an internal TypeError the model can't act
+  // on. Same gate as the `filters` shape check.
+  it.each([
+    ["fields", { fields: "amount_total:sum", groupby: ["partner_id"] }],
+    ["groupby", { fields: ["amount_total:sum"], groupby: "partner_id" }],
+  ])(
+    "rejects a non-array `%s` with a clear error instead of an internal TypeError",
+    async (param, params) => {
+      const tools = createApi({ [agentId]: agentConfig });
+      const tool = findTool(tools, "odoo_aggregate", agentId)!;
+
+      const result = await tool.execute("call-shape", {
+        model: "sale.order",
+        filters: [],
+        ...params,
+      });
+
+      expect(result.isError).toBe(true);
+      expect(result.content[0].text).toContain(`\`${param}\``);
+      expect(result.content[0].text).toContain("array");
+      expect(result.content[0].text).not.toContain("is not a function");
+      expect(mockReadGroup).not.toHaveBeenCalled();
+    },
+  );
 
   it("denies aggregation on unpermitted model", async () => {
     const tools = createApi({ [agentId]: agentConfig });
@@ -2672,12 +2723,9 @@ describe("error handling", () => {
   // the (also invalid) targetRef "x" — still an inline validation error,
   // still surfaced via details.error, just from a different gate.
   //
-  // Bug B (2026-07-15 prod incident): "x" doesn't even start with the
-  // `pinchy_ref:v1:` prefix, so it's an UNDECODABLE ref, not one minted for a
-  // different connection. Before the fix this asserted the connection-
-  // mismatch message, which was simply wrong for this input — see the
-  // dedicated "malformed vs wrong-connection" tests in the
-  // odoo_schedule_activity suite for both causes side by side.
+  // "x" has no `pinchy_ref:v1:` prefix, so it is an UNDECODABLE ref, not one
+  // minted for a different connection — this asserted the connection-mismatch
+  // message until the 2026-07-15 fix, which was simply wrong for this input.
   it("attaches details.error on an inline validation error (odoo_attach_file invalid targetRef, after filename normalization)", async () => {
     const tools = createApi({ [agentId]: agentConfig });
     const tool = findTool(tools, "odoo_attach_file", agentId)!;
@@ -4905,6 +4953,54 @@ describe("bare _pinchy_ref string for many2one fields (Layer 1)", () => {
     expect(mockCreate).not.toHaveBeenCalled();
   });
 
+  // The m2o path shares decodeOdooRefForConnection with decodeTargetRef, so
+  // it inherits the same "which failure was it?" problem: a corrupted ref
+  // used to surface the bare "Invalid integration reference", which tells
+  // the model nothing about what to do next. Same typed error, same
+  // actionable remedy as the target-ref path.
+  it("tells the model a corrupted bare _pinchy_ref is undecodable, not just 'invalid'", async () => {
+    const journalRef = encodeRef({
+      integrationType: "odoo",
+      connectionId: "conn-test-1",
+      model: "account.journal",
+      id: 17,
+      label: "Miscellaneous Operations",
+    });
+
+    mockFields.mockImplementation(async (model: string) => {
+      if (model === "account.move") {
+        return [
+          { name: "id", type: "integer", required: false, readonly: true },
+          {
+            name: "journal_id",
+            type: "many2one",
+            relation: "account.journal",
+            required: true,
+            readonly: false,
+          },
+        ];
+      }
+      return [];
+    });
+
+    const tools = createApi({
+      [agentId]: { ...agentConfig, permissions: { "account.move": ["create"] } },
+    });
+    const tool = findTool(tools, "odoo_create", agentId)!;
+    const result = await tool.execute("corrupt-m2o", {
+      model: "account.move",
+      values: { journal_id: journalRef.slice(0, -6) },
+    });
+
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain("could not be decoded");
+    expect(result.content[0].text).toContain("journal_id");
+    expect(result.content[0].text).not.toBe(
+      "Error: Invalid integration reference",
+    );
+    expect(mockCreate).not.toHaveBeenCalled();
+  });
+
   it("rejects a bare _pinchy_ref from a different connection", async () => {
     const otherConnRef = encodeRef({
       integrationType: "odoo",
@@ -5538,14 +5634,11 @@ describe("odoo_schedule_activity", () => {
     expect(mockCreate).not.toHaveBeenCalled();
   });
 
-  // Bug B (2026-07-15 prod incident, agent "Piper"): decodeTargetRef used to
-  // swallow every decode failure behind a bare `catch { return null; }`, so
-  // BOTH causes below reported the identical "does not belong to this Odoo
-  // connection" message. In production, that message pointed 11
-  // corrupted/truncated refs at connection config and key rotation, when the
-  // actual cause was the model garbling the ref string — a completely
-  // different, model-actionable problem. These two tests pin the messages
-  // apart so a regression that merges them back together fails loudly.
+  // Two causes, two remedies — a cross-connection ref is a config problem, a
+  // garbled one the model can fix itself by re-fetching. They shared one
+  // message until the 2026-07-15 incident (see MalformedIntegrationRefError
+  // in integration-ref.ts); these tests pin them apart so a regression that
+  // merges them back together fails loudly.
 
   it("Cause 1 — ref decodes fine but belongs to a different connection: keeps the existing, correct message", async () => {
     const tools = createApi({ [agentId]: activityConfig });
@@ -5586,6 +5679,35 @@ describe("odoo_schedule_activity", () => {
     expect(result.content[0].text).not.toContain(
       "does not belong to this Odoo connection",
     );
+    expect(mockCreate).not.toHaveBeenCalled();
+  });
+
+  // `assignee` decodes through the same shared gate but a different caller
+  // (resolveAssigneeUserId), which reported the bare "Invalid integration
+  // reference" for a corrupted ref. Named after the parameter the model
+  // actually passed, so it knows which of the two refs to re-fetch.
+  it("names `assignee` — not `target` — when it is the assignee ref that is corrupted", async () => {
+    const userRef = encodeRef({
+      integrationType: "odoo",
+      connectionId: "conn-test-1",
+      model: "res.users",
+      id: 7,
+      label: "Sam Seller",
+    });
+
+    const tools = createApi({ [agentId]: activityConfig });
+    const tool = findTool(tools, "odoo_schedule_activity", agentId)!;
+
+    const result = await tool.execute("c", {
+      target: leadRef(),
+      summary: "x",
+      dueDate: "2026-06-30",
+      assignee: userRef.slice(0, -6),
+    });
+
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain("could not be decoded");
+    expect(result.content[0].text).toContain("assignee");
     expect(mockCreate).not.toHaveBeenCalled();
   });
 });

@@ -29,7 +29,15 @@ export interface IntegrationRefPayload {
  * (see `decodeOdooRefForConnection` in index.ts), which throws a plain
  * `Error` instead. Callers that need to tell a corrupted ref apart from a
  * cross-connection ref (e.g. `decodeTargetRef`) check `instanceof` this
- * class rather than matching on message text.
+ * class rather than matching on message text — every decode failure shares
+ * the same generic message, so type is the only signal.
+ *
+ * Why the distinction earns a class: on 2026-07-15 agent "Piper" reported
+ * all 11 of its failed calls as "ref does not belong to this Odoo
+ * connection", which sent the investigation down a connection-config and
+ * key-rotation trail. 111 other calls decoded fine against that same
+ * connectionId. The refs were simply garbled by the model — a different
+ * problem with a different, model-actionable fix.
  */
 export class MalformedIntegrationRefError extends Error {
   constructor(message = "Invalid integration reference") {
