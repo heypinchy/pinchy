@@ -76,7 +76,7 @@ export async function runReconciliationSweep(deps: SweepDeps): Promise<void> {
       const port = await deps.createPort(unit.workflow.connectionId);
       // `folder` only narrows the provider query — the filter re-checks it
       // anyway, so this saves hydrating mail that is guaranteed to be dropped.
-      const emails = await listDispatchableEmails(port, {
+      const { emails, candidateCount } = await listDispatchableEmails(port, {
         sinceDays: unit.sweepWindowDays,
         folder: unit.workflow.filter.folder,
         limit: SWEEP_LIST_LIMIT,
@@ -85,7 +85,12 @@ export async function runReconciliationSweep(deps: SweepDeps): Promise<void> {
       // to hydrate, so this pass saw a truncated mailbox. Say so: the overflow is
       // not merely deferred (see SWEEP_LIST_LIMIT), and a component whose whole
       // job is "never lose an email" must not truncate in silence.
-      if (emails.length >= SWEEP_LIST_LIMIT) {
+      //
+      // Read the CANDIDATE count, not `emails.length`: the lister drops messages
+      // it cannot hydrate, so a full page with one poison mail yields LIMIT-1
+      // emails — and gating on the hydrated count would fall silent on exactly
+      // the pass that is both truncated and lossy.
+      if (candidateCount >= SWEEP_LIST_LIMIT) {
         console.warn(
           `reconciliation sweep: hit the listing limit of ${SWEEP_LIST_LIMIT} for workflow ${unit.workflow.id} on connection ${unit.workflow.connectionId} — mail beyond it was not seen this pass`
         );

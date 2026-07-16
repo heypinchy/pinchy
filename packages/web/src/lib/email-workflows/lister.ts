@@ -42,6 +42,21 @@ export interface EmailPort {
   read(id: string): Promise<EmailReadResult>;
 }
 
+/**
+ * The lister's output. `emails` is the hydrated, usable batch; `candidateCount`
+ * is how many candidates `search` returned *before* hydration dropped any.
+ *
+ * The two differ by the poison messages the lister isolates, and that gap is
+ * exactly why the sweep's saturation check must read `candidateCount`, not
+ * `emails.length`: a full page with a single unusable message hands back
+ * `limit - 1` emails, so gating truncation on the hydrated count would fall
+ * silent on the worst pass — one that is both truncated AND lossy.
+ */
+export interface EmailListResult {
+  emails: DispatchableEmail[];
+  candidateCount: number;
+}
+
 /** Extract the bare, lower-cased address from `Display Name <addr>` or a raw `addr`. */
 function normalizeAddress(raw: string): string {
   const angle = raw.lastIndexOf("<");
@@ -104,7 +119,7 @@ function normalizeAddressList(raw: string): string[] {
 export async function listDispatchableEmails(
   port: EmailPort,
   opts: { sinceDays?: number; folder?: string; limit?: number }
-): Promise<DispatchableEmail[]> {
+): Promise<EmailListResult> {
   // `search` is the mailbox-level probe: if it throws, nothing was listed and the
   // failure is the connection's, so it propagates to the sweep's unit-level catch
   // and surfaces as the workflow's `error` status.
@@ -131,7 +146,9 @@ export async function listDispatchableEmails(
   if (failures.length > 0 && emails.length === 0) {
     throw failures[0];
   }
-  return emails;
+  // `candidateCount` is the pre-hydration count on purpose: the sweep reads it to
+  // detect a truncated page, and a dropped poison message must not mask a full one.
+  return { emails, candidateCount: candidates.length };
 }
 
 function normalize(msg: EmailReadResult): DispatchableEmail {

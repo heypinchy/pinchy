@@ -267,6 +267,37 @@ describe("reconciliation sweep — listing window", () => {
     ).toBe(true);
   });
 
+  it("still warns when a saturated page also holds a poison message", async () => {
+    // Saturation is a property of what `search` RETURNS, not of what survives
+    // hydration. The lister drops a message it cannot hydrate (bad date, a read
+    // that 404s), so a saturated window with one poison mail hands back
+    // LIMIT-1 usable emails. If the warning gated on the hydrated count it would
+    // fall silent on exactly the pass that is BOTH truncated AND lossy — the
+    // worst case, hidden by a single outlier. The signal must come from the
+    // candidate count.
+    const { connection } = await seedDispatchableWorkflow();
+    const saturated = Array.from({ length: SWEEP_LIST_LIMIT }, (_, i) =>
+      message({ id: `bulk-${i}` })
+    );
+    // Poison exactly one: an unparseable date makes the lister's normalize throw,
+    // so it is isolated and dropped — LIMIT candidates, LIMIT-1 hydrated.
+    saturated[0] = message({ id: "bulk-poison", date: "not-a-date" });
+    const { createPort } = portFor(connection.id, saturated);
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    let warned: string[] = [];
+    try {
+      await runReconciliationSweep({ createPort, runAgent: doneRun });
+      warned = warn.mock.calls.map((call) => String(call[0]));
+    } finally {
+      warn.mockRestore();
+    }
+
+    expect(
+      warned.some((msg) => msg.includes("listing limit") && msg.includes(connection.id)),
+      `a saturated listing must warn even when one message failed to hydrate; warnings seen: ${JSON.stringify(warned)}`
+    ).toBe(true);
+  });
+
   it("narrows the provider query to the filter's folder", async () => {
     // The filter re-checks the folder anyway, so this is purely about not
     // hydrating (read()) mail the filter is guaranteed to drop.

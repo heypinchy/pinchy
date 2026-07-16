@@ -44,7 +44,7 @@ describe("mail lister — listDispatchableEmails", () => {
       },
     ]);
 
-    const emails = await listDispatchableEmails(port, { sinceDays: 14 });
+    const { emails } = await listDispatchableEmails(port, { sinceDays: 14 });
 
     expect(emails).toEqual([
       {
@@ -75,7 +75,9 @@ describe("mail lister — listDispatchableEmails", () => {
       },
     ]);
 
-    const [email] = await listDispatchableEmails(port, {});
+    const {
+      emails: [email],
+    } = await listDispatchableEmails(port, {});
 
     expect(email.to).toEqual(["shared@acme.test"]);
   });
@@ -95,7 +97,9 @@ describe("mail lister — listDispatchableEmails", () => {
       },
     ]);
 
-    const [email] = await listDispatchableEmails(port, {});
+    const {
+      emails: [email],
+    } = await listDispatchableEmails(port, {});
 
     expect(email.to).toEqual([]);
     expect(email.attachments).toEqual([]);
@@ -138,7 +142,9 @@ describe("mail lister — listDispatchableEmails", () => {
       },
     ]);
 
-    const [email] = await listDispatchableEmails(port, {});
+    const {
+      emails: [email],
+    } = await listDispatchableEmails(port, {});
 
     expect(email.to).toEqual(["john@acme.test", "jane@acme.test"]);
   });
@@ -158,7 +164,9 @@ describe("mail lister — listDispatchableEmails", () => {
       },
     ]);
 
-    const [email] = await listDispatchableEmails(port, {});
+    const {
+      emails: [email],
+    } = await listDispatchableEmails(port, {});
 
     expect(email.to).toEqual(["a@acme.test", "b@acme.test"]);
   });
@@ -178,7 +186,9 @@ describe("mail lister — listDispatchableEmails", () => {
       },
     ]);
 
-    const [email] = await listDispatchableEmails(port, {});
+    const {
+      emails: [email],
+    } = await listDispatchableEmails(port, {});
 
     expect(email.from).toBe("bad@y.test");
   });
@@ -220,11 +230,14 @@ describe("mail lister — listDispatchableEmails", () => {
       },
     ]);
 
-    const emails = await listDispatchableEmails(port, {});
+    const { emails, candidateCount } = await listDispatchableEmails(port, {});
 
     // The poison message is dropped — never a half-normalized email with an
     // Invalid Date, which would only throw later inside the run adapter.
     expect(emails.map((e) => e.providerMessageId)).toEqual(["id-good-before", "id-good-after"]);
+    // …but the dropped candidate still counts: `candidateCount` reflects what
+    // `search` returned, so the sweep can see a page was full even after a drop.
+    expect(candidateCount).toBe(3);
   });
 
   it("skips a message whose hydration fails, not just one that fails to normalize", async () => {
@@ -249,7 +262,7 @@ describe("mail lister — listDispatchableEmails", () => {
       },
     };
 
-    const emails = await listDispatchableEmails(port, {});
+    const { emails } = await listDispatchableEmails(port, {});
 
     expect(emails.map((e) => e.providerMessageId)).toEqual(["id-ok"]);
   });
@@ -307,7 +320,7 @@ describe("mail lister — listDispatchableEmails", () => {
       },
     };
 
-    const emails = await listDispatchableEmails(port, {
+    const { emails, candidateCount } = await listDispatchableEmails(port, {
       sinceDays: 14,
       folder: "INBOX",
       limit: 50,
@@ -315,5 +328,7 @@ describe("mail lister — listDispatchableEmails", () => {
 
     expect(seen).toEqual([{ sinceDays: 14, folder: "INBOX", limit: 50 }]);
     expect(emails.map((e) => e.providerMessageId)).toEqual(["a", "b"]);
+    // Every candidate hydrated, so the count matches the returned batch.
+    expect(candidateCount).toBe(2);
   });
 });
