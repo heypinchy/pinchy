@@ -81,12 +81,29 @@ export async function readExistingRuns(label: string): Promise<KbRunResult[]> {
     .map((line) => JSON.parse(line) as KbRunResult);
 }
 
+/**
+ * The runs that COUNT toward a scorecard: everything except `run-infra-error`
+ * invalid trials (a harness/transport failure where the model never produced a
+ * gradeable answer — neither a pass nor a model failure). PURE — no I/O — so
+ * the exclusion is unit-testable directly. Mirrors `export-kb-scorecard.ts`'s
+ * `aggregateKbResults` filter EXACTLY: without it a harness flake would depress
+ * a model's passRate and zero its passCaretK, conflating harness reliability
+ * with model quality (the very confounding `KbFailureTag`'s `run-infra-error`
+ * exists to prevent — see `../../src/lib/eval/kb/types.ts`).
+ */
+export function scorecardRuns(runs: KbRunResult[]): KbRunResult[] {
+  return runs.filter((r) => !r.tags.includes("run-infra-error"));
+}
+
 export async function writeScorecard(
   label: string,
   runs: KbRunResult[]
 ): Promise<ScorecardEntry[]> {
   assertValidLabel(label);
-  const scorecard = buildScorecard(runs);
+  // Score over VALID trials only (same exclusion the published exporter
+  // applies), but persist the FULL `runs` array for forensics so an excluded
+  // infra-error is still auditable from the on-disk record.
+  const scorecard = buildScorecard(scorecardRuns(runs));
   await mkdir(RESULTS_DIR, { recursive: true });
   const filePath = path.join(RESULTS_DIR, `${label}.json`);
   // eslint-disable-next-line security/detect-non-literal-fs-filename -- label validated above (alnum/./_/- only, no path separators)

@@ -14,6 +14,7 @@ import {
   noackCorpusDir,
   pendingPairs,
   retrievedSourcesFromAuditEntries,
+  scorecardRuns,
 } from "./run-kb-eval";
 import type { KbRunResult } from "../../src/lib/eval/kb/answer-graders";
 import type { KnowledgeSearchAuditEntry } from "./run-kb-eval";
@@ -195,6 +196,32 @@ describe("retrievedSourcesFromAuditEntries", () => {
       { detail: { returnedDocumentIds: [{ id: 42, name: "bad" }] } },
     ];
     expect(retrievedSourcesFromAuditEntries(entries)).toEqual([]);
+  });
+});
+
+describe("scorecardRuns (invalid-trial exclusion)", () => {
+  it("drops run-infra-error rows so a harness flake never counts as a model failure", () => {
+    const runs: KbRunResult[] = [
+      run({ model: "model-a", passed: true, tags: [] }),
+      run({ model: "model-a", passed: false, tags: ["run-infra-error"] }),
+      run({ model: "model-a", passed: false, tags: ["ungrounded-claim"] }),
+    ];
+
+    const valid = scorecardRuns(runs);
+
+    expect(valid).toHaveLength(2);
+    expect(valid.some((r) => r.tags.includes("run-infra-error"))).toBe(false);
+    // A genuine model failure (ungrounded-claim) is kept — only the invalid
+    // trial is excluded, matching export-kb-scorecard.ts's aggregateKbResults.
+    expect(valid.some((r) => r.tags.includes("ungrounded-claim"))).toBe(true);
+  });
+
+  it("keeps every run when none is an invalid trial", () => {
+    const runs: KbRunResult[] = [
+      run({ passed: true }),
+      run({ passed: false, tags: ["off-topic-grounded"] }),
+    ];
+    expect(scorecardRuns(runs)).toHaveLength(2);
   });
 });
 

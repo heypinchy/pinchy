@@ -76,8 +76,28 @@ const ABSTENTION_PHRASES = [
   /not in the knowledge base/i,
 ];
 
-/** True if `answer` uses one of the template-taught abstention phrases. */
+/** Any inline `[N]` citation marker. Its PRESENCE means the answer cited a source. */
+const INLINE_CITATION_MARKER = /\[\d+\]/;
+
+/**
+ * True if `answer` is a template-taught abstention ("I couldn't find this in
+ * the knowledge base").
+ *
+ * An abstention cites NOTHING — the template teaches a bare refusal with no
+ * Sources. So the presence of any inline `[N]` citation is the discriminator:
+ * an answer that USES an abstention phrase but still cites a source ("The
+ * handbook does not contain a dedicated clause, but section 4 states … [1].")
+ * is a real, grounded answer, not a refusal. Without this guard the substring
+ * phrases below (`does not contain`, `do not contain` — ordinary prose, not
+ * just refusals) would misread such an answer as an abstention, spuriously
+ * tripping `false-abstention` in `gradeGroundednessForGold` and skipping the
+ * relevance judge in `gradeAnswerRelevance` — both of which corrupt the
+ * (tracked) Layer-3 scorecard. Requiring zero citations keeps the intended
+ * bias toward false-negatives (a missed abstention is safer than a
+ * misclassified real answer).
+ */
 export function isAbstention(answer: string): boolean {
+  if (INLINE_CITATION_MARKER.test(answer)) return false;
   return ABSTENTION_PHRASES.some((phrase) => phrase.test(answer));
 }
 

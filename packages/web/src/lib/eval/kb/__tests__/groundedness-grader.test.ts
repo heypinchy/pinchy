@@ -59,6 +59,23 @@ describe("isAbstention", () => {
   it("does not flag a normal answering sentence as abstention", () => {
     expect(isAbstention("The retention policy requires seven years [1].")).toBe(false);
   });
+
+  it("does NOT flag a grounded, cited answer that merely uses an abstention phrase mid-sentence", () => {
+    // Substring-match footgun: this answer literally contains "does not
+    // contain" yet is a real, cited answer. An abstention cites nothing, so
+    // the presence of an inline [N] citation is the discriminator — misreading
+    // this as a refusal would spuriously trip false-abstention AND skip the
+    // relevance judge, corrupting the (tracked) Layer-3 scorecard.
+    expect(
+      isAbstention(
+        "The handbook does not contain a dedicated clause, but section 4 states records are kept for ten years [1]."
+      )
+    ).toBe(false);
+  });
+
+  it("still detects a genuine abstention (abstention phrase, no citations)", () => {
+    expect(isAbstention("The knowledge base does not contain an answer to this.")).toBe(true);
+  });
 });
 
 describe("gradeGroundedness", () => {
