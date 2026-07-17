@@ -24,6 +24,7 @@ import type { AddressInfo } from "net";
 import { DELAY_HINT_MS } from "@/lib/chat-liveness";
 import {
   handleRequest,
+  readDelayOverride,
   FAKE_OLLAMA_LIVENESS_SLOW_TRIGGER,
   FAKE_OLLAMA_LIVENESS_SLOW_RESPONSE,
   FAKE_OLLAMA_LIVENESS_SLOW_DELAY_MS,
@@ -189,6 +190,36 @@ describe("fake-ollama liveness SLOW trigger", () => {
   // assertions still pass, and the regression it guards ships unnoticed.
   it("stalls past the client's delay hint, so the 'taking longer' banner engages", () => {
     expect(FAKE_OLLAMA_LIVENESS_SLOW_DELAY_MS).toBeGreaterThan(DELAY_HINT_MS);
+  });
+});
+
+// The override exists to make THIS file fast. It must not be capable of making
+// the E2E stacks fast, because there "fast" means the banner never engages and
+// the spec that proves it does goes quietly green.
+describe("fake-ollama delay override parsing", () => {
+  const REAL = 18000;
+
+  // `Number("")` is 0, not NaN — an env var that EXISTS but is empty is the
+  // realistic accident here (a workflow's `FOO: ${{ env.UNSET }}`, a valueless
+  // compose `environment:` entry), and reading it as "0 ms" would be exactly the
+  // silent failure above.
+  it.each([
+    { raw: undefined, why: "unset — the normal E2E case" },
+    { raw: "", why: "set but empty (Number('') is 0, not NaN)" },
+    { raw: "   ", why: "whitespace only" },
+    { raw: "abc", why: "not a number" },
+    { raw: "-1", why: "negative" },
+    { raw: "Infinity", why: "not finite" },
+  ])("falls back to the real delay when the override is $why", ({ raw }) => {
+    expect(readDelayOverride(raw, REAL)).toBe(REAL);
+  });
+
+  it.each([
+    { raw: "0", expected: 0 },
+    { raw: "750", expected: 750 },
+    { raw: " 750 ", expected: 750 },
+  ])("honours a valid override of $raw", ({ raw, expected }) => {
+    expect(readDelayOverride(raw, REAL)).toBe(expected);
   });
 });
 

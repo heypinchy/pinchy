@@ -80,6 +80,25 @@ const SLOW_STREAM_RESPONSE = "one two three four five six seven eight nine ten";
 const SLOW_STREAM_DELAY_MS = 500;
 
 /**
+ * Reads a delay override from an env var, falling back to the real value.
+ *
+ * Deliberately checks the RAW STRING before converting: `Number("")` is `0`, not
+ * `NaN`, so a var that exists but is empty — trivially produced by a workflow's
+ * `FOO: ${{ env.SOMETHING_UNSET }}` or a valueless compose `environment:` entry
+ * — would otherwise mean "no delay at all" rather than "not set". For the
+ * liveness stall that silently costs the E2E banner its entire reason to engage,
+ * while every assertion stays green.
+ *
+ * @param raw the env var's value, or undefined when unset
+ * @param fallback the real delay to use when no valid override is present
+ */
+export function readDelayOverride(raw: string | undefined, fallback: number): number {
+  if (raw === undefined || raw.trim() === "") return fallback;
+  const parsed = Number(raw);
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : fallback;
+}
+
+/**
  * The per-word stream delay the helpers actually apply, allowing an env
  * override — same rationale and same contract as `livenessSlowDelayMs()` below.
  *
@@ -92,8 +111,10 @@ const SLOW_STREAM_DELAY_MS = 500;
  * E2E path sets it.
  */
 function slowStreamDelayMs(): number {
-  const override = Number(process.env.FAKE_OLLAMA_SLOW_STREAM_DELAY_MS_OVERRIDE);
-  return Number.isFinite(override) && override >= 0 ? override : SLOW_STREAM_DELAY_MS;
+  return readDelayOverride(
+    process.env.FAKE_OLLAMA_SLOW_STREAM_DELAY_MS_OVERRIDE,
+    SLOW_STREAM_DELAY_MS
+  );
 }
 
 // Same slow per-word stream as SLOW_STREAM, but with a word list no other spec
@@ -155,8 +176,7 @@ const LIVENESS_SLOW_DELAY_MS = 18000;
  * an ESM module-level read would freeze whatever was set at first import.
  */
 function livenessSlowDelayMs(): number {
-  const override = Number(process.env.FAKE_OLLAMA_LIVENESS_SLOW_DELAY_MS);
-  return Number.isFinite(override) && override >= 0 ? override : LIVENESS_SLOW_DELAY_MS;
+  return readDelayOverride(process.env.FAKE_OLLAMA_LIVENESS_SLOW_DELAY_MS, LIVENESS_SLOW_DELAY_MS);
 }
 
 // DYING: simulates a provider/stream failure. On the OpenAI-completions surface
@@ -1836,7 +1856,13 @@ export const FAKE_OLLAMA_DOMAIN_LOCK_TOOL_TRIGGER = DOMAIN_LOCK_TOOL_TRIGGER;
 export const FAKE_OLLAMA_DOMAIN_LOCK_TOOL_RESPONSE = DOMAIN_LOCK_TOOL_RESPONSE;
 export const FAKE_OLLAMA_SLOW_STREAM_TRIGGER = SLOW_STREAM_TRIGGER;
 export const FAKE_OLLAMA_SLOW_STREAM_RESPONSE = SLOW_STREAM_RESPONSE;
-export const FAKE_OLLAMA_SLOW_STREAM_DELAY_MS = SLOW_STREAM_DELAY_MS;
+// DEFAULT, not "applied": the server resolves the delay through
+// slowStreamDelayMs(), which an in-process caller can override. The E2E specs
+// that multiply this by a word count run in the Playwright process, against a
+// fake-ollama in a separate process that never has the override set — so for
+// them the default IS the applied value. The name says "default" so that an
+// in-process test computing a timing from it can't quietly be wrong.
+export const FAKE_OLLAMA_SLOW_STREAM_DEFAULT_DELAY_MS = SLOW_STREAM_DELAY_MS;
 // Stop-button trigger (#550): slow stream with a word list private to spec 19.
 // The per-word delay is the slow stream's, because both surfaces dispatch this
 // trigger through the shared streamTextResponseSlow/streamOpenAiTextSlow
@@ -1845,7 +1871,7 @@ export const FAKE_OLLAMA_SLOW_STREAM_DELAY_MS = SLOW_STREAM_DELAY_MS;
 // it, instead of the spec's wait silently drifting off the slow stream's.
 export const FAKE_OLLAMA_ABORT_STREAM_TRIGGER = ABORT_STREAM_TRIGGER;
 export const FAKE_OLLAMA_ABORT_STREAM_RESPONSE = ABORT_STREAM_RESPONSE;
-export const FAKE_OLLAMA_ABORT_STREAM_DELAY_MS = SLOW_STREAM_DELAY_MS;
+export const FAKE_OLLAMA_ABORT_STREAM_DEFAULT_DELAY_MS = SLOW_STREAM_DELAY_MS;
 // Chat-liveness triggers (slow "taking longer" + dying provider failure).
 export const FAKE_OLLAMA_LIVENESS_SLOW_TRIGGER = LIVENESS_SLOW_TRIGGER;
 export const FAKE_OLLAMA_LIVENESS_SLOW_RESPONSE = LIVENESS_SLOW_RESPONSE;

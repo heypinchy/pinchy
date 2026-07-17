@@ -4,7 +4,7 @@ import type { BrowserContext } from "@playwright/test";
 import {
   FAKE_OLLAMA_SLOW_STREAM_TRIGGER,
   FAKE_OLLAMA_SLOW_STREAM_RESPONSE,
-  FAKE_OLLAMA_SLOW_STREAM_DELAY_MS,
+  FAKE_OLLAMA_SLOW_STREAM_DEFAULT_DELAY_MS,
 } from "../shared/fake-ollama/fake-ollama-server";
 import { login, getSmithersAgentId, waitForOpenClawConnected } from "./helpers";
 
@@ -45,7 +45,7 @@ test.describe("Stream persistence — #199 Layer A + B end-to-end", () => {
 
     // Allow remaining tokens to drain on the server side.
     // Derived from stream parameters: total stream duration plus a 3s CI buffer.
-    const remainingStreamMs = FAKE_OLLAMA_SLOW_STREAM_DELAY_MS * RESPONSE_WORDS.length;
+    const remainingStreamMs = FAKE_OLLAMA_SLOW_STREAM_DEFAULT_DELAY_MS * RESPONSE_WORDS.length;
     await new Promise((r) => setTimeout(r, remainingStreamMs + 3000));
 
     // Fresh context — no shared cookies, no shared websocket. This is what a

@@ -105,7 +105,7 @@ jobs:
   # one job. They are genuinely independent — both start `FROM
   # mirror.gcr.io/library/node:22-slim` and neither `COPY --from`s the other —
   # and building them serially put their two ~10 min builds end-to-end on the
-  # critical path of all 12 downstream Docker/E2E jobs (measured: 20m06 on a
+  # critical path of all 11 downstream Docker/E2E jobs (measured: 20m06 on a
   # cold cache, run 29559529435). Two runners build them in true parallel, which
   # halves that. `docker buildx bake` in a single job would NOT: both targets
   # would then contend for one runner's cores.
@@ -175,7 +175,7 @@ jobs:
           cache-from: type=gha,scope=${{ matrix.scope }}-main
           cache-to: ${{ github.ref_name == 'main' && format('type=gha,mode=max,scope={0}-main', matrix.scope) || '' }}
 
-  # Fan-in. Exists so the 12 downstream jobs keep depending on ONE job with the
+  # Fan-in. Exists so the 11 downstream jobs keep depending on ONE job with the
   # exact contract they already encode — `needs.build-image.result` plus
   # `.outputs.{pinchy,openclaw}-image` — instead of every one of them growing a
   # two-job `needs:` and a doubled result check. Its `if:` mirrors build-images'
@@ -187,13 +187,22 @@ jobs:
   #   failed     → `always()` still runs this, the guard step below fails it
   #                → downstream `if:` is false → jobs are skipped, as before.
   #
-  # Without `always()` a failed build would leave this `skipped`, and every
-  # downstream job would silently local-build a Dockerfile CI just proved broken.
+  # Without the `!cancelled()` escape hatch a failed build would leave this
+  # `skipped`, and every downstream job would silently local-build a Dockerfile
+  # CI just proved broken.
+  #
+  # `!cancelled()`, NOT `always()`: `always()` also runs when the RUN was
+  # cancelled, and `cancel-in-progress` (above) cancels every superseded PR
+  # push. This job would then run against a cancelled `build-images`, its guard
+  # would read 'cancelled' != 'success', and a merely-superseded run would report
+  # a red "Build Pinchy + OpenClaw images" with an error annotation — routine red
+  # noise on every rapid second push. `!cancelled()` only inspects THIS run's
+  # cancellation, so the failure case above still runs the guard.
   build-image:
     name: Build Pinchy + OpenClaw images
     needs: [changes, build-images]
     if: >-
-      always() &&
+      !cancelled() &&
       needs.changes.outputs.code == 'true' &&
       (github.event_name != 'pull_request' || github.event.pull_request.head.repo.fork != true)
     runs-on: ubuntu-latest
@@ -2205,9 +2214,14 @@ jobs:
         run: docker compose -f docker-compose.yml -f docker-compose.e2e.yml -f docker-compose.test.yml down -v
 
   # Sharded for the same reason as setup-wizard-e2e (see the rationale there):
-  # 8m17 of test time made this the second-longest tail in the matrix, and its 18
-  # spec files divide cleanly. Also not a required check, so the matrix rename is
-  # safe.
+  # 8m17 of test time made this the second-longest tail in the matrix. Also not a
+  # required check, so the matrix rename is safe.
+  #
+  # The split is UNEVEN — 25 tests / 11 files against 15 / 7, measured, not
+  # halved. Playwright assigns a whole file to the shard holding its first test,
+  # and agent-chat.spec.ts's 7 tests start just before the index-20 boundary, so
+  # they all land in shard 1. Expect roughly 5 min, not 4. Balancing it means
+  # reordering files, which is not worth coupling spec names to shard maths.
   #
   # Per-shard stacks are a bonus here rather than a constraint: today the whole
   # suite shares ONE OpenClaw session, which is why triggers like SLOW_STREAM
