@@ -336,17 +336,17 @@ The agent's most recent index run — in flight or last finished. **Admin only.*
 }
 ```
 
-| Field                 | Description                                                                                                                         |
-| --------------------- | ----------------------------------------------------------------------------------------------------------------------------------- |
-| `status`              | `pending`, `running`, `succeeded`, or `failed`.                                                                                     |
-| `processed` / `total` | Documents done, and documents found. `total` is `null` until discovery has walked every folder; it never changes after that.        |
-| `counts`              | The run's findings **so far**, updated as it goes. `null` before the first document.                                                |
-| `counts.indexed`      | Documents added, updated, or rebuilt — and searchable afterwards.                                                                   |
-| `counts.skipped`      | Unchanged content hash, chunks already present.                                                                                     |
-| `counts.removed`      | Source file no longer on disk; the document and its chunks were deleted. Stays `0` until the run's final pass.                      |
-| `counts.unsearchable` | Parsed without error but yielded no text, so the document exists in the index yet can never be retrieved (typically a scanned PDF). |
-| `counts.failed`       | The file could not be read or parsed. The run continues — one bad file never aborts the reindex — and a previously indexed version of the file stays searchable. |
-| `error`               | Why the run failed. `null` unless `status` is `failed`.                                                                             |
+| Field                 | Description                                                                                                                                                                                                        |
+| --------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `status`              | `pending`, `running`, `succeeded`, or `failed`.                                                                                                                                                                    |
+| `processed` / `total` | Documents done, and documents found. `total` is `null` until discovery has walked every folder; it never changes after that. `processed` advances per whole document, so a long one can hold it still for minutes. |
+| `counts`              | The run's findings **so far**, updated as it goes. `null` before the first document.                                                                                                                               |
+| `counts.indexed`      | Documents added, updated, or rebuilt — and searchable afterwards.                                                                                                                                                  |
+| `counts.skipped`      | Unchanged content hash, chunks already present.                                                                                                                                                                    |
+| `counts.removed`      | Source file no longer on disk; the document and its chunks were deleted. Stays `0` until the run's final pass.                                                                                                     |
+| `counts.unsearchable` | Parsed without error but yielded no text, so the document exists in the index yet can never be retrieved (typically a scanned PDF).                                                                                |
+| `counts.failed`       | The file could not be read or parsed. The run continues — one bad file never aborts the reindex — and a previously indexed version of the file stays searchable.                                                   |
+| `error`               | Why the run failed. `null` unless `status` is `failed`.                                                                                                                                                            |
 
 `unsearchable` and `failed` can be non-zero on a `succeeded` run: the reindex itself worked, and these are its findings about the corpus.
 

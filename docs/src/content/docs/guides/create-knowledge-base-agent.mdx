@@ -97,6 +97,8 @@ curl -b session_cookie "https://pinchy.example.com/api/agents/<agentId>/knowledg
 
 `total` is every document we found across the granted folders, counted before the first one is read — so it doesn't move once the run starts. `counts` fills in as the run goes, so you don't have to wait until the end to see how it's going:
 
+`processed` counts whole documents, so a long one holds the number still while we work through it — a 300-page PDF can sit there for minutes. That's the run being slow, not stuck.
+
 | Field          | What it means                                                                                                                                 |
 | -------------- | --------------------------------------------------------------------------------------------------------------------------------------------- |
 | `indexed`      | Added or updated, and searchable afterwards.                                                                                                  |
