@@ -55,6 +55,17 @@ services:
       # Passed through so `models` mode can seed settings.ollama_cloud_api_key
       # without baking a real key into the image or compose file.
       - OLLAMA_CLOUD_API_KEY=${OLLAMA_CLOUD_API_KEY:-}
+      # The run fingerprint (#799) reads `build` from /api/version, which is
+      # `process.env.PINCHY_BUILD_SHA` at request time. A locally-built eval
+      # image bakes the build-arg default "dev", so the fingerprint lands
+      # `comparable:false` and the sweep can't anchor a cross-version regression
+      # baseline. /api/version reads this at RUNTIME (not a NEXT_PUBLIC compile
+      # inline), so overriding it here is enough — no rebuild. Launch the sweep
+      # with `PINCHY_BUILD_SHA=$(git rev-parse HEAD)` to stamp the real commit;
+      # unset it defaults to "dev" (unchanged behavior). A dirty tree still lands
+      # comparable:false via the harness `harnessDirty` check, so a stamped-but-
+      # dirty run is never mistaken for a clean baseline.
+      - PINCHY_BUILD_SHA=${PINCHY_BUILD_SHA:-dev}
     extra_hosts:
       # Pinchy probes ollama_local_url from regenerateOpenClawConfig(); the
       # selftest's fake-ollama runs on the HOST (started by eval.spec.ts, same

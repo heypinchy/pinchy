@@ -53,12 +53,17 @@ resumes from JSONL.**
    volume mount). Mock changes need
    `... up -d --build odoo-mock` — and never mid-sweep.
 5. **Stack env is exact:** `PINCHY_VERSION=latest DB_PASSWORD=eval_dev_pw
-docker compose -p pinchy-eval -f docker-compose.yml -f docker-compose.e2e.yml
--f docker-compose.eval.yml up --build -d`. `DB_PASSWORD` must be non-default
-   (Pinchy rotates `pinchy_dev` away). If openclaw won't stabilise with
-   `SecretRefResolutionError`: stale config volume — surgically delete
-   `/openclaw-config/openclaw.json*` in the pinchy container and restart
-   pinchy+openclaw (never `down -v`).
+PINCHY_BUILD_SHA=$(git rev-parse HEAD) docker compose -p pinchy-eval -f
+docker-compose.yml -f docker-compose.e2e.yml -f docker-compose.eval.yml up
+--build -d`. `DB_PASSWORD` must be non-default (Pinchy rotates `pinchy_dev`
+   away). **`PINCHY_BUILD_SHA` is what makes the run fingerprint `comparable`
+   (#799):** a locally-built image bakes `build:"dev"`, so without this the sweep
+   can't anchor a cross-version regression baseline — set it to the platform
+   checkout's commit (a dirty tree still lands `comparable:false` via the
+   harness dirty-check, so a stamped-but-dirty run is never a false baseline).
+   If openclaw won't stabilise with `SecretRefResolutionError`: stale config
+   volume — surgically delete `/openclaw-config/openclaw.json*` in the pinchy
+   container and restart pinchy+openclaw (never `down -v`).
 6. **Key is seeded once.** Pass `OLLAMA_CLOUD_API_KEY` via env on the first
    `eval:models` run (it lands in the eval DB); later runs and the watchdog
    resume **keyless**. Never write the key to disk.
