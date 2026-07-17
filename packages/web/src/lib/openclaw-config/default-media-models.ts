@@ -192,7 +192,13 @@ export const OLLAMA_CLOUD_IMAGE_PREFERENCE: readonly OllamaCloudModelId[] = [
   // Ordering matters, not just membership: kimi-k2.6 must stay ahead of
   // gemma4:31b, or a tool-using image turn degrades to gemma4 again. Pinned by
   // the ordering guard in ollama-cloud-image-preference-drift.test.ts.
-  "gemini-3-flash-preview",
+  // gemini-3-flash-preview led this list until Ollama retired it from the cloud
+  // catalog (2026-07-15), so minimax-m3 inherits the head — and with it the
+  // default `imageModel` that consumer (2) hands out. That stays sound for the
+  // same reason it was sound for the preview model: minimax-m3's block is about
+  // mangling nested TOOL arguments, and this slot describes images rather than
+  // driving tools. Consumer (1) still applies `isBlocked`, so a tool-using turn
+  // keeps skipping it down to kimi-k2.6.
   "minimax-m3",
   "kimi-k2.6",
   "gemma4:31b",

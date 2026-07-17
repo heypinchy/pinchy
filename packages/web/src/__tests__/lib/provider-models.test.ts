@@ -278,16 +278,9 @@ describe("fetchProviderModels", () => {
         JSON.stringify({
           data: [
             // Tool-capable — should appear
-            { id: "deepseek-v3.1:671b" },
-            { id: "deepseek-v3.2" },
             { id: "deepseek-v4-flash" },
             { id: "deepseek-v4-pro" },
-            { id: "devstral-2:123b" },
-            { id: "devstral-small-2:24b" },
-            { id: "gemini-3-flash-preview" },
             { id: "gemma4:31b" },
-            { id: "glm-4.7" },
-            { id: "glm-5" },
             { id: "glm-5.1" },
             { id: "glm-5.2" },
             { id: "gpt-oss:20b" },
@@ -297,22 +290,15 @@ describe("fetchProviderModels", () => {
             { id: "kimi-k2.5" },
             { id: "kimi-k2.6" },
             { id: "kimi-k2.7-code" },
-            { id: "minimax-m2.1" },
             { id: "minimax-m2.5" },
             { id: "minimax-m2.7" },
             { id: "minimax-m3" },
-            { id: "ministral-3:3b" },
-            { id: "ministral-3:8b" },
-            { id: "ministral-3:14b" },
             { id: "mistral-large-3:675b" },
             { id: "nemotron-3-nano:30b" },
             { id: "nemotron-3-super" },
             { id: "nemotron-3-ultra" },
-            { id: "qwen3-coder-next" },
-            { id: "qwen3-coder:480b" },
             { id: "qwen3-next:80b" },
             { id: "qwen3.5:397b" },
-            { id: "rnj-1:8b" },
             // Tool-broken on the live chat/completions endpoint — must be filtered out
             { id: "cogito-2.1:671b" },
             { id: "gemma3:27b" },
@@ -332,16 +318,9 @@ describe("fetchProviderModels", () => {
     // Every tool-capable model surfaces
     expect(ids).toEqual(
       expect.arrayContaining([
-        "ollama-cloud/deepseek-v3.1:671b",
-        "ollama-cloud/deepseek-v3.2",
         "ollama-cloud/deepseek-v4-flash",
         "ollama-cloud/deepseek-v4-pro",
-        "ollama-cloud/devstral-2:123b",
-        "ollama-cloud/devstral-small-2:24b",
-        "ollama-cloud/gemini-3-flash-preview",
         "ollama-cloud/gemma4:31b",
-        "ollama-cloud/glm-4.7",
-        "ollama-cloud/glm-5",
         "ollama-cloud/glm-5.1",
         "ollama-cloud/glm-5.2",
         "ollama-cloud/gpt-oss:20b",
@@ -349,21 +328,14 @@ describe("fetchProviderModels", () => {
         "ollama-cloud/kimi-k2.5",
         "ollama-cloud/kimi-k2.6",
         "ollama-cloud/kimi-k2.7-code",
-        "ollama-cloud/minimax-m2.1",
         "ollama-cloud/minimax-m2.5",
         "ollama-cloud/minimax-m2.7",
         "ollama-cloud/minimax-m3",
-        "ollama-cloud/ministral-3:3b",
-        "ollama-cloud/ministral-3:8b",
-        "ollama-cloud/ministral-3:14b",
         "ollama-cloud/mistral-large-3:675b",
         "ollama-cloud/nemotron-3-nano:30b",
         "ollama-cloud/nemotron-3-super",
         "ollama-cloud/nemotron-3-ultra",
-        "ollama-cloud/qwen3-coder-next",
-        "ollama-cloud/qwen3-coder:480b",
         "ollama-cloud/qwen3.5:397b",
-        "ollama-cloud/rnj-1:8b",
       ])
     );
     // kimi-k2-thinking removed from allowlist (#305 — Ollama Cloud returns HTTP 500 for this model)
@@ -374,7 +346,7 @@ describe("fetchProviderModels", () => {
     expect(ids).not.toContain("ollama-cloud/qwen3-next:80b");
     // minimax-m3 was added to the allowlist (vision + tools confirmed live).
     expect(ids).toContain("ollama-cloud/minimax-m3");
-    expect(ids).toHaveLength(32);
+    expect(ids).toHaveLength(18);
 
     // Tool-broken models are filtered out (probed 2026-06-12: gemma3:4b leaks
     // pseudo tool calls as text, gemma3:12b serves HTTP 500, gemma3:27b
@@ -423,19 +395,12 @@ describe("fetchProviderModels", () => {
     const ids = ollama!.models.map((m) => m.id);
     // kimi-k2-thinking removed from allowlist (#305 — Ollama Cloud returns HTTP 500 for this model)
     expect(ids).not.toContain("ollama-cloud/kimi-k2-thinking");
-    expect(ids).toHaveLength(32);
+    expect(ids).toHaveLength(18);
     expect(ids).toEqual(
       expect.arrayContaining([
-        "ollama-cloud/deepseek-v3.1:671b",
-        "ollama-cloud/deepseek-v3.2",
         "ollama-cloud/deepseek-v4-flash",
         "ollama-cloud/deepseek-v4-pro",
-        "ollama-cloud/devstral-2:123b",
-        "ollama-cloud/devstral-small-2:24b",
-        "ollama-cloud/gemini-3-flash-preview",
         "ollama-cloud/gemma4:31b",
-        "ollama-cloud/glm-4.7",
-        "ollama-cloud/glm-5",
         "ollama-cloud/glm-5.1",
         "ollama-cloud/glm-5.2",
         "ollama-cloud/gpt-oss:20b",
@@ -443,21 +408,14 @@ describe("fetchProviderModels", () => {
         "ollama-cloud/kimi-k2.5",
         "ollama-cloud/kimi-k2.6",
         "ollama-cloud/kimi-k2.7-code",
-        "ollama-cloud/minimax-m2.1",
         "ollama-cloud/minimax-m2.5",
         "ollama-cloud/minimax-m2.7",
         "ollama-cloud/minimax-m3",
-        "ollama-cloud/ministral-3:3b",
-        "ollama-cloud/ministral-3:8b",
-        "ollama-cloud/ministral-3:14b",
         "ollama-cloud/mistral-large-3:675b",
         "ollama-cloud/nemotron-3-nano:30b",
         "ollama-cloud/nemotron-3-super",
         "ollama-cloud/nemotron-3-ultra",
-        "ollama-cloud/qwen3-coder-next",
-        "ollama-cloud/qwen3-coder:480b",
         "ollama-cloud/qwen3.5:397b",
-        "ollama-cloud/rnj-1:8b",
       ])
     );
   });

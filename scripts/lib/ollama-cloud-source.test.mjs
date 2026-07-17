@@ -86,14 +86,20 @@ test("MODEL_ID_PATTERN accepts real ollama ids and rejects unsafe ones", () => {
 
 test("parses the real curated source and finds a known model with correct fields", () => {
   const models = parseOllamaCloudModels(readFileSync(REAL_SOURCE, "utf8"));
-  const glm = models.find((m) => m.id === "glm-4.7");
-  assert.ok(glm, "glm-4.7 should be present in the real catalog");
-  assert.equal(glm.contextWindow, 202752);
+  // glm-4.7 was this fixture until Ollama retired it (2026-07-15). Any live
+  // catalog entry serves the purpose — this test is about the PARSER, not about
+  // which models exist.
+  const glm = models.find((m) => m.id === "glm-5.2");
+  assert.ok(glm, "glm-5.2 should be present in the real catalog");
+  assert.equal(glm.contextWindow, 999424);
   assert.equal(glm.reasoning, true);
   assert.equal(glm.vision, false);
-  // Catch a parser that silently matches only the first entry.
+  // Catch a parser that silently matches only the first entry. The floor was 25
+  // when the catalog held 32; the 2026-07-15 retirement wave cut it to 18, so a
+  // floor near the catalog size would just be a snapshot that breaks on every
+  // retirement. 15 still catches the failure this guards (a parser returning 1).
   assert.ok(
-    models.length >= 25,
+    models.length >= 15,
     `expected the full catalog, parsed ${models.length}`,
   );
 });

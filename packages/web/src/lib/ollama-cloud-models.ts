@@ -71,20 +71,6 @@ const ZERO_COST = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } as const;
 // the `OllamaCloudModel` shape.
 export const TOOL_CAPABLE_OLLAMA_CLOUD_MODELS = [
   {
-    id: "deepseek-v3.1:671b",
-    contextWindow: 163840,
-    maxTokens: 8192,
-    reasoning: true,
-    vision: false,
-  },
-  {
-    id: "deepseek-v3.2",
-    contextWindow: 163840,
-    maxTokens: 8192,
-    reasoning: true,
-    vision: false,
-  },
-  {
     // The 1M here is real, unlike deepseek-v4-pro below: `ollama show
     // deepseek-v4-flash:cloud` reports 1048576, matching its library page
     // (checked 2026-07-16). Same family and same claimed size as pro, so it
@@ -124,58 +110,11 @@ export const TOOL_CAPABLE_OLLAMA_CLOUD_MODELS = [
     vision: false,
   },
   {
-    id: "devstral-2:123b",
-    contextWindow: 262144,
-    maxTokens: 8192,
-    reasoning: false,
-    vision: false,
-  },
-  {
-    // ollama.com/library/devstral-small-2 lists "Text, Image" in the input
-    // types, but the live `/v1/chat/completions` endpoint returns HTTP 400
-    // "Image input is not enabled for this model" on image_url payloads —
-    // confirmed by the empirical API smoke test in #416. Devstral is
-    // Mistral's coding series, not a vision model; the library page is
-    // misleading. Flagged `vision: false` so it isn't picked as an image
-    // model fallback.
-    id: "devstral-small-2:24b",
-    contextWindow: 393216,
-    maxTokens: 8192,
-    reasoning: false,
-    vision: false,
-  },
-  {
-    // Capable vision/long-context model for chat-only agents, but it leaks
-    // tool calls as plain text ("default_api" signature) in agentic sessions —
-    // observed in production 2026-06-11. The resolver blocklist (-preview +
-    // tools) keeps it out of every tool slot; do not hand-pick it for agents
-    // that use tools.
-    id: "gemini-3-flash-preview",
-    contextWindow: 1048576,
-    maxTokens: 65536,
-    reasoning: true,
-    vision: true,
-  },
-  {
     id: "gemma4:31b",
     contextWindow: 262144,
     maxTokens: 8192,
     reasoning: true,
     vision: true,
-  },
-  {
-    id: "glm-4.7",
-    contextWindow: 202752,
-    maxTokens: 8192,
-    reasoning: true,
-    vision: false,
-  },
-  {
-    id: "glm-5",
-    contextWindow: 202752,
-    maxTokens: 8192,
-    reasoning: true,
-    vision: false,
   },
   {
     id: "glm-5.1",
@@ -239,13 +178,6 @@ export const TOOL_CAPABLE_OLLAMA_CLOUD_MODELS = [
     vision: false,
   },
   {
-    id: "minimax-m2.1",
-    contextWindow: 204800,
-    maxTokens: 8192,
-    reasoning: false,
-    vision: false,
-  },
-  {
     id: "minimax-m2.5",
     contextWindow: 202752,
     maxTokens: 8192,
@@ -271,27 +203,6 @@ export const TOOL_CAPABLE_OLLAMA_CLOUD_MODELS = [
     contextWindow: 524288,
     maxTokens: 8192,
     reasoning: true,
-    vision: true,
-  },
-  {
-    id: "ministral-3:3b",
-    contextWindow: 262144,
-    maxTokens: 8192,
-    reasoning: false,
-    vision: true,
-  },
-  {
-    id: "ministral-3:8b",
-    contextWindow: 262144,
-    maxTokens: 8192,
-    reasoning: false,
-    vision: true,
-  },
-  {
-    id: "ministral-3:14b",
-    contextWindow: 262144,
-    maxTokens: 8192,
-    reasoning: false,
     vision: true,
   },
   {
@@ -326,20 +237,6 @@ export const TOOL_CAPABLE_OLLAMA_CLOUD_MODELS = [
     vision: false,
   },
   {
-    id: "qwen3-coder-next",
-    contextWindow: 262144,
-    maxTokens: 8192,
-    reasoning: false,
-    vision: false,
-  },
-  {
-    id: "qwen3-coder:480b",
-    contextWindow: 262144,
-    maxTokens: 8192,
-    reasoning: false,
-    vision: false,
-  },
-  {
     // The ollama.com/library/qwen3.5 page lists image input, but the live
     // /v1/chat/completions endpoint hallucinates image contents (wrong number
     // AND wrong color across distinct test images) rather than rejecting them
@@ -350,13 +247,6 @@ export const TOOL_CAPABLE_OLLAMA_CLOUD_MODELS = [
     contextWindow: 262144,
     maxTokens: 8192,
     reasoning: true,
-    vision: false,
-  },
-  {
-    id: "rnj-1:8b",
-    contextWindow: 32768,
-    maxTokens: 8192,
-    reasoning: false,
     vision: false,
   },
 ] as const satisfies readonly OllamaCloudModel[];

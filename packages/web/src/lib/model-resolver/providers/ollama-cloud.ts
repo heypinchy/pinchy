@@ -23,9 +23,35 @@ const BY_TIER_FAMILY: Record<
 > = {
   fast: {
     general: "ollama-cloud/deepseek-v4-flash",
-    coder: "ollama-cloud/qwen3-coder-next",
-    // Smallest practical vision model: 8B, vision+tools, 256K context.
-    vision: "ollama-cloud/ministral-3:8b",
+    // qwen3-coder-next was retired from Ollama Cloud (2026-07-15), along with
+    // the whole qwen3-coder family. kimi-k2.7-code is the only coder-specialised
+    // model left on the platform, so this is a forced pick, not a ranking.
+    coder: "ollama-cloud/kimi-k2.7-code",
+    // ministral-3:8b ("smallest practical vision model: 8B, vision+tools") was
+    // retired 2026-07-15 with the entire ministral family. There is no small
+    // vision model left: the live vision set is gemma4:31b, kimi-k2.5/2.6,
+    // minimax-m3 (tools-blocked) and mistral-large-3:675b. So this tier's
+    // vision slot cannot be fast AND reliable, and reliability wins — the same
+    // trade-off the reasoning tier already made below, for the same reason: a
+    // corrupted invoice ref fails the turn outright, which is what the speed
+    // was meant to serve.
+    //
+    // Why kimi-k2.6 and not gemma4:31b, the one small-ish candidate:
+    //   - gemma4:31b is 0/12 on duplicate-guard and 0/12 on silent-failure in
+    //     the 2026-07-11 sweep — it never verifies before writing, and never
+    //     notices a create that did not persist. Both differences from kimi are
+    //     statistically significant (diff 0.42, CI [0.09, 0.68]; and 0.33, CI
+    //     [0.02, 0.61]); on the easy scenarios the two are tied. The aggregate
+    //     read is a TIE (diff -0.107, CI [-0.294, 0.08]) — which is exactly why
+    //     the aggregate is the wrong lens: it averages a tie on cheap scenarios
+    //     with a significant loss on the two that cost money.
+    //   - the id-corruption incident (see the balanced tier) is a long-identifier
+    //     failure the invoice scenarios do not probe at all, so the eval's tie
+    //     does not clear gemma4 of it — it is an unmeasured risk on top.
+    //   - rejecting gemma4 for balanced and reasoning but accepting it here
+    //     would be incoherent: carrying refs through a multi-turn tool loop is
+    //     this slot's job in every tier.
+    vision: "ollama-cloud/kimi-k2.6",
   },
   balanced: {
     // glm-4.7 (general) and gemma4:31b (vision) were replaced 2026-07-07
@@ -37,7 +63,9 @@ const BY_TIER_FAMILY: Record<
     // strongest non-thinking-preferred tool-driver: vision:true, 256K
     // context, already in the curated catalog (issue #669).
     general: "ollama-cloud/kimi-k2.6",
-    coder: "ollama-cloud/qwen3-coder:480b",
+    // qwen3-coder:480b retired 2026-07-15 with the rest of the qwen3-coder
+    // family; kimi-k2.7-code is the only coder-specialised model still served.
+    coder: "ollama-cloud/kimi-k2.7-code",
     vision: "ollama-cloud/kimi-k2.6",
   },
   reasoning: {

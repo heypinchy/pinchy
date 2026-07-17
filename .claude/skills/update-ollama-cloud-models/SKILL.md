@@ -121,6 +121,14 @@ these derived sites in the SAME change:
      assertions (DB-backed; only `pnpm test:db` runs it, not `pnpm test`).
    - `__tests__/lib/ollama-cloud-image-preference-drift.test.ts` — guards the
      image-preference list.
+   - `__tests__/lib/vision-model-chain.test.ts` — its fixture simulates the LIVE
+     cloud catalog, so a retired vision model must be swapped there too.
+   - `src/lib/model-resolver/__tests__/ollama-cloud.test.ts` — NOTE the path:
+     there is a second `ollama-cloud.test.ts` under `src/__tests__/lib/`, and
+     running only that one passes while this one fails.
+   - `scripts/lib/ollama-cloud-source.test.mjs` — run by `pnpm test:scripts`,
+     NOT by `pnpm test`. It pins one model's fields as a parser fixture and
+     asserts a catalog-size floor; both break on a retirement.
 
 8. **Run the gates** — the FULL suites, not just the one drift test. A removed
    model drifts unit AND DB-backed snapshots; `pnpm test` alone misses the

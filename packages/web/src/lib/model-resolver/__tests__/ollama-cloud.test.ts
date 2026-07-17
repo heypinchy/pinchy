@@ -21,7 +21,13 @@ describe("resolveOllamaCloud", () => {
 
   it("prefers a coder model when taskType=coder", () => {
     const r = resolveOllamaCloud({ tier: "balanced", taskType: "coder" });
-    expect(r.model).toMatch(/coder/i);
+    // Pinned to the id, not /coder/i. That regex was a proxy for "is the
+    // coder-specialised model" and it silently died with the qwen3-coder family
+    // (retired from Ollama Cloud 2026-07-15): the only coder model left is
+    // kimi-k2.7-code, which is a coder model whose name never says "coder".
+    // A name pattern cannot express this; the pick itself can.
+    expect(r.model).toBe("ollama-cloud/kimi-k2.7-code");
+    expect(r.fallbackUsed).toBe(false);
   });
 
   it("falls back to general when taskType has no dedicated map entry", () => {

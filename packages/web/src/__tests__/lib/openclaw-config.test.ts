@@ -139,7 +139,7 @@ vi.mock("@/lib/provider-models", () => {
     anthropic: "anthropic/claude-haiku-4-5-20251001",
     openai: "openai/gpt-5.4-mini",
     google: "google/gemini-2.5-flash",
-    "ollama-cloud": "ollama-cloud/gemini-3-flash-preview",
+    "ollama-cloud": "ollama-cloud/minimax-m3",
     "ollama-local": "",
   };
   // Default "live" catalog: all three ollama-cloud image-preference models are
@@ -150,7 +150,7 @@ vi.mock("@/lib/provider-models", () => {
       id: "ollama-cloud",
       name: "Ollama Cloud",
       models: [
-        { id: "ollama-cloud/gemini-3-flash-preview", name: "gemini-3-flash-preview" },
+        { id: "ollama-cloud/minimax-m3", name: "minimax-m3" },
         { id: "ollama-cloud/minimax-m3", name: "minimax-m3" },
         { id: "ollama-cloud/gemma4:31b", name: "gemma4:31b" },
       ],
@@ -1616,7 +1616,7 @@ describe("regenerateOpenClawConfig", () => {
         {
           id: "kb-agent-id",
           name: "Invoice Reader",
-          model: "ollama-cloud/glm-4.7", // text-only chat model
+          model: "ollama-cloud/glm-5.2", // text-only chat model
           templateId: "knowledge-base",
           pluginConfig: { "pinchy-files": { allowed_paths: ["/data/invoices/"] } },
           allowedTools: [],
@@ -1640,7 +1640,7 @@ describe("regenerateOpenClawConfig", () => {
       })
       .find((c) => c && c.plugins);
     expect(config.plugins.entries["pinchy-files"].config.visionModel).toBe(
-      "ollama-cloud/gemini-3-flash-preview"
+      "ollama-cloud/minimax-m3"
     );
   });
 
@@ -2114,16 +2114,9 @@ describe("regenerateOpenClawConfig", () => {
 
     expect(modelIds.sort()).toEqual(
       [
-        "deepseek-v3.1:671b",
-        "deepseek-v3.2",
         "deepseek-v4-flash",
         "deepseek-v4-pro",
-        "devstral-2:123b",
-        "devstral-small-2:24b",
-        "gemini-3-flash-preview",
         "gemma4:31b",
-        "glm-4.7",
-        "glm-5",
         "glm-5.1",
         "glm-5.2",
         "gpt-oss:120b",
@@ -2131,21 +2124,14 @@ describe("regenerateOpenClawConfig", () => {
         "kimi-k2.5",
         "kimi-k2.6",
         "kimi-k2.7-code",
-        "minimax-m2.1",
         "minimax-m2.5",
         "minimax-m2.7",
         "minimax-m3",
-        "ministral-3:14b",
-        "ministral-3:3b",
-        "ministral-3:8b",
         "mistral-large-3:675b",
         "nemotron-3-nano:30b",
         "nemotron-3-super",
         "nemotron-3-ultra",
-        "qwen3-coder-next",
-        "qwen3-coder:480b",
         "qwen3.5:397b",
-        "rnj-1:8b",
       ].sort()
     );
   });
@@ -2171,40 +2157,27 @@ describe("regenerateOpenClawConfig", () => {
     const ctx = Object.fromEntries(models.map((m) => [m.id, m.contextWindow]));
 
     // 32K — smallest in the list, was previously over-reported as 128K
-    expect(ctx["rnj-1:8b"]).toBe(32768);
     // 128K
     expect(ctx["gpt-oss:20b"]).toBe(131072);
     expect(ctx["gpt-oss:120b"]).toBe(131072);
     // 160K
-    expect(ctx["deepseek-v3.1:671b"]).toBe(163840);
-    expect(ctx["deepseek-v3.2"]).toBe(163840);
     // 198K (GLM 4.x/5.x family, minimax-m2.5)
-    expect(ctx["glm-4.7"]).toBe(202752);
-    expect(ctx["glm-5"]).toBe(202752);
     expect(ctx["glm-5.1"]).toBe(202752);
     expect(ctx["minimax-m2.5"]).toBe(202752);
     // 976K (GLM-5.2 — "NK" = N×1024 → 999424)
     expect(ctx["glm-5.2"]).toBe(999424);
     // 200K (other minimax variants)
-    expect(ctx["minimax-m2.1"]).toBe(204800);
     expect(ctx["minimax-m2.7"]).toBe(204800);
     // 256K — the most common class
-    expect(ctx["devstral-2:123b"]).toBe(262144);
     expect(ctx["gemma4:31b"]).toBe(262144);
     expect(ctx["kimi-k2.5"]).toBe(262144);
     expect(ctx["kimi-k2.6"]).toBe(262144);
     expect(ctx["kimi-k2.7-code"]).toBe(262144);
-    expect(ctx["ministral-3:3b"]).toBe(262144);
-    expect(ctx["ministral-3:8b"]).toBe(262144);
-    expect(ctx["ministral-3:14b"]).toBe(262144);
     expect(ctx["mistral-large-3:675b"]).toBe(262144);
     expect(ctx["nemotron-3-super"]).toBe(262144);
     expect(ctx["nemotron-3-ultra"]).toBe(262144);
-    expect(ctx["qwen3-coder-next"]).toBe(262144);
-    expect(ctx["qwen3-coder:480b"]).toBe(262144);
     expect(ctx["qwen3.5:397b"]).toBe(262144);
     // 384K
-    expect(ctx["devstral-small-2:24b"]).toBe(393216);
     // 512K — deepseek-v4-pro belongs here, not with flash below, despite its
     // library page claiming 1M (see ollama-cloud-models.ts)
     expect(ctx["deepseek-v4-pro"]).toBe(524288);
@@ -2212,7 +2185,6 @@ describe("regenerateOpenClawConfig", () => {
     expect(ctx["minimax-m3"]).toBe(524288);
     // 1M
     expect(ctx["deepseek-v4-flash"]).toBe(1048576);
-    expect(ctx["gemini-3-flash-preview"]).toBe(1048576);
     expect(ctx["nemotron-3-nano:30b"]).toBe(1048576);
   });
 
@@ -2276,14 +2248,10 @@ describe("regenerateOpenClawConfig", () => {
     // devstral-small-2:24b is explicitly excluded — its library page claims
     // "Text, Image" but the runtime API rejects images with HTTP 400.
     const visionModels = [
-      "gemini-3-flash-preview",
       "gemma4:31b",
       "kimi-k2.5",
       "kimi-k2.6",
       "minimax-m3",
-      "ministral-3:3b",
-      "ministral-3:8b",
-      "ministral-3:14b",
       "mistral-large-3:675b",
     ];
     for (const id of visionModels) {
@@ -2294,10 +2262,6 @@ describe("regenerateOpenClawConfig", () => {
     // small-2:24b joined this list after the #416 smoke test demoted it.
     // qwen3.5:397b joined it too: its library page claims image input but the
     // live endpoint hallucinates image contents, so it is flagged text-only.
-    expect(byId["rnj-1:8b"].input).toEqual(["text"]);
-    expect(byId["qwen3-coder:480b"].input).toEqual(["text"]);
-    expect(byId["deepseek-v3.2"].input).toEqual(["text"]);
-    expect(byId["devstral-small-2:24b"].input).toEqual(["text"]);
     expect(byId["qwen3.5:397b"].input).toEqual(["text"]);
     // kimi-k2.7-code: library page claims image input (MoonViT), but the live
     // /v1/chat/completions returns HTTP 500 on image_url payloads (probed
@@ -2312,14 +2276,9 @@ describe("regenerateOpenClawConfig", () => {
 
     // Reasoning-capable cloud models per ollama.com/search?c=thinking&c=cloud
     const reasoningModels = [
-      "deepseek-v3.1:671b",
-      "deepseek-v3.2",
       "deepseek-v4-flash",
       "deepseek-v4-pro",
-      "gemini-3-flash-preview",
       "gemma4:31b",
-      "glm-4.7",
-      "glm-5",
       "glm-5.1",
       "glm-5.2",
       "gpt-oss:20b",
@@ -2341,18 +2300,7 @@ describe("regenerateOpenClawConfig", () => {
     // Non-reasoning — qwen3-coder-next explicitly "Non-thinking mode only",
     // ministral-3 / mistral-large-3 / devstral-* and rnj-1 not tagged,
     // minimax-m2.1 absent from Ollama's thinking tag list.
-    const nonReasoningModels = [
-      "devstral-2:123b",
-      "devstral-small-2:24b",
-      "minimax-m2.1",
-      "ministral-3:3b",
-      "ministral-3:8b",
-      "ministral-3:14b",
-      "mistral-large-3:675b",
-      "qwen3-coder-next",
-      "qwen3-coder:480b",
-      "rnj-1:8b",
-    ];
+    const nonReasoningModels = ["mistral-large-3:675b"];
     for (const id of nonReasoningModels) {
       expect(byId[id].reasoning).toBe(false);
     }
@@ -7589,7 +7537,7 @@ describe("regenerateOpenClawConfig size-drop guard (#311)", () => {
 
     const config = JSON.parse(writtenOpenClawConfig(mockedWriteFileSync));
     expect(config.agents.defaults.pdfModel).toBeDefined();
-    expect(config.agents.defaults.pdfModel.primary).toBe("ollama-cloud/gemini-3-flash-preview");
+    expect(config.agents.defaults.pdfModel.primary).toBe("ollama-cloud/minimax-m3");
   });
 
   it("does not set agents.defaults.pdfModel when no provider is configured", async () => {
@@ -7738,7 +7686,7 @@ describe("regenerateOpenClawConfig imageModel.primary (#416)", () => {
     await regenerateOpenClawConfig();
 
     const config = JSON.parse(writtenOpenClawConfig(mockedWriteFileSync));
-    expect(config.agents.defaults.imageModel.primary).toBe("ollama-cloud/gemini-3-flash-preview");
+    expect(config.agents.defaults.imageModel.primary).toBe("ollama-cloud/minimax-m3");
   });
 
   it("native vision providers (anthropic, google) beat ollama-cloud for imageModel", async () => {
@@ -7821,7 +7769,7 @@ describe("regenerateOpenClawConfig imageModel.primary (#416)", () => {
     const config = JSON.parse(writtenOpenClawConfig(mockedWriteFileSync));
     const expected = {
       primary: "openai/gpt-5.4-mini",
-      fallbacks: ["ollama-cloud/gemini-3-flash-preview"],
+      fallbacks: ["ollama-cloud/minimax-m3"],
     };
     expect(config.agents.defaults.pdfModel).toEqual(expected);
     expect(config.agents.defaults.imageModel).toEqual(expected);
