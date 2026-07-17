@@ -45,6 +45,7 @@ import {
   pinAgentModel,
   runOnce,
   writeScorecard,
+  PINCHY_URL,
   appendRunResult,
   readExistingRuns,
   candidateModelsFromEnv,
@@ -52,6 +53,7 @@ import {
   injectOdooCreateFailure,
   injectOdooCreateSilentSuccess,
 } from "./run-eval";
+import { captureRunFingerprint } from "./fingerprint";
 import { setupHetznerAgent } from "./eval-shared";
 import type { RunResult } from "../src/lib/eval/types";
 
@@ -148,6 +150,25 @@ test.describe("Eval-v1: model sweep (real Ollama Cloud)", () => {
     await waitForOdooMock();
     await waitForGraphMock();
     const cookie = await login();
+
+    // Fingerprint the platform build now the stack is up, before any run. The
+    // sweep resumes across restarts, so capture once at the start rather than
+    // per scenario — every scorecard this sweep writes carries the same one. A
+    // fingerprint with comparable:false (e.g. a `dev` build) is a loud signal
+    // the run cannot anchor a version-regression baseline (#799).
+    const fingerprint = await captureRunFingerprint(PINCHY_URL, new Date().toISOString());
+    console.log(
+      `[eval] run fingerprint: pinchy=${fingerprint.pinchyVersion} openclaw=${fingerprint.openclawVersion} ` +
+        `build=${fingerprint.build} harness=${fingerprint.harnessSha.slice(0, 12)}${
+          fingerprint.harnessDirty ? "-dirty" : ""
+        } comparable=${String(fingerprint.comparable)}`
+    );
+    if (!fingerprint.comparable) {
+      console.warn(
+        "[eval] ⚠️ fingerprint is NOT comparable — this sweep cannot anchor a cross-version " +
+          "regression baseline (build is 'dev'/unknown, harness dirty, or a version field missing)."
+      );
+    }
 
     // Resolve the Ollama Cloud key from the environment, or fall back to the
     // copy already stored in the eval DB. The fallback is what lets an
@@ -297,7 +318,7 @@ test.describe("Eval-v1: model sweep (real Ollama Cloud)", () => {
         }
       }
 
-      const scorecard = await writeScorecard(label, scenarioRuns);
+      const scorecard = await writeScorecard(label, scenarioRuns, fingerprint);
       console.log(
         `[eval] wrote scorecard "${label}" for ${String(scenarioRuns.length)} runs:`,
         scorecard

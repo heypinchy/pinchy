@@ -24,13 +24,14 @@ import { mkdir, writeFile, appendFile, readFile } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 import path from "node:path";
 import { EVAL_CANARY_JSONL_LINE, parseEvalJsonl } from "./canary";
+import type { RunFingerprint } from "./fingerprint";
 import { buildTrajectory, type NormalizeAuditEntry } from "../src/lib/eval/normalize";
 import { gradeRunForScenario } from "../src/lib/eval/graders";
 import { buildScorecard, type ScorecardEntry } from "../src/lib/eval/scorecard";
 import type { OdooMoveRecord, RunResult, RunTrajectory } from "../src/lib/eval/types";
 import { hetznerInvoiceScenario, type HetznerInvoiceScenario } from "./scenarios/hetzner-invoice";
 
-const PINCHY_URL = process.env.PINCHY_URL || "http://localhost:7777";
+export const PINCHY_URL = process.env.PINCHY_URL || "http://localhost:7777";
 const MOCK_ODOO_URL = process.env.MOCK_ODOO_URL || "http://localhost:9002";
 
 export const RESULTS_DIR = path.join(__dirname, "results");
@@ -514,7 +515,11 @@ export async function readExistingRuns(label: string): Promise<RunResult[]> {
   return parseEvalJsonl<RunResult>(text);
 }
 
-export async function writeScorecard(label: string, runs: RunResult[]): Promise<ScorecardEntry[]> {
+export async function writeScorecard(
+  label: string,
+  runs: RunResult[],
+  fingerprint?: RunFingerprint
+): Promise<ScorecardEntry[]> {
   // Defense in depth: label is a hardcoded literal at every call site today,
   // but reject path separators/traversal so a future env-derived label can
   // never escape RESULTS_DIR.
@@ -528,7 +533,11 @@ export async function writeScorecard(label: string, runs: RunResult[]): Promise<
   // eslint-disable-next-line security/detect-non-literal-fs-filename -- label validated above (alnum/./_/- only, no path separators)
   await writeFile(
     filePath,
-    JSON.stringify({ generatedAt: new Date().toISOString(), runs, scorecard }, null, 2),
+    JSON.stringify(
+      { generatedAt: new Date().toISOString(), fingerprint, runs, scorecard },
+      null,
+      2
+    ),
     "utf8"
   );
   return scorecard;
