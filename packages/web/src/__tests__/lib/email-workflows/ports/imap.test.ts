@@ -5,9 +5,36 @@
 // multipart attachment trees) and is pure, so it is unit-tested here against
 // real imapflow type shapes. The protocol half (connect / SEARCH / FETCH) is
 // exercised end-to-end against GreenMail, where a mock would only prove itself.
-import { describe, it, expect } from "vitest";
+//
+// The one exception is the connection bookkeeping at the bottom of this file:
+// what the port does when a connect FAILS is our logic, not imapflow's, and
+// GreenMail cannot exercise it — a healthy server never refuses a connection on
+// demand. That describe stubs imapflow for exactly that reason, and asserts on
+// the port's own state, never on the stub's protocol behaviour.
+import { describe, it, expect, vi, beforeEach } from "vitest";
 
-import { mapImapMessage, collectAttachments } from "@/lib/email-workflows/ports/imap";
+const { mockConnect, mockLogout, mockSearch, mockMailboxOpen } = vi.hoisted(() => ({
+  mockConnect: vi.fn(),
+  mockLogout: vi.fn(),
+  mockSearch: vi.fn(),
+  mockMailboxOpen: vi.fn(),
+}));
+
+vi.mock("imapflow", () => ({
+  ImapFlow: class {
+    connect = mockConnect;
+    logout = mockLogout;
+    search = mockSearch;
+    mailboxOpen = mockMailboxOpen;
+    fetchOne = vi.fn();
+  },
+}));
+
+import {
+  mapImapMessage,
+  collectAttachments,
+  createImapPort,
+} from "@/lib/email-workflows/ports/imap";
 
 describe("IMAP port — mapImapMessage", () => {
   it("maps a full envelope into an EmailReadResult", () => {
@@ -115,5 +142,63 @@ describe("IMAP port — collectAttachments", () => {
     });
 
     expect(attachments).toEqual([{ mimeType: "application/pdf", filename: "fallback.pdf" }]);
+  });
+});
+
+describe("IMAP port — connection bookkeeping", () => {
+  const credentials = {
+    imapHost: "mail.example.com",
+    imapPort: 993,
+    smtpHost: "mail.example.com",
+    smtpPort: 587,
+    username: "u",
+    password: "p",
+    security: "tls" as const,
+  };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockConnect.mockResolvedValue(undefined);
+    mockMailboxOpen.mockResolvedValue(undefined);
+    mockSearch.mockResolvedValue([]);
+    mockLogout.mockResolvedValue(undefined);
+  });
+
+  it("keeps no half-open client after a failed connect", async () => {
+    // The sweep closes every port in a `finally`, including the one whose
+    // mailbox was unreachable. If the failed connect left the client cached, that
+    // close would call logout() on a socket that never opened — the sweep catches
+    // and logs it, so the cost is a misleading "failed to close the port" line on
+    // top of the real, already-reported connect failure. Worse, a retry on the
+    // same port would skip connect() entirely and act as if it were connected.
+    mockConnect.mockRejectedValue(new Error("ECONNREFUSED"));
+    const port = createImapPort(credentials);
+
+    await expect(port.search({ sinceDays: 14 })).rejects.toThrow(/ECONNREFUSED/);
+
+    await expect(port.close?.()).resolves.toBeUndefined();
+    expect(mockLogout).not.toHaveBeenCalled();
+  });
+
+  it("connects once and serves search + read over the same connection", async () => {
+    // The lister does 1×search + N×read per unit; a connection per message is not
+    // an option (this is why the port holds one at all).
+    const port = createImapPort(credentials);
+
+    await port.search({ sinceDays: 14 });
+    await port.search({ sinceDays: 14 });
+
+    expect(mockConnect).toHaveBeenCalledTimes(1);
+  });
+
+  it("asks for every message when no window is given, never for `since: undefined`", async () => {
+    // The sweep always passes sweepWindowDays, so this is defensive — but an
+    // undefined-valued `since` key is the kind of thing a search compiler is free
+    // to read as a malformed term rather than an absent one. Say "all" explicitly.
+    const port = createImapPort(credentials);
+
+    await port.search({});
+
+    expect(mockSearch).toHaveBeenCalledWith({ all: true }, { uid: true });
   });
 });

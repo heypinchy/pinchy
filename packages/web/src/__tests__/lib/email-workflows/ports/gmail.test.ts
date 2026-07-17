@@ -198,3 +198,139 @@ describe("Gmail port — listing query", () => {
     await expect(port.search({ sinceDays: 14 })).resolves.toEqual([]);
   });
 });
+
+describe("Gmail port — label resolution", () => {
+  let fetchSpy: ReturnType<typeof vi.spyOn>;
+
+  beforeEach(() => {
+    fetchSpy = vi.spyOn(globalThis, "fetch");
+  });
+
+  afterEach(() => {
+    fetchSpy.mockRestore();
+  });
+
+  function urlOf(callIndex: number): string {
+    return decodeURIComponent(String(fetchSpy.mock.calls[callIndex][0]));
+  }
+
+  it("resolves a user label's name to its opaque id", async () => {
+    // A system label's id IS its name (INBOX, SPAM, …), which is why upper-casing
+    // the folder worked at all. A user-created label's id is an opaque `Label_17`
+    // and its name is never a valid labelId — so `labelIds=RECEIPTS` is a 400 from
+    // Gmail, and every workflow watching a user label is dead on arrival.
+    fetchSpy
+      .mockResolvedValueOnce(
+        jsonResponse({
+          labels: [
+            { id: "INBOX", name: "INBOX", type: "system" },
+            { id: "Label_17", name: "Receipts", type: "user" },
+          ],
+        })
+      )
+      .mockResolvedValueOnce(jsonResponse({ messages: [] }));
+    const port = createGmailPort(credentials);
+
+    await port.search({ sinceDays: 14, folder: "Receipts", limit: 50 });
+
+    expect(urlOf(0)).toContain("/users/me/labels");
+    expect(urlOf(1)).toContain("labelIds=Label_17");
+  });
+
+  it("spends no round trip on a system label", async () => {
+    // The overwhelmingly common case. A system label's id is its upper-cased
+    // name by definition, so resolving it over the wire would be pure latency.
+    fetchSpy.mockResolvedValueOnce(jsonResponse({ messages: [] }));
+    const port = createGmailPort(credentials);
+
+    await port.search({ sinceDays: 14, folder: "inbox", limit: 50 });
+
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+    expect(urlOf(0)).toContain("labelIds=INBOX");
+  });
+
+  it("resolves the label list once per port, not once per search", async () => {
+    fetchSpy
+      .mockResolvedValueOnce(jsonResponse({ labels: [{ id: "Label_17", name: "Receipts" }] }))
+      // A fresh Response per call: a Response body can only be read once, so a
+      // single shared instance would fail the second search on the body, not on
+      // the behaviour under test.
+      .mockImplementation(async () => jsonResponse({ messages: [] }));
+    const port = createGmailPort(credentials);
+
+    await port.search({ sinceDays: 14, folder: "Receipts" });
+    await port.search({ sinceDays: 14, folder: "Receipts" });
+
+    const labelCalls = fetchSpy.mock.calls.filter((call: unknown[]) =>
+      String(call[0]).includes("/labels")
+    );
+    expect(labelCalls).toHaveLength(1);
+  });
+
+  it("fails loudly for a label the mailbox does not have", async () => {
+    // Never fall back to searching the whole mailbox or to INBOX: a workflow
+    // pointed at a renamed/deleted label must surface as the workflow's `error`
+    // status, not quietly act on the wrong mail.
+    fetchSpy.mockResolvedValue(jsonResponse({ labels: [{ id: "Label_17", name: "Receipts" }] }));
+    const port = createGmailPort(credentials);
+
+    await expect(port.search({ sinceDays: 14, folder: "Gone" })).rejects.toThrow(/Gone/);
+  });
+
+  it("reports the label's NAME on read, not its opaque id", async () => {
+    // matchesFilter compares `email.folder` against the workflow's configured
+    // folder — which is the name the user typed, never `Label_17`.
+    fetchSpy
+      .mockResolvedValueOnce(jsonResponse({ labels: [{ id: "Label_17", name: "Receipts" }] }))
+      .mockResolvedValueOnce(jsonResponse({ messages: [{ id: "m1" }] }))
+      .mockResolvedValueOnce(
+        jsonResponse({ id: "m1", internalDate: "1752483600000", payload: { headers: [] } })
+      );
+    const port = createGmailPort(credentials);
+
+    await port.search({ sinceDays: 14, folder: "Receipts" });
+
+    await expect(port.read("m1")).resolves.toMatchObject({ folder: "Receipts" });
+  });
+});
+
+describe("Gmail port — folder round trip", () => {
+  let fetchSpy: ReturnType<typeof vi.spyOn>;
+
+  beforeEach(() => {
+    fetchSpy = vi.spyOn(globalThis, "fetch");
+  });
+
+  afterEach(() => {
+    fetchSpy.mockRestore();
+  });
+
+  it("reports the folder search scoped to, not the default label", async () => {
+    // LOAD-BEARING, and silent when wrong. `read` has no folder argument, so the
+    // port must remember what `search` scoped to — exactly as the IMAP port does
+    // with its open mailbox. Reporting the default instead makes matchesFilter's
+    // folder re-check (`email.folder !== filter.folder`) drop EVERY hydrated mail
+    // of a non-INBOX workflow: no error, no failed run, the workflow stays
+    // `active` and processes nothing. That is the sweep's worst failure mode.
+    fetchSpy
+      .mockResolvedValueOnce(jsonResponse({ messages: [{ id: "m1" }] }))
+      .mockResolvedValueOnce(
+        jsonResponse({ id: "m1", internalDate: "1752483600000", payload: { headers: [] } })
+      );
+    const port = createGmailPort(credentials);
+
+    await port.search({ sinceDays: 14, folder: "SPAM", limit: 50 });
+    const mail = await port.read("m1");
+
+    expect(mail.folder).toBe("SPAM");
+  });
+
+  it("falls back to INBOX when read runs without a preceding scoped search", async () => {
+    fetchSpy.mockResolvedValue(
+      jsonResponse({ id: "m1", internalDate: "1752483600000", payload: { headers: [] } })
+    );
+    const port = createGmailPort(credentials);
+
+    await expect(port.read("m1")).resolves.toMatchObject({ folder: "INBOX" });
+  });
+});

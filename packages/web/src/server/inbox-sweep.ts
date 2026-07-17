@@ -66,11 +66,19 @@ let _startupTimeout: ReturnType<typeof setTimeout> | null = null;
  *
  * `opts` overrides the cadence. Production leaves it empty; the E2E stack shortens
  * it via `INBOX_SWEEP_INTERVAL_MS`, since no test can wait 15 minutes for a tick.
+ *
+ * Idempotent: the timer handles live in module state, so a second start without
+ * this would overwrite the first one's handles and orphan an interval that fires
+ * forever with nobody holding a reference to stop it — doubling every sweep's
+ * provider I/O. That leak is the reason this cadence is not hung off the
+ * gateway's `connected` event; making start itself safe removes the footgun
+ * instead of leaving it for every future caller to remember.
  */
 export function startInboxSweep(
   runSweep: () => Promise<void>,
   opts: { intervalMs?: number; startupDelayMs?: number } = {}
 ): void {
+  stopInboxSweep();
   const guarded = createGuardedSweepRunner(runSweep);
   _interval = setInterval(() => void guarded(), opts.intervalMs ?? SWEEP_INTERVAL_MS);
   _startupTimeout = setTimeout(() => {

@@ -113,9 +113,16 @@ export function createGraphPort(credentials: unknown): EmailPort {
     return (await res.json()) as T;
   }
 
+  // What `search` last scoped to. `read` takes no folder argument, so without
+  // this the port would report the default for every message and a non-inbox
+  // workflow's mail would all fail the filter's folder re-check — silently.
+  // The IMAP port gets this for free from its open mailbox; here it is explicit.
+  let searchedFolder: string | null = null;
+
   return {
     async search(opts): Promise<EmailListItem[]> {
       const folder = opts.folder ?? DEFAULT_FOLDER;
+      searchedFolder = folder;
       // Built with encodeURIComponent rather than URLSearchParams, mirroring the
       // pinchy-email plugin's adapter: URLSearchParams encodes a space as `+`,
       // and `%20` is the unambiguous form for OData expressions.
@@ -150,7 +157,10 @@ export function createGraphPort(credentials: unknown): EmailPort {
       const message = await graphGet<GraphMessage>(
         `/me/messages/${encodeURIComponent(id)}?${parts.join("&")}`
       );
-      return mapGraphMessage({ folder: DEFAULT_FOLDER, message });
+      // The folder this port searched, not Graph's opaque parentFolderId: the
+      // filter re-checks `folder` by name, and every id reaching `read` came
+      // from that scoped listing.
+      return mapGraphMessage({ folder: searchedFolder ?? DEFAULT_FOLDER, message });
     },
   };
 }

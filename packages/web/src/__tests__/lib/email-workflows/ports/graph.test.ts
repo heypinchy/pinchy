@@ -189,3 +189,42 @@ describe("Graph port — search query", () => {
     await expect(port.search({ sinceDays: 14 })).rejects.toThrow(/401|Access token expired/i);
   });
 });
+
+describe("Graph port — folder round trip", () => {
+  let fetchSpy: ReturnType<typeof vi.spyOn>;
+
+  beforeEach(() => {
+    fetchSpy = vi.spyOn(globalThis, "fetch");
+  });
+
+  afterEach(() => {
+    fetchSpy.mockRestore();
+  });
+
+  it("reports the folder search scoped to, not the default folder", async () => {
+    // LOAD-BEARING, and silent when wrong. `read` has no folder argument, so the
+    // port must remember what `search` scoped to — exactly as the IMAP port does
+    // with its open mailbox. Reporting the default instead makes matchesFilter's
+    // folder re-check (`email.folder !== filter.folder`) drop EVERY hydrated mail
+    // of a non-inbox workflow: no error, no failed run, the workflow stays
+    // `active` and processes nothing. That is the sweep's worst failure mode.
+    fetchSpy
+      .mockResolvedValueOnce(jsonResponse({ value: [{ id: "m1" }] }))
+      .mockResolvedValueOnce(jsonResponse({ id: "m1", receivedDateTime: "2026-07-14T09:00:00Z" }));
+    const port = createGraphPort(credentials);
+
+    await port.search({ sinceDays: 14, folder: "archive", limit: 50 });
+    const mail = await port.read("m1");
+
+    expect(mail.folder).toBe("archive");
+  });
+
+  it("falls back to inbox when read runs without a preceding scoped search", async () => {
+    fetchSpy.mockResolvedValue(
+      jsonResponse({ id: "m1", receivedDateTime: "2026-07-14T09:00:00Z" })
+    );
+    const port = createGraphPort(credentials);
+
+    await expect(port.read("m1")).resolves.toMatchObject({ folder: "inbox" });
+  });
+});

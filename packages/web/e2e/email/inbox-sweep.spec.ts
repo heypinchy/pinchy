@@ -135,8 +135,13 @@ test.describe("Inbox Agent — the sweep dispatches with no manual trigger", () 
           return rows[0]?.status ?? "none";
         },
         {
+          // Two very different failures land here, so name both: "none" means the
+          // sweep never claimed the mail (boot wiring missing, or the port cannot
+          // reach GreenMail), while a terminal "failed" means it ran and the run
+          // or its report was rejected. Reporting only the first would send the
+          // next reader hunting for a scheduler bug that isn't there.
           message:
-            "the sweep never dispatched the seeded mail — check that server.ts starts it and that the port reaches GreenMail",
+            "the sweep never finished the seeded mail — a last status of `none` means it never claimed it (check that server.ts starts it and that the port reaches GreenMail); `failed` means the run itself was rejected (check the fake-Ollama report shape)",
           timeout: 120_000,
           intervals: [2000],
         }

@@ -108,7 +108,7 @@ export function createImapPort(credentials: unknown): EmailPort {
   /** Connect once, then select the folder only when it actually changes. */
   async function open(folder: string): Promise<ImapFlow> {
     if (!client) {
-      client = new ImapFlow({
+      const opening = new ImapFlow({
         host: creds.imapHost,
         port: creds.imapPort,
         secure: tlsModeForPort(creds.imapPort, creds.security).secure,
@@ -118,7 +118,12 @@ export function createImapPort(credentials: unknown): EmailPort {
         greetingTimeout: CONNECT_TIMEOUT_MS,
         socketTimeout: SOCKET_TIMEOUT_MS,
       });
-      await client.connect();
+      // Publish the client only once it is actually connected. A failed connect
+      // must leave the port exactly as it was: the sweep closes every port in a
+      // `finally`, and a cached half-open client would make that close log a
+      // bogus logout failure on top of the real error it already reported.
+      await opening.connect();
+      client = opening;
     }
     if (openFolder !== folder) {
       await client.mailboxOpen(folder);
@@ -135,12 +140,15 @@ export function createImapPort(credentials: unknown): EmailPort {
       // this is a coarse pre-filter. The sweep's own `sinceTs` watermark is what
       // actually bounds the window — this only keeps us from hydrating the
       // entire mailbox.
-      const since = opts.sinceDays
-        ? new Date(Date.now() - opts.sinceDays * 24 * 60 * 60_000)
-        : undefined;
+      // No window means every message, said explicitly: `{ since: undefined }`
+      // asks the search compiler to read an undefined-valued term as an absent
+      // one, which is a favour it does not owe us.
+      const query = opts.sinceDays
+        ? { since: new Date(Date.now() - opts.sinceDays * 24 * 60 * 60_000) }
+        : { all: true };
       // imapflow answers `false` (not an empty array) when the server rejects
       // the SEARCH — treat that as "nothing listed" rather than crashing on .map.
-      const uids = await imap.search({ since }, { uid: true });
+      const uids = await imap.search(query, { uid: true });
       const ids = (Array.isArray(uids) ? uids : []).map((uid) => ({ id: String(uid) }));
       // Keep the NEWEST when a limit applies: UIDs ascend with arrival, so the
       // tail is the most recent mail — the half a bounded pass should look at.

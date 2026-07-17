@@ -18,6 +18,29 @@ import type { EmailListItem, EmailPort, EmailReadResult } from "@/lib/email-work
 
 const DEFAULT_LABEL = "INBOX";
 
+/**
+ * Gmail's built-in labels, whose id IS their upper-cased name — which is the
+ * only reason upper-casing a folder ever worked as a labelId. A user-created
+ * label's id is an opaque `Label_17` instead, and its name is never a valid
+ * labelId, so anything outside this set has to be resolved over the wire.
+ */
+const SYSTEM_LABEL_IDS = new Set([
+  "INBOX",
+  "SENT",
+  "DRAFT",
+  "SPAM",
+  "TRASH",
+  "UNREAD",
+  "STARRED",
+  "IMPORTANT",
+  "CHAT",
+  "CATEGORY_PERSONAL",
+  "CATEGORY_SOCIAL",
+  "CATEGORY_PROMOTIONS",
+  "CATEGORY_UPDATES",
+  "CATEGORY_FORUMS",
+]);
+
 /** Same convention as the pinchy-email plugin's gmail adapter (E2E mock redirect). */
 function gmailBase(): string {
   return process.env.GMAIL_API_BASE_URL ?? "https://gmail.googleapis.com";
@@ -122,8 +145,47 @@ export function createGmailPort(credentials: unknown): EmailPort {
     return (await res.json()) as T;
   }
 
+  // What `search` last scoped to. `read` takes no folder argument, so without
+  // this the port would report the default for every message and a non-INBOX
+  // workflow's mail would all fail the filter's folder re-check — silently.
+  // The IMAP port gets this for free from its open mailbox; here it is explicit.
+  let searchedFolder: string | null = null;
+
+  // name (lower-cased) -> label id, fetched at most once per port. The port
+  // lives for one (workflow × connection) sweep unit, so this costs one extra
+  // round trip per unit that watches a user label, and none for system labels.
+  let labelIdsByName: Map<string, string> | null = null;
+
+  /** A folder name as Gmail's `labelIds` wants it: an id, not a name. */
+  async function resolveLabelId(folder: string): Promise<string> {
+    const upper = folder.toUpperCase();
+    if (SYSTEM_LABEL_IDS.has(upper)) return upper;
+
+    if (!labelIdsByName) {
+      const listed = await gmailGet<{ labels?: { id?: string; name?: string }[] }>(
+        "/users/me/labels"
+      );
+      labelIdsByName = new Map(
+        (listed.labels ?? [])
+          .filter((l): l is { id: string; name: string } => Boolean(l.id && l.name))
+          .map((l) => [l.name.toLowerCase(), l.id])
+      );
+    }
+
+    const id = labelIdsByName.get(folder.toLowerCase());
+    if (!id) {
+      // Never degrade to INBOX or to an unscoped search: a workflow watching a
+      // renamed or deleted label must surface as that workflow's `error` status,
+      // not quietly start acting on somebody else's mail.
+      throw new Error(`Gmail port: no label named "${folder}" in this mailbox`);
+    }
+    return id;
+  }
+
   return {
     async search(opts): Promise<EmailListItem[]> {
+      const folder = opts.folder ?? DEFAULT_LABEL;
+      searchedFolder = folder;
       const parts: string[] = [];
       // Scope the folder with labelIds, NEVER with `q`. Gmail's query language
       // only documents `in:trash`/`in:spam` for folder scoping; `label:INBOX`
@@ -132,7 +194,7 @@ export function createGmailPort(credentials: unknown): EmailPort {
       // SILENTLY EMPTY results, which for a sweep is the worst failure there is:
       // it reads as "nothing new" while the workflow looks perfectly healthy.
       // The pinchy-email plugin's adapter learned this the hard way.
-      parts.push(`labelIds=${encodeURIComponent((opts.folder ?? DEFAULT_LABEL).toUpperCase())}`);
+      parts.push(`labelIds=${encodeURIComponent(await resolveLabelId(folder))}`);
       if (opts.limit) parts.push(`maxResults=${encodeURIComponent(String(opts.limit))}`);
       if (opts.sinceDays) {
         // `q` carries only the time window — day granularity, a coarse
@@ -156,10 +218,10 @@ export function createGmailPort(credentials: unknown): EmailPort {
       const message = await gmailGet<GmailMessage>(
         `/users/me/messages/${encodeURIComponent(id)}?format=full`
       );
-      // Report the mailbox-level label rather than guessing from labelIds: the
-      // workflow's filter re-checks `folder` by name and the listing is scoped
-      // to it by construction.
-      return mapGmailMessage({ folder: DEFAULT_LABEL, message });
+      // The label this port searched, rather than guessing from the message's
+      // labelIds: the filter re-checks `folder` by name, and every id reaching
+      // `read` came from that scoped listing.
+      return mapGmailMessage({ folder: searchedFolder ?? DEFAULT_LABEL, message });
     },
   };
 }

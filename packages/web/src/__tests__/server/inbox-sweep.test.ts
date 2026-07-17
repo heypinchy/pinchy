@@ -133,4 +133,32 @@ describe("inbox sweep — scheduler wiring", () => {
     await vi.advanceTimersByTimeAsync(1000);
     expect(calls).toBe(2);
   });
+
+  it("a second start does not leak the first cadence", async () => {
+    // The timers live in module state, so a second start would overwrite the
+    // handles of the first — leaving an interval nobody holds a reference to,
+    // firing forever, un-stoppable, doubling every sweep's provider I/O. This is
+    // exactly the leak server.ts's comment cites as the reason the sweep is NOT
+    // hung off the gateway's `connected` event (which refires on every
+    // reconnect). Making start itself idempotent removes the footgun rather than
+    // relying on every future caller remembering it.
+    vi.useFakeTimers();
+    let calls = 0;
+    const runSweep = async (): Promise<void> => {
+      calls++;
+    };
+    startInboxSweep(runSweep, { intervalMs: 1000, startupDelayMs: 100 });
+    startInboxSweep(runSweep, { intervalMs: 1000, startupDelayMs: 100 });
+
+    await vi.advanceTimersByTimeAsync(100);
+    expect(calls).toBe(1); // one kick, not two
+
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(calls).toBe(2); // one interval, not two
+
+    // And a single stop really stops everything: nothing was orphaned.
+    stopInboxSweep();
+    await vi.advanceTimersByTimeAsync(5000);
+    expect(calls).toBe(2);
+  });
 });
