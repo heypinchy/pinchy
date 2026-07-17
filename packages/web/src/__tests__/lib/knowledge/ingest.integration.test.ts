@@ -16,7 +16,12 @@ import { and, eq } from "drizzle-orm";
 
 import { db } from "@/db";
 import { kbChunks, kbDocuments } from "@/db/schema";
-import { ingestDirectory, type IngestDeps, type IngestResult } from "@/lib/knowledge/ingest";
+import {
+  ingestDirectory,
+  ingestPaths,
+  type IngestDeps,
+  type IngestResult,
+} from "@/lib/knowledge/ingest";
 
 const ORG_ID = "org-kb-ingest-test";
 
@@ -435,4 +440,128 @@ it("keeps the last indexed version searchable when a file changes into one that 
   expect(docsAfter[0].id).toBe(docBefore.id);
   expect(docsAfter[0].contentHash).toBe(docBefore.contentHash);
   expect(await chunksFor(docBefore.id)).toHaveLength(chunksBefore.length);
+});
+
+// ── ingestPaths: many roots, one honest progress total ───────────────────
+
+/** Records every onProgress call so a test can assert the SEQUENCE, not just the final number — a bar that jumps 0 → done is not progress. */
+function progressRecorder() {
+  const seen: Array<{ processed: number; total: number }> = [];
+  return {
+    seen,
+    onProgress: (p: { processed: number; total: number }) => void seen.push({ ...p }),
+  };
+}
+
+function writePdf(dir: string, name: string, bytes = "fake-pdf-bytes") {
+  mkdirSync(dir, { recursive: true });
+  const p = join(dir, name);
+  writeFileSync(p, bytes);
+  return p;
+}
+
+it("publishes the discovery total before any file is processed, then counts up to it", async () => {
+  writePdf(tmpRoot, "a.pdf", "a");
+  writePdf(tmpRoot, "b.pdf", "b");
+  const { deps } = fakeDeps();
+  const { seen, onProgress } = progressRecorder();
+
+  const result = await ingestPaths(ORG_ID, [tmpRoot], deps, { onProgress });
+
+  expect(result).toEqual(counts({ indexed: 2 }));
+  // The total is known upfront (discovery walked every root before the first
+  // extract), so the first report already carries it. A total that grew as the
+  // run went would make the bar run backwards.
+  expect(seen).toEqual([
+    { processed: 0, total: 2 },
+    { processed: 1, total: 2 },
+    { processed: 2, total: 2 },
+  ]);
+});
+
+it("counts progress across all roots against one total instead of restarting per root", async () => {
+  const hr = join(tmpRoot, "hr");
+  const legal = join(tmpRoot, "legal");
+  writePdf(hr, "a.pdf", "a");
+  writePdf(legal, "b.pdf", "b");
+  writePdf(legal, "c.pdf", "c");
+  const { deps } = fakeDeps();
+  const { seen, onProgress } = progressRecorder();
+
+  const result = await ingestPaths(ORG_ID, [hr, legal], deps, { onProgress });
+
+  expect(result).toEqual(counts({ indexed: 3 }));
+  expect(seen).toEqual([
+    { processed: 0, total: 3 },
+    { processed: 1, total: 3 },
+    { processed: 2, total: 3 },
+    { processed: 3, total: 3 },
+  ]);
+});
+
+// An admin can grant both a parent and its child (/data and /data/hr) — the
+// permissions UI has no reason to forbid it. Discovery would then find the same
+// file under both roots: counted twice in the total, the bar would stop at 3/4,
+// and the file would be ingested twice (indexed, then skipped) inflating the
+// counts. One file on disk is one unit of work.
+it("counts a file reachable from two overlapping roots exactly once", async () => {
+  const hr = join(tmpRoot, "hr");
+  writePdf(hr, "shared.pdf", "shared");
+  const { deps, extractPdf } = fakeDeps();
+  const { seen, onProgress } = progressRecorder();
+
+  const result = await ingestPaths(ORG_ID, [tmpRoot, hr], deps, { onProgress });
+
+  expect(result).toEqual(counts({ indexed: 1 }));
+  expect(extractPdf).toHaveBeenCalledTimes(1);
+  expect(seen).toEqual([
+    { processed: 0, total: 1 },
+    { processed: 1, total: 1 },
+  ]);
+  expect(await db.select().from(kbDocuments).where(eq(kbDocuments.orgId, ORG_ID))).toHaveLength(1);
+});
+
+// Overlap must not make one root's removal pass delete the other's documents:
+// the passes stay per-root, so a document is only removed when it is gone from
+// the root it lives under.
+it("keeps a shared document when re-ingesting overlapping roots", async () => {
+  const hr = join(tmpRoot, "hr");
+  writePdf(hr, "shared.pdf", "shared");
+  const { deps } = fakeDeps();
+
+  await ingestPaths(ORG_ID, [tmpRoot, hr], deps);
+  const second = await ingestPaths(ORG_ID, [tmpRoot, hr], deps);
+
+  expect(second).toEqual(counts({ skipped: 1 }));
+  expect(await db.select().from(kbDocuments).where(eq(kbDocuments.orgId, ORG_ID))).toHaveLength(1);
+});
+
+it("still reports a total of zero for roots with nothing to ingest", async () => {
+  const { deps } = fakeDeps();
+  const { seen, onProgress } = progressRecorder();
+
+  const result = await ingestPaths(ORG_ID, [join(tmpRoot, "nope")], deps, { onProgress });
+
+  expect(result).toEqual(counts());
+  // Still one report: "0 of 0" is a finished run, and a caller that never hears
+  // anything cannot tell that apart from a run that never started.
+  expect(seen).toEqual([{ processed: 0, total: 0 }]);
+});
+
+// A file the run could not read still moved the run forward — progress measures
+// how much of the corpus is behind us, not how much of it succeeded.
+it("advances progress past a file that failed to extract", async () => {
+  writePdf(tmpRoot, "a-broken.pdf", "broken");
+  writePdf(tmpRoot, "b-good.pdf", "good");
+  const { deps } = fakeDeps();
+  (deps.extractPdf as ReturnType<typeof vi.fn>).mockImplementation(async (p: string) => {
+    if (p.endsWith("a-broken.pdf")) throw new Error("Invalid PDF structure");
+    return [{ page: 1, text: PAGE_1_TEXT }];
+  });
+  const { seen, onProgress } = progressRecorder();
+
+  const result = await ingestPaths(ORG_ID, [tmpRoot], deps, { onProgress });
+
+  expect(result).toEqual(counts({ indexed: 1, failed: 1 }));
+  expect(seen.at(-1)).toEqual({ processed: 2, total: 2 });
 });

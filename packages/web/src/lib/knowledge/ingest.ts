@@ -18,6 +18,11 @@
  * cannot be read or parsed counts as `failed` without taking the rest of the
  * run down with it.
  *
+ * ingestPaths() runs many roots as ONE job: discovery walks every root before
+ * the first extract, so the document total is known upfront and a file
+ * reachable from two overlapping roots counts once. ingestDirectory() is the
+ * single-root wrapper over it.
+ *
  * The embedder and PDF extractor are dependency-injected: production wires
  * `embedTexts` (./embeddings.ts) and a pdfjs-based extractor
  * (./pdf-extract.ts); tests inject deterministic fakes so the integration
@@ -41,11 +46,13 @@ import {
 } from "./exclude-globs";
 import { chunkPages } from "./chunk";
 import { detectLang } from "./lid";
+import type { IngestPage, IngestResult } from "./types";
 
-export interface IngestPage {
-  page: number;
-  text: string;
-}
+// IngestPage/IngestResult live in ./types (a runtime-free module) because
+// db/schema.ts persists IngestResult as a jsonb column and cannot import from
+// this file — it is what this file imports. Re-exported here so callers can
+// keep treating the ingest module as the contract's home.
+export type { IngestPage, IngestResult } from "./types";
 
 export interface IngestDeps {
   /** Batch-embeds chunk texts into dense vectors (bge-m3, 1024-dim). Prod: `(t) => embedTexts(t, embedCfg)`. */
@@ -57,25 +64,23 @@ export interface IngestDeps {
 export interface IngestOptions {
   /** Overrides the default extension allowlist (`[".pdf"]` for the MVP). */
   allowedExtensions?: readonly string[];
+  /**
+   * Called once with the discovery total before the first file is touched, then
+   * after every file. `total` never changes during a run.
+   *
+   * Deliberately called per file rather than on a timer: ingest reports what
+   * happened, and a caller that wants fewer writes (the index worker persists
+   * each report to Postgres) throttles in its own callback, where the cost of a
+   * write is known.
+   */
+  onProgress?: (progress: IngestProgress) => void | Promise<void>;
 }
 
-export interface IngestResult {
-  /** Documents newly indexed, replaced due to a content change, or recovered from a zero-chunk state — and searchable afterwards (at least one chunk). */
-  indexed: number;
-  /** Documents left untouched: unchanged content hash, chunks already present. */
-  skipped: number;
-  /** Documents deleted because their source file is no longer on disk. */
-  removed: number;
-  /**
-   * Files that parsed without error but yielded no chunks, so they are indexed
-   * yet can never be retrieved — an image-only scan with no text layer is the
-   * normal cause. Counted apart from `indexed` because the counts exist to
-   * answer "is the corpus findable?", and folding these into `indexed` reports
-   * a complete corpus while a slice of it silently answers nothing.
-   */
-  unsearchable: number;
-  /** Files skipped because reading or extracting THIS file threw (unreadable, corrupt). The run continues; see the per-file boundary in ingestDirectory. */
-  failed: number;
+export interface IngestProgress {
+  /** Files whose ingest is behind us — including the ones that failed. Progress measures how much of the corpus is done, not how much of it succeeded. */
+  processed: number;
+  /** Files discovered across every root, deduplicated. Known before the first file, so a bar built on it never runs backwards. */
+  total: number;
 }
 
 /** Applies the per-file eligibility rules (skip-hidden + A/B denylist + extension allowlist) to a basename. */
@@ -285,19 +290,89 @@ async function ingestFile(orgId: string, absPath: string, deps: IngestDeps): Pro
   return written > 0 ? "indexed" : "unsearchable";
 }
 
-export async function ingestDirectory(
+/**
+ * Deletes the documents previously indexed under `rootDir` whose source file is
+ * no longer on disk, and returns how many. Scoped to rootDir via isUnderRoot
+ * (separator-bounded for a directory root, exact-match for a file root) so
+ * ingesting one root never touches documents indexed from a different root for
+ * the same org.
+ *
+ * `discovered` is that root's OWN listing, not the run's deduplicated queue: two
+ * overlapping roots (an admin may grant both /data and /data/hr) each see the
+ * shared file in their own set, so neither pass deletes what the other covers.
+ *
+ * A file that vanishes between the walk and the read is still in `discovered`,
+ * so this pass leaves its document row alone for one run (it counts as `failed`
+ * instead); the next run no longer discovers it and removes it here. Erring
+ * toward keeping the row beats deleting on a transient read failure.
+ */
+async function removeVanishedDocuments(
   orgId: string,
   rootDir: string,
+  discovered: ReadonlySet<string>
+): Promise<number> {
+  const existingForOrg = await db.select().from(kbDocuments).where(eq(kbDocuments.orgId, orgId));
+
+  let removed = 0;
+  for (const doc of existingForOrg) {
+    if (!isUnderRoot(doc.sourcePath, rootDir)) continue;
+    if (discovered.has(doc.sourcePath)) continue;
+    await db.delete(kbDocuments).where(eq(kbDocuments.id, doc.id));
+    removed++;
+  }
+  return removed;
+}
+
+/**
+ * Ingests every root in one run, reporting progress against a single total.
+ *
+ * Discovery walks all roots FIRST, for two reasons: the total has to be known
+ * before the first file so a progress bar can't run backwards, and a file
+ * reachable from two overlapping roots (an admin may grant both `/data` and
+ * `/data/hr`) is one unit of work — ingesting it twice would inflate `skipped`
+ * and stall the bar one short of its total.
+ *
+ * The removal pass stays per-root and keeps that root's OWN discovered set, so
+ * overlap never lets one root's pass delete a document the other root still
+ * covers.
+ */
+export async function ingestPaths(
+  orgId: string,
+  rootDirs: readonly string[],
   deps: IngestDeps,
   opts: IngestOptions = {}
 ): Promise<IngestResult> {
   const allowedExtensions = opts.allowedExtensions ?? DEFAULT_ALLOWED_EXTENSIONS;
-  const discovered = await discoverFiles(rootDir, allowedExtensions);
+
+  const perRoot: Array<{ rootDir: string; discovered: Set<string> }> = [];
+  for (const rootDir of rootDirs) {
+    perRoot.push({ rootDir, discovered: new Set(await discoverFiles(rootDir, allowedExtensions)) });
+  }
+
+  // Deduplicated across roots, but ordered so each file is ingested while its
+  // first root is being processed — the order only matters for readability of
+  // the progress stream, not for correctness.
+  const queue: string[] = [];
+  const seen = new Set<string>();
+  for (const { discovered } of perRoot) {
+    for (const absPath of discovered) {
+      if (seen.has(absPath)) continue;
+      seen.add(absPath);
+      queue.push(absPath);
+    }
+  }
 
   const tally: Record<FileOutcome, number> = { indexed: 0, skipped: 0, unsearchable: 0 };
   let failed = 0;
+  let processed = 0;
+  const total = queue.length;
 
-  for (const absPath of discovered) {
+  // Reported before any work: "0 of N" is what tells a caller the run started
+  // and how big it is. A caller that hears nothing until the first file lands
+  // cannot tell a slow run from a dead one.
+  await opts.onProgress?.({ processed, total });
+
+  for (const absPath of queue) {
     try {
       tally[await ingestFile(orgId, absPath, deps)]++;
     } catch (err) {
@@ -313,29 +388,24 @@ export async function ingestDirectory(
       console.error(`[kb-ingest] ${err.message}`, err.cause);
       failed++;
     }
+    processed++;
+    await opts.onProgress?.({ processed, total });
   }
 
-  // Removal pass: any previously-indexed document under this root whose
-  // source file is no longer among the discovered files. Scoped to rootDir
-  // via isUnderRoot (separator-bounded for a directory root, exact-match for
-  // a file root) so ingesting one root never touches documents indexed from a
-  // different root for the same org.
-  //
-  // A file that vanishes between the walk and the read is still in
-  // `discovered`, so this pass leaves its document row alone for one run (it
-  // counts as `failed` above); the next run no longer discovers it and
-  // removes it here. Erring toward keeping the row beats deleting on a
-  // transient read failure.
-  const discoveredSet = new Set(discovered);
-  const existingForOrg = await db.select().from(kbDocuments).where(eq(kbDocuments.orgId, orgId));
-
   let removed = 0;
-  for (const doc of existingForOrg) {
-    if (!isUnderRoot(doc.sourcePath, rootDir)) continue;
-    if (discoveredSet.has(doc.sourcePath)) continue;
-    await db.delete(kbDocuments).where(eq(kbDocuments.id, doc.id));
-    removed++;
+  for (const { rootDir, discovered } of perRoot) {
+    removed += await removeVanishedDocuments(orgId, rootDir, discovered);
   }
 
   return { ...tally, removed, failed };
+}
+
+/** Ingests a single root. Thin wrapper over ingestPaths — kept because most callers and tests deal in one directory at a time. */
+export async function ingestDirectory(
+  orgId: string,
+  rootDir: string,
+  deps: IngestDeps,
+  opts: IngestOptions = {}
+): Promise<IngestResult> {
+  return ingestPaths(orgId, [rootDir], deps, opts);
 }
