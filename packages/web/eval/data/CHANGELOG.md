@@ -3,8 +3,9 @@
 Semantic versions of the published dataset (`packages/web/eval/data`), the open
 source-of-truth behind every reliability number we publish (pinchy#669). The
 version lives in `../dataset-version.ts` and is pinned to the newest entry here
-by `../__tests__/dataset-version.test.ts` — a data change that skips this file
-fails CI.
+by `../__tests__/dataset-version.test.ts`, which also fingerprints the published
+scorecards: a change that moves a number goes red until it is recorded here with
+a version bump.
 
 Versioning rule:
 
@@ -40,6 +41,11 @@ because a published number that changed under a grader fix must be traceable:
 - **Coverage — top-ups (2026-07-15)**: the `rejected` 5-model top-up and the
   `silent` invalid-trial re-runs (gpt-oss:20b, minimax-m3, gpt-oss:120b,
   gemma4:31b) that restored every cell to n=12.
+- **Metadata — contamination canary** (#794): every `.jsonl` and
+  `.trajectories.jsonl` here gained a canary GUID as its first line. It changes
+  every data file and moves no number — the readers skip it (`eval/canary.ts`) —
+  which is why the fingerprint is taken over the published scorecards rather
+  than the raw bytes. Recorded because a reader diffing these files will see it.
 
 See `README.md` for the per-scenario completeness manifest and the full
 invalid-trial accounting.

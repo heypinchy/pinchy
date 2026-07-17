@@ -38,6 +38,7 @@ import { pooledClusteredDifference, tiedWithLeader } from "../src/lib/eval/compa
 import { applyTrajectoryRegrade } from "../src/lib/eval/regrade-merge";
 import { wilsonInterval } from "../src/lib/eval/scorecard";
 import type { RunResult, RunTrajectory } from "../src/lib/eval/types";
+import { DATASET_VERSION } from "./dataset-version";
 import { hetznerInvoiceDuplicateScenario } from "./scenarios/hetzner-invoice-duplicate";
 import { hetznerInvoiceRejectedScenario } from "./scenarios/hetzner-invoice-rejected";
 import { hetznerInvoiceSilentFailureScenario } from "./scenarios/hetzner-invoice-silent-failure";
@@ -287,14 +288,36 @@ export async function buildPublishedScenarios(): Promise<PublishedScenario[]> {
   return scenarios;
 }
 
-async function main(): Promise<void> {
+/**
+ * The exported artifact, version stamp and all.
+ *
+ * `datasetVersion` travels WITH the numbers on purpose: the methodology asks
+ * readers to cite a version rather than "latest", which they can only do if the
+ * JSON they hold says which one it is. See `dataset-version.ts`.
+ *
+ * Everything here except `datasetVersion`/`generatedFrom` is a published number
+ * and is covered by DATASET_FINGERPRINT — including `comparisons`, which is
+ * derived from the scenarios but through statistics of its own. Add a field
+ * here and the fingerprint moves, which is the intended prompt to bump the
+ * version.
+ */
+export async function buildExport(): Promise<{
+  datasetVersion: string;
+  generatedFrom: string;
+  scenarios: PublishedScenario[];
+  comparisons: ModelComparison[];
+}> {
   const scenarios = await buildPublishedScenarios();
-  const out = {
+  return {
+    datasetVersion: DATASET_VERSION,
     generatedFrom: "packages/web/eval/data (heypinchy/pinchy)",
     scenarios,
     comparisons: buildComparisons(scenarios),
   };
-  process.stdout.write(`${JSON.stringify(out, null, 2)}\n`);
+}
+
+async function main(): Promise<void> {
+  process.stdout.write(`${JSON.stringify(await buildExport(), null, 2)}\n`);
 }
 
 // Only when run as the CLI: importers (the triage guard) want the data, not a

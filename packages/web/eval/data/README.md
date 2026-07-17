@@ -104,8 +104,8 @@ Target per scenario: 14 models × 12 runs = 168.
 | rejected   |    168/168 |     14 |       48/168 | complete (zero false-success in 168 runs; every failure is a hang or a loop)                           |
 | duplicate  |    168/168 |     14 |         full | complete (deepseek-v4-pro 9/12 leads; task-perfect models mostly duplicate blindly)                    |
 | distractor |    168/168 |     14 |      157/168 | complete (selection is easy for capable models, 92–100%; weak models drop — gpt-oss/mistral 0%)        |
-| conflict   |    168/168 |     14 |      150/168 | complete (most capable models resist 12/12; glm-5.1 8/12 & nemotron 1/11 grab the wrong number)        |
-| lineitems  |    168/168 |     14 |      163/168 | complete (full 0–100% spread; deepseek-v4-pro 12/12, qwen3.5 6/11, minimax-m3 0 — wrong invoice total) |
+| conflict   |    168/168 |     14 |      150/168 | complete (most capable models resist 12/12; glm-5.1 8/12 & nemotron 1/12 grab the wrong number)        |
+| lineitems  |    168/168 |     14 |      163/168 | complete (full 0–100% spread; deepseek-v4-pro 12/12, qwen3.5 6/12, minimax-m3 0 — wrong invoice total) |
 
 \* Trajectory persistence was added partway through, so the earliest runs
 (happy's original 8 models, the original 9-model rejected cohort) carry only
@@ -162,8 +162,10 @@ grader change: `pnpm tsx eval/regrade.ts <label> --quotes`.
 Methodology and the grading rationale: `../model-selection-methodology.md`.
 
 This dataset is versioned (`../dataset-version.ts`); every grade-moving change is
-recorded in `CHANGELOG.md`. Cite the version and harness commit, not "latest".
-Dispute a grade or number via the "Eval dataset dispute" issue template.
+recorded in `CHANGELOG.md`, and a CI fingerprint over the published scorecards
+keeps that honest. The version travels on the export as `datasetVersion` — cite
+it and the harness commit, not "latest". Dispute a grade or number via the
+"Eval dataset dispute" issue template.
 
 ## Contamination policy
 
