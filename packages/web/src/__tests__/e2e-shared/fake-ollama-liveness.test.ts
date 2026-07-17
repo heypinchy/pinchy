@@ -27,7 +27,7 @@ import {
   readDelayOverride,
   FAKE_OLLAMA_LIVENESS_SLOW_TRIGGER,
   FAKE_OLLAMA_LIVENESS_SLOW_RESPONSE,
-  FAKE_OLLAMA_LIVENESS_SLOW_DELAY_MS,
+  FAKE_OLLAMA_LIVENESS_SLOW_DEFAULT_DELAY_MS,
   FAKE_OLLAMA_LIVENESS_DYING_TRIGGER,
   FAKE_OLLAMA_LIVENESS_DYING_PARTIAL,
 } from "../../../e2e/shared/fake-ollama/fake-ollama-server";
@@ -36,8 +36,8 @@ import {
  * The stall this file drives the dispatcher with, via the server's env
  * override.
  *
- * The real trigger stalls FAKE_OLLAMA_LIVENESS_SLOW_DELAY_MS (18 s) so the E2E
- * banner spec has something to engage on. Sitting through that here bought
+ * The real trigger stalls FAKE_OLLAMA_LIVENESS_SLOW_DEFAULT_DELAY_MS (18 s) so
+ * the E2E banner spec has something to engage on. Sitting through that here bought
  * nothing — these cases assert trigger selection and wire shape, and both are
  * identical at any stall — while costing 49 s, a third of the file time of
  * `pnpm test` and therefore of every merge's required `quality` check.
@@ -69,9 +69,9 @@ let previousOverride: string | undefined;
 let previousStreamOverride: string | undefined;
 
 beforeEach(async () => {
-  previousOverride = process.env.FAKE_OLLAMA_LIVENESS_SLOW_DELAY_MS;
+  previousOverride = process.env.FAKE_OLLAMA_LIVENESS_SLOW_DELAY_MS_OVERRIDE;
   previousStreamOverride = process.env.FAKE_OLLAMA_SLOW_STREAM_DELAY_MS_OVERRIDE;
-  process.env.FAKE_OLLAMA_LIVENESS_SLOW_DELAY_MS = String(TEST_STALL_MS);
+  process.env.FAKE_OLLAMA_LIVENESS_SLOW_DELAY_MS_OVERRIDE = String(TEST_STALL_MS);
   process.env.FAKE_OLLAMA_SLOW_STREAM_DELAY_MS_OVERRIDE = String(TEST_STREAM_DELAY_MS);
   server = http.createServer(handleRequest);
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
@@ -80,8 +80,9 @@ beforeEach(async () => {
 });
 
 afterEach(async () => {
-  if (previousOverride === undefined) delete process.env.FAKE_OLLAMA_LIVENESS_SLOW_DELAY_MS;
-  else process.env.FAKE_OLLAMA_LIVENESS_SLOW_DELAY_MS = previousOverride;
+  if (previousOverride === undefined)
+    delete process.env.FAKE_OLLAMA_LIVENESS_SLOW_DELAY_MS_OVERRIDE;
+  else process.env.FAKE_OLLAMA_LIVENESS_SLOW_DELAY_MS_OVERRIDE = previousOverride;
   if (previousStreamOverride === undefined)
     delete process.env.FAKE_OLLAMA_SLOW_STREAM_DELAY_MS_OVERRIDE;
   else process.env.FAKE_OLLAMA_SLOW_STREAM_DELAY_MS_OVERRIDE = previousStreamOverride;
@@ -189,7 +190,7 @@ describe("fake-ollama liveness SLOW trigger", () => {
   // banner: the run completes before the hint ever fires, the spec's other
   // assertions still pass, and the regression it guards ships unnoticed.
   it("stalls past the client's delay hint, so the 'taking longer' banner engages", () => {
-    expect(FAKE_OLLAMA_LIVENESS_SLOW_DELAY_MS).toBeGreaterThan(DELAY_HINT_MS);
+    expect(FAKE_OLLAMA_LIVENESS_SLOW_DEFAULT_DELAY_MS).toBeGreaterThan(DELAY_HINT_MS);
   });
 });
 

@@ -170,13 +170,20 @@ const LIVENESS_SLOW_DELAY_MS = 18000;
  * So the unit test overrides this to a few hundred ms and still drives the same
  * dispatcher branch and asserts the same wire shape, while a separate instant
  * assertion pins the real 18 s against the client threshold. Nothing in the E2E
- * path sets the variable, so the Docker stacks keep the real value.
+ * path sets FAKE_OLLAMA_LIVENESS_SLOW_DELAY_MS_OVERRIDE — no compose file,
+ * workflow or script — so the Docker stacks keep the real value. The `_OVERRIDE`
+ * suffix is not decoration: without it the variable would be spelled exactly
+ * like the exported FAKE_OLLAMA_LIVENESS_SLOW_*_DELAY_MS constant, and a grep
+ * for either would land on both.
  *
  * Read per request, not at module load: the test toggles it between cases, and
  * an ESM module-level read would freeze whatever was set at first import.
  */
 function livenessSlowDelayMs(): number {
-  return readDelayOverride(process.env.FAKE_OLLAMA_LIVENESS_SLOW_DELAY_MS, LIVENESS_SLOW_DELAY_MS);
+  return readDelayOverride(
+    process.env.FAKE_OLLAMA_LIVENESS_SLOW_DELAY_MS_OVERRIDE,
+    LIVENESS_SLOW_DELAY_MS
+  );
 }
 
 // DYING: simulates a provider/stream failure. On the OpenAI-completions surface
@@ -1877,7 +1884,11 @@ export const FAKE_OLLAMA_LIVENESS_SLOW_TRIGGER = LIVENESS_SLOW_TRIGGER;
 export const FAKE_OLLAMA_LIVENESS_SLOW_RESPONSE = LIVENESS_SLOW_RESPONSE;
 export const FAKE_OLLAMA_MULTI_DEVICE_TRIGGER = MULTI_DEVICE_TRIGGER;
 export const FAKE_OLLAMA_MULTI_DEVICE_RESPONSE = MULTI_DEVICE_RESPONSE;
-export const FAKE_OLLAMA_LIVENESS_SLOW_DELAY_MS = LIVENESS_SLOW_DELAY_MS;
+// DEFAULT, not "applied" — same contract as the slow-stream export above, and
+// named that way for the same reason. This one earns it hardest: the in-process
+// liveness test is the only caller that overrides a delay at all, so a name
+// promising the applied value would be wrong precisely where it is read.
+export const FAKE_OLLAMA_LIVENESS_SLOW_DEFAULT_DELAY_MS = LIVENESS_SLOW_DELAY_MS;
 export const FAKE_OLLAMA_LIVENESS_DYING_TRIGGER = LIVENESS_DYING_TRIGGER;
 export const FAKE_OLLAMA_LIVENESS_DYING_PARTIAL = LIVENESS_DYING_PARTIAL;
 // Transient provider-error triggers (durable agent-error banner).
