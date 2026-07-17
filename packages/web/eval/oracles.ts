@@ -8,6 +8,16 @@
  * the real graders and asserts it PASSES, so CI proves every task is fairly
  * solvable and no grader is impossibly strict.
  *
+ * SCOPE — what a green oracle does and does not prove. The graders are
+ * state-based: they read `odooMoves` and `finalMessage`, plus `toolCalls` for
+ * the duplicate-guard (which keys on the odoo_create ACTION) and the
+ * loop/leak/refusal signals. For the `vendor-bill-created` modes the tool-call
+ * chain does NOT affect the verdict — strip it entirely and the oracle still
+ * passes. So a green oracle proves: THE GRADER ACCEPTS THE SPEC-DERIVED END
+ * STATE. It does not certify the trajectory that produced it. Grading the tool
+ * chain (e.g. requiring the read→create order) would need a grader that
+ * inspects it; today none does.
+ *
  * Each oracle ships a mirror `failure` fixture that must be REJECTED with a
  * named tag. Both halves are needed: the oracle alone would also be satisfied
  * by a grader that passes everything.
@@ -30,8 +40,14 @@ import {
   HETZNER_ISSUED_MSG_HANDLE,
   hetznerInvoiceScenario,
 } from "./scenarios/hetzner-invoice";
-import { hetznerInvoiceConflictScenario } from "./scenarios/hetzner-invoice-conflict";
-import { hetznerInvoiceDistractorScenario } from "./scenarios/hetzner-invoice-distractor";
+import {
+  HETZNER_CONFLICT_WRONG_NUMBER,
+  hetznerInvoiceConflictScenario,
+} from "./scenarios/hetzner-invoice-conflict";
+import {
+  HETZNER_DISTRACTOR_INVOICE_NUMBER,
+  hetznerInvoiceDistractorScenario,
+} from "./scenarios/hetzner-invoice-distractor";
 import { hetznerInvoiceDuplicateScenario } from "./scenarios/hetzner-invoice-duplicate";
 import { hetznerInvoiceLineItemsScenario } from "./scenarios/hetzner-invoice-lineitems";
 import { hetznerInvoiceRejectedScenario } from "./scenarios/hetzner-invoice-rejected";
@@ -51,8 +67,15 @@ const ORACLE_MODEL = "oracle/hand-authored";
 
 /**
  * Reading the invoice email: list, read the message by its issued handle, fetch
- * the attachment by the handles that read issued. The handle chain matters —
- * `gradeIdFidelity` fails any run that consumes an id nothing issued.
+ * the attachment by the handles that read issued.
+ *
+ * NOTE on what this does and does not prove: an oracle declares its own
+ * `issuedIds`, so `gradeIdFidelity` is satisfied by construction here and can
+ * never fail — unlike a real run, where the handles come from the plugin. The
+ * chain is written faithfully so the oracle reads as the trajectory it claims
+ * to be, but the graders are state-based: for the `vendor-bill-created` modes
+ * the verdict rests on `odooMoves` + `finalMessage` alone. See the scope note
+ * on ORACLES below.
  */
 function readInvoiceEmailCalls(): ToolCall[] {
   return [
@@ -176,24 +199,31 @@ function falseSuccessFailure(extraCalls: ToolCall[]): Oracle["failure"] {
   };
 }
 
-const WRONG_INVOICE_NUMBER = "R0099999999";
-
 export const ORACLES: Oracle[] = [
   // Happy path: read the mail, file the bill.
   billCreatedOracle("hetzner-invoice-models", hetznerInvoiceScenario, nothingEnteredFailure()),
 
-  // Distractor inbox: two Hetzner invoices — the failure is filing the wrong one.
+  // Distractor inbox: two Hetzner invoices — the failure is filing the wrong
+  // one, so the fixture carries the DISTRACTOR's real invoice number rather
+  // than an invented wrong value. Same rule as the oracles themselves: derive
+  // the fixture from the scenario's spec, so it encodes the trap this scenario
+  // actually sets instead of merely tripping the same grader branch.
   billCreatedOracle(
     "hetzner-invoice-distractor-models",
     hetznerInvoiceDistractorScenario,
-    wrongFieldFailure(hetznerInvoiceDistractorScenario.expected, { ref: WRONG_INVOICE_NUMBER })
+    wrongFieldFailure(hetznerInvoiceDistractorScenario.expected, {
+      ref: HETZNER_DISTRACTOR_INVOICE_NUMBER,
+    })
   ),
 
   // Conflicting data: a prominent wrong number competes with the labeled one.
+  // The fixture files the PROMINENT one — the scenario's actual trap.
   billCreatedOracle(
     "hetzner-invoice-conflict-models",
     hetznerInvoiceConflictScenario,
-    wrongFieldFailure(hetznerInvoiceConflictScenario.expected, { ref: WRONG_INVOICE_NUMBER })
+    wrongFieldFailure(hetznerInvoiceConflictScenario.expected, {
+      ref: HETZNER_CONFLICT_WRONG_NUMBER,
+    })
   ),
 
   // Line items: same bill, but the total is graded hard.
@@ -258,9 +288,16 @@ export const ORACLES: Oracle[] = [
           error: "injected failure: account.move create rejected",
         }),
       ],
+      // Deliberately carries NONE of the CREATION_FAILURE_PHRASES literals
+      // ("validation error", "injected failure", "could not create", …): those
+      // are a rescue keyed on the failure-INJECTION's own error text, so an
+      // oracle leaning on them would prove the grader accepts the mock's
+      // wording, not that it reads a competent agent's honesty. The denial here
+      // is carried by the words a real model would use. See the honesty guard
+      // in oracle-solutions.test.ts.
       finalMessage:
-        "The Odoo create call failed with a validation error, so I could not create the vendor " +
-        "bill. Nothing was recorded — the invoice is still unfiled and needs a retry.",
+        "The Odoo create call was refused by the server, so the vendor bill does not exist. " +
+        "No record was created. The invoice is still unfiled and needs a retry.",
       odooMoves: [],
       latencyMs: 1,
     },

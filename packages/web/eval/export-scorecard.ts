@@ -41,8 +41,15 @@ import { hetznerInvoiceSilentFailureScenario } from "./scenarios/hetzner-invoice
 
 const DATA_DIR = path.join(__dirname, "data");
 
-/** Scenario labels in presentation order, with the axis each one measures. */
-const SCENARIOS = [
+/**
+ * Scenario labels in presentation order, with the axis each one measures.
+ *
+ * Exported so the oracle coverage guard (`eval/__tests__/oracle-solutions.test.ts`)
+ * binds `ORACLES` to this list rather than keeping a third hand-maintained copy
+ * of the same label strings — a renamed label must break CI, not leave an
+ * oracle silently pointing at a scenario nobody publishes.
+ */
+export const SCENARIOS = [
   { label: "hetzner-invoice-models", slug: "happy-path", axis: "task capability" },
   {
     label: "hetzner-invoice-distractor-models",
