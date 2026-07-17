@@ -184,6 +184,82 @@ describe("embedTexts", () => {
       [1, 2, 3],
     ]);
   });
+
+  // Ingest embeds a whole document's chunks in ONE embedTexts() call
+  // (ingest.ts: `deps.embed(chunks.map(c => c.text))`). A large PDF produces
+  // hundreds of chunks; sending them all in a single unbounded POST is what
+  // took the reindex down at document 117 (a 342-page PDF) with `fetch failed`.
+  // embedTexts must split the input into bounded, sequential requests.
+  it("splits a large input into sequential batches of at most batchSize and concatenates in order", async () => {
+    // Echo each input's length as a length-1 vector so order is verifiable.
+    vi.mocked(fetch).mockImplementation(async (_url, init) => {
+      const body = JSON.parse((init?.body as string) ?? "{}");
+      const embeddings = (body.input as string[]).map((t) => [t.length]);
+      return new Response(JSON.stringify({ embeddings }), { status: 200 });
+    });
+
+    const result = await embedTexts(["a", "bb", "ccc", "dddd", "eeeee"], {
+      baseUrl: "http://ollama:11434",
+      batchSize: 2,
+    });
+
+    const calls = vi.mocked(fetch).mock.calls;
+    expect(calls).toHaveLength(3); // ceil(5 / 2)
+    const inputsPerCall = calls.map(
+      ([, init]) => JSON.parse((init?.body as string) ?? "{}").input as string[]
+    );
+    expect(inputsPerCall).toEqual([["a", "bb"], ["ccc", "dddd"], ["eeeee"]]);
+    expect(inputsPerCall.every((input) => input.length <= 2)).toBe(true);
+    // Concatenated in the original order, not per-batch-scrambled.
+    expect(result).toEqual([[1], [2], [3], [4], [5]]);
+  });
+
+  it("caps the batch size by default instead of sending one unbounded request", async () => {
+    vi.mocked(fetch).mockImplementation(async (_url, init) => {
+      const body = JSON.parse((init?.body as string) ?? "{}");
+      const embeddings = (body.input as string[]).map(() => [1]);
+      return new Response(JSON.stringify({ embeddings }), { status: 200 });
+    });
+
+    const texts = Array.from({ length: 200 }, (_, i) => `chunk-${i}`);
+    const result = await embedTexts(texts, { baseUrl: "http://ollama:11434" });
+
+    const calls = vi.mocked(fetch).mock.calls;
+    // Pins the default (32): a change to it is a deliberate one-line edit here,
+    // not a silent widening. 200 inputs => ceil(200 / 32) = 7 requests.
+    expect(calls).toHaveLength(7);
+    for (const [, init] of calls) {
+      const input = JSON.parse((init?.body as string) ?? "{}").input as string[];
+      expect(input.length).toBeLessThanOrEqual(32);
+    }
+    expect(result).toHaveLength(200);
+  });
+
+  it("returns [] without calling fetch for an empty input", async () => {
+    await expect(embedTexts([], { baseUrl: "http://ollama:11434" })).resolves.toEqual([]);
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it("aborts a stalled request and throws a clear timeout error instead of hanging forever", async () => {
+    // A wedged Ollama connection otherwise stalls the whole reindex with no
+    // upper bound. embedTexts must pass an AbortSignal and surface the abort
+    // as a timeout error, not a silent hang.
+    vi.mocked(fetch).mockImplementation(
+      (_url, init) =>
+        new Promise((_resolve, reject) => {
+          (init?.signal as AbortSignal).addEventListener("abort", () => {
+            reject(new DOMException("The operation was aborted", "AbortError"));
+          });
+        })
+    );
+
+    await expect(
+      embedTexts(["hallo"], { baseUrl: "http://ollama:11434", timeoutMs: 20 })
+    ).rejects.toThrow(/timed out/i);
+
+    const [, init] = vi.mocked(fetch).mock.calls[0];
+    expect(init?.signal).toBeInstanceOf(AbortSignal);
+  });
 });
 
 describe("embedTexts (provider: local, node-llama-cpp mocked)", () => {
