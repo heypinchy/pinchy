@@ -705,13 +705,22 @@ function countToolResults(messages: unknown[]): number {
 // Wire form of an integration ref (integration-ref.ts PREFIX `pinchy_ref:v1:`
 // + base64url payload). Kept local — this server is copied into a standalone
 // container and must not import the plugin.
-const PINCHY_REF_RE = /pinchy_ref:v1:[A-Za-z0-9_-]+/;
+//
+// ANCHORED TO THE `_pinchy_ref` KEY on purpose. An odoo_read result is not a
+// flat record: the plugin appends `company_id` to the requested fields
+// (augmentFieldsWithCompanyId) and wraps every many2one as `{ref, label}` — a
+// ref to the RELATED model (res.company, res.partner). Those nested refs are
+// serialized BEFORE the record's own `_pinchy_ref`, so an unanchored
+// `pinchy_ref:v1:…` match would hand a res.company ref to the tool under test
+// (odoo_reconcile rejected exactly that: "`invoice` must be an account.move
+// ref"). Only the record's OWN `_pinchy_ref` is the record handle.
+const PINCHY_REF_RE = /"_pinchy_ref"\s*:\s*"(pinchy_ref:v1:[A-Za-z0-9_-]+)"/;
 
 /**
- * Every `_pinchy_ref` token in the CURRENT round's tool-result messages — one
- * per tool-result message, in order. Scoped to `lastRoundMessages` so a stale
- * ref from an earlier round in a shared session can't leak in. Multi-ref tools
- * (odoo_reconcile: invoice + counterpart, minted by two separate odoo_read
+ * Every record's own `_pinchy_ref` in the CURRENT round's tool-result messages —
+ * one per tool-result message, in order. Scoped to `lastRoundMessages` so a
+ * stale ref from an earlier round in a shared session can't leak in. Multi-ref
+ * tools (odoo_reconcile: invoice + counterpart, minted by two separate odoo_read
  * rounds) rely on the positional order: refs[0] is the first read's ref, etc.
  */
 export function extractPinchyRefsInOrder(messages: unknown[]): string[] {
@@ -719,7 +728,7 @@ export function extractPinchyRefsInOrder(messages: unknown[]): string[] {
   for (const message of lastRoundMessages(messages)) {
     if (!hasToolRole(message)) continue;
     const match = messageContent(message).match(PINCHY_REF_RE);
-    if (match) refs.push(match[0]);
+    if (match) refs.push(match[1]);
   }
   return refs;
 }

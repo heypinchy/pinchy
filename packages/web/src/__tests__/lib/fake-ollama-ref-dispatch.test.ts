@@ -207,6 +207,38 @@ describe("extractPinchyRefsInOrder", () => {
     ];
     expect(extractPinchyRefsInOrder(messages)).toEqual([REF_A, REF_B]);
   });
+
+  // Regression (pinchy#791, caught by the odoo-e2e reconcile probe): odoo_read
+  // does NOT return flat records. `augmentFieldsWithCompanyId` silently appends
+  // `company_id` to the requested fields, and wrapReadResult wraps every
+  // many2one as `{ref, label}` — a ref to the RELATED model (res.company,
+  // res.partner). Those nested refs are serialized BEFORE the record's own
+  // `_pinchy_ref`, so grabbing the first `pinchy_ref:v1:` token in the message
+  // yields a res.company ref and the tool rejects it ("`invoice` must be an
+  // account.move ref"). Only the record's OWN `_pinchy_ref` is the record handle.
+  it("takes the record's own _pinchy_ref, not a nested many2one ref that precedes it", () => {
+    const companyRef = "pinchy_ref:v1:COMPANY-res_company_1";
+    const partnerRef = "pinchy_ref:v1:PARTNER-res_partner_1";
+    const messages = [
+      { role: "user", content: "E2E trigger" },
+      {
+        role: "tool",
+        content: JSON.stringify({
+          records: [
+            {
+              id: 9601,
+              name: "BILL/E2E-0001",
+              // Nested m2o refs come first in the serialized record.
+              company_id: { ref: companyRef, label: "Helmcraft GmbH" },
+              partner_id: { ref: partnerRef, label: "Müller GmbH" },
+              _pinchy_ref: REF_A,
+            },
+          ],
+        }),
+      },
+    ];
+    expect(extractPinchyRefsInOrder(messages)).toEqual([REF_A]);
+  });
 });
 
 // The DUAL-read shape (odoo_reconcile: read account.move, read account.payment,
