@@ -62,3 +62,15 @@ export type ProcessedEmailStatus = (typeof PROCESSED_EMAIL_STATUSES)[number];
 // callers can't write an out-of-domain status.
 export const NOTIFICATION_STATUSES = ["success", "failure"] as const;
 export type NotificationStatus = (typeof NOTIFICATION_STATUSES)[number];
+
+// Knowledge-base async reindex (#714). Lifecycle of one kb_index_jobs row.
+// `pending` and `running` are the ACTIVE states: the partial unique index in
+// schema.ts is defined over exactly this pair, so adding a state here without
+// deciding whether it blocks a new enqueue would silently change how many
+// index runs an org can have in flight. Enforced at the DB with a CHECK
+// constraint so the worker and the route can't write an out-of-domain status.
+export const KB_INDEX_JOB_STATUSES = ["pending", "running", "succeeded", "failed"] as const;
+export type KbIndexJobStatus = (typeof KB_INDEX_JOB_STATUSES)[number];
+
+/** The states in which a job still owns the org's index — see the partial unique index `uq_kb_index_jobs_active`. */
+export const KB_INDEX_JOB_ACTIVE_STATUSES = ["pending", "running"] as const;

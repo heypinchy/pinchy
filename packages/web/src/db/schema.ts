@@ -36,8 +36,12 @@ import {
   type ProcessedEmailStatus,
   NOTIFICATION_STATUSES,
   type NotificationStatus,
+  KB_INDEX_JOB_STATUSES,
+  KB_INDEX_JOB_ACTIVE_STATUSES,
+  type KbIndexJobStatus,
 } from "./enums";
 import type { EmailWorkflowFilter, ProcessedEmailOutcome } from "@/lib/email-workflows/types";
+import type { IngestResult } from "@/lib/knowledge/ingest";
 import { vector } from "./vector";
 
 // Render `IN ('a', 'b')` from an enum const (db/enums.ts) so a CHECK constraint
@@ -921,5 +925,62 @@ export const kbChunks = pgTable(
   (t) => [
     index("idx_kb_chunks_doc").on(t.documentId),
     index("idx_kb_chunks_org_path").on(t.orgId, t.sourcePath),
+  ]
+);
+
+// kb_index_jobs is the queue behind the async reindex (#714): the admin route
+// enqueues a row, an in-process worker (src/server/kb-index-worker.ts) claims
+// and runs it. Deliberately a plain table, not a queue engine — ingest is
+// content-hash idempotent, so a crashed run recovers by re-running, which is
+// the only guarantee a queue would have bought us.
+//
+// `paths` is a SNAPSHOT of the agent's granted folders resolved at enqueue
+// time, not a pointer to them: the worker must index what was authorized when
+// the admin asked, and re-reading the grants at run time would let a permission
+// change silently widen a job already in flight.
+export const kbIndexJobs = pgTable(
+  "kb_index_jobs",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    orgId: text("org_id").notNull(),
+    agentId: text("agent_id")
+      .notNull()
+      .references(() => agents.id, { onDelete: "cascade" }),
+    // Snapshotted beside the id so the completion audit row can carry the
+    // {id, name} pair (AGENTS.md) without re-querying an agent that may have
+    // been renamed or deleted while the job ran.
+    agentName: text("agent_name").notNull(),
+    requestedBy: text("requested_by").notNull(),
+    paths: jsonb("paths").$type<string[]>().notNull(),
+    status: text("status").$type<KbIndexJobStatus>().notNull().default("pending"),
+    // Progress, in documents. `total` stays null until discovery has walked
+    // every root — a total that grew as we went would make the progress bar
+    // run backwards, so it is written once, upfront.
+    total: integer("total"),
+    processed: integer("processed").notNull().default(0),
+    // The ingest's findings (IngestResult), written when the job reaches a
+    // terminal state — on failure too, since partial counts are the operator's
+    // only evidence of how far the run got.
+    counts: jsonb("counts").$type<IngestResult>(),
+    error: text("error"),
+    createdAt: timestamp("created_at").notNull().defaultNow(),
+    startedAt: timestamp("started_at"),
+    finishedAt: timestamp("finished_at"),
+  },
+  (t) => [
+    // At most one active index job per org. The index is corpus-wide and
+    // embedding is CPU-bound on a 1.5-core container, so two concurrent runs
+    // would race on the same (org_id, source_path) documents and thrash the
+    // CPU for no throughput. This is the constraint the enqueue path relies on
+    // to answer "busy" instead of queueing a duplicate — application code alone
+    // could not make that atomic.
+    uniqueIndex("uq_kb_index_jobs_active")
+      .on(t.orgId)
+      .where(sql`${t.status} ${inEnum(KB_INDEX_JOB_ACTIVE_STATUSES)}`),
+    // Serves both the worker's claim ("oldest pending") and the status route's
+    // "latest job for this agent".
+    index("idx_kb_index_jobs_status_created").on(t.status, t.createdAt),
+    index("idx_kb_index_jobs_agent_created").on(t.agentId, t.createdAt),
+    check("kb_index_jobs_status_check", sql`${t.status} ${inEnum(KB_INDEX_JOB_STATUSES)}`),
   ]
 );
