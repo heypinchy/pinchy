@@ -101,8 +101,20 @@ jobs:
           fi
           git diff --name-only "$BASE...HEAD" | node scripts/detect-code-changes.mjs
 
-  build-image:
-    name: Build Pinchy + OpenClaw images
+  # The two images are built by a MATRIX (one runner each), not as two steps of
+  # one job. They are genuinely independent — both start `FROM
+  # mirror.gcr.io/library/node:22-slim` and neither `COPY --from`s the other —
+  # and building them serially put their two ~10 min builds end-to-end on the
+  # critical path of all 12 downstream Docker/E2E jobs (measured: 20m06 on a
+  # cold cache, run 29559529435). Two runners build them in true parallel, which
+  # halves that. `docker buildx bake` in a single job would NOT: both targets
+  # would then contend for one runner's cores.
+  #
+  # This job deliberately has no `outputs`. A matrix job cannot express
+  # per-entry outputs, and it doesn't need to: the image tags are a pure
+  # function of github.sha, so the `build-image` fan-in below recomputes them.
+  build-images:
+    name: Build ${{ matrix.name }} image
     needs: changes
     runs-on: ubuntu-latest
     permissions:
@@ -114,9 +126,20 @@ jobs:
     if: >-
       needs.changes.outputs.code == 'true' &&
       (github.event_name != 'pull_request' || github.event.pull_request.head.repo.fork != true)
-    outputs:
-      pinchy-image: ${{ steps.tags.outputs.pinchy }}
-      openclaw-image: ${{ steps.tags.outputs.openclaw }}
+    strategy:
+      # Report both failures, not just the first: a broken Dockerfile.pinchy
+      # shouldn't hide an independent break in Dockerfile.openclaw.
+      fail-fast: false
+      matrix:
+        include:
+          - name: Pinchy
+            file: Dockerfile.pinchy
+            tag: ghcr.io/heypinchy/pinchy-ci
+            scope: pinchy
+          - name: OpenClaw
+            file: Dockerfile.openclaw
+            tag: ghcr.io/heypinchy/pinchy-openclaw-ci
+            scope: openclaw
     steps:
       - uses: actions/checkout@v7
 
@@ -128,34 +151,73 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Build & push ${{ matrix.name }} image
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: ${{ matrix.file }}
+          push: true
+          tags: ${{ matrix.tag }}:sha-${{ github.sha }}
+          # Read main's cache; write it only FROM main. The previous per-branch
+          # `scope=<img>-${{ github.ref_name }}` wrote a full mode=max layer set
+          # per branch, and type=gha shares ONE 10 GB per-repo budget — so two
+          # images × every active branch evicted each other constantly. That is
+          # the measured 3× spread: 6m27 warm vs 20m06 cold on the same
+          # Dockerfiles. Two stable scopes stay far under the cap, so a PR now
+          # reliably starts warm from main.
+          #
+          # The trade: a PR's 2nd push no longer reuses its own 1st push's
+          # layers. That's near-free — it would rebuild the changed layers
+          # anyway — and it also skips the ~30-60 s cache EXPORT on every PR
+          # build. If two mode=max scopes ever exceed 10 GB, move to
+          # `type=registry` on GHCR (no cap) rather than reintroducing
+          # per-branch scopes.
+          cache-from: type=gha,scope=${{ matrix.scope }}-main
+          cache-to: ${{ github.ref_name == 'main' && format('type=gha,mode=max,scope={0}-main', matrix.scope) || '' }}
+
+  # Fan-in. Exists so the 12 downstream jobs keep depending on ONE job with the
+  # exact contract they already encode — `needs.build-image.result` plus
+  # `.outputs.{pinchy,openclaw}-image` — instead of every one of them growing a
+  # two-job `needs:` and a doubled result check. Its `if:` mirrors build-images'
+  # verbatim, which is what preserves the three downstream states:
+  #
+  #   built      → both matrix entries succeeded → this succeeds → jobs pull.
+  #   skipped    → fork PR / docs-only → condition false → this is `skipped`
+  #                → jobs take their local-build fallback, as before.
+  #   failed     → `always()` still runs this, the guard step below fails it
+  #                → downstream `if:` is false → jobs are skipped, as before.
+  #
+  # Without `always()` a failed build would leave this `skipped`, and every
+  # downstream job would silently local-build a Dockerfile CI just proved broken.
+  build-image:
+    name: Build Pinchy + OpenClaw images
+    needs: [changes, build-images]
+    if: >-
+      always() &&
+      needs.changes.outputs.code == 'true' &&
+      (github.event_name != 'pull_request' || github.event.pull_request.head.repo.fork != true)
+    runs-on: ubuntu-latest
+    outputs:
+      pinchy-image: ${{ steps.tags.outputs.pinchy }}
+      openclaw-image: ${{ steps.tags.outputs.openclaw }}
+    steps:
+      # A matrix `result` is aggregated: 'success' only when EVERY entry
+      # succeeded. Anything else must fail this job, not be waved through.
+      - name: Fail if either image build failed
+        if: needs.build-images.result != 'success'
+        run: |
+          echo "::error::image build did not succeed (build-images result: ${{ needs.build-images.result }})"
+          exit 1
+
+      # Recomputed, not passed through — a matrix job cannot express per-entry
+      # outputs. That leaves two copies of the same expression, so
+      # scripts/lib/ci-image-tags.test.mjs (`pnpm test:scripts`) pins them
+      # together: without it, a tag edited on one side only would have every
+      # downstream job pull an image nobody pushed.
       - id: tags
         run: |
           echo "pinchy=ghcr.io/heypinchy/pinchy-ci:sha-${{ github.sha }}" >> $GITHUB_OUTPUT
           echo "openclaw=ghcr.io/heypinchy/pinchy-openclaw-ci:sha-${{ github.sha }}" >> $GITHUB_OUTPUT
-
-      - name: Build & push Pinchy image
-        uses: docker/build-push-action@v7
-        with:
-          context: .
-          file: Dockerfile.pinchy
-          push: true
-          tags: ${{ steps.tags.outputs.pinchy }}
-          cache-from: |
-            type=gha,scope=pinchy-${{ github.ref_name }}
-            type=gha,scope=pinchy-main
-          cache-to: type=gha,mode=max,scope=pinchy-${{ github.ref_name }}
-
-      - name: Build & push OpenClaw image
-        uses: docker/build-push-action@v7
-        with:
-          context: .
-          file: Dockerfile.openclaw
-          push: true
-          tags: ${{ steps.tags.outputs.openclaw }}
-          cache-from: |
-            type=gha,scope=openclaw-${{ github.ref_name }}
-            type=gha,scope=openclaw-main
-          cache-to: type=gha,mode=max,scope=openclaw-${{ github.ref_name }}
 
   quality:
     name: Lint, Test & Build
