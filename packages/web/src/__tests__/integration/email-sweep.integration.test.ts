@@ -177,6 +177,54 @@ describe("reconciliation sweep — loader → lister → dispatcher", () => {
   });
 });
 
+describe("reconciliation sweep — port lifecycle", () => {
+  // A mailbox port can hold a real connection: the IMAP adapter opens ONE
+  // connection and serves `search` plus every `read` over it, because the lister
+  // does 1×search + N×read and a connection per message is not an option. Nothing
+  // else can close it — the port is created per (workflow × connection) inside
+  // the sweep and discarded there — so the sweep owns the lifecycle. `close` is
+  // optional: Graph/Gmail are stateless HTTP and simply don't implement it.
+  it("closes the port after a unit", async () => {
+    const { connection } = await seedDispatchableWorkflow();
+    let closed = 0;
+    const { createPort: base } = portFor(connection.id, [message()]);
+    const createPort = async (id: string): Promise<EmailPort> => ({
+      ...(await base(id)),
+      close: async () => {
+        closed++;
+      },
+    });
+
+    await runReconciliationSweep({ createPort, runAgent: doneRun });
+
+    expect(closed).toBeGreaterThan(0);
+  });
+
+  it("closes the port even when the unit fails — a dead mailbox must not leak its connection", async () => {
+    // The failure path is exactly where a leak would go unnoticed: an unreachable
+    // mailbox throws out of `search`, the sweep catches it at unit level and moves
+    // on. Without a `finally` the connection would be stranded on every bad pass,
+    // every cadence, forever.
+    await seedDispatchableWorkflow();
+    let closed = 0;
+    const createPort = async (): Promise<EmailPort> => ({
+      search: async () => {
+        throw new Error("mailbox unreachable");
+      },
+      read: async () => {
+        throw new Error("unreachable");
+      },
+      close: async () => {
+        closed++;
+      },
+    });
+
+    await runReconciliationSweep({ createPort, runAgent: doneRun });
+
+    expect(closed).toBeGreaterThan(0);
+  });
+});
+
 describe("reconciliation sweep — sinceTs watermark", () => {
   it("never processes mail older than the workflow's sinceTs, even inside the sweep window", async () => {
     // The failure mode from design §8, "New workflow on old mailbox": the sweep

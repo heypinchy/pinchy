@@ -40,6 +40,14 @@ export interface EmailReadResult {
 export interface EmailPort {
   search(opts: { sinceDays?: number; folder?: string; limit?: number }): Promise<EmailListItem[]>;
   read(id: string): Promise<EmailReadResult>;
+  /**
+   * Release whatever the port holds open. Optional: stateless HTTP providers
+   * (Graph, Gmail) have nothing to release, while the IMAP adapter serves the
+   * lister's 1×search + N×read over ONE connection — a connection per message is
+   * not an option — and only the sweep can close it, since the port is created
+   * per (workflow × connection) there and discarded there.
+   */
+  close?(): Promise<void>;
 }
 
 /**

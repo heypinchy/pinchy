@@ -10,6 +10,7 @@ import { resetStuckProcessingEmails } from "@/lib/email-workflows/ledger";
 import type { StuckClaimKey } from "@/lib/email-workflows/ledger";
 import { listDispatchableEmails } from "@/lib/email-workflows/lister";
 import { loadDispatchableWorkflows } from "@/lib/email-workflows/loader";
+import type { DispatchableWorkflow } from "@/lib/email-workflows/loader";
 import { DEFAULT_RUN_TIMEOUT_MS } from "@/lib/email-workflows/run-adapter";
 import type { EmailPort } from "@/lib/email-workflows/lister";
 import type { RunAgent } from "@/lib/email-workflows/dispatch";
@@ -74,35 +75,23 @@ export async function runReconciliationSweep(deps: SweepDeps): Promise<void> {
     seenWorkflowIds.add(unit.workflow.id);
     try {
       const port = await deps.createPort(unit.workflow.connectionId);
-      // `folder` only narrows the provider query — the filter re-checks it
-      // anyway, so this saves hydrating mail that is guaranteed to be dropped.
-      const { emails, candidateCount } = await listDispatchableEmails(port, {
-        sinceDays: unit.sweepWindowDays,
-        folder: unit.workflow.filter.folder,
-        limit: SWEEP_LIST_LIMIT,
-      });
-      // A full page means the window held at least as much mail as we are willing
-      // to hydrate, so this pass saw a truncated mailbox. Say so: the overflow is
-      // not merely deferred (see SWEEP_LIST_LIMIT), and a component whose whole
-      // job is "never lose an email" must not truncate in silence.
-      //
-      // Read the CANDIDATE count, not `emails.length`: the lister drops messages
-      // it cannot hydrate, so a full page with one poison mail yields LIMIT-1
-      // emails — and gating on the hydrated count would fall silent on exactly
-      // the pass that is both truncated and lossy.
-      if (candidateCount >= SWEEP_LIST_LIMIT) {
-        console.warn(
-          `reconciliation sweep: hit the listing limit of ${SWEEP_LIST_LIMIT} for workflow ${unit.workflow.id} on connection ${unit.workflow.connectionId} — mail beyond it was not seen this pass`
-        );
+      try {
+        await sweepUnit(unit, port, deps);
+      } finally {
+        // The port can hold a real connection (IMAP), and this is its only
+        // owner — so release it on every path, including the dead-mailbox throw
+        // below, which would otherwise strand a connection every cadence.
+        // A close failure must NOT fail a unit whose work already succeeded
+        // (ledger written, runs done): log it and move on.
+        try {
+          await port.close?.();
+        } catch (closeErr) {
+          console.error(
+            `reconciliation sweep: failed to close the port for connection ${unit.workflow.connectionId}`,
+            closeErr
+          );
+        }
       }
-      // The sweep re-lists a whole window, so it is the only place the per-
-      // (workflow × connection) watermark can be enforced: the lister speaks
-      // `sinceDays` and nothing downstream reads `receivedAt`. Without this gate
-      // a workflow attached to an old mailbox would retroactively act on the
-      // entire window (design §8, "New workflow on old mailbox"). Below the
-      // watermark is dropped before the claim, never claimed-and-skipped.
-      const fresh = emails.filter((email) => email.receivedAt >= unit.sinceTs);
-      await dispatchEmails({ workflow: unit.workflow, emails: fresh, runAgent: deps.runAgent });
     } catch (err) {
       // A unit-level failure is a broken *mailbox* (credentials, unreachable
       // host) — invisible in the ledger, because nothing was ever listed. It
@@ -122,6 +111,43 @@ export async function runReconciliationSweep(deps: SweepDeps): Promise<void> {
     // on `status`, so the workflow would keep running while displaying `error`.
     await setWorkflowStatus(workflowId, failedWorkflowIds.has(workflowId) ? "error" : "active");
   }
+}
+
+/** One (workflow × connection) pass over an already-open port. */
+async function sweepUnit(
+  unit: DispatchableWorkflow,
+  port: EmailPort,
+  deps: SweepDeps
+): Promise<void> {
+  // `folder` only narrows the provider query — the filter re-checks it
+  // anyway, so this saves hydrating mail that is guaranteed to be dropped.
+  const { emails, candidateCount } = await listDispatchableEmails(port, {
+    sinceDays: unit.sweepWindowDays,
+    folder: unit.workflow.filter.folder,
+    limit: SWEEP_LIST_LIMIT,
+  });
+  // A full page means the window held at least as much mail as we are willing
+  // to hydrate, so this pass saw a truncated mailbox. Say so: the overflow is
+  // not merely deferred (see SWEEP_LIST_LIMIT), and a component whose whole
+  // job is "never lose an email" must not truncate in silence.
+  //
+  // Read the CANDIDATE count, not `emails.length`: the lister drops messages
+  // it cannot hydrate, so a full page with one poison mail yields LIMIT-1
+  // emails — and gating on the hydrated count would fall silent on exactly
+  // the pass that is both truncated and lossy.
+  if (candidateCount >= SWEEP_LIST_LIMIT) {
+    console.warn(
+      `reconciliation sweep: hit the listing limit of ${SWEEP_LIST_LIMIT} for workflow ${unit.workflow.id} on connection ${unit.workflow.connectionId} — mail beyond it was not seen this pass`
+    );
+  }
+  // The sweep re-lists a whole window, so it is the only place the per-
+  // (workflow × connection) watermark can be enforced: the lister speaks
+  // `sinceDays` and nothing downstream reads `receivedAt`. Without this gate
+  // a workflow attached to an old mailbox would retroactively act on the
+  // entire window (design §8, "New workflow on old mailbox"). Below the
+  // watermark is dropped before the claim, never claimed-and-skipped.
+  const fresh = emails.filter((email) => email.receivedAt >= unit.sinceTs);
+  await dispatchEmails({ workflow: unit.workflow, emails: fresh, runAgent: deps.runAgent });
 }
 
 async function setWorkflowStatus(workflowId: string, status: EmailWorkflowStatus): Promise<void> {
