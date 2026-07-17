@@ -62,18 +62,40 @@ This reads the agent's granted folders, extracts text from each PDF, splits it i
 
 Indexing is idempotent — unchanged files are skipped on the next run, changed files are re-indexed, and files removed from disk are dropped from the index. **Re-run reindex whenever documents change** — new files, edits, or deletions. There's no automatic file-watcher yet; a scheduled sweep is planned for a later phase.
 
-The response reports what happened:
+The request comes back immediately with a job to watch:
 
 ```json
 {
-  "indexed": 3,
-  "skipped": 12,
-  "removed": 1,
-  "unsearchable": 2,
-  "failed": 0,
+  "jobId": "6f1c2b64-6c3e-4a2f-9c19-5c1d3a1f2e77",
+  "status": "pending",
   "pathCount": 2
 }
 ```
+
+Indexing itself runs in the background. It has to: every page has to be read, split, and turned into a vector, and on a few thousand documents that's hours of work on a CPU. Nothing about that fits inside an HTTP request, so the request queues the run and hands you its id.
+
+One index run happens at a time. Trigger a second while one is going and you get a `409` carrying the running job's id — so you can watch the run that's already happening rather than start a duplicate.
+
+## 8. Watch the run
+
+Ask the same endpoint how it's going:
+
+```bash
+curl -b session_cookie "https://pinchy.example.com/api/agents/<agentId>/knowledge/reindex"
+```
+
+```json
+{
+  "job": {
+    "status": "running",
+    "processed": 340,
+    "total": 1893,
+    "counts": null
+  }
+}
+```
+
+`total` is every document we found across the granted folders, counted before the first one is read — so it doesn't move once the run starts. When the run finishes, `counts` tells you what it found:
 
 | Field          | What it means                                                                                                                                 |
 | -------------- | --------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -85,7 +107,11 @@ The response reports what happened:
 
 `indexed` counts documents the agent can actually reach, not documents we processed — that's why a scanned PDF lands under `unsearchable` instead. If either of the last two numbers is above zero, part of your corpus can't answer questions yet, and it's worth knowing which part before someone asks it something.
 
-## 8. Chat with the agent
+A `status` of `failed` is a different thing from a `failed` file: it means something systemic stopped the whole run — the embedding endpoint went away, or the database did — and `error` says what. A broken file never gets that far; it's counted and stepped over.
+
+If Pinchy restarts mid-run, the run resumes on the next start. Nothing is lost and nothing is done twice: everything already indexed is skipped on the way back through.
+
+## 9. Chat with the agent
 
 Go back to the agent's chat and start asking questions. The agent calls `knowledge_search` behind the scenes, which runs a hybrid search — semantic (vector) and full-text — over the passages you indexed, then answers using only what it found.
 
@@ -124,9 +150,9 @@ Phase 1 of the knowledge base is deliberately narrow:
 
 - Only **text-based PDFs** are indexed and searchable via `knowledge_search`. Scanned/image-only PDFs and Office documents (`.docx`, etc.) are on the roadmap, not indexed today.
 - There's no clickable link from a citation into the PDF viewer yet — citations are text (document path + page), not a jump-to-passage link.
-- Indexing is a manual, synchronous admin action (step 7). A scheduled sweep and progress UI are planned for a later phase.
+- Indexing is a manual admin action (step 7). It runs in the background and reports progress, but you still have to ask for it — a scheduled sweep and a progress UI in the app are planned for a later phase.
 
-Every retrieval and every reindex is recorded in the [audit trail](/concepts/audit-trail/) — reindex as `knowledge.reindex`, and each `knowledge_search` call as `retrieval.query` with the documents it drew on. The search query text itself is never stored in plaintext, only a one-way hash.
+Every retrieval and every reindex is recorded in the [audit trail](/concepts/audit-trail/) — each `knowledge_search` call as `retrieval.query` with the documents it drew on, and every reindex as two `knowledge.reindex` entries sharing a `jobId`: who asked for it, and how it turned out. Both are needed, because the run finishes long after the request that started it. The search query text itself is never stored in plaintext, only a one-way hash.
 
 ## Customizing the agent
 

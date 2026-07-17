@@ -274,7 +274,9 @@ See [Create a Knowledge Base Agent](/guides/create-knowledge-base-agent/) for th
 
 ### `POST /api/agents/:agentId/knowledge/reindex`
 
-(Re)index the agent's granted knowledge-base folders. **Admin only.** Reads the agent's `pinchy-files` `allowed_paths`, extracts text from each PDF, chunks and embeds it with the fixed `bge-m3` model, and stores the result in Pinchy's Postgres knowledge-base index. Idempotent: unchanged files are skipped, changed files are replaced, and files removed from disk are dropped from the index.
+Queue a (re)index of the agent's granted knowledge-base folders. **Admin only.** Reads the agent's `pinchy-files` `allowed_paths`, extracts text from each PDF, chunks and embeds it with the fixed `bge-m3` model, and stores the result in Pinchy's Postgres knowledge-base index. Idempotent: unchanged files are skipped, changed files are replaced, and files removed from disk are dropped from the index.
+
+The request returns as soon as the job is queued — indexing runs in the background, because a real corpus takes hours to embed. Poll [`GET`](#get-apiagentsagentidknowledgereindex) on the same path for progress and results.
 
 **Request body:**
 
@@ -282,36 +284,83 @@ See [Create a Knowledge Base Agent](/guides/create-knowledge-base-agent/) for th
 | ------- | -------- | -------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | `paths` | string[] | No       | Subset of the agent's granted folders to reindex. Can only narrow the granted set — any path not already granted is ignored. Omit to reindex every granted folder. |
 
-**Response:**
+**Response — `202 Accepted`:**
 
 ```json
 {
-  "indexed": 3,
-  "skipped": 12,
-  "removed": 1,
-  "unsearchable": 2,
-  "failed": 0,
+  "jobId": "6f1c2b64-6c3e-4a2f-9c19-5c1d3a1f2e77",
+  "status": "pending",
   "pathCount": 2
 }
 ```
 
-| Field          | Description                                                                                                                                                      |
-| -------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `indexed`      | Documents added, updated, or rebuilt — and searchable afterwards.                                                                                                |
-| `skipped`      | Unchanged content hash, chunks already present.                                                                                                                  |
-| `removed`      | Source file no longer on disk; the document and its chunks were deleted.                                                                                         |
-| `unsearchable` | Parsed without error but yielded no text, so the document exists in the index yet can never be retrieved (typically a scanned PDF).                              |
-| `failed`       | The file could not be read or parsed. The run continues — one bad file never aborts the reindex — and a previously indexed version of the file stays searchable. |
-| `pathCount`    | Number of granted folders reindexed.                                                                                                                             |
-
-`unsearchable` and `failed` can be non-zero on a `200`: the reindex itself succeeded and these are its findings about the corpus. Both are also recorded in the `knowledge.reindex` audit entry.
+| Field       | Description                                                                                            |
+| ----------- | ------------------------------------------------------------------------------------------------------ |
+| `jobId`     | The queued job. Pass nothing — `GET` on the same path reports this agent's most recent job.            |
+| `status`    | `pending` (queued) — or `noop` when the agent has no granted folders, in which case `jobId` is `null`. |
+| `pathCount` | Number of granted folders the job will reindex.                                                        |
 
 **Errors:**
 
 - `401` — not authenticated
 - `403` — not an admin
 - `404` — agent not found
+- `409` — a reindex is already running. One index job runs at a time. The response carries the running job's `jobId` and `status`, so you can watch that run instead of retrying.
 - `503` — the local Ollama embedding endpoint isn't configured (see [Set Up Local Ollama](/guides/ollama-setup/))
+
+### `GET /api/agents/:agentId/knowledge/reindex`
+
+The agent's most recent index run — in flight or last finished. **Admin only.** Returns `{ "job": null }` if the agent has never been reindexed.
+
+**Response:**
+
+```json
+{
+  "job": {
+    "id": "6f1c2b64-6c3e-4a2f-9c19-5c1d3a1f2e77",
+    "status": "succeeded",
+    "processed": 18,
+    "total": 18,
+    "counts": {
+      "indexed": 3,
+      "skipped": 12,
+      "removed": 1,
+      "unsearchable": 2,
+      "failed": 0
+    },
+    "error": null,
+    "createdAt": "2026-07-17T10:00:00.000Z",
+    "startedAt": "2026-07-17T10:00:05.000Z",
+    "finishedAt": "2026-07-17T10:04:11.000Z"
+  }
+}
+```
+
+| Field                 | Description                                                                                                                         |
+| --------------------- | ----------------------------------------------------------------------------------------------------------------------------------- |
+| `status`              | `pending`, `running`, `succeeded`, or `failed`.                                                                                     |
+| `processed` / `total` | Documents done, and documents found. `total` is `null` until discovery has walked every folder; it never changes after that.        |
+| `counts`              | The run's findings. `null` until the run finishes.                                                                                  |
+| `counts.indexed`      | Documents added, updated, or rebuilt — and searchable afterwards.                                                                   |
+| `counts.skipped`      | Unchanged content hash, chunks already present.                                                                                     |
+| `counts.removed`      | Source file no longer on disk; the document and its chunks were deleted.                                                            |
+| `counts.unsearchable` | Parsed without error but yielded no text, so the document exists in the index yet can never be retrieved (typically a scanned PDF). |
+| `counts.failed`       | The file could not be read or parsed. The run continues — one bad file never aborts the reindex — and a previously indexed version of the file stays searchable. |
+| `error`               | Why the run failed. `null` unless `status` is `failed`.                                                                             |
+
+`unsearchable` and `failed` can be non-zero on a `succeeded` run: the reindex itself worked, and these are its findings about the corpus.
+
+`status: "failed"` means something systemic stopped the run — the embedding endpoint or the database — not that a file was broken. A broken file is a `counts.failed`, and the run keeps going. Failed runs keep the counts they reached before dying.
+
+A run interrupted by a restart is picked up again automatically: indexing is idempotent, so the resumed run skips everything already done.
+
+Every run writes two `knowledge.reindex` audit entries, correlated by `jobId`: the admin's request, and the outcome (recorded by the background worker, with the counts).
+
+**Errors:**
+
+- `401` — not authenticated
+- `403` — not an admin
+- `404` — agent not found
 
 ### `POST /api/internal/knowledge/search`
 
