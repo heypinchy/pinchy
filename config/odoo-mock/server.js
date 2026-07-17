@@ -1494,8 +1494,10 @@ function handleJsonRpc(body) {
       // (didReconcile) — it does NOT trust the method's return value — so the
       // mock MUST zero the residual here or the tool honestly reports failure
       // (which is exactly the false-green trap #791/#782 called out). Also mark
-      // it paid, mirroring the visible end state.
-      if (objMethod === "js_assign_outstanding_line") {
+      // it paid, mirroring the visible end state. Scoped to account.move: in
+      // real Odoo this method lives only on account.move, and pinchy-odoo only
+      // ever calls it there — the guard keeps that contract explicit.
+      if (model === "account.move" && objMethod === "js_assign_outstanding_line") {
         const ids = positionalArgs[0] || [];
         for (const record of store.get(model)) {
           if (ids.includes(record.id)) {

@@ -644,18 +644,28 @@ test.describe("Odoo dispatch probe (pinchy-odoo plugin coverage)", () => {
   async function runRefDispatchProbe(
     page: Page,
     testInfo: TestInfo,
-    opts: { trigger: string; eventType: string; message: string }
+    opts: {
+      trigger: string;
+      eventType: string;
+      message: string;
+      // Optional setup run after the composer is ready but before the cutoff is
+      // captured and the trigger fires — e.g. odoo_attach_file uploads its
+      // fixture here so the file exists in the agent's uploads/ dir on disk.
+      beforeDispatch?: (page: Page) => Promise<void>;
+    }
   ): Promise<void> {
     testInfo.setTimeout(180_000);
     await loginViaUI(page, getAdminEmail(), getAdminPassword());
     await page.goto(`/chat/${dispatchAgentId}`);
     await expect(page).toHaveURL(`/chat/${dispatchAgentId}`, { timeout: 10_000 });
 
-    // Capture the cutoff BEFORE dispatch so the poll cannot match a stale row.
-    const since = new Date().toISOString();
-
     const input = page.getByPlaceholder(/send a message/i);
     await expect(input).toBeVisible({ timeout: 10_000 });
+
+    if (opts.beforeDispatch) await opts.beforeDispatch(page);
+
+    // Capture the cutoff BEFORE dispatch so the poll cannot match a stale row.
+    const since = new Date().toISOString();
     await input.fill(`${opts.trigger}: ${opts.message}`);
     await input.press("Enter");
 
@@ -758,47 +768,34 @@ test.describe("Odoo dispatch probe (pinchy-odoo plugin coverage)", () => {
   }, testInfo) => {
     // odoo_attach_file reads a file from the agent's uploads/ dir on disk, so
     // this probe FIRST uploads that file through the composer (landing it under
-    // the exact basename the fake-LLM will pass), then fires the trigger. Round
-    // 1 reads sale.order (target ref), round 2 attaches `test.pdf` to it.
-    testInfo.setTimeout(180_000);
-    await loginViaUI(page, getAdminEmail(), getAdminPassword());
-    await page.goto(`/chat/${dispatchAgentId}`);
-    await expect(page).toHaveURL(`/chat/${dispatchAgentId}`, { timeout: 10_000 });
-
-    const input = page.getByPlaceholder(/send a message/i);
-    await expect(input).toBeVisible({ timeout: 10_000 });
-
-    // Upload the fixture the fake-LLM will attach (basename must match the
-    // filename in the odoo_attach_file probe's buildArgs).
-    const fixturesDir = path.join(__dirname, "../fixtures");
-    const [fileChooser] = await Promise.all([
-      page.waitForEvent("filechooser"),
-      page.locator(".aui-composer-add-attachment").click(),
-    ]);
-    await fileChooser.setFiles(path.join(fixturesDir, FAKE_OLLAMA_ODOO_ATTACH_FILE_REF_FILENAME));
-
-    // Wait until the upload chip reaches "ready" (POST /uploads returned 200 →
-    // the file now exists in the agent's uploads/ dir for the plugin to read).
-    const readyChip = page
-      .locator(".text-green-600")
-      .locator("xpath=ancestor::*[@class and contains(@class,'rounded-lg')]")
-      .first();
-    await expect(readyChip).toBeVisible({ timeout: 20_000 });
-
-    // Capture the cutoff BEFORE dispatch so the poll cannot match a stale row.
-    const since = new Date().toISOString();
-
-    await input.fill(
-      `${FAKE_OLLAMA_ODOO_ATTACH_FILE_REF_TRIGGER}: attach the document to the order`
-    );
-    await input.press("Enter");
-
-    const entry = await pollAuditForEvent(page, {
+    // the exact basename the fake-LLM will pass) via beforeDispatch, then fires
+    // the trigger. Round 1 reads sale.order (target ref), round 2 attaches
+    // `test.pdf` to it.
+    await runRefDispatchProbe(page, testInfo, {
+      trigger: FAKE_OLLAMA_ODOO_ATTACH_FILE_REF_TRIGGER,
       eventType: "tool.odoo_attach_file",
-      predicate: (e) => e.resource === `agent:${dispatchAgentId}`,
-      since,
-      deadlineMs: 160_000,
+      message: "attach the document to the order",
+      beforeDispatch: async (page) => {
+        // Upload the fixture the fake-LLM will attach (basename must match the
+        // filename in the odoo_attach_file probe's buildArgs).
+        const fixturesDir = path.join(__dirname, "../fixtures");
+        const [fileChooser] = await Promise.all([
+          page.waitForEvent("filechooser"),
+          page.locator(".aui-composer-add-attachment").click(),
+        ]);
+        await fileChooser.setFiles(
+          path.join(fixturesDir, FAKE_OLLAMA_ODOO_ATTACH_FILE_REF_FILENAME)
+        );
+
+        // Wait until the upload chip reaches "ready" (POST /uploads returned 200
+        // → the file now exists in the agent's uploads/ dir for the plugin to
+        // read).
+        const readyChip = page
+          .locator(".text-green-600")
+          .locator("xpath=ancestor::*[@class and contains(@class,'rounded-lg')]")
+          .first();
+        await expect(readyChip).toBeVisible({ timeout: 20_000 });
+      },
     });
-    expect(entry.outcome).toBe("success");
   });
 });

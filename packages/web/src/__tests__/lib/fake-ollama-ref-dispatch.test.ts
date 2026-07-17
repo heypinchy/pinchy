@@ -12,8 +12,8 @@ import { describe, expect, it } from "vitest";
 import {
   extractPinchyRefFromToolResults,
   extractPinchyRefsInOrder,
-  buildOdooRefDispatchScript,
   buildRefDispatchScript,
+  SCHEDULE_ACTIVITY_PROBE,
   type RefDispatchProbe,
   FAKE_OLLAMA_ODOO_SCHEDULE_ACTIVITY_REF_RESPONSE,
 } from "../../../e2e/shared/fake-ollama/fake-ollama-server";
@@ -62,11 +62,15 @@ describe("extractPinchyRefFromToolResults", () => {
   });
 });
 
-describe("buildOdooRefDispatchScript", () => {
+// buildRefDispatchScript is the single reusable engine every ref probe runs on;
+// SCHEDULE_ACTIVITY_PROBE is its concrete single-read case. Driving the engine
+// with the real probe (rather than a wrapper) means these tests exercise exactly
+// the production code path the fake-LLM handlers take.
+describe("buildRefDispatchScript (single-read schedule_activity shape)", () => {
   const trigger = { role: "user", content: "E2E_ODOO_SCHEDULE_ACTIVITY_REF: follow up" };
 
   it("round 1 (no tool results yet): reads crm.lead to obtain a real ref", () => {
-    const script = buildOdooRefDispatchScript([trigger]);
+    const script = buildRefDispatchScript(SCHEDULE_ACTIVITY_PROBE, [trigger]);
     expect(script.kind).toBe("tool");
     if (script.kind !== "tool") throw new Error("unreachable");
     expect(script.toolName).toBe("odoo_read");
@@ -79,7 +83,7 @@ describe("buildOdooRefDispatchScript", () => {
       { role: "assistant", content: "", tool_calls: [{ function: { name: "odoo_read" } }] },
       toolResult([{ id: 5, name: "Acme Lead", _pinchy_ref: REF }]),
     ];
-    const script = buildOdooRefDispatchScript(messages);
+    const script = buildRefDispatchScript(SCHEDULE_ACTIVITY_PROBE, messages);
     expect(script.kind).toBe("tool");
     if (script.kind !== "tool") throw new Error("unreachable");
     expect(script.toolName).toBe("odoo_schedule_activity");
@@ -94,7 +98,7 @@ describe("buildOdooRefDispatchScript", () => {
       { role: "assistant", content: "", tool_calls: [{ function: { name: "odoo_read" } }] },
       { role: "tool", content: JSON.stringify({ records: [] }) },
     ];
-    const script = buildOdooRefDispatchScript(messages);
+    const script = buildRefDispatchScript(SCHEDULE_ACTIVITY_PROBE, messages);
     expect(script.kind).toBe("text");
     if (script.kind !== "text") throw new Error("unreachable");
     expect(script.text).toMatch(/_pinchy_ref/);
@@ -112,7 +116,7 @@ describe("buildOdooRefDispatchScript", () => {
       },
       { role: "tool", content: JSON.stringify({ id: 99 }) },
     ];
-    const script = buildOdooRefDispatchScript(messages);
+    const script = buildRefDispatchScript(SCHEDULE_ACTIVITY_PROBE, messages);
     expect(script.kind).toBe("text");
     if (script.kind !== "text") throw new Error("unreachable");
     expect(script.text).toBe(FAKE_OLLAMA_ODOO_SCHEDULE_ACTIVITY_REF_RESPONSE);
@@ -142,7 +146,7 @@ describe("buildOdooRefDispatchScript", () => {
     ];
 
     it("round 1 still reads crm.lead despite 2 stale tool results in history", () => {
-      const script = buildOdooRefDispatchScript([...priorTurns, trigger]);
+      const script = buildRefDispatchScript(SCHEDULE_ACTIVITY_PROBE, [...priorTurns, trigger]);
       expect(script.kind).toBe("tool");
       if (script.kind !== "tool") throw new Error("unreachable");
       expect(script.toolName).toBe("odoo_read");
@@ -158,7 +162,7 @@ describe("buildOdooRefDispatchScript", () => {
         { role: "assistant", content: "", tool_calls: [{ function: { name: "odoo_read" } }] },
         toolResult([{ id: 5, name: "Acme Lead", _pinchy_ref: REF }]),
       ];
-      const script = buildOdooRefDispatchScript(messages);
+      const script = buildRefDispatchScript(SCHEDULE_ACTIVITY_PROBE, messages);
       expect(script.kind).toBe("tool");
       if (script.kind !== "tool") throw new Error("unreachable");
       expect(script.toolName).toBe("odoo_schedule_activity");
@@ -205,11 +209,9 @@ describe("extractPinchyRefsInOrder", () => {
   });
 });
 
-// buildRefDispatchScript is the reusable engine every ref probe runs on
-// (buildOdooRefDispatchScript is a thin single-read wrapper over it). These
-// tests exercise the DUAL-read shape (odoo_reconcile: read account.move, read
-// account.payment, then reconcile on both refs) that the single-read
-// buildOdooRefDispatchScript tests above cannot reach.
+// The DUAL-read shape (odoo_reconcile: read account.move, read account.payment,
+// then reconcile on both refs) that the single-read SCHEDULE_ACTIVITY_PROBE tests
+// above cannot reach.
 describe("buildRefDispatchScript (multi-read reconcile shape)", () => {
   const INVOICE_REF = "pinchy_ref:v1:INV-move_1111";
   const COUNTERPART_REF = "pinchy_ref:v1:CP-payment_2222";

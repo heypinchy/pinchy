@@ -826,7 +826,10 @@ const ODOO_ATTACH_FILE_REF_RESPONSE = "File attached via ref: coverage probe com
 // firing the trigger, so the plugin finds it on disk.
 const ODOO_ATTACH_FILE_REF_FILENAME = "test.pdf";
 
-const SCHEDULE_ACTIVITY_PROBE: RefDispatchProbe = {
+// Exported so unit tests can drive the real engine (`buildRefDispatchScript`)
+// with a concrete single-read probe, instead of a wrapper that would only test
+// itself.
+export const SCHEDULE_ACTIVITY_PROBE: RefDispatchProbe = {
   trigger: ODOO_SCHEDULE_ACTIVITY_REF_TRIGGER,
   reads: ["crm.lead"],
   toolName: "odoo_schedule_activity",
@@ -904,15 +907,6 @@ const REF_DISPATCH_PROBES: RefDispatchProbe[] = [
     response: ODOO_ATTACH_FILE_REF_RESPONSE,
   },
 ];
-
-/**
- * Back-compat single-read wrapper for the odoo_schedule_activity probe — its
- * unit tests import this by name. New probes run through `buildRefDispatchScript`
- * directly via the registry loop in the handlers.
- */
-export function buildOdooRefDispatchScript(messages: unknown[]): RefDispatchScript {
-  return buildRefDispatchScript(SCHEDULE_ACTIVITY_PROBE, messages);
-}
 
 /** Emit one assistant tool_call turn on the Ollama-native NDJSON surface. */
 function writeNdjsonToolCall(
