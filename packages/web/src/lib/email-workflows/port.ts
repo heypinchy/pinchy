@@ -1,6 +1,7 @@
 import { resolveConnectionCredentials } from "@/lib/integrations/resolve-credentials";
 import { createImapPort } from "@/lib/email-workflows/ports/imap";
 import { createGraphPort } from "@/lib/email-workflows/ports/graph";
+import { createGmailPort } from "@/lib/email-workflows/ports/gmail";
 import type { EmailPort } from "@/lib/email-workflows/lister";
 
 /**
@@ -24,6 +25,8 @@ export async function createEmailPort(connectionId: string): Promise<EmailPort> 
       return createImapPort(credentials);
     case "microsoft":
       return createGraphPort(credentials);
+    case "google":
+      return createGmailPort(credentials);
     default:
       // A workflow pointed at a non-mailbox connection (odoo, web-search) is a
       // configuration bug. Fail loudly rather than hand back a port that
