@@ -158,10 +158,22 @@ describe("POST /api/agents/[agentId]/knowledge/reindex", () => {
   // Serialized per org by the job store. Rejecting with the blocking job's id
   // is what lets the admin watch the run that is actually happening instead of
   // clicking again into a queue that will never grow.
-  it("returns 409 with the in-flight job when the org is already reindexing", async () => {
+  //
+  // The blocking run can belong to a DIFFERENT agent — one index job per org,
+  // not per agent — and status is only readable per agent. So the 409 has to
+  // name that agent too, or the jobId it hands back points at a run the caller
+  // has no endpoint to look up.
+  it("returns 409 naming the in-flight job AND the agent it belongs to", async () => {
     mockEnqueueIndexJob.mockResolvedValueOnce({
       status: "busy",
-      job: makeJob({ id: "job-running", status: "running", processed: 30, total: 42 }),
+      job: makeJob({
+        id: "job-running",
+        status: "running",
+        processed: 30,
+        total: 42,
+        agentId: "agent-other",
+        agentName: "Legal KB",
+      }),
     });
 
     const res = await POST(makeRequest(), ctx as never);
@@ -171,6 +183,8 @@ describe("POST /api/agents/[agentId]/knowledge/reindex", () => {
       error: expect.stringContaining("already"),
       jobId: "job-running",
       status: "running",
+      // Where to go and watch it.
+      agent: { id: "agent-other", name: "Legal KB" },
     });
 
     const entry = mockDeferAuditLog.mock.calls[0][0];

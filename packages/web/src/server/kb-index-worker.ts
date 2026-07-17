@@ -66,9 +66,10 @@ export async function runNextIndexJob(opts: RunIndexJobOptions = {}): Promise<Kb
   if (!job) return null;
 
   const agent = { id: job.agentId, name: job.agentName };
-  // `counts` is tracked outside the try so a systemic throw still reports how
-  // far the run got. ingestPaths only returns on success, so a failure would
-  // otherwise land with nothing to say.
+  // Updated from every progress report, NOT from ingestPaths' return value: a
+  // systemic throw skips the return, and a run that died on file 1501 of 2000
+  // still indexed 1500 documents. Reading the tally off the last report is the
+  // only way that survives the throw.
   let counts: IngestResult = zeroIngestResult();
 
   try {
@@ -79,7 +80,10 @@ export async function runNextIndexJob(opts: RunIndexJobOptions = {}): Promise<Kb
     if (!deps) throw new Error("ollama_not_configured");
 
     counts = await ingestPaths(job.orgId, job.paths, deps, {
-      onProgress: (progress) => recordIndexJobProgress(job.id, progress),
+      onProgress: (progress) => {
+        counts = progress.counts;
+        return recordIndexJobProgress(job.id, progress);
+      },
     });
   } catch (err) {
     // Ingest already absorbs a single unreadable file (counting it `failed`),
@@ -87,6 +91,13 @@ export async function runNextIndexJob(opts: RunIndexJobOptions = {}): Promise<Kb
     // database — took the run down. Finishing the job (rather than leaving it
     // `running`) is what frees the org's active-job slot: without it, one
     // Ollama blip would wedge the queue until the next restart.
+    //
+    // The one case this cannot rescue is the database itself being the outage:
+    // then finishIndexJob's own write fails too, the row stays `running`, and
+    // the slot is held until the next boot requeues it. Recovering from that
+    // without a restart would need a liveness signal (heartbeat + staleness
+    // sweep) that the single-container design does not otherwise need — and a
+    // database outage is already an operator's problem, not a queue's.
     const reason = safeProviderError(err instanceof Error ? err.message : "reindex_failed");
     await finishIndexJob(job.id, { outcome: "failed", counts, error: reason });
     await auditOutcome({ job, agent, outcome: "failure", counts, reason });
@@ -140,20 +151,48 @@ async function auditOutcome(args: {
 const POLL_INTERVAL_MS = 10_000;
 
 let _pollInterval: ReturnType<typeof setInterval> | null = null;
-let _startupTimeout: ReturnType<typeof setTimeout> | null = null;
 // Re-entrancy guard: a multi-hour run must not be started a second time by an
 // overlapping tick. The DB claim would refuse the double-run anyway; this keeps
 // us from hammering it every 10s for hours to find that out.
 let _runInFlight = false;
+// Whether this process has already cleaned up after its predecessor. See the
+// requeue in runKbIndexWorkerTick for why doing it exactly once is not an
+// optimization but a correctness condition.
+let _orphansRequeued = false;
 
-async function runGuarded(): Promise<void> {
+/**
+ * One turn of the worker: adopt any jobs the previous process left behind, then
+ * drain the queue.
+ *
+ * Exported for tests. The interval calls it; the re-entrancy guard means a tick
+ * that lands during a multi-hour run returns immediately.
+ */
+export async function runKbIndexWorkerTick(opts: RunIndexJobOptions = {}): Promise<void> {
   if (_runInFlight) return;
   _runInFlight = true;
   try {
-    // Drain: a queue that only moves one job per tick would take 10s per job to
-    // work through a backlog, and each loop stops as soon as claim finds
-    // nothing.
-    while (await runNextIndexJob()) {
+    // Requeueing is only sound as a BOOT act: a `running` job is safe to reset
+    // precisely because this process is the only worker and has not started
+    // one yet, so whatever holds it is gone. Once we begin claiming, that
+    // premise dies — the next `running` job we would find is OUR OWN, and
+    // resetting it flips a live run to `pending`, blanks its total, and makes
+    // every status read lie for the hours it keeps running. Hence: strictly
+    // before the first claim, and exactly once.
+    if (!_orphansRequeued) {
+      _orphansRequeued = true;
+      const requeued = await requeueOrphanedIndexJobs();
+      if (requeued > 0) {
+        console.log(`[kb-index-worker] requeued ${requeued} job(s) orphaned by a restart`);
+      }
+    }
+
+    // Drains the queue rather than running one job per tick. Today that loop
+    // body runs at most once: Pinchy is single-tenant (DEFAULT_ORG_ID) and the
+    // active-job index is per org, so there is never a second job to find. It
+    // is a `while` because "keep going while there is work" is the rule the
+    // worker should follow — an `if` would quietly become wrong the day a
+    // second org exists, and costs exactly as much to write.
+    while (await runNextIndexJob(opts)) {
       /* keep going while there is work */
     }
   } catch (err) {
@@ -163,25 +202,18 @@ async function runGuarded(): Promise<void> {
   }
 }
 
+/**
+ * Starts polling for queued index jobs.
+ *
+ * No post-boot kick, unlike the hourly sweeps (upload-gc, chat-error-gc): the
+ * poll is already 10s, so the first tick IS the kick. Arming a second, earlier
+ * path to the same work is what let an orphan-requeue race a claim the interval
+ * had already made.
+ */
 export function startKbIndexWorker(): void {
   _pollInterval = setInterval(() => {
-    void runGuarded();
+    void runKbIndexWorkerTick();
   }, POLL_INTERVAL_MS);
-
-  _startupTimeout = setTimeout(() => {
-    _startupTimeout = null;
-    // Jobs left `running` by a crashed predecessor are requeued before the
-    // first claim: this process is the only worker, so nothing else could still
-    // be holding them.
-    void requeueOrphanedIndexJobs()
-      .then((requeued) => {
-        if (requeued > 0) {
-          console.log(`[kb-index-worker] requeued ${requeued} job(s) orphaned by a restart`);
-        }
-      })
-      .catch((err) => console.error("[kb-index-worker] requeue of orphaned jobs failed:", err))
-      .then(() => runGuarded());
-  }, 30_000);
 }
 
 export function stopKbIndexWorker(): void {
@@ -189,13 +221,15 @@ export function stopKbIndexWorker(): void {
     clearInterval(_pollInterval);
     _pollInterval = null;
   }
-  if (_startupTimeout !== null) {
-    clearTimeout(_startupTimeout);
-    _startupTimeout = null;
-  }
 }
 
 // Test-only helper (mirrors upload-gc / chat-error-gc / audit-verify-job).
 export function _isKbIndexWorkerRunning(): boolean {
   return _pollInterval !== null;
+}
+
+/** Test-only: returns the module to its just-booted state, so a test can exercise the once-per-process orphan requeue. */
+export function _resetKbIndexWorkerForTest(): void {
+  _orphansRequeued = false;
+  _runInFlight = false;
 }

@@ -81,6 +81,16 @@ export interface IngestProgress {
   processed: number;
   /** Files discovered across every root, deduplicated. Known before the first file, so a bar built on it never runs backwards. */
   total: number;
+  /**
+   * The tally so far.
+   *
+   * Reported alongside progress rather than only returned, because the return
+   * value is exactly what a systemic failure destroys: a run that dies on file
+   * 1501 of 2000 really did index 1500 documents, and the only way a caller can
+   * know that is if the tally reached it before the throw. `removed` stays 0
+   * until the removal pass runs at the very end.
+   */
+  counts: IngestResult;
 }
 
 /** Applies the per-file eligibility rules (skip-hidden + A/B denylist + extension allowlist) to a basename. */
@@ -112,32 +122,46 @@ async function walkDir(dir: string, allowedExtensions: readonly string[]): Promi
 
 /**
  * Lists ingest-eligible files for a root that may be a directory OR a single
- * file. An `allowed_paths` grant (pinchy-files) can point at either; a naive
+ * file, or returns null if the root could not be read at all.
+ *
+ * An `allowed_paths` grant (pinchy-files) can point at either shape; a naive
  * `readdir(root)` throws ENOTDIR on a file root (surfacing as an opaque 500
  * from the reindex route), so we stat the root first: a directory is walked
- * recursively, a file is treated as a one-file corpus (subject to the same
- * eligibility rules), and a missing/other root yields nothing rather than
- * throwing.
+ * recursively, and a file is treated as a one-file corpus subject to the same
+ * eligibility rules.
+ *
+ * null and [] are DIFFERENT answers and the removal pass depends on it. []
+ * means "I looked, there is nothing" — documents under this root are genuinely
+ * gone and should be dropped. null means "I could not look", which is what an
+ * unmounted volume looks like, and is indistinguishable from an emptied folder
+ * from the outside. Collapsing the two would let a bind mount that is not
+ * ready yet — a live race, since the index worker starts seconds after boot —
+ * delete an entire corpus and report success.
  */
 async function discoverFiles(
   rootDir: string,
   allowedExtensions: readonly string[]
-): Promise<string[]> {
+): Promise<string[] | null> {
   let rootStat;
   try {
     rootStat = await stat(rootDir);
   } catch {
-    // Missing or unreadable root: nothing to ingest (and nothing to remove —
-    // see the removal pass, which is scoped to this same root).
-    return [];
+    return null;
   }
 
   if (rootStat.isFile()) {
     return isEligibleFile(basename(rootDir), allowedExtensions) ? [rootDir] : [];
   }
+  // A socket, device, or dangling symlink: readable, and holds no documents.
   if (!rootStat.isDirectory()) return [];
 
-  return walkDir(rootDir, allowedExtensions);
+  try {
+    return await walkDir(rootDir, allowedExtensions);
+  } catch {
+    // The root vanished or turned unreadable mid-walk. Same reasoning as
+    // above: a partial listing must not be mistaken for the whole truth.
+    return null;
+  }
 }
 
 /**
@@ -344,9 +368,15 @@ export async function ingestPaths(
 ): Promise<IngestResult> {
   const allowedExtensions = opts.allowedExtensions ?? DEFAULT_ALLOWED_EXTENSIONS;
 
+  // A root we could not read is dropped from the run entirely: it contributes
+  // no files to ingest AND no removal pass, because we have no evidence about
+  // what is under it. See discoverFiles for why that distinction is not
+  // pedantry.
   const perRoot: Array<{ rootDir: string; discovered: Set<string> }> = [];
   for (const rootDir of rootDirs) {
-    perRoot.push({ rootDir, discovered: new Set(await discoverFiles(rootDir, allowedExtensions)) });
+    const discovered = await discoverFiles(rootDir, allowedExtensions);
+    if (discovered === null) continue;
+    perRoot.push({ rootDir, discovered: new Set(discovered) });
   }
 
   // Deduplicated across roots, but ordered so each file is ingested while its
@@ -365,12 +395,14 @@ export async function ingestPaths(
   const tally: Record<FileOutcome, number> = { indexed: 0, skipped: 0, unsearchable: 0 };
   let failed = 0;
   let processed = 0;
+  let removed = 0;
   const total = queue.length;
+  const snapshot = (): IngestResult => ({ ...tally, removed, failed });
 
   // Reported before any work: "0 of N" is what tells a caller the run started
   // and how big it is. A caller that hears nothing until the first file lands
   // cannot tell a slow run from a dead one.
-  await opts.onProgress?.({ processed, total });
+  await opts.onProgress?.({ processed, total, counts: snapshot() });
 
   for (const absPath of queue) {
     try {
@@ -381,7 +413,8 @@ export async function ingestPaths(
       // bad PDF aborts the reindex for every other file, and under a retrying
       // job runner it would fail identically forever. Systemic errors
       // (embedding outage, DB gone) are NOT FileIngestErrors and still escape
-      // — see ingestFile.
+      // — see ingestFile. The tally reported so far is the caller's last
+      // honest word on what the run achieved before that happened.
       if (!(err instanceof FileIngestError)) throw err;
       // The admin-facing counts must not name paths (audit PII rule), so this
       // server log is the only place that says WHICH file failed and why.
@@ -389,15 +422,14 @@ export async function ingestPaths(
       failed++;
     }
     processed++;
-    await opts.onProgress?.({ processed, total });
+    await opts.onProgress?.({ processed, total, counts: snapshot() });
   }
 
-  let removed = 0;
   for (const { rootDir, discovered } of perRoot) {
     removed += await removeVanishedDocuments(orgId, rootDir, discovered);
   }
 
-  return { ...tally, removed, failed };
+  return snapshot();
 }
 
 /** Ingests a single root. Thin wrapper over ingestPaths — kept because most callers and tests deal in one directory at a time. */

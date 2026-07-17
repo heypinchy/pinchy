@@ -20,6 +20,7 @@ import {
   ingestDirectory,
   ingestPaths,
   type IngestDeps,
+  type IngestProgress,
   type IngestResult,
 } from "@/lib/knowledge/ingest";
 
@@ -447,9 +448,14 @@ it("keeps the last indexed version searchable when a file changes into one that 
 /** Records every onProgress call so a test can assert the SEQUENCE, not just the final number — a bar that jumps 0 → done is not progress. */
 function progressRecorder() {
   const seen: Array<{ processed: number; total: number }> = [];
+  const counts: IngestResult[] = [];
   return {
     seen,
-    onProgress: (p: { processed: number; total: number }) => void seen.push({ ...p }),
+    counts,
+    onProgress: (p: IngestProgress) => {
+      seen.push({ processed: p.processed, total: p.total });
+      counts.push({ ...p.counts });
+    },
   };
 }
 
@@ -536,6 +542,46 @@ it("keeps a shared document when re-ingesting overlapping roots", async () => {
   expect(await db.select().from(kbDocuments).where(eq(kbDocuments.orgId, ORG_ID))).toHaveLength(1);
 });
 
+// A granted folder is usually a bind mount. If it is not ready yet — and the
+// index worker now starts seconds after boot, so that is a live race — stat
+// throws and discovery finds nothing. Treating "I could not look" as "there is
+// nothing there" hands the removal pass an empty set, and scoping it to the
+// root then selects the ENTIRE corpus under that root for deletion. The run
+// reports success, `removed: N`, and the next reindex re-embeds everything.
+it("never removes a root's documents when the root itself could not be read", async () => {
+  const mount = join(tmpRoot, "mount");
+  writePdf(mount, "handbook.pdf");
+  const { deps } = fakeDeps();
+
+  await ingestPaths(ORG_ID, [mount], deps);
+  expect(await db.select().from(kbDocuments).where(eq(kbDocuments.orgId, ORG_ID))).toHaveLength(1);
+
+  // The mount goes away (unmounted, or simply not attached yet).
+  rmSync(mount, { recursive: true, force: true });
+
+  const result = await ingestPaths(ORG_ID, [mount], deps);
+
+  expect(result).toEqual(counts());
+  expect(await db.select().from(kbDocuments).where(eq(kbDocuments.orgId, ORG_ID))).toHaveLength(1);
+});
+
+// The other side of the same coin: a root we CAN read, that is genuinely empty,
+// must still drop what is no longer there. Otherwise deleting a document would
+// never take it out of the index.
+it("removes a root's documents when the root is readable and its files are gone", async () => {
+  const dir = join(tmpRoot, "dir");
+  writePdf(dir, "handbook.pdf");
+  const { deps } = fakeDeps();
+
+  await ingestPaths(ORG_ID, [dir], deps);
+  rmSync(join(dir, "handbook.pdf"));
+
+  const result = await ingestPaths(ORG_ID, [dir], deps);
+
+  expect(result).toEqual(counts({ removed: 1 }));
+  expect(await db.select().from(kbDocuments).where(eq(kbDocuments.orgId, ORG_ID))).toHaveLength(0);
+});
+
 it("still reports a total of zero for roots with nothing to ingest", async () => {
   const { deps } = fakeDeps();
   const { seen, onProgress } = progressRecorder();
@@ -546,6 +592,41 @@ it("still reports a total of zero for roots with nothing to ingest", async () =>
   // Still one report: "0 of 0" is a finished run, and a caller that never hears
   // anything cannot tell that apart from a run that never started.
   expect(seen).toEqual([{ processed: 0, total: 0 }]);
+});
+
+// The tally travels WITH the progress report, because the return value is
+// exactly what a systemic failure destroys. A caller that only reads the return
+// learns nothing about a run that died two thirds of the way through.
+it("reports the running tally alongside progress, so a caller keeps it when the run throws", async () => {
+  writePdf(tmpRoot, "a-good.pdf", "a");
+  writePdf(tmpRoot, "b-good.pdf", "b");
+  writePdf(tmpRoot, "c-outage.pdf", "c");
+  const { deps } = fakeDeps();
+  let embedCalls = 0;
+  (deps.embed as ReturnType<typeof vi.fn>).mockImplementation(async (texts: string[]) => {
+    if (++embedCalls > 2) throw new Error("connect ECONNREFUSED");
+    return texts.map(() => Array(1024).fill(0.01));
+  });
+  const recorder = progressRecorder();
+
+  await expect(
+    ingestPaths(ORG_ID, [tmpRoot], deps, { onProgress: recorder.onProgress })
+  ).rejects.toThrow(/ECONNREFUSED/);
+
+  // The last report before the outage is the honest record: two indexed.
+  expect(recorder.counts.at(-1)).toEqual(counts({ indexed: 2 }));
+  expect(recorder.seen.at(-1)).toEqual({ processed: 2, total: 3 });
+});
+
+it("carries a zeroed tally on the very first report, before anything is counted", async () => {
+  writePdf(tmpRoot, "a.pdf", "a");
+  const { deps } = fakeDeps();
+  const recorder = progressRecorder();
+
+  await ingestPaths(ORG_ID, [tmpRoot], deps, { onProgress: recorder.onProgress });
+
+  expect(recorder.counts[0]).toEqual(counts());
+  expect(recorder.counts.at(-1)).toEqual(counts({ indexed: 1 }));
 });
 
 // A file the run could not read still moved the run forward — progress measures

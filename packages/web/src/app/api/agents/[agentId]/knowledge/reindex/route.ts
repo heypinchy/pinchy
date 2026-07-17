@@ -137,10 +137,16 @@ export const POST = withAdmin<RouteContext>(async (request, { params }, session)
   }
 
   // One index run per org at a time (the index is corpus-wide and embedding is
-  // CPU-bound). Answering 409 WITH the blocking job's id — rather than a bare
+  // CPU-bound). Answering 409 WITH the blocking job — rather than a bare
   // rejection — is what lets the admin watch the run that is actually
   // happening instead of clicking again into a queue that will never grow.
+  //
+  // That run may belong to a DIFFERENT agent, since the limit is per org while
+  // status is only readable per agent. So the response names the blocking
+  // agent as well: a jobId whose status endpoint the caller can't find is not
+  // an answer, it's a riddle.
   if (enqueued.status === "busy") {
+    const blocking: EntityRef = { id: enqueued.job.agentId, name: enqueued.job.agentName };
     deferAuditLog(
       reindexAuditEntry({
         actorType: "user",
@@ -157,6 +163,7 @@ export const POST = withAdmin<RouteContext>(async (request, { params }, session)
         error: "A knowledge base reindex is already running",
         jobId: enqueued.job.id,
         status: enqueued.job.status,
+        agent: blocking,
       },
       { status: 409 }
     );

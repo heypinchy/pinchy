@@ -74,7 +74,7 @@ The request comes back immediately with a job to watch:
 
 Indexing itself runs in the background. It has to: every page has to be read, split, and turned into a vector, and on a few thousand documents that's hours of work on a CPU. Nothing about that fits inside an HTTP request, so the request queues the run and hands you its id.
 
-One index run happens at a time. Trigger a second while one is going and you get a `409` carrying the running job's id — so you can watch the run that's already happening rather than start a duplicate.
+One index run happens at a time, across your whole Pinchy — the index is shared, and embedding is CPU-hungry enough that two runs would only slow each other down. Trigger a second while one is going and you get a `409` naming the run that's in your way, including which agent it belongs to. That may not be the agent you asked about; watch that one instead of retrying.
 
 ## 8. Watch the run
 

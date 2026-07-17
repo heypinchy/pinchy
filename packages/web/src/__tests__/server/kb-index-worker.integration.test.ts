@@ -16,7 +16,11 @@ import { eq } from "drizzle-orm";
 import { db } from "@/db";
 import { agents, auditLog, kbDocuments, kbIndexJobs } from "@/db/schema";
 import { enqueueIndexJob, getLatestIndexJobForAgent } from "@/lib/knowledge/index-jobs";
-import { runNextIndexJob } from "@/server/kb-index-worker";
+import {
+  runNextIndexJob,
+  runKbIndexWorkerTick,
+  _resetKbIndexWorkerForTest,
+} from "@/server/kb-index-worker";
 import type { IngestDeps } from "@/lib/knowledge/ingest";
 
 const ORG_ID = "org-kb-worker-test";
@@ -26,6 +30,7 @@ let tmpRoot: string;
 beforeEach(async () => {
   tmpRoot = mkdtempSync(join(tmpdir(), "pinchy-kb-worker-test-"));
   await db.delete(kbIndexJobs);
+  _resetKbIndexWorkerForTest();
 });
 
 afterEach(() => {
@@ -207,10 +212,10 @@ describe("kb index worker", () => {
     expect(row.outcome).toBe("success");
   });
 
-  // A systemic outage is the job's failure. It must land as one, keep the
-  // partial counts, and — critically — release the org's active-job slot, or
-  // one Ollama blip would wedge the queue until a restart.
-  it("fails the job on a systemic outage, keeps partial counts, and frees the slot", async () => {
+  // A systemic outage is the job's failure. It must land as one and —
+  // critically — release the org's active-job slot, or one Ollama blip would
+  // wedge the queue until a restart.
+  it("fails the job on a systemic outage and frees the slot", async () => {
     const agent = await makeAgent();
     writePdf(tmpRoot, "a.pdf", "a");
     await enqueueIndexJob({
@@ -232,13 +237,6 @@ describe("kb index worker", () => {
     const job = await getLatestIndexJobForAgent(agent.id);
     expect(job?.status).toBe("failed");
     expect(job?.error).toContain("ECONNREFUSED");
-    expect(job?.counts).toEqual({
-      indexed: 0,
-      skipped: 0,
-      removed: 0,
-      unsearchable: 0,
-      failed: 0,
-    });
 
     const [row] = await reindexAuditRows();
     expect(row.outcome).toBe("failure");
@@ -273,6 +271,46 @@ describe("kb index worker", () => {
     expect(job).toMatchObject({ status: "succeeded", processed: 0, total: 0 });
   });
 
+  // The whole reason a failed run keeps counts: a 2000-PDF run that dies at
+  // file 1501 indexed 1500 documents, and "indexed: 0" would be a false report
+  // of an empty corpus on an HMAC-signed audit row. The counts have to come
+  // from what the run actually did before it died, not from the initial value
+  // of a variable the throw skipped past.
+  it("records what a failed run had already indexed, not zeros", async () => {
+    const agent = await makeAgent();
+    writePdf(tmpRoot, "a-good.pdf", "a");
+    writePdf(tmpRoot, "b-good.pdf", "b");
+    writePdf(tmpRoot, "c-outage.pdf", "c");
+    await enqueueIndexJob({
+      orgId: ORG_ID,
+      agentId: agent.id,
+      agentName: agent.name,
+      requestedBy: "admin-1",
+      paths: [tmpRoot],
+    });
+
+    // Two files embed fine; the endpoint dies on the third.
+    const deps = fakeDeps();
+    let embedCalls = 0;
+    deps.embed = async (texts: string[]) => {
+      if (++embedCalls > 2) throw new Error("connect ECONNREFUSED ollama.local:11434");
+      return texts.map(() => Array(1024).fill(0.01));
+    };
+
+    await runNextIndexJob({ deps });
+
+    const job = await getLatestIndexJobForAgent(agent.id);
+    expect(job?.status).toBe("failed");
+    expect(job?.counts).toMatchObject({ indexed: 2 });
+    expect(job?.processed).toBe(2);
+
+    // And the audit row carries the same truth — it is the record that outlives
+    // the job row.
+    const [row] = await reindexAuditRows();
+    expect(row.outcome).toBe("failure");
+    expect(row.detail).toMatchObject({ indexed: 2 });
+  });
+
   // The route's 503 only covers the moment of the request. Between enqueue and
   // run — hours, on a real corpus — the Ollama setting can be cleared, so the
   // worker resolves it itself and fails the job honestly instead of throwing an
@@ -300,5 +338,59 @@ describe("kb index worker", () => {
     const [row] = await reindexAuditRows();
     expect(row.outcome).toBe("failure");
     expect((row.detail as { reason?: string }).reason).toContain("ollama_not_configured");
+  });
+});
+
+describe("kb index worker tick", () => {
+  it("requeues jobs orphaned by a crash before it claims anything", async () => {
+    const agent = await makeAgent();
+    writePdf(tmpRoot, "handbook.pdf");
+    await enqueueIndexJob({
+      orgId: ORG_ID,
+      agentId: agent.id,
+      agentName: agent.name,
+      requestedBy: "admin-1",
+      paths: [tmpRoot],
+    });
+    // A job left `running` by the process that died — nothing else can be
+    // holding it, so this tick has to free it and then run it.
+    await db.update(kbIndexJobs).set({ status: "running", startedAt: new Date() });
+
+    await runKbIndexWorkerTick({ deps: fakeDeps() });
+
+    expect(await getLatestIndexJobForAgent(agent.id)).toMatchObject({ status: "succeeded" });
+  });
+
+  // Requeueing is a BOOT act: it is only sound because a `running` job at
+  // startup belongs to a process that no longer exists. Repeat it on a later
+  // tick and that premise is false — the `running` job it finds is the one this
+  // process is working on right now, and resetting it flips a live run to
+  // `pending`, blanks its total, and makes every status read lie for hours.
+  it("never requeues again once it is running, so it cannot reset a live job", async () => {
+    const agent = await makeAgent();
+    writePdf(tmpRoot, "handbook.pdf");
+    await enqueueIndexJob({
+      orgId: ORG_ID,
+      agentId: agent.id,
+      agentName: agent.name,
+      requestedBy: "admin-1",
+      paths: [tmpRoot],
+    });
+
+    await runKbIndexWorkerTick({ deps: fakeDeps() });
+
+    // Stand in for a job this process has claimed and is embedding right now.
+    const startedAt = new Date();
+    await db
+      .update(kbIndexJobs)
+      .set({ status: "running", startedAt, processed: 30, total: 42, finishedAt: null });
+
+    await runKbIndexWorkerTick({ deps: fakeDeps() });
+
+    const job = await getLatestIndexJobForAgent(agent.id);
+    expect(job?.status).toBe("running");
+    expect(job?.processed).toBe(30);
+    expect(job?.total).toBe(42);
+    expect(job?.startedAt).toEqual(startedAt);
   });
 });
