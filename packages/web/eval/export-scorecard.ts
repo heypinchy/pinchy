@@ -36,7 +36,7 @@ import { parseEvalJsonl } from "./canary";
 import { gradeRunForScenario } from "../src/lib/eval/graders";
 import { pooledClusteredDifference, tiedWithLeader } from "../src/lib/eval/comparisons";
 import { applyTrajectoryRegrade } from "../src/lib/eval/regrade-merge";
-import { wilsonInterval } from "../src/lib/eval/scorecard";
+import { passHatKCurve, wilsonInterval } from "../src/lib/eval/scorecard";
 import type { RunResult, RunTrajectory } from "../src/lib/eval/types";
 import { DATASET_VERSION } from "./dataset-version";
 import { hetznerInvoiceDuplicateScenario } from "./scenarios/hetzner-invoice-duplicate";
@@ -100,6 +100,13 @@ interface Cell {
   passes: number;
   passRate: number;
   passAllK: boolean;
+  /**
+   * pass^k reliability curve (τ-bench estimator): the chance k runs in a row
+   * all pass, at k = 1, 2, 4, 8, 12 (levels above n omitted). k=1 is the pass
+   * rate; it decays as k grows. The reliability framing enterprises measure us
+   * against — a model at 0.9 pass@1 can sit near 0.5 at pass^8.
+   */
+  passHatK: { k: number; value: number }[];
   /** Wilson 95% score interval for the pass rate, at this cell's n. */
   wilson95: [number, number];
   /** Transport-errored runs excluded from n as invalid trials. */
@@ -156,6 +163,7 @@ function aggregate(runs: RunResult[]): Cell[] {
         passes,
         passRate: n > 0 ? Number((passes / n).toFixed(3)) : 0,
         passAllK: passes === n && n > 0,
+        passHatK: passHatKCurve(passes, n),
         wilson95: wilson95(passes, n),
         excludedInfraErrors,
         pendingRerun: excludedInfraErrors > 0,

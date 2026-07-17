@@ -93,6 +93,28 @@ correction, so those sets err slightly small. This does not soften the headline
 — it sharpens it: at n=12 this benchmark separates even less than the raw flags
 suggest.
 
+## pass^k — the reliability metric
+
+The consolidated export (`export-scorecard.ts` → the website's `data.json`)
+reports, per cell, a **pass^k** curve at k = 1, 2, 4, 8, 12 (levels above the
+cell's n are omitted). Read it as the number that matters for unattended
+deployment.
+
+- **pass@1** (= `passRate`, the same as pass^k at k=1) is a _capability_
+  measure: how often a single attempt succeeds.
+- **pass^k** is a _reliability_ measure: the chance that k attempts in a row
+  **all** succeed. We use the unbiased τ-bench estimator (arXiv 2406.12045):
+  `C(passes, k) / C(n, k)` — the probability that k of this cell's runs, drawn
+  without replacement, all passed. Not to be confused with **pass@k** (did _at
+  least one_ of k attempts succeed — an easier bar that rewards retrying).
+- Why it's the honest framing: reliability decays fast. A model at 0.75 pass@1
+  sits near 0.02 at pass^8 — "succeeds most of the time" is not "safe to run 8
+  times unwatched". A cell that is `passAllK: true` is exactly pass^12 = 1.
+
+The raw ingredient (passes/n per cell) is unchanged; pass^k is computed at
+export time in `src/lib/eval/scorecard.ts` (`computePassHatK` / `passHatKCurve`),
+so it re-derives from the open data with no new runs.
+
 ## Completeness manifest (as of harness `255678c25`)
 
 Target per scenario: 14 models × 12 runs = 168.

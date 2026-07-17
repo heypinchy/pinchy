@@ -17,6 +17,22 @@ Versioning rule:
 Every superseded version stays published and citable (HELM/Terminal-Bench legacy
 pattern): cite the version and the harness commit, not "latest".
 
+## [1.1.0] - 2026-07-17
+
+**Output field — pass^k reliability curve** (#796): every cell now carries
+`passHatK`, the unbiased τ-bench estimator `C(passes, k) / C(n, k)` at
+k = 1, 2, 4, 8, 12 (levels above the cell's n omitted). Additive: it is
+re-derived from each cell's existing passes/n, with no re-grade, no new runs,
+and no change to an existing number — the fingerprint of this export with
+`passHatK` stripped back out is identical to 1.0.0's, which is how we checked
+rather than assumed.
+
+Why it earns a field: `passRate` is pass@1, a _capability_ measure, and reading
+it as reliability overstates what an unattended agent will do. pass^k is the
+reliability framing — nemotron-3-ultra is 0.75 at pass@1 on happy-path and 0.018
+by pass^8. See `README.md` for how to read the curve, why pass^k is not pass@k,
+and why an empty curve (n=0) is not a reported 0.
+
 ## [1.0.0] - 2026-07-17
 
 First tagged release: the complete **14 models × 7 scenarios × 12 runs** state

@@ -43,6 +43,46 @@ export function computePassCaretK<Tag extends string = FailureTag>(runs: RunResu
   return runs.every((r) => r.passed) ? 1 : 0;
 }
 
+/** The k levels the published pass^k curve reports (k=1 is the pass rate). */
+export const PASS_CARET_K_LEVELS = [1, 2, 4, 8, 12] as const;
+
+/**
+ * Unbiased pass^k: the probability that k runs drawn WITHOUT replacement from
+ * this cell's n runs all pass — `C(passes, k) / C(n, k)`, the τ-bench estimator
+ * (arXiv 2406.12045). Computed as the stable product `Π (passes−i)/(n−i)` so it
+ * never overflows a factorial. This is the RELIABILITY curve: at k=1 it is the
+ * pass rate (a capability measure), and it decays toward 0 as k grows because
+ * "succeeds k times in a row" is a strictly harder bar than "succeeds once".
+ *
+ * Edge cases: k=0 → 1 (an empty draw trivially all-passes); n=0 → 0 (no trials,
+ * nothing proven); passes<k → 0 (an all-pass subset of size k cannot be formed);
+ * k>n → 0 (cannot draw k distinct runs from n).
+ */
+export function computePassHatK(passes: number, n: number, k: number): number {
+  if (k === 0) return 1;
+  if (n === 0 || k > n || passes < k) return 0;
+  let product = 1;
+  for (let i = 0; i < k; i++) {
+    product *= (passes - i) / (n - i);
+  }
+  return product;
+}
+
+/**
+ * The pass^k curve for a cell: `computePassHatK` at each of `levels`, dropping
+ * levels above n (k>n has no defined estimate), values rounded to 3 decimals to
+ * match the published pass-rate precision.
+ */
+export function passHatKCurve(
+  passes: number,
+  n: number,
+  levels: readonly number[] = PASS_CARET_K_LEVELS
+): { k: number; value: number }[] {
+  return levels
+    .filter((k) => k <= n)
+    .map((k) => ({ k, value: Number(computePassHatK(passes, n, k).toFixed(3)) }));
+}
+
 /**
  * Wilson score interval for a binomial proportion (`passes` out of `n`
  * trials), at the given z-score (default 1.96 -> ~95% confidence). Clamped
