@@ -357,9 +357,22 @@ it("keeps ingesting the rest of the corpus when one file's extraction throws", a
     return [{ page: 1, text: PAGE_1_TEXT }];
   });
 
-  const result = await ingestDirectory(ORG_ID, tmpRoot, { embed, extractPdf });
+  const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+  try {
+    const result = await ingestDirectory(ORG_ID, tmpRoot, { embed, extractPdf });
 
-  expect(result).toEqual(counts({ indexed: 1, failed: 1 }));
+    expect(result).toEqual(counts({ indexed: 1, failed: 1 }));
+
+    // `failed: 1` alone is a dead end — the admin-facing counts must not name
+    // paths (PII rule), so the server log is the only place that says WHICH
+    // file failed and why. One log line per failed file, path and cause.
+    expect(consoleError).toHaveBeenCalledTimes(1);
+    const logged = consoleError.mock.calls[0].map(String).join(" ");
+    expect(logged).toContain(join(tmpRoot, "a-broken.pdf"));
+    expect(logged).toContain("Invalid PDF structure");
+  } finally {
+    consoleError.mockRestore();
+  }
   // The good file is indexed regardless of walk order; the broken one leaves
   // no half-written document row behind.
   const docs = await db.select().from(kbDocuments).where(eq(kbDocuments.orgId, ORG_ID));
@@ -386,4 +399,40 @@ it("surfaces an embedding outage as a run failure instead of blaming every file"
   );
   // Bailed on the first file rather than walking the rest of the corpus.
   expect(embed).toHaveBeenCalledTimes(1);
+});
+
+// The replace path must not destroy before it can rebuild: a previously
+// indexed file that changes into something unparseable is a `failed` UPDATE,
+// not a license to drop the last good version. Deleting the old document
+// before extraction would leave the corpus silently poorer on every such
+// file — the run reports success with failed:1 while content that was
+// findable yesterday is gone today.
+it("keeps the last indexed version searchable when a file changes into one that fails to parse", async () => {
+  const pdfPath = join(tmpRoot, "policy.pdf");
+  writeFileSync(pdfPath, "good-bytes-v1");
+
+  const { deps } = fakeDeps([{ page: 1, text: PAGE_1_TEXT }]);
+  expect(await ingestDirectory(ORG_ID, tmpRoot, deps)).toEqual(counts({ indexed: 1 }));
+
+  const [docBefore] = await db.select().from(kbDocuments).where(eq(kbDocuments.orgId, ORG_ID));
+  const chunksBefore = await chunksFor(docBefore.id);
+  expect(chunksBefore).not.toHaveLength(0);
+
+  // The file changes on disk, but the new version is corrupt.
+  writeFileSync(pdfPath, "corrupt-bytes-v2");
+  const embed = vi.fn(async (texts: string[]) => texts.map(() => Array(1024).fill(0.1)));
+  const extractPdf = vi.fn(async () => {
+    throw new Error("Invalid PDF structure");
+  });
+
+  const result = await ingestDirectory(ORG_ID, tmpRoot, { embed, extractPdf });
+  expect(result).toEqual(counts({ failed: 1 }));
+
+  // The last good version is still there, chunks and all: same document row,
+  // old content hash, so the next run with a repaired file re-indexes it.
+  const docsAfter = await db.select().from(kbDocuments).where(eq(kbDocuments.orgId, ORG_ID));
+  expect(docsAfter).toHaveLength(1);
+  expect(docsAfter[0].id).toBe(docBefore.id);
+  expect(docsAfter[0].contentHash).toBe(docBefore.contentHash);
+  expect(await chunksFor(docBefore.id)).toHaveLength(chunksBefore.length);
 });

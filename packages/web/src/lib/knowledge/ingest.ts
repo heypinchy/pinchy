@@ -254,6 +254,12 @@ async function ingestFile(orgId: string, absPath: string, deps: IngestDeps): Pro
     return written > 0 ? "indexed" : "unsearchable";
   }
 
+  // Extract BEFORE deleting the old version: a file that changed into
+  // something unparseable throws here and stays a `failed` update, with the
+  // last good document and its chunks still searchable. Deleting first would
+  // turn that same failure into silent data loss on a success response.
+  const pages = await fileStep(absPath, () => deps.extractPdf(absPath));
+
   if (existing) {
     // Content changed since the last ingest: replace wholesale. Deleting
     // the document row cascades to its (now stale) chunks via the
@@ -261,7 +267,6 @@ async function ingestFile(orgId: string, absPath: string, deps: IngestDeps): Pro
     await db.delete(kbDocuments).where(eq(kbDocuments.id, existing.id));
   }
 
-  const pages = await fileStep(absPath, () => deps.extractPdf(absPath));
   const wholeDocText = pages.map((p) => p.text).join("\n");
 
   const [doc] = await db
@@ -303,6 +308,9 @@ export async function ingestDirectory(
       // (embedding outage, DB gone) are NOT FileIngestErrors and still escape
       // — see ingestFile.
       if (!(err instanceof FileIngestError)) throw err;
+      // The admin-facing counts must not name paths (audit PII rule), so this
+      // server log is the only place that says WHICH file failed and why.
+      console.error(`[kb-ingest] ${err.message}`, err.cause);
       failed++;
     }
   }
@@ -312,6 +320,12 @@ export async function ingestDirectory(
   // via isUnderRoot (separator-bounded for a directory root, exact-match for
   // a file root) so ingesting one root never touches documents indexed from a
   // different root for the same org.
+  //
+  // A file that vanishes between the walk and the read is still in
+  // `discovered`, so this pass leaves its document row alone for one run (it
+  // counts as `failed` above); the next run no longer discovers it and
+  // removes it here. Erring toward keeping the row beats deleting on a
+  // transient read failure.
   const discoveredSet = new Set(discovered);
   const existingForOrg = await db.select().from(kbDocuments).where(eq(kbDocuments.orgId, orgId));
 

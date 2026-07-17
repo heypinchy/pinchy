@@ -17,6 +17,15 @@ import { safeProviderError, type AuditLogEntry, type EntityRef } from "@/lib/aud
 
 type RouteContext = { params: Promise<{ agentId: string }> };
 
+/** The all-zero result: what a reindex with nothing to do reports. */
+const ZERO_COUNTS: IngestResult = {
+  indexed: 0,
+  skipped: 0,
+  removed: 0,
+  unsearchable: 0,
+  failed: 0,
+};
+
 /**
  * Sums the per-root ingest results into the totals the response and the audit
  * row report. Written out field by field on purpose: a counter added to
@@ -32,7 +41,7 @@ function totalCounts(results: IngestResult[]): IngestResult {
       unsearchable: total.unsearchable + result.unsearchable,
       failed: total.failed + result.failed,
     }),
-    { indexed: 0, skipped: 0, removed: 0, unsearchable: 0, failed: 0 }
+    ZERO_COUNTS
   );
 }
 
@@ -128,10 +137,10 @@ export const POST = withAdmin<RouteContext>(async (request, { params }, session)
         actorId,
         outcome: "success",
         pathCount: 0,
-        counts: totalCounts([]),
+        counts: ZERO_COUNTS,
       })
     );
-    return NextResponse.json({ ...totalCounts([]), pathCount: 0 });
+    return NextResponse.json({ ...ZERO_COUNTS, pathCount: 0 });
   }
 
   // The embedding model is fixed (bge-m3) but still needs a reachable Ollama
@@ -145,7 +154,7 @@ export const POST = withAdmin<RouteContext>(async (request, { params }, session)
         actorId,
         outcome: "failure",
         pathCount: targetPaths.length,
-        counts: totalCounts([]),
+        counts: ZERO_COUNTS,
         reason: "ollama_not_configured",
       })
     );

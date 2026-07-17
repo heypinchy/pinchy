@@ -81,7 +81,7 @@ The response reports what happened:
 | `skipped`      | Unchanged since the last run, left alone.                                                                                                     |
 | `removed`      | Gone from disk, dropped from the index.                                                                                                       |
 | `unsearchable` | Read without error, but the file holds no text to search — nearly always a scanned PDF (see [Scope in this release](#scope-in-this-release)). |
-| `failed`       | Couldn't be read or parsed at all. The file is left out and the run continues.                                                                |
+| `failed`       | Couldn't be read or parsed at all. The run continues; if an earlier version of the file was indexed, that version stays searchable.           |
 
 `indexed` counts documents the agent can actually reach, not documents we processed — that's why a scanned PDF lands under `unsearchable` instead. If either of the last two numbers is above zero, part of your corpus can't answer questions yet, and it's worth knowing which part before someone asks it something.
 
