@@ -126,6 +126,21 @@ Mistakes the drift guards in `ci-path-filter.test.mjs` exist to catch: re-adding
 
 An unresolvable base or empty diff deliberately answers **`code=true`**: wasting CI minutes is recoverable, skipping the matrix on a real code change is not. When adding a job that depends on `build-image`, note that `build-image` is skipped both on fork PRs (fall back to a local build) and on docs-only PRs (build nothing) — only the explicit `changes` gate tells those two apart.
 
+## Never Put A Required Check In A Matrix
+
+A `strategy.matrix` renames a job's status check: `E2E Tests` becomes `E2E Tests (1/2)`. Branch protection matches checks **by name**, so the moment a required job grows a matrix, main waits forever on a name that will never report again — the same unmergeable-with-nothing-broken failure as a workflow-level `paths-ignore`, from the other direction.
+
+The required names are `quality`, `vitest-integration` and `e2e` (`REQUIRED_JOBS` in `scripts/lib/ci-path-filter.mjs`). Sharding any of them means changing branch protection in the same change — **ask first**, it is not a unilateral edit. Every other job is free to shard.
+
+Sharding is worth it only where test time clearly exceeds the **~4m30 fixed overhead** every E2E job re-pays per shard (image pull ~1m30, stack boot ~1m, pnpm/playwright setup, teardown). Today that is `setup-wizard-e2e` (8m22) and `integration` (8m17); `telegram-e2e` (5m19), `odoo-e2e` (4m24) and `email-e2e` (3m32) stay whole, because a second stack would cost more than it saves. Measure before adding a shard — `gh api repos/heypinchy/pinchy/actions/runs/<id>/jobs` gives per-step timings.
+
+Two things a shard must get right:
+
+- **Shard across jobs, never by raising `workers`.** Every Playwright config here pins `workers: 1` deliberately: setup-wizard's specs call `resetStack()` (truncates the DB, restarts containers) and the integration suite shares one OpenClaw session. Two specs in one stack would wipe each other's state. One stack per shard keeps that invariant; `fullyParallel: true` breaks it.
+- **Scope the diagnostics artifact to the shard.** `upload-artifact` rejects a duplicate name within a run, so a bare `artifact-name: "<suite>"` from both shards turns a real test failure into an upload error and loses the diagnostics.
+
+Related: the images are built by a `build-images` **matrix** (two runners, ~2× faster than the old serial job) and fanned back in through `build-image`, whose only job is to preserve the `result` + `outputs` contract the 11 downstream jobs already encode. Its `if:` mirrors the matrix's verbatim, and `always()` plus its guard step is what keeps a *failed* build from reading as `skipped` — which downstream would take as "fork PR, build locally" and cheerfully rebuild a Dockerfile CI just proved broken. Because a matrix cannot export per-entry outputs, the fan-in recomputes the tags; `scripts/lib/ci-image-tags.test.mjs` pins the two expressions together.
+
 ## Web Test Files Are Type-Checked
 
 `packages/web` test files (`*.test.ts(x)`, `*.integration.test.ts`, `*.test-d.ts`) are type-checked in CI by the `quality` job's "Typecheck web (incl. tests)" step: `pnpm -C packages/web typecheck` → `tsc --noEmit -p packages/web/tsconfig.typecheck.json`.
