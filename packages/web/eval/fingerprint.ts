@@ -114,7 +114,22 @@ export async function captureRunFingerprint(
     const res = await fetch(`${pinchyUrl}/api/version`, {
       headers: { "Cache-Control": "no-store" },
     });
-    if (res.ok) version = (await res.json()) as VersionResponse;
+    if (res.ok) {
+      // Defense in depth: /api/version is our own localhost endpoint, but treat
+      // its body as untrusted. Accept only string fields and cap each at 120
+      // chars, so a rogue or oversized response can neither inject non-string
+      // structure into the scorecard nor bloat it — and only these four keys
+      // are ever read, never the raw object.
+      const raw = (await res.json()) as Record<string, unknown>;
+      const field = (v: unknown): string | undefined =>
+        typeof v === "string" ? v.slice(0, 120) : undefined;
+      version = {
+        pinchyVersion: field(raw.pinchyVersion),
+        openclawVersion: field(raw.openclawVersion),
+        build: field(raw.build),
+        nodeEnv: field(raw.nodeEnv),
+      };
+    }
   } catch {
     // leave version empty → all "unknown", comparable:false
   }
