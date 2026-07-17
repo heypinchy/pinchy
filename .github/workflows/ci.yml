@@ -1869,8 +1869,26 @@ jobs:
         if: always()
         run: docker compose -f docker-compose.yml -f docker-compose.e2e.yml -f docker-compose.imap-test.yml down -v
 
+  # Sharded across two runners: at 8m22 of test time this was the longest job in
+  # the matrix, and the matrix tail IS the run's wall-clock. The cost is real but
+  # bounded — each shard pays the ~4m30 fixed overhead (image pull, stack boot)
+  # again — so only the two longest suites are worth splitting. Don't shard the
+  # cheaper ones: below roughly 6 min of test time a second stack costs more than
+  # it saves.
+  #
+  # Sharding is across JOBS, one Docker stack each, and NOT via Playwright
+  # workers. `playwright.setup-wizard.config.ts` pins `workers: 1` on purpose:
+  # every spec calls `resetStack()`, which truncates the DB and restarts
+  # containers. Two specs sharing a stack would wipe each other's state
+  # mid-flight. Per-shard stacks keep that invariant intact.
+  #
+  # Safe to shard because this job is NOT a required check. Never do this to
+  # quality / vitest-integration / e2e (see REQUIRED_JOBS in
+  # scripts/lib/ci-path-filter.mjs): a matrix renames the check, branch
+  # protection would wait forever on a name that no longer reports, and main
+  # would be unmergeable.
   setup-wizard-e2e:
-    name: Setup Wizard E2E Tests
+    name: Setup Wizard E2E Tests (${{ matrix.shard }}/2)
     runs-on: ubuntu-latest
     needs: [changes, build-image]
     # See docker-smoke on why the changes gate is explicit rather than inferred
@@ -1883,6 +1901,13 @@ jobs:
     permissions:
       contents: read
       packages: read
+
+    strategy:
+      # A failure in shard 1 says nothing about shard 2 — they run disjoint
+      # specs. Cancelling the other half would just hide the second failure.
+      fail-fast: false
+      matrix:
+        shard: [1, 2]
 
     env:
       PINCHY_VERSION: latest
@@ -1977,8 +2002,11 @@ jobs:
 
       - uses: ./.github/actions/setup-playwright
 
+      # Playwright shards by SPEC FILE, and this suite is one provider per file
+      # (anthropic, google, ollama-cloud, ollama-local, openai) — so the 5 files
+      # split 3/2 with no test left behind and no file split across shards.
       - name: Run Setup Wizard E2E tests
-        run: pnpm -C packages/web test:e2e:setup-wizard
+        run: pnpm -C packages/web test:e2e:setup-wizard --shard=${{ matrix.shard }}/2
         env:
           CI: true
           ENCRYPTION_KEY: 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
@@ -1989,7 +2017,10 @@ jobs:
         with:
           compose-files: ${{ env.COMPOSE_FILES }}
           mock-service: "llm-providers-mock"
-          artifact-name: "setup-wizard-e2e"
+          # Shard-scoped: upload-artifact rejects a duplicate name within a run,
+          # so a bare "setup-wizard-e2e" from both shards would turn a real test
+          # failure into a confusing upload error — and lose the diagnostics.
+          artifact-name: "setup-wizard-e2e-shard-${{ matrix.shard }}"
 
       - name: Tear down
         if: always()
@@ -2173,8 +2204,18 @@ jobs:
         if: always()
         run: docker compose -f docker-compose.yml -f docker-compose.e2e.yml -f docker-compose.test.yml down -v
 
+  # Sharded for the same reason as setup-wizard-e2e (see the rationale there):
+  # 8m17 of test time made this the second-longest tail in the matrix, and its 18
+  # spec files divide cleanly. Also not a required check, so the matrix rename is
+  # safe.
+  #
+  # Per-shard stacks are a bonus here rather than a constraint: today the whole
+  # suite shares ONE OpenClaw session, which is why triggers like SLOW_STREAM
+  # need word lists no other spec can produce (see fake-ollama-server.ts). Two
+  # stacks mean two sessions and strictly less cross-spec interference, never
+  # more.
   integration:
-    name: Integration Tests (OpenClaw + Fake Ollama)
+    name: Integration Tests (OpenClaw + Fake Ollama) (${{ matrix.shard }}/2)
     runs-on: ubuntu-latest
     needs: [changes, build-image]
     # See docker-smoke on why the changes gate is explicit rather than inferred
@@ -2184,6 +2225,11 @@ jobs:
       needs.changes.outputs.code == 'true' &&
       (needs.build-image.result == 'success' ||
        needs.build-image.result == 'skipped')
+    strategy:
+      # Disjoint specs — a failure in one shard says nothing about the other.
+      fail-fast: false
+      matrix:
+        shard: [1, 2]
     permissions:
       contents: read
       packages: read
@@ -2283,7 +2329,7 @@ jobs:
       - uses: ./.github/actions/setup-playwright
 
       - name: Run integration tests
-        run: pnpm -C packages/web test:integration
+        run: pnpm -C packages/web test:integration --shard=${{ matrix.shard }}/2
         env:
           CI: true
 
@@ -2329,7 +2375,8 @@ jobs:
           # Integration suite runs fake-Ollama on the host, not as a compose
           # service — no mock to capture, the globalTeardown-captured
           # /tmp/openclaw-integration.log is already shown above.
-          artifact-name: "integration"
+          # Shard-scoped: upload-artifact rejects duplicate names within a run.
+          artifact-name: "integration-shard-${{ matrix.shard }}"
 
       - name: Tear down
         if: always()
