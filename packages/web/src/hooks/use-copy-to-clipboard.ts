@@ -13,12 +13,21 @@ import { useEffect, useRef, useState } from "react";
 export function useCopyToClipboard({ copiedDuration = 2000 }: { copiedDuration?: number } = {}) {
   const [isCopied, setIsCopied] = useState(false);
   const resetTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  const mounted = useRef(true);
 
-  useEffect(() => () => clearTimeout(resetTimer.current), []);
+  useEffect(() => {
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+      clearTimeout(resetTimer.current);
+    };
+  }, []);
 
   async function copy(text: string): Promise<boolean> {
     const ok = await writeToClipboard(text);
-    if (ok) {
+    // The write is async, so the component may be gone by now — in which case the
+    // cleanup has already run and would not catch a timer scheduled after it.
+    if (ok && mounted.current) {
       setIsCopied(true);
       clearTimeout(resetTimer.current);
       resetTimer.current = setTimeout(() => setIsCopied(false), copiedDuration);

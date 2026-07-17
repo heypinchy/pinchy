@@ -148,6 +148,37 @@ describe("useCopyToClipboard", () => {
     expect(vi.getTimerCount()).toBe(0);
   });
 
+  it("schedules no reset when the unmount beats the pending clipboard write", async () => {
+    // The unmount cleanup runs before the write resolves, so it has no timer to
+    // clear yet. Without a mounted guard the resolved write then schedules one
+    // anyway — orphaned past the cleanup, and nobody left to clear it.
+    let resolveWrite!: () => void;
+    writeText.mockReturnValue(
+      new Promise<void>((resolve) => {
+        resolveWrite = resolve;
+      })
+    );
+
+    const { result, unmount } = renderHook(() => useCopyToClipboard());
+
+    let copying!: Promise<boolean>;
+    act(() => {
+      copying = result.current.copy("hello");
+    });
+
+    unmount();
+
+    let returned: boolean | undefined;
+    await act(async () => {
+      resolveWrite();
+      returned = await copying;
+    });
+
+    expect(vi.getTimerCount()).toBe(0);
+    // The copy itself did succeed — only the state update is skipped.
+    expect(returned).toBe(true);
+  });
+
   it("restarts the reset window on a second copy instead of racing the first", async () => {
     const { result } = renderHook(() => useCopyToClipboard());
 
