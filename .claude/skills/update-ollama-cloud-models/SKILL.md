@@ -24,6 +24,13 @@ probe is the one mistake this skill is here to prevent.
 - An ollama-cloud email/announcement mentions a new model or version.
 - Preparing a Pinchy release (this is a pre-release checklist item — run it
   even for tiny releases).
+- **Before any Eval-v1 sweep** (iron rule 1 of the `run-model-eval` skill). The
+  benchmark's whole claim is that it measures what the provider actually serves
+  today, so a sweep against a drifted catalog is worse than no sweep: it burns
+  hours on models that 404, and publishes a model set the provider retired. This
+  is not hypothetical — Ollama retired `deepseek-v3.2` and `glm-4.7` on
+  2026-07-15 and the catalog still carried both two days later, because nothing
+  in either skill said to check before a sweep.
 - You suspect the catalog drifted (a model 404s, a tier pick feels stale).
 
 Do **not** add a model from its library page alone, ever. No key → no verified

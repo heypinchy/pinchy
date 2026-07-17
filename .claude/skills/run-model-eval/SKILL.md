@@ -20,7 +20,21 @@ resumes from JSONL.**
 
 ## Iron rules (each one cost us real damage once)
 
-1. **PROBE FIRST.** Before any full sweep of a new model or scenario: run
+1. **REFRESH THE CATALOG FIRST.** Before ANY sweep, run `pnpm models:discover`
+   (see the `update-ollama-cloud-models` skill) and act on the delta. The model
+   set decays under you: on 2026-07-15 Ollama retired `deepseek-v3.2` and
+   `glm-4.7` mid-benchmark, and we only noticed two days later — by accident,
+   while researching prices. `models:discover` exits non-zero on `REMOVED`, so
+   this is a 30-second check that prevents two expensive failures: a sweep that
+   burns hours 404-ing on a model that no longer exists, and a published
+   benchmark whose model set the provider no longer serves. `ADDED` matters just
+   as much — a sweep that silently omits the newest models is stale the day it
+   ships. The skill's own trigger list said "before a release", never "before a
+   sweep"; that gap is exactly how this bit us.
+   Retired models are NOT deleted from the dataset: their last measured numbers
+   stay published and citable, marked as withdrawn from the serving path (see
+   `data/CHANGELOG.md`, and the legacy policy in `data/README.md`).
+2. **PROBE FIRST.** Before any full sweep of a new model or scenario: run
    N=3 × 3-4 capable models (`EVAL_N=3`, `EVAL_CANDIDATE_MODELS=...`), then
    **read the trajectories** (`results/<label>.trajectories.jsonl`) — check
    tool calls, final messages, and that failures are model behavior, not
@@ -29,34 +43,34 @@ resumes from JSONL.**
    inboxes, a mock that couldn't sum two-step line entries, a stack duplicate
    guard masking behavior. A full sweep on a broken grader wastes ~12h and
    contaminates the dataset.
-2. **ONE SWEEP PER STACK.** Never run a sweep manually while the watchdog is
+3. **ONE SWEEP PER STACK.** Never run a sweep manually while the watchdog is
    armed (`active-scenario` ≠ `none`), and never two sweeps concurrently —
    they share mock state + the agent's model pin and **corrupt each other's
    state-based grades**. Check `pgrep -f eval:models` first. Contaminated
    models show ≠12 runs per cell: delete their rows from BOTH
    `<label>.jsonl` and `<label>.trajectories.jsonl`, then re-run them.
-3. **odoo-mock is image-built** (`docker-compose.eval.yml` build context, no
+4. **odoo-mock is image-built** (`docker-compose.eval.yml` build context, no
    volume mount). Mock changes need
    `... up -d --build odoo-mock` — and never mid-sweep.
-4. **Stack env is exact:** `PINCHY_VERSION=latest DB_PASSWORD=eval_dev_pw
+5. **Stack env is exact:** `PINCHY_VERSION=latest DB_PASSWORD=eval_dev_pw
 docker compose -p pinchy-eval -f docker-compose.yml -f docker-compose.e2e.yml
 -f docker-compose.eval.yml up --build -d`. `DB_PASSWORD` must be non-default
    (Pinchy rotates `pinchy_dev` away). If openclaw won't stabilise with
    `SecretRefResolutionError`: stale config volume — surgically delete
    `/openclaw-config/openclaw.json*` in the pinchy container and restart
    pinchy+openclaw (never `down -v`).
-5. **Key is seeded once.** Pass `OLLAMA_CLOUD_API_KEY` via env on the first
+6. **Key is seeded once.** Pass `OLLAMA_CLOUD_API_KEY` via env on the first
    `eval:models` run (it lands in the eval DB); later runs and the watchdog
    resume **keyless**. Never write the key to disk.
-6. **Fresh worktree: seed `results/` from `data/`** before topping up, or the
+7. **Fresh worktree: seed `results/` from `data/`** before topping up, or the
    rebuilt scorecards will contain only the new model:
    `cp packages/web/eval/data/*.jsonl packages/web/eval/data/*.json packages/web/eval/results/`
-7. **Long sweeps run under the watchdog, not a session.** Session-spawned
+8. **Long sweeps run under the watchdog, not a session.** Session-spawned
    background sweeps die with the session. Install per the header of
    `watchdog.sh` (in this skill dir; launchd + `caffeinate`, checks every
    15 min, stall-kills after 30 min without progress). The Mac must stay
    awake and powered; keep `EXPECTED_RUNS` = models × N in sync.
-8. **Publishing is manual and per-scenario:** copy
+9. **Publishing is manual and per-scenario:** copy
    `results/<label>{.jsonl,.trajectories.jsonl,.json}` → `eval/data/`, update
    the manifest table in `data/README.md`, commit as
    `data(eval): <scenario> ... (N models, M runs)`.
@@ -65,17 +79,19 @@ docker compose -p pinchy-eval -f docker-compose.yml -f docker-compose.e2e.yml
 
 1. Add it to `TOOL_CAPABLE_OLLAMA_CLOUD_MODELS` (use the
    `update-ollama-cloud-models` skill; verify tools via
-   `scripts/verify-ollama-cloud-tools.mjs --only=<id>`).
-2. Stack up (rule 4) → `pnpm -C packages/web eval:selftest` green.
-3. Seed `results/` (rule 6). **Probe** the new model, N=3, across the two
-   cheapest discriminators (happy + silent); inspect trajectories (rule 1).
+   `scripts/verify-ollama-cloud-tools.mjs --only=<id>`). Flags come from a live
+   probe, never from a library page — and a single green probe is a smoke test,
+   not proof: probe a NEW model several times before trusting it.
+2. Stack up (rule 5) → `pnpm -C packages/web eval:selftest` green.
+3. Seed `results/` (rule 7). **Probe** the new model, N=3, across the two
+   cheapest discriminators (happy + silent); inspect trajectories (rule 2).
 4. Add the id to `MODELS` + bump `EXPECTED_RUNS` in
    `~/.pinchy-eval-watchdog/watchdog.sh`, then per scenario label:
    `echo <label> > ~/.pinchy-eval-watchdog/active-scenario` and
    `launchctl kickstart gui/$(id -u)/com.pinchy.eval-watchdog`. Resume skips
    models already at N, so only the new model runs.
 5. When each label completes: `pnpm -C packages/web tsx eval/regrade.ts
-<label> --quotes` (sanity + evidence quotes), then publish (rule 8).
+<label> --quotes` (sanity + evidence quotes), then publish (rule 9).
 6. Set `active-scenario` to `none` when done.
 
 ## Recipe: add a scenario
