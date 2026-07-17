@@ -9,6 +9,7 @@ import {
   replaceTrailingPlaceholder,
   stripTrailingPlaceholder,
 } from "@/hooks/in-flight-placeholder";
+import { DELAY_HINT_MS } from "@/lib/chat-liveness";
 import { mergeOrAppendChunk } from "@/hooks/merge-chunk";
 import { ensureTrailingAssistant } from "@/hooks/ensure-trailing-assistant";
 import { uploadAttachment } from "@/lib/upload-attachment";
@@ -85,7 +86,6 @@ export interface WsMessage {
   oversized?: boolean;
 }
 
-const DELAY_HINT_MS = 15_000;
 /**
  * Cap on the Tier 2b pre-history frame buffer. The buffer holds chunks
  * that arrive on a fresh ws between `addListener` (server-side) and the

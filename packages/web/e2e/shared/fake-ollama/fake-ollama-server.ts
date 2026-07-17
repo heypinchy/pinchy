@@ -79,6 +79,23 @@ const SLOW_STREAM_TRIGGER = "E2E_SLOW_STREAM";
 const SLOW_STREAM_RESPONSE = "one two three four five six seven eight nine ten";
 const SLOW_STREAM_DELAY_MS = 500;
 
+/**
+ * The per-word stream delay the helpers actually apply, allowing an env
+ * override — same rationale and same contract as `livenessSlowDelayMs()` below.
+ *
+ * The E2E specs need the real 500 ms: "genuinely slow" is the point of these
+ * triggers there. The in-process unit tests assert the WIRE SHAPE of the
+ * stream, which is byte-identical at any rate, so paying 500 ms × every word of
+ * a 14-word response bought nothing and cost ~14 s of `pnpm test`.
+ *
+ * Defaults to the real value, so only a caller that opts in is affected — no
+ * E2E path sets it.
+ */
+function slowStreamDelayMs(): number {
+  const override = Number(process.env.FAKE_OLLAMA_SLOW_STREAM_DELAY_MS_OVERRIDE);
+  return Number.isFinite(override) && override >= 0 ? override : SLOW_STREAM_DELAY_MS;
+}
+
 // Same slow per-word stream as SLOW_STREAM, but with a word list no other spec
 // can produce. The integration suite shares ONE OpenClaw session, so specs
 // 15-18 leave completed "one … ten" replies in the history that spec 19 then
@@ -117,6 +134,30 @@ const LIVENESS_SLOW_RESPONSE =
 // the 15s threshold to stay deterministic on a loaded CI host without making
 // the spec needlessly slow.
 const LIVENESS_SLOW_DELAY_MS = 18000;
+
+/**
+ * The stall the dispatcher actually applies, allowing an env override.
+ *
+ * The E2E specs need the real 18 s — the banner only engages if the stall
+ * outlasts the client's 15 s threshold, so shortening it there would delete the
+ * coverage. The in-process unit test is a different question: it pins trigger
+ * SELECTION and WIRE SHAPE, and sitting through 18 s of real time proves
+ * nothing beyond `setTimeout` working. It cost 49 s — a third of the file time
+ * of `pnpm test`, which gates every merge as part of the required `quality`
+ * check.
+ *
+ * So the unit test overrides this to a few hundred ms and still drives the same
+ * dispatcher branch and asserts the same wire shape, while a separate instant
+ * assertion pins the real 18 s against the client threshold. Nothing in the E2E
+ * path sets the variable, so the Docker stacks keep the real value.
+ *
+ * Read per request, not at module load: the test toggles it between cases, and
+ * an ESM module-level read would freeze whatever was set at first import.
+ */
+function livenessSlowDelayMs(): number {
+  const override = Number(process.env.FAKE_OLLAMA_LIVENESS_SLOW_DELAY_MS);
+  return Number.isFinite(override) && override >= 0 ? override : LIVENESS_SLOW_DELAY_MS;
+}
 
 // DYING: simulates a provider/stream failure. On the OpenAI-completions surface
 // pi-ai expects a 200 SSE stream, so the most faithful "the provider died
@@ -678,7 +719,7 @@ async function streamTextResponseSlow(res: http.ServerResponse, text: string) {
       };
       res.write(JSON.stringify(chunk) + "\n");
       if (!isLast) {
-        await new Promise((r) => setTimeout(r, SLOW_STREAM_DELAY_MS));
+        await new Promise((r) => setTimeout(r, slowStreamDelayMs()));
       }
     }
   } catch {
@@ -1171,7 +1212,7 @@ async function streamOpenAiTextSlow(res: http.ServerResponse, text: string) {
       const piece = i === 0 ? words[i] : " " + words[i];
       sseWrite(res, chatCompletionChunk({ content: piece }));
       if (i < words.length - 1) {
-        await new Promise((r) => setTimeout(r, SLOW_STREAM_DELAY_MS));
+        await new Promise((r) => setTimeout(r, slowStreamDelayMs()));
       }
     }
     sseWrite(res, chatCompletionChunk({ finishReason: "stop" }));
@@ -1209,7 +1250,7 @@ async function streamOpenAiTextSlowStart(
       const piece = i === 0 ? words[i] : " " + words[i];
       sseWrite(res, chatCompletionChunk({ content: piece }));
       if (i < words.length - 1) {
-        await new Promise((r) => setTimeout(r, SLOW_STREAM_DELAY_MS));
+        await new Promise((r) => setTimeout(r, slowStreamDelayMs()));
       }
     }
     sseWrite(res, chatCompletionChunk({ finishReason: "stop" }));
@@ -1252,7 +1293,7 @@ async function streamTextResponseSlowStart(
       };
       res.write(JSON.stringify(chunk) + "\n");
       if (!isLast) {
-        await new Promise((r) => setTimeout(r, SLOW_STREAM_DELAY_MS));
+        await new Promise((r) => setTimeout(r, slowStreamDelayMs()));
       }
     }
   } catch {
@@ -1544,7 +1585,7 @@ export async function handleRequest(req: http.IncomingMessage, res: http.ServerR
     }
 
     if (lastContent.includes(LIVENESS_SLOW_TRIGGER) && !hasToolResult) {
-      await streamTextResponseSlowStart(res, LIVENESS_SLOW_RESPONSE, LIVENESS_SLOW_DELAY_MS);
+      await streamTextResponseSlowStart(res, LIVENESS_SLOW_RESPONSE, livenessSlowDelayMs());
       return;
     }
 
@@ -1743,7 +1784,7 @@ export async function handleRequest(req: http.IncomingMessage, res: http.ServerR
     // Liveness SLOW: stalls before the first token so a "taking longer" UI state
     // engages, then completes normally.
     if (lastContent.includes(LIVENESS_SLOW_TRIGGER) && !hasToolResult) {
-      await streamOpenAiTextSlowStart(res, LIVENESS_SLOW_RESPONSE, LIVENESS_SLOW_DELAY_MS);
+      await streamOpenAiTextSlowStart(res, LIVENESS_SLOW_RESPONSE, livenessSlowDelayMs());
       return;
     }
 
