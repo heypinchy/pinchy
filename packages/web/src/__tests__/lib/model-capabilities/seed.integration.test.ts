@@ -11,8 +11,13 @@ beforeEach(async () => {
 it("inserts a row for every built-in model on first run", async () => {
   await seedBuiltinModels();
   const rows = await db.select().from(models);
-  // Anthropic (3) + OpenAI (3) + Google (3) + ollama-cloud (~33) = ~42
-  expect(rows.length).toBeGreaterThanOrEqual(30);
+  // Anthropic (3) + OpenAI (3) + Google (3) + ollama-cloud (18) = 27.
+  // The floor was 30 when ollama-cloud carried ~33 models; the 2026-07-15
+  // retirement wave cut that to 18. A floor near the real total is just a
+  // snapshot that breaks on every retirement — this guards "the seed inserted
+  // every provider's models, not only the first provider's", so it only has to
+  // sit above any single provider's count.
+  expect(rows.length).toBeGreaterThanOrEqual(20);
   expect(rows.every((r) => r.source === "builtin")).toBe(true);
 });
 

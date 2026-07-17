@@ -119,6 +119,9 @@ these derived sites in the SAME change:
      per-model `contextWindow`, and the `reasoning`/`input` lists.
    - `__tests__/lib/model-vision.integration.test.ts` — `isModelVisionCapable`
      assertions (DB-backed; only `pnpm test:db` runs it, not `pnpm test`).
+   - `__tests__/lib/model-capabilities/seed.integration.test.ts` — DB-backed too,
+     and it asserts a FLOOR on the built-in model count (`>= 30` until the
+     2026-07-15 wave cut the catalog to 18). A retirement trips it.
    - `__tests__/lib/ollama-cloud-image-preference-drift.test.ts` — guards the
      image-preference list.
    - `__tests__/lib/vision-model-chain.test.ts` — its fixture simulates the LIVE

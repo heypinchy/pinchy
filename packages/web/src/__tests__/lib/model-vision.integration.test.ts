@@ -44,10 +44,6 @@ describe("Ollama cloud vision models (from DB seed)", () => {
     expect(isModelVisionCapable("ollama-cloud/kimi-k2.5")).toBe(true);
   });
 
-  it("returns true for gemini-3-flash-preview", () => {
-    expect(isModelVisionCapable("ollama-cloud/gemini-3-flash-preview")).toBe(true);
-  });
-
   it("returns true for mistral-large-3:675b", () => {
     expect(isModelVisionCapable("ollama-cloud/mistral-large-3:675b")).toBe(true);
   });
@@ -71,12 +67,6 @@ describe("Ollama cloud vision models (from DB seed)", () => {
     // 2026-06-25, 2 rounds). Flagged vision:false so it's never picked for
     // images — its value is reliable tools, not vision.
     expect(isModelVisionCapable("ollama-cloud/kimi-k2.7-code")).toBe(false);
-  });
-
-  it("returns true for every ministral-3 variant", () => {
-    expect(isModelVisionCapable("ollama-cloud/ministral-3:3b")).toBe(true);
-    expect(isModelVisionCapable("ollama-cloud/ministral-3:8b")).toBe(true);
-    expect(isModelVisionCapable("ollama-cloud/ministral-3:14b")).toBe(true);
   });
 
   it("returns true for kimi-k2.6", () => {
