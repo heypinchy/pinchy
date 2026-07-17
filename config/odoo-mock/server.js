@@ -1486,6 +1486,26 @@ function handleJsonRpc(body) {
         return true;
       }
 
+      // account.move.js_assign_outstanding_line — the public Odoo Community
+      // reconcile entry point pinchy-odoo drives for the payment counterpart
+      // (index.ts odoo_reconcile). Real Odoo adds the bill's own settlement
+      // line, reconciles both sides, and drops the bill's open balance to zero.
+      // The plugin verifies success ONLY by re-reading `amount_residual`
+      // (didReconcile) — it does NOT trust the method's return value — so the
+      // mock MUST zero the residual here or the tool honestly reports failure
+      // (which is exactly the false-green trap #791/#782 called out). Also mark
+      // it paid, mirroring the visible end state.
+      if (objMethod === "js_assign_outstanding_line") {
+        const ids = positionalArgs[0] || [];
+        for (const record of store.get(model)) {
+          if (ids.includes(record.id)) {
+            record.amount_residual = 0;
+            record.payment_state = "paid";
+          }
+        }
+        return true;
+      }
+
       // Generic record-action methods (action_*, button_*, and a few approval
       // methods). In real Odoo these return `true` when they finish cleanly,
       // or an `ir.actions.act_window` dict when a wizard (backorder, etc.) is

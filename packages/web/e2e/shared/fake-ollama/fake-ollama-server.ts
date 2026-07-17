@@ -702,27 +702,34 @@ function countToolResults(messages: unknown[]): number {
 // message and reuses it in the ref-based tool. This is the reusable mechanism
 // that lets any ref-based odoo tool get genuine E2E dispatch coverage — the
 // first consumer is the odoo_schedule_activity probe below.
-const ODOO_SCHEDULE_ACTIVITY_REF_TRIGGER = "E2E_ODOO_SCHEDULE_ACTIVITY_REF";
-const ODOO_SCHEDULE_ACTIVITY_REF_RESPONSE = "Activity scheduled via ref: coverage probe complete.";
-
 // Wire form of an integration ref (integration-ref.ts PREFIX `pinchy_ref:v1:`
 // + base64url payload). Kept local — this server is copied into a standalone
 // container and must not import the plugin.
 const PINCHY_REF_RE = /pinchy_ref:v1:[A-Za-z0-9_-]+/;
 
 /**
- * Extract the first `_pinchy_ref` token from the CURRENT round's tool-result
- * messages (those after the last user message, via `lastRoundMessages`) so a
- * stale ref from an earlier round in a shared session can't leak in. Returns
- * null if none is present.
+ * Every `_pinchy_ref` token in the CURRENT round's tool-result messages — one
+ * per tool-result message, in order. Scoped to `lastRoundMessages` so a stale
+ * ref from an earlier round in a shared session can't leak in. Multi-ref tools
+ * (odoo_reconcile: invoice + counterpart, minted by two separate odoo_read
+ * rounds) rely on the positional order: refs[0] is the first read's ref, etc.
  */
-export function extractPinchyRefFromToolResults(messages: unknown[]): string | null {
+export function extractPinchyRefsInOrder(messages: unknown[]): string[] {
+  const refs: string[] = [];
   for (const message of lastRoundMessages(messages)) {
     if (!hasToolRole(message)) continue;
     const match = messageContent(message).match(PINCHY_REF_RE);
-    if (match) return match[0];
+    if (match) refs.push(match[0]);
   }
-  return null;
+  return refs;
+}
+
+/**
+ * The first `_pinchy_ref` in the current round, or null. Single-read sugar over
+ * `extractPinchyRefsInOrder`.
+ */
+export function extractPinchyRefFromToolResults(messages: unknown[]): string | null {
+  return extractPinchyRefsInOrder(messages)[0] ?? null;
 }
 
 type RefDispatchScript =
@@ -730,46 +737,181 @@ type RefDispatchScript =
   | { kind: "text"; text: string };
 
 /**
- * Drive the two-tool ref-dispatch chain for the odoo_schedule_activity probe:
- *   round 1 → odoo_read crm.lead (its result carries a real `_pinchy_ref`)
- *   round 2 → odoo_schedule_activity on that ref (the tool under test)
- *   round 3 → final completion text
- * The step is chosen by how many tool results have round-tripped IN THE CURRENT
- * round. Unlike the Hetzner sequence (fresh eval session), this probe runs in
- * the shared odoo dispatch-probe session after odoo_list_models/odoo_read have
- * already dispatched, so counting the whole history would start at step 3 and
- * never dispatch the ref tool — hence `countToolResultsInLastRound`.
+ * A ref-based odoo tool (pinchy#791) takes an opaque `_pinchy_ref` minted at
+ * RUNTIME (per connection, per record), so the fake-LLM cannot forge one. A
+ * probe drives the same dance a real model would: `odoo_read` each `reads`
+ * model in turn (each result carries a real ref), then dispatch `toolName` with
+ * `buildArgs(refs)`, then emit `response`.
  */
-export function buildOdooRefDispatchScript(messages: unknown[]): RefDispatchScript {
-  const toolResults = countToolResultsInLastRound(messages);
-  if (toolResults === 0) {
+export interface RefDispatchProbe {
+  /** Substring of the user message that activates this probe. */
+  trigger: string;
+  /** Models to `odoo_read` in order — one ref minted per read. */
+  reads: string[];
+  /** The ref-based tool under test. */
+  toolName: string;
+  /** Build the tool arguments from the collected refs, in read order. */
+  buildArgs: (refs: string[]) => Record<string, unknown>;
+  /** Final completion text once the tool has dispatched. */
+  response: string;
+}
+
+/**
+ * Step engine every ref probe runs on. The step is chosen by how many tool
+ * results have round-tripped IN THE CURRENT round (`countToolResultsInLastRound`),
+ * so it is correct in the shared odoo dispatch-probe session where prior tests'
+ * tool messages are re-sent (counting the whole history would skip straight to
+ * the final-text branch and the ref tool would never dispatch):
+ *   done \< reads.length  → `odoo_read` the next model (mint the next ref)
+ *   done === reads.length → dispatch the ref tool on the collected refs
+ *   done \> reads.length   → final completion text
+ */
+export function buildRefDispatchScript(
+  probe: RefDispatchProbe,
+  messages: unknown[]
+): RefDispatchScript {
+  const done = countToolResultsInLastRound(messages);
+  if (done < probe.reads.length) {
     return {
       kind: "tool",
       toolName: "odoo_read",
-      arguments: { model: "crm.lead", filters: [], fields: ["name"] },
+      arguments: { model: probe.reads[done], filters: [], fields: ["name"] },
     };
   }
-  if (toolResults === 1) {
-    const ref = extractPinchyRefFromToolResults(messages);
-    if (!ref) {
+  if (done === probe.reads.length) {
+    const refs = extractPinchyRefsInOrder(messages);
+    if (refs.length < probe.reads.length) {
       // Surface the harness failure as text so the audit poll for
-      // tool.odoo_schedule_activity times out LOUDLY instead of false-passing.
+      // tool.<toolName> times out LOUDLY instead of false-passing.
       return {
         kind: "text",
-        text: "Harness error: no _pinchy_ref found in the odoo_read result.",
+        text: `Harness error: expected ${probe.reads.length} _pinchy_ref(s) from the odoo_read result(s) but found ${refs.length}.`,
       };
     }
-    return {
-      kind: "tool",
-      toolName: "odoo_schedule_activity",
-      arguments: {
-        target: ref,
-        summary: "E2E ref-dispatch follow-up",
-        dueDate: "2030-01-01",
-      },
-    };
+    return { kind: "tool", toolName: probe.toolName, arguments: probe.buildArgs(refs) };
   }
-  return { kind: "text", text: ODOO_SCHEDULE_ACTIVITY_REF_RESPONSE };
+  return { kind: "text", text: probe.response };
+}
+
+// ── The ref-probe registry (pinchy#791) ─────────────────────────────────────
+// Every ref-based odoo tool is driven from here; the fake-LLM handlers loop
+// over this list. Adding a tool = one entry here + its seed/permission in the
+// odoo dispatch-probe E2E spec + deleting its PENDING_E2E exemption. The E2E
+// filename fixture for odoo_attach_file (`test.pdf`) is uploaded via the
+// composer in that spec before the trigger fires.
+const ODOO_SCHEDULE_ACTIVITY_REF_TRIGGER = "E2E_ODOO_SCHEDULE_ACTIVITY_REF";
+const ODOO_SCHEDULE_ACTIVITY_REF_RESPONSE = "Activity scheduled via ref: coverage probe complete.";
+const ODOO_COMPLETE_ACTIVITY_REF_TRIGGER = "E2E_ODOO_COMPLETE_ACTIVITY_REF";
+const ODOO_COMPLETE_ACTIVITY_REF_RESPONSE = "Activity completed via ref: coverage probe complete.";
+const ODOO_RESCHEDULE_ACTIVITY_REF_TRIGGER = "E2E_ODOO_RESCHEDULE_ACTIVITY_REF";
+const ODOO_RESCHEDULE_ACTIVITY_REF_RESPONSE =
+  "Activity rescheduled via ref: coverage probe complete.";
+const ODOO_CONFIRM_ORDER_REF_TRIGGER = "E2E_ODOO_CONFIRM_ORDER_REF";
+const ODOO_CONFIRM_ORDER_REF_RESPONSE = "Order confirmed via ref: coverage probe complete.";
+const ODOO_APPLY_INVENTORY_REF_TRIGGER = "E2E_ODOO_APPLY_INVENTORY_REF";
+const ODOO_APPLY_INVENTORY_REF_RESPONSE = "Inventory applied via ref: coverage probe complete.";
+const ODOO_VALIDATE_PICKING_REF_TRIGGER = "E2E_ODOO_VALIDATE_PICKING_REF";
+const ODOO_VALIDATE_PICKING_REF_RESPONSE = "Picking validated via ref: coverage probe complete.";
+const ODOO_MARK_MO_DONE_REF_TRIGGER = "E2E_ODOO_MARK_MO_DONE_REF";
+const ODOO_MARK_MO_DONE_REF_RESPONSE = "MO marked done via ref: coverage probe complete.";
+const ODOO_SET_APPROVAL_REF_TRIGGER = "E2E_ODOO_SET_APPROVAL_REF";
+const ODOO_SET_APPROVAL_REF_RESPONSE = "Approval set via ref: coverage probe complete.";
+const ODOO_RECONCILE_REF_TRIGGER = "E2E_ODOO_RECONCILE_REF";
+const ODOO_RECONCILE_REF_RESPONSE = "Reconciled via ref: coverage probe complete.";
+const ODOO_ATTACH_FILE_REF_TRIGGER = "E2E_ODOO_ATTACH_FILE_REF";
+const ODOO_ATTACH_FILE_REF_RESPONSE = "File attached via ref: coverage probe complete.";
+
+// The filename the odoo_attach_file probe attaches. The E2E spec uploads this
+// exact fixture via the composer (landing it in the agent's uploads/ dir) before
+// firing the trigger, so the plugin finds it on disk.
+const ODOO_ATTACH_FILE_REF_FILENAME = "test.pdf";
+
+const SCHEDULE_ACTIVITY_PROBE: RefDispatchProbe = {
+  trigger: ODOO_SCHEDULE_ACTIVITY_REF_TRIGGER,
+  reads: ["crm.lead"],
+  toolName: "odoo_schedule_activity",
+  buildArgs: (refs) => ({
+    target: refs[0],
+    summary: "E2E ref-dispatch follow-up",
+    dueDate: "2030-01-01",
+  }),
+  response: ODOO_SCHEDULE_ACTIVITY_REF_RESPONSE,
+};
+
+const REF_DISPATCH_PROBES: RefDispatchProbe[] = [
+  SCHEDULE_ACTIVITY_PROBE,
+  {
+    trigger: ODOO_COMPLETE_ACTIVITY_REF_TRIGGER,
+    reads: ["mail.activity"],
+    toolName: "odoo_complete_activity",
+    buildArgs: (refs) => ({ target: refs[0], feedback: "E2E ref-dispatch: handled." }),
+    response: ODOO_COMPLETE_ACTIVITY_REF_RESPONSE,
+  },
+  {
+    trigger: ODOO_RESCHEDULE_ACTIVITY_REF_TRIGGER,
+    reads: ["mail.activity"],
+    toolName: "odoo_reschedule_activity",
+    buildArgs: (refs) => ({ target: refs[0], dueDate: "2031-02-02" }),
+    response: ODOO_RESCHEDULE_ACTIVITY_REF_RESPONSE,
+  },
+  {
+    trigger: ODOO_CONFIRM_ORDER_REF_TRIGGER,
+    reads: ["sale.order"],
+    toolName: "odoo_confirm_order",
+    buildArgs: (refs) => ({ target: refs[0] }),
+    response: ODOO_CONFIRM_ORDER_REF_RESPONSE,
+  },
+  {
+    trigger: ODOO_APPLY_INVENTORY_REF_TRIGGER,
+    reads: ["stock.quant"],
+    toolName: "odoo_apply_inventory",
+    buildArgs: (refs) => ({ target: refs[0] }),
+    response: ODOO_APPLY_INVENTORY_REF_RESPONSE,
+  },
+  {
+    trigger: ODOO_VALIDATE_PICKING_REF_TRIGGER,
+    reads: ["stock.picking"],
+    toolName: "odoo_validate_picking",
+    buildArgs: (refs) => ({ target: refs[0] }),
+    response: ODOO_VALIDATE_PICKING_REF_RESPONSE,
+  },
+  {
+    trigger: ODOO_MARK_MO_DONE_REF_TRIGGER,
+    reads: ["mrp.production"],
+    toolName: "odoo_mark_mo_done",
+    buildArgs: (refs) => ({ target: refs[0] }),
+    response: ODOO_MARK_MO_DONE_REF_RESPONSE,
+  },
+  {
+    trigger: ODOO_SET_APPROVAL_REF_TRIGGER,
+    reads: ["purchase.order"],
+    toolName: "odoo_set_approval",
+    buildArgs: (refs) => ({ target: refs[0], decision: "approve" }),
+    response: ODOO_SET_APPROVAL_REF_RESPONSE,
+  },
+  {
+    trigger: ODOO_RECONCILE_REF_TRIGGER,
+    reads: ["account.move", "account.payment"],
+    toolName: "odoo_reconcile",
+    buildArgs: (refs) => ({ invoice: refs[0], counterpart: refs[1] }),
+    response: ODOO_RECONCILE_REF_RESPONSE,
+  },
+  {
+    trigger: ODOO_ATTACH_FILE_REF_TRIGGER,
+    reads: ["sale.order"],
+    toolName: "odoo_attach_file",
+    buildArgs: (refs) => ({ targetRef: refs[0], filename: ODOO_ATTACH_FILE_REF_FILENAME }),
+    response: ODOO_ATTACH_FILE_REF_RESPONSE,
+  },
+];
+
+/**
+ * Back-compat single-read wrapper for the odoo_schedule_activity probe — its
+ * unit tests import this by name. New probes run through `buildRefDispatchScript`
+ * directly via the registry loop in the handlers.
+ */
+export function buildOdooRefDispatchScript(messages: unknown[]): RefDispatchScript {
+  return buildRefDispatchScript(SCHEDULE_ACTIVITY_PROBE, messages);
 }
 
 /** Emit one assistant tool_call turn on the Ollama-native NDJSON surface. */
@@ -1250,17 +1392,20 @@ export async function handleRequest(req: http.IncomingMessage, res: http.ServerR
       return;
     }
 
-    // Ref-dispatch probe (pinchy#791): odoo_read → reuse the runtime `_pinchy_ref`
-    // → odoo_schedule_activity → final text. Multi-round, driven by
-    // countToolResults, so the trigger check must NOT be gated on !hasToolResult.
-    if (lastContent.includes(ODOO_SCHEDULE_ACTIVITY_REF_TRIGGER)) {
-      const script = buildOdooRefDispatchScript(messages);
-      if (script.kind === "tool") {
-        writeNdjsonToolCall(res, script.toolName, script.arguments, messages);
-      } else {
-        streamTextResponse(res, script.text, countUserMessages(messages));
+    // Ref-dispatch probes (pinchy#791): odoo_read (one per ref) → reuse the
+    // runtime `_pinchy_ref` → the ref-based tool → final text. Multi-round,
+    // driven by countToolResultsInLastRound, so NOT gated on !hasToolResult.
+    {
+      const refProbe = REF_DISPATCH_PROBES.find((p) => lastContent.includes(p.trigger));
+      if (refProbe) {
+        const script = buildRefDispatchScript(refProbe, messages);
+        if (script.kind === "tool") {
+          writeNdjsonToolCall(res, script.toolName, script.arguments, messages);
+        } else {
+          streamTextResponse(res, script.text, countUserMessages(messages));
+        }
+        return;
       }
-      return;
     }
 
     const isSlowStreamPrompt = lastContent.includes(SLOW_STREAM_TRIGGER);
@@ -1438,18 +1583,21 @@ export async function handleRequest(req: http.IncomingMessage, res: http.ServerR
       return;
     }
 
-    // Ref-dispatch probe (pinchy#791) — primary surface (pi-ai uses
-    // /v1/chat/completions). odoo_read → reuse the runtime `_pinchy_ref` →
-    // odoo_schedule_activity → final text; driven by countToolResults, so NOT
-    // gated on !hasToolResult.
-    if (lastContent.includes(ODOO_SCHEDULE_ACTIVITY_REF_TRIGGER)) {
-      const script = buildOdooRefDispatchScript(messages);
-      if (script.kind === "tool") {
-        streamOpenAiToolCalls(res, script.toolName, script.arguments);
-      } else {
-        streamOpenAiText(res, script.text);
+    // Ref-dispatch probes (pinchy#791) — primary surface (pi-ai uses
+    // /v1/chat/completions). odoo_read (one per ref) → reuse the runtime
+    // `_pinchy_ref` → the ref-based tool → final text; driven by
+    // countToolResultsInLastRound, so NOT gated on !hasToolResult.
+    {
+      const refProbe = REF_DISPATCH_PROBES.find((p) => lastContent.includes(p.trigger));
+      if (refProbe) {
+        const script = buildRefDispatchScript(refProbe, messages);
+        if (script.kind === "tool") {
+          streamOpenAiToolCalls(res, script.toolName, script.arguments);
+        } else {
+          streamOpenAiText(res, script.text);
+        }
+        return;
       }
-      return;
     }
 
     // Slow-stream trigger: Pinchy emits ollama as api: "openai-completions" so
@@ -1568,6 +1716,18 @@ export const FAKE_OLLAMA_ODOO_READ_DENIED_TRIGGER = ODOO_READ_DENIED_TRIGGER;
 // constant is the final completion text asserted after the activity is scheduled.
 export const FAKE_OLLAMA_ODOO_SCHEDULE_ACTIVITY_REF_TRIGGER = ODOO_SCHEDULE_ACTIVITY_REF_TRIGGER;
 export const FAKE_OLLAMA_ODOO_SCHEDULE_ACTIVITY_REF_RESPONSE = ODOO_SCHEDULE_ACTIVITY_REF_RESPONSE;
+// Ref-dispatch probe triggers for the remaining ref-based odoo tools (pinchy#791).
+export const FAKE_OLLAMA_ODOO_COMPLETE_ACTIVITY_REF_TRIGGER = ODOO_COMPLETE_ACTIVITY_REF_TRIGGER;
+export const FAKE_OLLAMA_ODOO_RESCHEDULE_ACTIVITY_REF_TRIGGER =
+  ODOO_RESCHEDULE_ACTIVITY_REF_TRIGGER;
+export const FAKE_OLLAMA_ODOO_CONFIRM_ORDER_REF_TRIGGER = ODOO_CONFIRM_ORDER_REF_TRIGGER;
+export const FAKE_OLLAMA_ODOO_APPLY_INVENTORY_REF_TRIGGER = ODOO_APPLY_INVENTORY_REF_TRIGGER;
+export const FAKE_OLLAMA_ODOO_VALIDATE_PICKING_REF_TRIGGER = ODOO_VALIDATE_PICKING_REF_TRIGGER;
+export const FAKE_OLLAMA_ODOO_MARK_MO_DONE_REF_TRIGGER = ODOO_MARK_MO_DONE_REF_TRIGGER;
+export const FAKE_OLLAMA_ODOO_SET_APPROVAL_REF_TRIGGER = ODOO_SET_APPROVAL_REF_TRIGGER;
+export const FAKE_OLLAMA_ODOO_RECONCILE_REF_TRIGGER = ODOO_RECONCILE_REF_TRIGGER;
+export const FAKE_OLLAMA_ODOO_ATTACH_FILE_REF_TRIGGER = ODOO_ATTACH_FILE_REF_TRIGGER;
+export const FAKE_OLLAMA_ODOO_ATTACH_FILE_REF_FILENAME = ODOO_ATTACH_FILE_REF_FILENAME;
 export const FAKE_OLLAMA_ODOO_CREATE_NESTED_LINES_TRIGGER = ODOO_CREATE_NESTED_LINES_TRIGGER;
 export const FAKE_OLLAMA_ODOO_CREATE_NESTED_LINES_RESPONSE = ODOO_CREATE_NESTED_LINES_RESPONSE;
 export const FAKE_OLLAMA_EMAIL_LIST_TOOL_TRIGGER = EMAIL_LIST_TRIGGER;

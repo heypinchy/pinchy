@@ -47,24 +47,16 @@ const REF_BASED_ODOO_TOOLS = [
 // exemption is a deliberate, issue-referenced act, never a silent gap. Every
 // reason must cite pinchy#791 (the umbrella issue for closing this backlog).
 //
-// odoo_reconcile is called out specifically: covering it faithfully needs
-// `account.bank.statement.line` / `account.payment` / reconcile semantics in
-// the Odoo mock, which real Odoo 19 makes silent-no-op-prone — a mock risks a
-// false-green. It stays on live verification until the mock grows that surface.
-const PENDING_E2E: Record<string, string> = {
-  odoo_complete_activity: "pinchy#791 — ref-dispatch harness exists; test not yet written.",
-  odoo_reschedule_activity: "pinchy#791 — ref-dispatch harness exists; test not yet written.",
-  odoo_confirm_order: "pinchy#791 — ref-dispatch harness exists; test not yet written.",
-  odoo_apply_inventory: "pinchy#791 — ref-dispatch harness exists; test not yet written.",
-  odoo_validate_picking: "pinchy#791 — ref-dispatch harness exists; test not yet written.",
-  odoo_mark_mo_done: "pinchy#791 — ref-dispatch harness exists; test not yet written.",
-  odoo_set_approval: "pinchy#791 — ref-dispatch harness exists; test not yet written.",
-  odoo_reconcile:
-    "pinchy#791 — needs account.bank.statement.line/account.payment + reconcile " +
-    "semantics in the Odoo mock; real Odoo 19 reconcile is silent-no-op-prone, so " +
-    "a mock risks a false-green. Stays on live verification until the mock grows it.",
-  odoo_attach_file: "pinchy#791 — ref-dispatch harness exists; test not yet written.",
-};
+// Now EMPTY: pinchy#791 is closed out — every ref-based odoo tool has a genuine
+// E2E dispatch probe in odoo-agent-chat.spec.ts (the "Odoo dispatch probe"
+// block), each driven by the dynamic ref-resolution harness and asserting
+// outcome=success. odoo_reconcile is covered via the payment-counterpart path
+// (the mock's js_assign_outstanding_line zeroes the bill's residual, which is
+// the only signal didReconcile trusts). The bank-statement counterpart path —
+// x2many write-command expansion + journal suspense accounts, which real Odoo 19
+// makes silent-no-op-prone — is deliberately NOT mocked and stays on live
+// verification; the payment path already discharges this tool's #791 obligation.
+const PENDING_E2E: Record<string, string> = {};
 
 /**
  * Derive the ref-based odoo tool names straight from the plugin source, so the

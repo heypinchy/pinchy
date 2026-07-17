@@ -11,7 +11,10 @@
 import { describe, expect, it } from "vitest";
 import {
   extractPinchyRefFromToolResults,
+  extractPinchyRefsInOrder,
   buildOdooRefDispatchScript,
+  buildRefDispatchScript,
+  type RefDispatchProbe,
   FAKE_OLLAMA_ODOO_SCHEDULE_ACTIVITY_REF_RESPONSE,
 } from "../../../e2e/shared/fake-ollama/fake-ollama-server";
 
@@ -161,5 +164,131 @@ describe("buildOdooRefDispatchScript", () => {
       expect(script.toolName).toBe("odoo_schedule_activity");
       expect(script.arguments.target).toBe(REF);
     });
+  });
+});
+
+// extractPinchyRefsInOrder is the multi-ref sibling of
+// extractPinchyRefFromToolResults: it returns ONE ref per tool-result message in
+// the current round, in order. odoo_reconcile needs two refs (invoice +
+// counterpart) minted by two separate odoo_read rounds, so the harness collects
+// them positionally — the first read's ref is the invoice, the second the
+// counterpart.
+describe("extractPinchyRefsInOrder", () => {
+  const REF_A = "pinchy_ref:v1:AAAA-move_1111";
+  const REF_B = "pinchy_ref:v1:BBBB-payment_2222";
+
+  it("returns an empty array when there is no tool-result message", () => {
+    expect(extractPinchyRefsInOrder([{ role: "user", content: "hi" }])).toEqual([]);
+  });
+
+  it("returns one ref per tool-result message, in order", () => {
+    const messages = [
+      { role: "user", content: "E2E trigger" },
+      { role: "assistant", content: "", tool_calls: [{ function: { name: "odoo_read" } }] },
+      toolResult([{ id: 1, name: "Bill", _pinchy_ref: REF_A }]),
+      { role: "assistant", content: "", tool_calls: [{ function: { name: "odoo_read" } }] },
+      toolResult([{ id: 2, name: "Payment", _pinchy_ref: REF_B }]),
+    ];
+    expect(extractPinchyRefsInOrder(messages)).toEqual([REF_A, REF_B]);
+  });
+
+  it("ignores refs from before the last user message (current round only)", () => {
+    const stale = "pinchy_ref:v1:STALE_prior_round";
+    const messages = [
+      { role: "user", content: "old turn" },
+      toolResult([{ id: 9, _pinchy_ref: stale }]),
+      { role: "user", content: "E2E trigger" }, // new round starts here
+      toolResult([{ id: 1, _pinchy_ref: REF_A }]),
+      toolResult([{ id: 2, _pinchy_ref: REF_B }]),
+    ];
+    expect(extractPinchyRefsInOrder(messages)).toEqual([REF_A, REF_B]);
+  });
+});
+
+// buildRefDispatchScript is the reusable engine every ref probe runs on
+// (buildOdooRefDispatchScript is a thin single-read wrapper over it). These
+// tests exercise the DUAL-read shape (odoo_reconcile: read account.move, read
+// account.payment, then reconcile on both refs) that the single-read
+// buildOdooRefDispatchScript tests above cannot reach.
+describe("buildRefDispatchScript (multi-read reconcile shape)", () => {
+  const INVOICE_REF = "pinchy_ref:v1:INV-move_1111";
+  const COUNTERPART_REF = "pinchy_ref:v1:CP-payment_2222";
+  const RECONCILE_RESPONSE = "Reconciled via ref: coverage probe complete.";
+
+  const probe: RefDispatchProbe = {
+    trigger: "E2E_ODOO_RECONCILE_REF",
+    reads: ["account.move", "account.payment"],
+    toolName: "odoo_reconcile",
+    buildArgs: (refs) => ({ invoice: refs[0], counterpart: refs[1] }),
+    response: RECONCILE_RESPONSE,
+  };
+
+  const trigger = { role: "user", content: "E2E_ODOO_RECONCILE_REF: settle the bill" };
+
+  it("round 1 (no tool results): reads the first model to mint the invoice ref", () => {
+    const script = buildRefDispatchScript(probe, [trigger]);
+    expect(script.kind).toBe("tool");
+    if (script.kind !== "tool") throw new Error("unreachable");
+    expect(script.toolName).toBe("odoo_read");
+    expect(script.arguments.model).toBe("account.move");
+  });
+
+  it("round 2 (one read): reads the second model to mint the counterpart ref", () => {
+    const messages = [
+      trigger,
+      { role: "assistant", content: "", tool_calls: [{ function: { name: "odoo_read" } }] },
+      toolResult([{ id: 1, name: "Bill", _pinchy_ref: INVOICE_REF }]),
+    ];
+    const script = buildRefDispatchScript(probe, messages);
+    expect(script.kind).toBe("tool");
+    if (script.kind !== "tool") throw new Error("unreachable");
+    expect(script.toolName).toBe("odoo_read");
+    expect(script.arguments.model).toBe("account.payment");
+  });
+
+  it("round 3 (both reads done): reconciles on both refs, in order", () => {
+    const messages = [
+      trigger,
+      { role: "assistant", content: "", tool_calls: [{ function: { name: "odoo_read" } }] },
+      toolResult([{ id: 1, name: "Bill", _pinchy_ref: INVOICE_REF }]),
+      { role: "assistant", content: "", tool_calls: [{ function: { name: "odoo_read" } }] },
+      toolResult([{ id: 2, name: "Payment", _pinchy_ref: COUNTERPART_REF }]),
+    ];
+    const script = buildRefDispatchScript(probe, messages);
+    expect(script.kind).toBe("tool");
+    if (script.kind !== "tool") throw new Error("unreachable");
+    expect(script.toolName).toBe("odoo_reconcile");
+    expect(script.arguments.invoice).toBe(INVOICE_REF);
+    expect(script.arguments.counterpart).toBe(COUNTERPART_REF);
+  });
+
+  it("round 4 (tool dispatched): returns the final completion text", () => {
+    const messages = [
+      trigger,
+      { role: "assistant", content: "", tool_calls: [{ function: { name: "odoo_read" } }] },
+      toolResult([{ id: 1, _pinchy_ref: INVOICE_REF }]),
+      { role: "assistant", content: "", tool_calls: [{ function: { name: "odoo_read" } }] },
+      toolResult([{ id: 2, _pinchy_ref: COUNTERPART_REF }]),
+      { role: "assistant", content: "", tool_calls: [{ function: { name: "odoo_reconcile" } }] },
+      { role: "tool", content: JSON.stringify({ reconciled: true }) },
+    ];
+    const script = buildRefDispatchScript(probe, messages);
+    expect(script.kind).toBe("text");
+    if (script.kind !== "text") throw new Error("unreachable");
+    expect(script.text).toBe(RECONCILE_RESPONSE);
+  });
+
+  it("all reads done but a ref is missing: surfaces the harness failure as text", () => {
+    const messages = [
+      trigger,
+      { role: "assistant", content: "", tool_calls: [{ function: { name: "odoo_read" } }] },
+      toolResult([{ id: 1, _pinchy_ref: INVOICE_REF }]),
+      { role: "assistant", content: "", tool_calls: [{ function: { name: "odoo_read" } }] },
+      { role: "tool", content: JSON.stringify({ records: [] }) }, // second read yielded no ref
+    ];
+    const script = buildRefDispatchScript(probe, messages);
+    expect(script.kind).toBe("text");
+    if (script.kind !== "text") throw new Error("unreachable");
+    expect(script.text).toMatch(/_pinchy_ref/);
   });
 });
