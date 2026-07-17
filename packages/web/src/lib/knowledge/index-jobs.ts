@@ -121,14 +121,23 @@ export async function claimNextIndexJob(): Promise<KbIndexJob | null> {
   return claimed ?? null;
 }
 
-/** Publishes discovery's document total and how many of them are done. Called often; deliberately the only write on the hot path. */
+/**
+ * Publishes how far the run has got and what it has found so far. Called once
+ * per document; deliberately the only write on the hot path.
+ *
+ * Findings ride along with progress rather than waiting for the finish, for
+ * two reasons. They answer the question an operator asks at the same moment as
+ * "how far along?" — namely "is it going well?", and a run that is 200 files in
+ * with 190 of them unsearchable is worth knowing about before the other 1800.
+ * And it costs nothing: the UPDATE was already happening.
+ */
 export async function recordIndexJobProgress(
   jobId: string,
-  progress: { processed: number; total: number }
+  progress: { processed: number; total: number; counts: IngestResult }
 ): Promise<void> {
   await db
     .update(kbIndexJobs)
-    .set({ processed: progress.processed, total: progress.total })
+    .set({ processed: progress.processed, total: progress.total, counts: progress.counts })
     .where(eq(kbIndexJobs.id, jobId));
 }
 
@@ -162,14 +171,16 @@ export async function finishIndexJob(jobId: string, args: FinishIndexJobArgs): P
  * idempotent, so resuming costs a re-discovery (almost everything skips) and
  * nothing more.
  *
- * Progress is reset with the status: discovery re-runs from the top, and
- * leaving 30/42 on a run that restarted at zero would be the same
- * processed-isn't-real lie the counters exist to prevent.
+ * Progress and findings are reset with the status: discovery re-runs from the
+ * top, so leaving 30/42 on a run that restarted at zero would be the same
+ * processed-isn't-real lie the counters exist to prevent — and leaving the dead
+ * run's `indexed: 30` beside `processed: 0` would be a row contradicting
+ * itself.
  */
 export async function requeueOrphanedIndexJobs(): Promise<number> {
   const requeued = await db
     .update(kbIndexJobs)
-    .set({ status: "pending", processed: 0, total: null, startedAt: null })
+    .set({ status: "pending", processed: 0, total: null, counts: null, startedAt: null })
     .where(eq(kbIndexJobs.status, "running"))
     .returning({ id: kbIndexJobs.id });
   return requeued.length;

@@ -95,7 +95,7 @@ curl -b session_cookie "https://pinchy.example.com/api/agents/<agentId>/knowledg
 }
 ```
 
-`total` is every document we found across the granted folders, counted before the first one is read — so it doesn't move once the run starts. When the run finishes, `counts` tells you what it found:
+`total` is every document we found across the granted folders, counted before the first one is read — so it doesn't move once the run starts. `counts` fills in as the run goes, so you don't have to wait until the end to see how it's going:
 
 | Field          | What it means                                                                                                                                 |
 | -------------- | --------------------------------------------------------------------------------------------------------------------------------------------- |

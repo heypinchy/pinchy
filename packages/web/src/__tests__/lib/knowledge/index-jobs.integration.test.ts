@@ -140,16 +140,25 @@ describe("kb index job store", () => {
     expect(await claimNextIndexJob()).toBeNull();
   });
 
-  it("records discovery total and per-file progress", async () => {
+  // Progress and findings land in ONE write, because they answer two questions
+  // an operator asks at the same moment: how far along is it, and is it going
+  // well? A run at 7/42 that has already found 5 unsearchable files is a corpus
+  // problem worth seeing now, not after the remaining 35.
+  it("records discovery total, per-file progress, and the findings so far", async () => {
     const agent = await makeAgent();
     await enqueueIndexJob(enqueueArgs(agent.id));
     const job = await claimNextIndexJob();
 
-    await recordIndexJobProgress(job!.id, { processed: 0, total: 42 });
-    await recordIndexJobProgress(job!.id, { processed: 7, total: 42 });
+    await recordIndexJobProgress(job!.id, { processed: 0, total: 42, counts: zeroCounts() });
+    await recordIndexJobProgress(job!.id, {
+      processed: 7,
+      total: 42,
+      counts: { ...zeroCounts(), indexed: 2, unsearchable: 5 },
+    });
 
     const latest = await getLatestIndexJobForAgent(agent.id);
     expect(latest).toMatchObject({ processed: 7, total: 42, status: "running" });
+    expect(latest?.counts).toEqual({ ...zeroCounts(), indexed: 2, unsearchable: 5 });
   });
 
   it("records the findings and the terminal status when a job succeeds", async () => {
@@ -196,17 +205,23 @@ describe("kb index job store", () => {
     const agent = await makeAgent();
     await enqueueIndexJob(enqueueArgs(agent.id));
     const job = await claimNextIndexJob();
-    await recordIndexJobProgress(job!.id, { processed: 30, total: 42 });
+    await recordIndexJobProgress(job!.id, {
+      processed: 30,
+      total: 42,
+      counts: { ...zeroCounts(), indexed: 30 },
+    });
 
     const requeued = await requeueOrphanedIndexJobs();
 
     expect(requeued).toBe(1);
     const latest = await getLatestIndexJobForAgent(agent.id);
     expect(latest?.status).toBe("pending");
-    // Progress resets because discovery re-runs from the top; reporting 30/42
-    // for a run that restarted at zero would be the same "processed ≠ real"
-    // lie the counters exist to prevent.
+    // Progress AND findings reset, because discovery re-runs from the top.
+    // Reporting 30/42 for a run that restarted at zero would be the same
+    // "processed ≠ real" lie the counters exist to prevent — and leaving
+    // `indexed: 30` next to `processed: 0` would be a row contradicting itself.
     expect(latest).toMatchObject({ processed: 0, total: null, startedAt: null });
+    expect(latest?.counts).toBeNull();
     expect(await claimNextIndexJob()).not.toBeNull();
   });
 
