@@ -10,7 +10,12 @@ captainVersion: 4
 
 services:
   $$cap_appname-db:
-    image: postgres:17
+    # Must match docker-compose.yml's db image. pgvector/pgvector:pg17-trixie is
+    # a drop-in postgres:17 replacement that bundles the pgvector extension so
+    # `CREATE EXTENSION vector` (migration 0054) succeeds — required at boot, so a
+    # stock postgres:17 here crash-loops on the first migration. A drift guard in
+    # scripts/lib/marketplace-lint.test.mjs keeps this pinned to the compose image.
+    image: pgvector/pgvector:pg17-trixie
     restart: unless-stopped
     volumes:
       - $$cap_appname-pgdata:/var/lib/postgresql/data

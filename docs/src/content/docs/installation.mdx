@@ -38,11 +38,11 @@ docker compose pull && docker compose up -d
 
 The `docker-compose.yml` defines three services:
 
-| Service    | Image            | Port             | Purpose                       |
-| ---------- | ---------------- | ---------------- | ----------------------------- |
-| `pinchy`   | Custom (Next.js) | 7777 (exposed)   | Web UI, API, WebSocket bridge |
-| `openclaw` | Custom (Node.js) | 18789 (internal) | AI agent runtime              |
-| `db`       | `postgres:17`    | 5432 (internal)  | Database                      |
+| Service    | Image                           | Port             | Purpose                             |
+| ---------- | ------------------------------- | ---------------- | ----------------------------------- |
+| `pinchy`   | Custom (Next.js)                | 7777 (exposed)   | Web UI, API, WebSocket bridge       |
+| `openclaw` | Custom (Node.js)                | 18789 (internal) | AI agent runtime                    |
+| `db`       | `pgvector/pgvector:pg17-trixie` | 5432 (internal)  | Database (PostgreSQL 17 + pgvector) |
 
 Only port **7777** is exposed to the host. OpenClaw and PostgreSQL are only reachable within the Docker network.
 

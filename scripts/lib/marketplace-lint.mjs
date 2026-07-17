@@ -94,6 +94,48 @@ export function assertValidPackerTemplate(content) {
 }
 
 /**
+ * Extracts the `image:` value of a single service block from compose-style YAML
+ * text (no YAML lib available). Finds the `<serviceKey>:` line, then the first
+ * `image:` at deeper indentation before the block ends — comment lines (`#`) and
+ * blank lines are skipped, so the prose in docker-compose.yml's db comment can't
+ * be mistaken for the image.
+ * @param {string} content - raw compose/one-click YAML
+ * @param {string} serviceKey - e.g. "db" or "$$cap_appname-db"
+ * @returns {string} the image reference (e.g. "pgvector/pgvector:pg17-trixie")
+ * @throws {Error} if the service or its image can't be found
+ */
+export function extractServiceImage(content, serviceKey) {
+  const lines = content.split("\n");
+  const esc = serviceKey.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const keyRe = new RegExp(`^(\\s*)${esc}:\\s*$`);
+  let found = false;
+  // The same key can appear more than once (e.g. `db:` both as a service and
+  // under another service's `depends_on:`). Try each occurrence and return the
+  // first block that actually declares an image; the depends_on block has none.
+  for (let i = 0; i < lines.length; i++) {
+    const m = lines[i].match(keyRe);
+    if (!m) continue;
+    found = true;
+    const indent = m[1].length;
+    for (let j = i + 1; j < lines.length; j++) {
+      const line = lines[j];
+      const trimmed = line.trim();
+      if (trimmed === "" || trimmed.startsWith("#")) continue;
+      const curIndent = line.length - line.trimStart().length;
+      if (curIndent <= indent) break; // left this block
+      const im = trimmed.match(/^image:\s*(\S+)$/);
+      if (im) return im[1];
+    }
+  }
+  if (!found) {
+    throw new Error(`marketplace-lint: service "${serviceKey}" not found`);
+  }
+  throw new Error(
+    `marketplace-lint: no image declared for service "${serviceKey}"`,
+  );
+}
+
+/**
  * Validates the CapRover one-click template's critical invariants. Text-based
  * (no YAML lib); each invariant is a regression we have already hit or that
  * would silently break a real deploy.

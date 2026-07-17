@@ -8,12 +8,14 @@ import {
   checkShellSyntax,
   assertValidPackerTemplate,
   assertValidCaproverTemplate,
+  extractServiceImage,
 } from "./marketplace-lint.mjs";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..");
 const MARKETPLACE = resolve(ROOT, "marketplace");
 const TEMPLATE_PATH = resolve(MARKETPLACE, "digitalocean/template.json");
 const CAPROVER_PATH = resolve(MARKETPLACE, "caprover/pinchy.yml");
+const COMPOSE_PATH = resolve(ROOT, "docker-compose.yml");
 
 // ─── Packer template structure ────────────────────────────────────────────────
 
@@ -106,7 +108,66 @@ test("assertValidCaproverTemplate rejects a missing version pin", () => {
   assert.throws(() => assertValidCaproverTemplate(bad), /version defaultValue/);
 });
 
+// ─── Service image extraction ─────────────────────────────────────────────────
+
+test("extractServiceImage reads the image past a comment block", () => {
+  const yaml = `services:
+  db:
+    # a comment mentioning the word image in prose should be ignored
+    image: pgvector/pgvector:pg17-trixie
+    restart: unless-stopped
+  web:
+    image: ghcr.io/example/web:latest
+`;
+  assert.equal(
+    extractServiceImage(yaml, "db"),
+    "pgvector/pgvector:pg17-trixie",
+  );
+  assert.equal(extractServiceImage(yaml, "web"), "ghcr.io/example/web:latest");
+});
+
+test("extractServiceImage handles a CapRover $$-prefixed service key", () => {
+  const yaml = `services:
+  $$cap_appname-db:
+    image: postgres:17
+    restart: unless-stopped
+`;
+  assert.equal(extractServiceImage(yaml, "$$cap_appname-db"), "postgres:17");
+});
+
+test("extractServiceImage throws when the service or image is absent", () => {
+  assert.throws(
+    () => extractServiceImage("services:\n  db:\n    restart: always\n", "db"),
+    /no image declared/,
+  );
+  assert.throws(
+    () => extractServiceImage("services:\n  web:\n    image: x\n", "db"),
+    /not found/,
+  );
+});
+
 // ─── Real-file guards ─────────────────────────────────────────────────────────
+
+test("the CapRover db image matches docker-compose.yml's db image", () => {
+  // Drift guard (pinchy#820): the pgvector extension is required at boot
+  // (migration 0054 runs CREATE EXTENSION vector), so a CapRover template still
+  // pinning stock postgres:17 produces a dead-on-arrival install that crash-loops
+  // on first migration. Keep the one-click db image in lockstep with the
+  // canonical compose db image.
+  const composeDbImage = extractServiceImage(
+    readFileSync(COMPOSE_PATH, "utf8"),
+    "db",
+  );
+  const caproverDbImage = extractServiceImage(
+    readFileSync(CAPROVER_PATH, "utf8"),
+    "$$cap_appname-db",
+  );
+  assert.equal(
+    caproverDbImage,
+    composeDbImage,
+    `CapRover db image (${caproverDbImage}) must match docker-compose.yml db image (${composeDbImage}).`,
+  );
+});
 
 test("the committed DigitalOcean template.json is structurally valid", () => {
   assert.doesNotThrow(() =>

@@ -158,6 +158,90 @@ If you need to roll back after an upgrade:
   backup step matters.
 </Aside>
 
+## Upgrading from v0.8.0 to %%PINCHY_VERSION%%
+
+### Breaking changes
+
+#### Re-fetch `docker-compose.yml` — the database image changed
+
+This release adds Knowledge Base agents, whose search index is built on the [`pgvector`](https://github.com/pgvector/pgvector) Postgres extension. The database migrations enable that extension on startup, and the stock `postgres:17` image doesn't ship it — so the `db` service now uses `pgvector/pgvector:pg17-trixie` instead.
+
+<Aside type="danger">
+  If you keep your old `docker-compose.yml`, the migration fails with `extension
+  "vector" is not available` and Pinchy restart-loops without serving anything —
+  migrations run on boot, so a failed one takes the whole app down, not just the
+  Knowledge Base. Nothing is lost when this happens: fetch the new compose file
+  and start again, and the migration picks up where it left off.
+</Aside>
+
+Re-fetch the compose file **before** pulling images:
+
+```bash
+cd /opt/pinchy
+curl -fsSL https://raw.githubusercontent.com/heypinchy/pinchy/%%PINCHY_VERSION%%/docker-compose.yml -o docker-compose.yml
+sed -i 's/PINCHY_VERSION=v0.8.0/PINCHY_VERSION=%%PINCHY_VERSION%%/' .env
+docker compose pull && docker compose up -d && docker image prune -f
+```
+
+Your data is safe across the image swap: it's the same PostgreSQL 17 on the same Debian base, reading the same `pgdata` volume in place — only the pgvector library is added. Both images are larger this release (the agent runtime now bundles an offline embedding model), so expect a bigger pull; the `docker image prune -f` from the standard flow keeps disk in check.
+
+<Aside type="caution">
+  **If you edited `docker-compose.yml` to [mount data
+  directories](/guides/mount-data-directories/)**, re-apply those `volumes:`
+  lines after re-fetching — the download overwrites them. Keeping custom mounts
+  in a `docker-compose.override.yml` instead makes future upgrades hands-off.
+</Aside>
+
+<Aside type="note">
+  **If you run your own PostgreSQL** instead of the bundled `db` service,
+  install the [pgvector](https://github.com/pgvector/pgvector) extension on that
+  server before upgrading — the migration runs `CREATE EXTENSION IF NOT EXISTS
+  vector` and needs both the extension files and a role allowed to create it.
+</Aside>
+
+### Upgrade notes
+
+#### First boot may take longer on installations with a lot of history
+
+The migrations build new indexes over your audit log and usage records. On an instance with months of history this can take a few minutes, during which Pinchy reports "unhealthy". If `docker compose up -d` gives up waiting and the `openclaw` service doesn't start ("dependency failed to start"), wait for `docker compose logs pinchy` to show the server starting, then run `docker compose up -d` once more.
+
+#### Container resource limits are now set by default
+
+The compose file now caps each service (pinchy 1 GB, openclaw 2 GB, db 1 GB memory, plus CPU limits) so one runaway container can't take down the host. Deployments that routinely needed more will see the container restarted by the kernel instead. Every limit is overridable in `.env` — see [Customizing your deployment](/guides/customizing-deployment/). After upgrading, `docker inspect --format '{{.State.OOMKilled}}' pinchy-openclaw-1` (and the other containers) tells you whether a limit is too tight for your workload.
+
+#### Knowledge Base agents (new, opt-in)
+
+Agents can now answer from your own documents with cited sources, backed by a search index in Pinchy's Postgres. Nothing is indexed until you set it up: mount document directories, pull the embedding model on your local Ollama (`ollama pull bge-m3`), create an agent from the new Knowledge Base template, and trigger indexing. See [Create a Knowledge Base agent](/guides/create-knowledge-base-agent/). If you don't use it, nothing changes for you.
+
+#### Agent memory recall now works offline
+
+The agent runtime image bundles a local embedding model, so agents' memory search works on every install — including fully offline ones — with no API key. Installs where memory recall silently returned nothing will notice agents actually remembering things. The memory index rebuilds automatically in the background after the upgrade; brief extra CPU on the openclaw container in the first minutes is expected.
+
+#### Shared agents no longer bring private memory into group chats
+
+A shared agent's `MEMORY.md` — what it learned in one-to-one conversations — is no longer injected into Telegram group sessions, so notes from private chats can't surface in front of a group. Shared agents may appear to "know less" in groups; that's the privacy fix working.
+
+#### Old channel attachments are cleaned up after 48 hours
+
+Inbound channel media (Telegram photos, documents) is now copied into the agent workspace on arrival, and the runtime's internal media cache is swept after 48 hours instead of growing forever. Attachments received **before** this upgrade were never copied, so ones older than 48 hours are removed by the first sweep and may no longer open from old conversations. Export anything you still need from pre-upgrade chats before upgrading.
+
+#### Workspace terminals stay disabled
+
+The OpenClaw runtime this release ships (2026.7.1) adds an interactive terminal into agent workspaces. Pinchy pins it off: a shell would bypass agent permission allow-lists and the audit trail. It will return as an RBAC-scoped, audited feature.
+
+### Database migrations
+
+Eleven additive migrations (`0044`–`0054`) run automatically on startup — no manual steps. No data is dropped or destructively rewritten; existing rows already satisfy every new constraint.
+
+- `0044` — schema hardening: four timestamp columns to `NOT NULL`, foreign-key and hot-path composite indexes, `CHECK` constraints on the enum-like text columns (roles, agent visibility, invite/connection types and statuses), and the `invites.claimed_by_user_id` foreign key switched to `ON DELETE SET NULL`.
+- `0045` — per-agent starter prompts (`agents.starter_prompts`, defaults to empty).
+- `0046`, `0048` — GDPR crypto-erasure groundwork: a pseudonymized actor ID on `user` (backfilled, then defaulted and made `UNIQUE`/`NOT NULL`) plus the `audit_verify_state` table backing periodic incremental chain verification.
+- `0047` — audit-log `TRUNCATE` guard (statement-level trigger) closing the row-trigger gap.
+- `0049`–`0051` — tables and constraints for email inbox workflows (foundation; no runtime surface in this release).
+- `0052` — notifications / activity-feed tables (foundation; no runtime surface in this release).
+- `0053` — per-turn context-window usage tracking (`usage_records.context_tokens`).
+- `0054` — Knowledge Base tables (`kb_documents`, `kb_chunks`) with the pgvector index; enables the `vector` extension (see the breaking change above).
+
 ## Upgrading from v0.7.0 to v0.8.0
 
 ### Breaking changes

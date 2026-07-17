@@ -87,7 +87,7 @@ services:
   db:
     # pgvector/pgvector:pg17-trixie bundles the pgvector extension's shared
     # library on top of postgres:17 so `CREATE EXTENSION vector` (see
-    # packages/web/drizzle/0049_enable_pgvector.sql) succeeds. Powers the
+    # packages/web/drizzle/0054_safe_vision.sql) succeeds. Powers the
     # knowledge-base RAG index (kb_documents/kb_chunks, vector(1024) columns).
     #
     # Pinned to the `-trixie` variant, NOT the bare `pg17` tag: the plain
