@@ -151,9 +151,7 @@ try {
     log(
       "  ⚠ pnpm audit reported findings — continuing because --skip-audit was passed.",
     );
-    log(
-      "    Document the acceptance in the release notes (CONTRIBUTING.md).",
-    );
+    log("    Document the acceptance in the release notes (CONTRIBUTING.md).");
   } else {
     fail(
       "pnpm audit reported high or critical vulnerabilities (or failed to connect to the registry — check output above).\n" +
@@ -171,10 +169,16 @@ const webPkgPath = resolve(ROOT, "packages/web/package.json");
 const envExamplePath = resolve(ROOT, ".env.example");
 const readmePath = resolve(ROOT, "README.md");
 
-writeFileSync(rootPkgPath, bumpPackageJson(readFileSync(rootPkgPath, "utf8"), version));
+writeFileSync(
+  rootPkgPath,
+  bumpPackageJson(readFileSync(rootPkgPath, "utf8"), version),
+);
 log(`  ✔ package.json → ${version}`);
 
-writeFileSync(webPkgPath, bumpPackageJson(readFileSync(webPkgPath, "utf8"), version));
+writeFileSync(
+  webPkgPath,
+  bumpPackageJson(readFileSync(webPkgPath, "utf8"), version),
+);
 log(`  ✔ packages/web/package.json → ${version}`);
 
 writeFileSync(
@@ -217,7 +221,9 @@ log(`  ✔ marketplace/caprover/pinchy.yml → v${version}`);
 const finalizedMdx = finalizeUpgradeSection(upgradingMdx, prevVersion, version);
 if (finalizedMdx !== upgradingMdx) {
   writeFileSync(upgradingMdxPath, finalizedMdx);
-  log(`  ✔ upgrading.mdx → froze v${prevVersion}→%%PINCHY_VERSION%% section to v${version}`);
+  log(
+    `  ✔ upgrading.mdx → froze v${prevVersion}→%%PINCHY_VERSION%% section to v${version}`,
+  );
 } else {
   log(`  ✔ upgrading.mdx → section already concrete (nothing to freeze)`);
 }
@@ -240,5 +246,7 @@ exec("git push origin main");
 exec(`git push origin ${tag}`);
 log(`  ✔ Pushed\n`);
 
-log(`✔ Released ${tag} — GitHub Actions will create the release and deploy docs.\n`);
+log(
+  `✔ Released ${tag} — GitHub Actions will create the release and deploy docs.\n`,
+);
 log(`  https://github.com/heypinchy/pinchy/releases/tag/${tag}\n`);

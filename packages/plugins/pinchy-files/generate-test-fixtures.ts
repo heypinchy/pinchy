@@ -40,7 +40,7 @@ function writeText(
   font: PDFFont,
   boldFont: PDFFont,
   lines: { text: string; heading?: boolean }[],
-  startY: number = PAGE_HEIGHT - MARGIN,
+  startY: number = PAGE_HEIGHT - MARGIN
 ): number {
   let y = startY;
   for (const line of lines) {
@@ -75,7 +75,7 @@ function writeParagraphs(
   font: PDFFont,
   boldFont: PDFFont,
   paragraphs: { text: string; heading?: boolean }[],
-  startY: number = PAGE_HEIGHT - MARGIN,
+  startY: number = PAGE_HEIGHT - MARGIN
 ): number {
   let y = startY;
   const maxWidth = PAGE_WIDTH - 2 * MARGIN;
@@ -299,7 +299,7 @@ async function createWithTables(): Promise<Uint8Array> {
 async function renderTextToImage(
   textLines: string[],
   width = 1200,
-  height = 1600,
+  height = 1600
 ): Promise<Buffer> {
   const canvas = createCanvas(width, height);
   const ctx = canvas.getContext("2d");
@@ -553,10 +553,9 @@ async function createPasswordProtected(): Promise<Uint8Array> {
     const tmpIn = join(FIXTURES_DIR, "_tmp_unencrypted.pdf");
     const tmpOut = join(FIXTURES_DIR, "password-protected.pdf");
     writeFileSync(tmpIn, pdfBytes);
-    execSync(
-      `qpdf --encrypt testpass123 testpass123 256 -- "${tmpIn}" "${tmpOut}"`,
-      { stdio: "pipe" },
-    );
+    execSync(`qpdf --encrypt testpass123 testpass123 256 -- "${tmpIn}" "${tmpOut}"`, {
+      stdio: "pipe",
+    });
     unlinkSync(tmpIn);
     return readFileSync(tmpOut) as unknown as Uint8Array;
   } catch {

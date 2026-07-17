@@ -2,7 +2,14 @@ import { readdirSync, statSync, realpathSync, existsSync } from "fs";
 import { readFile, open, writeFile, mkdir } from "fs/promises";
 import { createHash } from "crypto";
 import { join, extname, basename, dirname } from "path";
-import { validateAccess, assertNoSymlinkEscape, MAX_FILE_SIZE, MAX_PDF_FILE_SIZE, MAX_DOCX_FILE_SIZE, type AgentFileConfig } from "./validate";
+import {
+  validateAccess,
+  assertNoSymlinkEscape,
+  MAX_FILE_SIZE,
+  MAX_PDF_FILE_SIZE,
+  MAX_DOCX_FILE_SIZE,
+  type AgentFileConfig,
+} from "./validate";
 import { extractDocxText } from "./docx-extract";
 import { extractPdfText } from "./pdf-extract";
 import { formatPdfResult } from "./pdf-format";
@@ -31,7 +38,10 @@ interface PluginToolContext {
 // nor the NFD normalization of the whole string and won't resolve — it just
 // falls back to the original (safe). That case doesn't arise here because every
 // segment comes from the same macOS upload written in one normalization form.
-export function resolveOnDiskPath(requestedPath: string, exists: (p: string) => boolean = existsSync): string {
+export function resolveOnDiskPath(
+  requestedPath: string,
+  exists: (p: string) => boolean = existsSync
+): string {
   if (exists(requestedPath)) return requestedPath;
   for (const form of ["NFC", "NFD"] as const) {
     const variant = requestedPath.normalize(form);
@@ -61,8 +71,7 @@ function relativizeWritePath(absolutePath: string, writePaths: readonly string[]
 // re-read image is fed back to the model as native multimodal input — the same
 // way a freshly uploaded attachment reaches the model on the first turn.
 type ContentBlock =
-  | { type: "text"; text: string }
-  | { type: "image"; data: string; mimeType: string };
+  { type: "text"; text: string } | { type: "image"; data: string; mimeType: string };
 
 // Image extensions pinchy_read returns as image content blocks rather than
 // utf-8 text. Reading the bytes as utf-8 would hand the model binary garbage
@@ -157,8 +166,10 @@ interface AgentTool {
 }
 
 const SYSTEM_FILES = new Set([
-  "Thumbs.db", "thumbs.db",
-  "desktop.ini", "Desktop.ini",
+  "Thumbs.db",
+  "thumbs.db",
+  "desktop.ini",
+  "Desktop.ini",
   "$RECYCLE.BIN",
   "System Volume Information",
   ".DS_Store",
@@ -186,7 +197,7 @@ function getCache(): PdfCache {
 async function readPdf(
   realPath: string,
   stats: { size: number; mtimeMs: number },
-  visionConfig: VisionApiConfig | null,
+  visionConfig: VisionApiConfig | null
 ): Promise<{ content: ContentBlock[]; visionUsage: AggregatedVisionUsage }> {
   const pdfCache = getCache();
   const zeroUsage: AggregatedVisionUsage = { inputTokens: 0, outputTokens: 0 };
@@ -262,9 +273,14 @@ const plugin = {
     const visionModelOverride = api.pluginConfig?.visionModel;
 
     // Capture runtime APIs for vision (direct LLM API calls for scanned pages)
-    const modelAuth = (api as any).runtime?.modelAuth as {
-      resolveApiKeyForProvider: (params: { provider: string; cfg: unknown }) => Promise<{ apiKey: string } | null>;
-    } | undefined;
+    const modelAuth = (api as any).runtime?.modelAuth as
+      | {
+          resolveApiKeyForProvider: (params: {
+            provider: string;
+            cfg: unknown;
+          }) => Promise<{ apiKey: string } | null>;
+        }
+      | undefined;
     const loadConfig = (api as any).runtime?.config?.loadConfig as
       (() => Record<string, unknown>) | undefined;
 
@@ -285,14 +301,14 @@ const plugin = {
           parameters: {
             type: "object",
             properties: {
-              path: { type: "string", description: `Directory to list. Use one of these paths: ${pathList}` },
+              path: {
+                type: "string",
+                description: `Directory to list. Use one of these paths: ${pathList}`,
+              },
             },
             required: ["path"],
           },
-          async execute(
-            _toolCallId: string,
-            params: Record<string, unknown>
-          ) {
+          async execute(_toolCallId: string, params: Record<string, unknown>) {
             try {
               const requestedPath = params.path as string;
               // Fall back to the other Unicode normalization form when the exact
@@ -303,7 +319,10 @@ const plugin = {
 
               const entries = readdirSync(realPath);
               const results = entries
-                .filter((name) => !name.startsWith(".") && !name.startsWith("~$") && !SYSTEM_FILES.has(name))
+                .filter(
+                  (name) =>
+                    !name.startsWith(".") && !name.startsWith("~$") && !SYSTEM_FILES.has(name)
+                )
                 .map((name) => {
                   const fullPath = join(realPath, name);
                   const stats = statSync(fullPath);
@@ -315,13 +334,10 @@ const plugin = {
                 });
 
               return {
-                content: [
-                  { type: "text", text: JSON.stringify(results, null, 2) },
-                ],
+                content: [{ type: "text", text: JSON.stringify(results, null, 2) }],
               };
             } catch (error) {
-              const message =
-                error instanceof Error ? error.message : "Unknown error";
+              const message = error instanceof Error ? error.message : "Unknown error";
               return {
                 isError: true,
                 content: [{ type: "text", text: message }],
@@ -357,10 +373,7 @@ const plugin = {
             },
             required: ["path"],
           },
-          async execute(
-            _toolCallId: string,
-            params: Record<string, unknown>
-          ) {
+          async execute(_toolCallId: string, params: Record<string, unknown>) {
             try {
               const requestedPath = params.path as string;
               // Fall back to the other Unicode normalization form when the exact
@@ -424,7 +437,7 @@ const plugin = {
                       inputTokens: pdfResult.visionUsage.inputTokens,
                       outputTokens: pdfResult.visionUsage.outputTokens,
                     },
-                    { apiBaseUrl, gatewayToken },
+                    { apiBaseUrl, gatewayToken }
                   );
                 }
 
@@ -485,8 +498,7 @@ const plugin = {
               }
               return { content: [{ type: "text", text: buffer.toString("utf-8") }] };
             } catch (error) {
-              const message =
-                error instanceof Error ? error.message : "Unknown error";
+              const message = error instanceof Error ? error.message : "Unknown error";
               return {
                 isError: true,
                 content: [{ type: "text", text: message }],

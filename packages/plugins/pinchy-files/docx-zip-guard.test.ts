@@ -22,7 +22,7 @@ function buildZip(
     name: string;
     data: Buffer;
     declaredUncompressedSize?: number;
-  }>,
+  }>
 ): Buffer {
   const localParts: Buffer[] = [];
   const centralParts: Buffer[] = [];
@@ -31,8 +31,7 @@ function buildZip(
   for (const entry of entries) {
     const nameBytes = Buffer.from(entry.name, "utf-8");
     const compressed = deflateRawSync(entry.data);
-    const uncompressedSize =
-      entry.declaredUncompressedSize ?? entry.data.length;
+    const uncompressedSize = entry.declaredUncompressedSize ?? entry.data.length;
 
     const local = Buffer.alloc(30 + nameBytes.length);
     local.writeUInt32LE(0x04034b50, 0); // local file header signature
@@ -91,9 +90,7 @@ describe("readDeclaredDocxSize", () => {
   });
 
   it("throws when the central directory lies outside the buffer", () => {
-    const zip = buildZip([
-      { name: "word/document.xml", data: Buffer.alloc(100) },
-    ]);
+    const zip = buildZip([{ name: "word/document.xml", data: Buffer.alloc(100) }]);
     // Corrupt the EOCD's central-directory offset to point past the end.
     zip.writeUInt32LE(zip.length + 1000, zip.length - 22 + 16);
     expect(() => readDeclaredDocxSize(zip)).toThrow(/not a valid \.docx/i);
@@ -102,9 +99,7 @@ describe("readDeclaredDocxSize", () => {
 
 describe("assertDocxDecompressedSizeWithinLimit", () => {
   it("accepts an archive whose declared size is within the limit", () => {
-    const zip = buildZip([
-      { name: "word/document.xml", data: Buffer.alloc(1000) },
-    ]);
+    const zip = buildZip([{ name: "word/document.xml", data: Buffer.alloc(1000) }]);
     expect(() => assertDocxDecompressedSizeWithinLimit(zip)).not.toThrow();
   });
 
@@ -119,7 +114,7 @@ describe("assertDocxDecompressedSizeWithinLimit", () => {
       },
     ]);
     expect(() => assertDocxDecompressedSizeWithinLimit(zip)).toThrow(
-      /decompressed size .* exceeds/i,
+      /decompressed size .* exceeds/i
     );
   });
 
@@ -129,9 +124,9 @@ describe("assertDocxDecompressedSizeWithinLimit", () => {
       data: Buffer.alloc(64),
       declaredUncompressedSize: 30 * 1024 * 1024, // 20 × 30 MB = 600 MB
     }));
-    expect(() =>
-      assertDocxDecompressedSizeWithinLimit(buildZip(entries)),
-    ).toThrow(/decompressed size .* exceeds/i);
+    expect(() => assertDocxDecompressedSizeWithinLimit(buildZip(entries))).toThrow(
+      /decompressed size .* exceeds/i
+    );
   });
 
   it("rejects ZIP64 size markers fail-closed", () => {
@@ -144,9 +139,7 @@ describe("assertDocxDecompressedSizeWithinLimit", () => {
         declaredUncompressedSize: 0xffffffff,
       },
     ]);
-    expect(() => assertDocxDecompressedSizeWithinLimit(zip)).toThrow(
-      /decompressed size|ZIP64/i,
-    );
+    expect(() => assertDocxDecompressedSizeWithinLimit(zip)).toThrow(/decompressed size|ZIP64/i);
   });
 
   it("allows a declared size exactly at the limit and rejects one byte over", () => {
@@ -159,19 +152,15 @@ describe("assertDocxDecompressedSizeWithinLimit", () => {
     ]);
     expect(() => assertDocxDecompressedSizeWithinLimit(zip, 1000)).not.toThrow();
     expect(() => assertDocxDecompressedSizeWithinLimit(zip, 999)).toThrow(
-      /decompressed size .* exceeds/i,
+      /decompressed size .* exceeds/i
     );
   });
 
   it("honors a custom limit", () => {
-    const zip = buildZip([
-      { name: "word/document.xml", data: Buffer.alloc(2000) },
-    ]);
+    const zip = buildZip([{ name: "word/document.xml", data: Buffer.alloc(2000) }]);
     expect(() => assertDocxDecompressedSizeWithinLimit(zip, 1000)).toThrow(
-      /decompressed size .* exceeds/i,
+      /decompressed size .* exceeds/i
     );
-    expect(() =>
-      assertDocxDecompressedSizeWithinLimit(zip, 4000),
-    ).not.toThrow();
+    expect(() => assertDocxDecompressedSizeWithinLimit(zip, 4000)).not.toThrow();
   });
 });

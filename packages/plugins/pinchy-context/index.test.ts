@@ -114,9 +114,11 @@ describe("pinchy-context plugin", () => {
     )?.[0];
     const tool = factory({ agentId: "agent-1" });
 
-    global.fetch = vi.fn().mockResolvedValueOnce(
-      new Response(JSON.stringify({ error: "Unauthorized" }), { status: 401 })
-    );
+    global.fetch = vi
+      .fn()
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ error: "Unauthorized" }), { status: 401 })
+      );
 
     const result = await tool.execute("call-1", { content: "..." });
     expect(result.isError).toBe(true);
@@ -150,9 +152,9 @@ describe("pinchy-context plugin", () => {
     )?.[0];
     const tool = factory({ agentId: "agent-2" });
 
-    global.fetch = vi.fn().mockResolvedValueOnce(
-      new Response(JSON.stringify({ error: "Forbidden" }), { status: 403 })
-    );
+    global.fetch = vi
+      .fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({ error: "Forbidden" }), { status: 403 }));
 
     const result = await tool.execute("call-1", { content: "..." });
     expect(result.isError).toBe(true);

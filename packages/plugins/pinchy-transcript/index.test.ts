@@ -78,13 +78,9 @@ describe("buildPayload", () => {
 
   it("falls back to a deterministic surrogate externalId when messageId is absent", () => {
     const p = buildPayload({ ...base, messageId: undefined });
-    expect(p?.externalId).toBe(
-      surrogateId("inbound", "Hello over Telegram", 1700000000000),
-    );
+    expect(p?.externalId).toBe(surrogateId("inbound", "Hello over Telegram", 1700000000000));
     // Stable across calls so retries dedup.
-    expect(buildPayload({ ...base, messageId: undefined })?.externalId).toBe(
-      p?.externalId,
-    );
+    expect(buildPayload({ ...base, messageId: undefined })?.externalId).toBe(p?.externalId);
   });
 
   it("skips non-mirrored channels", () => {
@@ -148,9 +144,7 @@ describe("buildPayload", () => {
 
   it("empty content AND no media still returns null (unchanged)", () => {
     expect(buildPayload({ ...base, content: "" })).toBeNull();
-    expect(
-      buildPayload({ ...base, content: "   ", media: undefined }),
-    ).toBeNull();
+    expect(buildPayload({ ...base, content: "   ", media: undefined })).toBeNull();
   });
 });
 
@@ -162,10 +156,8 @@ describe("extractMedia", () => {
           mediaPaths: ["/root/.openclaw/media/inbound/x.jpg"],
           mediaTypes: ["image/jpeg"],
         },
-      }),
-    ).toEqual([
-      { path: "/root/.openclaw/media/inbound/x.jpg", mimeType: "image/jpeg" },
-    ]);
+      })
+    ).toEqual([{ path: "/root/.openclaw/media/inbound/x.jpg", mimeType: "image/jpeg" }]);
   });
 
   it("tolerates a short/missing mediaTypes array (no mimeType key for the missing entry)", () => {
@@ -175,10 +167,7 @@ describe("extractMedia", () => {
         mediaTypes: ["image/jpeg"],
       },
     });
-    expect(result).toEqual([
-      { path: "/a.jpg", mimeType: "image/jpeg" },
-      { path: "/b.png" },
-    ]);
+    expect(result).toEqual([{ path: "/a.jpg", mimeType: "image/jpeg" }, { path: "/b.png" }]);
     expect(result?.[1]).not.toHaveProperty("mimeType");
   });
 
@@ -193,9 +182,7 @@ describe("extractMedia", () => {
     expect(extractMedia({})).toBeUndefined();
     expect(extractMedia({ metadata: {} })).toBeUndefined();
     expect(extractMedia({ metadata: { mediaPaths: [] } })).toBeUndefined();
-    expect(
-      extractMedia({ metadata: { mediaPaths: ["", null] } }),
-    ).toBeUndefined();
+    expect(extractMedia({ metadata: { mediaPaths: ["", null] } })).toBeUndefined();
     expect(extractMedia({ metadata: undefined })).toBeUndefined();
   });
 
@@ -292,7 +279,7 @@ describe("mirrorMedia", () => {
 
     // No files created in uploads
     await expect(readdir(join(workspaceRoot, agentId, "uploads")).catch(() => [])).resolves.toEqual(
-      [],
+      []
     );
   });
 
@@ -304,11 +291,15 @@ describe("mirrorMedia", () => {
     const symlinkPath = join(inboundDir, "evil.jpg");
     await symlink(outsideFile, symlinkPath);
 
-    const results = await mirrorMedia([{ path: "evil.jpg" }], { agentId, inboundDir, workspaceRoot });
+    const results = await mirrorMedia([{ path: "evil.jpg" }], {
+      agentId,
+      inboundDir,
+      workspaceRoot,
+    });
 
     expect(results[0].outcome).toBe("failure");
     await expect(readdir(join(workspaceRoot, agentId, "uploads")).catch(() => [])).resolves.toEqual(
-      [],
+      []
     );
   });
 
@@ -321,7 +312,7 @@ describe("mirrorMedia", () => {
 
     expect(results[0].outcome).toBe("failure");
     await expect(readdir(join(workspaceRoot, agentId, "uploads")).catch(() => [])).resolves.toEqual(
-      [],
+      []
     );
   });
 
@@ -331,7 +322,7 @@ describe("mirrorMedia", () => {
 
     const results = await mirrorMedia(
       [{ path: join(inboundDir, "missing.jpg") }, { path: presentSource }],
-      { agentId, inboundDir, workspaceRoot },
+      { agentId, inboundDir, workspaceRoot }
     );
 
     expect(results.map((r) => r.outcome)).toEqual(["failure", "success"]);
@@ -345,10 +336,11 @@ describe("mirrorMedia", () => {
     const source = join(inboundDir, "photo.jpg");
     await writeFile(source, "content");
 
-    const results = await mirrorMedia(
-      [{ path: source }, { path: join(inboundDir, "other.jpg") }],
-      { agentId: "../escape", inboundDir, workspaceRoot },
-    );
+    const results = await mirrorMedia([{ path: source }, { path: join(inboundDir, "other.jpg") }], {
+      agentId: "../escape",
+      inboundDir,
+      workspaceRoot,
+    });
 
     expect(results).toEqual([
       { path: source, outcome: "failure", error: "invalid agentId" },
@@ -447,9 +439,7 @@ describe("postChannelMessage", () => {
     // Trailing slash on apiBaseUrl is normalized away.
     expect(url).toBe("http://pinchy:7777/api/internal/channel-messages");
     expect((init as RequestInit).method).toBe("POST");
-    expect(
-      (init as { headers: Record<string, string> }).headers.Authorization,
-    ).toBe("Bearer tok");
+    expect((init as { headers: Record<string, string> }).headers.Authorization).toBe("Bearer tok");
     expect(JSON.parse((init as { body: string }).body)).toEqual(payload);
   });
 
@@ -472,17 +462,11 @@ describe("plugin.register", () => {
   const cfg = { apiBaseUrl: "http://pinchy:7777", gatewayToken: "tok" };
 
   function fakeApi() {
-    const handlers: Record<
-      string,
-      (e: unknown, c: unknown) => Promise<void> | void
-    > = {};
+    const handlers: Record<string, (e: unknown, c: unknown) => Promise<void> | void> = {};
     return {
       pluginConfig: cfg,
       logger: { warn: vi.fn() },
-      on: (
-        name: string,
-        h: (e: unknown, c: unknown) => Promise<void> | void,
-      ) => {
+      on: (name: string, h: (e: unknown, c: unknown) => Promise<void> | void) => {
         handlers[name] = h;
       },
       handlers,
@@ -504,7 +488,7 @@ describe("plugin.register", () => {
         sessionKey: SK,
         timestamp: 1700000000000,
       },
-      { channelId: "telegram" },
+      { channelId: "telegram" }
     );
 
     expect(fetchMock).toHaveBeenCalledTimes(1);
@@ -533,7 +517,7 @@ describe("plugin.register", () => {
           mediaTypes: ["image/jpeg"],
         },
       },
-      { channelId: "telegram" },
+      { channelId: "telegram" }
     );
 
     expect(fetchMock).toHaveBeenCalledTimes(1);
@@ -570,7 +554,7 @@ describe("plugin.register", () => {
           mediaTypes: ["image/jpeg"],
         },
       },
-      { channelId: "slack" },
+      { channelId: "slack" }
     );
 
     expect(fetchMock).not.toHaveBeenCalled();
@@ -590,7 +574,7 @@ describe("plugin.register", () => {
         success: true,
         metadata: { mediaPaths: ["/should-be-ignored.jpg"] },
       },
-      { channelId: "telegram" },
+      { channelId: "telegram" }
     );
 
     expect(fetchMock).toHaveBeenCalledTimes(1);
@@ -606,7 +590,7 @@ describe("plugin.register", () => {
 
     await api.handlers["message_sent"](
       { content: "reply", messageId: "m2", sessionKey: SK, success: true },
-      { channelId: "telegram" },
+      { channelId: "telegram" }
     );
     expect(fetchMock).toHaveBeenCalledTimes(1);
     expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toMatchObject({
@@ -621,7 +605,7 @@ describe("plugin.register", () => {
         sessionKey: SK,
         success: false,
       },
-      { channelId: "telegram" },
+      { channelId: "telegram" }
     );
     expect(fetchMock).not.toHaveBeenCalled();
   });

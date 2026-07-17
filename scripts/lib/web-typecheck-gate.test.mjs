@@ -25,7 +25,10 @@ test("validateTypecheckTsconfig accepts a config that includes test files", () =
 });
 
 test("validateTypecheckTsconfig flags an include that misses src/**", () => {
-  const problems = validateTypecheckTsconfig({ ...GOOD_TSCONFIG, include: ["next-env.d.ts"] });
+  const problems = validateTypecheckTsconfig({
+    ...GOOD_TSCONFIG,
+    include: ["next-env.d.ts"],
+  });
   assert.equal(problems.length, 1);
   assert.match(problems[0], /src\/\*\*/);
 });
@@ -59,20 +62,26 @@ test("validateTypecheckTsconfig reports a problem (not a throw) when config is n
 
 test("validateTypecheckScript accepts a script wired to the gate config", () => {
   assert.deepEqual(
-    validateTypecheckScript({ scripts: { typecheck: "tsc --noEmit -p tsconfig.typecheck.json" } }),
+    validateTypecheckScript({
+      scripts: { typecheck: "tsc --noEmit -p tsconfig.typecheck.json" },
+    }),
     [],
   );
 });
 
 test("validateTypecheckScript flags a missing typecheck script", () => {
-  const problems = validateTypecheckScript({ scripts: { build: "next build" } });
+  const problems = validateTypecheckScript({
+    scripts: { build: "next build" },
+  });
   assert.ok(problems.some((p) => /needs a "typecheck" script/.test(p)));
 });
 
 test("validateTypecheckScript flags a typecheck script pointed at the wrong tsconfig", () => {
   // Pointing typecheck at the default tsconfig (which excludes tests) would
   // silently stop covering test files while still looking green.
-  const problems = validateTypecheckScript({ scripts: { typecheck: "tsc --noEmit" } });
+  const problems = validateTypecheckScript({
+    scripts: { typecheck: "tsc --noEmit" },
+  });
   assert.ok(problems.some((p) => /tsconfig\.typecheck\.json/.test(p)));
 });
 
@@ -81,7 +90,10 @@ test("validateCiWiring flags a workflow that does not run the gate", () => {
 });
 
 test("validateCiWiring accepts a workflow that runs the gate", () => {
-  assert.deepEqual(validateCiWiring("      - run: pnpm -C packages/web typecheck\n"), []);
+  assert.deepEqual(
+    validateCiWiring("      - run: pnpm -C packages/web typecheck\n"),
+    [],
+  );
 });
 
 test("validateCiWiring flags a gate that is only present as a comment", () => {
@@ -91,14 +103,19 @@ test("validateCiWiring flags a gate that is only present as a comment", () => {
   const problems = validateCiWiring(
     "jobs:\n  quality:\n    steps:\n      # run: pnpm -C packages/web typecheck\n",
   );
-  assert.ok(problems.length > 0, "a commented-out gate must not satisfy the guard");
+  assert.ok(
+    problems.length > 0,
+    "a commented-out gate must not satisfy the guard",
+  );
 });
 
 test("validateCiWiring accepts the gate inside a multi-line run block", () => {
   // Stripping comments must not make the check brittle: the `run: |` block form
   // is a legitimate way to wire the gate and has to keep passing.
   assert.deepEqual(
-    validateCiWiring("      - run: |\n          pnpm -C packages/web typecheck\n"),
+    validateCiWiring(
+      "      - run: |\n          pnpm -C packages/web typecheck\n",
+    ),
     [],
   );
 });
@@ -108,7 +125,9 @@ test("validateCiWiring does not treat a '#' inside a command as a comment", () =
   // falsely report the gate as un-wired. Only a '#' at line start or after
   // whitespace starts a YAML comment.
   assert.deepEqual(
-    validateCiWiring('      - run: echo "#deps" && pnpm -C packages/web typecheck\n'),
+    validateCiWiring(
+      '      - run: echo "#deps" && pnpm -C packages/web typecheck\n',
+    ),
     [],
   );
 });
@@ -116,7 +135,9 @@ test("validateCiWiring does not treat a '#' inside a command as a comment", () =
 // ── Drift guards against the REAL repo files ──────────────────────────────
 
 test("packages/web/tsconfig.typecheck.json still covers test files", () => {
-  const config = JSON.parse(readFileSync(join(WEB, "tsconfig.typecheck.json"), "utf8"));
+  const config = JSON.parse(
+    readFileSync(join(WEB, "tsconfig.typecheck.json"), "utf8"),
+  );
   assert.deepEqual(
     validateTypecheckTsconfig(config),
     [],
@@ -130,6 +151,9 @@ test("packages/web/package.json wires the typecheck script to the gate config", 
 });
 
 test("CI runs the web typecheck gate", () => {
-  const ci = readFileSync(join(REPO_ROOT, ".github", "workflows", "ci.yml"), "utf8");
+  const ci = readFileSync(
+    join(REPO_ROOT, ".github", "workflows", "ci.yml"),
+    "utf8",
+  );
   assert.deepEqual(validateCiWiring(ci), []);
 });

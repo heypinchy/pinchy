@@ -33,7 +33,10 @@ const DOCS_LOCKFILE = "docs/pnpm-lock.yaml";
  * `PERSONALITY.md` is covered by the `**\/*.md` rule and needs no entry.
  */
 const IGNORED_PATHS = [
-  { glob: "docs/**", matches: (p) => p.startsWith("docs/") && p !== DOCS_LOCKFILE },
+  {
+    glob: "docs/**",
+    matches: (p) => p.startsWith("docs/") && p !== DOCS_LOCKFILE,
+  },
   { glob: "**/*.md", matches: (p) => p.endsWith(".md") },
   {
     glob: ".github/ISSUE_TEMPLATE/**",

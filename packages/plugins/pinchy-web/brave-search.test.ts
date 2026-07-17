@@ -33,7 +33,7 @@ describe("braveSearch", () => {
       expect.objectContaining({
         "X-Subscription-Token": "my-key",
         Accept: "application/json",
-      }),
+      })
     );
   });
 
@@ -77,9 +77,7 @@ describe("braveSearch", () => {
     });
 
     const url = new URL(fetchMock.mock.calls[0][0]);
-    expect(url.searchParams.get("q")).toBe(
-      "original query (site:a.com OR site:b.com)",
-    );
+    expect(url.searchParams.get("q")).toBe("original query (site:a.com OR site:b.com)");
   });
 
   it("injects excluded domains as -site: filters", async () => {
@@ -91,9 +89,7 @@ describe("braveSearch", () => {
     });
 
     const url = new URL(fetchMock.mock.calls[0][0]);
-    expect(url.searchParams.get("q")).toBe(
-      "original query -site:reddit.com -site:pinterest.com",
-    );
+    expect(url.searchParams.get("q")).toBe("original query -site:reddit.com -site:pinterest.com");
   });
 
   it("combines allowed and excluded domains in the same query", async () => {
@@ -106,20 +102,18 @@ describe("braveSearch", () => {
     });
 
     const url = new URL(fetchMock.mock.calls[0][0]);
-    expect(url.searchParams.get("q")).toBe(
-      "original query site:github.com -site:reddit.com",
-    );
+    expect(url.searchParams.get("q")).toBe("original query site:github.com -site:reddit.com");
   });
 
   it("rejects unsafe domain characters in allowedDomains (defence in depth)", async () => {
     await expect(
-      braveSearch("q", { apiKey: "key", allowedDomains: ['evil.com") OR site:victim.com ("'] }),
+      braveSearch("q", { apiKey: "key", allowedDomains: ['evil.com") OR site:victim.com ("'] })
     ).rejects.toThrow(/invalid domain/i);
   });
 
   it("rejects unsafe domain characters in excludedDomains (defence in depth)", async () => {
     await expect(
-      braveSearch("q", { apiKey: "key", excludedDomains: ["foo bar.com"] }),
+      braveSearch("q", { apiKey: "key", excludedDomains: ["foo bar.com"] })
     ).rejects.toThrow(/invalid domain/i);
   });
 
@@ -175,14 +169,12 @@ describe("braveSearch", () => {
     });
 
     await expect(braveSearch("query", { apiKey: "key" })).rejects.toThrow(
-      "Brave Search API error (429): Rate limit exceeded",
+      "Brave Search API error (429): Rate limit exceeded"
     );
   });
 
   it("throws a descriptive error when API key is missing", async () => {
-    await expect(braveSearch("query", { apiKey: "" })).rejects.toThrow(
-      /API key/i,
-    );
+    await expect(braveSearch("query", { apiKey: "" })).rejects.toThrow(/API key/i);
     expect(fetchMock).not.toHaveBeenCalled();
   });
 });

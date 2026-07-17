@@ -34,7 +34,7 @@ interface AgentTool {
   name: string;
   execute: (
     toolCallId: string,
-    params: Record<string, unknown>,
+    params: Record<string, unknown>
   ) => Promise<{
     content: Array<{ type: string; text: string }>;
     isError?: boolean;
@@ -75,9 +75,7 @@ beforeAll(async () => {
       res.end(JSON.stringify({ error: "Unauthorized" }));
       return;
     }
-    const match = req.url?.match(
-      /^\/api\/internal\/integrations\/([^/]+)\/credentials$/,
-    );
+    const match = req.url?.match(/^\/api\/internal\/integrations\/([^/]+)\/credentials$/);
     if (!match) {
       res.writeHead(404);
       res.end();
@@ -93,16 +91,14 @@ beforeAll(async () => {
         JSON.stringify({
           error:
             "This integration is no longer connected — it may have been removed or replaced. An admin can reconnect it under Settings → Integrations.",
-        }),
+        })
       );
       return;
     }
     res.writeHead(200, { "Content-Type": "application/json" });
     res.end(JSON.stringify({ type: "odoo", credentials }));
   });
-  await new Promise<void>((resolve) =>
-    mockPinchy.listen(0, "127.0.0.1", resolve),
-  );
+  await new Promise<void>((resolve) => mockPinchy.listen(0, "127.0.0.1", resolve));
   mockPinchyPort = (mockPinchy.address() as AddressInfo).port;
 });
 
@@ -110,7 +106,7 @@ afterAll(async () => {
   await mockOdoo?.stop();
   if (mockPinchy) {
     await new Promise<void>((resolve, reject) =>
-      mockPinchy.close((err) => (err ? reject(err) : resolve())),
+      mockPinchy.close((err) => (err ? reject(err) : resolve()))
     );
   }
 });
@@ -128,7 +124,7 @@ function createApi(agentConfigs: Record<string, unknown> = {}) {
     },
     registerTool: (
       factory: (ctx: { agentId?: string }) => AgentTool | null,
-      opts?: { name?: string },
+      opts?: { name?: string }
     ) => {
       tools.push({ factory, name: opts?.name ?? "" });
     },
@@ -138,16 +134,11 @@ function createApi(agentConfigs: Record<string, unknown> = {}) {
   return tools;
 }
 
-function findTool(
-  tools: ReturnType<typeof createApi>,
-  name: string,
-  agentId: string,
-): AgentTool {
+function findTool(tools: ReturnType<typeof createApi>, name: string, agentId: string): AgentTool {
   const entry = tools.find((t) => t.name === name);
   if (!entry) throw new Error(`Tool ${name} not registered`);
   const tool = entry.factory({ agentId });
-  if (!tool)
-    throw new Error(`Tool ${name} factory returned null for agent ${agentId}`);
+  if (!tool) throw new Error(`Tool ${name} factory returned null for agent ${agentId}`);
   return tool;
 }
 
@@ -229,7 +220,7 @@ describe("pinchy-odoo against real mock-odoo + mock-pinchy (#209 layer 2)", () =
     expect(result.isError).toBeFalsy();
     const { id } = JSON.parse(result.content[0].text) as { id: number };
     const records = (await fetch(
-      `http://127.0.0.1:${mockOdoo.controlPort}/control/records?model=res.partner`,
+      `http://127.0.0.1:${mockOdoo.controlPort}/control/records?model=res.partner`
     ).then((res) => res.json())) as Array<Record<string, unknown>>;
     expect(records.find((record) => record.id === id)).toMatchObject({
       name: "Lookup Partner",
@@ -264,7 +255,7 @@ describe("pinchy-odoo against real mock-odoo + mock-pinchy (#209 layer 2)", () =
 
     expect(writeResult.isError).toBeFalsy();
     const records = (await fetch(
-      `http://127.0.0.1:${mockOdoo.controlPort}/control/records?model=res.partner`,
+      `http://127.0.0.1:${mockOdoo.controlPort}/control/records?model=res.partner`
     ).then((res) => res.json())) as Array<Record<string, unknown>>;
     expect(records.find((record) => record.id === 2)).toMatchObject({
       country_id: 14,
@@ -281,15 +272,11 @@ describe("pinchy-odoo against real mock-odoo + mock-pinchy (#209 layer 2)", () =
     });
 
     expect(result.isError).toBe(true);
-    expect(result.content[0].text).toContain(
-      "Raw numeric IDs are not accepted",
-    );
+    expect(result.content[0].text).toContain("Raw numeric IDs are not accepted");
     const records = (await fetch(
-      `http://127.0.0.1:${mockOdoo.controlPort}/control/records?model=res.partner`,
+      `http://127.0.0.1:${mockOdoo.controlPort}/control/records?model=res.partner`
     ).then((res) => res.json())) as Array<Record<string, unknown>>;
-    expect(
-      records.some((record) => record.name === "Raw Numeric Partner"),
-    ).toBe(false);
+    expect(records.some((record) => record.name === "Raw Numeric Partner")).toBe(false);
   });
 
   it("REGRESSION (#209): if Pinchy returns the SecretRef-shaped dict instead of credentials, the plugin fails fast WITHOUT producing a Python crash", async () => {
@@ -381,7 +368,7 @@ describe("pinchy-odoo mail.activity scheduling against real mock-odoo", () => {
 
   async function activities(): Promise<Array<Record<string, unknown>>> {
     return (await fetch(
-      `http://127.0.0.1:${mockOdoo.controlPort}/control/records?model=mail.activity`,
+      `http://127.0.0.1:${mockOdoo.controlPort}/control/records?model=mail.activity`
     ).then((r) => r.json())) as Array<Record<string, unknown>>;
   }
 
@@ -407,7 +394,7 @@ describe("pinchy-odoo mail.activity scheduling against real mock-odoo", () => {
     expect(result.isError).toBeFalsy();
 
     const created = (await activities()).find(
-      (a) => a.summary === "Call the customer about the quote",
+      (a) => a.summary === "Call the customer about the quote"
     );
     expect(created).toBeTruthy();
     // res_model_id resolved to the ir.model id for crm.lead (seed id 5)
@@ -432,9 +419,7 @@ describe("pinchy-odoo mail.activity scheduling against real mock-odoo", () => {
     });
     expect(result.isError).toBeFalsy();
 
-    const created = (await activities()).find(
-      (a) => a.summary === "Send revised proposal",
-    );
+    const created = (await activities()).find((a) => a.summary === "Send revised proposal");
     expect(created!.user_id).toBe(2);
   });
 
@@ -448,9 +433,7 @@ describe("pinchy-odoo mail.activity scheduling against real mock-odoo", () => {
     });
     expect(result.isError).toBeFalsy();
 
-    const created = (await activities()).find(
-      (a) => a.summary === "Qualify this lead",
-    );
+    const created = (await activities()).find((a) => a.summary === "Qualify this lead");
     expect(created!.res_id).toBe(2);
     expect(created!.user_id).toBeUndefined();
   });
@@ -469,9 +452,7 @@ describe("pinchy-odoo mail.activity scheduling against real mock-odoo", () => {
     });
     expect(result.isError).toBeFalsy();
 
-    const created = (await activities()).find(
-      (a) => a.summary === "Legacy path follow-up",
-    );
+    const created = (await activities()).find((a) => a.summary === "Legacy path follow-up");
     expect(created!.res_model_id).toBe(5);
     expect(created!.res_model).toBe("crm.lead");
     expect(created!.res_id).toBe(1);
@@ -490,9 +471,7 @@ describe("pinchy-odoo mail.activity scheduling against real mock-odoo", () => {
     const { _pinchy_ref } = JSON.parse(scheduled.content[0].text) as {
       _pinchy_ref: string;
     };
-    expect(
-      (await activities()).some((a) => a.summary === "Activity to complete"),
-    ).toBe(true);
+    expect((await activities()).some((a) => a.summary === "Activity to complete")).toBe(true);
 
     const result = await complete.execute("c-complete", {
       target: _pinchy_ref,
@@ -501,19 +480,13 @@ describe("pinchy-odoo mail.activity scheduling against real mock-odoo", () => {
     expect(result.isError).toBeFalsy();
 
     // action_feedback marks done → the activity is gone from the open list.
-    expect(
-      (await activities()).some((a) => a.summary === "Activity to complete"),
-    ).toBe(false);
+    expect((await activities()).some((a) => a.summary === "Activity to complete")).toBe(false);
   });
 
   it("odoo_reschedule_activity updates the deadline and reassigns the activity", async () => {
     const tools = createApi({ [activityAgentId]: activityConfig });
     const schedule = findTool(tools, "odoo_schedule_activity", activityAgentId);
-    const reschedule = findTool(
-      tools,
-      "odoo_reschedule_activity",
-      activityAgentId,
-    );
+    const reschedule = findTool(tools, "odoo_reschedule_activity", activityAgentId);
 
     const scheduled = await schedule.execute("c-sched-resched", {
       target: leadRef(1, "Big Fence Order"),
@@ -583,21 +556,18 @@ describe("pinchy-odoo record-action tools against real mock-odoo", () => {
   });
 
   it("odoo_validate_picking hands off (Variant A) when Odoo returns a backorder wizard", async () => {
-    await fetch(
-      `http://127.0.0.1:${mockOdoo.controlPort}/control/method-response`,
-      {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          model: "stock.picking",
-          method: "button_validate",
-          response: {
-            type: "ir.actions.act_window",
-            res_model: "stock.backorder.confirmation",
-          },
-        }),
-      },
-    );
+    await fetch(`http://127.0.0.1:${mockOdoo.controlPort}/control/method-response`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        model: "stock.picking",
+        method: "button_validate",
+        response: {
+          type: "ir.actions.act_window",
+          res_model: "stock.backorder.confirmation",
+        },
+      }),
+    });
     const tools = createApi({ [actionAgentId]: actionConfig });
     const tool = findTool(tools, "odoo_validate_picking", actionAgentId);
     const result = await tool.execute("c-validate", {
@@ -654,16 +624,20 @@ describe("pinchy-odoo multi-company journal resolution (bare ref + scoped lookup
     });
   });
 
-  function ref(model: string, id: number, label: string, companyId?: number, companyLabel?: string): string {
+  function ref(
+    model: string,
+    id: number,
+    label: string,
+    companyId?: number,
+    companyLabel?: string
+  ): string {
     return encodeRef({
       integrationType: "odoo",
       connectionId: accountingConnectionId,
       model,
       id,
       label,
-      ...(companyId !== undefined && companyLabel !== undefined
-        ? { companyId, companyLabel }
-        : {}),
+      ...(companyId !== undefined && companyLabel !== undefined ? { companyId, companyLabel } : {}),
     });
   }
 
@@ -701,7 +675,7 @@ describe("pinchy-odoo multi-company journal resolution (bare ref + scoped lookup
     expect(createResult.isError).toBeFalsy();
     const { id } = JSON.parse(createResult.content[0].text) as { id: number };
     const moves = (await fetch(
-      `http://127.0.0.1:${mockOdoo.controlPort}/control/records?model=account.move`,
+      `http://127.0.0.1:${mockOdoo.controlPort}/control/records?model=account.move`
     ).then((res) => res.json())) as Array<Record<string, unknown>>;
     expect(moves.find((m) => m.id === id)).toMatchObject({
       journal_id: 17,
@@ -731,7 +705,7 @@ describe("pinchy-odoo multi-company journal resolution (bare ref + scoped lookup
 
     // Nothing was written — the guard fires before the create.
     const moves = (await fetch(
-      `http://127.0.0.1:${mockOdoo.controlPort}/control/records?model=account.move`,
+      `http://127.0.0.1:${mockOdoo.controlPort}/control/records?model=account.move`
     ).then((res) => res.json())) as Array<Record<string, unknown>>;
     expect(moves.some((m) => m.ref === "BAD-MT-001")).toBe(false);
   });
@@ -775,7 +749,7 @@ describe("pinchy-odoo multi-company journal resolution (bare ref + scoped lookup
 
     // Exactly one move with that ref exists — no duplicate was written.
     const moves = (await fetch(
-      `http://127.0.0.1:${mockOdoo.controlPort}/control/records?model=account.move`,
+      `http://127.0.0.1:${mockOdoo.controlPort}/control/records?model=account.move`
     ).then((res) => res.json())) as Array<Record<string, unknown>>;
     expect(moves.filter((m) => m.ref === "DUP-INV-777")).toHaveLength(1);
   });
@@ -796,7 +770,7 @@ describe("pinchy-odoo multi-company journal resolution (bare ref + scoped lookup
           filters: [["id", "=", 17]],
           fields: ["name"],
         })
-      ).content[0].text,
+      ).content[0].text
     ).records[0]._pinchy_ref;
     const journal2 = JSON.parse(
       (
@@ -805,7 +779,7 @@ describe("pinchy-odoo multi-company journal resolution (bare ref + scoped lookup
           filters: [["id", "=", 24]],
           fields: ["name"],
         })
-      ).content[0].text,
+      ).content[0].text
     ).records[0]._pinchy_ref;
 
     const first = await createTool.execute("create-xc-first", {
@@ -832,7 +806,7 @@ describe("pinchy-odoo multi-company journal resolution (bare ref + scoped lookup
 
     // Both companies' moves persisted — one per company, same ref.
     const moves = (await fetch(
-      `http://127.0.0.1:${mockOdoo.controlPort}/control/records?model=account.move`,
+      `http://127.0.0.1:${mockOdoo.controlPort}/control/records?model=account.move`
     ).then((res) => res.json())) as Array<Record<string, unknown>>;
     expect(moves.filter((m) => m.ref === "XCOMPANY-REF-1")).toHaveLength(2);
   });
@@ -859,7 +833,7 @@ describe("pinchy-odoo multi-company journal resolution (bare ref + scoped lookup
     expect(createResult.isError).toBeFalsy();
     const { id } = JSON.parse(createResult.content[0].text) as { id: number };
     const moves = (await fetch(
-      `http://127.0.0.1:${mockOdoo.controlPort}/control/records?model=account.move`,
+      `http://127.0.0.1:${mockOdoo.controlPort}/control/records?model=account.move`
     ).then((res) => res.json())) as Array<Record<string, unknown>>;
     expect(moves.find((m) => m.id === id)).toMatchObject({
       journal_id: 17,
@@ -878,7 +852,7 @@ describe("pinchy-odoo multi-company journal resolution (bare ref + scoped lookup
       24,
       "Miscellaneous Operations [Clemens Helm]",
       2,
-      "Clemens Helm",
+      "Clemens Helm"
     );
     const createResult = await createTool.execute("create-move-xc", {
       model: "account.move",
@@ -894,7 +868,7 @@ describe("pinchy-odoo multi-company journal resolution (bare ref + scoped lookup
     expect(createResult.isError).toBe(true);
     expect(createResult.content[0].text).toMatch(/cross-company/i);
     const moves = (await fetch(
-      `http://127.0.0.1:${mockOdoo.controlPort}/control/records?model=account.move`,
+      `http://127.0.0.1:${mockOdoo.controlPort}/control/records?model=account.move`
     ).then((res) => res.json())) as Array<Record<string, unknown>>;
     expect(moves.some((m) => m.ref === "should be rejected")).toBe(false);
   });
@@ -923,7 +897,7 @@ describe("pinchy-odoo multi-company journal resolution (bare ref + scoped lookup
     expect(createResult.isError).toBeFalsy();
     const { id } = JSON.parse(createResult.content[0].text) as { id: number };
     const moves = (await fetch(
-      `http://127.0.0.1:${mockOdoo.controlPort}/control/records?model=account.move`,
+      `http://127.0.0.1:${mockOdoo.controlPort}/control/records?model=account.move`
     ).then((res) => res.json())) as Array<Record<string, unknown>>;
     // The shared partner (id 5, company_id false) resolves despite the
     // company-1 scope; journal_id resolves to the company-1 journal (17).
@@ -986,7 +960,7 @@ describe("pinchy-odoo nested one2many + many2many governance against real mock-o
     expect(result.isError).toBeFalsy();
     const { id } = JSON.parse(result.content[0].text) as { id: number };
     const moves = (await fetch(
-      `http://127.0.0.1:${mockOdoo.controlPort}/control/records?model=account.move`,
+      `http://127.0.0.1:${mockOdoo.controlPort}/control/records?model=account.move`
     ).then((res) => res.json())) as Array<Record<string, unknown>>;
     const move = moves.find((m) => m.id === id);
     expect(move).toBeDefined();
@@ -994,11 +968,9 @@ describe("pinchy-odoo nested one2many + many2many governance against real mock-o
     expect((move!.line_ids as number[]).length).toBe(1);
 
     const lines = (await fetch(
-      `http://127.0.0.1:${mockOdoo.controlPort}/control/records?model=account.move.line`,
+      `http://127.0.0.1:${mockOdoo.controlPort}/control/records?model=account.move.line`
     ).then((res) => res.json())) as Array<Record<string, unknown>>;
-    const createdLine = lines.find(
-      (l) => l.id === (move!.line_ids as number[])[0],
-    );
+    const createdLine = lines.find((l) => l.id === (move!.line_ids as number[])[0]);
     expect(createdLine).toMatchObject({ account_id: 40, debit: 42 });
   });
 
@@ -1069,7 +1041,7 @@ describe("pinchy-odoo nested one2many + many2many governance against real mock-o
     expect(result.isError).toBeFalsy();
     const { id } = JSON.parse(result.content[0].text) as { id: number };
     const moves = (await fetch(
-      `http://127.0.0.1:${mockOdoo.controlPort}/control/records?model=account.move`,
+      `http://127.0.0.1:${mockOdoo.controlPort}/control/records?model=account.move`
     ).then((res) => res.json())) as Array<Record<string, unknown>>;
     const move = moves.find((m) => m.id === id);
     expect(move).toMatchObject({ tax_ids: [1] });

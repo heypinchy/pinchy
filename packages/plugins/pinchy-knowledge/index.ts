@@ -150,9 +150,7 @@ const plugin = {
   register(api: PluginApi) {
     const config = api.pluginConfig;
     if (!config?.apiBaseUrl || !config?.gatewayToken) {
-      api.logger?.warn?.(
-        "[pinchy-knowledge] plugin config is missing apiBaseUrl or gatewayToken"
-      );
+      api.logger?.warn?.("[pinchy-knowledge] plugin config is missing apiBaseUrl or gatewayToken");
       return;
     }
 
@@ -201,13 +199,10 @@ const plugin = {
 
               if (!res.ok) {
                 const data = await res.json().catch(() => ({}) as Record<string, unknown>);
-                const message =
-                  typeof data.error === "string" ? data.error : `HTTP ${res.status}`;
+                const message = typeof data.error === "string" ? data.error : `HTTP ${res.status}`;
                 return {
                   isError: true,
-                  content: [
-                    { type: "text", text: `Knowledge base search failed: ${message}` },
-                  ],
+                  content: [{ type: "text", text: `Knowledge base search failed: ${message}` }],
                   // details.error (and ONLY error — no other keys) is set on
                   // every failure path so the audit endpoint's isError-
                   // stripping defense (#404) can't mask the failure, WITHOUT

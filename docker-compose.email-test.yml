@@ -13,7 +13,13 @@ services:
     ports:
       - "9004:9004"
     healthcheck:
-      test: ["CMD", "node", "-e", "fetch('http://localhost:9004/control/health').then(r=>r.ok?process.exit(0):process.exit(1)).catch(()=>process.exit(1))"]
+      test:
+        [
+          "CMD",
+          "node",
+          "-e",
+          "fetch('http://localhost:9004/control/health').then(r=>r.ok?process.exit(0):process.exit(1)).catch(()=>process.exit(1))",
+        ]
       interval: 5s
       timeout: 3s
       retries: 10
@@ -24,7 +30,13 @@ services:
     ports:
       - "9005:9005"
     healthcheck:
-      test: ["CMD", "node", "-e", "fetch('http://localhost:9005/control/health').then(r=>r.ok?process.exit(0):process.exit(1)).catch(()=>process.exit(1))"]
+      test:
+        [
+          "CMD",
+          "node",
+          "-e",
+          "fetch('http://localhost:9005/control/health').then(r=>r.ok?process.exit(0):process.exit(1)).catch(()=>process.exit(1))",
+        ]
       interval: 5s
       timeout: 3s
       retries: 10

@@ -12,16 +12,11 @@ export function escapeDoubleQuoted(v: string): string {
 // identical across providers, only the provider-specific value for each
 // folder differs (Gmail label IDs vs Graph well-known folder names). Sharing
 // this keeps that validation from drifting between adapters.
-export function createFolderMapper(
-  mapping: Record<Folder, string>,
-): (f: Folder) => string {
+export function createFolderMapper(mapping: Record<Folder, string>): (f: Folder) => string {
   return function mapFolder(f: Folder): string {
     const key = String(f).trim().toUpperCase();
     const value = mapping[key as Folder];
-    if (!value)
-      throw new Error(
-        `unknown folder: ${f}. Valid: INBOX, SENT, DRAFTS, TRASH, SPAM.`,
-      );
+    if (!value) throw new Error(`unknown folder: ${f}. Valid: INBOX, SENT, DRAFTS, TRASH, SPAM.`);
     return value;
   };
 }
@@ -92,6 +87,6 @@ export interface EmailAdapter {
   send(opts: ComposeOptions): Promise<{ messageId: string | null }>;
   getAttachment(
     messageId: string,
-    attachmentId: string,
+    attachmentId: string
   ): Promise<{ filename: string; mimeType: string; data: Buffer }>;
 }

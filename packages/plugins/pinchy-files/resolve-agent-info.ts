@@ -10,12 +10,10 @@
  * Returns `undefined` for any field that isn't present so callers can decide
  * on their own fallback (`name ?? agentId`, `model ?? undefined`, etc.).
  */
-export function resolveAgentInfo(
-  cfg: unknown,
-  agentId: string
-): { name?: string; model?: string } {
-  const agents = (cfg as { agents?: { list?: Array<{ id?: string; name?: string; model?: string }> } } | null)
-    ?.agents?.list;
+export function resolveAgentInfo(cfg: unknown, agentId: string): { name?: string; model?: string } {
+  const agents = (
+    cfg as { agents?: { list?: Array<{ id?: string; name?: string; model?: string }> } } | null
+  )?.agents?.list;
   const agent = agents?.find((a) => a.id === agentId);
   return {
     name: agent?.name,

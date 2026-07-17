@@ -14,7 +14,9 @@ const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..");
 const RELEASE_YML = join(ROOT, ".github", "workflows", "release.yml");
 
 function jobBody(name) {
-  const job = splitWorkflowIntoJobs(RELEASE_YML).find((j) => j.jobName === name);
+  const job = splitWorkflowIntoJobs(RELEASE_YML).find(
+    (j) => j.jobName === name,
+  );
   assert.ok(job, `release.yml has no '${name}' job (workflow restructured?)`);
   return job.body;
 }

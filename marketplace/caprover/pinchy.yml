@@ -19,7 +19,7 @@ services:
       POSTGRES_USER: pinchy
       POSTGRES_PASSWORD: $$cap_db_password
     caproverExtra:
-      notExposeAsWebApp: 'true'
+      notExposeAsWebApp: "true"
 
   $$cap_appname-pinchy:
     image: ghcr.io/heypinchy/pinchy:$$cap_pinchy_version
@@ -43,7 +43,7 @@ services:
     depends_on:
       - $$cap_appname-db
     caproverExtra:
-      containerHttpPort: '7777'
+      containerHttpPort: "7777"
 
   $$cap_appname-openclaw:
     image: ghcr.io/heypinchy/pinchy-openclaw:$$cap_pinchy_version
@@ -58,7 +58,7 @@ services:
     depends_on:
       - $$cap_appname-pinchy
     caproverExtra:
-      notExposeAsWebApp: 'true'
+      notExposeAsWebApp: "true"
 
 caproverOneClickApp:
   displayName: Pinchy
@@ -78,7 +78,7 @@ caproverOneClickApp:
   variables:
     - id: $$cap_pinchy_version
       label: Pinchy version
-      defaultValue: 'v0.8.0'
+      defaultValue: "v0.8.0"
       description: The released Pinchy version to deploy (must have published images).
       validRegex: '/^v\d+\.\d+\.\d+$/'
     - id: $$cap_db_password
@@ -95,5 +95,5 @@ caproverOneClickApp:
       description: Auto-generated 64-hex-char key that encrypts provider API keys at rest. Leave as-is.
     - id: $$cap_enterprise_key
       label: Enterprise license key (optional)
-      defaultValue: ''
+      defaultValue: ""
       description: Optional. Enables Groups and agent access control. Can also be entered later in Settings -> License.

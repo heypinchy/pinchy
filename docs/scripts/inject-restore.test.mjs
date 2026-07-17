@@ -11,7 +11,13 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync } from "node:fs";
+import {
+  mkdtempSync,
+  mkdirSync,
+  writeFileSync,
+  readFileSync,
+  rmSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -29,7 +35,10 @@ function setupDocsLikeTree() {
   mkdirSync(snippetsDir, { recursive: true });
   mkdirSync(publicDir, { recursive: true });
   // Required by inject-version.sh to write public/cloud-init.yml.
-  writeFileSync(path.join(snippetsDir, "cloud-init.yml"), "version: %%PINCHY_VERSION%%\n");
+  writeFileSync(
+    path.join(snippetsDir, "cloud-init.yml"),
+    "version: %%PINCHY_VERSION%%\n",
+  );
   return { root, docsDir, srcDir };
 }
 
@@ -38,15 +47,23 @@ function copyScripts(targetDocsDir) {
   mkdirSync(scriptsDir, { recursive: true });
   for (const name of ["inject-version.sh", "restore-placeholders.sh"]) {
     const dest = path.join(scriptsDir, name);
-    writeFileSync(dest, readFileSync(path.join(__dirname, name)), { mode: 0o755 });
+    writeFileSync(dest, readFileSync(path.join(__dirname, name)), {
+      mode: 0o755,
+    });
   }
   return scriptsDir;
 }
 
 function runPipeline(scriptsDir, version) {
   const env = { ...process.env, PINCHY_VERSION: version };
-  execFileSync("sh", [path.join(scriptsDir, "inject-version.sh")], { env, stdio: "ignore" });
-  execFileSync("sh", [path.join(scriptsDir, "restore-placeholders.sh")], { env, stdio: "ignore" });
+  execFileSync("sh", [path.join(scriptsDir, "inject-version.sh")], {
+    env,
+    stdio: "ignore",
+  });
+  execFileSync("sh", [path.join(scriptsDir, "restore-placeholders.sh")], {
+    env,
+    stdio: "ignore",
+  });
 }
 
 test("inject + restore round-trip preserves historical version references", () => {

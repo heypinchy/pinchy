@@ -54,7 +54,7 @@ interface AgentTool {
   parameters: Record<string, unknown>;
   execute: (
     id: string,
-    params: Record<string, unknown>,
+    params: Record<string, unknown>
   ) => Promise<{
     content: Array<{ type: string; text: string }>;
     isError?: boolean;
@@ -74,7 +74,7 @@ function createApi(agentConfigs: Record<string, AgentOdooConfig> = {}) {
     },
     registerTool: (
       factory: (ctx: { agentId?: string }) => AgentTool | null,
-      opts?: { name?: string },
+      opts?: { name?: string }
     ) => {
       tools.push({ factory, name: opts?.name ?? "" });
     },
@@ -86,7 +86,7 @@ function createApi(agentConfigs: Record<string, AgentOdooConfig> = {}) {
 function findTool(
   tools: ReturnType<typeof createApi>,
   name: string,
-  agentId?: string,
+  agentId?: string
 ): AgentTool | null {
   const entry = tools.find((t) => t.name === name);
   if (!entry) return null;
@@ -123,9 +123,9 @@ describe("hasItemWrappedArray", () => {
   });
 
   it("detects nested {item:{item: …}} wrapping", () => {
-    expect(
-      hasItemWrappedArray({ tax_ids: { item: { item: ["6", "0", { item: "172" }] } } }),
-    ).toBe(true);
+    expect(hasItemWrappedArray({ tax_ids: { item: { item: ["6", "0", { item: "172" }] } } })).toBe(
+      true
+    );
   });
 
   it("detects wrapping nested inside a real array", () => {
@@ -133,9 +133,9 @@ describe("hasItemWrappedArray", () => {
   });
 
   it("passes a well-formed one2many command list", () => {
-    expect(
-      hasItemWrappedArray({ invoice_line_ids: [[0, 0, { account_id: 5, name: "x" }]] }),
-    ).toBe(false);
+    expect(hasItemWrappedArray({ invoice_line_ids: [[0, 0, { account_id: 5, name: "x" }]] })).toBe(
+      false
+    );
   });
 
   it("passes a well-formed many2many command list", () => {
@@ -287,9 +287,7 @@ describe("odoo_aggregate — {item: …} array-wrapping", () => {
 describe("relation-field name string — Postgres integer error is translated", () => {
   it("turns a raw 'invalid input syntax for type integer' into actionable guidance", async () => {
     mockCreate.mockRejectedValue(
-      new Error(
-        'invalid input syntax for type integer: "7600 Office supplies and printed forms"',
-      ),
+      new Error('invalid input syntax for type integer: "7600 Office supplies and printed forms"')
     );
     const tool = findTool(createApi({ [agentId]: cfg() }), "odoo_create", agentId)!;
     const result = await tool.execute("c", {

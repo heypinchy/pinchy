@@ -38,7 +38,10 @@ interface PluginApi {
   logger?: PluginLogger;
   on: (
     hookName: "before_tool_call" | "after_tool_call",
-    handler: (event: BeforeToolCallEvent | AfterToolCallEvent, ctx: ToolHookContext) => Promise<void>
+    handler: (
+      event: BeforeToolCallEvent | AfterToolCallEvent,
+      ctx: ToolHookContext
+    ) => Promise<void>
   ) => void;
 }
 
@@ -72,9 +75,20 @@ const MAX_DEPTH = 10;
 // SYNC: This sanitization logic is duplicated in packages/web/src/lib/audit-sanitize.ts
 // Keep both copies in sync when adding/removing patterns.
 const SENSITIVE_KEYS = [
-  "password", "secret", "token", "apikey", "api_key",
-  "authorization", "credential", "private_key", "privatekey",
-  "passphrase", "access_key", "accesskey", "client_secret", "clientsecret",
+  "password",
+  "secret",
+  "token",
+  "apikey",
+  "api_key",
+  "authorization",
+  "credential",
+  "private_key",
+  "privatekey",
+  "passphrase",
+  "access_key",
+  "accesskey",
+  "client_secret",
+  "clientsecret",
 ];
 
 const SECRET_PATTERNS: RegExp[] = [
@@ -90,7 +104,7 @@ const SECRET_PATTERNS: RegExp[] = [
   /EAA[a-zA-Z0-9]{20,}/g,
 ];
 
-const ENV_SECRET_LINE = /^([A-Z_]*(SECRET|KEY|TOKEN|PASSWORD|CREDENTIAL)[A-Z_]*)=(.+)$/gmi;
+const ENV_SECRET_LINE = /^([A-Z_]*(SECRET|KEY|TOKEN|PASSWORD|CREDENTIAL)[A-Z_]*)=(.+)$/gim;
 
 function isSensitiveKey(key: string): boolean {
   const lower = key.toLowerCase();
@@ -126,7 +140,12 @@ function sanitizeValue(value: unknown, depth: number): unknown {
   if (typeof value === "object") {
     const result: Record<string, unknown> = {};
     for (const [key, val] of Object.entries(value as Record<string, unknown>)) {
-      if (isSensitiveKey(key) && val !== null && val !== undefined && !isExemptTokenCount(key, val)) {
+      if (
+        isSensitiveKey(key) &&
+        val !== null &&
+        val !== undefined &&
+        !isExemptTokenCount(key, val)
+      ) {
         result[key] = REDACTED;
       } else {
         result[key] = sanitizeValue(val, depth + 1);
@@ -176,7 +195,7 @@ function cleanupRecentToolStarts(recentStarts: Map<string, RecentToolStart>): vo
 function toolStartKey(
   toolCallId: string | undefined,
   runId: string | undefined,
-  toolName: string,
+  toolName: string
 ): string {
   if (toolCallId) return toolCallId;
   if (runId) return `${runId}:${toolName}`;
@@ -229,12 +248,7 @@ const plugin = {
   description: "Source-level tool execution audit logging for all OpenClaw tools.",
   configSchema: {
     validate: (value: unknown) => {
-      if (
-        value &&
-        typeof value === "object" &&
-        "apiBaseUrl" in value &&
-        "gatewayToken" in value
-      ) {
+      if (value && typeof value === "object" && "apiBaseUrl" in value && "gatewayToken" in value) {
         return { ok: true as const, value };
       }
       return { ok: false as const, errors: ["Missing required keys in config"] };
@@ -258,7 +272,7 @@ const plugin = {
       const startKey = toolStartKey(
         beforeEvent.toolCallId ?? ctx.toolCallId,
         beforeEvent.runId ?? ctx.runId,
-        beforeEvent.toolName,
+        beforeEvent.toolName
       );
       recentStarts.set(startKey, {
         agentId,
@@ -268,16 +282,20 @@ const plugin = {
         at: Date.now(),
       });
 
-      await postToolAuditEvent(cfg, api.logger, sanitizePayloadFields({
-        phase: "start",
-        toolName: beforeEvent.toolName,
-        params: beforeEvent.params,
-        runId: beforeEvent.runId ?? ctx.runId,
-        toolCallId: beforeEvent.toolCallId ?? ctx.toolCallId,
-        agentId,
-        sessionKey: ctx.sessionKey,
-        sessionId: ctx.sessionId,
-      }));
+      await postToolAuditEvent(
+        cfg,
+        api.logger,
+        sanitizePayloadFields({
+          phase: "start",
+          toolName: beforeEvent.toolName,
+          params: beforeEvent.params,
+          runId: beforeEvent.runId ?? ctx.runId,
+          toolCallId: beforeEvent.toolCallId ?? ctx.toolCallId,
+          agentId,
+          sessionKey: ctx.sessionKey,
+          sessionId: ctx.sessionId,
+        })
+      );
     });
 
     api.on("after_tool_call", async (event, ctx) => {
@@ -286,30 +304,31 @@ const plugin = {
       const startKey = toolStartKey(
         afterEvent.toolCallId ?? ctx.toolCallId,
         afterEvent.runId ?? ctx.runId,
-        afterEvent.toolName,
+        afterEvent.toolName
       );
       const recent = recentStarts.get(startKey);
       const sessionKey = ctx.sessionKey ?? recent?.sessionKey;
       const sessionId = ctx.sessionId ?? recent?.sessionId;
       const runId = afterEvent.runId ?? ctx.runId ?? recent?.runId;
-      const agentId =
-        ctx.agentId ??
-        extractAgentIdFromSessionKey(sessionKey) ??
-        recent?.agentId;
+      const agentId = ctx.agentId ?? extractAgentIdFromSessionKey(sessionKey) ?? recent?.agentId;
 
-      await postToolAuditEvent(cfg, api.logger, sanitizePayloadFields({
-        phase: "end",
-        toolName: afterEvent.toolName,
-        params: afterEvent.params,
-        runId,
-        toolCallId: afterEvent.toolCallId ?? ctx.toolCallId,
-        agentId,
-        sessionKey,
-        sessionId,
-        result: afterEvent.result,
-        error: afterEvent.error,
-        durationMs: afterEvent.durationMs,
-      }));
+      await postToolAuditEvent(
+        cfg,
+        api.logger,
+        sanitizePayloadFields({
+          phase: "end",
+          toolName: afterEvent.toolName,
+          params: afterEvent.params,
+          runId,
+          toolCallId: afterEvent.toolCallId ?? ctx.toolCallId,
+          agentId,
+          sessionKey,
+          sessionId,
+          result: afterEvent.result,
+          error: afterEvent.error,
+          durationMs: afterEvent.durationMs,
+        })
+      );
     });
   },
 };

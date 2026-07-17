@@ -1,12 +1,6 @@
 // @vitest-environment node
 import { describe, it, expect, beforeEach, vi } from "vitest";
-import {
-  putHandle,
-  resolveHandle,
-  handleFor,
-  MSG_PREFIX,
-  ATT_PREFIX,
-} from "../id-handle-store";
+import { putHandle, resolveHandle, handleFor, MSG_PREFIX, ATT_PREFIX } from "../id-handle-store";
 
 describe("handleFor", () => {
   it("is deterministic: same realId + prefix always produces the same handle", () => {
@@ -32,8 +26,7 @@ describe("handleFor", () => {
   });
 
   it("produces a short handle, much shorter than a typical Graph id", () => {
-    const graphLikeId =
-      "AAMkAGI2AAAAAAA-".repeat(10) + "some-more-base64-padding==";
+    const graphLikeId = "AAMkAGI2AAAAAAA-".repeat(10) + "some-more-base64-padding==";
     const handle = handleFor(graphLikeId, MSG_PREFIX);
     expect(handle.length).toBeLessThan(30);
   });
@@ -44,9 +37,7 @@ describe("handleFor", () => {
   // bits (16 hex chars) so that a collision is genuinely negligible, not merely
   // unlikely. This guards against silently shrinking the entropy back.
   it("carries 64 bits (16 hex chars) of the realId digest", () => {
-    const hex = handleFor("some-real-id", MSG_PREFIX).slice(
-      `${MSG_PREFIX}_`.length,
-    );
+    const hex = handleFor("some-real-id", MSG_PREFIX).slice(`${MSG_PREFIX}_`.length);
     expect(hex).toMatch(/^[0-9a-f]{16}$/);
   });
 });

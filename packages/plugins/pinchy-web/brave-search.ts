@@ -16,11 +16,11 @@ export interface BraveSearchResult {
 
 export async function braveSearch(
   query: string,
-  config: BraveSearchConfig,
+  config: BraveSearchConfig
 ): Promise<{ results: BraveSearchResult[] }> {
   if (!config.apiKey) {
     throw new Error(
-      "Brave Search API key is required. Configure it in Pinchy integration settings.",
+      "Brave Search API key is required. Configure it in Pinchy integration settings."
     );
   }
 
@@ -37,8 +37,7 @@ export async function braveSearch(
   if (config.allowedDomains?.length) {
     config.allowedDomains.forEach(assertSiteSafe);
     const sites = config.allowedDomains.map((d) => `site:${d}`).join(" OR ");
-    q =
-      config.allowedDomains.length === 1 ? `${q} ${sites}` : `${q} (${sites})`;
+    q = config.allowedDomains.length === 1 ? `${q} ${sites}` : `${q} (${sites})`;
   }
   if (config.excludedDomains?.length) {
     config.excludedDomains.forEach(assertSiteSafe);
@@ -54,18 +53,14 @@ export async function braveSearch(
   if (config.language) params.set("search_lang", config.language);
   if (config.freshness) params.set("freshness", config.freshness);
 
-  const BRAVE_SEARCH_BASE_URL =
-    process.env.BRAVE_API_BASE_URL ?? "https://api.search.brave.com";
+  const BRAVE_SEARCH_BASE_URL = process.env.BRAVE_API_BASE_URL ?? "https://api.search.brave.com";
 
-  const res = await fetch(
-    `${BRAVE_SEARCH_BASE_URL}/res/v1/web/search?${params}`,
-    {
-      headers: {
-        "X-Subscription-Token": config.apiKey,
-        Accept: "application/json",
-      },
+  const res = await fetch(`${BRAVE_SEARCH_BASE_URL}/res/v1/web/search?${params}`, {
+    headers: {
+      "X-Subscription-Token": config.apiKey,
+      Accept: "application/json",
     },
-  );
+  });
 
   if (!res.ok) {
     const text = await res.text().catch(() => "");

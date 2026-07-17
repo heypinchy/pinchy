@@ -78,7 +78,9 @@ test("exportedImageTags reads the fan-in's $GITHUB_OUTPUT values", () => {
 // The regression in miniature: someone edits the tag scheme on ONE side. Every
 // downstream job then pulls an image nobody pushed.
 test("a tag scheme changed only in the builder is caught", () => {
-  const path = fixture(workflow({ ...IN_SYNC, pushed: "${{ matrix.tag }}:${{ github.sha }}" }));
+  const path = fixture(
+    workflow({ ...IN_SYNC, pushed: "${{ matrix.tag }}:${{ github.sha }}" }),
+  );
   assert.notDeepEqual(builtImageTags(path), exportedImageTags(path));
 });
 
@@ -90,7 +92,7 @@ test("a tag scheme changed only in the fan-in is caught", () => {
         "pinchy=ghcr.io/heypinchy/pinchy-ci:${{ github.sha }}",
         "openclaw=ghcr.io/heypinchy/pinchy-openclaw-ci:sha-${{ github.sha }}",
       ],
-    })
+    }),
   );
   assert.notDeepEqual(builtImageTags(path), exportedImageTags(path));
 });
@@ -104,7 +106,7 @@ test("a renamed image repo is caught", () => {
         "pinchy=ghcr.io/heypinchy/pinchy-ci:sha-${{ github.sha }}",
         "openclaw=ghcr.io/heypinchy/openclaw-ci:sha-${{ github.sha }}",
       ],
-    })
+    }),
   );
   assert.notDeepEqual(builtImageTags(path), exportedImageTags(path));
 });
@@ -132,7 +134,7 @@ jobs:
         run: |
           echo "pinchy=ghcr.io/heypinchy/pinchy-ci:sha-\${{ github.sha }}" >> $GITHUB_OUTPUT
           echo "openclaw=ghcr.io/heypinchy/pinchy-openclaw-ci:sha-\${{ github.sha }}" >> $GITHUB_OUTPUT
-`
+`,
   );
   assert.notDeepEqual(builtImageTags(path), exportedImageTags(path));
 });
@@ -149,7 +151,9 @@ test("a missing builder job is a loud error, not a silent pass", () => {
 // tag mismatch that doesn't exist. Diagnose the real cause instead: this shape
 // is unsupported, and the error has to say so.
 test("a block-scalar `tags:` fails with its real cause, not a bogus tag mismatch", () => {
-  const path = fixture(workflow({ ...IN_SYNC, pushed: "|\n            ${{ matrix.tag }}:sha-x" }));
+  const path = fixture(
+    workflow({ ...IN_SYNC, pushed: "|\n            ${{ matrix.tag }}:sha-x" }),
+  );
   assert.throws(() => builtImageTags(path), /single-line/i);
 });
 
@@ -162,6 +166,6 @@ test("ci.yml: the images build-images pushes are exactly the ones build-image ex
     builtImageTags(CI_WORKFLOW),
     exportedImageTags(CI_WORKFLOW),
     "the `build-images` matrix and the `build-image` fan-in must name the same image tags — " +
-      "downstream jobs pull what the fan-in exports, and nothing else checks that it was ever pushed"
+      "downstream jobs pull what the fan-in exports, and nothing else checks that it was ever pushed",
   );
 });

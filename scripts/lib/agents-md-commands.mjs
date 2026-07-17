@@ -79,7 +79,10 @@ function parsePnpmTokens(tokens, cwd) {
     }
     const inline = token.match(/^(--filter|--dir)=(.+)$/);
     if (inline) {
-      target = { type: inline[1] === "--filter" ? "filter" : "dir", value: inline[2] };
+      target = {
+        type: inline[1] === "--filter" ? "filter" : "dir",
+        value: inline[2],
+      };
       i += 1;
       continue;
     }
@@ -117,7 +120,8 @@ export function extractPnpmInvocations(markdown) {
       let cwd = ".";
       for (const segment of line.split("&&")) {
         const tokens = segment.trim().split(/\s+/).filter(Boolean);
-        while (tokens.length > 0 && ENV_ASSIGNMENT.test(tokens[0])) tokens.shift();
+        while (tokens.length > 0 && ENV_ASSIGNMENT.test(tokens[0]))
+          tokens.shift();
         const [command, ...rest] = tokens;
         if (command === "cd") {
           cwd = rest[0] ?? ".";
@@ -141,13 +145,17 @@ function normalizeDir(value) {
 /** pnpm filters allow `*`, e.g. `--filter "./packages/plugins/*"`. */
 function matchesGlob(pattern, value) {
   if (typeof value !== "string") return false;
-  const source = pattern.replace(/[.*+?^${}()|[\]\\]/g, (c) => (c === "*" ? "[^/]*" : `\\${c}`));
+  const source = pattern.replace(/[.*+?^${}()|[\]\\]/g, (c) =>
+    c === "*" ? "[^/]*" : `\\${c}`,
+  );
   return new RegExp(`^${source}$`).test(value);
 }
 
 function readPackage(repoRoot, dir) {
   try {
-    const pkg = JSON.parse(readFileSync(join(repoRoot, dir, "package.json"), "utf8"));
+    const pkg = JSON.parse(
+      readFileSync(join(repoRoot, dir, "package.json"), "utf8"),
+    );
     return {
       dir,
       name: typeof pkg.name === "string" ? pkg.name : null,
@@ -173,7 +181,9 @@ function packageDirs(repoRoot) {
     if (!glob?.endsWith("/*")) continue;
     const parent = glob.slice(0, -2);
     try {
-      for (const entry of readdirSync(join(repoRoot, parent), { withFileTypes: true })) {
+      for (const entry of readdirSync(join(repoRoot, parent), {
+        withFileTypes: true,
+      })) {
         if (entry.isDirectory()) dirs.push(`${parent}/${entry.name}`);
       }
     } catch {
@@ -210,7 +220,9 @@ export function createWorkspaceResolver(repoRoot) {
     );
     // A glob filter runs the script in every match, so any of them declaring it
     // means the documented command does something.
-    return matches.length === 0 ? null : [...new Set(matches.flatMap((pkg) => pkg.scripts))];
+    return matches.length === 0
+      ? null
+      : [...new Set(matches.flatMap((pkg) => pkg.scripts))];
   };
 }
 
@@ -231,8 +243,14 @@ export function checkAgentsMdCommands(markdown, resolveScripts) {
       continue;
     }
     if (!scripts.includes(script)) {
-      const where = target.type === "dir" ? `"${target.value}"` : `package "${target.value}"`;
-      const rootHint = target.type === "dir" && target.value === "." ? " (root package.json)" : "";
+      const where =
+        target.type === "dir"
+          ? `"${target.value}"`
+          : `package "${target.value}"`;
+      const rootHint =
+        target.type === "dir" && target.value === "."
+          ? " (root package.json)"
+          : "";
       problems.push(
         `\`${line}\` runs script "${script}" in ${where}${rootHint}, which declares no such script`,
       );

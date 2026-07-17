@@ -506,10 +506,7 @@ describe("pinchy-audit plugin", () => {
     });
 
     it("throws after all retries are exhausted (fail-closed)", async () => {
-      vi.stubGlobal(
-        "fetch",
-        vi.fn().mockRejectedValue(new Error("network down"))
-      );
+      vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new Error("network down")));
 
       const { default: plugin } = await import("./index");
       plugin.register?.(
@@ -529,10 +526,7 @@ describe("pinchy-audit plugin", () => {
     });
 
     it("throws after all retries exhausted on non-ok HTTP responses", async () => {
-      vi.stubGlobal(
-        "fetch",
-        vi.fn().mockResolvedValue({ ok: false, status: 500 })
-      );
+      vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: false, status: 500 }));
 
       const { default: plugin } = await import("./index");
       plugin.register?.(

@@ -55,7 +55,7 @@ interface AgentTool {
   parameters: Record<string, unknown>;
   execute: (
     id: string,
-    params: Record<string, unknown>,
+    params: Record<string, unknown>
   ) => Promise<{
     content: Array<{ type: string; text: string }>;
     isError?: boolean;
@@ -75,7 +75,7 @@ function createApi(agentConfigs: Record<string, AgentOdooConfig> = {}) {
     },
     registerTool: (
       factory: (ctx: { agentId?: string }) => AgentTool | null,
-      opts?: { name?: string },
+      opts?: { name?: string }
     ) => {
       tools.push({ factory, name: opts?.name ?? "" });
     },
@@ -87,7 +87,7 @@ function createApi(agentConfigs: Record<string, AgentOdooConfig> = {}) {
 function findTool(
   tools: ReturnType<typeof createApi>,
   name: string,
-  agentId?: string,
+  agentId?: string
 ): AgentTool | null {
   const entry = tools.find((t) => t.name === name);
   if (!entry) return null;
@@ -105,9 +105,7 @@ const FULL_PERMS = {
   "account.journal": ["read"],
 };
 
-function cfg(
-  permissions: Record<string, string[]> = FULL_PERMS,
-): AgentOdooConfig {
+function cfg(permissions: Record<string, string[]> = FULL_PERMS): AgentOdooConfig {
   return { connectionId: CONN, permissions } as AgentOdooConfig;
 }
 
@@ -218,7 +216,7 @@ function stubReads(
     newCounterpartLines?: Array<Record<string, unknown>>;
     readBackStLine?: Record<string, unknown>;
     readBackInvoice?: Record<string, unknown>;
-  } = {},
+  } = {}
 ) {
   const mutated = () => mockCallMethod.mock.calls.length > 0;
 
@@ -246,9 +244,9 @@ function stubReads(
         }
         if (moveId === PAYMENT_MOVE_ID) {
           return Promise.resolve({
-            records:
-              overrides.paymentLines ??
-              [{ id: 110, account_id: [PAYABLE_ACC, "Account Payable"] }],
+            records: overrides.paymentLines ?? [
+              { id: 110, account_id: [PAYABLE_ACC, "Account Payable"] },
+            ],
           });
         }
         if (moveId === ST_MOVE_ID) {
@@ -256,9 +254,9 @@ function stubReads(
           // After it: the freshly created payable counterpart.
           if (mutated()) {
             return Promise.resolve({
-              records:
-                overrides.newCounterpartLines ??
-                [{ id: 102, account_id: [PAYABLE_ACC, "Account Payable"] }],
+              records: overrides.newCounterpartLines ?? [
+                { id: 102, account_id: [PAYABLE_ACC, "Account Payable"] },
+              ],
             });
           }
           return Promise.resolve({
@@ -310,9 +308,7 @@ beforeEach(() => {
 
 describe("odoo_reconcile — registration", () => {
   it("is registered", () => {
-    expect(createApi({ [agentId]: cfg() }).map((t) => t.name)).toContain(
-      "odoo_reconcile",
-    );
+    expect(createApi({ [agentId]: cfg() }).map((t) => t.name)).toContain("odoo_reconcile");
   });
 
   it("is not offered to an agent without an Odoo config", () => {
@@ -340,7 +336,7 @@ describe("odoo_reconcile — bank transaction against a posted bill", () => {
     // Step 1: the statement move is rewritten — suspense line cleared, a
     // counterpart on the bill's payable account created, liquidity preserved.
     const writeCall = mockCallMethod.mock.calls.find(
-      (c) => c[0] === "account.bank.statement.line" && c[1] === "write",
+      (c) => c[0] === "account.bank.statement.line" && c[1] === "write"
     );
     expect(writeCall).toBeDefined();
     const [, , writeArgs, writeKwargs] = writeCall!;
@@ -368,7 +364,7 @@ describe("odoo_reconcile — bank transaction against a posted bill", () => {
 
     // Step 2: same-account reconcile of the new counterpart and the bill line.
     const reconcileCall = mockCallMethod.mock.calls.find(
-      (c) => c[0] === "account.move.line" && c[1] === "reconcile",
+      (c) => c[0] === "account.move.line" && c[1] === "reconcile"
     );
     expect(reconcileCall).toBeDefined();
     expect(reconcileCall![2]).toEqual([[102, INVOICE_LINE_ROW.id]]);
@@ -403,10 +399,8 @@ describe("odoo_reconcile — bank transaction against a posted bill", () => {
     // its suspense counterpart rather than sitting restated-but-unmatched.
     expect(
       mockCallMethod.mock.calls.some(
-        (c) =>
-          c[0] === "account.bank.statement.line" &&
-          c[1] === "action_undo_reconciliation",
-      ),
+        (c) => c[0] === "account.bank.statement.line" && c[1] === "action_undo_reconciliation"
+      )
     ).toBe(true);
   });
 
@@ -522,7 +516,7 @@ describe("odoo_reconcile — bank transaction against a posted bill", () => {
         [agentId]: cfg({ ...FULL_PERMS, "account.move.line": ["read"] }),
       }),
       "odoo_reconcile",
-      agentId,
+      agentId
     )!;
     const result = await tool.execute("c", {
       invoice: ref("account.move", INVOICE_ID),
@@ -543,7 +537,7 @@ describe("odoo_reconcile — bank transaction against a posted bill", () => {
         }),
       }),
       "odoo_reconcile",
-      agentId,
+      agentId
     )!;
     const result = await tool.execute("c", {
       invoice: ref("account.move", INVOICE_ID),
@@ -569,9 +563,7 @@ describe("odoo_reconcile — invoice against an existing payment", () => {
     });
 
     expect(result.isError).toBeFalsy();
-    const call = mockCallMethod.mock.calls.find(
-      (c) => c[1] === "js_assign_outstanding_line",
-    );
+    const call = mockCallMethod.mock.calls.find((c) => c[1] === "js_assign_outstanding_line");
     expect(call).toBeDefined();
     expect(call![0]).toBe("account.move");
     // Odoo takes a scalar line id, not a list.
@@ -601,9 +593,9 @@ describe("odoo_reconcile — invoice against an existing payment", () => {
     });
     expect(result.isError).toBe(true);
     expect(result.content[0].text).toMatch(/no matching line|does not post to/i);
-    expect(
-      mockCallMethod.mock.calls.some((c) => c[1] === "js_assign_outstanding_line"),
-    ).toBe(false);
+    expect(mockCallMethod.mock.calls.some((c) => c[1] === "js_assign_outstanding_line")).toBe(
+      false
+    );
   });
 });
 
@@ -625,9 +617,7 @@ describe("odoo_reconcile — ref validation", () => {
       counterpart: ref("res.partner", 1),
     });
     expect(result.isError).toBe(true);
-    expect(result.content[0].text).toMatch(
-      /account\.bank\.statement\.line|account\.payment/,
-    );
+    expect(result.content[0].text).toMatch(/account\.bank\.statement\.line|account\.payment/);
   });
 
   it("rejects a ref from another Odoo connection", async () => {

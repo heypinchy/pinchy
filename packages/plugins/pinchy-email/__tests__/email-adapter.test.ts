@@ -1,9 +1,5 @@
 import { describe, it, expect } from "vitest";
-import {
-  createFolderMapper,
-  escapeDoubleQuoted,
-  type Folder,
-} from "../email-adapter.js";
+import { createFolderMapper, escapeDoubleQuoted, type Folder } from "../email-adapter.js";
 
 describe("escapeDoubleQuoted", () => {
   it("passes a plain value through unchanged", () => {
@@ -42,7 +38,7 @@ describe("createFolderMapper", () => {
 
   it("throws a consistent error message for an unmapped folder", () => {
     expect(() => mapFolder("ARCHIVE" as Folder)).toThrow(
-      "unknown folder: ARCHIVE. Valid: INBOX, SENT, DRAFTS, TRASH, SPAM.",
+      "unknown folder: ARCHIVE. Valid: INBOX, SENT, DRAFTS, TRASH, SPAM."
     );
   });
 
@@ -60,7 +56,7 @@ describe("createFolderMapper", () => {
 
   it("still throws for a genuinely unknown folder, quoting the original input", () => {
     expect(() => mapFolder("archive" as Folder)).toThrow(
-      "unknown folder: archive. Valid: INBOX, SENT, DRAFTS, TRASH, SPAM.",
+      "unknown folder: archive. Valid: INBOX, SENT, DRAFTS, TRASH, SPAM."
     );
   });
 });

@@ -14,11 +14,7 @@ export type Permissions = Record<string, string[]>;
  * those agents. This is intentionally narrow: it only widens what counts as
  * "read" — it must NOT make "search" or "list" satisfy "draft" or "send".
  */
-function hasLegacyReadAlias(
-  permissions: Permissions,
-  model: string,
-  operation: string,
-) {
+function hasLegacyReadAlias(permissions: Permissions, model: string, operation: string) {
   return (
     operation === "read" &&
     ((permissions[model]?.includes("search") ?? false) ||
@@ -29,7 +25,7 @@ function hasLegacyReadAlias(
 export function checkPermission(
   permissions: Permissions,
   model: string,
-  operation: string,
+  operation: string
 ): boolean {
   return (
     (permissions[model]?.includes(operation) ?? false) ||
@@ -37,9 +33,6 @@ export function checkPermission(
   );
 }
 
-export function getPermittedOperations(
-  permissions: Permissions,
-  model: string,
-): string[] {
+export function getPermittedOperations(permissions: Permissions, model: string): string[] {
   return permissions[model] ?? [];
 }

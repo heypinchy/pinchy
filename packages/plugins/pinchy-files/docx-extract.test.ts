@@ -14,10 +14,7 @@ describe("extractDocxText", () => {
     expect(result.text.length).toBeGreaterThan(50);
 
     // Every phrase from the golden file must round-trip through mammoth.
-    const expected = readFileSync(
-      join(FIXTURES, "simple.expected.txt"),
-      "utf-8",
-    );
+    const expected = readFileSync(join(FIXTURES, "simple.expected.txt"), "utf-8");
     for (const phrase of expected.split("\n").filter(Boolean)) {
       expect(result.text).toContain(phrase);
     }
@@ -72,15 +69,15 @@ describe("extractDocxText", () => {
   // bomb). The declared-size guard must reject it BEFORE mammoth inflates.
   it("rejects a zip bomb before inflating it", async () => {
     const buffer = readFileSync(join(FIXTURES, "simple.docx"));
-    await expect(
-      extractDocxText(buffer, { maxDecompressedBytes: 10 }),
-    ).rejects.toThrow(/decompressed size .* exceeds/i);
+    await expect(extractDocxText(buffer, { maxDecompressedBytes: 10 })).rejects.toThrow(
+      /decompressed size .* exceeds/i
+    );
   });
 
   it("caps the extracted text length as a second defense layer", async () => {
     const buffer = readFileSync(join(FIXTURES, "simple.docx"));
     await expect(extractDocxText(buffer, { maxTextBytes: 10 })).rejects.toThrow(
-      /extracted text .* exceeds/i,
+      /extracted text .* exceeds/i
     );
   });
 

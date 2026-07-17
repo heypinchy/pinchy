@@ -25,7 +25,7 @@ interface ToolFactory {
     execute: (
       toolCallId: string,
       params: Record<string, unknown>,
-      signal?: AbortSignal,
+      signal?: AbortSignal
     ) => Promise<{ content: { type: string; text: string }[]; isError?: boolean }>;
   } | null;
 }
@@ -208,7 +208,7 @@ describe("pinchy-web plugin", () => {
             country: "US",
             freshness: "pw",
           },
-        }),
+        })
       );
 
       const tool = factories.pinchy_web_search({ agentId: "agent-1" })!;
@@ -238,15 +238,18 @@ describe("pinchy-web plugin", () => {
             tools: ["pinchy_web_search"],
             excludedDomains: ["reddit.com", "pinterest.com"],
           },
-        }),
+        })
       );
 
       const tool = factories.pinchy_web_search({ agentId: "agent-1" })!;
       await tool.execute("call-1", { query: "some query" });
 
-      expect(braveSearchMock).toHaveBeenCalledWith("some query", expect.objectContaining({
-        excludedDomains: ["reddit.com", "pinterest.com"],
-      }));
+      expect(braveSearchMock).toHaveBeenCalledWith(
+        "some query",
+        expect.objectContaining({
+          excludedDomains: ["reddit.com", "pinterest.com"],
+        })
+      );
     });
 
     it("returns isError when credentials config is missing", async () => {
@@ -272,7 +275,7 @@ describe("pinchy-web plugin", () => {
       const factories = collectFactories(
         credentialsPluginConfig({
           "agent-1": { tools: ["pinchy_web_search"] },
-        }),
+        })
       );
 
       const tool = factories.pinchy_web_search({ agentId: "agent-1" })!;
@@ -301,7 +304,7 @@ describe("pinchy-web plugin", () => {
       const factories = collectFactories(
         credentialsPluginConfig({
           "agent-1": { tools: ["pinchy_web_search"] },
-        }),
+        })
       );
 
       const tool = factories.pinchy_web_search({ agentId: "agent-1" })!;
@@ -327,20 +330,18 @@ describe("pinchy-web plugin", () => {
       const factories = collectFactories(
         credentialsPluginConfig({
           "agent-1": { tools: ["pinchy_web_search"] },
-        }),
+        })
       );
 
       const tool = factories.pinchy_web_search({ agentId: "agent-1" })!;
       await tool.execute("call-1", { query: "test" });
 
       const reportCalls = fetchMock.mock.calls.filter((c) =>
-        String(c[0]).includes("report-auth-failure"),
+        String(c[0]).includes("report-auth-failure")
       );
       expect(reportCalls).toHaveLength(1);
       const [url, opts] = reportCalls[0] as [string, RequestInit];
-      expect(url).toBe(
-        "https://pinchy.test/api/internal/integrations/conn-1/report-auth-failure",
-      );
+      expect(url).toBe("https://pinchy.test/api/internal/integrations/conn-1/report-auth-failure");
       expect(opts.method).toBe("POST");
       const headers = opts.headers as Record<string, string>;
       expect(headers["Authorization"]).toBe("Bearer gw-token");
@@ -357,14 +358,14 @@ describe("pinchy-web plugin", () => {
       const factories = collectFactories(
         credentialsPluginConfig({
           "agent-1": { tools: ["pinchy_web_search"] },
-        }),
+        })
       );
 
       const tool = factories.pinchy_web_search({ agentId: "agent-1" })!;
       await tool.execute("call-1", { query: "test" });
 
       const reportCalls = fetchMock.mock.calls.filter((c) =>
-        String(c[0]).includes("report-auth-failure"),
+        String(c[0]).includes("report-auth-failure")
       );
       expect(reportCalls).toHaveLength(0);
     });
@@ -376,7 +377,7 @@ describe("pinchy-web plugin", () => {
       const factories = collectFactories(
         credentialsPluginConfig({
           "agent-1": { tools: ["pinchy_web_search"] },
-        }),
+        })
       );
 
       const tool = factories.pinchy_web_search({ agentId: "agent-1" })!;

@@ -191,7 +191,10 @@ export function resolveSiblingModulePath(fromDir, specifier) {
  * @param {string} [entryFileName]
  * @returns {string[]} sorted absolute paths, or [] if the entry doesn't exist
  */
-export function discoverReachableModules(pluginDir, entryFileName = "index.ts") {
+export function discoverReachableModules(
+  pluginDir,
+  entryFileName = "index.ts",
+) {
   const entryPath = join(pluginDir, entryFileName);
   if (!existsSync(entryPath)) return [];
 

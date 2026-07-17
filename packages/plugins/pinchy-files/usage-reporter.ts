@@ -24,10 +24,7 @@ export interface UsageReportConfig {
   gatewayToken: string;
 }
 
-export async function reportUsage(
-  report: UsageReport,
-  config: UsageReportConfig,
-): Promise<void> {
+export async function reportUsage(report: UsageReport, config: UsageReportConfig): Promise<void> {
   if (report.inputTokens === 0 && report.outputTokens === 0) return;
 
   const url = `${config.apiBaseUrl.replace(/\/$/, "")}/api/internal/usage/record`;
@@ -52,9 +49,7 @@ export async function reportUsage(
 
     if (!response.ok) {
       const text = await response.text().catch(() => "");
-      console.error(
-        `[pinchy-files] Usage report failed (${response.status}): ${text}`,
-      );
+      console.error(`[pinchy-files] Usage report failed (${response.status}): ${text}`);
     }
   } catch (err) {
     console.error("[pinchy-files] Usage report failed:", err);

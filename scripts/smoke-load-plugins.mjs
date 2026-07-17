@@ -122,7 +122,11 @@ function run(cmd, args, opts) {
   return new Promise((resolvePromise) => {
     let child;
     try {
-      child = spawn(cmd, args, { stdio: ["ignore", "pipe", "pipe"], shell: IS_WINDOWS, ...opts });
+      child = spawn(cmd, args, {
+        stdio: ["ignore", "pipe", "pipe"],
+        shell: IS_WINDOWS,
+        ...opts,
+      });
     } catch (err) {
       resolvePromise({ status: 1, output: String(err) });
       return;
@@ -130,7 +134,9 @@ function run(cmd, args, opts) {
     let output = "";
     child.stdout.on("data", (chunk) => (output += chunk));
     child.stderr.on("data", (chunk) => (output += chunk));
-    child.on("error", (err) => resolvePromise({ status: 1, output: `${output}\n${err}` }));
+    child.on("error", (err) =>
+      resolvePromise({ status: 1, output: `${output}\n${err}` }),
+    );
     child.on("close", (status) => resolvePromise({ status, output }));
   });
 }
@@ -143,7 +149,11 @@ function run(cmd, args, opts) {
  * @param {{ entryPath: string, extraPaths: string[] }} params
  */
 function buildHarnessSource({ entryPath, extraPaths }) {
-  const payload = { entry: entryPath, extras: extraPaths, pluginConfig: STUB_PLUGIN_CONFIG };
+  const payload = {
+    entry: entryPath,
+    extras: extraPaths,
+    pluginConfig: STUB_PLUGIN_CONFIG,
+  };
   return `import { pathToFileURL } from "node:url";
 
 const PAYLOAD = ${JSON.stringify(payload)};
@@ -205,14 +215,22 @@ async function smokeLoadPlugin(pluginDir) {
 
   const declaredTools = readDeclaredTools(pluginDir);
   if (declaredTools === null) {
-    return { rel, status: "skip", note: "no contracts.tools in openclaw.plugin.json" };
+    return {
+      rel,
+      status: "skip",
+      note: "no contracts.tools in openclaw.plugin.json",
+    };
   }
 
   let pkg;
   try {
     pkg = JSON.parse(readFileSync(join(pluginDir, "package.json"), "utf8"));
   } catch (err) {
-    return { rel, status: "fail", note: `could not read package.json: ${err.message}` };
+    return {
+      rel,
+      status: "fail",
+      note: `could not read package.json: ${err.message}`,
+    };
   }
 
   const tempDir = mkdtempSync(join(tmpdir(), "smoke-load-plugins-"));
@@ -223,7 +241,11 @@ async function smokeLoadPlugin(pluginDir) {
     // vitest configs) just sit there unimported — only modules actually
     // reachable from index.ts get import()ed below.
     const sourceFileNames = readdirSync(pluginDir).filter((name) => {
-      if (!name.endsWith(".ts") || name.endsWith(".d.ts") || name.endsWith(".test.ts")) {
+      if (
+        !name.endsWith(".ts") ||
+        name.endsWith(".d.ts") ||
+        name.endsWith(".test.ts")
+      ) {
         return false;
       }
       return statSync(join(pluginDir, name)).isFile();
@@ -233,9 +255,13 @@ async function smokeLoadPlugin(pluginDir) {
     }
 
     if (hasProdDependencies(pkg)) {
-      copyFileSync(join(pluginDir, "package.json"), join(tempDir, "package.json"));
+      copyFileSync(
+        join(pluginDir, "package.json"),
+        join(tempDir, "package.json"),
+      );
       const lockPath = join(pluginDir, "package-lock.json");
-      if (existsSync(lockPath)) copyFileSync(lockPath, join(tempDir, "package-lock.json"));
+      if (existsSync(lockPath))
+        copyFileSync(lockPath, join(tempDir, "package-lock.json"));
 
       const install = await run(
         "npm",
@@ -283,7 +309,11 @@ async function smokeLoadPlugin(pluginDir) {
     }
 
     if (parsed.errors.length > 0) {
-      return { rel, status: "fail", note: `module import error(s):\n${parsed.errors.join("\n")}` };
+      return {
+        rel,
+        status: "fail",
+        note: `module import error(s):\n${parsed.errors.join("\n")}`,
+      };
     }
 
     const comparison = compareToolSets(parsed.registered, declaredTools);
@@ -295,7 +325,9 @@ async function smokeLoadPlugin(pluginDir) {
         );
       }
       if (comparison.extra.length > 0) {
-        parts.push(`registered but missing from contracts.tools: ${comparison.extra.join(", ")}`);
+        parts.push(
+          `registered but missing from contracts.tools: ${comparison.extra.join(", ")}`,
+        );
       }
       return { rel, status: "fail", note: parts.join("; ") };
     }
@@ -312,7 +344,9 @@ async function smokeLoadPlugin(pluginDir) {
 
 const dirs = discoverPluginDirs(PLUGINS_ROOT);
 if (dirs.length === 0) {
-  console.error(`No plugin packages found under ${relative(REPO_ROOT, PLUGINS_ROOT)}`);
+  console.error(
+    `No plugin packages found under ${relative(REPO_ROOT, PLUGINS_ROOT)}`,
+  );
   process.exit(1);
 }
 
@@ -337,8 +371,12 @@ for (const { rel, status, note } of results) {
 }
 
 if (failed) {
-  console.error("\n✖ Plugin smoke-load failed for one or more plugins (see ✖ above).");
+  console.error(
+    "\n✖ Plugin smoke-load failed for one or more plugins (see ✖ above).",
+  );
   process.exit(1);
 }
 
-console.log(`\n✔ All ${dirs.length} plugin packages smoke-loaded cleanly with production-only dependencies.`);
+console.log(
+  `\n✔ All ${dirs.length} plugin packages smoke-loaded cleanly with production-only dependencies.`,
+);

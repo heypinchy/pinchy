@@ -154,7 +154,10 @@ export function assertUpgradingSectionExists(mdx, prevVersion, targetVersion) {
   const sectionStart = headingMatch.index + headingMatch[0].length;
   const remainder = mdx.slice(sectionStart);
   const nextHeading = /^## /m.exec(remainder);
-  const sectionBody = remainder.slice(0, nextHeading ? nextHeading.index : remainder.length);
+  const sectionBody = remainder.slice(
+    0,
+    nextHeading ? nextHeading.index : remainder.length,
+  );
 
   for (const required of ["Breaking changes", "Upgrade notes"]) {
     const subPattern = new RegExp(`^###\\s+${escapeRegex(required)}\\s*$`, "m");
@@ -192,7 +195,10 @@ export function extractUpgradeNotes(mdx, prevVersion, targetVersion) {
 
   const remainder = mdx.slice(match.index + match[0].length);
   const nextHeading = /^## /m.exec(remainder);
-  const body = remainder.slice(0, nextHeading ? nextHeading.index : remainder.length);
+  const body = remainder.slice(
+    0,
+    nextHeading ? nextHeading.index : remainder.length,
+  );
 
   return body.trim().replace(/%%PINCHY_VERSION%%/g, `v${targetVersion}`);
 }
@@ -244,7 +250,9 @@ export function finalizeUpgradeSection(mdx, prevVersion, targetVersion) {
   const section = mdx.slice(sectionStart, sectionEnd);
   const after = mdx.slice(sectionEnd);
 
-  return before + section.replace(/%%PINCHY_VERSION%%/g, `v${targetVersion}`) + after;
+  return (
+    before + section.replace(/%%PINCHY_VERSION%%/g, `v${targetVersion}`) + after
+  );
 }
 
 /**
@@ -277,7 +285,12 @@ export function assertNoStaleUpgradeSections(mdx, latestReleasedVersion) {
   const matches = [];
   let m;
   while ((m = headingRe.exec(mdx)) !== null) {
-    matches.push({ from: m[1], to: m[2], index: m.index, headingLen: m[0].length });
+    matches.push({
+      from: m[1],
+      to: m[2],
+      index: m.index,
+      headingLen: m[0].length,
+    });
   }
 
   const placeholderSections = [];
@@ -285,7 +298,10 @@ export function assertNoStaleUpgradeSections(mdx, latestReleasedVersion) {
     const afterHeading = s.index + s.headingLen;
     const remainder = mdx.slice(afterHeading);
     const nextHeading = /^## /m.exec(remainder);
-    const body = remainder.slice(0, nextHeading ? nextHeading.index : remainder.length);
+    const body = remainder.slice(
+      0,
+      nextHeading ? nextHeading.index : remainder.length,
+    );
 
     if (s.to === "%%PINCHY_VERSION%%") {
       placeholderSections.push(s);
@@ -305,7 +321,10 @@ export function assertNoStaleUpgradeSections(mdx, latestReleasedVersion) {
     );
   }
 
-  if (placeholderSections.length === 1 && placeholderSections[0].from !== latest) {
+  if (
+    placeholderSections.length === 1 &&
+    placeholderSections[0].from !== latest
+  ) {
     const from = placeholderSections[0].from;
     throw new Error(
       `Stale upgrade-notes section: "Upgrading from v${from} to %%PINCHY_VERSION%%", ` +
@@ -348,7 +367,10 @@ export function deriveStagingChecklist(mdx, prevVersion, targetVersion) {
 
   const remainder = mdx.slice(m.index + m[0].length);
   const nextH2 = /^## /m.exec(remainder);
-  const sectionBody = remainder.slice(0, nextH2 ? nextH2.index : remainder.length);
+  const sectionBody = remainder.slice(
+    0,
+    nextH2 ? nextH2.index : remainder.length,
+  );
 
   const subRe = /^###\s+(.+?)\s*$/gm;
   const subs = [];
@@ -360,7 +382,8 @@ export function deriveStagingChecklist(mdx, prevVersion, targetVersion) {
   const items = [];
   for (let i = 0; i < subs.length; i++) {
     const bodyStart = subs[i].index + subs[i].len;
-    const bodyEnd = i + 1 < subs.length ? subs[i + 1].index : sectionBody.length;
+    const bodyEnd =
+      i + 1 < subs.length ? subs[i + 1].index : sectionBody.length;
     const body = sectionBody.slice(bodyStart, bodyEnd);
     const breaking = /^breaking changes$/i.test(subs[i].name);
     const hRe = /^####\s+(.+?)\s*$/gm;
@@ -416,7 +439,10 @@ export function checkReleaseVerification({ verifiedSha, headSha }) {
       message: `Attestation SHA ${verifiedSha} does not match HEAD ${headSha} — you verified a different commit than you're releasing.`,
     };
   }
-  return { ok: true, message: `Staging attestation matches HEAD (${h.slice(0, 12)}).` };
+  return {
+    ok: true,
+    message: `Staging attestation matches HEAD (${h.slice(0, 12)}).`,
+  };
 }
 
 /**

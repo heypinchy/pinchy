@@ -1,12 +1,4 @@
-import {
-  describe,
-  it,
-  expect,
-  vi,
-  beforeEach,
-  afterEach,
-  type Mock,
-} from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach, type Mock } from "vitest";
 import { GraphAdapter } from "../graph-adapter.js";
 
 describe("GraphAdapter.list", () => {
@@ -28,7 +20,7 @@ describe("GraphAdapter.list", () => {
     await adapter.list({ folder: "INBOX", limit: 5 });
     expect(fetch).toHaveBeenCalledWith(
       expect.stringContaining("/v1.0/me/mailFolders/inbox/messages"),
-      expect.any(Object),
+      expect.any(Object)
     );
   });
 
@@ -44,7 +36,7 @@ describe("GraphAdapter.list", () => {
     await adapter.list({});
     expect(fetch).toHaveBeenCalledWith(
       expect.stringContaining("/v1.0/me/mailFolders/inbox/messages"),
-      expect.any(Object),
+      expect.any(Object)
     );
   });
 
@@ -58,7 +50,7 @@ describe("GraphAdapter.list", () => {
     const url = (fetch as Mock).mock.calls[0][0] as string;
     const decoded = decodeURIComponent(url).replace(/\+/g, " ");
     expect(decoded).toContain(
-      "$filter=receivedDateTime ge 1970-01-01T00:00:00Z and isRead eq false",
+      "$filter=receivedDateTime ge 1970-01-01T00:00:00Z and isRead eq false"
     );
     expect(decoded).toContain("$orderby=receivedDateTime desc");
   });
@@ -78,9 +70,7 @@ describe("GraphAdapter.list", () => {
 
   it("unknown folder throws", async () => {
     const adapter = new GraphAdapter({ accessToken: "tok" });
-    await expect(adapter.list({ folder: "CUSTOM" as never })).rejects.toThrow(
-      /unknown folder/i,
-    );
+    await expect(adapter.list({ folder: "CUSTOM" as never })).rejects.toThrow(/unknown folder/i);
   });
 
   it("uses GRAPH_API_BASE_URL when set", async () => {
@@ -92,10 +82,8 @@ describe("GraphAdapter.list", () => {
     });
     await adapter.list({});
     expect(fetch).toHaveBeenCalledWith(
-      expect.stringContaining(
-        "http://graph-mock:9005/v1.0/me/mailFolders/inbox/messages",
-      ),
-      expect.any(Object),
+      expect.stringContaining("http://graph-mock:9005/v1.0/me/mailFolders/inbox/messages"),
+      expect.any(Object)
     );
     delete process.env.GRAPH_API_BASE_URL;
   });
@@ -124,7 +112,7 @@ describe("GraphAdapter.read", () => {
     const result = await adapter.read("msg1");
     expect(fetch).toHaveBeenCalledWith(
       expect.stringContaining("/v1.0/me/messages/msg1"),
-      expect.any(Object),
+      expect.any(Object)
     );
     expect(result.body).toBe("Hi there, full body");
     expect(result.cc).toBe("charlie@example.com");
@@ -188,9 +176,7 @@ describe("GraphAdapter.read attachments", () => {
 
   it("requests hasAttachments in the read $select", async () => {
     const adapter = new GraphAdapter({ accessToken: "tok" });
-    (fetch as Mock).mockResolvedValueOnce(
-      messageResponse({ hasAttachments: false }),
-    );
+    (fetch as Mock).mockResolvedValueOnce(messageResponse({ hasAttachments: false }));
     await adapter.read("msg1");
     const url = (fetch as Mock).mock.calls[0][0] as string;
     expect(decodeURIComponent(url)).toContain("hasAttachments");
@@ -198,15 +184,13 @@ describe("GraphAdapter.read attachments", () => {
 
   it("does NOT make a second request when hasAttachments is false", async () => {
     const adapter = new GraphAdapter({ accessToken: "tok" });
-    (fetch as Mock).mockResolvedValueOnce(
-      messageResponse({ hasAttachments: false }),
-    );
+    (fetch as Mock).mockResolvedValueOnce(messageResponse({ hasAttachments: false }));
     const result = await adapter.read("msg1");
     expect(result.attachments).toEqual([]);
     expect(fetch).toHaveBeenCalledTimes(1);
     expect(fetch).not.toHaveBeenCalledWith(
       expect.stringContaining("/attachments"),
-      expect.any(Object),
+      expect.any(Object)
     );
   });
 
@@ -345,10 +329,7 @@ describe("GraphAdapter.getAttachment", () => {
     // base64-vs-base64url specifically — Node's Buffer decoder accepts both
     // alphabets interchangeably; the adapter's choice of "base64" is a
     // correctness-of-intent signal.)
-    const bytes = Buffer.concat([
-      Buffer.from("%PDF-1.7"),
-      Buffer.from([0xfb, 0xff, 0xbf]),
-    ]);
+    const bytes = Buffer.concat([Buffer.from("%PDF-1.7"), Buffer.from([0xfb, 0xff, 0xbf])]);
     (fetch as Mock).mockResolvedValueOnce({
       ok: true,
       json: async () => ({
@@ -407,9 +388,7 @@ describe("GraphAdapter.getAttachment", () => {
       }),
     });
 
-    await expect(adapter.getAttachment("msg1", "att-item")).rejects.toThrow(
-      /embedded item/i,
-    );
+    await expect(adapter.getAttachment("msg1", "att-item")).rejects.toThrow(/embedded item/i);
   });
 
   it("propagates a Graph error response", async () => {
@@ -420,9 +399,7 @@ describe("GraphAdapter.getAttachment", () => {
       statusText: "Not Found",
       text: async () => "attachment not found",
     });
-    await expect(adapter.getAttachment("msg1", "gone")).rejects.toThrow(
-      /Graph 404/,
-    );
+    await expect(adapter.getAttachment("msg1", "gone")).rejects.toThrow(/Graph 404/);
   });
 });
 
@@ -480,9 +457,7 @@ describe("GraphAdapter.search", () => {
     expect(filterMatch).not.toBeNull();
     const filterValue = filterMatch![1];
     expect(
-      filterValue.startsWith(
-        "receivedDateTime ge 1970-01-01T00:00:00Z and isRead eq false",
-      ),
+      filterValue.startsWith("receivedDateTime ge 1970-01-01T00:00:00Z and isRead eq false")
     ).toBe(true);
     expect(decoded).toContain("$orderby=receivedDateTime desc");
   });
@@ -503,9 +478,7 @@ describe("GraphAdapter.search", () => {
     // URLSearchParams encodes spaces as +; decode both %xx and + before asserting
     const decoded = decodeURIComponent(url).replace(/\+/g, " ");
     expect(decoded).not.toContain("$search");
-    expect(decoded).toContain(
-      "from/emailAddress/address eq 'alice@example.com'",
-    );
+    expect(decoded).toContain("from/emailAddress/address eq 'alice@example.com'");
     expect(decoded).toContain("isRead eq false");
     // receivedDateTime (matching $orderby) must be first, then isRead, then
     // the from-predicate — the exact order of non-receivedDateTime predicates
@@ -514,12 +487,9 @@ describe("GraphAdapter.search", () => {
     const filterMatch = decoded.match(/\$filter=([^&]+)/);
     expect(filterMatch).not.toBeNull();
     const filterValue = filterMatch![1];
+    expect(filterValue.startsWith("receivedDateTime ge 1970-01-01T00:00:00Z")).toBe(true);
     expect(
-      filterValue.startsWith("receivedDateTime ge 1970-01-01T00:00:00Z"),
-    ).toBe(true);
-    expect(
-      filterValue.indexOf("isRead eq false") <
-        filterValue.indexOf("from/emailAddress/address"),
+      filterValue.indexOf("isRead eq false") < filterValue.indexOf("from/emailAddress/address")
     ).toBe(true);
   });
 
@@ -534,9 +504,7 @@ describe("GraphAdapter.search", () => {
     await adapter.search({ from: "o'brien@example.com", unread: true });
     const url = (fetch as Mock).mock.calls[0][0] as string;
     const decoded = decodeURIComponent(url).replace(/\+/g, " ");
-    expect(decoded).toContain(
-      "from/emailAddress/address eq 'o''brien@example.com'",
-    );
+    expect(decoded).toContain("from/emailAddress/address eq 'o''brien@example.com'");
   });
 
   it("folder scopes via mailFolders path", async () => {
@@ -548,7 +516,7 @@ describe("GraphAdapter.search", () => {
     await adapter.search({ from: "alice@example.com", folder: "SENT" });
     expect(fetch).toHaveBeenCalledWith(
       expect.stringContaining("/me/mailFolders/sentitems/messages"),
-      expect.any(Object),
+      expect.any(Object)
     );
   });
 
@@ -763,7 +731,7 @@ describe("GraphAdapter.draft", () => {
     });
     expect(fetch).toHaveBeenCalledWith(
       expect.stringContaining("/me/messages"),
-      expect.objectContaining({ method: "POST" }),
+      expect.objectContaining({ method: "POST" })
     );
     expect(result.draftId).toBe("draft1");
   });
@@ -781,7 +749,7 @@ describe("GraphAdapter.draft", () => {
     });
     expect(fetch).toHaveBeenCalledWith(
       expect.stringContaining("/me/messages/original-msg-id/createReply"),
-      expect.objectContaining({ method: "POST" }),
+      expect.objectContaining({ method: "POST" })
     );
     expect(result.draftId).toBe("reply1");
   });
@@ -802,9 +770,7 @@ describe("GraphAdapter.draft", () => {
     expect(sentBody.subject).toBe("Test Subject");
     expect(sentBody.body.contentType).toBe("text");
     expect(sentBody.body.content).toBe("Hello body");
-    expect(sentBody.toRecipients).toEqual([
-      { emailAddress: { address: "bob@example.com" } },
-    ]);
+    expect(sentBody.toRecipients).toEqual([{ emailAddress: { address: "bob@example.com" } }]);
   });
 });
 
@@ -825,7 +791,7 @@ describe("GraphAdapter.send", () => {
     });
     expect(fetch).toHaveBeenCalledWith(
       expect.stringContaining("/me/sendMail"),
-      expect.objectContaining({ method: "POST" }),
+      expect.objectContaining({ method: "POST" })
     );
   });
 
@@ -860,7 +826,7 @@ describe("GraphAdapter.send", () => {
     });
     expect(fetch).toHaveBeenCalledWith(
       expect.stringContaining("/me/messages/reply1/send"),
-      expect.objectContaining({ method: "POST" }),
+      expect.objectContaining({ method: "POST" })
     );
   });
 

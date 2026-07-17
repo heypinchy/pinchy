@@ -30,11 +30,16 @@ export function validateTypecheckTsconfig(config) {
   const problems = [];
   const include = Array.isArray(config.include) ? config.include : [];
   if (!include.some((g) => typeof g === "string" && g.includes("src/**"))) {
-    problems.push('include must contain a "src/**/*" glob so test files are type-checked');
+    problems.push(
+      'include must contain a "src/**/*" glob so test files are type-checked',
+    );
   }
   const exclude = Array.isArray(config.exclude) ? config.exclude : [];
   for (const pat of exclude) {
-    if (typeof pat === "string" && TEST_FILE_MARKERS.some((m) => pat.includes(m))) {
+    if (
+      typeof pat === "string" &&
+      TEST_FILE_MARKERS.some((m) => pat.includes(m))
+    ) {
       problems.push(`exclude must not drop test files, but excludes "${pat}"`);
     }
   }
@@ -47,7 +52,10 @@ export function validateTypecheckTsconfig(config) {
  */
 export function validateTypecheckScript(pkg) {
   const script =
-    pkg && typeof pkg === "object" && pkg.scripts && typeof pkg.scripts === "object"
+    pkg &&
+    typeof pkg === "object" &&
+    pkg.scripts &&
+    typeof pkg.scripts === "object"
       ? pkg.scripts.typecheck
       : undefined;
   if (typeof script !== "string") {
@@ -80,5 +88,7 @@ export function validateCiWiring(ciYaml) {
     .join("\n");
   return withoutComments.includes("packages/web typecheck")
     ? []
-    : ["CI (.github/workflows/ci.yml) must run `pnpm -C packages/web typecheck`"];
+    : [
+        "CI (.github/workflows/ci.yml) must run `pnpm -C packages/web typecheck`",
+      ];
 }

@@ -42,8 +42,7 @@ function buildGmailQuery(opts: SearchOptions): string {
   // Wrap in outer quotes only when the value has whitespace or characters
   // that would otherwise break the term boundary; escapeDoubleQuoted handles
   // the backslash-before-quote escaping shared with the Graph adapter.
-  const quote = (v: string) =>
-    /[\s"\\]/.test(v) ? `"${escapeDoubleQuoted(v)}"` : v;
+  const quote = (v: string) => (/[\s"\\]/.test(v) ? `"${escapeDoubleQuoted(v)}"` : v);
   // Bare term (no `field:` prefix) — Gmail free-text search matches the
   // whole message, including the body, unlike `subject:` which only scopes
   // to the subject header.
@@ -54,8 +53,7 @@ function buildGmailQuery(opts: SearchOptions): string {
   if (opts.unread) parts.push("is:unread");
   if (opts.sinceDays != null) parts.push(`newer_than:${opts.sinceDays}d`);
   if (opts.folder) parts.push(mapFolderToSearchOperator(opts.folder));
-  if (parts.length === 0)
-    throw new Error("search requires at least one filter field");
+  if (parts.length === 0) throw new Error("search requires at least one filter field");
   return parts.join(" ");
 }
 
@@ -96,10 +94,7 @@ export class GmailAdapter implements EmailAdapter {
     });
 
     const data = response.data;
-    if (!data.payload)
-      throw new Error(
-        `Gmail API returned message without payload for id: ${id}`,
-      );
+    if (!data.payload) throw new Error(`Gmail API returned message without payload for id: ${id}`);
     const payload = data.payload;
 
     return {
@@ -118,7 +113,7 @@ export class GmailAdapter implements EmailAdapter {
 
   async getAttachment(
     messageId: string,
-    attachmentId: string,
+    attachmentId: string
   ): Promise<{ filename: string; mimeType: string; data: Buffer }> {
     // The attachments.get endpoint returns only { size, data } — no filename or
     // mimeType — so we re-read the message and locate the part carrying this
@@ -134,7 +129,7 @@ export class GmailAdapter implements EmailAdapter {
     if (!part) {
       throw new Error(
         `attachment ${attachmentId} not found on message ${messageId}. ` +
-          `Gmail attachment ids change between reads — re-read the message to get fresh attachment ids.`,
+          `Gmail attachment ids change between reads — re-read the message to get fresh attachment ids.`
       );
     }
 
@@ -196,7 +191,7 @@ export class GmailAdapter implements EmailAdapter {
           snippet: detail.data.snippet ?? "",
           unread: detail.data.labelIds?.includes("UNREAD") ?? false,
         };
-      }),
+      })
     );
   }
 
@@ -226,9 +221,8 @@ export class GmailAdapter implements EmailAdapter {
 }
 
 function getHeader(
-  headers:
-    Array<{ name?: string | null; value?: string | null }> | undefined | null,
-  name: string,
+  headers: Array<{ name?: string | null; value?: string | null }> | undefined | null,
+  name: string
 ): string {
   return headers?.find((h) => h.name === name)?.value ?? "";
 }
@@ -248,10 +242,7 @@ interface MimePart {
 // both an attachmentId (downloadable via attachments.get) AND a non-empty
 // filename. Requiring a filename naturally skips inline images and other
 // content-only parts, which Gmail exposes without one.
-function collectAttachments(
-  part: MimePart,
-  acc: EmailAttachment[] = [],
-): EmailAttachment[] {
+function collectAttachments(part: MimePart, acc: EmailAttachment[] = []): EmailAttachment[] {
   const attachmentId = part.body?.attachmentId;
   if (attachmentId && part.filename) {
     acc.push({
@@ -270,10 +261,7 @@ function collectAttachments(
 // Locate the part carrying a given attachmentId anywhere in the MIME tree.
 // Used by getAttachment to recover filename/mimeType, which the attachments.get
 // endpoint does not return.
-function findAttachmentPart(
-  part: MimePart,
-  attachmentId: string,
-): MimePart | null {
+function findAttachmentPart(part: MimePart, attachmentId: string): MimePart | null {
   if (part.body?.attachmentId === attachmentId) return part;
   if (part.parts) {
     for (const child of part.parts) {

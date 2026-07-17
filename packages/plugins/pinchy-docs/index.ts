@@ -205,16 +205,10 @@ function resolveSafe(docsRoot: string, relPath: string): string | null {
 const plugin = {
   id: "pinchy-docs",
   name: "Pinchy Docs",
-  description:
-    "On-demand access to Pinchy platform documentation for personal assistants.",
+  description: "On-demand access to Pinchy platform documentation for personal assistants.",
   configSchema: {
     validate: (value: unknown) => {
-      if (
-        value &&
-        typeof value === "object" &&
-        "docsPath" in value &&
-        "agents" in value
-      ) {
+      if (value && typeof value === "object" && "docsPath" in value && "agents" in value) {
         return { ok: true as const, value };
       }
       return {
@@ -249,13 +243,10 @@ const plugin = {
             try {
               const files = listMdxFiles(docsPath, publicBaseUrl);
               return {
-                content: [
-                  { type: "text", text: JSON.stringify(files, null, 2) },
-                ],
+                content: [{ type: "text", text: JSON.stringify(files, null, 2) }],
               };
             } catch (error) {
-              const message =
-                error instanceof Error ? error.message : "Unknown error";
+              const message = error instanceof Error ? error.message : "Unknown error";
               return {
                 isError: true,
                 content: [{ type: "text", text: `Error listing docs: ${message}` }],
@@ -283,8 +274,7 @@ const plugin = {
             properties: {
               path: {
                 type: "string",
-                description:
-                  "Relative path to the doc file (e.g. 'guides/ollama-setup.mdx')",
+                description: "Relative path to the doc file (e.g. 'guides/ollama-setup.mdx')",
               },
             },
             required: ["path"],
@@ -317,13 +307,10 @@ const plugin = {
               const text = url ? `Public URL: ${url}\n\n${body}` : body;
               return { content: [{ type: "text", text }] };
             } catch (error) {
-              const message =
-                error instanceof Error ? error.message : "Unknown error";
+              const message = error instanceof Error ? error.message : "Unknown error";
               return {
                 isError: true,
-                content: [
-                  { type: "text", text: `File not found: ${relPath} (${message})` },
-                ],
+                content: [{ type: "text", text: `File not found: ${relPath} (${message})` }],
               };
             }
           },

@@ -16,10 +16,7 @@ describe("extractPdfText", () => {
     expect(result.pages[0].text.length).toBeGreaterThan(50);
     expect(result.totalPages).toBe(result.pages.length);
     // Check for key phrases from the golden file
-    const expected = readFileSync(
-      join(FIXTURES, "text-only.expected.txt"),
-      "utf-8",
-    );
+    const expected = readFileSync(join(FIXTURES, "text-only.expected.txt"), "utf-8");
     for (const phrase of expected.split("\n").filter(Boolean)) {
       const fullText = result.pages.map((p) => p.text).join("\n");
       expect(fullText).toContain(phrase);
@@ -64,10 +61,7 @@ describe("extractPdfText", () => {
     const result = await extractPdfText(buffer);
 
     const fullText = result.pages.map((p) => p.text).join("\n");
-    const expected = readFileSync(
-      join(FIXTURES, "with-tables.expected.txt"),
-      "utf-8",
-    );
+    const expected = readFileSync(join(FIXTURES, "with-tables.expected.txt"), "utf-8");
     for (const phrase of expected.split("\n").filter(Boolean)) {
       expect(fullText).toContain(phrase);
     }
@@ -90,9 +84,7 @@ describe("extractPdfText", () => {
     const buffer = readFileSync(join(FIXTURES, "with-images.pdf"));
     const result = await extractPdfText(buffer);
 
-    const pagesWithImages = result.pages.filter(
-      (p) => p.embeddedImages.length > 0,
-    );
+    const pagesWithImages = result.pages.filter((p) => p.embeddedImages.length > 0);
     expect(pagesWithImages.length).toBeGreaterThanOrEqual(1);
     for (const page of pagesWithImages) {
       for (const img of page.embeddedImages) {

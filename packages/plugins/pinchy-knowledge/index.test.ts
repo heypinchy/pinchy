@@ -244,8 +244,20 @@ describe("pinchy-knowledge plugin", () => {
 
 describe("formatWithCitations", () => {
   const results: KnowledgeSearchResult[] = [
-    { chunkId: "c1", text: "Snippet one.", sourcePath: "/data/kb/a.pdf", page: 3, docName: "a.pdf" },
-    { chunkId: "c2", text: "Snippet two.", sourcePath: "/data/kb/b.pdf", page: null, docName: "b.pdf" },
+    {
+      chunkId: "c1",
+      text: "Snippet one.",
+      sourcePath: "/data/kb/a.pdf",
+      page: 3,
+      docName: "a.pdf",
+    },
+    {
+      chunkId: "c2",
+      text: "Snippet two.",
+      sourcePath: "/data/kb/b.pdf",
+      page: null,
+      docName: "b.pdf",
+    },
   ];
 
   it("formats results as numbered, citable sources with sourcePath and page", () => {
@@ -280,8 +292,20 @@ describe("formatWithCitations", () => {
     // The failure a basename cannot express at all: two distinct documents
     // collapse into one indistinguishable citation.
     const collision: KnowledgeSearchResult[] = [
-      { chunkId: "c1", text: "A.", sourcePath: "/data/kb/2011/spec.pdf", page: 1, docName: "spec.pdf" },
-      { chunkId: "c2", text: "B.", sourcePath: "/data/kb/2012/spec.pdf", page: 1, docName: "spec.pdf" },
+      {
+        chunkId: "c1",
+        text: "A.",
+        sourcePath: "/data/kb/2011/spec.pdf",
+        page: 1,
+        docName: "spec.pdf",
+      },
+      {
+        chunkId: "c2",
+        text: "B.",
+        sourcePath: "/data/kb/2012/spec.pdf",
+        page: 1,
+        docName: "spec.pdf",
+      },
     ];
     const out = formatWithCitations(collision);
     expect(out).toContain("/data/kb/2011/spec.pdf");

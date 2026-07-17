@@ -2,14 +2,7 @@
 name: bootstrap-memory-group-filter
 description: "Strip MEMORY.md from bootstrap for channel group sessions so a shared agent's per-user memory is never pushed into a group."
 homepage: https://github.com/heypinchy/pinchy/issues/369
-metadata:
-  {
-    "openclaw":
-      {
-        "emoji": "🦞",
-        "events": ["agent:bootstrap"],
-      },
-  }
+metadata: { "openclaw": { "emoji": "🦞", "events": ["agent:bootstrap"] } }
 ---
 
 # Bootstrap Memory Group Filter Hook

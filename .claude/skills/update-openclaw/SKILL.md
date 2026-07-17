@@ -29,6 +29,7 @@ version between current and target first.
 ## Procedure
 
 1. **Check current vs. latest.**
+
    ```bash
    grep openclaw packages/web/package.json
    npm view openclaw version
@@ -38,10 +39,12 @@ version between current and target first.
 2. **Read every release's notes between current (exclusive) and target
    (inclusive)** — not just the target's diff summary, since intermediate
    point releases can carry changes too:
+
    ```bash
    gh release list --repo openclaw/openclaw --limit 20
    gh release view v<version> --repo openclaw/openclaw
    ```
+
    Read the full text, not just headline "Highlights" — the "Additional ...
    fixes" subsections often contain the entry that actually matters to us.
    Work through it against these four questions, in this order, and write
@@ -78,11 +81,13 @@ version between current and target first.
    **b. Resolved issues we have workarounds for.** Grep our own code for
    the upstream issue/PR numbers and version-guard comments before reading
    notes:
+
    ```bash
    git grep -rniE "openclaw/openclaw#[0-9]+|openclaw issue|version.?guard|workaround|TODO\(#" -- packages/ config/ | grep -vi node_modules
    ```
+
    For each hit, check the upstream issue state (`gh issue view <n> --repo
-   openclaw/openclaw --json state,closedAt`). But **"issue closed" is
+openclaw/openclaw --json state,closedAt`). But **"issue closed" is
    necessary, not sufficient** — a closed issue is where naive audits go
    wrong. Before removing any workaround, confirm ALL of:
 
@@ -93,7 +98,7 @@ version between current and target first.
       the fixed code, not just the changelog.
    2. **The fix targets OUR code path**, not a sibling. Real example: openclaw
       #75534 (config.apply no-op restart, tracked on our side by #215) fixed
-      OpenClaw's *own* `writeConfigFile` short-circuit — but Pinchy writes the
+      OpenClaw's _own_ `writeConfigFile` short-circuit — but Pinchy writes the
       config file itself and then calls `config.apply`, a different path whose
       `env.*`→default-`restart` mechanism was still present verbatim in
       2026.6.11. Issue closed, workaround NOT removable.
@@ -102,7 +107,7 @@ version between current and target first.
       after the bug is fixed. Real examples that are NOT removable-on-close:
       the `thought_signature` error classifier (`model-error-classifier.ts`,
       #338 — renders graceful UX whenever the upstream error surfaces, and its
-      removal is gated on an *empirical* live-path condition, not the issue
+      removal is gated on an _empirical_ live-path condition, not the issue
       state), and the Telegram store-based `allowFrom` (#47458 — a
       restart-avoiding design choice, see
       `reference_ollama_local_rewrite_decoupling.md` for the "decoupling, not a
@@ -112,7 +117,7 @@ version between current and target first.
       bundle archaeology. Bundle-reading can prove a workaround is STILL needed
       (mechanism present) but is weak evidence that one is safe to REMOVE —
       that needs the prescribed test. Memory: `reference_config_apply_rate_limit_drop.md`
-      warns version guards can *become* bugs after an upstream fix, so this
+      warns version guards can _become_ bugs after an upstream fix, so this
       cuts both ways.
 
    If all four hold, remove the workaround in the same change with a test
@@ -131,7 +136,7 @@ version between current and target first.
    append, publish, lock), which sounds like it could replace `pinchy-transcript`.
    But its methods are all keyed by `{ agentId, sessionKey, sessionId }` —
    **session-scoped**. Pinchy owns `channel_messages` precisely because it
-   needs a *channel-lifetime* record that survives `/new`/reset/compaction
+   needs a _channel-lifetime_ record that survives `/new`/reset/compaction
    (per PR #553 / `reference_pinchy_owned_transcript.md`); adopting the
    session-scoped SDK would reintroduce the exact blank-on-`/new` bug it fixed.
    So: not adoptable. If a native capability genuinely covers the reason,
@@ -170,6 +175,7 @@ version between current and target first.
    Pinchy pin.
 
 6. **Install and verify:**
+
    ```bash
    pnpm install
    pnpm -C packages/web vitest run src/__tests__/lib/openclaw-version-pin-drift.test.ts
@@ -177,6 +183,7 @@ version between current and target first.
    pnpm test
    pnpm build
    ```
+
    Note: the hook test above proves the filter logic, not that OpenClaw still
    fires the hook. If the notes touched bootstrap/hook/session-key behavior,
    run the HOOK.md staging check before shipping.
@@ -188,6 +195,7 @@ version between current and target first.
 ## If a release note flags something sensitive
 
 Don't just bump anyway. Options, in order of preference:
+
 - Pin to the last version before the risky change and note why in a commit
   message / to the user.
 - Do the bump on a branch, add/adjust a regression test for the specific

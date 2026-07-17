@@ -46,13 +46,13 @@ a missing key.
 `ollama-cloud-models.ts` is the single source. When you change it, re-check
 these derived sites in the SAME change:
 
-| Site | What to check |
-|------|---------------|
-| `model-resolver/providers/ollama-cloud.ts` | Per-tier `general`/`coder`/`vision` picks. Does a new model deserve to lead a tier? Did a removed model leave a dangling pick? (The `OllamaCloudModelId` union makes a removed ID a `tsc` error here.) |
-| `model-resolver/families.ts` | Family prefix lists — add a prefix only for a genuinely new family. (Local-resolver prefixes; not coupled to the cloud catalog, so a removed cloud model does not force a change here.) |
-| `model-resolver/blocklist.ts` | If a model emits tools but leaks them as text (gemini-3 case), block it instead of dropping it, so it stays usable for chat-only agents. |
+| Site                                                                        | What to check                                                                                                                                                                                                                                   |
+| --------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `model-resolver/providers/ollama-cloud.ts`                                  | Per-tier `general`/`coder`/`vision` picks. Does a new model deserve to lead a tier? Did a removed model leave a dangling pick? (The `OllamaCloudModelId` union makes a removed ID a `tsc` error here.)                                          |
+| `model-resolver/families.ts`                                                | Family prefix lists — add a prefix only for a genuinely new family. (Local-resolver prefixes; not coupled to the cloud catalog, so a removed cloud model does not force a change here.)                                                         |
+| `model-resolver/blocklist.ts`                                               | If a model emits tools but leaks them as text (gemini-3 case), block it instead of dropping it, so it stays usable for chat-only agents.                                                                                                        |
 | `openclaw-config/default-media-models.ts` → `OLLAMA_CLOUD_IMAGE_PREFERENCE` | The ordered best-vision image-fallback picks. Removing a model that appears here breaks the `ollama-cloud-image-preference-drift` test; re-point to another vision-verified model. Removing/demoting a vision model means dropping it here too. |
-| `__tests__/lib/ollama-cloud-models.test.ts` | Add a dated, empirical assertion pinning each non-obvious flag (see step 5). |
+| `__tests__/lib/ollama-cloud-models.test.ts`                                 | Add a dated, empirical assertion pinning each non-obvious flag (see step 5).                                                                                                                                                                    |
 
 ## Procedure
 
@@ -100,7 +100,7 @@ these derived sites in the SAME change:
      tool-capable. If it leaks but is otherwise good for chat, add it to the
      blocklist rather than the catalog. If it just never calls, drop it.
    - Vision: `OK (api accepts)` confirms `vision:true`. `DRIFT (flag=true but
-     API rejects)` → `vision:false`. **The script only catches outright
+API rejects)` → `vision:false`. **The script only catches outright
      rejection** — a model that returns HTTP 200 but hallucinates the image
      (qwen3.5) still needs the manual number+color check described in the test
      file header. When unsure, set `vision:false` (conservative side).
@@ -144,13 +144,13 @@ prevents.
 
 ## Common mistakes
 
-| Mistake | Fix |
-|---------|-----|
-| Set `vision:true` from the library page | Probe it. Pages lie. |
-| Treated `models:discover` ADDED as "add all" | ADDED includes chat-only models; triage against library tags. |
-| Forgot the tier picks / blocklist | A new leader or a leaky model needs `providers/ollama-cloud.ts` / `blocklist.ts` updated too. |
-| Dropped a leaky-but-good model entirely | Blocklist it instead — it stays usable for chat-only agents. |
-| Skipped the dated test assertion | The empirical record is the point; future-you will re-trust a page without it. |
+| Mistake                                      | Fix                                                                                           |
+| -------------------------------------------- | --------------------------------------------------------------------------------------------- |
+| Set `vision:true` from the library page      | Probe it. Pages lie.                                                                          |
+| Treated `models:discover` ADDED as "add all" | ADDED includes chat-only models; triage against library tags.                                 |
+| Forgot the tier picks / blocklist            | A new leader or a leaky model needs `providers/ollama-cloud.ts` / `blocklist.ts` updated too. |
+| Dropped a leaky-but-good model entirely      | Blocklist it instead — it stays usable for chat-only agents.                                  |
+| Skipped the dated test assertion             | The empirical record is the point; future-you will re-trust a page without it.                |
 
 ## Quick reference
 

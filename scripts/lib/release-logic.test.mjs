@@ -47,7 +47,11 @@ test("bumpPackageJson updates version field", () => {
 });
 
 test("bumpPackageJson preserves other fields", () => {
-  const input = JSON.stringify({ name: "pinchy", version: "0.2.0", private: true }, null, 2);
+  const input = JSON.stringify(
+    { name: "pinchy", version: "0.2.0", private: true },
+    null,
+    2,
+  );
   const output = bumpPackageJson(input, "0.3.0");
   const parsed = JSON.parse(output);
   assert.equal(parsed.name, "pinchy");
@@ -163,7 +167,9 @@ test("assertUpgradingSectionExists accepts %%PINCHY_VERSION%% placeholder", () =
     "",
     "Notes go here.",
   ].join("\n");
-  assert.doesNotThrow(() => assertUpgradingSectionExists(mdx, "0.4.4", "0.5.0"));
+  assert.doesNotThrow(() =>
+    assertUpgradingSectionExists(mdx, "0.4.4", "0.5.0"),
+  );
 });
 
 test("assertUpgradingSectionExists accepts concrete target version", () => {
@@ -178,7 +184,9 @@ test("assertUpgradingSectionExists accepts concrete target version", () => {
     "",
     "Notes.",
   ].join("\n");
-  assert.doesNotThrow(() => assertUpgradingSectionExists(mdx, "0.4.4", "0.5.0"));
+  assert.doesNotThrow(() =>
+    assertUpgradingSectionExists(mdx, "0.4.4", "0.5.0"),
+  );
 });
 
 test("assertUpgradingSectionExists rejects missing section", () => {
@@ -200,7 +208,9 @@ test("assertUpgradingSectionExists rejects stale section (wrong 'from' version)"
 test("assertUpgradingSectionExists is whitespace-tolerant in the heading", () => {
   const mdx =
     "##   Upgrading  from  v0.4.4  to  %%PINCHY_VERSION%%  \n\n### Breaking changes\n\nNone.\n\n### Upgrade notes\n\nNotes.\n";
-  assert.doesNotThrow(() => assertUpgradingSectionExists(mdx, "0.4.4", "0.5.0"));
+  assert.doesNotThrow(() =>
+    assertUpgradingSectionExists(mdx, "0.4.4", "0.5.0"),
+  );
 });
 
 test("assertUpgradingSectionExists error message suggests the heading to add", () => {
@@ -222,7 +232,9 @@ None.
 
 Standard upgrade.
 `;
-  assert.doesNotThrow(() => assertUpgradingSectionExists(mdx, "0.4.4", "0.5.0"));
+  assert.doesNotThrow(() =>
+    assertUpgradingSectionExists(mdx, "0.4.4", "0.5.0"),
+  );
 });
 
 test("assertUpgradingSectionExists rejects a section missing the Breaking changes subsection", () => {
@@ -309,7 +321,8 @@ test("extractUpgradeNotes replaces %%PINCHY_VERSION%% with v<target>", () => {
 });
 
 test("extractUpgradeNotes returns empty string when section is missing", () => {
-  const mdx = "# Upgrading Pinchy\n\n## Upgrading from v0.4.2 to v0.4.3\n\nOld.\n";
+  const mdx =
+    "# Upgrading Pinchy\n\n## Upgrading from v0.4.2 to v0.4.3\n\nOld.\n";
   assert.equal(extractUpgradeNotes(mdx, "0.4.4", "0.5.0"), "");
 });
 
@@ -381,7 +394,10 @@ test("bumpEnvExample throws when PINCHY_VERSION line is missing", () => {
   const input = `# Only optional vars, no PINCHY_VERSION
 # DB_PASSWORD=
 `;
-  assert.throws(() => bumpEnvExample(input, "0.5.0"), /No PINCHY_VERSION= line in \.env\.example/);
+  assert.throws(
+    () => bumpEnvExample(input, "0.5.0"),
+    /No PINCHY_VERSION= line in \.env\.example/,
+  );
 });
 
 test("bumpEnvExample preserves order and other variables when many exist", () => {
@@ -637,7 +653,10 @@ const CHECKLIST_MDX = [
 test("deriveStagingChecklist extracts #### subheadings as items, flagging breaking ones", () => {
   const items = deriveStagingChecklist(CHECKLIST_MDX, "0.5.8", "0.6.0");
   assert.deepEqual(items, [
-    { title: "Telegram and web no longer share one conversation", breaking: true },
+    {
+      title: "Telegram and web no longer share one conversation",
+      breaking: true,
+    },
     { title: "Multiple chats per agent", breaking: false },
     { title: "Sturdier streaming and reconnects", breaking: false },
   ]);
@@ -735,12 +754,18 @@ test("checkReleaseVerification fails on SHA mismatch", () => {
 });
 
 test("checkReleaseVerification fails when no attestation is provided", () => {
-  const r = checkReleaseVerification({ verifiedSha: "", headSha: "abc1234def" });
+  const r = checkReleaseVerification({
+    verifiedSha: "",
+    headSha: "abc1234def",
+  });
   assert.equal(r.ok, false);
   assert.match(r.message, /--verified|attestation|staging/i);
 });
 
 test("checkReleaseVerification rejects a too-short verified SHA", () => {
-  const r = checkReleaseVerification({ verifiedSha: "abc", headSha: "abc1234def567" });
+  const r = checkReleaseVerification({
+    verifiedSha: "abc",
+    headSha: "abc1234def567",
+  });
   assert.equal(r.ok, false);
 });

@@ -14,7 +14,7 @@ interface PluginApi {
   pluginConfig?: PluginConfig;
   registerTool: (
     factory: (ctx: PluginToolContext) => AgentTool | null,
-    opts?: { name?: string },
+    opts?: { name?: string }
   ) => void;
 }
 
@@ -26,7 +26,7 @@ interface AgentTool {
   execute: (
     toolCallId: string,
     params: Record<string, unknown>,
-    signal?: AbortSignal,
+    signal?: AbortSignal
   ) => Promise<{ content: ContentBlock[]; isError?: boolean }>;
 }
 
@@ -63,7 +63,7 @@ function assertBraveCredentialsShape(creds: unknown): asserts creds is BraveCred
   if (actual !== "string") {
     throw new Error(
       `pinchy-web: credentials.apiKey must be a string, got ${actual}` +
-        (actual === "object" ? " (looks like an unresolved SecretRef — see #209)" : ""),
+        (actual === "object" ? " (looks like an unresolved SecretRef — see #209)" : "")
     );
   }
 }
@@ -71,11 +71,11 @@ function assertBraveCredentialsShape(creds: unknown): asserts creds is BraveCred
 async function fetchBraveCredentials(
   apiBaseUrl: string,
   gatewayToken: string,
-  connectionId: string,
+  connectionId: string
 ): Promise<BraveCredentials> {
   const response = await fetch(
     `${apiBaseUrl}/api/internal/integrations/${connectionId}/credentials`,
-    { headers: { Authorization: `Bearer ${gatewayToken}` } },
+    { headers: { Authorization: `Bearer ${gatewayToken}` } }
   );
   if (!response.ok) {
     // The credentials route puts an actionable message in the JSON body (e.g. a
@@ -91,7 +91,7 @@ async function fetchBraveCredentials(
     })();
     const detail = body && typeof body.error === "string" ? `: ${body.error}` : "";
     throw new Error(
-      `Failed to fetch Brave credentials: HTTP ${response.status} ${response.statusText}${detail}`,
+      `Failed to fetch Brave credentials: HTTP ${response.status} ${response.statusText}${detail}`
     );
   }
   const data = (await response.json()) as { credentials?: unknown };
@@ -111,21 +111,18 @@ async function reportAuthFailure(
   apiBaseUrl: string,
   connectionId: string,
   gatewayToken: string,
-  reason: string,
+  reason: string
 ): Promise<void> {
   try {
-    await fetch(
-      `${apiBaseUrl}/api/internal/integrations/${connectionId}/report-auth-failure`,
-      {
-        method: "POST",
-        headers: {
-          Authorization: `Bearer ${gatewayToken}`,
-          "Content-Type": "application/json",
-          "X-Plugin-Id": "pinchy-web",
-        },
-        body: JSON.stringify({ reason: reason.slice(0, 500) }),
+    await fetch(`${apiBaseUrl}/api/internal/integrations/${connectionId}/report-auth-failure`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${gatewayToken}`,
+        "Content-Type": "application/json",
+        "X-Plugin-Id": "pinchy-web",
       },
-    );
+      body: JSON.stringify({ reason: reason.slice(0, 500) }),
+    });
   } catch {
     // best-effort — never mask the original tool error
   }
@@ -154,7 +151,7 @@ const plugin = {
       if (cached && cached.expiresAt > Date.now()) return cached.apiKey;
       if (!connectionId || !apiBaseUrl || !gatewayToken) {
         throw new Error(
-          "pinchy-web: missing connectionId/apiBaseUrl/gatewayToken in plugin config",
+          "pinchy-web: missing connectionId/apiBaseUrl/gatewayToken in plugin config"
         );
       }
       const creds = await fetchBraveCredentials(apiBaseUrl, gatewayToken, connectionId);
@@ -242,8 +239,7 @@ const plugin = {
                 ],
               };
             } catch (error) {
-              const msg =
-                error instanceof Error ? error.message : String(error);
+              const msg = error instanceof Error ? error.message : String(error);
               return {
                 isError: true,
                 content: [{ type: "text", text: `Search failed: ${msg}` }],
@@ -252,7 +248,7 @@ const plugin = {
           },
         };
       },
-      { name: "pinchy_web_search" },
+      { name: "pinchy_web_search" }
     );
 
     // pinchy_web_fetch
@@ -281,17 +277,13 @@ const plugin = {
                 allowedDomains: agentConfig.allowedDomains,
                 excludedDomains: agentConfig.excludedDomains,
               };
-              const result = await webFetch(
-                params.url as string,
-                fetchConfig,
-              );
+              const result = await webFetch(params.url as string, fetchConfig);
               return {
                 isError: result.isError,
                 content: [{ type: "text", text: result.content }],
               };
             } catch (error) {
-              const msg =
-                error instanceof Error ? error.message : String(error);
+              const msg = error instanceof Error ? error.message : String(error);
               return {
                 isError: true,
                 content: [{ type: "text", text: `Fetch failed: ${msg}` }],
@@ -300,7 +292,7 @@ const plugin = {
           },
         };
       },
-      { name: "pinchy_web_fetch" },
+      { name: "pinchy_web_fetch" }
     );
   },
 };

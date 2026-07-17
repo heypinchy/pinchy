@@ -22,7 +22,7 @@ describe("reportUsage", () => {
         inputTokens: 0,
         outputTokens: 0,
       },
-      { apiBaseUrl: "http://pinchy:7777", gatewayToken: "gw-token" },
+      { apiBaseUrl: "http://pinchy:7777", gatewayToken: "gw-token" }
     );
 
     expect(fetchSpy).not.toHaveBeenCalled();
@@ -41,7 +41,7 @@ describe("reportUsage", () => {
         inputTokens: 1234,
         outputTokens: 56,
       },
-      { apiBaseUrl: "http://pinchy:7777", gatewayToken: "gw-token" },
+      { apiBaseUrl: "http://pinchy:7777", gatewayToken: "gw-token" }
     );
 
     expect(fetchSpy).toHaveBeenCalledTimes(1);
@@ -77,7 +77,7 @@ describe("reportUsage", () => {
         inputTokens: 1,
         outputTokens: 1,
       },
-      { apiBaseUrl: "http://pinchy:7777/", gatewayToken: "gw-token" },
+      { apiBaseUrl: "http://pinchy:7777/", gatewayToken: "gw-token" }
     );
 
     const [url] = fetchSpy.mock.calls[0] as [string, RequestInit];
@@ -96,7 +96,7 @@ describe("reportUsage", () => {
         inputTokens: 0,
         outputTokens: 10,
       },
-      { apiBaseUrl: "http://pinchy:7777", gatewayToken: "gw-token" },
+      { apiBaseUrl: "http://pinchy:7777", gatewayToken: "gw-token" }
     );
 
     expect(fetchSpy).toHaveBeenCalledTimes(1);
@@ -120,8 +120,8 @@ describe("reportUsage", () => {
           inputTokens: 10,
           outputTokens: 5,
         },
-        { apiBaseUrl: "http://pinchy:7777", gatewayToken: "gw-token" },
-      ),
+        { apiBaseUrl: "http://pinchy:7777", gatewayToken: "gw-token" }
+      )
     ).resolves.toBeUndefined();
 
     expect(errorSpy).toHaveBeenCalled();
@@ -141,8 +141,8 @@ describe("reportUsage", () => {
           inputTokens: 10,
           outputTokens: 5,
         },
-        { apiBaseUrl: "http://pinchy:7777", gatewayToken: "gw-token" },
-      ),
+        { apiBaseUrl: "http://pinchy:7777", gatewayToken: "gw-token" }
+      )
     ).resolves.toBeUndefined();
 
     expect(errorSpy).toHaveBeenCalled();

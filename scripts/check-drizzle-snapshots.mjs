@@ -57,7 +57,10 @@ const stagedSqlBasenames = stagedNewFiles
   .map((p) => p.slice(sqlPathPrefix.length));
 
 const stagedSnapshotBasenames = stagedAnyChange
-  .filter((p) => p.startsWith(snapshotPathPrefix) && /\/\d{4}_snapshot\.json$/.test(p))
+  .filter(
+    (p) =>
+      p.startsWith(snapshotPathPrefix) && /\/\d{4}_snapshot\.json$/.test(p),
+  )
   .map((p) => p.slice(snapshotPathPrefix.length));
 
 const issues = findSnapshotIssues({
@@ -76,9 +79,7 @@ for (const issue of issues) {
   console.error(`  • ${issue}\n`);
 }
 console.error(
-  `(See docs at https://docs.heypinchy.com/contribute/drizzle-migrations/ for the snapshot recovery runbook.)\n`
+  `(See docs at https://docs.heypinchy.com/contribute/drizzle-migrations/ for the snapshot recovery runbook.)\n`,
 );
-console.error(
-  `(Migrations dir: ${migrationsDir.replace(repoRoot + "/", "")})`
-);
+console.error(`(Migrations dir: ${migrationsDir.replace(repoRoot + "/", "")})`);
 process.exit(1);

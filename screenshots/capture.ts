@@ -24,7 +24,8 @@ async function login(page: Page) {
     await page.context().addCookies(state.cookies || []);
     await page.goto(`${BASE_URL}/`);
     await page.waitForTimeout(2000);
-    if (!page.url().includes("/login") && !page.url().includes("/setup")) return;
+    if (!page.url().includes("/login") && !page.url().includes("/setup"))
+      return;
   }
 
   // Session invalid or not saved — perform fresh login
@@ -34,7 +35,8 @@ async function login(page: Page) {
   await page.getByLabel("Password", { exact: true }).fill(ADMIN_PASSWORD);
   await page.getByRole("button", { name: /sign in/i }).click();
   await page.waitForURL(
-    (url) => !url.pathname.includes("/login") && !url.pathname.includes("/setup"),
+    (url) =>
+      !url.pathname.includes("/login") && !url.pathname.includes("/setup"),
     { timeout: 30000 },
   );
   await page.context().storageState({ path: STORAGE_STATE });
@@ -72,7 +74,10 @@ async function screenshot(page: Page, name: string, target?: string) {
     // .first() guards against nested matches; animations:"disabled" freezes
     // CSS/Web animations so the element's box settles (element screenshots
     // wait for a stable bounding box, unlike page.screenshot).
-    await page.locator(target).first().screenshot({ path: out, animations: "disabled" });
+    await page
+      .locator(target)
+      .first()
+      .screenshot({ path: out, animations: "disabled" });
   } else {
     await page.screenshot({ path: out, fullPage: false });
   }
@@ -118,7 +123,9 @@ test.describe("Feature screenshots", () => {
     // introspection, and config-change restarts (see #302). 30s wasn't
     // enough on the v0.5.2 release — failed twice with the indicator never
     // flipping to "Connected" within budget.
-    await page.getByRole("button", { name: "Connected" }).waitFor({ timeout: 90000 });
+    await page
+      .getByRole("button", { name: "Connected" })
+      .waitFor({ timeout: 90000 });
     await page
       .locator('[data-role="assistant"]')
       .first()
@@ -126,9 +133,13 @@ test.describe("Feature screenshots", () => {
       .catch(() => {});
 
     // Type something in the input field to make it look dynamic
-    const input = page.locator('textarea, input[placeholder*="message" i], [contenteditable]').first();
+    const input = page
+      .locator('textarea, input[placeholder*="message" i], [contenteditable]')
+      .first();
     if (await input.isVisible({ timeout: 3000 }).catch(() => false)) {
-      await input.fill("It's Burns. Industrialist, bon vivant, amateur lepidopterist. Keep answers brief and never mention the word 'union.' Excellent.");
+      await input.fill(
+        "It's Burns. Industrialist, bon vivant, amateur lepidopterist. Keep answers brief and never mention the word 'union.' Excellent.",
+      );
     }
 
     await screenshot(page, "chat-interface.png");
@@ -187,13 +198,19 @@ test.describe("Feature screenshots", () => {
         await page.waitForTimeout(1500);
       }
       // Expand the Advanced options inside the Web Search section
-      const advancedTrigger = page.getByRole("button", { name: /advanced options/i });
-      if (await advancedTrigger.isVisible({ timeout: 2000 }).catch(() => false)) {
+      const advancedTrigger = page.getByRole("button", {
+        name: /advanced options/i,
+      });
+      if (
+        await advancedTrigger.isVisible({ timeout: 2000 }).catch(() => false)
+      ) {
         await advancedTrigger.click();
         await page.waitForTimeout(800);
       }
       // Bring the Web Search section into view
-      const webHeading = page.getByRole("heading", { name: /web search/i }).first();
+      const webHeading = page
+        .getByRole("heading", { name: /web search/i })
+        .first();
       if (await webHeading.isVisible({ timeout: 2000 }).catch(() => false)) {
         await webHeading.scrollIntoViewIfNeeded();
         await page.waitForTimeout(500);
@@ -225,7 +242,11 @@ test.describe("Feature screenshots", () => {
     if (await usersTab.isVisible({ timeout: 3000 }).catch(() => false)) {
       await usersTab.click();
     } else {
-      await page.locator("text=Users").first().click().catch(() => {});
+      await page
+        .locator("text=Users")
+        .first()
+        .click()
+        .catch(() => {});
     }
     await page.waitForTimeout(1500);
     await screenshot(page, "user-management.png");
@@ -240,7 +261,11 @@ test.describe("Feature screenshots", () => {
     if (await groupsTab.isVisible({ timeout: 3000 }).catch(() => false)) {
       await groupsTab.click();
     } else {
-      await page.locator("text=Groups").first().click().catch(() => {});
+      await page
+        .locator("text=Groups")
+        .first()
+        .click()
+        .catch(() => {});
     }
     await page.waitForTimeout(1500);
     await screenshot(page, "groups.png");
@@ -277,7 +302,11 @@ test.describe("Feature screenshots", () => {
     if (await telegramTab.isVisible({ timeout: 3000 }).catch(() => false)) {
       await telegramTab.click();
     } else {
-      await page.locator("text=Telegram").first().click().catch(() => {});
+      await page
+        .locator("text=Telegram")
+        .first()
+        .click()
+        .catch(() => {});
     }
     await page.waitForTimeout(1500);
     await screenshot(page, "settings-telegram.png");
@@ -290,7 +319,11 @@ test.describe("Feature screenshots", () => {
     if (await integrationsTab.isVisible({ timeout: 3000 }).catch(() => false)) {
       await integrationsTab.click();
     } else {
-      await page.locator("text=Integrations").first().click().catch(() => {});
+      await page
+        .locator("text=Integrations")
+        .first()
+        .click()
+        .catch(() => {});
     }
     await page.waitForTimeout(1500);
     const addButton = page.getByRole("button", { name: /add integration/i });
@@ -313,14 +346,20 @@ test.describe("Feature screenshots", () => {
     if (await integrationsTab.isVisible({ timeout: 3000 }).catch(() => false)) {
       await integrationsTab.click();
     } else {
-      await page.locator("text=Integrations").first().click().catch(() => {});
+      await page
+        .locator("text=Integrations")
+        .first()
+        .click()
+        .catch(() => {});
     }
     await page.waitForTimeout(1500);
     const addButton = page.getByRole("button", { name: /add integration/i });
     if (await addButton.isVisible({ timeout: 2000 }).catch(() => false)) {
       await addButton.click();
       await page.waitForTimeout(800);
-      const googleOption = page.getByRole("button", { name: /google/i }).first();
+      const googleOption = page
+        .getByRole("button", { name: /google/i })
+        .first();
       if (await googleOption.isVisible({ timeout: 2000 }).catch(() => false)) {
         await googleOption.click();
         await page.waitForTimeout(1000);

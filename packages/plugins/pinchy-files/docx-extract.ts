@@ -87,13 +87,13 @@ function normalizeTableHtml(html: string): string {
  */
 export async function extractDocxText(
   buffer: Buffer,
-  options: DocxExtractOptions = {},
+  options: DocxExtractOptions = {}
 ): Promise<DocxExtractionResult> {
   // Issue #424: reject decompression bombs from the central directory's
   // declared sizes before mammoth inflates anything.
   assertDocxDecompressedSizeWithinLimit(
     buffer,
-    options.maxDecompressedBytes ?? MAX_DOCX_DECOMPRESSED_BYTES,
+    options.maxDecompressedBytes ?? MAX_DOCX_DECOMPRESSED_BYTES
   );
 
   const { value: rawHtml } = await mammoth.convertToHtml(
@@ -101,9 +101,7 @@ export async function extractDocxText(
     {
       // Empty src skips mammoth's base64 encoding; the strip-image
       // turndown rule above replaces <img> with [image] downstream.
-      convertImage: mammoth.images.imgElement(() =>
-        Promise.resolve({ src: "" })
-      ),
+      convertImage: mammoth.images.imgElement(() => Promise.resolve({ src: "" })),
     }
   );
   const html = normalizeTableHtml(rawHtml);
@@ -114,7 +112,7 @@ export async function extractDocxText(
   const maxTextBytes = options.maxTextBytes ?? MAX_DOCX_EXTRACTED_TEXT_BYTES;
   if (Buffer.byteLength(text, "utf-8") > maxTextBytes) {
     throw new Error(
-      `DOCX extracted text (${Buffer.byteLength(text, "utf-8")} bytes) exceeds the limit (${maxTextBytes} bytes).`,
+      `DOCX extracted text (${Buffer.byteLength(text, "utf-8")} bytes) exceeds the limit (${maxTextBytes} bytes).`
     );
   }
   return { text };

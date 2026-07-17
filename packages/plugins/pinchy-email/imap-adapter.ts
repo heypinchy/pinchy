@@ -46,7 +46,7 @@ export interface ImapMailbox {
 const IMPLICIT_TLS_PORTS = new Set([993, 465]);
 export function tlsModeForPort(
   port: number,
-  security: string,
+  security: string
 ): { secure: boolean; requireTLS: boolean } {
   if (security === "none") return { secure: false, requireTLS: false };
   const implicit = IMPLICIT_TLS_PORTS.has(port);
@@ -75,9 +75,7 @@ export function decodeMessageId(id: string): {
     return { mailboxPath: "INBOX", uid: Number(id) };
   }
   const uid = Number(id.slice(0, at));
-  const mailboxPath = Buffer.from(id.slice(at + 1), "base64url").toString(
-    "utf8",
-  );
+  const mailboxPath = Buffer.from(id.slice(at + 1), "base64url").toString("utf8");
   return { mailboxPath, uid };
 }
 
@@ -106,17 +104,13 @@ const NAME_HEURISTICS: Record<Exclude<Folder, "INBOX">, RegExp> = {
 // localized folder names. INBOX is always the literal "INBOX". A folder that
 // matches neither is left unset rather than guessed — callers must handle a
 // missing key explicitly instead of silently operating on the wrong mailbox.
-export function resolveFolders(
-  mailboxes: ImapMailbox[],
-): Partial<Record<Folder, string>> {
+export function resolveFolders(mailboxes: ImapMailbox[]): Partial<Record<Folder, string>> {
   const result: Partial<Record<Folder, string>> = { INBOX: "INBOX" };
 
   for (const box of mailboxes) {
     if (box.path.toUpperCase() === "INBOX") continue;
 
-    const bySpecialUse = box.specialUse
-      ? SPECIAL_USE_TO_FOLDER[box.specialUse]
-      : undefined;
+    const bySpecialUse = box.specialUse ? SPECIAL_USE_TO_FOLDER[box.specialUse] : undefined;
     if (bySpecialUse && !result[bySpecialUse]) {
       result[bySpecialUse] = box.path;
       continue;
@@ -132,9 +126,7 @@ export function resolveFolders(
     // both common hierarchy delimiters ('.' and '/').
     const leaf = box.path.split(/[./]/).pop() ?? box.path;
 
-    for (const folder of Object.keys(NAME_HEURISTICS) as Array<
-      Exclude<Folder, "INBOX">
-    >) {
+    for (const folder of Object.keys(NAME_HEURISTICS) as Array<Exclude<Folder, "INBOX">>) {
       if (result[folder]) continue;
       if (NAME_HEURISTICS[folder].test(leaf)) {
         result[folder] = box.path;
@@ -154,10 +146,7 @@ const MS_PER_DAY = 86_400_000;
 // `folder` and `limit` are NOT search criteria — they drive mailbox selection
 // and result slicing in the search()/list() methods, not the IMAP SEARCH
 // command itself.
-export function buildImapSearch(
-  opts: SearchOptions,
-  now: Date,
-): Record<string, unknown> {
+export function buildImapSearch(opts: SearchOptions, now: Date): Record<string, unknown> {
   const criteria: Record<string, unknown> = {};
   if (opts.from) criteria.from = opts.from;
   if (opts.to) criteria.to = opts.to;
@@ -177,9 +166,7 @@ const SNIPPET_LENGTH = 200;
 // per repeated To:/Cc: header line). Both siblings only ever see a single
 // combined address string from their provider APIs, so this collapses either
 // shape into the same ".text" rendering convention used elsewhere.
-function addressText(
-  addr: AddressObject | AddressObject[] | undefined,
-): string {
+function addressText(addr: AddressObject | AddressObject[] | undefined): string {
   if (!addr) return "";
   return Array.isArray(addr) ? addr.map((a) => a.text).join(", ") : addr.text;
 }
@@ -230,7 +217,7 @@ function toAttachments(parsed: ParsedMail): EmailAttachment[] {
 function assertNoHeaderInjection(field: string, value: string): void {
   if (/[\r\n]/.test(value)) {
     throw new Error(
-      `${field} contains a line break, which is not allowed (possible header injection attempt)`,
+      `${field} contains a line break, which is not allowed (possible header injection attempt)`
     );
   }
 }
@@ -344,9 +331,7 @@ export class ImapAdapter implements EmailAdapter {
     };
   }
 
-  private async withClient<T>(
-    fn: (client: ImapFlow) => Promise<T>,
-  ): Promise<T> {
+  private async withClient<T>(fn: (client: ImapFlow) => Promise<T>): Promise<T> {
     const conn = this.resolveImapConnection();
     const client = new ImapFlow({
       host: conn.host,
@@ -375,17 +360,14 @@ export class ImapAdapter implements EmailAdapter {
   // Resolves a canonical Folder to a real mailbox path on the server. Throws
   // when the folder can't be resolved rather than silently falling back to
   // the wrong mailbox — INBOX always resolves via resolveFolders().
-  private async resolveMailboxPath(
-    client: ImapFlow,
-    folder: Folder,
-  ): Promise<string> {
+  private async resolveMailboxPath(client: ImapFlow, folder: Folder): Promise<string> {
     const mailboxes = (await client.list()) as ListResponse[];
     const resolved = resolveFolders(
       mailboxes.map((box) => ({
         path: box.path,
         specialUse: box.specialUse,
         flags: box.flags,
-      })),
+      }))
     );
     const path = resolved[folder];
     if (!path) {
@@ -398,7 +380,7 @@ export class ImapAdapter implements EmailAdapter {
     client: ImapFlow,
     path: string,
     criteria: Record<string, unknown>,
-    limit: number,
+    limit: number
   ): Promise<EmailSummary[]> {
     await client.mailboxOpen(path);
     const uids = await client.search(criteria, { uid: true });
@@ -410,27 +392,19 @@ export class ImapAdapter implements EmailAdapter {
     const wanted = sorted.slice(0, limit);
 
     const summaries: EmailSummary[] = [];
-    for await (const msg of client.fetch(
-      wanted,
-      { envelope: true, flags: true },
-      { uid: true },
-    )) {
+    for await (const msg of client.fetch(wanted, { envelope: true, flags: true }, { uid: true })) {
       summaries.push(toSummary(msg, path));
     }
     // Ids are now folder-encoded, so sort on the decoded uid (newest first)
     // rather than the raw id string.
-    summaries.sort(
-      (a, b) => decodeMessageId(b.id).uid - decodeMessageId(a.id).uid,
-    );
+    summaries.sort((a, b) => decodeMessageId(b.id).uid - decodeMessageId(a.id).uid);
     return summaries.slice(0, limit);
   }
 
   async list(opts: ListOptions): Promise<EmailSummary[]> {
     const folder = opts.folder ?? "INBOX";
     const limit = opts.limit ?? DEFAULT_LIMIT;
-    const criteria: Record<string, unknown> = opts.unreadOnly
-      ? { seen: false }
-      : { all: true };
+    const criteria: Record<string, unknown> = opts.unreadOnly ? { seen: false } : { all: true };
     return this.withClient(async (client) => {
       const path = await this.resolveMailboxPath(client, folder);
       return this.fetchSummaries(client, path, criteria, limit);
@@ -444,15 +418,11 @@ export class ImapAdapter implements EmailAdapter {
   // INBOX for backward compatibility (see decodeMessageId).
   private async fetchParsed(
     client: ImapFlow,
-    id: string,
+    id: string
   ): Promise<{ parsed: ParsedMail; unread: boolean }> {
     const decoded = decodeMessageId(id);
     await client.mailboxOpen(decoded.mailboxPath);
-    const msg = await client.fetchOne(
-      decoded.uid,
-      { source: true, flags: true },
-      { uid: true },
-    );
+    const msg = await client.fetchOne(decoded.uid, { source: true, flags: true }, { uid: true });
     if (!msg || !msg.source) {
       throw new Error(`message ${id} not found`);
     }
@@ -588,12 +558,12 @@ export class ImapAdapter implements EmailAdapter {
 
   async getAttachment(
     messageId: string,
-    attachmentId: string,
+    attachmentId: string
   ): Promise<{ filename: string; mimeType: string; data: Buffer }> {
     return this.withClient(async (client) => {
       const { parsed } = await this.fetchParsed(client, messageId);
       const match = parsed.attachments.find(
-        (a, i) => (a.contentId ?? a.cid ?? String(i)) === attachmentId,
+        (a, i) => (a.contentId ?? a.cid ?? String(i)) === attachmentId
       );
       if (!match) {
         throw new Error(`attachment ${attachmentId} not found`);

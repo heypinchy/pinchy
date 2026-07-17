@@ -30,7 +30,10 @@ function makeTempPluginDir() {
 
 test("discoverPluginDirs finds every real packages/plugins/pinchy-* package", () => {
   const dirs = discoverPluginDirs(PLUGINS_ROOT);
-  assert.ok(dirs.length >= 8, `expected to discover plugin packages, found ${dirs.length}`);
+  assert.ok(
+    dirs.length >= 8,
+    `expected to discover plugin packages, found ${dirs.length}`,
+  );
   for (const dir of dirs) {
     assert.match(dir, new RegExp(`${PLUGIN_DIR_PREFIX}[^/]+$`));
   }
@@ -151,13 +154,19 @@ test("readDeclaredTools matches every real plugin's manifest without throwing", 
 // ---------------------------------------------------------------------------
 
 test("hasProdDependencies is true when dependencies has at least one entry", () => {
-  assert.equal(hasProdDependencies({ dependencies: { googleapis: "^1.0.0" } }), true);
+  assert.equal(
+    hasProdDependencies({ dependencies: { googleapis: "^1.0.0" } }),
+    true,
+  );
 });
 
 test("hasProdDependencies is false when dependencies is empty or absent", () => {
   assert.equal(hasProdDependencies({ dependencies: {} }), false);
   assert.equal(hasProdDependencies({}), false);
-  assert.equal(hasProdDependencies({ devDependencies: { vitest: "^1.0.0" } }), false);
+  assert.equal(
+    hasProdDependencies({ devDependencies: { vitest: "^1.0.0" } }),
+    false,
+  );
 });
 
 // ---------------------------------------------------------------------------
@@ -189,7 +198,11 @@ test("compareToolSets treats duplicate registrations as a single tool (set seman
 });
 
 test("compareToolSets is empty-vs-empty ok for sidecar plugins with no tools", () => {
-  assert.deepEqual(compareToolSets([], []), { ok: true, missing: [], extra: [] });
+  assert.deepEqual(compareToolSets([], []), {
+    ok: true,
+    missing: [],
+    extra: [],
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -274,9 +287,15 @@ test("discoverReachableModules follows static imports transitively from the entr
       join(dir, "index.ts"),
       `import { a } from "./a.js";\nexport default { register() {} };`,
     );
-    writeFileSync(join(dir, "a.ts"), `import { b } from "./b.js";\nexport const a = 1;`);
+    writeFileSync(
+      join(dir, "a.ts"),
+      `import { b } from "./b.js";\nexport const a = 1;`,
+    );
     writeFileSync(join(dir, "b.ts"), `export const b = 1;`);
-    writeFileSync(join(dir, "unreachable.ts"), `import "some-dev-only-package";\nexport const u = 1;`);
+    writeFileSync(
+      join(dir, "unreachable.ts"),
+      `import "some-dev-only-package";\nexport const u = 1;`,
+    );
 
     const modules = discoverReachableModules(dir);
     const names = modules.map((m) => m.split("/").pop()).sort();
@@ -293,7 +312,10 @@ test("discoverReachableModules follows dynamic import() specifiers too", () => {
       join(dir, "index.ts"),
       `export default { async register() { await import("./lazy-adapter.js"); } };`,
     );
-    writeFileSync(join(dir, "lazy-adapter.ts"), `import "some-prod-dep";\nexport const x = 1;`);
+    writeFileSync(
+      join(dir, "lazy-adapter.ts"),
+      `import "some-prod-dep";\nexport const x = 1;`,
+    );
 
     const modules = discoverReachableModules(dir);
     const names = modules.map((m) => m.split("/").pop()).sort();
@@ -306,8 +328,14 @@ test("discoverReachableModules follows dynamic import() specifiers too", () => {
 test("discoverReachableModules never revisits a module twice even with import cycles", () => {
   const dir = makeTempPluginDir();
   try {
-    writeFileSync(join(dir, "index.ts"), `import "./a.js";\nexport default {};`);
-    writeFileSync(join(dir, "a.ts"), `import "./index.js";\nexport const a = 1;`);
+    writeFileSync(
+      join(dir, "index.ts"),
+      `import "./a.js";\nexport default {};`,
+    );
+    writeFileSync(
+      join(dir, "a.ts"),
+      `import "./index.js";\nexport const a = 1;`,
+    );
 
     const modules = discoverReachableModules(dir);
     const names = modules.map((m) => m.split("/").pop()).sort();
@@ -325,7 +353,10 @@ test("discoverReachableModules does not pull in a sibling that nothing imports (
     // referenced by index.ts. Reachability-based discovery must not pull this
     // in — otherwise a plugin whose dev scripts import devDependencies would
     // fail smoke-load even though OpenClaw never loads that file at runtime.
-    writeFileSync(join(dir, "generate-fixtures.ts"), `import { Document } from "docx";\nexport {};`);
+    writeFileSync(
+      join(dir, "generate-fixtures.ts"),
+      `import { Document } from "docx";\nexport {};`,
+    );
 
     const modules = discoverReachableModules(dir);
     const names = modules.map((m) => m.split("/").pop());

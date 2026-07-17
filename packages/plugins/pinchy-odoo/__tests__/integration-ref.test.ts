@@ -70,7 +70,7 @@ describe("integration refs", () => {
         secretsPath,
         JSON.stringify({
           plugins: { "pinchy-odoo": { refTokenKey: "c".repeat(64) } },
-        }),
+        })
       );
       vi.stubEnv("OPENCLAW_SECRETS_PATH", secretsPath);
       // Env var deliberately not set.
@@ -93,7 +93,7 @@ describe("integration refs", () => {
         secretsPath,
         JSON.stringify({
           plugins: { "pinchy-odoo": { refTokenKey: "1".repeat(64) } },
-        }),
+        })
       );
       vi.stubEnv("OPENCLAW_SECRETS_PATH", secretsPath);
       vi.stubEnv("PINCHY_REF_TOKEN_KEY", "2".repeat(64));
@@ -125,7 +125,7 @@ describe("integration refs", () => {
           model: "res.partner",
           id: 4,
           label: "x",
-        }),
+        })
       ).toThrow(/PINCHY_REF_TOKEN_KEY|secrets\.json/i);
     });
 
@@ -135,7 +135,7 @@ describe("integration refs", () => {
         secretsPath,
         JSON.stringify({
           plugins: { "pinchy-odoo": { refTokenKey: "not-hex" } },
-        }),
+        })
       );
       vi.stubEnv("OPENCLAW_SECRETS_PATH", secretsPath);
       vi.stubEnv("PINCHY_REF_TOKEN_KEY", "");
@@ -147,7 +147,7 @@ describe("integration refs", () => {
           model: "res.partner",
           id: 4,
           label: "x",
-        }),
+        })
       ).toThrow(/64 hex|invalid/i);
     });
 
@@ -159,10 +159,7 @@ describe("integration refs", () => {
       mkdirSync(fakeAppSecrets, { recursive: true });
       vi.stubEnv("ENCRYPTION_KEY_DIR", fakeAppSecrets);
       vi.stubEnv("PINCHY_REF_TOKEN_KEY", "");
-      vi.stubEnv(
-        "OPENCLAW_SECRETS_PATH",
-        join(tmpRoot, "no-such-file.json"),
-      );
+      vi.stubEnv("OPENCLAW_SECRETS_PATH", join(tmpRoot, "no-such-file.json"));
 
       expect(() =>
         encodeRef({
@@ -171,7 +168,7 @@ describe("integration refs", () => {
           model: "res.partner",
           id: 4,
           label: "x",
-        }),
+        })
       ).toThrow();
     });
   });
@@ -209,9 +206,7 @@ describe("integration refs", () => {
     });
 
     it("is thrown (not a bare Error) for a ref with the wrong prefix", () => {
-      expect(() => decodeRef("not-a-pinchy-ref-at-all")).toThrow(
-        MalformedIntegrationRefError,
-      );
+      expect(() => decodeRef("not-a-pinchy-ref-at-all")).toThrow(MalformedIntegrationRefError);
     });
 
     it("is thrown for a truncated ref (correct prefix, corrupted payload)", () => {
@@ -327,7 +322,7 @@ describe("integration refs", () => {
           label: "x",
           companyId: -1,
           companyLabel: "Bad",
-        }),
+        })
       ).toThrow(/Invalid integration reference payload/);
     });
 
@@ -342,7 +337,7 @@ describe("integration refs", () => {
           // companyId/companyLabel are both optional in the type; the runtime
           // validator rejects exactly-one-present, which is what we assert here.
           companyLabel: "Orphan",
-        }),
+        })
       ).toThrow(/Invalid integration reference payload/);
     });
 
@@ -357,7 +352,7 @@ describe("integration refs", () => {
           // companyId/companyLabel are both optional in the type; the runtime
           // validator rejects exactly-one-present, which is what we assert here.
           companyId: 1,
-        }),
+        })
       ).toThrow(/Invalid integration reference payload/);
     });
 
@@ -371,7 +366,7 @@ describe("integration refs", () => {
           label: "x",
           companyId: 1.5,
           companyLabel: "Half",
-        }),
+        })
       ).toThrow(/Invalid integration reference payload/);
     });
 
@@ -385,7 +380,7 @@ describe("integration refs", () => {
           label: "x",
           companyId: 1,
           companyLabel: "",
-        }),
+        })
       ).toThrow(/Invalid integration reference payload/);
     });
   });

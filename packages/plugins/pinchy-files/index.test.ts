@@ -1,6 +1,15 @@
 // @vitest-environment node
 import { describe, it, expect, vi, beforeEach, afterEach, afterAll } from "vitest";
-import { readFileSync as realReadFileSync, mkdtempSync, rmSync, mkdirSync, writeFileSync, symlinkSync, existsSync, readdirSync } from "fs";
+import {
+  readFileSync as realReadFileSync,
+  mkdtempSync,
+  rmSync,
+  mkdirSync,
+  writeFileSync,
+  symlinkSync,
+  existsSync,
+  readdirSync,
+} from "fs";
 import { join } from "path";
 import { tmpdir } from "os";
 import Database from "better-sqlite3";
@@ -24,7 +33,9 @@ vi.mock("./validate", async (importOriginal) => {
 
 const mockRegisterTool = vi.fn();
 
-function createMockApi(agentConfigs: Record<string, { allowed_paths: string[]; write_paths?: string[] }>) {
+function createMockApi(
+  agentConfigs: Record<string, { allowed_paths: string[]; write_paths?: string[] }>
+) {
   return {
     id: "pinchy-files",
     name: "Pinchy Files",
@@ -447,9 +458,7 @@ describe("pinchy_read PDF integration", () => {
     });
 
     // The override (google) wins over the agent's anthropic model.
-    expect(mockResolveApiKey).toHaveBeenCalledWith(
-      expect.objectContaining({ provider: "google" })
-    );
+    expect(mockResolveApiKey).toHaveBeenCalledWith(expect.objectContaining({ provider: "google" }));
     expect(mockResolveApiKey).not.toHaveBeenCalledWith(
       expect.objectContaining({ provider: "anthropic" })
     );
@@ -552,7 +561,9 @@ describe("pinchy_read PDF integration", () => {
     // Verify cache DB has exactly one entry for this path (not two),
     // confirming the second read used cache rather than inserting a new row
     const db = new Database(join(testCacheDir, "pdf-cache.sqlite"));
-    const rows = db.prepare("SELECT COUNT(*) as count FROM pdf_cache WHERE path = ?").get(fixturePath) as { count: number };
+    const rows = db
+      .prepare("SELECT COUNT(*) as count FROM pdf_cache WHERE path = ?")
+      .get(fixturePath) as { count: number };
     expect(rows.count).toBe(1);
     db.close();
   });
@@ -585,10 +596,7 @@ describe("pinchy_read DOCX integration", () => {
     expect(result.content[0].text.startsWith("PK")).toBe(false);
 
     // Every phrase from the golden file must appear in the agent-visible text.
-    const expected = realReadFileSync(
-      join(FIXTURES, "simple.expected.txt"),
-      "utf-8",
-    );
+    const expected = realReadFileSync(join(FIXTURES, "simple.expected.txt"), "utf-8");
     for (const phrase of expected.split("\n").filter(Boolean)) {
       expect(result.content[0].text).toContain(phrase);
     }
@@ -853,9 +861,7 @@ describe("pinchy_write tool", () => {
   });
 
   function getWriteFactory() {
-    return mockRegisterTool.mock.calls.find(
-      (call: any[]) => call[1]?.name === "pinchy_write"
-    )?.[0];
+    return mockRegisterTool.mock.calls.find((call: any[]) => call[1]?.name === "pinchy_write")?.[0];
   }
 
   it("does not register pinchy_write when agent has no write_paths", async () => {
@@ -1171,64 +1177,67 @@ function fsFoldsUnicode(): boolean {
   }
 }
 
-describe.skipIf(fsFoldsUnicode())("pinchy_write NFC/NFD fallback (normalization-sensitive FS only)", () => {
-  let tmpDir: string;
+describe.skipIf(fsFoldsUnicode())(
+  "pinchy_write NFC/NFD fallback (normalization-sensitive FS only)",
+  () => {
+    let tmpDir: string;
 
-  // Explicit escapes so the source file's own encoding can't fold the two forms.
-  const NFD_NAME = "Absch" + "a\u0308" + "tzung.pdf"; // "a" + U+0308 (decomposed)
-  const NFC_NAME = "Absch" + "\u00e4" + "tzung.pdf"; // U+00E4 (composed)
+    // Explicit escapes so the source file's own encoding can't fold the two forms.
+    const NFD_NAME = "Absch" + "a\u0308" + "tzung.pdf"; // "a" + U+0308 (decomposed)
+    const NFC_NAME = "Absch" + "\u00e4" + "tzung.pdf"; // U+00E4 (composed)
 
-  beforeEach(() => {
-    vi.clearAllMocks();
-    tmpDir = mkdtempSync(join(tmpdir(), "pinchy-write-nfc-nfd-"));
-  });
-
-  afterEach(() => {
-    rmSync(tmpDir, { recursive: true, force: true });
-  });
-
-  async function makeWriteTool() {
-    const api = createMockApi({
-      "agent-1": { allowed_paths: [tmpDir], write_paths: [tmpDir] },
+    beforeEach(() => {
+      vi.clearAllMocks();
+      tmpDir = mkdtempSync(join(tmpdir(), "pinchy-write-nfc-nfd-"));
     });
-    const { default: plugin } = await import("./index");
-    plugin.register!(api as any);
-    const factory = mockRegisterTool.mock.calls.find(
-      (call: any[]) => call[1]?.name === "pinchy_write"
-    )?.[0];
-    return factory({ agentId: "agent-1" });
+
+    afterEach(() => {
+      rmSync(tmpDir, { recursive: true, force: true });
+    });
+
+    async function makeWriteTool() {
+      const api = createMockApi({
+        "agent-1": { allowed_paths: [tmpDir], write_paths: [tmpDir] },
+      });
+      const { default: plugin } = await import("./index");
+      plugin.register!(api as any);
+      const factory = mockRegisterTool.mock.calls.find(
+        (call: any[]) => call[1]?.name === "pinchy_write"
+      )?.[0];
+      return factory({ agentId: "agent-1" });
+    }
+
+    it("reports the collision instead of creating an NFC duplicate (overwrite=false)", async () => {
+      writeFileSync(join(tmpDir, NFD_NAME), "original-nfd");
+      const tool = await makeWriteTool();
+
+      const result = await tool.execute("call-1", {
+        path: join(tmpDir, NFC_NAME), // NFC request; the file on disk is NFD
+        content: "would-be-duplicate",
+      });
+
+      expect(result.isError).toBe(true);
+      expect(result.content[0].text).toMatch(/already exists/i);
+      // No second file: the NFC write must not have landed beside the NFD original.
+      expect(readdirSync(tmpDir)).toHaveLength(1);
+      expect(realReadFileSync(join(tmpDir, NFD_NAME), "utf-8")).toBe("original-nfd");
+    });
+
+    it("overwrites the existing NFD file rather than duplicating it (overwrite=true)", async () => {
+      writeFileSync(join(tmpDir, NFD_NAME), "original-nfd");
+      const tool = await makeWriteTool();
+
+      const result = await tool.execute("call-1", {
+        path: join(tmpDir, NFC_NAME),
+        content: "updated",
+        overwrite: true,
+      });
+
+      expect(result.isError).toBeFalsy();
+      expect(result.details.mode).toBe("overwrite");
+      // Still exactly one file, and it's the original NFD file with new content.
+      expect(readdirSync(tmpDir)).toHaveLength(1);
+      expect(realReadFileSync(join(tmpDir, NFD_NAME), "utf-8")).toBe("updated");
+    });
   }
-
-  it("reports the collision instead of creating an NFC duplicate (overwrite=false)", async () => {
-    writeFileSync(join(tmpDir, NFD_NAME), "original-nfd");
-    const tool = await makeWriteTool();
-
-    const result = await tool.execute("call-1", {
-      path: join(tmpDir, NFC_NAME), // NFC request; the file on disk is NFD
-      content: "would-be-duplicate",
-    });
-
-    expect(result.isError).toBe(true);
-    expect(result.content[0].text).toMatch(/already exists/i);
-    // No second file: the NFC write must not have landed beside the NFD original.
-    expect(readdirSync(tmpDir)).toHaveLength(1);
-    expect(realReadFileSync(join(tmpDir, NFD_NAME), "utf-8")).toBe("original-nfd");
-  });
-
-  it("overwrites the existing NFD file rather than duplicating it (overwrite=true)", async () => {
-    writeFileSync(join(tmpDir, NFD_NAME), "original-nfd");
-    const tool = await makeWriteTool();
-
-    const result = await tool.execute("call-1", {
-      path: join(tmpDir, NFC_NAME),
-      content: "updated",
-      overwrite: true,
-    });
-
-    expect(result.isError).toBeFalsy();
-    expect(result.details.mode).toBe("overwrite");
-    // Still exactly one file, and it's the original NFD file with new content.
-    expect(readdirSync(tmpDir)).toHaveLength(1);
-    expect(realReadFileSync(join(tmpDir, NFD_NAME), "utf-8")).toBe("updated");
-  });
-});
+);

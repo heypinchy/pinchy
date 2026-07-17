@@ -32,7 +32,11 @@ import { splitWorkflowIntoJobs } from "./workflow-jobs.mjs";
  */
 export function shardedJobs(workflowPath) {
   return splitWorkflowIntoJobs(workflowPath)
-    .filter((job) => /^\s+strategy:\s*$/m.test(job.body) && /^\s+matrix:\s*$/m.test(job.body))
+    .filter(
+      (job) =>
+        /^\s+strategy:\s*$/m.test(job.body) &&
+        /^\s+matrix:\s*$/m.test(job.body),
+    )
     .map((job) => job.jobName);
 }
 
@@ -60,9 +64,9 @@ export function shardDenominatorMismatches(workflowPath) {
   const offenders = [];
 
   for (const job of splitWorkflowIntoJobs(workflowPath)) {
-    const denominators = [...job.body.matchAll(/--shard=\$\{\{\s*matrix\.shard\s*\}\}\/(\d+)/g)].map(
-      (m) => Number(m[1])
-    );
+    const denominators = [
+      ...job.body.matchAll(/--shard=\$\{\{\s*matrix\.shard\s*\}\}\/(\d+)/g),
+    ].map((m) => Number(m[1]));
     if (denominators.length === 0) continue;
 
     const list = /^\s+shard:\s*\[([^\]]*)\]\s*$/m.exec(job.body);
@@ -72,7 +76,7 @@ export function shardDenominatorMismatches(workflowPath) {
           `inline \`shard: [...]\` matrix this check can read. Either it is broken, or the matrix ` +
           `was rewritten in a form this textual sweep does not parse (block sequence, include:, ` +
           `anchor). Restore the inline form, or teach shardDenominatorMismatches the new one — ` +
-          `do not leave it unreadable, or a wrong denominator silently stops being caught.`
+          `do not leave it unreadable, or a wrong denominator silently stops being caught.`,
       );
     }
 

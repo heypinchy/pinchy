@@ -35,7 +35,9 @@ function streamResponse(chunks: Uint8Array[]): Response {
     body: {
       getReader: () => ({
         read: async () =>
-          i < chunks.length ? { done: false, value: chunks[i++] } : { done: true, value: undefined },
+          i < chunks.length
+            ? { done: false, value: chunks[i++] }
+            : { done: true, value: undefined },
         cancel: async () => {},
       }),
     },
@@ -321,11 +323,9 @@ describe("webFetch", () => {
       });
       // DNS for redirect target resolves to private IP
       resolve4Mock
-        .mockResolvedValueOnce(["93.184.216.34"])  // initial URL
-        .mockResolvedValueOnce(["10.0.0.5"]);      // redirect target
-      resolve6Mock
-        .mockResolvedValueOnce([])
-        .mockResolvedValueOnce([]);
+        .mockResolvedValueOnce(["93.184.216.34"]) // initial URL
+        .mockResolvedValueOnce(["10.0.0.5"]); // redirect target
+      resolve6Mock.mockResolvedValueOnce([]).mockResolvedValueOnce([]);
 
       const result = await webFetch("https://evil.com/redirect");
 
@@ -351,9 +351,7 @@ describe("webFetch", () => {
       resolve4Mock
         .mockResolvedValueOnce(["93.184.216.34"])
         .mockResolvedValueOnce(["93.184.216.34"]);
-      resolve6Mock
-        .mockResolvedValueOnce([])
-        .mockResolvedValueOnce([]);
+      resolve6Mock.mockResolvedValueOnce([]).mockResolvedValueOnce([]);
 
       const result = await webFetch("https://example.com/old");
 
@@ -439,14 +437,12 @@ describe("webFetch", () => {
     it("invokes the callback with the pinned address regardless of hostname", async () => {
       const lookup = pinnedLookup("93.184.216.34", 4);
 
-      const result = await new Promise<{ address: string; family: number }>(
-        (resolve, reject) => {
-          lookup("evil.com", {}, (err, address, family) => {
-            if (err) reject(err);
-            else resolve({ address: address as string, family: family as number });
-          });
-        },
-      );
+      const result = await new Promise<{ address: string; family: number }>((resolve, reject) => {
+        lookup("evil.com", {}, (err, address, family) => {
+          if (err) reject(err);
+          else resolve({ address: address as string, family: family as number });
+        });
+      });
 
       expect(result.address).toBe("93.184.216.34");
       expect(result.family).toBe(4);
@@ -455,14 +451,12 @@ describe("webFetch", () => {
     it("supports IPv6 addresses", async () => {
       const lookup = pinnedLookup("2606:2800:220:1:248:1893:25c8:1946", 6);
 
-      const result = await new Promise<{ address: string; family: number }>(
-        (resolve, reject) => {
-          lookup("example.com", {}, (err, address, family) => {
-            if (err) reject(err);
-            else resolve({ address: address as string, family: family as number });
-          });
-        },
-      );
+      const result = await new Promise<{ address: string; family: number }>((resolve, reject) => {
+        lookup("example.com", {}, (err, address, family) => {
+          if (err) reject(err);
+          else resolve({ address: address as string, family: family as number });
+        });
+      });
 
       expect(result.address).toBe("2606:2800:220:1:248:1893:25c8:1946");
       expect(result.family).toBe(6);
@@ -531,7 +525,7 @@ describe("webFetch", () => {
 
     it("falls back to the cause's message when it carries no errno code", async () => {
       fetchMock.mockRejectedValue(
-        new TypeError("fetch failed", { cause: new Error("Client network socket disconnected") }),
+        new TypeError("fetch failed", { cause: new Error("Client network socket disconnected") })
       );
 
       const result = await webFetch("https://example.com/tls-dead");
@@ -637,7 +631,8 @@ describe("extractReadableContent", () => {
   it("returns full visible text when Readability under-extracts a non-article page", () => {
     const sections = Array.from(
       { length: 14 },
-      (_, i) => `<section><div>Heading ${i}</div><div>Distinct marketing line number ${i}.</div></section>`,
+      (_, i) =>
+        `<section><div>Heading ${i}</div><div>Distinct marketing line number ${i}.</div></section>`
     ).join("");
     const html = `<!DOCTYPE html><html><head><title>Marketing</title></head><body><header>Home Pricing Login</header>${sections}</body></html>`;
 

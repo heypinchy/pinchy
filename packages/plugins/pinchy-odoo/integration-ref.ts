@@ -143,7 +143,7 @@ function getKey(): Buffer {
   if (bundleKey) {
     if (!HEX_64.test(bundleKey)) {
       throw new Error(
-        "plugins['pinchy-odoo'].refTokenKey in secrets.json is invalid: expected 64 hex characters",
+        "plugins['pinchy-odoo'].refTokenKey in secrets.json is invalid: expected 64 hex characters"
       );
     }
     cachedKey = Buffer.from(bundleKey, "hex");
@@ -154,7 +154,7 @@ function getKey(): Buffer {
     "PINCHY_REF_TOKEN_KEY environment variable is required (64 hex characters) " +
       "or pinchy-web must have written secrets.json with plugins['pinchy-odoo'].refTokenKey. " +
       "If you upgraded an existing deployment, restart the pinchy service to trigger " +
-      "regenerateOpenClawConfig() and provision the key.",
+      "regenerateOpenClawConfig() and provision the key."
   );
 }
 
@@ -189,10 +189,9 @@ export function decodeRef(ref: string): IntegrationRefPayload {
     const ciphertext = raw.subarray(IV_LENGTH + 16);
     const decipher = createDecipheriv(ALGORITHM, getKey(), iv);
     decipher.setAuthTag(tag);
-    const plaintext = Buffer.concat([
-      decipher.update(ciphertext),
-      decipher.final(),
-    ]).toString("utf8");
+    const plaintext = Buffer.concat([decipher.update(ciphertext), decipher.final()]).toString(
+      "utf8"
+    );
     const payload = JSON.parse(plaintext) as unknown;
     if (!isPayload(payload)) {
       throw new Error("invalid payload");

@@ -87,9 +87,9 @@ describe("findInvalidSelectionValues", () => {
   });
 
   it("accepts a valid selection value", () => {
-    expect(
-      findInvalidSelectionValues(MOVE_FIELDS, { move_type: "in_invoice", ref: "X" }),
-    ).toEqual([]);
+    expect(findInvalidSelectionValues(MOVE_FIELDS, { move_type: "in_invoice", ref: "X" })).toEqual(
+      []
+    );
   });
 
   it("ignores non-selection fields, unknown fields, and non-primitive values", () => {
@@ -98,7 +98,7 @@ describe("findInvalidSelectionValues", () => {
         ref: "anything", // char field, not validated
         unknown_field: "whatever", // not in schema
         partner_id: { ref: "pinchy_ref:v1:abc" }, // relational, not a scalar
-      }),
+      })
     ).toEqual([]);
   });
 
@@ -125,7 +125,7 @@ interface AgentTool {
   execute: (
     toolCallId: string,
     params: Record<string, unknown>,
-    signal?: AbortSignal,
+    signal?: AbortSignal
   ) => Promise<{
     content: Array<{ type: string; text: string }>;
     isError?: boolean;
@@ -171,7 +171,7 @@ function createApi(agentConfigs: Record<string, AgentOdooConfig> = {}) {
     },
     registerTool: (
       factory: (ctx: { agentId?: string }) => AgentTool | null,
-      opts?: { name?: string },
+      opts?: { name?: string }
     ) => {
       tools.push({ factory, name: opts?.name ?? "" });
     },
@@ -184,7 +184,7 @@ function createApi(agentConfigs: Record<string, AgentOdooConfig> = {}) {
 function findTool(
   tools: ReturnType<typeof createApi>,
   name: string,
-  agentId?: string,
+  agentId?: string
 ): AgentTool | null {
   const entry = tools.find((t) => t.name === name);
   if (!entry) return null;
@@ -218,9 +218,7 @@ describe("compactType", () => {
   });
 
   it("returns 'unknown' for undefined type", () => {
-    expect(
-      compactType({ name: "wtf", type: undefined as unknown as string }),
-    ).toBe("unknown");
+    expect(compactType({ name: "wtf", type: undefined as unknown as string })).toBe("unknown");
   });
 
   it("encodes many2one as 'm2o:<relation>'", () => {
@@ -229,7 +227,7 @@ describe("compactType", () => {
         name: "partner_id",
         type: "many2one",
         relation: "res.partner",
-      }),
+      })
     ).toBe("m2o:res.partner");
   });
 
@@ -239,7 +237,7 @@ describe("compactType", () => {
         name: "line_ids",
         type: "one2many",
         relation: "account.move.line",
-      }),
+      })
     ).toBe("o2m:account.move.line");
   });
 
@@ -249,7 +247,7 @@ describe("compactType", () => {
         name: "tag_ids",
         type: "many2many",
         relation: "res.partner.category",
-      }),
+      })
     ).toBe("m2m:res.partner.category");
   });
 
@@ -267,7 +265,7 @@ describe("compactType", () => {
           ["posted", "Posted"],
           ["cancel", "Cancelled"],
         ],
-      }),
+      })
     ).toBe("selection:draft|posted|cancel");
   });
 
@@ -277,14 +275,12 @@ describe("compactType", () => {
         name: "color",
         type: "selection",
         selection: [["red", "Red"]],
-      }),
+      })
     ).toBe("selection:red");
   });
 
   it("handles selection without options (empty array)", () => {
-    expect(compactType({ name: "x", type: "selection", selection: [] })).toBe(
-      "selection:",
-    );
+    expect(compactType({ name: "x", type: "selection", selection: [] })).toBe("selection:");
   });
 
   it("handles selection without options (undefined)", () => {
@@ -561,9 +557,7 @@ describe("compactSchema", () => {
       const out = compactSchema(fs, { limit: 40, verbose: false });
       expect(String(out.fields.id)).toMatch(/NOT the SKU/i);
       expect(String(out.fields.default_code)).toMatch(/NOT the database id/i);
-      expect(String(out.fields.default_code)).toMatch(
-        /SKU|internal reference/i,
-      );
+      expect(String(out.fields.default_code)).toMatch(/SKU|internal reference/i);
       // Unrelated fields stay as plain compact type strings.
       expect(out.fields.name).toBe("char");
     });
@@ -592,9 +586,7 @@ describe("compactSchema", () => {
         verbose: false,
       });
       expect(String(out.fields.default_code)).toMatch(/NOT the database id/i);
-      expect(String(out.fields.default_code)).toMatch(
-        /SKU|internal reference/i,
-      );
+      expect(String(out.fields.default_code)).toMatch(/SKU|internal reference/i);
     });
 
     // Symmetric case to the one above.
@@ -724,19 +716,12 @@ describe("stripSyntheticFields", () => {
   });
 
   it("strips a bare `_pinchy_ref` entry", () => {
-    const result = stripSyntheticFields([
-      "name",
-      "_pinchy_ref",
-      "amount_total",
-    ]);
+    const result = stripSyntheticFields(["name", "_pinchy_ref", "amount_total"]);
     expect(result).toEqual(["name", "amount_total"]);
   });
 
   it("strips `_pinchy_ref` even with an aggregation/granularity suffix (odoo_aggregate's `field:agg` syntax)", () => {
-    const result = stripSyntheticFields([
-      "partner_id",
-      "_pinchy_ref:count_distinct",
-    ]);
+    const result = stripSyntheticFields(["partner_id", "_pinchy_ref:count_distinct"]);
     expect(result).toEqual(["partner_id"]);
   });
 
@@ -814,12 +799,7 @@ describe("assertNoCrossCompanyRefs", () => {
     vi.stubEnv("PINCHY_REF_TOKEN_KEY", "a".repeat(64));
   });
 
-  function tagged(
-    model: string,
-    id: number,
-    companyId: number,
-    companyLabel: string,
-  ) {
+  function tagged(model: string, id: number, companyId: number, companyLabel: string) {
     return {
       ref: encodeRef({
         integrationType: "odoo",
@@ -848,7 +828,7 @@ describe("assertNoCrossCompanyRefs", () => {
     expect(() =>
       assertNoCrossCompanyRefs({
         account_id: tagged("account.account", 1, 1, "A"),
-      }),
+      })
     ).not.toThrow();
   });
 
@@ -857,7 +837,7 @@ describe("assertNoCrossCompanyRefs", () => {
       assertNoCrossCompanyRefs({
         company_id: untagged("res.company", 1),
         account_id: tagged("account.account", 1, 2, "B"),
-      }),
+      })
     ).not.toThrow();
   });
 
@@ -866,7 +846,7 @@ describe("assertNoCrossCompanyRefs", () => {
       assertNoCrossCompanyRefs({
         company_id: tagged("res.company", 1, 1, "A"),
         partner_id: untagged("res.partner", 99),
-      }),
+      })
     ).not.toThrow();
   });
 
@@ -875,7 +855,7 @@ describe("assertNoCrossCompanyRefs", () => {
       assertNoCrossCompanyRefs({
         company_id: tagged("res.company", 1, 1, "GmbH A"),
         account_id: tagged("account.account", 42, 2, "GmbH B"),
-      }),
+      })
     ).toThrow(/cross-company/i);
   });
 
@@ -903,7 +883,7 @@ describe("assertNoCrossCompanyRefs", () => {
         company_id: tagged("res.company", 1, 1, "A"),
         account_id: "1000 Wareneinsatz", // string lookup, not a ref
         partner_id: 42, // raw id (would be rejected later, but not by this guard)
-      }),
+      })
     ).not.toThrow();
   });
 
@@ -915,9 +895,7 @@ describe("assertNoCrossCompanyRefs", () => {
       try {
         assertNoCrossCompanyRefs({
           company_id: tagged("res.company", 1, 1, "GmbH A"),
-          line_ids: [
-            [0, 0, { account_id: tagged("account.account", 5, 2, "GmbH B") }],
-          ],
+          line_ids: [[0, 0, { account_id: tagged("account.account", 5, 2, "GmbH B") }]],
         });
         throw new Error("did not throw");
       } catch (err) {
@@ -943,7 +921,7 @@ describe("assertNoCrossCompanyRefs", () => {
               },
             ],
           ],
-        }),
+        })
       ).not.toThrow();
     });
 
@@ -952,7 +930,7 @@ describe("assertNoCrossCompanyRefs", () => {
         assertNoCrossCompanyRefs({
           company_id: tagged("res.company", 1, 1, "GmbH A"),
           line_ids: [[2, tagged("account.move.line", 9, 2, "GmbH B")]],
-        }),
+        })
       ).toThrow(/cross-company/i);
     });
 
@@ -961,7 +939,7 @@ describe("assertNoCrossCompanyRefs", () => {
         assertNoCrossCompanyRefs({
           company_id: tagged("res.company", 1, 1, "GmbH A"),
           line_ids: [[1, tagged("account.move.line", 9, 2, "GmbH B"), {}]],
-        }),
+        })
       ).toThrow(/cross-company/i);
     });
 
@@ -974,7 +952,7 @@ describe("assertNoCrossCompanyRefs", () => {
             [4, 42],
             [6, 0, [1, 2, 3]],
           ],
-        }),
+        })
       ).not.toThrow();
     });
   });
@@ -1075,9 +1053,7 @@ describe("odoo_list_models", () => {
       models: Array<{ model: string; name: string; operations: string[] }>;
     };
     expect(data.models).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({ model: "res.partner" }),
-      ]),
+      expect.arrayContaining([expect.objectContaining({ model: "res.partner" })])
     );
     expect(data.models.length).toBeGreaterThan(0);
   });
@@ -1191,9 +1167,7 @@ describe("odoo_describe_model", () => {
     // `id` is described as NOT-the-SKU.
     expect(tool.description).toMatch(/`id`[^.]*NOT the SKU/);
     // SKU / internal reference IS `default_code`.
-    expect(tool.description).toMatch(
-      /(SKU|internal reference)[^.]*`default_code`/i,
-    );
+    expect(tool.description).toMatch(/(SKU|internal reference)[^.]*`default_code`/i);
   });
 });
 
@@ -1218,9 +1192,7 @@ describe("odoo_schema deprecated alias", () => {
       models: Array<{ model: string; name: string }>;
     };
     expect(data.models).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({ model: "res.partner" }),
-      ]),
+      expect.arrayContaining([expect.objectContaining({ model: "res.partner" })])
     );
   });
 
@@ -1266,15 +1238,11 @@ describe("odoo_schema deprecated alias", () => {
 // directly on the constant so that swap-typo fails here loudly.
 describe("PRODUCT_REF_DISAMBIGUATION_HINT (issue #377)", () => {
   it("directs SKU / internal-reference wording to `default_code` (not `id`)", () => {
-    expect(PRODUCT_REF_DISAMBIGUATION_HINT).toMatch(
-      /(SKU|internal reference)[^.]*`default_code`/i,
-    );
+    expect(PRODUCT_REF_DISAMBIGUATION_HINT).toMatch(/(SKU|internal reference)[^.]*`default_code`/i);
   });
 
   it("directs 'record ID' / 'URL' wording to `id` (not `default_code`)", () => {
-    expect(PRODUCT_REF_DISAMBIGUATION_HINT).toMatch(
-      /(record ID|URL)[^.]*`id`/i,
-    );
+    expect(PRODUCT_REF_DISAMBIGUATION_HINT).toMatch(/(record ID|URL)[^.]*`id`/i);
   });
 
   it("contains the explicit anti-direction `default_code`, not `id`", () => {
@@ -1333,11 +1301,7 @@ describe("odoo_read", () => {
     });
 
     expect(result.isError).toBeFalsy();
-    expect(mockSearchRead).toHaveBeenCalledWith(
-      "sale.order",
-      [],
-      expect.any(Object),
-    );
+    expect(mockSearchRead).toHaveBeenCalledWith("sale.order", [], expect.any(Object));
   });
 
   it("reads records with correct parameters", async () => {
@@ -1364,16 +1328,12 @@ describe("odoo_read", () => {
     expect(data.records).toHaveLength(1);
     expect(data.total).toBe(1);
 
-    expect(mockSearchRead).toHaveBeenCalledWith(
-      "sale.order",
-      [["state", "=", "sale"]],
-      {
-        fields: ["name", "amount_total"],
-        limit: 10,
-        offset: 0,
-        order: "date_order desc",
-      },
-    );
+    expect(mockSearchRead).toHaveBeenCalledWith("sale.order", [["state", "=", "sale"]], {
+      fields: ["name", "amount_total"],
+      limit: 10,
+      offset: 0,
+      order: "date_order desc",
+    });
   });
 
   // The read side of the same trap: the tool prompt teaches `_pinchy_ref`,
@@ -1398,7 +1358,7 @@ describe("odoo_read", () => {
     expect(mockSearchRead).toHaveBeenCalledWith(
       "res.partner",
       [],
-      expect.objectContaining({ fields: ["name"] }),
+      expect.objectContaining({ fields: ["name"] })
     );
   });
 
@@ -1797,11 +1757,7 @@ describe("odoo_read — one2many line refs (Feature 3)", () => {
       ids: [40],
       values: {
         line_ids: [
-          [
-            1,
-            { _pinchy_ref: lineRef, id: 102, model: "account.move.line" },
-            { credit: 7 },
-          ],
+          [1, { _pinchy_ref: lineRef, id: 102, model: "account.move.line" }, { credit: 7 }],
         ],
       },
     });
@@ -1901,9 +1857,7 @@ describe("odoo_count", () => {
 
     const data = JSON.parse(result.content[0].text);
     expect(data.count).toBe(42);
-    expect(mockSearchCount).toHaveBeenCalledWith("sale.order", [
-      ["state", "=", "sale"],
-    ]);
+    expect(mockSearchCount).toHaveBeenCalledWith("sale.order", [["state", "=", "sale"]]);
   });
 
   it("treats omitted `filters` as an empty domain (match all), not an error", async () => {
@@ -1964,9 +1918,7 @@ describe("odoo_aggregate", () => {
 
   it("aggregates data for a permitted model", async () => {
     mockReadGroup.mockResolvedValue({
-      groups: [
-        { partner_id: [1, "Customer A"], amount_total: 1500, __count: 3 },
-      ],
+      groups: [{ partner_id: [1, "Customer A"], amount_total: 1500, __count: 3 }],
     });
 
     const tools = createApi({ [agentId]: agentConfig });
@@ -1986,7 +1938,7 @@ describe("odoo_aggregate", () => {
       [],
       ["partner_id", "amount_total:sum"],
       ["partner_id"],
-      { limit: undefined, offset: undefined, orderby: undefined },
+      { limit: undefined, offset: undefined, orderby: undefined }
     );
   });
 
@@ -2011,7 +1963,7 @@ describe("odoo_aggregate", () => {
       [],
       ["partner_id"],
       ["partner_id"],
-      expect.any(Object),
+      expect.any(Object)
     );
   });
 
@@ -2079,7 +2031,7 @@ describe("odoo_aggregate", () => {
       expect(result.content[0].text).toContain("array");
       expect(result.content[0].text).not.toContain("is not a function");
       expect(mockReadGroup).not.toHaveBeenCalled();
-    },
+    }
   );
 
   it("denies aggregation on unpermitted model", async () => {
@@ -2259,9 +2211,7 @@ describe("odoo_create", () => {
     });
 
     expect(result.isError).toBe(true);
-    expect(result.content[0].text).toContain(
-      "Raw numeric IDs are not accepted",
-    );
+    expect(result.content[0].text).toContain("Raw numeric IDs are not accepted");
     expect(mockCreate).not.toHaveBeenCalled();
   });
 
@@ -2547,9 +2497,7 @@ describe("odoo_write", () => {
       ids: [42],
       values: {
         '"name"': "Tesla",
-        '"child_ids"': [
-          [0, 0, { '"name"': "Contact 1", '"email"': "a@example.com" }],
-        ],
+        '"child_ids"': [[0, 0, { '"name"': "Contact 1", '"email"': "a@example.com" }]],
       },
     });
 
@@ -2670,7 +2618,7 @@ describe("error handling", () => {
 
     expect(result.isError).toBe(true);
     expect((result.details as { error?: string } | undefined)?.error).toContain(
-      "Connection refused",
+      "Connection refused"
     );
   });
 
@@ -2686,7 +2634,7 @@ describe("error handling", () => {
 
     expect(result.isError).toBe(true);
     expect((result.details as { error?: string } | undefined)?.error).toContain(
-      "Permission denied",
+      "Permission denied"
     );
   });
 
@@ -2697,9 +2645,7 @@ describe("error handling", () => {
     const result = await tool.execute("call-1", {});
 
     expect(result.isError).toBe(true);
-    expect((result.details as { error?: string } | undefined)?.error).toMatch(
-      /model.*required/i,
-    );
+    expect((result.details as { error?: string } | undefined)?.error).toMatch(/model.*required/i);
   });
 
   it("attaches details.error on an inline validation error (odoo_attach_file invalid filename)", async () => {
@@ -2712,9 +2658,7 @@ describe("error handling", () => {
     });
 
     expect(result.isError).toBe(true);
-    expect((result.details as { error?: string } | undefined)?.error).toContain(
-      "Invalid filename",
-    );
+    expect((result.details as { error?: string } | undefined)?.error).toContain("Invalid filename");
   });
 
   // "../../etc/passwd" used to hit the "Invalid filename" branch directly.
@@ -2763,15 +2707,11 @@ describe("error handling", () => {
     const result = await tool.execute("call-1", { model: "stock.move" });
 
     expect(result.isError).toBe(true);
-    expect((result.details as { error?: string } | undefined)?.error).toMatch(
-      /not available/i,
-    );
+    expect((result.details as { error?: string } | undefined)?.error).toMatch(/not available/i);
   });
 
   it("returns permission message for Odoo access errors", async () => {
-    mockSearchRead.mockRejectedValue(
-      new Error("AccessError: no read access on sale.order"),
-    );
+    mockSearchRead.mockRejectedValue(new Error("AccessError: no read access on sale.order"));
 
     const tools = createApi({ [agentId]: agentConfig });
     const tool = findTool(tools, "odoo_read", agentId)!;
@@ -2913,9 +2853,7 @@ describe("client caching (#209 layer 2: credentials fetched lazily, cached)", ()
   });
 
   it("invalidates the cache and refetches credentials on auth error", async () => {
-    mockSearchRead.mockRejectedValueOnce(
-      new Error("Access Denied: invalid api key"),
-    );
+    mockSearchRead.mockRejectedValueOnce(new Error("Access Denied: invalid api key"));
     mockSearchRead.mockResolvedValueOnce({
       records: [],
       total: 0,
@@ -2955,12 +2893,12 @@ describe("client caching (#209 layer 2: credentials fetched lazily, cached)", ()
     await tool.execute("call-1", { model: "sale.order", filters: [] });
 
     const reportCalls = fetchMock.mock.calls.filter((c) =>
-      String(c[0]).includes("report-auth-failure"),
+      String(c[0]).includes("report-auth-failure")
     );
     expect(reportCalls).toHaveLength(1);
     const [url, opts] = reportCalls[0] as [string, RequestInit];
     expect(url).toBe(
-      "http://pinchy-test:7777/api/internal/integrations/conn-test-1/report-auth-failure",
+      "http://pinchy-test:7777/api/internal/integrations/conn-test-1/report-auth-failure"
     );
     expect(opts.method).toBe("POST");
     const headers = opts.headers as Record<string, string>;
@@ -2978,9 +2916,7 @@ describe("client caching (#209 layer 2: credentials fetched lazily, cached)", ()
       json: async () => ({ type: "odoo", credentials: testCredentials }),
     } as unknown as Response);
 
-    mockSearchRead.mockRejectedValueOnce(
-      new Error("HTTP 503 Service Unavailable"),
-    );
+    mockSearchRead.mockRejectedValueOnce(new Error("HTTP 503 Service Unavailable"));
 
     const tools = createApi({ [agentId]: agentConfig });
     const tool = findTool(tools, "odoo_read", agentId)!;
@@ -2988,7 +2924,7 @@ describe("client caching (#209 layer 2: credentials fetched lazily, cached)", ()
     await tool.execute("call-1", { model: "sale.order", filters: [] });
 
     const reportCalls = fetchMock.mock.calls.filter((c) =>
-      String(c[0]).includes("report-auth-failure"),
+      String(c[0]).includes("report-auth-failure")
     );
     expect(reportCalls).toHaveLength(0);
   });
@@ -3054,7 +2990,7 @@ describe("odoo_attach_file", () => {
     });
 
     expect(mockReadFile).toHaveBeenCalledWith(
-      `/root/.openclaw/workspaces/${attachAgentId}/uploads/receipt.jpg`,
+      `/root/.openclaw/workspaces/${attachAgentId}/uploads/receipt.jpg`
     );
   });
 
@@ -3080,9 +3016,7 @@ describe("odoo_attach_file", () => {
     });
 
     expect(result.isError).toBe(true);
-    expect(result.content[0].text).toContain(
-      "does not belong to this Odoo connection",
-    );
+    expect(result.content[0].text).toContain("does not belong to this Odoo connection");
     expect(mockCreate).not.toHaveBeenCalled();
   });
 
@@ -3094,9 +3028,7 @@ describe("odoo_attach_file", () => {
       id: 42,
       label: "INV/2025/0001",
     });
-    mockStat.mockRejectedValue(
-      Object.assign(new Error("no such file"), { code: "ENOENT" }),
-    );
+    mockStat.mockRejectedValue(Object.assign(new Error("no such file"), { code: "ENOENT" }));
 
     const tools = createApi({ [attachAgentId]: attachAgentConfig });
     const tool = findTool(tools, "odoo_attach_file", attachAgentId)!;
@@ -3107,9 +3039,7 @@ describe("odoo_attach_file", () => {
     });
 
     expect(result.isError).toBe(true);
-    expect((result.details as { error?: string } | undefined)?.error).toContain(
-      "File not found",
-    );
+    expect((result.details as { error?: string } | undefined)?.error).toContain("File not found");
     expect(mockCreate).not.toHaveBeenCalled();
   });
 
@@ -3133,9 +3063,7 @@ describe("odoo_attach_file", () => {
     });
 
     expect(result.isError).toBe(true);
-    expect((result.details as { error?: string } | undefined)?.error).toContain(
-      "File too large",
-    );
+    expect((result.details as { error?: string } | undefined)?.error).toContain("File too large");
     expect(mockCreate).not.toHaveBeenCalled();
   });
 
@@ -3265,7 +3193,7 @@ describe("odoo_attach_file", () => {
 
     expect(mockCreate).toHaveBeenCalledWith(
       "ir.attachment",
-      expect.objectContaining({ mimetype: expectedMime }),
+      expect.objectContaining({ mimetype: expectedMime })
     );
   });
 
@@ -3345,16 +3273,16 @@ describe("odoo_attach_file", () => {
 
         expect(result.isError).toBeFalsy();
         expect(mockStat).toHaveBeenCalledWith(
-          `/root/.openclaw/workspaces/${attachAgentId}/uploads/${expectedBasename}`,
+          `/root/.openclaw/workspaces/${attachAgentId}/uploads/${expectedBasename}`
         );
         expect(mockReadFile).toHaveBeenCalledWith(
-          `/root/.openclaw/workspaces/${attachAgentId}/uploads/${expectedBasename}`,
+          `/root/.openclaw/workspaces/${attachAgentId}/uploads/${expectedBasename}`
         );
         expect(mockCreate).toHaveBeenCalledWith(
           "ir.attachment",
-          expect.objectContaining({ name: expectedBasename }),
+          expect.objectContaining({ name: expectedBasename })
         );
-      },
+      }
     );
 
     it("accepts a plain filename with spaces, digits, and dashes", async () => {
@@ -3412,7 +3340,7 @@ describe("odoo_attach_file", () => {
       expect(mockReadFile).toHaveBeenCalledWith(expectedPath);
       expect(mockCreate).toHaveBeenCalledWith(
         "ir.attachment",
-        expect.objectContaining({ name: "file_12---abc.jpg" }),
+        expect.objectContaining({ name: "file_12---abc.jpg" })
       );
     });
 
@@ -3449,9 +3377,7 @@ describe("odoo_attach_file", () => {
         id: 42,
         label: "INV/2025/0001",
       });
-      mockStat.mockRejectedValue(
-        Object.assign(new Error("no such file"), { code: "ENOENT" }),
-      );
+      mockStat.mockRejectedValue(Object.assign(new Error("no such file"), { code: "ENOENT" }));
 
       const tools = createApi({ [attachAgentId]: attachAgentConfig });
       const tool = findTool(tools, "odoo_attach_file", attachAgentId)!;
@@ -3616,7 +3542,7 @@ describe("odoo_read multi-company auto-include", () => {
     expect(mockSearchRead).toHaveBeenCalledWith(
       "account.account",
       [],
-      expect.objectContaining({ fields: ["code", "name", "company_id"] }),
+      expect.objectContaining({ fields: ["code", "name", "company_id"] })
     );
   });
 
@@ -3648,7 +3574,7 @@ describe("odoo_read multi-company auto-include", () => {
       [],
       expect.not.objectContaining({
         fields: expect.arrayContaining(["company_id"]),
-      }),
+      })
     );
   });
 
@@ -3684,7 +3610,7 @@ describe("odoo_read multi-company auto-include", () => {
     expect(mockSearchRead).toHaveBeenCalledWith(
       "account.move",
       [],
-      expect.objectContaining({ fields: ["company_id", "name"] }),
+      expect.objectContaining({ fields: ["company_id", "name"] })
     );
   });
 
@@ -3715,7 +3641,7 @@ describe("odoo_read multi-company auto-include", () => {
     expect(mockSearchRead).toHaveBeenCalledWith(
       "account.move",
       [],
-      expect.objectContaining({ fields: undefined }),
+      expect.objectContaining({ fields: undefined })
     );
   });
 
@@ -3767,9 +3693,7 @@ describe("odoo_read multi-company auto-include", () => {
     });
 
     const payload = JSON.parse(result.content[0].text);
-    const refs = payload.records.map((r: { _pinchy_ref: string }) =>
-      decodeRef(r._pinchy_ref),
-    );
+    const refs = payload.records.map((r: { _pinchy_ref: string }) => decodeRef(r._pinchy_ref));
     expect(refs[0].label).toBe("1000 Wareneinsatz [GmbH A]");
     expect(refs[1].label).toBe("1000 Wareneinsatz [GmbH B]");
   });
@@ -3964,9 +3888,7 @@ describe("odoo_read multi-company auto-include", () => {
       filters: [],
       fields: ["display_name"],
     });
-    const decoded = decodeRef(
-      JSON.parse(result.content[0].text).records[0]._pinchy_ref,
-    );
+    const decoded = decodeRef(JSON.parse(result.content[0].text).records[0]._pinchy_ref);
     expect(decoded.companyId).toBeUndefined();
     expect(decoded.companyLabel).toBeUndefined();
   });
@@ -4002,9 +3924,7 @@ describe("odoo_read multi-company auto-include", () => {
       filters: [],
       fields: ["display_name"],
     });
-    const decoded = decodeRef(
-      JSON.parse(result.content[0].text).records[0]._pinchy_ref,
-    );
+    const decoded = decodeRef(JSON.parse(result.content[0].text).records[0]._pinchy_ref);
     expect(decoded.companyId).toBeUndefined();
     expect(decoded.companyLabel).toBeUndefined();
   });
@@ -4150,12 +4070,10 @@ describe("m2o lookup multi-company error", () => {
       })
       .catch(() => {});
 
-    const lookupCall = mockSearchRead.mock.calls.find(
-      ([model]) => model === "account.account",
-    );
+    const lookupCall = mockSearchRead.mock.calls.find(([model]) => model === "account.account");
     expect(lookupCall).toBeDefined();
     expect(lookupCall![2]?.fields).toEqual(
-      expect.arrayContaining(["id", "name", "display_name", "company_id"]),
+      expect.arrayContaining(["id", "name", "display_name", "company_id"])
     );
   });
 
@@ -4209,9 +4127,7 @@ describe("m2o lookup multi-company error", () => {
       })
       .catch(() => {});
 
-    const currencyLookup = mockSearchRead.mock.calls.find(
-      ([model]) => model === "res.currency",
-    );
+    const currencyLookup = mockSearchRead.mock.calls.find(([model]) => model === "res.currency");
     expect(currencyLookup).toBeDefined();
     expect(currencyLookup![2]?.fields).not.toContain("company_id");
   });
@@ -4905,13 +4821,11 @@ describe("bare _pinchy_ref string for many2one fields (Layer 1)", () => {
     expect(result.isError).toBeFalsy();
     expect(mockCreate).toHaveBeenCalledWith(
       "account.move",
-      expect.objectContaining({ journal_id: 17, company_id: 1 }),
+      expect.objectContaining({ journal_id: 17, company_id: 1 })
     );
     // The bare ref must short-circuit the name lookup — no searchRead on
     // account.journal should happen.
-    const journalLookup = mockSearchRead.mock.calls.find(
-      ([model]) => model === "account.journal",
-    );
+    const journalLookup = mockSearchRead.mock.calls.find(([model]) => model === "account.journal");
     expect(journalLookup).toBeUndefined();
   });
 
@@ -4996,9 +4910,7 @@ describe("bare _pinchy_ref string for many2one fields (Layer 1)", () => {
     expect(result.isError).toBe(true);
     expect(result.content[0].text).toContain("could not be decoded");
     expect(result.content[0].text).toContain("journal_id");
-    expect(result.content[0].text).not.toBe(
-      "Error: Invalid integration reference",
-    );
+    expect(result.content[0].text).not.toBe("Error: Invalid integration reference");
     expect(mockCreate).not.toHaveBeenCalled();
   });
 
@@ -5171,9 +5083,7 @@ describe("company-scoped m2o name lookup (Layer 2)", () => {
       if (model === "account.journal") {
         const hasCompanyScope =
           Array.isArray(domain) &&
-          domain.some(
-            (c) => Array.isArray(c) && c[0] === "company_id" && c[2] === 1,
-          );
+          domain.some((c) => Array.isArray(c) && c[0] === "company_id" && c[2] === 1);
         return hasCompanyScope
           ? {
               records: [
@@ -5225,17 +5135,13 @@ describe("company-scoped m2o name lookup (Layer 2)", () => {
     });
 
     expect(result.isError).toBeFalsy();
-    const journalLookup = mockSearchRead.mock.calls.find(
-      ([model]) => model === "account.journal",
-    );
+    const journalLookup = mockSearchRead.mock.calls.find(([model]) => model === "account.journal");
     expect(journalLookup).toBeDefined();
     const domain = journalLookup![1];
-    expect(domain).toEqual(
-      expect.arrayContaining([["company_id", "=", 1]]),
-    );
+    expect(domain).toEqual(expect.arrayContaining([["company_id", "=", 1]]));
     expect(mockCreate).toHaveBeenCalledWith(
       "account.move",
-      expect.objectContaining({ journal_id: 17 }),
+      expect.objectContaining({ journal_id: 17 })
     );
   });
 
@@ -5302,9 +5208,7 @@ describe("company-scoped m2o name lookup (Layer 2)", () => {
     });
 
     expect(result.isError).toBeFalsy();
-    const currencyLookup = mockSearchRead.mock.calls.find(
-      ([model]) => model === "res.currency",
-    );
+    const currencyLookup = mockSearchRead.mock.calls.find(([model]) => model === "res.currency");
     expect(currencyLookup).toBeDefined();
     const domain = currencyLookup![1];
     // res.currency has no company_id — adding a company_id domain would make
@@ -5387,9 +5291,7 @@ describe("company scope includes shared records (company_id = false)", () => {
       if (model === "res.partner") {
         const hasSharedBranch =
           Array.isArray(domain) &&
-          domain.some(
-            (c) => Array.isArray(c) && c[0] === "company_id" && c[2] === false,
-          );
+          domain.some((c) => Array.isArray(c) && c[0] === "company_id" && c[2] === false);
         return hasSharedBranch
           ? {
               records: [
@@ -5435,18 +5337,12 @@ describe("company scope includes shared records (company_id = false)", () => {
     });
 
     expect(result.isError).toBeFalsy();
-    const partnerLookup = mockSearchRead.mock.calls.find(
-      ([model]) => model === "res.partner",
-    );
+    const partnerLookup = mockSearchRead.mock.calls.find(([model]) => model === "res.partner");
     expect(partnerLookup).toBeDefined();
     const domain = partnerLookup![1];
     // The scope must be the OR-with-false pattern, not a strict equality.
     expect(domain).toEqual(
-      expect.arrayContaining([
-        "|",
-        ["company_id", "=", false],
-        ["company_id", "=", 1],
-      ]),
+      expect.arrayContaining(["|", ["company_id", "=", false], ["company_id", "=", 1]])
     );
     // … and NOT the strict-only form that would exclude shared records.
     expect(domain).not.toEqual([
@@ -5457,7 +5353,7 @@ describe("company scope includes shared records (company_id = false)", () => {
     // company-1-only partner that a strict filter would have returned.
     expect(mockCreate).toHaveBeenCalledWith(
       "account.move",
-      expect.objectContaining({ partner_id: 5, company_id: 1 }),
+      expect.objectContaining({ partner_id: 5, company_id: 1 })
     );
   });
 });
@@ -5498,14 +5394,10 @@ describe("relationHasCompanyId / findCompanyIdField helper", () => {
     expect(relationHasCompanyId(fields)).toBe(true);
   });
   it("returns false when company_id is absent or not many2one", () => {
-    expect(
-      relationHasCompanyId(normalizeFields([{ name: "id", type: "integer" }])),
-    ).toBe(false);
-    expect(
-      relationHasCompanyId(
-        normalizeFields([{ name: "company_id", type: "char" }]),
-      ),
-    ).toBe(false);
+    expect(relationHasCompanyId(normalizeFields([{ name: "id", type: "integer" }]))).toBe(false);
+    expect(relationHasCompanyId(normalizeFields([{ name: "company_id", type: "char" }]))).toBe(
+      false
+    );
   });
 });
 
@@ -5540,8 +5432,7 @@ describe("odoo_schedule_activity", () => {
 
   it("builds the mail.activity payload with resolved res_model_id, default To-Do type, and the lead's salesperson", async () => {
     mockSearchRead.mockImplementation(async (model: string) => {
-      if (model === "ir.model")
-        return { records: [{ id: 5 }], total: 1, limit: 1, offset: 0 };
+      if (model === "ir.model") return { records: [{ id: 5 }], total: 1, limit: 1, offset: 0 };
       if (model === "ir.model.data")
         return {
           records: [{ id: 1, res_id: 9 }],
@@ -5584,8 +5475,7 @@ describe("odoo_schedule_activity", () => {
 
   it("falls back to Odoo's default activity type when the To-Do xmlid is absent", async () => {
     mockSearchRead.mockImplementation(async (model: string) => {
-      if (model === "ir.model")
-        return { records: [{ id: 5 }], total: 1, limit: 1, offset: 0 };
+      if (model === "ir.model") return { records: [{ id: 5 }], total: 1, limit: 1, offset: 0 };
       // ir.model.data lookup finds nothing → no activity_type_id forced
       return { records: [], total: 0, limit: 0, offset: 0 };
     });
@@ -5650,9 +5540,7 @@ describe("odoo_schedule_activity", () => {
       dueDate: "2026-06-30",
     });
     expect(result.isError).toBe(true);
-    expect(result.content[0].text).toContain(
-      "does not belong to this Odoo connection",
-    );
+    expect(result.content[0].text).toContain("does not belong to this Odoo connection");
     expect(result.content[0].text).not.toContain("could not be decoded");
     expect(mockCreate).not.toHaveBeenCalled();
   });
@@ -5677,9 +5565,7 @@ describe("odoo_schedule_activity", () => {
     });
     expect(result.isError).toBe(true);
     expect(result.content[0].text).toContain("could not be decoded");
-    expect(result.content[0].text).not.toContain(
-      "does not belong to this Odoo connection",
-    );
+    expect(result.content[0].text).not.toContain("does not belong to this Odoo connection");
     expect(mockCreate).not.toHaveBeenCalled();
   });
 
@@ -5746,12 +5632,9 @@ describe("odoo_complete_activity", () => {
       feedback: "Spoke to the customer",
     });
     expect(result.isError).toBeFalsy();
-    expect(mockCallMethod).toHaveBeenCalledWith(
-      "mail.activity",
-      "action_feedback",
-      [[5]],
-      { feedback: "Spoke to the customer" },
-    );
+    expect(mockCallMethod).toHaveBeenCalledWith("mail.activity", "action_feedback", [[5]], {
+      feedback: "Spoke to the customer",
+    });
   });
 
   it("omits the feedback kwarg when none is given", async () => {
@@ -5759,12 +5642,7 @@ describe("odoo_complete_activity", () => {
     const tools = createApi({ [agentId]: cfg });
     const tool = findTool(tools, "odoo_complete_activity", agentId)!;
     await tool.execute("c", { target: activityRef() });
-    expect(mockCallMethod).toHaveBeenCalledWith(
-      "mail.activity",
-      "action_feedback",
-      [[5]],
-      {},
-    );
+    expect(mockCallMethod).toHaveBeenCalledWith("mail.activity", "action_feedback", [[5]], {});
   });
 
   it("requires write on mail.activity", async () => {
@@ -5826,7 +5704,7 @@ describe("odoo_reschedule_activity", () => {
     mockSearchRead.mockImplementation(async (model: string) =>
       model === "res.users"
         ? { records: [{ id: 2 }], total: 1, limit: 2, offset: 0 }
-        : { records: [], total: 0, limit: 0, offset: 0 },
+        : { records: [], total: 0, limit: 0, offset: 0 }
     );
     mockWrite.mockResolvedValue(true);
 
@@ -5928,9 +5806,7 @@ describe("odoo record-action tools (confirm / apply / validate / mark-done)", ()
       };
 
       it("is registered", () => {
-        expect(createApi({ [agentId]: cfg }).map((t) => t.name)).toContain(
-          tool,
-        );
+        expect(createApi({ [agentId]: cfg }).map((t) => t.name)).toContain(tool);
       });
 
       it(`calls ${method} and reports completed`, async () => {
@@ -5965,7 +5841,7 @@ describe("odoo record-action tools (confirm / apply / validate / mark-done)", ()
             },
           }),
           tool,
-          agentId,
+          agentId
         )!;
         const result = await t.execute("c", { target: ref(model) });
         expect(result.isError).toBe(true);
@@ -6009,19 +5885,14 @@ describe("odoo_set_approval", () => {
         },
       }),
       "odoo_set_approval",
-      agentId,
+      agentId
     )!;
     const result = await t.execute("c", {
       target: ref("purchase.order"),
       decision: "approve",
     });
     expect(result.isError).toBeFalsy();
-    expect(mockCallMethod).toHaveBeenCalledWith(
-      "purchase.order",
-      "button_confirm",
-      [[3]],
-      {},
-    );
+    expect(mockCallMethod).toHaveBeenCalledWith("purchase.order", "button_confirm", [[3]], {});
   });
 
   it("refuses an expense sheet via refuse_sheet with the reason as a positional arg", async () => {
@@ -6034,7 +5905,7 @@ describe("odoo_set_approval", () => {
         },
       }),
       "odoo_set_approval",
-      agentId,
+      agentId
     )!;
     const result = await t.execute("c", {
       target: ref("hr.expense.sheet"),
@@ -6046,7 +5917,7 @@ describe("odoo_set_approval", () => {
       "hr.expense.sheet",
       "refuse_sheet",
       [[3], "Over budget"],
-      {},
+      {}
     );
   });
 
@@ -6059,7 +5930,7 @@ describe("odoo_set_approval", () => {
         },
       }),
       "odoo_set_approval",
-      agentId,
+      agentId
     )!;
     const result = await t.execute("c", {
       target: ref("sale.order"),
@@ -6079,7 +5950,7 @@ describe("odoo_set_approval", () => {
         },
       }),
       "odoo_set_approval",
-      agentId,
+      agentId
     )!;
     const result = await t.execute("c", {
       target: ref("purchase.order"),
@@ -6098,7 +5969,7 @@ describe("odoo_set_approval", () => {
         },
       }),
       "odoo_set_approval",
-      agentId,
+      agentId
     )!;
     const result = await t.execute("c", {
       target: ref("purchase.order"),

@@ -10,7 +10,7 @@ function makePage(
     text: string;
     isScanned: boolean;
     embeddedImages: { width: number; height: number; data: Buffer }[];
-  }> = {},
+  }> = {}
 ) {
   return {
     pageNumber: overrides.pageNumber ?? 1,

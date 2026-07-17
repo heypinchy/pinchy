@@ -139,9 +139,7 @@ describe("GmailAdapter", () => {
 
       await adapter.list({ folder: "INBOX" });
 
-      expect(mockList).toHaveBeenCalledWith(
-        expect.objectContaining({ labelIds: ["INBOX"] }),
-      );
+      expect(mockList).toHaveBeenCalledWith(expect.objectContaining({ labelIds: ["INBOX"] }));
     });
 
     it("filters unread only", async () => {
@@ -149,9 +147,7 @@ describe("GmailAdapter", () => {
 
       await adapter.list({ unreadOnly: true });
 
-      expect(mockList).toHaveBeenCalledWith(
-        expect.objectContaining({ q: "is:unread" }),
-      );
+      expect(mockList).toHaveBeenCalledWith(expect.objectContaining({ q: "is:unread" }));
     });
 
     it("returns empty array when no messages", async () => {
@@ -167,9 +163,7 @@ describe("GmailAdapter", () => {
 
       await adapter.list({});
 
-      expect(mockList).toHaveBeenCalledWith(
-        expect.objectContaining({ maxResults: 20 }),
-      );
+      expect(mockList).toHaveBeenCalledWith(expect.objectContaining({ maxResults: 20 }));
     });
 
     it("defaults to the INBOX label when folder is omitted", async () => {
@@ -180,9 +174,7 @@ describe("GmailAdapter", () => {
 
       await adapter.list({});
 
-      expect(mockList).toHaveBeenCalledWith(
-        expect.objectContaining({ labelIds: ["INBOX"] }),
-      );
+      expect(mockList).toHaveBeenCalledWith(expect.objectContaining({ labelIds: ["INBOX"] }));
     });
   });
 
@@ -419,9 +411,7 @@ describe("GmailAdapter", () => {
             parts: [
               {
                 mimeType: "multipart/alternative",
-                parts: [
-                  { mimeType: "text/plain", body: { data: base64url("body") } },
-                ],
+                parts: [{ mimeType: "text/plain", body: { data: base64url("body") } }],
               },
               {
                 mimeType: "multipart/mixed",
@@ -666,9 +656,7 @@ describe("GmailAdapter", () => {
         },
       });
 
-      await expect(
-        adapter.getAttachment("msg-stale", "att-gone"),
-      ).rejects.toThrow(/re-read/i);
+      await expect(adapter.getAttachment("msg-stale", "att-gone")).rejects.toThrow(/re-read/i);
       // Must not attempt the bytes fetch when the id can't be resolved.
       expect(mockAttachmentsGet).not.toHaveBeenCalled();
     });
@@ -693,9 +681,7 @@ describe("GmailAdapter", () => {
 
       await adapter.search({ from: "test", limit: 5 });
 
-      expect(mockList).toHaveBeenCalledWith(
-        expect.objectContaining({ maxResults: 5 }),
-      );
+      expect(mockList).toHaveBeenCalledWith(expect.objectContaining({ maxResults: 5 }));
     });
   });
 
@@ -703,15 +689,13 @@ describe("GmailAdapter", () => {
     it("maps canonical folders to Gmail label IDs", async () => {
       mockList.mockResolvedValue({ data: { messages: [] } });
       await adapter.list({ folder: "DRAFTS", limit: 5 });
-      expect(mockList).toHaveBeenCalledWith(
-        expect.objectContaining({ labelIds: ["DRAFT"] }),
-      );
+      expect(mockList).toHaveBeenCalledWith(expect.objectContaining({ labelIds: ["DRAFT"] }));
     });
 
     it("rejects custom folder names", async () => {
-      await expect(
-        adapter.list({ folder: "CUSTOM_LABEL" as never }),
-      ).rejects.toThrow(/unknown folder/i);
+      await expect(adapter.list({ folder: "CUSTOM_LABEL" as never })).rejects.toThrow(
+        /unknown folder/i
+      );
     });
   });
 
@@ -727,7 +711,7 @@ describe("GmailAdapter", () => {
       expect(mockList).toHaveBeenCalledWith(
         expect.objectContaining({
           q: "from:alice@example.com subject:invoice is:unread newer_than:7d",
-        }),
+        })
       );
     });
 
@@ -735,7 +719,7 @@ describe("GmailAdapter", () => {
       mockList.mockResolvedValue({ data: { messages: [] } });
       await adapter.search({ subject: "monthly report" });
       expect(mockList).toHaveBeenCalledWith(
-        expect.objectContaining({ q: 'subject:"monthly report"' }),
+        expect.objectContaining({ q: 'subject:"monthly report"' })
       );
     });
 
@@ -744,9 +728,7 @@ describe("GmailAdapter", () => {
       // A backslash must be doubled so a trailing "\" can't escape the closing
       // quote. Input `re: a\b` → `subject:"re: a\\b"`.
       await adapter.search({ subject: "re: a\\b" });
-      expect(mockList).toHaveBeenCalledWith(
-        expect.objectContaining({ q: 'subject:"re: a\\\\b"' }),
-      );
+      expect(mockList).toHaveBeenCalledWith(expect.objectContaining({ q: 'subject:"re: a\\\\b"' }));
     });
 
     it("requires at least one field", async () => {
@@ -764,17 +746,13 @@ describe("GmailAdapter", () => {
     it("adds a single-token `text` value as a bare, unquoted term", async () => {
       mockList.mockResolvedValue({ data: { messages: [] } });
       await adapter.search({ text: "PO-1234" });
-      expect(mockList).toHaveBeenCalledWith(
-        expect.objectContaining({ q: "PO-1234" }),
-      );
+      expect(mockList).toHaveBeenCalledWith(expect.objectContaining({ q: "PO-1234" }));
     });
 
     it("quotes a multi-word `text` value", async () => {
       mockList.mockResolvedValue({ data: { messages: [] } });
       await adapter.search({ text: "quarterly report" });
-      expect(mockList).toHaveBeenCalledWith(
-        expect.objectContaining({ q: '"quarterly report"' }),
-      );
+      expect(mockList).toHaveBeenCalledWith(expect.objectContaining({ q: '"quarterly report"' }));
     });
 
     it("combines `text` with other DSL fields", async () => {
@@ -810,25 +788,19 @@ describe("GmailAdapter", () => {
     it("uses in:spam for SPAM folder", async () => {
       mockList.mockResolvedValue({ data: { messages: [] } });
       await adapter.search({ folder: "SPAM" });
-      expect(mockList).toHaveBeenCalledWith(
-        expect.objectContaining({ q: "in:spam" }),
-      );
+      expect(mockList).toHaveBeenCalledWith(expect.objectContaining({ q: "in:spam" }));
     });
 
     it("uses in:inbox for INBOX folder", async () => {
       mockList.mockResolvedValue({ data: { messages: [] } });
       await adapter.search({ folder: "INBOX" });
-      expect(mockList).toHaveBeenCalledWith(
-        expect.objectContaining({ q: "in:inbox" }),
-      );
+      expect(mockList).toHaveBeenCalledWith(expect.objectContaining({ q: "in:inbox" }));
     });
 
     it("uses in:sent for SENT folder", async () => {
       mockList.mockResolvedValue({ data: { messages: [] } });
       await adapter.search({ folder: "SENT" });
-      expect(mockList).toHaveBeenCalledWith(
-        expect.objectContaining({ q: "in:sent" }),
-      );
+      expect(mockList).toHaveBeenCalledWith(expect.objectContaining({ q: "in:sent" }));
     });
 
     it("uses in:drafts (not in:draft, not label:DRAFT) for DRAFTS folder", async () => {
@@ -841,9 +813,7 @@ describe("GmailAdapter", () => {
     });
 
     it("throws the unknown-folder error for an invalid folder", async () => {
-      await expect(
-        adapter.search({ folder: "BOGUS" as never }),
-      ).rejects.toThrow(/unknown folder/i);
+      await expect(adapter.search({ folder: "BOGUS" as never })).rejects.toThrow(/unknown folder/i);
     });
   });
 
@@ -888,10 +858,7 @@ describe("GmailAdapter", () => {
 
       // Verify the raw message content
       const call = mockDraftsCreate.mock.calls[0][0];
-      const raw = Buffer.from(
-        call.requestBody.message.raw,
-        "base64url",
-      ).toString("utf-8");
+      const raw = Buffer.from(call.requestBody.message.raw, "base64url").toString("utf-8");
       expect(raw).toContain("To: bob@example.com");
       expect(raw).toContain("Subject: Draft subject");
       expect(raw).toContain("Draft body");
@@ -910,10 +877,7 @@ describe("GmailAdapter", () => {
       });
 
       const call = mockDraftsCreate.mock.calls[0][0];
-      const raw = Buffer.from(
-        call.requestBody.message.raw,
-        "base64url",
-      ).toString("utf-8");
+      const raw = Buffer.from(call.requestBody.message.raw, "base64url").toString("utf-8");
       expect(raw).toContain("In-Reply-To: <original-msg-id@example.com>");
     });
   });
@@ -941,9 +905,7 @@ describe("GmailAdapter", () => {
 
       // Verify the raw message content
       const call = mockSend.mock.calls[0][0];
-      const raw = Buffer.from(call.requestBody.raw, "base64url").toString(
-        "utf-8",
-      );
+      const raw = Buffer.from(call.requestBody.raw, "base64url").toString("utf-8");
       expect(raw).toContain("To: bob@example.com");
       expect(raw).toContain("Subject: Sent subject");
       expect(raw).toContain("Sent body");
@@ -962,9 +924,7 @@ describe("GmailAdapter", () => {
       });
 
       const call = mockSend.mock.calls[0][0];
-      const raw = Buffer.from(call.requestBody.raw, "base64url").toString(
-        "utf-8",
-      );
+      const raw = Buffer.from(call.requestBody.raw, "base64url").toString("utf-8");
       expect(raw).toContain("In-Reply-To: <thread-id@example.com>");
     });
   });
@@ -976,10 +936,7 @@ describe("GmailAdapter", () => {
 
     function getRawLines(mockFn: ReturnType<typeof vi.fn>): string[] {
       const call = mockFn.mock.calls[0][0];
-      const raw = Buffer.from(
-        call.requestBody.message.raw,
-        "base64url",
-      ).toString("utf-8");
+      const raw = Buffer.from(call.requestBody.message.raw, "base64url").toString("utf-8");
       return raw.split("\r\n");
     }
 

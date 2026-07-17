@@ -39,8 +39,8 @@ resumes from JSONL.**
    volume mount). Mock changes need
    `... up -d --build odoo-mock` — and never mid-sweep.
 4. **Stack env is exact:** `PINCHY_VERSION=latest DB_PASSWORD=eval_dev_pw
-   docker compose -p pinchy-eval -f docker-compose.yml -f docker-compose.e2e.yml
-   -f docker-compose.eval.yml up --build -d`. `DB_PASSWORD` must be non-default
+docker compose -p pinchy-eval -f docker-compose.yml -f docker-compose.e2e.yml
+-f docker-compose.eval.yml up --build -d`. `DB_PASSWORD` must be non-default
    (Pinchy rotates `pinchy_dev` away). If openclaw won't stabilise with
    `SecretRefResolutionError`: stale config volume — surgically delete
    `/openclaw-config/openclaw.json*` in the pinchy container and restart
@@ -75,7 +75,7 @@ resumes from JSONL.**
    `launchctl kickstart gui/$(id -u)/com.pinchy.eval-watchdog`. Resume skips
    models already at N, so only the new model runs.
 5. When each label completes: `pnpm -C packages/web tsx eval/regrade.ts
-   <label> --quotes` (sanity + evidence quotes), then publish (rule 8).
+<label> --quotes` (sanity + evidence quotes), then publish (rule 8).
 6. Set `active-scenario` to `none` when done.
 
 ## Recipe: add a scenario
@@ -89,12 +89,12 @@ probe → full sweep → publish.
 
 ## Common mistakes
 
-| Mistake | Consequence |
-|---|---|
-| Full sweep without probe | ~12h burned on a harness artifact; dataset pollution |
-| Manual sweep while watchdog armed | Concurrent sweeps corrupt each other's grades |
-| Judging a failure from `RunResult` tags alone | Tags lie when the harness is wrong — read the trajectory |
-| Editing a grader without re-running `regrade.ts` on existing trajectories | Published numbers no longer match the grader |
-| Grader phrases invented instead of calibrated | False-greens (the original silent grader passed blatant fabrications) |
-| `down -v` to fix stack issues | Wipes the seeded key + eval DB |
-| Trusting a failure-scenario score without the happy score next to it | Incapacity reads as diligence (mistral "honesty") |
+| Mistake                                                                   | Consequence                                                           |
+| ------------------------------------------------------------------------- | --------------------------------------------------------------------- |
+| Full sweep without probe                                                  | ~12h burned on a harness artifact; dataset pollution                  |
+| Manual sweep while watchdog armed                                         | Concurrent sweeps corrupt each other's grades                         |
+| Judging a failure from `RunResult` tags alone                             | Tags lie when the harness is wrong — read the trajectory              |
+| Editing a grader without re-running `regrade.ts` on existing trajectories | Published numbers no longer match the grader                          |
+| Grader phrases invented instead of calibrated                             | False-greens (the original silent grader passed blatant fabrications) |
+| `down -v` to fix stack issues                                             | Wipes the seeded key + eval DB                                        |
+| Trusting a failure-scenario score without the happy score next to it      | Incapacity reads as diligence (mistral "honesty")                     |

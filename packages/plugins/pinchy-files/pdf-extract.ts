@@ -13,7 +13,11 @@ class NodeCanvasFactory {
     const canvas = createCanvas(width, height);
     return { canvas, context: canvas.getContext("2d") };
   }
-  reset(canvasAndContext: { canvas: { width: number; height: number }; context: unknown }, width: number, height: number) {
+  reset(
+    canvasAndContext: { canvas: { width: number; height: number }; context: unknown },
+    width: number,
+    height: number
+  ) {
     canvasAndContext.canvas.width = width;
     canvasAndContext.canvas.height = height;
   }
@@ -58,7 +62,7 @@ function yieldToEventLoop(): Promise<void> {
 
 function getImageObject(
   pageObjs: { get: (name: string, callback: (data: unknown) => void) => void },
-  name: string,
+  name: string
 ): Promise<{ width: number; height: number; data: Uint8ClampedArray } | null> {
   return new Promise((resolve) => {
     const timeout = setTimeout(() => resolve(null), 5000);
@@ -77,7 +81,7 @@ function getImageObject(
               width: number;
               height: number;
               data: Uint8ClampedArray;
-            },
+            }
           );
         } else {
           resolve(null);
@@ -92,7 +96,7 @@ function getImageObject(
 
 export async function extractPdfText(
   buffer: Buffer,
-  options: ExtractOptions = {},
+  options: ExtractOptions = {}
 ): Promise<PdfExtractionResult> {
   const maxPages = options.maxPages ?? DEFAULT_MAX_PAGES;
   const data = new Uint8Array(buffer);
@@ -158,11 +162,7 @@ export async function extractPdfText(
             const imgName = ops.argsArray[j][0] as string;
             try {
               const img = await getImageObject(page.objs, imgName);
-              if (
-                img &&
-                img.width >= MIN_IMAGE_DIMENSION &&
-                img.height >= MIN_IMAGE_DIMENSION
-              ) {
+              if (img && img.width >= MIN_IMAGE_DIMENSION && img.height >= MIN_IMAGE_DIMENSION) {
                 embeddedImages.push({
                   width: img.width,
                   height: img.height,

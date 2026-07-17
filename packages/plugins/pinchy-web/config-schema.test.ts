@@ -41,7 +41,7 @@ describe("pinchy-web manifest contract", () => {
         gatewayToken: "t",
         connectionId: "c",
         agents: { "a-1": {} },
-      }).ok,
+      }).ok
     ).toBe(false);
   });
 

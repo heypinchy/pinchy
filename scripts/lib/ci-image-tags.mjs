@@ -28,7 +28,9 @@ const BUILDER_JOB = "build-images";
 const FANIN_JOB = "build-image";
 
 function jobBody(workflowPath, jobName) {
-  const job = splitWorkflowIntoJobs(workflowPath).find((j) => j.jobName === jobName);
+  const job = splitWorkflowIntoJobs(workflowPath).find(
+    (j) => j.jobName === jobName,
+  );
   if (!job) throw new Error(`ci.yml must define a "${jobName}" job`);
   return job.body;
 }
@@ -50,7 +52,9 @@ export function builtImageTags(workflowPath) {
 
   const template = /^\s+tags:\s*(\S.*?)\s*$/m.exec(body);
   if (!template) {
-    throw new Error(`"${BUILDER_JOB}" must pass a \`tags:\` template to the build step`);
+    throw new Error(
+      `"${BUILDER_JOB}" must pass a \`tags:\` template to the build step`,
+    );
   }
 
   // `tags: |` (a newline-separated list, which build-push-action accepts) would
@@ -60,16 +64,20 @@ export function builtImageTags(workflowPath) {
   if (/^[|>][-+]?\d*$/.test(template[1])) {
     throw new Error(
       `"${BUILDER_JOB}" passes \`tags:\` as a block scalar (${template[1]}); this check reads a ` +
-        `single-line template. Keep it on one line, or teach builtImageTags to read the block.`
+        `single-line template. Keep it on one line, or teach builtImageTags to read the block.`,
     );
   }
 
   const entries = [...body.matchAll(/^\s+tag:\s*(\S+)\s*$/gm)].map((m) => m[1]);
   if (entries.length === 0) {
-    throw new Error(`"${BUILDER_JOB}" must define matrix entries carrying a \`tag:\``);
+    throw new Error(
+      `"${BUILDER_JOB}" must define matrix entries carrying a \`tag:\``,
+    );
   }
 
-  return entries.map((tag) => template[1].replaceAll("${{ matrix.tag }}", tag)).sort();
+  return entries
+    .map((tag) => template[1].replaceAll("${{ matrix.tag }}", tag))
+    .sort();
 }
 
 /**
@@ -83,9 +91,11 @@ export function builtImageTags(workflowPath) {
 export function exportedImageTags(workflowPath) {
   const body = jobBody(workflowPath, FANIN_JOB);
 
-  const tags = [...body.matchAll(/echo\s+"[A-Za-z0-9_-]+=([^"]+)"\s*>>\s*"?\$GITHUB_OUTPUT"?/g)].map(
-    (m) => m[1]
-  );
+  const tags = [
+    ...body.matchAll(
+      /echo\s+"[A-Za-z0-9_-]+=([^"]+)"\s*>>\s*"?\$GITHUB_OUTPUT"?/g,
+    ),
+  ].map((m) => m[1]);
   if (tags.length === 0) {
     throw new Error(`"${FANIN_JOB}" must export image tags via $GITHUB_OUTPUT`);
   }

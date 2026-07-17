@@ -69,10 +69,7 @@ export function readDeclaredDocxSize(buffer: Buffer): DocxDeclaredSize {
   let totalUncompressedBytes = 0;
   let pos = cdOffset;
   for (let entry = 0; entry < totalEntries; entry++) {
-    if (
-      pos + 46 > eocdOffset ||
-      buffer.readUInt32LE(pos) !== CENTRAL_DIR_SIGNATURE
-    ) {
+    if (pos + 46 > eocdOffset || buffer.readUInt32LE(pos) !== CENTRAL_DIR_SIGNATURE) {
       throw invalidDocx("malformed central directory entry");
     }
     const uncompressedSize = buffer.readUInt32LE(pos + 24);
@@ -92,12 +89,12 @@ export function readDeclaredDocxSize(buffer: Buffer): DocxDeclaredSize {
 
 export function assertDocxDecompressedSizeWithinLimit(
   buffer: Buffer,
-  limit: number = MAX_DOCX_DECOMPRESSED_BYTES,
+  limit: number = MAX_DOCX_DECOMPRESSED_BYTES
 ): void {
   const { totalUncompressedBytes } = readDeclaredDocxSize(buffer);
   if (totalUncompressedBytes > limit) {
     throw new Error(
-      `DOCX declared decompressed size (${totalUncompressedBytes} bytes) exceeds the limit (${limit} bytes). The file may be a decompression bomb.`,
+      `DOCX declared decompressed size (${totalUncompressedBytes} bytes) exceeds the limit (${limit} bytes). The file may be a decompression bomb.`
     );
   }
 }

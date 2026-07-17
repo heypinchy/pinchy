@@ -34,15 +34,13 @@ function checkInefficientFilter(req, res) {
     filterStr.includes(prop),
   );
   if (!startsWithFirst || !allPropsPresent) {
-    res
-      .status(400)
-      .json({
-        error: {
-          code: "InefficientFilter",
-          message:
-            "The restriction or sort order is too complex for this operation.",
-        },
-      });
+    res.status(400).json({
+      error: {
+        code: "InefficientFilter",
+        message:
+          "The restriction or sort order is too complex for this operation.",
+      },
+    });
     return false;
   }
   return true;
@@ -71,14 +69,12 @@ resetState();
 function requireBearer(req, res) {
   const auth = req.headers.authorization || "";
   if (!auth.startsWith("Bearer ") || auth.trim() === "Bearer") {
-    res
-      .status(401)
-      .json({
-        error: {
-          code: "InvalidAuthenticationToken",
-          message: "Access token is empty.",
-        },
-      });
+    res.status(401).json({
+      error: {
+        code: "InvalidAuthenticationToken",
+        message: "Access token is empty.",
+      },
+    });
     return false;
   }
   return true;
@@ -96,12 +92,10 @@ app.post("/:tenant/oauth2/v2.0/token", (req, res) => {
   });
 
   if (refresh_token === "invalid-refresh-token" || code === "invalid-code") {
-    return res
-      .status(400)
-      .json({
-        error: "invalid_grant",
-        error_description: "The provided value is invalid.",
-      });
+    return res.status(400).json({
+      error: "invalid_grant",
+      error_description: "The provided value is invalid.",
+    });
   }
 
   const ts = Date.now();
@@ -173,14 +167,12 @@ app.get("/v1.0/me/messages/:id", (req, res) => {
   if (!requireBearer(req, res)) return;
   const msg = messages.find((m) => m.id === req.params.id);
   if (!msg)
-    return res
-      .status(404)
-      .json({
-        error: {
-          code: "ErrorItemNotFound",
-          message: "The specified object was not found in the store.",
-        },
-      });
+    return res.status(404).json({
+      error: {
+        code: "ErrorItemNotFound",
+        message: "The specified object was not found in the store.",
+      },
+    });
   res.json(msg);
 });
 
@@ -194,14 +186,12 @@ app.get("/v1.0/me/messages/:id/attachments", (req, res) => {
   });
   const msg = messages.find((m) => m.id === req.params.id);
   if (!msg)
-    return res
-      .status(404)
-      .json({
-        error: {
-          code: "ErrorItemNotFound",
-          message: "The specified object was not found in the store.",
-        },
-      });
+    return res.status(404).json({
+      error: {
+        code: "ErrorItemNotFound",
+        message: "The specified object was not found in the store.",
+      },
+    });
   const value = (msg.attachments ?? []).map((a) => ({
     "@odata.type": a["@odata.type"],
     id: a.id,
@@ -227,14 +217,12 @@ app.get("/v1.0/me/messages/:id/attachments/:attachmentId", (req, res) => {
     (a) => a.id === req.params.attachmentId,
   );
   if (!attachment)
-    return res
-      .status(404)
-      .json({
-        error: {
-          code: "ErrorItemNotFound",
-          message: "The specified object was not found in the store.",
-        },
-      });
+    return res.status(404).json({
+      error: {
+        code: "ErrorItemNotFound",
+        message: "The specified object was not found in the store.",
+      },
+    });
   res.json(attachment);
 });
 
@@ -262,14 +250,12 @@ app.patch("/v1.0/me/messages/:id", (req, res) => {
   if (!requireBearer(req, res)) return;
   const idx = messages.findIndex((m) => m.id === req.params.id);
   if (idx === -1)
-    return res
-      .status(404)
-      .json({
-        error: {
-          code: "ErrorItemNotFound",
-          message: "The specified object was not found in the store.",
-        },
-      });
+    return res.status(404).json({
+      error: {
+        code: "ErrorItemNotFound",
+        message: "The specified object was not found in the store.",
+      },
+    });
   messages[idx] = { ...messages[idx], ...req.body };
   requestLog.push({
     endpoint: `/v1.0/me/messages/${req.params.id}`,
@@ -312,14 +298,12 @@ app.post("/v1.0/me/messages/:id/createReply", (req, res) => {
   if (!requireBearer(req, res)) return;
   const original = messages.find((m) => m.id === req.params.id);
   if (!original)
-    return res
-      .status(404)
-      .json({
-        error: {
-          code: "ErrorItemNotFound",
-          message: "The specified object was not found in the store.",
-        },
-      });
+    return res.status(404).json({
+      error: {
+        code: "ErrorItemNotFound",
+        message: "The specified object was not found in the store.",
+      },
+    });
   const reply = {
     id: `draft-${generateId()}`,
     isDraft: true,

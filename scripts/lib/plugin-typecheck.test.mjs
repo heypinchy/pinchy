@@ -16,7 +16,11 @@ const PLUGINS_ROOT = join(REPO_ROOT, "packages", "plugins");
 // it typechecks production *and* test files, resolves node builtins, and
 // tolerates third-party .d.ts breakage.
 const GOOD = {
-  compilerOptions: { strict: true, skipLibCheck: true, types: ["node", "vitest"] },
+  compilerOptions: {
+    strict: true,
+    skipLibCheck: true,
+    types: ["node", "vitest"],
+  },
   include: ["**/*.ts"],
 };
 
@@ -42,7 +46,10 @@ test("validateTsconfigShape flags an exclude that drops test files", () => {
 });
 
 test("validateTsconfigShape flags __tests__ in exclude", () => {
-  const problems = validateTsconfigShape({ ...GOOD, exclude: ["**/__tests__/**"] });
+  const problems = validateTsconfigShape({
+    ...GOOD,
+    exclude: ["**/__tests__/**"],
+  });
   assert.ok(problems.some((p) => /exclude/.test(p)));
 });
 
@@ -60,7 +67,10 @@ test("validateTsconfigShape flags any exclude key, even one that only names non-
 });
 
 test("validateTsconfigShape requires compilerOptions.types to include node", () => {
-  const problems = validateTsconfigShape({ ...GOOD, compilerOptions: { skipLibCheck: true, types: ["vitest"] } });
+  const problems = validateTsconfigShape({
+    ...GOOD,
+    compilerOptions: { skipLibCheck: true, types: ["vitest"] },
+  });
   assert.ok(problems.some((p) => /node/.test(p)));
 });
 
@@ -73,7 +83,10 @@ test("validateTsconfigShape requires skipLibCheck (third-party .d.ts otherwise b
 });
 
 test("validateTsconfigShape reports a problem (not a throw) when compilerOptions is null", () => {
-  const problems = validateTsconfigShape({ include: ["**/*.ts"], compilerOptions: null });
+  const problems = validateTsconfigShape({
+    include: ["**/*.ts"],
+    compilerOptions: null,
+  });
   assert.ok(
     problems.some((p) => /compilerOptions/.test(p)),
     `expected a compilerOptions problem, got ${JSON.stringify(problems)}`,
@@ -81,7 +94,10 @@ test("validateTsconfigShape reports a problem (not a throw) when compilerOptions
 });
 
 test("validateTsconfigShape reports a problem (not a throw) when compilerOptions is an array", () => {
-  const problems = validateTsconfigShape({ include: ["**/*.ts"], compilerOptions: [] });
+  const problems = validateTsconfigShape({
+    include: ["**/*.ts"],
+    compilerOptions: [],
+  });
   assert.ok(
     problems.some((p) => /compilerOptions must be an object/.test(p)),
     `expected a "compilerOptions must be an object" problem, got ${JSON.stringify(problems)}`,
@@ -109,12 +125,16 @@ test("validatePackageShape accepts an @types/node devDependency", () => {
 test("validatePackageShape requires @types/node so tsc can resolve node builtins", () => {
   // `types: ["node"]` in tsconfig throws TS2688 unless @types/node is actually
   // installed. The fast guard catches the missing dep before the slow tsc gate.
-  const problems = validatePackageShape({ devDependencies: { vitest: "^4.1.9" } });
+  const problems = validatePackageShape({
+    devDependencies: { vitest: "^4.1.9" },
+  });
   assert.ok(problems.some((p) => /@types\/node/.test(p)));
 });
 
 test("validatePluginDir reports a missing tsconfig.json", () => {
-  const problems = validatePluginDir(join(PLUGINS_ROOT, "pinchy-does-not-exist"));
+  const problems = validatePluginDir(
+    join(PLUGINS_ROOT, "pinchy-does-not-exist"),
+  );
   assert.deepEqual(problems, ["missing tsconfig.json"]);
 });
 
@@ -125,7 +145,10 @@ test("validatePluginDir reports a missing tsconfig.json", () => {
 // exclude, skipLibCheck, types: ["node", "vitest"]) plus an @types/node devDep.
 test("every packages/plugins/pinchy-* plugin is wired for the typecheck gate", () => {
   const dirs = discoverPluginDirs(PLUGINS_ROOT);
-  assert.ok(dirs.length >= 8, `expected to discover the plugin packages, found ${dirs.length}`);
+  assert.ok(
+    dirs.length >= 8,
+    `expected to discover the plugin packages, found ${dirs.length}`,
+  );
   const offenders = dirs
     .map((dir) => ({ name: basename(dir), problems: validatePluginDir(dir) }))
     .filter((r) => r.problems.length > 0);

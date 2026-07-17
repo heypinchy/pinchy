@@ -78,7 +78,10 @@ test("workflow splitter actually finds jobs in our repo", () => {
     totalJobs += jobs.length;
     totalComposeJobs += jobs.filter(jobInvokesCompose).length;
   }
-  assert.ok(totalJobs >= 10, `expected ≥10 jobs across workflows, got ${totalJobs}`);
+  assert.ok(
+    totalJobs >= 10,
+    `expected ≥10 jobs across workflows, got ${totalJobs}`,
+  );
   assert.ok(
     totalComposeJobs >= 3,
     `expected ≥3 compose-using jobs (release end-user-install, ci end-user-* etc.), got ${totalComposeJobs}`,

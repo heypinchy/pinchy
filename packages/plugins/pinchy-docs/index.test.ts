@@ -71,9 +71,7 @@ describe("pinchy-docs plugin", () => {
     const { default: plugin } = await import("./index");
     plugin.register!(api as any);
 
-    const factory = mockRegisterTool.mock.calls.find(
-      (c: any[]) => c[1]?.name === "docs_list"
-    )?.[0];
+    const factory = mockRegisterTool.mock.calls.find((c: any[]) => c[1]?.name === "docs_list")?.[0];
     const tool = factory({ agentId: "agent-1" });
     expect(tool).not.toBeNull();
     expect(tool.name).toBe("docs_list");
@@ -84,9 +82,7 @@ describe("pinchy-docs plugin", () => {
     const { default: plugin } = await import("./index");
     plugin.register!(api as any);
 
-    const factory = mockRegisterTool.mock.calls.find(
-      (c: any[]) => c[1]?.name === "docs_list"
-    )?.[0];
+    const factory = mockRegisterTool.mock.calls.find((c: any[]) => c[1]?.name === "docs_list")?.[0];
     const tool = factory({ agentId: "other" });
     expect(tool).toBeNull();
   });
@@ -99,9 +95,7 @@ describe("pinchy-docs plugin", () => {
     const { default: plugin } = await import("./index");
     plugin.register!(api as any);
 
-    const factory = mockRegisterTool.mock.calls.find(
-      (c: any[]) => c[1]?.name === "docs_list"
-    )?.[0];
+    const factory = mockRegisterTool.mock.calls.find((c: any[]) => c[1]?.name === "docs_list")?.[0];
     const tool = factory({ agentId: "agent-1" });
     const result = await tool.execute("call-1", {});
     const parsed = JSON.parse(result.content[0].text);
@@ -119,9 +113,7 @@ describe("pinchy-docs plugin", () => {
     const { default: plugin } = await import("./index");
     plugin.register!(api as any);
 
-    const factory = mockRegisterTool.mock.calls.find(
-      (c: any[]) => c[1]?.name === "docs_list"
-    )?.[0];
+    const factory = mockRegisterTool.mock.calls.find((c: any[]) => c[1]?.name === "docs_list")?.[0];
     const tool = factory({ agentId: "agent-1" });
     const result = await tool.execute("call-1", {});
     const parsed = JSON.parse(result.content[0].text);
@@ -138,9 +130,7 @@ describe("pinchy-docs plugin", () => {
     const { default: plugin } = await import("./index");
     plugin.register!(api as any);
 
-    const factory = mockRegisterTool.mock.calls.find(
-      (c: any[]) => c[1]?.name === "docs_list"
-    )?.[0];
+    const factory = mockRegisterTool.mock.calls.find((c: any[]) => c[1]?.name === "docs_list")?.[0];
     const tool = factory({ agentId: "agent-1" });
     const result = await tool.execute("call-1", {});
     const parsed = JSON.parse(result.content[0].text);
@@ -155,9 +145,7 @@ describe("pinchy-docs plugin", () => {
     const { default: plugin } = await import("./index");
     plugin.register!(api as any);
 
-    const factory = mockRegisterTool.mock.calls.find(
-      (c: any[]) => c[1]?.name === "docs_read"
-    )?.[0];
+    const factory = mockRegisterTool.mock.calls.find((c: any[]) => c[1]?.name === "docs_read")?.[0];
     const tool = factory({ agentId: "agent-1" });
     const result = await tool.execute("call-1", { path: "foo.mdx" });
     // Frontmatter is stripped — see "docs_read strips frontmatter" — so the
@@ -171,9 +159,7 @@ describe("pinchy-docs plugin", () => {
     const { default: plugin } = await import("./index");
     plugin.register!(api as any);
 
-    const factory = mockRegisterTool.mock.calls.find(
-      (c: any[]) => c[1]?.name === "docs_read"
-    )?.[0];
+    const factory = mockRegisterTool.mock.calls.find((c: any[]) => c[1]?.name === "docs_read")?.[0];
     const tool = factory({ agentId: "agent-1" });
     const result = await tool.execute("call-1", { path: "../etc/passwd" });
     expect(result.content[0].text.toLowerCase()).toContain("invalid");
@@ -199,9 +185,7 @@ describe("pinchy-docs plugin", () => {
     const { default: plugin } = await import("./index");
     plugin.register!(api as any);
 
-    const factory = mockRegisterTool.mock.calls.find(
-      (c: any[]) => c[1]?.name === "docs_read"
-    )?.[0];
+    const factory = mockRegisterTool.mock.calls.find((c: any[]) => c[1]?.name === "docs_read")?.[0];
     const tool = factory({ agentId: "agent-1" });
     const result = await tool.execute("call-1", { path: "leak.mdx" });
 
@@ -217,9 +201,7 @@ describe("pinchy-docs plugin", () => {
     const { default: plugin } = await import("./index");
     plugin.register!(api as any);
 
-    const factory = mockRegisterTool.mock.calls.find(
-      (c: any[]) => c[1]?.name === "docs_read"
-    )?.[0];
+    const factory = mockRegisterTool.mock.calls.find((c: any[]) => c[1]?.name === "docs_read")?.[0];
     const tool = factory({ agentId: "agent-1" });
     const result = await tool.execute("call-1", { path: "/etc/passwd" });
     expect(result.content[0].text.toLowerCase()).toContain("invalid");
@@ -233,9 +215,7 @@ describe("pinchy-docs plugin", () => {
     const { default: plugin } = await import("./index");
     plugin.register!(api as any);
 
-    const factory = mockRegisterTool.mock.calls.find(
-      (c: any[]) => c[1]?.name === "docs_read"
-    )?.[0];
+    const factory = mockRegisterTool.mock.calls.find((c: any[]) => c[1]?.name === "docs_read")?.[0];
     const tool = factory({ agentId: "agent-1" });
     const result = await tool.execute("call-1", { path: "subdir" });
     expect(result.content[0].text.toLowerCase()).toContain("not a file");
@@ -247,9 +227,7 @@ describe("pinchy-docs plugin", () => {
     const { default: plugin } = await import("./index");
     plugin.register!(api as any);
 
-    const factory = mockRegisterTool.mock.calls.find(
-      (c: any[]) => c[1]?.name === "docs_read"
-    )?.[0];
+    const factory = mockRegisterTool.mock.calls.find((c: any[]) => c[1]?.name === "docs_read")?.[0];
     const tool = factory({ agentId: "agent-1" });
     const result = await tool.execute("call-1", { path: "nonexistent.mdx" });
     expect(result.content[0].text.toLowerCase()).toMatch(/not found|no such/);
@@ -261,27 +239,19 @@ describe("pinchy-docs plugin", () => {
     const { default: plugin } = await import("./index");
     plugin.register!(api as any);
 
-    const factory = mockRegisterTool.mock.calls.find(
-      (c: any[]) => c[1]?.name === "docs_read"
-    )?.[0];
+    const factory = mockRegisterTool.mock.calls.find((c: any[]) => c[1]?.name === "docs_read")?.[0];
     const tool = factory({ agentId: "other" });
     expect(tool).toBeNull();
   });
 
   it("docs_read strips frontmatter from the returned content", async () => {
-    writeMdx(
-      "foo.mdx",
-      { title: "Foo", description: "x" },
-      "Hello world."
-    );
+    writeMdx("foo.mdx", { title: "Foo", description: "x" }, "Hello world.");
 
     const api = createMockApi({ docsPath: docsRoot, agents: { "agent-1": {} } });
     const { default: plugin } = await import("./index");
     plugin.register!(api as any);
 
-    const factory = mockRegisterTool.mock.calls.find(
-      (c: any[]) => c[1]?.name === "docs_read"
-    )?.[0];
+    const factory = mockRegisterTool.mock.calls.find((c: any[]) => c[1]?.name === "docs_read")?.[0];
     const tool = factory({ agentId: "agent-1" });
     const result = await tool.execute("call-1", { path: "foo.mdx" });
 
@@ -307,9 +277,7 @@ describe("pinchy-docs plugin", () => {
     const { default: plugin } = await import("./index");
     plugin.register!(api as any);
 
-    const factory = mockRegisterTool.mock.calls.find(
-      (c: any[]) => c[1]?.name === "docs_read"
-    )?.[0];
+    const factory = mockRegisterTool.mock.calls.find((c: any[]) => c[1]?.name === "docs_read")?.[0];
     const tool = factory({ agentId: "agent-1" });
     const result = await tool.execute("call-1", { path: "foo.mdx" });
 
@@ -338,13 +306,13 @@ describe("pinchy-docs plugin", () => {
     const { default: plugin } = await import("./index");
     plugin.register!(api as any);
 
-    const factory = mockRegisterTool.mock.calls.find(
-      (c: any[]) => c[1]?.name === "docs_read"
-    )?.[0];
+    const factory = mockRegisterTool.mock.calls.find((c: any[]) => c[1]?.name === "docs_read")?.[0];
     const tool = factory({ agentId: "agent-1" });
     const result = await tool.execute("call-1", { path: "foo.mdx" });
 
-    expect(result.content[0].text).toContain("Pinchy agents require models with tool calling support.");
+    expect(result.content[0].text).toContain(
+      "Pinchy agents require models with tool calling support."
+    );
     expect(result.content[0].text).toContain("First step");
     expect(result.content[0].text).toContain("Second step");
     expect(result.content[0].text).not.toContain("<Aside");
@@ -376,9 +344,7 @@ describe("pinchy-docs plugin", () => {
     const { default: plugin } = await import("./index");
     plugin.register!(api as any);
 
-    const factory = mockRegisterTool.mock.calls.find(
-      (c: any[]) => c[1]?.name === "docs_read"
-    )?.[0];
+    const factory = mockRegisterTool.mock.calls.find((c: any[]) => c[1]?.name === "docs_read")?.[0];
     const tool = factory({ agentId: "agent-1" });
     const result = await tool.execute("call-1", { path: "foo.mdx" });
 
@@ -395,22 +361,14 @@ describe("pinchy-docs plugin", () => {
     writeMdx(
       "foo.mdx",
       { title: "Foo" },
-      [
-        "Example component:",
-        "",
-        "```tsx",
-        '<Aside type="note">Hello</Aside>',
-        "```",
-      ].join("\n")
+      ["Example component:", "", "```tsx", '<Aside type="note">Hello</Aside>', "```"].join("\n")
     );
 
     const api = createMockApi({ docsPath: docsRoot, agents: { "agent-1": {} } });
     const { default: plugin } = await import("./index");
     plugin.register!(api as any);
 
-    const factory = mockRegisterTool.mock.calls.find(
-      (c: any[]) => c[1]?.name === "docs_read"
-    )?.[0];
+    const factory = mockRegisterTool.mock.calls.find((c: any[]) => c[1]?.name === "docs_read")?.[0];
     const tool = factory({ agentId: "agent-1" });
     const result = await tool.execute("call-1", { path: "foo.mdx" });
 
@@ -418,19 +376,13 @@ describe("pinchy-docs plugin", () => {
   });
 
   it("docs_read collapses runs of blank lines to a single blank line", async () => {
-    writeMdx(
-      "foo.mdx",
-      { title: "Foo" },
-      ["First.", "", "", "", "", "Second."].join("\n")
-    );
+    writeMdx("foo.mdx", { title: "Foo" }, ["First.", "", "", "", "", "Second."].join("\n"));
 
     const api = createMockApi({ docsPath: docsRoot, agents: { "agent-1": {} } });
     const { default: plugin } = await import("./index");
     plugin.register!(api as any);
 
-    const factory = mockRegisterTool.mock.calls.find(
-      (c: any[]) => c[1]?.name === "docs_read"
-    )?.[0];
+    const factory = mockRegisterTool.mock.calls.find((c: any[]) => c[1]?.name === "docs_read")?.[0];
     const tool = factory({ agentId: "agent-1" });
     const result = await tool.execute("call-1", { path: "foo.mdx" });
 

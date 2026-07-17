@@ -103,19 +103,19 @@ Work through **every** item in **CONTRIBUTING.md § "Pre-release checklist"** �
 
 ## Red flags — STOP
 
-| Thought                                                 | Reality                                                                          |
-| ------------------------------------------------------- | -------------------------------------------------------------------------------- |
-| "I'll just `gh release create` quickly"                 | That's the v0.5.5 footgun. CI fails it. Use `pnpm release`.                      |
-| "I'll `git tag` and push the tag myself"                | Skips the version bump → `/api/version` drifts from the tag. Let the script tag. |
-| "I'll pre-create the GitHub Release, then push the tag" | Breaks the PREV-tag lookup for the upgrade notes. Don't.                         |
-| "The version bump is just cosmetic"                     | `/api/version` and the public Releases page read it. It IS the shipped version.  |
-| "Deadline — skip the checklist"                         | The checklist is the only thing the script _can't_ enforce.                      |
-| "I can release from this worktree/branch"               | Releases cut from clean `main` only. The script refuses otherwise.               |
-| "`pnpm release` went green, so I'm done"                | Green ≠ verified. The staging click-through + PWA are manual gates the script can't see. Run `release:preflight`, make each `[ ]` a blocking task, verify on `:next` first. |
-| "Staging booted / I clicked through it, so that gate's done" | Booting ≠ working. Run the **active test-and-fix loop**: drive real flows adversarially, verify against the audit log + OpenClaw logs (not the UI), and TDD-fix every bug you find before the cut. |
-| "The watch exited 0, so CI is green"                    | `gh run/pr checks --watch` exits early when checks register late (right after a push) or stage in via `needs:`. Confirm `conclusion: success` + `mergeStateStatus: CLEAN` before merging/announcing. |
-| "Pre-release CI was green, so the release commit is fine" | The `chore: release` commit adds the version bumps + the auto-finalized `upgrading.mdx`. Watch the fresh CI run on that commit too — v0.6.0 turned main red exactly here. |
-| "CI is red — rerun it"                                  | Classify first. Infra (Node/pnpm crash, runner stall, fresh OSV) with `main` green → rerun. Our own test/build → real, fix it. |
+| Thought                                                      | Reality                                                                                                                                                                                              |
+| ------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| "I'll just `gh release create` quickly"                      | That's the v0.5.5 footgun. CI fails it. Use `pnpm release`.                                                                                                                                          |
+| "I'll `git tag` and push the tag myself"                     | Skips the version bump → `/api/version` drifts from the tag. Let the script tag.                                                                                                                     |
+| "I'll pre-create the GitHub Release, then push the tag"      | Breaks the PREV-tag lookup for the upgrade notes. Don't.                                                                                                                                             |
+| "The version bump is just cosmetic"                          | `/api/version` and the public Releases page read it. It IS the shipped version.                                                                                                                      |
+| "Deadline — skip the checklist"                              | The checklist is the only thing the script _can't_ enforce.                                                                                                                                          |
+| "I can release from this worktree/branch"                    | Releases cut from clean `main` only. The script refuses otherwise.                                                                                                                                   |
+| "`pnpm release` went green, so I'm done"                     | Green ≠ verified. The staging click-through + PWA are manual gates the script can't see. Run `release:preflight`, make each `[ ]` a blocking task, verify on `:next` first.                          |
+| "Staging booted / I clicked through it, so that gate's done" | Booting ≠ working. Run the **active test-and-fix loop**: drive real flows adversarially, verify against the audit log + OpenClaw logs (not the UI), and TDD-fix every bug you find before the cut.   |
+| "The watch exited 0, so CI is green"                         | `gh run/pr checks --watch` exits early when checks register late (right after a push) or stage in via `needs:`. Confirm `conclusion: success` + `mergeStateStatus: CLEAN` before merging/announcing. |
+| "Pre-release CI was green, so the release commit is fine"    | The `chore: release` commit adds the version bumps + the auto-finalized `upgrading.mdx`. Watch the fresh CI run on that commit too — v0.6.0 turned main red exactly here.                            |
+| "CI is red — rerun it"                                       | Classify first. Infra (Node/pnpm crash, runner stall, fresh OSV) with `main` green → rerun. Our own test/build → real, fix it.                                                                       |
 
 ## Common mistakes
 

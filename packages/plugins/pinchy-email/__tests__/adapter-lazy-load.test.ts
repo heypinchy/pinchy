@@ -64,7 +64,7 @@ interface AgentTool {
   name: string;
   execute: (
     toolCallId: string,
-    params: Record<string, unknown>,
+    params: Record<string, unknown>
   ) => Promise<{
     content: Array<{ type: string; text: string }>;
     isError?: boolean;
@@ -75,10 +75,7 @@ interface AgentTool {
 interface PluginConfig {
   apiBaseUrl: string;
   gatewayToken: string;
-  agents: Record<
-    string,
-    { connectionId: string; permissions: Record<string, string[]> }
-  >;
+  agents: Record<string, { connectionId: string; permissions: Record<string, string[]> }>;
 }
 
 const testConfig: PluginConfig = {
@@ -105,7 +102,7 @@ function createApi(pluginConfig: PluginConfig = testConfig) {
     pluginConfig,
     registerTool: (
       factory: (ctx: { agentId?: string }) => AgentTool | null,
-      opts?: { name?: string },
+      opts?: { name?: string }
     ) => {
       tools.push({ factory, name: opts?.name ?? "" });
     },
@@ -114,27 +111,18 @@ function createApi(pluginConfig: PluginConfig = testConfig) {
   return tools;
 }
 
-function findTool(
-  tools: ReturnType<typeof createApi>,
-  name: string,
-  agentId: string,
-): AgentTool {
+function findTool(tools: ReturnType<typeof createApi>, name: string, agentId: string): AgentTool {
   const entry = tools.find((t) => t.name === name);
   if (!entry) throw new Error(`tool ${name} was not registered`);
   const tool = entry.factory({ agentId });
-  if (!tool)
-    throw new Error(`tool ${name} factory returned null for ${agentId}`);
+  if (!tool) throw new Error(`tool ${name} factory returned null for ${agentId}`);
   return tool;
 }
 
 const mockFetch = vi.fn();
 vi.stubGlobal("fetch", mockFetch);
 
-function mockCredentialsFor(
-  connectionId: string,
-  type: string,
-  credentials: unknown,
-) {
+function mockCredentialsFor(connectionId: string, type: string, credentials: unknown) {
   mockFetch.mockImplementation(async (url: unknown) => {
     if (String(url).includes(`/integrations/${connectionId}/credentials`)) {
       return { ok: true, json: async () => ({ type, credentials }) };
@@ -160,7 +148,7 @@ describe("adapter dynamic loading resilience", () => {
         "email_draft",
         "email_send",
         "email_get_attachment",
-      ]),
+      ])
     );
   });
 
@@ -173,7 +161,7 @@ describe("adapter dynamic loading resilience", () => {
 
     expect(result.isError).toBe(true);
     expect(result.content[0].text).toContain(
-      "The google email integration failed to initialize (a required module could not be loaded)",
+      "The google email integration failed to initialize (a required module could not be loaded)"
     );
     // Audit-integrity contract (#404): details.error must mirror content[0].text.
     expect(result.details?.error).toBe(result.content[0].text);
@@ -209,12 +197,8 @@ describe("index.ts source has no static top-level adapter imports", () => {
     // A static top-level import would pull in the adapter's third-party SDK
     // the moment index.ts is loaded — the exact failure mode this file
     // guards against.
-    expect(source).not.toMatch(
-      /^import\s*\{[^}]*GmailAdapter[^}]*\}\s*from/m,
-    );
-    expect(source).not.toMatch(
-      /^import\s*\{[^}]*GraphAdapter[^}]*\}\s*from/m,
-    );
+    expect(source).not.toMatch(/^import\s*\{[^}]*GmailAdapter[^}]*\}\s*from/m);
+    expect(source).not.toMatch(/^import\s*\{[^}]*GraphAdapter[^}]*\}\s*from/m);
     expect(source).not.toMatch(/^import\s*\{[^}]*ImapAdapter[^}]*\}\s*from/m);
 
     // Each adapter must instead be reachable via a dynamic import() so a

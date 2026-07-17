@@ -25,8 +25,7 @@ const MIME_BY_EXT: Record<string, string> = {
   ".webp": "image/webp",
   ".pdf": "application/pdf",
   ".doc": "application/msword",
-  ".docx":
-    "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+  ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
   ".xls": "application/vnd.ms-excel",
   ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
   ".txt": "text/plain",
@@ -34,9 +33,7 @@ const MIME_BY_EXT: Record<string, string> = {
 };
 
 function mimeForFilename(filename: string): string {
-  return (
-    MIME_BY_EXT[extname(filename).toLowerCase()] ?? "application/octet-stream"
-  );
+  return MIME_BY_EXT[extname(filename).toLowerCase()] ?? "application/octet-stream";
 }
 
 // Reject filenames that could escape the agent's uploads directory.
@@ -64,7 +61,7 @@ interface PluginApi {
   pluginConfig?: PluginConfig;
   registerTool: (
     factory: (ctx: PluginToolContext) => AgentTool | null,
-    opts?: { name?: string },
+    opts?: { name?: string }
   ) => void;
 }
 
@@ -76,7 +73,7 @@ interface AgentTool {
   execute: (
     toolCallId: string,
     params: Record<string, unknown>,
-    signal?: AbortSignal,
+    signal?: AbortSignal
   ) => Promise<{
     content: ContentBlock[];
     isError?: boolean;
@@ -136,7 +133,7 @@ const COUNTRY_ALIASES_TO_CODE: Record<string, string> = {
 
 function getAgentConfig(
   agentConfigs: Record<string, AgentOdooConfig>,
-  agentId: string,
+  agentId: string
 ): AgentOdooConfig | null {
   return agentConfigs[agentId] ?? null;
 }
@@ -148,13 +145,9 @@ function getAgentConfig(
  * `unhashable type: 'dict'`, see issue #209). Without this assertion a
  * malformed payload would propagate all the way to Odoo before erroring.
  */
-function assertCredentialsShape(
-  creds: unknown,
-): asserts creds is OdooCredentials {
+function assertCredentialsShape(creds: unknown): asserts creds is OdooCredentials {
   if (!creds || typeof creds !== "object") {
-    throw new Error(
-      `pinchy-odoo: credentials must be an object, got ${typeof creds}`,
-    );
+    throw new Error(`pinchy-odoo: credentials must be an object, got ${typeof creds}`);
   }
   const obj = creds as Record<string, unknown>;
   // Detect the SecretRef-shaped payload (#209) up front so the error
@@ -178,9 +171,7 @@ function assertCredentialsShape(
         : actual === "object"
           ? " (looks like an unresolved SecretRef — see #209)"
           : "";
-      throw new Error(
-        `pinchy-odoo: credentials.${name} must be a ${type}, got ${actual}${hint}`,
-      );
+      throw new Error(`pinchy-odoo: credentials.${name} must be a ${type}, got ${actual}${hint}`);
     }
   }
 }
@@ -199,11 +190,11 @@ function assertCredentialsShape(
 async function fetchCredentials(
   apiBaseUrl: string,
   gatewayToken: string,
-  connectionId: string,
+  connectionId: string
 ): Promise<OdooCredentials> {
   const response = await fetch(
     `${apiBaseUrl}/api/internal/integrations/${connectionId}/credentials`,
-    { headers: { Authorization: `Bearer ${gatewayToken}` } },
+    { headers: { Authorization: `Bearer ${gatewayToken}` } }
   );
   if (!response.ok) {
     // The credentials route puts an actionable message in the JSON body (e.g. a
@@ -217,11 +208,10 @@ async function fetchCredentials(
         return null;
       }
     })();
-    const detail =
-      body && typeof body.error === "string" ? `: ${body.error}` : "";
+    const detail = body && typeof body.error === "string" ? `: ${body.error}` : "";
     throw new Error(
       `Failed to fetch Odoo credentials for connection ${connectionId}: ` +
-        `HTTP ${response.status} ${response.statusText}${detail}`,
+        `HTTP ${response.status} ${response.statusText}${detail}`
     );
   }
   const data = (await response.json()) as { credentials?: unknown };
@@ -260,9 +250,7 @@ function unquoteFieldKeysDeep(value: unknown): unknown {
   const out: Record<string, unknown> = {};
   for (const [key, val] of Object.entries(value)) {
     const stripped =
-      key.length >= 2 && key.startsWith('"') && key.endsWith('"')
-        ? key.slice(1, -1)
-        : key;
+      key.length >= 2 && key.startsWith('"') && key.endsWith('"') ? key.slice(1, -1) : key;
     out[stripped] = unquoteFieldKeysDeep(val);
   }
   return out;
@@ -306,13 +294,11 @@ function itemWrappedError(paramName: string): Error {
     `Your \`${paramName}\` arrived with arrays wrapped as {"item": …} objects instead of plain JSON arrays — a serialization artifact from the model, not a value Odoo can accept. ` +
       `Re-issue the call with plain arrays. For example, a one2many field is invoice_line_ids: [[0, 0, {…}]], ` +
       `a many2many is tax_ids: [[6, 0, [<id>]]], and a domain is [["state", "=", "posted"]] — ` +
-      `never {"item": {"item": [...]}}.`,
+      `never {"item": {"item": [...]}}.`
   );
 }
 
-function unquoteFieldKeys(
-  values: Record<string, unknown>,
-): Record<string, unknown> {
+function unquoteFieldKeys(values: Record<string, unknown>): Record<string, unknown> {
   return unquoteFieldKeysDeep(values) as Record<string, unknown>;
 }
 
@@ -368,9 +354,7 @@ const COMMON_FIELDS = [
   "ref",
 ] as const;
 
-const COMMON_INDEX = new Map<string, number>(
-  COMMON_FIELDS.map((f, i) => [f, i]),
-);
+const COMMON_INDEX = new Map<string, number>(COMMON_FIELDS.map((f, i) => [f, i]));
 
 export function sortFieldsByPriority(fields: OdooField[]): OdooField[] {
   return [...fields].sort((a, b) => {
@@ -421,8 +405,7 @@ const DEFAULT_FIELD_LIMIT = 40;
 // model guesses, and the downstream action lands on the wrong record. When a
 // model declares both fields in its schema, surface a one-line hint next to
 // each so the LLM sees the distinction at the point of decision.
-const ID_DISAMBIGUATION_NOTE =
-  "Odoo's internal numeric primary key. NOT the SKU.";
+const ID_DISAMBIGUATION_NOTE = "Odoo's internal numeric primary key. NOT the SKU.";
 const DEFAULT_CODE_DISAMBIGUATION_NOTE =
   "Human-readable internal reference / SKU. NOT the database id.";
 
@@ -441,17 +424,14 @@ export const PRODUCT_REF_DISAMBIGUATION_HINT =
 
 export function compactSchema(
   allFields: OdooField[],
-  opts: CompactSchemaOptions,
+  opts: CompactSchemaOptions
 ): CompactSchemaResult {
   const sorted = sortFieldsByPriority(allFields);
 
   // Empty `fields: []` is treated the same as omitted — the agent didn't ask
   // for anything specific, so fall through to the default-truncate path.
   const hasFieldsFilter = Array.isArray(opts.fields) && opts.fields.length > 0;
-  const wantsAll =
-    hasFieldsFilter &&
-    opts.fields!.length === 1 &&
-    opts.fields![0] === "__all__";
+  const wantsAll = hasFieldsFilter && opts.fields!.length === 1 && opts.fields![0] === "__all__";
 
   // Clamp limit: NaN / non-finite → default; negative → 0.
   const safeLimit = Number.isFinite(opts.limit)
@@ -490,8 +470,7 @@ export function compactSchema(
   // `id` on records regardless of the requested field list — annotating
   // runtime records would be misplaced).
   const allFieldNames = new Set(allFields.map((f) => f.name));
-  const annotateIdVsCode =
-    allFieldNames.has("id") && allFieldNames.has("default_code");
+  const annotateIdVsCode = allFieldNames.has("id") && allFieldNames.has("default_code");
 
   function noteFor(name: string): string | undefined {
     if (!annotateIdVsCode) return undefined;
@@ -506,9 +485,7 @@ export function compactSchema(
     if (opts.verbose) {
       out[f.name] = {
         type: f.type,
-        ...(f.type === "many2one" ||
-        f.type === "one2many" ||
-        f.type === "many2many"
+        ...(f.type === "many2one" || f.type === "one2many" || f.type === "many2many"
           ? { relation: f.relation }
           : {}),
         ...(f.type === "selection" ? { selection: f.selection ?? [] } : {}),
@@ -522,8 +499,7 @@ export function compactSchema(
     }
   }
 
-  const truncated =
-    !hasFieldsFilter && !wantsAll && sorted.length > selected.length;
+  const truncated = !hasFieldsFilter && !wantsAll && sorted.length > selected.length;
   if (truncated) {
     hint =
       "default-truncated to most common fields; pass fields:['__all__'] for the full list or fields:[…] to target specific ones";
@@ -582,7 +558,7 @@ export function relationHasCompanyId(fields: OdooField[]): boolean {
 
 export function augmentFieldsWithCompanyId(
   requested: string[] | undefined,
-  modelFields: OdooField[],
+  modelFields: OdooField[]
 ): string[] | undefined {
   if (!requested || requested.length === 0) return requested;
   if (!relationHasCompanyId(modelFields)) return requested;
@@ -604,9 +580,7 @@ export function augmentFieldsWithCompanyId(
  * back in — teaching a name and then rejecting it is the plugin's bug, not
  * the model's.
  */
-export const SYNTHETIC_FIELD_NAMES: ReadonlySet<string> = new Set([
-  "_pinchy_ref",
-]);
+export const SYNTHETIC_FIELD_NAMES: ReadonlySet<string> = new Set(["_pinchy_ref"]);
 
 /**
  * Remove synthetic (plugin-invented) field names from a model-supplied
@@ -626,13 +600,9 @@ export const SYNTHETIC_FIELD_NAMES: ReadonlySet<string> = new Set([
  * metadata and never sees model-supplied input, so it must not go through
  * this stripping.
  */
-export function stripSyntheticFields<T extends string[] | undefined>(
-  requested: T,
-): T {
+export function stripSyntheticFields<T extends string[] | undefined>(requested: T): T {
   if (!requested || requested.length === 0) return requested;
-  const filtered = requested.filter(
-    (entry) => !SYNTHETIC_FIELD_NAMES.has(entry.split(":")[0]),
-  );
+  const filtered = requested.filter((entry) => !SYNTHETIC_FIELD_NAMES.has(entry.split(":")[0]));
   return (filtered.length === requested.length ? requested : filtered) as T;
 }
 
@@ -649,22 +619,17 @@ export function stripSyntheticFields<T extends string[] | undefined>(
  * `_pinchy_ref` is never a legitimate thing to group by — it is per-record
  * by construction, so `id` is what the model actually wants.
  */
-export function prepareAggregateFields(
-  value: unknown,
-  paramName: "fields" | "groupby",
-): string[] {
+export function prepareAggregateFields(value: unknown, paramName: "fields" | "groupby"): string[] {
   if (!Array.isArray(value) || value.some((e) => typeof e !== "string")) {
     throw new Error(`\`${paramName}\` must be an array of field-name strings.`);
   }
   const stripped = stripSyntheticFields(value as string[]);
   if (value.length > 0 && stripped.length === 0) {
-    const synthetic = [...SYNTHETIC_FIELD_NAMES]
-      .map((name) => `\`${name}\``)
-      .join(", ");
+    const synthetic = [...SYNTHETIC_FIELD_NAMES].map((name) => `\`${name}\``).join(", ");
     throw new Error(
       `\`${paramName}\` contained only synthetic field names (${synthetic}), ` +
         `which do not exist on the Odoo model. Use a real column — to count ` +
-        `or group per record, use \`id\`.`,
+        `or group per record, use \`id\`.`
     );
   }
   return stripped;
@@ -687,15 +652,12 @@ export function normalizeFields(fields: unknown): OdooField[] {
           name: field.name,
           string: typeof field.string === "string" ? field.string : undefined,
           type: typeof field.type === "string" ? field.type : undefined,
-          relation:
-            typeof field.relation === "string" ? field.relation : undefined,
+          relation: typeof field.relation === "string" ? field.relation : undefined,
           selection: Array.isArray(field.selection)
             ? (field.selection as Array<[string, string]>)
             : undefined,
-          readonly:
-            typeof field.readonly === "boolean" ? field.readonly : undefined,
-          required:
-            typeof field.required === "boolean" ? field.required : undefined,
+          readonly: typeof field.readonly === "boolean" ? field.readonly : undefined,
+          required: typeof field.required === "boolean" ? field.required : undefined,
         },
       ];
     });
@@ -710,15 +672,12 @@ export function normalizeFields(fields: unknown): OdooField[] {
         name,
         string: typeof field.string === "string" ? field.string : undefined,
         type: typeof field.type === "string" ? field.type : undefined,
-        relation:
-          typeof field.relation === "string" ? field.relation : undefined,
+        relation: typeof field.relation === "string" ? field.relation : undefined,
         selection: Array.isArray(field.selection)
           ? (field.selection as Array<[string, string]>)
           : undefined,
-        readonly:
-          typeof field.readonly === "boolean" ? field.readonly : undefined,
-        required:
-          typeof field.required === "boolean" ? field.required : undefined,
+        readonly: typeof field.readonly === "boolean" ? field.readonly : undefined,
+        required: typeof field.required === "boolean" ? field.required : undefined,
       },
     ];
   });
@@ -740,7 +699,7 @@ type FieldsCache = Map<string, OdooField[]>;
 async function loadFields(
   client: OdooClient,
   model: string,
-  cache: FieldsCache,
+  cache: FieldsCache
 ): Promise<OdooField[]> {
   const cached = cache.get(model);
   if (cached) return cached;
@@ -773,16 +732,12 @@ function recordText(record: OdooRecord, field: string): string | null {
 }
 
 function uniqueIds(records: OdooRecord[]): number[] {
-  return [
-    ...new Set(records.map(recordId).filter((id): id is number => id !== null)),
-  ];
+  return [...new Set(records.map(recordId).filter((id): id is number => id !== null))];
 }
 
 function recordLabel(record: OdooRecord): string {
   return (
-    recordText(record, "display_name") ??
-    recordText(record, "name") ??
-    String(record.id ?? "")
+    recordText(record, "display_name") ?? recordText(record, "name") ?? String(record.id ?? "")
   );
 }
 
@@ -797,9 +752,10 @@ function recordLabel(record: OdooRecord): string {
 const MAX_DISPLAYED_LABELS = 5;
 
 function formatSuggestions(records: OdooRecord[]): string {
-  const labels = [
-    ...new Set(records.map(recordLabel).filter((label) => label.length > 0)),
-  ].slice(0, MAX_DISPLAYED_LABELS);
+  const labels = [...new Set(records.map(recordLabel).filter((label) => label.length > 0))].slice(
+    0,
+    MAX_DISPLAYED_LABELS
+  );
   return labels.length > 0 ? ` Suggestions: ${labels.join(", ")}.` : "";
 }
 
@@ -814,7 +770,7 @@ function formatSuggestions(records: OdooRecord[]): string {
 export function formatMultiMatchError(
   field: OdooField,
   lookup: { name?: string | null; code?: string | null },
-  matches: OdooRecord[],
+  matches: OdooRecord[]
 ): string {
   const label = field.string ?? field.name;
   const input = lookup.code ?? lookup.name ?? "";
@@ -849,8 +805,7 @@ function rankedSuggestions(input: string, records: OdooRecord[]): OdooRecord[] {
     const displayName = recordText(record, "display_name");
     return (
       (name !== null && normalizeLookupText(name).startsWith(requested)) ||
-      (displayName !== null &&
-        normalizeLookupText(displayName).startsWith(requested))
+      (displayName !== null && normalizeLookupText(displayName).startsWith(requested))
     );
   });
   return startsWith.length > 0 ? startsWith : records;
@@ -860,8 +815,7 @@ function parseLookup(field: OdooField, value: unknown): RelationLookup | null {
   if (typeof value === "string") {
     const input = value.trim();
     if (input === "") return { name: "" };
-    const countryCode =
-      field.relation === "res.country" ? countryCodeForInput(input) : null;
+    const countryCode = field.relation === "res.country" ? countryCodeForInput(input) : null;
     return countryCode ? { code: countryCode } : { name: input };
   }
 
@@ -869,37 +823,34 @@ function parseLookup(field: OdooField, value: unknown): RelationLookup | null {
   const lookup = value.lookup;
   return {
     name: typeof lookup.name === "string" ? lookup.name.trim() : undefined,
-    code:
-      typeof lookup.code === "string"
-        ? lookup.code.trim().toUpperCase()
-        : undefined,
+    code: typeof lookup.code === "string" ? lookup.code.trim().toUpperCase() : undefined,
   };
 }
 
 function resolveReferenceFromRecords(
   field: OdooField,
   lookup: RelationLookup,
-  records: OdooRecord[],
+  records: OdooRecord[]
 ): number {
   const label = field.string ?? field.name;
   const input = lookup.code ?? lookup.name ?? "";
 
   if (field.relation === "res.country" && lookup.code) {
     const codeMatches = records.filter(
-      (record) => recordText(record, "code")?.toUpperCase() === lookup.code,
+      (record) => recordText(record, "code")?.toUpperCase() === lookup.code
     );
     const ids = uniqueIds(codeMatches);
     if (ids.length === 1) return ids[0];
     if (ids.length > 1) {
       throw new Error(
-        `Could not resolve ${field.name}: multiple countries match code "${lookup.code}".`,
+        `Could not resolve ${field.name}: multiple countries match code "${lookup.code}".`
       );
     }
   }
 
   if (!lookup.name) {
     throw new Error(
-      `Could not resolve ${field.name} from "${input}".${formatSuggestions(records)} Provide an exact ${label} name or ref.`,
+      `Could not resolve ${field.name} from "${input}".${formatSuggestions(records)} Provide an exact ${label} name or ref.`
     );
   }
 
@@ -920,8 +871,8 @@ function resolveReferenceFromRecords(
 
   throw new Error(
     `Could not resolve ${field.name} from "${input}".${formatSuggestions(
-      rankedSuggestions(input, records),
-    )} Provide an exact ${label} name or ref.`,
+      rankedSuggestions(input, records)
+    )} Provide an exact ${label} name or ref.`
   );
 }
 
@@ -942,7 +893,7 @@ function resolveReferenceFromRecords(
  */
 function decodeOdooRefForConnection(
   connectionId: string,
-  refString: string,
+  refString: string
 ): IntegrationRefPayload {
   const ref = decodeRef(refString);
   if (ref.integrationType !== "odoo") {
@@ -971,7 +922,7 @@ function refDecodeError(err: unknown, paramName: string): Error {
     return new Error(
       `\`${paramName}\` ref could not be decoded — it looks corrupted or ` +
         `truncated. Re-fetch the record with \`odoo_read\` and pass the ` +
-        `fresh \`_pinchy_ref\` exactly as returned.`,
+        `fresh \`_pinchy_ref\` exactly as returned.`
     );
   }
   return err instanceof Error ? err : new Error(String(err));
@@ -996,7 +947,7 @@ function refDecodeError(err: unknown, paramName: string): Error {
 function decodeTargetRef(
   connectionId: string,
   refString: string,
-  paramName = "target",
+  paramName = "target"
 ): IntegrationRefPayload {
   try {
     return decodeOdooRefForConnection(connectionId, refString);
@@ -1004,9 +955,7 @@ function decodeTargetRef(
     if (err instanceof MalformedIntegrationRefError) {
       throw refDecodeError(err, paramName);
     }
-    throw new Error(
-      `\`${paramName}\` ref does not belong to this Odoo connection.`,
-    );
+    throw new Error(`\`${paramName}\` ref does not belong to this Odoo connection.`);
   }
 }
 
@@ -1024,11 +973,7 @@ function decodeTargetRef(
  * both get the same validation — accepting the bare string loses no safety
  * versus the object form.
  */
-function decodeAndValidateRef(
-  connectionId: string,
-  field: OdooField,
-  refString: string,
-): number {
+function decodeAndValidateRef(connectionId: string, field: OdooField, refString: string): number {
   let ref: IntegrationRefPayload;
   try {
     ref = decodeOdooRefForConnection(connectionId, refString);
@@ -1036,9 +981,7 @@ function decodeAndValidateRef(
     throw refDecodeError(err, field.name);
   }
   if (ref.model !== field.relation) {
-    throw new Error(
-      `Invalid ref for ${field.name}: expected ${field.relation}, got ${ref.model}.`,
-    );
+    throw new Error(`Invalid ref for ${field.name}: expected ${field.relation}, got ${ref.model}.`);
   }
   return ref.id;
 }
@@ -1046,7 +989,7 @@ function decodeAndValidateRef(
 function refToId(
   connectionId: string,
   field: OdooField,
-  value: Record<string, unknown>,
+  value: Record<string, unknown>
 ): number | null {
   // Accept BOTH wire shapes: the m2o wrapper's `{ ref }` (wrapMany2OneValue)
   // and the one2many wrapper's `{ _pinchy_ref }` (wrapOne2ManyValue). Without
@@ -1091,9 +1034,7 @@ function refToId(
  * `line_ids[0].account_id`. Odoo's server-side `company_id` constraint
  * remains the ultimate authority.
  */
-export function assertNoCrossCompanyRefs(
-  values: Record<string, unknown>,
-): void {
+export function assertNoCrossCompanyRefs(values: Record<string, unknown>): void {
   const intended = readRefCompanyTag(values.company_id);
   if (intended === null) return;
   const intendedLabel = intended.label ?? `id=${intended.id}`;
@@ -1124,7 +1065,7 @@ function assertNoCrossCompanyValue(
   intended: { id: number; label: string | null },
   intendedLabel: string,
   path: string,
-  depth: number,
+  depth: number
 ): void {
   if (depth >= MAX_CROSS_COMPANY_DEPTH) return;
   const sibling = readRefCompanyTag(value);
@@ -1134,7 +1075,7 @@ function assertNoCrossCompanyValue(
       throw new Error(
         `Cross-company write rejected: values.company_id points to "${intendedLabel}" ` +
           `but values.${path} points to a record in "${otherLabel}". ` +
-          `Re-resolve ${path} in the right company first.`,
+          `Re-resolve ${path} in the right company first.`
       );
     }
     return;
@@ -1152,9 +1093,7 @@ function assertNoCrossCompanyValue(
       // to the parent's company when the line declares none.
       const lineTag = readRefCompanyTag(lineDict.company_id);
       const lineIntended = lineTag ?? intended;
-      const lineIntendedLabel = lineTag
-        ? (lineTag.label ?? `id=${lineTag.id}`)
-        : intendedLabel;
+      const lineIntendedLabel = lineTag ? (lineTag.label ?? `id=${lineTag.id}`) : intendedLabel;
       for (const [k, v] of Object.entries(lineDict)) {
         if (k === "company_id") continue; // the scoping anchor itself
         assertNoCrossCompanyValue(
@@ -1162,31 +1101,19 @@ function assertNoCrossCompanyValue(
           lineIntended,
           lineIntendedLabel,
           `${path}[${i}].${k}`,
-          depth + 1,
+          depth + 1
         );
       }
     }
     // Codes 1 (update), 2 (delete), 3 (unlink), 4 (link) all carry a
     // company-taggable id at tuple[1]. (0 has no id; 6 is handled below.)
     if (tuple[0] === 1 || tuple[0] === 2 || tuple[0] === 3 || tuple[0] === 4) {
-      assertNoCrossCompanyValue(
-        tuple[1],
-        intended,
-        intendedLabel,
-        `${path}[${i}]`,
-        depth + 1,
-      );
+      assertNoCrossCompanyValue(tuple[1], intended, intendedLabel, `${path}[${i}]`, depth + 1);
     }
     // replace (6, 0, [ids]) — check every id in the replacement list.
     if (tuple[0] === 6 && Array.isArray(tuple[2])) {
       (tuple[2] as unknown[]).forEach((id, j) => {
-        assertNoCrossCompanyValue(
-          id,
-          intended,
-          intendedLabel,
-          `${path}[${i}][${j}]`,
-          depth + 1,
-        );
+        assertNoCrossCompanyValue(id, intended, intendedLabel, `${path}[${i}][${j}]`, depth + 1);
       });
     }
   });
@@ -1210,7 +1137,7 @@ function assertNoCrossCompanyValue(
  */
 export function findInvalidSelectionValues(
   fields: OdooField[],
-  values: Record<string, unknown>,
+  values: Record<string, unknown>
 ): Array<{ field: string; value: string; validValues: string[] }> {
   const byName = new Map(fields.map((f) => [f.name, f]));
   const invalid: Array<{ field: string; value: string; validValues: string[] }> = [];
@@ -1230,13 +1157,13 @@ export function findInvalidSelectionValues(
 /** Human-readable error for invalid selection values, listing the valid keys. */
 export function formatInvalidSelectionError(
   model: string,
-  invalid: Array<{ field: string; value: string; validValues: string[] }>,
+  invalid: Array<{ field: string; value: string; validValues: string[] }>
 ): string {
   return invalid
     .map(
       (e) =>
         `Invalid value "${e.value}" for ${model}.${e.field}. ` +
-        `Valid values: ${e.validValues.join(", ")}.`,
+        `Valid values: ${e.validValues.join(", ")}.`
     )
     .join(" ");
 }
@@ -1248,9 +1175,7 @@ export function formatInvalidSelectionError(
  * label may still be null even when the id is present, mirroring the
  * encoder's tolerance of partial tags on the read side.
  */
-function readRefCompanyTag(
-  value: unknown,
-): { id: number; label: string | null } | null {
+function readRefCompanyTag(value: unknown): { id: number; label: string | null } | null {
   // Accept the ref in any wire form the agent may pass: the m2o wrapper's
   // `{ ref: "…" }` object, the one2many wrapper's `{ _pinchy_ref: "…" }`
   // object (so a pasted whole o2m line object is visible to this guard too),
@@ -1301,13 +1226,13 @@ async function searchRelationByName(
   field: OdooField,
   lookup: RelationLookup,
   scopeCompanyId: number | null = null,
-  fieldsCache: FieldsCache = new Map(),
+  fieldsCache: FieldsCache = new Map()
 ): Promise<unknown> {
   const relation = field.relation as string;
   const relationFields = await loadFields(client, relation, fieldsCache);
   const lookupFields = augmentFieldsWithCompanyId(
     ["id", "name", "display_name"],
-    relationFields,
+    relationFields
   ) ?? ["id", "name", "display_name"];
   const domain: OdooDomain = [["name", "ilike", lookup.name ?? ""]];
   if (scopeCompanyId !== null && relationHasCompanyId(relationFields)) {
@@ -1318,11 +1243,7 @@ async function searchRelationByName(
     // lookups that resolved before. For company-EXCLUSIVE relations
     // (account.journal, where company_id is required) the false branch
     // never matches, so this is equivalent to the strict filter there.
-    domain.push(
-      "|",
-      ["company_id", "=", false],
-      ["company_id", "=", scopeCompanyId],
-    );
+    domain.push("|", ["company_id", "=", false], ["company_id", "=", scopeCompanyId]);
   }
   return client.searchRead(relation, domain, {
     fields: lookupFields,
@@ -1336,17 +1257,17 @@ async function resolveRelationValue(
   field: OdooField,
   value: unknown,
   scopeCompanyId: number | null = null,
-  fieldsCache: FieldsCache = new Map(),
+  fieldsCache: FieldsCache = new Map()
 ): Promise<unknown> {
   if (value == null || value === false) return value;
   if (typeof value === "number") {
     throw new Error(
-      `Raw numeric IDs are not accepted for ${field.name}. Use an opaque ref or lookup.`,
+      `Raw numeric IDs are not accepted for ${field.name}. Use an opaque ref or lookup.`
     );
   }
   if (Array.isArray(value) && typeof value[0] === "number") {
     throw new Error(
-      `Raw numeric IDs are not accepted for ${field.name}. Use an opaque ref or lookup.`,
+      `Raw numeric IDs are not accepted for ${field.name}. Use an opaque ref or lookup.`
     );
   }
   if (isRecord(value)) {
@@ -1354,7 +1275,7 @@ async function resolveRelationValue(
     if (refId !== null) return refId;
     if (typeof value.id === "number") {
       throw new Error(
-        `Raw numeric IDs are not accepted for ${field.name}. Use an opaque ref or lookup.`,
+        `Raw numeric IDs are not accepted for ${field.name}. Use an opaque ref or lookup.`
       );
     }
   }
@@ -1377,7 +1298,7 @@ async function resolveRelationValue(
   if (lookup.name === "") return false;
   if (lookup.name && /^\d+$/.test(lookup.name)) {
     throw new Error(
-      `Raw numeric IDs are not accepted for ${field.name}. Use an opaque ref or lookup.`,
+      `Raw numeric IDs are not accepted for ${field.name}. Use an opaque ref or lookup.`
     );
   }
   if (!field.relation) return value;
@@ -1388,19 +1309,9 @@ async function resolveRelationValue(
           fields: ["id", "name", "display_name", "code"],
           limit: 1000,
         })
-      : await searchRelationByName(
-          client,
-          field,
-          lookup,
-          scopeCompanyId,
-          fieldsCache,
-        );
+      : await searchRelationByName(client, field, lookup, scopeCompanyId, fieldsCache);
 
-  return resolveReferenceFromRecords(
-    field,
-    lookup,
-    getSearchReadRecords(result),
-  );
+  return resolveReferenceFromRecords(field, lookup, getSearchReadRecords(result));
 }
 
 export async function normalizeMany2OneValues(
@@ -1411,7 +1322,7 @@ export async function normalizeMany2OneValues(
   permissions: Permissions,
   depth = 0,
   inheritedScope: number | null = null,
-  fieldsCache: FieldsCache = new Map(),
+  fieldsCache: FieldsCache = new Map()
 ): Promise<{ values: Record<string, unknown>; fields: OdooField[] }> {
   const fields = await loadFields(client, model, fieldsCache);
   if (fields.length === 0) return { values, fields };
@@ -1437,14 +1348,10 @@ export async function normalizeMany2OneValues(
       companyField,
       normalized.company_id,
       null,
-      fieldsCache,
+      fieldsCache
     );
     normalized.company_id = resolved;
-    if (
-      typeof resolved === "number" &&
-      Number.isInteger(resolved) &&
-      resolved > 0
-    ) {
+    if (typeof resolved === "number" && Number.isInteger(resolved) && resolved > 0) {
       scopeCompanyId = resolved;
     }
   }
@@ -1458,7 +1365,7 @@ export async function normalizeMany2OneValues(
       field,
       normalized[field.name],
       scopeCompanyId,
-      fieldsCache,
+      fieldsCache
     );
   }
 
@@ -1474,11 +1381,7 @@ export async function normalizeMany2OneValues(
   if (depth < 1) {
     for (const field of fields) {
       const kind =
-        field.type === "one2many"
-          ? "one2many"
-          : field.type === "many2many"
-            ? "many2many"
-            : null;
+        field.type === "one2many" ? "one2many" : field.type === "many2many" ? "many2many" : null;
       if (kind === null || !field.relation) continue;
       if (!(field.name in normalized)) continue;
       const commands = normalized[field.name];
@@ -1492,7 +1395,7 @@ export async function normalizeMany2OneValues(
         permissions,
         depth,
         fieldsCache,
-        kind,
+        kind
       );
     }
   }
@@ -1550,7 +1453,7 @@ async function resolveCommandTargetId(
   relationField: OdooField,
   idValue: unknown,
   scopeCompanyId: number | null,
-  fieldsCache: FieldsCache,
+  fieldsCache: FieldsCache
 ): Promise<unknown> {
   if (typeof idValue === "number") return idValue;
   if (idValue === false || idValue == null) return idValue;
@@ -1560,7 +1463,7 @@ async function resolveCommandTargetId(
     relationField,
     idValue,
     scopeCompanyId,
-    fieldsCache,
+    fieldsCache
   );
 }
 
@@ -1573,8 +1476,7 @@ async function resolveCommandTargetId(
 function isRefShaped(value: unknown): boolean {
   if (isIntegrationRef(value)) return true;
   return (
-    isRecord(value) &&
-    (typeof value.ref === "string" || typeof value._pinchy_ref === "string")
+    isRecord(value) && (typeof value.ref === "string" || typeof value._pinchy_ref === "string")
   );
 }
 
@@ -1628,7 +1530,7 @@ async function normalizeCommandTuples(
   permissions: Permissions,
   depth: number,
   fieldsCache: FieldsCache,
-  kind: "one2many" | "many2many",
+  kind: "one2many" | "many2many"
 ): Promise<unknown[]> {
   const relationModel = relationField.relation as string;
   const opByCode = kind === "one2many" ? NESTED_OP_BY_CODE : M2M_OP_BY_CODE;
@@ -1647,7 +1549,7 @@ async function normalizeCommandTuples(
       throw new Error(
         `Agent missing ${op} grant on ${relationModel} ` +
           `(nested via ${relationField.name} command ${cmd[0]}). ` +
-          `Add ${op} on ${relationModel} to this agent's permissions.`,
+          `Add ${op} on ${relationModel} to this agent's permissions.`
       );
     }
   }
@@ -1664,7 +1566,7 @@ async function normalizeCommandTuples(
     throw new Error(
       `Cannot resolve references in "${relationField.name}" (relation "${relationModel}"): ` +
         `the schema for ${relationModel} came back empty, so many2one refs in its ` +
-        `command tuples cannot be decoded. Re-check the connection to Odoo and try again.`,
+        `command tuples cannot be decoded. Re-check the connection to Odoo and try again.`
     );
   }
 
@@ -1686,7 +1588,7 @@ async function normalizeCommandTuples(
           permissions,
           depth + 1,
           scopeCompanyId,
-          fieldsCache,
+          fieldsCache
         )
       ).values;
       const resolvedId =
@@ -1697,7 +1599,7 @@ async function normalizeCommandTuples(
               relationField,
               cmd[1],
               scopeCompanyId,
-              fieldsCache,
+              fieldsCache
             )
           : cmd[1];
       out.push([code, resolvedId, resolvedValues]);
@@ -1708,7 +1610,7 @@ async function normalizeCommandTuples(
         relationField,
         cmd[1],
         scopeCompanyId,
-        fieldsCache,
+        fieldsCache
       );
       out.push([code, resolvedId, ...cmd.slice(2)]);
     } else if (code === 6 && Array.isArray(cmd[2])) {
@@ -1720,9 +1622,9 @@ async function normalizeCommandTuples(
             relationField,
             id,
             scopeCompanyId,
-            fieldsCache,
-          ),
-        ),
+            fieldsCache
+          )
+        )
       );
       out.push([code, cmd[1], resolvedIds]);
     } else {
@@ -1747,20 +1649,16 @@ const TODO_ACTIVITY_XMLID = { module: "mail", name: "mail_activity_data_todo" };
  * `res_id IS NOT NULL AND res_id != 0` SQL CHECK. ir.model is world-readable
  * for internal users, so this lookup needs no extra model grant.
  */
-async function resolveIrModelId(
-  client: OdooClient,
-  technicalModel: string,
-): Promise<number> {
-  const result = await client.searchRead(
-    "ir.model",
-    [["model", "=", technicalModel]],
-    { fields: ["id"], limit: 1 },
-  );
+async function resolveIrModelId(client: OdooClient, technicalModel: string): Promise<number> {
+  const result = await client.searchRead("ir.model", [["model", "=", technicalModel]], {
+    fields: ["id"],
+    limit: 1,
+  });
   const record = getSearchReadRecords(result)[0];
   const id = record ? recordId(record) : null;
   if (id === null) {
     throw new Error(
-      `Could not resolve the Odoo model "${technicalModel}" — no ir.model row found.`,
+      `Could not resolve the Odoo model "${technicalModel}" — no ir.model row found.`
     );
   }
   return id;
@@ -1771,9 +1669,7 @@ async function resolveIrModelId(
  * (rather than throwing) when ir.model.data is unreadable or the xmlid is
  * absent, so the caller can fall back to Odoo's own default activity type.
  */
-async function resolveDefaultActivityTypeId(
-  client: OdooClient,
-): Promise<number | null> {
+async function resolveDefaultActivityTypeId(client: OdooClient): Promise<number | null> {
   try {
     const result = await client.searchRead(
       "ir.model.data",
@@ -1781,7 +1677,7 @@ async function resolveDefaultActivityTypeId(
         ["module", "=", TODO_ACTIVITY_XMLID.module],
         ["name", "=", TODO_ACTIVITY_XMLID.name],
       ],
-      { fields: ["res_id"], limit: 1 },
+      { fields: ["res_id"], limit: 1 }
     );
     const record = getSearchReadRecords(result)[0];
     return record && typeof record.res_id === "number" ? record.res_id : null;
@@ -1791,20 +1687,16 @@ async function resolveDefaultActivityTypeId(
 }
 
 /** Resolve an activity type id from its exact (untranslated) name. */
-async function resolveActivityTypeByName(
-  client: OdooClient,
-  name: string,
-): Promise<number> {
-  const result = await client.searchRead(
-    "mail.activity.type",
-    [["name", "=", name]],
-    { fields: ["id"], limit: 1 },
-  );
+async function resolveActivityTypeByName(client: OdooClient, name: string): Promise<number> {
+  const result = await client.searchRead("mail.activity.type", [["name", "=", name]], {
+    fields: ["id"],
+    limit: 1,
+  });
   const record = getSearchReadRecords(result)[0];
   const id = record ? recordId(record) : null;
   if (id === null) {
     throw new Error(
-      `Could not resolve activity type "${name}". Use an exact activity type name (e.g. "To-Do", "Call", "Email").`,
+      `Could not resolve activity type "${name}". Use an exact activity type name (e.g. "To-Do", "Call", "Email").`
     );
   }
   return id;
@@ -1818,7 +1710,7 @@ async function resolveActivityTypeByName(
 async function resolveAssigneeUserId(
   client: OdooClient,
   connectionId: string,
-  assignee: string,
+  assignee: string
 ): Promise<number> {
   if (isIntegrationRef(assignee)) {
     let ref: IntegrationRefPayload;
@@ -1832,23 +1724,17 @@ async function resolveAssigneeUserId(
     }
     return ref.id;
   }
-  const result = await client.searchRead(
-    "res.users",
-    [["name", "=", assignee]],
-    {
-      fields: ["id"],
-      limit: 2,
-    },
-  );
+  const result = await client.searchRead("res.users", [["name", "=", assignee]], {
+    fields: ["id"],
+    limit: 2,
+  });
   const ids = uniqueIds(getSearchReadRecords(result));
   if (ids.length === 1) return ids[0];
   if (ids.length === 0) {
-    throw new Error(
-      `Could not resolve assignee "${assignee}" — no matching user.`,
-    );
+    throw new Error(`Could not resolve assignee "${assignee}" — no matching user.`);
   }
   throw new Error(
-    `Could not resolve assignee "${assignee}" — multiple users match; pass an opaque res.users ref instead.`,
+    `Could not resolve assignee "${assignee}" — multiple users match; pass an opaque res.users ref instead.`
   );
 }
 
@@ -1861,19 +1747,16 @@ async function resolveAssigneeUserId(
 async function resolveTargetSalespersonId(
   client: OdooClient,
   targetModel: string,
-  targetId: number,
+  targetId: number
 ): Promise<number | null> {
   try {
-    const result = await client.searchRead(
-      targetModel,
-      [["id", "=", targetId]],
-      { fields: ["user_id"], limit: 1 },
-    );
+    const result = await client.searchRead(targetModel, [["id", "=", targetId]], {
+      fields: ["user_id"],
+      limit: 1,
+    });
     const record = getSearchReadRecords(result)[0];
     const userId = record?.user_id;
-    return Array.isArray(userId) && typeof userId[0] === "number"
-      ? userId[0]
-      : null;
+    return Array.isArray(userId) && typeof userId[0] === "number" ? userId[0] : null;
   } catch {
     return null;
   }
@@ -1894,7 +1777,7 @@ async function resolveTargetSalespersonId(
 async function ensureActivityResModelId(
   client: OdooClient,
   model: string,
-  values: Record<string, unknown>,
+  values: Record<string, unknown>
 ): Promise<Record<string, unknown>> {
   if (model !== "mail.activity") return values;
   if (values.res_model_id != null) return values;
@@ -1955,10 +1838,7 @@ const SETTLEMENT_ACCOUNT_TYPES = ["asset_receivable", "liability_payable"];
  * The only trustworthy evidence is the settled document's own residual going
  * down. That is what we check.
  */
-export function didReconcile(
-  residualBefore: unknown,
-  residualAfter: unknown,
-): boolean {
+export function didReconcile(residualBefore: unknown, residualAfter: unknown): boolean {
   const before = asNumber(residualBefore);
   const after = asNumber(residualAfter);
   if (before === null || after === null) return false;
@@ -2034,22 +1914,14 @@ export function extractCompanyLabel(value: unknown): string | null {
  */
 export function extractCompanyId(value: unknown): number | null {
   if (!Array.isArray(value)) return null;
-  if (
-    typeof value[0] !== "number" ||
-    !Number.isInteger(value[0]) ||
-    value[0] <= 0
-  ) {
+  if (typeof value[0] !== "number" || !Number.isInteger(value[0]) || value[0] <= 0) {
     return null;
   }
   if (extractCompanyLabel(value) === null) return null;
   return value[0];
 }
 
-function wrapMany2OneValue(
-  connectionId: string,
-  field: OdooField,
-  value: unknown,
-): unknown {
+function wrapMany2OneValue(connectionId: string, field: OdooField, value: unknown): unknown {
   if (
     field.type !== "many2one" ||
     !field.relation ||
@@ -2089,11 +1961,7 @@ function wrapMany2OneValue(
  * o2m on read, but the field loop is generic) passes through unchanged —
  * defensive, never throws.
  */
-function wrapOne2ManyValue(
-  connectionId: string,
-  field: OdooField,
-  value: unknown,
-): unknown {
+function wrapOne2ManyValue(connectionId: string, field: OdooField, value: unknown): unknown {
   if (
     field.type !== "one2many" ||
     !field.relation ||
@@ -2121,7 +1989,7 @@ function wrapReadResult(
   connectionId: string,
   model: string,
   fields: OdooField[],
-  result: unknown,
+  result: unknown
 ): unknown {
   const byName = new Map(fields.map((field) => [field.name, field]));
   const wrapRecord = (record: OdooRecord): OdooRecord => {
@@ -2156,9 +2024,7 @@ function wrapReadResult(
         model,
         id: record.id,
         label,
-        ...(companyId !== null && companyLabel !== null
-          ? { companyId, companyLabel }
-          : {}),
+        ...(companyId !== null && companyLabel !== null ? { companyId, companyLabel } : {}),
       });
     }
 
@@ -2186,21 +2052,18 @@ async function reportAuthFailure(
   apiBaseUrl: string,
   connectionId: string,
   gatewayToken: string,
-  reason: string,
+  reason: string
 ): Promise<void> {
   try {
-    await fetch(
-      `${apiBaseUrl}/api/internal/integrations/${connectionId}/report-auth-failure`,
-      {
-        method: "POST",
-        headers: {
-          Authorization: `Bearer ${gatewayToken}`,
-          "Content-Type": "application/json",
-          "X-Plugin-Id": "pinchy-odoo",
-        },
-        body: JSON.stringify({ reason: reason.slice(0, 500) }),
+    await fetch(`${apiBaseUrl}/api/internal/integrations/${connectionId}/report-auth-failure`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${gatewayToken}`,
+        "Content-Type": "application/json",
+        "X-Plugin-Id": "pinchy-odoo",
       },
-    );
+      body: JSON.stringify({ reason: reason.slice(0, 500) }),
+    });
   } catch {
     // best-effort — never mask the original tool error
   }
@@ -2229,11 +2092,9 @@ function toolError(text: string): {
 
 function permissionDenied(
   operation: string,
-  model: string,
+  model: string
 ): { content: ContentBlock[]; isError: true; details: { error: string } } {
-  return toolError(
-    `Permission denied: ${operation} on ${model} is not allowed for this agent.`,
-  );
+  return toolError(`Permission denied: ${operation} on ${model} is not allowed for this agent.`);
 }
 
 function isOdooAccessError(error: unknown): boolean {
@@ -2249,12 +2110,12 @@ function isOdooAccessError(error: unknown): boolean {
 
 function errorResult(
   error: unknown,
-  context?: { operation?: string; model?: string },
+  context?: { operation?: string; model?: string }
 ): { content: ContentBlock[]; isError: true; details: { error: string } } {
   if (isOdooAccessError(error) && context?.model) {
     const op = context.operation ?? "access";
     return toolError(
-      `Odoo denied permission to ${op} on ${context.model}. The Odoo user's permissions may have changed since the last sync. An admin can re-sync the connection in Settings > Integrations to update available permissions.`,
+      `Odoo denied permission to ${op} on ${context.model}. The Odoo user's permissions may have changed since the last sync. An admin can re-sync the connection in Settings > Integrations to update available permissions.`
     );
   }
   const message = error instanceof Error ? error.message : "Unknown error";
@@ -2265,7 +2126,7 @@ function errorResult(
   // account_id: "7600 Office supplies …" and got only the bare Postgres error).
   if (/invalid input syntax for type integer:/i.test(message)) {
     return toolError(
-      `Error: ${message.trim()}\n\nThis usually means a relation field (e.g. account_id, partner_id, journal_id) was given a display name or text instead of a numeric id. Look the record up with odoo_read to get its id, then pass that id or the _pinchy_ref it returns — never the display name.`,
+      `Error: ${message.trim()}\n\nThis usually means a relation field (e.g. account_id, partner_id, journal_id) was given a display name or text instead of a numeric id. Look the record up with odoo_read to get its id, then pass that id or the _pinchy_ref it returns — never the display name.`
     );
   }
   return toolError(`Error: ${message}`);
@@ -2298,15 +2159,11 @@ const plugin = {
 
     async function getOrCreateClient(
       agentId: string,
-      config: AgentOdooConfig,
+      config: AgentOdooConfig
     ): Promise<OdooClient> {
       const hit = cache.get(agentId);
       if (hit && hit.expiresAt > Date.now()) return hit.client;
-      const creds = await fetchCredentials(
-        apiBaseUrl,
-        gatewayToken,
-        config.connectionId,
-      );
+      const creds = await fetchCredentials(apiBaseUrl, gatewayToken, config.connectionId);
       const client = createClient(creds);
       cache.set(agentId, {
         client,
@@ -2325,7 +2182,7 @@ const plugin = {
     async function withAuthRetry<T>(
       agentId: string,
       config: AgentOdooConfig,
-      fn: (client: OdooClient) => Promise<T>,
+      fn: (client: OdooClient) => Promise<T>
     ): Promise<T> {
       const client = await getOrCreateClient(agentId, config);
       try {
@@ -2343,14 +2200,8 @@ const plugin = {
         try {
           return await fn(fresh);
         } catch (retryErr) {
-          const retryMsg =
-            retryErr instanceof Error ? retryErr.message : String(retryErr);
-          await reportAuthFailure(
-            apiBaseUrl,
-            config.connectionId,
-            gatewayToken,
-            retryMsg,
-          );
+          const retryMsg = retryErr instanceof Error ? retryErr.message : String(retryErr);
+          await reportAuthFailure(apiBaseUrl, config.connectionId, gatewayToken, retryMsg);
           throw retryErr;
         }
       }
@@ -2362,17 +2213,13 @@ const plugin = {
     function listModelsImpl(config: AgentOdooConfig) {
       try {
         const names = config.modelNames ?? {};
-        const models = Object.entries(config.permissions).map(
-          ([model, ops]) => ({
-            model,
-            name: names[model] ?? model,
-            operations: ops,
-          }),
-        );
+        const models = Object.entries(config.permissions).map(([model, ops]) => ({
+          model,
+          name: names[model] ?? model,
+          operations: ops,
+        }));
         return {
-          content: [
-            { type: "text" as const, text: JSON.stringify({ models }) },
-          ],
+          content: [{ type: "text" as const, text: JSON.stringify({ models }) }],
         };
       } catch (error) {
         return errorResult(error);
@@ -2386,7 +2233,7 @@ const plugin = {
     async function describeModelImpl(
       agentId: string,
       config: AgentOdooConfig,
-      params: Record<string, unknown>,
+      params: Record<string, unknown>
     ) {
       try {
         const model = params.model;
@@ -2397,15 +2244,11 @@ const plugin = {
           return toolError(`Model "${model}" is not available for this agent.`);
         }
 
-        const rawFields = await withAuthRetry(agentId, config, (client) =>
-          client.fields(model),
-        );
+        const rawFields = await withAuthRetry(agentId, config, (client) => client.fields(model));
         const normalised = normalizeFields(rawFields);
 
         const result = compactSchema(normalised, {
-          fields: Array.isArray(params.fields)
-            ? (params.fields as string[])
-            : undefined,
+          fields: Array.isArray(params.fields) ? (params.fields as string[]) : undefined,
           limit: typeof params.limit === "number" ? params.limit : 40,
           verbose: params.verbose === true,
         });
@@ -2450,7 +2293,7 @@ const plugin = {
           },
         };
       },
-      { name: "odoo_list_models" },
+      { name: "odoo_list_models" }
     );
 
     // 2. odoo_describe_model
@@ -2471,8 +2314,7 @@ const plugin = {
             properties: {
               model: {
                 type: "string",
-                description:
-                  "Odoo model name to describe, e.g. 'account.move'.",
+                description: "Odoo model name to describe, e.g. 'account.move'.",
               },
               fields: {
                 type: "array",
@@ -2482,8 +2324,7 @@ const plugin = {
               },
               limit: {
                 type: "number",
-                description:
-                  "Cap on field count when `fields` is omitted (default 40).",
+                description: "Cap on field count when `fields` is omitted (default 40).",
               },
               verbose: {
                 type: "boolean",
@@ -2498,7 +2339,7 @@ const plugin = {
           },
         };
       },
-      { name: "odoo_describe_model" },
+      { name: "odoo_describe_model" }
     );
 
     // 2b. odoo_schema (deprecated alias — kept for AGENTS.md files written by
@@ -2523,8 +2364,7 @@ const plugin = {
             properties: {
               model: {
                 type: "string",
-                description:
-                  "Odoo model name to describe. Omit to list available models.",
+                description: "Odoo model name to describe. Omit to list available models.",
               },
               fields: {
                 type: "array",
@@ -2534,8 +2374,7 @@ const plugin = {
               },
               limit: {
                 type: "number",
-                description:
-                  "Cap on field count when `fields` is omitted (default 40).",
+                description: "Cap on field count when `fields` is omitted (default 40).",
               },
               verbose: {
                 type: "boolean",
@@ -2553,7 +2392,7 @@ const plugin = {
           },
         };
       },
-      { name: "odoo_schema" },
+      { name: "odoo_schema" }
     );
 
     // 3. odoo_read
@@ -2580,8 +2419,7 @@ const plugin = {
                 items: {
                   type: "array",
                   items: {},
-                  description:
-                    "A [field, operator, value] tuple, e.g. ['state', '=', 'sale']",
+                  description: "A [field, operator, value] tuple, e.g. ['state', '=', 'sale']",
                 },
                 description:
                   'Odoo domain filter. A plain array of [field, operator, value] tuples, e.g. [["state", "=", "posted"]] — never wrap it as {"item": …}. Operators: =, !=, >, >=, <, <=, in, not in, like, ilike. Optional — omit or pass [] to match all records.',
@@ -2622,35 +2460,20 @@ const plugin = {
                 throw itemWrappedError("fields");
               }
 
-              const result = await withAuthRetry(
-                agentId,
-                config,
-                async (client) => {
-                  const modelFields = normalizeFields(
-                    await client.fields(model),
-                  );
-                  const effectiveFields = augmentFieldsWithCompanyId(
-                    stripSyntheticFields(params.fields as string[] | undefined),
-                    modelFields,
-                  );
-                  const records = await client.searchRead(
-                    model,
-                    asDomain(params.filters),
-                    {
-                      fields: effectiveFields,
-                      limit: params.limit as number | undefined,
-                      offset: params.offset as number | undefined,
-                      order: params.order as string | undefined,
-                    },
-                  );
-                  return wrapReadResult(
-                    config.connectionId,
-                    model,
-                    modelFields,
-                    records,
-                  );
-                },
-              );
+              const result = await withAuthRetry(agentId, config, async (client) => {
+                const modelFields = normalizeFields(await client.fields(model));
+                const effectiveFields = augmentFieldsWithCompanyId(
+                  stripSyntheticFields(params.fields as string[] | undefined),
+                  modelFields
+                );
+                const records = await client.searchRead(model, asDomain(params.filters), {
+                  fields: effectiveFields,
+                  limit: params.limit as number | undefined,
+                  offset: params.offset as number | undefined,
+                  order: params.order as string | undefined,
+                });
+                return wrapReadResult(config.connectionId, model, modelFields, records);
+              });
 
               return {
                 content: [{ type: "text", text: JSON.stringify(result) }],
@@ -2664,7 +2487,7 @@ const plugin = {
           },
         };
       },
-      { name: "odoo_read" },
+      { name: "odoo_read" }
     );
 
     // 3. odoo_count
@@ -2690,8 +2513,7 @@ const plugin = {
                   items: {},
                   description: "A [field, operator, value] tuple",
                 },
-                description:
-                  "Odoo domain filter. Optional — omit or pass [] to match all records.",
+                description: "Odoo domain filter. Optional — omit or pass [] to match all records.",
               },
             },
             required: ["model"],
@@ -2709,7 +2531,7 @@ const plugin = {
               }
 
               const count = await withAuthRetry(agentId, config, (client) =>
-                client.searchCount(model, asDomain(params.filters)),
+                client.searchCount(model, asDomain(params.filters))
               );
 
               return {
@@ -2724,7 +2546,7 @@ const plugin = {
           },
         };
       },
-      { name: "odoo_count" },
+      { name: "odoo_count" }
     );
 
     // 4. odoo_aggregate
@@ -2750,8 +2572,7 @@ const plugin = {
                   items: {},
                   description: "A [field, operator, value] tuple",
                 },
-                description:
-                  "Odoo domain filter. Optional — omit or pass [] to match all records.",
+                description: "Odoo domain filter. Optional — omit or pass [] to match all records.",
               },
               fields: {
                 type: "array",
@@ -2762,8 +2583,7 @@ const plugin = {
               groupby: {
                 type: "array",
                 items: { type: "string" },
-                description:
-                  "Fields to group by, e.g. ['partner_id'] or ['date_order:month']",
+                description: "Fields to group by, e.g. ['partner_id'] or ['date_order:month']",
               },
               limit: { type: "number", description: "Max groups to return" },
               offset: {
@@ -2791,17 +2611,11 @@ const plugin = {
               const groupby = prepareAggregateFields(params.groupby, "groupby");
 
               const result = await withAuthRetry(agentId, config, (client) =>
-                client.readGroup(
-                  model,
-                  asDomain(params.filters),
-                  fields,
-                  groupby,
-                  {
-                    limit: params.limit as number | undefined,
-                    offset: params.offset as number | undefined,
-                    orderby: params.orderby as string | undefined,
-                  },
-                ),
+                client.readGroup(model, asDomain(params.filters), fields, groupby, {
+                  limit: params.limit as number | undefined,
+                  offset: params.offset as number | undefined,
+                  orderby: params.orderby as string | undefined,
+                })
               );
 
               return {
@@ -2816,7 +2630,7 @@ const plugin = {
           },
         };
       },
-      { name: "odoo_aggregate" },
+      { name: "odoo_aggregate" }
     );
 
     // 5. odoo_create
@@ -2857,107 +2671,94 @@ const plugin = {
                 throw itemWrappedError("values");
               }
 
-              const id = await withAuthRetry(
-                agentId,
-                config,
-                async (client) => {
-                  let values: Record<string, unknown>;
-                  // The model's field schema, fetched once during many2one
-                  // normalization and reused for #5 selection validation below
-                  // (avoids a second client.fields round-trip on every create).
-                  let modelFields: OdooField[] | null = null;
-                  if (isRecord(params.values)) {
-                    const cleaned = unquoteFieldKeys(params.values);
-                    assertNoCrossCompanyRefs(cleaned);
-                    const normalized = await normalizeMany2OneValues(
-                      client,
-                      config.connectionId,
-                      model,
-                      cleaned,
-                      config.permissions,
-                    );
-                    values = normalized.values;
-                    modelFields = normalized.fields;
-                    values = await ensureActivityResModelId(
-                      client,
-                      model,
-                      values,
-                    );
-                  } else {
-                    values = params.values as Record<string, unknown>;
-                  }
+              const id = await withAuthRetry(agentId, config, async (client) => {
+                let values: Record<string, unknown>;
+                // The model's field schema, fetched once during many2one
+                // normalization and reused for #5 selection validation below
+                // (avoids a second client.fields round-trip on every create).
+                let modelFields: OdooField[] | null = null;
+                if (isRecord(params.values)) {
+                  const cleaned = unquoteFieldKeys(params.values);
+                  assertNoCrossCompanyRefs(cleaned);
+                  const normalized = await normalizeMany2OneValues(
+                    client,
+                    config.connectionId,
+                    model,
+                    cleaned,
+                    config.permissions
+                  );
+                  values = normalized.values;
+                  modelFields = normalized.fields;
+                  values = await ensureActivityResModelId(client, model, values);
+                } else {
+                  values = params.values as Record<string, unknown>;
+                }
 
-                  // #5: reject out-of-set selection values (e.g. move_type
-                  // "in_bill", which is not a real Odoo move_type) with the valid
-                  // options, instead of forwarding a bad enum to Odoo where it
-                  // surfaces as an opaque server error the agent has to guess at.
-                  if (modelFields) {
-                    const invalidSelections = findInvalidSelectionValues(
-                      modelFields,
-                      values,
-                    );
-                    if (invalidSelections.length > 0) {
-                      throw new Error(
-                        formatInvalidSelectionError(model, invalidSelections),
-                      );
-                    }
+                // #5: reject out-of-set selection values (e.g. move_type
+                // "in_bill", which is not a real Odoo move_type) with the valid
+                // options, instead of forwarding a bad enum to Odoo where it
+                // surfaces as an opaque server error the agent has to guess at.
+                if (modelFields) {
+                  const invalidSelections = findInvalidSelectionValues(modelFields, values);
+                  if (invalidSelections.length > 0) {
+                    throw new Error(formatInvalidSelectionError(model, invalidSelections));
                   }
+                }
 
-                  // #3: duplicate-invoice guard. An account.move (vendor/customer
-                  // invoice) is keyed by its `ref` — the supplier's invoice
-                  // number. Agents that fail to find an existing bill (e.g. a
-                  // search with an invalid move_type returns empty) otherwise book
-                  // a DUPLICATE: on staging the agent created move_id 40 duplicating
-                  // move_id 39, both ref 083000981540. Before creating, surface any
-                  // existing move that already carries the same ref (+ move_type +
-                  // partner) so the agent updates it or confirms a deliberate
-                  // second entry rather than silently double-booking.
-                  if (
-                    model === "account.move" &&
-                    typeof values.ref === "string" &&
-                    values.ref.trim() &&
-                    checkPermission(config.permissions, model, "read")
-                  ) {
-                    const dupDomain: OdooDomain = [["ref", "=", values.ref]];
-                    if (typeof values.move_type === "string") {
-                      dupDomain.push(["move_type", "=", values.move_type]);
-                    }
-                    // Scope by company: the same supplier invoice number can be
-                    // booked legitimately by two separate companies in one Odoo
-                    // instance, so a global ref match would falsely reject the
-                    // second company's entry. company_id is a resolved integer
-                    // here (normalizeMany2OneValues ran above).
-                    if (typeof values.company_id === "number") {
-                      dupDomain.push(["company_id", "=", values.company_id]);
-                    }
-                    if (typeof values.partner_id === "number") {
-                      dupDomain.push(["partner_id", "=", values.partner_id]);
-                    }
-                    const existing = getSearchReadRecords(
-                      await client.searchRead("account.move", dupDomain, {
-                        fields: ["id", "name", "state"],
-                        limit: 1,
-                      }),
-                    );
-                    if (existing.length > 0) {
-                      const dup = existing[0] as { id: number; name?: string; state?: string };
-                      throw new Error(
-                        `A record already exists in account.move with ref "${values.ref}"` +
-                          (typeof values.move_type === "string"
-                            ? ` (move_type "${values.move_type}")`
-                            : "") +
-                          `: id ${dup.id}` +
-                          (dup.name ? ` "${dup.name}"` : "") +
-                          (dup.state ? `, state "${dup.state}"` : "") +
-                          `. To avoid a duplicate, update it with odoo_write, or confirm you ` +
-                          `intend a second entry before creating.`,
-                      );
-                    }
+                // #3: duplicate-invoice guard. An account.move (vendor/customer
+                // invoice) is keyed by its `ref` — the supplier's invoice
+                // number. Agents that fail to find an existing bill (e.g. a
+                // search with an invalid move_type returns empty) otherwise book
+                // a DUPLICATE: on staging the agent created move_id 40 duplicating
+                // move_id 39, both ref 083000981540. Before creating, surface any
+                // existing move that already carries the same ref (+ move_type +
+                // partner) so the agent updates it or confirms a deliberate
+                // second entry rather than silently double-booking.
+                if (
+                  model === "account.move" &&
+                  typeof values.ref === "string" &&
+                  values.ref.trim() &&
+                  checkPermission(config.permissions, model, "read")
+                ) {
+                  const dupDomain: OdooDomain = [["ref", "=", values.ref]];
+                  if (typeof values.move_type === "string") {
+                    dupDomain.push(["move_type", "=", values.move_type]);
                   }
+                  // Scope by company: the same supplier invoice number can be
+                  // booked legitimately by two separate companies in one Odoo
+                  // instance, so a global ref match would falsely reject the
+                  // second company's entry. company_id is a resolved integer
+                  // here (normalizeMany2OneValues ran above).
+                  if (typeof values.company_id === "number") {
+                    dupDomain.push(["company_id", "=", values.company_id]);
+                  }
+                  if (typeof values.partner_id === "number") {
+                    dupDomain.push(["partner_id", "=", values.partner_id]);
+                  }
+                  const existing = getSearchReadRecords(
+                    await client.searchRead("account.move", dupDomain, {
+                      fields: ["id", "name", "state"],
+                      limit: 1,
+                    })
+                  );
+                  if (existing.length > 0) {
+                    const dup = existing[0] as { id: number; name?: string; state?: string };
+                    throw new Error(
+                      `A record already exists in account.move with ref "${values.ref}"` +
+                        (typeof values.move_type === "string"
+                          ? ` (move_type "${values.move_type}")`
+                          : "") +
+                        `: id ${dup.id}` +
+                        (dup.name ? ` "${dup.name}"` : "") +
+                        (dup.state ? `, state "${dup.state}"` : "") +
+                        `. To avoid a duplicate, update it with odoo_write, or confirm you ` +
+                        `intend a second entry before creating.`
+                    );
+                  }
+                }
 
-                  return client.create(model, values);
-                },
-              );
+                return client.create(model, values);
+              });
 
               // Emit a self-ref so the LLM can chain into tools that consume
               // opaque references (most importantly odoo_attach_file). Without
@@ -2996,7 +2797,7 @@ const plugin = {
           },
         };
       },
-      { name: "odoo_create" },
+      { name: "odoo_create" }
     );
 
     // 5b. odoo_schedule_activity
@@ -3022,8 +2823,7 @@ const plugin = {
               },
               summary: {
                 type: "string",
-                description:
-                  'Short title of the follow-up, e.g. "Call about the quote".',
+                description: 'Short title of the follow-up, e.g. "Call about the quote".',
               },
               dueDate: {
                 type: "string",
@@ -3031,8 +2831,7 @@ const plugin = {
               },
               note: {
                 type: "string",
-                description:
-                  "Optional longer description / context for the activity.",
+                description: "Optional longer description / context for the activity.",
               },
               assignee: {
                 type: "string",
@@ -3054,8 +2853,8 @@ const plugin = {
               if (typeof target !== "string" || target.length === 0) {
                 return errorResult(
                   new Error(
-                    "`target` is required: pass the _pinchy_ref of the record to attach the activity to.",
-                  ),
+                    "`target` is required: pass the _pinchy_ref of the record to attach the activity to."
+                  )
                 );
               }
               const summary = params.summary;
@@ -3063,88 +2862,56 @@ const plugin = {
                 return errorResult(new Error("`summary` is required."));
               }
               const dueDate = params.dueDate;
-              if (
-                typeof dueDate !== "string" ||
-                !/^\d{4}-\d{2}-\d{2}$/.test(dueDate)
-              ) {
-                return errorResult(
-                  new Error("`dueDate` is required in YYYY-MM-DD format."),
-                );
+              if (typeof dueDate !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(dueDate)) {
+                return errorResult(new Error("`dueDate` is required in YYYY-MM-DD format."));
               }
 
               const decoded = decodeTargetRef(config.connectionId, target);
               const targetModel = decoded.model;
               const targetId = decoded.id;
 
-              if (
-                !checkPermission(config.permissions, "mail.activity", "create")
-              ) {
+              if (!checkPermission(config.permissions, "mail.activity", "create")) {
                 return permissionDenied("create", "mail.activity");
               }
               if (!checkPermission(config.permissions, targetModel, "read")) {
                 return permissionDenied("read", targetModel);
               }
 
-              const id = await withAuthRetry(
-                agentId,
-                config,
-                async (client) => {
-                  const resModelId = await resolveIrModelId(
-                    client,
-                    targetModel,
-                  );
+              const id = await withAuthRetry(agentId, config, async (client) => {
+                const resModelId = await resolveIrModelId(client, targetModel);
 
-                  const activityTypeRequested =
-                    typeof params.activityType === "string"
-                      ? params.activityType.trim()
-                      : "";
-                  const activityTypeId =
-                    activityTypeRequested.length > 0
-                      ? await resolveActivityTypeByName(
-                          client,
-                          activityTypeRequested,
-                        )
-                      : await resolveDefaultActivityTypeId(client);
+                const activityTypeRequested =
+                  typeof params.activityType === "string" ? params.activityType.trim() : "";
+                const activityTypeId =
+                  activityTypeRequested.length > 0
+                    ? await resolveActivityTypeByName(client, activityTypeRequested)
+                    : await resolveDefaultActivityTypeId(client);
 
-                  const assigneeRequested =
-                    typeof params.assignee === "string"
-                      ? params.assignee.trim()
-                      : "";
-                  const userId =
-                    assigneeRequested.length > 0
-                      ? await resolveAssigneeUserId(
-                          client,
-                          config.connectionId,
-                          assigneeRequested,
-                        )
-                      : await resolveTargetSalespersonId(
-                          client,
-                          targetModel,
-                          targetId,
-                        );
+                const assigneeRequested =
+                  typeof params.assignee === "string" ? params.assignee.trim() : "";
+                const userId =
+                  assigneeRequested.length > 0
+                    ? await resolveAssigneeUserId(client, config.connectionId, assigneeRequested)
+                    : await resolveTargetSalespersonId(client, targetModel, targetId);
 
-                  const values: Record<string, unknown> = {
-                    res_model_id: resModelId,
-                    res_id: targetId,
-                    date_deadline: dueDate,
-                    summary: summary.trim(),
-                  };
-                  if (
-                    typeof params.note === "string" &&
-                    params.note.length > 0
-                  ) {
-                    values.note = params.note;
-                  }
-                  if (activityTypeId != null) {
-                    values.activity_type_id = activityTypeId;
-                  }
-                  if (userId != null) {
-                    values.user_id = userId;
-                  }
+                const values: Record<string, unknown> = {
+                  res_model_id: resModelId,
+                  res_id: targetId,
+                  date_deadline: dueDate,
+                  summary: summary.trim(),
+                };
+                if (typeof params.note === "string" && params.note.length > 0) {
+                  values.note = params.note;
+                }
+                if (activityTypeId != null) {
+                  values.activity_type_id = activityTypeId;
+                }
+                if (userId != null) {
+                  values.user_id = userId;
+                }
 
-                  return client.create("mail.activity", values);
-                },
-              );
+                return client.create("mail.activity", values);
+              });
 
               const ref = encodeRef({
                 integrationType: "odoo",
@@ -3171,7 +2938,7 @@ const plugin = {
           },
         };
       },
-      { name: "odoo_schedule_activity" },
+      { name: "odoo_schedule_activity" }
     );
 
     // 5c. odoo_complete_activity
@@ -3210,39 +2977,29 @@ const plugin = {
               if (typeof target !== "string" || target.length === 0) {
                 return errorResult(
                   new Error(
-                    "`target` is required: pass the _pinchy_ref of the activity to complete.",
-                  ),
+                    "`target` is required: pass the _pinchy_ref of the activity to complete."
+                  )
                 );
               }
               const decoded = decodeTargetRef(config.connectionId, target);
               if (decoded.model !== "mail.activity") {
                 return errorResult(
                   new Error(
-                    "`target` must be a mail.activity ref — read the activity with `odoo_read` on `mail.activity` first.",
-                  ),
+                    "`target` must be a mail.activity ref — read the activity with `odoo_read` on `mail.activity` first."
+                  )
                 );
               }
-              if (
-                !checkPermission(config.permissions, "mail.activity", "write")
-              ) {
+              if (!checkPermission(config.permissions, "mail.activity", "write")) {
                 return permissionDenied("write", "mail.activity");
               }
 
               const kwargs: Record<string, unknown> = {};
-              if (
-                typeof params.feedback === "string" &&
-                params.feedback.trim().length > 0
-              ) {
+              if (typeof params.feedback === "string" && params.feedback.trim().length > 0) {
                 kwargs.feedback = params.feedback.trim();
               }
 
               await withAuthRetry(agentId, config, (client) =>
-                client.callMethod(
-                  "mail.activity",
-                  "action_feedback",
-                  [[decoded.id]],
-                  kwargs,
-                ),
+                client.callMethod("mail.activity", "action_feedback", [[decoded.id]], kwargs)
               );
 
               return {
@@ -3262,7 +3019,7 @@ const plugin = {
           },
         };
       },
-      { name: "odoo_complete_activity" },
+      { name: "odoo_complete_activity" }
     );
 
     // 5d. odoo_reschedule_activity
@@ -3292,8 +3049,7 @@ const plugin = {
               },
               assignee: {
                 type: "string",
-                description:
-                  "New assignee: exact user name or an opaque res.users ref.",
+                description: "New assignee: exact user name or an opaque res.users ref.",
               },
             },
             required: ["target"],
@@ -3305,62 +3061,47 @@ const plugin = {
               if (typeof target !== "string" || target.length === 0) {
                 return errorResult(
                   new Error(
-                    "`target` is required: pass the _pinchy_ref of the activity to reschedule.",
-                  ),
+                    "`target` is required: pass the _pinchy_ref of the activity to reschedule."
+                  )
                 );
               }
-              const dueDateRaw =
-                typeof params.dueDate === "string" ? params.dueDate.trim() : "";
-              const assigneeRaw =
-                typeof params.assignee === "string"
-                  ? params.assignee.trim()
-                  : "";
+              const dueDateRaw = typeof params.dueDate === "string" ? params.dueDate.trim() : "";
+              const assigneeRaw = typeof params.assignee === "string" ? params.assignee.trim() : "";
               if (dueDateRaw.length === 0 && assigneeRaw.length === 0) {
                 return errorResult(
                   new Error(
-                    "Provide at least one of `dueDate` (YYYY-MM-DD) or `assignee` to reschedule.",
-                  ),
+                    "Provide at least one of `dueDate` (YYYY-MM-DD) or `assignee` to reschedule."
+                  )
                 );
               }
-              if (
-                dueDateRaw.length > 0 &&
-                !/^\d{4}-\d{2}-\d{2}$/.test(dueDateRaw)
-              ) {
-                return errorResult(
-                  new Error("`dueDate` must be in YYYY-MM-DD format."),
-                );
+              if (dueDateRaw.length > 0 && !/^\d{4}-\d{2}-\d{2}$/.test(dueDateRaw)) {
+                return errorResult(new Error("`dueDate` must be in YYYY-MM-DD format."));
               }
 
               const decoded = decodeTargetRef(config.connectionId, target);
               if (decoded.model !== "mail.activity") {
                 return errorResult(
                   new Error(
-                    "`target` must be a mail.activity ref — read the activity with `odoo_read` on `mail.activity` first.",
-                  ),
+                    "`target` must be a mail.activity ref — read the activity with `odoo_read` on `mail.activity` first."
+                  )
                 );
               }
-              if (
-                !checkPermission(config.permissions, "mail.activity", "write")
-              ) {
+              if (!checkPermission(config.permissions, "mail.activity", "write")) {
                 return permissionDenied("write", "mail.activity");
               }
 
-              const success = await withAuthRetry(
-                agentId,
-                config,
-                async (client) => {
-                  const values: Record<string, unknown> = {};
-                  if (dueDateRaw.length > 0) values.date_deadline = dueDateRaw;
-                  if (assigneeRaw.length > 0) {
-                    values.user_id = await resolveAssigneeUserId(
-                      client,
-                      config.connectionId,
-                      assigneeRaw,
-                    );
-                  }
-                  return client.write("mail.activity", [decoded.id], values);
-                },
-              );
+              const success = await withAuthRetry(agentId, config, async (client) => {
+                const values: Record<string, unknown> = {};
+                if (dueDateRaw.length > 0) values.date_deadline = dueDateRaw;
+                if (assigneeRaw.length > 0) {
+                  values.user_id = await resolveAssigneeUserId(
+                    client,
+                    config.connectionId,
+                    assigneeRaw
+                  );
+                }
+                return client.write("mail.activity", [decoded.id], values);
+              });
 
               return {
                 content: [
@@ -3379,7 +3120,7 @@ const plugin = {
           },
         };
       },
-      { name: "odoo_reschedule_activity" },
+      { name: "odoo_reschedule_activity" }
     );
 
     // 5e–5h. Governed record-action tools. Each invokes one allow-listed Odoo
@@ -3420,22 +3161,20 @@ const plugin = {
               if (typeof target !== "string" || target.length === 0) {
                 return errorResult(
                   new Error(
-                    `\`target\` is required: pass the _pinchy_ref of the ${spec.model} record.`,
-                  ),
+                    `\`target\` is required: pass the _pinchy_ref of the ${spec.model} record.`
+                  )
                 );
               }
               const decoded = decodeTargetRef(config.connectionId, target);
               if (decoded.model !== spec.model) {
-                return errorResult(
-                  new Error(`\`target\` must be a ${spec.model} ref.`),
-                );
+                return errorResult(new Error(`\`target\` must be a ${spec.model} ref.`));
               }
               if (!checkPermission(config.permissions, spec.model, "write")) {
                 return permissionDenied("write", spec.model);
               }
 
               const result = await withAuthRetry(agentId, config, (client) =>
-                client.callMethod(spec.model, spec.method, [[decoded.id]], {}),
+                client.callMethod(spec.model, spec.method, [[decoded.id]], {})
               );
 
               const pending = describePendingWizard(result);
@@ -3482,7 +3221,7 @@ const plugin = {
         model: "sale.order",
         method: "action_confirm",
       }),
-      { name: "odoo_confirm_order" },
+      { name: "odoo_confirm_order" }
     );
 
     api.registerTool(
@@ -3494,7 +3233,7 @@ const plugin = {
         model: "stock.quant",
         method: "action_apply_inventory",
       }),
-      { name: "odoo_apply_inventory" },
+      { name: "odoo_apply_inventory" }
     );
 
     api.registerTool(
@@ -3506,7 +3245,7 @@ const plugin = {
         model: "stock.picking",
         method: "button_validate",
       }),
-      { name: "odoo_validate_picking" },
+      { name: "odoo_validate_picking" }
     );
 
     api.registerTool(
@@ -3518,7 +3257,7 @@ const plugin = {
         model: "mrp.production",
         method: "button_mark_done",
       }),
-      { name: "odoo_mark_mo_done" },
+      { name: "odoo_mark_mo_done" }
     );
 
     // 5i. odoo_set_approval (parameterized over an allow-list of approval models)
@@ -3539,8 +3278,7 @@ const plugin = {
             properties: {
               target: {
                 type: "string",
-                description:
-                  "Opaque `_pinchy_ref` of the record to approve or refuse.",
+                description: "Opaque `_pinchy_ref` of the record to approve or refuse.",
               },
               decision: {
                 type: "string",
@@ -3561,9 +3299,7 @@ const plugin = {
               const target = params.target;
               if (typeof target !== "string" || target.length === 0) {
                 return errorResult(
-                  new Error(
-                    "`target` is required: pass the _pinchy_ref of the record.",
-                  ),
+                  new Error("`target` is required: pass the _pinchy_ref of the record.")
                 );
               }
               const decision: "approve" | "refuse" | null =
@@ -3573,9 +3309,7 @@ const plugin = {
                     ? "refuse"
                     : null;
               if (!decision) {
-                return errorResult(
-                  new Error('`decision` must be "approve" or "refuse".'),
-                );
+                return errorResult(new Error('`decision` must be "approve" or "refuse".'));
               }
               const decoded = decodeTargetRef(config.connectionId, target);
               const route = APPROVAL_ROUTES[decoded.model];
@@ -3583,27 +3317,24 @@ const plugin = {
                 return errorResult(
                   new Error(
                     `${decoded.model} is not an approvable model. Supported: ${Object.keys(
-                      APPROVAL_ROUTES,
-                    ).join(", ")}.`,
-                  ),
+                      APPROVAL_ROUTES
+                    ).join(", ")}.`
+                  )
                 );
               }
-              if (
-                !checkPermission(config.permissions, decoded.model, "write")
-              ) {
+              if (!checkPermission(config.permissions, decoded.model, "write")) {
                 return permissionDenied("write", decoded.model);
               }
 
               const method = route[decision];
-              const reason =
-                typeof params.reason === "string" ? params.reason.trim() : "";
+              const reason = typeof params.reason === "string" ? params.reason.trim() : "";
               const args: unknown[] =
                 decision === "refuse" && route.reasonPositional
                   ? [[decoded.id], reason || "Refused"]
                   : [[decoded.id]];
 
               const result = await withAuthRetry(agentId, config, (client) =>
-                client.callMethod(decoded.model, method, args, {}),
+                client.callMethod(decoded.model, method, args, {})
               );
 
               const pending = describePendingWizard(result);
@@ -3640,7 +3371,7 @@ const plugin = {
           },
         };
       },
-      { name: "odoo_set_approval" },
+      { name: "odoo_set_approval" }
     );
 
     // 5j. odoo_reconcile. Odoo has no single "reconcile" button we could wrap,
@@ -3685,18 +3416,15 @@ const plugin = {
               if (typeof invoiceRef !== "string" || invoiceRef.length === 0) {
                 return errorResult(
                   new Error(
-                    "`invoice` is required: pass the _pinchy_ref of the bill or invoice (account.move).",
-                  ),
+                    "`invoice` is required: pass the _pinchy_ref of the bill or invoice (account.move)."
+                  )
                 );
               }
-              if (
-                typeof counterpartRef !== "string" ||
-                counterpartRef.length === 0
-              ) {
+              if (typeof counterpartRef !== "string" || counterpartRef.length === 0) {
                 return errorResult(
                   new Error(
-                    "`counterpart` is required: pass the _pinchy_ref of the bank transaction (account.bank.statement.line) or payment (account.payment).",
-                  ),
+                    "`counterpart` is required: pass the _pinchy_ref of the bank transaction (account.bank.statement.line) or payment (account.payment)."
+                  )
                 );
               }
 
@@ -3704,48 +3432,31 @@ const plugin = {
               // foreign ref; the throw is caught below and surfaced with the
               // parameter name we pass here, so the user is told which ref was
               // wrong rather than a generic "target".
-              const inv = decodeTargetRef(
-                config.connectionId,
-                invoiceRef,
-                "invoice",
-              );
+              const inv = decodeTargetRef(config.connectionId, invoiceRef, "invoice");
               if (inv.model !== "account.move") {
                 return errorResult(
                   new Error(
-                    "`invoice` must be an account.move ref (a vendor bill or customer invoice).",
-                  ),
+                    "`invoice` must be an account.move ref (a vendor bill or customer invoice)."
+                  )
                 );
               }
-              const cp = decodeTargetRef(
-                config.connectionId,
-                counterpartRef,
-                "counterpart",
-              );
-              if (
-                cp.model !== "account.bank.statement.line" &&
-                cp.model !== "account.payment"
-              ) {
+              const cp = decodeTargetRef(config.connectionId, counterpartRef, "counterpart");
+              if (cp.model !== "account.bank.statement.line" && cp.model !== "account.payment") {
                 return errorResult(
                   new Error(
-                    `\`counterpart\` must be an account.bank.statement.line (bank transaction) or account.payment ref, not ${cp.model}.`,
-                  ),
+                    `\`counterpart\` must be an account.bank.statement.line (bank transaction) or account.payment ref, not ${cp.model}.`
+                  )
                 );
               }
 
               // Reconciling rewrites and matches journal items in every case.
-              if (
-                !checkPermission(config.permissions, "account.move.line", "write")
-              ) {
+              if (!checkPermission(config.permissions, "account.move.line", "write")) {
                 return permissionDenied("write", "account.move.line");
               }
               // The bank flow additionally restates the statement line's move.
               if (
                 cp.model === "account.bank.statement.line" &&
-                !checkPermission(
-                  config.permissions,
-                  "account.bank.statement.line",
-                  "write",
-                )
+                !checkPermission(config.permissions, "account.bank.statement.line", "write")
               ) {
                 return permissionDenied("write", "account.bank.statement.line");
               }
@@ -3762,24 +3473,21 @@ const plugin = {
                       "partner_id",
                     ],
                     limit: 1,
-                  }),
+                  })
                 )
               ).records[0];
               if (!invoice) {
-                return errorResult(
-                  new Error(`account.move ${inv.id} was not found in Odoo.`),
-                );
+                return errorResult(new Error(`account.move ${inv.id} was not found in Odoo.`));
               }
-              const invoiceName =
-                typeof invoice.name === "string" ? invoice.name : `#${inv.id}`;
+              const invoiceName = typeof invoice.name === "string" ? invoice.name : `#${inv.id}`;
 
               // Odoo 19 no longer refuses to reconcile a draft entry — it just
               // silently does nothing. Catch it here or ship a false success.
               if (invoice.state !== "posted") {
                 return errorResult(
                   new Error(
-                    `${invoiceName} is in state "${String(invoice.state)}", not "posted". Odoo accepts a reconcile call on a draft entry but silently does nothing, so post it first (after the user confirms), then reconcile.`,
-                  ),
+                    `${invoiceName} is in state "${String(invoice.state)}", not "posted". Odoo accepts a reconcile call on a draft entry but silently does nothing, so post it first (after the user confirms), then reconcile.`
+                  )
                 );
               }
 
@@ -3793,38 +3501,30 @@ const plugin = {
                       ["reconciled", "=", false],
                     ],
                     {
-                      fields: [
-                        "id",
-                        "account_id",
-                        "account_type",
-                        "debit",
-                        "credit",
-                      ],
-                    },
+                      fields: ["id", "account_id", "account_type", "debit", "credit"],
+                    }
                   )
                 )
               ).records;
               if (invoiceLines.length === 0) {
                 return errorResult(
                   new Error(
-                    `${invoiceName} has no open receivable/payable line — there is nothing left to reconcile (it may already be paid).`,
-                  ),
+                    `${invoiceName} has no open receivable/payable line — there is nothing left to reconcile (it may already be paid).`
+                  )
                 );
               }
               if (invoiceLines.length > 1) {
                 return errorResult(
                   new Error(
-                    `${invoiceName} has ${invoiceLines.length} open receivable/payable lines, so the counterpart is ambiguous. Reconcile it in Odoo.`,
-                  ),
+                    `${invoiceName} has ${invoiceLines.length} open receivable/payable lines, so the counterpart is ambiguous. Reconcile it in Odoo.`
+                  )
                 );
               }
               const invoiceLine = invoiceLines[0];
               const settlementAccountId = relationId(invoiceLine.account_id);
               if (settlementAccountId === null) {
                 return errorResult(
-                  new Error(
-                    `Could not read the settlement account of ${invoiceName}.`,
-                  ),
+                  new Error(`Could not read the settlement account of ${invoiceName}.`)
                 );
               }
               const invoiceCompanyId = relationId(invoice.company_id);
@@ -3836,20 +3536,20 @@ const plugin = {
                */
               const confirm = async (
                 extra: Record<string, unknown>,
-                rollback?: () => Promise<void>,
+                rollback?: () => Promise<void>
               ) => {
                 const after = (
                   await withAuthRetry(agentId, config, (client) =>
                     client.searchRead("account.move", [["id", "=", inv.id]], {
                       fields: ["payment_state", "amount_residual"],
                       limit: 1,
-                    }),
+                    })
                   )
                 ).records[0];
                 if (!didReconcile(residualBefore, after?.amount_residual)) {
                   if (rollback) await rollback();
                   return toolError(
-                    `Odoo accepted the reconcile call but ${invoiceName} did not reconcile: its open balance is still ${String(after?.amount_residual ?? residualBefore)}. Odoo reports no error in this case, so this is not a transient failure — the entries were not matched. Check in Odoo that both sides are posted and on the same account.`,
+                    `Odoo accepted the reconcile call but ${invoiceName} did not reconcile: its open balance is still ${String(after?.amount_residual ?? residualBefore)}. Odoo reports no error in this case, so this is not a transient failure — the entries were not matched. Check in Odoo that both sides are posted and on the same account.`
                   );
                 }
                 return {
@@ -3875,13 +3575,11 @@ const plugin = {
                     client.searchRead("account.payment", [["id", "=", cp.id]], {
                       fields: ["move_id", "state", "company_id"],
                       limit: 1,
-                    }),
+                    })
                   )
                 ).records[0];
                 if (!payment) {
-                  return errorResult(
-                    new Error(`account.payment ${cp.id} was not found in Odoo.`),
-                  );
+                  return errorResult(new Error(`account.payment ${cp.id} was not found in Odoo.`));
                 }
                 // A canceled or rejected payment has no live journal entry to
                 // match against; reconcile() would silently no-op, so refuse it
@@ -3889,8 +3587,8 @@ const plugin = {
                 if (payment.state === "canceled" || payment.state === "rejected") {
                   return errorResult(
                     new Error(
-                      `This payment is in state "${String(payment.state)}", so there is nothing to reconcile against. Use a payment that is in process or paid.`,
-                    ),
+                      `This payment is in state "${String(payment.state)}", so there is nothing to reconcile against. Use a payment that is in process or paid.`
+                    )
                   );
                 }
                 const paymentCompanyId = relationId(payment.company_id);
@@ -3901,8 +3599,8 @@ const plugin = {
                 ) {
                   return errorResult(
                     new Error(
-                      `Cross-company match rejected: ${invoiceName} belongs to ${relationLabel(invoice.company_id) ?? invoiceCompanyId} but the payment belongs to ${relationLabel(payment.company_id) ?? paymentCompanyId}.`,
-                    ),
+                      `Cross-company match rejected: ${invoiceName} belongs to ${relationLabel(invoice.company_id) ?? invoiceCompanyId} but the payment belongs to ${relationLabel(payment.company_id) ?? paymentCompanyId}.`
+                    )
                   );
                 }
                 // Odoo 19 payments may exist without a journal entry.
@@ -3910,8 +3608,8 @@ const plugin = {
                 if (paymentMoveId === null) {
                   return errorResult(
                     new Error(
-                      "This payment has no journal entry yet, so there is nothing to reconcile against.",
-                    ),
+                      "This payment has no journal entry yet, so there is nothing to reconcile against."
+                    )
                   );
                 }
                 const paymentLine = (
@@ -3923,15 +3621,15 @@ const plugin = {
                         ["account_id", "=", settlementAccountId],
                         ["reconciled", "=", false],
                       ],
-                      { fields: ["id"] },
-                    ),
+                      { fields: ["id"] }
+                    )
                   )
                 ).records[0];
                 if (!paymentLine) {
                   return errorResult(
                     new Error(
-                      `This payment has no matching open line on ${relationLabel(invoiceLine.account_id) ?? "the settlement account"} — it does not post to the same account as ${invoiceName}, so Odoo cannot reconcile the two.`,
-                    ),
+                      `This payment has no matching open line on ${relationLabel(invoiceLine.account_id) ?? "the settlement account"} — it does not post to the same account as ${invoiceName}, so Odoo cannot reconcile the two.`
+                    )
                   );
                 }
                 // js_assign_outstanding_line adds the invoice's own line for
@@ -3941,8 +3639,8 @@ const plugin = {
                     "account.move",
                     "js_assign_outstanding_line",
                     [[inv.id], paymentLine.id],
-                    {},
-                  ),
+                    {}
+                  )
                 );
                 return await confirm({ payment: { id: cp.id } });
               }
@@ -3950,34 +3648,22 @@ const plugin = {
               // ---- Counterpart is a bank transaction --------------------
               const stLine = (
                 await withAuthRetry(agentId, config, (client) =>
-                  client.searchRead(
-                    "account.bank.statement.line",
-                    [["id", "=", cp.id]],
-                    {
-                      fields: [
-                        "payment_ref",
-                        "move_id",
-                        "journal_id",
-                        "is_reconciled",
-                        "company_id",
-                      ],
-                      limit: 1,
-                    },
-                  ),
+                  client.searchRead("account.bank.statement.line", [["id", "=", cp.id]], {
+                    fields: ["payment_ref", "move_id", "journal_id", "is_reconciled", "company_id"],
+                    limit: 1,
+                  })
                 )
               ).records[0];
               if (!stLine) {
                 return errorResult(
-                  new Error(
-                    `account.bank.statement.line ${cp.id} was not found in Odoo.`,
-                  ),
+                  new Error(`account.bank.statement.line ${cp.id} was not found in Odoo.`)
                 );
               }
               if (stLine.is_reconciled === true) {
                 return errorResult(
                   new Error(
-                    "This bank transaction is already reconciled. Undo the existing match in Odoo first if it is wrong.",
-                  ),
+                    "This bank transaction is already reconciled. Undo the existing match in Odoo first if it is wrong."
+                  )
                 );
               }
               const stCompanyId = relationId(stLine.company_id);
@@ -3988,17 +3674,15 @@ const plugin = {
               ) {
                 return errorResult(
                   new Error(
-                    `Cross-company match rejected: ${invoiceName} belongs to ${relationLabel(invoice.company_id) ?? invoiceCompanyId} but the bank transaction belongs to ${relationLabel(stLine.company_id) ?? stCompanyId}.`,
-                  ),
+                    `Cross-company match rejected: ${invoiceName} belongs to ${relationLabel(invoice.company_id) ?? invoiceCompanyId} but the bank transaction belongs to ${relationLabel(stLine.company_id) ?? stCompanyId}.`
+                  )
                 );
               }
               const stMoveId = relationId(stLine.move_id);
               const journalId = relationId(stLine.journal_id);
               if (stMoveId === null || journalId === null) {
                 return errorResult(
-                  new Error(
-                    "Could not read the bank transaction's journal entry or journal.",
-                  ),
+                  new Error("Could not read the bank transaction's journal entry or journal.")
                 );
               }
               const journal = (
@@ -4006,41 +3690,35 @@ const plugin = {
                   client.searchRead("account.journal", [["id", "=", journalId]], {
                     fields: ["default_account_id", "suspense_account_id"],
                     limit: 1,
-                  }),
+                  })
                 )
               ).records[0];
               if (!journal) {
-                return errorResult(
-                  new Error(`account.journal ${journalId} was not found.`),
-                );
+                return errorResult(new Error(`account.journal ${journalId} was not found.`));
               }
               const bankAccountId = relationId(journal.default_account_id);
               const suspenseAccountId = relationId(journal.suspense_account_id);
 
               const stMoveLines = (
                 await withAuthRetry(agentId, config, (client) =>
-                  client.searchRead(
-                    "account.move.line",
-                    [["move_id", "=", stMoveId]],
-                    {
-                      fields: [
-                        "id",
-                        "account_id",
-                        "debit",
-                        "credit",
-                        "amount_currency",
-                        "partner_id",
-                        "name",
-                      ],
-                    },
-                  ),
+                  client.searchRead("account.move.line", [["move_id", "=", stMoveId]], {
+                    fields: [
+                      "id",
+                      "account_id",
+                      "debit",
+                      "credit",
+                      "amount_currency",
+                      "partner_id",
+                      "name",
+                    ],
+                  })
                 )
               ).records;
               const liquidityLines = stMoveLines.filter(
-                (l) => relationId(l.account_id) === bankAccountId,
+                (l) => relationId(l.account_id) === bankAccountId
               );
               const suspenseLines = stMoveLines.filter(
-                (l) => relationId(l.account_id) === suspenseAccountId,
+                (l) => relationId(l.account_id) === suspenseAccountId
               );
               // `_synchronize_from_moves` enforces exactly one liquidity line
               // and at most one suspense line; a shape we don't recognise means
@@ -4048,15 +3726,15 @@ const plugin = {
               if (liquidityLines.length !== 1) {
                 return errorResult(
                   new Error(
-                    `This bank transaction has ${liquidityLines.length} bank lines; Odoo requires exactly one. Reconcile it in Odoo.`,
-                  ),
+                    `This bank transaction has ${liquidityLines.length} bank lines; Odoo requires exactly one. Reconcile it in Odoo.`
+                  )
                 );
               }
               if (suspenseLines.length !== 1) {
                 return errorResult(
                   new Error(
-                    "This bank transaction has no suspense line to replace — it is probably already matched to something else. Reset it in Odoo first.",
-                  ),
+                    "This bank transaction has no suspense line to replace — it is probably already matched to something else. Reset it in Odoo first."
+                  )
                 );
               }
               // The rewrite below clears every line ([5,0,0]) and recreates only
@@ -4067,8 +3745,8 @@ const plugin = {
               if (stMoveLines.length !== 2) {
                 return errorResult(
                   new Error(
-                    `This bank transaction's journal entry has ${stMoveLines.length} lines, not the expected two (one bank line, one suspense line). It carries an extra line this tool would drop on rewrite — reconcile it in Odoo.`,
-                  ),
+                    `This bank transaction's journal entry has ${stMoveLines.length} lines, not the expected two (one bank line, one suspense line). It carries an extra line this tool would drop on rewrite — reconcile it in Odoo.`
+                  )
                 );
               }
               const liquidity = liquidityLines[0];
@@ -4110,16 +3788,15 @@ const plugin = {
                             credit: suspense.credit,
                             amount_currency: suspense.amount_currency,
                             partner_id:
-                              relationId(invoice.partner_id) ??
-                              relationId(suspense.partner_id),
+                              relationId(invoice.partner_id) ?? relationId(suspense.partner_id),
                             name: suspense.name,
                           },
                         ],
                       ],
                     },
                   ],
-                  { context: { force_delete: true, skip_readonly_check: true } },
-                ),
+                  { context: { force_delete: true, skip_readonly_check: true } }
+                )
               );
 
               const newCounterpart = (
@@ -4130,15 +3807,15 @@ const plugin = {
                       ["move_id", "=", stMoveId],
                       ["account_id", "=", settlementAccountId],
                     ],
-                    { fields: ["id"] },
-                  ),
+                    { fields: ["id"] }
+                  )
                 )
               ).records[0];
               if (!newCounterpart) {
                 return errorResult(
                   new Error(
-                    "Odoo did not create the counterpart line on the settlement account; the bank transaction was left unchanged.",
-                  ),
+                    "Odoo did not create the counterpart line on the settlement account; the bank transaction was left unchanged."
+                  )
                 );
               }
 
@@ -4148,8 +3825,8 @@ const plugin = {
                   "account.move.line",
                   "reconcile",
                   [[newCounterpart.id, invoiceLine.id]],
-                  {},
-                ),
+                  {}
+                )
               );
 
               return await confirm(
@@ -4163,10 +3840,10 @@ const plugin = {
                       "account.bank.statement.line",
                       "action_undo_reconciliation",
                       [[cp.id]],
-                      {},
-                    ),
+                      {}
+                    )
                   );
-                },
+                }
               );
             } catch (error) {
               return errorResult(error, { operation: "write" });
@@ -4174,7 +3851,7 @@ const plugin = {
           },
         };
       },
-      { name: "odoo_reconcile" },
+      { name: "odoo_reconcile" }
     );
 
     // 6. odoo_write
@@ -4221,34 +3898,26 @@ const plugin = {
                 throw itemWrappedError("values");
               }
 
-              const success = await withAuthRetry(
-                agentId,
-                config,
-                async (client) => {
-                  let values: Record<string, unknown>;
-                  if (isRecord(params.values)) {
-                    const cleaned = unquoteFieldKeys(params.values);
-                    assertNoCrossCompanyRefs(cleaned);
-                    values = (
-                      await normalizeMany2OneValues(
-                        client,
-                        config.connectionId,
-                        model,
-                        cleaned,
-                        config.permissions,
-                      )
-                    ).values;
-                    values = await ensureActivityResModelId(
+              const success = await withAuthRetry(agentId, config, async (client) => {
+                let values: Record<string, unknown>;
+                if (isRecord(params.values)) {
+                  const cleaned = unquoteFieldKeys(params.values);
+                  assertNoCrossCompanyRefs(cleaned);
+                  values = (
+                    await normalizeMany2OneValues(
                       client,
+                      config.connectionId,
                       model,
-                      values,
-                    );
-                  } else {
-                    values = params.values as Record<string, unknown>;
-                  }
-                  return client.write(model, params.ids as number[], values);
-                },
-              );
+                      cleaned,
+                      config.permissions
+                    )
+                  ).values;
+                  values = await ensureActivityResModelId(client, model, values);
+                } else {
+                  values = params.values as Record<string, unknown>;
+                }
+                return client.write(model, params.ids as number[], values);
+              });
 
               return {
                 content: [{ type: "text", text: JSON.stringify({ success }) }],
@@ -4262,7 +3931,7 @@ const plugin = {
           },
         };
       },
-      { name: "odoo_write" },
+      { name: "odoo_write" }
     );
 
     // 7. odoo_delete
@@ -4297,7 +3966,7 @@ const plugin = {
               }
 
               const success = await withAuthRetry(agentId, config, (client) =>
-                client.unlink(model, params.ids as number[]),
+                client.unlink(model, params.ids as number[])
               );
 
               return {
@@ -4312,7 +3981,7 @@ const plugin = {
           },
         };
       },
-      { name: "odoo_delete" },
+      { name: "odoo_delete" }
     );
 
     // 8. odoo_attach_file
@@ -4363,7 +4032,7 @@ const plugin = {
               // and empty names.
               if (!isSafeFilename(filename)) {
                 return toolError(
-                  `Invalid filename: "${filename}". Must be a plain file name without path components (no "/", no "\\", no "..", no leading ".").`,
+                  `Invalid filename: "${filename}". Must be a plain file name without path components (no "/", no "\\", no "..", no leading ".").`
                 );
               }
 
@@ -4372,20 +4041,12 @@ const plugin = {
               // connection decodes validly under this deployment's single ref
               // key, so reject it before acting — same gate every other
               // ref-consuming Odoo tool applies (decodeTargetRef).
-              const decoded = decodeTargetRef(
-                config.connectionId,
-                targetRef,
-                "targetRef",
-              );
+              const decoded = decodeTargetRef(config.connectionId, targetRef, "targetRef");
 
-              if (
-                !checkPermission(config.permissions, "ir.attachment", "create")
-              ) {
+              if (!checkPermission(config.permissions, "ir.attachment", "create")) {
                 return permissionDenied("create", "ir.attachment");
               }
-              if (
-                !checkPermission(config.permissions, decoded.model, "write")
-              ) {
+              if (!checkPermission(config.permissions, decoded.model, "write")) {
                 return permissionDenied("write", decoded.model);
               }
 
@@ -4402,7 +4063,7 @@ const plugin = {
                     : "";
                 if (code === "ENOENT") {
                   return toolError(
-                    `File not found: ${filename}. Chat uploads and Telegram media land in the uploads directory automatically (Telegram media keeps the basename shown in "[media attached: …]"). If it is missing, tell the user honestly and ask the user to re-send the file — never guess or invent filenames.`,
+                    `File not found: ${filename}. Chat uploads and Telegram media land in the uploads directory automatically (Telegram media keeps the basename shown in "[media attached: …]"). If it is missing, tell the user honestly and ask the user to re-send the file — never guess or invent filenames.`
                   );
                 }
                 throw err;
@@ -4412,7 +4073,7 @@ const plugin = {
                 const sizeMb = (fileSize / 1024 / 1024).toFixed(1);
                 const maxMb = (MAX_ATTACHMENT_BYTES / 1024 / 1024).toFixed(0);
                 return toolError(
-                  `File too large: ${filename} is ${sizeMb} MB, max allowed is ${maxMb} MB.`,
+                  `File too large: ${filename} is ${sizeMb} MB, max allowed is ${maxMb} MB.`
                 );
               }
 
@@ -4427,7 +4088,7 @@ const plugin = {
                   name: filename,
                   datas,
                   mimetype,
-                }),
+                })
               );
 
               const ref = encodeRef({
@@ -4455,7 +4116,7 @@ const plugin = {
           },
         };
       },
-      { name: "odoo_attach_file" },
+      { name: "odoo_attach_file" }
     );
   },
 };

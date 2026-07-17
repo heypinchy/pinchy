@@ -100,7 +100,11 @@ test("handles 4-digit zero-padded indexes correctly (e.g. idx 31 → 0031_snapsh
 test("ignores non-snapshot files in the meta directory", () => {
   const issues = findSnapshotIssues({
     journalEntries: [{ idx: 0, tag: "0000_init" }],
-    existingSnapshotFilenames: ["0000_snapshot.json", "_journal.json", "README.md"],
+    existingSnapshotFilenames: [
+      "0000_snapshot.json",
+      "_journal.json",
+      "README.md",
+    ],
     stagedSqlBasenames: [],
     stagedSnapshotBasenames: [],
   });

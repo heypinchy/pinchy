@@ -51,9 +51,7 @@ function collectAllTools(): AgentTool[] {
       gatewayToken: "test-gateway-token",
       agents: { [agentId]: agentConfig },
     },
-    registerTool: (
-      factory: (ctx: { agentId?: string }) => AgentTool | null,
-    ) => {
+    registerTool: (factory: (ctx: { agentId?: string }) => AgentTool | null) => {
       const t = factory({ agentId });
       if (t) tools.push(t);
     },
@@ -67,7 +65,7 @@ function collectAllTools(): AgentTool[] {
 // so deeply nested arrays (e.g. arrays of arrays) are caught.
 function* walkArraySchemas(
   node: unknown,
-  path: string[] = [],
+  path: string[] = []
 ): Generator<{ node: Record<string, unknown>; path: string[] }> {
   if (!node || typeof node !== "object") return;
   const obj = node as Record<string, unknown>;
@@ -77,9 +75,7 @@ function* walkArraySchemas(
   }
 
   if (obj.properties && typeof obj.properties === "object") {
-    for (const [key, value] of Object.entries(
-      obj.properties as Record<string, unknown>,
-    )) {
+    for (const [key, value] of Object.entries(obj.properties as Record<string, unknown>)) {
       yield* walkArraySchemas(value, [...path, "properties", key]);
     }
   }
@@ -106,7 +102,7 @@ describe("OpenAI strict-schema compatibility", () => {
       for (const { node, path } of walkArraySchemas(tool.parameters)) {
         if (!("items" in node)) {
           offenders.push(
-            `${tool.name}: ${path.join(".") || "<root>"} is type:array without \`items\` — OpenAI will reject it with "array schema missing items"`,
+            `${tool.name}: ${path.join(".") || "<root>"} is type:array without \`items\` — OpenAI will reject it with "array schema missing items"`
           );
         }
       }
@@ -125,13 +121,10 @@ describe("OpenAI strict-schema compatibility", () => {
     expect(tools.length).toBeGreaterThan(0);
 
     for (const tool of tools) {
-      expect(
-        typeof tool.description,
-        `${tool.name}: description must be a string`,
-      ).toBe("string");
+      expect(typeof tool.description, `${tool.name}: description must be a string`).toBe("string");
       expect(
         tool.description.length,
-        `${tool.name}: description must be non-empty`,
+        `${tool.name}: description must be non-empty`
       ).toBeGreaterThan(0);
 
       // Round-trip catches non-serializable values (functions, undefined),

@@ -16,11 +16,11 @@ This document describes the security architecture, controls, and practices of th
 
 Pinchy runs as a Docker Compose stack with three services on a single host:
 
-| Service | Purpose | Communication |
-|---|---|---|
-| **Pinchy Web** | Next.js application (UI + API) | Serves HTTP/WebSocket to users |
-| **PostgreSQL** | Data storage | Localhost only |
-| **OpenClaw Gateway** | AI agent runtime | Localhost WebSocket bridge |
+| Service              | Purpose                        | Communication                  |
+| -------------------- | ------------------------------ | ------------------------------ |
+| **Pinchy Web**       | Next.js application (UI + API) | Serves HTTP/WebSocket to users |
+| **PostgreSQL**       | Data storage                   | Localhost only                 |
+| **OpenClaw Gateway** | AI agent runtime               | Localhost WebSocket bridge     |
 
 All inter-service communication occurs over **localhost**. No service is required to be exposed to the public internet except the Pinchy Web application (via reverse proxy configured by the customer).
 
@@ -56,10 +56,10 @@ Passwords are hashed using **scrypt** before storage (with a **bcrypt** legacy f
 
 Pinchy implements two roles:
 
-| Role | Capabilities |
-|---|---|
+| Role      | Capabilities                                                                             |
+| --------- | ---------------------------------------------------------------------------------------- |
 | **Admin** | Full access: user management, agent management, system configuration, all chat functions |
-| **User** | Chat with agents, view own sessions |
+| **User**  | Chat with agents, view own sessions                                                      |
 
 ### 4.2 Current Limitations
 
@@ -73,20 +73,20 @@ Pinchy implements two roles:
 
 ### 5.1 Encryption at Rest
 
-| Data | Method |
-|---|---|
-| LLM provider API keys | **AES-256-GCM** — authenticated encryption with associated data. Keys are encrypted before database storage and decrypted only when needed for LLM API calls. |
-| User passwords | **scrypt** hash (one-way; not reversible), with **bcrypt** legacy fallback for migrated accounts |
-| Other database contents | Stored in PostgreSQL on local disk. Disk-level encryption (e.g., LUKS, FileVault) is the customer's responsibility. |
+| Data                    | Method                                                                                                                                                        |
+| ----------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| LLM provider API keys   | **AES-256-GCM** — authenticated encryption with associated data. Keys are encrypted before database storage and decrypted only when needed for LLM API calls. |
+| User passwords          | **scrypt** hash (one-way; not reversible), with **bcrypt** legacy fallback for migrated accounts                                                              |
+| Other database contents | Stored in PostgreSQL on local disk. Disk-level encryption (e.g., LUKS, FileVault) is the customer's responsibility.                                           |
 
 ### 5.2 Encryption in Transit
 
-| Path | Method |
-|---|---|
-| User → Pinchy Web | **HTTPS/WSS** — configurable by the customer via reverse proxy (e.g., nginx, Caddy, Traefik) |
-| Pinchy Web → PostgreSQL | Localhost (no network transit) |
-| Pinchy Web → OpenClaw Gateway | Localhost WebSocket (no network transit) |
-| Pinchy Web → LLM Provider | **HTTPS** — standard TLS to the provider's API endpoint |
+| Path                          | Method                                                                                       |
+| ----------------------------- | -------------------------------------------------------------------------------------------- |
+| User → Pinchy Web             | **HTTPS/WSS** — configurable by the customer via reverse proxy (e.g., nginx, Caddy, Traefik) |
+| Pinchy Web → PostgreSQL       | Localhost (no network transit)                                                               |
+| Pinchy Web → OpenClaw Gateway | Localhost WebSocket (no network transit)                                                     |
+| Pinchy Web → LLM Provider     | **HTTPS** — standard TLS to the provider's API endpoint                                      |
 
 ### 5.3 Key Management
 
@@ -108,6 +108,7 @@ Pinchy's self-hosted design provides inherent data isolation:
 ### 6.2 No External Data Collection
 
 Pinchy does **not**:
+
 - Collect telemetry or usage analytics
 - Phone home to Helmcraft GmbH
 - Include third-party tracking or advertising code
@@ -177,6 +178,7 @@ Security vulnerabilities in Pinchy should be reported to:
 **Subject line:** `[SECURITY] <brief description>`
 
 Please include:
+
 - Description of the vulnerability
 - Steps to reproduce
 - Potential impact assessment
@@ -184,13 +186,13 @@ Please include:
 
 ### 10.2 Response Process
 
-| Step | Target Timeline |
-|---|---|
-| Acknowledgment of report | 48 hours |
-| Initial assessment | 5 business days |
-| Fix for critical vulnerabilities | As soon as possible |
-| Fix for non-critical vulnerabilities | Next scheduled release |
-| Disclosure | Coordinated with reporter |
+| Step                                 | Target Timeline           |
+| ------------------------------------ | ------------------------- |
+| Acknowledgment of report             | 48 hours                  |
+| Initial assessment                   | 5 business days           |
+| Fix for critical vulnerabilities     | As soon as possible       |
+| Fix for non-critical vulnerabilities | Next scheduled release    |
+| Disclosure                           | Coordinated with reporter |
 
 ### 10.3 Customer-Side Incidents
 
@@ -242,11 +244,11 @@ The audit log can be exported as CSV for external compliance tools and auditors.
 
 The following security features are planned but **not yet implemented**:
 
-| Feature | Status |
-|---|---|
+| Feature           | Status  |
+| ----------------- | ------- |
 | SSO (OAuth2/OIDC) | Planned |
-| SAML integration | Planned |
-| Granular RBAC | Planned |
+| SAML integration  | Planned |
+| Granular RBAC     | Planned |
 
 This document will be updated as these features become available.
 
@@ -285,4 +287,4 @@ GitHub: https://github.com/heypinchy/pinchy
 
 ---
 
-*This policy describes security measures implemented in the Pinchy software. It is not a guarantee of security for any specific deployment, as overall security depends on the customer's infrastructure and operational practices.*
+_This policy describes security measures implemented in the Pinchy software. It is not a guarantee of security for any specific deployment, as overall security depends on the customer's infrastructure and operational practices._

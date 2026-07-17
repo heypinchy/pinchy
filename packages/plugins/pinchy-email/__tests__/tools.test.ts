@@ -64,11 +64,7 @@ import { GmailAdapter } from "../gmail-adapter";
 import { GraphAdapter } from "../graph-adapter";
 import { ImapAdapter } from "../imap-adapter";
 import plugin from "../index";
-import {
-  MAX_ENTRIES_PER_AGENT,
-  MSG_PREFIX,
-  resolveHandle,
-} from "../id-handle-store";
+import { MAX_ENTRIES_PER_AGENT, MSG_PREFIX, resolveHandle } from "../id-handle-store";
 
 interface AgentTool {
   name: string;
@@ -78,7 +74,7 @@ interface AgentTool {
   execute: (
     toolCallId: string,
     params: Record<string, unknown>,
-    signal?: AbortSignal,
+    signal?: AbortSignal
   ) => Promise<{
     content: Array<{ type: string; text: string }>;
     isError?: boolean;
@@ -119,7 +115,7 @@ function createApi(pluginConfig: PluginConfig = testConfig) {
     pluginConfig,
     registerTool: (
       factory: (ctx: { agentId?: string }) => AgentTool | null,
-      opts?: { name?: string },
+      opts?: { name?: string }
     ) => {
       tools.push({ factory, name: opts?.name ?? "" });
     },
@@ -132,7 +128,7 @@ function createApi(pluginConfig: PluginConfig = testConfig) {
 function findTool(
   tools: ReturnType<typeof createApi>,
   name: string,
-  agentId?: string,
+  agentId?: string
 ): AgentTool | null {
   const entry = tools.find((t) => t.name === name);
   if (!entry) return null;
@@ -152,10 +148,7 @@ function mockCredentialResponse(accessToken = "test-access-token") {
   });
 }
 
-function mockCredentialFailure(
-  status = 500,
-  statusText = "Internal Server Error",
-) {
+function mockCredentialFailure(status = 500, statusText = "Internal Server Error") {
   mockFetch.mockResolvedValue({
     ok: false,
     status,
@@ -397,7 +390,7 @@ describe("credential fetching", () => {
     expect(mockFetch).toHaveBeenCalledTimes(1);
     expect(mockFetch).toHaveBeenCalledWith(
       "http://pinchy:7777/api/internal/integrations/conn-1/credentials",
-      { headers: { Authorization: "Bearer test-gateway-token" } },
+      { headers: { Authorization: "Bearer test-gateway-token" } }
     );
   });
 
@@ -572,9 +565,7 @@ describe("credential fetching", () => {
     const result = await tool.execute("call-1", {});
 
     expect(result.isError).toBe(true);
-    expect(result.content[0].text).toContain(
-      "credentials API returned no type field",
-    );
+    expect(result.content[0].text).toContain("credentials API returned no type field");
     expect(mockList).not.toHaveBeenCalled();
   });
 
@@ -675,7 +666,7 @@ describe("credential fetching", () => {
     // Two credential fetches: initial + refetch after first 401.
     // A third fetch goes to report-auth-failure (best-effort).
     const credentialFetches = mockFetch.mock.calls.filter(
-      (c) => !String(c[0]).includes("report-auth-failure"),
+      (c) => !String(c[0]).includes("report-auth-failure")
     );
     expect(credentialFetches).toHaveLength(2);
     expect(mockList).toHaveBeenCalledTimes(2);
@@ -692,13 +683,11 @@ describe("credential fetching", () => {
     await tool.execute("call-1", {});
 
     const reportCalls = mockFetch.mock.calls.filter((c) =>
-      String(c[0]).includes("report-auth-failure"),
+      String(c[0]).includes("report-auth-failure")
     );
     expect(reportCalls).toHaveLength(1);
     const [url, opts] = reportCalls[0] as [string, RequestInit];
-    expect(url).toBe(
-      "http://pinchy:7777/api/internal/integrations/conn-1/report-auth-failure",
-    );
+    expect(url).toBe("http://pinchy:7777/api/internal/integrations/conn-1/report-auth-failure");
     expect(opts.method).toBe("POST");
     const headers = opts.headers as Record<string, string>;
     expect(headers["Authorization"]).toBe("Bearer test-gateway-token");
@@ -716,7 +705,7 @@ describe("credential fetching", () => {
     await tool.execute("call-1", {});
 
     const reportCalls = mockFetch.mock.calls.filter((c) =>
-      String(c[0]).includes("report-auth-failure"),
+      String(c[0]).includes("report-auth-failure")
     );
     expect(reportCalls).toHaveLength(0);
   });
@@ -733,8 +722,7 @@ describe("credential fetching", () => {
       status: 503,
       statusText: "Service Unavailable",
       json: async () => ({
-        error:
-          "Microsoft OAuth settings missing — reconnect the mailbox or restore the OAuth app",
+        error: "Microsoft OAuth settings missing — reconnect the mailbox or restore the OAuth app",
       }),
     });
 
@@ -744,7 +732,7 @@ describe("credential fetching", () => {
 
     expect(result.isError).toBe(true);
     expect(result.content[0].text).toContain(
-      "Microsoft OAuth settings missing — reconnect the mailbox or restore the OAuth app",
+      "Microsoft OAuth settings missing — reconnect the mailbox or restore the OAuth app"
     );
     expect(mockList).not.toHaveBeenCalled();
   });
@@ -755,8 +743,7 @@ describe("credential fetching", () => {
       status: 503,
       statusText: "Service Unavailable",
       json: async () => ({
-        error:
-          "Microsoft OAuth settings missing — reconnect the mailbox or restore the OAuth app",
+        error: "Microsoft OAuth settings missing — reconnect the mailbox or restore the OAuth app",
       }),
     });
 
@@ -765,13 +752,11 @@ describe("credential fetching", () => {
     await tool.execute("call-1", {});
 
     const reportCalls = mockFetch.mock.calls.filter((c) =>
-      String(c[0]).includes("report-auth-failure"),
+      String(c[0]).includes("report-auth-failure")
     );
     expect(reportCalls).toHaveLength(1);
     const [url, opts] = reportCalls[0] as [string, RequestInit];
-    expect(url).toBe(
-      "http://pinchy:7777/api/internal/integrations/conn-1/report-auth-failure",
-    );
+    expect(url).toBe("http://pinchy:7777/api/internal/integrations/conn-1/report-auth-failure");
     expect(opts.method).toBe("POST");
     const headers = opts.headers as Record<string, string>;
     expect(headers["Authorization"]).toBe("Bearer test-gateway-token");
@@ -789,7 +774,7 @@ describe("credential fetching", () => {
 
     expect(result.isError).toBe(true);
     const reportCalls = mockFetch.mock.calls.filter((c) =>
-      String(c[0]).includes("report-auth-failure"),
+      String(c[0]).includes("report-auth-failure")
     );
     expect(reportCalls).toHaveLength(0);
   });
@@ -872,12 +857,8 @@ describe("email_list", () => {
     const tools = createApi();
     const tool = findTool(tools, "email_list", agentId)!;
 
-    const first = JSON.parse(
-      (await tool.execute("call-1", {})).content[0].text,
-    );
-    const second = JSON.parse(
-      (await tool.execute("call-2", {})).content[0].text,
-    );
+    const first = JSON.parse((await tool.execute("call-1", {})).content[0].text);
+    const second = JSON.parse((await tool.execute("call-2", {})).content[0].text);
 
     expect(first[0].id).toBe(second[0].id);
   });
@@ -1114,9 +1095,7 @@ describe("email_search", () => {
     });
 
     expect(result.isError).toBeUndefined();
-    expect(mockSearch).toHaveBeenCalledWith(
-      expect.objectContaining({ text: "PO-1234" }),
-    );
+    expect(mockSearch).toHaveBeenCalledWith(expect.objectContaining({ text: "PO-1234" }));
   });
 
   it("combines `text` with other DSL fields when forwarding to the adapter", async () => {
@@ -1130,7 +1109,7 @@ describe("email_search", () => {
     });
 
     expect(mockSearch).toHaveBeenCalledWith(
-      expect.objectContaining({ text: "invoice", from: "b@test.com" }),
+      expect.objectContaining({ text: "invoice", from: "b@test.com" })
     );
   });
 });
@@ -1313,12 +1292,10 @@ describe("error handling", () => {
 
     expect(result.isError).toBe(true);
     expect((result.details as { error?: string } | undefined)?.error).toContain(
-      "Gmail API rate limit exceeded",
+      "Gmail API rate limit exceeded"
     );
     // The details.error message must match content[0].text (same human-readable string).
-    expect((result.details as { error?: string } | undefined)?.error).toBe(
-      result.content[0].text,
-    );
+    expect((result.details as { error?: string } | undefined)?.error).toBe(result.content[0].text);
   });
 
   it("attaches details.error on a permission-denied result", async () => {
@@ -1333,11 +1310,9 @@ describe("error handling", () => {
 
     expect(result.isError).toBe(true);
     expect((result.details as { error?: string } | undefined)?.error).toContain(
-      "Permission denied",
+      "Permission denied"
     );
-    expect((result.details as { error?: string } | undefined)?.error).toBe(
-      result.content[0].text,
-    );
+    expect((result.details as { error?: string } | undefined)?.error).toBe(result.content[0].text);
   });
 });
 
@@ -1346,9 +1321,7 @@ describe("email_get_attachment", () => {
     vi.clearAllMocks();
     mockCredentialResponse();
     // Default: no filename collision (target path does not exist yet).
-    mockAccess.mockRejectedValue(
-      Object.assign(new Error("ENOENT"), { code: "ENOENT" }),
-    );
+    mockAccess.mockRejectedValue(Object.assign(new Error("ENOENT"), { code: "ENOENT" }));
     mockMkdir.mockResolvedValue(undefined);
     mockWriteFile.mockResolvedValue(undefined);
   });
@@ -1397,14 +1370,13 @@ describe("email_get_attachment", () => {
 
     expect(result.isError).toBeFalsy();
     expect(mockGetAttachment).toHaveBeenCalledWith("msg-1", "att-1");
-    expect(mockMkdir).toHaveBeenCalledWith(
-      "/root/.openclaw/workspaces/agent-1/uploads",
-      { recursive: true },
-    );
+    expect(mockMkdir).toHaveBeenCalledWith("/root/.openclaw/workspaces/agent-1/uploads", {
+      recursive: true,
+    });
     expect(mockWriteFile).toHaveBeenCalledWith(
       "/root/.openclaw/workspaces/agent-1/uploads/invoice.pdf",
       data,
-      { flag: "wx" },
+      { flag: "wx" }
     );
 
     const payload = JSON.parse(result.content[0].text);
@@ -1459,9 +1431,7 @@ describe("email_get_attachment", () => {
 
     expect(result.isError).toBeFalsy();
     const [writtenPath] = mockWriteFile.mock.calls[0] as [string, Buffer];
-    expect(
-      writtenPath.startsWith("/root/.openclaw/workspaces/agent-1/uploads/"),
-    ).toBe(true);
+    expect(writtenPath.startsWith("/root/.openclaw/workspaces/agent-1/uploads/")).toBe(true);
     expect(writtenPath).not.toContain("..");
     expect(writtenPath).not.toContain("/etc/passwd");
 
@@ -1488,9 +1458,7 @@ describe("email_get_attachment", () => {
 
     expect(result.isError).toBeFalsy();
     const [writtenPath] = mockWriteFile.mock.calls[0] as [string, Buffer];
-    expect(
-      writtenPath.startsWith("/root/.openclaw/workspaces/agent-1/uploads/"),
-    ).toBe(true);
+    expect(writtenPath.startsWith("/root/.openclaw/workspaces/agent-1/uploads/")).toBe(true);
     expect(writtenPath).not.toContain("\\");
     expect(writtenPath).not.toContain("..");
 
@@ -1539,7 +1507,7 @@ describe("email_get_attachment", () => {
     expect(mockWriteFile).toHaveBeenCalledWith(
       "/root/.openclaw/workspaces/agent-1/uploads/Abschätzung.pdf",
       data,
-      { flag: "wx" },
+      { flag: "wx" }
     );
 
     const payload = JSON.parse(result.content[0].text);
@@ -1571,9 +1539,7 @@ describe("email_get_attachment", () => {
 
     expect(result.isError).toBeFalsy();
     const [writtenPath] = mockWriteFile.mock.calls[0] as [string, Buffer];
-    expect(writtenPath).toBe(
-      `/root/.openclaw/workspaces/agent-1/uploads/${nfc}`,
-    );
+    expect(writtenPath).toBe(`/root/.openclaw/workspaces/agent-1/uploads/${nfc}`);
 
     const payload = JSON.parse(result.content[0].text);
     expect(payload.filename).toBe(nfc);
@@ -1605,9 +1571,7 @@ describe("email_get_attachment", () => {
     // Second access() check (invoice-1.pdf) rejects ENOENT => free name.
     mockAccess
       .mockResolvedValueOnce(undefined)
-      .mockRejectedValueOnce(
-        Object.assign(new Error("ENOENT"), { code: "ENOENT" }),
-      );
+      .mockRejectedValueOnce(Object.assign(new Error("ENOENT"), { code: "ENOENT" }));
     mockGetAttachment.mockResolvedValue({
       filename: "invoice.pdf",
       mimeType: "application/pdf",
@@ -1628,7 +1592,7 @@ describe("email_get_attachment", () => {
     expect(mockWriteFile).toHaveBeenCalledWith(
       "/root/.openclaw/workspaces/agent-1/uploads/invoice-1.pdf",
       expect.anything(),
-      { flag: "wx" },
+      { flag: "wx" }
     );
     // Never overwrite: writeFile must only ever be called with the free name,
     // and the exclusive "wx" flag makes that guarantee atomic.
@@ -1640,9 +1604,7 @@ describe("email_get_attachment", () => {
       .mockResolvedValueOnce(undefined) // invoice.pdf exists
       .mockResolvedValueOnce(undefined) // invoice-1.pdf exists
       .mockResolvedValueOnce(undefined) // invoice-2.pdf exists
-      .mockRejectedValueOnce(
-        Object.assign(new Error("ENOENT"), { code: "ENOENT" }),
-      ); // invoice-3.pdf free
+      .mockRejectedValueOnce(Object.assign(new Error("ENOENT"), { code: "ENOENT" })); // invoice-3.pdf free
     mockGetAttachment.mockResolvedValue({
       filename: "invoice.pdf",
       mimeType: "application/pdf",
@@ -1813,9 +1775,7 @@ describe("id-handle indirection", () => {
       data: Buffer.from("x"),
     });
     mockMkdir.mockResolvedValue(undefined);
-    mockAccess.mockRejectedValue(
-      Object.assign(new Error("ENOENT"), { code: "ENOENT" }),
-    );
+    mockAccess.mockRejectedValue(Object.assign(new Error("ENOENT"), { code: "ENOENT" }));
     mockWriteFile.mockResolvedValue(undefined);
 
     const attTool = findTool(tools, "email_get_attachment", agentId)!;
@@ -1838,7 +1798,7 @@ describe("id-handle indirection", () => {
 
     expect(result.isError).toBe(true);
     expect(result.content[0].text).toContain(
-      "The email reference 'msg_deadbeef' is unknown or has expired.",
+      "The email reference 'msg_deadbeef' is unknown or has expired."
     );
     expect(result.content[0].text).toContain("email_list");
     expect(result.content[0].text).toContain("email_search");
@@ -1859,7 +1819,7 @@ describe("id-handle indirection", () => {
 
     expect(result.isError).toBe(true);
     expect(result.content[0].text).toContain(
-      "The email reference 'msg_unknownhandle' is unknown or has expired.",
+      "The email reference 'msg_unknownhandle' is unknown or has expired."
     );
     const details = (result as { details?: { error?: string } }).details;
     expect(details?.error).toBe(result.content[0].text);
@@ -1877,7 +1837,7 @@ describe("id-handle indirection", () => {
 
     expect(result.isError).toBe(true);
     expect(result.content[0].text).toContain(
-      "The email reference 'att_unknownhandle' is unknown or has expired.",
+      "The email reference 'att_unknownhandle' is unknown or has expired."
     );
     expect(mockGetAttachment).not.toHaveBeenCalled();
   });
@@ -1895,7 +1855,7 @@ describe("id-handle indirection", () => {
 
     expect(result.isError).toBe(true);
     expect(result.content[0].text).toContain(
-      "The email reference 'msg_unknownhandle' is unknown or has expired.",
+      "The email reference 'msg_unknownhandle' is unknown or has expired."
     );
     expect(mockDraft).not.toHaveBeenCalled();
   });
@@ -1922,7 +1882,7 @@ describe("id-handle indirection", () => {
 
     expect(result.isError).toBe(true);
     expect(result.content[0].text).toContain(
-      "The email reference 'msg_unknownhandle' is unknown or has expired.",
+      "The email reference 'msg_unknownhandle' is unknown or has expired."
     );
     expect(mockSend).not.toHaveBeenCalled();
   });
@@ -2017,9 +1977,7 @@ describe("id-handle indirection", () => {
       data: Buffer.from("hello"),
     });
     mockMkdir.mockResolvedValue(undefined);
-    mockAccess.mockRejectedValue(
-      Object.assign(new Error("ENOENT"), { code: "ENOENT" }),
-    );
+    mockAccess.mockRejectedValue(Object.assign(new Error("ENOENT"), { code: "ENOENT" }));
     mockWriteFile.mockResolvedValue(undefined);
 
     const tools = createApi();
@@ -2031,10 +1989,7 @@ describe("id-handle indirection", () => {
     });
 
     expect(result.isError).toBeFalsy();
-    expect(mockGetAttachment).toHaveBeenCalledWith(
-      "raw-message-id",
-      "raw-attachment-id",
-    );
+    expect(mockGetAttachment).toHaveBeenCalledWith("raw-message-id", "raw-attachment-id");
   });
 
   it("agent isolation: a handle minted while serving one agent cannot be resolved by a different agent", async () => {
@@ -2085,7 +2040,7 @@ describe("id-handle indirection", () => {
     await tool.execute("call-1", { limit: MAX_ENTRIES_PER_AGENT + 5000 });
 
     expect(mockList).toHaveBeenCalledWith(
-      expect.objectContaining({ limit: MAX_ENTRIES_PER_AGENT }),
+      expect.objectContaining({ limit: MAX_ENTRIES_PER_AGENT })
     );
   });
 
@@ -2100,7 +2055,7 @@ describe("id-handle indirection", () => {
     });
 
     expect(mockSearch).toHaveBeenCalledWith(
-      expect.objectContaining({ limit: MAX_ENTRIES_PER_AGENT }),
+      expect.objectContaining({ limit: MAX_ENTRIES_PER_AGENT })
     );
   });
 
@@ -2111,9 +2066,7 @@ describe("id-handle indirection", () => {
 
     await tool.execute("call-1", { limit: 25 });
 
-    expect(mockList).toHaveBeenCalledWith(
-      expect.objectContaining({ limit: 25 }),
-    );
+    expect(mockList).toHaveBeenCalledWith(expect.objectContaining({ limit: 25 }));
   });
 
   // Finding 2 (2026-07-07 review of PR #673): clampListLimit deckelte nur nach
@@ -2152,8 +2105,7 @@ describe("id-handle indirection", () => {
   });
 
   it("email_send -> read round trip: the handle returned by email_send resolves to the real message id at the adapter", async () => {
-    const rawSentId =
-      "AAMkAGI2-real-graph-id-of-the-just-sent-message-very-long";
+    const rawSentId = "AAMkAGI2-real-graph-id-of-the-just-sent-message-very-long";
     const configWithSend: PluginConfig = {
       ...testConfig,
       agents: {

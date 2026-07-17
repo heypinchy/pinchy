@@ -18,7 +18,7 @@ silent.
 1. **`openclaw-secrets` can't be a tmpfs.** In production it's a RAM-only volume
    (cleared on restart, rebuilt from the encrypted database). CapRover only
    supports regular named volumes, so here it's a shared on-disk volume
-   (`$$cap_appname-oc-secrets`). The bounded impact: a runtime SecretRef *cache*
+   (`$$cap_appname-oc-secrets`). The bounded impact: a runtime SecretRef _cache_
    lands on the host disk instead of RAM. It is **not** the source of truth —
    the actual provider keys stay AES-256-GCM-encrypted in PostgreSQL and the
    cache is rebuilt from them. For deployments where runtime secrets must never

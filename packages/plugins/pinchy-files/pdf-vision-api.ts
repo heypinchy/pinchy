@@ -4,7 +4,8 @@
  * render pages to PNG → send to vision-capable LLM → get text back.
  */
 
-const PROMPT = "Extract all text from this scanned document page. Return only the extracted text content, preserving the structure (headings, paragraphs, lists, tables). If you see tables, format them as markdown tables. Do not add commentary — only return the document text.";
+const PROMPT =
+  "Extract all text from this scanned document page. Return only the extracted text content, preserving the structure (headings, paragraphs, lists, tables). If you see tables, format them as markdown tables. Do not add commentary — only return the document text.";
 
 const MAX_RETRIES = 3;
 
@@ -32,7 +33,10 @@ export interface VisionApiConfig {
 /** Internal config that carries the OpenClaw cfg object */
 export interface VisionApiInternalConfig {
   modelAuth: {
-    resolveApiKeyForProvider: (params: { provider: string; cfg: unknown }) => Promise<{ apiKey: string } | null>;
+    resolveApiKeyForProvider: (params: {
+      provider: string;
+      cfg: unknown;
+    }) => Promise<{ apiKey: string } | null>;
   };
   cfg: unknown;
   model: string;
@@ -63,7 +67,7 @@ function validateModelId(modelId: string): void {
  */
 export async function describePageImage(
   imageBase64: string,
-  config: VisionApiConfig,
+  config: VisionApiConfig
 ): Promise<VisionResult | null> {
   const [provider, ...modelParts] = config.model.split("/");
   const modelId = modelParts.join("/");
@@ -112,7 +116,7 @@ export function createVisionConfig(internal: VisionApiInternalConfig): VisionApi
 async function describeViaAnthropic(
   imageBase64: string,
   modelId: string,
-  config: VisionApiConfig,
+  config: VisionApiConfig
 ): Promise<VisionResult | null> {
   const apiKey = await config.resolveApiKey("anthropic");
   if (!apiKey) return null;
@@ -174,7 +178,7 @@ async function describeViaAnthropic(
 async function describeViaOpenAI(
   imageBase64: string,
   modelId: string,
-  config: VisionApiConfig,
+  config: VisionApiConfig
 ): Promise<VisionResult | null> {
   const apiKey = await config.resolveApiKey("openai");
   if (!apiKey) return null;
@@ -227,7 +231,7 @@ async function describeViaOpenAI(
 async function describeViaGoogle(
   imageBase64: string,
   modelId: string,
-  config: VisionApiConfig,
+  config: VisionApiConfig
 ): Promise<VisionResult | null> {
   const apiKey = await config.resolveApiKey("google");
   if (!apiKey) return null;
@@ -252,7 +256,7 @@ async function describeViaGoogle(
           },
         ],
       }),
-    },
+    }
   );
 
   if (!response.ok) {
@@ -283,7 +287,7 @@ async function describeViaGoogle(
 async function describeViaOllama(
   imageBase64: string,
   modelId: string,
-  config: VisionApiConfig,
+  config: VisionApiConfig
 ): Promise<VisionResult | null> {
   if (!config.ollamaBaseUrl) return null;
 

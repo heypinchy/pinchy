@@ -18,39 +18,29 @@ const agentConfig = {
 
 describe("validateAccess", () => {
   it("should allow paths within allowed directories", () => {
-    expect(() =>
-      validateAccess(agentConfig, "/data/hr-docs/vacation.md")
-    ).not.toThrow();
+    expect(() => validateAccess(agentConfig, "/data/hr-docs/vacation.md")).not.toThrow();
   });
 
   it("should reject paths outside allowed directories", () => {
-    expect(() =>
-      validateAccess(agentConfig, "/data/finance/report.md")
-    ).toThrow("Access denied");
+    expect(() => validateAccess(agentConfig, "/data/finance/report.md")).toThrow("Access denied");
   });
 
   it("should reject paths with null bytes", () => {
-    expect(() =>
-      validateAccess(agentConfig, "/data/hr-docs/\0evil")
-    ).toThrow("Invalid path");
+    expect(() => validateAccess(agentConfig, "/data/hr-docs/\0evil")).toThrow("Invalid path");
   });
 
   it("should reject dotfiles", () => {
-    expect(() => validateAccess(agentConfig, "/data/hr-docs/.env")).toThrow(
-      "Hidden files"
-    );
+    expect(() => validateAccess(agentConfig, "/data/hr-docs/.env")).toThrow("Hidden files");
   });
 
   it("should reject paths not under /data/", () => {
-    expect(() => validateAccess(agentConfig, "/etc/passwd")).toThrow(
-      "Access denied"
-    );
+    expect(() => validateAccess(agentConfig, "/etc/passwd")).toThrow("Access denied");
   });
 
   it("should reject traversal attempts", () => {
-    expect(() =>
-      validateAccess(agentConfig, "/data/hr-docs/../../etc/passwd")
-    ).toThrow("Access denied");
+    expect(() => validateAccess(agentConfig, "/data/hr-docs/../../etc/passwd")).toThrow(
+      "Access denied"
+    );
   });
 });
 
@@ -82,18 +72,14 @@ describe("multi-root + mode validation", () => {
   });
 
   it("rejects paths outside both allowed roots", () => {
-    expect(() =>
-      validateAccess({ allowed_paths: ["/data/kb"] }, "/etc/passwd", "read")
-    ).toThrow(/outside.*allowed root/i);
+    expect(() => validateAccess({ allowed_paths: ["/data/kb"] }, "/etc/passwd", "read")).toThrow(
+      /outside.*allowed root/i
+    );
   });
 
   it("rejects write to read-only path when write_paths excludes it", () => {
     expect(() =>
-      validateAccess(
-        { allowed_paths: ["/data/kb"], write_paths: [] },
-        "/data/kb/file.txt",
-        "write"
-      )
+      validateAccess({ allowed_paths: ["/data/kb"], write_paths: [] }, "/data/kb/file.txt", "write")
     ).toThrow(/not in.*write/i);
   });
 
@@ -164,11 +150,7 @@ describe("write-mode rejection lists allowed write paths (LLM hint)", () => {
 
   it("read-mode rejection still mentions allowed directories", () => {
     try {
-      validateAccess(
-        { allowed_paths: ["/data/kb/"] },
-        "/data/other/x.csv",
-        "read"
-      );
+      validateAccess({ allowed_paths: ["/data/kb/"] }, "/data/other/x.csv", "read");
       throw new Error("expected validateAccess to throw");
     } catch (e) {
       const message = (e as Error).message;
@@ -180,11 +162,7 @@ describe("write-mode rejection lists allowed write paths (LLM hint)", () => {
   it("does not include write_paths when none are configured", () => {
     // No write_paths configured → don't dangle an empty list in the error.
     try {
-      validateAccess(
-        { allowed_paths: ["/data/kb/"], write_paths: [] },
-        "/data/kb/x.csv",
-        "write"
-      );
+      validateAccess({ allowed_paths: ["/data/kb/"], write_paths: [] }, "/data/kb/x.csv", "write");
       throw new Error("expected validateAccess to throw");
     } catch (e) {
       const message = (e as Error).message;
@@ -212,9 +190,7 @@ describe("agent memory write paths (file-granular MEMORY.md, instructions protec
   });
 
   it("allows writing a daily note under memory/", () => {
-    expect(() =>
-      validateAccess(memoryConfig, `${ws}/memory/2026-06-01.md`, "write")
-    ).not.toThrow();
+    expect(() => validateAccess(memoryConfig, `${ws}/memory/2026-06-01.md`, "write")).not.toThrow();
   });
 
   it("allows reading MEMORY.md back", () => {
@@ -294,11 +270,7 @@ describe("path-boundary matching (sibling-directory escape)", () => {
   it("still allows allow-list entries that already end with a slash", () => {
     // Pre-existing entries (admin-configured KB paths) commonly end with /.
     expect(() =>
-      validateAccess(
-        { allowed_paths: ["/data/hr-docs/"] },
-        "/data/hr-docs/vacation.md",
-        "read"
-      )
+      validateAccess({ allowed_paths: ["/data/hr-docs/"] }, "/data/hr-docs/vacation.md", "read")
     ).not.toThrow();
   });
 });
@@ -365,9 +337,9 @@ describe("assertNoSymlinkEscape (write-path symlink containment)", () => {
       // This is the proof the fix does not weaken the guard: a genuine
       // symlink escape (write root exists, an ancestor symlinks outside it)
       // must still be rejected.
-      expect(() =>
-        assertNoSymlinkEscape(join(sandbox, "link", "secret.txt"), [sandbox])
-      ).toThrow(/not under any configured write path/);
+      expect(() => assertNoSymlinkEscape(join(sandbox, "link", "secret.txt"), [sandbox])).toThrow(
+        /not under any configured write path/
+      );
     } finally {
       rmSync(base, { recursive: true, force: true });
     }
@@ -397,9 +369,7 @@ describe("assertNoSymlinkEscape (write-path symlink containment)", () => {
       const rootLink = join(base, "root-link");
       symlinkSync(realRoot, rootLink);
 
-      expect(() =>
-        assertNoSymlinkEscape(join(realRoot, "file.txt"), [rootLink])
-      ).not.toThrow();
+      expect(() => assertNoSymlinkEscape(join(realRoot, "file.txt"), [rootLink])).not.toThrow();
     } finally {
       rmSync(base, { recursive: true, force: true });
     }

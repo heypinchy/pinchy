@@ -17,7 +17,7 @@ function generateSelfSignedCert() {
   const tmpDir = "/tmp/telegram-mock-certs";
   execSync(`mkdir -p ${tmpDir}`);
   execSync(
-    `openssl req -x509 -newkey rsa:2048 -keyout ${tmpDir}/key.pem -out ${tmpDir}/cert.pem -days 1 -nodes -subj "/CN=mock-api" -addext "subjectAltName=DNS:api.telegram.org,DNS:api.anthropic.com" 2>/dev/null`
+    `openssl req -x509 -newkey rsa:2048 -keyout ${tmpDir}/key.pem -out ${tmpDir}/cert.pem -days 1 -nodes -subj "/CN=mock-api" -addext "subjectAltName=DNS:api.telegram.org,DNS:api.anthropic.com" 2>/dev/null`,
   );
   const fs = require("fs");
   return {
@@ -42,7 +42,7 @@ const mockFiles = new Map();
 // image. Good enough for E2E to confirm bytes made it through the mock.
 const MOCK_JPEG_BYTES = Buffer.from(
   "ffd8ffe000104a46494600010100000100010000ffdb004300030202020203020203030303040604040404040805050405080b0908090909080b0d0f0f0c0c0f0d0d0e0e0e0e0effc9000b080001000103011100ffcc00060010ffda0008010100003f00ffd9",
-  "hex"
+  "hex",
 );
 
 // Registered bot tokens and their info
@@ -174,8 +174,16 @@ function handleAnthropicRequest(url, body) {
   if (url === "/v1/models" || url.startsWith("/v1/models")) {
     return {
       data: [
-        { id: "claude-haiku-4-5-20251001", type: "model", display_name: "Claude Haiku" },
-        { id: "claude-sonnet-4-20250514", type: "model", display_name: "Claude Sonnet" },
+        {
+          id: "claude-haiku-4-5-20251001",
+          type: "model",
+          display_name: "Claude Haiku",
+        },
+        {
+          id: "claude-sonnet-4-20250514",
+          type: "model",
+          display_name: "Claude Sonnet",
+        },
       ],
       has_more: false,
     };
@@ -196,7 +204,11 @@ function handleAnthropicRequest(url, body) {
 
 function parsedBody(raw) {
   if (!raw) return {};
-  try { return JSON.parse(raw); } catch { return {}; }
+  try {
+    return JSON.parse(raw);
+  } catch {
+    return {};
+  }
 }
 
 // ── Bot API handlers ───────────────────────────────────────────────────
@@ -252,7 +264,17 @@ function buildPhotoSizes() {
 // `photo: true` builds a photo message (PhotoSize[] + optional caption)
 // instead of a text message — mirrors real Telegram, where a message carries
 // either `text` or `photo`/`caption`, never both.
-function injectMessage({ token, chatId, text, userId, username, firstName, lastName, photo, caption }) {
+function injectMessage({
+  token,
+  chatId,
+  text,
+  userId,
+  username,
+  firstName,
+  lastName,
+  photo,
+  caption,
+}) {
   const updateId = ++updateIdCounter;
   const message = {
     message_id: ++messageIdCounter,
@@ -328,11 +350,14 @@ async function handleGetUpdates(token, body, options = {}) {
     const updates = pendingUpdates.get(token) || [];
     if (offset > 0) {
       // Clear consumed updates
-      pendingUpdates.set(token, updates.filter((u) => u.update_id >= offset));
+      pendingUpdates.set(
+        token,
+        updates.filter((u) => u.update_id >= offset),
+      );
     }
 
     const filtered = (pendingUpdates.get(token) || []).filter(
-      (u) => u.update_id >= offset
+      (u) => u.update_id >= offset,
     );
 
     if (filtered.length > 0) {
@@ -346,7 +371,7 @@ async function handleGetUpdates(token, body, options = {}) {
         const listeners = updateListeners.get(token) || [];
         updateListeners.set(
           token,
-          listeners.filter((cb) => cb !== onUpdate)
+          listeners.filter((cb) => cb !== onUpdate),
         );
         if (signal) signal.removeEventListener("abort", onAbort);
       };
@@ -357,7 +382,7 @@ async function handleGetUpdates(token, body, options = {}) {
       const onUpdate = () => {
         cleanup();
         const current = (pendingUpdates.get(token) || []).filter(
-          (u) => u.update_id >= offset
+          (u) => u.update_id >= offset,
         );
         resolve({ ok: true, result: current });
       };
@@ -453,7 +478,11 @@ function handleBotRequest(token, method, body) {
     case "getFile": {
       const file = mockFiles.get(body?.file_id);
       if (!file) {
-        return { ok: false, error_code: 400, description: "Bad Request: invalid file_id" };
+        return {
+          ok: false,
+          error_code: 400,
+          description: "Bad Request: invalid file_id",
+        };
       }
       return {
         ok: true,
@@ -490,7 +519,9 @@ function dispatchFileDownload(req, res) {
   const bytes = getFileBytes(decodeURIComponent(filePath));
   if (!bytes) {
     res.writeHead(404, { "Content-Type": "application/json" });
-    res.end(JSON.stringify({ ok: false, error_code: 404, description: "Not Found" }));
+    res.end(
+      JSON.stringify({ ok: false, error_code: 404, description: "Not Found" }),
+    );
     return true;
   }
 
@@ -506,7 +537,9 @@ function startHttpsServer(cert) {
     console.log(`[telegram-mock] HTTPS ${req.method} ${req.url}`);
     let body = "";
     req.on("data", (chunk) => (body += chunk));
-    req.on("error", (err) => console.error(`[telegram-mock] HTTPS request error: ${err.message}`));
+    req.on("error", (err) =>
+      console.error(`[telegram-mock] HTTPS request error: ${err.message}`),
+    );
     req.on("end", () => {
       // Handle Anthropic API requests (model prewarm and chat)
       if (req.url.startsWith("/v1/")) {
@@ -532,7 +565,9 @@ function startHttpsServer(cert) {
       const [, token, method] = match;
       let bodyData = parsedBody(body);
 
-      console.log(`[telegram-mock] HTTPS ${method} from bot ${token.substring(0, 10)}...`);
+      console.log(
+        `[telegram-mock] HTTPS ${method} from bot ${token.substring(0, 10)}...`,
+      );
 
       // getUpdates is async (long-poll)
       if (method === "getUpdates") {
@@ -575,7 +610,11 @@ function startControlServer() {
 
         if (!opts.token || !opts.chatId || !(opts.text || opts.photo)) {
           res.writeHead(400);
-          res.end(JSON.stringify({ error: "token, chatId, and text or photo required" }));
+          res.end(
+            JSON.stringify({
+              error: "token, chatId, and text or photo required",
+            }),
+          );
           return;
         }
 
@@ -586,9 +625,12 @@ function startControlServer() {
         // Strip CR/LF from the user-provided values before logging (CodeQL
         // js/log-injection — it only recognises an explicit newline replace).
         const safeChatId = String(opts.chatId).replace(/[\r\n]/g, "");
-        const safeText = String(opts.photo ? "[photo]" : opts.text).replace(/[\r\n]/g, "");
+        const safeText = String(opts.photo ? "[photo]" : opts.text).replace(
+          /[\r\n]/g,
+          "",
+        );
         console.log(
-          `[telegram-mock] Injected message from user ${safeChatId}: "${safeText}"`
+          `[telegram-mock] Injected message from user ${safeChatId}: "${safeText}"`,
         );
         return;
       }
@@ -600,7 +642,7 @@ function startControlServer() {
         let filtered = botResponses;
         if (chatId) {
           filtered = filtered.filter(
-            (r) => String(r.chatId) === String(chatId)
+            (r) => String(r.chatId) === String(chatId),
           );
         }
         if (since) {
@@ -633,20 +675,29 @@ function startControlServer() {
         }
         res.writeHead(200);
         res.end(
-          JSON.stringify({ ok: true, conflict409All, conflict409Tokens: [...conflict409Tokens] })
+          JSON.stringify({
+            ok: true,
+            conflict409All,
+            conflict409Tokens: [...conflict409Tokens],
+          }),
         );
         // Strip CR/LF from the user-provided token before logging (CodeQL
         // js/log-injection — it only recognises an explicit newline replace).
-        const safeToken = token ? String(token).slice(0, 10).replace(/[\r\n]/g, "") : "";
+        const safeToken = token
+          ? String(token)
+              .slice(0, 10)
+              .replace(/[\r\n]/g, "")
+          : "";
         console.log(
-          `[telegram-mock] getUpdates409 ${enabled ? "ENABLED" : "disabled"}${token ? ` for ${safeToken}...` : " (all)"}`
+          `[telegram-mock] getUpdates409 ${enabled ? "ENABLED" : "disabled"}${token ? ` for ${safeToken}...` : " (all)"}`,
         );
         return;
       }
 
       // GET /control/health
       if (req.method === "GET" && url.pathname === "/control/health") {
-        const { pollingTokens: pollingTokensSnapshot, activePollingTokens } = getHealthSnapshot();
+        const { pollingTokens: pollingTokensSnapshot, activePollingTokens } =
+          getHealthSnapshot();
         res.writeHead(200);
         res.end(
           JSON.stringify({
@@ -658,7 +709,7 @@ function startControlServer() {
             responses: botResponses.length,
             conflict409All,
             conflict409Tokens: [...conflict409Tokens],
-          })
+          }),
         );
         return;
       }

@@ -7,6 +7,7 @@ Agents in Pinchy are personalities, not tools. This spec adds two separate templ
 ## Current State
 
 **Schema** (`packages/web/src/db/schema.ts`):
+
 ```
 agents table:
   id, name, templateId, pluginConfig, allowedTools,
@@ -14,10 +15,12 @@ agents table:
 ```
 
 **Templates** (`packages/web/src/lib/agent-templates.ts`):
+
 - `knowledge-base` — tools: pinchy_ls/pinchy_read, has defaultSoulMd + defaultGreeting
 - `custom` — blank slate
 
 **Agent creation** (`packages/web/src/components/new-agent-form.tsx`):
+
 - User picks a template → enters a name → optionally picks data directories → creates agent
 
 **No personality system, no avatars, no role field.**
@@ -29,10 +32,12 @@ agents table:
 ### Two Template Layers
 
 **Agent Templates** define WHAT the agent can do:
+
 - Tools, plugins, capabilities
 - Examples: Knowledge Base, Custom, (future: Accounting, DevOps, Support)
 
 **Personality Presets** define WHO the agent is:
+
 - Name suggestion, SOUL.md content, greeting message, avatar seed, default background color
 - Examples: "Professional Assistant", "Friendly Helper", "Technical Expert", "The Butler" (Smithers)
 
@@ -45,13 +50,13 @@ Each agent template comes with a **default personality preset**, but the user ca
 
 export interface PersonalityPreset {
   id: string;
-  name: string;                    // Display name of the preset
-  suggestedAgentName: string;      // Pre-filled agent name (user can change)
-  description: string;             // One-line description shown in picker
-  soulMd: string;                  // Full SOUL.md content
-  greetingMessage: string | null;  // First message when chat starts
-  avatarSeed: string;              // DiceBear seed for the avatar
-  backgroundColor: string;         // Default hex color (e.g. "#3b82f6")
+  name: string; // Display name of the preset
+  suggestedAgentName: string; // Pre-filled agent name (user can change)
+  description: string; // One-line description shown in picker
+  soulMd: string; // Full SOUL.md content
+  greetingMessage: string | null; // First message when chat starts
+  avatarSeed: string; // DiceBear seed for the avatar
+  backgroundColor: string; // Default hex color (e.g. "#3b82f6")
 }
 ```
 
@@ -69,11 +74,11 @@ You have a dry sense of humor and take pride in being thorough.
 You address users respectfully and always aim to be helpful without being overbearing.
 When you don't know something, you say so clearly.`,
     greetingMessage: "Good day. How may I be of assistance?",
-    avatarSeed: "__smithers__",  // Special: renders custom Smithers lobster avatar
+    avatarSeed: "__smithers__", // Special: renders custom Smithers lobster avatar
     backgroundColor: "#dc2626",
   },
 
-  "professional": {
+  professional: {
     id: "professional",
     name: "Professional Assistant",
     suggestedAgentName: "Sandra",
@@ -86,7 +91,7 @@ You use a neutral, professional tone — friendly but not casual.`,
     backgroundColor: "#3b82f6",
   },
 
-  "friendly": {
+  friendly: {
     id: "friendly",
     name: "Friendly Helper",
     suggestedAgentName: "Max",
@@ -99,7 +104,7 @@ You use a conversational tone and don't mind a bit of humor.`,
     backgroundColor: "#22c55e",
   },
 
-  "technical": {
+  technical: {
     id: "technical",
     name: "Technical Expert",
     suggestedAgentName: "Ada",
@@ -112,14 +117,14 @@ You prefer accuracy over speed and will say when something needs more investigat
     backgroundColor: "#8b5cf6",
   },
 
-  "blank": {
+  blank: {
     id: "blank",
     name: "No Personality",
     suggestedAgentName: "",
     description: "Start with a blank SOUL.md.",
     soulMd: `<!-- Describe your agent's personality and instructions here. -->`,
     greetingMessage: null,
-    avatarSeed: "",  // Will use agent name as seed
+    avatarSeed: "", // Will use agent name as seed
     backgroundColor: "#6b7280",
   },
 };
@@ -136,7 +141,7 @@ export interface AgentTemplate {
   description: string;
   allowedTools: string[];
   pluginId: string | null;
-  defaultPersonality: string;  // NEW: ID of default personality preset
+  defaultPersonality: string; // NEW: ID of default personality preset
 }
 
 export const AGENT_TEMPLATES: Record<string, AgentTemplate> = {
@@ -188,16 +193,21 @@ personalityPresetId: text("personality_preset_id"), // Which preset was used (fo
 - **Coloured faces** — notionists are black-and-white line art with white fills, so we recolour those whites to a light tint of the chosen background hue (a duotone), so each face carries colour instead of staying plain black-and-white.
 - **Head-focused framing** (`scale` + `translateY`) zooms onto the face so the head fills the circle instead of wasting space on the torso.
 - **Curated hairstyles** deliberately exclude culturally specific headwear (turban/headscarf) and props (hat, headphones). The masculine and feminine sets are disjoint; the mixed pool is the default.
-- **Presentation** (feminine / masculine / mixed) is pinned only for an explicit, curated allow-list of clearly-gendered names we ship (e.g. Ada, Maya → feminine; Sherlock → masculine). We never *infer* gender from an arbitrary user-provided name — everything else uses the mixed pool.
+- **Presentation** (feminine / masculine / mixed) is pinned only for an explicit, curated allow-list of clearly-gendered names we ship (e.g. Ada, Maya → feminine; Sherlock → masculine). We never _infer_ gender from an arbitrary user-provided name — everything else uses the mixed pool.
 
 ```typescript
 // packages/web/src/lib/avatar.ts (shape)
-export function getAgentAvatarSvg(agent: { avatarSeed: string | null; name: string }): string {
+export function getAgentAvatarSvg(agent: {
+  avatarSeed: string | null;
+  name: string;
+}): string {
   const seed = agent.avatarSeed ?? agent.name;
   if (seed === "__smithers__") return SMITHERS_AVATAR_PATH; // reserved crab mascot
   const options = buildNotionistsOptions(seed, agent.name); // picks one brand background
   const skin = SKIN_BY_BG.get(options.backgroundColor[0]); // matching light skin tint
-  const svg = createAvatar(notionists, options).toString().replaceAll("#ffffff", `#${skin}`);
+  const svg = createAvatar(notionists, options)
+    .toString()
+    .replaceAll("#ffffff", `#${skin}`);
   return `data:image/svg+xml,${encodeURIComponent(svg)}`;
 }
 ```
@@ -215,7 +225,7 @@ const [avatarSeed, setAvatarSeed] = useState(preset.avatarSeed || "");
 const [avatarBg, setAvatarBg] = useState(preset.backgroundColor);
 
 function rerollAvatar() {
-  setAvatarSeed(crypto.randomUUID());  // Random seed = random avatar
+  setAvatarSeed(crypto.randomUUID()); // Random seed = random avatar
 }
 
 // In JSX:
@@ -236,7 +246,7 @@ function rerollAvatar() {
       className="w-10 h-8 p-0 border-0"
     />
   </div>
-</div>
+</div>;
 ```
 
 The `avatarSeed` is local form state. Only persisted on form submit (create or save settings).
@@ -275,20 +285,20 @@ Advanced users can also directly edit the SOUL.md file on disk (in the OpenClaw 
 
 ### File Changes Summary
 
-| File | Change |
-|------|--------|
-| `src/db/schema.ts` | Add `role`, `avatarSeed`, `avatarBg`, `personalityPresetId` to agents |
-| `drizzle/` | New migration |
-| `src/lib/personality-presets.ts` | **NEW** — Personality preset definitions |
-| `src/lib/agent-templates.ts` | Add `defaultPersonality` field |
-| `src/lib/avatar.ts` | **NEW** — Avatar URL generation logic |
-| `src/components/new-agent-form.tsx` | Add personality picker, avatar preview + re-roll, role field, color picker |
-| `src/components/agent-settings-general.tsx` | Add avatar editing, role field |
-| `src/components/assistant-ui/thread.tsx` | Show avatar in chat messages |
-| `src/app/api/agents/route.ts` | Accept new fields on POST |
-| `src/app/api/agents/[agentId]/route.ts` | Accept new fields on PATCH |
-| `public/images/smithers-avatar.png` | **NEW** — Custom Smithers lobster avatar |
-| `package.json` | (Optional) Add `@dicebear/core` + `@dicebear/collection` for offline rendering |
+| File                                        | Change                                                                         |
+| ------------------------------------------- | ------------------------------------------------------------------------------ |
+| `src/db/schema.ts`                          | Add `role`, `avatarSeed`, `avatarBg`, `personalityPresetId` to agents          |
+| `drizzle/`                                  | New migration                                                                  |
+| `src/lib/personality-presets.ts`            | **NEW** — Personality preset definitions                                       |
+| `src/lib/agent-templates.ts`                | Add `defaultPersonality` field                                                 |
+| `src/lib/avatar.ts`                         | **NEW** — Avatar URL generation logic                                          |
+| `src/components/new-agent-form.tsx`         | Add personality picker, avatar preview + re-roll, role field, color picker     |
+| `src/components/agent-settings-general.tsx` | Add avatar editing, role field                                                 |
+| `src/components/assistant-ui/thread.tsx`    | Show avatar in chat messages                                                   |
+| `src/app/api/agents/route.ts`               | Accept new fields on POST                                                      |
+| `src/app/api/agents/[agentId]/route.ts`     | Accept new fields on PATCH                                                     |
+| `public/images/smithers-avatar.png`         | **NEW** — Custom Smithers lobster avatar                                       |
+| `package.json`                              | (Optional) Add `@dicebear/core` + `@dicebear/collection` for offline rendering |
 
 ### Design Principles (from PERSONALITY.md)
 

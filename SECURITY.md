@@ -20,7 +20,7 @@ This policy applies to the Pinchy codebase and its official distributions. Issue
 ## Supported Versions
 
 | Version | Supported |
-|---------|-----------|
+| ------- | --------- |
 | Latest  | ✅        |
 
 ## Recognition

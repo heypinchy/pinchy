@@ -26,7 +26,8 @@ if (!tag) {
   process.exit(1);
 }
 
-const readVersion = (relPath) => JSON.parse(readFileSync(resolve(ROOT, relPath), "utf8")).version;
+const readVersion = (relPath) =>
+  JSON.parse(readFileSync(resolve(ROOT, relPath), "utf8")).version;
 
 try {
   assertVersionMatchesTag({

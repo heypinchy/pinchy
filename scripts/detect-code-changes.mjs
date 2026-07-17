@@ -27,7 +27,7 @@ console.log(
   code
     ? "→ code=true: running the full CI matrix."
     : "→ code=false: docs-only change, skipping the build/E2E matrix. " +
-        "Required checks still run and report."
+        "Required checks still run and report.",
 );
 
 if (process.env.GITHUB_OUTPUT) {

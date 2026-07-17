@@ -17,8 +17,7 @@ const mapFolder = createFolderMapper({
   SPAM: "junkemail",
 });
 
-const SUMMARY_SELECT =
-  "id,subject,bodyPreview,receivedDateTime,from,toRecipients,isRead";
+const SUMMARY_SELECT = "id,subject,bodyPreview,receivedDateTime,from,toRecipients,isRead";
 
 // Escape a value for use inside an OData single-quoted string literal. OData
 // escapes a single quote by doubling it; without this an apostrophe in a search
@@ -91,12 +90,8 @@ const RECEIVED_DATE_TIME_SENTINEL = "receivedDateTime ge 1970-01-01T00:00:00Z";
 
 function buildOrderedFilter(filters: string[]): string | undefined {
   if (filters.length === 0) return undefined;
-  const hasReceivedDateTime = filters.some((f) =>
-    f.startsWith("receivedDateTime "),
-  );
-  const ordered = hasReceivedDateTime
-    ? filters
-    : [RECEIVED_DATE_TIME_SENTINEL, ...filters];
+  const hasReceivedDateTime = filters.some((f) => f.startsWith("receivedDateTime "));
+  const ordered = hasReceivedDateTime ? filters : [RECEIVED_DATE_TIME_SENTINEL, ...filters];
   return ordered.join(" and ");
 }
 
@@ -104,9 +99,7 @@ function toSummary(m: GraphMessage): EmailSummary {
   return {
     id: m.id,
     from: m.from?.emailAddress?.address ?? "",
-    to:
-      m.toRecipients?.map((r) => r.emailAddress?.address ?? "").join(", ") ??
-      "",
+    to: m.toRecipients?.map((r) => r.emailAddress?.address ?? "").join(", ") ?? "",
     subject: m.subject ?? "",
     date: m.receivedDateTime ?? "",
     snippet: m.bodyPreview ?? "",
@@ -149,9 +142,7 @@ export class GraphAdapter implements EmailAdapter {
       `$select=${encodeURIComponent(SUMMARY_SELECT)}`,
       `$orderby=${encodeURIComponent("receivedDateTime desc")}`,
     ];
-    const filter = buildOrderedFilter(
-      opts.unreadOnly ? ["isRead eq false"] : [],
-    );
+    const filter = buildOrderedFilter(opts.unreadOnly ? ["isRead eq false"] : []);
     if (filter) parts.push(`$filter=${encodeURIComponent(filter)}`);
     const res = await this.req(`${path}?${parts.join("&")}`);
     const data = (await res.json()) as { value: GraphMessage[] };
@@ -163,9 +154,7 @@ export class GraphAdapter implements EmailAdapter {
       $select:
         "id,subject,bodyPreview,receivedDateTime,from,toRecipients,ccRecipients,isRead,body,hasAttachments",
     });
-    const res = await this.req(
-      `/me/messages/${encodeURIComponent(id)}?${params.toString()}`,
-    );
+    const res = await this.req(`/me/messages/${encodeURIComponent(id)}?${params.toString()}`);
     const m = (await res.json()) as GraphMessage & {
       ccRecipients?: Array<{ emailAddress?: { address?: string } }>;
       body?: { contentType?: string; content?: string };
@@ -173,9 +162,7 @@ export class GraphAdapter implements EmailAdapter {
     };
     return {
       ...toSummary(m),
-      cc:
-        m.ccRecipients?.map((r) => r.emailAddress?.address ?? "").join(", ") ??
-        "",
+      cc: m.ccRecipients?.map((r) => r.emailAddress?.address ?? "").join(", ") ?? "",
       body: m.body?.content ?? "",
       // Only pay for the second round trip when the message actually has
       // attachments — the common no-attachment case stays a single request.
@@ -188,7 +175,7 @@ export class GraphAdapter implements EmailAdapter {
       $select: "id,name,contentType,size,isInline",
     });
     const res = await this.req(
-      `/me/messages/${encodeURIComponent(messageId)}/attachments?${params.toString()}`,
+      `/me/messages/${encodeURIComponent(messageId)}/attachments?${params.toString()}`
     );
     const data = (await res.json()) as { value: GraphAttachment[] };
     return data.value
@@ -203,16 +190,16 @@ export class GraphAdapter implements EmailAdapter {
 
   async getAttachment(
     messageId: string,
-    attachmentId: string,
+    attachmentId: string
   ): Promise<{ filename: string; mimeType: string; data: Buffer }> {
     const res = await this.req(
-      `/me/messages/${encodeURIComponent(messageId)}/attachments/${encodeURIComponent(attachmentId)}`,
+      `/me/messages/${encodeURIComponent(messageId)}/attachments/${encodeURIComponent(attachmentId)}`
     );
     const a = (await res.json()) as GraphAttachment;
     if (a.contentBytes == null) {
       throw new Error(
         `attachment ${attachmentId} is an embedded item (e.g. an attached email or a cloud reference) ` +
-          `and cannot be downloaded as a file.`,
+          `and cannot be downloaded as a file.`
       );
     }
     // Graph fileAttachment.contentBytes is standard base64 (not base64url).
@@ -235,9 +222,7 @@ export class GraphAdapter implements EmailAdapter {
     if (opts.to) searchTerms.push(kqlTerm("to", opts.to));
     if (opts.subject) searchTerms.push(kqlTerm("subject", opts.subject));
     if (opts.sinceDays != null) {
-      const cutoff = new Date(
-        Date.now() - opts.sinceDays * 86_400_000,
-      ).toISOString();
+      const cutoff = new Date(Date.now() - opts.sinceDays * 86_400_000).toISOString();
       filters.push(`receivedDateTime ge ${cutoff}`);
     }
     if (opts.unread) filters.push("isRead eq false");
@@ -255,16 +240,10 @@ export class GraphAdapter implements EmailAdapter {
     if (searchTerms.length > 0 && filters.length > 0) {
       // Microsoft Graph v1.0 does not allow $search and $filter together.
       // Convert text terms to OData $filter predicates instead.
-      if (opts.from)
-        filters.push(
-          `from/emailAddress/address eq '${odataString(opts.from)}'`,
-        );
+      if (opts.from) filters.push(`from/emailAddress/address eq '${odataString(opts.from)}'`);
       if (opts.to)
-        filters.push(
-          `toRecipients/any(r: r/emailAddress/address eq '${odataString(opts.to)}')`,
-        );
-      if (opts.subject)
-        filters.push(`contains(subject, '${odataString(opts.subject)}')`);
+        filters.push(`toRecipients/any(r: r/emailAddress/address eq '${odataString(opts.to)}')`);
+      if (opts.subject) filters.push(`contains(subject, '${odataString(opts.subject)}')`);
       params.set("$filter", buildOrderedFilter(filters)!);
       params.set("$orderby", "receivedDateTime desc");
     } else if (searchTerms.length > 0) {
@@ -330,13 +309,10 @@ export class GraphAdapter implements EmailAdapter {
 
   async draft(opts: ComposeOptions): Promise<{ draftId: string }> {
     if (opts.replyTo) {
-      const reply = await this.req(
-        `/me/messages/${encodeURIComponent(opts.replyTo)}/createReply`,
-        {
-          method: "POST",
-          body: JSON.stringify({}),
-        },
-      );
+      const reply = await this.req(`/me/messages/${encodeURIComponent(opts.replyTo)}/createReply`, {
+        method: "POST",
+        body: JSON.stringify({}),
+      });
       const created = (await reply.json()) as { id: string };
       await this.req(`/me/messages/${encodeURIComponent(created.id)}`, {
         method: "PATCH",

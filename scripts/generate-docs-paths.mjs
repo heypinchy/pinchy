@@ -13,7 +13,10 @@ import { fileURLToPath } from "url";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const DOCS_DIR = join(__dirname, "../docs/src/content/docs");
-const OUTPUT = join(__dirname, "../packages/web/src/lib/docs-paths.generated.ts");
+const OUTPUT = join(
+  __dirname,
+  "../packages/web/src/lib/docs-paths.generated.ts",
+);
 
 function collectPaths(dir) {
   const paths = [];

@@ -47,6 +47,7 @@ This DPA is effective for the duration of the contractual relationship between t
 2.2 The Controller determines the purposes and means of processing and is the data controller within the meaning of Art. 4(7) GDPR.
 
 2.3 The Controller is responsible for:
+
 - Configuring and operating the Pinchy instance on its own infrastructure
 - Establishing and enforcing data retention policies
 - Responding to data subject requests
@@ -137,20 +138,20 @@ Liability is governed by the underlying agreement between the Parties and applic
 
 ## Annex 1: Description of Processing
 
-| Element | Description |
-|---|---|
-| **Categories of Data Subjects** | Customer's employees, contractors, or other users of the Pinchy instance |
-| **Categories of Personal Data** | Email addresses, display names, hashed passwords, chat messages, session data, agent configurations |
-| **Sensitive Data** | None intentionally processed. Chat messages may incidentally contain sensitive data at the Controller's discretion. |
-| **Processing Operations** | Storage of user accounts; processing of chat messages for AI agent interaction; storage of agent configurations; encrypted storage of API keys; file access from configured mount points; audit logging of user actions (HMAC-signed, append-only) |
-| **Purpose of Processing** | Provision of the Pinchy AI agent platform |
-| **Data Location** | Controller's own infrastructure (determined by Controller) |
+| Element                         | Description                                                                                                                                                                                                                                        |
+| ------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Categories of Data Subjects** | Customer's employees, contractors, or other users of the Pinchy instance                                                                                                                                                                           |
+| **Categories of Personal Data** | Email addresses, display names, hashed passwords, chat messages, session data, agent configurations                                                                                                                                                |
+| **Sensitive Data**              | None intentionally processed. Chat messages may incidentally contain sensitive data at the Controller's discretion.                                                                                                                                |
+| **Processing Operations**       | Storage of user accounts; processing of chat messages for AI agent interaction; storage of agent configurations; encrypted storage of API keys; file access from configured mount points; audit logging of user actions (HMAC-signed, append-only) |
+| **Purpose of Processing**       | Provision of the Pinchy AI agent platform                                                                                                                                                                                                          |
+| **Data Location**               | Controller's own infrastructure (determined by Controller)                                                                                                                                                                                         |
 
 ---
 
 ## Annex 2: Technical and Organizational Measures (TOMs)
 
-*The following measures are implemented in the Pinchy software as delivered. Infrastructure-level security (server hardening, network security, physical security) is the Controller's responsibility.*
+_The following measures are implemented in the Pinchy software as delivered. Infrastructure-level security (server hardening, network security, physical security) is the Controller's responsibility._
 
 ### Access Control (Authentication)
 

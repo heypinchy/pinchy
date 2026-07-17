@@ -25,7 +25,7 @@ describe("describePageImage", () => {
     expect(result?.text).toBe("Extracted text from page");
     expect(globalThis.fetch).toHaveBeenCalledWith(
       "https://api.anthropic.com/v1/messages",
-      expect.objectContaining({ method: "POST" }),
+      expect.objectContaining({ method: "POST" })
     );
   });
 
@@ -63,7 +63,8 @@ describe("describePageImage", () => {
   });
 
   it("retries on 429 rate limit and succeeds", async () => {
-    const mockFetch = vi.fn()
+    const mockFetch = vi
+      .fn()
       .mockResolvedValueOnce({
         ok: false,
         status: 429,
@@ -120,7 +121,7 @@ describe("describePageImage", () => {
     expect(result?.text).toBe("OpenAI extracted text");
     expect(globalThis.fetch).toHaveBeenCalledWith(
       "https://api.openai.com/v1/chat/completions",
-      expect.objectContaining({ method: "POST" }),
+      expect.objectContaining({ method: "POST" })
     );
   });
 
@@ -140,7 +141,7 @@ describe("describePageImage", () => {
     expect(result?.text).toBe("Google extracted text");
     expect(globalThis.fetch).toHaveBeenCalledWith(
       expect.stringContaining("generativelanguage.googleapis.com"),
-      expect.objectContaining({ method: "POST" }),
+      expect.objectContaining({ method: "POST" })
     );
   });
 
@@ -149,7 +150,7 @@ describe("describePageImage", () => {
       describePageImage("base64data", {
         model: "google/../../admin",
         resolveApiKey: async () => "test-key",
-      }),
+      })
     ).rejects.toThrow("Invalid model ID");
   });
 
@@ -176,7 +177,7 @@ describe("describePageImage", () => {
           headers: expect.objectContaining({
             "content-type": "application/json",
           }),
-        }),
+        })
       );
       // Verify no Authorization header
       const callArgs = (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls[0];

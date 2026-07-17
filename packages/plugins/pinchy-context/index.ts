@@ -59,8 +59,7 @@ function deleteOnboardingFile(agentId: string): void {
 const plugin = {
   id: "pinchy-context",
   name: "Pinchy Context",
-  description:
-    "Allows agents to save user and organization context during onboarding.",
+  description: "Allows agents to save user and organization context during onboarding.",
   configSchema: {
     validate: (value: unknown) => {
       if (
@@ -92,8 +91,7 @@ const plugin = {
         if (!agentId) return null;
 
         const agentConfig = getAgentConfig(agentConfigs, agentId);
-        if (!agentConfig || !agentConfig.tools.includes("save_user_context"))
-          return null;
+        if (!agentConfig || !agentConfig.tools.includes("save_user_context")) return null;
 
         return {
           name: "pinchy_save_user_context",
@@ -105,16 +103,12 @@ const plugin = {
             properties: {
               content: {
                 type: "string",
-                description:
-                  "Markdown-formatted summary of the user's context",
+                description: "Markdown-formatted summary of the user's context",
               },
             },
             required: ["content"],
           },
-          async execute(
-            _toolCallId: string,
-            params: Record<string, unknown>
-          ) {
+          async execute(_toolCallId: string, params: Record<string, unknown>) {
             try {
               const content = params.content as string;
               const res = await fetch(
@@ -159,8 +153,7 @@ const plugin = {
                 ],
               };
             } catch (error) {
-              const message =
-                error instanceof Error ? error.message : "Unknown error";
+              const message = error instanceof Error ? error.message : "Unknown error";
               return {
                 isError: true,
                 content: [{ type: "text", text: message }],
@@ -179,8 +172,7 @@ const plugin = {
         if (!agentId) return null;
 
         const agentConfig = getAgentConfig(agentConfigs, agentId);
-        if (!agentConfig || !agentConfig.tools.includes("save_org_context"))
-          return null;
+        if (!agentConfig || !agentConfig.tools.includes("save_org_context")) return null;
 
         return {
           name: "pinchy_save_org_context",
@@ -192,29 +184,22 @@ const plugin = {
             properties: {
               content: {
                 type: "string",
-                description:
-                  "Markdown-formatted summary of the organization context",
+                description: "Markdown-formatted summary of the organization context",
               },
             },
             required: ["content"],
           },
-          async execute(
-            _toolCallId: string,
-            params: Record<string, unknown>
-          ) {
+          async execute(_toolCallId: string, params: Record<string, unknown>) {
             try {
               const content = params.content as string;
-              const res = await fetch(
-                `${apiBaseUrl}/api/internal/settings/context`,
-                {
-                  method: "PUT",
-                  headers: {
-                    "Content-Type": "application/json",
-                    Authorization: `Bearer ${gatewayToken}`,
-                  },
-                  body: JSON.stringify({ content }),
-                }
-              );
+              const res = await fetch(`${apiBaseUrl}/api/internal/settings/context`, {
+                method: "PUT",
+                headers: {
+                  "Content-Type": "application/json",
+                  Authorization: `Bearer ${gatewayToken}`,
+                },
+                body: JSON.stringify({ content }),
+              });
 
               if (!res.ok) {
                 const data = await res.json();
@@ -244,8 +229,7 @@ const plugin = {
                 ],
               };
             } catch (error) {
-              const message =
-                error instanceof Error ? error.message : "Unknown error";
+              const message = error instanceof Error ? error.message : "Unknown error";
               return {
                 isError: true,
                 content: [{ type: "text", text: message }],

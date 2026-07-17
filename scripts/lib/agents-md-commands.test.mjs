@@ -26,7 +26,10 @@ function fakeResolver(workspace) {
 const WORKSPACE = {
   byDir: {
     ".": { name: "pinchy", scripts: ["test", "build"] },
-    "packages/web": { name: "@pinchy/web", scripts: ["test", "lint", "format", "db:generate"] },
+    "packages/web": {
+      name: "@pinchy/web",
+      scripts: ["test", "lint", "format", "db:generate"],
+    },
     docs: { name: "docs", scripts: ["dev", "build"] },
   },
 };
@@ -34,7 +37,10 @@ const WORKSPACE = {
 test("extractPnpmInvocations reads plain root scripts out of bash blocks", () => {
   const md = ["```bash", "pnpm test", "pnpm build", "```"].join("\n");
   assert.deepEqual(
-    extractPnpmInvocations(md).map((i) => ({ dir: i.target.value, script: i.script })),
+    extractPnpmInvocations(md).map((i) => ({
+      dir: i.target.value,
+      script: i.script,
+    })),
     [
       { dir: ".", script: "test" },
       { dir: ".", script: "build" },
@@ -43,9 +49,12 @@ test("extractPnpmInvocations reads plain root scripts out of bash blocks", () =>
 });
 
 test("extractPnpmInvocations ignores non-pnpm lines", () => {
-  const md = ["```bash", "docker compose up --build", "PINCHY_KEY=x docker compose pull", "```"].join(
-    "\n",
-  );
+  const md = [
+    "```bash",
+    "docker compose up --build",
+    "PINCHY_KEY=x docker compose pull",
+    "```",
+  ].join("\n");
   assert.deepEqual(extractPnpmInvocations(md), []);
 });
 
@@ -57,14 +66,18 @@ test("extractPnpmInvocations resolves -C into a directory target", () => {
 });
 
 test("extractPnpmInvocations resolves --filter into a package-name target", () => {
-  const md = ["```bash", "pnpm --filter @pinchy/web format:check", "```"].join("\n");
+  const md = ["```bash", "pnpm --filter @pinchy/web format:check", "```"].join(
+    "\n",
+  );
   const [inv] = extractPnpmInvocations(md);
   assert.deepEqual(inv.target, { type: "filter", value: "@pinchy/web" });
   assert.equal(inv.script, "format:check");
 });
 
 test("extractPnpmInvocations follows `cd` across a && chain", () => {
-  const md = ["```bash", "cd docs && pnpm install && pnpm dev", "```"].join("\n");
+  const md = ["```bash", "cd docs && pnpm install && pnpm dev", "```"].join(
+    "\n",
+  );
   const invocations = extractPnpmInvocations(md);
   // `pnpm install` is a builtin, not a script, so only `pnpm dev` is a claim
   // about a script existing.
@@ -111,8 +124,14 @@ test("createWorkspaceResolver finds every package, not just the root and web", (
   const resolver = createWorkspaceResolver(REPO_ROOT);
   // A plugin reached by name — the case the hand-written map used to miss,
   // turning a correctly documented command into a bogus "not a package".
-  assert.ok(resolver({ type: "filter", value: "@pinchy/pinchy-odoo" })?.includes("test"));
-  assert.ok(resolver({ type: "filter", value: "@pinchy/web" })?.includes("lint"));
+  assert.ok(
+    resolver({ type: "filter", value: "@pinchy/pinchy-odoo" })?.includes(
+      "test",
+    ),
+  );
+  assert.ok(
+    resolver({ type: "filter", value: "@pinchy/web" })?.includes("lint"),
+  );
   assert.ok(resolver({ type: "dir", value: "." })?.includes("test:scripts"));
   // docs/ is standalone rather than a workspace member, but AGENTS.md
   // documents it, so the guard has to know it.
@@ -121,7 +140,11 @@ test("createWorkspaceResolver finds every package, not just the root and web", (
 
 test("createWorkspaceResolver resolves a glob filter to the union of its matches", () => {
   const resolver = createWorkspaceResolver(REPO_ROOT);
-  assert.ok(resolver({ type: "filter", value: "./packages/plugins/*" })?.includes("test"));
+  assert.ok(
+    resolver({ type: "filter", value: "./packages/plugins/*" })?.includes(
+      "test",
+    ),
+  );
   assert.ok(resolver({ type: "filter", value: "@pinchy/*" })?.includes("lint"));
 });
 
@@ -133,5 +156,8 @@ test("createWorkspaceResolver still returns null for a package that does not exi
 
 test("every pnpm command in the real AGENTS.md resolves to a real script", () => {
   const markdown = readFileSync(join(REPO_ROOT, "AGENTS.md"), "utf8");
-  assert.deepEqual(checkAgentsMdCommands(markdown, createWorkspaceResolver(REPO_ROOT)), []);
+  assert.deepEqual(
+    checkAgentsMdCommands(markdown, createWorkspaceResolver(REPO_ROOT)),
+    [],
+  );
 });

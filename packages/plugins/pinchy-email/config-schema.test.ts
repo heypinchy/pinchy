@@ -34,7 +34,7 @@ describe("pinchy-email manifest contract", () => {
       validatePluginEntry(manifest, {
         apiBaseUrl: "http://x",
         gatewayToken: "t",
-      }).ok,
+      }).ok
     ).toBe(false);
   });
 
@@ -44,7 +44,7 @@ describe("pinchy-email manifest contract", () => {
         apiBaseUrl: "http://x",
         gatewayToken: "t",
         agents: { "a-1": { connectionId: "c-1" } },
-      }).ok,
+      }).ok
     ).toBe(false);
   });
 
@@ -73,9 +73,7 @@ describe("pinchy-email manifest contract", () => {
   });
 
   it("uses additionalProperties: false", () => {
-    expect(
-      (manifest.configSchema as Record<string, unknown>).additionalProperties,
-    ).toBe(false);
+    expect((manifest.configSchema as Record<string, unknown>).additionalProperties).toBe(false);
   });
 
   it("declares contracts.tools with all email tool names", () => {

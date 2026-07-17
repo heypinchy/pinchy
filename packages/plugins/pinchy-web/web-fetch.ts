@@ -11,8 +11,15 @@ export interface WebFetchConfig {
 }
 
 const PRIVATE_IP_PATTERNS = [
-  /^127\./, /^10\./, /^172\.(1[6-9]|2\d|3[01])\./, /^192\.168\./,
-  /^169\.254\./, /^0\./, /^::1$/, /^fc00:/i, /^fe80:/i,
+  /^127\./,
+  /^10\./,
+  /^172\.(1[6-9]|2\d|3[01])\./,
+  /^192\.168\./,
+  /^169\.254\./,
+  /^0\./,
+  /^::1$/,
+  /^fc00:/i,
+  /^fe80:/i,
 ];
 
 // Allow up to 5 redirect hops beyond the initial request (6 HTTP calls total).
@@ -87,14 +94,10 @@ type LookupAddress = { address: string; family: number };
 type LookupCallback = (
   err: Error | null,
   address: string | LookupAddress[],
-  family?: number,
+  family?: number
 ) => void;
 type LookupOptions = { all?: boolean };
-type LookupFunction = (
-  hostname: string,
-  options: LookupOptions,
-  callback: LookupCallback,
-) => void;
+type LookupFunction = (hostname: string, options: LookupOptions, callback: LookupCallback) => void;
 
 export function pinnedLookup(address: string, family: 4 | 6): LookupFunction {
   return (_hostname, options, callback) => {
@@ -129,7 +132,7 @@ export function buildPinnedAgent(address: string, family: 4 | 6): Agent {
 // server; the mocked-fetch suite cannot see whether undici accepts the Agent.
 export const httpFetch = undiciFetch as unknown as (
   url: string,
-  init: RequestInit,
+  init: RequestInit
 ) => Promise<Response>;
 
 // Normalize a hostname so our allow/deny comparison is case-insensitive and
@@ -143,21 +146,17 @@ function normalizeHostname(hostname: string): string {
 
 function checkDomainAllowed(
   hostname: string,
-  config: Pick<WebFetchConfig, "allowedDomains" | "excludedDomains">,
+  config: Pick<WebFetchConfig, "allowedDomains" | "excludedDomains">
 ): string | null {
   const host = normalizeHostname(hostname);
   if (config.allowedDomains?.length) {
-    const allowed = config.allowedDomains.some(
-      (d) => host === d || host.endsWith(`.${d}`),
-    );
+    const allowed = config.allowedDomains.some((d) => host === d || host.endsWith(`.${d}`));
     if (!allowed) {
       return `This agent is not allowed to fetch content from ${host}. Allowed domains: ${config.allowedDomains.join(", ")}`;
     }
   }
   if (config.excludedDomains?.length) {
-    const excluded = config.excludedDomains.some(
-      (d) => host === d || host.endsWith(`.${d}`),
-    );
+    const excluded = config.excludedDomains.some((d) => host === d || host.endsWith(`.${d}`));
     if (excluded) {
       return `Domain ${host} is blocked for this agent.`;
     }
@@ -262,7 +261,7 @@ function capText(s: string, maxChars: number): string {
 export function extractReadableContent(
   text: string,
   contentType: string,
-  maxChars: number,
+  maxChars: number
 ): { content: string; isError?: boolean } {
   if (!contentType.includes("text/html")) {
     return { content: capText(text, maxChars) };
@@ -298,7 +297,7 @@ export function extractReadableContent(
 
 export async function webFetch(
   url: string,
-  config: WebFetchConfig = {},
+  config: WebFetchConfig = {}
 ): Promise<{ content: string; isError?: boolean }> {
   // Validate URL
   let parsed: URL;
@@ -333,9 +332,7 @@ export async function webFetch(
 
   const maxChars = config.maxChars ?? 50000;
   let dispatcher: Agent | undefined =
-    resolved.kind === "resolved"
-      ? buildPinnedAgent(resolved.address, resolved.family)
-      : undefined;
+    resolved.kind === "resolved" ? buildPinnedAgent(resolved.address, resolved.family) : undefined;
   try {
     let currentUrl = url;
     let res: Response | undefined;

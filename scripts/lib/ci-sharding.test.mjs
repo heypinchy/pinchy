@@ -43,7 +43,7 @@ ${shardedJob("integration", { list: "1, 2", denominator: 2 })}
     name: Lint, Test & Build
     steps:
       - run: pnpm test
-`
+`,
   );
   assert.deepEqual(shardedJobs(path), ["integration"]);
 });
@@ -53,7 +53,9 @@ ${shardedJob("integration", { list: "1, 2", denominator: 2 })}
 // ---------------------------------------------------------------------------
 
 test("a matrix length matching its denominator is not an offender", () => {
-  const path = fixture(`name: CI\njobs:\n${shardedJob("e2e-ish", { list: "1, 2", denominator: 2 })}`);
+  const path = fixture(
+    `name: CI\njobs:\n${shardedJob("e2e-ish", { list: "1, 2", denominator: 2 })}`,
+  );
   assert.deepEqual(shardDenominatorMismatches(path), []);
 });
 
@@ -61,7 +63,9 @@ test("a matrix length matching its denominator is not an offender", () => {
 // leaves the matrix at two entries. Shard 3 — a third of the suite — never runs,
 // and BOTH jobs report green.
 test("a denominator raised without extending the matrix is caught", () => {
-  const path = fixture(`name: CI\njobs:\n${shardedJob("e2e-ish", { list: "1, 2", denominator: 3 })}`);
+  const path = fixture(
+    `name: CI\njobs:\n${shardedJob("e2e-ish", { list: "1, 2", denominator: 3 })}`,
+  );
   assert.deepEqual(shardDenominatorMismatches(path), [
     { jobName: "e2e-ish", matrixLength: 2, denominator: 3 },
   ]);
@@ -69,7 +73,7 @@ test("a denominator raised without extending the matrix is caught", () => {
 
 test("a matrix extended without raising the denominator is caught too", () => {
   const path = fixture(
-    `name: CI\njobs:\n${shardedJob("e2e-ish", { list: "1, 2, 3", denominator: 2 })}`
+    `name: CI\njobs:\n${shardedJob("e2e-ish", { list: "1, 2, 3", denominator: 2 })}`,
   );
   assert.deepEqual(shardDenominatorMismatches(path), [
     { jobName: "e2e-ish", matrixLength: 3, denominator: 2 },
@@ -111,7 +115,7 @@ jobs:
             tag: ghcr.io/heypinchy/pinchy-ci
     steps:
       - run: docker build .
-`
+`,
   );
   assert.deepEqual(shardDenominatorMismatches(path), []);
 });
@@ -131,7 +135,7 @@ test("ci.yml: no required check is sharded", () => {
     [],
     `these are required status checks — a matrix renames them to "<name> (1/2)" and branch protection ` +
       `would wait forever on a name that never reports, leaving main unmergeable: ${offenders.join(", ")}. ` +
-      `Sharding one means changing branch protection in the same change.`
+      `Sharding one means changing branch protection in the same change.`,
   );
 });
 
@@ -141,6 +145,6 @@ test("ci.yml: every sharded job's matrix length matches the denominator it passe
     offenders,
     [],
     `shard denominator disagrees with the matrix — the extra shard's tests never run and the job still ` +
-      `reports green: ${offenders.map((o) => `${o.jobName} (matrix ${o.matrixLength}, --shard=…/${o.denominator})`).join(", ")}`
+      `reports green: ${offenders.map((o) => `${o.jobName} (matrix ${o.matrixLength}, --shard=…/${o.denominator})`).join(", ")}`,
   );
 });

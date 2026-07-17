@@ -72,13 +72,20 @@ export function validateTsconfigShape(cfg) {
     cfg?.compilerOptions !== null &&
     typeof cfg?.compilerOptions === "object" &&
     !Array.isArray(cfg.compilerOptions);
-  if (cfg && typeof cfg === "object" && "compilerOptions" in cfg && !isPlainObject) {
+  if (
+    cfg &&
+    typeof cfg === "object" &&
+    "compilerOptions" in cfg &&
+    !isPlainObject
+  ) {
     problems.push(
       `compilerOptions must be an object (got ${JSON.stringify(cfg.compilerOptions)})`,
     );
   }
   const compilerOptions = isPlainObject ? cfg.compilerOptions : {};
-  const types = Array.isArray(compilerOptions.types) ? compilerOptions.types : [];
+  const types = Array.isArray(compilerOptions.types)
+    ? compilerOptions.types
+    : [];
   // Plugins import node builtins (fs, path, node:dns, ...). Without an explicit
   // "node" type (backed by an @types/node devDep) tsc cannot resolve them.
   if (!types.includes("node")) {
@@ -112,7 +119,7 @@ export function validatePackageShape(pkg) {
   };
   if (!("@types/node" in deps)) {
     problems.push(
-      "package.json must declare an @types/node devDependency (tsconfig sets types: [\"node\"])",
+      'package.json must declare an @types/node devDependency (tsconfig sets types: ["node"])',
     );
   }
   return problems;

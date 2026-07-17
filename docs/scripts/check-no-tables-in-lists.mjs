@@ -2,10 +2,7 @@ import { readFileSync, readdirSync, statSync } from "node:fs";
 import { join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 
-const DOCS_DIR = join(
-  fileURLToPath(import.meta.url),
-  "../../src/content/docs",
-);
+const DOCS_DIR = join(fileURLToPath(import.meta.url), "../../src/content/docs");
 
 /**
  * Scans MDX content for Markdown table syntax (lines beginning with | )

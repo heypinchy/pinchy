@@ -28,15 +28,9 @@ const EXT_BY_MIME = new Map<string, string>([
   ["image/gif", ".gif"],
   ["image/webp", ".webp"],
   ["application/msword", ".doc"],
-  [
-    "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-    ".docx",
-  ],
+  ["application/vnd.openxmlformats-officedocument.wordprocessingml.document", ".docx"],
   ["application/vnd.ms-excel", ".xls"],
-  [
-    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-    ".xlsx",
-  ],
+  ["application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", ".xlsx"],
   ["text/plain", ".txt"],
   ["text/csv", ".csv"],
 ]);
@@ -96,7 +90,7 @@ function sanitizeNameToken(value: string): string {
 function sanitizeAttachmentFilename(
   rawFilename: string,
   attachmentId: string,
-  mimeType: string | undefined,
+  mimeType: string | undefined
 ): string {
   const base = basename((rawFilename ?? "").trim().replace(/\\/g, "/"));
   const cleaned = sanitizeNameToken(base);
@@ -129,10 +123,7 @@ async function pathExists(path: string): Promise<boolean> {
  * before the extension. Never overwrites — uploads/ is also the user's
  * chat-upload zone, so clobbering a user's file would be data loss.
  */
-async function pickUniqueFilename(
-  dir: string,
-  filename: string,
-): Promise<string> {
+async function pickUniqueFilename(dir: string, filename: string): Promise<string> {
   const [stem, ext] = splitExtension(filename);
   let candidate = filename;
   let counter = 0;
@@ -156,7 +147,7 @@ interface PluginApi {
   pluginConfig?: PluginConfig;
   registerTool: (
     factory: (ctx: PluginToolContext) => AgentTool | null,
-    opts?: { name?: string },
+    opts?: { name?: string }
   ) => void;
 }
 
@@ -168,7 +159,7 @@ interface AgentTool {
   execute: (
     toolCallId: string,
     params: Record<string, unknown>,
-    signal?: AbortSignal,
+    signal?: AbortSignal
   ) => Promise<{
     content: ContentBlock[];
     isError?: boolean;
@@ -200,7 +191,7 @@ interface AgentEmailConfig {
 
 function getAgentConfig(
   agentConfigs: Record<string, AgentEmailConfig>,
-  agentId: string,
+  agentId: string
 ): AgentEmailConfig | null {
   return agentConfigs[agentId] ?? null;
 }
@@ -217,21 +208,18 @@ async function reportAuthFailure(
   apiBaseUrl: string,
   connectionId: string,
   gatewayToken: string,
-  reason: string,
+  reason: string
 ): Promise<void> {
   try {
-    await fetch(
-      `${apiBaseUrl}/api/internal/integrations/${connectionId}/report-auth-failure`,
-      {
-        method: "POST",
-        headers: {
-          Authorization: `Bearer ${gatewayToken}`,
-          "Content-Type": "application/json",
-          "X-Plugin-Id": "pinchy-email",
-        },
-        body: JSON.stringify({ reason: reason.slice(0, 500) }),
+    await fetch(`${apiBaseUrl}/api/internal/integrations/${connectionId}/report-auth-failure`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${gatewayToken}`,
+        "Content-Type": "application/json",
+        "X-Plugin-Id": "pinchy-email",
       },
-    );
+      body: JSON.stringify({ reason: reason.slice(0, 500) }),
+    });
   } catch {
     // best-effort — never mask the original tool error
   }
@@ -262,9 +250,7 @@ function permissionDenied(operation: string): {
   isError: true;
   details: { error: string };
 } {
-  return toolError(
-    `Permission denied: email.${operation} is not allowed for this agent.`,
-  );
+  return toolError(`Permission denied: email.${operation} is not allowed for this agent.`);
 }
 
 function errorResult(error: unknown): {
@@ -291,12 +277,9 @@ function errorResult(error: unknown): {
  */
 function resolveEmailReference(
   agentId: string,
-  value: string,
-):
-  | { ok: true; realId: string }
-  | { ok: false; result: ReturnType<typeof toolError> } {
-  const isHandle =
-    value.startsWith(`${MSG_PREFIX}_`) || value.startsWith(`${ATT_PREFIX}_`);
+  value: string
+): { ok: true; realId: string } | { ok: false; result: ReturnType<typeof toolError> } {
+  const isHandle = value.startsWith(`${MSG_PREFIX}_`) || value.startsWith(`${ATT_PREFIX}_`);
   if (!isHandle) return { ok: true, realId: value };
 
   const realId = resolveHandle(agentId, value);
@@ -305,7 +288,7 @@ function resolveEmailReference(
       ok: false,
       result: toolError(
         `The email reference '${value}' is unknown or has expired. ` +
-          `Call email_list or email_search again to get a fresh reference.`,
+          `Call email_list or email_search again to get a fresh reference.`
       ),
     };
   }
@@ -313,10 +296,7 @@ function resolveEmailReference(
 }
 
 /** Replace each summary's raw id with a per-agent handle, minting one as needed. */
-function handleizeSummaries(
-  agentId: string,
-  summaries: EmailSummary[],
-): EmailSummary[] {
+function handleizeSummaries(agentId: string, summaries: EmailSummary[]): EmailSummary[] {
   return summaries.map((s) => ({
     ...s,
     id: putHandle(agentId, s.id),
@@ -335,8 +315,7 @@ function handleizeSummaries(
  * reach the provider and yield a confusing empty result or a 400.
  */
 function clampListLimit(limit: unknown): number | undefined {
-  if (typeof limit !== "number" || !Number.isFinite(limit) || limit <= 0)
-    return undefined;
+  if (typeof limit !== "number" || !Number.isFinite(limit) || limit <= 0) return undefined;
   return Math.min(limit, MAX_ENTRIES_PER_AGENT);
 }
 
@@ -370,12 +349,10 @@ export type EmailCredentials = OAuthEmailCredentials | ImapEmailCredentials;
  * real cause.
  */
 export function assertOAuthCredentialsShape(
-  creds: unknown,
+  creds: unknown
 ): asserts creds is OAuthEmailCredentials {
   if (!creds || typeof creds !== "object") {
-    throw new Error(
-      `pinchy-email: credentials must be an object, got ${typeof creds}`,
-    );
+    throw new Error(`pinchy-email: credentials must be an object, got ${typeof creds}`);
   }
   const obj = creds as Record<string, unknown>;
   const looksLikeSecretRef =
@@ -389,9 +366,7 @@ export function assertOAuthCredentialsShape(
       : actual === "object"
         ? " (looks like an unresolved SecretRef — see #209)"
         : "";
-    throw new Error(
-      `pinchy-email: credentials.accessToken must be a string, got ${actual}${hint}`,
-    );
+    throw new Error(`pinchy-email: credentials.accessToken must be a string, got ${actual}${hint}`);
   }
 }
 
@@ -403,58 +378,50 @@ export function assertOAuthCredentialsShape(
  * named in the error — an agent-facing "credentials.imapHost ..." error is
  * far more actionable than a generic shape mismatch.
  */
-export function assertImapCredentialsShape(
-  creds: unknown,
-): asserts creds is ImapEmailCredentials {
+export function assertImapCredentialsShape(creds: unknown): asserts creds is ImapEmailCredentials {
   if (!creds || typeof creds !== "object") {
-    throw new Error(
-      `pinchy-email: credentials must be an object, got ${typeof creds}`,
-    );
+    throw new Error(`pinchy-email: credentials must be an object, got ${typeof creds}`);
   }
   const obj = creds as Record<string, unknown>;
 
   if (typeof obj.imapHost !== "string" || obj.imapHost.length === 0) {
     throw new Error(
-      `pinchy-email: credentials.imapHost must be a non-empty string, got ${typeof obj.imapHost}`,
+      `pinchy-email: credentials.imapHost must be a non-empty string, got ${typeof obj.imapHost}`
     );
   }
   if (typeof obj.imapPort !== "number") {
     throw new Error(
-      `pinchy-email: credentials.imapPort must be a number, got ${typeof obj.imapPort}`,
+      `pinchy-email: credentials.imapPort must be a number, got ${typeof obj.imapPort}`
     );
   }
   if (typeof obj.smtpHost !== "string" || obj.smtpHost.length === 0) {
     throw new Error(
-      `pinchy-email: credentials.smtpHost must be a non-empty string, got ${typeof obj.smtpHost}`,
+      `pinchy-email: credentials.smtpHost must be a non-empty string, got ${typeof obj.smtpHost}`
     );
   }
   if (typeof obj.smtpPort !== "number") {
     throw new Error(
-      `pinchy-email: credentials.smtpPort must be a number, got ${typeof obj.smtpPort}`,
+      `pinchy-email: credentials.smtpPort must be a number, got ${typeof obj.smtpPort}`
     );
   }
   if (typeof obj.username !== "string" || obj.username.length === 0) {
     throw new Error(
-      `pinchy-email: credentials.username must be a non-empty string, got ${typeof obj.username}`,
+      `pinchy-email: credentials.username must be a non-empty string, got ${typeof obj.username}`
     );
   }
   if (typeof obj.password !== "string" || obj.password.length === 0) {
     throw new Error(
-      `pinchy-email: credentials.password must be a non-empty string, got ${typeof obj.password}`,
+      `pinchy-email: credentials.password must be a non-empty string, got ${typeof obj.password}`
     );
   }
-  if (
-    obj.security !== "tls" &&
-    obj.security !== "starttls" &&
-    obj.security !== "none"
-  ) {
+  if (obj.security !== "tls" && obj.security !== "starttls" && obj.security !== "none") {
     throw new Error(
-      `pinchy-email: credentials.security must be one of "tls", "starttls", "none", got ${JSON.stringify(obj.security)}`,
+      `pinchy-email: credentials.security must be one of "tls", "starttls", "none", got ${JSON.stringify(obj.security)}`
     );
   }
   if (obj.senderName !== undefined && typeof obj.senderName !== "string") {
     throw new Error(
-      `pinchy-email: credentials.senderName must be a string, got ${typeof obj.senderName}`,
+      `pinchy-email: credentials.senderName must be a string, got ${typeof obj.senderName}`
     );
   }
 }
@@ -478,11 +445,11 @@ class CredentialsFetchError extends Error {
 async function fetchCredentials(
   apiBaseUrl: string,
   gatewayToken: string,
-  connectionId: string,
+  connectionId: string
 ): Promise<{ type: string; credentials: EmailCredentials }> {
   const response = await fetch(
     `${apiBaseUrl}/api/internal/integrations/${connectionId}/credentials`,
-    { headers: { Authorization: `Bearer ${gatewayToken}` } },
+    { headers: { Authorization: `Bearer ${gatewayToken}` } }
   );
 
   if (!response.ok) {
@@ -500,11 +467,10 @@ async function fetchCredentials(
         return null;
       }
     })();
-    const detail =
-      body && typeof body.error === "string" ? `: ${body.error}` : "";
+    const detail = body && typeof body.error === "string" ? `: ${body.error}` : "";
     throw new CredentialsFetchError(
       `Failed to fetch credentials: ${response.status} ${response.statusText}${detail}`,
-      response.status,
+      response.status
     );
   }
 
@@ -514,7 +480,7 @@ async function fetchCredentials(
   };
   if (!data.type || typeof data.type !== "string") {
     throw new Error(
-      `pinchy-email: credentials API returned no type field (got ${JSON.stringify((data as { type?: unknown }).type)})`,
+      `pinchy-email: credentials API returned no type field (got ${JSON.stringify((data as { type?: unknown }).type)})`
     );
   }
   // IMAP connections carry host/port/username/password credentials with no
@@ -533,8 +499,7 @@ async function fetchCredentials(
 const plugin = {
   id: "pinchy-email",
   name: "Pinchy Email",
-  description:
-    "Email integration (Gmail, Microsoft 365, and IMAP) with per-agent permissions.",
+  description: "Email integration (Gmail, Microsoft 365, and IMAP) with per-agent permissions.",
 
   register(api: PluginApi) {
     // Capture agentConfigs at register() time. OpenClaw calls register() with a
@@ -580,10 +545,7 @@ const plugin = {
     // OAuth refresh races the call) we invalidate eagerly and refetch once
     // before surfacing the error.
     const CREDENTIALS_TTL_MS = 5 * 60 * 1000; // 5 minutes
-    const cache = new Map<
-      string,
-      { adapter: EmailAdapter; expiresAt: number }
-    >();
+    const cache = new Map<string, { adapter: EmailAdapter; expiresAt: number }>();
 
     function invalidate(agentId: string, connectionId: string) {
       cache.delete(`${agentId}:${connectionId}`);
@@ -591,7 +553,7 @@ const plugin = {
 
     async function getOrCreateClient(
       agentId: string,
-      config: AgentEmailConfig,
+      config: AgentEmailConfig
     ): Promise<EmailAdapter> {
       const cacheKey = `${agentId}:${config.connectionId}`;
       const hit = cache.get(cacheKey);
@@ -603,7 +565,7 @@ const plugin = {
       const { type, credentials: creds } = await fetchCredentials(
         apiBaseUrl,
         gatewayToken,
-        config.connectionId,
+        config.connectionId
       );
       // google/microsoft are oauth-shaped; imap carries its own
       // host/port/username/password shape (ImapEmailCredentials).
@@ -645,10 +607,9 @@ const plugin = {
         // dispatch and surfaced as an actionable error the tool layer turns
         // into a failed tool result. Re-throw "unsupported email provider"
         // unchanged so its message/behavior above is untouched.
-        if (err instanceof Error && /unsupported email provider/.test(err.message))
-          throw err;
+        if (err instanceof Error && /unsupported email provider/.test(err.message)) throw err;
         throw new Error(
-          `The ${type} email integration failed to initialize (a required module could not be loaded): ${err instanceof Error ? err.message : String(err)}`,
+          `The ${type} email integration failed to initialize (a required module could not be loaded): ${err instanceof Error ? err.message : String(err)}`
         );
       }
       cache.set(cacheKey, {
@@ -664,10 +625,7 @@ const plugin = {
      * error is terminal (not worth retrying) so the "flag + rethrow" shape
      * can't drift between call sites.
      */
-    async function reportAndRethrow(
-      connectionId: string,
-      error: unknown,
-    ): Promise<never> {
+    async function reportAndRethrow(connectionId: string, error: unknown): Promise<never> {
       const reason = error instanceof Error ? error.message : String(error);
       // Read apiBaseUrl/gatewayToken dynamically (same as getOrCreateClient):
       // they live on api.pluginConfig, not in this function's scope.
@@ -698,7 +656,7 @@ const plugin = {
     async function withAuthRetry<T>(
       agentId: string,
       config: AgentEmailConfig,
-      fn: (adapter: EmailAdapter) => Promise<T>,
+      fn: (adapter: EmailAdapter) => Promise<T>
     ): Promise<T> {
       let adapter: EmailAdapter;
       try {
@@ -725,10 +683,7 @@ const plugin = {
         try {
           fresh = await getOrCreateClient(agentId, config);
         } catch (refetchErr) {
-          if (
-            refetchErr instanceof CredentialsFetchError &&
-            refetchErr.status === 503
-          ) {
+          if (refetchErr instanceof CredentialsFetchError && refetchErr.status === 503) {
             return reportAndRethrow(config.connectionId, refetchErr);
           }
           throw refetchErr;
@@ -784,15 +739,13 @@ const plugin = {
                   folder: params.folder as Folder | undefined,
                   limit: clampListLimit(params.limit),
                   unreadOnly: params.unreadOnly as boolean | undefined,
-                }),
+                })
               );
 
               const handleized = handleizeSummaries(agentId, result);
 
               return {
-                content: [
-                  { type: "text", text: JSON.stringify(handleized, null, 2) },
-                ],
+                content: [{ type: "text", text: JSON.stringify(handleized, null, 2) }],
               };
             } catch (error) {
               return errorResult(error);
@@ -800,7 +753,7 @@ const plugin = {
           },
         };
       },
-      { name: "email_list" },
+      { name: "email_list" }
     );
 
     // 2. email_read
@@ -832,23 +785,18 @@ const plugin = {
                 return permissionDenied("read");
               }
 
-              const resolved = resolveEmailReference(
-                agentId,
-                params.id as string,
-              );
+              const resolved = resolveEmailReference(agentId, params.id as string);
               if (!resolved.ok) return resolved.result;
 
               const result = await withAuthRetry(agentId, config, (adapter) =>
-                adapter.read(resolved.realId),
+                adapter.read(resolved.realId)
               );
 
               const msgHandle = putHandle(agentId, result.id);
-              const handleizedAttachments = (result.attachments ?? []).map(
-                (a) => ({
-                  ...a,
-                  id: putAttachmentHandle(agentId, a.id),
-                }),
-              );
+              const handleizedAttachments = (result.attachments ?? []).map((a) => ({
+                ...a,
+                id: putAttachmentHandle(agentId, a.id),
+              }));
               const handleizedResult = {
                 ...result,
                 id: msgHandle,
@@ -866,7 +814,7 @@ const plugin = {
                 const list = handleizedAttachments
                   .map(
                     (a) =>
-                      `- id: ${a.id}, filename: ${a.filename}, mimeType: ${a.mimeType}, size: ${humanReadableSize(a.size)}`,
+                      `- id: ${a.id}, filename: ${a.filename}, mimeType: ${a.mimeType}, size: ${humanReadableSize(a.size)}`
                   )
                   .join("\n");
                 content.push({
@@ -884,7 +832,7 @@ const plugin = {
           },
         };
       },
-      { name: "email_read" },
+      { name: "email_read" }
     );
 
     // 3. email_search
@@ -961,8 +909,8 @@ const plugin = {
                   new Error(
                     "The `query` parameter was removed. email_search now uses structured " +
                       "fields instead of a raw query string: from, to, subject, unread, " +
-                      "sinceDays, folder, limit. Re-issue the call using those fields.",
-                  ),
+                      "sinceDays, folder, limit. Re-issue the call using those fields."
+                  )
                 );
               }
 
@@ -977,15 +925,13 @@ const plugin = {
                   folder: params.folder as
                     "INBOX" | "SENT" | "DRAFTS" | "TRASH" | "SPAM" | undefined,
                   limit: clampListLimit(params.limit),
-                }),
+                })
               );
 
               const handleized = handleizeSummaries(agentId, result);
 
               return {
-                content: [
-                  { type: "text", text: JSON.stringify(handleized, null, 2) },
-                ],
+                content: [{ type: "text", text: JSON.stringify(handleized, null, 2) }],
               };
             } catch (error) {
               return errorResult(error);
@@ -993,7 +939,7 @@ const plugin = {
           },
         };
       },
-      { name: "email_search" },
+      { name: "email_search" }
     );
 
     // 4. email_draft
@@ -1020,8 +966,7 @@ const plugin = {
               },
               replyTo: {
                 type: "string",
-                description:
-                  "Message ID to reply to (optional). Sets In-Reply-To header.",
+                description: "Message ID to reply to (optional). Sets In-Reply-To header.",
               },
             },
             required: ["to", "subject", "body"],
@@ -1032,8 +977,7 @@ const plugin = {
                 return permissionDenied("draft");
               }
 
-              let replyTo: string | undefined = params.replyTo as
-                string | undefined;
+              let replyTo: string | undefined = params.replyTo as string | undefined;
               if (replyTo != null) {
                 const resolved = resolveEmailReference(agentId, replyTo);
                 if (!resolved.ok) return resolved.result;
@@ -1046,7 +990,7 @@ const plugin = {
                   subject: params.subject as string,
                   body: params.body as string,
                   replyTo,
-                }),
+                })
               );
 
               // Never hand the raw provider id back to the model — mint a
@@ -1062,7 +1006,7 @@ const plugin = {
                         draftId: putHandle(agentId, result.draftId),
                       },
                       null,
-                      2,
+                      2
                     ),
                   },
                 ],
@@ -1073,7 +1017,7 @@ const plugin = {
           },
         };
       },
-      { name: "email_draft" },
+      { name: "email_draft" }
     );
 
     // 5. email_send
@@ -1100,8 +1044,7 @@ const plugin = {
               },
               replyTo: {
                 type: "string",
-                description:
-                  "Message ID to reply to (optional). Sets In-Reply-To header.",
+                description: "Message ID to reply to (optional). Sets In-Reply-To header.",
               },
             },
             required: ["to", "subject", "body"],
@@ -1112,8 +1055,7 @@ const plugin = {
                 return permissionDenied("send");
               }
 
-              let replyTo: string | undefined = params.replyTo as
-                string | undefined;
+              let replyTo: string | undefined = params.replyTo as string | undefined;
               if (replyTo != null) {
                 const resolved = resolveEmailReference(agentId, replyTo);
                 if (!resolved.ok) return resolved.result;
@@ -1126,7 +1068,7 @@ const plugin = {
                   subject: params.subject as string,
                   body: params.body as string,
                   replyTo,
-                }),
+                })
               );
 
               // Never hand the raw provider id back to the model — mint a
@@ -1134,9 +1076,7 @@ const plugin = {
               // short reference, not a corruptible ~150-char Graph id. A null
               // messageId is a "no id available" signal, not an id: leave it.
               const messageId =
-                result.messageId == null
-                  ? result.messageId
-                  : putHandle(agentId, result.messageId);
+                result.messageId == null ? result.messageId : putHandle(agentId, result.messageId);
               const content: ContentBlock[] = [
                 {
                   type: "text",
@@ -1162,7 +1102,7 @@ const plugin = {
           },
         };
       },
-      { name: "email_send" },
+      { name: "email_send" }
     );
 
     // 6. email_get_attachment
@@ -1183,8 +1123,7 @@ const plugin = {
             properties: {
               messageId: {
                 type: "string",
-                description:
-                  "The email message ID that contains the attachment",
+                description: "The email message ID that contains the attachment",
               },
               attachmentId: {
                 type: "string",
@@ -1199,14 +1138,11 @@ const plugin = {
                 return permissionDenied("read");
               }
 
-              const resolvedMessageId = resolveEmailReference(
-                agentId,
-                params.messageId as string,
-              );
+              const resolvedMessageId = resolveEmailReference(agentId, params.messageId as string);
               if (!resolvedMessageId.ok) return resolvedMessageId.result;
               const resolvedAttachmentId = resolveEmailReference(
                 agentId,
-                params.attachmentId as string,
+                params.attachmentId as string
               );
               if (!resolvedAttachmentId.ok) return resolvedAttachmentId.result;
 
@@ -1220,20 +1156,14 @@ const plugin = {
               // local-file stat() precheck. We always postcheck data.length
               // below, which is what actually protects the process (metadata
               // can lie or be absent; the downloaded buffer cannot).
-              const attachment = await withAuthRetry(
-                agentId,
-                config,
-                (adapter) => adapter.getAttachment(messageId, attachmentId),
+              const attachment = await withAuthRetry(agentId, config, (adapter) =>
+                adapter.getAttachment(messageId, attachmentId)
               );
 
               if (attachment.data.length > MAX_ATTACHMENT_BYTES) {
-                const sizeMb = (attachment.data.length / 1024 / 1024).toFixed(
-                  1,
-                );
+                const sizeMb = (attachment.data.length / 1024 / 1024).toFixed(1);
                 const maxMb = (MAX_ATTACHMENT_BYTES / 1024 / 1024).toFixed(0);
-                throw new Error(
-                  `Attachment too large: ${sizeMb} MB, max allowed is ${maxMb} MB.`,
-                );
+                throw new Error(`Attachment too large: ${sizeMb} MB, max allowed is ${maxMb} MB.`);
               }
 
               const dir = `${WORKSPACE_ROOT}/${agentId}/uploads`;
@@ -1242,7 +1172,7 @@ const plugin = {
               const sanitized = sanitizeAttachmentFilename(
                 attachment.filename,
                 attachmentId,
-                attachment.mimeType,
+                attachment.mimeType
               );
               const finalFilename = await pickUniqueFilename(dir, sanitized);
               const filePath = `${dir}/${finalFilename}`;
@@ -1255,12 +1185,9 @@ const plugin = {
               // those forms fall into the attachment-<id> fallback and never
               // reach here. Keep that leading-dot strip if you refactor the
               // sanitizer.
-              if (
-                basename(filePath) !== finalFilename ||
-                !filePath.startsWith(`${dir}/`)
-              ) {
+              if (basename(filePath) !== finalFilename || !filePath.startsWith(`${dir}/`)) {
                 throw new Error(
-                  `Refusing to write attachment outside the uploads directory: ${finalFilename}`,
+                  `Refusing to write attachment outside the uploads directory: ${finalFilename}`
                 );
               }
 
@@ -1282,7 +1209,7 @@ const plugin = {
                         mimeType: attachment.mimeType,
                       },
                       null,
-                      2,
+                      2
                     ),
                   },
                   {
@@ -1300,7 +1227,7 @@ const plugin = {
           },
         };
       },
-      { name: "email_get_attachment" },
+      { name: "email_get_attachment" }
     );
   },
 };

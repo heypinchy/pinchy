@@ -91,13 +91,7 @@ describe("normalizeMany2OneValues — nested one2many command tuples (#615)", ()
     };
 
     const result = (
-      await normalizeMany2OneValues(
-        client,
-        "conn-1",
-        "account.move",
-        values,
-        FULL_LINE_PERMISSIONS,
-      )
+      await normalizeMany2OneValues(client, "conn-1", "account.move", values, FULL_LINE_PERMISSIONS)
     ).values;
 
     // company_id resolved to the res.company id.
@@ -124,13 +118,7 @@ describe("normalizeMany2OneValues — nested one2many command tuples (#615)", ()
     };
 
     const result = (
-      await normalizeMany2OneValues(
-        client,
-        "conn-1",
-        "account.move",
-        values,
-        FULL_LINE_PERMISSIONS,
-      )
+      await normalizeMany2OneValues(client, "conn-1", "account.move", values, FULL_LINE_PERMISSIONS)
     ).values;
     expect(result.line_ids).toEqual([[4, 42], [5], [6, 0, [1, 2, 3]], [2, 9]]);
   });
@@ -142,13 +130,7 @@ describe("normalizeMany2OneValues — nested one2many command tuples (#615)", ()
     };
 
     const result = (
-      await normalizeMany2OneValues(
-        client,
-        "conn-1",
-        "account.move",
-        values,
-        FULL_LINE_PERMISSIONS,
-      )
+      await normalizeMany2OneValues(client, "conn-1", "account.move", values, FULL_LINE_PERMISSIONS)
     ).values;
     expect(result.line_ids).toEqual([[1, 77, { account_id: 5, credit: 50 }]]);
   });
@@ -164,27 +146,15 @@ describe("normalizeMany2OneValues — nested one2many command tuples (#615)", ()
     FIELDS["account.tax"] = { name: { type: "char" } };
 
     const values = {
-      line_ids: [
-        [0, 0, { account_id: "Main Bank", tax_ids: [[0, 0, { name: "VAT" }]] }],
-      ],
+      line_ids: [[0, 0, { account_id: "Main Bank", tax_ids: [[0, 0, { name: "VAT" }]] }]],
     };
 
     const result = (
-      await normalizeMany2OneValues(
-        client,
-        "conn-1",
-        "account.move",
-        values,
-        FULL_LINE_PERMISSIONS,
-      )
+      await normalizeMany2OneValues(client, "conn-1", "account.move", values, FULL_LINE_PERMISSIONS)
     ).values as { line_ids: unknown[] };
 
     // Top-level line's account_id resolved.
-    const line = result.line_ids[0] as [
-      number,
-      number,
-      Record<string, unknown>,
-    ];
+    const line = result.line_ids[0] as [number, number, Record<string, unknown>];
     expect(line[2].account_id).toBe(5);
     // The nested tax_ids tuple is left verbatim (name NOT resolved/looked up).
     expect(line[2].tax_ids).toEqual([[0, 0, { name: "VAT" }]]);
@@ -212,16 +182,9 @@ describe("normalizeMany2OneValues — nested one2many command tuples (#615)", ()
       ],
     };
 
-    await normalizeMany2OneValues(
-      client,
-      "conn-1",
-      "account.move",
-      values,
-      FULL_LINE_PERMISSIONS,
-    );
+    await normalizeMany2OneValues(client, "conn-1", "account.move", values, FULL_LINE_PERMISSIONS);
 
-    const countOf = (model: string) =>
-      fieldsCalls.filter((m) => m === model).length;
+    const countOf = (model: string) => fieldsCalls.filter((m) => m === model).length;
     // Parent schema: once. Line schema: once for all three lines. Account
     // lookup schema: once for all three name resolutions.
     expect(countOf("account.move")).toBe(1);
@@ -256,29 +219,16 @@ describe("normalizeMany2OneValues — fail loud on empty line schema when resolu
 
   it("throws naming the field and relation when a create tuple carries a bare _pinchy_ref and the line schema is empty", async () => {
     const client = makeEmptySchemaClient();
-    const bareRef =
-      "pinchy_ref:v1:doesnotneedtobevalid-the-schema-check-happens-first";
+    const bareRef = "pinchy_ref:v1:doesnotneedtobevalid-the-schema-check-happens-first";
     const values = {
       line_ids: [[0, 0, { account_id: bareRef }]],
     };
 
     await expect(
-      normalizeMany2OneValues(
-        client,
-        "conn-1",
-        "account.move",
-        values,
-        FULL_LINE_PERMISSIONS,
-      ),
+      normalizeMany2OneValues(client, "conn-1", "account.move", values, FULL_LINE_PERMISSIONS)
     ).rejects.toThrow(/line_ids/);
     await expect(
-      normalizeMany2OneValues(
-        client,
-        "conn-1",
-        "account.move",
-        values,
-        FULL_LINE_PERMISSIONS,
-      ),
+      normalizeMany2OneValues(client, "conn-1", "account.move", values, FULL_LINE_PERMISSIONS)
     ).rejects.toThrow(/account\.move\.line/);
   });
 
@@ -289,13 +239,7 @@ describe("normalizeMany2OneValues — fail loud on empty line schema when resolu
     };
 
     await expect(
-      normalizeMany2OneValues(
-        client,
-        "conn-1",
-        "account.move",
-        values,
-        FULL_LINE_PERMISSIONS,
-      ),
+      normalizeMany2OneValues(client, "conn-1", "account.move", values, FULL_LINE_PERMISSIONS)
     ).rejects.toThrow(/line_ids.*account\.move\.line/s);
   });
 
@@ -308,7 +252,7 @@ describe("normalizeMany2OneValues — fail loud on empty line schema when resolu
       "conn-1",
       "account.move",
       values,
-      FULL_LINE_PERMISSIONS,
+      FULL_LINE_PERMISSIONS
     );
     expect(result.values.line_ids).toEqual([[6, 0, [1, 2]]]);
   });
@@ -336,13 +280,7 @@ describe("normalizeMany2OneValues — nested-permission gating (governance prior
     const { client } = makeMockClient();
     const values = { line_ids: [[2, 1]] };
     await expect(
-      normalizeMany2OneValues(
-        client,
-        "conn-1",
-        "account.move",
-        values,
-        NO_LINE_PERMISSIONS,
-      ),
+      normalizeMany2OneValues(client, "conn-1", "account.move", values, NO_LINE_PERMISSIONS)
     ).rejects.toThrow(/delete/i);
   });
 
@@ -350,13 +288,7 @@ describe("normalizeMany2OneValues — nested-permission gating (governance prior
     const { client } = makeMockClient();
     const values = { line_ids: [[3, 1]] };
     await expect(
-      normalizeMany2OneValues(
-        client,
-        "conn-1",
-        "account.move",
-        values,
-        NO_LINE_PERMISSIONS,
-      ),
+      normalizeMany2OneValues(client, "conn-1", "account.move", values, NO_LINE_PERMISSIONS)
     ).rejects.toThrow(/delete/i);
   });
 
@@ -364,13 +296,7 @@ describe("normalizeMany2OneValues — nested-permission gating (governance prior
     const { client } = makeMockClient();
     const values = { line_ids: [[5]] };
     await expect(
-      normalizeMany2OneValues(
-        client,
-        "conn-1",
-        "account.move",
-        values,
-        NO_LINE_PERMISSIONS,
-      ),
+      normalizeMany2OneValues(client, "conn-1", "account.move", values, NO_LINE_PERMISSIONS)
     ).rejects.toThrow(/delete/i);
   });
 
@@ -378,13 +304,7 @@ describe("normalizeMany2OneValues — nested-permission gating (governance prior
     const { client } = makeMockClient();
     const values = { line_ids: [[6, 0, []]] };
     await expect(
-      normalizeMany2OneValues(
-        client,
-        "conn-1",
-        "account.move",
-        values,
-        NO_LINE_PERMISSIONS,
-      ),
+      normalizeMany2OneValues(client, "conn-1", "account.move", values, NO_LINE_PERMISSIONS)
     ).rejects.toThrow(/delete/i);
   });
 
@@ -397,7 +317,7 @@ describe("normalizeMany2OneValues — nested-permission gating (governance prior
         "conn-1",
         "account.move",
         values,
-        DELETE_ONLY_LINE_PERMISSIONS,
+        DELETE_ONLY_LINE_PERMISSIONS
       );
       expect(result.values.line_ids).toEqual([cmd]);
     }
@@ -409,13 +329,7 @@ describe("normalizeMany2OneValues — nested-permission gating (governance prior
       line_ids: [[1, 77, { account_id: "Main Bank", credit: 50 }]],
     };
     await expect(
-      normalizeMany2OneValues(
-        client,
-        "conn-1",
-        "account.move",
-        values,
-        NO_LINE_PERMISSIONS,
-      ),
+      normalizeMany2OneValues(client, "conn-1", "account.move", values, NO_LINE_PERMISSIONS)
     ).rejects.toThrow(/write/i);
   });
 
@@ -429,11 +343,9 @@ describe("normalizeMany2OneValues — nested-permission gating (governance prior
       "conn-1",
       "account.move",
       values,
-      WRITE_ONLY_LINE_PERMISSIONS,
+      WRITE_ONLY_LINE_PERMISSIONS
     );
-    expect(result.values.line_ids).toEqual([
-      [1, 77, { account_id: 5, credit: 50 }],
-    ]);
+    expect(result.values.line_ids).toEqual([[1, 77, { account_id: 5, credit: 50 }]]);
   });
 
   it("allows inline [0,0,{...}] create with only the parent's create grant (no line grant needed)", async () => {
@@ -443,16 +355,10 @@ describe("normalizeMany2OneValues — nested-permission gating (governance prior
     };
     // Only account.move:create is granted — no account.move.line permission
     // at all — and inline create still succeeds.
-    const result = await normalizeMany2OneValues(
-      client,
-      "conn-1",
-      "account.move",
-      values,
-      { "account.move": ["create"] },
-    );
-    expect(result.values.line_ids).toEqual([
-      [0, 0, { account_id: 5, debit: 100 }],
-    ]);
+    const result = await normalizeMany2OneValues(client, "conn-1", "account.move", values, {
+      "account.move": ["create"],
+    });
+    expect(result.values.line_ids).toEqual([[0, 0, { account_id: 5, debit: 100 }]]);
   });
 
   it("allows [4,id] link without any account.move.line grant", async () => {
@@ -463,7 +369,7 @@ describe("normalizeMany2OneValues — nested-permission gating (governance prior
       "conn-1",
       "account.move",
       values,
-      NO_LINE_PERMISSIONS,
+      NO_LINE_PERMISSIONS
     );
     expect(result.values.line_ids).toEqual([[4, 42]]);
   });
@@ -472,16 +378,8 @@ describe("normalizeMany2OneValues — nested-permission gating (governance prior
     const { client } = makeMockClient();
     const values = { line_ids: [[2, 1]] };
     await expect(
-      normalizeMany2OneValues(
-        client,
-        "conn-1",
-        "account.move",
-        values,
-        NO_LINE_PERMISSIONS,
-      ),
-    ).rejects.toThrow(
-      /Agent missing delete grant on account\.move\.line.*line_ids.*command 2/,
-    );
+      normalizeMany2OneValues(client, "conn-1", "account.move", values, NO_LINE_PERMISSIONS)
+    ).rejects.toThrow(/Agent missing delete grant on account\.move\.line.*line_ids.*command 2/);
   });
 
   it("throws the PERMISSION error, not the empty-schema error, when both apply (authz wins)", async () => {
@@ -502,18 +400,10 @@ describe("normalizeMany2OneValues — nested-permission gating (governance prior
       },
     } as unknown as OdooClient;
     const values = {
-      line_ids: [
-        [2, "pinchy_ref:v1:doesnotneedtobevalid-the-schema-check-happens-first"],
-      ],
+      line_ids: [[2, "pinchy_ref:v1:doesnotneedtobevalid-the-schema-check-happens-first"]],
     }; // delete needs account.move.line:delete
     await expect(
-      normalizeMany2OneValues(
-        client,
-        "conn-1",
-        "account.move",
-        values,
-        NO_LINE_PERMISSIONS,
-      ),
+      normalizeMany2OneValues(client, "conn-1", "account.move", values, NO_LINE_PERMISSIONS)
     ).rejects.toThrow(/Agent missing delete grant on account\.move\.line/);
   });
 });
