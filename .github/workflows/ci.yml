@@ -166,12 +166,16 @@ jobs:
           # Dockerfiles. Two stable scopes stay far under the cap, so a PR now
           # reliably starts warm from main.
           #
-          # The trade: a PR's 2nd push no longer reuses its own 1st push's
-          # layers. That's near-free — it would rebuild the changed layers
-          # anyway — and it also skips the ~30-60 s cache EXPORT on every PR
-          # build. If two mode=max scopes ever exceed 10 GB, move to
-          # `type=registry` on GHCR (no cap) rather than reintroducing
-          # per-branch scopes.
+          # The trade, stated honestly: a PR's 2nd push no longer reuses its own
+          # 1st push's layers. For the common PR that only touches app source
+          # that is free — the changed layers would rebuild anyway — and it even
+          # saves the ~30-60 s cache EXPORT on every PR build. It is NOT free for
+          # a PR that touches a lockfile or an early Dockerfile layer: such a PR
+          # re-pays the full dependency install on EVERY push, where before only
+          # the first push paid it. That is the price of not having the two
+          # images evict each other, which cost every PR 3× (6m27 warm vs 20m06
+          # cold). If it starts to hurt, the fix is `type=registry` on GHCR (no
+          # 10 GB cap), NOT per-branch gha scopes.
           cache-from: type=gha,scope=${{ matrix.scope }}-main
           cache-to: ${{ github.ref_name == 'main' && format('type=gha,mode=max,scope={0}-main', matrix.scope) || '' }}
 
