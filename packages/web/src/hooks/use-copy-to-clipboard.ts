@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 /**
  * Copy text to the clipboard, robust to non-secure contexts.
@@ -12,12 +12,16 @@ import { useState } from "react";
  */
 export function useCopyToClipboard({ copiedDuration = 2000 }: { copiedDuration?: number } = {}) {
   const [isCopied, setIsCopied] = useState(false);
+  const resetTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+
+  useEffect(() => () => clearTimeout(resetTimer.current), []);
 
   async function copy(text: string): Promise<boolean> {
     const ok = await writeToClipboard(text);
     if (ok) {
       setIsCopied(true);
-      setTimeout(() => setIsCopied(false), copiedDuration);
+      clearTimeout(resetTimer.current);
+      resetTimer.current = setTimeout(() => setIsCopied(false), copiedDuration);
     }
     return ok;
   }
