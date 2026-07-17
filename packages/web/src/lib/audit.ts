@@ -601,28 +601,51 @@ export type AuditLogEntry =
       };
     })
   | (AuditLogBase & {
-      // POST /api/agents/[agentId]/knowledge/reindex: an admin manually
-      // (re)ingests the agent's granted knowledge-base folders. Audited as an
-      // index-management action. `pathCount` is the number of granted folders
-      // reindexed — NOT the folder paths themselves, which can embed a
-      // username (AGENTS.md PII rule). `reason` is present on failure rows
-      // only (embedding endpoint unconfigured, ingest error).
+      // Knowledge-base index management. Since #714 a reindex is asynchronous,
+      // so ONE run produces TWO rows, correlated by `jobId` (the same
+      // correlation pattern as `sweepId` for GC sweeps):
       //
-      // The counters mirror IngestResult (lib/knowledge/ingest.ts) and are
-      // what an admin judges the corpus by, so they distinguish findable from
-      // merely processed: `unsearchable` files were indexed but produced no
-      // text to retrieve (image-only scans), and `failed` files could not be
-      // read or parsed at all. Both can be non-zero on a `success` row — the
-      // reindex worked, and these are its findings.
+      //   1. the admin's request        — actorType "user",   POST .../knowledge/reindex
+      //   2. the run's outcome          — actorType "system", written by the index worker
+      //
+      // Both are needed: the request is a user action and must be attributable
+      // even if the run never happens, and the outcome lands hours later in a
+      // context that has no request behind it.
+      //
+      // `pathCount` is the number of granted folders reindexed — NOT the folder
+      // paths themselves, which can embed a username (AGENTS.md PII rule).
+      // `reason` is present on failure rows only (embedding endpoint
+      // unconfigured, a job already running, ingest error).
+      //
+      // `jobId` is absent only where no job exists: nothing granted, or the
+      // request was rejected before it could enqueue.
+      //
+      // The counters mirror IngestResult (lib/knowledge/types.ts) and are what
+      // an admin judges the corpus by, so they distinguish findable from merely
+      // processed: `unsearchable` files were indexed but produced no text to
+      // retrieve (image-only scans), and `failed` files could not be read or
+      // parsed at all. Both can be non-zero on a `success` row — the reindex
+      // worked, and these are its findings. They are absent on the request row,
+      // which has not counted anything yet; writing zeros there would report an
+      // empty corpus for every reindex ever started. Kept flat rather than
+      // nested under a `counts` object so `detail->>'indexed'` keeps answering
+      // across rows written before this change — an append-only log should not
+      // need a shape-version branch to query.
+      //
+      // Spelled out field by field rather than typed as IngestResult on
+      // purpose: the obvious next counter to want is a list of the paths that
+      // failed, which is precisely what this HMAC-signed row must never carry.
+      // Adding a counter here has to stay a decision, not a side effect.
       eventType: "knowledge.reindex";
       detail: {
         agent: EntityRef;
         pathCount: number;
-        indexed: number;
-        skipped: number;
-        removed: number;
-        unsearchable: number;
-        failed: number;
+        jobId?: string;
+        indexed?: number;
+        skipped?: number;
+        removed?: number;
+        unsearchable?: number;
+        failed?: number;
         reason?: string;
       };
     })

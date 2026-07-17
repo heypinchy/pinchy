@@ -354,6 +354,14 @@ ${domain ? `<p><a href="https://${domain}">Go to ${domain} →</a></p>` : ""}
   const { startAuditVerifyJob, stopAuditVerifyJob } = await import("./src/server/audit-verify-job");
   startAuditVerifyJob();
 
+  // Run queued knowledge-base reindexes in the background. A real corpus is
+  // hours of CPU-only embedding, which can't happen inside the admin's HTTP
+  // request. The post-boot kick also requeues any job left `running` by a
+  // crashed predecessor — this process is the only worker, so nothing else
+  // could still hold one.
+  const { startKbIndexWorker, stopKbIndexWorker } = await import("./src/server/kb-index-worker");
+  startKbIndexWorker();
+
   // Graceful shutdown: stop the upload GC + usage poller intervals, close the
   // memory-audit watcher, disconnect from OpenClaw, drain browser WebSockets,
   // then close the HTTP server and DB pool. Without this, a SIGTERM (e.g.
@@ -373,6 +381,7 @@ ${domain ? `<p><a href="https://${domain}">Go to ${domain} →</a></p>` : ""}
       stopUploadGc: () => stopUploadGc(),
       stopChatErrorGc: () => stopChatErrorGc(),
       stopAuditVerifyJob: () => stopAuditVerifyJob(),
+      stopKbIndexWorker: () => stopKbIndexWorker(),
       stopUsagePoller: () => stopUsagePoller(),
       stopMemoryAuditWatcher: () =>
         stopMemoryAuditWatcher ? stopMemoryAuditWatcher() : Promise.resolve(),
