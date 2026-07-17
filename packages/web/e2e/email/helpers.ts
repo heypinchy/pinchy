@@ -660,9 +660,19 @@ export async function createGreenmailImapConnectionInDb(
  * Seed an enabled email workflow plus its (workflow × connection) link.
  *
  * Seeded directly because no product surface creates workflows yet — the
- * natural-language creation tool is #705. `sinceTs` is the watermark the sweep
- * enforces, so it is backdated here; left at "now" it would race the seeded
- * mail and drop it as historical.
+ * natural-language creation tool is #705.
+ *
+ * Two fields are load-bearing and easy to get wrong, because the loader drops a
+ * workflow that gets them wrong SILENTLY (no log, no status change — it just
+ * never runs):
+ *
+ * - `createdBy` must resolve to a real user. The loader derives the run's
+ *   notification recipients from it (a shared agent's workflow notifies its
+ *   creator) and skips any workflow whose recipient set comes out empty, since
+ *   dispatchEmails rejects an undeliverable unit. Defaults to the admin.
+ * - `sinceTs` is the watermark the sweep enforces. It is backdated an hour by
+ *   default; left at "now" it would race the mail seeded right after it and
+ *   drop it as historical.
  */
 export async function seedEmailWorkflow(input: {
   agentId: string;
@@ -671,17 +681,25 @@ export async function seedEmailWorkflow(input: {
   action: string;
   filter?: Record<string, unknown>;
   sinceTs?: Date;
+  createdBy?: string;
 }): Promise<string> {
   const dbUrl = process.env.DATABASE_URL || stackDbUrl(5434);
   const { default: postgres } = await import("postgres");
   const sql = postgres(dbUrl);
 
+  let createdBy = input.createdBy;
+  if (!createdBy) {
+    const [admin] = await sql`SELECT id FROM "user" WHERE email = ${_adminEmail} LIMIT 1`;
+    if (!admin) throw new Error(`seedEmailWorkflow: no user found for ${_adminEmail}`);
+    createdBy = admin.id as string;
+  }
+
   const id = randomUUID();
   await sql`
-    INSERT INTO email_workflows (id, agent_id, name, filter, action, enabled, status)
+    INSERT INTO email_workflows (id, agent_id, name, filter, action, enabled, status, created_by)
     VALUES (${id}, ${input.agentId}, ${input.name}, ${JSON.stringify(
       input.filter ?? {}
-    )}::jsonb, ${input.action}, true, 'active')
+    )}::jsonb, ${input.action}, true, 'active', ${createdBy})
   `;
   await sql`
     INSERT INTO email_workflow_connections (workflow_id, connection_id, since_ts)
