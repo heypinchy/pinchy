@@ -385,15 +385,24 @@ export function gradeNoDuplicateCorroboration(input: AttributionInput): KbGrader
 /**
  * Merges a set of `KbGraderResult`s into one: `passed` is true only if every
  * grader passes, `tags` is the de-duplicated union of all failing graders'
- * tags in stable execution order, and `notes` is the concatenation of every
- * grader's notes. Mirrors `graders.ts`'s `composeGraderResults`, but returns a
+ * tags in stable execution order, and `notes` is the de-duplicated union of
+ * every grader's notes (byte-identical notes collapsed, first-seen order
+ * kept). Mirrors `graders.ts`'s `composeGraderResults`, but returns a
  * `KbGraderResult` (no `model`/`latencyMs`/`tokens` — those belong to the
  * invoice eval's `RunResult`, not a KB answer grade).
+ *
+ * Notes are de-duplicated for the same reason tags are: `gradeKbRun` runs
+ * `gradePathCitation` twice against one retrieved set (once inside
+ * `gradeAttribution`, once as `gradeCitationCorrectness` — see that function's
+ * doc comment), so a real fabricated citation would otherwise emit the
+ * identical note line twice. Collapsing byte-identical notes keeps the
+ * human-readable forensics clean without losing any distinct diagnostic.
  */
 export function composeKbGraderResults(results: KbGraderResult[]): KbGraderResult {
   const passed = results.every((result) => result.passed);
   const tagSet = new Set<KbFailureTag>();
   const tags: KbFailureTag[] = [];
+  const noteSet = new Set<string>();
   const notes: string[] = [];
 
   for (const result of results) {
@@ -403,7 +412,12 @@ export function composeKbGraderResults(results: KbGraderResult[]): KbGraderResul
         tags.push(tag);
       }
     }
-    notes.push(...result.notes);
+    for (const note of result.notes) {
+      if (!noteSet.has(note)) {
+        noteSet.add(note);
+        notes.push(note);
+      }
+    }
   }
 
   return { passed, tags, notes };

@@ -11,6 +11,7 @@ import { describe, expect, it } from "vitest";
 import {
   corpusFromEnv,
   countRunsForPair,
+  infraErrorRun,
   noackCorpusDir,
   pendingPairs,
   retrievedSourcesFromAuditEntries,
@@ -222,6 +223,32 @@ describe("scorecardRuns (invalid-trial exclusion)", () => {
       run({ passed: false, tags: ["off-topic-grounded"] }),
     ];
     expect(scorecardRuns(runs)).toHaveLength(2);
+  });
+});
+
+describe("infraErrorRun", () => {
+  it("builds a run-infra-error KbRunResult that scorecardRuns excludes as an invalid trial", () => {
+    const result = infraErrorRun("model-a", "gqa-happy-1", new Error("boom"), 1234);
+
+    expect(result).toEqual<KbRunResult>({
+      model: "model-a",
+      scenario: "gqa-happy-1",
+      passed: false,
+      tags: ["run-infra-error"],
+      notes: ["[run-infra-error] Error: boom"],
+      latencyMs: 1234,
+    });
+    // Same invalid-trial exclusion the scorecard applies: a harness/setup
+    // failure must never count as a model failure.
+    expect(scorecardRuns([result])).toHaveLength(0);
+  });
+
+  it("stringifies a non-Error thrown value without throwing", () => {
+    const result = infraErrorRun("model-b", "gqa-happy-2", "plain string failure", 0);
+
+    expect(result.tags).toEqual(["run-infra-error"]);
+    expect(result.notes).toEqual(["[run-infra-error] plain string failure"]);
+    expect(result.latencyMs).toBe(0);
   });
 });
 

@@ -356,6 +356,24 @@ describe("composeKbGraderResults", () => {
       ])
     ).toEqual<KbGraderResult>({ passed: true, tags: [], notes: [] });
   });
+
+  it("de-duplicates byte-identical notes so a grader reused twice (gradePathCitation via both gradeAttribution and gradeCitationCorrectness) emits its note once", () => {
+    // gradeKbRun runs gradePathCitation twice against the SAME retrieved set
+    // (once inside gradeAttribution, once as gradeCitationCorrectness), so on a
+    // real fabricated citation both emit the identical note. The tag is already
+    // Set-deduped; this keeps the human-readable notes array from carrying the
+    // same line twice.
+    const results: KbGraderResult[] = [
+      { passed: false, tags: ["path-not-cited"], notes: ["same note", "unique-1"] },
+      { passed: false, tags: ["path-not-cited"], notes: ["same note"] },
+    ];
+
+    expect(composeKbGraderResults(results)).toEqual<KbGraderResult>({
+      passed: false,
+      tags: ["path-not-cited"],
+      notes: ["same note", "unique-1"],
+    });
+  });
 });
 
 describe("gradeAttribution", () => {

@@ -95,6 +95,32 @@ export function scorecardRuns(runs: KbRunResult[]): KbRunResult[] {
   return runs.filter((r) => !r.tags.includes("run-infra-error"));
 }
 
+/**
+ * Builds the `run-infra-error` `KbRunResult` the sweep records when a run (or a
+ * model's per-model setup) fails for a harness/transport reason rather than a
+ * model-quality one. PURE — no I/O — so the row shape is unit-testable and
+ * identical at every call site (the per-run catch AND the per-model setup-
+ * failure path). `scorecardRuns`/`export-kb-scorecard.ts` exclude these as
+ * invalid trials, so a setup failure becomes VISIBLE in the on-disk record
+ * (and in `excludedInfraErrors`) instead of a model silently vanishing from the
+ * scorecard when it never even became dispatchable.
+ */
+export function infraErrorRun(
+  model: string,
+  goldId: string,
+  err: unknown,
+  latencyMs: number
+): KbRunResult {
+  return {
+    model,
+    scenario: goldId,
+    passed: false,
+    tags: ["run-infra-error"],
+    notes: [`[run-infra-error] ${String(err)}`],
+    latencyMs,
+  };
+}
+
 export async function writeScorecard(
   label: string,
   runs: KbRunResult[]

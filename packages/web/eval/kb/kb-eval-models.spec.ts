@@ -69,6 +69,7 @@ import {
   corpusFromEnv,
   noackCorpusDir,
   retrievedSourcesFromAuditEntries,
+  infraErrorRun,
 } from "./run-kb-eval";
 import type { KnowledgeSearchAuditEntry } from "./run-kb-eval";
 import { getRawAssistantMessage } from "./getRawAssistantMessage";
@@ -376,6 +377,7 @@ test.describe("KB Eval Harness Layer 3: groundedness sweep (real Ollama Cloud)",
       if (!gold) throw new Error(`Unknown gold id in pendingPairs: ${goldId}`);
 
       if (pinnedModel !== model) {
+        const setupStart = Date.now();
         try {
           await withRetry(async () => {
             await pinAgentModel(cookie, agentId, model);
@@ -387,9 +389,21 @@ test.describe("KB Eval Harness Layer 3: groundedness sweep (real Ollama Cloud)",
           }, `setup ${model}`);
           pinnedModel = model;
         } catch (err) {
+          // Setup (pin + dispatchable) failed after retries — a
+          // harness/transport failure, not model quality. Record it as a
+          // run-infra-error row for THIS (model, goldId) pair so the failure is
+          // visible in the on-disk record and `excludedInfraErrors` instead of
+          // the model silently vanishing from the scorecard. `scorecardRuns`/
+          // the exporter exclude it from n, so it never counts as a model
+          // failure. A model that fails setup on every goldId thus leaves one
+          // infra-error row per pair (each pair re-enters this block, since
+          // `pinnedModel` was never advanced to it).
           console.warn(
-            `[kb-eval] SKIPPING model ${model} entirely — setup failed after retries: ${String(err)}`
+            `[kb-eval] setup failed for ${model}/${goldId} after retries, recording run-infra-error: ${String(err)}`
           );
+          const setupErrorRun = infraErrorRun(model, goldId, err, Date.now() - setupStart);
+          allRuns.push(setupErrorRun);
+          await appendRunResult(RESULT_LABEL, setupErrorRun);
           continue;
         }
       }
@@ -441,18 +455,10 @@ test.describe("KB Eval Harness Layer 3: groundedness sweep (real Ollama Cloud)",
         // left untagged would be silently counted as a model failure in
         // passRate and would zero passCaretK, conflating harness flakiness
         // with model quality.
-        const latencyMs = Date.now() - runStart;
         console.warn(
           `[kb-eval] run for ${model}/${goldId} recorded as run-infra-error: ${String(err)}`
         );
-        const infraErrorResult: KbRunResult = {
-          model,
-          scenario: goldId,
-          passed: false,
-          tags: ["run-infra-error"],
-          notes: [`[run-infra-error] ${String(err)}`],
-          latencyMs,
-        };
+        const infraErrorResult = infraErrorRun(model, goldId, err, Date.now() - runStart);
         allRuns.push(infraErrorResult);
         await appendRunResult(RESULT_LABEL, infraErrorResult);
       }
