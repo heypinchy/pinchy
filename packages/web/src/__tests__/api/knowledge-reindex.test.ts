@@ -1,7 +1,8 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { NextRequest } from "next/server";
 import { DEFAULT_ORG_ID } from "@/lib/knowledge/constants";
-import type { IngestResult } from "@/lib/knowledge/ingest";
+import type { KbIndexJob } from "@/lib/knowledge/index-jobs";
+import type { IngestResult } from "@/lib/knowledge/types";
 
 // ── Mocks ────────────────────────────────────────────────────────────────
 
@@ -31,19 +32,11 @@ vi.mock("@/lib/settings", () => ({
   getSetting: (...args: unknown[]) => mockGetSetting(...args),
 }));
 
-const mockIngestDirectory = vi.fn();
-vi.mock("@/lib/knowledge/ingest", () => ({
-  ingestDirectory: (...args: unknown[]) => mockIngestDirectory(...args),
-}));
-
-const mockEmbedTexts = vi.fn();
-vi.mock("@/lib/knowledge/embeddings", () => ({
-  embedTexts: (...args: unknown[]) => mockEmbedTexts(...args),
-}));
-
-const mockExtractPdfPages = vi.fn();
-vi.mock("@/lib/knowledge/pdf-extract", () => ({
-  extractPdfPages: (...args: unknown[]) => mockExtractPdfPages(...args),
+const mockEnqueueIndexJob = vi.fn();
+const mockGetLatestIndexJobForAgent = vi.fn();
+vi.mock("@/lib/knowledge/index-jobs", () => ({
+  enqueueIndexJob: (...args: unknown[]) => mockEnqueueIndexJob(...args),
+  getLatestIndexJobForAgent: (...args: unknown[]) => mockGetLatestIndexJobForAgent(...args),
 }));
 
 const mockDeferAuditLog = vi.fn();
@@ -61,14 +54,33 @@ function makeRequest(body: Record<string, unknown> = {}) {
   });
 }
 
-/**
- * An ingestDirectory result with every counter at zero, overridden by `counts`.
- * Typed as IngestResult so a new counter added to ingest.ts fails to compile
- * here until the route is taught to aggregate it, rather than silently
- * dropping out of the response.
- */
+function makeGetRequest() {
+  return new NextRequest("http://localhost/api/agents/agent-1/knowledge/reindex");
+}
+
+/** An IngestResult with every counter at zero, overridden by `counts`. Typed so a counter added to ingest fails to compile here rather than silently vanishing from what an admin sees. */
 function ingestResult(counts: Partial<IngestResult> = {}): IngestResult {
   return { indexed: 0, skipped: 0, removed: 0, unsearchable: 0, failed: 0, ...counts };
+}
+
+function makeJob(overrides: Partial<KbIndexJob> = {}): KbIndexJob {
+  return {
+    id: "job-1",
+    orgId: DEFAULT_ORG_ID,
+    agentId: "agent-1",
+    agentName: "Smithers",
+    requestedBy: "admin-1",
+    paths: ["/data/hr", "/data/legal"],
+    status: "pending",
+    total: null,
+    processed: 0,
+    counts: null,
+    error: null,
+    createdAt: new Date("2026-07-17T10:00:00Z"),
+    startedAt: null,
+    finishedAt: null,
+    ...overrides,
+  };
 }
 
 const ctx = { params: Promise.resolve({ agentId: "agent-1" }) };
@@ -87,83 +99,109 @@ describe("POST /api/agents/[agentId]/knowledge/reindex", () => {
     mockGetSession.mockResolvedValue({ user: { id: "admin-1", role: "admin" } });
     mockLimit.mockResolvedValue([agentRow]);
     mockGetSetting.mockResolvedValue("http://ollama.local:11434");
-    mockIngestDirectory.mockResolvedValue(ingestResult({ indexed: 2, skipped: 1 }));
+    mockEnqueueIndexJob.mockResolvedValue({ status: "queued", job: makeJob() });
     POST = (await import("@/app/api/agents/[agentId]/knowledge/reindex/route")).POST;
   });
 
-  it("returns 401 when unauthenticated and never ingests", async () => {
+  it("returns 401 when unauthenticated and never enqueues", async () => {
     mockGetSession.mockResolvedValueOnce(null);
     const res = await POST(makeRequest(), ctx as never);
     expect(res.status).toBe(401);
-    expect(mockIngestDirectory).not.toHaveBeenCalled();
+    expect(mockEnqueueIndexJob).not.toHaveBeenCalled();
   });
 
-  it("returns 403 for an authenticated non-admin and never ingests", async () => {
+  it("returns 403 for an authenticated non-admin and never enqueues", async () => {
     mockGetSession.mockResolvedValueOnce({ user: { id: "user-1", role: "member" } });
     const res = await POST(makeRequest(), ctx as never);
     expect(res.status).toBe(403);
-    expect(mockIngestDirectory).not.toHaveBeenCalled();
+    expect(mockEnqueueIndexJob).not.toHaveBeenCalled();
   });
 
-  it("returns 404 when the agent does not exist (or is deleted) and never ingests", async () => {
+  it("returns 404 when the agent does not exist (or is deleted) and never enqueues", async () => {
     mockLimit.mockResolvedValueOnce([]);
     const res = await POST(makeRequest(), ctx as never);
     expect(res.status).toBe(404);
-    expect(mockIngestDirectory).not.toHaveBeenCalled();
+    expect(mockEnqueueIndexJob).not.toHaveBeenCalled();
   });
 
-  it("reindexes every granted folder and aggregates counts across paths", async () => {
-    mockIngestDirectory
-      .mockResolvedValueOnce(ingestResult({ indexed: 2, skipped: 1 }))
-      .mockResolvedValueOnce(ingestResult({ indexed: 3, removed: 1 }));
-
+  // The whole point of #714: a real corpus is hours of embedding, so the
+  // request hands back a job to watch instead of blocking until it is done.
+  it("queues a job for every granted folder and answers 202 with the job to poll", async () => {
     const res = await POST(makeRequest(), ctx as never);
-    expect(res.status).toBe(200);
+
+    expect(res.status).toBe(202);
     expect(await res.json()).toEqual({
-      ...ingestResult({ indexed: 5, skipped: 1, removed: 1 }),
+      jobId: "job-1",
+      status: "pending",
       pathCount: 2,
     });
 
-    expect(mockIngestDirectory).toHaveBeenCalledTimes(2);
-    // Each granted folder is ingested with the shared single-tenant org id.
-    expect(mockIngestDirectory.mock.calls[0][0]).toBe(DEFAULT_ORG_ID);
-    expect(mockIngestDirectory.mock.calls[0][1]).toBe("/data/hr");
-    expect(mockIngestDirectory.mock.calls[1][0]).toBe(DEFAULT_ORG_ID);
-    expect(mockIngestDirectory.mock.calls[1][1]).toBe("/data/legal");
-    // The production deps (embed + extractPdf) are passed as the third arg.
-    const deps = mockIngestDirectory.mock.calls[0][2];
-    expect(typeof deps.embed).toBe("function");
-    expect(typeof deps.extractPdf).toBe("function");
+    expect(mockEnqueueIndexJob).toHaveBeenCalledTimes(1);
+    expect(mockEnqueueIndexJob.mock.calls[0][0]).toMatchObject({
+      orgId: DEFAULT_ORG_ID,
+      agentId: "agent-1",
+      // Snapshotted onto the job so the outcome row can still name the agent
+      // hours later, and so the worker indexes what was authorized when asked.
+      agentName: "Smithers",
+      requestedBy: "admin-1",
+      paths: ["/data/hr", "/data/legal"],
+    });
   });
 
   it("narrows to the requested subset but never past the agent's granted folders", async () => {
-    // /data/legal is granted; /etc/passwd is NOT — it must be dropped, not ingested.
+    // /data/legal is granted; /etc/passwd is NOT — it must be dropped, not queued.
     const res = await POST(makeRequest({ paths: ["/data/legal", "/etc/passwd"] }), ctx as never);
-    expect(res.status).toBe(200);
-    expect(mockIngestDirectory).toHaveBeenCalledTimes(1);
-    expect(mockIngestDirectory.mock.calls[0][1]).toBe("/data/legal");
+    expect(res.status).toBe(202);
+    expect(mockEnqueueIndexJob.mock.calls[0][0].paths).toEqual(["/data/legal"]);
   });
 
-  it("returns 200 with zero counts and never ingests when the agent has no granted folders", async () => {
+  // Serialized per org by the job store. Rejecting with the blocking job's id
+  // is what lets the admin watch the run that is actually happening instead of
+  // clicking again into a queue that will never grow.
+  it("returns 409 with the in-flight job when the org is already reindexing", async () => {
+    mockEnqueueIndexJob.mockResolvedValueOnce({
+      status: "busy",
+      job: makeJob({ id: "job-running", status: "running", processed: 30, total: 42 }),
+    });
+
+    const res = await POST(makeRequest(), ctx as never);
+
+    expect(res.status).toBe(409);
+    expect(await res.json()).toMatchObject({
+      error: expect.stringContaining("already"),
+      jobId: "job-running",
+      status: "running",
+    });
+
+    const entry = mockDeferAuditLog.mock.calls[0][0];
+    expect(entry.outcome).toBe("failure");
+    expect(entry.detail.jobId).toBe("job-running");
+    expect(entry.detail.reason).toBe("index_job_already_running");
+  });
+
+  it("returns 200 and never enqueues when the agent has no granted folders", async () => {
     mockLimit.mockResolvedValueOnce([{ id: "agent-1", name: "Smithers", pluginConfig: null }]);
     const res = await POST(makeRequest(), ctx as never);
     expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({ ...ingestResult(), pathCount: 0 });
-    expect(mockIngestDirectory).not.toHaveBeenCalled();
+    expect(await res.json()).toEqual({ jobId: null, status: "noop", pathCount: 0 });
+    expect(mockEnqueueIndexJob).not.toHaveBeenCalled();
 
-    // A no-op reindex is still audited (success, zero counts).
+    // A no-op reindex is still audited (success, no job).
     expect(mockDeferAuditLog).toHaveBeenCalledTimes(1);
     const entry = mockDeferAuditLog.mock.calls[0][0];
     expect(entry.eventType).toBe("knowledge.reindex");
     expect(entry.outcome).toBe("success");
     expect(entry.detail.pathCount).toBe(0);
+    expect(entry.detail.jobId).toBeUndefined();
   });
 
+  // Fast feedback beats a job that queues, waits, and fails hours later with
+  // the same information.
   it("returns 503 and audits a failure when the embedding endpoint is not configured", async () => {
     mockGetSetting.mockResolvedValueOnce(null);
     const res = await POST(makeRequest(), ctx as never);
     expect(res.status).toBe(503);
-    expect(mockIngestDirectory).not.toHaveBeenCalled();
+    expect(mockEnqueueIndexJob).not.toHaveBeenCalled();
 
     expect(mockDeferAuditLog).toHaveBeenCalledTimes(1);
     const entry = mockDeferAuditLog.mock.calls[0][0];
@@ -172,8 +210,8 @@ describe("POST /api/agents/[agentId]/knowledge/reindex", () => {
     expect(entry.detail.reason).toBe("ollama_not_configured");
   });
 
-  it("returns 500 and audits a failure when ingest throws", async () => {
-    mockIngestDirectory.mockRejectedValueOnce(new Error("disk exploded"));
+  it("returns 500 and audits a failure when enqueueing throws", async () => {
+    mockEnqueueIndexJob.mockRejectedValueOnce(new Error("db exploded"));
     const res = await POST(makeRequest(), ctx as never);
     expect(res.status).toBe(500);
 
@@ -183,27 +221,23 @@ describe("POST /api/agents/[agentId]/knowledge/reindex", () => {
     expect(entry.outcome).toBe("failure");
   });
 
-  it("writes a knowledge.reindex audit row with {id,name} agent ref, counts, and no raw filesystem path/PII", async () => {
-    mockIngestDirectory
-      .mockResolvedValueOnce(ingestResult({ indexed: 2, skipped: 1 }))
-      .mockResolvedValueOnce(ingestResult({ indexed: 3, removed: 1 }));
-
+  it("audits the request with an {id,name} agent ref, the jobId, and no raw filesystem path/PII", async () => {
     const res = await POST(makeRequest(), ctx as never);
-    expect(res.status).toBe(200);
+    expect(res.status).toBe(202);
 
     expect(mockDeferAuditLog).toHaveBeenCalledTimes(1);
     const entry = mockDeferAuditLog.mock.calls[0][0];
     expect(entry.eventType).toBe("knowledge.reindex");
+    expect(entry.actorType).toBe("user");
+    expect(entry.actorId).toBe("admin-1");
     expect(entry.outcome).toBe("success");
     expect(entry.detail.agent).toEqual({ id: "agent-1", name: "Smithers" });
-    expect(entry.detail).toMatchObject({
-      pathCount: 2,
-      indexed: 5,
-      skipped: 1,
-      removed: 1,
-      unsearchable: 0,
-      failed: 0,
-    });
+    expect(entry.detail).toMatchObject({ pathCount: 2, jobId: "job-1" });
+
+    // Counters are absent, not zero: nothing has been counted yet, and zeros
+    // here would record an empty corpus for every reindex ever started.
+    expect(entry.detail.indexed).toBeUndefined();
+    expect(entry.detail.failed).toBeUndefined();
 
     // No full filesystem paths (which can embed usernames) in the audit detail.
     const serialized = JSON.stringify(entry);
@@ -211,25 +245,113 @@ describe("POST /api/agents/[agentId]/knowledge/reindex", () => {
     expect(serialized).not.toContain("/data/legal");
     expect(serialized).not.toMatch(/[^\s@]+@[^\s@]+\.[^\s@]+/); // no email-shaped strings
   });
+});
 
-  // The counts are the ONLY thing an admin sees after a reindex, so the two
-  // that mean "this file will never answer a question" have to survive the
-  // trip from ingest to response and audit. Dropping them here would restore
-  // exactly the false "everything indexed" the ingest layer stopped telling.
-  it("reports unsearchable and failed files in both the response and the audit row", async () => {
-    mockIngestDirectory
-      .mockResolvedValueOnce(ingestResult({ indexed: 4, unsearchable: 2 }))
-      .mockResolvedValueOnce(ingestResult({ indexed: 1, skipped: 3, unsearchable: 1, failed: 2 }));
+describe("GET /api/agents/[agentId]/knowledge/reindex", () => {
+  let GET: typeof import("@/app/api/agents/[agentId]/knowledge/reindex/route").GET;
 
-    const res = await POST(makeRequest(), ctx as never);
+  beforeEach(async () => {
+    vi.clearAllMocks();
+    mockGetSession.mockResolvedValue({ user: { id: "admin-1", role: "admin" } });
+    mockLimit.mockResolvedValue([agentRow]);
+    GET = (await import("@/app/api/agents/[agentId]/knowledge/reindex/route")).GET;
+  });
+
+  it("returns 401 when unauthenticated", async () => {
+    mockGetSession.mockResolvedValueOnce(null);
+    expect((await GET(makeGetRequest(), ctx as never)).status).toBe(401);
+  });
+
+  it("returns 403 for an authenticated non-admin — index state is admin-only, like the reindex itself", async () => {
+    mockGetSession.mockResolvedValueOnce({ user: { id: "user-1", role: "member" } });
+    expect((await GET(makeGetRequest(), ctx as never)).status).toBe(403);
+  });
+
+  it("returns 404 when the agent does not exist", async () => {
+    mockLimit.mockResolvedValueOnce([]);
+    expect((await GET(makeGetRequest(), ctx as never)).status).toBe(404);
+  });
+
+  it("reports no job for an agent that has never been reindexed", async () => {
+    mockGetLatestIndexJobForAgent.mockResolvedValueOnce(null);
+    const res = await GET(makeGetRequest(), ctx as never);
     expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({
-      ...ingestResult({ indexed: 5, skipped: 3, unsearchable: 3, failed: 2 }),
-      pathCount: 2,
-    });
+    expect(await res.json()).toEqual({ job: null });
+  });
 
-    const entry = mockDeferAuditLog.mock.calls[0][0];
-    expect(entry.outcome).toBe("success");
-    expect(entry.detail).toMatchObject({ indexed: 5, unsearchable: 3, failed: 2 });
+  it("reports progress while a run is in flight", async () => {
+    mockGetLatestIndexJobForAgent.mockResolvedValueOnce(
+      makeJob({
+        status: "running",
+        processed: 30,
+        total: 42,
+        startedAt: new Date("2026-07-17T10:00:05Z"),
+      })
+    );
+
+    const res = await GET(makeGetRequest(), ctx as never);
+
+    expect(res.status).toBe(200);
+    expect(await res.json()).toMatchObject({
+      job: { id: "job-1", status: "running", processed: 30, total: 42, counts: null },
+    });
+  });
+
+  // This endpoint is now the only place an admin sees the counts, so the two
+  // that mean "this file will never answer a question" have to survive the trip
+  // from the worker to here. Dropping them would restore exactly the false
+  // "everything indexed" the ingest counters exist to prevent.
+  it("reports unsearchable and failed files on a finished run", async () => {
+    mockGetLatestIndexJobForAgent.mockResolvedValueOnce(
+      makeJob({
+        status: "succeeded",
+        processed: 9,
+        total: 9,
+        counts: ingestResult({ indexed: 5, skipped: 1, unsearchable: 2, failed: 1 }),
+        finishedAt: new Date("2026-07-17T11:00:00Z"),
+      })
+    );
+
+    const res = await GET(makeGetRequest(), ctx as never);
+
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.job.status).toBe("succeeded");
+    expect(body.job.counts).toEqual(
+      ingestResult({ indexed: 5, skipped: 1, unsearchable: 2, failed: 1 })
+    );
+  });
+
+  it("reports why a failed run failed", async () => {
+    mockGetLatestIndexJobForAgent.mockResolvedValueOnce(
+      makeJob({
+        status: "failed",
+        processed: 3,
+        total: 42,
+        counts: ingestResult({ indexed: 3 }),
+        error: "connect ECONNREFUSED",
+        finishedAt: new Date("2026-07-17T11:00:00Z"),
+      })
+    );
+
+    const res = await GET(makeGetRequest(), ctx as never);
+
+    const body = await res.json();
+    expect(body.job).toMatchObject({ status: "failed", error: "connect ECONNREFUSED" });
+  });
+
+  // Not a PII boundary — the admin granted these folders and can see them in
+  // the permissions UI. The response is a projection of the run's STATE, and
+  // paths are its input; shipping the job row wholesale would also mean
+  // shipping the enqueue-time snapshot, which can disagree with the grants the
+  // admin is looking at right now. Report what the run is doing, nothing else.
+  it("reports the run's state without echoing the job's path snapshot", async () => {
+    mockGetLatestIndexJobForAgent.mockResolvedValueOnce(makeJob({ status: "running" }));
+
+    const res = await GET(makeGetRequest(), ctx as never);
+
+    const serialized = JSON.stringify(await res.json());
+    expect(serialized).not.toContain("/data/hr");
+    expect(serialized).not.toContain("/data/legal");
   });
 });
