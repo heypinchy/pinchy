@@ -675,7 +675,11 @@ test.describe("Odoo dispatch probe (pinchy-odoo plugin coverage)", () => {
       since,
       deadlineMs: 160_000,
     });
-    expect(entry.outcome).toBe("success");
+    // Surface the audited failure reason on assertion failure — a ref tool that
+    // dispatches but the plugin rejects (bad ref, missing seed, silent no-op)
+    // audits outcome=failure with the plugin's error in `detail`. Printing it
+    // makes a red probe self-diagnose in the CI log instead of just "failure".
+    expect(entry.outcome, `audit detail: ${JSON.stringify(entry.detail)}`).toBe("success");
   }
 
   test("odoo_complete_activity dispatches on a runtime-minted _pinchy_ref", async ({
