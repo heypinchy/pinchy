@@ -161,6 +161,10 @@ grader change: `pnpm tsx eval/regrade.ts <label> --quotes`.
 
 Methodology and the grading rationale: `../model-selection-methodology.md`.
 
+This dataset is versioned (`../dataset-version.ts`); every grade-moving change is
+recorded in `CHANGELOG.md`. Cite the version and harness commit, not "latest".
+Dispute a grade or number via the "Eval dataset dispute" issue template.
+
 ## Contamination policy
 
 This dataset is public in an AGPL repo, so from the next training crawl onward a
