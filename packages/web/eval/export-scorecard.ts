@@ -32,6 +32,7 @@
  */
 import { readFile } from "node:fs/promises";
 import path from "node:path";
+import { parseEvalJsonl } from "./canary";
 import { gradeRunForScenario } from "../src/lib/eval/graders";
 import { applyTrajectoryRegrade } from "../src/lib/eval/regrade-merge";
 import type { RunResult, RunTrajectory } from "../src/lib/eval/types";
@@ -115,10 +116,7 @@ function wilson95(passes: number, n: number): [number, number] {
 async function readJsonl<T>(file: string): Promise<T[]> {
   try {
     const text = await readFile(path.join(DATA_DIR, file), "utf8");
-    return text
-      .split("\n")
-      .filter((l) => l.trim().length > 0)
-      .map((l) => JSON.parse(l) as T);
+    return parseEvalJsonl<T>(text);
   } catch {
     return [];
   }

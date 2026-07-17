@@ -16,6 +16,7 @@
  */
 import { readFile } from "node:fs/promises";
 import path from "node:path";
+import { parseEvalJsonl } from "./canary";
 import { gradeRunForScenario } from "../src/lib/eval/graders";
 import { buildScorecard } from "../src/lib/eval/scorecard";
 import type { RunResult, RunTrajectory } from "../src/lib/eval/types";
@@ -49,13 +50,12 @@ async function main(): Promise<void> {
   const scenario = SCENARIO_BY_LABEL[label];
   const filePath = path.join(__dirname, "results", `${label}.trajectories.jsonl`);
   const text = await readFile(filePath, "utf8");
-  const lines = text.split("\n").filter((l) => l.trim().length > 0);
+  const records = parseEvalJsonl<RunTrajectory & { passed?: boolean; tags?: string[] }>(text);
 
   const results: RunResult[] = [];
   const flips: string[] = [];
   const quotes: string[] = [];
-  for (const line of lines) {
-    const rec = JSON.parse(line) as RunTrajectory & { passed?: boolean; tags?: string[] };
+  for (const rec of records) {
     const traj: RunTrajectory = {
       model: rec.model,
       toolCalls: rec.toolCalls,

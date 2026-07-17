@@ -23,6 +23,7 @@ import type { Page } from "@playwright/test";
 import { mkdir, writeFile, appendFile, readFile } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 import path from "node:path";
+import { EVAL_CANARY_JSONL_LINE, parseEvalJsonl } from "./canary";
 import { buildTrajectory, type NormalizeAuditEntry } from "../src/lib/eval/normalize";
 import { gradeRunForScenario } from "../src/lib/eval/graders";
 import { buildScorecard, type ScorecardEntry } from "../src/lib/eval/scorecard";
@@ -433,6 +434,22 @@ export interface PersistedTrajectory extends RunTrajectory {
   tags: RunResult["tags"];
 }
 
+/**
+ * Writes the contamination canary (#794) as the first line of a fresh eval
+ * JSONL file, so every file the harness produces is born marked. A no-op once
+ * the file exists — including files seeded from `data/`, which already carry
+ * the header. The `wx` flag makes the create atomic, so concurrent first
+ * appends can't double-write the header.
+ */
+async function ensureCanaryHeader(filePath: string): Promise<void> {
+  try {
+    // eslint-disable-next-line security/detect-non-literal-fs-filename -- caller-validated label (alnum/./_/- only)
+    await writeFile(filePath, `${EVAL_CANARY_JSONL_LINE}\n`, { encoding: "utf8", flag: "wx" });
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== "EEXIST") throw err;
+  }
+}
+
 /** Appends one full trajectory to `results/<label>.trajectories.jsonl`. */
 export async function appendTrajectory(
   label: string,
@@ -446,6 +463,7 @@ export async function appendTrajectory(
   await mkdir(RESULTS_DIR, { recursive: true });
   const filePath = path.join(RESULTS_DIR, `${label}.trajectories.jsonl`);
   const record: PersistedTrajectory = { ...trajectory, scenarioLabel: label, passed, tags };
+  await ensureCanaryHeader(filePath);
   // eslint-disable-next-line security/detect-non-literal-fs-filename -- label validated above (alnum/./_/- only)
   await appendFile(filePath, `${JSON.stringify(record)}\n`, "utf8");
 }
@@ -465,6 +483,7 @@ export async function appendRunResult(label: string, result: RunResult): Promise
   }
   await mkdir(RESULTS_DIR, { recursive: true });
   const filePath = path.join(RESULTS_DIR, `${label}.jsonl`);
+  await ensureCanaryHeader(filePath);
   // eslint-disable-next-line security/detect-non-literal-fs-filename -- label validated above (alnum/./_/- only)
   await appendFile(filePath, `${JSON.stringify(result)}\n`, "utf8");
 }
@@ -488,10 +507,7 @@ export async function readExistingRuns(label: string): Promise<RunResult[]> {
   } catch {
     return [];
   }
-  return text
-    .split("\n")
-    .filter((line) => line.trim().length > 0)
-    .map((line) => JSON.parse(line) as RunResult);
+  return parseEvalJsonl<RunResult>(text);
 }
 
 export async function writeScorecard(label: string, runs: RunResult[]): Promise<ScorecardEntry[]> {
