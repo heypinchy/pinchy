@@ -53,6 +53,17 @@ export function builtImageTags(workflowPath) {
     throw new Error(`"${BUILDER_JOB}" must pass a \`tags:\` template to the build step`);
   }
 
+  // `tags: |` (a newline-separated list, which build-push-action accepts) would
+  // otherwise capture the block indicator itself, and every tag would resolve to
+  // "|" — turning a CORRECT workflow into a red build whose message blames a tag
+  // mismatch that does not exist. Name the real cause instead.
+  if (/^[|>][-+]?\d*$/.test(template[1])) {
+    throw new Error(
+      `"${BUILDER_JOB}" passes \`tags:\` as a block scalar (${template[1]}); this check reads a ` +
+        `single-line template. Keep it on one line, or teach builtImageTags to read the block.`
+    );
+  }
+
   const entries = [...body.matchAll(/^\s+tag:\s*(\S+)\s*$/gm)].map((m) => m[1]);
   if (entries.length === 0) {
     throw new Error(`"${BUILDER_JOB}" must define matrix entries carrying a \`tag:\``);

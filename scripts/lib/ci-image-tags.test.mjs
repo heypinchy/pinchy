@@ -142,6 +142,17 @@ test("a missing builder job is a loud error, not a silent pass", () => {
   assert.throws(() => builtImageTags(path), /build-images/);
 });
 
+// docker/build-push-action takes `tags:` as a newline-separated list too, so
+// `tags: |` is a CORRECT workflow. The extractor reads a single-line template
+// and would silently capture the "|" indicator as if it were the tag, making
+// the ci.yml assertion below fail with `["|", "|"]` — a red build pointing at a
+// tag mismatch that doesn't exist. Diagnose the real cause instead: this shape
+// is unsupported, and the error has to say so.
+test("a block-scalar `tags:` fails with its real cause, not a bogus tag mismatch", () => {
+  const path = fixture(workflow({ ...IN_SYNC, pushed: "|\n            ${{ matrix.tag }}:sha-x" }));
+  assert.throws(() => builtImageTags(path), /single-line/i);
+});
+
 // ---------------------------------------------------------------------------
 // The real ci.yml
 // ---------------------------------------------------------------------------

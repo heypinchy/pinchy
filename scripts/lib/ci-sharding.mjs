@@ -40,23 +40,41 @@ export function shardedJobs(workflowPath) {
  * Every job whose `shard:` matrix length disagrees with the `/N` denominator it
  * passes to Playwright.
  *
- * Only inspects jobs that declare BOTH — a matrix over something other than
- * shards (build-images' image list) has no denominator to agree with, and a
- * `--shard` with no matrix would be a hardcoded single shard, which the
- * length check below would not describe.
+ * A job with no `--shard=${{ matrix.shard }}/N` at all is skipped: it has no
+ * denominator to disagree with (build-images matrixes over images, not shards).
+ *
+ * A job that HAS one but whose `shard:` list this cannot read THROWS. The
+ * denominator regex already requires `${{ matrix.shard }}`, so referencing it
+ * without a readable list is not an innocent shape — it is either broken, or
+ * written in a form (a YAML block sequence, an `include:`, an anchor) this
+ * textual sweep does not understand. Returning "no offenders" for it would let
+ * the guard stop guarding the instant someone reformats a matrix, which is the
+ * silent-coverage-loss failure the whole function exists to prevent. Refusing
+ * to answer is the only honest response to input it cannot check.
  *
  * @param {string} workflowPath absolute path to a workflow file
+ * @throws if a job references `matrix.shard` but declares no inline `shard:` list
  * @returns {Array<{ jobName: string, matrixLength: number, denominator: number }>}
  */
 export function shardDenominatorMismatches(workflowPath) {
   const offenders = [];
 
   for (const job of splitWorkflowIntoJobs(workflowPath)) {
-    const list = /^\s+shard:\s*\[([^\]]*)\]\s*$/m.exec(job.body);
     const denominators = [...job.body.matchAll(/--shard=\$\{\{\s*matrix\.shard\s*\}\}\/(\d+)/g)].map(
       (m) => Number(m[1])
     );
-    if (!list || denominators.length === 0) continue;
+    if (denominators.length === 0) continue;
+
+    const list = /^\s+shard:\s*\[([^\]]*)\]\s*$/m.exec(job.body);
+    if (!list) {
+      throw new Error(
+        `"${job.jobName}" passes --shard=\${{ matrix.shard }}/${denominators[0]} but declares no ` +
+          `inline \`shard: [...]\` matrix this check can read. Either it is broken, or the matrix ` +
+          `was rewritten in a form this textual sweep does not parse (block sequence, include:, ` +
+          `anchor). Restore the inline form, or teach shardDenominatorMismatches the new one — ` +
+          `do not leave it unreadable, or a wrong denominator silently stops being caught.`
+      );
+    }
 
     const matrixLength = list[1]
       .split(",")

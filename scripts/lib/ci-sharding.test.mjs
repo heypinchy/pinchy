@@ -76,6 +76,27 @@ test("a matrix extended without raising the denominator is caught too", () => {
   ]);
 });
 
+// The guard's own silent-failure mode. `shard:` written as a YAML block
+// sequence is valid, identical in meaning, and what plenty of people write —
+// but it is not the inline form the extractor recognises. Answering "no
+// offenders" there would mean the guard stops guarding the moment someone
+// reformats the matrix, which is the exact failure it exists to catch. A shard
+// list it cannot read is UNCHECKABLE, not innocent, so it must be loud.
+test("a shard matrix written as a block sequence is a loud error, not a silent pass", () => {
+  const path = fixture(`name: CI
+jobs:
+  integration:
+    strategy:
+      matrix:
+        shard:
+          - 1
+          - 2
+    steps:
+      - run: pnpm -C packages/web test:integration --shard=\${{ matrix.shard }}/3
+`);
+  assert.throws(() => shardDenominatorMismatches(path), /integration/);
+});
+
 // build-images matrixes over images, not shards — it has no denominator and must
 // not be dragged into this check.
 test("a matrix that is not a shard matrix is ignored", () => {
