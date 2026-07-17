@@ -7,7 +7,7 @@ import { defineConfig } from "@playwright/test";
  */
 export default defineConfig({
   testDir: "./e2e/email",
-  testMatch: "email-imap.spec.ts",
+  testMatch: /(email-imap|inbox-sweep)\.spec\.ts/,
   fullyParallel: false,
   retries: 0,
   workers: 1,

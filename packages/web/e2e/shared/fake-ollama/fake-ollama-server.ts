@@ -199,6 +199,17 @@ const ODOO_READ_DENIED_RESPONSE = "Read attempted: coverage probe complete.";
 // against a mock that now actually validates many2one write values.
 const ODOO_CREATE_NESTED_LINES_TRIGGER = "E2E_ODOO_CREATE_NESTED_LINES_TOOL";
 const ODOO_CREATE_NESTED_LINES_RESPONSE = "Move created: coverage probe complete.";
+// Inbox Agent (#139). Unlike every trigger around it, this one answers with
+// plain TEXT and no tool call: an inbox run's result channel IS the final
+// assistant text, ending in one fenced JSON report (see run-adapter.ts —
+// real Gateways don't surface tool_use chunks through chat(), so a report tool
+// would be invisible). The trigger rides in the workflow's `action`, which the
+// adapter renders into the task message as `Task: <action>`.
+const INBOX_SWEEP_TRIGGER = "E2E_INBOX_SWEEP_RUN";
+const INBOX_SWEEP_RESPONSE = `Filed the invoice against the customer record.
+\`\`\`json
+{"status": "done", "title": "Invoice filed", "content": "Booked the attached invoice for the E2E sweep probe.", "outcome": {"note": "e2e-inbox-sweep"}}
+\`\`\``;
 const EMAIL_LIST_TRIGGER = "E2E_EMAIL_LIST_TOOL";
 const EMAIL_LIST_RESPONSE = "Emails listed: coverage probe complete.";
 const EMAIL_SEARCH_TRIGGER = "E2E_EMAIL_SEARCH_TOOL";
@@ -1452,6 +1463,14 @@ export async function handleRequest(req: http.IncomingMessage, res: http.ServerR
       return;
     }
 
+    // Inbox Agent run (#139): plain text ending in the fenced JSON report the
+    // run adapter parses. Only on this surface — an inbox run is dispatched by
+    // Pinchy through OC's pi-ai, which uses /v1/chat/completions.
+    if (lastContent.includes(INBOX_SWEEP_TRIGGER)) {
+      streamOpenAiText(res, INBOX_SWEEP_RESPONSE);
+      return;
+    }
+
     // Slow-stream trigger: Pinchy emits ollama as api: "openai-completions" so
     // OC's pi-ai uses /v1/chat/completions, not /api/chat. The slow-stream
     // handler must live on this path too or stream-persistence tests never
@@ -1570,6 +1589,7 @@ export const FAKE_OLLAMA_ODOO_SCHEDULE_ACTIVITY_REF_TRIGGER = ODOO_SCHEDULE_ACTI
 export const FAKE_OLLAMA_ODOO_SCHEDULE_ACTIVITY_REF_RESPONSE = ODOO_SCHEDULE_ACTIVITY_REF_RESPONSE;
 export const FAKE_OLLAMA_ODOO_CREATE_NESTED_LINES_TRIGGER = ODOO_CREATE_NESTED_LINES_TRIGGER;
 export const FAKE_OLLAMA_ODOO_CREATE_NESTED_LINES_RESPONSE = ODOO_CREATE_NESTED_LINES_RESPONSE;
+export const FAKE_OLLAMA_INBOX_SWEEP_TRIGGER = INBOX_SWEEP_TRIGGER;
 export const FAKE_OLLAMA_EMAIL_LIST_TOOL_TRIGGER = EMAIL_LIST_TRIGGER;
 export const FAKE_OLLAMA_EMAIL_LIST_TOOL_RESPONSE = EMAIL_LIST_RESPONSE;
 export const FAKE_OLLAMA_EMAIL_SEARCH_TOOL_TRIGGER = EMAIL_SEARCH_TRIGGER;

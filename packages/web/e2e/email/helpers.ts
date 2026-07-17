@@ -609,3 +609,121 @@ export async function getGreenmailMailboxMessages(address: string): Promise<
     await client.logout();
   }
 }
+
+/**
+ * An IMAP connection whose stored credentials point straight at GreenMail.
+ *
+ * Deliberately NOT the `IMAP_MOCK_HOST` env redirect the pinchy-email plugin
+ * uses: the Inbox Agent's sweep opens its mailbox from the credentials in the
+ * DB row, so seeding the real host here exercises that path end to end and
+ * keeps the sweep's IMAP port free of any test-only branch.
+ *
+ * `security: "none"` is what makes the port speak plaintext to GreenMail
+ * (tlsModeForPort maps it to secure:false) — GreenMail here has no TLS
+ * listener, and its auth is disabled, so any user/password authenticates.
+ */
+export async function createGreenmailImapConnectionInDb(
+  name = "E2E Sweep IMAP",
+  emailAddress = "mock@example.com"
+): Promise<{ id: string; type: string; name: string }> {
+  const dbUrl = process.env.DATABASE_URL || stackDbUrl(5434);
+  const { default: postgres } = await import("postgres");
+  const sql = postgres(dbUrl);
+
+  const credentials = {
+    // Resolved on the compose network — the web app (not the test runner)
+    // is what opens this connection.
+    imapHost: "greenmail",
+    imapPort: 3143,
+    smtpHost: "greenmail",
+    smtpPort: 3025,
+    username: emailAddress,
+    password: "mock-password",
+    security: "none",
+  };
+
+  const id = randomUUID();
+  const data = JSON.stringify({ emailAddress, provider: "imap" });
+  const [row] = await sql`
+    INSERT INTO integration_connections (id, type, name, description, credentials, status, data)
+    VALUES (${id}, 'imap', ${name}, 'E2E sweep IMAP connection', ${encryptCredentials(
+      JSON.stringify(credentials)
+    )}, 'active', ${data})
+    RETURNING id, type, name
+  `;
+
+  await sql.end();
+  return row as { id: string; type: string; name: string };
+}
+
+/**
+ * Seed an enabled email workflow plus its (workflow × connection) link.
+ *
+ * Seeded directly because no product surface creates workflows yet — the
+ * natural-language creation tool is #705. `sinceTs` is the watermark the sweep
+ * enforces, so it is backdated here; left at "now" it would race the seeded
+ * mail and drop it as historical.
+ */
+export async function seedEmailWorkflow(input: {
+  agentId: string;
+  connectionId: string;
+  name: string;
+  action: string;
+  filter?: Record<string, unknown>;
+  sinceTs?: Date;
+}): Promise<string> {
+  const dbUrl = process.env.DATABASE_URL || stackDbUrl(5434);
+  const { default: postgres } = await import("postgres");
+  const sql = postgres(dbUrl);
+
+  const id = randomUUID();
+  await sql`
+    INSERT INTO email_workflows (id, agent_id, name, filter, action, enabled, status)
+    VALUES (${id}, ${input.agentId}, ${input.name}, ${JSON.stringify(
+      input.filter ?? {}
+    )}::jsonb, ${input.action}, true, 'active')
+  `;
+  await sql`
+    INSERT INTO email_workflow_connections (workflow_id, connection_id, since_ts)
+    VALUES (${id}, ${input.connectionId}, ${input.sinceTs ?? new Date(Date.now() - 60 * 60_000)})
+  `;
+
+  await sql.end();
+  return id;
+}
+
+/**
+ * The workflow's ledger rows — the sweep's record of what it has processed.
+ *
+ * The ledger stores no subject or address: it is keyed by the provider's
+ * message id and deliberately holds no PII. `messageIdHeader` (the RFC 5322
+ * Message-ID) is what correlates a row back to a seeded mail.
+ */
+export async function getProcessedEmails(workflowId: string): Promise<
+  Array<{
+    providerMessageId: string;
+    messageIdHeader: string | null;
+    status: string;
+    outcome: Record<string, unknown> | null;
+    runId: string | null;
+  }>
+> {
+  const dbUrl = process.env.DATABASE_URL || stackDbUrl(5434);
+  const { default: postgres } = await import("postgres");
+  const sql = postgres(dbUrl);
+
+  const rows = await sql`
+    SELECT provider_message_id, message_id_header, status, outcome, run_id
+    FROM processed_emails
+    WHERE workflow_id = ${workflowId}
+  `;
+
+  await sql.end();
+  return rows.map((r) => ({
+    providerMessageId: r.provider_message_id as string,
+    messageIdHeader: (r.message_id_header ?? null) as string | null,
+    status: r.status as string,
+    outcome: (r.outcome ?? null) as Record<string, unknown> | null,
+    runId: (r.run_id ?? null) as string | null,
+  }));
+}

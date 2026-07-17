@@ -61,12 +61,20 @@ services:
 
   pinchy:
     environment:
-      # The web app doesn't speak IMAP/SMTP directly, but tests may probe the
-      # mock host/port through the same env override the plugin uses.
+      # Probed by the web app's "test connection" path. NOTE: the Inbox Agent's
+      # sweep (inbox-sweep.spec.ts) does NOT ride on this override — it seeds a
+      # connection pointing straight at greenmail:3143 with security "none", so
+      # it exercises the real credential path (host out of the DB row) and needs
+      # no test-only branch in the sweep's IMAP port.
       - IMAP_MOCK_HOST=greenmail
       - IMAP_MOCK_PORT=3143
       - SMTP_MOCK_HOST=greenmail
       - SMTP_MOCK_PORT=3025
+      # Drive the reconciliation sweep on a 5s cadence instead of the 15-minute
+      # production one, so a spec can prove mail dispatches with no manual
+      # trigger. Same convention as CHANNEL_HEALTH_INTERVAL_MS.
+      - INBOX_SWEEP_INTERVAL_MS=5000
+      - INBOX_SWEEP_STARTUP_DELAY_MS=2000
       # Opt this test container into the insecure GreenMail redirect. The
       # adapter's *_MOCK_HOST override forces plaintext (secure:false); it only
       # takes effect with this explicit flag, so the TLS downgrade can never

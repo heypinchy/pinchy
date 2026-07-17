@@ -652,7 +652,12 @@ ${domain ? `<p><a href="https://${domain}">Go to ${domain} →</a></p>` : ""}
     const { buildSweepDeps } = await import("./src/server/inbox-sweep-deps");
     const { runReconciliationSweep } = await import("./src/lib/email-workflows/sweep");
     const sweepDeps = buildSweepDeps(ocForWatchdog);
-    startInboxSweep(() => runReconciliationSweep(sweepDeps));
+    startInboxSweep(() => runReconciliationSweep(sweepDeps), {
+      // E2E only (same convention as CHANNEL_HEALTH_INTERVAL_MS): the 15-minute
+      // production cadence is far longer than any test can wait for.
+      intervalMs: Number(process.env.INBOX_SWEEP_INTERVAL_MS) || undefined,
+      startupDelayMs: Number(process.env.INBOX_SWEEP_STARTUP_DELAY_MS) || undefined,
+    });
     registerShutdownHandlers([
       () => {
         stopInboxSweep();

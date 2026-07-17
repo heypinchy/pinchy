@@ -111,4 +111,26 @@ describe("inbox sweep — scheduler wiring", () => {
     await vi.advanceTimersByTimeAsync(SWEEP_INTERVAL_MS * 2);
     expect(calls).toBe(2); // no further passes after stop
   });
+
+  it("accepts an overridden cadence", async () => {
+    // The production cadence is 15 minutes, which no E2E can wait for, and the
+    // post-startup kick has long since fired by the time a spec runs. Making
+    // both injectable is what lets the E2E prove the sweep dispatches with no
+    // manual trigger — the one claim unit tests cannot make. Same convention as
+    // CHANNEL_HEALTH_INTERVAL_MS.
+    vi.useFakeTimers();
+    let calls = 0;
+    startInboxSweep(
+      async () => {
+        calls++;
+      },
+      { intervalMs: 1000, startupDelayMs: 100 }
+    );
+
+    await vi.advanceTimersByTimeAsync(100);
+    expect(calls).toBe(1);
+
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(calls).toBe(2);
+  });
 });

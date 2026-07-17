@@ -60,17 +60,23 @@ let _startupTimeout: ReturnType<typeof setTimeout> | null = null;
 /**
  * Start the in-process sweep cadence: a post-startup kick plus a recurring
  * interval, both firing the same re-entrancy-guarded runner so a slow pass never
- * overlaps its own next tick. `runSweep` is injected (the production wiring —
- * `runReconciliationSweep` with a real mailbox port — is a later brick), keeping
- * the scheduler testable and decoupled from mailbox I/O.
+ * overlaps its own next tick. `runSweep` is injected (production composes it in
+ * `inbox-sweep-deps.ts`), keeping the scheduler decoupled from DB and gateway —
+ * which is what lets these tests run with no mocks at all.
+ *
+ * `opts` overrides the cadence. Production leaves it empty; the E2E stack shortens
+ * it via `INBOX_SWEEP_INTERVAL_MS`, since no test can wait 15 minutes for a tick.
  */
-export function startInboxSweep(runSweep: () => Promise<void>): void {
+export function startInboxSweep(
+  runSweep: () => Promise<void>,
+  opts: { intervalMs?: number; startupDelayMs?: number } = {}
+): void {
   const guarded = createGuardedSweepRunner(runSweep);
-  _interval = setInterval(() => void guarded(), SWEEP_INTERVAL_MS);
+  _interval = setInterval(() => void guarded(), opts.intervalMs ?? SWEEP_INTERVAL_MS);
   _startupTimeout = setTimeout(() => {
     _startupTimeout = null;
     void guarded();
-  }, SWEEP_STARTUP_DELAY_MS);
+  }, opts.startupDelayMs ?? SWEEP_STARTUP_DELAY_MS);
 }
 
 /** Stop the cadence, clearing both timers so a stopped scheduler never fires again. */
