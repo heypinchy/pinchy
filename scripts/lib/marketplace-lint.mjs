@@ -123,7 +123,9 @@ export function extractServiceImage(content, serviceKey) {
       if (trimmed === "" || trimmed.startsWith("#")) continue;
       const curIndent = line.length - line.trimStart().length;
       if (curIndent <= indent) break; // left this block
-      const im = trimmed.match(/^image:\s*(\S+)$/);
+      // `\S+` (not `.*$`) stops at the first whitespace, so a trailing inline
+      // comment (`image: foo:bar # pinned`) yields the bare image reference.
+      const im = trimmed.match(/^image:\s*(\S+)/);
       if (im) return im[1];
     }
   }

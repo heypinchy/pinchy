@@ -126,6 +126,17 @@ test("extractServiceImage reads the image past a comment block", () => {
   assert.equal(extractServiceImage(yaml, "web"), "ghcr.io/example/web:latest");
 });
 
+test("extractServiceImage tolerates a trailing inline comment on the image line", () => {
+  const yaml = `services:
+  db:
+    image: pgvector/pgvector:pg17-trixie # pinned; see docker-compose.yml
+`;
+  assert.equal(
+    extractServiceImage(yaml, "db"),
+    "pgvector/pgvector:pg17-trixie",
+  );
+});
+
 test("extractServiceImage handles a CapRover $$-prefixed service key", () => {
   const yaml = `services:
   $$cap_appname-db:

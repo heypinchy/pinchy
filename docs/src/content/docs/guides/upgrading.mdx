@@ -179,7 +179,7 @@ Re-fetch the compose file **before** pulling images:
 ```bash
 cd /opt/pinchy
 curl -fsSL https://raw.githubusercontent.com/heypinchy/pinchy/%%PINCHY_VERSION%%/docker-compose.yml -o docker-compose.yml
-sed -i 's/PINCHY_VERSION=v0.8.0/PINCHY_VERSION=%%PINCHY_VERSION%%/' .env
+sed -i 's/^PINCHY_VERSION=.*/PINCHY_VERSION=%%PINCHY_VERSION%%/' .env
 docker compose pull && docker compose up -d && docker image prune -f
 ```
 
