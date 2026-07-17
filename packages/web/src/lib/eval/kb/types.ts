@@ -7,7 +7,7 @@
  * the pass/tags/notes result envelope and reporting plumbing are shared.
  */
 
-import type { GraderResult, RunResult } from "../types";
+import type { GraderResult, RunResult, RunTokenUsage } from "../types";
 
 /**
  * A retrieved chunk, as the eval sees it. Mirrors `retrieve()`'s return shape
@@ -104,4 +104,4 @@ export interface KbGraderResult extends Omit<GraderResult, "tags"> {
   tags: KbFailureTag[];
 }
 
-export type { RunResult };
+export type { RunResult, RunTokenUsage };

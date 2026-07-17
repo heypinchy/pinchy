@@ -27,7 +27,16 @@ export interface ScorecardEntry {
   passCaretK: number;
   tagHistogram: Record<string, number>;
   medianLatencyMs: number;
+  /** Median total tokens (prompt + completion) over ALL runs with token data. */
   medianTokens?: number;
+  /**
+   * Median total tokens over the PASSING runs only — the #798 primary cost
+   * metric, "tokens per completed task". A model that fails cheaply must not
+   * read as cheaper than one that succeeds; the cost that matters is the cost of
+   * a run that actually did the task. Undefined when no passing run has token
+   * data (or none passed).
+   */
+  medianTokensPerCompletedTask?: number;
 }
 
 /**
@@ -167,10 +176,15 @@ export function buildScorecard<Tag extends string = FailureTag>(
 
     const medianLatencyMs = median(modelRuns.map((r) => r.latencyMs));
 
-    const tokenTotals = modelRuns
-      .filter((r) => r.tokens !== undefined)
-      .map((r) => r.tokens!.prompt + r.tokens!.completion);
+    const totalTokens = (r: RunResult<Tag>): number => r.tokens!.prompt + r.tokens!.completion;
+    const tokenTotals = modelRuns.filter((r) => r.tokens !== undefined).map(totalTokens);
     const medianTokens = tokenTotals.length > 0 ? median(tokenTotals) : undefined;
+
+    const completedTokenTotals = modelRuns
+      .filter((r) => r.passed && r.tokens !== undefined)
+      .map(totalTokens);
+    const medianTokensPerCompletedTask =
+      completedTokenTotals.length > 0 ? median(completedTokenTotals) : undefined;
 
     return {
       model,
@@ -182,6 +196,7 @@ export function buildScorecard<Tag extends string = FailureTag>(
       tagHistogram,
       medianLatencyMs,
       medianTokens,
+      medianTokensPerCompletedTask,
     };
   });
 

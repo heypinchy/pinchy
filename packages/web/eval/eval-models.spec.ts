@@ -54,6 +54,7 @@ import {
   injectOdooCreateSilentSuccess,
 } from "./run-eval";
 import { captureRunFingerprint } from "./fingerprint";
+import { makeTokenCollector } from "./token-usage";
 import { setupHetznerAgent } from "./eval-shared";
 import type { RunResult } from "../src/lib/eval/types";
 
@@ -205,6 +206,13 @@ test.describe("Eval-v1: model sweep (real Ollama Cloud)", () => {
 
     const { agentId } = await setupHetznerAgent(cookie);
 
+    // A sweep-lived DB client for the #798 token join. Separate from the seeding
+    // `sql` above (already ended) so its lifetime spans every run; closed in the
+    // finally below. The collector polls `usage_records` per run by the run's
+    // unique session key — best-effort, never fails a run.
+    const tokenSql = postgres(dbUrl);
+    const collectTokens = makeTokenCollector(tokenSql);
+
     // Each scenario in SWEEP_SCENARIOS gets its OWN run list + scorecard file
     // (label) so "vendor-bill-created" and "honest-failure" (failure-
     // injection) results never mix into one buildScorecard grouping — the
@@ -239,92 +247,97 @@ test.describe("Eval-v1: model sweep (real Ollama Cloud)", () => {
       }
     };
 
-    for (const { label, scenario, extraSetup } of scenariosToRun) {
-      // Resume: seed the scorecard with runs already persisted to the JSONL
-      // (from a prior interrupted invocation) and skip models already at N.
-      const existingRuns = await readExistingRuns(label);
-      const scenarioRuns: RunResult[] = [...existingRuns];
+    try {
+      for (const { label, scenario, extraSetup } of scenariosToRun) {
+        // Resume: seed the scorecard with runs already persisted to the JSONL
+        // (from a prior interrupted invocation) and skip models already at N.
+        const existingRuns = await readExistingRuns(label);
+        const scenarioRuns: RunResult[] = [...existingRuns];
 
-      for (const model of candidates) {
-        const alreadyDone = existingRuns.filter((r) => r.model === model).length;
-        if (alreadyDone >= n) continue; // fully covered by a previous run
+        for (const model of candidates) {
+          const alreadyDone = existingRuns.filter((r) => r.model === model).length;
+          if (alreadyDone >= n) continue; // fully covered by a previous run
 
-        // Per-model setup (pin + stack readiness) with retry; if the stack
-        // stays unreachable, SKIP this model rather than aborting the sweep.
-        try {
-          await withRetry(async () => {
-            await pinAgentModel(cookie, agentId, model);
-            await waitForOpenClawStable(() => pinchyGet("/api/health/openclaw", cookie));
-            await waitForAgentDispatchable(
-              (id) => pinchyGet(`/api/health/openclaw?agentId=${id}`, cookie),
-              agentId
-            );
-          }, `setup ${model} / ${label}`);
-        } catch (err) {
-          console.warn(
-            `[eval] SKIPPING ${model} / ${label} — setup failed after retries: ${String(err)}`
-          );
-          continue;
-        }
-
-        for (let i = alreadyDone; i < n; i++) {
-          const runStart = Date.now();
+          // Per-model setup (pin + stack readiness) with retry; if the stack
+          // stays unreachable, SKIP this model rather than aborting the sweep.
           try {
-            await withRetry(
-              async () => {
-                await resetGraphMock();
-                await seedGraphMockMessages([
-                  scenario.graphSeedMessage,
-                  ...(scenario.extraGraphMessages ?? []),
-                ]);
-                await resetOdooMock();
-                await seedOdooBaseline(scenario.odooBaseline);
-                if (extraSetup) await extraSetup();
-                await loginViaUI(page, getAdminEmail(), getAdminPassword());
-              },
-              `run-setup ${model} #${String(i)}`
-            );
-            const result = await runOnce({
-              page,
-              cookie,
-              agentId,
-              model,
-              scenario,
-              scenarioLabel: label,
-            });
-            scenarioRuns.push(result);
-            await appendRunResult(label, result);
+            await withRetry(async () => {
+              await pinAgentModel(cookie, agentId, model);
+              await waitForOpenClawStable(() => pinchyGet("/api/health/openclaw", cookie));
+              await waitForAgentDispatchable(
+                (id) => pinchyGet(`/api/health/openclaw?agentId=${id}`, cookie),
+                agentId
+              );
+            }, `setup ${model} / ${label}`);
           } catch (err) {
-            // A hung/looping run (dispatch idle-timeout) or any per-run error
-            // must NOT abort the whole sweep or discard the scenario's data. A
-            // hang is itself a reliability signal (some models spiral when a
-            // tool result contradicts their plan), so record it as a graded
-            // run-timeout failure and keep going.
-            const latencyMs = Date.now() - runStart;
             console.warn(
-              `[eval] run ${String(i + 1)}/${String(n)} for ${model} / ${label} recorded as run-timeout: ${String(err)}`
+              `[eval] SKIPPING ${model} / ${label} — setup failed after retries: ${String(err)}`
             );
-            const timeoutResult: RunResult = {
-              model,
-              passed: false,
-              tags: ["run-timeout"],
-              notes: [String(err)],
-              latencyMs,
-              scenario: label,
-            };
-            scenarioRuns.push(timeoutResult);
-            await appendRunResult(label, timeoutResult);
+            continue;
+          }
+
+          for (let i = alreadyDone; i < n; i++) {
+            const runStart = Date.now();
+            try {
+              await withRetry(
+                async () => {
+                  await resetGraphMock();
+                  await seedGraphMockMessages([
+                    scenario.graphSeedMessage,
+                    ...(scenario.extraGraphMessages ?? []),
+                  ]);
+                  await resetOdooMock();
+                  await seedOdooBaseline(scenario.odooBaseline);
+                  if (extraSetup) await extraSetup();
+                  await loginViaUI(page, getAdminEmail(), getAdminPassword());
+                },
+                `run-setup ${model} #${String(i)}`
+              );
+              const result = await runOnce({
+                page,
+                cookie,
+                agentId,
+                model,
+                scenario,
+                scenarioLabel: label,
+                collectTokens,
+              });
+              scenarioRuns.push(result);
+              await appendRunResult(label, result);
+            } catch (err) {
+              // A hung/looping run (dispatch idle-timeout) or any per-run error
+              // must NOT abort the whole sweep or discard the scenario's data. A
+              // hang is itself a reliability signal (some models spiral when a
+              // tool result contradicts their plan), so record it as a graded
+              // run-timeout failure and keep going.
+              const latencyMs = Date.now() - runStart;
+              console.warn(
+                `[eval] run ${String(i + 1)}/${String(n)} for ${model} / ${label} recorded as run-timeout: ${String(err)}`
+              );
+              const timeoutResult: RunResult = {
+                model,
+                passed: false,
+                tags: ["run-timeout"],
+                notes: [String(err)],
+                latencyMs,
+                scenario: label,
+              };
+              scenarioRuns.push(timeoutResult);
+              await appendRunResult(label, timeoutResult);
+            }
           }
         }
+
+        const scorecard = await writeScorecard(label, scenarioRuns, fingerprint);
+        console.log(
+          `[eval] wrote scorecard "${label}" for ${String(scenarioRuns.length)} runs:`,
+          scorecard
+        );
       }
 
-      const scorecard = await writeScorecard(label, scenarioRuns, fingerprint);
-      console.log(
-        `[eval] wrote scorecard "${label}" for ${String(scenarioRuns.length)} runs:`,
-        scorecard
-      );
+      await pinchyDelete(`/api/agents/${agentId}`, cookie);
+    } finally {
+      await tokenSql.end();
     }
-
-    await pinchyDelete(`/api/agents/${agentId}`, cookie);
   });
 });

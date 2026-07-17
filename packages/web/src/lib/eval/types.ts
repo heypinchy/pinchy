@@ -77,6 +77,30 @@ export interface OdooMoveRecord {
   [k: string]: unknown;
 }
 
+/**
+ * Token + cost accounting for one run, joined from `usage_records` by the run's
+ * unique OpenClaw session key (pinchy#798). `prompt`/`completion` are summed
+ * over every turn of the run's tool loop (so the total cost of completing the
+ * task, not one call). Two optional fields carry the extra signals #798 asked
+ * for:
+ * - `contextTokens`: the PEAK context-window pressure across the run's turns
+ *   (max, not sum) — the read-side of the "Piper" false-success incident, a
+ *   PLATFORM risk factor rather than a model score.
+ * - `costUsd`: summed `estimated_cost_usd`. Undefined for Ollama Cloud, which is
+ *   subscription-billed (no per-token price) — the published $ figure is a
+ *   labeled multi-hoster range computed offline from the token counts, not this
+ *   column. Present only when a provider actually prices per token.
+ *
+ * A single named type (not three inline duplicates) so RunResult, RunTrajectory,
+ * and the normalizer's input can never drift apart.
+ */
+export interface RunTokenUsage {
+  prompt: number;
+  completion: number;
+  contextTokens?: number;
+  costUsd?: number;
+}
+
 export interface RunTrajectory {
   model: string;
   toolCalls: ToolCall[];
@@ -85,7 +109,7 @@ export interface RunTrajectory {
   /** account.move records read back from the Odoo mock AFTER the run. */
   odooMoves: OdooMoveRecord[];
   latencyMs: number;
-  tokens?: { prompt: number; completion: number };
+  tokens?: RunTokenUsage;
 }
 
 export interface ExpectedInvoice {
@@ -154,5 +178,5 @@ export interface RunResult<Tag extends string = FailureTag> {
   tags: Tag[];
   notes: string[];
   latencyMs: number;
-  tokens?: { prompt: number; completion: number };
+  tokens?: RunTokenUsage;
 }

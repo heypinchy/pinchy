@@ -6,7 +6,7 @@
  * responsible for gathering the raw inputs (audit rows, the scraped final
  * assistant message, the Odoo mock read-back) and calling `buildTrajectory`.
  */
-import type { OdooMoveRecord, RunTrajectory, ToolCall } from "./types";
+import type { OdooMoveRecord, RunTokenUsage, RunTrajectory, ToolCall } from "./types";
 
 const TOOL_EVENT_PREFIX = "tool.";
 
@@ -43,7 +43,7 @@ export interface NormalizeInput {
   extraIssuedMessageHandles?: string[];
   extraIssuedAttachmentHandles?: string[];
   latencyMs: number;
-  tokens?: { prompt: number; completion: number };
+  tokens?: RunTokenUsage;
 }
 
 function toToolCall(entry: NormalizeAuditEntry): ToolCall {

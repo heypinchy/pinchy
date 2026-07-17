@@ -312,7 +312,8 @@ OLLAMA_CLOUD_API_KEY=... pnpm -C packages/web eval:models
       "passCaretK": 0,
       "tagHistogram": { "false-success": 1 },
       "medianLatencyMs": 8421,
-      "medianTokens": 1203
+      "medianTokens": 1203,
+      "medianTokensPerCompletedTask": 1450
     }
   ]
 }
@@ -330,6 +331,35 @@ overlap. `tagHistogram` counts which `FailureTag`s fired across all failing
 runs for that model — this is usually more actionable than the raw pass
 rate (e.g. "always `id-malformed`" points at a very different fix than
 "always `task-incomplete`").
+
+### Token cost per run (pinchy#798)
+
+Each `RunResult` now carries a `tokens` object, joined from `usage_records` by
+the run's unique OpenClaw session key (`agent:<id>:direct:<userId>:<chatId>` —
+`dispatchAndScrape` mints a fresh `chatId` per run, so the join is exact, not a
+time window). It is summed over every turn of the run's tool loop, so it is the
+whole task's cost, not one call's:
+
+```json
+"tokens": { "prompt": 9200, "completion": 640, "contextTokens": 41200 }
+```
+
+- `prompt` / `completion` — summed input / output tokens across the run.
+- `contextTokens` — the PEAK context-window pressure (max over turns, not sum).
+  It is the read-side of the "Piper" false-success incident: a run whose context
+  climbs without compaction firing is a PLATFORM risk factor, not a model score.
+  Omitted when no turn recorded it.
+- `costUsd` — summed `estimated_cost_usd`, present only when a provider prices
+  per token. Absent for Ollama Cloud, which is subscription-billed (no per-token
+  price); the published `$` figure is a labeled multi-hoster range computed
+  offline from the token counts, never this column.
+
+The scorecard exposes two medians: `medianTokens` (over all runs) and
+**`medianTokensPerCompletedTask`** (over PASSING runs only). The latter is the
+published primary cost metric — a model that fails cheaply must not read as
+cheaper than one that actually completed the task. The capture is best-effort:
+the collector polls for recorder lag and yields no `tokens` (rather than
+aborting the run) on a miss, so a run with no usage row simply has no cost.
 
 ## The triage guard — a catastrophic cell has to be read
 

@@ -121,6 +121,30 @@ describe("buildScorecard", () => {
     expect(a.medianTokens).toBeUndefined();
   });
 
+  it("computes tokens-per-COMPLETED-task over passing runs only (the #798 metric)", () => {
+    // A failed run that burned few tokens must not make the model look cheaper
+    // at the thing that matters: the cost of a run that actually SUCCEEDED.
+    const runs: RunResult[] = [
+      run({ model: "model-a", passed: true, tokens: { prompt: 200, completion: 100 } }), // 300
+      run({ model: "model-a", passed: true, tokens: { prompt: 300, completion: 100 } }), // 400
+      run({ model: "model-a", passed: false, tokens: { prompt: 10, completion: 5 } }), // 15, excluded
+    ];
+    const a = buildScorecard(runs).find((e) => e.model === "model-a")!;
+    // Median over the two PASSING runs (300, 400) = 350; the cheap failure is out.
+    expect(a.medianTokensPerCompletedTask).toBe(350);
+    // Contrast: the all-runs median includes the failure.
+    expect(a.medianTokens).toBe(300);
+  });
+
+  it("leaves medianTokensPerCompletedTask undefined when no passing run has tokens", () => {
+    const runs: RunResult[] = [
+      run({ model: "model-a", passed: false, tokens: { prompt: 100, completion: 50 } }),
+      run({ model: "model-a", passed: true }), // passed but no token data
+    ];
+    const a = buildScorecard(runs).find((e) => e.model === "model-a")!;
+    expect(a.medianTokensPerCompletedTask).toBeUndefined();
+  });
+
   it("computes a Wilson 95% interval for each model", () => {
     const runs: RunResult[] = [
       run({ model: "model-a", passed: true }),

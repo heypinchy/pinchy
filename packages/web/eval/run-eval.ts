@@ -25,6 +25,7 @@ import { randomUUID } from "node:crypto";
 import path from "node:path";
 import { EVAL_CANARY_JSONL_LINE, parseEvalJsonl } from "./canary";
 import type { RunFingerprint } from "./fingerprint";
+import type { TokenCollector } from "./token-usage";
 import { buildTrajectory, type NormalizeAuditEntry } from "../src/lib/eval/normalize";
 import { gradeRunForScenario } from "../src/lib/eval/graders";
 import { buildScorecard, type ScorecardEntry } from "../src/lib/eval/scorecard";
@@ -291,6 +292,12 @@ async function scrapeFinalAssistantMessage(page: Page): Promise<string> {
 export interface DispatchResult {
   finalMessage: string;
   latencyMs: number;
+  /**
+   * The chatId this dispatch ran under. The run's OpenClaw session is
+   * `agent:<agentId>:direct:<userId>:<chatId>`, so this is the key the #798
+   * token join filters `usage_records` by (see token-usage.ts).
+   */
+  chatId: string;
 }
 
 /**
@@ -322,7 +329,7 @@ export async function dispatchAndScrape(
   const latencyMs = Date.now() - start;
 
   const finalMessage = await scrapeFinalAssistantMessage(page);
-  return { finalMessage, latencyMs };
+  return { finalMessage, latencyMs, chatId };
 }
 
 // ── Agent model pinning ──────────────────────────────────────────────────
@@ -369,6 +376,14 @@ export interface RunOnceParams {
    * (see `writeScorecard`). Purely a label — does not affect grading.
    */
   scenarioLabel?: string;
+  /**
+   * Joins this run to its `usage_records` tokens/cost by (agentId, chatId), for
+   * the #798 cost metric. Optional and injected (the DB coupling lives in the
+   * sweep spec, not here) — when omitted, `RunResult.tokens` stays undefined and
+   * the run is graded exactly as before. Never throws; a capture miss degrades
+   * to undefined rather than failing the run.
+   */
+  collectTokens?: TokenCollector;
 }
 
 /**
@@ -383,7 +398,7 @@ export async function runOnce(params: RunOnceParams): Promise<RunResult> {
   const scenario = params.scenario ?? hetznerInvoiceScenario;
   const since = new Date().toISOString();
 
-  const { finalMessage, latencyMs } = await dispatchAndScrape(
+  const { finalMessage, latencyMs, chatId } = await dispatchAndScrape(
     page,
     agentId,
     params.prompt ?? scenario.userPrompt
@@ -391,6 +406,9 @@ export async function runOnce(params: RunOnceParams): Promise<RunResult> {
 
   const auditEntries = await collectToolAuditEntries(cookie, agentId, since);
   const odooMoves = await getOdooRecords("account.move");
+  // Join this run's tokens/cost by its unique session (agentId, chatId). Polls
+  // for the recorder lag; best-effort — undefined on a miss, never throws.
+  const tokens = params.collectTokens ? await params.collectTokens(agentId, chatId) : undefined;
 
   const trajectory = buildTrajectory({
     model,
@@ -402,6 +420,7 @@ export async function runOnce(params: RunOnceParams): Promise<RunResult> {
     extraIssuedMessageHandles: scenario.extraIssuedMessageHandles,
     extraIssuedAttachmentHandles: scenario.extraIssuedAttachmentHandles,
     latencyMs,
+    tokens,
   });
 
   const result = gradeRunForScenario(trajectory, scenario);

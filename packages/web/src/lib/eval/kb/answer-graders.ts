@@ -21,7 +21,7 @@ import type { RetrievedSource } from "./attribution-graders";
 import { gradeGroundednessForGold, isAbstention } from "./groundedness-grader";
 import type { GroundednessOptions } from "./groundedness-grader";
 import type { NliClient } from "./nli";
-import type { GoldQA, KbFailureTag, KbGraderResult, RunResult } from "./types";
+import type { GoldQA, KbFailureTag, KbGraderResult, RunResult, RunTokenUsage } from "./types";
 
 /**
  * Scores how well `answer` addresses `query`, in [0, 1]. Dependency-injected
@@ -130,8 +130,8 @@ export interface KbRunTrajectory {
   /** The TEXT of the retrieved passages the answer cited (groundedness premise material). */
   citedPassageTexts: string[];
   latencyMs: number;
-  /** prompt/completion token usage, same shape as `../types`'s `RunResult.tokens`. */
-  tokens?: { prompt: number; completion: number };
+  /** Token/cost usage, the shared `RunTokenUsage` shape from `../types`. */
+  tokens?: RunTokenUsage;
 }
 
 /**
