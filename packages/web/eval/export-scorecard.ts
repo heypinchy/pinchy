@@ -104,7 +104,9 @@ interface Cell {
    * pass^k reliability curve (τ-bench estimator): the chance k runs in a row
    * all pass, at k = 1, 2, 4, 8, 12 (levels above n omitted). k=1 is the pass
    * rate; it decays as k grows. The reliability framing enterprises measure us
-   * against — a model at 0.9 pass@1 can sit near 0.5 at pass^8.
+   * against — nemotron-3-ultra on happy-path is 0.75 at pass@1 and 0.018 by
+   * pass^8. Empty for a cell with no valid trials (n=0): no estimate, which is
+   * not the same claim as an estimated 0.
    */
   passHatK: { k: number; value: number }[];
   /** Wilson 95% score interval for the pass rate, at this cell's n. */

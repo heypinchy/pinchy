@@ -31,12 +31,17 @@ export interface ScorecardEntry {
 }
 
 /**
- * pass^k for one model's runs: 1 if every run passed, else 0. 0 for an empty
- * run list (no trials, no proven consistency). Exported as a standalone pure
+ * The all-pass indicator: 1 if every run passed, else 0. 0 for an empty run
+ * list (no trials, no proven consistency). Exported as a standalone pure
  * function (in addition to being folded into `buildScorecard`'s per-model
  * entries) so it can be unit-tested directly against the n=0 edge case, which
  * `buildScorecard`'s per-model grouping never produces (a model only gets an
  * entry when it has >= 1 run).
+ *
+ * This is pass^k only at k = n: it answers "did this cell go n-for-n", not
+ * "what is pass^k". For the curve at arbitrary k — the number the published
+ * export reports — use `computePassHatK`, which is a real estimate in [0, 1]
+ * rather than a 0/1 verdict.
  */
 export function computePassCaretK<Tag extends string = FailureTag>(runs: RunResult<Tag>[]): number {
   if (runs.length === 0) return 0;
@@ -44,7 +49,7 @@ export function computePassCaretK<Tag extends string = FailureTag>(runs: RunResu
 }
 
 /** The k levels the published pass^k curve reports (k=1 is the pass rate). */
-export const PASS_CARET_K_LEVELS = [1, 2, 4, 8, 12] as const;
+export const PASS_HAT_K_LEVELS = [1, 2, 4, 8, 12] as const;
 
 /**
  * Unbiased pass^k: the probability that k runs drawn WITHOUT replacement from
@@ -71,12 +76,14 @@ export function computePassHatK(passes: number, n: number, k: number): number {
 /**
  * The pass^k curve for a cell: `computePassHatK` at each of `levels`, dropping
  * levels above n (k>n has no defined estimate), values rounded to 3 decimals to
- * match the published pass-rate precision.
+ * match the published pass-rate precision. A cell with no valid trials (n=0)
+ * therefore has an EMPTY curve, not a curve of zeroes — consumers must treat
+ * "no estimate" and "estimated 0" as different answers.
  */
 export function passHatKCurve(
   passes: number,
   n: number,
-  levels: readonly number[] = PASS_CARET_K_LEVELS
+  levels: readonly number[] = PASS_HAT_K_LEVELS
 ): { k: number; value: number }[] {
   return levels
     .filter((k) => k <= n)

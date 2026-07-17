@@ -290,4 +290,20 @@ describe("passHatKCurve", () => {
     // Only 6 of 12 passed, so an 8-of-8 all-pass subset is impossible: pass^8 = 0.
     expect(curve.find((p) => p.k === 8)?.value).toBe(0);
   });
+
+  it("is empty for a cell with no valid trials — no estimate, not an estimated 0", () => {
+    // `aggregate` produces n=0 when every run of a model was a transport error
+    // (all excluded as invalid trials). The curve must not answer 0 there: 0 is
+    // a measured claim ("k in a row never happened"), and we measured nothing.
+    expect(passHatKCurve(0, 0)).toEqual([]);
+  });
+
+  it("never rounds a real estimate down into the impossible-0 at n=12", () => {
+    // The tail is the whole point of the curve, so 3-decimal rounding must not
+    // collapse a nonzero pass^k onto the 0 that means "can't be done". The
+    // scarcest nonzero cell at each k is passes === k.
+    for (const k of [2, 4, 8, 12]) {
+      expect(passHatKCurve(k, 12).find((p) => p.k === k)?.value).toBeGreaterThan(0);
+    }
+  });
 });

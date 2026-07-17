@@ -109,7 +109,12 @@ deployment.
   least one_ of k attempts succeed — an easier bar that rewards retrying).
 - Why it's the honest framing: reliability decays fast. A model at 0.75 pass@1
   sits near 0.02 at pass^8 — "succeeds most of the time" is not "safe to run 8
-  times unwatched". A cell that is `passAllK: true` is exactly pass^12 = 1.
+  times unwatched". A cell that is `passAllK: true` is pass^k = 1 at every
+  reported k (at today's n=12, that includes pass^12).
+
+Two zeroes that read alike but are not: a **reported** 0 is an estimate (fewer
+than k runs passed, so no all-pass draw of size k exists), while an **empty**
+curve means the cell had no valid trials at all (n=0) and nothing was estimated.
 
 The raw ingredient (passes/n per cell) is unchanged; pass^k is computed at
 export time in `src/lib/eval/scorecard.ts` (`computePassHatK` / `passHatKCurve`),
