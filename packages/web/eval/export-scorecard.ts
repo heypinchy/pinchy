@@ -33,6 +33,7 @@
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { gradeRunForScenario } from "../src/lib/eval/graders";
+import { pooledClusteredDifference, tiedWithLeader } from "../src/lib/eval/comparisons";
 import { applyTrajectoryRegrade } from "../src/lib/eval/regrade-merge";
 import type { RunResult, RunTrajectory } from "../src/lib/eval/types";
 import { hetznerInvoiceDuplicateScenario } from "./scenarios/hetzner-invoice-duplicate";
@@ -162,6 +163,65 @@ export interface PublishedScenario {
   axis: string;
   totalRuns: number;
   models: Cell[];
+  /**
+   * Every model this scenario's leader is NOT significantly ahead of (the
+   * leader included). At n=12 most rank gaps aren't significant, so a reader
+   * given only an ordered list would over-read it — this names the tie.
+   */
+  tiedWithLeader: string[];
+}
+
+/** A pooled, scenario-clustered comparison of two models across all scenarios. */
+export interface ModelComparison {
+  a: string;
+  b: string;
+  /** Mean of the per-scenario pass-rate differences, p(a) − p(b). */
+  diff: number;
+  /** 95% t-interval on the clustered SE (df = scenarios − 1). */
+  ci: [number, number];
+  /** True when the interval spans 0 — no detectable difference overall. */
+  tied: boolean;
+  scenarios: number;
+}
+
+const round3 = (v: number): number => Number(v.toFixed(3));
+
+/**
+ * Every unordered model pair, compared pooled across scenarios with a
+ * scenario-clustered SE. Answers "is A actually better than B", which two
+ * overlapping per-cell CIs cannot (Miller 2024).
+ */
+export function buildComparisons(scenarios: PublishedScenario[]): ModelComparison[] {
+  const models = [...new Set(scenarios.flatMap((s) => s.models.map((m) => m.model)))].sort();
+  const comparisons: ModelComparison[] = [];
+
+  for (let i = 0; i < models.length; i++) {
+    for (let j = i + 1; j < models.length; j++) {
+      const [a, b] = [models[i], models[j]];
+      const pairs = scenarios.flatMap((s) => {
+        const ca = s.models.find((m) => m.model === a);
+        const cb = s.models.find((m) => m.model === b);
+        return ca && cb
+          ? [
+              {
+                a: { model: a, passes: ca.passes, n: ca.n },
+                b: { model: b, passes: cb.passes, n: cb.n },
+              },
+            ]
+          : [];
+      });
+      const pooled = pooledClusteredDifference(pairs);
+      comparisons.push({
+        a,
+        b,
+        diff: round3(pooled.diff),
+        ci: [round3(pooled.ci[0]), round3(pooled.ci[1])],
+        tied: pooled.tied,
+        scenarios: pooled.scenarios,
+      });
+    }
+  }
+  return comparisons;
 }
 
 /**
@@ -198,21 +258,25 @@ export async function buildPublishedScenarios(): Promise<PublishedScenario[]> {
       );
     }
 
+    const models = aggregate(runs);
     scenarios.push({
       label: s.label,
       slug: s.slug,
       axis: s.axis,
       totalRuns: runs.length,
-      models: aggregate(runs),
+      models,
+      tiedWithLeader: tiedWithLeader(models),
     });
   }
   return scenarios;
 }
 
 async function main(): Promise<void> {
+  const scenarios = await buildPublishedScenarios();
   const out = {
     generatedFrom: "packages/web/eval/data (heypinchy/pinchy)",
-    scenarios: await buildPublishedScenarios(),
+    scenarios,
+    comparisons: buildComparisons(scenarios),
   };
   process.stdout.write(`${JSON.stringify(out, null, 2)}\n`);
 }
