@@ -1,4 +1,4 @@
-import { rm, readFile } from "node:fs/promises";
+import { readdir, rm, readFile } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -12,21 +12,25 @@ import type { RunResult, RunTrajectory } from "../../src/lib/eval/types";
  * unmarked — the retrofit-impossible gap #794 closes for future data, the
  * write-side complement to the read-side coverage guard over today's files.
  */
-const labels: string[] = [];
+const TEMP_PREFIX = "canary-writer-test-";
 function tempLabel(): string {
-  const label = `canary-writer-test-${randomUUID()}`;
-  labels.push(label);
-  return label;
+  return `${TEMP_PREFIX}${randomUUID()}`;
 }
 
+// The writer targets the real (gitignored) results/ dir, so sweep by prefix
+// rather than by a tracked label list: this also clears any temp file an earlier
+// run was killed before deleting, keeping the dir clean across aborted runs.
 afterEach(async () => {
+  let entries: string[];
+  try {
+    entries = await readdir(RESULTS_DIR);
+  } catch {
+    return;
+  }
   await Promise.all(
-    labels
-      .splice(0)
-      .flatMap((l) => [
-        rm(path.join(RESULTS_DIR, `${l}.jsonl`), { force: true }),
-        rm(path.join(RESULTS_DIR, `${l}.trajectories.jsonl`), { force: true }),
-      ])
+    entries
+      .filter((f) => f.startsWith(TEMP_PREFIX))
+      .map((f) => rm(path.join(RESULTS_DIR, f), { force: true }))
   );
 });
 

@@ -14,6 +14,11 @@ const EVAL_DIR = path.join(__dirname, "..");
 const SCENARIO_DIR = path.join(EVAL_DIR, "scenarios");
 const DATA_DIR = path.join(EVAL_DIR, "data");
 
+// Every `.ts` under scenarios/ must carry the GUID — not only today's scenario
+// files but any helper added here later: a helper still encodes task definitions
+// that leak just the same, so the guard covers the whole directory on purpose
+// rather than a name pattern. A new file here needs the canary comment; that is
+// intended, not a surprise.
 const scenarioFiles = readdirSync(SCENARIO_DIR).filter((f) => f.endsWith(".ts"));
 const dataFiles = readdirSync(DATA_DIR).filter((f) => f.endsWith(".jsonl"));
 

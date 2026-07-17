@@ -437,9 +437,13 @@ export interface PersistedTrajectory extends RunTrajectory {
 /**
  * Writes the contamination canary (#794) as the first line of a fresh eval
  * JSONL file, so every file the harness produces is born marked. A no-op once
- * the file exists — including files seeded from `data/`, which already carry
- * the header. The `wx` flag makes the create atomic, so concurrent first
- * appends can't double-write the header.
+ * the file exists: a file seeded from `data/` already carries the header, and a
+ * file that predates this change is deliberately left unmarked rather than
+ * retrofitted — the read-side coverage guard is what keeps published `data/`
+ * honest. The `wx` flag opens with `O_EXCL`, so exactly one caller creates the
+ * file and stamps the header while any concurrent first-appender gets `EEXIST`
+ * and skips; the header is written once. Records are appended sequentially per
+ * label, so the header always ends up on line 1.
  */
 async function ensureCanaryHeader(filePath: string): Promise<void> {
   try {
