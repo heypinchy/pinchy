@@ -244,13 +244,16 @@ jobs:
       - name: Lint
         run: pnpm --filter @pinchy/web lint
 
-      - name: Format check (web)
-        run: pnpm --filter @pinchy/web format:check
-
-      # Docs & workflow formatting is checked by the dedicated `docs-format.yml`
-      # workflow, which (unlike this one) is NOT paths-ignored for docs, so it
-      # runs on the docs PRs it guards instead of only firing as collateral
-      # here on unrelated code changes.
+      # Whole-tree, from the repo root — NOT a glob list, and NOT scoped to one
+      # package. Both of those are how `scripts/`, `config/` and every plugin sat
+      # outside the format gate unnoticed: the check said "Format check" and only
+      # ever read packages/web. A path this job cannot see is a path no one
+      # formats. `quality` is ungated (it is required), so this runs on every PR,
+      # including docs-only ones — which is why the old dedicated
+      # `docs-format.yml` workflow is gone rather than duplicated here.
+      # See AGENTS.md § "One Format Gate, Whole-Tree, From The Root".
+      - name: Format check (repo)
+        run: pnpm format:check
 
       - name: Typecheck plugins
         # The pinchy-* plugins run via tsx with no ahead-of-time type checking

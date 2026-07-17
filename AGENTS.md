@@ -152,6 +152,28 @@ This exists because `next build` type-checks the web package but its `tsconfig.j
 - The drift guard `scripts/lib/web-typecheck-gate.test.mjs` (pure logic in `web-typecheck-gate.mjs`, run by `pnpm test:scripts`) fails if the tsconfig stops including test files, re-excludes them, the `typecheck` script drifts, or CI stops running the gate — the read-side sibling of the no-untracked-skips / no-test-deletion / plugin-typecheck guards.
 - Playwright `e2e/**/*.spec.ts` is intentionally out of this gate (separate Playwright type context).
 
+## One Format Gate, Whole-Tree, From The Root
+
+There is exactly **one** format gate: `pnpm format:check` → `prettier --check .`, run from the repo root by the `quality` job. `pnpm format` writes. Prettier is declared **once**, in the root `package.json`, and nowhere else.
+
+Until 2026-07 the gate was `pnpm --filter @pinchy/web format:check` — a check named "Format check" that only ever read `packages/web`. Everything else had never been formatted and nothing said so: `scripts/` (28 files), every plugin (56), the `config/` mock servers, the compose overlays, `docs/scripts/`. **The check was green the whole time**, because a gate reports on what it looks at, not on what it should look at. That is the same failure shape as a `paths-ignore` on a required check, arriving through the config instead of the trigger.
+
+The rules that keep it honest:
+
+- **Whole-tree (`.`), never a glob list, never `--filter`/`-C` delegation.** Both narrow the gate silently, and both are the original bug spelled differently. What is excluded belongs in `.gitignore`/`.prettierignore` — one place, not a list in a script that rots as directories are added.
+- **`.prettierignore` must repeat what NESTED `.gitignore` files say.** Prettier reads only the **root** `.gitignore`; `docs/.gitignore` and `packages/web/.gitignore` are invisible to a run started from the root. Add a generated directory to a nested `.gitignore` → add it to `.prettierignore` too, or `pnpm format` reformats build output.
+- **One prettier declaration.** Two can resolve to two versions, which format the same file differently — then somebody's local `pnpm format` always loses to the gate.
+- **`pnpm format` is not guaranteed to converge in one pass.** Prettier is not idempotent on every input (`config/llm-providers-mock/server.js` reflows a method chain differently on pass 1 and pass 2). The tree is committed at a fixed point; if `format:check` still complains right after `format`, run `format` again before assuming the gate is broken.
+- The drift guard is `scripts/lib/format-gate.test.mjs` (pure logic in `format-gate.mjs`, run by `pnpm test:scripts`). Its most important assertion is not the wiring but the **coverage probe**: it resolves prettier's real ignore rules against one file per tree and fails if any is excluded. A single well-meaning `scripts/` line in `.prettierignore` reverts the whole gate while every check stays green — that is the one mutation the wiring checks cannot see.
+
+### Two styles, and why the boundary sits at `packages/`
+
+There is deliberately **no root `.prettierrc`**. `packages/.prettierrc` (printWidth 100, `trailingComma: es5`) governs **all** app TypeScript — `packages/web` **and** `packages/plugins/*`. Everything else — `scripts/`, `config/`, `docs/`, the compose files, `.github/` — uses prettier's defaults (printWidth 80, `trailingComma: all`), which is what those files were already written in. This is a **coverage** gate, not a style-unification: a root config in the web style would re-wrap 23 files that are green today, which is a separate change with a separate argument.
+
+The config sits at `packages/`, not `packages/web/`, and that is load-bearing rather than tidiness. `normalizeTableHtml` is **duplicated on purpose** across `packages/plugins/pinchy-files/docx-extract.ts` and `packages/web/src/hooks/use-ws-runtime.ts` (bundle isolation), and `normalize-docx-table-html-drift.test.ts` pins the two bodies to be textually identical modulo whitespace and comments. With the config one level down, the plugin copy formatted at `trailingComma: all` and the web copy at `es5` — a **token** difference, not a whitespace one, so the guard went red the moment the plugins entered the gate. Any style split that cuts through duplicated-by-design code will do that again. If a future duplication crosses a different boundary, move the config up — do not weaken the guard.
+
+`docs-format.yml` used to check docs and workflows separately, because `ci.yml` once carried a workflow-level `paths-ignore` and skipped docs PRs. It no longer does (see above), and `quality` is ungated — so the root gate covers those files on every PR and the extra workflow was removed rather than left to duplicate it.
+
 ## Commands
 
 Development should use Docker Compose because the app depends on PostgreSQL, OpenClaw, and migrations:
@@ -180,13 +202,14 @@ pnpm build
 pnpm test:scripts
 pnpm typecheck:plugins
 pnpm test:plugins
+pnpm format
+pnpm format:check
 ```
 
 Useful web package commands:
 
 ```bash
 pnpm -C packages/web lint
-pnpm -C packages/web format
 pnpm -C packages/web db:generate
 pnpm -C packages/web test
 pnpm -C packages/web test:db

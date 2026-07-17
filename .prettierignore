@@ -1,0 +1,29 @@
+# Prettier reads the ROOT .gitignore automatically, so node_modules/, .next/,
+# dist/, build/ and coverage/ need no repetition here.
+#
+# What it does NOT read is a NESTED .gitignore. docs/.gitignore and
+# packages/web/.gitignore are invisible to a run started from the repo root,
+# so every generated tree they cover must be repeated below — otherwise
+# `pnpm format` reformats build output and `format:check` fails on files no
+# one wrote. Adding a generated directory to a nested .gitignore means adding
+# it here too.
+
+# Generated — see docs/.gitignore
+docs/.astro/
+docs/public/cloud-init.yml
+
+# Generated — see packages/web/.gitignore
+packages/web/out/
+packages/web/eval/results/
+packages/web/eval/kb/results/
+# Written by `next build`/`next dev`, so it exists locally but never in a fresh
+# CI checkout — the one file where a missing rule makes the LOCAL gate disagree
+# with CI. It is prettier-clean today by luck; a Next upgrade that regenerates it
+# differently would fail `format:check` with no fix available, since the file is
+# gitignored and the reformat cannot be committed.
+packages/web/next-env.d.ts
+
+# Lockfiles are generated and committed. Reformatting them produces a diff the
+# next `pnpm install` silently reverts, so the gate would never settle.
+pnpm-lock.yaml
+docs/pnpm-lock.yaml
