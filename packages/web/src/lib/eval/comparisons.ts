@@ -19,8 +19,16 @@
  * 2. **Scenario-clustered pooling.** Runs cluster within scenarios, so pooling
  *    all 84 runs as if independent would understate uncertainty. The cluster —
  *    not the run — is the unit: we average the per-scenario differences and take
- *    the standard error from their between-scenario spread, with a t-interval on
- *    S−1 degrees of freedom because S is small (7 scenarios, not 700).
+ *    the standard error from a random-effects estimate that carries BOTH the
+ *    between-scenario spread and the within-scenario binomial error, with a
+ *    t-interval on S−1 degrees of freedom because S is small (7, not 700).
+ *
+ *    The between-scenario spread alone is not enough, and the failure is not
+ *    hypothetical: with the per-scenario differences all equal (seven scenarios
+ *    of 12/12 vs 11/12, say) that spread is 0, so the SE is 0 and the interval
+ *    collapses to a point — infinite confidence in a winner, from 84 runs, when
+ *    the SAME one-run gap read per scenario is a tie. See
+ *    {@link pooledClusteredDifference} for the estimator that closes this.
  */
 import { wilsonInterval } from "./scorecard";
 
@@ -43,9 +51,11 @@ export interface Difference {
 export interface PooledDifference extends Difference {
   /** How many scenarios (clusters) the pooled estimate averages over. */
   scenarios: number;
-  /** Cluster-robust SE of the mean difference; null when S < 2 (no spread to estimate). */
+  /** Random-effects SE of the mean difference; null when S < 2 (nothing to pool). */
   se: number | null;
 }
+
+const Z_95 = 1.96;
 
 /** Two-sided t critical values at 95%, by degrees of freedom. */
 const T_95: Record<number, number> = {
@@ -88,6 +98,25 @@ function tCritical95(df: number): number {
 
 const clamp = (v: number): number => Math.max(-1, Math.min(1, v));
 const rate = (c: ComparableCell): number => (c.n > 0 ? c.passes / c.n : 0);
+/** A cell with no valid trials (every run an excluded infra error) proves nothing. */
+const hasData = (c: ComparableCell): boolean => c.n > 0;
+
+/**
+ * Sampling variance of one cell's pass rate, from the Wilson/Agresti-Coull
+ * shrunken estimate p̃ = (x + z²/2)/(n + z²) rather than the raw p.
+ *
+ * The textbook Wald variance p(1−p)/n is exactly 0 at p=0 and p=1 — which is
+ * where most of our cells sit — so it would claim a 12/12 cell carries no
+ * sampling error at all. That is the same collapse Wilson exists to avoid, so
+ * we stay in the Wilson family here rather than reintroduce Wald through the
+ * back door. At n=0 this yields the maximal 0.25/z², which is the right answer
+ * for "no trials": maximal uncertainty.
+ */
+function cellVariance(c: ComparableCell): number {
+  const nTilde = c.n + Z_95 ** 2;
+  const pTilde = (c.passes + Z_95 ** 2 / 2) / nTilde;
+  return (pTilde * (1 - pTilde)) / nTilde;
+}
 
 /**
  * The difference between two models in ONE scenario, as a Newcombe hybrid-score
@@ -114,37 +143,73 @@ export function scenarioDifference(a: ComparableCell, b: ComparableCell): Differ
  * Every model in a scenario that its leader is NOT significantly ahead of —
  * the "statistically tied for the lead" set, the leader included. Prevents a
  * reader from over-reading a rank order that n=12 cannot support.
+ *
+ * A model with no valid trials stays in the set: nothing measured cannot rule
+ * it out of the lead, and it cannot become the leader either.
+ *
+ * Note this is a best-vs-rest sweep against the EMPIRICAL maximum and the
+ * comparisons are uncorrected, so the set errs slightly small — see the
+ * multiplicity note in `eval/data/README.md`.
  */
 export function tiedWithLeader(cells: ComparableCell[]): string[] {
-  if (cells.length === 0) return [];
-  const leader = cells.reduce((best, c) => (rate(c) > rate(best) ? c : best), cells[0]);
-  return cells.filter((c) => scenarioDifference(leader, c).tied).map((c) => c.model);
+  const measured = cells.filter(hasData);
+  if (measured.length === 0) return cells.map((c) => c.model);
+  const leader = measured.reduce((best, c) => (rate(c) > rate(best) ? c : best), measured[0]);
+  return cells.filter((c) => !hasData(c) || scenarioDifference(leader, c).tied).map((c) => c.model);
 }
 
 /**
- * The two models' difference pooled across scenarios, with a scenario-clustered
- * standard error: average the per-scenario differences, then take the SE from
- * their spread (sd/√S) and a t-interval on S−1 df.
+ * The two models' difference pooled across scenarios: average the per-scenario
+ * differences, then put a random-effects SE and a t-interval (S−1 df) on it.
  *
- * With S < 2 there is no between-scenario spread to estimate, so no honest
- * interval exists — we report the widest possible one and call it a tie rather
- * than manufacture precision.
+ * The observed per-scenario difference varies for two reasons, and the SE has
+ * to carry both:
+ *
+ * - τ², genuine scenario-to-scenario heterogeneity (a model that shines on
+ *   happy-path may fold on line-items), and
+ * - σ²_s, binomial noise, because each difference is measured off 12+12 runs.
+ *
+ * Taking the SE from the between-scenario spread alone (sd/√S) silently drops
+ * σ²_s. It survives on average — E[s²] does absorb the binomial noise — but the
+ * realized interval can collapse: seven scenarios that happen to agree exactly
+ * give s²=0, hence SE=0 and a zero-width interval declaring a winner with
+ * certainty. That is the precise over-precision this module exists to prevent.
+ *
+ * Method of moments closes it. Since E[s²] = τ² + mean(σ²_s), the heterogeneity
+ * estimate is τ̂² = max(0, s² − mean(σ²_s)), and
+ *
+ *   Var(mean) = (mean(σ²_s) + τ̂²)/S = max(s², mean(σ²_s))/S
+ *
+ * so the between-scenario spread governs whenever it exceeds the binomial floor
+ * (the heterogeneous case, unchanged from before) and the binomial floor holds
+ * the interval open when it does not. Equal weights are correct here because
+ * every cell carries the same n. df stays S−1: with τ̂²=0 a larger df would be
+ * defensible, but a wider interval is the honest direction to err at S=7.
+ *
+ * Scenarios where either model has no valid trials are dropped — absence of
+ * evidence is not a 0% pass rate. With S < 2 there is nothing to pool, so we
+ * report the widest possible interval and call it a tie rather than manufacture
+ * precision.
  */
 export function pooledClusteredDifference(
   pairs: { a: ComparableCell; b: ComparableCell }[]
 ): PooledDifference {
-  const diffs = pairs.map(({ a, b }) => rate(a) - rate(b));
+  const usable = pairs.filter(({ a, b }) => hasData(a) && hasData(b));
+  const diffs = usable.map(({ a, b }) => rate(a) - rate(b));
   const scenarios = diffs.length;
 
-  if (scenarios === 0) return { diff: 0, ci: [0, 0], tied: true, scenarios: 0, se: null };
+  if (scenarios === 0) return { diff: 0, ci: [-1, 1], tied: true, scenarios: 0, se: null };
 
   const mean = diffs.reduce((s, d) => s + d, 0) / scenarios;
   if (scenarios < 2) {
     return { diff: mean, ci: [-1, 1], tied: true, scenarios, se: null };
   }
 
-  const variance = diffs.reduce((s, d) => s + (d - mean) ** 2, 0) / (scenarios - 1);
-  const se = Math.sqrt(variance) / Math.sqrt(scenarios);
+  const between = diffs.reduce((s, d) => s + (d - mean) ** 2, 0) / (scenarios - 1);
+  const meanWithin =
+    usable.reduce((s, { a, b }) => s + cellVariance(a) + cellVariance(b), 0) / scenarios;
+
+  const se = Math.sqrt(Math.max(between, meanWithin) / scenarios);
   const margin = tCritical95(scenarios - 1) * se;
   const ci: [number, number] = [clamp(mean - margin), clamp(mean + margin)];
 

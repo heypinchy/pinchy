@@ -34,10 +34,15 @@ describe("wilsonInterval", () => {
     expect(lower).toBeGreaterThanOrEqual(0);
   });
 
-  it("returns [0, 0] for n=0", () => {
+  it("returns the uninformative [0, 1] for n=0, not a point mass at 0", () => {
+    // Zero trials means "we know nothing", not "it fails every time". The
+    // point-mass [0, 0] this used to return reads as CERTAINTY that the model
+    // scores 0, which is how a cell whose every run was an invalid trial
+    // (`run-infra-error`, excluded from n) got declared significantly worse
+    // than the leader in `comparisons.ts` — from no data at all.
     const [lower, upper] = wilsonInterval(0, 0, 1.96);
     expect(lower).toBe(0);
-    expect(upper).toBe(0);
+    expect(upper).toBe(1);
   });
 
   it("clamps into [0, 1]", () => {

@@ -35,6 +35,7 @@ import path from "node:path";
 import { gradeRunForScenario } from "../src/lib/eval/graders";
 import { pooledClusteredDifference, tiedWithLeader } from "../src/lib/eval/comparisons";
 import { applyTrajectoryRegrade } from "../src/lib/eval/regrade-merge";
+import { wilsonInterval } from "../src/lib/eval/scorecard";
 import type { RunResult, RunTrajectory } from "../src/lib/eval/types";
 import { hetznerInvoiceDuplicateScenario } from "./scenarios/hetzner-invoice-duplicate";
 import { hetznerInvoiceRejectedScenario } from "./scenarios/hetzner-invoice-rejected";
@@ -99,19 +100,20 @@ interface Cell {
   tagHistogram: Record<string, number>;
 }
 
-/** Wilson 95% score interval for `passes` successes in `n` trials. */
-function wilson95(passes: number, n: number): [number, number] {
-  if (n === 0) return [0, 1];
-  const z = 1.96;
-  const p = passes / n;
-  const denom = 1 + z ** 2 / n;
-  const center = p + z ** 2 / (2 * n);
-  const margin = z * Math.sqrt((p * (1 - p)) / n + z ** 2 / (4 * n ** 2));
-  return [
-    Number(((center - margin) / denom).toFixed(3)),
-    Number(((center + margin) / denom).toFixed(3)),
-  ];
-}
+const round3 = (v: number): number => Number(v.toFixed(3));
+
+/**
+ * Wilson 95% score interval for `passes` successes in `n` trials, rounded for
+ * publication. The maths lives in `src/lib/eval/scorecard.ts` — this file used
+ * to carry a second copy that disagreed with it at n=0 ([0, 1] here, a [0, 0]
+ * point mass there), which is a contradiction a reader of one exported record
+ * could not see: the same zero-trial cell would publish "anything is possible"
+ * in `wilson95` while `comparisons.ts` read "certainly 0%" off the other copy.
+ */
+const wilson95 = (passes: number, n: number): [number, number] => {
+  const [lower, upper] = wilsonInterval(passes, n);
+  return [round3(lower), round3(upper)];
+};
 
 async function readJsonl<T>(file: string): Promise<T[]> {
   try {
@@ -181,10 +183,13 @@ export interface ModelComparison {
   ci: [number, number];
   /** True when the interval spans 0 — no detectable difference overall. */
   tied: boolean;
+  /**
+   * Random-effects SE behind `ci`. Published so a reader can rebuild the
+   * interval (or a corrected one) instead of taking `tied` on faith.
+   */
+  se: number | null;
   scenarios: number;
 }
-
-const round3 = (v: number): number => Number(v.toFixed(3));
 
 /**
  * Every unordered model pair, compared pooled across scenarios with a
@@ -211,12 +216,18 @@ export function buildComparisons(scenarios: PublishedScenario[]): ModelCompariso
           : [];
       });
       const pooled = pooledClusteredDifference(pairs);
+      // `tied` is derived from the ROUNDED bounds we publish, not the raw ones,
+      // so a reader who recomputes "does the interval span 0" from the exported
+      // numbers gets the exported verdict. Otherwise a raw lower bound of
+      // 0.0004 would publish as ci[0] = 0 alongside tied: false.
+      const ci: [number, number] = [round3(pooled.ci[0]), round3(pooled.ci[1])];
       comparisons.push({
         a,
         b,
         diff: round3(pooled.diff),
-        ci: [round3(pooled.ci[0]), round3(pooled.ci[1])],
-        tied: pooled.tied,
+        ci,
+        tied: ci[0] <= 0 && ci[1] >= 0,
+        se: pooled.se === null ? null : round3(pooled.se),
         scenarios: pooled.scenarios,
       });
     }

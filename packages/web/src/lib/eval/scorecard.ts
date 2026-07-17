@@ -46,10 +46,17 @@ export function computePassCaretK(runs: RunResult[]): number {
 /**
  * Wilson score interval for a binomial proportion (`passes` out of `n`
  * trials), at the given z-score (default 1.96 -> ~95% confidence). Clamped
- * to [0, 1]. Returns [0, 0] for n === 0 (no trials, no interval to report).
+ * to [0, 1].
+ *
+ * Returns the uninformative [0, 1] for n === 0: with no trials every rate is
+ * still possible. The tempting [0, 0] reads as CERTAINTY that the model scores
+ * 0, which is a claim from no data — and `comparisons.ts` acts on these bounds,
+ * so a point mass there declares a zero-trial cell significantly worse than the
+ * leader. `eval/export-scorecard.ts` has always published [0, 1] for this case;
+ * this is now the single definition both sides read.
  */
 export function wilsonInterval(passes: number, n: number, z = 1.96): [number, number] {
-  if (n === 0) return [0, 0];
+  if (n === 0) return [0, 1];
 
   const p = passes / n;
   const z2 = z * z;
