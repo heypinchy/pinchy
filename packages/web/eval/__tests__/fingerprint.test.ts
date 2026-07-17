@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { buildRunFingerprint, type VersionResponse } from "../fingerprint";
+import { buildRunFingerprint, parseVersionResponse, type VersionResponse } from "../fingerprint";
 
 const version: VersionResponse = {
   pinchyVersion: "0.8.0",
@@ -58,5 +58,76 @@ describe("buildRunFingerprint", () => {
     expect(fp.nodeEnv).toBe("unknown");
     expect(fp.harnessSha).toBe("unknown");
     expect(fp.comparable).toBe(false);
+  });
+
+  it("trims surrounding whitespace so a padded-but-valid build stays comparable", () => {
+    const fp = buildRunFingerprint(
+      { ...version, pinchyVersion: "  0.8.0  ", build: " a1b2c3d4e5f6 " },
+      cleanGit,
+      AT
+    );
+    expect(fp.pinchyVersion).toBe("0.8.0");
+    expect(fp.build).toBe("a1b2c3d4e5f6");
+    expect(fp.comparable).toBe(true);
+  });
+
+  it("treats a whitespace-only field as unknown, not comparable", () => {
+    const fp = buildRunFingerprint({ ...version, build: "   " }, cleanGit, AT);
+    expect(fp.build).toBe("unknown");
+    expect(fp.comparable).toBe(false);
+  });
+});
+
+describe("parseVersionResponse", () => {
+  it("keeps the four known string fields", () => {
+    expect(
+      parseVersionResponse({
+        pinchyVersion: "0.8.0",
+        openclawVersion: "2026.7.1",
+        build: "a1b2c3d4e5f6",
+        nodeEnv: "production",
+      })
+    ).toEqual({
+      pinchyVersion: "0.8.0",
+      openclawVersion: "2026.7.1",
+      build: "a1b2c3d4e5f6",
+      nodeEnv: "production",
+    });
+  });
+
+  it("drops non-string fields to undefined rather than trusting their shape", () => {
+    const parsed = parseVersionResponse({
+      pinchyVersion: 42,
+      openclawVersion: { nested: "object" },
+      build: ["a"],
+      nodeEnv: null,
+    });
+    expect(parsed).toEqual({
+      pinchyVersion: undefined,
+      openclawVersion: undefined,
+      build: undefined,
+      nodeEnv: undefined,
+    });
+  });
+
+  it("caps each field at 120 chars so a rogue body can't bloat the scorecard", () => {
+    const parsed = parseVersionResponse({ pinchyVersion: "x".repeat(500) });
+    expect(parsed.pinchyVersion).toHaveLength(120);
+  });
+
+  it("ignores extra keys and never surfaces the raw object", () => {
+    const parsed = parseVersionResponse({ pinchyVersion: "0.8.0", evil: "ignored" });
+    expect(parsed).not.toHaveProperty("evil");
+  });
+
+  it("returns all-undefined for a non-object body rather than throwing", () => {
+    for (const body of [null, undefined, "string", 7, []]) {
+      expect(parseVersionResponse(body)).toEqual({
+        pinchyVersion: undefined,
+        openclawVersion: undefined,
+        build: undefined,
+        nodeEnv: undefined,
+      });
+    }
   });
 });

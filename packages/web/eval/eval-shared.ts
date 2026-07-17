@@ -20,7 +20,7 @@ import {
   seedGraphMockMessages,
 } from "../e2e/email/helpers";
 import { hetznerInvoiceScenario } from "./scenarios/hetzner-invoice";
-import { resetOdooMock, seedOdooBaseline } from "./run-eval";
+import { resetOdooMock, seedOdooBaseline, PINCHY_URL } from "./run-eval";
 
 export const HETZNER_ALLOWED_TOOLS = [
   "email_list",
@@ -84,13 +84,12 @@ export async function setupHetznerAgent(cookie: string): Promise<{
   const agentId = ((await createRes.json()) as { id: string }).id;
 
   // Email read permission via the same PUT-integrations shape email specs use.
-  const pinchyUrl = process.env.PINCHY_URL || "http://localhost:7777";
-  const emailGrant = await fetch(`${pinchyUrl}/api/agents/${agentId}/integrations`, {
+  const emailGrant = await fetch(`${PINCHY_URL}/api/agents/${agentId}/integrations`, {
     method: "PUT",
     headers: {
       "Content-Type": "application/json",
       Cookie: cookie,
-      Origin: pinchyUrl,
+      Origin: PINCHY_URL,
     },
     body: JSON.stringify({
       connectionId: emailConn.id,
