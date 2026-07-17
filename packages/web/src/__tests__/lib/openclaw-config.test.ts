@@ -151,7 +151,7 @@ vi.mock("@/lib/provider-models", () => {
       name: "Ollama Cloud",
       models: [
         { id: "ollama-cloud/minimax-m3", name: "minimax-m3" },
-        { id: "ollama-cloud/minimax-m3", name: "minimax-m3" },
+        { id: "ollama-cloud/kimi-k2.6", name: "kimi-k2.6" },
         { id: "ollama-cloud/gemma4:31b", name: "gemma4:31b" },
       ],
     },
