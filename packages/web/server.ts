@@ -634,6 +634,32 @@ ${domain ? `<p><a href="https://${domain}">Go to ${domain} →</a></p>` : ""}
       },
     ]);
 
+    // Inbox Agent (#139): drive the reconciliation sweep on its own cadence.
+    // The sweep re-lists each email workflow's recent mail and dispatches
+    // whatever the ledger has not seen — the correctness path that makes the
+    // feature autonomous. It runs agents, so it belongs here (inside the
+    // gateway block) rather than beside the periodic jobs started above.
+    //
+    // Starting it before the handshake is safe by construction: while the
+    // gateway is disconnected the readiness gate defers every run rather than
+    // failing mail nobody examined (see createAgentReadinessGate). That is also
+    // why this is NOT hung off the `connected` event — that fires again on every
+    // reconnect, and a second startInboxSweep would leak another interval.
+    //
+    // Lazy import for the same reason as the jobs above: these modules pull in
+    // `@/db`, which must not be evaluated before bootInits() has completed.
+    const { startInboxSweep, stopInboxSweep } = await import("./src/server/inbox-sweep");
+    const { buildSweepDeps } = await import("./src/server/inbox-sweep-deps");
+    const { runReconciliationSweep } = await import("./src/lib/email-workflows/sweep");
+    const sweepDeps = buildSweepDeps(ocForWatchdog);
+    startInboxSweep(() => runReconciliationSweep(sweepDeps));
+    registerShutdownHandlers([
+      () => {
+        stopInboxSweep();
+        return Promise.resolve();
+      },
+    ]);
+
     let hasConnected = false;
     let errorLogged = false;
 
