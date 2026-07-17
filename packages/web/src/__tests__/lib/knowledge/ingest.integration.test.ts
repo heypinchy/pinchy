@@ -16,7 +16,7 @@ import { and, eq } from "drizzle-orm";
 
 import { db } from "@/db";
 import { kbChunks, kbDocuments } from "@/db/schema";
-import { ingestDirectory, type IngestDeps } from "@/lib/knowledge/ingest";
+import { ingestDirectory, type IngestDeps, type IngestResult } from "@/lib/knowledge/ingest";
 
 const ORG_ID = "org-kb-ingest-test";
 
@@ -54,6 +54,16 @@ async function chunksFor(documentId: string) {
   return db.select().from(kbChunks).where(eq(kbChunks.documentId, documentId));
 }
 
+/**
+ * An IngestResult with every counter at zero, overridden by `expected`. Lets a
+ * test name only the counters it is about while still asserting via toEqual
+ * that every OTHER counter is zero — so a file quietly landing in the wrong
+ * bucket fails the test that owns the right one.
+ */
+function counts(expected: Partial<IngestResult> = {}): IngestResult {
+  return { indexed: 0, skipped: 0, removed: 0, unsearchable: 0, failed: 0, ...expected };
+}
+
 it("indexes a PDF into kb_documents + kb_chunks with real embeddings, then skips a re-run with unchanged content", async () => {
   const pdfPath = join(tmpRoot, "handbook.pdf");
   writeFileSync(pdfPath, "fake-pdf-bytes-v1");
@@ -66,7 +76,7 @@ it("indexes a PDF into kb_documents + kb_chunks with real embeddings, then skips
 
   const result = await ingestDirectory(ORG_ID, tmpRoot, deps);
 
-  expect(result).toEqual({ indexed: 1, skipped: 0, removed: 0 });
+  expect(result).toEqual(counts({ indexed: 1 }));
   expect(extractPdf).toHaveBeenCalledTimes(1);
   expect(extractPdf).toHaveBeenCalledWith(pdfPath);
 
@@ -91,7 +101,7 @@ it("indexes a PDF into kb_documents + kb_chunks with real embeddings, then skips
 
   // ── Second run, no changes on disk ──────────────────────────────────────
   const secondResult = await ingestDirectory(ORG_ID, tmpRoot, deps);
-  expect(secondResult).toEqual({ indexed: 0, skipped: 1, removed: 0 });
+  expect(secondResult).toEqual(counts({ skipped: 1 }));
   // No re-extraction, no re-embedding: real idempotency, not just a
   // row-count coincidence.
   expect(extractPdf).toHaveBeenCalledTimes(1);
@@ -121,7 +131,7 @@ it("replaces the document and its chunks when the file's content changes", async
   const { deps: updatedDeps } = fakeDeps([{ page: 1, text: "Updated policy text for 2026." }]);
 
   const result = await ingestDirectory(ORG_ID, tmpRoot, updatedDeps);
-  expect(result).toEqual({ indexed: 1, skipped: 0, removed: 0 });
+  expect(result).toEqual(counts({ indexed: 1 }));
 
   const docsAfter = await db.select().from(kbDocuments).where(eq(kbDocuments.orgId, ORG_ID));
   expect(docsAfter).toHaveLength(1);
@@ -155,7 +165,7 @@ it("indexes byte-identical files at different paths as separate documents (no un
   const { deps } = fakeDeps();
   const result = await ingestDirectory(ORG_ID, tmpRoot, deps);
 
-  expect(result).toEqual({ indexed: 2, skipped: 0, removed: 0 });
+  expect(result).toEqual(counts({ indexed: 2 }));
   const docs = await db.select().from(kbDocuments).where(eq(kbDocuments.orgId, ORG_ID));
   expect(docs).toHaveLength(2);
   // Both share the same content hash but are distinct rows with distinct paths.
@@ -166,7 +176,7 @@ it("indexes byte-identical files at different paths as separate documents (no un
 
   // Idempotent re-run: both skip, no crash, no new rows.
   const secondResult = await ingestDirectory(ORG_ID, tmpRoot, deps);
-  expect(secondResult).toEqual({ indexed: 0, skipped: 2, removed: 0 });
+  expect(secondResult).toEqual(counts({ skipped: 2 }));
   const docsAfter = await db.select().from(kbDocuments).where(eq(kbDocuments.orgId, ORG_ID));
   expect(docsAfter).toHaveLength(2);
 });
@@ -184,7 +194,7 @@ it("removes the document and its chunks when the source file disappears from dis
   rmSync(pdfPath);
 
   const result = await ingestDirectory(ORG_ID, tmpRoot, deps);
-  expect(result).toEqual({ indexed: 0, skipped: 0, removed: 1 });
+  expect(result).toEqual(counts({ removed: 1 }));
 
   const docsAfter = await db.select().from(kbDocuments).where(eq(kbDocuments.orgId, ORG_ID));
   expect(docsAfter).toHaveLength(0);
@@ -207,7 +217,7 @@ it("does not touch documents indexed from a different root directory for the sam
 
     // Ingesting tmpRoot must not report the other root's untouched file as
     // removed, and must leave its document row alone.
-    expect(result).toEqual({ indexed: 1, skipped: 0, removed: 0 });
+    expect(result).toEqual(counts({ indexed: 1 }));
     const docs = await db.select().from(kbDocuments).where(eq(kbDocuments.orgId, ORG_ID));
     expect(docs.map((d) => d.sourcePath).sort()).toEqual([otherPdfPath, pdfPath].sort());
   } finally {
@@ -264,7 +274,7 @@ it("accepts a single-file root path (not just a directory) and indexes that one 
   // Root IS the file, not its parent directory.
   const result = await ingestDirectory(ORG_ID, pdfPath, deps);
 
-  expect(result).toEqual({ indexed: 1, skipped: 0, removed: 0 });
+  expect(result).toEqual(counts({ indexed: 1 }));
   expect(extractPdf).toHaveBeenCalledWith(pdfPath);
 
   const docs = await db.select().from(kbDocuments).where(eq(kbDocuments.orgId, ORG_ID));
@@ -273,7 +283,7 @@ it("accepts a single-file root path (not just a directory) and indexes that one 
 
   // Idempotent on a file root too: a second run skips, never re-removes.
   const second = await ingestDirectory(ORG_ID, pdfPath, deps);
-  expect(second).toEqual({ indexed: 0, skipped: 1, removed: 0 });
+  expect(second).toEqual(counts({ skipped: 1 }));
 });
 
 it("ignores a single-file root whose extension is not on the allowlist", async () => {
@@ -283,7 +293,7 @@ it("ignores a single-file root whose extension is not on the allowlist", async (
   const { deps, extractPdf } = fakeDeps();
   const result = await ingestDirectory(ORG_ID, txtPath, deps);
 
-  expect(result).toEqual({ indexed: 0, skipped: 0, removed: 0 });
+  expect(result).toEqual(counts());
   expect(extractPdf).not.toHaveBeenCalled();
   const docs = await db.select().from(kbDocuments).where(eq(kbDocuments.orgId, ORG_ID));
   expect(docs).toHaveLength(0);
@@ -291,5 +301,89 @@ it("ignores a single-file root whose extension is not on the allowlist", async (
 
 it("returns a zero result for a root path that does not exist, without throwing", async () => {
   const result = await ingestDirectory(ORG_ID, join(tmpRoot, "does-not-exist"), fakeDeps().deps);
-  expect(result).toEqual({ indexed: 0, skipped: 0, removed: 0 });
+  expect(result).toEqual(counts());
+});
+
+// An image-only scan (~13% of the reference customer corpus, incl. every
+// certificate) parses fine and yields pages with no text layer, so chunking
+// produces nothing and the document is never retrievable. Counting that as
+// `indexed` tells an admin the corpus is complete while a slice of it can
+// never answer a question — the count exists to mean "findable", so a
+// zero-chunk document gets its own honest bucket instead.
+it("reports a text-less scan as unsearchable rather than indexed, on the first run and every run after", async () => {
+  const pdfPath = join(tmpRoot, "scan.pdf");
+  writeFileSync(pdfPath, "fake-scanned-pdf-bytes");
+
+  // What pdfjs returns for an image-only scan: pages exist, text layer empty.
+  const { deps, embed } = fakeDeps([
+    { page: 1, text: "" },
+    { page: 2, text: "   " },
+  ]);
+
+  const result = await ingestDirectory(ORG_ID, tmpRoot, deps);
+  expect(result).toEqual(counts({ unsearchable: 1 }));
+  // Nothing to embed — the scan must not burn an embedding call.
+  expect(embed).not.toHaveBeenCalled();
+
+  // The document row still exists: it IS a known corpus file, and the removal
+  // pass must not treat "no chunks" as "gone from disk".
+  const docs = await db.select().from(kbDocuments).where(eq(kbDocuments.orgId, ORG_ID));
+  expect(docs).toHaveLength(1);
+  expect(docs[0].sourcePath).toBe(pdfPath);
+  expect(await chunksFor(docs[0].id)).toHaveLength(0);
+
+  // Every subsequent run reports the same honest number. The zero-chunk
+  // recovery branch re-extracts this file forever (its hash never changes and
+  // it never gains chunks), which is exactly why it must not re-report itself
+  // as freshly `indexed` each time.
+  const second = await ingestDirectory(ORG_ID, tmpRoot, deps);
+  expect(second).toEqual(counts({ unsearchable: 1 }));
+  const docsAfter = await db.select().from(kbDocuments).where(eq(kbDocuments.orgId, ORG_ID));
+  expect(docsAfter).toHaveLength(1);
+  expect(docsAfter[0].id).toBe(docs[0].id);
+});
+
+// A corpus is not a curated fixture: one corrupt or unreadable PDF is normal.
+// Without a per-file boundary it aborts the entire reindex, so a single bad
+// file costs every other file its update — and under a retrying job runner it
+// would fail the same way forever.
+it("keeps ingesting the rest of the corpus when one file's extraction throws", async () => {
+  writeFileSync(join(tmpRoot, "a-broken.pdf"), "corrupt-bytes");
+  writeFileSync(join(tmpRoot, "b-good.pdf"), "good-bytes");
+
+  const embed = vi.fn(async (texts: string[]) => texts.map(() => Array(1024).fill(0.1)));
+  const extractPdf = vi.fn(async (absPath: string) => {
+    if (absPath.endsWith("a-broken.pdf")) throw new Error("Invalid PDF structure");
+    return [{ page: 1, text: PAGE_1_TEXT }];
+  });
+
+  const result = await ingestDirectory(ORG_ID, tmpRoot, { embed, extractPdf });
+
+  expect(result).toEqual(counts({ indexed: 1, failed: 1 }));
+  // The good file is indexed regardless of walk order; the broken one leaves
+  // no half-written document row behind.
+  const docs = await db.select().from(kbDocuments).where(eq(kbDocuments.orgId, ORG_ID));
+  expect(docs.map((d) => d.sourcePath)).toEqual([join(tmpRoot, "b-good.pdf")]);
+  expect(await chunksFor(docs[0].id)).not.toHaveLength(0);
+});
+
+// The counterpart to the test above, and the reason the per-file boundary is
+// scoped to extraction only: Ollama being unreachable is ONE outage, not N
+// corrupt files. Swallowing it per file would report "193 failed" for a
+// systemic problem, bury the actual cause, and pointlessly parse the whole
+// corpus on the way. Embedding and DB errors abort the run and surface.
+it("surfaces an embedding outage as a run failure instead of blaming every file", async () => {
+  writeFileSync(join(tmpRoot, "a.pdf"), "bytes-a");
+  writeFileSync(join(tmpRoot, "b.pdf"), "bytes-b");
+
+  const embed = vi.fn(async () => {
+    throw new Error("connect ECONNREFUSED 127.0.0.1:11434");
+  });
+  const extractPdf = vi.fn(async () => [{ page: 1, text: PAGE_1_TEXT }]);
+
+  await expect(ingestDirectory(ORG_ID, tmpRoot, { embed, extractPdf })).rejects.toThrow(
+    /ECONNREFUSED/
+  );
+  // Bailed on the first file rather than walking the rest of the corpus.
+  expect(embed).toHaveBeenCalledTimes(1);
 });

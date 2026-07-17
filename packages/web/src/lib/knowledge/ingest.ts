@@ -12,6 +12,12 @@
  *   - a previously-indexed file that's gone from disk -> delete its document
  *     row (cascades to its chunks).
  *
+ * The result counts what an operator needs to trust the corpus, so "processed"
+ * is never conflated with "findable": a file that parses but yields no text
+ * (image-only scan) counts as `unsearchable`, not `indexed`, and a file that
+ * cannot be read or parsed counts as `failed` without taking the rest of the
+ * run down with it.
+ *
  * The embedder and PDF extractor are dependency-injected: production wires
  * `embedTexts` (./embeddings.ts) and a pdfjs-based extractor
  * (./pdf-extract.ts); tests inject deterministic fakes so the integration
@@ -54,12 +60,22 @@ export interface IngestOptions {
 }
 
 export interface IngestResult {
-  /** Documents newly indexed, replaced due to a content change, or recovered from a zero-chunk state. */
+  /** Documents newly indexed, replaced due to a content change, or recovered from a zero-chunk state — and searchable afterwards (at least one chunk). */
   indexed: number;
   /** Documents left untouched: unchanged content hash, chunks already present. */
   skipped: number;
   /** Documents deleted because their source file is no longer on disk. */
   removed: number;
+  /**
+   * Files that parsed without error but yielded no chunks, so they are indexed
+   * yet can never be retrieved — an image-only scan with no text layer is the
+   * normal cause. Counted apart from `indexed` because the counts exist to
+   * answer "is the corpus findable?", and folding these into `indexed` reports
+   * a complete corpus while a slice of it silently answers nothing.
+   */
+  unsearchable: number;
+  /** Files skipped because reading or extracting THIS file threw (unreadable, corrupt). The run continues; see the per-file boundary in ingestDirectory. */
+  failed: number;
 }
 
 /** Applies the per-file eligibility rules (skip-hidden + A/B denylist + extension allowlist) to a basename. */
@@ -132,16 +148,22 @@ function isUnderRoot(sourcePath: string, rootDir: string): boolean {
   return sourcePath.startsWith(rootPrefix);
 }
 
-/** Chunks `pages`, embeds every chunk, and inserts the resulting kb_chunks rows for `documentId`. No-op if chunking yields nothing (e.g. an all-whitespace PDF). */
+/**
+ * Chunks `pages`, embeds every chunk, and inserts the resulting kb_chunks rows
+ * for `documentId`. Returns the number of chunks written — zero means the
+ * document is indexed but unsearchable (e.g. an image-only scan whose text
+ * layer is empty), which callers must report as such rather than as a
+ * successful index.
+ */
 async function writeChunks(
   documentId: string,
   orgId: string,
   sourcePath: string,
   pages: IngestPage[],
   deps: IngestDeps
-): Promise<void> {
+): Promise<number> {
   const chunks = chunkPages(pages);
-  if (chunks.length === 0) return;
+  if (chunks.length === 0) return 0;
 
   const vectors = await deps.embed(chunks.map((chunk) => chunk.text));
 
@@ -156,6 +178,106 @@ async function writeChunks(
       embedding: vectors[i],
     }))
   );
+
+  return chunks.length;
+}
+
+/**
+ * A file-level ingest failure: THIS file could not be read or parsed (corrupt
+ * PDF, permission denied, vanished between the walk and the read). Distinct
+ * from the errors ingestDirectory deliberately lets escape — embedding and DB
+ * failures are systemic, and reporting an Ollama outage as "193 corrupt files"
+ * would bury the one fact an operator needs.
+ */
+class FileIngestError extends Error {
+  constructor(
+    readonly sourcePath: string,
+    cause: unknown
+  ) {
+    super(`Ingest failed for ${sourcePath}`, { cause });
+    this.name = "FileIngestError";
+  }
+}
+
+/** Runs a file-scoped step, tagging anything it throws as a FileIngestError so the per-file boundary in ingestDirectory can catch exactly those. */
+async function fileStep<T>(sourcePath: string, step: () => Promise<T>): Promise<T> {
+  try {
+    return await step();
+  } catch (err) {
+    throw new FileIngestError(sourcePath, err);
+  }
+}
+
+/** How one file ended up, mapping 1:1 onto the IngestResult counters of the same name. */
+type FileOutcome = "indexed" | "skipped" | "unsearchable";
+
+/**
+ * Ingests one file: hash it, decide skip/recover/replace/insert, and write its
+ * chunks. Reading and PDF extraction are wrapped in fileStep() so a failure
+ * THIS file owns surfaces as a FileIngestError; embedding and DB calls are
+ * deliberately left bare so a systemic outage aborts the whole run.
+ */
+async function ingestFile(orgId: string, absPath: string, deps: IngestDeps): Promise<FileOutcome> {
+  const { buffer, fileStat } = await fileStep(absPath, async () => ({
+    buffer: await readFile(absPath),
+    fileStat: await stat(absPath),
+  }));
+  const contentHash = createHash("sha256").update(buffer).digest("hex");
+
+  const [existing] = await db
+    .select()
+    .from(kbDocuments)
+    .where(and(eq(kbDocuments.orgId, orgId), eq(kbDocuments.sourcePath, absPath)))
+    .limit(1);
+
+  if (existing && existing.contentHash === contentHash) {
+    const [{ value: chunkCount }] = await db
+      .select({ value: count() })
+      .from(kbChunks)
+      .where(eq(kbChunks.documentId, existing.id));
+
+    if (chunkCount > 0) return "skipped";
+
+    // Robustness case: a document row survives with zero chunks (e.g. a
+    // prior ingest crashed after the document insert but before chunk
+    // writes, or an operator hand-deleted kb_chunks rows). The content
+    // hash still matches the file on disk, so a naive "hash matches ->
+    // skip" would leave this document permanently unsearchable while
+    // silently reporting success. We recover instead: rebuild chunks for
+    // the existing document (same id, no duplicate row).
+    //
+    // A file with no text at all lands here too, on every run, and rebuilds
+    // to zero chunks again — the write result, not the branch, is what tells
+    // the two apart.
+    const pages = await fileStep(absPath, () => deps.extractPdf(absPath));
+    const written = await writeChunks(existing.id, orgId, absPath, pages, deps);
+    return written > 0 ? "indexed" : "unsearchable";
+  }
+
+  if (existing) {
+    // Content changed since the last ingest: replace wholesale. Deleting
+    // the document row cascades to its (now stale) chunks via the
+    // kb_chunks.document_id FK.
+    await db.delete(kbDocuments).where(eq(kbDocuments.id, existing.id));
+  }
+
+  const pages = await fileStep(absPath, () => deps.extractPdf(absPath));
+  const wholeDocText = pages.map((p) => p.text).join("\n");
+
+  const [doc] = await db
+    .insert(kbDocuments)
+    .values({
+      orgId,
+      contentHash,
+      sourcePath: absPath,
+      pageCount: pages.length,
+      mtime: fileStat.mtime,
+      lang: detectLang(wholeDocText),
+    })
+    .returning();
+
+  const written = await writeChunks(doc.id, orgId, absPath, pages, deps);
+  return written > 0 ? "indexed" : "unsearchable";
 }
 
 export async function ingestDirectory(
@@ -167,68 +289,22 @@ export async function ingestDirectory(
   const allowedExtensions = opts.allowedExtensions ?? DEFAULT_ALLOWED_EXTENSIONS;
   const discovered = await discoverFiles(rootDir, allowedExtensions);
 
-  let indexed = 0;
-  let skipped = 0;
+  const tally: Record<FileOutcome, number> = { indexed: 0, skipped: 0, unsearchable: 0 };
+  let failed = 0;
 
   for (const absPath of discovered) {
-    const buffer = await readFile(absPath);
-    const contentHash = createHash("sha256").update(buffer).digest("hex");
-    const fileStat = await stat(absPath);
-
-    const [existing] = await db
-      .select()
-      .from(kbDocuments)
-      .where(and(eq(kbDocuments.orgId, orgId), eq(kbDocuments.sourcePath, absPath)))
-      .limit(1);
-
-    if (existing && existing.contentHash === contentHash) {
-      const [{ value: chunkCount }] = await db
-        .select({ value: count() })
-        .from(kbChunks)
-        .where(eq(kbChunks.documentId, existing.id));
-
-      if (chunkCount > 0) {
-        skipped++;
-        continue;
-      }
-
-      // Robustness case: a document row survives with zero chunks (e.g. a
-      // prior ingest crashed after the document insert but before chunk
-      // writes, or an operator hand-deleted kb_chunks rows). The content
-      // hash still matches the file on disk, so a naive "hash matches ->
-      // skip" would leave this document permanently unsearchable while
-      // silently reporting success. We recover instead: rebuild chunks for
-      // the existing document (same id, no duplicate row).
-      const pages = await deps.extractPdf(absPath);
-      await writeChunks(existing.id, orgId, absPath, pages, deps);
-      indexed++;
-      continue;
+    try {
+      tally[await ingestFile(orgId, absPath, deps)]++;
+    } catch (err) {
+      // One unreadable or corrupt file is a normal property of a real corpus,
+      // so it costs itself and nothing else: without this boundary a single
+      // bad PDF aborts the reindex for every other file, and under a retrying
+      // job runner it would fail identically forever. Systemic errors
+      // (embedding outage, DB gone) are NOT FileIngestErrors and still escape
+      // — see ingestFile.
+      if (!(err instanceof FileIngestError)) throw err;
+      failed++;
     }
-
-    if (existing) {
-      // Content changed since the last ingest: replace wholesale. Deleting
-      // the document row cascades to its (now stale) chunks via the
-      // kb_chunks.document_id FK.
-      await db.delete(kbDocuments).where(eq(kbDocuments.id, existing.id));
-    }
-
-    const pages = await deps.extractPdf(absPath);
-    const wholeDocText = pages.map((p) => p.text).join("\n");
-
-    const [doc] = await db
-      .insert(kbDocuments)
-      .values({
-        orgId,
-        contentHash,
-        sourcePath: absPath,
-        pageCount: pages.length,
-        mtime: fileStat.mtime,
-        lang: detectLang(wholeDocText),
-      })
-      .returning();
-
-    await writeChunks(doc.id, orgId, absPath, pages, deps);
-    indexed++;
   }
 
   // Removal pass: any previously-indexed document under this root whose
@@ -247,5 +323,5 @@ export async function ingestDirectory(
     removed++;
   }
 
-  return { indexed, skipped, removed };
+  return { ...tally, removed, failed };
 }

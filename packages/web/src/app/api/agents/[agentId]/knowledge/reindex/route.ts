@@ -6,7 +6,7 @@ import { parseRequestBody } from "@/lib/api-validation";
 import { knowledgeReindexSchema } from "@/lib/schemas/knowledge-base";
 import { db } from "@/db";
 import { activeAgents, type AgentPluginConfig } from "@/db/schema";
-import { ingestDirectory, type IngestDeps } from "@/lib/knowledge/ingest";
+import { ingestDirectory, type IngestDeps, type IngestResult } from "@/lib/knowledge/ingest";
 import { embedTexts } from "@/lib/knowledge/embeddings";
 import { extractPdfPages } from "@/lib/knowledge/pdf-extract";
 import { DEFAULT_ORG_ID, EMBEDDING_MODEL, EMBEDDING_DIMENSIONS } from "@/lib/knowledge/constants";
@@ -16,6 +16,25 @@ import { deferAuditLog } from "@/lib/audit-deferred";
 import { safeProviderError, type AuditLogEntry, type EntityRef } from "@/lib/audit";
 
 type RouteContext = { params: Promise<{ agentId: string }> };
+
+/**
+ * Sums the per-root ingest results into the totals the response and the audit
+ * row report. Written out field by field on purpose: a counter added to
+ * IngestResult then fails to compile here until it is summed, so a new counter
+ * cannot silently drop out of the only numbers an admin ever sees.
+ */
+function totalCounts(results: IngestResult[]): IngestResult {
+  return results.reduce<IngestResult>(
+    (total, result) => ({
+      indexed: total.indexed + result.indexed,
+      skipped: total.skipped + result.skipped,
+      removed: total.removed + result.removed,
+      unsearchable: total.unsearchable + result.unsearchable,
+      failed: total.failed + result.failed,
+    }),
+    { indexed: 0, skipped: 0, removed: 0, unsearchable: 0, failed: 0 }
+  );
+}
 
 // Builds (but does not send) the knowledge.reindex audit entry — a pure
 // function so every branch shares the same detail shape. Callers pass this
@@ -27,9 +46,7 @@ function reindexAuditEntry(args: {
   actorId: string;
   outcome: "success" | "failure";
   pathCount: number;
-  indexed: number;
-  skipped: number;
-  removed: number;
+  counts: IngestResult;
   reason?: string;
 }): AuditLogEntry {
   return {
@@ -40,10 +57,18 @@ function reindexAuditEntry(args: {
     outcome: args.outcome,
     detail: {
       agent: args.agent,
+      // Listed one by one rather than spread from `counts`: a spread would
+      // copy whatever IngestResult grows into straight onto an HMAC-signed
+      // row, and the obvious next counter to want is a list of the paths that
+      // failed — precisely the filesystem paths this detail must never carry
+      // (AGENTS.md PII rule; see `pathCount` above). Adding a counter here has
+      // to stay a decision, not a side effect.
       pathCount: args.pathCount,
-      indexed: args.indexed,
-      skipped: args.skipped,
-      removed: args.removed,
+      indexed: args.counts.indexed,
+      skipped: args.counts.skipped,
+      removed: args.counts.removed,
+      unsearchable: args.counts.unsearchable,
+      failed: args.counts.failed,
       ...(args.reason !== undefined ? { reason: args.reason } : {}),
     },
   };
@@ -66,6 +91,10 @@ function reindexAuditEntry(args: {
  * large-corpus reindex needs async execution + progress reporting — that's
  * Phase 2 (see the implementation plan); do NOT block a request on a
  * multi-minute ingest in production.
+ *
+ * The response and audit row report every ingest counter, `unsearchable` and
+ * `failed` included: these are the numbers an admin trusts the corpus by, so
+ * "indexed" must keep meaning "findable" rather than merely "processed".
  */
 export const POST = withAdmin<RouteContext>(async (request, { params }, session) => {
   const { agentId } = await params;
@@ -99,12 +128,10 @@ export const POST = withAdmin<RouteContext>(async (request, { params }, session)
         actorId,
         outcome: "success",
         pathCount: 0,
-        indexed: 0,
-        skipped: 0,
-        removed: 0,
+        counts: totalCounts([]),
       })
     );
-    return NextResponse.json({ indexed: 0, skipped: 0, removed: 0, pathCount: 0 });
+    return NextResponse.json({ ...totalCounts([]), pathCount: 0 });
   }
 
   // The embedding model is fixed (bge-m3) but still needs a reachable Ollama
@@ -118,9 +145,7 @@ export const POST = withAdmin<RouteContext>(async (request, { params }, session)
         actorId,
         outcome: "failure",
         pathCount: targetPaths.length,
-        indexed: 0,
-        skipped: 0,
-        removed: 0,
+        counts: totalCounts([]),
         reason: "ollama_not_configured",
       })
     );
@@ -140,15 +165,14 @@ export const POST = withAdmin<RouteContext>(async (request, { params }, session)
     extractPdf: extractPdfPages,
   };
 
-  let indexed = 0;
-  let skipped = 0;
-  let removed = 0;
+  // Collected per root so a throw partway through still audits the roots that
+  // did finish. Ingest handles a single unreadable file on its own (counting
+  // it as `failed`), so reaching this catch means something systemic — the
+  // embedding endpoint or the database — took the run down.
+  const results: IngestResult[] = [];
   try {
     for (const path of targetPaths) {
-      const result = await ingestDirectory(DEFAULT_ORG_ID, path, deps);
-      indexed += result.indexed;
-      skipped += result.skipped;
-      removed += result.removed;
+      results.push(await ingestDirectory(DEFAULT_ORG_ID, path, deps));
     }
   } catch (err) {
     // safeProviderError scrubs emails + caps length; the underlying error could
@@ -159,26 +183,26 @@ export const POST = withAdmin<RouteContext>(async (request, { params }, session)
         actorId,
         outcome: "failure",
         pathCount: targetPaths.length,
-        indexed,
-        skipped,
-        removed,
+        counts: totalCounts(results),
         reason: safeProviderError(err instanceof Error ? err.message : "reindex_failed"),
       })
     );
     return NextResponse.json({ error: "Knowledge base reindex failed" }, { status: 500 });
   }
 
+  // Success covers `unsearchable`/`failed` files too: the reindex itself did
+  // its job, and those counts are a finding about the corpus, not a failure of
+  // the action. Burying them would be the failure.
+  const counts = totalCounts(results);
   deferAuditLog(
     reindexAuditEntry({
       agent: agentRef,
       actorId,
       outcome: "success",
       pathCount: targetPaths.length,
-      indexed,
-      skipped,
-      removed,
+      counts,
     })
   );
 
-  return NextResponse.json({ indexed, skipped, removed, pathCount: targetPaths.length });
+  return NextResponse.json({ ...counts, pathCount: targetPaths.length });
 });

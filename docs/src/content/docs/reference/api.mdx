@@ -285,8 +285,26 @@ See [Create a Knowledge Base Agent](/guides/create-knowledge-base-agent/) for th
 **Response:**
 
 ```json
-{ "indexed": 3, "skipped": 12, "removed": 1, "pathCount": 2 }
+{
+  "indexed": 3,
+  "skipped": 12,
+  "removed": 1,
+  "unsearchable": 2,
+  "failed": 0,
+  "pathCount": 2
+}
 ```
+
+| Field          | Description                                                                                                                         |
+| -------------- | ----------------------------------------------------------------------------------------------------------------------------------- |
+| `indexed`      | Documents added, updated, or rebuilt — and searchable afterwards.                                                                   |
+| `skipped`      | Unchanged content hash, chunks already present.                                                                                     |
+| `removed`      | Source file no longer on disk; the document and its chunks were deleted.                                                            |
+| `unsearchable` | Parsed without error but yielded no text, so the document exists in the index yet can never be retrieved (typically a scanned PDF). |
+| `failed`       | The file could not be read or parsed. It is left out and the run continues; one bad file never aborts the reindex.                  |
+| `pathCount`    | Number of granted folders reindexed.                                                                                                |
+
+`unsearchable` and `failed` can be non-zero on a `200`: the reindex itself succeeded and these are its findings about the corpus. Both are also recorded in the `knowledge.reindex` audit entry.
 
 **Errors:**
 

@@ -607,6 +607,13 @@ export type AuditLogEntry =
       // reindexed — NOT the folder paths themselves, which can embed a
       // username (AGENTS.md PII rule). `reason` is present on failure rows
       // only (embedding endpoint unconfigured, ingest error).
+      //
+      // The counters mirror IngestResult (lib/knowledge/ingest.ts) and are
+      // what an admin judges the corpus by, so they distinguish findable from
+      // merely processed: `unsearchable` files were indexed but produced no
+      // text to retrieve (image-only scans), and `failed` files could not be
+      // read or parsed at all. Both can be non-zero on a `success` row — the
+      // reindex worked, and these are its findings.
       eventType: "knowledge.reindex";
       detail: {
         agent: EntityRef;
@@ -614,6 +621,8 @@ export type AuditLogEntry =
         indexed: number;
         skipped: number;
         removed: number;
+        unsearchable: number;
+        failed: number;
         reason?: string;
       };
     })

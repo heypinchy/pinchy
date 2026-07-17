@@ -65,8 +65,25 @@ Indexing is idempotent — unchanged files are skipped on the next run, changed 
 The response reports what happened:
 
 ```json
-{ "indexed": 3, "skipped": 12, "removed": 1, "pathCount": 2 }
+{
+  "indexed": 3,
+  "skipped": 12,
+  "removed": 1,
+  "unsearchable": 2,
+  "failed": 0,
+  "pathCount": 2
+}
 ```
+
+| Field          | What it means                                                                                                                                 |
+| -------------- | --------------------------------------------------------------------------------------------------------------------------------------------- |
+| `indexed`      | Added or updated, and searchable afterwards.                                                                                                  |
+| `skipped`      | Unchanged since the last run, left alone.                                                                                                     |
+| `removed`      | Gone from disk, dropped from the index.                                                                                                       |
+| `unsearchable` | Read without error, but the file holds no text to search — nearly always a scanned PDF (see [Scope in this release](#scope-in-this-release)). |
+| `failed`       | Couldn't be read or parsed at all. The file is left out and the run continues.                                                                |
+
+`indexed` counts documents the agent can actually reach, not documents we processed — that's why a scanned PDF lands under `unsearchable` instead. If either of the last two numbers is above zero, part of your corpus can't answer questions yet, and it's worth knowing which part before someone asks it something.
 
 ## 8. Chat with the agent
 

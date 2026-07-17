@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { NextRequest } from "next/server";
 import { DEFAULT_ORG_ID } from "@/lib/knowledge/constants";
+import type { IngestResult } from "@/lib/knowledge/ingest";
 
 // ── Mocks ────────────────────────────────────────────────────────────────
 
@@ -60,6 +61,16 @@ function makeRequest(body: Record<string, unknown> = {}) {
   });
 }
 
+/**
+ * An ingestDirectory result with every counter at zero, overridden by `counts`.
+ * Typed as IngestResult so a new counter added to ingest.ts fails to compile
+ * here until the route is taught to aggregate it, rather than silently
+ * dropping out of the response.
+ */
+function ingestResult(counts: Partial<IngestResult> = {}): IngestResult {
+  return { indexed: 0, skipped: 0, removed: 0, unsearchable: 0, failed: 0, ...counts };
+}
+
 const ctx = { params: Promise.resolve({ agentId: "agent-1" }) };
 
 const agentRow = {
@@ -76,7 +87,7 @@ describe("POST /api/agents/[agentId]/knowledge/reindex", () => {
     mockGetSession.mockResolvedValue({ user: { id: "admin-1", role: "admin" } });
     mockLimit.mockResolvedValue([agentRow]);
     mockGetSetting.mockResolvedValue("http://ollama.local:11434");
-    mockIngestDirectory.mockResolvedValue({ indexed: 2, skipped: 1, removed: 0 });
+    mockIngestDirectory.mockResolvedValue(ingestResult({ indexed: 2, skipped: 1 }));
     POST = (await import("@/app/api/agents/[agentId]/knowledge/reindex/route")).POST;
   });
 
@@ -103,12 +114,15 @@ describe("POST /api/agents/[agentId]/knowledge/reindex", () => {
 
   it("reindexes every granted folder and aggregates counts across paths", async () => {
     mockIngestDirectory
-      .mockResolvedValueOnce({ indexed: 2, skipped: 1, removed: 0 })
-      .mockResolvedValueOnce({ indexed: 3, skipped: 0, removed: 1 });
+      .mockResolvedValueOnce(ingestResult({ indexed: 2, skipped: 1 }))
+      .mockResolvedValueOnce(ingestResult({ indexed: 3, removed: 1 }));
 
     const res = await POST(makeRequest(), ctx as never);
     expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({ indexed: 5, skipped: 1, removed: 1, pathCount: 2 });
+    expect(await res.json()).toEqual({
+      ...ingestResult({ indexed: 5, skipped: 1, removed: 1 }),
+      pathCount: 2,
+    });
 
     expect(mockIngestDirectory).toHaveBeenCalledTimes(2);
     // Each granted folder is ingested with the shared single-tenant org id.
@@ -134,7 +148,7 @@ describe("POST /api/agents/[agentId]/knowledge/reindex", () => {
     mockLimit.mockResolvedValueOnce([{ id: "agent-1", name: "Smithers", pluginConfig: null }]);
     const res = await POST(makeRequest(), ctx as never);
     expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({ indexed: 0, skipped: 0, removed: 0, pathCount: 0 });
+    expect(await res.json()).toEqual({ ...ingestResult(), pathCount: 0 });
     expect(mockIngestDirectory).not.toHaveBeenCalled();
 
     // A no-op reindex is still audited (success, zero counts).
@@ -171,8 +185,8 @@ describe("POST /api/agents/[agentId]/knowledge/reindex", () => {
 
   it("writes a knowledge.reindex audit row with {id,name} agent ref, counts, and no raw filesystem path/PII", async () => {
     mockIngestDirectory
-      .mockResolvedValueOnce({ indexed: 2, skipped: 1, removed: 0 })
-      .mockResolvedValueOnce({ indexed: 3, skipped: 0, removed: 1 });
+      .mockResolvedValueOnce(ingestResult({ indexed: 2, skipped: 1 }))
+      .mockResolvedValueOnce(ingestResult({ indexed: 3, removed: 1 }));
 
     const res = await POST(makeRequest(), ctx as never);
     expect(res.status).toBe(200);
@@ -182,12 +196,40 @@ describe("POST /api/agents/[agentId]/knowledge/reindex", () => {
     expect(entry.eventType).toBe("knowledge.reindex");
     expect(entry.outcome).toBe("success");
     expect(entry.detail.agent).toEqual({ id: "agent-1", name: "Smithers" });
-    expect(entry.detail).toMatchObject({ pathCount: 2, indexed: 5, skipped: 1, removed: 1 });
+    expect(entry.detail).toMatchObject({
+      pathCount: 2,
+      indexed: 5,
+      skipped: 1,
+      removed: 1,
+      unsearchable: 0,
+      failed: 0,
+    });
 
     // No full filesystem paths (which can embed usernames) in the audit detail.
     const serialized = JSON.stringify(entry);
     expect(serialized).not.toContain("/data/hr");
     expect(serialized).not.toContain("/data/legal");
     expect(serialized).not.toMatch(/[^\s@]+@[^\s@]+\.[^\s@]+/); // no email-shaped strings
+  });
+
+  // The counts are the ONLY thing an admin sees after a reindex, so the two
+  // that mean "this file will never answer a question" have to survive the
+  // trip from ingest to response and audit. Dropping them here would restore
+  // exactly the false "everything indexed" the ingest layer stopped telling.
+  it("reports unsearchable and failed files in both the response and the audit row", async () => {
+    mockIngestDirectory
+      .mockResolvedValueOnce(ingestResult({ indexed: 4, unsearchable: 2 }))
+      .mockResolvedValueOnce(ingestResult({ indexed: 1, skipped: 3, unsearchable: 1, failed: 2 }));
+
+    const res = await POST(makeRequest(), ctx as never);
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({
+      ...ingestResult({ indexed: 5, skipped: 3, unsearchable: 3, failed: 2 }),
+      pathCount: 2,
+    });
+
+    const entry = mockDeferAuditLog.mock.calls[0][0];
+    expect(entry.outcome).toBe("success");
+    expect(entry.detail).toMatchObject({ indexed: 5, unsearchable: 3, failed: 2 });
   });
 });
