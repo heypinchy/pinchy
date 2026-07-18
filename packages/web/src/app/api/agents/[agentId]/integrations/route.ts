@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { eq, and } from "drizzle-orm";
+import { eq, and, inArray } from "drizzle-orm";
 import { withAdmin } from "@/lib/api-auth";
 import { db } from "@/db";
 import { agentConnectionPermissions, integrationConnections, agents } from "@/db/schema";
@@ -18,15 +18,34 @@ type RouteContext = { params: Promise<{ agentId: string }> };
 export const GET = withAdmin<RouteContext>(async (_req, { params }) => {
   const { agentId } = await params;
 
-  // Join permissions with connections
-  const rows = await db
+  // Join permissions with connections WITHOUT a projection-less
+  // `.innerJoin(integrationConnections, …)`. That returns every column of both
+  // tables — including the potentially large `integrationConnections.data`
+  // jsonb blob (a cached Odoo model catalog) — ONE ROW PER PERMISSION, fanning
+  // the blob out across every permission row that references the connection.
+  // Same fan-out class as the boot-OOM fixed in build.ts
+  // (loadAgentConnectionPermissions); here it is bounded to a single agent but
+  // still amplifies (blob size) × (this agent's permission-row count) in one
+  // admin request. Load permissions and their referenced connections as two
+  // queries and stitch them in memory so each connection blob is fetched once.
+  const perms = await db
     .select()
     .from(agentConnectionPermissions)
-    .innerJoin(
-      integrationConnections,
-      eq(agentConnectionPermissions.connectionId, integrationConnections.id)
-    )
     .where(eq(agentConnectionPermissions.agentId, agentId));
+  const connectionIds = [...new Set(perms.map((p) => p.connectionId))];
+  const connections = connectionIds.length
+    ? await db
+        .select()
+        .from(integrationConnections)
+        .where(inArray(integrationConnections.id, connectionIds))
+    : [];
+  const connById = new Map(connections.map((c) => [c.id, c]));
+  // Preserve inner-join semantics: a permission is included only if its
+  // connection still exists.
+  const rows = perms.flatMap((perm) => {
+    const conn = connById.get(perm.connectionId);
+    return conn ? [{ agent_connection_permissions: perm, integration_connections: conn }] : [];
+  });
 
   // Group by connection
   const grouped = new Map<

@@ -80,6 +80,7 @@ vi.mock("@/lib/audit-deferred", () => ({
 import { GET, PUT, DELETE } from "@/app/api/agents/[agentId]/integrations/route";
 import { NextRequest } from "next/server";
 import { regenerateOpenClawConfig } from "@/lib/openclaw-config";
+import { agentConnectionPermissions, integrationConnections } from "@/db/schema";
 
 const AGENT_ID = "agent-1";
 const CONNECTION_ID = "conn-1";
@@ -117,10 +118,13 @@ describe("GET /api/agents/[agentId]/integrations", () => {
   });
 
   it("returns empty array when no permissions exist", async () => {
-    mockSelectFrom.mockReturnValueOnce({
-      innerJoin: vi.fn().mockReturnValue({
-        where: vi.fn().mockResolvedValue([]),
-      }),
+    // Two-query shape: permissions come back empty, so the connections query
+    // is skipped entirely and grouping yields [].
+    mockSelectFrom.mockImplementation((table: unknown) => {
+      if (table === agentConnectionPermissions) {
+        return { where: vi.fn().mockResolvedValue([]) };
+      }
+      throw new Error(`unexpected table passed to .from(): ${String(table)}`);
     });
 
     const req = new NextRequest(`http://localhost:7777/api/agents/${AGENT_ID}/integrations`);
@@ -132,29 +136,28 @@ describe("GET /api/agents/[agentId]/integrations", () => {
   });
 
   it("returns permissions grouped by connection", async () => {
-    mockSelectFrom.mockReturnValueOnce({
-      innerJoin: vi.fn().mockReturnValue({
-        where: vi.fn().mockResolvedValue([
-          {
-            integration_connections: {
+    mockSelectFrom.mockImplementation((table: unknown) => {
+      if (table === agentConnectionPermissions) {
+        return {
+          where: vi.fn().mockResolvedValue([
+            { connectionId: CONNECTION_ID, model: "res.partner", operation: "read" },
+            { connectionId: CONNECTION_ID, model: "res.partner", operation: "create" },
+          ]),
+        };
+      }
+      if (table === integrationConnections) {
+        return {
+          where: vi.fn().mockResolvedValue([
+            {
               id: CONNECTION_ID,
               name: "My Odoo",
               type: "odoo",
               data: { models: [{ model: "res.partner", name: "Contact" }] },
             },
-            agent_connection_permissions: { model: "res.partner", operation: "read" },
-          },
-          {
-            integration_connections: {
-              id: CONNECTION_ID,
-              name: "My Odoo",
-              type: "odoo",
-              data: { models: [{ model: "res.partner", name: "Contact" }] },
-            },
-            agent_connection_permissions: { model: "res.partner", operation: "create" },
-          },
-        ]),
-      }),
+          ]),
+        };
+      }
+      throw new Error(`unexpected table passed to .from(): ${String(table)}`);
     });
 
     const req = new NextRequest(`http://localhost:7777/api/agents/${AGENT_ID}/integrations`);
@@ -170,6 +173,64 @@ describe("GET /api/agents/[agentId]/integrations", () => {
       { model: "res.partner", modelName: "Contact", operation: "read" },
       { model: "res.partner", modelName: "Contact", operation: "create" },
     ]);
+  });
+
+  // Regression guard for the same boot-OOM fan-out class fixed in build.ts
+  // (loadAgentConnectionPermissions). The old handler used a projection-less
+  // `.innerJoin(integrationConnections, …)`, which materializes the full
+  // `integrationConnections.data` blob ONCE PER PERMISSION ROW. An agent with
+  // many model permissions on a big-blob Odoo connection would fan a multi-
+  // hundred-kB catalog out across every row in a single admin request. The
+  // fix loads permissions and the referenced connections as two separate
+  // queries and stitches them in memory, so each connection blob is fetched
+  // exactly once. This mock provides NO `.innerJoin` on the permissions query
+  // — a revert to the fan-out join throws here instead of silently passing.
+  it("fetches each connection blob once (no per-permission-row fan-out) and still groups correctly", async () => {
+    const bigBlob = {
+      models: Array.from({ length: 300 }, (_, i) => ({ model: `model.${i}`, name: `Model ${i}` })),
+    };
+    const connection = {
+      id: CONNECTION_ID,
+      name: "Big Odoo",
+      type: "odoo",
+      data: bigBlob,
+    };
+    const permissionRows = Array.from({ length: 40 }, (_, i) => ({
+      agentId: AGENT_ID,
+      connectionId: CONNECTION_ID,
+      model: `model.${i}`,
+      operation: "read",
+    }));
+
+    let integrationConnectionsFromCalls = 0;
+    mockSelectFrom.mockImplementation((table: unknown) => {
+      if (table === agentConnectionPermissions) {
+        return { where: vi.fn().mockResolvedValue(permissionRows) };
+      }
+      if (table === integrationConnections) {
+        integrationConnectionsFromCalls++;
+        return { where: vi.fn().mockResolvedValue([connection]) };
+      }
+      throw new Error(`unexpected table passed to .from(): ${String(table)}`);
+    });
+
+    const req = new NextRequest(`http://localhost:7777/api/agents/${AGENT_ID}/integrations`);
+    const res = await GET(req, makeParams(AGENT_ID));
+
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    // All 40 permissions grouped under the single connection…
+    expect(body).toHaveLength(1);
+    expect(body[0].connectionId).toBe(CONNECTION_ID);
+    expect(body[0].permissions).toHaveLength(40);
+    expect(body[0].permissions[0]).toEqual({
+      model: "model.0",
+      modelName: "Model 0",
+      operation: "read",
+    });
+    // …while the connection (and its blob) is queried exactly once, not once
+    // per permission row.
+    expect(integrationConnectionsFromCalls).toBe(1);
   });
 });
 
