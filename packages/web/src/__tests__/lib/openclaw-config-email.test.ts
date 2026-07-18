@@ -87,6 +87,7 @@ import { writeFileSync, readFileSync, existsSync } from "fs";
 import { regenerateOpenClawConfig } from "@/lib/openclaw-config";
 import { db } from "@/db";
 import { getSetting } from "@/lib/settings";
+import { mockJoinedPermissionsDb } from "@/test-helpers/db-mock";
 
 const mockedWriteFileSync = vi.mocked(writeFileSync);
 const mockedReadFileSync = vi.mocked(readFileSync);
@@ -152,18 +153,7 @@ describe("pinchy-email config generation", () => {
       },
     ];
 
-    mockedDb.select.mockReturnValue({
-      from: vi.fn().mockImplementation(() =>
-        Object.assign(Promise.resolve(agentsData), {
-          innerJoin: vi.fn().mockReturnValue(
-            Object.assign(Promise.resolve(permissionsData), {
-              where: vi.fn().mockResolvedValue(permissionsData),
-            })
-          ),
-          where: vi.fn().mockResolvedValue([]),
-        })
-      ),
-    } as never);
+    mockedDb.select.mockReturnValue(mockJoinedPermissionsDb(agentsData, permissionsData) as never);
 
     mockedReadFileSync.mockReturnValue(
       JSON.stringify({
@@ -237,18 +227,7 @@ describe("pinchy-email config generation", () => {
       },
     ];
 
-    mockedDb.select.mockReturnValue({
-      from: vi.fn().mockImplementation(() =>
-        Object.assign(Promise.resolve(agentsData), {
-          innerJoin: vi.fn().mockReturnValue(
-            Object.assign(Promise.resolve(permissionsData), {
-              where: vi.fn().mockResolvedValue(permissionsData),
-            })
-          ),
-          where: vi.fn().mockResolvedValue([]),
-        })
-      ),
-    } as never);
+    mockedDb.select.mockReturnValue(mockJoinedPermissionsDb(agentsData, permissionsData) as never);
 
     mockedReadFileSync.mockReturnValue(
       JSON.stringify({
@@ -330,18 +309,7 @@ describe("pinchy-email config generation", () => {
       },
     ];
 
-    mockedDb.select.mockReturnValue({
-      from: vi.fn().mockImplementation(() =>
-        Object.assign(Promise.resolve(agentsData), {
-          innerJoin: vi.fn().mockReturnValue(
-            Object.assign(Promise.resolve(permissionsData), {
-              where: vi.fn().mockResolvedValue(permissionsData),
-            })
-          ),
-          where: vi.fn().mockResolvedValue([]),
-        })
-      ),
-    } as never);
+    mockedDb.select.mockReturnValue(mockJoinedPermissionsDb(agentsData, permissionsData) as never);
 
     mockedReadFileSync.mockReturnValue(
       JSON.stringify({
@@ -396,18 +364,7 @@ describe("pinchy-email config generation", () => {
       },
     ];
 
-    mockedDb.select.mockReturnValue({
-      from: vi.fn().mockImplementation(() =>
-        Object.assign(Promise.resolve(agentsData), {
-          innerJoin: vi.fn().mockReturnValue(
-            Object.assign(Promise.resolve(permissionsData), {
-              where: vi.fn().mockResolvedValue(permissionsData),
-            })
-          ),
-          where: vi.fn().mockResolvedValue([]),
-        })
-      ),
-    } as never);
+    mockedDb.select.mockReturnValue(mockJoinedPermissionsDb(agentsData, permissionsData) as never);
 
     mockedReadFileSync.mockReturnValue(
       JSON.stringify({
@@ -474,18 +431,7 @@ describe("pinchy-email config generation", () => {
       },
     ];
 
-    mockedDb.select.mockReturnValue({
-      from: vi.fn().mockImplementation(() =>
-        Object.assign(Promise.resolve(agentsData), {
-          innerJoin: vi.fn().mockReturnValue(
-            Object.assign(Promise.resolve(permissionsData), {
-              where: vi.fn().mockResolvedValue(permissionsData),
-            })
-          ),
-          where: vi.fn().mockResolvedValue([]),
-        })
-      ),
-    } as never);
+    mockedDb.select.mockReturnValue(mockJoinedPermissionsDb(agentsData, permissionsData) as never);
 
     await regenerateOpenClawConfig();
 
@@ -567,18 +513,7 @@ describe("pinchy-email config generation", () => {
       },
     ];
 
-    mockedDb.select.mockReturnValue({
-      from: vi.fn().mockImplementation(() =>
-        Object.assign(Promise.resolve(agentsData), {
-          innerJoin: vi.fn().mockReturnValue(
-            Object.assign(Promise.resolve(permissionsData), {
-              where: vi.fn().mockResolvedValue(permissionsData),
-            })
-          ),
-          where: vi.fn().mockResolvedValue([]),
-        })
-      ),
-    } as never);
+    mockedDb.select.mockReturnValue(mockJoinedPermissionsDb(agentsData, permissionsData) as never);
 
     mockedReadFileSync.mockReturnValue(
       JSON.stringify({
@@ -659,18 +594,7 @@ describe("pinchy-email config generation", () => {
       },
     ];
 
-    mockedDb.select.mockReturnValue({
-      from: vi.fn().mockImplementation(() =>
-        Object.assign(Promise.resolve(agentsData), {
-          innerJoin: vi.fn().mockReturnValue(
-            Object.assign(Promise.resolve(permissionsData), {
-              where: vi.fn().mockResolvedValue(permissionsData),
-            })
-          ),
-          where: vi.fn().mockResolvedValue([]),
-        })
-      ),
-    } as never);
+    mockedDb.select.mockReturnValue(mockJoinedPermissionsDb(agentsData, permissionsData) as never);
 
     mockedReadFileSync.mockReturnValue(
       JSON.stringify({
@@ -741,18 +665,7 @@ describe("pinchy-email config generation", () => {
       },
     ];
 
-    mockedDb.select.mockReturnValue({
-      from: vi.fn().mockImplementation(() =>
-        Object.assign(Promise.resolve(agentsData), {
-          innerJoin: vi.fn().mockReturnValue(
-            Object.assign(Promise.resolve(permissionsData), {
-              where: vi.fn().mockResolvedValue(permissionsData),
-            })
-          ),
-          where: vi.fn().mockResolvedValue([]),
-        })
-      ),
-    } as never);
+    mockedDb.select.mockReturnValue(mockJoinedPermissionsDb(agentsData, permissionsData) as never);
 
     mockedReadFileSync.mockReturnValue(
       JSON.stringify({

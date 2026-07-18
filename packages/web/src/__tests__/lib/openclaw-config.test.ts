@@ -193,6 +193,7 @@ import { pushConfigInBackground, _resetPushGeneration } from "@/lib/openclaw-con
 import { getPendingConfigPushCount, _resetConfigPushState } from "@/lib/openclaw-config/push-state";
 import { db } from "@/db";
 import { getSetting } from "@/lib/settings";
+import { mockJoinedPermissionsDb } from "@/test-helpers/db-mock";
 import { fetchOllamaLocalModelsFromUrl, fetchProviderModels } from "@/lib/provider-models";
 
 const mockedFetchProviderModels = vi.mocked(fetchProviderModels);
@@ -4523,9 +4524,10 @@ describe("pinchy-web config", () => {
             innerJoin: mockInnerJoin([]),
           });
         }
-        // callCount 2 = agentConnectionPermissions (chained with innerJoin)
-        // callCount 3 = integrationConnections for web-search (with where)
-        if (callCount === 3) {
+        // callCount 2 = agentConnectionPermissions (bare, no where/innerJoin)
+        // callCount 3 = integrationConnections for active-connection dedup (where)
+        // callCount 4 = integrationConnections for web-search (where)
+        if (callCount === 4) {
           return Object.assign(Promise.resolve(webSearchConnections), {
             innerJoin: mockInnerJoin([]),
             where: vi.fn().mockResolvedValue(webSearchConnections),
@@ -4631,7 +4633,7 @@ describe("pinchy-web config", () => {
             innerJoin: mockInnerJoin([]),
           });
         }
-        if (callCount === 3) {
+        if (callCount === 4) {
           return Object.assign(Promise.resolve(webSearchConnections), {
             innerJoin: mockInnerJoin([]),
             where: vi.fn().mockResolvedValue(webSearchConnections),
@@ -4686,7 +4688,7 @@ describe("pinchy-web config", () => {
             innerJoin: mockInnerJoin([]),
           });
         }
-        if (callCount === 3) {
+        if (callCount === 4) {
           return Object.assign(Promise.resolve(webSearchConnections), {
             innerJoin: mockInnerJoin([]),
             where: vi.fn().mockResolvedValue(webSearchConnections),
@@ -4752,7 +4754,7 @@ describe("pinchy-web config", () => {
             innerJoin: mockInnerJoin([]),
           });
         }
-        if (callCount === 3) {
+        if (callCount === 4) {
           return Object.assign(Promise.resolve(webSearchConnections), {
             innerJoin: mockInnerJoin([]),
             where: vi.fn().mockResolvedValue(webSearchConnections),
@@ -4826,7 +4828,7 @@ describe("pinchy-web: credentials fetched on demand via Pinchy API (#209)", () =
             innerJoin: mockInnerJoin([]),
           });
         }
-        if (callCount === 3) {
+        if (callCount === 4) {
           return Object.assign(Promise.resolve(webSearchConnections), {
             innerJoin: mockInnerJoin([]),
             where: vi.fn().mockResolvedValue(webSearchConnections),
@@ -4924,14 +4926,7 @@ describe("pinchy-odoo config size", () => {
       },
     ];
 
-    mockedDb.select.mockReturnValue({
-      from: vi.fn().mockImplementation(() =>
-        Object.assign(Promise.resolve(agentsData), {
-          innerJoin: mockInnerJoin(permissionsData),
-          where: vi.fn().mockResolvedValue([]),
-        })
-      ),
-    } as never);
+    mockedDb.select.mockReturnValue(mockJoinedPermissionsDb(agentsData, permissionsData) as never);
 
     await regenerateOpenClawConfig();
 
@@ -4991,14 +4986,7 @@ describe("pinchy-odoo config size", () => {
       },
     ];
 
-    mockedDb.select.mockReturnValue({
-      from: vi.fn().mockImplementation(() =>
-        Object.assign(Promise.resolve(agentsData), {
-          innerJoin: mockInnerJoin(permissionsData),
-          where: vi.fn().mockResolvedValue([]),
-        })
-      ),
-    } as never);
+    mockedDb.select.mockReturnValue(mockJoinedPermissionsDb(agentsData, permissionsData) as never);
 
     // Make decrypt throw to verify it is NOT called during config write.
     mockDecrypt.mockImplementation(() => {
@@ -5083,14 +5071,7 @@ describe("pinchy-odoo: credentials fetched on demand via Pinchy API (#209)", () 
       },
     ];
 
-    mockedDb.select.mockReturnValue({
-      from: vi.fn().mockImplementation(() =>
-        Object.assign(Promise.resolve(agentsData), {
-          innerJoin: mockInnerJoin(permissionsData),
-          where: vi.fn().mockResolvedValue([]),
-        })
-      ),
-    } as never);
+    mockedDb.select.mockReturnValue(mockJoinedPermissionsDb(agentsData, permissionsData) as never);
 
     await regenerateOpenClawConfig();
 
@@ -5817,10 +5798,11 @@ describe("restart-state integration", () => {
             { innerJoin: mockInnerJoin([]), where: vi.fn().mockResolvedValue([]) }
           );
         }
-        // callCount 2 = agentConnectionPermissions (chained with innerJoin)
-        // callCount 3 = integrationConnections for web-search (chained with where)
-        // callCount 4 = channel_links table: both users linked
-        if (callCount === 4) {
+        // callCount 2 = agentConnectionPermissions (bare, no where/innerJoin)
+        // callCount 3 = integrationConnections for active-connection dedup (where)
+        // callCount 4 = integrationConnections for web-search (where)
+        // callCount 5 = channel_links table: both users linked
+        if (callCount === 5) {
           return Object.assign(
             Promise.resolve([
               { userId: "user-a", channel: "telegram", channelUserId: "111222333" },
@@ -5936,10 +5918,11 @@ describe("restart-state integration", () => {
             { innerJoin: mockInnerJoin([]), where: vi.fn().mockResolvedValue([]) }
           );
         }
-        // callCount 2 = agentConnectionPermissions (chained with innerJoin)
-        // callCount 3 = integrationConnections for web-search (chained with where)
-        // callCount 4 = channel_links table
-        if (callCount === 4) {
+        // callCount 2 = agentConnectionPermissions (bare, no where/innerJoin)
+        // callCount 3 = integrationConnections for active-connection dedup (where)
+        // callCount 4 = integrationConnections for web-search (where)
+        // callCount 5 = channel_links table
+        if (callCount === 5) {
           return Object.assign(
             Promise.resolve([{ userId: "user-1", channel: "telegram", channelUserId: "999888" }]),
             { innerJoin: mockInnerJoin([]), where: vi.fn().mockResolvedValue([]) }
@@ -6030,7 +6013,7 @@ describe("restart-state integration", () => {
             { innerJoin: mockInnerJoin([]), where: vi.fn().mockResolvedValue([]) }
           );
         }
-        if (callCount === 4) {
+        if (callCount === 5) {
           // channel_links table — a linked Telegram user exists.
           return Object.assign(
             Promise.resolve([{ userId: "user-1", channel: "telegram", channelUserId: "999888" }]),
@@ -7106,25 +7089,20 @@ describe("pinchy-* plugin gatewayToken as SecretRef", () => {
       },
     ];
 
-    mockedDb.select.mockReturnValue({
-      from: vi.fn().mockImplementation(() =>
-        Object.assign(
-          Promise.resolve([
-            {
-              id: "email-agent",
-              name: "Email Agent",
-              model: "anthropic/claude-haiku-4-5-20251001",
-              allowedTools: ["pinchy_email_read"],
-              createdAt: new Date(),
-            },
-          ]),
+    mockedDb.select.mockReturnValue(
+      mockJoinedPermissionsDb(
+        [
           {
-            innerJoin: mockInnerJoin(emailPermissionsData),
-            where: vi.fn().mockResolvedValue([]),
-          }
-        )
-      ),
-    } as never);
+            id: "email-agent",
+            name: "Email Agent",
+            model: "anthropic/claude-haiku-4-5-20251001",
+            allowedTools: ["pinchy_email_read"],
+            createdAt: new Date(),
+          },
+        ],
+        emailPermissionsData
+      ) as never
+    );
 
     await regenerateOpenClawConfig();
 

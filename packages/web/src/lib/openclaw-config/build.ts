@@ -141,6 +141,46 @@ const OLLAMA_LOCAL_DEFAULT_CONTEXT_WINDOW = 32_768;
  */
 const OLLAMA_LOCAL_MAX_TOKENS_CAP = 8_192;
 
+/**
+ * Loads every non-pending agent-connection permission joined with its
+ * integration connection, WITHOUT fanning the connection row out per
+ * permission row.
+ *
+ * The naive query (`.select().from(agentConnectionPermissions)
+ * .innerJoin(integrationConnections, ...)`) returns all columns of BOTH
+ * tables — including the potentially large `integrationConnections.data`
+ * jsonb blob (e.g. a cached Odoo model catalog) — ONE ROW PER PERMISSION.
+ * On staging, one Odoo connection carried an 837 kB `data` blob and 426
+ * permission rows pointed at it: the join transferred and materialized
+ * ~426 * 837 kB ~= 348 MB in the resulting array on every config
+ * regeneration, OOM-crashing the boot under a 1 GB container memory limit.
+ *
+ * This loads permissions and (active) connections as two separate queries
+ * and reconstructs the joined shape in memory, so each connection — and its
+ * blob — is fetched exactly once and shared BY REFERENCE across every
+ * permission row that references it.
+ *
+ * Preserves the original inner-join semantics: a permission row is included
+ * only if its connection exists and is not `"pending"`.
+ */
+export async function loadAgentConnectionPermissions(dbClient: typeof db): Promise<
+  Array<{
+    agent_connection_permissions: typeof agentConnectionPermissions.$inferSelect;
+    integration_connections: typeof integrationConnections.$inferSelect;
+  }>
+> {
+  const permRows = await dbClient.select().from(agentConnectionPermissions);
+  const activeConns = await dbClient
+    .select()
+    .from(integrationConnections)
+    .where(ne(integrationConnections.status, "pending"));
+  const connById = new Map(activeConns.map((c) => [c.id, c]));
+  return permRows.flatMap((perm) => {
+    const conn = connById.get(perm.connectionId);
+    return conn ? [{ agent_connection_permissions: perm, integration_connections: conn }] : [];
+  });
+}
+
 export async function regenerateOpenClawConfig() {
   // `readExistingConfig` distinguishes two recoverable failure modes:
   //   - ENOENT / parse error → returns {} (cold start; we build the first config from scratch).
@@ -264,14 +304,10 @@ export async function regenerateOpenClawConfig() {
   // on disk before that measurement, or its size would only be reflected one
   // regeneration behind.
   // Only include active connections — pending ones have no usable credentials.
-  const allPermissions = await db
-    .select()
-    .from(agentConnectionPermissions)
-    .innerJoin(
-      integrationConnections,
-      eq(agentConnectionPermissions.connectionId, integrationConnections.id)
-    )
-    .where(ne(integrationConnections.status, "pending"));
+  // See loadAgentConnectionPermissions for why this is two queries + an
+  // in-memory reconstruction rather than a single `.innerJoin()` (#OOM
+  // fan-out fix, v0.9.0 release verification).
+  const allPermissions = await loadAgentConnectionPermissions(db);
 
   // Aggregate email permissions per agent. LATENT FIRST-WINS BEHAVIOR: the
   // pinchy-email plugin config supports exactly ONE connectionId per agent

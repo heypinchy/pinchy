@@ -407,19 +407,36 @@ describe("Pre-existing IMAP connection — cross-route invariant (listed ⟹ rea
         },
       ];
 
+      // Table-identity routing (see @/test-helpers/db-mock) doesn't survive
+      // this file's vi.resetModules() + dynamic-import pattern: the schema
+      // tables imported at this file's top level are a DIFFERENT module
+      // instance than the one build.ts sees when dynamically re-imported
+      // below, so `===` comparisons against them would silently fail. Route
+      // by call order instead, matching build.ts's query sequence:
+      //   1. agents (bare) · 2. agentConnectionPermissions (bare) ·
+      //   3. integrationConnections active-conn dedup (.where()) ·
+      //   4. integrationConnections web-search (.where()) · 5. channelLinks (bare)
+      const permRows = preExistingPermissionRows.map((r) => r.agent_connection_permissions);
+      const activeConnections = [preExistingPermissionRows[0]!.integration_connections];
+      let callCount = 0;
       vi.doMock("@/db", () => ({
         db: {
           select: vi.fn().mockImplementation(() => ({
-            from: vi.fn().mockImplementation(() =>
-              Object.assign(Promise.resolve(agentsData), {
-                innerJoin: vi.fn().mockReturnValue(
-                  Object.assign(Promise.resolve(preExistingPermissionRows), {
-                    where: vi.fn().mockResolvedValue(preExistingPermissionRows),
-                  })
-                ),
+            from: vi.fn().mockImplementation(() => {
+              callCount++;
+              if (callCount === 1) {
+                return Promise.resolve(agentsData);
+              }
+              if (callCount === 2) {
+                return Promise.resolve(permRows);
+              }
+              if (callCount === 3) {
+                return { where: vi.fn().mockResolvedValue(activeConnections) };
+              }
+              return Object.assign(Promise.resolve([]), {
                 where: vi.fn().mockResolvedValue([]),
-              })
-            ),
+              });
+            }),
           })),
         },
       }));

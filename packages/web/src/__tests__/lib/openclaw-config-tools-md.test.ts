@@ -109,6 +109,7 @@ vi.mock("@/lib/provider-models", () => ({
 import { readFileSync } from "fs";
 import { regenerateOpenClawConfig } from "@/lib/openclaw-config";
 import { db } from "@/db";
+import { mockJoinedPermissionsDb } from "@/test-helpers/db-mock";
 import { generateToolsContent } from "@/lib/workspace";
 import {
   OPENCLAW_DEFAULT_BOOTSTRAP_MAX_CHARS,
@@ -181,26 +182,20 @@ function emailPermission(
 }
 
 /**
- * Wire the db mock: plain from() → agents, from().innerJoin().where() →
- * permission rows, from().where() → web-search connections.
+ * Wire the db mock: agents table, `agentConnectionPermissions` bare
+ * (`loadAgentConnectionPermissions`'s two-query fan-out fix — see
+ * @/test-helpers/db-mock), and `integrationConnections` for both the
+ * de-duplicated active connections and (on a later call) web-search
+ * connections.
  */
 function mockDb(
   agentsData: Array<Record<string, unknown>>,
   permissionsData: PermissionRow[],
   webSearchConnections: Array<Record<string, unknown>> = []
 ) {
-  mockedDb.select.mockReturnValue({
-    from: vi.fn().mockImplementation(() =>
-      Object.assign(Promise.resolve(agentsData), {
-        innerJoin: vi.fn().mockReturnValue(
-          Object.assign(Promise.resolve(permissionsData), {
-            where: vi.fn().mockResolvedValue(permissionsData),
-          })
-        ),
-        where: vi.fn().mockResolvedValue(webSearchConnections),
-      })
-    ),
-  } as never);
+  mockedDb.select.mockReturnValue(
+    mockJoinedPermissionsDb(agentsData, permissionsData, webSearchConnections) as never
+  );
 }
 
 function agentRow(id: string, overrides: Partial<Record<string, unknown>> = {}) {
