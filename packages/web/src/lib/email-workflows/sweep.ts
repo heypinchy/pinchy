@@ -6,7 +6,10 @@ import type { EmailWorkflowStatus } from "@/db/enums";
 import { appendAuditLog } from "@/lib/audit";
 import { recordAuditFailure } from "@/lib/audit-deferred";
 import { dispatchEmails } from "@/lib/email-workflows/dispatch";
-import { resetStuckProcessingEmails } from "@/lib/email-workflows/ledger";
+import {
+  listProcessedProviderMessageIds,
+  resetStuckProcessingEmails,
+} from "@/lib/email-workflows/ledger";
 import type { StuckClaimKey } from "@/lib/email-workflows/ledger";
 import { listDispatchableEmails } from "@/lib/email-workflows/lister";
 import { loadDispatchableWorkflows } from "@/lib/email-workflows/loader";
@@ -40,6 +43,8 @@ export const DEFAULT_STUCK_GRACE_MS = 3 * DEFAULT_RUN_TIMEOUT_MS;
  * above a realistic filtered window.
  */
 export const SWEEP_LIST_LIMIT = 200;
+
+const DAY_MS = 24 * 60 * 60 * 1000;
 
 export interface SweepDeps {
   /** Builds a mailbox port for one connection, from its decrypted credentials. */
@@ -119,12 +124,32 @@ async function sweepUnit(
   port: EmailPort,
   deps: SweepDeps
 ): Promise<void> {
+  // Two provider-load optimizations, neither of which touches correctness — both
+  // only avoid work whose result the sweep would discard anyway. They are what
+  // let this sweep run on a short cadence (the low-latency path) instead of only
+  // as an infrequent backstop.
+  //
+  // 1. Cap the listing window at the watermark's age. The sweep drops everything
+  //    below `sinceTs`, so listing further back than that only hydrates mail it
+  //    will discard — ruinous every pass for a workflow freshly attached to an
+  //    old mailbox. `min(N, ageInDays)` never shortens the window below the
+  //    configured N (an old watermark ⟹ full window, design §5's backstop), and
+  //    the ceil keeps the bound at/above `sinceTs` so the precise watermark
+  //    filter below still trims the day-granularity overlap.
+  const watermarkAgeDays = Math.max(1, Math.ceil((Date.now() - unit.sinceTs.getTime()) / DAY_MS));
+  const sinceDays = Math.min(unit.sweepWindowDays, watermarkAgeDays);
   // `folder` only narrows the provider query — the filter re-checks it
   // anyway, so this saves hydrating mail that is guaranteed to be dropped.
   const { emails, candidateCount } = await listDispatchableEmails(port, {
-    sinceDays: unit.sweepWindowDays,
+    sinceDays,
     folder: unit.workflow.filter.folder,
     limit: SWEEP_LIST_LIMIT,
+    // 2. Skip hydrating candidates the ledger already holds. Stuck rows were
+    //    DELETEd at the top of the sweep (before any unit lists), so a reset
+    //    email is absent here and correctly re-hydrated this same pass; only
+    //    genuinely-accounted-for mail is skipped.
+    resolveAlreadyProcessed: (candidateIds) =>
+      listProcessedProviderMessageIds(unit.workflow.id, unit.workflow.connectionId, candidateIds),
   });
   // A full page means the window held at least as much mail as we are willing
   // to hydrate, so this pass saw a truncated mailbox. Say so: the overflow is

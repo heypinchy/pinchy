@@ -16,6 +16,7 @@ import {
 import {
   claimEmail,
   finalizeEmail,
+  listProcessedProviderMessageIds,
   resetStuckProcessingEmails,
   type ClaimInput,
 } from "@/lib/email-workflows/ledger";
@@ -131,6 +132,61 @@ describe("email ledger — claimEmail", () => {
       claimEmail(key),
     ]);
     expect(results.filter(Boolean)).toHaveLength(1);
+  });
+});
+
+describe("email ledger — listProcessedProviderMessageIds (cheap-poll skip set)", () => {
+  it("returns exactly the candidate ids this (workflow, connection) already holds, any status", async () => {
+    // The cheap poll asks the ledger which of `search`'s candidates it may skip
+    // hydrating. "Already accounted for" means a row EXISTS — whether it is a
+    // terminal `done`/`failed` or an in-flight `processing`: re-hydrating either
+    // is wasted I/O (the claim would just `onConflictDoNothing`). A candidate with
+    // no row is genuinely new and must NOT be in the skip set.
+    const agent = await seedAgent();
+    const wf = await seedWorkflow(agent.id);
+    const conn = "conn-skip";
+
+    const doneId = await claimOrFail({
+      workflowId: wf.id,
+      connectionId: conn,
+      providerMessageId: "done-1",
+    });
+    await finalizeEmail({ id: doneId, status: "done" });
+    await claimOrFail({ workflowId: wf.id, connectionId: conn, providerMessageId: "processing-1" });
+
+    const skip = await listProcessedProviderMessageIds(wf.id, conn, [
+      "done-1",
+      "processing-1",
+      "fresh-1", // never claimed → must be hydrated
+    ]);
+
+    expect(skip).toEqual(new Set(["done-1", "processing-1"]));
+  });
+
+  it("is scoped to the (workflow, connection) key — a claim on another scope is not skipped", async () => {
+    // The claim key is (workflowId, connectionId, providerMessageId): the same
+    // provider id can be a fresh email for a different workflow or a different
+    // mailbox. If the skip set leaked across scope, that fresh email would never
+    // be hydrated — silently dropped. This locks the query to both key columns.
+    const agent = await seedAgent();
+    const wfA = await seedWorkflow(agent.id);
+    const wfB = await seedWorkflow(agent.id);
+    await claimOrFail({ workflowId: wfA.id, connectionId: "conn-x", providerMessageId: "shared" });
+    // Same provider id, but claimed under a different workflow AND a different
+    // connection — neither may appear in wfB/conn-y's skip set.
+    await claimOrFail({ workflowId: wfA.id, connectionId: "conn-y", providerMessageId: "other" });
+
+    const skip = await listProcessedProviderMessageIds(wfB.id, "conn-y", ["shared", "other"]);
+
+    expect(skip).toEqual(new Set()); // wfB on conn-y has claimed neither
+  });
+
+  it("returns an empty set for no candidates without touching the DB", async () => {
+    // A pass whose `search` returned nothing must not issue a pointless
+    // `IN ()` query — return early. (Also guards against an invalid empty-IN SQL.)
+    const agent = await seedAgent();
+    const wf = await seedWorkflow(agent.id);
+    expect(await listProcessedProviderMessageIds(wf.id, "conn-empty", [])).toEqual(new Set());
   });
 });
 

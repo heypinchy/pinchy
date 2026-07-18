@@ -4,9 +4,10 @@
 //
 // The sweep is the *correctness* path of design §4: it re-lists the last N days
 // straight from each connection and dispatches whatever the ledger has not seen,
-// so a lost/expired cursor can never lose an email. (The cheap cursor-driven poll
-// is the event-trigger's job and needs OpenClaw 2026.7.1 — a later brick. The
-// lister only speaks `sinceDays`, never a cursor, for exactly that reason.)
+// so a lost/expired cursor can never lose an email. It is ALSO the low-latency
+// path (Path A): the ledger pre-filter and watermark-bounded window make a
+// steady-state pass cost one `search` and ~zero reads, so it runs on a short
+// cadence and reacts in near-real-time without a separate token-free poll.
 //
 // The mailbox port and the agent run are injected, mirroring how `dispatchEmails`
 // injects `RunAgent`: the production port is built from decrypted connection
@@ -123,15 +124,19 @@ function message(overrides: Partial<EmailReadResult> = {}): EmailReadResult {
  */
 function portFor(connectionId: string, messages: EmailReadResult[]) {
   const searchCalls: { sinceDays?: number; folder?: string; limit?: number }[] = [];
+  const readCalls: string[] = [];
   const createPort = async (id: string): Promise<EmailPort> => ({
     search: async (opts) => {
       if (id !== connectionId) return [];
       searchCalls.push(opts);
       return messages.map((m) => ({ id: m.id }));
     },
-    read: async (msgId) => messages.find((m) => m.id === msgId)!,
+    read: async (msgId) => {
+      readCalls.push(msgId);
+      return messages.find((m) => m.id === msgId)!;
+    },
   });
-  return { createPort, searchCalls };
+  return { createPort, searchCalls, readCalls };
 }
 
 const doneRun: RunAgent = async () => ({
@@ -355,6 +360,113 @@ describe("reconciliation sweep — listing window", () => {
     await runReconciliationSweep({ createPort, runAgent: doneRun });
 
     expect(searchCalls[0].folder).toBe("Invoices");
+  });
+});
+
+describe("reconciliation sweep — cheap poll (skip already-processed, watermark-bounded window)", () => {
+  it("does not re-hydrate mail the ledger already holds — only genuinely new mail costs a read", async () => {
+    // This is what makes running the sweep on a short cadence affordable. `read`
+    // is the N+1 cost of a pass; re-reading mail already in the ledger is pure
+    // provider I/O for nothing (the re-claim would `onConflictDoNothing`). In
+    // steady state — every message already processed — a poll must cost one
+    // `search` and ZERO reads. Without the ledger pre-filter, every message in
+    // the window is re-hydrated every single pass.
+    const { workflow, connection } = await seedDispatchableWorkflow();
+    // "already" is finalized in the ledger before the sweep even runs.
+    const alreadyId = await claimEmail({
+      workflowId: workflow.id,
+      connectionId: connection.id,
+      providerMessageId: "already",
+    });
+    await finalizeEmail({ id: alreadyId!, status: "done", outcome: { note: "prior pass" } });
+
+    const { createPort, readCalls } = portFor(connection.id, [
+      message({ id: "already" }),
+      message({ id: "fresh" }),
+    ]);
+    const ran: string[] = [];
+    const runAgent: RunAgent = async (ctx) => {
+      ran.push(ctx.email.providerMessageId);
+      return doneRun(ctx);
+    };
+
+    await runReconciliationSweep({ createPort, runAgent });
+
+    // The already-processed message was skipped BEFORE hydration: no read, no run.
+    expect(readCalls).toEqual(["fresh"]);
+    expect(ran).toEqual(["fresh"]);
+    // Its terminal outcome is untouched — the sweep never reconsidered it.
+    expect((await ledgerRow(workflow.id, "already")).outcome).toEqual({ note: "prior pass" });
+  });
+
+  it("re-hydrates a stuck claim the same pass resets — reset frees it before the skip-filter reads it", async () => {
+    // The skip-filter must not defeat delete-and-reclaim (#735). A stuck
+    // `processing` row is DELETEd at the top of the sweep, BEFORE any unit lists,
+    // so by the time the ledger pre-filter runs the row is gone and the email is
+    // no longer "already processed" — it gets re-hydrated and retried in this same
+    // pass. If the ordering were reversed, a stuck email would be skipped forever.
+    const GRACE_MS = 10 * 60_000;
+    const { workflow, connection } = await seedDispatchableWorkflow();
+    const stuckId = await claimEmail({
+      workflowId: workflow.id,
+      connectionId: connection.id,
+      providerMessageId: "stuck",
+    });
+    await db
+      .update(processedEmails)
+      .set({ claimedAt: new Date(Date.now() - GRACE_MS - 60_000) })
+      .where(eq(processedEmails.id, stuckId!));
+
+    const { createPort, readCalls } = portFor(connection.id, [message({ id: "stuck" })]);
+    const ran: string[] = [];
+    const runAgent: RunAgent = async (ctx) => {
+      ran.push(ctx.email.providerMessageId);
+      return doneRun(ctx);
+    };
+
+    await runReconciliationSweep({ createPort, runAgent, graceMs: GRACE_MS });
+
+    expect(readCalls).toEqual(["stuck"]); // re-hydrated, not skipped
+    expect(ran).toEqual(["stuck"]);
+  });
+
+  it("bounds the provider query to the watermark, not the full window, for a fresh workflow", async () => {
+    // A workflow attached today has a recent `sinceTs`, and the sweep drops
+    // everything below it anyway — so listing the full `sweepWindowDays` would
+    // hydrate two weeks of pre-workflow mail every pass just to discard it. That
+    // waste is invisible at a 15-minute cadence but ruinous at a short one, so
+    // `search`'s window is capped at the watermark's age. Correctness is
+    // untouched: nothing at/above `sinceTs` is excluded — only mail the watermark
+    // already discards is no longer listed.
+    const DAY_MS = 24 * 60 * 60 * 1000;
+    const { connection } = await seedDispatchableWorkflow({
+      sweepWindowDays: 30,
+      sinceTs: new Date(Date.now() - 5 * DAY_MS),
+    });
+    const { createPort, searchCalls } = portFor(connection.id, [message()]);
+
+    await runReconciliationSweep({ createPort, runAgent: doneRun });
+
+    expect(searchCalls).toHaveLength(1);
+    // ~5 days of watermark age (ceil'd), never the full 30-day window.
+    expect(searchCalls[0].sinceDays).toBeGreaterThanOrEqual(5);
+    expect(searchCalls[0].sinceDays).toBeLessThanOrEqual(6);
+  });
+
+  it("keeps the full window for an old workflow — the watermark only ever tightens it", async () => {
+    // The mirror image: a workflow whose `sinceTs` predates the whole window must
+    // still re-list the full `sweepWindowDays` (design §5's slip-through backstop).
+    // Capping at the watermark must never SHORTEN the window below the configured
+    // N — `min(N, ageInDays)` gives N whenever the watermark is older than N.
+    const { connection } = await seedDispatchableWorkflow({
+      sweepWindowDays: 3,
+      sinceTs: new Date(0), // epoch — far older than any window
+    });
+    const { createPort, searchCalls } = portFor(connection.id, [message()]);
+
+    await runReconciliationSweep({ createPort, runAgent: doneRun });
+
+    expect(searchCalls[0].sinceDays).toBe(3);
   });
 });
 

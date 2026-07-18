@@ -331,4 +331,69 @@ describe("mail lister — listDispatchableEmails", () => {
     // Every candidate hydrated, so the count matches the returned batch.
     expect(candidateCount).toBe(2);
   });
+
+  it("skips hydrating candidates the ledger already holds, sparing the expensive read()", async () => {
+    // The cheap-poll optimization: `read` is the N+1 cost of a pass, and re-reading
+    // mail the ledger has already claimed is pure waste — the claim would just
+    // `onConflictDoNothing`. `resolveAlreadyProcessed` is injected (so the lister
+    // stays DB-decoupled, like the port) and names the ids to skip BEFORE hydration.
+    // In steady state it skips everything, so a poll costs one search and zero reads,
+    // which is what makes a frequent cadence affordable.
+    const reads: string[] = [];
+    const port: EmailPort = {
+      async search() {
+        return [{ id: "seen-1" }, { id: "fresh-2" }, { id: "seen-3" }];
+      },
+      async read(id) {
+        reads.push(id);
+        return {
+          id,
+          from: "s@x.test",
+          to: "",
+          cc: "",
+          subject: id,
+          date: "2026-07-14T00:00:00.000Z",
+          attachments: [],
+        };
+      },
+    };
+
+    const { emails, candidateCount } = await listDispatchableEmails(port, {
+      resolveAlreadyProcessed: async (ids) => {
+        // The resolver sees every candidate id, and returns the subset to skip.
+        expect(ids).toEqual(["seen-1", "fresh-2", "seen-3"]);
+        return new Set(["seen-1", "seen-3"]);
+      },
+    });
+
+    // Only the un-ledgered candidate was hydrated; the seen ones cost no read.
+    expect(reads).toEqual(["fresh-2"]);
+    expect(emails.map((e) => e.providerMessageId)).toEqual(["fresh-2"]);
+    // candidateCount stays the pre-skip `search` count: the sweep's saturation
+    // check reads it to detect a full page, which is about what search returned,
+    // not what survived the skip.
+    expect(candidateCount).toBe(3);
+  });
+
+  it("treats a fully-skipped pass as an empty result, not a dead mailbox", async () => {
+    // The dead-mailbox guard throws when every candidate FAILS to hydrate. A pass
+    // where every candidate was SKIPPED (already in the ledger) is the steady-state
+    // success case — zero reads, zero failures — and must never be mistaken for a
+    // mailbox whose credentials just expired.
+    const port: EmailPort = {
+      async search() {
+        return [{ id: "seen-1" }, { id: "seen-2" }];
+      },
+      async read(id) {
+        throw new Error(`must not hydrate skipped id ${id}`);
+      },
+    };
+
+    const { emails, candidateCount } = await listDispatchableEmails(port, {
+      resolveAlreadyProcessed: async () => new Set(["seen-1", "seen-2"]),
+    });
+
+    expect(emails).toEqual([]);
+    expect(candidateCount).toBe(2);
+  });
 });

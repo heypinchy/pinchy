@@ -1,4 +1,4 @@
-import { and, eq, lt } from "drizzle-orm";
+import { and, eq, inArray, lt } from "drizzle-orm";
 import { db } from "@/db";
 import { processedEmails } from "@/db/schema";
 import type { ProcessedEmailOutcome } from "@/lib/email-workflows/types";
@@ -40,6 +40,36 @@ export async function claimEmail(input: ClaimInput): Promise<string | null> {
     })
     .returning({ id: processedEmails.id });
   return rows[0]?.id ?? null;
+}
+
+/**
+ * Of a set of candidate provider ids, return those this (workflow, connection)
+ * already has a ledger row for — the cheap poll's skip set. Any status counts:
+ * a terminal row is done, a `processing` row is in flight, and re-hydrating
+ * either is wasted provider I/O because the re-claim would only
+ * `onConflictDoNothing`. A candidate absent here is genuinely new.
+ *
+ * Scoped to BOTH key columns (design D3: the claim key is per workflow × per
+ * connection), and bounded to the candidate ids so the query never scans the
+ * whole ledger. An empty candidate list short-circuits — no pointless `IN ()`.
+ */
+export async function listProcessedProviderMessageIds(
+  workflowId: string,
+  connectionId: string,
+  candidateIds: string[]
+): Promise<Set<string>> {
+  if (candidateIds.length === 0) return new Set();
+  const rows = await db
+    .select({ providerMessageId: processedEmails.providerMessageId })
+    .from(processedEmails)
+    .where(
+      and(
+        eq(processedEmails.workflowId, workflowId),
+        eq(processedEmails.connectionId, connectionId),
+        inArray(processedEmails.providerMessageId, candidateIds)
+      )
+    );
+  return new Set(rows.map((r) => r.providerMessageId));
 }
 
 export type FinalizeStatus = "done" | "no_action" | "failed";

@@ -112,9 +112,11 @@ function normalizeAddressList(raw: string): string[] {
 /**
  * List a connection's candidate messages and hydrate each into a
  * {@link DispatchableEmail} (design §6). The filter needs attachment metadata,
- * which only `read` returns, so every candidate is hydrated — an N+1 that is
- * fine on the bounded sweep path this serves (the token-free steady-state poll
- * lives in the OpenClaw event-trigger, a later brick).
+ * which only `read` returns, so every *un-skipped* candidate is hydrated — an
+ * N+1 whose N the cheap poll keeps near zero: `resolveAlreadyProcessed` (when
+ * injected) names the ids the ledger already holds, and hydration skips them, so
+ * a steady-state pass costs one `search` and no reads. That is what makes running
+ * this sweep on a short cadence — the low-latency path — affordable.
  *
  * Normalization is the deterministic substance: providers hand back
  * inconsistent header shapes (Gmail raw `Display Name <addr>` and
@@ -126,15 +128,33 @@ function normalizeAddressList(raw: string): string[] {
  */
 export async function listDispatchableEmails(
   port: EmailPort,
-  opts: { sinceDays?: number; folder?: string; limit?: number }
+  opts: {
+    sinceDays?: number;
+    folder?: string;
+    limit?: number;
+    /**
+     * Given every candidate id `search` returned, resolve the subset already in
+     * the ledger, which hydration then skips. Injected so the lister stays
+     * DB-decoupled (like the port); the sweep supplies a closure over the ledger.
+     * Absent ⟹ hydrate every candidate (the plain re-list).
+     */
+    resolveAlreadyProcessed?: (candidateIds: string[]) => Promise<ReadonlySet<string>>;
+  }
 ): Promise<EmailListResult> {
   // `search` is the mailbox-level probe: if it throws, nothing was listed and the
   // failure is the connection's, so it propagates to the sweep's unit-level catch
   // and surfaces as the workflow's `error` status.
   const candidates = await port.search(opts);
+  // Ask the ledger which candidates are already accounted for, BEFORE the N+1:
+  // skipping the read is the whole point — re-hydrating a claimed email only to
+  // have the claim `onConflictDoNothing` is pure provider I/O for no effect.
+  const alreadyProcessed = opts.resolveAlreadyProcessed
+    ? await opts.resolveAlreadyProcessed(candidates.map((c) => c.id))
+    : null;
   const emails: DispatchableEmail[] = [];
   const failures: unknown[] = [];
   for (const candidate of candidates) {
+    if (alreadyProcessed?.has(candidate.id)) continue;
     // Isolate per message: one unusable mail (unparseable date, a read that 404s
     // on a message deleted mid-sweep) must cost exactly that mail, not the whole
     // mailbox's pass. Without this, a single corrupt message stops every other
