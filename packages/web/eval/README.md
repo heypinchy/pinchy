@@ -344,7 +344,10 @@ whole task's cost, not one call's:
 "tokens": { "prompt": 9200, "completion": 640, "contextTokens": 41200 }
 ```
 
-- `prompt` / `completion` — summed input / output tokens across the run.
+- `prompt` / `completion` — summed prompt / output tokens across the run.
+  `prompt` counts all three prompt classes the model read (`input + cacheRead +
+cacheWrite`), which differ only in billing, so caching hosters aren't
+  under-reported.
 - `contextTokens` — the PEAK context-window pressure (max over turns, not sum).
   It is the read-side of the "Piper" false-success incident: a run whose context
   climbs without compaction firing is a PLATFORM risk factor, not a model score.

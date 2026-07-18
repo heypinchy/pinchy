@@ -26,18 +26,25 @@ import type { RunTokenUsage } from "../src/lib/eval/types";
 /**
  * One `usage_records` row as read for the join. `estimated_cost_usd` is a
  * `numeric` column, so postgres.js hands it back as a string (or null); the
- * token columns are integers, `context_tokens` nullable.
+ * token columns are integers, `context_tokens` nullable. `input`, `cacheRead`
+ * and `cacheWrite` are the three DISJOINT prompt classes (see
+ * usage-from-trajectory.ts) — all tokens the model read, differing only in
+ * billing — so the run's prompt volume is their sum.
  */
 export interface UsageRow {
   inputTokens: number;
   outputTokens: number;
+  cacheReadTokens: number;
+  cacheWriteTokens: number;
   contextTokens: number | null;
   estimatedCostUsd: string | null;
 }
 
 /**
  * Rolls up a run's `usage_records` rows into a {@link RunTokenUsage}. Pure.
- * - `prompt`/`completion`: summed over every turn (the task's total cost).
+ * - `prompt`: summed over every turn, counting all three prompt classes
+ *   (`input + cacheRead + cacheWrite`) so caching hosters aren't under-reported.
+ * - `completion`: summed output over every turn (the task's total cost).
  * - `contextTokens`: the PEAK (max) across turns, ignoring nulls — window
  *   pressure, not a total. Omitted when no turn recorded it.
  * - `costUsd`: summed parsed cost. Omitted when no turn priced per token.
@@ -54,7 +61,7 @@ export function aggregateTokenUsage(rows: UsageRow[]): RunTokenUsage | undefined
   let costUsd: number | undefined;
 
   for (const r of rows) {
-    prompt += r.inputTokens;
+    prompt += r.inputTokens + r.cacheReadTokens + r.cacheWriteTokens;
     completion += r.outputTokens;
     if (r.contextTokens !== null) {
       peakContext =
@@ -81,6 +88,15 @@ export interface CollectTokensOptions {
   now?: () => number;
   /** Injectable delay (tests). Default a real `setTimeout` sleep. */
   sleep?: (ms: number) => Promise<void>;
+  /**
+   * Called when the join query throws. The result still degrades to
+   * `undefined` (a DB blip must never abort the sweep), but a THROWN query is a
+   * systemic break — a renamed column, a session-key convention drift — that
+   * would otherwise capture nothing for the whole sweep, indistinguishable from
+   * "this provider is subscription-billed". `makeTokenCollector` uses this to
+   * warn once so the break is visible in the logs rather than fully silent.
+   */
+  onQueryError?: (err: unknown) => void;
 }
 
 const realSleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
@@ -88,7 +104,11 @@ const realSleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r
 /**
  * Polls `query` until the row count is non-empty AND unchanged since the
  * previous read (the recorder has finished writing this run's turns), then
- * returns the aggregate. Best-effort on the edges:
+ * returns the aggregate. Count-stability is a sound "done" signal because the
+ * recorder writes a run's turns in ONE atomic batch insert (see
+ * `insertPerTurnUsage`) and the collector only runs after the run is idle, so
+ * the count steps 0 → N → N and never settles on a partial N. Best-effort on
+ * the edges:
  * - No rows before `timeoutMs` → `undefined` (run recorded no usage).
  * - Rows that never stabilize before `timeoutMs` → the last aggregate seen,
  *   rather than discarding a partial count.
@@ -111,7 +131,8 @@ export async function collectRunTokens(
     let rows: UsageRow[];
     try {
       rows = await query();
-    } catch {
+    } catch (err) {
+      opts.onQueryError?.(err);
       return undefined;
     }
 
@@ -140,15 +161,36 @@ export type TokenCollector = (
  *
  * The session_key filter anchors on both the agent prefix and the run's unique
  * chatId suffix (`agent:<agentId>:direct:%:<chatId>`), so the `%` only spans the
- * userId segment and the rows are exactly this run's.
+ * userId segment and the rows are exactly this run's. The pattern is
+ * lower-cased because `usage_records.session_key` is written lower-cased (see
+ * `lib/usage.ts` / `lib/usage-per-turn.ts`); matching the raw mixed-case id
+ * would silently return nothing.
+ *
+ * A thrown join query (renamed column, convention drift) degrades to no tokens
+ * — but is warned ONCE per sweep so a systemic break is visible in the logs
+ * rather than fully silent (a captured-nothing sweep looks identical to a
+ * subscription-billed one otherwise).
  */
 export function makeTokenCollector(sql: Sql, opts: CollectTokensOptions = {}): TokenCollector {
+  let warnedQueryError = false;
+  const onQueryError =
+    opts.onQueryError ??
+    ((err: unknown) => {
+      if (warnedQueryError) return;
+      warnedQueryError = true;
+      console.warn(
+        `[eval] token join query failed — capturing no per-run cost for this sweep: ${String(err)}`
+      );
+    });
+
   return (agentId, chatId) => {
-    const pattern = `agent:${agentId}:direct:%:${chatId}`;
+    const pattern = `agent:${agentId}:direct:%:${chatId}`.toLowerCase();
     const query = async (): Promise<UsageRow[]> => {
       const rows = await sql<UsageRow[]>`
         SELECT input_tokens        AS "inputTokens",
                output_tokens       AS "outputTokens",
+               cache_read_tokens   AS "cacheReadTokens",
+               cache_write_tokens  AS "cacheWriteTokens",
                context_tokens      AS "contextTokens",
                estimated_cost_usd  AS "estimatedCostUsd"
         FROM usage_records
@@ -157,6 +199,6 @@ export function makeTokenCollector(sql: Sql, opts: CollectTokensOptions = {}): T
       `;
       return [...rows];
     };
-    return collectRunTokens(query, opts);
+    return collectRunTokens(query, { ...opts, onQueryError });
   };
 }

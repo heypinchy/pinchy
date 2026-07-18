@@ -81,8 +81,10 @@ export interface OdooMoveRecord {
  * Token + cost accounting for one run, joined from `usage_records` by the run's
  * unique OpenClaw session key (pinchy#798). `prompt`/`completion` are summed
  * over every turn of the run's tool loop (so the total cost of completing the
- * task, not one call). Two optional fields carry the extra signals #798 asked
- * for:
+ * task, not one call). `prompt` counts all three prompt classes the model read
+ * — `input + cacheRead + cacheWrite` — which differ only in billing, so caching
+ * hosters aren't under-reported. Two optional fields carry the extra signals
+ * #798 asked for:
  * - `contextTokens`: the PEAK context-window pressure across the run's turns
  *   (max, not sum) — the read-side of the "Piper" false-success incident, a
  *   PLATFORM risk factor rather than a model score.

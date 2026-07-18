@@ -334,9 +334,13 @@ test.describe("Eval-v1: model sweep (real Ollama Cloud)", () => {
           scorecard
         );
       }
-
-      await pinchyDelete(`/api/agents/${agentId}`, cookie);
     } finally {
+      // Clean up the ephemeral sweep agent even when a run throws, then always
+      // close the token DB client. Each cleanup is isolated so one failing does
+      // not skip the other.
+      await pinchyDelete(`/api/agents/${agentId}`, cookie).catch((err: unknown) =>
+        console.warn(`[eval] agent cleanup failed: ${String(err)}`)
+      );
       await tokenSql.end();
     }
   });

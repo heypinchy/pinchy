@@ -1,9 +1,17 @@
-import { describe, expect, it } from "vitest";
-import { aggregateTokenUsage, collectRunTokens, type UsageRow } from "../token-usage";
+import { describe, expect, it, vi } from "vitest";
+import type { Sql } from "postgres";
+import {
+  aggregateTokenUsage,
+  collectRunTokens,
+  makeTokenCollector,
+  type UsageRow,
+} from "../token-usage";
 
 const row = (over: Partial<UsageRow> = {}): UsageRow => ({
   inputTokens: 0,
   outputTokens: 0,
+  cacheReadTokens: 0,
+  cacheWriteTokens: 0,
   contextTokens: null,
   estimatedCostUsd: null,
   ...over,
@@ -21,6 +29,16 @@ describe("aggregateTokenUsage", () => {
       row({ inputTokens: 30, outputTokens: 5 }),
     ]);
     expect(usage).toMatchObject({ prompt: 380, completion: 65 });
+  });
+
+  it("counts cacheRead/cacheWrite as prompt tokens (all three prompt classes the model read)", () => {
+    // input/cacheRead/cacheWrite are disjoint (see usage-from-trajectory.ts);
+    // all three are tokens the model read, differing only in billing. Dropping
+    // the cache classes under-reports prompt volume on caching hosters.
+    const usage = aggregateTokenUsage([
+      row({ inputTokens: 5, cacheReadTokens: 630, cacheWriteTokens: 320, outputTokens: 12 }),
+    ]);
+    expect(usage).toMatchObject({ prompt: 955, completion: 12 });
   });
 
   it("takes the PEAK context (max), not the sum — context is window pressure", () => {
@@ -135,5 +153,62 @@ describe("collectRunTokens", () => {
   it("never throws — a query error degrades to undefined, never aborts the sweep", async () => {
     const usage = await collectRunTokens(() => Promise.reject(new Error("db down")), clockOpts());
     expect(usage).toBeUndefined();
+  });
+
+  it("reports the query error via onQueryError so a systemic break is not fully silent", async () => {
+    const errors: unknown[] = [];
+    const usage = await collectRunTokens(() => Promise.reject(new Error("db down")), {
+      ...clockOpts(),
+      onQueryError: (e) => errors.push(e),
+    });
+    expect(usage).toBeUndefined();
+    expect(errors).toHaveLength(1);
+    expect(String(errors[0])).toContain("db down");
+  });
+});
+
+// A fake `Sql` tagged-template. `makeTokenCollector` interpolates `${agentId}`
+// then `${pattern}`, so the LIKE pattern is always the last interpolated value.
+function fakeSql(onCall: (pattern: string) => Promise<UsageRow[]>): Sql {
+  const tag = (_strings: TemplateStringsArray, ...values: unknown[]) =>
+    onCall(values[values.length - 1] as string);
+  return tag as unknown as Sql;
+}
+
+describe("makeTokenCollector", () => {
+  const clockOpts = () => {
+    const clock = fakeClock();
+    return { timeoutMs: 20_000, intervalMs: 500, now: clock.now, sleep: clock.sleep };
+  };
+
+  it("lowercases the session_key pattern to match the stored (lowercased) key", async () => {
+    // usage_records.session_key is written lowercased (see lib/usage*.ts), so a
+    // raw mixed-case agentId/chatId would silently never match. Verify the
+    // pattern is folded to lower case.
+    let seen: string | undefined;
+    const collect = makeTokenCollector(
+      fakeSql((pattern) => {
+        seen = pattern;
+        return Promise.resolve([]);
+      }),
+      clockOpts()
+    );
+    await collect("Agent-ABC", "Chat-DEF");
+    expect(seen).toBe("agent:agent-abc:direct:%:chat-def");
+  });
+
+  it("warns at most once per sweep even if every run's join query keeps failing", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const collect = makeTokenCollector(
+        fakeSql(() => Promise.reject(new Error("boom"))),
+        clockOpts()
+      );
+      expect(await collect("a", "chat-1")).toBeUndefined();
+      expect(await collect("a", "chat-2")).toBeUndefined();
+      expect(warn).toHaveBeenCalledTimes(1);
+    } finally {
+      warn.mockRestore();
+    }
   });
 });
