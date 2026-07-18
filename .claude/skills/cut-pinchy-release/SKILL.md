@@ -69,6 +69,26 @@ So, mechanically:
 3. Verify each on the **real `:next` staging instance** (`staging.heypinchy.com`) — it carries the upgrade path + real agents/data; the ephemeral CI E2E stacks don't. The release-specific items are different every release, which is why they're generated from the notes rather than hardcoded.
 4. The preflight then prints the exact `pnpm release <version> --verified=$(git rev-parse HEAD)` command. The `--verified` SHA ties your attestation to the commit you actually tested on staging. (A hard `--verified` gate in `release.mjs` is planned once it can be verified end-to-end against a real staging release; today it's enforced by this task discipline + the preflight echo.)
 
+### Build the test plan from the FULL changelog, then split it agent vs human
+
+The preflight's staging checklist is auto-derived from the **upgrade notes** (`####` subheadings) — that is a **subset**, not the coverage plan. Upgrade notes call out breaking changes and what an operator must know; they miss most shipped features (v0.9.0's Knowledge Base, IMAP connect flow, chat slash-commands, `odoo_reconcile`, auth error-honesty were none of them upgrade-note subheadings). Build the actual plan from the full changelog:
+
+```bash
+git log v<prev>..main --no-merges --pretty=format:'%s' | grep -iE '^(feat|fix)'
+```
+
+Then three moves before you test anything:
+
+1. **Scope out what has no runtime surface — don't test it.** Dark foundations (schema/tables/plumbing merged ahead of the feature that will consume them — grep the upgrade notes and commit bodies for "foundation" / "no runtime surface") and internal-only tooling (`eval`, CI guards, `scripts/`) are not user-testable. v0.9.0 shipped ~75 such commits (the whole `inbox-agent`/email-workflows cluster + `eval`/`kb-eval`). Listing them as "to test" burns actions hunting for UI that doesn't exist — name them explicitly as out-of-scope so the human doesn't hunt either.
+
+2. **Cluster into minimum-action super-flows.** One well-chosen end-to-end flow exercises many features + fixes at once: a KB-agent setup+query covers ingest, pgvector, hybrid retrieval, citations, abstention, offline embedding and a dozen KB fixes in two questions; an email→Odoo booking covers read, attachment, vision, `odoo_read`/`create`/`reconcile`, duplicate-guard and audit in one run. Optimize for max coverage per action, not one test per commit.
+
+3. **Split every cluster into an agent half and a human half — and hand the human theirs explicitly.** This is sharper than §6's "gates only a human _can_ close" list: it divides _every_ feature, not just the agent-impossible ones.
+   - **The agent owns the plumbing / logic / honesty half** — anything verifiable against ground truth: tool round-trips via the audit log, API responses to crafted inputs (auth error semantics, open-redirect / SSRF rejection, credential masking), DB & migration state, config emission, retrieval correctness (citations point at real passages, abstention fires). Drive it and confirm against evidence, per the loop below.
+   - **The human owns ALL UI/UX, plus edge-cases and real devices** — not as leftovers but because they need the human feel the agent lacks: every wizard / flow / rendering / interaction (the IMAP connect wizard, slash-command discoverability, citation rendering, hover/paste behavior, dialog layout), anything on real hardware (PWA install + share-target), and the weird-behavior / edge-case hunting a human is simply better at. A feature with both halves (IMAP: API layer vs. connect wizard) is split down the middle — agent takes the API, human takes the wizard.
+
+   Deliver the split as a table (cluster → agent verifies X / human checks Y), the human half prioritized, **before** you start driving your half.
+
 ### The staging pass is an active test-and-fix loop — not a click-through
 
 The CONTRIBUTING item reads "clicked through today," but a passive click-through is the weakest form of this gate — it confirms the app _boots_, not that the release _works_. The version that actually catches blockers, and is now the standard, is an **autonomous test-and-fix loop** you run yourself before handing back for the human's "go" (the v0.8.0 email→Odoo pass caught three shippable blockers this way — a false-success invoice read, a missing vision fallback, and a duplicate-booking bug):
