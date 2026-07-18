@@ -260,6 +260,48 @@ describe("embedTexts", () => {
     const [, init] = vi.mocked(fetch).mock.calls[0];
     expect(init?.signal).toBeInstanceOf(AbortSignal);
   });
+
+  it("times out when the response body read stalls, not only the initial fetch", async () => {
+    // A connection can wedge *after* the response headers arrive — fetch()
+    // resolves, but response.json() then never settles. If the timeout only
+    // covered fetch(), that stall would hang the reindex forever. The abort
+    // must stay armed through the body read.
+    vi.mocked(fetch).mockImplementation(async (_url, init) => {
+      const signal = init?.signal as AbortSignal;
+      return {
+        ok: true,
+        json: () =>
+          new Promise((_resolve, reject) => {
+            signal.addEventListener("abort", () => {
+              reject(new DOMException("The operation was aborted", "AbortError"));
+            });
+          }),
+      } as unknown as Response;
+    });
+
+    await expect(
+      embedTexts(["hallo"], { baseUrl: "http://ollama:11434", timeoutMs: 20 })
+    ).rejects.toThrow(/timed out/i);
+  });
+
+  it("rejects vector-width drift across batches even without expectedDim", async () => {
+    // Per-batch validation guarantees each request is internally consistent but
+    // not that batch 2's width matches batch 1's — e.g. Ollama reloading a
+    // different model mid-reindex. Without a cross-batch guard, mixed-width
+    // vectors would reach the kb_chunks embedding column and fail opaquely at
+    // insert instead of here.
+    let call = 0;
+    vi.mocked(fetch).mockImplementation(async (_url, init) => {
+      const body = JSON.parse((init?.body as string) ?? "{}");
+      const width = call++ === 0 ? 3 : 2; // batch 1: 3-dim, batch 2: 2-dim
+      const embeddings = (body.input as string[]).map(() => Array<number>(width).fill(1));
+      return new Response(JSON.stringify({ embeddings }), { status: 200 });
+    });
+
+    await expect(
+      embedTexts(["a", "b", "c"], { baseUrl: "http://ollama:11434", batchSize: 2 })
+    ).rejects.toThrow(/dimension/i);
+  });
 });
 
 describe("embedTexts (provider: local, node-llama-cpp mocked)", () => {

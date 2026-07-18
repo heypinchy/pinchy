@@ -176,9 +176,11 @@ async function embedTextsLocal(texts: string[], cfg: EmbeddingConfig): Promise<n
 
 /**
  * POST one bounded batch to Ollama's `/api/embed`, aborting if it stalls past
- * `timeoutMs`. Kept separate from embedTexts so the batching loop stays a
- * plain slice-and-concat; this is the single HTTP boundary where a timeout
- * and the non-2xx / shape checks belong.
+ * `timeoutMs` — whether the stall is at connect, waiting for headers, or
+ * reading the body (fetch() resolves once headers arrive, so the body read
+ * needs the same bound). Kept separate from embedTexts so the batching loop
+ * stays a plain slice-and-concat; this is the single HTTP boundary where a
+ * timeout and the non-2xx / shape checks belong.
  */
 async function embedBatchViaOllama(
   batch: string[],
@@ -190,9 +192,8 @@ async function embedBatchViaOllama(
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
 
-  let response: Response;
   try {
-    response = await fetch(url, {
+    const response = await fetch(url, {
       method: "POST",
       headers,
       body: JSON.stringify({
@@ -202,10 +203,19 @@ async function embedBatchViaOllama(
       }),
       signal: controller.signal,
     });
+
+    if (!response.ok) {
+      const error = await response.text().catch(() => "unknown error");
+      throw new Error(`Ollama embeddings API error (${response.status}): ${error}`);
+    }
+
+    const data = (await response.json()) as OllamaEmbedResponse;
+    return assertEmbeddingShape(data.embeddings, batch.length, cfg, "Ollama embeddings API");
   } catch (err) {
-    // Distinguish our own abort (a stall we cut off) from a genuine network
-    // failure ("fetch failed"), which stays as-is so a real connection error
-    // still reads as one.
+    // The timeout aborts the request whether it stalls mid-fetch or mid
+    // body-read; both surface here as an AbortError. Convert either to a clear
+    // timeout, distinct from a genuine network failure ("fetch failed") — which
+    // stays as-is so a real connection error still reads as one.
     if (controller.signal.aborted) {
       throw new Error(`Ollama embeddings request timed out after ${timeoutMs}ms`);
     }
@@ -213,14 +223,6 @@ async function embedBatchViaOllama(
   } finally {
     clearTimeout(timer);
   }
-
-  if (!response.ok) {
-    const error = await response.text().catch(() => "unknown error");
-    throw new Error(`Ollama embeddings API error (${response.status}): ${error}`);
-  }
-
-  const data = (await response.json()) as OllamaEmbedResponse;
-  return assertEmbeddingShape(data.embeddings, batch.length, cfg, "Ollama embeddings API");
 }
 
 /**
@@ -230,7 +232,7 @@ async function embedBatchViaOllama(
  * (see `embedTextsLocal`).
  *
  * The Ollama path splits `texts` into sequential requests of at most
- * `cfg.batchSize` (default 64) and concatenates their vectors in the original
+ * `cfg.batchSize` (default 32) and concatenates their vectors in the original
  * order — ingest hands a whole document's chunks in one call, so an unbounded
  * POST here is what a large PDF used to break the reindex on.
  */
@@ -257,5 +259,10 @@ export async function embedTexts(texts: string[], cfg: EmbeddingConfig): Promise
     const vectors = await embedBatchViaOllama(batch, url, headers, cfg, timeoutMs);
     for (const vector of vectors) all.push(vector);
   }
-  return all;
+
+  // Each batch is validated internally, but not against the others: a model
+  // swap mid-reindex could hand batch 2 a different width than batch 1. Revalidate
+  // the concatenation once so mixed-width vectors fail here, not opaquely at the
+  // kb_chunks embedding insert.
+  return assertEmbeddingShape(all, texts.length, cfg, "Ollama embeddings API");
 }
