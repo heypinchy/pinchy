@@ -4,10 +4,13 @@
  * autonomously, mirroring the established periodic-job pattern (`upload-gc.ts`,
  * `audit-verify-job.ts`) — a `setInterval` plus a post-startup kick.
  *
- * The sweep is the correctness path, not the low-latency path: it re-lists a
- * whole window every cadence, so it runs infrequently. The token-free
- * steady-state poll is a later brick (an OpenClaw cron event-trigger), leaving
- * this as the safety net that guarantees no email is ever lost.
+ * The sweep is BOTH the correctness path and the low-latency path. It re-lists a
+ * whole window every cadence, but the sweep's ledger pre-filter and
+ * watermark-bounded window make a steady-state pass cost one `search` and ~zero
+ * reads (the expensive N+1 `read` runs only for genuinely new mail). That is what
+ * lets it run on a short cadence and react in near-real-time itself — no separate
+ * token-free poll (the abandoned OpenClaw event-trigger brick) is needed, and it
+ * is still the backstop that guarantees no email is ever lost.
  */
 
 /**
@@ -41,12 +44,14 @@ export function createGuardedSweepRunner(runSweep: () => Promise<void>): () => P
 }
 
 /**
- * Cadence for the reconciliation sweep. Deliberately infrequent: each pass
- * re-lists a whole window (an O(window) provider read per connection), so this
- * is the safety net, not the low-latency path. The token-free steady-state poll
- * that will run near-real-time is a later brick (an OpenClaw cron event-trigger).
+ * Cadence for the reconciliation sweep. Short on purpose: this IS the low-latency
+ * path. A steady-state pass costs one `search` per connection and hydrates only
+ * genuinely-new mail (the sweep's ledger pre-filter + watermark-bounded window),
+ * so a frequent cadence is affordable — one minute trades a little provider I/O
+ * for near-real-time reaction. Tunable via `INBOX_SWEEP_INTERVAL_MS` for large
+ * deployments where per-connection poll volume matters more than latency.
  */
-export const SWEEP_INTERVAL_MS = 15 * 60_000;
+export const SWEEP_INTERVAL_MS = 60_000;
 
 /**
  * Delay before the first pass, so the OpenClaw gateway and config have settled

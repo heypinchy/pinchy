@@ -11,7 +11,7 @@
  *
  * So this spec never triggers a sweep. It seeds a workflow and a message, then
  * waits for Pinchy's own cadence (INBOX_SWEEP_INTERVAL_MS, 5s here instead of
- * the 15-minute production interval) to notice. If the boot wiring in server.ts
+ * the one-minute production interval) to notice. If the boot wiring in server.ts
  * were missing or the port could not reach the mailbox, nothing would ever
  * happen and this test would time out — which is exactly the failure that
  * every green unit test would still hide.

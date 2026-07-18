@@ -79,6 +79,18 @@ describe("inbox sweep — scheduler wiring", () => {
     vi.useRealTimers();
   });
 
+  it("defaults to a low-latency cadence — the sweep IS the fast poll, not a 15-minute backstop", async () => {
+    // Path A: the ledger pre-filter + watermark-bounded window make a pass cost
+    // one `search` and ~zero reads in steady state, so the sweep runs frequently
+    // and delivers near-real-time reaction itself, rather than deferring latency
+    // to a separate OpenClaw event-trigger brick. This locks that intent in: a
+    // revert to the old infrequent 15-minute cadence (or anything slower than a
+    // couple of minutes) would silently give back the latency and fail here. The
+    // startup kick must still land before the first interval.
+    expect(SWEEP_INTERVAL_MS).toBeLessThanOrEqual(2 * 60_000);
+    expect(SWEEP_STARTUP_DELAY_MS).toBeLessThanOrEqual(SWEEP_INTERVAL_MS);
+  });
+
   it("_isInboxSweepRunning reflects start/stop", () => {
     expect(_isInboxSweepRunning()).toBe(false);
     startInboxSweep(async () => {});
@@ -113,11 +125,11 @@ describe("inbox sweep — scheduler wiring", () => {
   });
 
   it("accepts an overridden cadence", async () => {
-    // The production cadence is 15 minutes, which no E2E can wait for, and the
-    // post-startup kick has long since fired by the time a spec runs. Making
-    // both injectable is what lets the E2E prove the sweep dispatches with no
-    // manual trigger — the one claim unit tests cannot make. Same convention as
-    // CHANNEL_HEALTH_INTERVAL_MS.
+    // Even the low-latency production cadence (one minute) is far longer than an
+    // E2E can wait for, and the post-startup kick has long since fired by the time
+    // a spec runs. Making both injectable is what lets the E2E prove the sweep
+    // dispatches with no manual trigger — the one claim unit tests cannot make.
+    // Same convention as CHANNEL_HEALTH_INTERVAL_MS.
     vi.useFakeTimers();
     let calls = 0;
     startInboxSweep(
