@@ -15,6 +15,26 @@ vi.mock("@/lib/audit", async (importOriginal) => {
   };
 });
 
+// The route canonicalizes OpenClaw's lowercased session-key userId back to
+// the real (mixed-case) users.id via a single select().from(users).where(...)
+// lookup — mock db the same way agent-uploads-route.test.ts does for its
+// ownership lookup. Default (set in beforeEach) is "no match", so existing
+// tests that don't care about case-canonicalization keep seeing the
+// extracted id fall through unchanged.
+const { mockUserLookup } = vi.hoisted(() => ({
+  mockUserLookup: vi.fn(),
+}));
+
+vi.mock("@/db", () => ({
+  db: {
+    select: () => ({
+      from: () => ({
+        where: (...args: unknown[]) => mockUserLookup(...args),
+      }),
+    }),
+  },
+}));
+
 import { validateGatewayToken } from "@/lib/gateway-auth";
 import { appendAuditLog } from "@/lib/audit";
 import { POST } from "@/app/api/internal/audit/tool-use/route";
@@ -34,6 +54,7 @@ describe("POST /api/internal/audit/tool-use", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     vi.mocked(validateGatewayToken).mockReturnValue(true);
+    mockUserLookup.mockResolvedValue([]);
   });
 
   it("returns 401 when gateway token is invalid", async () => {
@@ -155,6 +176,58 @@ describe("POST /api/internal/audit/tool-use", () => {
       outcome: "success",
       error: null,
     });
+  });
+
+  // Regression: OpenClaw lowercases session keys, so extractUserIdFromSessionKey
+  // returns a lowercased userId. appendAuditLog's pseudonym substitution does a
+  // case-sensitive `eq(users.id, actorId)` lookup, so a raw lowercased id never
+  // matches and every tool.* audit row silently skips pseudonymization (only 2 of
+  // 1221 user-actor rows were pseudonymized on staging). The route must
+  // canonicalize the lowercased id back to the real users.id case before handing
+  // it to appendAuditLog as actorId — mirroring usage-poller.ts's userIdMap.
+  it("canonicalizes a lowercased OpenClaw session-key userId back to the real users.id case", async () => {
+    const canonicalId = "9Uy331nd8hFYbtm0ulwlztjwboimggn2";
+    mockUserLookup.mockResolvedValueOnce([{ id: canonicalId }]);
+
+    const res = await POST(
+      makeRequest({
+        phase: "end",
+        toolName: "browser",
+        agentId: "agent-2",
+        sessionKey: `agent:agent-2:direct:${canonicalId.toLowerCase()}`,
+        result: { ok: true },
+      })
+    );
+
+    expect(res.status).toBe(200);
+    expect(appendAuditLog).toHaveBeenCalledWith(
+      expect.objectContaining({
+        actorType: "user",
+        actorId: canonicalId,
+      })
+    );
+  });
+
+  it("falls back to the extracted (lowercased) id when no users row matches case-insensitively", async () => {
+    mockUserLookup.mockResolvedValueOnce([]);
+
+    const res = await POST(
+      makeRequest({
+        phase: "end",
+        toolName: "browser",
+        agentId: "agent-2",
+        sessionKey: "agent:agent-2:direct:unknown-lowercase-id",
+        result: { ok: true },
+      })
+    );
+
+    expect(res.status).toBe(200);
+    expect(appendAuditLog).toHaveBeenCalledWith(
+      expect.objectContaining({
+        actorType: "user",
+        actorId: "unknown-lowercase-id",
+      })
+    );
   });
 
   // #640: diagnostics export matches a depth-truncated trajectory argument back

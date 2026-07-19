@@ -1,9 +1,12 @@
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
+import { sql } from "drizzle-orm";
 import { validateGatewayToken } from "@/lib/gateway-auth";
 import { appendAuditLog, safeProviderError } from "@/lib/audit";
 import { sanitizeDetail } from "@/lib/audit-sanitize";
 import { parseRequestBody } from "@/lib/api-validation";
+import { db } from "@/db";
+import { users } from "@/db/schema";
 
 function isObject(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
@@ -52,6 +55,26 @@ function extractUserIdFromSessionKey(sessionKey: string | undefined): string | u
   // a greedy `(.+)$` would swallow `<userId>:<chatId>` and mis-attribute the
   // audit row. The userId itself never contains a colon.
   return /^agent:[^:]+:direct:([^:]+)/.exec(sessionKey)?.[1];
+}
+
+// OpenClaw lowercases session keys, so the userId extracted above is always
+// lowercased and won't match users.id's real case. appendAuditLog's GDPR
+// pseudonym substitution (audit.ts resolveActorId) does a case-sensitive
+// `eq(users.id, actorId)` lookup, so a raw lowercased id silently misses it
+// and the raw id is written instead of the pseudonym. Canonicalize back to
+// the real users.id case here — the same compensation usage-poller.ts:159-164
+// applies via its `userIdMap` — before handing the id to appendAuditLog.
+// No throw: audit availability must not depend on this lookup succeeding.
+async function canonicalizeUserId(lowercasedUserId: string): Promise<string> {
+  try {
+    const rows = await db
+      .select({ id: users.id })
+      .from(users)
+      .where(sql`lower(${users.id}) = ${lowercasedUserId.toLowerCase()}`);
+    return rows[0]?.id ?? lowercasedUserId;
+  } catch {
+    return lowercasedUserId;
+  }
 }
 
 // Trim and reject blank strings; turns "" or "   " into undefined so optional
@@ -200,7 +223,8 @@ export async function POST(request: NextRequest) {
   }
 
   // Change 3: Actor becomes the user extracted from sessionKey when possible
-  const userId = extractUserIdFromSessionKey(payload.sessionKey);
+  const rawUserId = extractUserIdFromSessionKey(payload.sessionKey);
+  const userId = rawUserId ? await canonicalizeUserId(rawUserId) : undefined;
   const actorType = userId ? "user" : "agent";
   const actorId = userId ?? payload.agentId;
 
