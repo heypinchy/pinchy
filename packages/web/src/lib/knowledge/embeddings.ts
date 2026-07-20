@@ -1,9 +1,14 @@
 /**
- * Embedding client for the knowledge base's dense vectors (bge-m3, 1024-dim).
+ * Embedding client for the knowledge base's dense vectors. Backend-agnostic:
+ * the default path targets Ollama's batch embeddings endpoint (model defaults
+ * to bge-m3), and `provider: "local"` switches to an in-process node-llama-cpp
+ * GGUF instead. The KB itself now uses the local path (embeddinggemma-300m,
+ * 768-dim — see kb-embedder.ts / #715); the Ollama path stays for callers that
+ * still point at a configured endpoint.
  *
- * The embedding model is fixed (bge-m3), independent of any agent's chat
- * model, so this client takes its own config rather than reading agent
- * config or process.env. Mirrors the Ollama call pattern in
+ * The embedding model is independent of any agent's chat model, so this client
+ * takes its own config rather than reading agent config or process.env. The
+ * Ollama path mirrors the call pattern in
  * packages/plugins/pinchy-files/pdf-vision-api.ts (describeViaOllama), but
  * targets Ollama's batch embeddings endpoint instead of chat completions.
  */
@@ -30,8 +35,8 @@ export interface EmbeddingConfig {
   /**
    * Optional expected vector width. When set, a returned width other than
    * this throws a clear error naming both expected and actual dims — the KB
-   * pipeline passes `EMBEDDING_DIMENSIONS` (1024) so a wrong model surfaces
-   * here, not as an opaque `vector(1024)` insert failure at Postgres. Unset =
+   * pipeline passes `EMBEDDING_DIMENSIONS` (768) so a wrong model surfaces
+   * here, not as an opaque `vector(768)` insert failure at Postgres. Unset =
    * no dimension enforcement (the client stays model-agnostic).
    */
   expectedDim?: number;
@@ -127,6 +132,14 @@ function assertEmbeddingShape(
 // their own context; the promise is cached (not just the resolved value) so
 // concurrent callers during the initial load also await the same load
 // rather than triggering it twice.
+//
+// Sharing ONE context across concurrent callers is safe: in the web process
+// the KB search route (one query embed per request) and the KB index worker
+// (a sequential embed loop per document) can call getEmbeddingFor on this
+// same context at the same time. node-llama-cpp serializes each call
+// internally (an "evaluate" lock that erases the context token range before
+// every input), so concurrent embeds queue and run one at a time instead of
+// corrupting each other's state — no external mutex needed here.
 type LlamaEmbeddingContext = {
   getEmbeddingFor(text: string): Promise<{ vector: ArrayLike<number> }>;
 };

@@ -5,6 +5,15 @@
  * availability gate from here, so the "how does the KB embed" decision lives in
  * one place — and switching off the Ollama dependency (#715) also dissolved the
  * setup friction where an embedding-only deployment could not configure the KB.
+ *
+ * Deliberate trade-off: embedding no longer runs in a separate Ollama process
+ * but IN the web process, so the ~300 MB GGUF + node-llama-cpp native runtime
+ * are resident in the server that also handles requests, and a large reindex's
+ * embed loop is CPU work competing with request serving on the same box. For
+ * single-box self-hosting (the target deployment) that is the point — one
+ * self-contained container, no side-car — and the model loads lazily on first
+ * embed (getLocalEmbeddingContext), so a deployment that never uses the KB
+ * pays nothing.
  */
 import { existsSync } from "node:fs";
 
