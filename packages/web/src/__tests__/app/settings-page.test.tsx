@@ -3,7 +3,14 @@ import { render, screen, waitFor, act } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import "@testing-library/jest-dom";
 import { useRouter, useSearchParams } from "next/navigation";
+import type { ReadonlyURLSearchParams } from "next/navigation";
 import { SettingsPageContent as SettingsPage } from "@/components/settings-page-content";
+
+// useSearchParams() is typed as ReadonlyURLSearchParams; a plain URLSearchParams
+// is structurally not assignable (the readonly type drops the mutating methods)
+// but is a valid value at runtime, so the mocks cast through it.
+const readonlySearchParams = (init?: string) =>
+  new URLSearchParams(init) as unknown as ReadonlyURLSearchParams;
 
 let capturedProviderProps: {
   onSuccess?: () => void;
@@ -168,7 +175,7 @@ describe("Settings Page", () => {
   beforeEach(() => {
     fetchSpy = vi.spyOn(global, "fetch").mockImplementation(vi.fn());
     vi.clearAllMocks();
-    vi.mocked(useSearchParams).mockReturnValue(new URLSearchParams());
+    vi.mocked(useSearchParams).mockReturnValue(readonlySearchParams());
     capturedProviderProps = {};
     capturedOnDirtyChangeProvider = undefined;
     capturedOnDirtyChangeContext = undefined;
@@ -538,7 +545,7 @@ describe("Settings Page", () => {
     });
 
     it("shows a back control when a tab is explicitly selected via the URL param", async () => {
-      vi.mocked(useSearchParams).mockReturnValue(new URLSearchParams("tab=profile"));
+      vi.mocked(useSearchParams).mockReturnValue(readonlySearchParams("tab=profile"));
       setupAdminFetchMocks();
 
       render(<SettingsPage isAdmin={isCurrentTestAdmin} />);
@@ -549,7 +556,7 @@ describe("Settings Page", () => {
     });
 
     it("clears the tab param when the back control is clicked", async () => {
-      vi.mocked(useSearchParams).mockReturnValue(new URLSearchParams("tab=profile"));
+      vi.mocked(useSearchParams).mockReturnValue(readonlySearchParams("tab=profile"));
       setupAdminFetchMocks();
 
       render(<SettingsPage isAdmin={isCurrentTestAdmin} />);
@@ -562,7 +569,7 @@ describe("Settings Page", () => {
     });
 
     it("preserves unrelated query params when the back control is clicked", async () => {
-      vi.mocked(useSearchParams).mockReturnValue(new URLSearchParams("tab=profile&foo=bar"));
+      vi.mocked(useSearchParams).mockReturnValue(readonlySearchParams("tab=profile&foo=bar"));
       setupAdminFetchMocks();
 
       render(<SettingsPage isAdmin={isCurrentTestAdmin} />);
@@ -590,7 +597,7 @@ describe("Settings Page", () => {
       ["profile", "Profile"],
       ["provider", "AI Provider"],
     ])("mobile back header label matches the '%s' tab trigger", async (tab, expected) => {
-      vi.mocked(useSearchParams).mockReturnValue(new URLSearchParams(`tab=${tab}`));
+      vi.mocked(useSearchParams).mockReturnValue(readonlySearchParams(`tab=${tab}`));
       setupAdminFetchMocks();
 
       const { container } = render(<SettingsPage isAdmin={isCurrentTestAdmin} />);
