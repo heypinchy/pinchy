@@ -274,7 +274,7 @@ See [Create a Knowledge Base Agent](/guides/create-knowledge-base-agent/) for th
 
 ### `POST /api/agents/:agentId/knowledge/reindex`
 
-Queue a (re)index of the agent's granted knowledge-base folders. **Admin only.** Reads the agent's `pinchy-files` `allowed_paths`, extracts text from each PDF, chunks and embeds it with the fixed `bge-m3` model, and stores the result in Pinchy's Postgres knowledge-base index. Idempotent: unchanged files are skipped, changed files are replaced, and files removed from disk are dropped from the index.
+Queue a (re)index of the agent's granted knowledge-base folders. **Admin only.** Reads the agent's `pinchy-files` `allowed_paths`, extracts text from each PDF, chunks and embeds it with the bundled in-process `embeddinggemma` model (no Ollama endpoint required), and stores the result in Pinchy's Postgres knowledge-base index. Idempotent: unchanged files are skipped, changed files are replaced, and files removed from disk are dropped from the index.
 
 The request returns as soon as the job is queued — indexing runs in the background, because a real corpus takes hours to embed. Poll [`GET`](#get-apiagentsagentidknowledgereindex) on the same path for progress and results.
 
@@ -306,7 +306,7 @@ The request returns as soon as the job is queued — indexing runs in the backgr
 - `403` — not an admin
 - `404` — agent not found
 - `409` — a reindex is already running. One index job runs at a time across the whole instance, so the run in your way may belong to a **different** agent. The response carries the running job's `jobId`, `status`, and `agent` — `GET` that agent's reindex endpoint to watch it, rather than retrying.
-- `503` — the local Ollama embedding endpoint isn't configured (see [Set Up Local Ollama](/guides/ollama-setup/))
+- `503` — the bundled embedding model file is missing from the image (a broken build or mount, not a configuration step)
 
 ### `GET /api/agents/:agentId/knowledge/reindex`
 

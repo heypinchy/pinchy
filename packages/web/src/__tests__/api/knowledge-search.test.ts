@@ -31,6 +31,18 @@ vi.mock("@/lib/knowledge/retrieve", () => ({
   retrieve: (...args: unknown[]) => mockRetrieve(...args),
 }));
 
+const mockKbEmbedderAvailable = vi.fn(() => true);
+vi.mock("@/lib/knowledge/kb-embedder", () => ({
+  kbEmbedderAvailable: () => mockKbEmbedderAvailable(),
+  kbEmbeddingConfig: () => ({
+    baseUrl: "",
+    provider: "local",
+    model: "embeddinggemma-300m",
+    modelPath: "/opt/embedding-models/embeddinggemma-300m-qat-Q8_0.gguf",
+    expectedDim: 768,
+  }),
+}));
+
 const mockEmbedTexts = vi.fn();
 vi.mock("@/lib/knowledge/embeddings", () => ({
   embedTexts: (...args: unknown[]) => mockEmbedTexts(...args),
@@ -88,7 +100,7 @@ describe("POST /api/internal/knowledge/search", () => {
     vi.clearAllMocks();
     mockValidateGatewayToken.mockReturnValue(true);
     mockLimit.mockResolvedValue([agentRow]);
-    mockGetSetting.mockResolvedValue("http://ollama.local:11434");
+    mockKbEmbedderAvailable.mockReturnValue(true);
     mockEmbedTexts.mockResolvedValue([[0.1, 0.2, 0.3]]);
     mockRetrieve.mockResolvedValue(retrievedChunks);
     POST = (await import("@/app/api/internal/knowledge/search/route")).POST;
@@ -201,14 +213,27 @@ describe("POST /api/internal/knowledge/search", () => {
     expect(entry.detail.resultCount).toBe(0);
   });
 
-  it("wires embedTexts(bge-m3) as the retrieve() embedder using the configured local Ollama URL", async () => {
+  it("wires embedTexts as the retrieve() embedder using the native in-process embeddinggemma config", async () => {
     await POST(makeRequest(validBody));
     expect(mockRetrieve).toHaveBeenCalledTimes(1);
     const deps = mockRetrieve.mock.calls[0][3];
     await deps.embed(["hello"]);
     expect(mockEmbedTexts).toHaveBeenCalledWith(
       ["hello"],
-      expect.objectContaining({ baseUrl: "http://ollama.local:11434" })
+      expect.objectContaining({ provider: "local", expectedDim: 768 })
     );
+  });
+
+  it("returns 503 and audits a failure when the bundled embedding model is missing", async () => {
+    mockKbEmbedderAvailable.mockReturnValueOnce(false);
+    const res = await POST(makeRequest(validBody));
+    expect(res.status).toBe(503);
+    expect(mockRetrieve).not.toHaveBeenCalled();
+
+    expect(mockDeferAuditLog).toHaveBeenCalledTimes(1);
+    const entry = mockDeferAuditLog.mock.calls[0][0];
+    expect(entry.eventType).toBe("retrieval.query");
+    expect(entry.outcome).toBe("failure");
+    expect(entry.detail.reason).toBe("embedding_model_missing");
   });
 });

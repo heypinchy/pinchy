@@ -17,15 +17,32 @@
  */
 export const DEFAULT_ORG_ID = "default";
 
-/** Fixed embedding model for the knowledge base (bge-m3, 1024-dim). */
-export const EMBEDDING_MODEL = "bge-m3";
+/**
+ * Fixed embedding model for the knowledge base: embeddinggemma-300m, run
+ * IN-PROCESS via node-llama-cpp (not over Ollama HTTP). This name is cosmetic
+ * — it labels logs and error messages; the actual model loaded is the GGUF at
+ * `EMBEDDING_MODEL_PATH`. The KB deliberately does NOT depend on a configured
+ * Ollama endpoint (see #715): embedding is self-contained.
+ */
+export const EMBEDDING_MODEL = "embeddinggemma-300m";
 
 /**
- * bge-m3's output width. The `kb_chunks.embedding` column is `vector(1024)`
- * (see db/vector.ts), so a model that returns any other width can only be
- * inserted as an opaque Postgres dimension-mismatch error. Callers pass this
- * as `embedTexts(..., { expectedDim: EMBEDDING_DIMENSIONS })` so a
- * misconfigured embedder fails with a clear, source-of-truth message at the
- * embedding boundary instead. Keep in lockstep with `vector()`'s `vector(N)`.
+ * Filesystem path to the bundled embeddinggemma GGUF the KB embedder loads
+ * in-process. Same pinned file the OpenClaw agent-memory feature already
+ * bundles (Dockerfile.openclaw); Dockerfile.pinchy provisions it at this same
+ * path for the web process the KB index worker + search route run in.
+ * Env-overridable for local dev (point it at a GGUF you downloaded yourself).
  */
-export const EMBEDDING_DIMENSIONS = 1024;
+export const EMBEDDING_MODEL_PATH =
+  process.env.KB_EMBEDDING_MODEL_PATH || "/opt/embedding-models/embeddinggemma-300m-qat-Q8_0.gguf";
+
+/**
+ * embeddinggemma-300m's output width. The `kb_chunks.embedding` column is
+ * `vector(768)` (db/vector.ts imports THIS constant, so the two cannot drift),
+ * so a model that returns any other width can only be inserted as an opaque
+ * Postgres dimension-mismatch error. Callers pass this as
+ * `embedTexts(..., { expectedDim: EMBEDDING_DIMENSIONS })` so a misconfigured
+ * embedder fails with a clear, source-of-truth message at the embedding
+ * boundary instead.
+ */
+export const EMBEDDING_DIMENSIONS = 768;

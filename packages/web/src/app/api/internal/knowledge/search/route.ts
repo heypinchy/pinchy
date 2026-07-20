@@ -10,9 +10,8 @@ import { db } from "@/db";
 import { activeAgents, type AgentPluginConfig } from "@/db/schema";
 import { retrieve, type RetrievedChunk } from "@/lib/knowledge/retrieve";
 import { embedTexts } from "@/lib/knowledge/embeddings";
-import { DEFAULT_ORG_ID, EMBEDDING_MODEL, EMBEDDING_DIMENSIONS } from "@/lib/knowledge/constants";
-import { getSetting } from "@/lib/settings";
-import { PROVIDERS } from "@/lib/providers";
+import { kbEmbedderAvailable, kbEmbeddingConfig } from "@/lib/knowledge/kb-embedder";
+import { DEFAULT_ORG_ID } from "@/lib/knowledge/constants";
 import { deferAuditLog } from "@/lib/audit-deferred";
 import { safeProviderError, type AuditLogEntry, type EntityRef } from "@/lib/audit";
 
@@ -103,15 +102,11 @@ export async function POST(request: NextRequest) {
   const allowedPaths =
     (agent.pluginConfig as AgentPluginConfig | null)?.["pinchy-files"]?.allowed_paths ?? [];
 
-  // The embedding model is fixed (bge-m3) and independent of any agent's chat
-  // model (see embeddings.ts) — but it still needs a reachable Ollama base
-  // URL. Reused from the SAME admin-configured "Ollama (Local)" provider
-  // setting the chat/vision path already resolves (packages/web/src/lib/
-  // provider-models.ts's ollamaUrl), rather than a new env var: it's the one
-  // platform-wide (not per-agent) Ollama endpoint Pinchy already asks admins
-  // to configure, and bge-m3 is expected to be pulled on that same instance.
-  const ollamaBaseUrl = await getSetting(PROVIDERS["ollama-local"].settingsKey);
-  if (!ollamaBaseUrl) {
+  // The embedding model is fixed (embeddinggemma-300m) and independent of any
+  // agent's chat model — and runs IN-PROCESS via node-llama-cpp, so the KB no
+  // longer needs a configured Ollama endpoint at all (#715). The only way this
+  // gate trips is a broken image/mount where the bundled GGUF is missing.
+  if (!kbEmbedderAvailable()) {
     deferAuditLog(
       retrievalAuditEntry({
         agentId: agent.id,
@@ -120,11 +115,11 @@ export async function POST(request: NextRequest) {
         outcome: "failure",
         resultCount: 0,
         returnedDocumentIds: [],
-        reason: "ollama_not_configured",
+        reason: "embedding_model_missing",
       })
     );
     return NextResponse.json(
-      { error: "Knowledge base embedding endpoint not configured" },
+      { error: "Knowledge base embedding model not available" },
       { status: 503 }
     );
   }
@@ -132,12 +127,7 @@ export async function POST(request: NextRequest) {
   let chunks: RetrievedChunk[];
   try {
     chunks = await retrieve(DEFAULT_ORG_ID, allowedPaths, query, {
-      embed: (texts) =>
-        embedTexts(texts, {
-          baseUrl: ollamaBaseUrl,
-          model: EMBEDDING_MODEL,
-          expectedDim: EMBEDDING_DIMENSIONS,
-        }),
+      embed: (texts) => embedTexts(texts, kbEmbeddingConfig()),
     });
   } catch (err) {
     // safeProviderError scrubs emails and caps length — the underlying error

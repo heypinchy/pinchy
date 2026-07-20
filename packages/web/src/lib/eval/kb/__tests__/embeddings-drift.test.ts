@@ -17,13 +17,15 @@ describe("KB eval committed embeddings fixture (Task 0.4)", () => {
   // each of these tests surfaces THAT message — a clean, self-explaining
   // failure that tells you exactly how to generate the missing fixture.
 
-  it("declares model 'bge-m3' and dim 1024", () => {
+  it("declares model 'embeddinggemma-300m' and dim 768", () => {
     const fixture = loadEmbeddings();
-    expect(fixture.model, `expected model "bge-m3", got "${fixture.model}"`).toBe("bge-m3");
-    expect(fixture.dim, `expected dim 1024, got ${fixture.dim}`).toBe(1024);
+    expect(fixture.model, `expected model "embeddinggemma-300m", got "${fixture.model}"`).toBe(
+      "embeddinggemma-300m"
+    );
+    expect(fixture.dim, `expected dim 768, got ${fixture.dim}`).toBe(768);
   });
 
-  it("has exactly one 1024-dim embedding per corpus chunk id (no missing, no orphan)", () => {
+  it("has exactly one 768-dim embedding per corpus chunk id (no missing, no orphan)", () => {
     const fixture = loadEmbeddings();
     const fixtureChunkIds = new Set(Object.keys(fixture.chunks));
 
@@ -40,12 +42,12 @@ describe("KB eval committed embeddings fixture (Task 0.4)", () => {
       const vec = fixture.chunks[id];
       expect(
         vec?.length,
-        `chunk "${id}" embedding has ${vec?.length ?? "undefined"} dims, expected 1024`
-      ).toBe(1024);
+        `chunk "${id}" embedding has ${vec?.length ?? "undefined"} dims, expected 768`
+      ).toBe(768);
     }
   });
 
-  it("has exactly one 1024-dim embedding per gold query id (no missing, no orphan)", () => {
+  it("has exactly one 768-dim embedding per gold query id (no missing, no orphan)", () => {
     const fixture = loadEmbeddings();
     const fixtureQueryIds = new Set(Object.keys(fixture.queries));
 
@@ -64,8 +66,8 @@ describe("KB eval committed embeddings fixture (Task 0.4)", () => {
       const vec = fixture.queries[id];
       expect(
         vec?.length,
-        `gold query "${id}" embedding has ${vec?.length ?? "undefined"} dims, expected 1024`
-      ).toBe(1024);
+        `gold query "${id}" embedding has ${vec?.length ?? "undefined"} dims, expected 768`
+      ).toBe(768);
     }
   });
 });

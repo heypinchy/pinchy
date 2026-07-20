@@ -32,6 +32,11 @@ vi.mock("@/lib/settings", () => ({
   getSetting: (...args: unknown[]) => mockGetSetting(...args),
 }));
 
+const mockKbEmbedderAvailable = vi.fn(() => true);
+vi.mock("@/lib/knowledge/kb-embedder", () => ({
+  kbEmbedderAvailable: () => mockKbEmbedderAvailable(),
+}));
+
 const mockEnqueueIndexJob = vi.fn();
 const mockGetLatestIndexJobForAgent = vi.fn();
 vi.mock("@/lib/knowledge/index-jobs", () => ({
@@ -99,6 +104,7 @@ describe("POST /api/agents/[agentId]/knowledge/reindex", () => {
     mockGetSession.mockResolvedValue({ user: { id: "admin-1", role: "admin" } });
     mockLimit.mockResolvedValue([agentRow]);
     mockGetSetting.mockResolvedValue("http://ollama.local:11434");
+    mockKbEmbedderAvailable.mockReturnValue(true);
     mockEnqueueIndexJob.mockResolvedValue({ status: "queued", job: makeJob() });
     POST = (await import("@/app/api/agents/[agentId]/knowledge/reindex/route")).POST;
   });
@@ -211,8 +217,8 @@ describe("POST /api/agents/[agentId]/knowledge/reindex", () => {
 
   // Fast feedback beats a job that queues, waits, and fails hours later with
   // the same information.
-  it("returns 503 and audits a failure when the embedding endpoint is not configured", async () => {
-    mockGetSetting.mockResolvedValueOnce(null);
+  it("returns 503 and audits a failure when the bundled embedding model is missing", async () => {
+    mockKbEmbedderAvailable.mockReturnValueOnce(false);
     const res = await POST(makeRequest(), ctx as never);
     expect(res.status).toBe(503);
     expect(mockEnqueueIndexJob).not.toHaveBeenCalled();
@@ -221,7 +227,7 @@ describe("POST /api/agents/[agentId]/knowledge/reindex", () => {
     const entry = mockDeferAuditLog.mock.calls[0][0];
     expect(entry.eventType).toBe("knowledge.reindex");
     expect(entry.outcome).toBe("failure");
-    expect(entry.detail.reason).toBe("ollama_not_configured");
+    expect(entry.detail.reason).toBe("embedding_model_missing");
   });
 
   it("returns 500 and audits a failure when enqueueing throws", async () => {

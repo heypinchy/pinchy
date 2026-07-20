@@ -30,7 +30,7 @@ export interface RetrievedChunk {
 }
 
 export interface RetrieveDeps {
-  /** Embeds the query into a single dense vector (bge-m3, 1024-dim). Prod: `(t) => embedTexts(t, embedCfg)`. */
+  /** Embeds the query into a single dense vector (embeddinggemma-300m, 768-dim). Prod: `(t) => embedTexts(t, embedCfg)`. */
   embed: (texts: string[]) => Promise<number[][]>;
 }
 

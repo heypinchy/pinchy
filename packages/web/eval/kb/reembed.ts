@@ -1,18 +1,17 @@
 // packages/web/eval/kb/reembed.ts
 //
 // KB eval harness fixture generator (Task 0.4). Embeds every corpus chunk
-// (KB_EVAL_CORPUS) and every gold query (GOLD_QUERIES) via bge-m3 and writes
-// the result as the committed fixture at corpus/embeddings.json.
+// (KB_EVAL_CORPUS) and every gold query (GOLD_QUERIES) via the KB's native
+// in-process embeddinggemma-300m embedder and writes the result as the
+// committed fixture at corpus/embeddings.json — the same embedder production
+// uses (kbEmbeddingConfig), so the fixture matches what a real index holds.
 //
 // Run with: pnpm kb-eval:reembed
 //
-// Requires a reachable Ollama endpoint with bge-m3 pulled. Defaults to
-// http://localhost:11434; override with KB_EVAL_EMBED_URL for a different
-// host (e.g. a Docker-networked Ollama container). This mirrors how
-// src/app/api/internal/knowledge/search/route.ts resolves its embedder in
-// production, except prod reads the admin-configured Ollama URL from the DB
-// — this standalone script has no DB connection, so the endpoint comes from
-// an env var instead.
+// Requires the embeddinggemma GGUF on disk. The image bundles it at
+// /opt/embedding-models/…; for a local re-embed download it yourself and point
+// KB_EMBEDDING_MODEL_PATH at it (see the gated embeddings.local.gguf test for
+// the pinned file). No network or Ollama endpoint is involved.
 //
 // Regenerating this fixture is a deliberate, reviewable act: the resulting
 // diff to corpus/embeddings.json should be reviewed like any other change to
@@ -21,13 +20,18 @@
 import { writeFileSync } from "node:fs";
 import { EMBEDDING_DIMENSIONS, EMBEDDING_MODEL } from "../../src/lib/knowledge/constants";
 import { embedTexts } from "../../src/lib/knowledge/embeddings";
+import { kbEmbedderAvailable, kbEmbeddingConfig } from "../../src/lib/knowledge/kb-embedder";
 import { KB_EVAL_CORPUS } from "./corpus/manifest";
 import { GOLD_QUERIES } from "./corpus/gold-queries";
 import { EMBEDDINGS_FIXTURE_PATH, type EmbeddingsFixture } from "./embeddings-fixture";
 
-const baseUrl = process.env.KB_EVAL_EMBED_URL ?? "http://localhost:11434";
-
 async function main() {
+  if (!kbEmbedderAvailable()) {
+    throw new Error(
+      "embeddinggemma GGUF not found — set KB_EMBEDDING_MODEL_PATH to a local copy " +
+        "(see eval/kb/reembed.ts header) before running pnpm kb-eval:reembed"
+    );
+  }
   // Flatten the corpus into parallel id/text arrays, iterated in the
   // manifest's declaration order — this (not object-key insertion from some
   // intermediate Map) is what makes the written JSON's key order stable
@@ -47,14 +51,10 @@ async function main() {
 
   console.log(
     `Embedding ${chunkTexts.length} corpus chunks + ${queryTexts.length} gold queries ` +
-      `via ${EMBEDDING_MODEL} at ${baseUrl}...`
+      `via native ${EMBEDDING_MODEL} (${EMBEDDING_DIMENSIONS}-dim, in-process)...`
   );
 
-  const embedCfg = {
-    baseUrl,
-    model: EMBEDDING_MODEL,
-    expectedDim: EMBEDDING_DIMENSIONS,
-  };
+  const embedCfg = kbEmbeddingConfig();
 
   // Sequential, not Promise.all: keeps load on the embedding endpoint
   // predictable and keeps failure attribution unambiguous (chunks vs.

@@ -3,9 +3,9 @@ import { embedTexts } from "@/lib/knowledge/embeddings";
 
 /**
  * Exercises the real node-llama-cpp path end-to-end against a real GGUF
- * embedding model (embeddinggemma, 768-dim — deliberately decoupled from
- * the KB's 1024-dim EMBEDDING_DIMENSIONS constant, which stays bge-m3/Ollama
- * for now; see #715 for the eventual switch).
+ * embedding model (embeddinggemma, 768-dim — the KB's production embedder
+ * since #715: EMBEDDING_DIMENSIONS is 768 and the index worker + search route
+ * embed in-process via this same node-llama-cpp path, no Ollama).
  *
  * Gated with describe.skipIf (not an untracked test.skip — an allowed
  * env/OS conditional gate per AGENTS.md) so CI and contributors without the

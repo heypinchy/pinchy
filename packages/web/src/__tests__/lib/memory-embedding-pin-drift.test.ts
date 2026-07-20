@@ -24,10 +24,22 @@ import { describe, it, expect } from "vitest";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { MEMORY_EMBEDDING_MODEL_PATH } from "@/lib/openclaw-config";
+import { EMBEDDING_MODEL_PATH } from "@/lib/knowledge/constants";
 
 const REPO_ROOT = resolve(__dirname, "../../../../..");
 const DOCKERFILE_OPENCLAW = readFileSync(resolve(REPO_ROOT, "Dockerfile.openclaw"), "utf8");
+const DOCKERFILE_PINCHY = readFileSync(resolve(REPO_ROOT, "Dockerfile.pinchy"), "utf8");
 const VERIFY_SCRIPT = readFileSync(resolve(REPO_ROOT, "config/verify-memory-search.sh"), "utf8");
+
+/** Extracts the pinned HF `resolve/<40-hex-sha>/…gguf` revision from a Dockerfile's download URL. */
+function ggufRevision(dockerfile: string): string | undefined {
+  return dockerfile.match(/huggingface\.co\/\S+\/resolve\/([0-9a-f]{40})\/\S+\.gguf/)?.[1];
+}
+
+/** Extracts the pinned `sha256sum -c` digest a Dockerfile verifies the GGUF against. */
+function ggufSha256(dockerfile: string): string | undefined {
+  return dockerfile.match(/([0-9a-f]{64})\s+\S+\.gguf/)?.[1];
+}
 
 describe("memory embedding pin drift guard", () => {
   it("Dockerfile.openclaw installs the external llama-cpp embedding provider", () => {
@@ -82,5 +94,65 @@ describe("memory embedding pin drift guard", () => {
   it("the CI smoke test checks the same model path", () => {
     const smokePath = VERIFY_SCRIPT.match(/MODEL_PATH="([^"]+\.gguf)"/)?.[1];
     expect(smokePath).toBe(MEMORY_EMBEDDING_MODEL_PATH);
+  });
+});
+
+/**
+ * Sibling guard for the knowledge base's embedder (#715). The KB embeds
+ * in-process via node-llama-cpp too, but the web process it runs in ships in
+ * Dockerfile.pinchy — a DIFFERENT image from the OpenClaw one above. That
+ * container split is the whole migration cost: if Dockerfile.pinchy stops
+ * bundling the GGUF, or bundles it at the wrong path, the KB index worker +
+ * search route load nothing in production (every search returns an empty
+ * corpus) while every unit test here still passes — the same silent-failure
+ * class the memory guard exists to kill, one image over.
+ *
+ * Both features load the IDENTICAL GGUF, so the two Dockerfiles must pin the
+ * same revision + checksum: a lockstep assertion, not two independent pins.
+ */
+describe("KB embedding pin drift guard", () => {
+  it("Dockerfile.pinchy downloads the GGUF to exactly EMBEDDING_MODEL_PATH", () => {
+    // The file kbEmbeddingConfig() points modelPath at MUST be the file the
+    // image bakes, or the KB embeds nothing while unit tests pass.
+    const downloaded = DOCKERFILE_PINCHY.match(/-o\s+(\S+\.gguf)/)?.[1];
+    expect(downloaded).toBe(EMBEDDING_MODEL_PATH);
+  });
+
+  it("copies the bundled model into the runtime image", () => {
+    // Downloading it in a build stage is useless unless the runtime stage — the
+    // image that actually boots the web process — copies it in.
+    expect(DOCKERFILE_PINCHY).toMatch(/COPY --from=embedding-model \S*\/opt\/embedding-models/);
+  });
+
+  it("pins the GGUF download to an immutable commit revision, not a moving ref", () => {
+    expect(DOCKERFILE_PINCHY).not.toMatch(/huggingface\.co\/\S+\/resolve\/main\//);
+    expect(DOCKERFILE_PINCHY).toMatch(/huggingface\.co\/\S+\/resolve\/[0-9a-f]{40}\/\S+\.gguf/);
+  });
+
+  it("verifies the downloaded GGUF against a sha256 checksum", () => {
+    expect(DOCKERFILE_PINCHY).toMatch(/sha256sum\s+-c/);
+    expect(DOCKERFILE_PINCHY).toMatch(/[0-9a-f]{64}\s+\S+\.gguf/);
+  });
+
+  it("retries the GGUF download on transient HTTP failures", () => {
+    const download =
+      DOCKERFILE_PINCHY.match(/curl -fsSL[\s\S]*?huggingface\.co\S+\.gguf/)?.[0] ?? "";
+    expect(download).toMatch(/--retry\s+\d+/);
+    expect(download).toMatch(/--retry-all-errors/);
+  });
+
+  it("pins the SAME revision + checksum as the agent-memory model (both load the identical GGUF)", () => {
+    // The KB and agent-memory bundle the same embeddinggemma file. If one pin
+    // moves and the other does not, the two images ship different model bytes
+    // for what is meant to be one model — bump them together or not at all.
+    const openclawRev = ggufRevision(DOCKERFILE_OPENCLAW);
+    const pinchyRev = ggufRevision(DOCKERFILE_PINCHY);
+    expect(pinchyRev).toBeDefined();
+    expect(pinchyRev).toBe(openclawRev);
+
+    const openclawSha = ggufSha256(DOCKERFILE_OPENCLAW);
+    const pinchySha = ggufSha256(DOCKERFILE_PINCHY);
+    expect(pinchySha).toBeDefined();
+    expect(pinchySha).toBe(openclawSha);
   });
 });

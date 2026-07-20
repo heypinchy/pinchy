@@ -211,7 +211,7 @@ The compose file now caps each service (pinchy 1 GB, openclaw 2 GB, db 1 GB memo
 
 #### Knowledge Base agents (new, opt-in)
 
-Agents can now answer from your own documents with cited sources, backed by a search index in Pinchy's Postgres. Nothing is indexed until you set it up: mount document directories, pull the embedding model on your local Ollama (`ollama pull bge-m3`), create an agent from the new Knowledge Base template, and trigger indexing. See [Create a Knowledge Base agent](/guides/create-knowledge-base-agent/). If you don't use it, nothing changes for you.
+Agents can now answer from your own documents with cited sources, backed by a search index in Pinchy's Postgres. Nothing is indexed until you set it up: mount document directories, create an agent from the new Knowledge Base template, and trigger indexing. The embedding model ships inside the image (the same offline `embeddinggemma` model that powers agent memory), so there is nothing to pull or configure and no Ollama endpoint is involved — indexing and search work fully offline. See [Create a Knowledge Base agent](/guides/create-knowledge-base-agent/). If you don't use it, nothing changes for you.
 
 #### Agent memory recall now works offline
 
@@ -231,7 +231,7 @@ The OpenClaw runtime this release ships (2026.7.1) adds an interactive terminal 
 
 ### Database migrations
 
-Eleven additive migrations (`0044`–`0054`) run automatically on startup — no manual steps. No data is dropped or destructively rewritten; existing rows already satisfy every new constraint.
+Thirteen migrations (`0044`–`0056`) run automatically on startup — no manual steps. No existing data is dropped: every one is additive except `0056`, which recreates a Knowledge Base index column introduced earlier in this same release (see below), so the tables it rewrites are empty on upgrade.
 
 - `0044` — schema hardening: four timestamp columns to `NOT NULL`, foreign-key and hot-path composite indexes, `CHECK` constraints on the enum-like text columns (roles, agent visibility, invite/connection types and statuses), and the `invites.claimed_by_user_id` foreign key switched to `ON DELETE SET NULL`.
 - `0045` — per-agent starter prompts (`agents.starter_prompts`, defaults to empty).
@@ -241,6 +241,8 @@ Eleven additive migrations (`0044`–`0054`) run automatically on startup — no
 - `0052` — notifications / activity-feed tables (foundation; no runtime surface in this release).
 - `0053` — per-turn context-window usage tracking (`usage_records.context_tokens`).
 - `0054` — Knowledge Base tables (`kb_documents`, `kb_chunks`) with the pgvector index; enables the `vector` extension (see the breaking change above).
+- `0055` — the Knowledge Base async index-job queue (`kb_index_jobs`) backing the background reindex.
+- `0056` — recreates `kb_chunks.embedding` at 768 dimensions for the bundled in-process `embeddinggemma` embedder (replacing the earlier plan to embed over Ollama) and clears the two KB tables. Both were introduced in `0054` above and are empty on any real upgrade, so nothing is lost — the first reindex populates them.
 
 ## Upgrading from v0.7.0 to v0.8.0
 

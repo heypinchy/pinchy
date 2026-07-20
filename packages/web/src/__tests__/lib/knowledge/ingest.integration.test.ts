@@ -3,7 +3,7 @@
  * chunk -> embed -> upsert). Uses a real PostgreSQL test database
  * (provisioned by global-setup.ts, truncated between tests by setup.ts) plus
  * real filesystem I/O against a per-test temp directory. The embedder and
- * PDF extractor are dependency-injected fakes (deterministic 1024-dim
+ * PDF extractor are dependency-injected fakes (deterministic 768-dim
  * vectors, canned page text) so the suite stays hermetic — no Ollama, no
  * real PDF parsing — and exercises the orchestration + idempotency/staleness
  * logic that Task 6 owns.
@@ -50,7 +50,7 @@ function fakeDeps(
   ]
 ): { deps: IngestDeps; embed: ReturnType<typeof vi.fn>; extractPdf: ReturnType<typeof vi.fn> } {
   const embed = vi.fn(async (texts: string[]) =>
-    texts.map((_, i) => Array(1024).fill(0.001 * (i + 1)))
+    texts.map((_, i) => Array(768).fill(0.001 * (i + 1)))
   );
   const extractPdf = vi.fn(async () => pages);
   return { deps: { embed, extractPdf }, embed, extractPdf };
@@ -98,7 +98,7 @@ it("indexes a PDF into kb_documents + kb_chunks with real embeddings, then skips
   const chunks = await chunksFor(doc.id);
   expect(chunks.length).toBeGreaterThanOrEqual(1);
   for (const chunk of chunks) {
-    expect(chunk.embedding).toHaveLength(1024);
+    expect(chunk.embedding).toHaveLength(768);
     expect(chunk.sourcePath).toBe(pdfPath);
     expect(chunk.orgId).toBe(ORG_ID);
   }
@@ -357,7 +357,7 @@ it("keeps ingesting the rest of the corpus when one file's extraction throws", a
   writeFileSync(join(tmpRoot, "a-broken.pdf"), "corrupt-bytes");
   writeFileSync(join(tmpRoot, "b-good.pdf"), "good-bytes");
 
-  const embed = vi.fn(async (texts: string[]) => texts.map(() => Array(1024).fill(0.1)));
+  const embed = vi.fn(async (texts: string[]) => texts.map(() => Array(768).fill(0.1)));
   const extractPdf = vi.fn(async (absPath: string) => {
     if (absPath.endsWith("a-broken.pdf")) throw new Error("Invalid PDF structure");
     return [{ page: 1, text: PAGE_1_TEXT }];
@@ -426,7 +426,7 @@ it("keeps the last indexed version searchable when a file changes into one that 
 
   // The file changes on disk, but the new version is corrupt.
   writeFileSync(pdfPath, "corrupt-bytes-v2");
-  const embed = vi.fn(async (texts: string[]) => texts.map(() => Array(1024).fill(0.1)));
+  const embed = vi.fn(async (texts: string[]) => texts.map(() => Array(768).fill(0.1)));
   const extractPdf = vi.fn(async () => {
     throw new Error("Invalid PDF structure");
   });
@@ -605,7 +605,7 @@ it("reports the running tally alongside progress, so a caller keeps it when the 
   let embedCalls = 0;
   (deps.embed as ReturnType<typeof vi.fn>).mockImplementation(async (texts: string[]) => {
     if (++embedCalls > 2) throw new Error("connect ECONNREFUSED");
-    return texts.map(() => Array(1024).fill(0.01));
+    return texts.map(() => Array(768).fill(0.01));
   });
   const recorder = progressRecorder();
 

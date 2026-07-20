@@ -2,14 +2,14 @@
  * Real-DB integration tests for retrieve() (hybrid pgvector + FTS retrieval,
  * fused via Reciprocal Rank Fusion). Uses a real PostgreSQL test database
  * (provisioned by global-setup.ts, truncated between tests by setup.ts).
- * kb_documents/kb_chunks rows are inserted DIRECTLY with hand-chosen 1024-dim
- * embeddings and texts, so ranking is fully deterministic without Ollama —
- * the generated `tsv` column auto-populates from `chunk_text` on insert. The
- * embedder is dependency-injected: the fake below returns a fixed vector for
- * the query text so the test controls exactly how close/far it is from each
- * stored chunk's embedding.
+ * kb_documents/kb_chunks rows are inserted DIRECTLY with hand-chosen
+ * embeddinggemma-width embeddings and texts, so ranking is fully deterministic
+ * without Ollama — the generated `tsv` column auto-populates from `chunk_text`
+ * on insert. The embedder is dependency-injected: the fake below returns a
+ * fixed vector for the query text so the test controls exactly how close/far it
+ * is from each stored chunk's embedding.
  *
- * Vector setup: all vectors are 1024-dim "one-hot" (or a 90/10 blend of two
+ * Vector setup: all vectors are EMBEDDING_DIMENSIONS-wide "one-hot" (or a 90/10 blend of two
  * one-hot) vectors. Two one-hot vectors along DIFFERENT axes are orthogonal,
  * so pgvector's cosine distance (`<=>`) between them is exactly 1 (maximally
  * far); identical one-hot vectors have cosine distance 0 (closest possible).
@@ -22,10 +22,13 @@ import { expect, it, vi } from "vitest";
 
 import { db } from "@/db";
 import { kbChunks, kbDocuments } from "@/db/schema";
+import { EMBEDDING_DIMENSIONS } from "@/lib/knowledge/constants";
 import { retrieve, type RetrieveDeps } from "@/lib/knowledge/retrieve";
 
 const ORG_ID = "org-kb-retrieve-test";
-const DIM = 1024;
+// Match the live column width so inserts don't fail the vector(N) check; a
+// dimension change flows through here instead of a hardcoded literal.
+const DIM = EMBEDDING_DIMENSIONS;
 
 function oneHot(axis: number): number[] {
   const v = new Array(DIM).fill(0);

@@ -9,38 +9,30 @@ This guide walks you through creating a Knowledge Base agent — an agent that s
 
 - Pinchy is running (see [Quick Start](/getting-started/))
 - You have mounted at least one data directory (see [Mount Data Directories](/guides/mount-data-directories/))
-- Local Ollama is connected under **Settings → LLM Provider → Ollama (Local)** (see [Set Up Local Ollama](/guides/ollama-setup/)) — the knowledge base uses a fixed local embedding model, independent of whichever chat model the agent uses
+- A chat model is configured for the agent under **Settings → LLM Provider**
 - You are logged in as an admin
+
+The knowledge base embeds your documents with a local model (`embeddinggemma`) that ships inside the Pinchy image, so there is nothing to pull or configure and no Ollama endpoint is involved — indexing and search work offline, independent of whichever chat model the agent uses.
 
 ## 1. Mount your data directories
 
 Before creating a Knowledge Base agent, make sure the documents you want the agent to access are mounted under `/data/` in the Pinchy container. See the [Mount Data Directories](/guides/mount-data-directories/) guide for detailed instructions.
 
-## 2. Pull the embedding model
-
-The knowledge base turns your documents into searchable passages using a fixed embedding model, `bge-m3`, served by the same local Ollama endpoint you configured above. Pull it once:
-
-```bash
-ollama pull bge-m3
-```
-
-If `bge-m3` isn't available when you trigger indexing (see below), the reindex request fails until it's pulled.
-
-## 3. Navigate to "New Agent"
+## 2. Navigate to "New Agent"
 
 In the Pinchy sidebar, click the **+** button next to "Agents" to open the agent creation form.
 
-## 4. Select the "Knowledge Base" template
+## 3. Select the "Knowledge Base" template
 
 Choose **Knowledge Base** from the template options. This template gives the agent the `knowledge_search` tool — a search over your indexed documents that returns citable passages, not raw file access.
 
-## 5. Enter a name and create
+## 4. Enter a name and create
 
 Give your agent a descriptive name, for example "HR Policy Assistant" or "Engineering Docs". You can also add an optional tagline like "Answers questions about company HR policies". Then click **Create**.
 
 The agent is created with an auto-generated avatar and you are taken to its chat page. The Knowledge Base template pre-fills operating instructions (AGENTS.md) with cite-then-answer guidelines, but the agent doesn't know which documents to search yet — you scope that in the Permissions tab, then index those documents.
 
-## 6. Configure directory access
+## 5. Configure directory access
 
 Open the agent's settings by clicking the gear icon, then select the **Permissions** tab.
 
@@ -50,7 +42,7 @@ Under **Knowledge Base**, the **Allowed Directories** picker shows all directori
 
 Click **Save** to apply the permissions.
 
-## 7. Index the documents
+## 6. Index the documents
 
 Granting a directory doesn't index it automatically — an admin has to trigger indexing. Call the reindex endpoint for the agent:
 
@@ -58,7 +50,7 @@ Granting a directory doesn't index it automatically — an admin has to trigger 
 curl -X POST -b session_cookie "https://pinchy.example.com/api/agents/<agentId>/knowledge/reindex"
 ```
 
-This reads the agent's granted folders, extracts text from each PDF, splits it into overlapping chunks, embeds every chunk with `bge-m3`, and stores the result in Pinchy's own Postgres database (using `pgvector`) so it can be searched later.
+This reads the agent's granted folders, extracts text from each PDF, splits it into overlapping chunks, embeds every chunk with a bundled local model (`embeddinggemma`), and stores the result in Pinchy's own Postgres database (using `pgvector`) so it can be searched later.
 
 Indexing is idempotent — unchanged files are skipped on the next run, changed files are re-indexed, and files removed from disk are dropped from the index. **Re-run reindex whenever documents change** — new files, edits, or deletions. There's no automatic file-watcher yet; a scheduled sweep is planned for a later phase.
 
@@ -76,7 +68,7 @@ Indexing itself runs in the background. It has to: every page has to be read, sp
 
 One index run happens at a time, across your whole Pinchy — the index is shared, and embedding is CPU-hungry enough that two runs would only slow each other down. Trigger a second while one is going and you get a `409` naming the run that's in your way, including which agent it belongs to. That may not be the agent you asked about; watch that one instead of retrying.
 
-## 8. Watch the run
+## 7. Watch the run
 
 Ask the same endpoint how it's going:
 
@@ -109,11 +101,11 @@ curl -b session_cookie "https://pinchy.example.com/api/agents/<agentId>/knowledg
 
 `indexed` counts documents the agent can actually reach, not documents we processed — that's why a scanned PDF lands under `unsearchable` instead. If either of the last two numbers is above zero, part of your corpus can't answer questions yet, and it's worth knowing which part before someone asks it something.
 
-A `status` of `failed` is a different thing from a `failed` file: it means something systemic stopped the whole run — the embedding endpoint went away, or the database did — and `error` says what. A broken file never gets that far; it's counted and stepped over.
+A `status` of `failed` is a different thing from a `failed` file: it means something systemic stopped the whole run — the embedding model failed to load, or the database did — and `error` says what. A broken file never gets that far; it's counted and stepped over.
 
 If Pinchy restarts mid-run, the run resumes on the next start. Nothing is lost and nothing is done twice: everything already indexed is skipped on the way back through.
 
-## 9. Chat with the agent
+## 8. Chat with the agent
 
 Go back to the agent's chat and start asking questions. The agent calls `knowledge_search` behind the scenes, which runs a hybrid search — semantic (vector) and full-text — over the passages you indexed, then answers using only what it found.
 

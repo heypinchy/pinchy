@@ -39,7 +39,7 @@ afterEach(() => {
 
 function fakeDeps(): IngestDeps {
   return {
-    embed: vi.fn(async (texts: string[]) => texts.map(() => Array(1024).fill(0.01))),
+    embed: vi.fn(async (texts: string[]) => texts.map(() => Array(768).fill(0.01))),
     extractPdf: vi.fn(async () => [
       { page: 1, text: "Onboarding starts on day one and every hire receives a laptop." },
     ]),
@@ -294,7 +294,7 @@ describe("kb index worker", () => {
     let embedCalls = 0;
     deps.embed = async (texts: string[]) => {
       if (++embedCalls > 2) throw new Error("connect ECONNREFUSED ollama.local:11434");
-      return texts.map(() => Array(1024).fill(0.01));
+      return texts.map(() => Array(768).fill(0.01));
     };
 
     await runNextIndexJob({ deps });
@@ -311,11 +311,13 @@ describe("kb index worker", () => {
     expect(row.detail).toMatchObject({ indexed: 2 });
   });
 
-  // The route's 503 only covers the moment of the request. Between enqueue and
-  // run — hours, on a real corpus — the Ollama setting can be cleared, so the
-  // worker resolves it itself and fails the job honestly instead of throwing an
-  // opaque error into the interval.
-  it("fails the job when the embedding endpoint is not configured at run time", async () => {
+  // The route's 503 precheck only covers the moment of the request. Between
+  // enqueue and run — hours, on a real corpus — the bundled model file could
+  // vanish (a broken remount), so the worker re-resolves the embedder itself
+  // and fails the job honestly instead of throwing an opaque error into the
+  // interval. KB_EMBEDDING_MODEL_PATH points at a nonexistent path in the
+  // integration config, so the production resolution path finds no model.
+  it("fails the job when the bundled embedding model is missing at run time", async () => {
     const agent = await makeAgent();
     writePdf(tmpRoot, "handbook.pdf");
     await enqueueIndexJob({
@@ -326,18 +328,17 @@ describe("kb index worker", () => {
       paths: [tmpRoot],
     });
 
-    // No deps injected and no Ollama setting seeded: the production resolution
-    // path runs and finds nothing.
+    // No deps injected: the production resolution path runs and finds no GGUF.
     const ran = await runNextIndexJob();
 
     expect(ran?.status).toBe("failed");
     const job = await getLatestIndexJobForAgent(agent.id);
     expect(job?.status).toBe("failed");
-    expect(job?.error).toContain("ollama_not_configured");
+    expect(job?.error).toContain("embedding_model_missing");
 
     const [row] = await reindexAuditRows();
     expect(row.outcome).toBe("failure");
-    expect((row.detail as { reason?: string }).reason).toContain("ollama_not_configured");
+    expect((row.detail as { reason?: string }).reason).toContain("embedding_model_missing");
   });
 });
 

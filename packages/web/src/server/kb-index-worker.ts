@@ -19,7 +19,7 @@ import { appendAuditLog } from "@/lib/audit";
 import { safeProviderError } from "@/lib/audit";
 import { recordAuditFailure } from "@/lib/audit-deferred";
 import { embedTexts } from "@/lib/knowledge/embeddings";
-import { EMBEDDING_DIMENSIONS, EMBEDDING_MODEL } from "@/lib/knowledge/constants";
+import { kbEmbedderAvailable, kbEmbeddingConfig } from "@/lib/knowledge/kb-embedder";
 import { extractPdfPages } from "@/lib/knowledge/pdf-extract";
 import { ingestPaths, type IngestDeps } from "@/lib/knowledge/ingest";
 import {
@@ -31,27 +31,20 @@ import {
 } from "@/lib/knowledge/index-jobs";
 import { KB_INDEX_WORKER_ACTOR, reindexAuditEntry } from "@/lib/knowledge/reindex-audit";
 import { zeroIngestResult, type IngestResult } from "@/lib/knowledge/types";
-import { PROVIDERS } from "@/lib/providers";
-import { getSetting } from "@/lib/settings";
 
-/** Resolves the production embedder + extractor, or null if the KB's embedding endpoint is not configured. */
-async function resolveIngestDeps(): Promise<IngestDeps | null> {
-  const ollamaBaseUrl = await getSetting(PROVIDERS["ollama-local"].settingsKey);
-  if (!ollamaBaseUrl) return null;
+/** Resolves the production embedder + extractor, or null if the bundled embedding model is missing (a broken image, not a config choice). */
+function resolveIngestDeps(): IngestDeps | null {
+  if (!kbEmbedderAvailable()) return null;
 
+  const cfg = kbEmbeddingConfig();
   return {
-    embed: (texts) =>
-      embedTexts(texts, {
-        baseUrl: ollamaBaseUrl,
-        model: EMBEDDING_MODEL,
-        expectedDim: EMBEDDING_DIMENSIONS,
-      }),
+    embed: (texts) => embedTexts(texts, cfg),
     extractPdf: extractPdfPages,
   };
 }
 
 export interface RunIndexJobOptions {
-  /** Test seam: injects a deterministic embedder/extractor. Production resolves them from the admin-configured Ollama endpoint. */
+  /** Test seam: injects a deterministic embedder/extractor. Production resolves them from the bundled in-process embeddinggemma GGUF. */
   deps?: IngestDeps;
 }
 
@@ -73,11 +66,10 @@ export async function runNextIndexJob(opts: RunIndexJobOptions = {}): Promise<Kb
   let counts: IngestResult = zeroIngestResult();
 
   try {
-    // Resolved per run, not per process: an admin can configure Ollama after a
-    // job is already queued, and the route's 503 only covers the moment of the
-    // request.
-    const deps = opts.deps ?? (await resolveIngestDeps());
-    if (!deps) throw new Error("ollama_not_configured");
+    // Resolved per run, not per process: the route's precheck only covers the
+    // moment of the request, and existsSync is cheap enough to re-check here.
+    const deps = opts.deps ?? resolveIngestDeps();
+    if (!deps) throw new Error("embedding_model_missing");
 
     counts = await ingestPaths(job.orgId, job.paths, deps, {
       onProgress: (progress) => {
@@ -87,10 +79,11 @@ export async function runNextIndexJob(opts: RunIndexJobOptions = {}): Promise<Kb
     });
   } catch (err) {
     // Ingest already absorbs a single unreadable file (counting it `failed`),
-    // so reaching here means something systemic — the embedding endpoint or the
-    // database — took the run down. Finishing the job (rather than leaving it
-    // `running`) is what frees the org's active-job slot: without it, one
-    // Ollama blip would wedge the queue until the next restart.
+    // so reaching here means something systemic — the embedder (a missing GGUF
+    // or a node-llama-cpp load failure) or the database — took the run down.
+    // Finishing the job (rather than leaving it `running`) is what frees the
+    // org's active-job slot: without it, one transient failure would wedge the
+    // queue until the next restart.
     //
     // The one case this cannot rescue is the database itself being the outage:
     // then finishIndexJob's own write fails too, the row stays `running`, and

@@ -20,7 +20,7 @@
 // run from this task, no key available here). Every piece below is read from
 // source, not observed live:
 //   1. Corpus seeding (seedSyntheticCorpus) — raw SQL INSERTs against
-//      kb_documents/kb_chunks with the committed bge-m3 embeddings fixture,
+//      kb_documents/kb_chunks with the committed embeddinggemma-300m embeddings fixture,
 //      mirroring `kb-retrieval-eval.integration.test.ts`'s Drizzle-based
 //      seeding but via the `postgres` package + stackDbUrl (this file runs
 //      as an external Playwright spec against a docker-mapped port, not
@@ -107,7 +107,7 @@ const CORPUS_ROOT = "/data";
 
 /**
  * Seeds `KB_EVAL_CORPUS` (`./corpus/manifest.ts`) into the live stack's
- * Postgres via raw SQL, using the COMMITTED bge-m3 embeddings fixture
+ * Postgres via raw SQL, using the COMMITTED embeddinggemma-300m embeddings fixture
  * (`./embeddings-fixture.ts`) — the same fixture Layer 1's
  * `kb-retrieval-eval.integration.test.ts` uses, so chunk embeddings need no
  * live embedder call. The real `retrieve()` (invoked through

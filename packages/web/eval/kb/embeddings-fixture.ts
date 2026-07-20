@@ -1,13 +1,14 @@
 /**
- * Shared fixture type + loader for the KB eval harness's committed bge-m3
- * embeddings (`corpus/embeddings.json`). Both `reembed.ts` (the writer) and
- * every reader — today `embeddings-drift.test.ts`, later Task 1.4's Layer-1
- * harness — import this ONE `loadEmbeddings()` rather than re-parsing the
- * file independently, so the fixture shape is defined in exactly one place.
+ * Shared fixture type + loader for the KB eval harness's committed
+ * embeddinggemma-300m embeddings (`corpus/embeddings.json`). Both `reembed.ts`
+ * (the writer) and every reader — today `embeddings-drift.test.ts`, later Task
+ * 1.4's Layer-1 harness — import this ONE `loadEmbeddings()` rather than
+ * re-parsing the file independently, so the fixture shape is defined in exactly
+ * one place.
  *
  * Why a committed fixture at all: the Layer-1 gate must be deterministic AND
- * keyless in CI. Freezing bge-m3 embeddings removes the model from the gate
- * loop entirely — only our SQL/RRF logic is under test. Regenerating is an
+ * keyless in CI. Freezing embeddinggemma embeddings removes the model from the
+ * gate loop entirely — only our SQL/RRF logic is under test. Regenerating is an
  * explicit, reviewable act (`pnpm kb-eval:reembed`), never an implicit one.
  */
 
@@ -23,17 +24,17 @@ export const EMBEDDINGS_FIXTURE_PATH = resolve(__dirname, "corpus/embeddings.jso
  *
  * ```json
  * {
- *   "model": "bge-m3",
- *   "dim": 1024,
- *   "chunks": { "<chunkId>": [ ...1024 floats ], ... },
- *   "queries": { "<goldQueryId>": [ ...1024 floats ], ... }
+ *   "model": "embeddinggemma-300m",
+ *   "dim": 768,
+ *   "chunks": { "<chunkId>": [ ...768 floats ], ... },
+ *   "queries": { "<goldQueryId>": [ ...768 floats ], ... }
  * }
  * ```
  */
 export interface EmbeddingsFixture {
-  /** Embedding model that produced every vector below. Expected "bge-m3". */
+  /** Embedding model that produced every vector below. Expected "embeddinggemma-300m". */
   model: string;
-  /** Vector width for every entry below. Expected 1024 (EMBEDDING_DIMENSIONS). */
+  /** Vector width for every entry below. Expected 768 (EMBEDDING_DIMENSIONS). */
   dim: number;
   /** One embedding per `KB_EVAL_CORPUS` chunk, keyed by `chunk.id`. */
   chunks: Record<string, number[]>;
@@ -47,7 +48,7 @@ export interface EmbeddingsFixture {
  * Throws a clear, actionable error — naming the missing fixture and the
  * regeneration command — instead of letting an ENOENT or JSON.parse
  * SyntaxError bubble up as an opaque stack trace. The fixture does not exist
- * until someone with a reachable bge-m3 Ollama endpoint runs
+ * until someone with the embeddinggemma GGUF on disk runs
  * `pnpm kb-eval:reembed`, so this is the expected first failure mode for any
  * fresh checkout or CI run that hasn't generated it yet.
  */
@@ -64,8 +65,8 @@ export function loadEmbeddings(fixturePath: string = EMBEDDINGS_FIXTURE_PATH): E
     if ((err as NodeJS.ErrnoException).code === "ENOENT") {
       throw new Error(
         `KB eval embeddings fixture not found at ${fixturePath}. ` +
-          "Run `pnpm kb-eval:reembed` (requires a reachable bge-m3 Ollama endpoint, " +
-          "see KB_EVAL_EMBED_URL) to generate it."
+          "Run `pnpm kb-eval:reembed` (requires the embeddinggemma GGUF on disk, " +
+          "set KB_EMBEDDING_MODEL_PATH) to generate it."
       );
     }
     throw err;

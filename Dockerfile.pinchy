@@ -87,6 +87,28 @@ RUN cd packages/web && pnpm build
 RUN rm -rf packages/web/.next/cache
 
 # ---------------------------------------------------------------------------
+# Stage: embedding-model — fetch the pinned embeddinggemma GGUF the knowledge
+# base embeds with in-process (node-llama-cpp, provider "local"). Isolated in
+# its own stage so the ~300 MB blob and the curl/apt tooling never land in the
+# runtime image — the runtime stage COPYs only the verified file.
+#
+# Same pinned HuggingFace revision + sha256 as the agent-memory model in
+# Dockerfile.openclaw: both features load the identical GGUF, so the two must
+# stay in lockstep (enforced by memory-embedding-pin-drift.test.ts). curl's
+# retry flags matter because this is a large, uncached blob whose transient HF
+# hiccup would otherwise redden an unrelated PR; the sha256sum -c enforces
+# integrity regardless of how many retries it took.
+# ---------------------------------------------------------------------------
+FROM mirror.gcr.io/library/node:22-slim AS embedding-model
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates curl \
+    && rm -rf /var/lib/apt/lists/*
+RUN mkdir -p /opt/embedding-models \
+    && curl -fsSL --retry 5 --retry-all-errors --retry-delay 5 \
+       -o /opt/embedding-models/embeddinggemma-300m-qat-Q8_0.gguf \
+       https://huggingface.co/ggml-org/embeddinggemma-300m-qat-q8_0-GGUF/resolve/66f974f8cd48cc3b9c41c516b95508e75b4bee64/embeddinggemma-300m-qat-Q8_0.gguf \
+    && echo "6fa0c02a9c302be6f977521d399b4de3a46310a4f2621ee0063747881b673f67  /opt/embedding-models/embeddinggemma-300m-qat-Q8_0.gguf" | sha256sum -c -
+
+# ---------------------------------------------------------------------------
 # Stage: runtime — minimal image that actually boots the server.
 # ---------------------------------------------------------------------------
 FROM mirror.gcr.io/library/node:22-slim AS runtime
@@ -155,6 +177,12 @@ COPY --from=build /app/packages/web/next.config.ts /app/packages/web/drizzle.con
 # The built Next.js app, WITHOUT the build-only `.next/cache` (stripped in the
 # build stage). This is the compiled production app the custom server serves.
 COPY --from=build /app/packages/web/.next ./packages/web/.next
+
+# The embeddinggemma GGUF the KB index worker + search route load in-process
+# (kbEmbeddingConfig reads EMBEDDING_MODEL_PATH = /opt/embedding-models/...).
+# Verified in the embedding-model stage; copied here so the running web process
+# can embed without any network/Ollama dependency (#715).
+COPY --from=embedding-model /opt/embedding-models /opt/embedding-models
 
 # Plugin manifests at /app/packages/plugins/<name>/openclaw.plugin.json.
 # plugin-manifest-loader.ts statically imports these via the relative path

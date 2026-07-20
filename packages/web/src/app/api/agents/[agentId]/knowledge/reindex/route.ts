@@ -9,8 +9,7 @@ import { activeAgents, type AgentPluginConfig } from "@/db/schema";
 import { enqueueIndexJob, getLatestIndexJobForAgent } from "@/lib/knowledge/index-jobs";
 import { reindexAuditEntry } from "@/lib/knowledge/reindex-audit";
 import { DEFAULT_ORG_ID } from "@/lib/knowledge/constants";
-import { getSetting } from "@/lib/settings";
-import { PROVIDERS } from "@/lib/providers";
+import { kbEmbedderAvailable } from "@/lib/knowledge/kb-embedder";
 import { deferAuditLog } from "@/lib/audit-deferred";
 import { safeProviderError, type EntityRef } from "@/lib/audit";
 
@@ -84,14 +83,12 @@ export const POST = withAdmin<RouteContext>(async (request, { params }, session)
     return NextResponse.json({ jobId: null, status: "noop", pathCount: 0 });
   }
 
-  // The embedding model is fixed (bge-m3) but still needs a reachable Ollama
-  // base URL — the same admin-configured "Ollama (Local)" provider setting the
-  // search route and the chat/vision path already resolve. Checked here as well
-  // as in the worker: queueing a job that can only fail, and saying so hours
-  // later, is worse than saying it now. The worker re-checks because the
-  // setting can change while a job waits.
-  const ollamaBaseUrl = await getSetting(PROVIDERS["ollama-local"].settingsKey);
-  if (!ollamaBaseUrl) {
+  // The embedding model is bundled (embeddinggemma, loaded in-process — no
+  // Ollama), so the only way this trips is a broken image/mount. Checked here
+  // as well as in the worker: queueing a job that can only fail, and saying so
+  // hours later, is worse than saying it now. The worker re-checks because it
+  // runs long after the request.
+  if (!kbEmbedderAvailable()) {
     deferAuditLog(
       reindexAuditEntry({
         actorType: "user",
@@ -99,11 +96,11 @@ export const POST = withAdmin<RouteContext>(async (request, { params }, session)
         agent: agentRef,
         outcome: "failure",
         pathCount: targetPaths.length,
-        reason: "ollama_not_configured",
+        reason: "embedding_model_missing",
       })
     );
     return NextResponse.json(
-      { error: "Knowledge base embedding endpoint not configured" },
+      { error: "Knowledge base embedding model not available" },
       { status: 503 }
     );
   }

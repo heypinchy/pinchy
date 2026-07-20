@@ -2,7 +2,7 @@
  * KB Eval Harness Layer 1 — the deterministic retrieval-quality gate.
  *
  * Seeds the frozen synthetic corpus (`eval/kb/corpus/manifest.ts`) into a
- * real PostgreSQL test database with the committed bge-m3 embeddings
+ * real PostgreSQL test database with the committed embeddinggemma-300m embeddings
  * (`eval/kb/corpus/embeddings.json`), then runs the REAL `retrieve()` — our
  * SQL/RRF hybrid retrieval — against every gold query
  * (`eval/kb/corpus/gold-queries.ts`), scoring recall@10 / MRR / nDCG@10 via
@@ -11,7 +11,7 @@
  * The embedder is dependency-injected with a fake that ignores its input and
  * always returns the COMMITTED query embedding for the gold query being
  * scored (`embeddings.queries[<goldQueryId>]`). This removes the embedding
- * MODEL from the gate's loop entirely — a real bge-m3 call is nondeterministic
+ * MODEL from the gate's loop entirely — a real embeddinggemma-300m call is nondeterministic
  * in ways that would make CI flaky, and this gate exists to catch regressions
  * in OUR SQL/RRF/scoping logic, not in the model. `embeddings-drift.test.ts`
  * is the separate guard that keeps the committed fixture honest against the
@@ -46,7 +46,7 @@ const ORG_ID = "org-kb-eval";
 
 /**
  * Floors chosen from OBSERVED aggregate + per-axis numbers on this frozen
- * corpus + committed bge-m3 fixture (`KB_EVAL_VERBOSE=1 pnpm test:db ...`
+ * corpus + committed embeddinggemma-300m fixture (`KB_EVAL_VERBOSE=1 pnpm test:db ...`
  * prints the same JSON this comment is transcribed from), rounded DOWN and
  * set strictly BELOW observed so the gate trips on a real regression but
  * tolerates normal noise (e.g. an HNSW `ef_search` tweak nudging candidate
@@ -62,7 +62,7 @@ const ORG_ID = "org-kb-eval";
  *   distractor    recall 1.0  mrr 1.0   ndcg 1.0
  *   cross-lingual recall 1.0  mrr 0.75  ndcg 0.8155
  *
- * recall@10 is a perfect 1.0 on EVERY axis, including cross-lingual — bge-m3
+ * recall@10 is a perfect 1.0 on EVERY axis, including cross-lingual — embeddinggemma-300m
  * bridges DE/EN cleanly on this corpus, so there is no cross-lingual retrieval
  * gap to flag. path-citation and cross-lingual are the only two axes below a
  * perfect MRR (both 0.75): the relevant chunk is always recalled, just not

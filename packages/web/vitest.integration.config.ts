@@ -48,6 +48,11 @@ export default defineConfig({
       // 32-byte hex key so module-load doesn't error.
       ENCRYPTION_KEY: "0".repeat(64),
       AUDIT_HMAC_SECRET: "deadbeef".repeat(8),
+      // The KB's native embedder is exercised via injected fake deps in every
+      // integration test; only the worker's "model missing" path relies on the
+      // real resolution. Point it at a path that cannot exist so that check is
+      // deterministically false regardless of what the host has bundled.
+      KB_EMBEDDING_MODEL_PATH: "/nonexistent/kb-embeddinggemma-not-bundled-in-tests.gguf",
       NODE_ENV: "test",
     },
   },

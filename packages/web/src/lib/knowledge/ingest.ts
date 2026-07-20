@@ -55,7 +55,7 @@ import type { IngestPage, IngestResult } from "./types";
 export type { IngestPage, IngestResult } from "./types";
 
 export interface IngestDeps {
-  /** Batch-embeds chunk texts into dense vectors (bge-m3, 1024-dim). Prod: `(t) => embedTexts(t, embedCfg)`. */
+  /** Batch-embeds chunk texts into dense vectors (embeddinggemma-300m, 768-dim). Prod: `(t) => embedTexts(t, embedCfg)`. */
   embed: (texts: string[]) => Promise<number[][]>;
   /** Extracts per-page text from a PDF at an absolute path. Prod: pdfjs-based (./pdf-extract.ts). */
   extractPdf: (absPath: string) => Promise<IngestPage[]>;

@@ -6,6 +6,7 @@
 import { describe, it, expect } from "vitest";
 import { pgTable, serial } from "drizzle-orm/pg-core";
 import { vector } from "@/db/vector";
+import { EMBEDDING_DIMENSIONS } from "@/lib/knowledge/constants";
 
 const probe = pgTable("vector_probe", {
   id: serial("id").primaryKey(),
@@ -13,8 +14,9 @@ const probe = pgTable("vector_probe", {
 });
 
 describe("vector customType", () => {
-  it("emits a vector(1024) SQL column type", () => {
-    expect(probe.embedding.getSQLType()).toBe("vector(1024)");
+  it("emits a vector column type at the embedder's width (768, embeddinggemma)", () => {
+    expect(probe.embedding.getSQLType()).toBe(`vector(${EMBEDDING_DIMENSIONS})`);
+    expect(probe.embedding.getSQLType()).toBe("vector(768)");
   });
 
   it("serializes a number[] to the pgvector literal format on write", () => {

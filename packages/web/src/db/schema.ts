@@ -903,8 +903,8 @@ export const kbDocuments = pgTable(
 
 // kb_chunks denormalizes org_id and source_path from the parent document so
 // retrieval (Task 7) can filter by allowed_paths without a join. embedding
-// is vector(1024) (bge-m3, see ./vector); the FTS tsv generated column +
-// GIN index and the HNSW vector index are hand-added raw SQL in the
+// is vector(768) (embeddinggemma-300m, see ./vector); the FTS tsv generated
+// column + GIN index and the HNSW vector index are hand-added raw SQL in the
 // generated migration (drizzle-kit cannot express either).
 export const kbChunks = pgTable(
   "kb_chunks",

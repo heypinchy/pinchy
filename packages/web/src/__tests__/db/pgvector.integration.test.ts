@@ -4,7 +4,7 @@
  * not just that the migration file exists.
  *
  * Foundation for the knowledge-base RAG index: later work adds
- * kb_documents/kb_chunks tables with vector(1024) embedding columns (bge-m3)
+ * kb_documents/kb_chunks tables with vector(768) embedding columns (embeddinggemma-300m)
  * and HNSW indexes. This test only proves the extension + `<=>` cosine
  * distance operator are available.
  */
