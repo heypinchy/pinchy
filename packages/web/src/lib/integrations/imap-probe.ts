@@ -1,5 +1,6 @@
 import { ImapFlow } from "imapflow";
 import nodemailer from "nodemailer";
+import { connect as netConnect } from "node:net";
 import type { ImapTestInput } from "@/lib/schemas/imap";
 
 // Shared IMAP/SMTP probe logic used by BOTH:
@@ -38,6 +39,95 @@ export function friendlyError(error: unknown): string {
     return "Could not establish a secure connection — check the security setting";
   }
   return "Connection failed — check your settings and try again";
+}
+
+// Structured counterpart to friendlyError(): a machine-readable `code` plus a
+// human-readable message, so callers (the IMAP test route) can branch on the
+// failure category — e.g. to decide whether it's worth probing raw SMTP port
+// reachability — instead of pattern-matching the friendly string again.
+// friendlyError() itself is kept unchanged/exported for its existing callers.
+export type ProbeFailureCode = "timeout" | "refused" | "dns" | "auth" | "tls" | "unknown";
+
+// Per-leg (IMAP or SMTP) outcome of a connection test — see ImapTestResult in
+// @/lib/schemas/imap for how the two legs combine into the full API response.
+export type LegResult = { ok: true } | { ok: false; code: ProbeFailureCode; message: string };
+
+export function classifyProbeError(error: unknown): { code: ProbeFailureCode; message: string } {
+  const message = error instanceof Error ? error.message : String(error);
+  const lower = message.toLowerCase();
+
+  if (
+    lower.includes("auth") ||
+    lower.includes("invalid login") ||
+    lower.includes("invalid credentials") ||
+    lower.includes("535")
+  ) {
+    return { code: "auth", message: "Authentication failed — check the username and password" };
+  }
+  if (lower.includes("timed out") || lower.includes("timeout") || lower.includes("etimedout")) {
+    return {
+      code: "timeout",
+      message:
+        "Connection timed out — cloud hosts often block this port; try a different port or check the host and port",
+    };
+  }
+  if (lower.includes("econnrefused")) {
+    return { code: "refused", message: "Connection refused — check the host and port" };
+  }
+  if (lower.includes("enotfound") || lower.includes("eai_again")) {
+    return { code: "dns", message: "Could not resolve the host — check the hostname" };
+  }
+  if (lower.includes("ehostunreach") || lower.includes("could not connect")) {
+    return {
+      code: "refused",
+      message: "Could not connect to the server — check the host and port",
+    };
+  }
+  if (lower.includes("certificate") || lower.includes("self signed") || lower.includes("ssl")) {
+    return {
+      code: "tls",
+      message: "Could not establish a secure connection — check the security setting",
+    };
+  }
+  return { code: "unknown", message: "Connection failed — check your settings and try again" };
+}
+
+export type SmtpPortProbe = { port: number; reachable: boolean };
+
+// Bound the raw TCP probe so a filtered/black-holed port can't hang the
+// user-facing request. This is deliberately just a TCP connect — no TLS
+// handshake, no auth — since all we need to know is whether the OS-level
+// connection succeeds within a reasonable time.
+const SMTP_PORT_PROBE_TIMEOUT_MS = 2500;
+
+function probeTcpPort(host: string, port: number, timeoutMs: number): Promise<boolean> {
+  return new Promise((resolve) => {
+    const socket = netConnect({ host, port, timeout: timeoutMs });
+    const finish = (reachable: boolean) => {
+      socket.removeAllListeners();
+      socket.destroy();
+      resolve(reachable);
+    };
+    socket.once("connect", () => finish(true));
+    socket.once("timeout", () => finish(false));
+    socket.once("error", () => finish(false));
+  });
+}
+
+// SECURITY: this connects ONLY to the already-provided, caller-supplied
+// smtpHost on a fixed, hardcoded port list — never to a host/port derived
+// from user-controlled input beyond what the caller already validated and
+// intended to probe. Do not widen this to accept arbitrary ports/hosts.
+export async function probeSmtpPorts(
+  host: string,
+  ports: number[] = [465, 587, 25]
+): Promise<SmtpPortProbe[]> {
+  return Promise.all(
+    ports.map(async (port) => ({
+      port,
+      reachable: await probeTcpPort(host, port, SMTP_PORT_PROBE_TIMEOUT_MS),
+    }))
+  );
 }
 
 // A single `security` field can't be simultaneously correct for IMAP

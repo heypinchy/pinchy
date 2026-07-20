@@ -514,6 +514,106 @@ describe("ImapConnectStep", () => {
     expect(apiPost).toHaveBeenCalledTimes(1);
   });
 
+  it("shows a switch-port banner on a switch_smtp_port suggestion, and retries with the new port on click", async () => {
+    vi.mocked(apiPost).mockResolvedValueOnce({
+      ok: false,
+      imap: { ok: true },
+      smtp: {
+        ok: false,
+        code: "timeout",
+        message: "Connection timed out — cloud hosts often block this port",
+      },
+      smtpPortProbe: [
+        { port: 465, reachable: false },
+        { port: 587, reachable: true },
+        { port: 25, reachable: false },
+      ],
+      suggestion: { kind: "switch_smtp_port", port: 587, security: "starttls" },
+      error: "Connection timed out — cloud hosts often block this port",
+    }); // first test: fails on 465
+    vi.mocked(apiPost).mockResolvedValueOnce({
+      ok: true,
+      imap: { ok: true },
+      smtp: { ok: true },
+    }); // retry test: succeeds on 587
+    vi.mocked(apiPost).mockResolvedValueOnce({ id: "conn-1", name: "someone@example.com" }); // create
+
+    const user = userEvent.setup();
+    const { onSuccess } = renderStep();
+    await user.click(screen.getByRole("button", { name: /enter server settings manually/i }));
+
+    await user.type(screen.getByLabelText(/^imap host$/i), "imap.example.com");
+    await user.type(screen.getByLabelText(/^smtp host$/i), "smtp.example.com");
+    await user.clear(screen.getByLabelText(/^smtp port$/i));
+    await user.type(screen.getByLabelText(/^smtp port$/i), "465");
+    await fillEmailAndPassword(user);
+
+    await user.click(screen.getByRole("button", { name: /test & save/i }));
+
+    await waitFor(() => {
+      expect(screen.getByText(/we can reach port 587 from this server/i)).toBeInTheDocument();
+    });
+    expect(screen.getByRole("button", { name: /switch to 587 & retry/i })).toBeInTheDocument();
+    // Per-leg status is visible alongside the banner.
+    expect(screen.getByText(/imap ✓/i)).toBeInTheDocument();
+    expect(screen.getByText(/smtp ✗/i)).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: /switch to 587 & retry/i }));
+
+    // The form field updates to reflect the switch.
+    await waitFor(() => {
+      expect(screen.getByLabelText(/^smtp port$/i)).toHaveValue("587");
+    });
+
+    // The retry re-invoked the test endpoint with the new port.
+    await waitFor(() => {
+      expect(apiPost).toHaveBeenNthCalledWith(
+        2,
+        "/api/integrations/imap/test",
+        expect.objectContaining({ smtpPort: 587, security: "starttls" })
+      );
+    });
+
+    // Retry succeeded, so the flow continues on to create the connection.
+    await waitFor(() => {
+      expect(onSuccess).toHaveBeenCalledWith({ id: "conn-1", name: "someone@example.com" });
+    });
+  });
+
+  it("shows an all-SMTP-blocked banner when no outbound SMTP port is reachable", async () => {
+    vi.mocked(apiPost).mockResolvedValueOnce({
+      ok: false,
+      imap: { ok: true },
+      smtp: {
+        ok: false,
+        code: "timeout",
+        message: "Connection timed out — cloud hosts often block this port",
+      },
+      smtpPortProbe: [
+        { port: 465, reachable: false },
+        { port: 587, reachable: false },
+        { port: 25, reachable: false },
+      ],
+      suggestion: { kind: "all_smtp_blocked" },
+      error: "Connection timed out — cloud hosts often block this port",
+    });
+
+    const user = userEvent.setup();
+    renderStep();
+    await user.click(screen.getByRole("button", { name: /enter server settings manually/i }));
+
+    await user.type(screen.getByLabelText(/^imap host$/i), "imap.example.com");
+    await user.type(screen.getByLabelText(/^smtp host$/i), "smtp.example.com");
+    await fillEmailAndPassword(user);
+
+    await user.click(screen.getByRole("button", { name: /test & save/i }));
+
+    await waitFor(() => {
+      expect(screen.getByText(/we can.t reach any outbound smtp port/i)).toBeInTheDocument();
+    });
+    expect(screen.queryByRole("button", { name: /switch to .* & retry/i })).not.toBeInTheDocument();
+  });
+
   it("surfaces a Save ApiError to the user without calling onSuccess", async () => {
     vi.mocked(apiPost).mockResolvedValueOnce({ ok: true }); // test
     vi.mocked(apiPost).mockRejectedValueOnce(

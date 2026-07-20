@@ -160,6 +160,52 @@ The server didn't respond in time — usually a network issue or an incorrect ho
 
 ---
 
+## Ports, TLS & cloud firewalls
+
+Pinchy runs the connection test from the exact server that will send your mail — so if the SMTP leg times out or gets refused, that's real evidence about what this server can reach, not a guess. We use it: on a connection timeout or refusal, we also probe the standard SMTP ports (`465`, `587`, `25`) directly from the container, and if a different port is reachable, we show a banner with a one-click "Switch & retry" button for it. Click it and we update the SMTP port and security setting for you and re-run the test — nothing switches silently.
+
+<Aside type="note">
+  This only ever happens for connection-level failures (timeout or refused). An
+  authentication or TLS/certificate failure never triggers a port probe — those
+  aren't firewall problems, so a different port wouldn't fix them.
+</Aside>
+
+### Why cloud hosts block SMTP ports
+
+Cloud providers block outbound mail ports by default on new servers — it's an anti-spam measure, not a Pinchy limitation. The exact ports blocked vary by provider:
+
+| Provider          | Blocked outbound | Open            | Unblocking                                                                         |
+| ----------------- | ---------------- | --------------- | ---------------------------------------------------------------------------------- |
+| Hetzner           | 25, 465          | 587             | Usually opens automatically after ~1 month of account age, or via a support ticket |
+| DigitalOcean      | 25, 465, 587     | none by default | Open a support ticket requesting outbound mail ports be unblocked                  |
+| AWS / GCP / Azure | 25               | 465, 587        | Port 25 stays blocked by policy; use 465 or 587 instead                            |
+
+Port `587` (STARTTLS submission) is the safest default for a new cloud server — it's the one port most providers leave open. Port `465` (implicit TLS) is the next most likely to work. Port `25` (unencrypted SMTP relay) is blocked almost everywhere and isn't worth troubleshooting for outbound mail.
+
+### Testing reachability yourself
+
+You can check the same thing Pinchy's probe checks, directly from the server (or a shell on the same host):
+
+```bash
+# Raw TCP reachability (no TLS, no auth) — mirrors what Pinchy's probe does
+nc -vz smtp.example.com 587
+
+# Full TLS handshake against an implicit-TLS port (465)
+openssl s_client -connect smtp.example.com:465
+```
+
+`nc` reporting "succeeded" (or `openssl` reaching a certificate dump instead of hanging) means the port is reachable from this server. A hang followed by nothing means it's filtered — usually the host's outbound firewall, not your mail provider.
+
+### Requesting an unblock
+
+If every standard port is blocked (Pinchy's "all outbound SMTP ports appear blocked" banner), the fix has to happen at the host level:
+
+- **Hetzner**: open a support ticket asking to unblock outbound SMTP for your server/project. New accounts are usually auto-unblocked after roughly a month of account age.
+- **DigitalOcean**: open a support ticket from the control panel requesting outbound mail ports be enabled for your account.
+- **AWS / GCP / Azure**: port 25 is blocked by long-standing policy and generally isn't unblocked on request — use port 465 or 587 instead, which these providers leave open.
+
+---
+
 ## What's next
 
 - [Connect Email](/guides/connect-email/) — overview and comparing Gmail, Microsoft 365, and IMAP

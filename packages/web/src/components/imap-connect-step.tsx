@@ -14,7 +14,7 @@ import {
 import { Loader2, AlertTriangle, Eye, EyeOff } from "lucide-react";
 import { toast } from "sonner";
 import { apiGet, apiPost, ApiError } from "@/lib/api-client";
-import type { ImapTestInput, ImapCreateInput } from "@/lib/schemas/imap";
+import type { ImapTestInput, ImapCreateInput, ImapTestResult } from "@/lib/schemas/imap";
 
 interface AutodiscoverResponse {
   config: Partial<{
@@ -108,11 +108,16 @@ export function ImapConnectStep({ onSuccess, onCancel, onBack }: ImapConnectStep
     "idle"
   );
   const [testError, setTestError] = useState<string | null>(null);
+  // The full structured diagnostic from the last "Test & Save" attempt (only
+  // populated when the server actually returned one — an ApiError from a
+  // network/5xx failure has no per-leg breakdown, so testResult stays null).
+  const [testResult, setTestResult] = useState<ImapTestResult | null>(null);
   const [saveError, setSaveError] = useState<string | null>(null);
 
   function updateField<K extends keyof FormState>(key: K, value: FormState[K]) {
     setForm((prev) => ({ ...prev, [key]: value }));
     setTestError(null);
+    setTestResult(null);
     setSaveError(null);
     if (flightStatus === "failure") {
       setFlightStatus("idle");
@@ -202,42 +207,44 @@ export function ImapConnectStep({ onSuccess, onCancel, onBack }: ImapConnectStep
       return next;
     });
     setTestError(null);
+    setTestResult(null);
     setSaveError(null);
     if (flightStatus === "failure") {
       setFlightStatus("idle");
     }
   }
 
-  function buildTestBody(): ImapTestInput {
+  // `overrides` lets the "Switch to {port} & retry" banner re-run the test
+  // with the suggested SMTP port/security immediately, without waiting on a
+  // setForm() state update to land first (React state updates are not
+  // synchronous, so reading form.smtpPort right after setForm would still see
+  // the stale value). smtpPort is a number here (matching ImapTestInput),
+  // unlike FormState.smtpPort which holds the raw string input value.
+  type TestOverrides = { smtpPort?: number; security?: Security };
+
+  function buildTestBody(overrides?: TestOverrides): ImapTestInput {
     return {
       imapHost: form.imapHost,
       imapPort: Number(form.imapPort),
       smtpHost: form.smtpHost,
-      smtpPort: Number(form.smtpPort),
+      smtpPort: overrides?.smtpPort ?? Number(form.smtpPort),
       username: form.username,
       password: form.password,
-      security: form.security,
+      security: overrides?.security ?? form.security,
     };
   }
 
-  async function handleTestAndSave() {
+  async function handleTestAndSave(overrides?: TestOverrides) {
     setTestError(null);
+    setTestResult(null);
     setSaveError(null);
     setFlightStatus("testing");
 
-    try {
-      const result = await apiPost<{ ok: boolean; error?: string }>(
-        "/api/integrations/imap/test",
-        buildTestBody()
-      );
+    const testBody = buildTestBody(overrides);
+    let result: ImapTestResult;
 
-      if (!result.ok) {
-        setFlightStatus("failure");
-        setTestError(result.error ?? "Connection test failed");
-        setServerSettingsExpanded(true);
-        setUserExpanded(true);
-        return;
-      }
+    try {
+      result = await apiPost<ImapTestResult>("/api/integrations/imap/test", testBody);
     } catch (err) {
       setFlightStatus("failure");
       setTestError(err instanceof ApiError ? err.message : "Connection test failed");
@@ -246,10 +253,20 @@ export function ImapConnectStep({ onSuccess, onCancel, onBack }: ImapConnectStep
       return;
     }
 
+    setTestResult(result);
+
+    if (!result.ok) {
+      setFlightStatus("failure");
+      setTestError(result.error ?? "Connection test failed");
+      setServerSettingsExpanded(true);
+      setUserExpanded(true);
+      return;
+    }
+
     setFlightStatus("saving");
 
     const body: ImapCreateInput = {
-      ...buildTestBody(),
+      ...testBody,
       ...(form.senderName.trim() ? { senderName: form.senderName.trim() } : {}),
     };
 
@@ -267,6 +284,20 @@ export function ImapConnectStep({ onSuccess, onCancel, onBack }: ImapConnectStep
     }
   }
 
+  // The user clicks to apply a suggested port switch — we never auto-switch
+  // silently. Updates the visible form fields AND immediately re-runs the
+  // test with the same values (passed explicitly, see buildTestBody above).
+  function handleSwitchPortAndRetry(port: number, security: "starttls" | "tls") {
+    setForm((prev) => ({ ...prev, smtpPort: String(port), security }));
+    setTouched((prev) => {
+      const next = new Set(prev);
+      next.add("smtpPort");
+      next.add("security");
+      return next;
+    });
+    void handleTestAndSave({ smtpPort: port, security });
+  }
+
   const inFlight = flightStatus === "testing" || flightStatus === "saving";
   const canSubmit = !inFlight && form.email.trim().length > 0 && form.password.trim().length > 0;
 
@@ -274,6 +305,20 @@ export function ImapConnectStep({ onSuccess, onCancel, onBack }: ImapConnectStep
     !serverSettingsExpanded && CONFIDENT_SOURCES.has(source)
       ? `Server settings found — IMAP ${form.imapHost}:${form.imapPort} · SMTP ${form.smtpHost}:${form.smtpPort}`
       : null;
+
+  // Per-leg status line ("IMAP ✓ · SMTP ✗ (couldn't reach smtp.host:465)").
+  // Only renders for the new structured contract — a caught ApiError (no
+  // per-leg breakdown) or an older mocked `{ ok, error }` shape leaves
+  // testResult.imap/testResult.smtp undefined, so this stays hidden rather
+  // than throwing.
+  const legStatus =
+    testResult && !testResult.ok && testResult.imap && testResult.smtp
+      ? `IMAP ${testResult.imap.ok ? "✓" : "✗"} · SMTP ${testResult.smtp.ok ? "✓" : "✗"}${
+          !testResult.smtp.ok ? ` (couldn't reach ${form.smtpHost}:${form.smtpPort})` : ""
+        }`
+      : null;
+
+  const suggestion = testResult && !testResult.ok ? testResult.suggestion : undefined;
 
   return (
     <div className="space-y-4">
@@ -435,10 +480,45 @@ export function ImapConnectStep({ onSuccess, onCancel, onBack }: ImapConnectStep
             </Select>
           </div>
 
+          {legStatus && <p className="text-xs text-muted-foreground">{legStatus}</p>}
+
           {testError && (
             <div className="flex items-start gap-2 text-sm text-destructive">
               <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
               <span>{testError}</span>
+            </div>
+          )}
+
+          {suggestion?.kind === "switch_smtp_port" && (
+            <div className="space-y-2 rounded-md border border-amber-300 bg-amber-50 p-3 text-sm dark:border-amber-900 dark:bg-amber-950/40">
+              <p>
+                Port {form.smtpPort} is commonly blocked by cloud hosts like Hetzner and
+                DigitalOcean — but we can reach port {suggestion.port} from this server.
+              </p>
+              <Button
+                type="button"
+                size="sm"
+                onClick={() => handleSwitchPortAndRetry(suggestion.port, suggestion.security)}
+              >
+                Switch to {suggestion.port} & retry
+              </Button>
+            </div>
+          )}
+
+          {suggestion?.kind === "all_smtp_blocked" && (
+            <div className="space-y-1 rounded-md border border-amber-300 bg-amber-50 p-3 text-sm dark:border-amber-900 dark:bg-amber-950/40">
+              <p>
+                We can&apos;t reach any outbound SMTP port (465, 587, or 25) from this server. Ask
+                your host to unblock outbound SMTP, or send through a relay.{" "}
+                <a
+                  href="https://docs.heypinchy.com/guides/connect-email-imap#ports-tls-and-cloud-firewalls"
+                  target="_blank"
+                  rel="noreferrer"
+                  className="underline"
+                >
+                  See the troubleshooting guide.
+                </a>
+              </p>
             </div>
           )}
         </div>
@@ -462,7 +542,7 @@ export function ImapConnectStep({ onSuccess, onCancel, onBack }: ImapConnectStep
             Cancel
           </Button>
         </div>
-        <Button type="button" disabled={!canSubmit} onClick={handleTestAndSave}>
+        <Button type="button" disabled={!canSubmit} onClick={() => handleTestAndSave()}>
           {flightStatus === "testing" ? (
             <>
               <Loader2 className="mr-2 h-4 w-4 animate-spin" />

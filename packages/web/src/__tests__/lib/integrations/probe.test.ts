@@ -20,11 +20,12 @@ vi.mock("@/lib/integrations/brave-probe", () => ({
 const mockTestImapLogin = vi.fn();
 const mockTestSmtpVerify = vi.fn();
 // Only the network I/O (testImapLogin/testSmtpVerify) is mocked; friendlyError
-// comes from the REAL module via importActual. The imap branch of probe.ts
-// classifies transient-vs-auth by matching the real friendlyError wording
-// (/authentication failed/i), so re-implementing it here would let a reword of
-// the real string silently break auth-failure detection while this test stayed
-// green. Importing the real one makes that coupling a real compile/run check.
+// and classifyProbeError come from the REAL module via importActual. The imap
+// branch of probe.ts classifies transient-vs-auth via the real
+// classifyProbeError()'s code === "auth", so re-implementing that mapping
+// here would let a change to the real classifier silently break auth-failure
+// detection while this test stayed green. Importing the real one makes that
+// coupling a real compile/run check.
 vi.mock("@/lib/integrations/imap-probe", async (importActual) => {
   const actual = await importActual<typeof import("@/lib/integrations/imap-probe")>();
   return {

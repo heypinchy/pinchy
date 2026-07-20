@@ -2,7 +2,12 @@ import { OdooClient } from "odoo-node";
 import { fetchOdooSchema } from "@/lib/integrations/odoo-sync";
 import { probeBraveApiKey } from "@/lib/integrations/brave-probe";
 import { odooCredentialsSchema } from "@/lib/integrations/odoo-schema";
-import { testImapLogin, testSmtpVerify, friendlyError } from "@/lib/integrations/imap-probe";
+import {
+  testImapLogin,
+  testSmtpVerify,
+  friendlyError,
+  classifyProbeError,
+} from "@/lib/integrations/imap-probe";
 import { imapTestSchema } from "@/lib/schemas/imap";
 
 /**
@@ -112,7 +117,10 @@ export async function probeIntegrationCredentials(
       // connection to auth_failed. Everything else (timeouts, connection refused,
       // TLS/cert errors, socket hang up, any unmapped error) is a transient hiccup,
       // so a healthy connection is never falsely flagged.
-      const isAuthFailure = /authentication failed/i.test(reason);
+      // Uses the shared per-leg classifier (also used by the "Test & Save"
+      // route) rather than re-matching friendlyError's wording, so the two
+      // callers can never classify the same error differently.
+      const isAuthFailure = classifyProbeError(err).code === "auth";
       return isAuthFailure
         ? { success: false, reason }
         : { success: false, transient: true, reason };
