@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useEffect, useCallback } from "react";
-import { usePathname, useRouter } from "next/navigation";
+import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { authClient } from "@/lib/auth-client";
 import { useTabParam, SETTINGS_TABS, type SettingsTab } from "@/hooks/use-tab-param";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
@@ -77,11 +77,15 @@ export function SettingsPageContent({
   const { data: session } = authClient.useSession();
   const pathname = usePathname();
   const router = useRouter();
+  const searchParams = useSearchParams();
   const visibleTabs: SettingsTab[] = isAdmin
     ? [...SETTINGS_TABS]
     : ["context", "profile", "telegram", "support"];
   const [activeTab, setActiveTab, isTabExplicit] = useTabParam("context", visibleTabs, initialTab, {
     keepParamForDefault: true,
+    // Drilling into a tab on mobile pushes a history entry so the browser
+    // Back button (and back gesture) returns to the menu, not off the page.
+    pushOnEnter: true,
   });
   // Mark the (admin-only) Integrations tab when a connection needs attention, so
   // the error trail continues from the sidebar badge down to the exact tab.
@@ -91,8 +95,13 @@ export function SettingsPageContent({
   // (level 1) vs. a selected tab's content with a back header (level 2).
   // Desktop always shows the split layout regardless of this flag.
   const goToMenu = useCallback(() => {
-    router.replace(pathname, { scroll: false });
-  }, [pathname, router]);
+    // Only drop `tab`; keep any unrelated query params (e.g. an OAuth `?error=`)
+    // so the back control doesn't silently discard page state.
+    const params = new URLSearchParams(searchParams.toString());
+    params.delete("tab");
+    const query = params.toString();
+    router.replace(query ? `${pathname}?${query}` : pathname, { scroll: false });
+  }, [pathname, router, searchParams]);
 
   const [status, setStatus] = useState<ProviderStatus | null>(null);
   const [loading, setLoading] = useState(true);
@@ -197,7 +206,7 @@ export function SettingsPageContent({
           <TabsList
             variant="sidebar"
             className={cn(
-              "h-fit w-full shrink-0 flex-col items-stretch gap-0.5 md:sticky md:top-0 md:w-56 md:self-start md:overflow-y-auto md:max-h-[calc(100dvh-4rem)]",
+              "h-fit w-full shrink-0 flex-col items-stretch gap-0.5 md:sticky md:top-8 md:w-56 md:self-start md:overflow-y-auto md:max-h-[calc(100dvh-4rem)]",
               isTabExplicit ? "hidden md:flex" : "flex md:flex"
             )}
           >

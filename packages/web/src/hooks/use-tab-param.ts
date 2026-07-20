@@ -45,17 +45,24 @@ export type AgentSettingsTab = (typeof AGENT_SETTINGS_TABS)[number];
  * "the default tab was explicitly selected" (e.g. a mobile drill-down
  * menu) should pass `keepParamForDefault: true` so selecting the
  * default tab still writes `?tab=<default>` instead of clearing it.
+ *
+ * `pushOnEnter: true` makes the first selection out of the menu level
+ * (i.e. while not yet `isExplicit`) a `router.push` instead of `replace`,
+ * so the browser Back button returns to the menu in a mobile drill-down.
+ * Switching between tabs afterwards still uses `replace` to avoid piling
+ * up one history entry per tab click.
  */
 export function useTabParam<T extends string>(
   defaultTab: T,
   validTabs: readonly T[],
   initialTab?: string | null,
-  options?: { keepParamForDefault?: boolean }
+  options?: { keepParamForDefault?: boolean; pushOnEnter?: boolean }
 ): readonly [T, (tab: string) => void, boolean] {
   const searchParams = useSearchParams();
   const pathname = usePathname();
   const router = useRouter();
   const keepParamForDefault = options?.keepParamForDefault ?? false;
+  const pushOnEnter = options?.pushOnEnter ?? false;
 
   const rawTab = (searchParams.get("tab") ?? initialTab ?? null) as T | null;
   const isExplicit = Boolean(rawTab && validTabs.includes(rawTab));
@@ -73,11 +80,25 @@ export function useTabParam<T extends string>(
       }
 
       const query = params.toString();
-      router.replace(query ? `${pathname}?${query}` : pathname, {
-        scroll: false,
-      });
+      const url = query ? `${pathname}?${query}` : pathname;
+      // Drilling in from the menu (not yet explicit) gets its own history
+      // entry so Back returns to the menu; every later switch replaces.
+      if (pushOnEnter && !isExplicit) {
+        router.push(url, { scroll: false });
+      } else {
+        router.replace(url, { scroll: false });
+      }
     },
-    [defaultTab, keepParamForDefault, pathname, router, searchParams, validTabs]
+    [
+      defaultTab,
+      isExplicit,
+      keepParamForDefault,
+      pushOnEnter,
+      pathname,
+      router,
+      searchParams,
+      validTabs,
+    ]
   );
 
   return [tab, setTab, isExplicit] as const;

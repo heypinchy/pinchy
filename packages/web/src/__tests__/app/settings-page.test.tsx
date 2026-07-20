@@ -107,7 +107,7 @@ vi.mock("@/components/settings-profile", () => ({
 }));
 
 vi.mock("next/navigation", () => ({
-  useRouter: vi.fn().mockReturnValue({ replace: vi.fn() }),
+  useRouter: vi.fn().mockReturnValue({ replace: vi.fn(), push: vi.fn() }),
   useSearchParams: vi.fn().mockReturnValue(new URLSearchParams()),
   usePathname: vi.fn().mockReturnValue("/settings"),
 }));
@@ -561,6 +561,19 @@ describe("Settings Page", () => {
       expect(router.replace).toHaveBeenCalledWith("/settings", { scroll: false });
     });
 
+    it("preserves unrelated query params when the back control is clicked", async () => {
+      vi.mocked(useSearchParams).mockReturnValue(new URLSearchParams("tab=profile&foo=bar"));
+      setupAdminFetchMocks();
+
+      render(<SettingsPage isAdmin={isCurrentTestAdmin} />);
+
+      const backButton = await screen.findByRole("button", { name: /back to settings/i });
+      await userEvent.click(backButton);
+
+      const router = useRouter();
+      expect(router.replace).toHaveBeenCalledWith("/settings?foo=bar", { scroll: false });
+    });
+
     it("keeps the active tab indicator on the sidebar variant", async () => {
       setupAdminFetchMocks();
 
@@ -568,6 +581,28 @@ describe("Settings Page", () => {
 
       const contextTab = await screen.findByRole("tab", { name: /context/i });
       expect(contextTab).toHaveAttribute("data-state", "active");
+    });
+
+    // Drift guard: the mobile back-header label (from TAB_LABELS) must match the
+    // active sidebar trigger's text, so renaming a tab can't leave a stale label.
+    // Covers the "AI Provider" disambiguation, the trickiest label.
+    it.each([
+      ["profile", "Profile"],
+      ["provider", "AI Provider"],
+    ])("mobile back header label matches the '%s' tab trigger", async (tab, expected) => {
+      vi.mocked(useSearchParams).mockReturnValue(new URLSearchParams(`tab=${tab}`));
+      setupAdminFetchMocks();
+
+      const { container } = render(<SettingsPage isAdmin={isCurrentTestAdmin} />);
+
+      const backButton = await screen.findByRole("button", { name: /back to settings/i });
+      const headerLabel = backButton.parentElement?.querySelector("span")?.textContent?.trim();
+      const activeTrigger = container
+        .querySelector('[role="tab"][data-state="active"]')
+        ?.textContent?.trim();
+
+      expect(headerLabel).toBe(expected);
+      expect(headerLabel).toBe(activeTrigger);
     });
   });
 });
