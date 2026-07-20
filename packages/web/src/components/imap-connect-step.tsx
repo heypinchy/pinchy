@@ -311,10 +311,20 @@ export function ImapConnectStep({ onSuccess, onCancel, onBack }: ImapConnectStep
   // per-leg breakdown) or an older mocked `{ ok, error }` shape leaves
   // testResult.imap/testResult.smtp undefined, so this stays hidden rather
   // than throwing.
+  //
+  // The "couldn't reach" suffix is only truthful for connection-level failures
+  // (timeout/refused). An auth or TLS failure means the host WAS reached, so
+  // claiming it was unreachable there would be misleading.
+  const smtpUnreachable =
+    testResult &&
+    !testResult.ok &&
+    testResult.smtp &&
+    !testResult.smtp.ok &&
+    (testResult.smtp.code === "timeout" || testResult.smtp.code === "refused");
   const legStatus =
     testResult && !testResult.ok && testResult.imap && testResult.smtp
       ? `IMAP ${testResult.imap.ok ? "✓" : "✗"} · SMTP ${testResult.smtp.ok ? "✓" : "✗"}${
-          !testResult.smtp.ok ? ` (couldn't reach ${form.smtpHost}:${form.smtpPort})` : ""
+          smtpUnreachable ? ` (couldn't reach ${form.smtpHost}:${form.smtpPort})` : ""
         }`
       : null;
 

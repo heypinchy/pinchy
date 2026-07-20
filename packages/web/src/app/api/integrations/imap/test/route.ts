@@ -42,7 +42,7 @@ function buildSuggestion(failingPort: number, portProbe: SmtpPortProbe[]): ImapT
   if (isReachable(portProbe, 587) && failingPort !== 587) {
     return { kind: "switch_smtp_port", port: 587, security: "starttls" };
   }
-  if (isReachable(portProbe, 465) && failingPort === 587) {
+  if (isReachable(portProbe, 465) && failingPort !== 465) {
     return { kind: "switch_smtp_port", port: 465, security: "tls" };
   }
   if (!isReachable(portProbe, 465) && !isReachable(portProbe, 587)) {

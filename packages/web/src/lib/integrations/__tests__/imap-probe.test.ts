@@ -58,7 +58,14 @@ const { mockNetConnect, fakeSockets } = vi.hoisted(() => {
       }),
       destroy: vi.fn(),
       emit: (event: string, ...args: unknown[]) => {
-        for (const listener of listeners.get(event) ?? []) listener(...args);
+        const registered = listeners.get(event) ?? [];
+        // Mirror Node's EventEmitter: an "error" event with no listener throws
+        // (crashes the process), so a test that emits a late error reproduces
+        // the real unhandled-'error' hazard instead of silently swallowing it.
+        if (event === "error" && registered.length === 0) {
+          throw args[0] instanceof Error ? args[0] : new Error("Unhandled 'error' event");
+        }
+        for (const listener of registered) listener(...args);
       },
     };
     fakeSockets.push(socket);
@@ -255,6 +262,13 @@ describe("imap-probe", () => {
       );
     });
 
+    it("classifies a DNS failure on an auth-named host as connect-failure, not auth", () => {
+      // The hostname contains "auth"; the ENOTFOUND code must still win.
+      const message = friendlyError(new Error("getaddrinfo ENOTFOUND smtp-auth.example.com"));
+      expect(message).toMatch(/could not connect/i);
+      expect(message).not.toMatch(/authentication/i);
+    });
+
     it("maps TLS/certificate errors to a secure-connection message", () => {
       expect(friendlyError(new Error("self signed certificate"))).toMatch(/secure connection/i);
     });
@@ -280,6 +294,13 @@ describe("imap-probe", () => {
       ["self signed certificate", new Error("self signed certificate"), "tls"],
       ["ssl wording", new Error("wrong version number (ssl)"), "tls"],
       ["unmapped error", new Error("something totally unexpected"), "unknown"],
+      // Regression: the network-error CODE must win over a substring match on
+      // the (user-controlled) hostname. "smtp-auth.…" is a common mail host
+      // name; a DNS/timeout/refused failure on it must NOT be reported as an
+      // auth failure (which would also wrongly skip the port-reachability probe).
+      ["ENOTFOUND on an auth-named host", new Error("getaddrinfo ENOTFOUND smtp-auth.example.com"), "dns"], // prettier-ignore
+      ["ETIMEDOUT on an auth-named host", new Error("connect ETIMEDOUT 1.2.3.4:587 smtp-auth.example.com"), "timeout"], // prettier-ignore
+      ["ECONNREFUSED on an auth-named host", new Error("connect ECONNREFUSED smtp-auth.example.com:465"), "refused"], // prettier-ignore
     ] as const)("classifies %s as code %s", (_label, error, expectedCode) => {
       const result = classifyProbeError(error);
       expect(result.code).toBe(expectedCode);
@@ -344,6 +365,17 @@ describe("imap-probe", () => {
       fakeSockets[0].emit("connect");
 
       await expect(resultPromise).resolves.toEqual([{ port: 2525, reachable: true }]);
+    });
+
+    it("does not crash on a late error emitted after the port already resolved", async () => {
+      const resultPromise = probeSmtpPorts("smtp.example.com", [587]);
+      fakeSockets[0].emit("connect");
+      await expect(resultPromise).resolves.toEqual([{ port: 587, reachable: true }]);
+
+      // destroy() on a still-connecting socket can emit a late 'error'; the
+      // probe must keep an error listener attached so it's handled, not thrown
+      // as an unhandled 'error' event (which would crash the process).
+      expect(() => fakeSockets[0].emit("error", new Error("late ECONNRESET"))).not.toThrow();
     });
   });
 });

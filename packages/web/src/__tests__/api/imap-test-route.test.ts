@@ -300,6 +300,24 @@ describe("POST /api/integrations/imap/test", () => {
       expect(body.suggestion).toEqual({ kind: "switch_smtp_port", port: 465, security: "tls" });
     });
 
+    it("suggests switching to 465 when the failing port is 25 and only 465 is reachable", async () => {
+      // Regression: previously the 465 suggestion only fired when the failing
+      // port was exactly 587, so failing on 25 with 465 reachable (587 blocked)
+      // gave no suggestion at all despite a reachable alternative.
+      mockTransport.verify.mockRejectedValue(new Error("connect ETIMEDOUT 1.2.3.4:25"));
+      mockProbeSmtpPorts.mockResolvedValue([
+        { port: 465, reachable: true },
+        { port: 587, reachable: false },
+        { port: 25, reachable: false },
+      ]);
+
+      const { POST } = await import("@/app/api/integrations/imap/test/route");
+      const response = await POST(makeRequest({ ...validBody, smtpPort: 25 }), routeContext());
+      const body = await response.json();
+
+      expect(body.suggestion).toEqual({ kind: "switch_smtp_port", port: 465, security: "tls" });
+    });
+
     it("reports all_smtp_blocked when neither 465 nor 587 is reachable", async () => {
       mockTransport.verify.mockRejectedValue(new Error("connect ETIMEDOUT 1.2.3.4:465"));
       mockProbeSmtpPorts.mockResolvedValue([

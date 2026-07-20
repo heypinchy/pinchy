@@ -11,11 +11,27 @@ import type { ImapTestInput } from "@/lib/schemas/imap";
 // between the two callers.
 
 // Maps low-level probe errors to short, friendly messages that never leak a
-// stack trace or the password. Order matters: more specific patterns first.
+// stack trace or the password. Order matters: unambiguous network-error CODES
+// are matched BEFORE the fuzzy "auth" wordlist, because that wordlist matches
+// against the whole message — which includes the (user-controlled) hostname.
+// A host named e.g. "smtp-auth.example.com" would otherwise turn a DNS/timeout/
+// refused failure into a bogus "authentication failed".
 export function friendlyError(error: unknown): string {
   const message = error instanceof Error ? error.message : String(error);
   const lower = message.toLowerCase();
 
+  if (lower.includes("timed out") || lower.includes("timeout") || lower.includes("etimedout")) {
+    return "Connection timed out — check the host and port";
+  }
+  if (
+    lower.includes("econnrefused") ||
+    lower.includes("enotfound") ||
+    lower.includes("eai_again") ||
+    lower.includes("ehostunreach") ||
+    lower.includes("could not connect")
+  ) {
+    return "Could not connect to the server — check the host and port";
+  }
   if (
     lower.includes("auth") ||
     lower.includes("invalid login") ||
@@ -23,17 +39,6 @@ export function friendlyError(error: unknown): string {
     lower.includes("535")
   ) {
     return "Authentication failed — check the username and password";
-  }
-  if (lower.includes("timed out") || lower.includes("timeout") || lower.includes("etimedout")) {
-    return "Connection timed out — check the host and port";
-  }
-  if (
-    lower.includes("econnrefused") ||
-    lower.includes("enotfound") ||
-    lower.includes("ehostunreach") ||
-    lower.includes("could not connect")
-  ) {
-    return "Could not connect to the server — check the host and port";
   }
   if (lower.includes("certificate") || lower.includes("self signed") || lower.includes("ssl")) {
     return "Could not establish a secure connection — check the security setting";
@@ -56,14 +61,12 @@ export function classifyProbeError(error: unknown): { code: ProbeFailureCode; me
   const message = error instanceof Error ? error.message : String(error);
   const lower = message.toLowerCase();
 
-  if (
-    lower.includes("auth") ||
-    lower.includes("invalid login") ||
-    lower.includes("invalid credentials") ||
-    lower.includes("535")
-  ) {
-    return { code: "auth", message: "Authentication failed — check the username and password" };
-  }
+  // Unambiguous network-error CODES first. The "auth" branch below matches a
+  // fuzzy wordlist against the whole message — which includes the
+  // (user-controlled) hostname — so a host named e.g. "smtp-auth.example.com"
+  // would otherwise misclassify a DNS/timeout/refused failure as "auth" and
+  // wrongly skip the SMTP port-reachability probe the caller runs for
+  // connection-level failures.
   if (lower.includes("timed out") || lower.includes("timeout") || lower.includes("etimedout")) {
     return {
       code: "timeout",
@@ -82,6 +85,14 @@ export function classifyProbeError(error: unknown): { code: ProbeFailureCode; me
       code: "refused",
       message: "Could not connect to the server — check the host and port",
     };
+  }
+  if (
+    lower.includes("auth") ||
+    lower.includes("invalid login") ||
+    lower.includes("invalid credentials") ||
+    lower.includes("535")
+  ) {
+    return { code: "auth", message: "Authentication failed — check the username and password" };
   }
   if (lower.includes("certificate") || lower.includes("self signed") || lower.includes("ssl")) {
     return {
@@ -103,11 +114,18 @@ const SMTP_PORT_PROBE_TIMEOUT_MS = 2500;
 function probeTcpPort(host: string, port: number, timeoutMs: number): Promise<boolean> {
   return new Promise((resolve) => {
     const socket = netConnect({ host, port, timeout: timeoutMs });
+    let settled = false;
     const finish = (reachable: boolean) => {
-      socket.removeAllListeners();
+      if (settled) return;
+      settled = true;
       socket.destroy();
       resolve(reachable);
     };
+    // Keep the error listener attached for the socket's whole lifetime rather
+    // than removing all listeners on the first settle: destroy() on a
+    // still-connecting socket can emit a late 'error', and an 'error' event
+    // with no listener crashes the process. The `settled` guard makes any such
+    // late event a no-op instead of a second resolve.
     socket.once("connect", () => finish(true));
     socket.once("timeout", () => finish(false));
     socket.once("error", () => finish(false));

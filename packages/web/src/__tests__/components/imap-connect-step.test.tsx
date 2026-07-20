@@ -614,6 +614,37 @@ describe("ImapConnectStep", () => {
     expect(screen.queryByRole("button", { name: /switch to .* & retry/i })).not.toBeInTheDocument();
   });
 
+  it("does not claim the SMTP host was unreachable on an auth failure (server was reached)", async () => {
+    vi.mocked(apiPost).mockResolvedValueOnce({
+      ok: false,
+      imap: { ok: true },
+      smtp: {
+        ok: false,
+        code: "auth",
+        message: "Authentication failed — check the username and password",
+      },
+      error: "Authentication failed — check the username and password",
+    });
+
+    const user = userEvent.setup();
+    renderStep();
+    await user.click(screen.getByRole("button", { name: /enter server settings manually/i }));
+
+    await user.type(screen.getByLabelText(/^imap host$/i), "imap.example.com");
+    await user.type(screen.getByLabelText(/^smtp host$/i), "smtp.example.com");
+    await fillEmailAndPassword(user);
+
+    await user.click(screen.getByRole("button", { name: /test & save/i }));
+
+    // Per-leg status still shows the SMTP leg failed…
+    await waitFor(() => {
+      expect(screen.getByText(/smtp ✗/i)).toBeInTheDocument();
+    });
+    // …but must NOT say the host was unreachable — auth failures mean the
+    // server WAS reached, so a "couldn't reach" claim would be misleading.
+    expect(screen.queryByText(/couldn't reach/i)).not.toBeInTheDocument();
+  });
+
   it("surfaces a Save ApiError to the user without calling onSuccess", async () => {
     vi.mocked(apiPost).mockResolvedValueOnce({ ok: true }); // test
     vi.mocked(apiPost).mockRejectedValueOnce(
