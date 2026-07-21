@@ -16,10 +16,10 @@ function makeFakeClient(readyState: number) {
 // these four have no `calls` entry of their own, so they are driven by index.
 // Named here so inserting a step is one edit rather than a hunt for magic
 // numbers.
-const STEP_OPENCLAW_DISCONNECT = 6;
-const STEP_WS_DRAIN = 7;
-const STEP_CLOSE_HTTP_SERVER = 8;
-const STEP_CLOSE_DB = 9;
+const STEP_OPENCLAW_DISCONNECT = 7;
+const STEP_WS_DRAIN = 8;
+const STEP_CLOSE_HTTP_SERVER = 9;
+const STEP_CLOSE_DB = 10;
 
 function makeDeps(overrides: Partial<ShutdownDeps> = {}, calls: string[] = []): ShutdownDeps {
   const wssClose = vi.fn((cb: () => void) => cb());
@@ -29,6 +29,9 @@ function makeDeps(overrides: Partial<ShutdownDeps> = {}, calls: string[] = []): 
     }),
     stopChatErrorGc: vi.fn(async () => {
       calls.push("stopChatErrorGc");
+    }),
+    stopApprovalSweep: vi.fn(async () => {
+      calls.push("stopApprovalSweep");
     }),
     stopAuditVerifyJob: vi.fn(async () => {
       calls.push("stopAuditVerifyJob");
@@ -58,12 +61,12 @@ function makeDeps(overrides: Partial<ShutdownDeps> = {}, calls: string[] = []): 
 }
 
 describe("buildShutdownSteps (#263)", () => {
-  it("returns exactly 10 steps in the documented order", async () => {
+  it("returns exactly 11 steps in the documented order", async () => {
     const calls: string[] = [];
     const deps = makeDeps({}, calls);
     const steps = buildShutdownSteps(deps);
 
-    expect(steps).toHaveLength(10);
+    expect(steps).toHaveLength(11);
 
     for (const step of steps) {
       await step();
@@ -72,6 +75,7 @@ describe("buildShutdownSteps (#263)", () => {
     expect(calls).toEqual([
       "stopUploadGc",
       "stopChatErrorGc",
+      "stopApprovalSweep",
       "stopAuditVerifyJob",
       "stopKbIndexWorker",
       "stopUsagePoller",
@@ -101,6 +105,7 @@ describe("buildShutdownSteps (#263)", () => {
 
     expect(deps.stopUploadGc).toHaveBeenCalledTimes(1);
     expect(deps.stopChatErrorGc).toHaveBeenCalledTimes(1);
+    expect(deps.stopApprovalSweep).toHaveBeenCalledTimes(1);
     expect(deps.stopAuditVerifyJob).toHaveBeenCalledTimes(1);
     expect(deps.stopUsagePoller).toHaveBeenCalledTimes(1);
     expect(deps.stopMemoryAuditWatcher).toHaveBeenCalledTimes(1);

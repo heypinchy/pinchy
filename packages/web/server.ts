@@ -360,6 +360,11 @@ const startup = app.prepare().then(async () => {
   const { startChatErrorGc, stopChatErrorGc } = await import("./src/server/chat-error-gc");
   startChatErrorGc();
 
+  // Flip overdue pending tool-call confirmations to `expired` (with their
+  // audit rows) and reap settled ones past retention, on the same cadence.
+  const { startApprovalSweep, stopApprovalSweep } = await import("./src/server/approval-sweep");
+  startApprovalSweep();
+
   // Periodically re-verify the audit-log hash chain from the last checkpoint
   // forward, so a break introduced via direct DB access (bypassing the
   // no_update/no_delete/no_truncate triggers) is caught automatically instead
@@ -393,6 +398,7 @@ const startup = app.prepare().then(async () => {
     buildShutdownSteps({
       stopUploadGc: () => stopUploadGc(),
       stopChatErrorGc: () => stopChatErrorGc(),
+      stopApprovalSweep: () => stopApprovalSweep(),
       stopAuditVerifyJob: () => stopAuditVerifyJob(),
       stopKbIndexWorker: () => stopKbIndexWorker(),
       stopUsagePoller: () => stopUsagePoller(),

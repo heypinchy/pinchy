@@ -183,7 +183,8 @@ export type AuditEventType =
   | "approval.granted"
   | "approval.denied"
   | "approval.consumed"
-  | "approval.expired";
+  | "approval.expired"
+  | "approval.gc";
 
 interface HmacFieldsV1 {
   timestamp: Date;
@@ -491,6 +492,20 @@ export type AuditLogEntry =
         toolName: string;
         argsDigest: string;
         reason?: string;
+        /** Set on sweep-emitted rows (approval.expired) so analysts can
+         * correlate one sweep run (AGENTS.md §"Audit logging rules"). */
+        sweepId?: string;
+      };
+    })
+  | (AuditLogBase & {
+      // Retention GC for settled tool_approval rows — one summary row per
+      // sweep (bulk housekeeping delete), not per deleted row: each row's
+      // lifecycle is already in the trail via the approval.* events above.
+      eventType: "approval.gc";
+      detail: {
+        swept: number;
+        retentionDays: number;
+        sweepId: string;
       };
     })
   | (AuditLogBase & {

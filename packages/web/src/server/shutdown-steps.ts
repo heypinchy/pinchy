@@ -16,6 +16,7 @@ export type ShutdownStopFn = () => void | Promise<void>;
 export interface ShutdownDeps {
   stopUploadGc: ShutdownStopFn;
   stopChatErrorGc: ShutdownStopFn;
+  stopApprovalSweep: ShutdownStopFn;
   stopAuditVerifyJob: ShutdownStopFn;
   stopKbIndexWorker: ShutdownStopFn;
   stopUsagePoller: ShutdownStopFn;
@@ -36,6 +37,7 @@ export function buildShutdownSteps(deps: ShutdownDeps): ShutdownStopFn[] {
   return [
     () => deps.stopUploadGc(),
     () => deps.stopChatErrorGc(),
+    () => deps.stopApprovalSweep(),
     () => deps.stopAuditVerifyJob(),
     // Stops the poll for NEW index jobs. A run already in flight is not
     // awaited: it can have hours left, which is far past any container's
