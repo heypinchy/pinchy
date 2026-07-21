@@ -42,6 +42,7 @@ Every step lands in the [audit trail](/concepts/audit-trail): the request, the d
 - **The check is enforced on the server**, inside the agent runtime — not in the browser. A gated tool can't run without a matching, approved, single-use confirmation, so the control holds even if someone pokes at the UI.
 - **It's per person.** A confirmation you approve is yours; it never clears the same action for a teammate on a shared agent.
 - **It fails safe.** If a confirmation isn't approved in time, it expires and the action stays blocked.
+- **Confirmations live in the Pinchy app.** On other channels (say, Telegram) there's no way to approve yet, so a gated tool stays blocked there — the safe default. If you want an agent to act freely on a channel, leave its tools un-gated; channel-side approval is on our list.
 
 <Aside type="note">
   Today the approver is the person driving the agent (a human-in-the-loop
