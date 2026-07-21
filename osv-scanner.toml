@@ -21,3 +21,23 @@ reason = "Transitive devDep via openclaw → @anthropic-ai/vertex-sdk → google
 [[IgnoredVulns]]
 id = "GHSA-q8mj-m7cp-5q26"
 reason = "Transitive devDep via openclaw → @earendil-works/pi-ai → @modelcontextprotocol/sdk → express → body-parser → qs@6.15.1 (test tool only — not in production build; pnpm audit --prod clean)"
+
+# Residual astro advisories in docs/pnpm-lock.yaml whose only fix crosses the
+# Astro 6→7 major (which drags @astrojs/starlight 0.38→0.41). docs/ is a
+# standalone Starlight site (docs.heypinchy.com), separate from the Pinchy
+# production Docker image. The highest-severity docs astro advisory (CVSS 8.2)
+# and the js-yaml one were already fixed via safe in-major bumps; these three
+# (CVSS 5.3 / 5.1 / 2.1) are allow-listed until the framework major lands.
+# Tracked in https://github.com/heypinchy/pinchy/issues/851 — remove on upgrade.
+
+[[IgnoredVulns]]
+id = "GHSA-4g3v-8h47-v7g6"
+reason = "astro@6.4.8, fixed only in 7.1.0 (major). Docs-only Starlight site, not in the Pinchy production image. Tracked in #851."
+
+[[IgnoredVulns]]
+id = "GHSA-f48w-9m4c-m7f5"
+reason = "astro@6.4.8, fixed only in 7.0.6 (major). Docs-only Starlight site, not in the Pinchy production image. Tracked in #851."
+
+[[IgnoredVulns]]
+id = "GHSA-7pw4-f3q4-r2p2"
+reason = "astro@6.4.8, fixed only in 7.0.4 (major). Docs-only Starlight site, not in the Pinchy production image. Tracked in #851."
