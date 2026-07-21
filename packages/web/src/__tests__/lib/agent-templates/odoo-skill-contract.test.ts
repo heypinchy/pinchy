@@ -68,13 +68,14 @@ describe("odoo template ↔ skill contract", () => {
     }
   });
 
-  it("templates that manage mail.activity (create/write) carry odoo-activities", () => {
+  it("templates that manage mail.activity (create) carry odoo-activities; others do not", () => {
     for (const [id, t] of entries) {
       const managesActivities = modelsWith(t, "create").some((m) => m.model === "mail.activity");
       const carries = (t.defaultSkills ?? []).includes("odoo-activities");
-      if (managesActivities) {
-        expect(carries, `${id} manages mail.activity but is missing odoo-activities`).toBe(true);
-      }
+      expect(
+        carries,
+        `${id} manages-mail.activity=${managesActivities} but odoo-activities=${carries}`
+      ).toBe(managesActivities);
     }
   });
 

@@ -13,12 +13,12 @@ Never construct ref strings yourself. Formats like `"account.move,37"`, `"37"`, 
 
 ## When to use
 
-When the user sends a file that belongs on a record — a receipt or invoice for a
-bill, a delivery note or packing slip for a transfer, a signed contract
-amendment or medical certificate for an HR record, a specification or design
-asset for a task, a quality report for a manufacturing order, supporting
-documents for an approval. Always confirm the target record with the user before
-attaching.
+Use this whenever the user sends a file that belongs on a record — a receipt or
+invoice for a bill, a delivery note or packing slip for a transfer, a signed
+contract amendment or medical certificate for an HR record, a specification or
+design asset for a task, a quality report for a manufacturing order, or
+supporting documents for an approval. Always confirm the target record with the
+user before attaching.
 
 Source documents attached to accounting and approval records are the audit trail
 external auditors ask for — attaching before posting/approval eliminates the

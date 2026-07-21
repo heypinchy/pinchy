@@ -77,7 +77,7 @@ String with field name and direction: `"date_order desc"` or `"amount_total asc"
 - Format currency as EUR with 2 decimals
 - Format dates as DD.MM.YYYY
 
-## Important Rules
+## General Rules
 
 - Never guess or fabricate data — only report what the API returns
 - If a query returns too many results, use count first and suggest filters
