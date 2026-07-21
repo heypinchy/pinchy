@@ -5,19 +5,44 @@
 # image. These packages are only present in the lockfile because
 # openclaw (added as a devDependency for the schema-validation
 # integration test) pulls them in. They have no impact on Pinchy users.
+#
+# MAL-2026-3432, GHSA-w5hq-g745-h8pq (uuid) and GHSA-q8mj-m7cp-5q26 (qs) were
+# dropped 2026-07-21: osv-scanner reported them as UNUSED (fail-on-unused) — no
+# lockfile package matches them anymore. GHSA-v2v4-37r5-5v8g stays (still used;
+# MAL-2026-3432 is one of its aliases, so it remains covered). Re-add with a
+# fresh reason if osv-scanner flags any of them again.
 
 [[IgnoredVulns]]
 id = "GHSA-v2v4-37r5-5v8g"
 reason = "Transitive devDep via openclaw (test tool only — not in production build)"
 
+# brace-expansion (via glob/minimatch in eslint, vitest and other build/test
+# tooling) — 0 occurrences in the production dependency tree (`pnpm list
+# brace-expansion --prod` is empty for both root and @pinchy/web), so it ships
+# to no user. The GHSA-3jxr fix (5.0.7) also breaks @eslint/config-array's
+# `expand is not a function` at lint time, so bumping it is worse than useless
+# here. Ignored as build-only, like the openclaw/astro entries.
 [[IgnoredVulns]]
-id = "MAL-2026-3432"
-reason = "Transitive devDep via openclaw (test tool only — not in production build)"
+id = "GHSA-3jxr-9vmj-r5cp"
+reason = "brace-expansion — build/test tooling only (0 occurrences in prod tree); the 5.0.7 fix breaks @eslint/config-array"
+
+# astro (docs/pnpm-lock.yaml) is the static-site generator that builds the
+# documentation site AT BUILD TIME. It ships in no runtime image and reaches no
+# Pinchy user — the same "build tooling, not in production" category as the
+# openclaw devDep above. These three advisories fix only in astro 7.x, which
+# @astrojs/starlight 0.38 does not support (its peer is astro ^6); clearing them
+# needs a coordinated Starlight major upgrade, tracked separately. The one
+# High-severity astro advisory (GHSA-vj59-8hwv-xxmv, 8.2) IS fixed here — astro
+# is bumped to 6.4.8, which resolves it within the ^6 range.
 
 [[IgnoredVulns]]
-id = "GHSA-w5hq-g745-h8pq"
-reason = "Transitive devDep via openclaw → @anthropic-ai/vertex-sdk → google-auth-library → gaxios → uuid@9.0.1 (test tool only — not in production build; openclaw container has its own dep chain)"
+id = "GHSA-4g3v-8h47-v7g6"
+reason = "astro — docs static-site build tooling (docs/pnpm-lock.yaml), not shipped to users; fixes only in astro 7.x, which Starlight 0.38 blocks"
 
 [[IgnoredVulns]]
-id = "GHSA-q8mj-m7cp-5q26"
-reason = "Transitive devDep via openclaw → @earendil-works/pi-ai → @modelcontextprotocol/sdk → express → body-parser → qs@6.15.1 (test tool only — not in production build; pnpm audit --prod clean)"
+id = "GHSA-7pw4-f3q4-r2p2"
+reason = "astro — docs static-site build tooling (docs/pnpm-lock.yaml), not shipped to users; fixes only in astro 7.x, which Starlight 0.38 blocks"
+
+[[IgnoredVulns]]
+id = "GHSA-f48w-9m4c-m7f5"
+reason = "astro — docs static-site build tooling (docs/pnpm-lock.yaml), not shipped to users; fixes only in astro 7.x, which Starlight 0.38 blocks"
