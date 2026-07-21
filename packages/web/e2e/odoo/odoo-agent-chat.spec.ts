@@ -30,6 +30,9 @@ import {
   FAKE_OLLAMA_ODOO_RECONCILE_REF_TRIGGER,
   FAKE_OLLAMA_ODOO_ATTACH_FILE_REF_TRIGGER,
   FAKE_OLLAMA_ODOO_ATTACH_FILE_REF_FILENAME,
+  FAKE_OLLAMA_ODOO_DUP_BILL_REF,
+  FAKE_OLLAMA_ODOO_CREATE_DUP_BLOCK_TRIGGER,
+  FAKE_OLLAMA_ODOO_CREATE_DUP_OVERRIDE_TRIGGER,
   FAKE_OLLAMA_PORT,
   startFakeOllama,
   stopFakeOllama,
@@ -406,6 +409,26 @@ test.describe("Odoo dispatch probe (pinchy-odoo plugin coverage)", () => {
         company_id: [1, "Helmcraft GmbH"],
       },
     ]);
+    // Duplicate guard (pinchy#721): a POSTED vendor bill already on file. A
+    // second odoo_create with this same ref+move_type must be blocked; the
+    // override probe re-files it deliberately. It carries no lines, so the
+    // mock's amount-computation leaves it untouched. Crucially it is seeded
+    // AFTER the reconcile bill (9601): the reconcile probe's odoo_read passes no
+    // `order`, so the mock returns account.move in INSERTION order, keeping 9601
+    // first and the probe's `refs[0]` on the reconcile bill. The id (9801 > 9601)
+    // is a belt-and-suspenders in case a default id sort is ever introduced.
+    // Do not reorder these seeds.
+    await seedOdooRecords("account.move", [
+      {
+        id: 9801,
+        name: "BILL/E2E-DUP",
+        move_type: "in_invoice",
+        state: "posted",
+        ref: FAKE_OLLAMA_ODOO_DUP_BILL_REF,
+        company_id: [1, "Helmcraft GmbH"],
+        partner_id: [1, "Müller GmbH"],
+      },
+    ]);
     await seedOdooRecords("account.move.line", [
       {
         id: 9611,
@@ -451,6 +474,7 @@ test.describe("Odoo dispatch probe (pinchy-odoo plugin coverage)", () => {
       { model: "purchase.order", operation: "read" },
       { model: "purchase.order", operation: "write" },
       { model: "account.move", operation: "read" },
+      { model: "account.move", operation: "create" },
       { model: "account.move.line", operation: "write" },
       { model: "account.payment", operation: "read" },
       { model: "ir.attachment", operation: "create" },
@@ -475,6 +499,7 @@ test.describe("Odoo dispatch probe (pinchy-odoo plugin coverage)", () => {
           "odoo_set_approval",
           "odoo_reconcile",
           "odoo_attach_file",
+          "odoo_create",
         ],
       },
       dispatchCookie
@@ -801,5 +826,60 @@ test.describe("Odoo dispatch probe (pinchy-odoo plugin coverage)", () => {
         await expect(readyChip).toBeVisible({ timeout: 20_000 });
       },
     });
+  });
+
+  // ── Deterministic vendor-bill duplicate guard (pinchy#721) ────────────────
+  // A vendor bill with ref ODOO_DUP_BILL_REF is already on file (seeded in
+  // beforeAll). These two probes dispatch odoo_create for the SAME ref and
+  // assert the AUDIT outcome end-to-end: a blind create is BLOCKED (failure),
+  // and the explicit allow_duplicate:true override proceeds (success). This is
+  // the audit half of the acceptance — the block/override logic itself is unit-
+  // and integration-tested against the same odoo-mock.
+  async function dispatchCreateAndGetAudit(page: Page, testInfo: TestInfo, trigger: string) {
+    testInfo.setTimeout(180_000);
+    await loginViaUI(page, getAdminEmail(), getAdminPassword());
+    await page.goto(`/chat/${dispatchAgentId}`);
+    await expect(page).toHaveURL(`/chat/${dispatchAgentId}`, { timeout: 10_000 });
+
+    const input = page.getByPlaceholder(/send a message/i);
+    await expect(input).toBeVisible({ timeout: 10_000 });
+
+    const since = new Date().toISOString();
+    await input.fill(`${trigger}: file the vendor bill`);
+    await input.press("Enter");
+
+    return pollAuditForEvent(page, {
+      eventType: "tool.odoo_create",
+      predicate: (e) => e.resource === `agent:${dispatchAgentId}`,
+      since,
+      deadlineMs: 160_000,
+    });
+  }
+
+  test("odoo_create is BLOCKED for a duplicate vendor bill (audited failure)", async ({
+    page,
+  }, testInfo) => {
+    const entry = await dispatchCreateAndGetAudit(
+      page,
+      testInfo,
+      FAKE_OLLAMA_ODOO_CREATE_DUP_BLOCK_TRIGGER
+    );
+    expect(entry.outcome, `audit detail: ${JSON.stringify(entry.detail)}`).toBe("failure");
+    // The blocked attempt is what the audit trail should show — with the
+    // structured refusal (naming the on-file bill) in the detail.
+    expect(JSON.stringify(entry.detail)).toContain("blocked");
+  });
+
+  test("odoo_create PROCEEDS for a duplicate when allow_duplicate is set (audited success)", async ({
+    page,
+  }, testInfo) => {
+    const entry = await dispatchCreateAndGetAudit(
+      page,
+      testInfo,
+      FAKE_OLLAMA_ODOO_CREATE_DUP_OVERRIDE_TRIGGER
+    );
+    expect(entry.outcome, `audit detail: ${JSON.stringify(entry.detail)}`).toBe("success");
+    // The deliberate override is traceable: the curated detail flags it.
+    expect(JSON.stringify(entry.detail)).toContain("duplicateOverride");
   });
 });

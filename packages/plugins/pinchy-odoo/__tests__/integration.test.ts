@@ -38,6 +38,7 @@ interface AgentTool {
   ) => Promise<{
     content: Array<{ type: string; text: string }>;
     isError?: boolean;
+    details?: unknown;
   }>;
 }
 
@@ -744,14 +745,36 @@ describe("pinchy-odoo multi-company journal resolution (bare ref + scoped lookup
       values,
     });
     expect(second.isError).toBe(true);
-    expect(second.content[0].text).toContain("already exists");
+    // Structured, retry-safe block (pinchy#721): names the existing bill and
+    // points at the explicit override rather than inviting a blind retry.
+    expect(second.content[0].text).toContain("blocked");
     expect(second.content[0].text).toContain("DUP-INV-777");
+    expect(second.content[0].text).toContain("allow_duplicate");
 
     // Exactly one move with that ref exists — no duplicate was written.
     const moves = (await fetch(
       `http://127.0.0.1:${mockOdoo.controlPort}/control/records?model=account.move`
     ).then((res) => res.json())) as Array<Record<string, unknown>>;
     expect(moves.filter((m) => m.ref === "DUP-INV-777")).toHaveLength(1);
+
+    // The explicit override re-files the bill deliberately: the create proceeds
+    // and the result carries a traceable override detail naming the bill it
+    // duplicated (the tool-use audit route lifts result.details).
+    const overridden = await createTool.execute("create-dup-override", {
+      model: "account.move",
+      values,
+      allow_duplicate: true,
+    });
+    expect(overridden.isError).toBeFalsy();
+    const overrideDetails = overridden.details as Record<string, unknown>;
+    expect(overrideDetails.duplicateOverride).toBe(true);
+    expect((overrideDetails.existingBill as { id: number }).id).toBeGreaterThan(0);
+
+    // Now two moves with that ref exist — the deliberate second entry landed.
+    const movesAfter = (await fetch(
+      `http://127.0.0.1:${mockOdoo.controlPort}/control/records?model=account.move`
+    ).then((res) => res.json())) as Array<Record<string, unknown>>;
+    expect(movesAfter.filter((m) => m.ref === "DUP-INV-777")).toHaveLength(2);
   });
 
   it("#3: allows the same ref in a DIFFERENT company (dedup is company-scoped, not global)", async () => {

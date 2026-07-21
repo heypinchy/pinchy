@@ -267,6 +267,17 @@ const ODOO_READ_DENIED_RESPONSE = "Read attempted: coverage probe complete.";
 // against a mock that now actually validates many2one write values.
 const ODOO_CREATE_NESTED_LINES_TRIGGER = "E2E_ODOO_CREATE_NESTED_LINES_TOOL";
 const ODOO_CREATE_NESTED_LINES_RESPONSE = "Move created: coverage probe complete.";
+// Deterministic vendor-bill duplicate guard (pinchy#721). The spec seeds a
+// posted vendor bill with ref ODOO_DUP_BILL_REF before dispatch. The BLOCK
+// trigger dispatches odoo_create for a second account.move with the SAME
+// ref+move_type: the plugin refuses it (audited failure). The OVERRIDE trigger
+// passes allow_duplicate:true, so the deliberate second entry proceeds (audited
+// success with a traceable override detail).
+const ODOO_DUP_BILL_REF = "E2E-DUP-777";
+const ODOO_CREATE_DUP_BLOCK_TRIGGER = "E2E_ODOO_CREATE_DUP_BLOCK_TOOL";
+const ODOO_CREATE_DUP_BLOCK_RESPONSE = "Duplicate blocked: coverage probe complete.";
+const ODOO_CREATE_DUP_OVERRIDE_TRIGGER = "E2E_ODOO_CREATE_DUP_OVERRIDE_TOOL";
+const ODOO_CREATE_DUP_OVERRIDE_RESPONSE = "Duplicate overridden: coverage probe complete.";
 // Inbox Agent (#139). Unlike every trigger around it, this one answers with
 // plain TEXT and no tool call: an inbox run's result channel IS the final
 // assistant text, ending in one fenced JSON report (see run-adapter.ts —
@@ -587,6 +598,27 @@ const TOOL_TRIGGERS: TriggerConfig[] = [
           [0, 0, { account_id: "Bank", credit: 100 }],
         ],
       },
+    },
+  },
+  {
+    trigger: ODOO_CREATE_DUP_BLOCK_TRIGGER,
+    response: ODOO_CREATE_DUP_BLOCK_RESPONSE,
+    toolName: "odoo_create",
+    // Same ref + move_type as the seeded bill → the guard blocks this create.
+    arguments: {
+      model: "account.move",
+      values: { move_type: "in_invoice", ref: ODOO_DUP_BILL_REF },
+    },
+  },
+  {
+    trigger: ODOO_CREATE_DUP_OVERRIDE_TRIGGER,
+    response: ODOO_CREATE_DUP_OVERRIDE_RESPONSE,
+    toolName: "odoo_create",
+    // allow_duplicate:true authorizes the deliberate second entry.
+    arguments: {
+      model: "account.move",
+      values: { move_type: "in_invoice", ref: ODOO_DUP_BILL_REF },
+      allow_duplicate: true,
     },
   },
   {
@@ -1943,6 +1975,9 @@ export const FAKE_OLLAMA_ODOO_ATTACH_FILE_REF_TRIGGER = ODOO_ATTACH_FILE_REF_TRI
 export const FAKE_OLLAMA_ODOO_ATTACH_FILE_REF_FILENAME = ODOO_ATTACH_FILE_REF_FILENAME;
 export const FAKE_OLLAMA_ODOO_CREATE_NESTED_LINES_TRIGGER = ODOO_CREATE_NESTED_LINES_TRIGGER;
 export const FAKE_OLLAMA_ODOO_CREATE_NESTED_LINES_RESPONSE = ODOO_CREATE_NESTED_LINES_RESPONSE;
+export const FAKE_OLLAMA_ODOO_DUP_BILL_REF = ODOO_DUP_BILL_REF;
+export const FAKE_OLLAMA_ODOO_CREATE_DUP_BLOCK_TRIGGER = ODOO_CREATE_DUP_BLOCK_TRIGGER;
+export const FAKE_OLLAMA_ODOO_CREATE_DUP_OVERRIDE_TRIGGER = ODOO_CREATE_DUP_OVERRIDE_TRIGGER;
 export const FAKE_OLLAMA_INBOX_SWEEP_TRIGGER = INBOX_SWEEP_TRIGGER;
 export const FAKE_OLLAMA_EMAIL_LIST_TOOL_TRIGGER = EMAIL_LIST_TRIGGER;
 export const FAKE_OLLAMA_EMAIL_LIST_TOOL_RESPONSE = EMAIL_LIST_RESPONSE;
