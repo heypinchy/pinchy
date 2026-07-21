@@ -22,27 +22,29 @@ reason = "Transitive devDep via openclaw (test tool only — not in production b
 # to no user. The GHSA-3jxr fix (5.0.7) also breaks @eslint/config-array's
 # `expand is not a function` at lint time, so bumping it is worse than useless
 # here. Ignored as build-only, like the openclaw/astro entries.
+# Revisit tracked in #854: drop this ignore once the fix stops breaking
+# @eslint/config-array, or immediately if brace-expansion enters the prod tree.
 [[IgnoredVulns]]
 id = "GHSA-3jxr-9vmj-r5cp"
-reason = "brace-expansion — build/test tooling only (0 occurrences in prod tree); the 5.0.7 fix breaks @eslint/config-array"
+reason = "brace-expansion — build/test tooling only (0 occurrences in prod tree); the 5.0.7 fix breaks @eslint/config-array. Revisit: #854"
 
 # astro (docs/pnpm-lock.yaml) is the static-site generator that builds the
 # documentation site AT BUILD TIME. It ships in no runtime image and reaches no
 # Pinchy user — the same "build tooling, not in production" category as the
 # openclaw devDep above. These three advisories fix only in astro 7.x, which
 # @astrojs/starlight 0.38 does not support (its peer is astro ^6); clearing them
-# needs a coordinated Starlight major upgrade, tracked separately. The one
+# needs a coordinated Starlight major upgrade, tracked in #851. The one
 # High-severity astro advisory (GHSA-vj59-8hwv-xxmv, 8.2) IS fixed here — astro
 # is bumped to 6.4.8, which resolves it within the ^6 range.
 
 [[IgnoredVulns]]
 id = "GHSA-4g3v-8h47-v7g6"
-reason = "astro — docs static-site build tooling (docs/pnpm-lock.yaml), not shipped to users; fixes only in astro 7.x, which Starlight 0.38 blocks"
+reason = "astro — docs static-site build tooling (docs/pnpm-lock.yaml), not shipped to users; fixes only in astro 7.x, which Starlight 0.38 blocks. Tracked: #851"
 
 [[IgnoredVulns]]
 id = "GHSA-7pw4-f3q4-r2p2"
-reason = "astro — docs static-site build tooling (docs/pnpm-lock.yaml), not shipped to users; fixes only in astro 7.x, which Starlight 0.38 blocks"
+reason = "astro — docs static-site build tooling (docs/pnpm-lock.yaml), not shipped to users; fixes only in astro 7.x, which Starlight 0.38 blocks. Tracked: #851"
 
 [[IgnoredVulns]]
 id = "GHSA-f48w-9m4c-m7f5"
-reason = "astro — docs static-site build tooling (docs/pnpm-lock.yaml), not shipped to users; fixes only in astro 7.x, which Starlight 0.38 blocks"
+reason = "astro — docs static-site build tooling (docs/pnpm-lock.yaml), not shipped to users; fixes only in astro 7.x, which Starlight 0.38 blocks. Tracked: #851"
