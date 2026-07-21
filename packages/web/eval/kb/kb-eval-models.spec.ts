@@ -124,9 +124,14 @@ async function seedSyntheticCorpus(dbUrl: string): Promise<void> {
   const sql = postgres(dbUrl);
   try {
     for (const doc of KB_EVAL_CORPUS) {
+      // kb_documents.id / kb_chunks.id are `text` with NO database default —
+      // the app supplies them via Drizzle's `$defaultFn(() => crypto.randomUUID())`,
+      // so a raw INSERT that omits `id` hits a NOT NULL violation. Mint one in
+      // SQL (gen_random_uuid() is built into Postgres 13+, no extension) to
+      // mirror the app's uuid-shaped text id.
       const [dbDoc] = await sql<{ id: string }[]>`
-        INSERT INTO kb_documents (org_id, content_hash, source_path, status)
-        VALUES (${DEFAULT_ORG_ID}, ${`hash-${doc.sourcePath}`}, ${doc.sourcePath}, 'active')
+        INSERT INTO kb_documents (id, org_id, content_hash, source_path, status)
+        VALUES (gen_random_uuid()::text, ${DEFAULT_ORG_ID}, ${`hash-${doc.sourcePath}`}, ${doc.sourcePath}, 'active')
         ON CONFLICT DO NOTHING
         RETURNING id
       `;
@@ -157,8 +162,8 @@ async function seedSyntheticCorpus(dbUrl: string): Promise<void> {
         // produces for a number array — see src/lib/knowledge/retrieve.ts's
         // identical `${queryVectorLiteral}::vector` pattern.
         await sql`
-          INSERT INTO kb_chunks (document_id, org_id, source_path, chunk_text, page, embedding)
-          VALUES (${dbDocId}, ${DEFAULT_ORG_ID}, ${doc.sourcePath}, ${chunk.text}, ${chunk.page}, ${JSON.stringify(embedding)}::vector)
+          INSERT INTO kb_chunks (id, document_id, org_id, source_path, chunk_text, page, embedding)
+          VALUES (gen_random_uuid()::text, ${dbDocId}, ${DEFAULT_ORG_ID}, ${doc.sourcePath}, ${chunk.text}, ${chunk.page}, ${JSON.stringify(embedding)}::vector)
         `;
       }
     }

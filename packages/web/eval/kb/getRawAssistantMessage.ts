@@ -125,8 +125,17 @@ export async function getRawAssistantMessage(
     );
   }
 
+  // The CSRF gate (src/server/csrf-check.ts) rejects any mutating /api/ POST
+  // that carries neither an Origin nor a Referer header — reason
+  // "missing-origin-and-referer", surfaced as 403. Playwright's
+  // page.request.post sends neither by default (it is an API request context,
+  // not a browser fetch from page JS), so this capture was the one mutating
+  // eval call that bypassed run-eval.ts's `mutatingHeaders` helper (which sets
+  // `Origin: PINCHY_URL` on every pinchyPost/Patch/Delete). Send an Origin that
+  // matches the page's own host so the gate's Origin===Host check passes.
   const exportRes = await page.request.post("/api/diagnostics/export", {
     data: { agentId, sessionId: match.sessionId },
+    headers: { Origin: new URL(page.url()).origin },
   });
   if (!exportRes.ok()) {
     throw new Error(
