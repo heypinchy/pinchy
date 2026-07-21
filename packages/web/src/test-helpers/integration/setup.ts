@@ -21,6 +21,7 @@ const APPLICATION_TABLES = [
   "agent_delivered_files",
   "usage_records",
   "agent_connection_permissions",
+  "tool_approval",
   "integration_connections",
   "email_workflows",
   "email_workflow_connections",

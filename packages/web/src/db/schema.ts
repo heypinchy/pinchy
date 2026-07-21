@@ -77,6 +77,14 @@ export type AgentPluginConfig = {
     country?: string;
     freshness?: string;
   };
+  /**
+   * Tools that require an inline human confirmation before the agent may
+   * execute them (#124 Tier 2). The acting user approves their own call;
+   * the gate (pinchy-approvals) enforces it server-side.
+   */
+  "pinchy-approvals"?: {
+    confirmTools: string[];
+  };
 };
 
 /**
@@ -320,6 +328,65 @@ export const agentGroups = pgTable(
   (table) => [
     primaryKey({ columns: [table.agentId, table.groupId] }),
     index("agent_groups_group_id_idx").on(table.groupId),
+  ]
+);
+
+// ── Tool-call approvals (pinchy-approvals, #124) ────────────────────────
+//
+// A durable, server-enforced human-in-the-loop confirmation record. Tier 2
+// (`confirm`) — the acting user approves their own gated tool call inline in
+// chat. `escalate` is reserved for the deferred four-eyes tier and is not yet
+// used. A grant is bound to (agentId, requesterId, argsDigest, sessionKey) and
+// consumed exactly once — never shared across users of a shared agent.
+export const approvalTierEnum = pgEnum("approval_tier", ["confirm", "escalate"]);
+export const approvalStatusEnum = pgEnum("approval_status", [
+  "pending",
+  "approved",
+  "denied",
+  "consumed",
+  "expired",
+]);
+
+export const toolApproval = pgTable(
+  "tool_approval",
+  {
+    id: text("id")
+      .primaryKey()
+      .$defaultFn(() => crypto.randomUUID()),
+    agentId: text("agent_id")
+      .notNull()
+      .references(() => agents.id, { onDelete: "cascade" }),
+    // requesterId / approverId are the acting principal derived from the OpenClaw
+    // session key (agent:<id>:direct:<userId>) — the same identity `audit_log`
+    // stores in `actorId`. Like actorId, they are plain text with NO FK to
+    // `user.id`: a chat principal is not guaranteed to be a Better-Auth user row
+    // (Telegram senderId, group principals, …), so an FK here would reject
+    // legitimate confirmations. User-specificity is still enforced by matching
+    // requesterId against approverId (both are `session.user.id`).
+    requesterId: text("requester_id").notNull(),
+    sessionKey: text("session_key").notNull(),
+    toolName: text("tool_name").notNull(),
+    argsDigest: text("args_digest").notNull(),
+    argsSummary: jsonb("args_summary").$type<Record<string, unknown>>(),
+    tier: approvalTierEnum("tier").notNull().default("confirm"),
+    status: approvalStatusEnum("status").notNull().default("pending"),
+    approverId: text("approver_id"),
+    decisionReason: text("decision_reason"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    decidedAt: timestamp("decided_at", { withTimezone: true }),
+    consumedAt: timestamp("consumed_at", { withTimezone: true }),
+    expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+  },
+  (table) => [
+    // The gate's hot path looks up an unconsumed grant for an exact call.
+    index("tool_approval_lookup_idx").on(
+      table.agentId,
+      table.requesterId,
+      table.argsDigest,
+      table.status
+    ),
+    // The chat UI lists a requester's pending confirmations.
+    index("tool_approval_requester_status_idx").on(table.requesterId, table.status),
   ]
 );
 
