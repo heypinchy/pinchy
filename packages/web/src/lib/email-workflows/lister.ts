@@ -170,8 +170,20 @@ export async function listDispatchableEmails(
   // But isolation must not swallow a dead mailbox. Credentials expiring between
   // `search` and `read` fail EVERY hydration; reported as an empty inbox that
   // would read as "nothing new" and silently retire the workflow while its status
-  // stayed `active`. No usable message at all is a mailbox failure, not an outlier.
-  if (failures.length > 0 && emails.length === 0) {
+  // stayed `active`.
+  //
+  // "Dead" means every listed candidate was attempted and failed — NOT merely
+  // that the hydrated batch came back empty. `resolveAlreadyProcessed` breaks the
+  // old shorthand: a healthy, caught-up mailbox skips its processed mail and may
+  // attempt only a single un-skipped candidate, and if that one is a persistently
+  // unhydratable message (unparseable date, a mid-sweep 404) then
+  // `emails.length === 0 && failures.length > 0` holds while the mailbox is
+  // perfectly alive — flipping the whole workflow to `error` every pass and
+  // defeating the per-message isolation above. So require that NOTHING hydrated
+  // and NOTHING was skipped, i.e. every candidate failed. A real credential death
+  // that races in after some mail was skipped simply surfaces one cadence later,
+  // when the next `search` itself throws — no email is lost.
+  if (candidates.length > 0 && failures.length === candidates.length) {
     throw failures[0];
   }
   // `candidateCount` is the pre-hydration count on purpose: the sweep reads it to

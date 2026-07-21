@@ -396,4 +396,34 @@ describe("mail lister — listDispatchableEmails", () => {
     expect(emails).toEqual([]);
     expect(candidateCount).toBe(2);
   });
+
+  it("does not mistake one isolated poison message for a dead mailbox when the rest were skipped", async () => {
+    // The dead-mailbox guard fires when NO candidate hydrates. Before the skip
+    // filter existed, "no hydration" meant every candidate was read and every read
+    // failed — a real credential death. With the skip filter, a healthy, caught-up
+    // mailbox hydrates almost nothing: skip the processed mail, and the ONE
+    // un-skipped candidate may be a persistently-unhydratable message (an
+    // unparseable date, a mid-sweep 404). That single failure must stay isolated —
+    // exactly what the per-message try/catch promises — and must NOT flip the whole
+    // workflow to `error` every pass. The guard must only cry "dead" when EVERY
+    // candidate `search` returned was attempted and failed, not when the sole
+    // attempted one did.
+    const port: EmailPort = {
+      async search() {
+        return [{ id: "seen-1" }, { id: "poison" }];
+      },
+      async read(id) {
+        if (id === "poison") throw new Error("unparseable message poison");
+        throw new Error(`must not hydrate skipped id ${id}`);
+      },
+    };
+
+    const { emails, candidateCount } = await listDispatchableEmails(port, {
+      resolveAlreadyProcessed: async () => new Set(["seen-1"]),
+    });
+
+    // Poison isolated to itself; the healthy mailbox reports an empty batch, never a throw.
+    expect(emails).toEqual([]);
+    expect(candidateCount).toBe(2);
+  });
 });
