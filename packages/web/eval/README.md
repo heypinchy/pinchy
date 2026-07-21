@@ -355,7 +355,8 @@ cacheWrite`), which differ only in billing, so caching hosters aren't
 - `costUsd` — summed `estimated_cost_usd`, present only when a provider prices
   per token. Absent for Ollama Cloud, which is subscription-billed (no per-token
   price); the published `$` figure is a labeled multi-hoster range computed
-  offline from the token counts, never this column.
+  offline from the token counts, never this column. The price snapshot and the
+  offline formula live in [`pricing/`](pricing/README.md).
 
 The scorecard exposes two medians: `medianTokens` (over all runs) and
 **`medianTokensPerCompletedTask`** (over PASSING runs only). The latter is the

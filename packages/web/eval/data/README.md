@@ -239,3 +239,7 @@ happen; we make it detectable and ask to be excluded.
   ([`../elicitation-protocol.md`](../elicitation-protocol.md)): every model runs on
   Pinchy's real production path with untuned, uniform sampling — no per-model
   scaffold to over- or under-build.
+- Any `$` figure is a **market-rate proxy**, not what we paid: Ollama Cloud is
+  subscription-billed, so the cost is computed offline from the captured token
+  counts against a dated, multi-hoster open-market price range. Source, range
+  semantics, and the formula: [`../pricing/README.md`](../pricing/README.md).
