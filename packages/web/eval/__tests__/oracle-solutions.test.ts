@@ -69,18 +69,40 @@ describe("honest-failure oracles state their honesty without a rescue phrase", (
   );
 });
 
+/**
+ * Scenario modules whose oracle is still PENDING — each entry must name the
+ * task that deletes it, and the list must stay empty in a finished release.
+ * - crm-lead.ts (Eval-v2 #803, Task 6): its oracle requires the
+ *   "lead-created" grading branch (gradeLeadCompletion) AND the sweep label,
+ *   both landing in Task 7 — replaying a lead trajectory through today's
+ *   invoice-only dispatch would prove nothing. Task 7 removes this entry.
+ */
+const PENDING_ORACLE_SCENARIOS = ["crm-lead.ts"];
+
 describe("oracle coverage", () => {
+  const coveredScenarioFiles = () =>
+    readdirSync(SCENARIO_DIR).filter(
+      (f) => f.endsWith(".ts") && !PENDING_ORACLE_SCENARIOS.includes(f)
+    );
+
   it("has one oracle per scenario module", () => {
-    const scenarioFiles = readdirSync(SCENARIO_DIR).filter((f) => f.endsWith(".ts"));
-    expect(ORACLES).toHaveLength(scenarioFiles.length);
+    expect(ORACLES).toHaveLength(coveredScenarioFiles().length);
   });
 
   // Counting alone would accept two oracles pointing at the SAME scenario while
   // another goes uncovered — 7 oracles, 7 unique labels, 6 scenarios graded.
   // Identity is what the guard actually promises.
   it("covers each scenario exactly once", () => {
-    const scenarioFiles = readdirSync(SCENARIO_DIR).filter((f) => f.endsWith(".ts"));
-    expect(new Set(ORACLES.map((o) => o.scenario)).size).toBe(scenarioFiles.length);
+    expect(new Set(ORACLES.map((o) => o.scenario)).size).toBe(coveredScenarioFiles().length);
+  });
+
+  it("only exempts scenario files that actually exist", () => {
+    // A stale PENDING entry (e.g. Task 7 renames the file but not the list)
+    // would silently widen the exemption forever.
+    const allFiles = readdirSync(SCENARIO_DIR);
+    for (const pending of PENDING_ORACLE_SCENARIOS) {
+      expect(allFiles).toContain(pending);
+    }
   });
 
   it("has a unique label per oracle", () => {

@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { odooCreateFailurePayload, odooCreateSilentSuccessPayload } from "../run-eval";
+import { crmLeadScenario } from "../scenarios/crm-lead";
 import { hetznerInvoiceScenario, readbackModelsFor } from "../scenarios/hetzner-invoice";
 
 /**
@@ -39,6 +40,21 @@ describe("readbackModelsFor", () => {
     expect(() => readbackModelsFor({ ...hetznerInvoiceScenario, readbackModels: [] })).toThrow(
       /empty readbackModels/
     );
+  });
+
+  it("accepts the crm-lead scenario shape (structural param, not invoice-only)", () => {
+    // `CrmLeadScenario` has none of the invoice-only fields (attachments,
+    // ExpectedInvoice) — `readbackModelsFor` must type against just
+    // `{ readbackModels?: string[] }` for the CRM domain to reuse it.
+    expect(readbackModelsFor(crmLeadScenario)).toEqual(["crm.lead"]);
+  });
+
+  it("dedupes repeated model names", () => {
+    const repeated = {
+      ...hetznerInvoiceScenario,
+      readbackModels: ["crm.lead", "crm.lead", "res.partner"],
+    };
+    expect(readbackModelsFor(repeated)).toEqual(["crm.lead", "res.partner"]);
   });
 });
 

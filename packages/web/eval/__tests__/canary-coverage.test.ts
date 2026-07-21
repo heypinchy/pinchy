@@ -27,6 +27,13 @@ describe("canary coverage over scenario sources", () => {
     expect(scenarioFiles.length).toBeGreaterThan(0);
   });
 
+  it("covers the crm-lead scenario module (Eval-v2, #803)", () => {
+    // Named explicitly (on top of the directory glob) so the Eval-v2 CRM
+    // domain can't ship without its scenario source passing through the
+    // canary guard above.
+    expect(scenarioFiles).toContain("crm-lead.ts");
+  });
+
   it.each(scenarioFiles)("%s carries the canary GUID", (file) => {
     const text = readFileSync(path.join(SCENARIO_DIR, file), "utf8");
     expect(text).toContain(EVAL_CANARY_GUID);
