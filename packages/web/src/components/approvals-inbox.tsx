@@ -33,6 +33,9 @@ export function ApprovalsInbox() {
     // Defined inside the effect (not a useCallback) so the setState is clearly
     // behind the await — satisfies the react-compiler set-state-in-effect rule.
     const poll = async () => {
+      // Every signed-in tab runs this poller; a hidden tab has nobody to act
+      // on a card, so skip the request and catch up on the visibility flip.
+      if (document.visibilityState === "hidden") return;
       try {
         const { approvals } = await fetchPendingApprovals();
         if (!cancelled) setPending(approvals);
@@ -42,9 +45,14 @@ export function ApprovalsInbox() {
     };
     void poll();
     const timer = setInterval(() => void poll(), POLL_MS);
+    const onVisibilityChange = () => {
+      if (document.visibilityState === "visible") void poll();
+    };
+    document.addEventListener("visibilitychange", onVisibilityChange);
     return () => {
       cancelled = true;
       clearInterval(timer);
+      document.removeEventListener("visibilitychange", onVisibilityChange);
     };
   }, []);
 

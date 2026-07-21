@@ -54,6 +54,25 @@ describe("ApprovalsInbox", () => {
     await waitFor(() => expect(screen.queryByText(/needs your confirmation/i)).toBeNull());
   });
 
+  it("does not poll while the tab is hidden and polls immediately on becoming visible", async () => {
+    let visibility: DocumentVisibilityState = "hidden";
+    const spy = vi.spyOn(document, "visibilityState", "get").mockImplementation(() => visibility);
+    try {
+      fetchPendingApprovals.mockResolvedValue({ approvals: [] });
+      render(<ApprovalsInbox />);
+
+      // Mounted hidden: the initial poll is skipped entirely.
+      await Promise.resolve();
+      expect(fetchPendingApprovals).not.toHaveBeenCalled();
+
+      visibility = "visible";
+      fireEvent(document, new Event("visibilitychange"));
+      await waitFor(() => expect(fetchPendingApprovals).toHaveBeenCalledTimes(1));
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
   it("denies a request", async () => {
     fetchPendingApprovals.mockResolvedValue({ approvals: [pending] });
     submitApprovalDecision.mockResolvedValue(undefined);
