@@ -2907,7 +2907,9 @@ const plugin = {
                   // create params): the deliberate double-booking described inline
                   // — what was booked (ref + move type + new id) AND the bill it
                   // duplicated — so an auditor sees the full decision without a
-                  // second lookup, and without logging partner/amount PII.
+                  // second lookup. The snapshot deliberately carries the existing
+                  // bill's amount/date/state (auditor context, not PII) but no
+                  // partner identity, so no personal identifiers reach the log.
                   details: {
                     duplicateOverride: true,
                     bookedRef: outcome.ref,
