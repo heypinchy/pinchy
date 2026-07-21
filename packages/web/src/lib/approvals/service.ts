@@ -29,7 +29,10 @@ export interface DecideGateInput {
 
 /**
  * The gate's decision for one tool call, bound to (agent, requester, session,
- * argsDigest):
+ * toolName, argsDigest) — toolName is part of the binding because two gated
+ * tools can receive identical params (the odoo record-action family all take
+ * `{ target: <ref> }`), and an approval must clear exactly the action the
+ * user saw:
  *   1. consume exactly one approved, unexpired ticket → allow;
  *   2. else reuse an existing unexpired pending request → block;
  *   3. else create a new pending request → block.
@@ -48,6 +51,7 @@ export async function decideGate(input: DecideGateInput): Promise<GateDecision> 
       WHERE agent_id = ${input.agentId}
         AND requester_id = ${input.requesterId}
         AND session_key = ${input.sessionKey}
+        AND tool_name = ${input.toolName}
         AND args_digest = ${input.argsDigest}
         AND status = 'approved'
         AND expires_at > ${nowIso}::timestamptz
@@ -69,6 +73,7 @@ export async function decideGate(input: DecideGateInput): Promise<GateDecision> 
         eq(toolApproval.agentId, input.agentId),
         eq(toolApproval.requesterId, input.requesterId),
         eq(toolApproval.sessionKey, input.sessionKey),
+        eq(toolApproval.toolName, input.toolName),
         eq(toolApproval.argsDigest, input.argsDigest),
         eq(toolApproval.status, "pending"),
         gt(toolApproval.expiresAt, now)
@@ -120,7 +125,12 @@ export async function resolveDecision(input: ResolveDecisionInput): Promise<Reso
   if (input.selfConfirmOnly && row.requesterId !== input.approverId) {
     return { ok: false, reason: "forbidden" };
   }
-  if (row.status !== "pending") return { ok: false, reason: "not_pending" };
+  // An expired request is no longer actionable even while the sweep hasn't
+  // flipped it yet: approving it would mint a grant the consume step (which
+  // checks expires_at) can never honor — a success toast over a dead grant.
+  if (row.status !== "pending" || row.expiresAt <= now) {
+    return { ok: false, reason: "not_pending" };
+  }
 
   const [updated] = await db
     .update(toolApproval)
@@ -136,13 +146,28 @@ export async function resolveDecision(input: ResolveDecisionInput): Promise<Reso
   return { ok: true, request: updated };
 }
 
-/** Flip overdue pending requests to `expired`. Returns the count flipped. */
-export async function expireStale(now?: Date): Promise<number> {
+/** One row flipped by {@link expireStale} — enough to audit `approval.expired`. */
+export interface ExpiredApproval {
+  id: string;
+  agentId: string;
+  requesterId: string;
+  toolName: string;
+  argsDigest: string;
+}
+
+/** Flip overdue pending requests to `expired`. Returns the flipped rows so the
+ * sweep can emit one `approval.expired` audit entry per request. */
+export async function expireStale(now?: Date): Promise<ExpiredApproval[]> {
   const at = now ?? new Date();
-  const expired = await db
+  return await db
     .update(toolApproval)
     .set({ status: "expired" })
     .where(and(eq(toolApproval.status, "pending"), lt(toolApproval.expiresAt, at)))
-    .returning({ id: toolApproval.id });
-  return expired.length;
+    .returning({
+      id: toolApproval.id,
+      agentId: toolApproval.agentId,
+      requesterId: toolApproval.requesterId,
+      toolName: toolApproval.toolName,
+      argsDigest: toolApproval.argsDigest,
+    });
 }

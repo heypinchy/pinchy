@@ -87,6 +87,32 @@ describe("approvals gate decision service", () => {
     expect(again.requestId).not.toBe(r.requestId);
   });
 
+  it("an approval for one tool is not consumable by a different tool with the same digest", async () => {
+    // Two gated tools can legitimately receive identical params (e.g. the
+    // odoo record-action family all take `{ target: <ref> }`), so the digest
+    // alone must not be the binding — "one confirmation, one action" includes
+    // the tool name.
+    const r = await decideGate(base());
+    await resolveDecision({ id: r.requestId, approverId: requesterId, decision: "approve" });
+
+    const cross = await decideGate({ ...base(), toolName: "odoo_unlink" });
+    expect(cross.decision).toBe("block");
+    const [grant] = await db.select().from(toolApproval).where(eq(toolApproval.id, r.requestId));
+    expect(grant.status).toBe("approved");
+
+    // The original tool still consumes its own grant.
+    const own = await decideGate(base());
+    expect(own.decision).toBe("allow");
+    expect(own.requestId).toBe(r.requestId);
+  });
+
+  it("pending requests are tool-specific even with identical args", async () => {
+    const a = await decideGate(base());
+    const b = await decideGate({ ...base(), toolName: "odoo_unlink" });
+    expect(b.requestId).not.toBe(a.requestId);
+    expect(await db.select().from(toolApproval)).toHaveLength(2);
+  });
+
   it("changed args produce a different digest → a new confirmation", async () => {
     const r = await decideGate(base());
     await resolveDecision({ id: r.requestId, approverId: requesterId, decision: "approve" });
@@ -96,8 +122,16 @@ describe("approvals gate decision service", () => {
   });
 
   it("fails closed on an expired approved ticket (does not consume it)", async () => {
-    const r = await decideGate({ ...base(), ttlMs: -1000 });
+    // Approve a live request, then let the grant expire before the agent
+    // re-issues the call. (resolveDecision itself refuses already-expired
+    // requests — see the not_pending test below — so expiry is injected
+    // after the approval here.)
+    const r = await decideGate(base());
     await resolveDecision({ id: r.requestId, approverId: requesterId, decision: "approve" });
+    await db
+      .update(toolApproval)
+      .set({ expiresAt: new Date(Date.now() - 1000) })
+      .where(eq(toolApproval.id, r.requestId));
     const res = await decideGate(base());
     expect(res.decision).toBe("block");
     const [row] = await db.select().from(toolApproval).where(eq(toolApproval.id, r.requestId));
@@ -157,10 +191,31 @@ describe("approvals gate decision service", () => {
     expect(np).toEqual({ ok: false, reason: "not_pending" });
   });
 
-  it("expireStale flips overdue pending requests to expired", async () => {
+  it("resolveDecision refuses an expired pending request (fail-closed, sweep owns the flip)", async () => {
+    // Approving an expired request would produce a dead grant (consume checks
+    // expires_at) plus a success toast — refuse it up front instead.
     const r = await decideGate({ ...base(), ttlMs: -1000 });
-    const n = await expireStale();
-    expect(n).toBeGreaterThanOrEqual(1);
+    const res = await resolveDecision({
+      id: r.requestId,
+      approverId: requesterId,
+      decision: "approve",
+    });
+    expect(res).toEqual({ ok: false, reason: "not_pending" });
+    const [row] = await db.select().from(toolApproval).where(eq(toolApproval.id, r.requestId));
+    expect(row.status).toBe("pending");
+    expect(row.approverId).toBeNull();
+  });
+
+  it("expireStale flips overdue pending requests to expired and returns them", async () => {
+    const r = await decideGate({ ...base(), ttlMs: -1000 });
+    const flipped = await expireStale();
+    expect(flipped.map((f) => f.id)).toContain(r.requestId);
+    expect(flipped.find((f) => f.id === r.requestId)).toMatchObject({
+      agentId,
+      requesterId,
+      toolName: "odoo_write",
+      argsDigest: "digest-1",
+    });
     const [row] = await db.select().from(toolApproval).where(eq(toolApproval.id, r.requestId));
     expect(row.status).toBe("expired");
   });

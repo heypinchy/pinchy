@@ -134,7 +134,13 @@ export const users = pgTable(
     createdAt: timestamp("created_at").notNull().defaultNow(),
     updatedAt: timestamp("updated_at").notNull().defaultNow(),
   },
-  (table) => [check("users_role_check", sql`${table.role} ${inEnum(USER_ROLES)}`)]
+  (table) => [
+    check("users_role_check", sql`${table.role} ${inEnum(USER_ROLES)}`),
+    // The approvals gate resolves the lowercased session-key principal back to
+    // the case-preserved user id via `lower(id) = ?` (resolveRequesterUserId in
+    // the gate-check route); this keeps that per-gated-call lookup off a seq scan.
+    index("users_lower_id_idx").on(sql`lower(${table.id})`),
+  ]
 );
 
 export const sessions = pgTable(
@@ -337,7 +343,8 @@ export const agentGroups = pgTable(
 // (`confirm`) — the acting user approves their own gated tool call inline in
 // chat. `escalate` is reserved for the deferred four-eyes tier and is not yet
 // used. A grant is bound to (agentId, requesterId, argsDigest, sessionKey) and
-// consumed exactly once — never shared across users of a shared agent.
+// consumed exactly once — never shared across users of a shared agent, and
+// never shared across tools (two gated tools can receive identical params).
 export const approvalTierEnum = pgEnum("approval_tier", ["confirm", "escalate"]);
 export const approvalStatusEnum = pgEnum("approval_status", [
   "pending",
@@ -382,6 +389,7 @@ export const toolApproval = pgTable(
     index("tool_approval_lookup_idx").on(
       table.agentId,
       table.requesterId,
+      table.toolName,
       table.argsDigest,
       table.status
     ),
