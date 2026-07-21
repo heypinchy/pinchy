@@ -152,6 +152,16 @@ If your Odoo database hosts more than one `res.company`, Pinchy adds two layers 
 
 The stock **Finance Controller** and **Bookkeeper** templates also include guidance that teaches the agent to disambiguate multi-company records up front. (Finance Controller suggests **Penny** as one of its agent names, so you may see this agent under that name.) Newly-created agents pick this up automatically; existing agents keep their stored `AGENTS.md` until you recreate them, but the runtime cross-company guard applies regardless.
 
+## Duplicate vendor bills
+
+Filing the same supplier invoice twice is double payment — one of the failure modes teams fear most from an autonomous agent. So before an agent creates a vendor bill or vendor credit note (`account.move` with `move_type` `in_invoice` or `in_refund`), the `pinchy-odoo` plugin checks whether a bill with the same reference (`ref` — the supplier's invoice number) is already on file, scoped to the company and partner when the create supplies them.
+
+**On a match, the create is blocked.** The agent receives a structured refusal naming the existing bill — its id, name, state, total, and date — so it relays that back to you instead of writing a second copy. The blocked attempt is recorded in the [audit trail](/concepts/audit-trail/) as a failed `tool.odoo_create` entry, which is exactly what the audit should show.
+
+This mirrors how Odoo itself keys duplicate detection for vendor documents — on the reference number — and never applies to customer invoices or journal entries, where a shared reference is legitimate.
+
+**Deliberate re-filings have an escape hatch.** If a second entry really is intended, the agent can repeat the create with `allow_duplicate: true`. The bill is then created and the audit entry records the override alongside the bill it duplicated, so the decision stays traceable.
+
 ## Re-syncing when Odoo permissions change
 
 If the Odoo admin changes the API user's permissions after you've set up the connection, agents may lose access to certain models. When this happens, the agent gets a clear error message explaining that access was denied.

@@ -2132,6 +2132,72 @@ function errorResult(
   return toolError(`Error: ${message}`);
 }
 
+/**
+ * A snapshot of the vendor bill that already carries a given `ref`, surfaced by
+ * the deterministic duplicate guard (pinchy#721) so the model can relay it to
+ * the user instead of double-booking (a double-payment risk).
+ */
+interface ExistingBillSnapshot {
+  id: number;
+  name: string | null;
+  state: string | null;
+  amount_total: number | null;
+  date: string | null;
+}
+
+// Odoo's own duplicate detection (`_fetch_duplicate_reference`, account 19)
+// keys VENDOR documents on their `ref` — the supplier's invoice number. Customer
+// invoices (out_invoice/out_refund) are deduped on amount+date, NEVER on ref, and
+// journal entries are never deduped at all. So a ref-based guard scopes to exactly
+// these two vendor move types; guarding out_* on ref would falsely reject a
+// legitimately re-used customer-document reference.
+const VENDOR_DOCUMENT_MOVE_TYPES = new Set(["in_invoice", "in_refund"]);
+
+function vendorDocumentLabel(moveType: string): string {
+  return moveType === "in_refund" ? "vendor credit note" : "vendor bill";
+}
+
+function toBillSnapshot(record: Record<string, unknown>): ExistingBillSnapshot {
+  return {
+    id: record.id as number,
+    name: typeof record.name === "string" ? record.name : null,
+    state: typeof record.state === "string" ? record.state : null,
+    amount_total: typeof record.amount_total === "number" ? record.amount_total : null,
+    // Odoo returns `false` for an unset invoice_date; normalize to null.
+    date: typeof record.invoice_date === "string" ? record.invoice_date : null,
+  };
+}
+
+function formatExistingBillSnapshot(s: ExistingBillSnapshot): string {
+  const parts = [`id ${s.id}`];
+  if (s.name) parts.push(`"${s.name}"`);
+  if (s.state) parts.push(`state ${s.state}`);
+  if (s.amount_total !== null) parts.push(`total ${s.amount_total}`);
+  if (s.date) parts.push(`dated ${s.date}`);
+  return parts.join(", ");
+}
+
+/**
+ * The block message. Deliberately phrased to make the model RELAY the existing
+ * bill rather than loop against the refusal (the eval's hard-rejection scenario
+ * showed some models retry a refused create). It names the bill, states it was
+ * not created, and points at the explicit `allow_duplicate` override.
+ */
+function duplicateBillBlockMessage(
+  moveType: string,
+  ref: string,
+  snapshot: ExistingBillSnapshot
+): string {
+  const label = vendorDocumentLabel(moveType);
+  return (
+    `Duplicate ${label} blocked. A ${label} with reference "${ref}" is already on file ` +
+    `in Odoo: ${formatExistingBillSnapshot(snapshot)}. It was NOT created again — booking ` +
+    `it twice risks a double payment. Do not retry this create; relay the existing bill ` +
+    `above to the user. If this is a deliberate, confirmed re-filing, call odoo_create ` +
+    `again with allow_duplicate: true.`
+  );
+}
+
 const plugin = {
   id: "pinchy-odoo",
   name: "Pinchy Odoo",
@@ -2645,7 +2711,7 @@ const plugin = {
           name: "odoo_create",
           label: "Odoo Create",
           description:
-            'Create a new record in Odoo. Returns `{id, _pinchy_ref}` — pass the `_pinchy_ref` verbatim to any tool that takes an opaque reference (e.g. `odoo_attach_file.targetRef`). For many2one fields, do not pass raw numeric IDs; use an opaque ref from odoo_read, an exact display name, or a supported lookup such as a country code. One2many and many2many fields use Odoo command tuples emitted as plain JSON arrays: a new line is invoice_line_ids: [[0, 0, {…}]] and a tag link is tax_ids: [[6, 0, [<taxId>]]] — never wrap arrays as {"item": …}. Note: in invoice/order line models (e.g. `account.move.line`, `sale.order.line`, `purchase.order.line`), `price_unit` is tax-exclusive (net); Odoo computes gross totals from `tax_ids`. Convert receipt gross amounts to net before writing.',
+            'Create a new record in Odoo. Returns `{id, _pinchy_ref}` — pass the `_pinchy_ref` verbatim to any tool that takes an opaque reference (e.g. `odoo_attach_file.targetRef`). For many2one fields, do not pass raw numeric IDs; use an opaque ref from odoo_read, an exact display name, or a supported lookup such as a country code. One2many and many2many fields use Odoo command tuples emitted as plain JSON arrays: a new line is invoice_line_ids: [[0, 0, {…}]] and a tag link is tax_ids: [[6, 0, [<taxId>]]] — never wrap arrays as {"item": …}. Note: in invoice/order line models (e.g. `account.move.line`, `sale.order.line`, `purchase.order.line`), `price_unit` is tax-exclusive (net); Odoo computes gross totals from `tax_ids`. Convert receipt gross amounts to net before writing. Vendor bills and vendor credit notes (account.move `in_invoice` / `in_refund`) are duplicate-guarded: a create whose `ref` already exists on file is BLOCKED and the existing bill returned so you can relay it to the user instead of double-booking. Set `allow_duplicate: true` only to deliberately re-file a bill you have confirmed should exist twice.',
           parameters: {
             type: "object",
             properties: {
@@ -2654,6 +2720,11 @@ const plugin = {
                 type: "object",
                 description:
                   "Field values for the new record. Many2one text values must be exact names or supported codes, not partial/fuzzy matches.",
+              },
+              allow_duplicate: {
+                type: "boolean",
+                description:
+                  "Set true ONLY to deliberately re-file a vendor bill/credit note (account.move in_invoice/in_refund) whose reference already exists in Odoo. Normally leave unset: the plugin blocks a duplicate vendor-bill create and returns the existing bill so you relay it to the user instead of double-booking (a double-payment risk).",
               },
             },
             required: ["model", "values"],
@@ -2671,94 +2742,140 @@ const plugin = {
                 throw itemWrappedError("values");
               }
 
-              const id = await withAuthRetry(agentId, config, async (client) => {
-                let values: Record<string, unknown>;
-                // The model's field schema, fetched once during many2one
-                // normalization and reused for #5 selection validation below
-                // (avoids a second client.fields round-trip on every create).
-                let modelFields: OdooField[] | null = null;
-                if (isRecord(params.values)) {
-                  const cleaned = unquoteFieldKeys(params.values);
-                  assertNoCrossCompanyRefs(cleaned);
-                  const normalized = await normalizeMany2OneValues(
-                    client,
-                    config.connectionId,
-                    model,
-                    cleaned,
-                    config.permissions
-                  );
-                  values = normalized.values;
-                  modelFields = normalized.fields;
-                  values = await ensureActivityResModelId(client, model, values);
-                } else {
-                  values = params.values as Record<string, unknown>;
-                }
+              // Explicit override for a deliberate re-filing of a bill that
+              // already exists (pinchy#721). Read from the raw params: it is a
+              // tool-level flag, not an Odoo field, so it never enters `values`.
+              const allowDuplicate = params.allow_duplicate === true;
 
-                // #5: reject out-of-set selection values (e.g. move_type
-                // "in_bill", which is not a real Odoo move_type) with the valid
-                // options, instead of forwarding a bad enum to Odoo where it
-                // surfaces as an opaque server error the agent has to guess at.
-                if (modelFields) {
-                  const invalidSelections = findInvalidSelectionValues(modelFields, values);
-                  if (invalidSelections.length > 0) {
-                    throw new Error(formatInvalidSelectionError(model, invalidSelections));
-                  }
-                }
-
-                // #3: duplicate-invoice guard. An account.move (vendor/customer
-                // invoice) is keyed by its `ref` — the supplier's invoice
-                // number. Agents that fail to find an existing bill (e.g. a
-                // search with an invalid move_type returns empty) otherwise book
-                // a DUPLICATE: on staging the agent created move_id 40 duplicating
-                // move_id 39, both ref 083000981540. Before creating, surface any
-                // existing move that already carries the same ref (+ move_type +
-                // partner) so the agent updates it or confirms a deliberate
-                // second entry rather than silently double-booking.
-                if (
-                  model === "account.move" &&
-                  typeof values.ref === "string" &&
-                  values.ref.trim() &&
-                  checkPermission(config.permissions, model, "read")
-                ) {
-                  const dupDomain: OdooDomain = [["ref", "=", values.ref]];
-                  if (typeof values.move_type === "string") {
-                    dupDomain.push(["move_type", "=", values.move_type]);
-                  }
-                  // Scope by company: the same supplier invoice number can be
-                  // booked legitimately by two separate companies in one Odoo
-                  // instance, so a global ref match would falsely reject the
-                  // second company's entry. company_id is a resolved integer
-                  // here (normalizeMany2OneValues ran above).
-                  if (typeof values.company_id === "number") {
-                    dupDomain.push(["company_id", "=", values.company_id]);
-                  }
-                  if (typeof values.partner_id === "number") {
-                    dupDomain.push(["partner_id", "=", values.partner_id]);
-                  }
-                  const existing = getSearchReadRecords(
-                    await client.searchRead("account.move", dupDomain, {
-                      fields: ["id", "name", "state"],
-                      limit: 1,
-                    })
-                  );
-                  if (existing.length > 0) {
-                    const dup = existing[0] as { id: number; name?: string; state?: string };
-                    throw new Error(
-                      `A record already exists in account.move with ref "${values.ref}"` +
-                        (typeof values.move_type === "string"
-                          ? ` (move_type "${values.move_type}")`
-                          : "") +
-                        `: id ${dup.id}` +
-                        (dup.name ? ` "${dup.name}"` : "") +
-                        (dup.state ? `, state "${dup.state}"` : "") +
-                        `. To avoid a duplicate, update it with odoo_write, or confirm you ` +
-                        `intend a second entry before creating.`
+              const outcome = await withAuthRetry(
+                agentId,
+                config,
+                async (
+                  client
+                ): Promise<
+                  | {
+                      kind: "created";
+                      id: number;
+                      override: ExistingBillSnapshot | null;
+                      ref: string | null;
+                      moveType: string;
+                    }
+                  | {
+                      kind: "blocked";
+                      moveType: string;
+                      ref: string;
+                      snapshot: ExistingBillSnapshot;
+                    }
+                > => {
+                  let values: Record<string, unknown>;
+                  // The model's field schema, fetched once during many2one
+                  // normalization and reused for #5 selection validation below
+                  // (avoids a second client.fields round-trip on every create).
+                  let modelFields: OdooField[] | null = null;
+                  if (isRecord(params.values)) {
+                    const cleaned = unquoteFieldKeys(params.values);
+                    assertNoCrossCompanyRefs(cleaned);
+                    const normalized = await normalizeMany2OneValues(
+                      client,
+                      config.connectionId,
+                      model,
+                      cleaned,
+                      config.permissions
                     );
+                    values = normalized.values;
+                    modelFields = normalized.fields;
+                    values = await ensureActivityResModelId(client, model, values);
+                  } else {
+                    values = params.values as Record<string, unknown>;
                   }
-                }
 
-                return client.create(model, values);
-              });
+                  // #5: reject out-of-set selection values (e.g. move_type
+                  // "in_bill", which is not a real Odoo move_type) with the valid
+                  // options, instead of forwarding a bad enum to Odoo where it
+                  // surfaces as an opaque server error the agent has to guess at.
+                  if (modelFields) {
+                    const invalidSelections = findInvalidSelectionValues(modelFields, values);
+                    if (invalidSelections.length > 0) {
+                      throw new Error(formatInvalidSelectionError(model, invalidSelections));
+                    }
+                  }
+
+                  // #3: deterministic vendor-bill duplicate guard (pinchy#721).
+                  // A vendor bill/credit note is keyed by its `ref` — the
+                  // supplier's invoice number. On staging an agent created
+                  // move_id 40 duplicating move_id 39, both ref 083000981540; in
+                  // the eval, 13/14 models filed the duplicate anyway. Pinchy owns
+                  // the tool layer, so Pinchy owns the guarantee: before creating,
+                  // search for an existing bill with the same ref (+ move_type +
+                  // company + partner). On a hit, BLOCK and return the existing
+                  // bill so the model relays it; `allow_duplicate: true` is the
+                  // explicit escape hatch for a deliberate second entry. Scope is
+                  // in_invoice/in_refund only — matching Odoo's own ref-based
+                  // dedup, which never ref-dedups customer invoices or entries.
+                  let override: ExistingBillSnapshot | null = null;
+                  const moveType = typeof values.move_type === "string" ? values.move_type : "";
+                  if (
+                    model === "account.move" &&
+                    VENDOR_DOCUMENT_MOVE_TYPES.has(moveType) &&
+                    typeof values.ref === "string" &&
+                    values.ref.trim() &&
+                    checkPermission(config.permissions, model, "read")
+                  ) {
+                    const dupDomain: OdooDomain = [
+                      ["ref", "=", values.ref],
+                      ["move_type", "=", moveType],
+                    ];
+                    // Scope by company: the same supplier invoice number can be
+                    // booked legitimately by two separate companies in one Odoo
+                    // instance, so a global ref match would falsely reject the
+                    // second company's entry. company_id is a resolved integer
+                    // here (normalizeMany2OneValues ran above).
+                    if (typeof values.company_id === "number") {
+                      dupDomain.push(["company_id", "=", values.company_id]);
+                    }
+                    if (typeof values.partner_id === "number") {
+                      dupDomain.push(["partner_id", "=", values.partner_id]);
+                    }
+                    const existing = getSearchReadRecords(
+                      await client.searchRead("account.move", dupDomain, {
+                        fields: ["id", "name", "state", "amount_total", "invoice_date"],
+                        limit: 1,
+                      })
+                    );
+                    if (existing.length > 0) {
+                      const snapshot = toBillSnapshot(existing[0]);
+                      if (!allowDuplicate) {
+                        return { kind: "blocked", moveType, ref: values.ref, snapshot };
+                      }
+                      // Override authorized: remember what was overridden so the
+                      // deliberate double-booking is traceable in the audit trail.
+                      override = snapshot;
+                    }
+                  }
+
+                  const createdId = await client.create(model, values);
+                  return {
+                    kind: "created",
+                    id: createdId,
+                    override,
+                    ref: typeof values.ref === "string" ? values.ref : null,
+                    moveType,
+                  };
+                }
+              );
+
+              if (outcome.kind === "blocked") {
+                // isError:true → the pinchy-audit hook + tool-use route record
+                // outcome=failure with the snapshot lifted into detail.error.
+                // toolError emits an error-ONLY `details: { error }`, which the
+                // route deliberately does not treat as curation — so the blocked
+                // create's params survive in the audit row for forensics.
+                return toolError(
+                  duplicateBillBlockMessage(outcome.moveType, outcome.ref, outcome.snapshot)
+                );
+              }
+
+              const id = outcome.id;
 
               // Emit a self-ref so the LLM can chain into tools that consume
               // opaque references (most importantly odoo_attach_file). Without
@@ -2780,11 +2897,32 @@ const plugin = {
                 label,
               });
 
+              const body: Record<string, unknown> = { id, _pinchy_ref: selfRef };
+              if (outcome.override) {
+                body.duplicate_override = { existing_bill: outcome.override };
+                return {
+                  content: [{ type: "text", text: JSON.stringify(body) }],
+                  // Curated audit detail (the tool-use route lifts result.details
+                  // and, because it carries non-error fields, suppresses the raw
+                  // create params): the deliberate double-booking described inline
+                  // — what was booked (ref + move type + new id) AND the bill it
+                  // duplicated — so an auditor sees the full decision without a
+                  // second lookup, and without logging partner/amount PII.
+                  details: {
+                    duplicateOverride: true,
+                    bookedRef: outcome.ref,
+                    bookedMoveType: outcome.moveType,
+                    createdId: id,
+                    existingBill: outcome.override,
+                  },
+                };
+              }
+
               return {
                 content: [
                   {
                     type: "text",
-                    text: JSON.stringify({ id, _pinchy_ref: selfRef }),
+                    text: JSON.stringify(body),
                   },
                 ],
               };

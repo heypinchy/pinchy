@@ -2442,6 +2442,250 @@ describe("odoo_create", () => {
   });
 });
 
+// pinchy#721: deterministic vendor-bill duplicate guard. Before an odoo_create on
+// account.move for a VENDOR document (move_type in_invoice / in_refund), the plugin
+// searches for an existing bill with the same partner + ref and, on a hit, blocks
+// the create and returns a structured snapshot of the existing bill so the model
+// relays it to the user instead of double-booking (a double-payment risk). An
+// explicit `allow_duplicate: true` override exists for deliberate re-filings.
+//
+// Scope is intentionally the two VENDOR move types only — matching Odoo's own
+// _fetch_duplicate_reference, which keys vendor docs on `ref` and never
+// ref-dedups customer invoices (out_invoice) or journal entries (entry).
+describe("odoo_create vendor-bill duplicate guard (#721)", () => {
+  const dupConfig = {
+    connectionId: "conn-test-1",
+    permissions: { "account.move": ["read", "create"] },
+    modelNames: { "account.move": "Journal Entry" },
+  };
+  // Odoo account.move fields the guard's normalization + selection validation see.
+  const MOVE_SCHEMA_FIELDS = [
+    {
+      name: "move_type",
+      string: "Type",
+      type: "selection",
+      selection: [
+        ["entry", "Journal Entry"],
+        ["out_invoice", "Customer Invoice"],
+        ["out_refund", "Customer Credit Note"],
+        ["in_invoice", "Vendor Bill"],
+        ["in_refund", "Vendor Credit Note"],
+      ],
+    },
+    { name: "ref", string: "Reference", type: "char" },
+    { name: "partner_id", string: "Partner", type: "many2one", relation: "res.partner" },
+  ];
+
+  // The vendor bill already on file that a hit must snapshot.
+  const EXISTING_BILL = {
+    id: 39,
+    name: "BILL/2026/0039",
+    state: "posted",
+    amount_total: 1234.56,
+    invoice_date: "2026-06-01",
+  };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.stubEnv("PINCHY_REF_TOKEN_KEY", "a".repeat(64));
+    mockFields.mockResolvedValue(MOVE_SCHEMA_FIELDS);
+  });
+
+  it("blocks a vendor-bill create when a bill with the same ref already exists, snapshotting id/name/state/amount_total/date", async () => {
+    mockSearchRead.mockResolvedValue({
+      records: [EXISTING_BILL],
+      total: 1,
+      limit: 1,
+      offset: 0,
+    });
+
+    const tools = createApi({ [agentId]: dupConfig });
+    const tool = findTool(tools, "odoo_create", agentId)!;
+
+    const result = await tool.execute("call-dup", {
+      model: "account.move",
+      values: { move_type: "in_invoice", ref: "083000981540" },
+    });
+
+    // Blocked: failure outcome, no write reached Odoo.
+    expect(result.isError).toBe(true);
+    expect(mockCreate).not.toHaveBeenCalled();
+
+    // Structured snapshot naming the existing bill (issue: id, name, state,
+    // amount_total, date) so the model can relay it instead of writing.
+    const text = result.content[0].text;
+    expect(text).toContain("083000981540"); // the ref
+    expect(text).toContain("39"); // existing bill id
+    expect(text).toContain("BILL/2026/0039"); // existing bill name
+    expect(text).toContain("posted"); // existing bill state
+    expect(text).toContain("1234.56"); // amount_total
+    expect(text).toContain("2026-06-01"); // date
+    // Retry-safe: point the model at the override rather than a blind retry.
+    expect(text).toMatch(/allow_duplicate/);
+  });
+
+  it("blocks a vendor CREDIT NOTE (in_refund) duplicate too — Odoo treats it with vendor bills", async () => {
+    mockSearchRead.mockResolvedValue({
+      records: [{ ...EXISTING_BILL, id: 41, name: "RBILL/2026/0041" }],
+      total: 1,
+      limit: 1,
+      offset: 0,
+    });
+
+    const tools = createApi({ [agentId]: dupConfig });
+    const tool = findTool(tools, "odoo_create", agentId)!;
+
+    const result = await tool.execute("call-refund-dup", {
+      model: "account.move",
+      values: { move_type: "in_refund", ref: "CN-9001" },
+    });
+
+    expect(result.isError).toBe(true);
+    expect(mockCreate).not.toHaveBeenCalled();
+    expect(result.content[0].text).toContain("41");
+  });
+
+  it("lets a first-time vendor bill through when no duplicate is on file", async () => {
+    mockSearchRead.mockResolvedValue({ records: [], total: 0, limit: 1, offset: 0 });
+    mockCreate.mockResolvedValue(1002);
+
+    const tools = createApi({ [agentId]: dupConfig });
+    const tool = findTool(tools, "odoo_create", agentId)!;
+
+    const result = await tool.execute("call-first", {
+      model: "account.move",
+      values: { move_type: "in_invoice", ref: "NEW-0001" },
+    });
+
+    expect(result.isError).toBeFalsy();
+    expect(mockCreate).toHaveBeenCalledWith("account.move", {
+      move_type: "in_invoice",
+      ref: "NEW-0001",
+    });
+    expect(JSON.parse(result.content[0].text).id).toBe(1002);
+  });
+
+  it("does NOT guard a customer invoice (out_invoice) — Odoo never ref-dedups those", async () => {
+    // A same-ref customer invoice is a legitimate second entry: out-document refs
+    // are not vendor document numbers. The guard must not run its search, so the
+    // create proceeds even though a record with this ref exists.
+    mockSearchRead.mockResolvedValue({
+      records: [EXISTING_BILL],
+      total: 1,
+      limit: 1,
+      offset: 0,
+    });
+    mockCreate.mockResolvedValue(2002);
+
+    const tools = createApi({ [agentId]: dupConfig });
+    const tool = findTool(tools, "odoo_create", agentId)!;
+
+    const result = await tool.execute("call-out", {
+      model: "account.move",
+      values: { move_type: "out_invoice", ref: "083000981540" },
+    });
+
+    expect(result.isError).toBeFalsy();
+    expect(mockCreate).toHaveBeenCalled();
+    expect(mockSearchRead).not.toHaveBeenCalled();
+  });
+
+  it("does NOT guard a plain journal entry (no move_type) — Odoo never dedups those", async () => {
+    mockCreate.mockResolvedValue(3003);
+
+    const tools = createApi({ [agentId]: dupConfig });
+    const tool = findTool(tools, "odoo_create", agentId)!;
+
+    const result = await tool.execute("call-entry", {
+      model: "account.move",
+      values: { ref: "JE-0001" },
+    });
+
+    expect(result.isError).toBeFalsy();
+    expect(mockCreate).toHaveBeenCalled();
+    expect(mockSearchRead).not.toHaveBeenCalled();
+  });
+
+  it("proceeds and records a traceable override when allow_duplicate is true", async () => {
+    mockSearchRead.mockResolvedValue({
+      records: [EXISTING_BILL],
+      total: 1,
+      limit: 1,
+      offset: 0,
+    });
+    mockCreate.mockResolvedValue(1003);
+
+    const tools = createApi({ [agentId]: dupConfig });
+    const tool = findTool(tools, "odoo_create", agentId)!;
+
+    const result = await tool.execute("call-override", {
+      model: "account.move",
+      values: { move_type: "in_invoice", ref: "083000981540" },
+      allow_duplicate: true,
+    });
+
+    // The create proceeds despite the on-file duplicate.
+    expect(result.isError).toBeFalsy();
+    expect(mockCreate).toHaveBeenCalledWith("account.move", {
+      move_type: "in_invoice",
+      ref: "083000981540",
+    });
+    expect(JSON.parse(result.content[0].text).id).toBe(1003);
+
+    // The override decision is captured in a curated audit detail (the tool-use
+    // audit route lifts result.details) naming the bill that was overridden, so
+    // the deliberate double-booking is traceable.
+    const details = result.details as Record<string, unknown>;
+    expect(details.duplicateOverride).toBe(true);
+    expect((details.existingBill as { id: number }).id).toBe(39);
+    // The audit row describes the deliberate double-booking inline: what was
+    // booked (ref + move type + new id) alongside the bill it duplicated.
+    expect(details.bookedRef).toBe("083000981540");
+    expect(details.bookedMoveType).toBe("in_invoice");
+    expect(details.createdId).toBe(1003);
+  });
+
+  it("allow_duplicate on a bill with NO on-file duplicate is a normal create (no override detail)", async () => {
+    mockSearchRead.mockResolvedValue({ records: [], total: 0, limit: 1, offset: 0 });
+    mockCreate.mockResolvedValue(1004);
+
+    const tools = createApi({ [agentId]: dupConfig });
+    const tool = findTool(tools, "odoo_create", agentId)!;
+
+    const result = await tool.execute("call-override-noop", {
+      model: "account.move",
+      values: { move_type: "in_invoice", ref: "NEW-0002" },
+      allow_duplicate: true,
+    });
+
+    expect(result.isError).toBeFalsy();
+    expect(mockCreate).toHaveBeenCalled();
+    // No duplicate existed, so nothing was overridden — no override audit detail.
+    expect(result.details).toBeUndefined();
+  });
+
+  it("skips the guard when the agent lacks read on account.move (cannot verify, so cannot block)", async () => {
+    const createOnly = {
+      connectionId: "conn-test-1",
+      permissions: { "account.move": ["create"] },
+      modelNames: { "account.move": "Journal Entry" },
+    };
+    mockCreate.mockResolvedValue(4004);
+
+    const tools = createApi({ [agentId]: createOnly });
+    const tool = findTool(tools, "odoo_create", agentId)!;
+
+    const result = await tool.execute("call-noread", {
+      model: "account.move",
+      values: { move_type: "in_invoice", ref: "083000981540" },
+    });
+
+    expect(result.isError).toBeFalsy();
+    expect(mockCreate).toHaveBeenCalled();
+    expect(mockSearchRead).not.toHaveBeenCalled();
+  });
+});
+
 describe("odoo_write", () => {
   beforeEach(() => {
     vi.clearAllMocks();
