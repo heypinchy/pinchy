@@ -25,19 +25,29 @@ reason = "Transitive devDep via openclaw → @earendil-works/pi-ai → @modelcon
 # Residual astro advisories in docs/pnpm-lock.yaml whose only fix crosses the
 # Astro 6→7 major (which drags @astrojs/starlight 0.38→0.41). docs/ is a
 # standalone Starlight site (docs.heypinchy.com), separate from the Pinchy
-# production Docker image. The highest-severity docs astro advisory (CVSS 8.2)
-# and the js-yaml one were already fixed via safe in-major bumps; these three
-# (CVSS 5.3 / 5.1 / 2.1) are allow-listed until the framework major lands.
+# production Docker image. All three are XSS bugs the upstream advisories scope
+# to on-demand SSR / the dev server only; statically prerendered output — which
+# is all Starlight emits — is explicitly unaffected, so the residual risk to the
+# built and deployed docs site is nil regardless of the deferred major bump.
+# The highest-severity docs astro advisory (CVSS 8.2) and the js-yaml one were
+# already fixed via safe in-major bumps; these three (CVSS 5.3 / 5.1 / 2.1) are
+# allow-listed until the framework major lands.
 # Tracked in https://github.com/heypinchy/pinchy/issues/851 — remove on upgrade.
+# ignoreUntil forces a re-triage on 2026-10-21 so the exception cannot outlive
+# #851 silently: if the Astro 7 upgrade has not landed by then, osv-scan goes
+# red again and this file must be revisited rather than left to rot.
 
 [[IgnoredVulns]]
 id = "GHSA-4g3v-8h47-v7g6"
-reason = "astro@6.4.8, fixed only in 7.1.0 (major). Docs-only Starlight site, not in the Pinchy production image. Tracked in #851."
+ignoreUntil = 2026-10-21
+reason = "astro@6.4.8; reflected XSS in View Transitions, on-demand SSR / dev-server only — Starlight emits static HTML, so the built docs site is unaffected. Fixed only in 7.1.0 (major). Docs-only site, not in the Pinchy production image. Tracked in #851."
 
 [[IgnoredVulns]]
 id = "GHSA-f48w-9m4c-m7f5"
-reason = "astro@6.4.8, fixed only in 7.0.6 (major). Docs-only Starlight site, not in the Pinchy production image. Tracked in #851."
+ignoreUntil = 2026-10-21
+reason = "astro@6.4.8; XSS via unescaped attribute names, requires an SSR runtime with a global HTMLElement — not reachable in Starlight's static output. Fixed only in 7.0.6 (major). Docs-only site, not in the Pinchy production image. Tracked in #851."
 
 [[IgnoredVulns]]
 id = "GHSA-7pw4-f3q4-r2p2"
-reason = "astro@6.4.8, fixed only in 7.0.4 (major). Docs-only Starlight site, not in the Pinchy production image. Tracked in #851."
+ignoreUntil = 2026-10-21
+reason = "astro@6.4.8; reflected XSS in transition directives, on-demand SSR / dev-server only — statically prerendered Starlight output is unaffected. Fixed only in 7.0.4 (major). Docs-only site, not in the Pinchy production image. Tracked in #851."
