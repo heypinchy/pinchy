@@ -4,8 +4,8 @@ The strongest objection to any per-model reliability number is **"you just
 integrated model X badly."** This document is the answer: it states exactly how
 every model is elicited, so a low score is a property of the model on our real
 serving path — not of a scaffold we under-built for it. It follows the METR
-elicitation-protocol framing (evaluations.metr.org/elicitation-protocol) and is
-part of the methodology (`model-selection-methodology.md` sits above it).
+elicitation-protocol framing (https://evaluations.metr.org/elicitation-protocol/)
+and is part of the methodology (`model-selection-methodology.md` sits above it).
 
 ## The core fairness property: there is no eval-special scaffold
 
@@ -48,8 +48,8 @@ The only per-model differences are the catalog entries in
 Rather than duplicate a table that would drift, this doc points at the catalog
 as the source of truth and states the invariants:
 
-- `maxTokens` is a uniform 8192 output hint across the catalog (the one
-  exception is documented in the catalog).
+- `maxTokens` is a uniform 8192 output hint across every catalog entry, with no
+  per-model exception — a shared output ceiling can advantage no one model.
 - `reasoning` and `vision` are read from each model's `ollama.com/library`
   capability tags, then **corrected against the live `/v1` endpoint** where the
   page lies (e.g. a model that advertises vision but returns HTTP 500 on an
