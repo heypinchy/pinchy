@@ -70,7 +70,8 @@ let _startupTimeout: ReturnType<typeof setTimeout> | null = null;
  * which is what lets these tests run with no mocks at all.
  *
  * `opts` overrides the cadence. Production leaves it empty; the E2E stack shortens
- * it via `INBOX_SWEEP_INTERVAL_MS`, since no test can wait 15 minutes for a tick.
+ * it via `INBOX_SWEEP_INTERVAL_MS`, since even the one-minute production cadence is
+ * far longer than a test can wait for a tick.
  *
  * Idempotent: the timer handles live in module state, so a second start without
  * this would overwrite the first one's handles and orphan an interval that fires
