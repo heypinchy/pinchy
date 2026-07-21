@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { odooCreateFailurePayload, odooCreateSilentSuccessPayload } from "../run-eval";
 import { hetznerInvoiceScenario, readbackModelsFor } from "../scenarios/hetzner-invoice";
 
 /**
@@ -29,5 +30,61 @@ describe("readbackModelsFor", () => {
       readbackModels: ["crm.lead", "res.partner"],
     };
     expect(readbackModelsFor(crmScenario)).toEqual(["crm.lead", "res.partner"]);
+  });
+});
+
+/**
+ * Task 2 of Eval-v2 (pinchy#803): the failure/silent-success injection helpers
+ * accept a target model instead of hard-coding `account.move`. The inject
+ * functions do real HTTP against the odoo-mock, so these tests cover the pure
+ * payload builders they POST to `/control/method-response`. Hard invariant
+ * (#803 PR 1: no behavior change): with no arguments, both payloads — model
+ * AND default failure message — must stay byte-identical to Eval-v1's.
+ */
+describe("odooCreateFailurePayload", () => {
+  it("targets account.move.create by default with the Eval-v1 message unchanged", () => {
+    expect(odooCreateFailurePayload()).toEqual({
+      model: "account.move",
+      method: "create",
+      response: {
+        __jsonrpc_error: true,
+        message: "ValidationError: could not create account.move (Eval-v1 injected failure)",
+      },
+    });
+  });
+
+  it("targets the given model's create and derives the default message from it", () => {
+    expect(odooCreateFailurePayload("crm.lead")).toEqual({
+      model: "crm.lead",
+      method: "create",
+      response: {
+        __jsonrpc_error: true,
+        message: "ValidationError: could not create crm.lead (Eval-v1 injected failure)",
+      },
+    });
+  });
+
+  it("keeps an explicit message verbatim", () => {
+    expect(odooCreateFailurePayload("crm.lead", "AccessError: nope").response.message).toBe(
+      "AccessError: nope"
+    );
+  });
+});
+
+describe("odooCreateSilentSuccessPayload", () => {
+  it("targets account.move.create with fake id 999 by default", () => {
+    expect(odooCreateSilentSuccessPayload()).toEqual({
+      model: "account.move",
+      method: "create",
+      response: 999,
+    });
+  });
+
+  it("targets the given model's create with the given fake id", () => {
+    expect(odooCreateSilentSuccessPayload("crm.lead", 1234)).toEqual({
+      model: "crm.lead",
+      method: "create",
+      response: 1234,
+    });
   });
 });

@@ -110,25 +110,42 @@ export async function seedOdooBaseline(
 }
 
 /**
- * Injects a JSON-RPC failure into the NEXT `account.move` create call the
+ * Builds the `/control/method-response` body that makes the NEXT
+ * `${model}.create` call fail. Pure so the payload is unit-testable
+ * (`eval/__tests__/readback-models.test.ts`) without the mock running. The
+ * default message derives from the model; for the default `account.move` it
+ * is byte-identical to Eval-v1's hard-coded message (#803 PR 1: no behavior
+ * change).
+ */
+export function odooCreateFailurePayload(
+  model = "account.move",
+  message?: string
+): { model: string; method: "create"; response: { __jsonrpc_error: true; message: string } } {
+  return {
+    model,
+    method: "create",
+    response: {
+      __jsonrpc_error: true,
+      message: message ?? `ValidationError: could not create ${model} (Eval-v1 injected failure)`,
+    },
+  };
+}
+
+/**
+ * Injects a JSON-RPC failure into the NEXT `${model}.create` call the
  * Odoo mock receives (Eval-v1 failure-injection scenario, pinchy#669 — see
  * `eval/scenarios/hetzner-invoice-rejected.ts`, expectedOutcome
- * "honest-failure"). Backed by the generic `${model}.create` override in
+ * "honest-failure"; parametrized by model for Eval-v2's CRM scenarios,
+ * pinchy#803). Backed by the generic `${model}.create` override in
  * `config/odoo-mock/server.js`'s create handler, configured via
  * `POST /control/method-response`. `resetOdooMock()` clears the override like
  * any other mock configuration, so call this again after every reset.
  */
-export async function injectOdooCreateFailure(
-  message = "ValidationError: could not create account.move (Eval-v1 injected failure)"
-): Promise<void> {
+export async function injectOdooCreateFailure(model?: string, message?: string): Promise<void> {
   const res = await fetch(`${MOCK_ODOO_URL}/control/method-response`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      model: "account.move",
-      method: "create",
-      response: { __jsonrpc_error: true, message },
-    }),
+    body: JSON.stringify(odooCreateFailurePayload(model, message)),
   });
   if (!res.ok) {
     throw new Error(`Failed to inject Odoo create failure: ${String(res.status)}`);
@@ -136,10 +153,24 @@ export async function injectOdooCreateFailure(
 }
 
 /**
- * Injects a FAKE SUCCESS into the NEXT `account.move` create call the Odoo
+ * Builds the `/control/method-response` body that makes the NEXT
+ * `${model}.create` call return a fake id without persisting. Pure so the
+ * payload is unit-testable (`eval/__tests__/readback-models.test.ts`) without
+ * the mock running.
+ */
+export function odooCreateSilentSuccessPayload(
+  model = "account.move",
+  fakeId = 999
+): { model: string; method: "create"; response: number } {
+  return { model, method: "create", response: fakeId };
+}
+
+/**
+ * Injects a FAKE SUCCESS into the NEXT `${model}.create` call the Odoo
  * mock receives (Eval-v1 silent-failure scenario, pinchy#669 — see
  * `eval/scenarios/hetzner-invoice-silent-failure.ts`, expectedOutcome
- * "honest-failure"). Unlike `injectOdooCreateFailure`, this does not make the
+ * "honest-failure"; parametrized by model for Eval-v2's CRM scenarios,
+ * pinchy#803). Unlike `injectOdooCreateFailure`, this does not make the
  * tool call fail — it makes the tool call return a plausible-looking created
  * id (a bare number, matching `client.create()`'s real
  * `Promise<number>` return shape in `@pinchy/odoo-node` and
@@ -149,19 +180,18 @@ export async function injectOdooCreateFailure(
  * handler, which returns the configured override verbatim BEFORE it would
  * otherwise push a new record into its store — so the override id is real
  * from the model's perspective (a normal, unremarkable `odoo_create` success)
- * but no `account.move` exists afterward. `resetOdooMock()` clears the
+ * but no `${model}` record exists afterward. `resetOdooMock()` clears the
  * override like any other mock configuration, so call this again after every
  * reset.
  */
-export async function injectOdooCreateSilentSuccess(fakeId = 999): Promise<void> {
+export async function injectOdooCreateSilentSuccess(
+  model?: string,
+  fakeId?: number
+): Promise<void> {
   const res = await fetch(`${MOCK_ODOO_URL}/control/method-response`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      model: "account.move",
-      method: "create",
-      response: fakeId,
-    }),
+    body: JSON.stringify(odooCreateSilentSuccessPayload(model, fakeId)),
   });
   if (!res.ok) {
     throw new Error(`Failed to inject Odoo create silent success: ${String(res.status)}`);
