@@ -88,6 +88,9 @@ const NO_SCHEMA_REQUIRED: ReadonlyArray<KnownPinchyPlugin> = [
   // separate per-instance schema (probed identifier list) for this plugin to
   // drift against.
   "pinchy-knowledge",
+  // pinchy-approvals: a hook-only confirmation gate. Per-agent policy lives in
+  // the agent's pluginConfig, not in any template schema.
+  "pinchy-approvals",
   // External plugins without per-template schema requirements (today).
   // pinchy-email: templates declare `requiresEmailConnection: true` but no
   //   `requiredFolders` / `requiredLabels` — any IMAP/Gmail account works.

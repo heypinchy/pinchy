@@ -6920,6 +6920,7 @@ describe("restart-state integration", () => {
       "telegram",
       "pinchy-files",
       "pinchy-transcript",
+      "pinchy-approvals",
       "document-extract",
       "llama-cpp",
     ]);
@@ -7351,6 +7352,7 @@ describe("restart-state integration", () => {
         "telegram",
         "pinchy-files",
         "pinchy-transcript",
+        "pinchy-approvals",
         "document-extract",
         "llama-cpp",
       ]);
