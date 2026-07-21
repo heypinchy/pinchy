@@ -135,13 +135,15 @@ vi.mock("@/lib/openclaw-secrets", async (importOriginal) => {
 });
 
 vi.mock("@/lib/provider-models", () => {
-  const defaults: Record<string, string> = {
-    anthropic: "anthropic/claude-haiku-4-5-20251001",
-    openai: "openai/gpt-5.4-mini",
-    google: "google/gemini-2.5-flash",
-    "ollama-cloud": "ollama-cloud/minimax-m3",
-    "ollama-local": "",
-  };
+  // Map instead of a Record so the lookup below is not a
+  // security/detect-object-injection sink (Map#get is not one).
+  const defaults = new Map<string, string>([
+    ["anthropic", "anthropic/claude-haiku-4-5-20251001"],
+    ["openai", "openai/gpt-5.4-mini"],
+    ["google", "google/gemini-2.5-flash"],
+    ["ollama-cloud", "ollama-cloud/minimax-m3"],
+    ["ollama-local", ""],
+  ]);
   // Default "live" catalog: all three ollama-cloud image-preference models are
   // present. Individual tests override this to simulate an upstream retirement
   // (a model dropping out of /v1/models).
@@ -157,7 +159,7 @@ vi.mock("@/lib/provider-models", () => {
     },
   ]);
   return {
-    getDefaultModel: vi.fn(async (provider: string) => defaults[provider] ?? ""),
+    getDefaultModel: vi.fn(async (provider: string) => defaults.get(provider) ?? ""),
     fetchProviderModels,
     fetchOllamaLocalModelsFromUrl: vi.fn().mockResolvedValue([]),
   };
@@ -173,7 +175,7 @@ vi.mock("@/server/openclaw-client", () => ({
   getOpenClawClient: () => mockGetClient(),
 }));
 
-import { writeFileSync, readFileSync, existsSync, mkdirSync } from "fs";
+import { writeFileSync, readFileSync, existsSync } from "fs";
 import {
   writtenOpenClawConfig,
   findOpenClawConfigWrite,
@@ -200,7 +202,6 @@ const mockedFetchProviderModels = vi.mocked(fetchProviderModels);
 const mockedWriteFileSync = vi.mocked(writeFileSync);
 const mockedReadFileSync = vi.mocked(readFileSync);
 const mockedExistsSync = vi.mocked(existsSync);
-const mockedMkdirSync = vi.mocked(mkdirSync);
 
 const mockedDb = vi.mocked(db);
 const mockedGetSetting = vi.mocked(getSetting);
@@ -1038,6 +1039,8 @@ describe("regenerateOpenClawConfig", () => {
     const providers = config?.models?.providers ?? {};
 
     for (const providerName of ["anthropic", "openai"]) {
+      // Keys come from the literal list above, not from input.
+      // eslint-disable-next-line security/detect-object-injection
       const models = providers[providerName]?.models ?? [];
       expect(models.length, `${providerName} has models`).toBeGreaterThan(0);
       for (const m of models) {
@@ -1264,7 +1267,10 @@ describe("regenerateOpenClawConfig", () => {
         keyValue,
         expectedBaseUrl
       ) => {
+        // Env keys come from the literal it.each table above, not from input.
+        // eslint-disable-next-line security/detect-object-injection
         process.env[sdkEnv] = sdkValue;
+        // eslint-disable-next-line security/detect-object-injection
         process.env[pinchyEnv] = pinchyValue;
         mockedGetSetting.mockImplementation(async (key: string) => {
           if (key === settingKey) return keyValue;
@@ -1274,6 +1280,7 @@ describe("regenerateOpenClawConfig", () => {
         await regenerateOpenClawConfig();
         const written = writtenOpenClawConfig(mockedWriteFileSync);
         const config = JSON.parse(written);
+        // eslint-disable-next-line security/detect-object-injection
         expect(config?.models?.providers?.[provider]?.baseUrl).toBe(expectedBaseUrl);
       }
     );
@@ -2263,6 +2270,7 @@ describe("regenerateOpenClawConfig", () => {
       "mistral-large-3:675b",
     ];
     for (const id of visionModels) {
+      // eslint-disable-next-line security/detect-object-injection
       expect(byId[id].input).toEqual(["text", "image"]);
     }
     // Spot-check that text-only models stay text-only (gemma4 was the
@@ -2303,6 +2311,7 @@ describe("regenerateOpenClawConfig", () => {
       "qwen3.5:397b",
     ];
     for (const id of reasoningModels) {
+      // eslint-disable-next-line security/detect-object-injection
       expect(byId[id].reasoning).toBe(true);
     }
     // Non-reasoning — qwen3-coder-next explicitly "Non-thinking mode only",
@@ -2310,6 +2319,7 @@ describe("regenerateOpenClawConfig", () => {
     // minimax-m2.1 absent from Ollama's thinking tag list.
     const nonReasoningModels = ["mistral-large-3:675b"];
     for (const id of nonReasoningModels) {
+      // eslint-disable-next-line security/detect-object-injection
       expect(byId[id].reasoning).toBe(false);
     }
 
@@ -6967,8 +6977,6 @@ describe("pinchy-* plugin gatewayToken as SecretRef", () => {
     } as never);
     mockedGetSetting.mockResolvedValue(null);
   });
-
-  const GW_TOKEN_REF = { source: "file", provider: "pinchy", id: "/gateway/token" };
 
   it("preserves gateway.auth.token as plain string, keeps mode and bind", async () => {
     const existingConfig = {
