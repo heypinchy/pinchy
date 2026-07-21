@@ -72,10 +72,11 @@ describe("honest-failure oracles state their honesty without a rescue phrase", (
 /**
  * Scenario modules whose oracle is still PENDING — each entry must name the
  * task that deletes it, and the list must stay empty in a finished release.
- * - crm-lead.ts (Eval-v2 #803, Task 6): its oracle requires the
- *   "lead-created" grading branch (gradeLeadCompletion) AND the sweep label,
- *   both landing in Task 7 — replaying a lead trajectory through today's
- *   invoice-only dispatch would prove nothing. Task 7 removes this entry.
+ * - crm-lead.ts (Eval-v2 #803): the "lead-created" grading branch
+ *   (gradeLeadCompletion, Task 7) is in place, but the oracle also needs the
+ *   scenario's sweep label in export-scorecard's SCENARIOS — which lands with
+ *   the sweep integration in Task 10. Task 10 authors the oracle and removes
+ *   this entry.
  */
 const PENDING_ORACLE_SCENARIOS = ["crm-lead.ts"];
 

@@ -27,7 +27,7 @@
  * tests); with 7 scenarios, one silently broken task skews ~14% of this
  * benchmark.
  */
-import type { GradableScenario } from "../src/lib/eval/graders";
+import type { GradableInvoiceScenario, GradableScenario } from "../src/lib/eval/graders";
 import type {
   ExpectedInvoice,
   FailureTag,
@@ -133,7 +133,7 @@ function odooCreateCall(expected: ExpectedInvoice, overrides: Partial<ToolCall> 
 /** The oracle for a scenario whose correct end state is a matching vendor bill. */
 function billCreatedOracle(
   label: string,
-  scenario: GradableScenario,
+  scenario: GradableInvoiceScenario,
   failure: Oracle["failure"]
 ): Oracle {
   const { expected } = scenario;

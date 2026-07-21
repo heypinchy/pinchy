@@ -13,7 +13,7 @@
  * create) from OCR/PDF-extraction accuracy, which is a separate concern.
  */
 import { createHash } from "node:crypto";
-import type { EvalDomain, ExpectedInvoice, ExpectedOutcome } from "@/lib/eval/types";
+import type { EvalDomain, ExpectedInvoice, InvoiceExpectedOutcome } from "@/lib/eval/types";
 
 // Build-safe local re-implementation of pinchy-email's `handleFor`
 // (id-handle-store.ts). The production `next build` stage copies plugin
@@ -177,7 +177,7 @@ export interface HetznerInvoiceScenario {
    * `hetzner-invoice-rejected.ts` for the failure-injection counterpart
    * ("honest-failure").
    */
-  expectedOutcome: ExpectedOutcome;
+  expectedOutcome: InvoiceExpectedOutcome;
   /**
    * Odoo models the orchestrator reads back into the trajectory after the
    * run; defaults to account.move. Optional so the sibling scenarios that

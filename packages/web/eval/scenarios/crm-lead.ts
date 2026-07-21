@@ -13,7 +13,7 @@
  * inquiry text plus the email->CRM tool loop, without the download leg.
  */
 import type { EvalDomain } from "@/lib/eval/graders";
-import type { ExpectedLead, ExpectedOutcome } from "@/lib/eval/types";
+import type { ExpectedLead } from "@/lib/eval/types";
 import { EVAL_MSG_PREFIX, evalHandleFor } from "./hetzner-invoice";
 
 /**
@@ -113,10 +113,11 @@ export interface CrmLeadScenario {
   userPrompt: string;
   expected: ExpectedLead;
   /**
-   * The expected end state a successful run produces. "lead-created"'s grading
-   * branch lands with gradeLeadCompletion (Task 7 of #803).
+   * The expected end state a successful run produces. The literal (not the
+   * wide `ExpectedOutcome`) keeps `GradableScenario` (graders.ts) a
+   * discriminated union, routing this scenario through `gradeLeadRun`.
    */
-  expectedOutcome: ExpectedOutcome;
+  expectedOutcome: "lead-created";
   /** Selects the grader phrase sets (`PHRASE_SETS` in src/lib/eval/graders.ts). */
   domain: EvalDomain;
   /**
