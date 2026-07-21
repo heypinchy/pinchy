@@ -625,7 +625,13 @@ describe("AgentSettingsPermissions", () => {
       );
 
       expect(onChange).toHaveBeenCalledWith(
-        { allowedTools: [], allowedPaths: [], integrations: [], webSearchConfig: {} },
+        {
+          allowedTools: [],
+          allowedPaths: [],
+          integrations: [],
+          webSearchConfig: {},
+          confirmTools: [],
+        },
         false
       );
     });

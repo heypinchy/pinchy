@@ -13,6 +13,7 @@ import { OdooPermissionSection } from "@/components/odoo-permission-section";
 import { EmailPermissionSection } from "@/components/email-permission-section";
 import { WebSearchPermissionSection } from "@/components/web-search-permission-section";
 import { KnowledgeReindexSection } from "@/components/knowledge-reindex-section";
+import { ApprovalConfirmationSection } from "@/components/approval-confirmation-section";
 import type { Connection as OdooConnection } from "@/hooks/use-odoo-permissions";
 import type { AgentPluginConfig } from "@/db/schema";
 import { EMAIL_CONNECTION_TYPES } from "@/lib/integrations/oauth-providers";
@@ -25,6 +26,7 @@ export interface PermissionsValues {
     permissions: Array<{ model: string; operation: string }>;
   }>;
   webSearchConfig?: AgentPluginConfig["pinchy-web"];
+  confirmTools: string[];
 }
 
 interface Connection {
@@ -87,10 +89,14 @@ export function AgentSettingsPermissions({
   const [webSearchConfig, setWebSearchConfig] = useState<AgentPluginConfig["pinchy-web"]>(
     agent.pluginConfig?.["pinchy-web"] ?? {}
   );
+  const [confirmTools, setConfirmTools] = useState<string[]>(
+    agent.pluginConfig?.["pinchy-approvals"]?.confirmTools ?? []
+  );
 
   const initialKbToolsRef = useRef(initialKbTools);
   const initialAllowedPaths = useRef(agent.pluginConfig?.["pinchy-files"]?.allowed_paths ?? []);
   const initialWebSearchConfig = useRef(agent.pluginConfig?.["pinchy-web"] ?? {});
+  const initialConfirmTools = useRef(agent.pluginConfig?.["pinchy-approvals"]?.confirmTools ?? []);
 
   // Re-sync the "initial" snapshot when the agent prop changes (the parent
   // refetches the agent after a successful save, so the prop now reflects the
@@ -105,6 +111,7 @@ export function AgentSettingsPermissions({
     );
     initialAllowedPaths.current = agent.pluginConfig?.["pinchy-files"]?.allowed_paths ?? [];
     initialWebSearchConfig.current = agent.pluginConfig?.["pinchy-web"] ?? {};
+    initialConfirmTools.current = agent.pluginConfig?.["pinchy-approvals"]?.confirmTools ?? [];
   }, [agent.allowedTools, agent.pluginConfig]);
 
   const hasWebToolChecked = webTools.some((tool) => allowedKbTools.includes(tool.id));
@@ -193,7 +200,10 @@ export function AgentSettingsPermissions({
         JSON.stringify([...initialAllowedPaths.current].sort());
     const webConfigDirty =
       JSON.stringify(webSearchConfig) !== JSON.stringify(initialWebSearchConfig.current);
-    const isDirty = kbDirty || odooIsDirty || emailIsDirty || webConfigDirty;
+    const confirmToolsDirty =
+      JSON.stringify([...confirmTools].sort()) !==
+      JSON.stringify([...initialConfirmTools.current].sort());
+    const isDirty = kbDirty || odooIsDirty || emailIsDirty || webConfigDirty || confirmToolsDirty;
     // Collect all active integrations
     const integrations: Array<{
       connectionId: string;
@@ -207,6 +217,7 @@ export function AgentSettingsPermissions({
         allowedPaths,
         integrations,
         webSearchConfig,
+        confirmTools: confirmTools.filter((id) => allAllowedTools.includes(id)),
       },
       isDirty
     );
@@ -218,6 +229,7 @@ export function AgentSettingsPermissions({
     emailIntegration,
     emailIsDirty,
     webSearchConfig,
+    confirmTools,
     onChange,
     computeAllowedTools,
   ]);
@@ -375,6 +387,19 @@ export function AgentSettingsPermissions({
             agentId={agent.id}
             connections={emailConnections}
             onChange={handleEmailChange}
+          />
+        </section>
+      )}
+
+      {/* Require confirmation — admin marks which tools pause for the acting
+          user to confirm before the agent runs them (#124 Tier 2). */}
+      {isAdmin && (
+        <section className="space-y-4">
+          <h3 className="text-lg font-semibold">Require confirmation before</h3>
+          <ApprovalConfirmationSection
+            allowedTools={computeAllowedTools(allowedKbTools, odooIntegration, emailIntegration)}
+            confirmTools={confirmTools}
+            onChange={setConfirmTools}
           />
         </section>
       )}
