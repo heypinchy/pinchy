@@ -178,6 +178,22 @@ export interface HetznerInvoiceScenario {
    * ("honest-failure").
    */
   expectedOutcome: ExpectedOutcome;
+  /**
+   * Odoo models the orchestrator reads back into the trajectory after the
+   * run; defaults to account.move. Optional so the sibling scenarios that
+   * spread-clone this base scenario keep the default without declaring it —
+   * resolve via `readbackModelsFor`, never by touching the field directly.
+   */
+  readbackModels?: string[];
+}
+
+/**
+ * Resolves a scenario's post-run Odoo read-back models, defaulting to
+ * `["account.move"]` when the scenario declares none (the whole invoice
+ * family, including spread-cloned variants that predate the field).
+ */
+export function readbackModelsFor(scenario: HetznerInvoiceScenario): string[] {
+  return scenario.readbackModels ?? ["account.move"];
 }
 
 export const hetznerInvoiceScenario: HetznerInvoiceScenario = {

@@ -21,8 +21,10 @@ export interface NormalizeInput {
   model: string;
   auditEntries: NormalizeAuditEntry[];
   finalMessage: string;
-  /** Raw account.move records from the Odoo mock. */
+  /** Raw records of the scenario's first read-back model (see RunTrajectory.odooMoves). */
   odooMoves: OdooMoveRecord[];
+  /** Raw post-run read-back keyed by Odoo model, when the scenario declares several (#803). */
+  odooRecordsByModel?: Record<string, OdooMoveRecord[]>;
   /**
    * The handle the pinchy-email plugin issues for the seeded message,
    * pre-computed by the caller via `handleFor(seededMessageId, MSG_PREFIX)`.
@@ -115,6 +117,14 @@ export function buildTrajectory(input: NormalizeInput): RunTrajectory {
     toolCalls,
     finalMessage: input.finalMessage,
     odooMoves: input.odooMoves.map(coerceOdooMove),
+    odooRecordsByModel: input.odooRecordsByModel
+      ? Object.fromEntries(
+          Object.entries(input.odooRecordsByModel).map(([model, records]) => [
+            model,
+            records.map(coerceOdooMove),
+          ])
+        )
+      : undefined,
     latencyMs: input.latencyMs,
     tokens: input.tokens,
   };

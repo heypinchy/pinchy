@@ -30,7 +30,11 @@ import { buildTrajectory, type NormalizeAuditEntry } from "../src/lib/eval/norma
 import { gradeRunForScenario } from "../src/lib/eval/graders";
 import { buildScorecard, type ScorecardEntry } from "../src/lib/eval/scorecard";
 import type { OdooMoveRecord, RunResult, RunTrajectory } from "../src/lib/eval/types";
-import { hetznerInvoiceScenario, type HetznerInvoiceScenario } from "./scenarios/hetzner-invoice";
+import {
+  hetznerInvoiceScenario,
+  readbackModelsFor,
+  type HetznerInvoiceScenario,
+} from "./scenarios/hetzner-invoice";
 
 export const PINCHY_URL = process.env.PINCHY_URL || "http://localhost:7777";
 const MOCK_ODOO_URL = process.env.MOCK_ODOO_URL || "http://localhost:9002";
@@ -405,7 +409,18 @@ export async function runOnce(params: RunOnceParams): Promise<RunResult> {
   );
 
   const auditEntries = await collectToolAuditEntries(cookie, agentId, since);
-  const odooMoves = await getOdooRecords("account.move");
+  // Post-run Odoo read-back, parametrized per scenario (#803). The invoice
+  // family defaults to ["account.move"], so single-model scenarios behave
+  // exactly as before: `odooMoves` carries the first model's records (the
+  // grader-facing field — see RunTrajectory.odooMoves) and the full map rides
+  // along for multi-model scenarios.
+  const readbackModels = readbackModelsFor(scenario);
+  const readbackEntries: Array<[string, OdooMoveRecord[]]> = [];
+  for (const readbackModel of readbackModels) {
+    readbackEntries.push([readbackModel, await getOdooRecords(readbackModel)]);
+  }
+  const odooRecordsByModel: Record<string, OdooMoveRecord[]> = Object.fromEntries(readbackEntries);
+  const odooMoves = readbackEntries[0]?.[1] ?? [];
   // Join this run's tokens/cost by its unique session (agentId, chatId). Polls
   // for the recorder lag; best-effort — undefined on a miss, never throws.
   const tokens = params.collectTokens ? await params.collectTokens(agentId, chatId) : undefined;
@@ -415,6 +430,7 @@ export async function runOnce(params: RunOnceParams): Promise<RunResult> {
     auditEntries,
     finalMessage,
     odooMoves,
+    odooRecordsByModel,
     issuedMessageHandle: scenario.issuedMessageHandle,
     issuedAttachmentHandle: scenario.issuedAttachmentHandle,
     extraIssuedMessageHandles: scenario.extraIssuedMessageHandles,

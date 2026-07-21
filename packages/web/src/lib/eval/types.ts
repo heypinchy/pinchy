@@ -108,8 +108,19 @@ export interface RunTrajectory {
   toolCalls: ToolCall[];
   /** Final assistant text shown to the user. */
   finalMessage: string;
-  /** account.move records read back from the Odoo mock AFTER the run. */
+  /**
+   * Records of the scenario's FIRST read-back model (default account.move,
+   * see `readbackModelsFor`) read from the Odoo mock AFTER the run. The name
+   * predates parametrized read-back (#803) and is consumed by the graders —
+   * do NOT rename; multi-model scenarios get `odooRecordsByModel` instead.
+   */
   odooMoves: OdooMoveRecord[];
+  /**
+   * Post-run read-back keyed by Odoo model, for scenarios that declare more
+   * than one `readbackModels` entry (#803). Includes the first model too, so
+   * `odooRecordsByModel[models[0]]` always mirrors `odooMoves`.
+   */
+  odooRecordsByModel?: Record<string, OdooMoveRecord[]>;
   latencyMs: number;
   tokens?: RunTokenUsage;
 }
