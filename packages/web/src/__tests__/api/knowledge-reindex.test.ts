@@ -65,7 +65,7 @@ function makeGetRequest() {
 
 /** An IngestResult with every counter at zero, overridden by `counts`. Typed so a counter added to ingest fails to compile here rather than silently vanishing from what an admin sees. */
 function ingestResult(counts: Partial<IngestResult> = {}): IngestResult {
-  return { indexed: 0, skipped: 0, removed: 0, unsearchable: 0, failed: 0, ...counts };
+  return { indexed: 0, skipped: 0, removed: 0, unsearchable: 0, failed: 0, archived: 0, ...counts };
 }
 
 function makeJob(overrides: Partial<KbIndexJob> = {}): KbIndexJob {

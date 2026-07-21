@@ -30,6 +30,15 @@
  *   answer to a parental-leave question is abstention (abstention axis).
  * - `it-equipment-policy.md` — a plain, unambiguous document with no
  *   adjacent trap, for straightforward "happy path" retrieval queries.
+ * - `quality/afnor-certificate-2024.md` +
+ *   `quality/OLD/afnor-certificate-2013.md` — a current certificate and its
+ *   expired copy under an `OLD/` segment. The archived copy is seeded as
+ *   `archived` (statusForPath), so default retrieval must return only the
+ *   current cert (freshness axis; #858).
+ * - `petrifilm-datasheet.md` + `quality-binder.md` — a clean single-topic
+ *   datasheet and a multi-section compilation binder that reworded the same
+ *   Petrifilm incubation fact. The binder's chunks must not crowd the
+ *   datasheet out of the fused result list (crowding axis; #858).
  *
  * Chunk-id scheme: `<docdir-or-basename>/<basename>#c<N>` — e.g.
  * `handbook-2011/policy#c1`, `product-insert#c1`. Ids are globally unique
@@ -261,6 +270,88 @@ export const KB_EVAL_CORPUS: CorpusDoc[] = [
         id: "it-equipment-policy#c2",
         page: 1,
         text: "Employees who need non-standard equipment, such as a second monitor or specialized peripherals, must submit a request through the IT service desk portal with manager approval.",
+      },
+    ],
+  },
+
+  // --- freshness axis (#858): a current certificate and its expired archived
+  //     copy, both answering the "AFNOR certification" question. The archived
+  //     copy sits under an OLD/ segment, so statusForPath (archive-paths.ts)
+  //     seeds it as `archived` — default retrieval must return only the
+  //     current cert, and citing the 2013-expired one is the exact dangerous
+  //     answer the 2026-07-14 Noack live test surfaced.
+  {
+    sourcePath: "/data/quality/afnor-certificate-2024.md",
+    file: "quality/afnor-certificate-2024.md",
+    chunks: [
+      {
+        id: "quality/afnor-certificate-2024#c1",
+        page: 1,
+        text: "The Northwind microbiology laboratory holds a valid AFNOR NF VALIDATION certificate for its Petrifilm enumeration methods, certificate number NF-2024-0417, issued in January 2024 and valid through December 2027.",
+      },
+    ],
+  },
+  {
+    sourcePath: "/data/quality/OLD/afnor-certificate-2013.md",
+    file: "quality/OLD/afnor-certificate-2013.md",
+    chunks: [
+      {
+        id: "quality/OLD/afnor-certificate-2013#c1",
+        page: 1,
+        text: "This archived record documents the Northwind microbiology laboratory's AFNOR NF VALIDATION certificate number NF-2013-0092, issued in March 2013. This certificate expired in December 2016 and is retained for historical reference only.",
+      },
+    ],
+  },
+
+  // --- crowding axis (#858): a clean single-topic datasheet vs. a compilation
+  //     binder that reworded the same Petrifilm incubation fact among many
+  //     unrelated sections. Without the per-document crowding cap the binder's
+  //     chunks can dominate the result list and the citation points at the
+  //     binder instead of the datasheet.
+  {
+    sourcePath: "/data/petrifilm-datasheet.md",
+    file: "petrifilm-datasheet.md",
+    chunks: [
+      {
+        id: "petrifilm-datasheet#c1",
+        page: 1,
+        text: "The Petrifilm Aerobic Count Plate is a ready-made culture medium for enumerating aerobic bacteria in food and water samples. Inoculate the plate with 1 mL of sample and spread with the flat side of the spreader.",
+      },
+      {
+        id: "petrifilm-datasheet#c2",
+        page: 1,
+        text: "Incubate Petrifilm Aerobic Count Plates at 32 degrees Celsius for 48 hours, then count the red colonies to determine the aerobic plate count. Store unused plates in a freezer at minus 15 degrees Celsius.",
+      },
+    ],
+  },
+  {
+    sourcePath: "/data/quality-binder.md",
+    file: "quality-binder.md",
+    chunks: [
+      {
+        id: "quality-binder#c1",
+        page: 1,
+        text: "Section 1 — Sample intake. Water and food samples are logged on arrival with a unique accession number, refrigerated at 4 degrees Celsius, and processed within 24 hours of receipt to preserve microbial counts.",
+      },
+      {
+        id: "quality-binder#c2",
+        page: 1,
+        text: "Section 2 — Media preparation. Prepared agar plates are checked for sterility by incubating a sample of each batch overnight before use. Expired or contaminated media are discarded per the disposal SOP.",
+      },
+      {
+        id: "quality-binder#c3",
+        page: 1,
+        text: "Section 3 — Aerobic enumeration. For aerobic count determinations the laboratory uses Petrifilm plates; these are incubated at 32 degrees Celsius for 48 hours and the resulting red colonies are counted. This restates the datasheet method for the binder's readers.",
+      },
+      {
+        id: "quality-binder#c4",
+        page: 1,
+        text: "Section 4 — Equipment calibration. The incubators are calibrated quarterly against a traceable reference thermometer, and the balance is verified daily with certified check weights.",
+      },
+      {
+        id: "quality-binder#c5",
+        page: 1,
+        text: "Section 5 — Records retention. Completed bench sheets are retained for five years and archived to the OLD folder once superseded by a newer revision.",
       },
     ],
   },

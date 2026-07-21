@@ -224,6 +224,28 @@ describe("POST /api/internal/knowledge/search", () => {
     );
   });
 
+  it("passes includeArchived: true through to retrieve() and flags it in the audit detail", async () => {
+    const res = await POST(makeRequest({ ...validBody, includeArchived: true }));
+    expect(res.status).toBe(200);
+
+    const opts = mockRetrieve.mock.calls[0][4];
+    expect(opts).toMatchObject({ includeArchived: true });
+
+    const entry = mockDeferAuditLog.mock.calls[0][0];
+    expect(entry.detail.includeArchived).toBe(true);
+  });
+
+  it("defaults to excluding archived documents and keeps the audit detail free of the flag", async () => {
+    const res = await POST(makeRequest(validBody));
+    expect(res.status).toBe(200);
+
+    const opts = mockRetrieve.mock.calls[0][4];
+    expect(opts?.includeArchived ?? false).toBe(false);
+
+    const entry = mockDeferAuditLog.mock.calls[0][0];
+    expect(entry.detail).not.toHaveProperty("includeArchived");
+  });
+
   it("returns 503 and audits a failure when the bundled embedding model is missing", async () => {
     mockKbEmbedderAvailable.mockReturnValueOnce(false);
     const res = await POST(makeRequest(validBody));

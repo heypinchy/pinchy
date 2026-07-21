@@ -67,9 +67,16 @@ test("GoldQuery field types", () => {
   expectTypeOf<GoldQuery["axis"]>().toEqualTypeOf<KbEvalAxis>();
 });
 
-test("KbEvalAxis is exactly the six behavioral axes", () => {
+test("KbEvalAxis is exactly the eight behavioral axes", () => {
   expectTypeOf<KbEvalAxis>().toEqualTypeOf<
-    "happy" | "path-citation" | "dedup" | "multi-hop" | "distractor" | "cross-lingual"
+    | "happy"
+    | "path-citation"
+    | "dedup"
+    | "multi-hop"
+    | "distractor"
+    | "cross-lingual"
+    | "freshness"
+    | "crowding"
   >();
 });
 

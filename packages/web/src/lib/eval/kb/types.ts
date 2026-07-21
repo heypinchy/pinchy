@@ -40,7 +40,14 @@ export interface GoldQuery {
 }
 
 export type KbEvalAxis =
-  "happy" | "path-citation" | "dedup" | "multi-hop" | "distractor" | "cross-lingual";
+  | "happy"
+  | "path-citation"
+  | "dedup"
+  | "multi-hop"
+  | "distractor"
+  | "cross-lingual"
+  | "freshness"
+  | "crowding";
 
 /**
  * The single source of truth for the KB eval axes as a runtime-iterable list
@@ -63,6 +70,11 @@ export const KB_EVAL_AXES = [
   "multi-hop",
   "distractor",
   "cross-lingual",
+  // #858: an archived doc competing with a current doc for the same query
+  // (freshness), and a compilation superset competing with a clean datasheet
+  // (crowding).
+  "freshness",
+  "crowding",
 ] as const satisfies readonly KbEvalAxis[];
 
 type _Exhaustive = Exclude<KbEvalAxis, (typeof KB_EVAL_AXES)[number]> extends never ? true : never;

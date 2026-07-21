@@ -67,7 +67,15 @@ async function chunksFor(documentId: string) {
  * bucket fails the test that owns the right one.
  */
 function counts(expected: Partial<IngestResult> = {}): IngestResult {
-  return { indexed: 0, skipped: 0, removed: 0, unsearchable: 0, failed: 0, ...expected };
+  return {
+    indexed: 0,
+    skipped: 0,
+    removed: 0,
+    unsearchable: 0,
+    failed: 0,
+    archived: 0,
+    ...expected,
+  };
 }
 
 it("indexes a PDF into kb_documents + kb_chunks with real embeddings, then skips a re-run with unchanged content", async () => {
@@ -171,7 +179,9 @@ it("indexes byte-identical files at different paths as separate documents (no un
   const { deps } = fakeDeps();
   const result = await ingestDirectory(ORG_ID, tmpRoot, deps);
 
-  expect(result).toEqual(counts({ indexed: 2 }));
+  // The OLD/ copy is additionally counted as archived (#858) — orthogonal to
+  // `indexed`, see the archive-gating tests at the bottom of this file.
+  expect(result).toEqual(counts({ indexed: 2, archived: 1 }));
   const docs = await db.select().from(kbDocuments).where(eq(kbDocuments.orgId, ORG_ID));
   expect(docs).toHaveLength(2);
   // Both share the same content hash but are distinct rows with distinct paths.
@@ -182,7 +192,7 @@ it("indexes byte-identical files at different paths as separate documents (no un
 
   // Idempotent re-run: both skip, no crash, no new rows.
   const secondResult = await ingestDirectory(ORG_ID, tmpRoot, deps);
-  expect(secondResult).toEqual(counts({ skipped: 2 }));
+  expect(secondResult).toEqual(counts({ skipped: 2, archived: 1 }));
   const docsAfter = await db.select().from(kbDocuments).where(eq(kbDocuments.orgId, ORG_ID));
   expect(docsAfter).toHaveLength(2);
 });
@@ -645,4 +655,67 @@ it("advances progress past a file that failed to extract", async () => {
 
   expect(result).toEqual(counts({ indexed: 1, failed: 1 }));
   expect(seen.at(-1)).toEqual({ processed: 2, total: 2 });
+});
+
+// --- archive/freshness gating (#858): status assignment + archived counter ---
+
+it("marks a document under an archive folder as archived, fully ingested, and counts it in `archived`", async () => {
+  const currentPath = writePdf(tmpRoot, "certificate-2024.pdf", "current");
+  const archivedPath = writePdf(join(tmpRoot, "OLD"), "certificate-2013.pdf", "expired");
+  const { deps } = fakeDeps();
+
+  const result = await ingestDirectory(ORG_ID, tmpRoot, deps);
+
+  // `archived` is ORTHOGONAL to the outcome partition: the archived doc is
+  // both `indexed` (chunks written — the "search the archive too" opt-in
+  // needs them) and `archived` (hidden from default retrieval).
+  expect(result).toEqual(counts({ indexed: 2, archived: 1 }));
+
+  const [currentDoc] = await db
+    .select()
+    .from(kbDocuments)
+    .where(and(eq(kbDocuments.orgId, ORG_ID), eq(kbDocuments.sourcePath, currentPath)));
+  const [archivedDoc] = await db
+    .select()
+    .from(kbDocuments)
+    .where(and(eq(kbDocuments.orgId, ORG_ID), eq(kbDocuments.sourcePath, archivedPath)));
+
+  expect(currentDoc.status).toBe("active");
+  expect(archivedDoc.status).toBe("archived");
+  // Fully ingested despite being archived: chunks exist.
+  expect((await chunksFor(archivedDoc.id)).length).toBeGreaterThan(0);
+});
+
+it("keeps counting an unchanged archived document as archived on a skip re-run", async () => {
+  writePdf(join(tmpRoot, "Archiv"), "alt.pdf", "alt");
+  const { deps } = fakeDeps();
+
+  await ingestDirectory(ORG_ID, tmpRoot, deps);
+  const rerun = await ingestDirectory(ORG_ID, tmpRoot, deps);
+
+  expect(rerun).toEqual(counts({ skipped: 1, archived: 1 }));
+});
+
+it("heals a stored status that disagrees with the archive rule on the next skip re-run", async () => {
+  const archivedPath = writePdf(join(tmpRoot, "OLD"), "binder.pdf", "old-binder");
+  const { deps } = fakeDeps();
+
+  await ingestDirectory(ORG_ID, tmpRoot, deps);
+
+  // Simulate a pre-backfill row (or a rule change): status stored as active
+  // although the path is under OLD/. The next run must heal it even though
+  // the content hash is unchanged (the skip path).
+  await db
+    .update(kbDocuments)
+    .set({ status: "active" })
+    .where(and(eq(kbDocuments.orgId, ORG_ID), eq(kbDocuments.sourcePath, archivedPath)));
+
+  const rerun = await ingestDirectory(ORG_ID, tmpRoot, deps);
+  expect(rerun).toEqual(counts({ skipped: 1, archived: 1 }));
+
+  const [doc] = await db
+    .select()
+    .from(kbDocuments)
+    .where(and(eq(kbDocuments.orgId, ORG_ID), eq(kbDocuments.sourcePath, archivedPath)));
+  expect(doc.status).toBe("archived");
 });

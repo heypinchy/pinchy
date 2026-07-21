@@ -148,6 +148,38 @@ describe("pinchy-knowledge plugin", () => {
     expect(result.isError).toBeUndefined();
   });
 
+  it("passes include_archived: true through to the route body, and omits it by default", async () => {
+    const api = createMockApi(defaultConfig);
+    const { default: plugin } = await import("./index");
+    plugin.register!(api as any);
+    const factory = mockRegisterTool.mock.calls[0][0];
+    const tool = factory({ agentId: "agent-1" });
+
+    const okResponse = () => new Response(JSON.stringify({ results: [] }), { status: 200 });
+    const fetchMock = vi.fn().mockResolvedValue(okResponse());
+    global.fetch = fetchMock;
+
+    // The model can advertise the opt-in in the schema...
+    expect(tool.parameters.properties).toHaveProperty("include_archived");
+    expect(tool.parameters.required).toEqual(["query"]);
+
+    // ...and setting it forwards includeArchived to the route.
+    await tool.execute("call-1", { query: "old certificates", include_archived: true });
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toEqual({
+      query: "old certificates",
+      agentId: "agent-1",
+      includeArchived: true,
+    });
+
+    // Default: the body carries no includeArchived key at all — the route's
+    // audit detail stays unmarked for archive-free queries.
+    await tool.execute("call-2", { query: "current certificates" });
+    expect(JSON.parse(fetchMock.mock.calls[1][1].body)).toEqual({
+      query: "current certificates",
+      agentId: "agent-1",
+    });
+  });
+
   it("normalizes a trailing slash on apiBaseUrl", async () => {
     const api = createMockApi({ ...defaultConfig, apiBaseUrl: "http://pinchy:7777/" });
     const { default: plugin } = await import("./index");

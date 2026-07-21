@@ -44,6 +44,7 @@ import {
   isDenylistedFileName,
   isHiddenSegment,
 } from "./exclude-globs";
+import { isArchivedPath, statusForPath } from "./archive-paths";
 import { chunkPages } from "./chunk";
 import { detectLang } from "./lid";
 import type { IngestPage, IngestResult } from "./types";
@@ -260,6 +261,15 @@ async function ingestFile(orgId: string, absPath: string, deps: IngestDeps): Pro
     .limit(1);
 
   if (existing && existing.contentHash === contentHash) {
+    // Self-healing status: the status is a pure function of the path
+    // (archive-paths.ts), so a stored value can only disagree after a rule
+    // change or a pre-backfill row. The content-hash skip below would
+    // otherwise freeze that disagreement forever.
+    const status = statusForPath(absPath);
+    if (existing.status !== status) {
+      await db.update(kbDocuments).set({ status }).where(eq(kbDocuments.id, existing.id));
+    }
+
     const [{ value: chunkCount }] = await db
       .select({ value: count() })
       .from(kbChunks)
@@ -304,6 +314,7 @@ async function ingestFile(orgId: string, absPath: string, deps: IngestDeps): Pro
       orgId,
       contentHash,
       sourcePath: absPath,
+      status: statusForPath(absPath),
       pageCount: pages.length,
       mtime: fileStat.mtime,
       lang: detectLang(wholeDocText),
@@ -396,8 +407,13 @@ export async function ingestPaths(
   let failed = 0;
   let processed = 0;
   let removed = 0;
+  // Orthogonal to the outcome tally: an archived document is ALSO indexed or
+  // skipped (archived files are fully ingested; only default retrieval hides
+  // them). Counted only for files that actually have a document row, so a
+  // `failed` file under OLD/ inflates neither bucket.
+  let archived = 0;
   const total = queue.length;
-  const snapshot = (): IngestResult => ({ ...tally, removed, failed });
+  const snapshot = (): IngestResult => ({ ...tally, removed, failed, archived });
 
   // Reported before any work: "0 of N" is what tells a caller the run started
   // and how big it is. A caller that hears nothing until the first file lands
@@ -407,6 +423,7 @@ export async function ingestPaths(
   for (const absPath of queue) {
     try {
       tally[await ingestFile(orgId, absPath, deps)]++;
+      if (isArchivedPath(absPath)) archived++;
     } catch (err) {
       // One unreadable or corrupt file is a normal property of a real corpus,
       // so it costs itself and nothing else: without this boundary a single

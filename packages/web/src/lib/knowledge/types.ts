@@ -30,11 +30,22 @@ export interface IngestResult {
   unsearchable: number;
   /** Files skipped because reading or extracting THIS file threw (unreadable, corrupt). The run continues; see the per-file boundary in ingestDirectory. */
   failed: number;
+  /**
+   * Documents in this run whose path falls under an archive folder
+   * (archive-paths.ts) and are therefore hidden from default retrieval.
+   * ORTHOGONAL to the outcome partition above — an archived document is
+   * also `indexed` or `skipped`, since archived files are fully ingested
+   * (the "search the archive too" opt-in needs their chunks). Reported for
+   * the same reason `unsearchable` is: the counts answer "is the corpus
+   * findable by default?", and 45% of a real corpus sitting in OLD/ trees
+   * is a fact the operator must see, not infer.
+   */
+  archived: number;
 }
 
 /** A fresh IngestResult with every counter at zero — the identity for summing per-root results. A function, not a shared const, so no caller can mutate the zero. */
 export function zeroIngestResult(): IngestResult {
-  return { indexed: 0, skipped: 0, removed: 0, unsearchable: 0, failed: 0 };
+  return { indexed: 0, skipped: 0, removed: 0, unsearchable: 0, failed: 0, archived: 0 };
 }
 
 /**
@@ -50,6 +61,7 @@ export function totalCounts(results: readonly IngestResult[]): IngestResult {
       removed: total.removed + result.removed,
       unsearchable: total.unsearchable + result.unsearchable,
       failed: total.failed + result.failed,
+      archived: total.archived + result.archived,
     }),
     zeroIngestResult()
   );

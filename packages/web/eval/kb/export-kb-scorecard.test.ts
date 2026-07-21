@@ -33,6 +33,8 @@ describe("aggregateKbResults", () => {
       "multi-hop",
       "distractor",
       "cross-lingual",
+      "freshness",
+      "crowding",
     ]);
   });
 

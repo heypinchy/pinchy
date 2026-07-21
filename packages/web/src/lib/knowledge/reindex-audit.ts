@@ -54,6 +54,7 @@ export function reindexAuditEntry(args: ReindexAuditArgs): AuditLogEntry {
             removed: args.counts.removed,
             unsearchable: args.counts.unsearchable,
             failed: args.counts.failed,
+            archived: args.counts.archived,
           }
         : {}),
       ...(args.reason !== undefined ? { reason: args.reason } : {}),

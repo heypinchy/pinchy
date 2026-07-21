@@ -175,6 +175,11 @@ const plugin = {
                 type: "string",
                 description: "Natural-language search query",
               },
+              include_archived: {
+                type: "boolean",
+                description:
+                  "Also search archived documents (OLD/Archive folders). By default only current documents are searched — set this only when the user explicitly asks for archived or historical material.",
+              },
             },
             required: ["query"],
           },
@@ -186,6 +191,9 @@ const plugin = {
                 content: [{ type: "text", text: "A search query is required." }],
               };
             }
+            // Forwarded only when true so the route's audit detail stays
+            // unmarked for the common, archive-free default query.
+            const includeArchived = params.include_archived === true;
 
             try {
               const res = await fetch(`${apiBaseUrl}/api/internal/knowledge/search`, {
@@ -194,7 +202,11 @@ const plugin = {
                   "Content-Type": "application/json",
                   Authorization: `Bearer ${gatewayToken}`,
                 },
-                body: JSON.stringify({ query, agentId }),
+                body: JSON.stringify({
+                  query,
+                  agentId,
+                  ...(includeArchived ? { includeArchived: true } : {}),
+                }),
               });
 
               if (!res.ok) {

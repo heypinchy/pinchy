@@ -166,7 +166,7 @@ describe("kb index job store", () => {
     await enqueueIndexJob(enqueueArgs(agent.id));
     const job = await claimNextIndexJob();
 
-    const counts = { indexed: 4, skipped: 2, removed: 1, unsearchable: 3, failed: 1 };
+    const counts = { indexed: 4, skipped: 2, removed: 1, unsearchable: 3, failed: 1, archived: 2 };
     await finishIndexJob(job!.id, { outcome: "succeeded", counts });
 
     const latest = await getLatestIndexJobForAgent(agent.id);
@@ -186,7 +186,7 @@ describe("kb index job store", () => {
 
     await finishIndexJob(job!.id, {
       outcome: "failed",
-      counts: { indexed: 2, skipped: 0, removed: 0, unsearchable: 0, failed: 0 },
+      counts: { indexed: 2, skipped: 0, removed: 0, unsearchable: 0, failed: 0, archived: 0 },
       error: "connect ECONNREFUSED ollama.local:11434",
     });
 
@@ -250,5 +250,5 @@ describe("kb index job store", () => {
 });
 
 function zeroCounts() {
-  return { indexed: 0, skipped: 0, removed: 0, unsearchable: 0, failed: 0 };
+  return { indexed: 0, skipped: 0, removed: 0, unsearchable: 0, failed: 0, archived: 0 };
 }

@@ -41,11 +41,31 @@ export interface RetrieveOptions {
   candidateK?: number;
   /** RRF smoothing constant. */
   rrfK?: number;
+  /**
+   * Also search `archived` documents (OLD/-style folders, archive-paths.ts).
+   * Default retrieval excludes them: an archived quality binder answering an
+   * AFNOR-certification question with 2013-expired certificates is the
+   * failure this gate exists for (#858). Opt-in, so "search the archive too"
+   * stays possible.
+   */
+  includeArchived?: boolean;
+  /**
+   * Crowding cap: at most this many chunks per DOCUMENT survive the fused
+   * ranking before the top-k slice. Fixes the measured Noack failure where
+   * one 549-chunk compilation binder occupied the whole result list and
+   * crowded the clean 8-page datasheet out of the top-k (#858). With k=8 and
+   * a cap of 2 the result list always spans ≥4 distinct documents. Per-path
+   * ACL duplicates are distinct documents (uq_kb_doc_org_path) and keep
+   * their own budget — the cap diversifies the result set, it never merges
+   * or suppresses documents.
+   */
+  maxChunksPerDoc?: number;
 }
 
 const DEFAULT_K = 8;
 const DEFAULT_CANDIDATE_K = 50;
 const DEFAULT_RRF_K = 60;
+const DEFAULT_MAX_CHUNKS_PER_DOC = 2;
 
 interface RetrieveRow extends Record<string, unknown> {
   chunk_id: string;
@@ -102,13 +122,15 @@ export async function retrieve(
   const k = opts.k ?? DEFAULT_K;
   const candidateK = opts.candidateK ?? DEFAULT_CANDIDATE_K;
   const rrfK = opts.rrfK ?? DEFAULT_RRF_K;
+  const maxChunksPerDoc = opts.maxChunksPerDoc ?? DEFAULT_MAX_CHUNKS_PER_DOC;
 
   const [queryVector] = await deps.embed([query]);
   // pgvector's textual literal is the same `[1,2,3]` form JSON.stringify
   // produces for a number array (see db/vector.ts's customType).
   const queryVectorLiteral = JSON.stringify(queryVector);
   const pathFilter = buildPathFilter(allowedPaths);
-  const baseFilter = sql`c.org_id = ${orgId} AND d.status = 'active' AND (${pathFilter})`;
+  const statusFilter = opts.includeArchived ? sql`` : sql`AND d.status = 'active'`;
+  const baseFilter = sql`c.org_id = ${orgId} ${statusFilter} AND (${pathFilter})`;
 
   return db.transaction(async (tx) => {
     // Filtered HNSW recall for the vector arm's index scan: without this,
@@ -157,16 +179,31 @@ export async function retrieve(
         SELECT chunk_id, SUM(1.0 / (${rrfK} + rank)) AS score
         FROM combined
         GROUP BY chunk_id
+      ),
+      -- Crowding control (#858): rank each document's chunks within the fused
+      -- set so the WHERE below can keep only its best maxChunksPerDoc. The
+      -- chunk_id tiebreak makes equal-score ordering deterministic. Partitioned
+      -- by document_id, so per-path ACL duplicates (distinct documents by
+      -- design) each keep their own budget.
+      ranked AS (
+        SELECT f.chunk_id, f.score,
+               ROW_NUMBER() OVER (
+                 PARTITION BY c.document_id
+                 ORDER BY f.score DESC, f.chunk_id
+               ) AS doc_rank
+        FROM fused f
+        JOIN kb_chunks c ON c.id = f.chunk_id
       )
       SELECT c.id AS chunk_id,
              c.document_id AS document_id,
              c.chunk_text AS chunk_text,
              c.source_path AS source_path,
              c.page AS page,
-             f.score AS score
-      FROM fused f
-      JOIN kb_chunks c ON c.id = f.chunk_id
-      ORDER BY f.score DESC
+             r.score AS score
+      FROM ranked r
+      JOIN kb_chunks c ON c.id = r.chunk_id
+      WHERE r.doc_rank <= ${maxChunksPerDoc}
+      ORDER BY r.score DESC, r.chunk_id
       LIMIT ${k}
     `);
 

@@ -14,7 +14,7 @@
  * `relevantChunkIds` order is the ideal rank (most relevant first), since
  * nDCG scoring is order-sensitive.
  *
- * Axis coverage (six `KbEvalAxis` members, four queries each):
+ * Axis coverage (eight `KbEvalAxis` members, four queries each):
  *
  * - happy: `it-equipment-policy.md` — plain, unambiguous, no adjacent trap.
  * - path-citation: `handbook-2011/policy.md` vs `handbook-2012/policy.md` —
@@ -33,6 +33,14 @@
  *   the relevant set intentionally excludes the same-language chunk so a
  *   retriever cannot pass by ignoring the cross-lingual bridge entirely.
  *   The other two queries are same-language baselines within the axis.
+ * - freshness: `quality/afnor-certificate-2024.md` (current) vs
+ *   `quality/OLD/afnor-certificate-2013.md` (archived, expired). The relevant
+ *   set is the current cert only; the archived copy is seeded `archived` and
+ *   default retrieval must exclude it (#858).
+ * - crowding: `petrifilm-datasheet.md` (clean) vs `quality-binder.md`
+ *   (compilation superset that reworded the same fact). The relevant set is
+ *   the datasheet chunk; the per-document crowding cap keeps the binder from
+ *   dominating the fused top-k (#858).
  *
  * Language coverage: both "de" and "en" appear across the full set (17 en /
  * 7 de), not necessarily balanced within every axis.
@@ -226,5 +234,71 @@ export const GOLD_QUERIES: GoldQuery[] = [
     // Same-language baseline within the axis.
     relevantChunkIds: ["vacation-policy-en#c1"],
     axis: "cross-lingual",
+  },
+
+  // --- freshness (#858): the current AFNOR cert is the only correct source; ---
+  // --- its expired 2013 copy sits under OLD/ and is excluded by default.    ---
+  // Relevant set names ONLY the current chunk: the archived chunk is seeded
+  // `archived` and default retrieval must never surface it, so recall/MRR are
+  // scored against the current cert alone.
+  {
+    id: "gq-freshness-1",
+    lang: "en",
+    query: "What is Northwind's current AFNOR certification for its Petrifilm methods?",
+    relevantChunkIds: ["quality/afnor-certificate-2024#c1"],
+    axis: "freshness",
+  },
+  {
+    id: "gq-freshness-2",
+    lang: "en",
+    query:
+      "Which AFNOR certificate number should a Northwind quality report cite as current accreditation?",
+    relevantChunkIds: ["quality/afnor-certificate-2024#c1"],
+    axis: "freshness",
+  },
+  {
+    id: "gq-freshness-3",
+    lang: "en",
+    query: "Until when is Northwind's AFNOR laboratory certification valid?",
+    relevantChunkIds: ["quality/afnor-certificate-2024#c1"],
+    axis: "freshness",
+  },
+  {
+    id: "gq-freshness-4",
+    lang: "de",
+    query: "Welches AFNOR-Zertifikat belegt die aktuelle Akkreditierung des Northwind-Labors?",
+    relevantChunkIds: ["quality/afnor-certificate-2024#c1"],
+    axis: "freshness",
+  },
+
+  // --- crowding (#858): the clean datasheet chunk is the canonical source; ---
+  // --- the binder's reworded copy must not crowd it out of the top-k.      ---
+  {
+    id: "gq-crowding-1",
+    lang: "en",
+    query: "At what temperature and for how long are Petrifilm Aerobic Count Plates incubated?",
+    relevantChunkIds: ["petrifilm-datasheet#c2"],
+    axis: "crowding",
+  },
+  {
+    id: "gq-crowding-2",
+    lang: "en",
+    query: "How is a sample applied to a Petrifilm Aerobic Count Plate?",
+    relevantChunkIds: ["petrifilm-datasheet#c1"],
+    axis: "crowding",
+  },
+  {
+    id: "gq-crowding-3",
+    lang: "en",
+    query: "How should unused Petrifilm Aerobic Count Plates be stored?",
+    relevantChunkIds: ["petrifilm-datasheet#c2"],
+    axis: "crowding",
+  },
+  {
+    id: "gq-crowding-4",
+    lang: "de",
+    query: "Bei welcher Temperatur werden Petrifilm-Platten für die aerobe Keimzahl bebrütet?",
+    relevantChunkIds: ["petrifilm-datasheet#c2"],
+    axis: "crowding",
   },
 ];

@@ -38,6 +38,7 @@ function retrievalAuditEntry(args: {
   outcome: "success" | "failure";
   resultCount: number;
   returnedDocumentIds: EntityRef[];
+  includeArchived?: boolean;
   reason?: string;
 }): AuditLogEntry {
   return {
@@ -51,6 +52,9 @@ function retrievalAuditEntry(args: {
       queryHash: args.queryHash,
       resultCount: args.resultCount,
       returnedDocumentIds: args.returnedDocumentIds,
+      // Flagged only when true: the trail must show when an answer drew on
+      // archive material (#858); the common default case stays unmarked.
+      ...(args.includeArchived ? { includeArchived: true as const } : {}),
       ...(args.reason !== undefined ? { reason: args.reason } : {}),
     },
   };
@@ -79,7 +83,7 @@ export async function POST(request: NextRequest) {
 
   const parsed = await parseRequestBody(knowledgeSearchSchema, request);
   if ("error" in parsed) return parsed.error;
-  const { query, agentId } = parsed.data;
+  const { query, agentId, includeArchived } = parsed.data;
 
   const queryHash = createHash("sha256").update(query).digest("hex");
 
@@ -90,6 +94,7 @@ export async function POST(request: NextRequest) {
         agentId,
         agentName: null,
         queryHash,
+        includeArchived,
         outcome: "failure",
         resultCount: 0,
         returnedDocumentIds: [],
@@ -112,6 +117,7 @@ export async function POST(request: NextRequest) {
         agentId: agent.id,
         agentName: agent.name,
         queryHash,
+        includeArchived,
         outcome: "failure",
         resultCount: 0,
         returnedDocumentIds: [],
@@ -126,9 +132,15 @@ export async function POST(request: NextRequest) {
 
   let chunks: RetrievedChunk[];
   try {
-    chunks = await retrieve(DEFAULT_ORG_ID, allowedPaths, query, {
-      embed: (texts) => embedTexts(texts, kbEmbeddingConfig()),
-    });
+    chunks = await retrieve(
+      DEFAULT_ORG_ID,
+      allowedPaths,
+      query,
+      {
+        embed: (texts) => embedTexts(texts, kbEmbeddingConfig()),
+      },
+      { includeArchived }
+    );
   } catch (err) {
     // safeProviderError scrubs emails and caps length — the underlying error
     // could in principle echo request content (e.g. a misconfigured Ollama
@@ -139,6 +151,7 @@ export async function POST(request: NextRequest) {
         agentId: agent.id,
         agentName: agent.name,
         queryHash,
+        includeArchived,
         outcome: "failure",
         resultCount: 0,
         returnedDocumentIds: [],
@@ -155,6 +168,7 @@ export async function POST(request: NextRequest) {
       agentId: agent.id,
       agentName: agent.name,
       queryHash,
+      includeArchived,
       outcome: "success",
       resultCount: chunks.length,
       returnedDocumentIds,

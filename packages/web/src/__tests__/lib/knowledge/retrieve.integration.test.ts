@@ -298,3 +298,146 @@ it("only retrieves chunks for the given org (ignores another org's data even und
     .where(eq(kbChunks.orgId, "org-kb-retrieve-other"));
   expect(otherRows).toHaveLength(1);
 });
+
+it("includes archived chunks when includeArchived is set (the 'search the archive too' opt-in)", async () => {
+  const archived = await seedChunk({
+    sourcePath: "/data/OLD/expired-cert.pdf",
+    text: "The vacation policy allows unlimited PTO.",
+    embedding: oneHot(0),
+    status: "archived",
+  });
+
+  const { deps } = fakeDeps();
+  const withoutOptIn = await retrieve(ORG_ID, ["/data"], "vacation policy", deps);
+  const withOptIn = await retrieve(ORG_ID, ["/data"], "vacation policy", deps, {
+    includeArchived: true,
+  });
+
+  expect(withoutOptIn.map((r) => r.chunkId)).not.toContain(archived.chunkId);
+  expect(withOptIn.map((r) => r.chunkId)).toContain(archived.chunkId);
+});
+
+// --- crowding control (#858): one dominant document must not occupy the ---
+// --- whole result list                                                  ---
+
+/** Seeds ONE document with several chunks — the compilation-binder shape. */
+async function seedDoc(
+  sourcePath: string,
+  chunks: Array<{ text: string; embedding: number[] }>
+): Promise<{ documentId: string; chunkIds: string[] }> {
+  const [doc] = await db
+    .insert(kbDocuments)
+    .values({
+      orgId: ORG_ID,
+      contentHash: `hash-${sourcePath}`,
+      sourcePath,
+      status: "active",
+    })
+    .returning();
+
+  const chunkIds: string[] = [];
+  for (const [i, chunk] of chunks.entries()) {
+    const [row] = await db
+      .insert(kbChunks)
+      .values({
+        documentId: doc.id,
+        orgId: ORG_ID,
+        sourcePath,
+        chunkText: chunk.text,
+        page: i + 1,
+        embedding: chunk.embedding,
+      })
+      .returning();
+    chunkIds.push(row.id);
+  }
+  return { documentId: doc.id, chunkIds };
+}
+
+it("caps a single document's chunks in the fused top-k so a binder cannot crowd out the clean datasheet", async () => {
+  // Binder: three chunks, all slightly closer to the query than the datasheet
+  // chunk (90/10 blends vs. an 80/20 blend). Without a per-document cap the
+  // binder fills the entire k=3 result list; with the default cap of 2, the
+  // datasheet must surface. No chunk shares terms with the query, so ranking
+  // is pure vector distance — fully deterministic.
+  const binder = await seedDoc("/data/quality-binder.pdf", [
+    { text: "Binder page about warming periods.", embedding: blend(0, 0.9, 7, 0.1) },
+    { text: "Binder page about storage conditions.", embedding: blend(0, 0.9, 8, 0.1) },
+    { text: "Binder page about shelf life.", embedding: blend(0, 0.9, 9, 0.1) },
+  ]);
+  const datasheet = await seedChunk({
+    sourcePath: "/data/petrifilm-datasheet.pdf",
+    text: "Datasheet section on warming.",
+    embedding: blend(0, 0.8, 10, 0.2),
+  });
+
+  const { deps } = fakeDeps();
+  // No seeded text contains "incubation", so the FTS arm is empty and the
+  // ranking is pure vector distance — the binder's three chunks are strictly
+  // closer than the datasheet chunk, which is what makes this red without
+  // the per-document cap.
+  const results = await retrieve(ORG_ID, ["/data"], "incubation", deps, { k: 3 });
+
+  const binderCount = results.filter((r) => r.documentId === binder.documentId).length;
+  expect(binderCount).toBeLessThanOrEqual(2);
+  expect(results.map((r) => r.chunkId)).toContain(datasheet.chunkId);
+});
+
+it("honors a maxChunksPerDoc override of 1 (one chunk per document in the result list)", async () => {
+  await seedDoc("/data/quality-binder.pdf", [
+    { text: "Binder page one.", embedding: blend(0, 0.9, 7, 0.1) },
+    { text: "Binder page two.", embedding: blend(0, 0.9, 8, 0.1) },
+  ]);
+  const datasheetA = await seedChunk({
+    sourcePath: "/data/datasheet-a.pdf",
+    text: "Datasheet A.",
+    embedding: blend(0, 0.8, 10, 0.2),
+  });
+  const datasheetB = await seedChunk({
+    sourcePath: "/data/datasheet-b.pdf",
+    text: "Datasheet B.",
+    embedding: blend(0, 0.7, 11, 0.3),
+  });
+
+  const { deps } = fakeDeps();
+  const results = await retrieve(ORG_ID, ["/data"], "incubation", deps, {
+    k: 3,
+    maxChunksPerDoc: 1,
+  });
+
+  const docCounts = new Map<string, number>();
+  for (const r of results) {
+    docCounts.set(r.documentId, (docCounts.get(r.documentId) ?? 0) + 1);
+  }
+  for (const [documentId, n] of docCounts) {
+    expect(n, `document ${documentId} exceeded maxChunksPerDoc=1`).toBe(1);
+  }
+  expect(results.map((r) => r.chunkId)).toEqual(
+    expect.arrayContaining([datasheetA.chunkId, datasheetB.chunkId])
+  );
+});
+
+it("keeps byte-identical documents at different paths independently cap-counted (per-path ACL duplicates are separate documents)", async () => {
+  // The crowding cap partitions by document_id, and per-path duplicates are
+  // distinct documents BY DESIGN (uq_kb_doc_org_path) — so a duplicate at a
+  // second path must not be folded into the first document's budget.
+  const copyA = await seedChunk({
+    sourcePath: "/data/team-a/datasheet.pdf",
+    text: "Shared datasheet text.",
+    embedding: blend(0, 0.9, 7, 0.1),
+  });
+  const copyB = await seedChunk({
+    sourcePath: "/data/team-b/datasheet.pdf",
+    text: "Shared datasheet text.",
+    embedding: blend(0, 0.9, 7, 0.1),
+  });
+
+  const { deps } = fakeDeps();
+  const results = await retrieve(ORG_ID, ["/data"], "incubation", deps, {
+    k: 3,
+    maxChunksPerDoc: 1,
+  });
+
+  const ids = results.map((r) => r.chunkId);
+  expect(ids).toContain(copyA.chunkId);
+  expect(ids).toContain(copyB.chunkId);
+});

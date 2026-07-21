@@ -13,6 +13,8 @@ const ALL_AXES: KbEvalAxis[] = [
   "multi-hop",
   "distractor",
   "cross-lingual",
+  "freshness",
+  "crowding",
 ];
 
 // Single source of truth for the manifest's chunk ids, reused by every
@@ -113,7 +115,7 @@ describe("GOLD_QUERIES <-> GOLD_QA paired-list drift guard", () => {
 });
 
 describe("corpus manifest chunk-text fixture guard", () => {
-  it("has every chunk's text as a verbatim substring of its .md file body (all 25 chunks across 12 docs)", () => {
+  it("has every chunk's text as a verbatim substring of its .md file body (all 34 chunks across 16 docs)", () => {
     const docsDir = resolve(__dirname, "../../../../../eval/kb/corpus/docs");
     let checkedChunks = 0;
     let checkedDocs = 0;
@@ -130,7 +132,7 @@ describe("corpus manifest chunk-text fixture guard", () => {
     }
     // Guard against a silently-empty manifest making this test a no-op pass.
     expect(checkedDocs).toBe(KB_EVAL_CORPUS.length);
-    expect(checkedDocs).toBeGreaterThanOrEqual(12);
-    expect(checkedChunks).toBeGreaterThanOrEqual(25);
+    expect(checkedDocs).toBeGreaterThanOrEqual(16);
+    expect(checkedChunks).toBeGreaterThanOrEqual(34);
   });
 });

@@ -31,6 +31,7 @@ import { describe, expect, it } from "vitest";
 import { db } from "@/db";
 import { kbChunks, kbDocuments } from "@/db/schema";
 import { retrieve, type RetrieveDeps } from "@/lib/knowledge/retrieve";
+import { statusForPath } from "@/lib/knowledge/archive-paths";
 import {
   aggregate,
   nearDuplicateSourcePaths,
@@ -52,7 +53,7 @@ const ORG_ID = "org-kb-eval";
  * tolerates normal noise (e.g. an HNSW `ef_search` tweak nudging candidate
  * order by one rank).
  *
- * Observed aggregate (n=24): recallAt10 = 1.0, mrr = 0.9167, ndcgAt10 = 0.9385.
+ * Observed aggregate (n=32): recallAt10 = 1.0, mrr = 0.9375, ndcgAt10 = 0.9539.
  *
  * Observed per-axis (n=4 each):
  *   happy         recall 1.0  mrr 1.0   ndcg 1.0
@@ -61,6 +62,8 @@ const ORG_ID = "org-kb-eval";
  *   multi-hop     recall 1.0  mrr 1.0   ndcg 1.0
  *   distractor    recall 1.0  mrr 1.0   ndcg 1.0
  *   cross-lingual recall 1.0  mrr 0.75  ndcg 0.8155
+ *   freshness     recall 1.0  mrr 1.0   ndcg 1.0
+ *   crowding      recall 1.0  mrr 1.0   ndcg 1.0
  *
  * recall@10 is a perfect 1.0 on EVERY axis, including cross-lingual — embeddinggemma-300m
  * bridges DE/EN cleanly on this corpus, so there is no cross-lingual retrieval
@@ -71,16 +74,25 @@ const ORG_ID = "org-kb-eval";
  * bug: recall is perfect, so nothing relevant is ever missed, only sometimes
  * out-ranked.
  *
+ * freshness (#858) scores a perfect 1.0 because the archived 2013 cert is
+ * seeded `archived` (via statusForPath, so this exercises the real ingest
+ * wiring) and default retrieval excludes it — leaving only the current cert
+ * to recall and rank. crowding (#858) scores 1.0 because the per-document cap
+ * keeps the compilation binder from displacing the clean datasheet. The two
+ * behavioral describe blocks below assert those two mechanisms directly
+ * (archived-exclusion + opt-in; per-document cap), which is what gives these
+ * axes teeth beyond the numeric floors.
+ *
  * WHY per-axis floors matter (this is what gives the gate teeth): a ranking
  * regression confined to ONE axis — a relevant chunk still recalled in top-10
- * but shoved from rank 1 to rank 5+ — barely moves the n=24 aggregate MRR and
+ * but shoved from rank 1 to rank 5+ — barely moves the n=32 aggregate MRR and
  * would slip past an aggregate-only assertion. Asserting a per-axis MRR floor
  * on every axis catches a single-axis collapse the aggregate hides.
  *
  * Floor derivation (all strictly below the corresponding observed minimum):
  *   RECALL_FLOOR         = 0.9   (observed aggregate + per-axis min both 1.0)
- *   MRR_FLOOR            = 0.7   (observed aggregate 0.9167)
- *   NDCG_FLOOR           = 0.85  (observed aggregate 0.9385)
+ *   MRR_FLOOR            = 0.7   (observed aggregate 0.9375)
+ *   NDCG_FLOOR           = 0.85  (observed aggregate 0.9539)
  *   PER_AXIS_RECALL_FLOOR= 0.9   (observed per-axis min 1.0)
  *   PER_AXIS_MRR_FLOOR   = 0.6   (observed per-axis min 0.75, on path-citation
  *                                 & cross-lingual; 0.6 leaves headroom below)
@@ -112,7 +124,11 @@ async function seedCorpus(
         orgId: ORG_ID,
         contentHash: `hash-${doc.sourcePath}`,
         sourcePath: doc.sourcePath,
-        status: "active",
+        // Derive the seed status from the real archive rule so the freshness
+        // axis exercises the actual ingest wiring (statusForPath), not a
+        // hand-set status: the OLD/ cert lands `archived` exactly as a real
+        // ingest would mark it.
+        status: statusForPath(doc.sourcePath),
       })
       .returning();
 
@@ -267,5 +283,97 @@ describe("dedup axis — cross-path provenance is preserved, not collapsed", () 
         `If retrieval started deduping cross-path near-duplicates, allowed_paths access-control ` +
         `scoping would silently break for whichever path lost the collapse.`
     ).toEqual(expect.arrayContaining(["/data/product-insert.md", "/data/quality-file.md"]));
+  });
+});
+
+describe("freshness axis (#858) — archived material is excluded by default, opt-in only", () => {
+  // The mechanism proof behind the freshness axis's perfect numeric scores:
+  // the archived 2013 AFNOR cert competes with the current 2024 cert for the
+  // same query. Default retrieval must never surface the expired one (the
+  // exact dangerous answer the 2026-07-14 Noack live test produced), and the
+  // explicit includeArchived opt-in must bring it back for "search the
+  // archive too". Seeded via statusForPath, so a regression in the ingest
+  // rule OR the retrieval filter turns this red.
+  const CURRENT = "quality/afnor-certificate-2024#c1";
+  const ARCHIVED = "quality/OLD/afnor-certificate-2013#c1";
+
+  it("returns the current cert but not the archived one by default, and includes the archived one on opt-in", async () => {
+    const embeddings = loadEmbeddings();
+    const logicalIdByDbId = await seedCorpus(KB_EVAL_CORPUS, embeddings);
+
+    const freshnessQuery = GOLD_QUERIES.find((q) => q.id === "gq-freshness-1");
+    if (!freshnessQuery) {
+      throw new Error("gq-freshness-1 not found in GOLD_QUERIES — freshness axis fixture drifted");
+    }
+    const deps = embedderFor(freshnessQuery, embeddings);
+
+    const toLogical = (results: Awaited<ReturnType<typeof retrieve>>) =>
+      results.map((r) => {
+        const logicalId = logicalIdByDbId.get(r.chunkId);
+        if (!logicalId) throw new Error(`retrieve() returned unseeded chunk id ${r.chunkId}`);
+        return logicalId;
+      });
+
+    const byDefault = toLogical(
+      await retrieve(ORG_ID, ["/data"], freshnessQuery.query, deps, { k: 10 })
+    );
+    expect(byDefault).toContain(CURRENT);
+    expect(
+      byDefault,
+      "default retrieval must NOT surface the expired 2013 cert under OLD/ — citing it is the dangerous answer #858 exists to prevent"
+    ).not.toContain(ARCHIVED);
+
+    const withArchive = toLogical(
+      await retrieve(ORG_ID, ["/data"], freshnessQuery.query, deps, {
+        k: 10,
+        includeArchived: true,
+      })
+    );
+    expect(
+      withArchive,
+      "the includeArchived opt-in must make the archived cert retrievable again ('search the archive too')"
+    ).toContain(ARCHIVED);
+  });
+});
+
+describe("crowding axis (#858) — a compilation binder cannot dominate the fused result list", () => {
+  // The mechanism proof behind the crowding axis's numeric scores: the
+  // per-document cap means no single document (here the multi-section quality
+  // binder) can occupy more than maxChunksPerDoc slots of the fused result,
+  // so a clean single-topic datasheet is never crowded out. Asserted on real
+  // embeddinggemma embeddings, complementing the deterministic hand-vectored
+  // proof in retrieve.integration.test.ts.
+  it("caps the binder at the default two chunks per document while still recalling the datasheet", async () => {
+    const embeddings = loadEmbeddings();
+    const logicalIdByDbId = await seedCorpus(KB_EVAL_CORPUS, embeddings);
+
+    const crowdingQuery = GOLD_QUERIES.find((q) => q.id === "gq-crowding-1");
+    if (!crowdingQuery) {
+      throw new Error("gq-crowding-1 not found in GOLD_QUERIES — crowding axis fixture drifted");
+    }
+    const deps = embedderFor(crowdingQuery, embeddings);
+
+    // Small k so the cap actually bites: the binder has five chunks that could
+    // otherwise fill the whole list.
+    const results = await retrieve(ORG_ID, ["/data"], crowdingQuery.query, deps, { k: 4 });
+
+    const perDoc = new Map<string, number>();
+    for (const r of results) perDoc.set(r.documentId, (perDoc.get(r.documentId) ?? 0) + 1);
+    for (const [documentId, n] of perDoc) {
+      expect(
+        n,
+        `document ${documentId} contributed ${n} chunks, above the default cap of 2`
+      ).toBeLessThanOrEqual(2);
+    }
+
+    const logicalIds = results.map((r) => {
+      const logicalId = logicalIdByDbId.get(r.chunkId);
+      if (!logicalId) throw new Error(`retrieve() returned unseeded chunk id ${r.chunkId}`);
+      return logicalId;
+    });
+    expect(
+      logicalIds,
+      "the clean datasheet chunk must survive the binder's crowding in the capped top-k"
+    ).toContain("petrifilm-datasheet#c2");
   });
 });

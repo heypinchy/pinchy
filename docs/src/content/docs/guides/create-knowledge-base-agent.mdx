@@ -138,6 +138,20 @@ If the indexed documents don't contain the answer, the agent says so instead of 
 
 The agent answers in the language you asked in, even if the source documents are written in a different language.
 
+### Current documents first
+
+Real document trees keep old material around — a quality binder full of expired certificates, a `Archive/` folder of superseded revisions. Answering a "what's our current certification?" question with a document that expired years ago isn't a small mistake; for a compliance question it's a dangerous one.
+
+So we treat archived folders as archived. When we index your documents, any file sitting under a folder named `OLD`, `Archive`, `Archived`, or `Archiv` (case doesn't matter) is marked archived and left out of everyday search. The document is still indexed — nothing is lost — it just doesn't compete with current material by default. Date and year folders like `2013/` or `Q3/` are **not** treated as archives: those are almost always live structure, not an archive. A file only counts as archived because of the folder it lives in, never because its own name contains one of those words.
+
+If you genuinely need to search the archive too — "find me the 2013 certificate" — that's still possible: the agent can opt into including archived documents for a specific search. Everyday questions just won't surface stale material on their own.
+
+### One binder can't crowd out the datasheet
+
+Some corpora contain large compilation documents — a single "quality file" binder that reprints dozens of individual datasheets. Left unchecked, a binder like that can fill an entire result list with its own pages and push the clean, single-topic source out of the answer, so a citation points at a 500-page binder instead of the 8-page datasheet it copied.
+
+We cap how many passages any one document can contribute to a single answer, so a result set always spans several distinct documents. The binder still appears when it's genuinely the best match — it just can't monopolize the answer and hide the cleaner source behind it. Documents at different folder paths stay independent even when their content is identical, so this never collapses a file one team can see into one only another team can.
+
 ## Scope in this release
 
 Phase 1 of the knowledge base is deliberately narrow:
@@ -146,7 +160,7 @@ Phase 1 of the knowledge base is deliberately narrow:
 - There's no clickable link from a citation into the PDF viewer yet — citations are text (document path + page), not a jump-to-passage link.
 - Indexing is a manual admin action (step 7). It runs in the background and reports progress, but you still have to ask for it — a scheduled sweep and a progress UI in the app are planned for a later phase.
 
-Every retrieval and every reindex is recorded in the [audit trail](/concepts/audit-trail/) — each `knowledge_search` call as `retrieval.query` with the documents it drew on, and every reindex as two `knowledge.reindex` entries sharing a `jobId`: who asked for it, and how it turned out. Both are needed, because the run finishes long after the request that started it. The search query text itself is never stored in plaintext, only a one-way hash.
+Every retrieval and every reindex is recorded in the [audit trail](/concepts/audit-trail/) — each `knowledge_search` call as `retrieval.query` with the documents it drew on (and a flag when the search reached into archived material), and every reindex as two `knowledge.reindex` entries sharing a `jobId`: who asked for it, and how it turned out, including how many documents were archived. Both are needed, because the run finishes long after the request that started it. The search query text itself is never stored in plaintext, only a one-way hash.
 
 ## Customizing the agent
 

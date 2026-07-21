@@ -14,6 +14,13 @@ export const knowledgeSearchSchema = z.object({
   /** The user's/agent's natural-language question. Never logged in plaintext. */
   query: z.string().trim().min(1).max(4000),
   agentId: z.string().trim().min(1),
+  /**
+   * Opt-in: also search `archived` documents (OLD/-style folders — see
+   * archive-paths.ts). Default retrieval excludes them so expired material
+   * cannot outrank current documents (#858); "search the archive too" stays
+   * an explicit request.
+   */
+  includeArchived: z.boolean().optional(),
 });
 
 export type KnowledgeSearchRequest = z.infer<typeof knowledgeSearchSchema>;

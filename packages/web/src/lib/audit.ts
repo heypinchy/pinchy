@@ -577,6 +577,10 @@ export type AuditLogEntry =
         queryHash: string;
         resultCount: number;
         returnedDocumentIds: EntityRef[];
+        // Present (as true) only when the caller opted into searching
+        // archived documents — the audit trail must show when an answer drew
+        // on OLD/-style archive material (#858). Absent on default queries.
+        includeArchived?: true;
         reason?: string;
       };
     })
@@ -646,6 +650,7 @@ export type AuditLogEntry =
         removed?: number;
         unsearchable?: number;
         failed?: number;
+        archived?: number;
         reason?: string;
       };
     })
