@@ -197,7 +197,7 @@ export const MODEL_PRICING: PricingSnapshot = {
     "qwen3.5:397b": {
       inputMin: 0.3,
       inputMax: 0.5,
-      outputMin: 1.5,
+      outputMin: 1.56,
       outputMax: 2.0,
       confidence: "approx",
       note: "397B open-weight not directly listed on aggregators; bracketed above Qwen3.5-Plus ($0.26/$1.56) for the flagship size. Re-capture at sweep.",
