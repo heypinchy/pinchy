@@ -82,4 +82,11 @@ export interface OdooAgentTemplateSpec {
     optional?: boolean;
   }>;
   modelHint?: ModelHint;
+  /**
+   * OpenClaw-native skills the template seeds onto new agents — the union of the
+   * skills the template's workflows actually invoke (master issue #543, Odoo
+   * migration #546). Each entry must appear in KNOWN_SKILLS (drift-guarded). The
+   * factory copies this onto the resulting `AgentTemplate.defaultSkills`.
+   */
+  defaultSkills?: readonly string[];
 }

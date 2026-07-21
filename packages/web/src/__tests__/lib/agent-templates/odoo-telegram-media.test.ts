@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest";
 import { AGENT_TEMPLATES } from "@/lib/agent-templates";
 import { SMITHERS_SOUL_MD } from "@/lib/smithers-soul";
+import { getSkillBody } from "@/lib/skills";
 
 /**
  * Telegram media mirroring lands inbound media at `uploads/<name>` in the
@@ -11,6 +12,10 @@ import { SMITHERS_SOUL_MD } from "@/lib/smithers-soul";
  * has to guess — a production agent once hallucinated plausible filenames and
  * asked the user to re-upload under those names. Templates without file/
  * attachment capability must NOT carry this guidance — it would be noise.
+ *
+ * Since #546 the guidance lives in the shared `odoo-attach` SKILL.md and every
+ * attach-capable template opts in through `defaultSkills: [... "odoo-attach"]`
+ * rather than splicing the prose into its defaultAgentsMd.
  */
 describe("odoo templates: Telegram media -> uploads mapping", () => {
   const attachCapableIds = Object.entries(AGENT_TEMPLATES)
@@ -36,20 +41,31 @@ describe("odoo templates: Telegram media -> uploads mapping", () => {
     );
   });
 
-  it.each(attachCapableIds)("%s teaches the Telegram media -> uploads mapping", (id) => {
-    const md = AGENT_TEMPLATES[id].defaultAgentsMd ?? "";
-    expect(md).toMatch(/\[media attached: \/root\/\.openclaw\/media\/inbound\/<name>\]/);
-    expect(md).toMatch(/uploads directory/i);
-    expect(md).toMatch(/odoo_attach_file/);
-    expect(md).toMatch(/never invent or guess filenames/i);
+  it.each(attachCapableIds)("%s carries the odoo-attach skill", (id) => {
+    expect(AGENT_TEMPLATES[id].defaultSkills ?? []).toContain("odoo-attach");
   });
 
-  it("does not add the guidance to templates without attachment capability", () => {
+  it("the odoo-attach skill teaches the Telegram media -> uploads mapping", () => {
+    const skill = getSkillBody("odoo-attach");
+    expect(skill).toMatch(/\[media attached: \/root\/\.openclaw\/media\/inbound\/<name>\]/);
+    expect(skill).toMatch(/uploads directory/i);
+    expect(skill).toMatch(/odoo_attach_file/);
+    expect(skill).toMatch(/never invent or guess filenames/i);
+  });
+
+  it("does not attach the odoo-attach skill to templates without attachment capability", () => {
     const nonAttachIds = Object.keys(AGENT_TEMPLATES).filter(
       (id) => !attachCapableIds.includes(id)
     );
     for (const id of nonAttachIds) {
-      const md = AGENT_TEMPLATES[id].defaultAgentsMd ?? "";
+      expect(AGENT_TEMPLATES[id].defaultSkills ?? [], id).not.toContain("odoo-attach");
+    }
+  });
+
+  it("does not add the media-mapping prose to any template's AGENTS.md", () => {
+    // The guidance belongs in the skill body now, not spliced into personas.
+    for (const template of Object.values(AGENT_TEMPLATES)) {
+      const md = template.defaultAgentsMd ?? "";
       expect(md).not.toMatch(/\[media attached: \/root\/\.openclaw\/media\/inbound\/<name>\]/);
     }
   });

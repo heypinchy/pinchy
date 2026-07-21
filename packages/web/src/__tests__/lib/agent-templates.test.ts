@@ -13,6 +13,7 @@ import { PERSONALITY_PRESETS } from "@/lib/personality-presets";
 import { MAX_STARTER_PROMPT_LENGTH } from "@/lib/schemas/starter-prompts";
 import { TEMPLATE_ICON_COMPONENTS } from "@/lib/template-icons";
 import { getOdooToolsForAccessLevel } from "@/lib/tool-registry";
+import { getSkillBody } from "@/lib/skills";
 
 /**
  * Real (non-`custom`) templates always ship a non-null `defaultAgentsMd` —
@@ -641,23 +642,29 @@ describe("Odoo templates", () => {
   // should call out the distinction explicitly so the model can disambiguate
   // from the human-given wording before issuing the search.
   //
-  // This test dynamically enumerates every `odoo-*` template from the
-  // registry rather than hardcoding IDs, so newly-added Odoo templates
-  // (e.g. bookkeeper, hr-analyst, fleet-manager, ...) cannot silently drift
-  // out of compliance.
-  it("every odoo template's AGENTS.md disambiguates id (DB primary key) from default_code (SKU/internal reference)", () => {
+  // This disambiguation now lives in the shared `odoo-read` skill body rather
+  // than being spliced into every template's AGENTS.md (#546). The invariant is
+  // preserved by (a) every odoo template carrying `odoo-read` in defaultSkills,
+  // enumerated dynamically so a new template cannot silently opt out, and
+  // (b) the skill body itself calling out id vs default_code.
+  it("every odoo template carries the odoo-read skill, which disambiguates id from default_code (SKU/internal reference)", () => {
     const odooTemplates = getTemplateList().filter((t) => t.id.startsWith("odoo-"));
     expect(odooTemplates.length).toBeGreaterThan(0);
 
     for (const t of odooTemplates) {
-      expect(t.defaultAgentsMd, `template ${t.id} is missing the default_code mention`).toContain(
-        "default_code"
-      );
       expect(
-        t.defaultAgentsMd,
-        `template ${t.id} is missing the SKU / internal-reference mention`
-      ).toMatch(/SKU|internal reference/i);
+        AGENT_TEMPLATES[t.id].defaultSkills ?? [],
+        `template ${t.id} is missing the odoo-read skill`
+      ).toContain("odoo-read");
     }
+
+    const readSkill = getSkillBody("odoo-read");
+    expect(readSkill, "odoo-read skill is missing the default_code mention").toContain(
+      "default_code"
+    );
+    expect(readSkill, "odoo-read skill is missing the SKU / internal-reference mention").toMatch(
+      /SKU|internal reference/i
+    );
   });
 });
 
@@ -974,6 +981,34 @@ describe("createOdooTemplate", () => {
     ];
     const t = createOdooTemplate({ ...baseSpec, requiredModels });
     expect(t.odooConfig?.requiredModels).toEqual(requiredModels);
+  });
+
+  it("threads defaultSkills through when provided", () => {
+    const t = createOdooTemplate({
+      ...baseSpec,
+      defaultSkills: ["odoo-read", "odoo-write"],
+      requiredModels: [{ model: "crm.lead", operations: ["read", "write"] }],
+    });
+    expect(t.defaultSkills).toEqual(["odoo-read", "odoo-write"]);
+  });
+
+  it("omits defaultSkills when the spec does not provide it", () => {
+    const t = createOdooTemplate({
+      ...baseSpec,
+      requiredModels: [{ model: "sale.order", operations: ["read"] }],
+    });
+    expect(t.defaultSkills).toBeUndefined();
+  });
+
+  it("copies the defaultSkills array rather than sharing the spec reference", () => {
+    const skills = ["odoo-read"];
+    const t = createOdooTemplate({
+      ...baseSpec,
+      defaultSkills: skills,
+      requiredModels: [{ model: "sale.order", operations: ["read"] }],
+    });
+    expect(t.defaultSkills).not.toBe(skills);
+    expect(t.defaultSkills).toEqual(skills);
   });
 
   it("preserves the caller-provided fields verbatim", () => {

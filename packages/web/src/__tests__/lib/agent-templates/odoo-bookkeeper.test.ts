@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { AGENT_TEMPLATES } from "@/lib/agent-templates";
+import { getSkillBody } from "@/lib/skills";
 
 describe("odoo-bookkeeper template", () => {
   const template = AGENT_TEMPLATES["odoo-bookkeeper"];
@@ -7,8 +8,11 @@ describe("odoo-bookkeeper template", () => {
   const required = template.odooConfig?.requiredModels ?? [];
   const modelOps = (m: string) => required.find((r) => r.model === m)?.operations ?? [];
 
-  it("documents that price_unit is tax-exclusive (net)", () => {
-    expect(md).toMatch(/price_unit`[^.]{0,80}tax-exclusive/i);
+  it("documents that price_unit is tax-exclusive (net) via the odoo-gross-to-net skill", () => {
+    // The gross-to-net convention now lives in the shared odoo-gross-to-net
+    // SKILL.md (#546) rather than being spliced into the bookkeeper persona.
+    expect(template.defaultSkills ?? []).toContain("odoo-gross-to-net");
+    expect(getSkillBody("odoo-gross-to-net")).toMatch(/price_unit`[^.]{0,80}tax-exclusive/i);
   });
 
   it("mandates post-create verification against amount_total within tolerance", () => {
