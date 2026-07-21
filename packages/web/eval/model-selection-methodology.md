@@ -10,6 +10,11 @@ This document does not choose models by itself. It encodes _how we decide_ so th
 default-model change — which lands on every self-hosted customer — is auditable, not
 folklore.
 
+The scorecard at the top of the evidence hierarchy is only as trustworthy as the
+elicitation behind it. [`elicitation-protocol.md`](elicitation-protocol.md) is the
+companion that proves every model got a fair scaffold (METR framing), so a low score
+is the model's, not a rig we under-built for it.
+
 ---
 
 ## The evidence hierarchy (the DNA)

@@ -235,3 +235,7 @@ happen; we make it detectable and ask to be excluded.
   on the failure scenarios by _incapacity_ (they never get far enough to lie or
   duplicate), not diligence — always read a failure-scenario score next to the
   happy-path score. The graders flag these where possible.
+- "You integrated model X badly" is answered by the elicitation protocol
+  ([`../elicitation-protocol.md`](../elicitation-protocol.md)): every model runs on
+  Pinchy's real production path with untuned, uniform sampling — no per-model
+  scaffold to over- or under-build.
