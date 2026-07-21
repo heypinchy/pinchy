@@ -44,6 +44,15 @@ describe("AuditLogEntry channel.auto_disabled (#477 layer 2)", () => {
   });
 });
 
+describe("AuditLogEntry email_workflow.created (Inbox Agent, #139)", () => {
+  it("keeps the event in the curated union", () => {
+    // The write side typechecks via the `${AuditResource}.created` template
+    // family, which the subset test below can't see in reverse — so pin the
+    // membership explicitly, like every other `.created` family.
+    expectTypeOf<"email_workflow.created">().toExtend<AuditEventType>();
+  });
+});
+
 describe("AuditEventType is a subset of AuditLogEntry['eventType']", () => {
   it("every curated event type is one appendAuditLog can record", () => {
     // Intentionally NOT equal (the entry type is strictly broader), but the

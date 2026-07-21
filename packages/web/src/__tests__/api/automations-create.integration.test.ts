@@ -87,10 +87,10 @@ async function seedConnection(id: string) {
   return row;
 }
 
-async function grantEmailPermission(agentId: string, connectionId: string) {
+async function grantEmailPermission(agentId: string, connectionId: string, operation = "read") {
   await db
     .insert(agentConnectionPermissions)
-    .values({ agentId, connectionId, model: "email", operation: "read" });
+    .values({ agentId, connectionId, model: "email", operation });
 }
 
 function postBody(body: Record<string, unknown>) {
@@ -156,13 +156,16 @@ describe("POST /api/automations — create email workflow", () => {
     expect(conns[0].sinceTs.getTime()).toBeGreaterThanOrEqual(before - 1000);
     expect(conns[0].sinceTs.getTime()).toBeLessThanOrEqual(Date.now() + 1000);
 
-    // Audited: email_workflow.created, names snapshotted, ids-only (no PII).
+    // Audited: email_workflow.created with the resource pointer, {id, name}
+    // snapshots (name scrubbed — see the PII test below), connections as ids
+    // only (their names can carry addresses).
     expect(deferAuditLogMock).toHaveBeenCalledTimes(1);
     const entry = deferAuditLogMock.mock.calls[0][0];
     expect(entry).toMatchObject({
       eventType: "email_workflow.created",
       actorType: "user",
       actorId: OWNER,
+      resource: `email_workflow:${wf.id}`,
       outcome: "success",
     });
     expect(entry.detail).toMatchObject({
@@ -208,6 +211,64 @@ describe("POST /api/automations — create email workflow", () => {
     const [wf] = await loadWorkflows(agent.id);
     expect(wf.status).toBe("pending");
     expect(wf.createdBy).toBe(ADMIN);
+  });
+
+  it("rejects a connection whose only email permission is send — a workflow must READ mail", async () => {
+    asMember(OWNER);
+    const agent = await seedAgent({ isPersonal: true, ownerId: OWNER });
+    await seedConnection("conn-send-only");
+    await grantEmailPermission(agent.id, "conn-send-only", "send");
+
+    const res = await POST(postBody(validBody(agent.id, "conn-send-only")), routeContext());
+    expect(res.status).toBe(400);
+    expect(await loadWorkflows(agent.id)).toHaveLength(0);
+    expect(deferAuditLogMock).not.toHaveBeenCalled();
+  });
+
+  it("accepts a legacy 'search' permission row as a read grant", async () => {
+    // Pre-#328 template creation could write raw per-tool operations ("search",
+    // "list") without an accompanying "read" row; the runtime treats them as
+    // read aliases (tool-registry.getEmailToolsForOperations), so the gate
+    // here must too — otherwise a legacy agent can't get a workflow at all.
+    asMember(OWNER);
+    const agent = await seedAgent({ isPersonal: true, ownerId: OWNER });
+    await seedConnection("conn-legacy");
+    await grantEmailPermission(agent.id, "conn-legacy", "search");
+
+    const res = await POST(postBody(validBody(agent.id, "conn-legacy")), routeContext());
+    expect(res.status).toBe(201);
+    expect(await loadWorkflows(agent.id)).toHaveLength(1);
+  });
+
+  it("scrubs email addresses from the workflow name before it lands in the audit detail", async () => {
+    // The name is free user text and the audit log is append-only + HMAC-signed
+    // (GDPR Art. 17: no erasure once written), so an address in the name must
+    // never reach `detail` — same treatment as the IMAP route's connectionName.
+    asMember(OWNER);
+    const agent = await seedAgent({ isPersonal: true, ownerId: OWNER });
+    await seedConnection("conn-pii");
+    await grantEmailPermission(agent.id, "conn-pii");
+
+    const res = await POST(
+      postBody({
+        ...validBody(agent.id, "conn-pii"),
+        name: "Forward mail from boss@acme.com",
+      }),
+      routeContext()
+    );
+    expect(res.status).toBe(201);
+
+    // The stored workflow and the API response keep the raw name — only the
+    // un-erasable audit detail is scrubbed.
+    const [wf] = await loadWorkflows(agent.id);
+    expect(wf.name).toBe("Forward mail from boss@acme.com");
+    expect(await res.json()).toMatchObject({ name: "Forward mail from boss@acme.com" });
+
+    const entry = deferAuditLogMock.mock.calls[0][0];
+    expect(entry.detail.workflow).toEqual({
+      id: wf.id,
+      name: "Forward mail from <email-redacted>",
+    });
   });
 
   it("rejects a connection the agent has no email permission for — no partial write", async () => {

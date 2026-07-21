@@ -32,6 +32,13 @@ export type FilterParity = AssertAssignable<
 export const AUTOMATION_NAME_MAX_LENGTH = 200;
 
 /**
+ * Upper bound on mailboxes per workflow. Far above any real setup, but keeps
+ * an absurd request from ballooning the 400-error echo and the audit
+ * `detail.connectionIds` list (AGENTS.md: keep audit detail under 2048 bytes).
+ */
+export const AUTOMATION_MAX_CONNECTIONS = 50;
+
+/**
  * Request schema for POST /api/automations — the single write path for the
  * Inbox Agent's email workflows (design §5). Both the Automations form (#139)
  * and the conversational create tool (#705) send this exact shape, so the
@@ -53,7 +60,7 @@ export const createAutomationSchema = z.object({
   action: z.string().min(1),
   // At least one mailbox: a workflow with no connection is never dispatched
   // (the loader inner-joins email_workflow_connections), so it would be inert.
-  connectionIds: z.array(z.string().min(1)).min(1),
+  connectionIds: z.array(z.string().min(1)).min(1).max(AUTOMATION_MAX_CONNECTIONS),
   // How far back the reconciliation sweep re-lists (design §5). Bounded so a
   // typo can't make one workflow re-hydrate years of mail every pass.
   sweepWindowDays: z.number().int().positive().max(365).default(14),

@@ -11,7 +11,9 @@ import {
 import { withAuth } from "@/lib/api-auth";
 import { parseRequestBody } from "@/lib/api-validation";
 import { createAutomationSchema } from "@/lib/schemas/automations";
+import { scrubEmails } from "@/lib/audit";
 import { deferAuditLog } from "@/lib/audit-deferred";
+import { EMAIL_READ_OPERATIONS } from "@/lib/tool-registry";
 
 /**
  * POST /api/automations — create an Inbox Agent email workflow (design §5).
@@ -61,9 +63,12 @@ export const POST = withAuth(async (request, _ctx, session) => {
     );
   }
 
-  // Every requested mailbox must be one the agent is allowed to read. An unknown
-  // connection id has no permission row either, so this single check rejects
-  // both "no access" and "no such connection" — a workflow must never point at a
+  // Every requested mailbox must be one the agent is allowed to READ — a
+  // workflow's trigger lists and reads mail, so a draft/send-only grant is not
+  // enough. EMAIL_READ_OPERATIONS includes the legacy "search"/"list" aliases
+  // the runtime already treats as read (tool-registry). An unknown connection
+  // id has no permission row either, so this single check rejects "no read
+  // access" and "no such connection" alike — a workflow must never point at a
   // mailbox its agent can't open.
   const requestedConnectionIds = [...new Set(connectionIds)];
   const permittedRows = await db
@@ -73,6 +78,7 @@ export const POST = withAuth(async (request, _ctx, session) => {
       and(
         eq(agentConnectionPermissions.agentId, agentId),
         eq(agentConnectionPermissions.model, "email"),
+        inArray(agentConnectionPermissions.operation, [...EMAIL_READ_OPERATIONS]),
         inArray(agentConnectionPermissions.connectionId, requestedConnectionIds)
       )
     );
@@ -105,14 +111,17 @@ export const POST = withAuth(async (request, _ctx, session) => {
   });
 
   // Deferred: the rows are committed and non-rollbackable, so an audit outage
-  // must not fail the create. Ids only — connection names can carry addresses.
+  // must not fail the create. Connections as ids only (their names can carry
+  // addresses), and the free-text workflow name scrubbed — the audit log is
+  // append-only + HMAC-signed, so an address written here is un-erasable.
   deferAuditLog({
     actorType: "user",
     actorId: userId,
     eventType: "email_workflow.created",
+    resource: `email_workflow:${workflow.id}`,
     outcome: "success",
     detail: {
-      workflow: { id: workflow.id, name: workflow.name },
+      workflow: { id: workflow.id, name: scrubEmails(workflow.name) },
       agent: { id: agent.id, name: agent.name },
       connectionCount: requestedConnectionIds.length,
       connectionIds: requestedConnectionIds,

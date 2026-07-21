@@ -310,6 +310,14 @@ export const EMAIL_OPERATIONS = ["read", "draft", "send"] as const;
 export type EmailOperation = (typeof EMAIL_OPERATIONS)[number];
 
 /**
+ * Every operation value that grants READ access to a mailbox: the canonical
+ * "read" plus the legacy "search"/"list" aliases described above. Use this
+ * wherever a gate asks "may this agent read this mailbox?" (e.g. the
+ * Automations write-API) so legacy rows keep working — never for draft/send.
+ */
+export const EMAIL_READ_OPERATIONS = ["read", "search", "list"] as const;
+
+/**
  * Display order for rendering granted operations (TOOLS.md mailbox context).
  * Superset of EMAIL_OPERATIONS: includes the legacy "search" and "list" slots
  * so old permission rows still render in a stable position.
@@ -343,7 +351,7 @@ const EMAIL_SEND_TOOLS = ["email_send"] as const;
 export function getEmailToolsForOperations(operations: string[]): string[] {
   const tools: string[] = [];
   const ops = new Set(operations);
-  if (ops.has("read") || ops.has("search") || ops.has("list")) tools.push(...EMAIL_READ_TOOLS);
+  if (EMAIL_READ_OPERATIONS.some((op) => ops.has(op))) tools.push(...EMAIL_READ_TOOLS);
   if (ops.has("draft")) tools.push(...EMAIL_DRAFT_TOOLS);
   if (ops.has("send")) tools.push(...EMAIL_SEND_TOOLS);
   return tools;

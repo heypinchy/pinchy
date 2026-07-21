@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 
-import { createAutomationSchema } from "@/lib/schemas/automations";
+import { AUTOMATION_MAX_CONNECTIONS, createAutomationSchema } from "@/lib/schemas/automations";
 
 // The shared request schema for POST /api/automations. Both the route handler
 // (parseRequestBody) and — later — the client form / the conversational
@@ -39,6 +39,22 @@ describe("createAutomationSchema", () => {
   it("requires at least one connection — a workflow with no mailbox is inert", () => {
     const result = createAutomationSchema.safeParse({ ...valid, connectionIds: [] });
     expect(result.success).toBe(false);
+  });
+
+  it("caps connectionIds — an absurd list must not balloon the error echo or audit detail", () => {
+    const ids = (n: number) => Array.from({ length: n }, (_, i) => `conn-${i}`);
+    expect(
+      createAutomationSchema.safeParse({
+        ...valid,
+        connectionIds: ids(AUTOMATION_MAX_CONNECTIONS),
+      }).success
+    ).toBe(true);
+    expect(
+      createAutomationSchema.safeParse({
+        ...valid,
+        connectionIds: ids(AUTOMATION_MAX_CONNECTIONS + 1),
+      }).success
+    ).toBe(false);
   });
 
   it("rejects a blank or whitespace-only name", () => {
