@@ -12,6 +12,7 @@ import {
 import { OdooPermissionSection } from "@/components/odoo-permission-section";
 import { EmailPermissionSection } from "@/components/email-permission-section";
 import { WebSearchPermissionSection } from "@/components/web-search-permission-section";
+import { KnowledgeReindexSection } from "@/components/knowledge-reindex-section";
 import type { Connection as OdooConnection } from "@/hooks/use-odoo-permissions";
 import type { AgentPluginConfig } from "@/db/schema";
 import { EMAIL_CONNECTION_TYPES } from "@/lib/integrations/oauth-providers";
@@ -265,6 +266,13 @@ export function AgentSettingsPermissions({
               onChange={handlePathsChange}
             />
           </div>
+        )}
+
+        {/* Admin-only reindex trigger + progress. The async worker/queue is
+            server-side (#714); this is the surface to start a run and watch it.
+            Gated on isAdmin because the route is admin-only (withAdmin). */}
+        {isAdmin && (
+          <KnowledgeReindexSection agentId={agent.id} allowedPathCount={allowedPaths.length} />
         )}
 
         {/* Explicit KB tool toggles (safe, non-integration) — empty after pinchy_ls/pinchy_read became implicit */}
