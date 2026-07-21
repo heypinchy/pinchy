@@ -28,7 +28,18 @@ export type MembershipDetail = {
 };
 
 export type AuditResource =
-  "agent" | "group" | "user" | "settings" | "config" | "channel" | "chat" | "integration";
+  | "agent"
+  | "group"
+  | "user"
+  | "settings"
+  | "config"
+  | "channel"
+  | "chat"
+  | "integration"
+  // Inbox Agent email workflows (design §5). Durable noun matching the
+  // email_workflows table; yields email_workflow.created/.updated/.deleted for
+  // the whole Automations CRUD lifecycle (the create path lands first).
+  | "email_workflow";
 
 export type AuditEventType =
   | `tool.${string}`
