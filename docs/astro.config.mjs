@@ -165,6 +165,10 @@ export default defineConfig({
               slug: "guides/create-market-monitor-agent",
             },
             {
+              label: "Require Tool Confirmation",
+              slug: "guides/tool-confirmation",
+            },
+            {
               label: "Mount Data Directories",
               slug: "guides/mount-data-directories",
             },

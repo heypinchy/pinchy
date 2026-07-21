@@ -1,0 +1,51 @@
+---
+title: Require Confirmation Before a Tool Runs
+description: Keep an agent from acting on its own — have it pause and ask the person in the chat before it runs a sensitive tool.
+---
+
+import { Aside } from "@astrojs/starlight/components";
+
+Some agent actions are worth a second look before they happen — sending an email, writing to Odoo, deleting a record. Tool confirmation lets you mark those actions so the agent **pauses and asks the person in the chat** before it runs them. The agent still does the work; a human just says "go" first.
+
+This is a human-in-the-loop checkpoint, not a bottleneck: the person driving the agent approves their own action, in seconds, right where they're working.
+
+## Turn it on for an agent
+
+Confirmation is set per agent, by an admin:
+
+1. Open the agent's **Settings → Permissions**.
+2. Find **Require confirmation before**.
+3. Check the tools that should pause for a confirmation — or click **Use recommended** to select the agent's powerful (write and side-effecting) tools in one go.
+4. Save.
+
+<Aside type="tip">
+  "Use recommended" picks the tools that change things — the ones most worth a
+  glance. Read-only tools stay un-gated so the agent keeps feeling fast. You can
+  always adjust the list later.
+</Aside>
+
+## What the person sees
+
+When the agent reaches a gated tool, it doesn't run it. Instead a card appears with the action and its details — for example, _"Smithers needs your confirmation: run `email_send` with to: ada@example.com?"_ — and two buttons:
+
+- **Approve** — the action is cleared. Ask the agent to go ahead, and it runs the tool.
+- **Deny** — the action is blocked, and the agent is told so.
+
+Approve clears exactly that one action. If the agent later tries something different — a different recipient, a different record — it asks again. One confirmation, one action.
+
+## What gets recorded
+
+Every step lands in the [audit trail](/concepts/audit-trail): the request, the decision (who approved or denied, and when), and the moment the action finally ran. The audit entries reference the action by a content hash, never its raw arguments, so sensitive details stay out of the log.
+
+## Good to know
+
+- **The check is enforced on the server**, inside the agent runtime — not in the browser. A gated tool can't run without a matching, approved, single-use confirmation, so the control holds even if someone pokes at the UI.
+- **It's per person.** A confirmation you approve is yours; it never clears the same action for a teammate on a shared agent.
+- **It fails safe.** If a confirmation isn't approved in time, it expires and the action stays blocked.
+
+<Aside type="note">
+  Today the approver is the person driving the agent (a human-in-the-loop
+  confirmation). Four-eyes approval — where a *different* admin signs off on the
+  most sensitive actions — is a planned extension. [Tell
+  us](https://github.com/heypinchy/pinchy/issues/124) if your team needs it.
+</Aside>
