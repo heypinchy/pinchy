@@ -4,7 +4,8 @@ import { withAuth } from "@/lib/api-auth";
 import { parseRequestBody } from "@/lib/api-validation";
 import { decisionSchema } from "@/lib/schemas/approvals";
 import { resolveDecision } from "@/lib/approvals/service";
-import { appendAuditLog, type AuditLogEntry } from "@/lib/audit";
+import { type AuditLogEntry } from "@/lib/audit";
+import { deferAuditLog } from "@/lib/audit-deferred";
 import { db } from "@/db";
 import { agents, users } from "@/db/schema";
 
@@ -62,11 +63,11 @@ export const POST = withAuth<RouteContext>(async (request, { params }, session) 
     },
     outcome: "success",
   };
-  try {
-    await appendAuditLog(entry);
-  } catch {
-    return NextResponse.json({ error: "Audit logging failed" }, { status: 500 });
-  }
+  // Deferred, not awaited: the decision above is already persisted and not
+  // rollbackable, so a 500 here would only mislead (a retry then 409s with
+  // not_pending). deferAuditLog records a write failure as a structured
+  // signal instead (AGENTS.md §"Audit logging rules").
+  deferAuditLog(entry);
 
   // On approve, Phase E2 injects a "proceed" turn into req.sessionKey so the
   // agent re-issues the call and the gate consumes the now-approved ticket.

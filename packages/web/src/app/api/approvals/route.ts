@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { and, desc, eq } from "drizzle-orm";
+import { and, desc, eq, gt } from "drizzle-orm";
 import { withAuth } from "@/lib/api-auth";
 import { db } from "@/db";
 import { toolApproval, agents } from "@/db/schema";
@@ -22,7 +22,15 @@ export const GET = withAuth(async (_req, _ctx, session) => {
     })
     .from(toolApproval)
     .innerJoin(agents, eq(agents.id, toolApproval.agentId))
-    .where(and(eq(toolApproval.requesterId, session.user.id!), eq(toolApproval.status, "pending")))
+    .where(
+      and(
+        eq(toolApproval.requesterId, session.user.id!),
+        eq(toolApproval.status, "pending"),
+        // Overdue rows are dead (consume + decision both check expiry); the
+        // hourly sweep flips them to `expired` — never show them as actionable.
+        gt(toolApproval.expiresAt, new Date())
+      )
+    )
     .orderBy(desc(toolApproval.createdAt));
 
   return NextResponse.json({ approvals });

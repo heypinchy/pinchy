@@ -4,13 +4,41 @@
  * their audit lifecycle. Only the auth boundary (getSession) is mocked; the DB
  * and audit writes are real.
  */
-import { describe, it, expect, beforeEach, beforeAll, vi } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, beforeAll, vi } from "vitest";
 import { NextRequest } from "next/server";
 import { eq } from "drizzle-orm";
 
 vi.mock("next/headers", () => ({
   headers: vi.fn().mockResolvedValue(new Headers()),
 }));
+
+// The decision route schedules its audit write via deferAuditLog -> after(),
+// which needs a real request scope. Run the callback synchronously and track
+// the promise so tests can `await flushAfter()` before asserting audit rows.
+// Mirrors diagnostics-export.integration.test.ts / src/test-setup.ts.
+const pendingAfter: Promise<unknown>[] = [];
+async function flushAfter(): Promise<void> {
+  while (pendingAfter.length > 0) {
+    const all = pendingAfter.splice(0);
+    await Promise.allSettled(all);
+  }
+}
+vi.mock("next/server", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("next/server")>();
+  return {
+    ...actual,
+    after: vi.fn((fn: () => void | Promise<void>) => {
+      try {
+        const result = fn();
+        if (result instanceof Promise) {
+          pendingAfter.push(result.catch(() => {}));
+        }
+      } catch {
+        // Swallowed — matches Next's after() error handling.
+      }
+    }),
+  };
+});
 
 const mockGetSession = vi.fn();
 vi.mock("@/lib/auth", () => ({
@@ -93,6 +121,12 @@ describe("approval routes (integration, real DB)", () => {
     agent = await seedAgent(user.id);
   });
 
+  // Drain deferred audit writes before the next test's truncate, so an
+  // un-awaited write can't race into another test's table state.
+  afterEach(async () => {
+    await flushAfter();
+  });
+
   it("rejects gate-check without the gateway token", async () => {
     const res = await gateCheck(gateReq(gateBody(), null));
     expect(res.status).toBe(401);
@@ -171,6 +205,24 @@ describe("approval routes (integration, real DB)", () => {
     expect(list.approvals[0].argsSummary).toEqual({ recordId: 5 });
   });
 
+  it("does not list expired pending confirmations (no dead cards in the inbox)", async () => {
+    await db.insert(toolApproval).values({
+      agentId: agent.id,
+      requesterId: user.id,
+      sessionKey: sessionKey(),
+      toolName: "odoo_write",
+      argsDigest: "stale-digest",
+      tier: "confirm",
+      status: "pending",
+      expiresAt: new Date(Date.now() - 1000),
+    });
+    setSession(user);
+    const list = await (
+      await listApprovals(new NextRequest("http://localhost/api/approvals"), {})
+    ).json();
+    expect(list.approvals).toHaveLength(0);
+  });
+
   it("approve → agent retry consumes the ticket + full audit lifecycle", async () => {
     const blocked = await (await gateCheck(gateReq(gateBody()))).json();
     setSession(user);
@@ -185,6 +237,7 @@ describe("approval routes (integration, real DB)", () => {
       .where(eq(toolApproval.id, blocked.requestId));
     expect(row.status).toBe("consumed");
 
+    await flushAfter();
     for (const eventType of [
       "approval.requested",
       "approval.granted",
