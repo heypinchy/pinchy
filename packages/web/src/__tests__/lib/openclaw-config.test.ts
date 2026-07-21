@@ -1371,27 +1371,34 @@ describe("regenerateOpenClawConfig", () => {
     expect(config.agents.defaults.compaction.memoryFlush.enabled).toBe(false);
   });
 
-  it("emits a flush-disable that OpenClaw's own resolver actually honors", async () => {
-    // Behavior guard against the REAL dependency: feed Pinchy's emitted config to
-    // OpenClaw's actual buildMemoryFlushPlan. A non-null plan is what spawned the
-    // tool-less flush run that dropped the production Telegram receipt; null means
-    // the flush never runs. Key-agnostic: if a future OpenClaw bump changes how the
-    // flag is read, this goes red even though our unit assertion above stays green.
-    const resolveFlushPlan = await loadOpenClawFlushResolver();
+  // 30s timeout: loadOpenClawFlushResolver cold-imports OpenClaw's real dist
+  // module graph (~95MB), which takes ~4.7s on an idle machine — over the 5s
+  // default whenever the full suite contends for CPU.
+  it(
+    "emits a flush-disable that OpenClaw's own resolver actually honors",
+    { timeout: 30_000 },
+    async () => {
+      // Behavior guard against the REAL dependency: feed Pinchy's emitted config to
+      // OpenClaw's actual buildMemoryFlushPlan. A non-null plan is what spawned the
+      // tool-less flush run that dropped the production Telegram receipt; null means
+      // the flush never runs. Key-agnostic: if a future OpenClaw bump changes how the
+      // flag is read, this goes red even though our unit assertion above stays green.
+      const resolveFlushPlan = await loadOpenClawFlushResolver();
 
-    await regenerateOpenClawConfig();
-    const config = JSON.parse(writtenOpenClawConfig(mockedWriteFileSync));
+      await regenerateOpenClawConfig();
+      const config = JSON.parse(writtenOpenClawConfig(mockedWriteFileSync));
 
-    // Pinchy's emitted config disables the flush.
-    expect(resolveFlushPlan({ cfg: config })).toBeNull();
+      // Pinchy's emitted config disables the flush.
+      expect(resolveFlushPlan({ cfg: config })).toBeNull();
 
-    // Baseline that prevents a false green: the SAME config with our flag removed
-    // must still produce a plan, proving the null above is caused by our flag and
-    // not by some unrelated reason the resolver bailed out.
-    const withoutFlag = structuredClone(config);
-    delete withoutFlag.agents.defaults.compaction;
-    expect(resolveFlushPlan({ cfg: withoutFlag })).not.toBeNull();
-  });
+      // Baseline that prevents a false green: the SAME config with our flag removed
+      // must still produce a plan, proving the null above is caused by our flag and
+      // not by some unrelated reason the resolver bailed out.
+      const withoutFlag = structuredClone(config);
+      delete withoutFlag.agents.defaults.compaction;
+      expect(resolveFlushPlan({ cfg: withoutFlag })).not.toBeNull();
+    }
+  );
 
   it("pins memory-search to the bundled local embedding provider (no API key, offline)", async () => {
     // memory_search / memory_get ride on memory-core's embedding index.

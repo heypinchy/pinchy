@@ -9,7 +9,10 @@ vi.mock("sonner", () => ({
   toast: { success: vi.fn(), error: vi.fn() },
 }));
 
-describe("TimezoneSettings", () => {
+// 30s timeout: the Select renders ~418 Intl.supportedValuesOf timezones, so
+// opening it and querying options by role in jsdom takes ~3.5s of real CPU per
+// interaction test — over the 5s default when the full suite contends for CPU.
+describe("TimezoneSettings", { timeout: 30_000 }, () => {
   let fetchSpy: ReturnType<typeof vi.spyOn>;
 
   beforeEach(() => {
