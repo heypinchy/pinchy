@@ -227,6 +227,30 @@ const MODEL_FIELDS = {
       readonly: false,
       relation: "res.partner",
     },
+    email_from: {
+      string: "Email",
+      type: "char",
+      required: false,
+      readonly: false,
+    },
+    phone: {
+      string: "Phone",
+      type: "char",
+      required: false,
+      readonly: false,
+    },
+    description: {
+      string: "Notes",
+      type: "text",
+      required: false,
+      readonly: false,
+    },
+    expected_revenue: {
+      string: "Expected Revenue",
+      type: "float",
+      required: false,
+      readonly: false,
+    },
   },
   "mail.activity.type": {
     id: { string: "ID", type: "integer", required: false, readonly: true },
