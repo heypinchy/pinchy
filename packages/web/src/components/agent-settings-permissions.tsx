@@ -109,6 +109,14 @@ export function AgentSettingsPermissions({
 
   const hasWebToolChecked = webTools.some((tool) => allowedKbTools.includes(tool.id));
 
+  // A reindex operates on the SAVED grants (the route reads pluginConfig), so
+  // the reindex section is gated on the persisted paths — never on the picker's
+  // unsaved selection, which the server cannot see yet. The parent refetches
+  // the agent after a save, so this recomputes to the new truth on its own.
+  const savedAllowedPaths = agent.pluginConfig?.["pinchy-files"]?.allowed_paths ?? [];
+  const hasUnsavedPathChanges =
+    JSON.stringify([...allowedPaths].sort()) !== JSON.stringify([...savedAllowedPaths].sort());
+
   // Check if the agent has sensitive data access (any allowed paths or odoo/email tools)
   const hasSensitiveDataAccess =
     allowedPaths.length > 0 || odooIntegration !== null || emailIntegration !== null;
@@ -272,7 +280,11 @@ export function AgentSettingsPermissions({
             server-side (#714); this is the surface to start a run and watch it.
             Gated on isAdmin because the route is admin-only (withAdmin). */}
         {isAdmin && (
-          <KnowledgeReindexSection agentId={agent.id} allowedPathCount={allowedPaths.length} />
+          <KnowledgeReindexSection
+            agentId={agent.id}
+            allowedPathCount={savedAllowedPaths.length}
+            hasUnsavedPathChanges={hasUnsavedPathChanges}
+          />
         )}
 
         {/* Explicit KB tool toggles (safe, non-integration) — empty after pinchy_ls/pinchy_read became implicit */}

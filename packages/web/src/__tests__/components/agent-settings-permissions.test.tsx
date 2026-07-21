@@ -88,6 +88,26 @@ vi.mock("@/components/web-search-permission-section", () => ({
   },
 }));
 
+// Captured so wiring tests can assert WHAT the parent feeds the reindex
+// section (saved grants, not the unsaved picker selection) without pulling the
+// section's own fetch/poll machinery into this suite.
+let capturedReindexProps: {
+  agentId: string;
+  allowedPathCount: number;
+  hasUnsavedPathChanges?: boolean;
+} | null = null;
+
+vi.mock("@/components/knowledge-reindex-section", () => ({
+  KnowledgeReindexSection: (props: {
+    agentId: string;
+    allowedPathCount: number;
+    hasUnsavedPathChanges?: boolean;
+  }) => {
+    capturedReindexProps = props;
+    return <div data-testid="knowledge-reindex-section" />;
+  },
+}));
+
 vi.mock("@/components/email-permission-section", () => ({
   EmailPermissionSection: ({
     onChange,
@@ -104,6 +124,7 @@ vi.mock("@/components/email-permission-section", () => ({
 beforeEach(() => {
   capturedOdooOnChange = null;
   capturedWebSearchOnChange = null;
+  capturedReindexProps = null;
 });
 
 describe("AgentSettingsPermissions", () => {
@@ -231,6 +252,70 @@ describe("AgentSettingsPermissions", () => {
     );
 
     expect(screen.getByText("Allowed Directories")).toBeInTheDocument();
+  });
+
+  it("gates the reindex section on SAVED grants, not the unsaved picker selection", async () => {
+    const user = userEvent.setup();
+    render(
+      <AgentSettingsPermissions
+        agent={defaultAgent}
+        directories={defaultDirectories}
+        connections={[]}
+        isAdmin={true}
+        onChange={vi.fn()}
+      />
+    );
+
+    expect(capturedReindexProps).toMatchObject({
+      agentId: "agent-1",
+      allowedPathCount: 0,
+      hasUnsavedPathChanges: false,
+    });
+
+    // Tick a directory WITHOUT saving: the server still sees zero grants, so
+    // the reindex gate must not open — but the section learns about the dirt.
+    await user.click(screen.getByRole("checkbox", { name: "docs" }));
+
+    expect(capturedReindexProps).toMatchObject({
+      allowedPathCount: 0,
+      hasUnsavedPathChanges: true,
+    });
+  });
+
+  it("feeds the reindex section the saved grant count for an agent with saved paths", () => {
+    const agentWithPaths = {
+      ...defaultAgent,
+      pluginConfig: { "pinchy-files": { allowed_paths: ["/data/docs", "/data/reports"] } },
+    };
+
+    render(
+      <AgentSettingsPermissions
+        agent={agentWithPaths}
+        directories={defaultDirectories}
+        connections={[]}
+        isAdmin={true}
+        onChange={vi.fn()}
+      />
+    );
+
+    expect(capturedReindexProps).toMatchObject({
+      allowedPathCount: 2,
+      hasUnsavedPathChanges: false,
+    });
+  });
+
+  it("hides the reindex section for non-admins", () => {
+    render(
+      <AgentSettingsPermissions
+        agent={defaultAgent}
+        directories={defaultDirectories}
+        connections={[]}
+        isAdmin={false}
+        onChange={vi.fn()}
+      />
+    );
+
+    expect(screen.queryByTestId("knowledge-reindex-section")).not.toBeInTheDocument();
   });
 
   describe("conditional integration sections", () => {

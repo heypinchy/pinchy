@@ -186,7 +186,10 @@ describe("POST /api/agents/[agentId]/knowledge/reindex", () => {
 
     expect(res.status).toBe(409);
     expect(await res.json()).toMatchObject({
-      error: expect.stringContaining("already"),
+      // The message itself must name the blocking agent: the web client's
+      // ApiError only carries `error`, so a name in a sibling field never
+      // reaches the toast an admin actually sees.
+      error: expect.stringContaining("Legal KB"),
       jobId: "job-running",
       status: "running",
       // Where to go and watch it.

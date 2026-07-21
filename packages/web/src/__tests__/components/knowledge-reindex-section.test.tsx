@@ -120,17 +120,109 @@ describe("KnowledgeReindexSection", () => {
     expect(screen.getByRole("button", { name: /reindex/i })).toBeEnabled();
   });
 
-  it("surfaces a concurrent-run conflict (409) as an error toast", async () => {
+  it("surfaces a concurrent-run conflict (409) as an error toast naming the blocking agent", async () => {
     const user = userEvent.setup();
-    mockPost.mockRejectedValue(new ApiError(409, "A knowledge base reindex is already running"));
+    // The real route puts the blocking agent's name INTO the message — the only
+    // field ApiError carries to the toast (the `agent` sibling field is lost).
+    const message = 'A knowledge base reindex is already running for agent "Legal KB"';
+    mockPost.mockRejectedValue(new ApiError(409, message));
+
+    render(<KnowledgeReindexSection agentId="a1" allowedPathCount={2} />);
+    await waitFor(() => expect(screen.getByRole("button", { name: /reindex/i })).toBeEnabled());
+    await user.click(screen.getByRole("button", { name: /reindex/i }));
+
+    await waitFor(() => expect(toast.error).toHaveBeenCalledWith(message));
+  });
+
+  it("surfaces a missing embedder (503) as an error toast with the route's message", async () => {
+    const user = userEvent.setup();
+    mockPost.mockRejectedValue(new ApiError(503, "Knowledge base embedding model not available"));
 
     render(<KnowledgeReindexSection agentId="a1" allowedPathCount={2} />);
     await waitFor(() => expect(screen.getByRole("button", { name: /reindex/i })).toBeEnabled());
     await user.click(screen.getByRole("button", { name: /reindex/i }));
 
     await waitFor(() =>
-      expect(toast.error).toHaveBeenCalledWith("A knowledge base reindex is already running")
+      expect(toast.error).toHaveBeenCalledWith("Knowledge base embedding model not available")
     );
+    // No phantom run to watch — the button recovers.
+    expect(screen.getByRole("button", { name: /reindex/i })).toBeEnabled();
+  });
+
+  it("names the discovery phase instead of faking a percentage while total is unknown", async () => {
+    mockGet.mockResolvedValue({
+      job: job({ status: "running", processed: 0, total: null }),
+    });
+
+    render(<KnowledgeReindexSection agentId="a1" allowedPathCount={2} />);
+
+    await waitFor(() => expect(screen.getByText(/discovering documents/i)).toBeInTheDocument());
+    expect(screen.getByRole("button", { name: /reindex/i })).toBeDisabled();
+  });
+
+  it("renders a failed run as a destructive alert with the error and the counts", async () => {
+    mockGet.mockResolvedValue({
+      job: job({
+        status: "failed",
+        processed: 40,
+        total: 100,
+        error: "Embedding model crashed",
+        counts: { indexed: 30, skipped: 9, removed: 0, unsearchable: 0, failed: 1 },
+      }),
+    });
+
+    render(<KnowledgeReindexSection agentId="a1" allowedPathCount={2} />);
+
+    await waitFor(() => expect(screen.getByText(/last reindex failed/i)).toBeInTheDocument());
+    expect(screen.getByText("Embedding model crashed")).toBeInTheDocument();
+    expect(screen.getByText(/1 failed/)).toBeInTheDocument();
+    // A failed run is over — the admin can immediately try again.
+    expect(screen.getByRole("button", { name: /reindex/i })).toBeEnabled();
+  });
+
+  it("clamps the progress bar at 100% even if processed overshoots total", async () => {
+    mockGet.mockResolvedValue({
+      job: job({ status: "running", processed: 12, total: 10 }),
+    });
+
+    render(<KnowledgeReindexSection agentId="a1" allowedPathCount={2} />);
+
+    const bar = await screen.findByRole("progressbar");
+    await waitFor(() => expect(bar).toHaveAttribute("aria-valuenow", "100"));
+  });
+
+  it("warns that a reindex uses the saved grants while directory changes are unsaved", async () => {
+    render(<KnowledgeReindexSection agentId="a1" allowedPathCount={2} hasUnsavedPathChanges />);
+
+    await waitFor(() => expect(screen.getByRole("button", { name: /reindex/i })).toBeEnabled());
+    expect(screen.getByText(/saved grants/i)).toBeInTheDocument();
+  });
+
+  it("ignores a slow status read that resolves after a reindex was triggered", async () => {
+    const user = userEvent.setup();
+    let resolveMountGet!: (value: { job: Job | null }) => void;
+    mockGet
+      // The mount-time GET hangs until we resolve it by hand, mid-run.
+      .mockImplementationOnce(
+        () =>
+          new Promise<{ job: Job | null }>((resolve) => {
+            resolveMountGet = resolve;
+          })
+      )
+      .mockResolvedValue({
+        job: job({ status: "running", processed: 1, total: 5, counts: null }),
+      });
+    mockPost.mockResolvedValue({ jobId: "job-9", status: "pending", pathCount: 2 });
+
+    render(<KnowledgeReindexSection agentId="a1" allowedPathCount={2} pollIntervalMs={20} />);
+    await user.click(screen.getByRole("button", { name: /reindex/i }));
+    await waitFor(() => expect(screen.getByRole("button", { name: /reindexing/i })).toBeDisabled());
+
+    // The pre-click read finally answers "no job ever ran". It is stale — it
+    // must not clear the run the admin just started and is watching.
+    resolveMountGet({ job: null });
+    await waitFor(() => expect(mockGet).toHaveBeenCalledTimes(2));
+    expect(screen.getByRole("button", { name: /reindexing/i })).toBeDisabled();
   });
 
   it("treats a server-side no-op (nothing to index) as info, not an error", async () => {

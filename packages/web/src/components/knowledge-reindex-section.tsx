@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 
 import { Button } from "@/components/ui/button";
@@ -44,6 +44,12 @@ export interface KnowledgeReindexSectionProps {
    * instead of letting the admin click into an honest-but-confusing no-op.
    */
   allowedPathCount: number;
+  /**
+   * True while the directory picker holds selections that differ from the
+   * saved grants. A reindex only ever sees the SAVED grants, so the section
+   * says so instead of letting the admin believe unsaved checkmarks count.
+   */
+  hasUnsavedPathChanges?: boolean;
   /** Poll cadence while a run is in flight. Injectable so tests need not wait seconds. */
   pollIntervalMs?: number;
 }
@@ -60,16 +66,25 @@ export interface KnowledgeReindexSectionProps {
 export function KnowledgeReindexSection({
   agentId,
   allowedPathCount,
+  hasUnsavedPathChanges = false,
   pollIntervalMs = 3000,
 }: KnowledgeReindexSectionProps) {
   const [job, setJob] = useState<ReindexJob | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const url = `/api/agents/${agentId}/knowledge/reindex`;
 
+  // Monotonic ticket per status read: a response only lands if it is still the
+  // NEWEST read issued. Reads overlap (mount fetch, post-trigger fetch, poll
+  // ticks), and a slow early response must not overwrite a later one — the
+  // mount-time `job: null` arriving after a trigger would silently clear the
+  // run the admin just started.
+  const fetchSeq = useRef(0);
+
   const fetchStatus = useCallback(async () => {
+    const seq = ++fetchSeq.current;
     try {
       const res = await apiGet<{ job: ReindexJob | null }>(url);
-      setJob(res.job);
+      if (seq === fetchSeq.current) setJob(res.job);
     } catch {
       // A failed status read is non-fatal: keep the last-known state and let the
       // next poll (or the user) retry. Deliberately no toast — a polling error
@@ -134,12 +149,19 @@ export function KnowledgeReindexSection({
         </Button>
       </div>
 
+      {hasUnsavedPathChanges && (
+        <p className="text-sm text-muted-foreground">
+          You have unsaved directory changes — a reindex uses the saved grants. Save to include
+          them.
+        </p>
+      )}
+
       {allowedPathCount === 0 ? (
         <p className="text-sm text-muted-foreground">
-          Grant at least one directory above to enable indexing.
+          Grant at least one directory to enable indexing.
         </p>
-      ) : active ? (
-        <RunningState job={job!} />
+      ) : active && job ? (
+        <RunningState job={job} />
       ) : job?.status === "succeeded" ? (
         <SucceededState job={job} />
       ) : job?.status === "failed" ? (
@@ -162,7 +184,9 @@ function RunningState({ job }: { job: ReindexJob }) {
       </div>
     );
   }
-  const pct = job.total > 0 ? Math.round((job.processed / job.total) * 100) : 0;
+  // Clamped: `processed` can momentarily overshoot a stale `total` snapshot,
+  // and a >100 value flips the Radix progressbar into its indeterminate state.
+  const pct = job.total > 0 ? Math.min(100, Math.round((job.processed / job.total) * 100)) : 0;
   return (
     <div className="space-y-2">
       <Progress value={pct} />

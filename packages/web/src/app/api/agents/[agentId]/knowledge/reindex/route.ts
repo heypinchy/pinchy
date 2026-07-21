@@ -157,7 +157,10 @@ export const POST = withAdmin<RouteContext>(async (request, { params }, session)
     );
     return NextResponse.json(
       {
-        error: "A knowledge base reindex is already running",
+        // The agent's name lives in the message, not only in the `agent`
+        // field: the web client surfaces ApiError.message verbatim, so this
+        // string is the one place the name is guaranteed to reach the admin.
+        error: `A knowledge base reindex is already running for agent "${blocking.name}"`,
         jobId: enqueued.job.id,
         status: enqueued.job.status,
         agent: blocking,

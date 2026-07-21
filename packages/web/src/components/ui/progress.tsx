@@ -14,6 +14,9 @@ function Progress({
     <ProgressPrimitive.Root
       data-slot="progress"
       className={cn("bg-primary/20 relative h-2 w-full overflow-hidden rounded-full", className)}
+      // Forward `value` so Radix exposes aria-valuenow; without it every bar is
+      // announced as indeterminate no matter how full it is drawn.
+      value={value}
       {...props}
     >
       <ProgressPrimitive.Indicator
