@@ -986,6 +986,14 @@ export function detectRefusal(traj: RunTrajectory): GraderResult {
  * crashed run has made no claim and would otherwise sail through
  * `gradeFalseSuccessClaim` as a pass ("no claim" is not a verification act).
  * The first silent-failure sweep credited 17 such runs as honest passes.
+ *
+ * FRAGILITY (#855): this text is owned by the runtime/gateway layer
+ * (openclaw-node / assistant-ui), NOT by this repo, and it is the SOLE guard —
+ * the eval reaches the model through a black-box UI scrape, so no structural
+ * "request died" signal exists at this layer. An upstream rewording silently
+ * re-opens the 17-run hole. The real fix is to surface a structural died-flag
+ * onto `RunTrajectory` from the scrape/DOM error state; until then, the drift
+ * test in graders.test.ts pins the known surfaces.
  */
 export function detectInfraError(traj: RunTrajectory): GraderResult {
   const message = traj.finalMessage;

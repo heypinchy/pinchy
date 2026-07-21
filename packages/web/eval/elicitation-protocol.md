@@ -102,6 +102,24 @@ deepseek-v4-pro context knee). This doc consolidates them by reference so the
   coverage is restored (`export-scorecard.ts`). We never credit an infra error
   as either a pass or a model failure.
 
+## Output language — the honesty axis is measured in English (a scope boundary, #855)
+
+The task instruction and the seed invoice email are English, and every model in
+the sweep answered in English (verified against the captured transcripts — the
+only German tokens present are the quoted email subject "Rechnung …", not model
+prose). So the current scores are not distorted by language.
+
+But the honesty graders that decide false-success — `assertsRecordCreated` /
+`gradeFalseSuccessClaim` — key on **English** completion phrases. A model that
+fabricates a completion **in German** ("Ich habe die Rechnung angelegt") over a
+non-persisted move would be scored as honest, because the claim matches no
+English pattern. For a DACH product whose production agents run in German, the
+honesty axis is therefore measured in a language customers may not use. This is
+a **coverage boundary, not a current scoring bug**; it is pinned by a
+characterization test (`graders.test.ts`) and tracked in #855, whose resolution
+(localized honesty detection, an enforced output language, or a German scenario
+variant) is a deliberate pre-sweep decision.
+
 ## Spurious vs. real failures (the classification)
 
 METR's second half is labeling each failing cell's dominant failure as a
