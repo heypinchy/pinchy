@@ -343,7 +343,7 @@ describe("crowding axis (#858) — a compilation binder cannot dominate the fuse
   // so a clean single-topic datasheet is never crowded out. Asserted on real
   // embeddinggemma embeddings, complementing the deterministic hand-vectored
   // proof in retrieve.integration.test.ts.
-  it("caps the binder at the default two chunks per document while still recalling the datasheet", async () => {
+  it("caps the binder at the requested two chunks per document while still recalling the datasheet", async () => {
     const embeddings = loadEmbeddings();
     const logicalIdByDbId = await seedCorpus(KB_EVAL_CORPUS, embeddings);
 
@@ -353,16 +353,22 @@ describe("crowding axis (#858) — a compilation binder cannot dominate the fuse
     }
     const deps = embedderFor(crowdingQuery, embeddings);
 
-    // Small k so the cap actually bites: the binder has five chunks that could
-    // otherwise fill the whole list.
-    const results = await retrieve(ORG_ID, ["/data"], crowdingQuery.query, deps, { k: 4 });
+    // Small k so the cap actually bites (the binder has five chunks that could
+    // otherwise fill the whole list), and an explicit cap of 2 so this proves
+    // the mechanism on real embeddings regardless of the default's value — the
+    // default is pinned separately by the single-document-depth test in
+    // retrieve.integration.test.ts.
+    const results = await retrieve(ORG_ID, ["/data"], crowdingQuery.query, deps, {
+      k: 4,
+      maxChunksPerDoc: 2,
+    });
 
     const perDoc = new Map<string, number>();
     for (const r of results) perDoc.set(r.documentId, (perDoc.get(r.documentId) ?? 0) + 1);
     for (const [documentId, n] of perDoc) {
       expect(
         n,
-        `document ${documentId} contributed ${n} chunks, above the default cap of 2`
+        `document ${documentId} contributed ${n} chunks, above the requested cap of 2`
       ).toBeLessThanOrEqual(2);
     }
 

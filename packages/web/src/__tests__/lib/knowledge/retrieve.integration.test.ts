@@ -356,9 +356,12 @@ async function seedDoc(
 it("caps a single document's chunks in the fused top-k so a binder cannot crowd out the clean datasheet", async () => {
   // Binder: three chunks, all slightly closer to the query than the datasheet
   // chunk (90/10 blends vs. an 80/20 blend). Without a per-document cap the
-  // binder fills the entire k=3 result list; with the default cap of 2, the
-  // datasheet must surface. No chunk shares terms with the query, so ranking
-  // is pure vector distance — fully deterministic.
+  // binder fills the entire k=3 result list; with an explicit cap of 2, the
+  // datasheet must surface. maxChunksPerDoc is pinned explicitly (not left to
+  // the default) so this proves the CAP MECHANISM regardless of what the
+  // default happens to be — the default's own value is pinned separately by
+  // the single-document-depth test below. No chunk shares terms with the
+  // query, so ranking is pure vector distance — fully deterministic.
   const binder = await seedDoc("/data/quality-binder.pdf", [
     { text: "Binder page about warming periods.", embedding: blend(0, 0.9, 7, 0.1) },
     { text: "Binder page about storage conditions.", embedding: blend(0, 0.9, 8, 0.1) },
@@ -375,11 +378,42 @@ it("caps a single document's chunks in the fused top-k so a binder cannot crowd 
   // ranking is pure vector distance — the binder's three chunks are strictly
   // closer than the datasheet chunk, which is what makes this red without
   // the per-document cap.
-  const results = await retrieve(ORG_ID, ["/data"], "incubation", deps, { k: 3 });
+  const results = await retrieve(ORG_ID, ["/data"], "incubation", deps, {
+    k: 3,
+    maxChunksPerDoc: 2,
+  });
 
   const binderCount = results.filter((r) => r.documentId === binder.documentId).length;
   expect(binderCount).toBeLessThanOrEqual(2);
   expect(results.map((r) => r.chunkId)).toContain(datasheet.chunkId);
+});
+
+it("lets one document contribute up to the default cap of chunks — a multi-passage answer isn't truncated", async () => {
+  // The other side of the crowding trade-off: capping too tightly silently
+  // drops legitimate depth. An answer often lives in several passages of ONE
+  // document (a policy whose answer spans multiple sections), and the default
+  // cap must be generous enough not to truncate that. This document has FOUR
+  // near-identical-distance chunks; the default cap of 3 must surface exactly
+  // three — proving the default neither collapses single-document depth to 2
+  // (the tighter value this test exists to rule out) nor lets one document run
+  // away with all four slots. If the default drops to 2, this goes red.
+  const policy = await seedDoc("/data/leave-policy.pdf", [
+    { text: "Leave policy section one.", embedding: blend(0, 0.9, 6, 0.1) },
+    { text: "Leave policy section two.", embedding: blend(0, 0.9, 7, 0.1) },
+    { text: "Leave policy section three.", embedding: blend(0, 0.9, 8, 0.1) },
+    { text: "Leave policy section four.", embedding: blend(0, 0.9, 9, 0.1) },
+  ]);
+
+  const { deps } = fakeDeps();
+  // Default maxChunksPerDoc (no override), k large enough that the cap — not k
+  // — is what bounds this single document's contribution.
+  const results = await retrieve(ORG_ID, ["/data"], "leave policy", deps, { k: 8 });
+
+  const policyCount = results.filter((r) => r.documentId === policy.documentId).length;
+  expect(
+    policyCount,
+    "the default cap must let a single document contribute three passages, not truncate to two"
+  ).toBe(3);
 });
 
 it("honors a maxChunksPerDoc override of 1 (one chunk per document in the result list)", async () => {

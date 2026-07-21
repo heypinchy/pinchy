@@ -54,10 +54,20 @@ export interface RetrieveOptions {
    * ranking before the top-k slice. Fixes the measured Noack failure where
    * one 549-chunk compilation binder occupied the whole result list and
    * crowded the clean 8-page datasheet out of the top-k (#858). With k=8 and
-   * a cap of 2 the result list always spans ≥4 distinct documents. Per-path
-   * ACL duplicates are distinct documents (uq_kb_doc_org_path) and keep
-   * their own budget — the cap diversifies the result set, it never merges
-   * or suppresses documents.
+   * the default cap of 3 the result list always spans ≥3 distinct documents.
+   *
+   * The default is 3, not a tighter 2, deliberately: anti-crowding only needs
+   * "no single document dominates", and a 549-chunk binder is capped just as
+   * hard at 3 as at 2 — both keep it to a handful of the k slots. But a
+   * legitimate answer often lives in several passages of ONE document (a
+   * policy whose answer spans three sections is common), and a cap of 2 would
+   * silently truncate that to 2/3 of the relevant text. 3 preserves that
+   * single-document depth while still guaranteeing ≥3 documents' worth of
+   * diversity at k=8 — see the single-document-depth test in
+   * retrieve.integration.test.ts, which pins this floor. Per-path ACL
+   * duplicates are distinct documents (uq_kb_doc_org_path) and keep their own
+   * budget — the cap diversifies the result set, it never merges or
+   * suppresses documents.
    */
   maxChunksPerDoc?: number;
 }
@@ -65,7 +75,7 @@ export interface RetrieveOptions {
 const DEFAULT_K = 8;
 const DEFAULT_CANDIDATE_K = 50;
 const DEFAULT_RRF_K = 60;
-const DEFAULT_MAX_CHUNKS_PER_DOC = 2;
+const DEFAULT_MAX_CHUNKS_PER_DOC = 3;
 
 interface RetrieveRow extends Record<string, unknown> {
   chunk_id: string;
