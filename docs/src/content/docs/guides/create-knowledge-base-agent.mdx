@@ -44,7 +44,9 @@ Click **Save** to apply the permissions.
 
 ## 6. Index the documents
 
-Granting a directory doesn't index it automatically — an admin has to trigger indexing. Call the reindex endpoint for the agent:
+Granting a directory doesn't index it automatically — an admin has to trigger indexing. The simplest way is right where you granted the directories: in the agent's **Permissions** tab, the **Knowledge Base** section has an **Index** control. Click **Reindex now** and the section shows the run inline — discovery, a live progress bar, and the last run's outcome — so you never have to leave the page or read a log.
+
+The same action is available over the API, which is what you'd script for scheduled re-indexing:
 
 ```bash
 curl -X POST -b session_cookie "https://pinchy.example.com/api/agents/<agentId>/knowledge/reindex"
@@ -70,7 +72,9 @@ One index run happens at a time, across your whole Pinchy — the index is share
 
 ## 7. Watch the run
 
-Ask the same endpoint how it's going:
+If you triggered the reindex from the **Permissions** tab, the **Index** control already does this for you — it polls in the background and renders the progress bar and the counts below the button until the run finishes. The rest of this section explains those same numbers, whether you read them there or over the API.
+
+Over the API, ask the same endpoint how it's going:
 
 ```bash
 curl -b session_cookie "https://pinchy.example.com/api/agents/<agentId>/knowledge/reindex"
