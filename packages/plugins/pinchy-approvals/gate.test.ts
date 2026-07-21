@@ -31,6 +31,20 @@ describe("evaluateGate", () => {
     expect(res.blockReason).toMatch(/unavailable/i);
   });
 
+  it("fails closed (with the unavailable reason) when the response body is not valid JSON", async () => {
+    // OpenClaw 2026.7.1 blocks on a throwing hook anyway, but then the user
+    // sees the generic hook-failure text instead of our actionable message.
+    const f = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => {
+        throw new SyntaxError("Unexpected token < in JSON");
+      },
+    }) as unknown as FetchLike;
+    const res = await evaluateGate("odoo_write", {}, ctx, cfg, f);
+    expect(res.block).toBe(true);
+    expect(res.blockReason).toMatch(/unavailable/i);
+  });
+
   it("fails closed on a non-2xx response", async () => {
     const f = vi
       .fn()

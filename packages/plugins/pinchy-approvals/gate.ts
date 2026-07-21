@@ -45,9 +45,13 @@ export async function evaluateGate(
     return {};
   }
 
-  let res: { ok: boolean; json: () => Promise<unknown> };
+  // One try around fetch AND body parsing: a malformed body (proxy error page,
+  // truncated response) must land in the same fail-closed branch as a network
+  // error — OpenClaw would block on a throwing hook anyway, but with a generic
+  // hook-failure text instead of this actionable reason.
+  let data: { decision?: string; reason?: string };
   try {
-    res = await fetchImpl(`${cfg.apiBaseUrl}/api/internal/approvals/gate-check`, {
+    const res = await fetchImpl(`${cfg.apiBaseUrl}/api/internal/approvals/gate-check`, {
       method: "POST",
       headers: {
         "content-type": "application/json",
@@ -61,15 +65,13 @@ export async function evaluateGate(
         params,
       }),
     });
+    if (!res.ok) {
+      return { block: true, blockReason: UNAVAILABLE };
+    }
+    data = (await res.json()) as { decision?: string; reason?: string };
   } catch {
     return { block: true, blockReason: UNAVAILABLE };
   }
-
-  if (!res.ok) {
-    return { block: true, blockReason: UNAVAILABLE };
-  }
-
-  const data = (await res.json()) as { decision?: string; reason?: string };
   if (data.decision === "block") {
     return {
       block: true,
