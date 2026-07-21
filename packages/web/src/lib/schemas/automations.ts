@@ -67,3 +67,16 @@ export const createAutomationSchema = z.object({
 });
 
 export type CreateAutomationInput = z.infer<typeof createAutomationSchema>;
+
+/**
+ * Request schema for PATCH /api/automations/[id]. Deliberately narrow: `enabled`
+ * is the one knob a human flips to activate (or pause) a proposed workflow —
+ * the human-gated step that "propose, don't self-activate" reserves for a
+ * person. Editing name/filter/action belongs to the Automations form (#139), not
+ * this toggle.
+ */
+export const updateAutomationSchema = z.object({
+  enabled: z.boolean(),
+});
+
+export type UpdateAutomationInput = z.infer<typeof updateAutomationSchema>;

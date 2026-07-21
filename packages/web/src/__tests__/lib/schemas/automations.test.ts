@@ -1,6 +1,10 @@
 import { describe, it, expect } from "vitest";
 
-import { AUTOMATION_MAX_CONNECTIONS, createAutomationSchema } from "@/lib/schemas/automations";
+import {
+  AUTOMATION_MAX_CONNECTIONS,
+  createAutomationSchema,
+  updateAutomationSchema,
+} from "@/lib/schemas/automations";
 
 // The shared request schema for POST /api/automations. Both the route handler
 // (parseRequestBody) and — later — the client form / the conversational
@@ -73,5 +77,20 @@ describe("createAutomationSchema", () => {
     expect(createAutomationSchema.safeParse({ ...valid, sweepWindowDays: 2.5 }).success).toBe(
       false
     );
+  });
+});
+
+// PATCH /api/automations/[id]. The one mutable knob a reviewer flips to activate
+// (or pause) a proposed workflow — deliberately narrow: editing name/filter/
+// action is the form's job (#139), enabling is the human-gated activation step.
+describe("updateAutomationSchema", () => {
+  it("parses an enable/disable toggle", () => {
+    expect(updateAutomationSchema.parse({ enabled: true })).toEqual({ enabled: true });
+    expect(updateAutomationSchema.parse({ enabled: false })).toEqual({ enabled: false });
+  });
+
+  it("requires enabled to be a boolean", () => {
+    expect(updateAutomationSchema.safeParse({}).success).toBe(false);
+    expect(updateAutomationSchema.safeParse({ enabled: "yes" }).success).toBe(false);
   });
 });

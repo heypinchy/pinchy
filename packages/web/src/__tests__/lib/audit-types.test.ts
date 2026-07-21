@@ -53,6 +53,15 @@ describe("AuditLogEntry email_workflow.created (Inbox Agent, #139)", () => {
   });
 });
 
+describe("AuditLogEntry email_workflow.updated / .deleted (Automations management)", () => {
+  it("keeps the whole CRUD lifecycle in the curated union", () => {
+    // The management API (list / enable-disable / delete) rounds out the
+    // lifecycle; like agent.*, all three verbs are curated explicitly.
+    expectTypeOf<"email_workflow.updated">().toExtend<AuditEventType>();
+    expectTypeOf<"email_workflow.deleted">().toExtend<AuditEventType>();
+  });
+});
+
 describe("AuditEventType is a subset of AuditLogEntry['eventType']", () => {
   it("every curated event type is one appendAuditLog can record", () => {
     // Intentionally NOT equal (the entry type is strictly broader), but the

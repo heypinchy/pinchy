@@ -96,6 +96,8 @@ export type AuditEventType =
   | "integration.credentials_tested"
   | "integration.credentials_updated"
   | "email_workflow.created"
+  | "email_workflow.updated"
+  | "email_workflow.deleted"
   | "file.upload.staged"
   | "file.upload.attached"
   | "file.upload.expired"

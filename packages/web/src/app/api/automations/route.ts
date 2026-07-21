@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { and, eq, inArray } from "drizzle-orm";
+import { and, desc, eq, inArray } from "drizzle-orm";
 
 import { db } from "@/db";
 import {
@@ -14,6 +14,70 @@ import { createAutomationSchema } from "@/lib/schemas/automations";
 import { scrubEmails } from "@/lib/audit";
 import { deferAuditLog } from "@/lib/audit-deferred";
 import { EMAIL_READ_OPERATIONS } from "@/lib/tool-registry";
+import { canManageAgentWorkflows } from "@/lib/email-workflows/authz";
+
+/**
+ * GET /api/automations?agentId=<id> — list an agent's email workflows for the
+ * Automations tab. Same scope gate as create: a member sees their own personal
+ * agent's workflows; a shared agent is admin-only. Each row carries its attached
+ * connection ids so the tab can render (and the reviewer can vet) the full
+ * structured translation before enabling it.
+ */
+export const GET = withAuth(async (request, _ctx, session) => {
+  const agentId = new URL(request.url).searchParams.get("agentId");
+  if (!agentId) {
+    return NextResponse.json({ error: "agentId is required" }, { status: 400 });
+  }
+
+  const [agent] = await db
+    .select({ isPersonal: agents.isPersonal, ownerId: agents.ownerId })
+    .from(agents)
+    .where(eq(agents.id, agentId));
+  if (!agent) {
+    return NextResponse.json({ error: "Agent not found" }, { status: 404 });
+  }
+  if (!canManageAgentWorkflows(agent, { id: session.user.id!, role: session.user.role })) {
+    return NextResponse.json({ error: "You do not have access to this agent" }, { status: 403 });
+  }
+
+  const workflows = await db
+    .select({
+      id: emailWorkflows.id,
+      name: emailWorkflows.name,
+      filter: emailWorkflows.filter,
+      action: emailWorkflows.action,
+      enabled: emailWorkflows.enabled,
+      status: emailWorkflows.status,
+      sweepWindowDays: emailWorkflows.sweepWindowDays,
+      createdBy: emailWorkflows.createdBy,
+      createdAt: emailWorkflows.createdAt,
+    })
+    .from(emailWorkflows)
+    .where(eq(emailWorkflows.agentId, agentId))
+    .orderBy(desc(emailWorkflows.createdAt));
+
+  // Fan the connection ids back onto each workflow in one query, not N.
+  const ids = workflows.map((w) => w.id);
+  const connRows = ids.length
+    ? await db
+        .select({
+          workflowId: emailWorkflowConnections.workflowId,
+          connectionId: emailWorkflowConnections.connectionId,
+        })
+        .from(emailWorkflowConnections)
+        .where(inArray(emailWorkflowConnections.workflowId, ids))
+    : [];
+  const byWorkflow = new Map<string, string[]>();
+  for (const row of connRows) {
+    const list = byWorkflow.get(row.workflowId) ?? [];
+    list.push(row.connectionId);
+    byWorkflow.set(row.workflowId, list);
+  }
+
+  return NextResponse.json(
+    workflows.map((w) => ({ ...w, connectionIds: byWorkflow.get(w.id) ?? [] }))
+  );
+});
 
 /**
  * POST /api/automations — create an Inbox Agent email workflow (design §5).
@@ -38,7 +102,6 @@ export const POST = withAuth(async (request, _ctx, session) => {
   const { agentId, name, filter, action, connectionIds, sweepWindowDays } = parsed.data;
 
   const userId = session.user.id!;
-  const isAdmin = session.user.role === "admin";
 
   const [agent] = await db
     .select({
@@ -53,10 +116,7 @@ export const POST = withAuth(async (request, _ctx, session) => {
     return NextResponse.json({ error: "Agent not found" }, { status: 404 });
   }
 
-  // A member may act only on a personal agent they own; a shared agent (or
-  // someone else's personal agent) is admin-only.
-  const isOwnPersonalAgent = agent.isPersonal && agent.ownerId === userId;
-  if (!isOwnPersonalAgent && !isAdmin) {
+  if (!canManageAgentWorkflows(agent, { id: userId, role: session.user.role })) {
     return NextResponse.json(
       { error: "You do not have permission to create a workflow on this agent" },
       { status: 403 }
