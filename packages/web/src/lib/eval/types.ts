@@ -193,7 +193,11 @@ export interface ExpectedLead {
    * `expected_revenue` is missing/wrong, but a run without it still passes.
    */
   expectedRevenue?: number;
-  /** Soft signal, taxonomy-only — NEVER a pass gate; see `expectedRevenue`. */
+  /**
+   * Currently UNGRADED — carried in the scenario spec only, reserved for a
+   * future soft-signal calibration (it would mirror `expectedRevenue`'s
+   * never-gating policy, e.g. a lead-phone-not-captured tag).
+   */
   phone?: string;
 }
 

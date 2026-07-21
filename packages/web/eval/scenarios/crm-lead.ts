@@ -12,7 +12,6 @@
  * deliberately NO attachment — this domain probes extraction from natural
  * inquiry text plus the email->CRM tool loop, without the download leg.
  */
-import type { EvalDomain } from "@/lib/eval/graders";
 import type { ExpectedLead } from "@/lib/eval/types";
 import { EVAL_MSG_PREFIX, evalHandleFor } from "./hetzner-invoice";
 
@@ -118,8 +117,12 @@ export interface CrmLeadScenario {
    * discriminated union, routing this scenario through `gradeLeadRun`.
    */
   expectedOutcome: "lead-created";
-  /** Selects the grader phrase sets (`PHRASE_SETS` in src/lib/eval/graders.ts). */
-  domain: EvalDomain;
+  /**
+   * Selects the grader phrase sets (`PHRASE_SETS` in src/lib/eval/graders.ts).
+   * The `EvalDomain` literal, narrowed to the only truthful value — matching
+   * `GradableLeadScenario.domain`.
+   */
+  domain: "crm-lead";
   /**
    * Odoo models the orchestrator reads back into the trajectory after the
    * run — resolve via `readbackModelsFor` (hetzner-invoice.ts), never by
