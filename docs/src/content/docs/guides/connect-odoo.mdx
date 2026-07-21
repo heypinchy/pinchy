@@ -162,6 +162,35 @@ This mirrors how Odoo itself keys duplicate detection for vendor documents — o
 
 **Deliberate re-filings have an escape hatch.** If a second entry really is intended, the agent can repeat the create with `allow_duplicate: true`. The bill is then created and the audit entry records the override alongside the bill it duplicated, so the decision stays traceable.
 
+## Verified writes
+
+When an agent books an invoice or bill, it should not have to _hope_ the write
+landed — and neither should you. Left to themselves, language models trust
+whatever a tool hands back: if the ERP returns a plausible record id, the agent
+reports success, even when nothing was actually saved. Our reliability
+benchmark found this failure in every model we tested, strong and weak alike, so
+we moved the check out of the model's hands and into the tool.
+
+For the highest-stakes writes — journal entries and invoices (`account.move`
+and its line items) — the `pinchy-odoo` plugin reads the record back before it
+reports success. It reads from the same authenticated session, so there is no
+lag to race, and compares the fields it just wrote:
+
+- **On a match**, the agent gets its normal success result, now enriched with
+  the verified values, and the audit entry records `verified: true`.
+- **On a missing record or a value that did not persist**, the agent gets a hard
+  error instead of a success it can narrate away — "Odoo returned an id but the
+  record could not be read back" — and the audit entry records the call as a
+  `failure` with `verified: false`.
+
+The result is a platform guarantee rather than a model behavior: a silent no-op
+in the ERP becomes a visible, audited failure your team can act on, whichever
+model an agent runs. This complements the existing read-back guarantee on
+`odoo_reconcile`, which already confirms a payment truly matched before reporting
+it done. Verification only runs where it is deterministic; writes that cannot be
+confirmed this way are covered instead by the confirmation-before-write habit the
+read-write finance templates carry.
+
 ## Re-syncing when Odoo permissions change
 
 If the Odoo admin changes the API user's permissions after you've set up the connection, agents may lose access to certain models. When this happens, the agent gets a clear error message explaining that access was denied.

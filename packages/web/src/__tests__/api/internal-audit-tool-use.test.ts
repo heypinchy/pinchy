@@ -806,6 +806,67 @@ describe("POST /api/internal/audit/tool-use", () => {
       expect((detail.params as Record<string, unknown>).model).toBe("account.move");
     });
 
+    it("records verified:true and keeps params for a verified success (#720)", async () => {
+      // #720: pinchy-odoo returns `details: { verified: true }` after reading a
+      // create/write back. `verified` is a verification-outcome flag, NOT a
+      // curated PII field, so it must land in the audit detail AND must not
+      // trigger param-suppression — the params still belong in the audit row.
+      await POST(
+        makeRequest({
+          phase: "end",
+          toolName: "odoo_create",
+          agentId: "agent-1",
+          params: { model: "account.move", values: { move_type: "in_invoice" } },
+          result: {
+            content: [{ type: "text", text: JSON.stringify({ id: 5, verified: true }) }],
+            details: { verified: true },
+          },
+        })
+      );
+
+      const call = vi.mocked(appendAuditLog).mock.calls[0]?.[0];
+      expect(call?.outcome).toBe("success");
+      const detail = call?.detail as Record<string, unknown>;
+      expect(detail.verified).toBe(true);
+      // params retained (verified is not a curated PII field)
+      expect(detail).toHaveProperty("params");
+      expect((detail.params as Record<string, unknown>).model).toBe("account.move");
+    });
+
+    it("records verified:false and keeps params on a verification failure (#720)", async () => {
+      // The failure path returns `details: { error, verified: false }`. The
+      // extra `verified: false` must NOT suppress params — forensics still need
+      // to know what the failed create attempted (same contract as the
+      // error-only case above).
+      await POST(
+        makeRequest({
+          phase: "end",
+          toolName: "odoo_create",
+          agentId: "agent-1",
+          params: { model: "account.move", values: { ref: "INV-1" } },
+          result: {
+            content: [
+              { type: "text", text: "Odoo returned id 5 but the record could not be read back" },
+            ],
+            details: {
+              error: "Odoo returned id 5 but the record could not be read back",
+              verified: false,
+            },
+          },
+        })
+      );
+
+      const call = vi.mocked(appendAuditLog).mock.calls[0]?.[0];
+      expect(call?.outcome).toBe("failure");
+      const detail = call?.detail as Record<string, unknown>;
+      expect(detail.verified).toBe(false);
+      expect(detail.success).toBe(false);
+      // params retained for forensics
+      expect(detail).toHaveProperty("params");
+      const params = (detail.params as Record<string, unknown>).values as Record<string, unknown>;
+      expect(params.ref).toBe("INV-1");
+    });
+
     it("keeps params when result.details is not a plain object", async () => {
       await POST(
         makeRequest({

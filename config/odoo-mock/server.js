@@ -1665,14 +1665,23 @@ const controlServer = http.createServer(async (req, res) => {
 
   // Configure a record-action method to return a wizard action (instead of
   // the default `true`), to exercise the Variant A handoff path.
-  // Body: { model, method, response }
+  // Body: { model, method, response } — or { model, method, clear: true } to
+  // remove a previously-set override WITHOUT wiping the store (pinchy#720: the
+  // read-after-write E2E injects a silent-no-op create, then clears just that
+  // override so the surrounding seeded probe records survive).
   if (req.method === "POST" && path === "/control/method-response") {
     const body = await readBody(req);
     if (!body || !body.model || !body.method) {
       sendJson(res, 400, { error: "Need { model, method, response }" });
       return;
     }
-    methodResponses[`${body.model}.${body.method}`] = body.response;
+    const key = `${body.model}.${body.method}`;
+    if (body.clear) {
+      delete methodResponses[key];
+      sendJson(res, 200, { status: "cleared" });
+      return;
+    }
+    methodResponses[key] = body.response;
     sendJson(res, 200, { status: "configured" });
     return;
   }

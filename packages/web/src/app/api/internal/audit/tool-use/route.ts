@@ -219,8 +219,12 @@ export async function POST(request: NextRequest) {
     // failed tool now emits so OpenClaw's isError-stripping (#404) can't mask
     // the failure, must NOT suppress params: forensics need to know what the
     // failed call attempted (the 2026-06-25 false-success incident hinged on
-    // those params being lost).
-    const curatesNonErrorFields = Object.keys(resultDetails).some((k) => k !== "error");
+    // those params being lost). `verified` (#720: pinchy-odoo's read-after-write
+    // outcome) is likewise a verification flag, not curated PII — it records
+    // into the audit detail but must not suppress params on either path.
+    const curatesNonErrorFields = Object.keys(resultDetails).some(
+      (k) => k !== "error" && k !== "verified"
+    );
     if (curatesNonErrorFields) delete detail.params;
     Object.assign(detail, resultDetails);
     // Plugins must not override these system fields. Re-apply after merge.

@@ -90,6 +90,35 @@ export async function setOdooAuthMode(mode: "ok" | "fail"): Promise<void> {
   if (!res.ok) throw new Error(`Failed to set Odoo auth mode: ${res.status}`);
 }
 
+/**
+ * Override the Odoo mock's response for `<model>.<method>` (pinchy#720). Used
+ * to inject a silent no-op create: the mock returns `response` (a plausible id)
+ * without persisting anything, so the plugin's read-after-write verification
+ * turns it into a hard failure instead of a false success.
+ */
+export async function setOdooMethodResponse(
+  model: string,
+  method: string,
+  response: unknown
+): Promise<void> {
+  const res = await fetch(`${MOCK_ODOO_URL}/control/method-response`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ model, method, response }),
+  });
+  if (!res.ok) throw new Error(`Failed to set Odoo method response: ${res.status}`);
+}
+
+/** Remove a `<model>.<method>` override without wiping the mock's store. */
+export async function clearOdooMethodResponse(model: string, method: string): Promise<void> {
+  const res = await fetch(`${MOCK_ODOO_URL}/control/method-response`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ model, method, clear: true }),
+  });
+  if (!res.ok) throw new Error(`Failed to clear Odoo method response: ${res.status}`);
+}
+
 export async function seedOdooRecords(
   model: string,
   records: Record<string, unknown>[]

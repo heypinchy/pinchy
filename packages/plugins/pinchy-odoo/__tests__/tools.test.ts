@@ -2670,7 +2670,16 @@ describe("odoo_create vendor-bill duplicate guard (#721)", () => {
   });
 
   it("lets a first-time vendor bill through when no duplicate is on file", async () => {
-    mockSearchRead.mockResolvedValue({ records: [], total: 0, limit: 1, offset: 0 });
+    // dup-guard read → no existing bill; then #720 verification read-back → the
+    // created bill (account.move is a verified-write model).
+    mockSearchRead
+      .mockResolvedValueOnce({ records: [], total: 0, limit: 1, offset: 0 })
+      .mockResolvedValue({
+        records: [{ id: 1002, move_type: "in_invoice", ref: "NEW-0001" }],
+        total: 1,
+        limit: 1,
+        offset: 0,
+      });
     mockCreate.mockResolvedValue(1002);
 
     const tools = createApi({ [agentId]: dupConfig });
@@ -2693,8 +2702,10 @@ describe("odoo_create vendor-bill duplicate guard (#721)", () => {
     // A same-ref customer invoice is a legitimate second entry: out-document refs
     // are not vendor document numbers. The guard must not run its search, so the
     // create proceeds even though a record with this ref exists.
+    // out_invoice is not dup-guarded, so no ref-keyed dup search runs; the only
+    // read is the #720 verification read-back of the created invoice.
     mockSearchRead.mockResolvedValue({
-      records: [EXISTING_BILL],
+      records: [{ id: 2002, move_type: "out_invoice", ref: "083000981540" }],
       total: 1,
       limit: 1,
       offset: 0,
@@ -2711,10 +2722,23 @@ describe("odoo_create vendor-bill duplicate guard (#721)", () => {
 
     expect(result.isError).toBeFalsy();
     expect(mockCreate).toHaveBeenCalled();
-    expect(mockSearchRead).not.toHaveBeenCalled();
+    // The duplicate guard (a `ref`-keyed search) never ran — the create proceeded
+    // despite a same-ref record. The only search performed was the #720
+    // verification read-back, which keys on `id`, not `ref`.
+    const dupSearched = mockSearchRead.mock.calls.some((c) =>
+      JSON.stringify(c[1] ?? "").includes('"ref"')
+    );
+    expect(dupSearched).toBe(false);
   });
 
   it("does NOT guard a plain journal entry (no move_type) — Odoo never dedups those", async () => {
+    // no move_type → not dup-guarded; only the #720 verification read-back runs.
+    mockSearchRead.mockResolvedValue({
+      records: [{ id: 3003, ref: "JE-0001" }],
+      total: 1,
+      limit: 1,
+      offset: 0,
+    });
     mockCreate.mockResolvedValue(3003);
 
     const tools = createApi({ [agentId]: dupConfig });
@@ -2727,16 +2751,25 @@ describe("odoo_create vendor-bill duplicate guard (#721)", () => {
 
     expect(result.isError).toBeFalsy();
     expect(mockCreate).toHaveBeenCalled();
-    expect(mockSearchRead).not.toHaveBeenCalled();
+    // No ref-keyed dup search ran; the only search was the id-keyed #720
+    // verification read-back.
+    const dupSearched = mockSearchRead.mock.calls.some((c) =>
+      JSON.stringify(c[1] ?? "").includes('"ref"')
+    );
+    expect(dupSearched).toBe(false);
   });
 
   it("proceeds and records a traceable override when allow_duplicate is true", async () => {
-    mockSearchRead.mockResolvedValue({
-      records: [EXISTING_BILL],
-      total: 1,
-      limit: 1,
-      offset: 0,
-    });
+    // dup-guard read → finds the on-file bill (override authorized); then the
+    // #720 verification read-back → the newly created bill.
+    mockSearchRead
+      .mockResolvedValueOnce({ records: [EXISTING_BILL], total: 1, limit: 1, offset: 0 })
+      .mockResolvedValue({
+        records: [{ id: 1003, move_type: "in_invoice", ref: "083000981540" }],
+        total: 1,
+        limit: 1,
+        offset: 0,
+      });
     mockCreate.mockResolvedValue(1003);
 
     const tools = createApi({ [agentId]: dupConfig });
@@ -2770,7 +2803,16 @@ describe("odoo_create vendor-bill duplicate guard (#721)", () => {
   });
 
   it("allow_duplicate on a bill with NO on-file duplicate is a normal create (no override detail)", async () => {
-    mockSearchRead.mockResolvedValue({ records: [], total: 0, limit: 1, offset: 0 });
+    // dup-guard read → no existing bill; then #720 verification read-back → the
+    // created bill.
+    mockSearchRead
+      .mockResolvedValueOnce({ records: [], total: 0, limit: 1, offset: 0 })
+      .mockResolvedValue({
+        records: [{ id: 1004, move_type: "in_invoice", ref: "NEW-0002" }],
+        total: 1,
+        limit: 1,
+        offset: 0,
+      });
     mockCreate.mockResolvedValue(1004);
 
     const tools = createApi({ [agentId]: dupConfig });
@@ -2784,8 +2826,11 @@ describe("odoo_create vendor-bill duplicate guard (#721)", () => {
 
     expect(result.isError).toBeFalsy();
     expect(mockCreate).toHaveBeenCalled();
-    // No duplicate existed, so nothing was overridden — no override audit detail.
-    expect(result.details).toBeUndefined();
+    // No duplicate existed, so nothing was overridden — the detail carries only
+    // the #720 verification outcome, never an override record.
+    expect(
+      (result.details as Record<string, unknown> | undefined)?.duplicateOverride
+    ).toBeUndefined();
   });
 
   it("skips the guard when the agent lacks read on account.move (cannot verify, so cannot block)", async () => {
@@ -3821,6 +3866,15 @@ describe("odoo_attach_file", () => {
       mockCreate
         .mockResolvedValueOnce(123) // odoo_create returns id 123 for account.move
         .mockResolvedValueOnce(456); // odoo_attach_file create for ir.attachment
+      // #720: account.move is a verified-write model — odoo_create reads the
+      // record back before reporting success. Echo the submitted verbatim
+      // scalars so verification passes.
+      mockSearchRead.mockResolvedValueOnce({
+        records: [{ id: 123, move_type: "in_invoice", invoice_date: "2026-01-15" }],
+        total: 1,
+        limit: 1,
+        offset: 0,
+      });
 
       const tools = createApi({ [attachAgentId]: attachAgentConfig });
       const createTool = findTool(tools, "odoo_create", attachAgentId)!;

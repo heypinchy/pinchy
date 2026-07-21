@@ -2166,6 +2166,115 @@ function toolError(text: string): {
   };
 }
 
+/**
+ * #720: error result for a failed read-after-write verification. Same
+ * `isError` + `details.error` contract as {@link toolError} (so the audit
+ * route records `outcome: failure`), plus `verified: false` so the audit row
+ * carries the verification outcome. The record was NOT persisted as reported;
+ * the model must surface the failure instead of narrating success.
+ */
+function verificationError(text: string): {
+  content: ContentBlock[];
+  isError: true;
+  details: { error: string; verified: false };
+} {
+  return {
+    isError: true,
+    content: [{ type: "text", text }],
+    details: { error: text, verified: false },
+  };
+}
+
+// ---------------------------------------------------------------------------
+// #720: plugin-side write verification (read-after-write).
+//
+// Eval-v1's silent-failure scenario — the ERP returns a plausible id but
+// persists nothing — showed 0 of 162 graded runs across all 14 models
+// performing a verifying read after the write. Every model trusted the bare
+// return value and reported success while the ERP stayed empty. This is a
+// behavioural failure shared by the strongest and weakest models alike, so we
+// move verification into the deterministic tool layer: after a create/write on
+// a covered model the plugin reads the record back — from the SAME
+// authenticated session, so there is no replica lag — and only reports success
+// once the authoritative post-state confirms it (the "persist-before-
+// acknowledge" pattern, mirroring `odoo_reconcile`'s `didReconcile` check).
+// ---------------------------------------------------------------------------
+
+// Models whose writes we verify. Start with account.move + its line model (the
+// highest-stakes writes, per #720); widen only if the eval supports it.
+const VERIFIED_WRITE_MODELS = new Set(["account.move", "account.move.line"]);
+
+export function isVerifiedModel(model: string): boolean {
+  return VERIFIED_WRITE_MODELS.has(model);
+}
+
+// Field types Odoo stores VERBATIM — a read-back value equals what we wrote,
+// with no legitimate backend transformation, so comparing them cannot
+// false-fail. Deliberately EXCLUDED (each can differ from the submitted value
+// through legitimate Odoo behaviour, which a naive comparison would misread as
+// a failed write):
+//   - relational (many2one/one2many/many2many): normalization, command-tuple
+//     expansion, and the `[id, label]` read shape;
+//   - float / monetary: currency & decimal-precision rounding, net↔gross;
+//   - datetime: a submitted date is normalized to `... 00:00:00`;
+//   - readonly / computed: the server owns the value.
+const VERBATIM_SCALAR_TYPES = new Set(["char", "text", "boolean", "date", "selection", "integer"]);
+
+export function isVerbatimScalarField(field: OdooField): boolean {
+  return !field.readonly && !!field.type && VERBATIM_SCALAR_TYPES.has(field.type);
+}
+
+/**
+ * The submitted fields we can safely compare on read-back: those the caller
+ * explicitly set that map to a verbatim-scalar field in the model schema.
+ */
+export function verbatimFieldsToVerify(
+  fields: OdooField[],
+  submitted: Record<string, unknown>
+): OdooField[] {
+  const byName = new Map(fields.map((f) => [f.name, f]));
+  const out: OdooField[] = [];
+  for (const key of Object.keys(submitted)) {
+    const field = byName.get(key);
+    if (field && isVerbatimScalarField(field)) out.push(field);
+  }
+  return out;
+}
+
+function scalarEquals(field: OdooField, expected: unknown, actual: unknown): boolean {
+  // Odoo returns integers as numbers; tolerate a numeric-string submitted value
+  // (e.g. sequence). Everything else in the verbatim set round-trips exactly.
+  if (field.type === "integer") return Number(expected) === Number(actual);
+  return expected === actual;
+}
+
+export function findVerbatimMismatches(
+  fields: OdooField[],
+  submitted: Record<string, unknown>,
+  readBack: Record<string, unknown> | undefined
+): Array<{ field: string; expected: unknown; actual: unknown }> {
+  const out: Array<{ field: string; expected: unknown; actual: unknown }> = [];
+  for (const field of verbatimFieldsToVerify(fields, submitted)) {
+    const expected = submitted[field.name];
+    const actual = readBack?.[field.name];
+    if (!scalarEquals(field, expected, actual)) {
+      out.push({ field: field.name, expected, actual });
+    }
+  }
+  return out;
+}
+
+function formatMismatches(
+  mismatches: Array<{ field: string; expected: unknown; actual: unknown }>
+): string {
+  return mismatches
+    .map(
+      (m) =>
+        `${m.field}: wrote ${JSON.stringify(m.expected)}, read back ${JSON.stringify(m.actual)}`
+    )
+    .join("; ");
+}
+
 function permissionDenied(
   operation: string,
   model: string
@@ -2347,6 +2456,136 @@ const plugin = {
           throw retryErr;
         }
       }
+    }
+
+    /**
+     * #720: read the record back after `odoo_create` and confirm it persisted.
+     *
+     * Two gates, strongest first:
+     *   1. Existence — if the id cannot be read back, the write did not persist
+     *      (the Eval-v1 silent-failure scenario). This is deterministic and
+     *      cannot false-fail: a persisted record is always readable by its own
+     *      id in the same session.
+     *   2. Verbatim-scalar match — every submitted field Odoo stores verbatim
+     *      must read back unchanged (see `verbatimFieldsToVerify`).
+     *
+     * Only runs for covered models when the agent can read; otherwise it makes
+     * no verification claim (returns `verified: false`, and the caller omits the
+     * flag) rather than reporting an unverified success as verified.
+     */
+    async function verifyCreate(
+      agentId: string,
+      config: AgentOdooConfig,
+      model: string,
+      id: number,
+      sentValues: Record<string, unknown>,
+      modelFields: OdooField[] | null
+    ): Promise<
+      | { ok: true; verified: boolean; verifiedValues?: Record<string, unknown> }
+      | { ok: false; error: string }
+    > {
+      if (!isVerifiedModel(model)) return { ok: true, verified: false };
+      if (!checkPermission(config.permissions, model, "read")) return { ok: true, verified: false };
+
+      const compareFields = modelFields ? verbatimFieldsToVerify(modelFields, sentValues) : [];
+      const readFields = ["id", ...compareFields.map((f) => f.name)];
+
+      let record: Record<string, unknown> | undefined;
+      try {
+        const res = await withAuthRetry(agentId, config, (client) =>
+          client.searchRead(model, [["id", "=", id]], { fields: readFields, limit: 1 })
+        );
+        record = getSearchReadRecords(res)[0] as Record<string, unknown> | undefined;
+      } catch {
+        // The verification read failed (transport). The create may well have
+        // persisted, so reporting failure would risk a duplicate on retry —
+        // degrade to an unverified success rather than false-fail.
+        return { ok: true, verified: false };
+      }
+
+      if (!record) {
+        return {
+          ok: false,
+          error:
+            `Odoo returned id ${id} for ${model} but the record could not be read back — ` +
+            `the write did not persist. Odoo reports no error in this case, so this is not a ` +
+            `transient failure: nothing was saved. Do not report success — retry the create or ` +
+            `check the Odoo connection.`,
+        };
+      }
+
+      const mismatches = findVerbatimMismatches(compareFields, sentValues, record);
+      if (mismatches.length > 0) {
+        return {
+          ok: false,
+          error:
+            `Odoo created ${model} id ${id} but the saved values do not match what was written ` +
+            `(${formatMismatches(mismatches)}). The record was not persisted as intended — do ` +
+            `not report success.`,
+        };
+      }
+
+      const verifiedValues: Record<string, unknown> = {};
+      for (const f of compareFields) verifiedValues[f.name] = record[f.name];
+      return { ok: true, verified: true, verifiedValues };
+    }
+
+    /**
+     * #720: read the written records back after `odoo_write` and confirm the
+     * submitted verbatim scalars now match. `write` returns only a boolean and
+     * the record pre-exists, so existence is a weak signal — the authoritative
+     * check is that the fields we changed read back as written (mirrors
+     * `odoo_reconcile`). If we have nothing verbatim to compare (all submitted
+     * fields are relational/float), we make no verification claim.
+     */
+    async function verifyWrite(
+      agentId: string,
+      config: AgentOdooConfig,
+      model: string,
+      ids: number[],
+      sentValues: Record<string, unknown>,
+      modelFields: OdooField[] | null
+    ): Promise<{ ok: true; verified: boolean } | { ok: false; error: string }> {
+      if (!isVerifiedModel(model)) return { ok: true, verified: false };
+      if (!checkPermission(config.permissions, model, "read")) return { ok: true, verified: false };
+
+      const compareFields = modelFields ? verbatimFieldsToVerify(modelFields, sentValues) : [];
+      if (compareFields.length === 0) return { ok: true, verified: false };
+      const readFields = ["id", ...compareFields.map((f) => f.name)];
+
+      let recordsById: Map<unknown, Record<string, unknown>>;
+      try {
+        const res = await withAuthRetry(agentId, config, (client) =>
+          client.searchRead(model, [["id", "in", ids]], { fields: readFields })
+        );
+        recordsById = new Map(
+          getSearchReadRecords(res).map((r) => [(r as Record<string, unknown>).id, r])
+        );
+      } catch {
+        return { ok: true, verified: false };
+      }
+
+      for (const id of ids) {
+        const record = recordsById.get(id) as Record<string, unknown> | undefined;
+        if (!record) {
+          return {
+            ok: false,
+            error:
+              `Odoo reported the write to ${model} id ${id} succeeded but the record could not ` +
+              `be read back — the change did not persist. Do not report success.`,
+          };
+        }
+        const mismatches = findVerbatimMismatches(compareFields, sentValues, record);
+        if (mismatches.length > 0) {
+          return {
+            ok: false,
+            error:
+              `Odoo reported the write to ${model} id ${id} succeeded but the saved values do ` +
+              `not match what was written (${formatMismatches(mismatches)}). Do not report success.`,
+          };
+        }
+      }
+      return { ok: true, verified: true };
     }
 
     // Shared implementation of the list-models tool body. Reused by the
@@ -2835,6 +3074,10 @@ const plugin = {
                       override: ExistingBillSnapshot | null;
                       ref: string | null;
                       moveType: string;
+                      // #720: carried out so the post-create read-back can
+                      // compare the submitted verbatim scalars.
+                      sentValues: Record<string, unknown>;
+                      modelFields: OdooField[] | null;
                     }
                   | {
                       kind: "blocked";
@@ -2936,6 +3179,8 @@ const plugin = {
                     override,
                     ref: typeof values.ref === "string" ? values.ref : null,
                     moveType,
+                    sentValues: values,
+                    modelFields,
                   };
                 }
               );
@@ -2952,6 +3197,20 @@ const plugin = {
               }
 
               const id = outcome.id;
+
+              // #720: read the record back and confirm it persisted before
+              // reporting success. On a silent no-op (id returned, nothing
+              // saved) or a verbatim-scalar mismatch this returns a hard error
+              // so the model surfaces the failure instead of narrating success.
+              const verify = await verifyCreate(
+                agentId,
+                config,
+                model,
+                id,
+                outcome.sentValues,
+                outcome.modelFields
+              );
+              if (!verify.ok) return verificationError(verify.error);
 
               // Emit a self-ref so the LLM can chain into tools that consume
               // opaque references (most importantly odoo_attach_file). Without
@@ -2973,9 +3232,16 @@ const plugin = {
                 label,
               });
 
-              const body: Record<string, unknown> = { id, _pinchy_ref: selfRef };
+              // Deliberate duplicate override (pinchy#721): a distinct curated
+              // payload naming what was booked and the bill it duplicated. The
+              // create was already read back and verified above (#720).
               if (outcome.override) {
-                body.duplicate_override = { existing_bill: outcome.override };
+                const body: Record<string, unknown> = {
+                  id,
+                  _pinchy_ref: selfRef,
+                  duplicate_override: { existing_bill: outcome.override },
+                };
+                if (verify.verified) body.verified = true;
                 return {
                   content: [{ type: "text", text: JSON.stringify(body) }],
                   // Curated audit detail (the tool-use route lifts result.details
@@ -2992,17 +3258,29 @@ const plugin = {
                     bookedMoveType: outcome.moveType,
                     createdId: id,
                     existingBill: outcome.override,
+                    ...(verify.verified ? { verified: true } : {}),
                   },
                 };
               }
 
+              // Enrich the success payload with the verification outcome (#720).
+              // Only claim `verified: true` when we actually read the record back
+              // (covered model + read permission); otherwise omit the flag rather
+              // than assert a verification we did not perform.
+              const payload: Record<string, unknown> = { id, _pinchy_ref: selfRef };
+              if (verify.verified) {
+                payload.verified = true;
+                if (verify.verifiedValues && Object.keys(verify.verifiedValues).length > 0) {
+                  payload.verifiedValues = verify.verifiedValues;
+                }
+              }
+
               return {
-                content: [
-                  {
-                    type: "text",
-                    text: JSON.stringify(body),
-                  },
-                ],
+                content: [{ type: "text", text: JSON.stringify(payload) }],
+                // `details.verified` flows into the audit row (#720). Only set
+                // it when we verified — an unverified create must not audit a
+                // verification claim.
+                ...(verify.verified ? { details: { verified: true } } : {}),
               };
             } catch (error) {
               return errorResult(error, {
@@ -4114,29 +4392,55 @@ const plugin = {
                 throw itemWrappedError("values");
               }
 
-              const success = await withAuthRetry(agentId, config, async (client) => {
+              const written = await withAuthRetry(agentId, config, async (client) => {
                 let values: Record<string, unknown>;
+                let modelFields: OdooField[] | null = null;
                 if (isRecord(params.values)) {
                   const cleaned = unquoteFieldKeys(params.values);
                   assertNoCrossCompanyRefs(cleaned);
-                  values = (
-                    await normalizeMany2OneValues(
-                      client,
-                      config.connectionId,
-                      model,
-                      cleaned,
-                      config.permissions
-                    )
-                  ).values;
+                  const normalized = await normalizeMany2OneValues(
+                    client,
+                    config.connectionId,
+                    model,
+                    cleaned,
+                    config.permissions
+                  );
+                  values = normalized.values;
+                  modelFields = normalized.fields;
                   values = await ensureActivityResModelId(client, model, values);
                 } else {
                   values = params.values as Record<string, unknown>;
                 }
-                return client.write(model, params.ids as number[], values);
+                const ok = await client.write(model, params.ids as number[], values);
+                return { success: ok, sentValues: values, modelFields };
               });
 
+              const success = written.success;
+
+              // #720: read the written records back and confirm the change
+              // persisted. A backend that returns `true` but saved nothing (or
+              // saved a different value) becomes a hard, visible error instead
+              // of a false success.
+              const verify = await verifyWrite(
+                agentId,
+                config,
+                model,
+                params.ids as number[],
+                written.sentValues,
+                written.modelFields
+              );
+              if (!verify.ok) return verificationError(verify.error);
+
               return {
-                content: [{ type: "text", text: JSON.stringify({ success }) }],
+                content: [
+                  {
+                    type: "text",
+                    text: JSON.stringify(
+                      verify.verified ? { success, verified: true } : { success }
+                    ),
+                  },
+                ],
+                ...(verify.verified ? { details: { verified: true } } : {}),
               };
             } catch (error) {
               return errorResult(error, {
