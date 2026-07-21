@@ -2,21 +2,15 @@
 // rules). Access is still gated — the GET enforces per-user ownership via an
 // uploadedFiles lookup to prevent IDOR on shared agents (see below).
 import { NextResponse } from "next/server";
-import { open, stat } from "fs/promises";
-import { join, resolve, sep, extname } from "path";
-import { fileTypeFromBuffer } from "file-type";
+import { join, resolve, sep } from "path";
 import { and, eq } from "drizzle-orm";
 import { withAuth } from "@/lib/api-auth";
 import { getAgentWithAccess } from "@/lib/agent-access";
 import { getWorkspacePath } from "@/lib/workspace";
 import { db } from "@/db";
 import { uploadedFiles } from "@/db/schema";
-import {
-  sanitizeFilename,
-  ALLOWED_ATTACHMENT_MIMES,
-  ALLOWED_TEXT_MIMES,
-} from "@/lib/upload-validation";
-import { EXTENSION_TO_MIME } from "@/lib/attachment-mime";
+import { sanitizeFilename } from "@/lib/upload-validation";
+import { streamWorkspaceFile } from "@/lib/serve-workspace-file";
 
 type Params = { params: Promise<{ agentId: string; filename: string }> };
 
@@ -68,67 +62,8 @@ export const GET = withAuth<Params>(async (_req, { params }, session) => {
     return new NextResponse("Not found", { status: 404 });
   }
 
-  let info;
-  try {
-    // eslint-disable-next-line security/detect-non-literal-fs-filename -- path is sanitized + resolve-checked above
-    info = await stat(fullPath);
-  } catch {
-    return new NextResponse("Not found", { status: 404 });
-  }
-  if (!info.isFile()) {
-    return new NextResponse("Not found", { status: 404 });
-  }
-
-  // Read the buffer first — uploads are capped at 15 MB at upload time so an
-  // in-memory read is fine. We detect MIME from the buffer's magic bytes using
-  // fileTypeFromBuffer (same as upload-validation.ts) rather than
-  // fileTypeFromFile, which uses dynamic imports that Next.js/Webpack cannot
-  // statically analyse ("Cannot find module as expression is too dynamic").
-  // eslint-disable-next-line security/detect-non-literal-fs-filename -- path is sanitized + resolve-checked above
-  const fh = await open(fullPath, "r");
-  let buffer: Buffer;
-  try {
-    buffer = await fh.readFile();
-  } finally {
-    await fh.close();
-  }
-
-  // Refuse anything outside the upload allowlist — a sneaked-in .exe must
-  // never reach the browser as application/octet-stream either.
-  const detected = await fileTypeFromBuffer(
-    new Uint8Array(buffer.buffer, buffer.byteOffset, buffer.byteLength)
-  );
-
-  let servedMime: string;
-  if (!detected) {
-    // Text files have no magic bytes. Derive MIME from extension and verify
-    // against the text allowlist. Null-byte check guards against binary
-    // files renamed to .csv / .txt.
-    const ext = extname(safeName).toLowerCase();
-    const textMime = EXTENSION_TO_MIME[ext];
-    if (!textMime || !ALLOWED_TEXT_MIMES.has(textMime) || buffer.includes(0x00)) {
-      return new NextResponse("Unsupported media type", { status: 415 });
-    }
-    servedMime = textMime;
-  } else {
-    if (!ALLOWED_ATTACHMENT_MIMES.has(detected.mime)) {
-      return new NextResponse("Unsupported media type", { status: 415 });
-    }
-    servedMime = detected.mime;
-  }
-
-  return new NextResponse(Uint8Array.from(buffer), {
-    headers: {
-      "content-type": servedMime,
-      "content-length": String(buffer.byteLength),
-      "cache-control": "private, max-age=3600",
-      // Inline so the browser renders PDFs/images directly instead of
-      // forcing a download. The filename is advisory.
-      "content-disposition": `inline; filename="${safeName.replace(/[^\x20-\x7e]/g, "_")}"; filename*=UTF-8''${encodeURIComponent(safeName)}`,
-      // Allow same-origin embeds (<embed> thumbnail in AttachmentPreview).
-      // Without this override Next.js emits X-Frame-Options: DENY by default
-      // which blocks the <embed> from loading the file.
-      "x-frame-options": "SAMEORIGIN",
-    },
-  });
+  // Uploads are capped at 15 MB at upload time, so the helper's in-memory read
+  // is fine. It also refuses anything outside the MIME allowlist (a sneaked-in
+  // .exe must never reach the browser as application/octet-stream).
+  return streamWorkspaceFile(fullPath, safeName);
 });

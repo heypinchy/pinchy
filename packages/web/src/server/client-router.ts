@@ -52,8 +52,9 @@ import {
   stripFinalEnvelope,
 } from "@/server/silent-reply-buffer";
 import { db } from "@/db";
-import { agents, users, models } from "@/db/schema";
-import { eq } from "drizzle-orm";
+import { agents, users, models, agentDeliveredFiles } from "@/db/schema";
+import { attachDeliveredFilesToHistory } from "@/server/delivery-marker";
+import { and, eq } from "drizzle-orm";
 import { isModelVisionCapable } from "@/lib/model-vision";
 import { resolveImageTurnModel, type VisionCandidate } from "@/lib/image-fallback";
 import { readExistingConfig } from "@/lib/openclaw-config/write";
@@ -823,102 +824,123 @@ export class ClientRouter {
       // filter silently drop the whole row — the vanishing-user-message bug
       // found in v0.8.0 staging.
 
-      return (
-        rawMessages
-          .filter((msg) => msg.role === "user" || msg.role === "assistant")
-          .map((msg) => {
-            let content: string;
-            if (Array.isArray(msg.content)) {
-              content = msg.content
-                .filter(
-                  (
-                    part: { type?: string; text?: string } | null | undefined
-                  ): part is { text: string } =>
-                    part != null &&
-                    part.type === "text" &&
-                    typeof part.text === "string" &&
-                    part.text.length > 0
-                )
-                .map((part) => part.text)
-                .join(" ");
-            } else {
-              content = typeof msg.content === "string" ? msg.content : "";
+      const mapped = rawMessages
+        .filter((msg) => msg.role === "user" || msg.role === "assistant")
+        .map((msg) => {
+          let content: string;
+          if (Array.isArray(msg.content)) {
+            content = msg.content
+              .filter(
+                (
+                  part: { type?: string; text?: string } | null | undefined
+                ): part is { text: string } =>
+                  part != null &&
+                  part.type === "text" &&
+                  typeof part.text === "string" &&
+                  part.text.length > 0
+              )
+              .map((part) => part.text)
+              .join(" ");
+          } else {
+            content = typeof msg.content === "string" ? msg.content : "";
+          }
+
+          // Strip protocol tags from assistant responses
+          content = content.replace(/<\/?final>/g, "");
+
+          // Match the placeholder both bare and behind OpenClaw's optional
+          // leading `[timestamp]` prefix (which it stamps on user messages —
+          // see the timestamp-strip below). Without the second form, a
+          // timestamped oversized turn would slip past this check and its
+          // raw internal string would leak to the user, unflagged.
+          const isOversizedPlaceholder =
+            content === CHAT_HISTORY_OVERSIZED_PLACEHOLDER ||
+            content.replace(/^\[.*?\]\s*/, "") === CHAT_HISTORY_OVERSIZED_PLACEHOLDER;
+
+          // For user messages: strip OpenClaw's timestamp prefix AND extract
+          // the per-message <pinchy:attachments> block (see buildAttachmentBlock
+          // in attachment-pipeline.ts). The block lives in the message text in
+          // OpenClaw's session JSONL — we round-trip its metadata into the
+          // wire-level `files` field so the browser can render the chip
+          // without ever seeing the markup.
+          let files: Array<{ filename: string; mimeType: string }> | undefined;
+          if (isOversizedPlaceholder) {
+            // The original content (and any attachment block it carried) is
+            // gone for good — OpenClaw already discarded it server-side.
+            // Surface a friendly, non-empty placeholder instead of dropping
+            // the row, and flag it so the client's history-reconcile can
+            // prefer a richer LOCAL copy of this same message when one
+            // exists (use-ws-runtime.ts).
+            content = OVERSIZED_HISTORY_MESSAGE_TEXT;
+          } else if (msg.role === "user") {
+            content = content.replace(/^\[.*?\]\s*/, "");
+            const parsed = parseAttachmentBlock(content);
+            content = parsed.cleanText;
+            if (parsed.attachments.length > 0) {
+              files = parsed.attachments.map((a) => ({
+                filename: a.filename,
+                mimeType: a.mimeType,
+              }));
             }
+          }
 
-            // Strip protocol tags from assistant responses
-            content = content.replace(/<\/?final>/g, "");
-
-            // Match the placeholder both bare and behind OpenClaw's optional
-            // leading `[timestamp]` prefix (which it stamps on user messages —
-            // see the timestamp-strip below). Without the second form, a
-            // timestamped oversized turn would slip past this check and its
-            // raw internal string would leak to the user, unflagged.
-            const isOversizedPlaceholder =
-              content === CHAT_HISTORY_OVERSIZED_PLACEHOLDER ||
-              content.replace(/^\[.*?\]\s*/, "") === CHAT_HISTORY_OVERSIZED_PLACEHOLDER;
-
-            // For user messages: strip OpenClaw's timestamp prefix AND extract
-            // the per-message <pinchy:attachments> block (see buildAttachmentBlock
-            // in attachment-pipeline.ts). The block lives in the message text in
-            // OpenClaw's session JSONL — we round-trip its metadata into the
-            // wire-level `files` field so the browser can render the chip
-            // without ever seeing the markup.
-            let files: Array<{ filename: string; mimeType: string }> | undefined;
-            if (isOversizedPlaceholder) {
-              // The original content (and any attachment block it carried) is
-              // gone for good — OpenClaw already discarded it server-side.
-              // Surface a friendly, non-empty placeholder instead of dropping
-              // the row, and flag it so the client's history-reconcile can
-              // prefer a richer LOCAL copy of this same message when one
-              // exists (use-ws-runtime.ts).
-              content = OVERSIZED_HISTORY_MESSAGE_TEXT;
-            } else if (msg.role === "user") {
-              content = content.replace(/^\[.*?\]\s*/, "");
-              const parsed = parseAttachmentBlock(content);
-              content = parsed.cleanText;
-              if (parsed.attachments.length > 0) {
-                files = parsed.attachments.map((a) => ({
-                  filename: a.filename,
-                  mimeType: a.mimeType,
-                }));
-              }
-            }
-
-            return {
-              role: msg.role as "user" | "assistant",
-              content,
-              files,
-              oversized: isOversizedPlaceholder,
-              rawContent:
-                typeof msg.content === "string"
-                  ? msg.content
-                  : Array.isArray(msg.content)
-                    ? msg.content
-                        .filter(
-                          (part: { type: string; text?: string }) =>
-                            part.type === "text" && part.text
-                        )
-                        .map((part: { text?: string }) => part.text!)
-                        .join(" ")
-                    : "",
-              timestamp: msg.timestamp,
-            };
-          })
-          // Keep messages that have either text content OR a non-empty `files`
-          // chip list. Attachment-only user messages (PDF dropped without any
-          // accompanying prose) round-trip to `content === ""` after the block
-          // is stripped — dropping them here would silently delete the user's
-          // own upload from history. The chip's `files` metadata is the carrier
-          // of meaning in that case, so it must be enough on its own.
-          .filter((msg) => msg.content || (msg.files && msg.files.length > 0))
-          .filter((msg) => !(msg.role === "user" && msg.rawContent.startsWith(QUEUED_RETRY_PREFIX)))
-          .map(({ role, content, files, timestamp, oversized }) => ({
-            role,
+          return {
+            role: msg.role as "user" | "assistant",
             content,
             files,
-            timestamp,
-            ...(oversized ? { oversized: true as const } : {}),
-          }))
+            oversized: isOversizedPlaceholder,
+            rawContent:
+              typeof msg.content === "string"
+                ? msg.content
+                : Array.isArray(msg.content)
+                  ? msg.content
+                      .filter(
+                        (part: { type: string; text?: string }) => part.type === "text" && part.text
+                      )
+                      .map((part: { text?: string }) => part.text!)
+                      .join(" ")
+                  : "",
+            timestamp: msg.timestamp,
+          };
+        })
+        // Keep messages that have either text content OR a non-empty `files`
+        // chip list. Attachment-only user messages (PDF dropped without any
+        // accompanying prose) round-trip to `content === ""` after the block
+        // is stripped — dropping them here would silently delete the user's
+        // own upload from history. The chip's `files` metadata is the carrier
+        // of meaning in that case, so it must be enough on its own.
+        .filter((msg) => msg.content || (msg.files && msg.files.length > 0))
+        .filter((msg) => !(msg.role === "user" && msg.rawContent.startsWith(QUEUED_RETRY_PREFIX)))
+        .map(({ role, content, files, timestamp, oversized }) => ({
+          role,
+          content,
+          files,
+          timestamp,
+          ...(oversized ? { oversized: true as const } : {}),
+        }));
+
+      // Re-attach agent-delivered files (#703). Delivered-file chips are not
+      // recoverable from the transcript on reload (chat.history drops the
+      // tool_result that carried the marker), so we read them from the durable
+      // grant table and map each back onto the assistant turn it was delivered
+      // during. Grants are session-scoped (`agent:{id}:direct:{userId}`), so
+      // this only ever surfaces the caller's own deliveries.
+      const grants = await db
+        .select({
+          filename: agentDeliveredFiles.filename,
+          mimeType: agentDeliveredFiles.mimeType,
+          createdAt: agentDeliveredFiles.createdAt,
+        })
+        .from(agentDeliveredFiles)
+        .where(eq(agentDeliveredFiles.sessionKey, sessionKey));
+
+      return attachDeliveredFilesToHistory(
+        mapped,
+        grants.map((g) => ({
+          filename: g.filename,
+          mimeType: g.mimeType,
+          createdAt: g.createdAt.getTime(),
+        }))
       );
     };
 
@@ -1523,6 +1545,18 @@ export class ClientRouter {
         }
       }
 
+      // Agent → user file delivery (#703): the OpenClaw gateway does not stream
+      // native plugin tool-output text to openclaw-node, so a delivery cannot be
+      // observed inline. Instead, once the run's stream has closed, ask OpenClaw
+      // for the artifacts its transcript accumulated (`artifacts.list`) and turn
+      // any file/image blocks into per-user download grants + chips. Wrapped so a
+      // failed poll never breaks the run.
+      try {
+        await this.deliverRunArtifacts(sessionKey, agent, clientWs, messageId);
+      } catch (err) {
+        console.error("[delivery] artifacts poll failed", err);
+      }
+
       // #7: OpenClaw dropped the socket mid-stream. The stream will never
       // produce a terminal chunk, so there is nothing to synthesize and no
       // genuine `complete`. Skip straight to the finally cleanup so the
@@ -1763,6 +1797,99 @@ export class ClientRouter {
     const payload = JSON.stringify(data);
     for (const ws of run.listeners) {
       if (ws.readyState === WS_OPEN) ws.send(payload);
+    }
+  }
+
+  /**
+   * Agent → user file delivery (#703). Called once the run's stream has closed.
+   * The OpenClaw gateway does not stream native plugin tool-output text to
+   * openclaw-node, so a delivery marker in tool output never reaches us. Instead
+   * we ask OpenClaw's native `artifacts.list` RPC for the file/image content
+   * blocks its session transcript accumulated, and for each new one we:
+   *
+   *   1. Record a per-user download grant (the authorization the serving route
+   *      checks — without it the file 404s, so a grant-insert failure skips the
+   *      chip rather than showing an undownloadable file).
+   *   2. Audit `file.delivered` (WS scope → appendAuditLog + recordAuditFailure).
+   *   3. Broadcast a `file` frame the client attaches to the current assistant
+   *      message.
+   *
+   * `artifacts.list` is cumulative across the whole session, so this runs after
+   * every turn and must be idempotent: a grant already recorded for this user +
+   * agent + filename is skipped (no duplicate insert, audit, or chip).
+   *
+   * `userId` comes from `this.userId` (server-side), never from the artifact — a
+   * plugin cannot deliver a file to anyone but the chat's own user.
+   */
+  private async deliverRunArtifacts(
+    sessionKey: string,
+    agent: { id: string; name: string },
+    clientWs: WebSocket,
+    messageId: string
+  ): Promise<void> {
+    const res = await this.openclawClient.request("artifacts.list", { sessionKey });
+    const artifacts =
+      (res.payload as { artifacts?: Array<{ type?: string; title?: string; mimeType?: string }> })
+        ?.artifacts ?? [];
+    for (const a of artifacts) {
+      if (a.type !== "file" && a.type !== "image") continue;
+      const filename = a.title;
+      if (!filename) continue;
+      const mimeType = a.mimeType ?? "application/octet-stream";
+
+      // Idempotent: skip if this user already has a grant for this file on this
+      // agent (artifacts.list is cumulative across the whole session).
+      const existing = await db
+        .select({ id: agentDeliveredFiles.id })
+        .from(agentDeliveredFiles)
+        .where(
+          and(
+            eq(agentDeliveredFiles.agentId, agent.id),
+            eq(agentDeliveredFiles.filename, filename),
+            eq(agentDeliveredFiles.userId, this.userId)
+          )
+        );
+      if (existing.length > 0) continue;
+
+      try {
+        await db.insert(agentDeliveredFiles).values({
+          userId: this.userId,
+          agentId: agent.id,
+          sessionKey,
+          filename,
+          mimeType,
+        });
+      } catch (err) {
+        // The grant is the authorization; without it the serving route 404s.
+        // Skip the chip so we never surface an undownloadable file.
+        console.error("[delivery] failed to record delivery grant", err);
+        continue;
+      }
+
+      const auditEntry = {
+        actorType: "user" as const,
+        actorId: this.userId,
+        eventType: "file.delivered" as const,
+        resource: `agent:${agent.id}`,
+        detail: {
+          agent: { id: agent.id, name: agent.name },
+          filename,
+          mimeType,
+        },
+        outcome: "success" as const,
+      };
+      try {
+        await appendAuditLog(auditEntry);
+      } catch (err) {
+        recordAuditFailure(err, auditEntry);
+      }
+
+      this.broadcastForRun(sessionKey, clientWs, {
+        type: "file",
+        messageId,
+        filename,
+        mimeType,
+      });
     }
   }
 

@@ -3,7 +3,7 @@
 import { useContext, useEffect, useRef, useState, type FC } from "react";
 import { useMessagePartFile } from "@assistant-ui/react";
 import { FileText, Loader2 } from "lucide-react";
-import { AgentIdContext, AgentModelContext } from "@/components/chat";
+import { AgentIdContext, AgentModelContext, FileSourceContext } from "@/components/chat";
 import { Dialog, DialogContent, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
 import { imageInputNote } from "@/lib/attachment-capability";
 
@@ -67,8 +67,8 @@ function useUploadReadiness(url: string | null): ProbeState {
  * spaces / parentheses / unicode all survive — the route handler decodes it
  * back via Next's params resolution.
  */
-function buildUploadUrl(agentId: string, filename: string): string {
-  return `/api/agents/${encodeURIComponent(agentId)}/uploads/${encodeURIComponent(filename)}`;
+function buildFileUrl(agentId: string, filename: string, source: "uploads" | "artifacts"): string {
+  return `/api/agents/${encodeURIComponent(agentId)}/${source}/${encodeURIComponent(filename)}`;
 }
 
 /**
@@ -83,12 +83,13 @@ export const AttachmentPreview: FC = () => {
   const { mimeType, filename } = useMessagePartFile();
   const agentId = useContext(AgentIdContext);
   const agentModel = useContext(AgentModelContext);
+  const fileSource = useContext(FileSourceContext);
   const { data: capabilityMap } = useModelCapabilities();
   const modelCapabilities = agentModel ? (capabilityMap?.[agentModel] ?? null) : null;
 
   const isPreviewable =
     !!agentId && !!filename && (mimeType === "application/pdf" || mimeType.startsWith("image/"));
-  const url = isPreviewable ? buildUploadUrl(agentId!, filename!) : null;
+  const url = isPreviewable ? buildFileUrl(agentId!, filename!, fileSource) : null;
   const readiness = useUploadReadiness(url);
 
   const capabilityWarning = imageInputNote(mimeType, modelCapabilities?.vision);

@@ -95,6 +95,12 @@ vi.mock("@/db/schema", () => ({
   agents: { id: "id" },
   users: { id: "id" },
   models: { vision: "vision", provider: "provider", modelId: "modelId", tools: "tools" },
+  agentDeliveredFiles: {
+    filename: "filename",
+    mimeType: "mime_type",
+    createdAt: "created_at",
+    sessionKey: "session_key",
+  },
 }));
 
 vi.mock("@/lib/model-vision", () => ({

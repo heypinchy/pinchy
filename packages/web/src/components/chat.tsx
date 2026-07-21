@@ -60,6 +60,15 @@ export const AgentIdContext = createContext<string | null>(null);
 export const ChatIdContext = createContext<string | null>(null);
 export const AgentNameContext = createContext<string | null>(null);
 export const AgentModelContext = createContext<string | null>(null);
+/**
+ * Which serving route a file chip fetches from (#703). User attachments live in
+ * `uploads/` and are authorized by an uploadedFiles row (`uploads` route);
+ * agent-delivered files live in `workbench|uploads/` and are authorized by a
+ * delivery grant (`artifacts` route). AttachmentPreview reads this to build the
+ * right URL; assistant messages provide `"artifacts"`, user messages the default
+ * `"uploads"`.
+ */
+export const FileSourceContext = createContext<"uploads" | "artifacts">("uploads");
 export const RetryResendContext = createContext<(messageId: string) => void>(() => {});
 export const RetryContinueContext = createContext<
   (reason: "orphan" | "partial_stream_failure" | "send_failure") => void

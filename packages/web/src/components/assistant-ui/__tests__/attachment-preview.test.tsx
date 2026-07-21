@@ -9,6 +9,7 @@ import React from "react";
 vi.mock("@/components/chat", () => ({
   AgentIdContext: React.createContext<string | null>(null),
   AgentModelContext: React.createContext<string | null>(null),
+  FileSourceContext: React.createContext<"uploads" | "artifacts">("uploads"),
 }));
 
 // useMessagePartFile is the assistant-ui hook the component reads from.
@@ -70,6 +71,28 @@ describe("AttachmentPreview — PDF", () => {
     expect(embed.getAttribute("type")).toBe("application/pdf");
     // URL-encoded path with the agent id segment.
     expect(embed.getAttribute("src")).toBe("/api/agents/agent-1/uploads/Profile%20(38).pdf");
+  });
+
+  it("points at the ARTIFACTS route when FileSourceContext is 'artifacts' (agent-delivered file, #703)", async () => {
+    mockUseMessagePartFile.mockReturnValue({
+      mimeType: "application/pdf",
+      filename: "report.pdf",
+    });
+    const { AgentIdContext, FileSourceContext } = await import("@/components/chat");
+    const { AttachmentPreview } = await import("@/components/assistant-ui/attachment-preview");
+    const { container } = render(
+      <AgentIdContext.Provider value="agent-1">
+        <FileSourceContext.Provider value="artifacts">
+          <AttachmentPreview />
+        </FileSourceContext.Provider>
+      </AgentIdContext.Provider>
+    );
+    const embed = await waitFor(() => {
+      const e = container.querySelector("embed");
+      if (!e) throw new Error("embed not yet mounted");
+      return e;
+    });
+    expect(embed.getAttribute("src")).toBe("/api/agents/agent-1/artifacts/report.pdf");
   });
 
   it("opens a modal with a full-size PDF embed when the thumbnail is clicked", async () => {

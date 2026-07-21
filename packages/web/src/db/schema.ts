@@ -793,6 +793,53 @@ export const uploadedFiles = pgTable(
 );
 
 /**
+ * Agent → user file delivery grants (#703). When an agent produces or fetches a
+ * file into its workspace and hands it to the user in chat, a row here records
+ * WHO may download it. This is the read-side authorization source for
+ * `GET /api/agents/:agentId/artifacts/:filename` — the delivered-file analogue
+ * of `uploadedFiles` for the user-upload route.
+ *
+ * Why a dedicated grant table (not reuse `uploadedFiles`): uploads model the
+ * user→agent direction (staging, GC, draft/message lifecycle, content hash);
+ * a delivery has none of that. Reusing that row would conflate provenance and
+ * muddy the audit trail. Here the row is a pure capability: "user U may fetch
+ * file F (in zone Z) from agent A".
+ *
+ * IDOR safety mirrors the uploads route: the serving route requires a row
+ * matching `(agentId, filename, userId = caller)`. A shared agent's other
+ * members hold no grant, so a predictable filename does not leak across users.
+ * The bytes live under the agent workspace; the serving route searches the known
+ * workspace zones (`workbench` for agent-generated files, `uploads` for
+ * agent-fetched files) for the granted filename. `sessionKey` is the full
+ * `agent:{agentId}:direct:{userId}` key the delivery happened in, kept for
+ * history re-attachment and correlation (never read as a prefix).
+ */
+export const agentDeliveredFiles = pgTable(
+  "agent_delivered_files",
+  {
+    id: text("id")
+      .primaryKey()
+      .$defaultFn(() => crypto.randomUUID()),
+    userId: text("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    agentId: text("agent_id")
+      .notNull()
+      .references(() => agents.id, { onDelete: "cascade" }),
+    sessionKey: text("session_key").notNull(),
+    filename: text("filename").notNull(),
+    mimeType: text("mime_type").notNull(),
+    createdAt: timestamp("created_at").notNull().defaultNow(),
+  },
+  (t) => [
+    // The serving route's authorization lookup: (agentId, filename, userId).
+    index("idx_agent_delivered_files_lookup").on(t.agentId, t.filename, t.userId),
+    // History re-attachment reads all grants for one session.
+    index("idx_agent_delivered_files_session").on(t.sessionKey),
+  ]
+);
+
+/**
  * Durable agent-error visibility (Concern 1). An OpenClaw error chunk surfaces
  * a live error bubble over the WS, but that bubble is ephemeral client state —
  * a reload or a WS reconnect during a long tool loop loses it, leaving only the

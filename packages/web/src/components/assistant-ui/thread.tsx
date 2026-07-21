@@ -52,6 +52,7 @@ import {
   AddPendingUploadContext,
   RemovePendingUploadContext,
   RetryPendingUploadContext,
+  FileSourceContext,
 } from "@/components/chat";
 import { DiagnosticsExportDialog } from "@/components/diagnostics-export-dialog";
 import { useAgentsContext } from "@/components/agents-provider";
@@ -562,12 +563,19 @@ const AssistantErrorOrContent: FC<{ actionSlot?: React.ReactNode }> = ({ actionS
 
   return (
     <>
-      <MessagePrimitive.Parts
-        components={{
-          Text: MarkdownText,
-          tools: { Fallback: ToolFallback },
-        }}
-      />
+      {/* Agent-delivered files (#703) render with the same chip/preview
+          component as user uploads, but fetch from the grant-authorized
+          `artifacts` route instead of `uploads`. */}
+      <FileSourceContext.Provider value="artifacts">
+        <MessagePrimitive.Parts
+          components={{
+            Text: MarkdownText,
+            Image: ChatImage,
+            File: AttachmentPreview,
+            tools: { Fallback: ToolFallback },
+          }}
+        />
+      </FileSourceContext.Provider>
       <MessageError />
     </>
   );

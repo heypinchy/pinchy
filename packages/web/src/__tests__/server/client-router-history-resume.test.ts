@@ -36,10 +36,18 @@ vi.mock("@/db", () => ({
       agents: { findFirst: mockFindFirst },
       users: { findFirst: mockUserFindFirst },
     },
+    // History re-attach (#703) reads agent_delivered_files; no grants here.
+    select: () => ({ from: () => ({ where: () => [] }) }),
   },
 }));
 
 vi.mock("@/db/schema", () => ({
+  agentDeliveredFiles: {
+    filename: "filename",
+    mimeType: "mime_type",
+    createdAt: "created_at",
+    sessionKey: "session_key",
+  },
   agents: { id: "id" },
   users: { id: "id" },
 }));

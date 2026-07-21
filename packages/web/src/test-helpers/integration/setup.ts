@@ -18,6 +18,7 @@ const APPLICATION_TABLES = [
   "audit_log",
   "chat_session_errors",
   "uploaded_files",
+  "agent_delivered_files",
   "usage_records",
   "agent_connection_permissions",
   "integration_connections",

@@ -407,6 +407,13 @@
       "when": 1784648413956,
       "tag": "0057_kb_archive_status_backfill",
       "breakpoints": true
+    },
+    {
+      "idx": 58,
+      "version": "7",
+      "when": 1784708902405,
+      "tag": "0058_sudden_jubilee",
+      "breakpoints": true
     }
   ]
 }

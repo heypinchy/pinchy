@@ -1,4 +1,4 @@
-import { mkdir, writeFile, access } from "node:fs/promises";
+import { mkdir, writeFile, access, chown } from "node:fs/promises";
 import { basename } from "node:path";
 import type { EmailAdapter, EmailSummary, Folder } from "./email-adapter.js";
 import { checkPermission, type Permissions } from "./permissions.js";
@@ -16,6 +16,14 @@ import {
 // attachment can be handed off to odoo_attach_file by filename alone. This is
 // NOT plugin config — do not add it to openclaw.plugin.json's configSchema.
 const WORKSPACE_ROOT = "/root/.openclaw/workspaces";
+
+// The Pinchy web process (uid/gid 999) serves a delivered attachment straight
+// off the shared volume (the #703 artifacts route). This plugin runs as root, so
+// a downloaded file lands root-owned and the web process cannot read it — chown
+// it back to 999, best-effort (a failure on a non-Linux/no-CAP_CHOWN host must
+// never fail the download itself). Mirrors pinchy-transcript's media mirror.
+const DELIVERY_UID = 999;
+const DELIVERY_GID = 999;
 
 // 25 MB matches odoo_attach_file's own cap (see packages/plugins/pinchy-odoo/index.ts),
 // so anything saved here is always small enough to hand off downstream.
@@ -138,9 +146,15 @@ interface PluginToolContext {
   agentId?: string;
 }
 
+// A text block carries `text`; a delivery block (`type: "file"` / `"image"`)
+// carries `filename`/`mimeType` instead and lands in the session transcript as a
+// native artifact, which Pinchy's client-router picks up via `artifacts.list`
+// to deliver the file to the user in chat (#703).
 interface ContentBlock {
   type: string;
-  text: string;
+  text?: string;
+  filename?: string;
+  mimeType?: string;
 }
 
 interface PluginApi {
@@ -1198,6 +1212,13 @@ const plugin = {
               // file or be redirected outside uploads/ via a planted symlink.
               await writeFile(filePath, attachment.data, { flag: "wx" });
 
+              // Hand ownership to the web process so it can serve the file (#703).
+              try {
+                await chown(filePath, DELIVERY_UID, DELIVERY_GID);
+              } catch {
+                // Best-effort — see DELIVERY_UID/DELIVERY_GID comment above.
+              }
+
               return {
                 content: [
                   {
@@ -1216,8 +1237,18 @@ const plugin = {
                     type: "text",
                     text:
                       `Saved to the workspace uploads directory as "${finalFilename}" ` +
-                      `(${humanReadableSize(attachment.data.length)}). Readable with the pdf tool ` +
-                      `(for PDFs); attachable to an Odoo record via odoo_attach_file using this filename.`,
+                      `(${humanReadableSize(attachment.data.length)}). Delivered to the user in chat as a ` +
+                      `downloadable file; also readable with the pdf tool (for PDFs) and attachable to an ` +
+                      `Odoo record via odoo_attach_file using this filename.`,
+                  },
+                  // File delivery (#703): a native file content block lands in the
+                  // session transcript, which Pinchy's client-router reads via
+                  // OpenClaw's `artifacts.list` RPC after the run to record the
+                  // per-user download grant and render the chip.
+                  {
+                    type: "file",
+                    filename: finalFilename,
+                    mimeType: attachment.mimeType,
                   },
                 ],
               };

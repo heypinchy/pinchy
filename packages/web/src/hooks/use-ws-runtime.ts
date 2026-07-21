@@ -11,6 +11,7 @@ import {
 } from "@/hooks/in-flight-placeholder";
 import { DELAY_HINT_MS } from "@/lib/chat-liveness";
 import { mergeOrAppendChunk } from "@/hooks/merge-chunk";
+import { attachDeliveredFile } from "@/hooks/attach-delivered-file";
 import { ensureTrailingAssistant } from "@/hooks/ensure-trailing-assistant";
 import { uploadAttachment } from "@/lib/upload-attachment";
 import { oversizeAttachmentError } from "@/lib/attachment-size-check";
@@ -1392,6 +1393,23 @@ export function useWsRuntime(
               })
             );
           });
+        }
+
+        if (data.type === "file") {
+          // Agent → user file delivery (#703). A plugin handed the user a file
+          // mid-run; attach the chip to the assistant message this run is
+          // streaming into (creating a content-less bubble if the file lands
+          // before any text). The bytes are fetched lazily from the artifacts
+          // route by the chip component.
+          setMessages((prev) =>
+            capMessages(
+              attachDeliveredFile(prev, {
+                id: data.messageId,
+                filename: data.filename,
+                mimeType: data.mimeType,
+              })
+            )
+          );
         }
 
         if (data.type === "done") {

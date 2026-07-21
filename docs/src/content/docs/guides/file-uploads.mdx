@@ -60,6 +60,14 @@ Pinchy renders an inline preview next to your chat message:
 
 Both previews survive page reloads — the file lives in the agent workspace, not in browser memory, so it's still there hours or days later.
 
+## Receive files from the agent
+
+Files flow the other way too. When an agent produces or fetches a file — an email attachment it downloaded, a document it wrote — it hands the file straight back to you in chat as a downloadable chip, right next to its reply. PDFs and images preview inline exactly like your own uploads; anything else shows as a chip you can open. No "it's in your workspace, go find it" — the file is one click away in the conversation.
+
+Today this happens whenever an agent downloads an email attachment with `email_get_attachment`: the attachment lands in the workspace _and_ appears as a chip you can open. Generating files from data an agent has assembled — a CSV, a spreadsheet, a PDF report — is coming next ([issue #788](https://github.com/heypinchy/pinchy/issues/788)).
+
+Delivered files are scoped to the chat they were delivered in: only you can download a file an agent handed to _your_ conversation, even on a shared agent where several people talk to the same agent. The chip reappears after a reload, just like your own attachments, because the authorization to download it is recorded durably — not held in browser memory.
+
 ## Security
 
 Pinchy validates every uploaded file against its actual content, not just the browser-reported MIME type. A file renamed to `.pdf` that contains executable code will be rejected. Filenames are also sanitized before being written to disk.

@@ -317,8 +317,8 @@ importers:
         specifier: 0.3.0
         version: 0.3.0
       openclaw-node:
-        specifier: 0.13.1
-        version: 0.13.1
+        specifier: 0.14.0
+        version: 0.14.0
       pdfjs-dist:
         specifier: ^5.7.284
         version: 5.7.284
@@ -6048,8 +6048,8 @@ packages:
       zod:
         optional: true
 
-  openclaw-node@0.13.1:
-    resolution: {integrity: sha512-MxLiYMz4WCK/nFlLL+NR3xDrJNDgiSa1aNjMOzbCLPqLp2+eeKcvOFIqx7EPeIomZ9ywrEsX+KvGX3DrLYKX8A==}
+  openclaw-node@0.14.0:
+    resolution: {integrity: sha512-cLaeV44fWHrCILGLocG2cFH3uNlgj8TCXyLerzOHKOJhDp1PF6lideYL7aFHtb/zmey3C+tbO6nWQ0c3j3TVZw==}
     engines: {node: '>=20.0.0'}
 
   openclaw@2026.7.1:
@@ -13471,7 +13471,7 @@ snapshots:
       ws: 8.21.0
       zod: 4.4.3
 
-  openclaw-node@0.13.1:
+  openclaw-node@0.14.0:
     optionalDependencies:
       ws: 8.21.0
     transitivePeerDependencies:

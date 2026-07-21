@@ -107,7 +107,9 @@ function createApi(pluginConfig: PluginConfig = testConfig) {
       tools.push({ factory, name: opts?.name ?? "" });
     },
   };
-  plugin.register(api);
+  // Cast at the seam: the plugin's real ContentBlock has an optional `text`
+  // (file blocks omit it), which the local AgentTool mirror declares required.
+  plugin.register(api as unknown as Parameters<typeof plugin.register>[0]);
   return tools;
 }
 

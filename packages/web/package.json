@@ -63,7 +63,7 @@
     "node-llama-cpp": "^3",
     "nodemailer": "^9.0.3",
     "odoo-node": "0.3.0",
-    "openclaw-node": "0.13.1",
+    "openclaw-node": "0.14.0",
     "pdfjs-dist": "^5.7.284",
     "pdfkit": "^0.19.1",
     "postgres": "^3.4.9",

@@ -149,6 +149,7 @@ vi.mock("@/components/chat", async () => {
     RetryResendContext: React.createContext<(messageId: string) => void>(() => {}),
     RetryContinueContext: React.createContext<() => void>(() => {}),
     ChatStatusContext: React.createContext<{ kind: string; reason?: string }>({ kind: "ready" }),
+    FileSourceContext: React.createContext<"uploads" | "artifacts">("uploads"),
   };
 });
 

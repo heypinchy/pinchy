@@ -101,6 +101,7 @@ export type AuditEventType =
   | "file.upload.staged"
   | "file.upload.attached"
   | "file.upload.expired"
+  | "file.delivered"
   | "retrieval.query"
   | "knowledge.source_viewed"
   | "knowledge.reindex"
@@ -576,6 +577,19 @@ export type AuditLogEntry =
             sweepId: string;
             reason: string;
           };
+    })
+  | (AuditLogBase & {
+      // Agent → user file delivery (#703): a plugin handed a file to the user in
+      // chat, creating a per-user download grant. Logged where the grant is
+      // recorded (client-router's post-run artifacts.list poll). The filename is
+      // the user-facing artifact name (same posture as file.upload.attached,
+      // which also logs filenames); do not add the user's email or other PII here.
+      eventType: "file.delivered";
+      detail: {
+        agent: EntityRef;
+        filename: string;
+        mimeType: string;
+      };
     })
   | (AuditLogBase & {
       // Knowledge-base retrieval (Task 8 of the KB implementation plan): the

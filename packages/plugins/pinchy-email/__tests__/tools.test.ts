@@ -48,16 +48,18 @@ vi.mock("../imap-adapter", () => {
 // Mock node:fs/promises so attachment writes never touch the real filesystem.
 // vi.mock(...) is hoisted above these const declarations, so the mock fns
 // themselves must be created via vi.hoisted() to avoid a TDZ error.
-const { mockMkdir, mockWriteFile, mockAccess } = vi.hoisted(() => ({
+const { mockMkdir, mockWriteFile, mockAccess, mockChown } = vi.hoisted(() => ({
   mockMkdir: vi.fn(),
   mockWriteFile: vi.fn(),
   mockAccess: vi.fn(),
+  mockChown: vi.fn(),
 }));
 
 vi.mock("node:fs/promises", () => ({
   mkdir: mockMkdir,
   writeFile: mockWriteFile,
   access: mockAccess,
+  chown: mockChown,
 }));
 
 import { GmailAdapter } from "../gmail-adapter";
@@ -76,7 +78,7 @@ interface AgentTool {
     params: Record<string, unknown>,
     signal?: AbortSignal
   ) => Promise<{
-    content: Array<{ type: string; text: string }>;
+    content: Array<{ type: string; text: string; filename?: string; mimeType?: string }>;
     isError?: boolean;
     details?: unknown;
   }>;
@@ -121,7 +123,10 @@ function createApi(pluginConfig: PluginConfig = testConfig) {
     },
   };
 
-  plugin.register(api);
+  // The plugin's real ContentBlock allows a file block (text optional); this
+  // test's local AgentTool mirrors it with text required for terser `.text`
+  // reads, so the mock api is cast to the plugin's PluginApi at the seam.
+  plugin.register(api as unknown as Parameters<typeof plugin.register>[0]);
   return tools;
 }
 
@@ -1324,6 +1329,7 @@ describe("email_get_attachment", () => {
     mockAccess.mockRejectedValue(Object.assign(new Error("ENOENT"), { code: "ENOENT" }));
     mockMkdir.mockResolvedValue(undefined);
     mockWriteFile.mockResolvedValue(undefined);
+    mockChown.mockResolvedValue(undefined);
   });
 
   it("is gated on email.read permission and never touches the filesystem when denied", async () => {
@@ -1386,11 +1392,29 @@ describe("email_get_attachment", () => {
 
     // Guidance references the hand-off to odoo_attach_file and the written name.
     const guidance = result.content
-      .slice(1)
+      .filter((b) => b.type === "text")
       .map((b) => b.text)
       .join("\n");
     expect(guidance).toContain("odoo_attach_file");
     expect(guidance).toContain("invoice.pdf");
+
+    // #703: the downloaded file is delivered to the user in chat. The tool
+    // output carries a native file content block that lands in the session
+    // transcript; Pinchy's client-router reads it via OpenClaw's artifacts.list
+    // RPC to record the download grant and render the chip.
+    expect(
+      result.content.some(
+        (b) => b.type === "file" && b.filename === "invoice.pdf" && b.mimeType === "application/pdf"
+      )
+    ).toBe(true);
+
+    // The web process (uid/gid 999) serves the file off the shared volume, so
+    // this root-run plugin hands ownership over after the write.
+    expect(mockChown).toHaveBeenCalledWith(
+      "/root/.openclaw/workspaces/agent-1/uploads/invoice.pdf",
+      999,
+      999
+    );
   });
 
   it("never includes attachment content/bytes in the tool result", async () => {

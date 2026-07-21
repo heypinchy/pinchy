@@ -238,6 +238,7 @@ vi.mock("@/components/chat", async () => {
     RemovePendingUploadContext: React.createContext<(localId: string) => void>(() => {}),
     RetryPendingUploadContext: React.createContext<(localId: string) => void>(() => {}),
     AddPendingUploadContext: React.createContext<(file: File) => void>(() => {}),
+    FileSourceContext: React.createContext<"uploads" | "artifacts">("uploads"),
   };
 });
 
