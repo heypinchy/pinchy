@@ -200,7 +200,7 @@ export async function POST(request: NextRequest) {
   } catch (err) {
     console.error("Failed to apply provider config to the OpenClaw runtime:", err);
     runtimeWarning =
-      "Saved. Applying it to the agent runtime failed — this usually resolves on the next restart.";
+      "Saved. Applying it to the agent runtime failed — check the server logs; it will retry on the next restart or config change.";
   }
   resetCache();
 
