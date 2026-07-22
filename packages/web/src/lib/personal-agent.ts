@@ -9,7 +9,7 @@ import {
 import { getContextForAgent } from "@/lib/context-sync";
 import { getSetting } from "@/lib/settings";
 import { type ProviderName } from "@/lib/providers";
-import { resolveModelForTemplate } from "@/lib/model-resolver";
+import { resolveAvailableModelForTemplate } from "@/lib/model-resolver/resolve-available";
 import type { ModelHint } from "@/lib/model-resolver/types";
 import { TemplateCapabilityUnavailableError } from "@/lib/model-resolver/types";
 import { SMITHERS_SOUL_MD } from "@/lib/smithers-soul";
@@ -82,7 +82,7 @@ export async function seedPersonalAgent(userId: string, isAdmin = false) {
   let model: string;
   if (defaultProvider) {
     try {
-      const resolved = await resolveModelForTemplate({
+      const resolved = await resolveAvailableModelForTemplate({
         hint: SMITHERS_MODEL_HINT,
         provider: defaultProvider,
       });

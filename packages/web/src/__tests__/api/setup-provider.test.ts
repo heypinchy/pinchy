@@ -83,8 +83,11 @@ vi.mock("@/lib/provider-models", () => ({
   ]),
 }));
 
-vi.mock("@/lib/model-resolver", () => ({
-  resolveModelForTemplate: vi.fn().mockResolvedValue({
+// The route resolves Smithers' model through the live-availability wrapper
+// (#883); mock that. TemplateCapabilityUnavailableError is imported from the
+// real ./types module below, so the barrel stays unmocked.
+vi.mock("@/lib/model-resolver/resolve-available", () => ({
+  resolveAvailableModelForTemplate: vi.fn().mockResolvedValue({
     model: "anthropic/claude-sonnet-4-6",
     reason: "balanced",
     fallbackUsed: false,
@@ -126,7 +129,7 @@ import {
   fetchOllamaLocalModelsFromUrl,
   setOllamaLocalModels,
 } from "@/lib/provider-models";
-import { resolveModelForTemplate } from "@/lib/model-resolver";
+import { resolveAvailableModelForTemplate } from "@/lib/model-resolver/resolve-available";
 import { TemplateCapabilityUnavailableError } from "@/lib/model-resolver/types";
 import { SMITHERS_MODEL_HINT } from "@/lib/personal-agent";
 
@@ -583,7 +586,7 @@ describe("POST /api/setup/provider", () => {
   });
 
   it("updates Smithers' model using SMITHERS_MODEL_HINT when provider is configured as first provider", async () => {
-    vi.mocked(resolveModelForTemplate).mockResolvedValueOnce({
+    vi.mocked(resolveAvailableModelForTemplate).mockResolvedValueOnce({
       model: "anthropic/claude-sonnet-4-6",
       reason: "balanced tier",
       fallbackUsed: false,
@@ -596,7 +599,7 @@ describe("POST /api/setup/provider", () => {
       }) as any
     );
 
-    expect(resolveModelForTemplate).toHaveBeenCalledWith({
+    expect(resolveAvailableModelForTemplate).toHaveBeenCalledWith({
       hint: SMITHERS_MODEL_HINT,
       provider: "anthropic",
     });
@@ -606,7 +609,7 @@ describe("POST /api/setup/provider", () => {
   });
 
   it("updates Smithers' model via SMITHERS_MODEL_HINT for ollama-local as first provider", async () => {
-    vi.mocked(resolveModelForTemplate).mockResolvedValueOnce({
+    vi.mocked(resolveAvailableModelForTemplate).mockResolvedValueOnce({
       model: "ollama/qwen2.5:7b",
       reason: "balanced tier",
       fallbackUsed: false,
@@ -619,7 +622,7 @@ describe("POST /api/setup/provider", () => {
       }) as any
     );
 
-    expect(resolveModelForTemplate).toHaveBeenCalledWith({
+    expect(resolveAvailableModelForTemplate).toHaveBeenCalledWith({
       hint: SMITHERS_MODEL_HINT,
       provider: "ollama-local",
     });
@@ -713,7 +716,7 @@ describe("POST /api/setup/provider", () => {
   it("succeeds with 200 even when resolveModelForTemplate throws TemplateCapabilityUnavailableError", async () => {
     // Provider is being added as the first provider, but resolver finds no
     // matching model — e.g. an Ollama instance with only text-only models.
-    vi.mocked(resolveModelForTemplate).mockRejectedValueOnce(
+    vi.mocked(resolveAvailableModelForTemplate).mockRejectedValueOnce(
       new TemplateCapabilityUnavailableError(["tools"], "anthropic", "https://docs.heypinchy.com")
     );
 

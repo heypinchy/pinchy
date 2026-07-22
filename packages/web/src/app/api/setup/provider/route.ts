@@ -16,7 +16,7 @@ import {
   fetchOllamaLocalModelsFromUrl,
   setOllamaLocalModels,
 } from "@/lib/provider-models";
-import { resolveModelForTemplate } from "@/lib/model-resolver";
+import { resolveAvailableModelForTemplate } from "@/lib/model-resolver/resolve-available";
 import { TemplateCapabilityUnavailableError } from "@/lib/model-resolver/types";
 import { SMITHERS_MODEL_HINT } from "@/lib/personal-agent";
 import { db } from "@/db";
@@ -172,7 +172,7 @@ export async function POST(request: NextRequest) {
     const smithers = await db.query.agents.findFirst();
     if (smithers) {
       try {
-        const resolved = await resolveModelForTemplate({
+        const resolved = await resolveAvailableModelForTemplate({
           hint: SMITHERS_MODEL_HINT,
           provider: provider as ProviderName,
         });

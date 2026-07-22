@@ -61,10 +61,13 @@ vi.mock("@/lib/onboarding-prompt", () => ({
   ONBOARDING_GREETING: "Test onboarding greeting",
 }));
 
-// ── Mock @/lib/model-resolver ─────────────────────────────────────────────────
-const resolveModelForTemplateMock = vi.fn();
-vi.mock("@/lib/model-resolver", () => ({
-  resolveModelForTemplate: (...args: unknown[]) => resolveModelForTemplateMock(...args),
+// ── Mock the live-availability resolver wrapper (personal-agent's dependency) ──
+// personal-agent calls resolveAvailableModelForTemplate (#883); the wrapper's own
+// live-catalog logic is unit-tested in model-resolver/__tests__/resolve-available.
+const resolveAvailableModelForTemplateMock = vi.fn();
+vi.mock("@/lib/model-resolver/resolve-available", () => ({
+  resolveAvailableModelForTemplate: (...args: unknown[]) =>
+    resolveAvailableModelForTemplateMock(...args),
 }));
 
 // ── Mock @/lib/providers ─────────────────────────────────────────────────────
@@ -513,7 +516,7 @@ describe("seedPersonalAgent", () => {
 
   it("uses the default model from provider settings when available", async () => {
     getSettingMock.mockResolvedValue("openai");
-    resolveModelForTemplateMock.mockResolvedValue({
+    resolveAvailableModelForTemplateMock.mockResolvedValue({
       model: "openai/gpt-5.4-mini",
       reason: "balanced tier match",
       fallbackUsed: false,
@@ -600,7 +603,7 @@ describe("seedPersonalAgent", () => {
   it("resolves Smithers model via resolveModelForTemplate with balanced hint when provider is configured", async () => {
     findFirstMock.mockResolvedValue(undefined);
     getSettingMock.mockResolvedValue("anthropic");
-    resolveModelForTemplateMock.mockResolvedValue({
+    resolveAvailableModelForTemplateMock.mockResolvedValue({
       model: "anthropic/claude-sonnet-4-6",
       reason: "balanced tier match",
       fallbackUsed: false,
@@ -618,7 +621,7 @@ describe("seedPersonalAgent", () => {
     const { seedPersonalAgent, SMITHERS_MODEL_HINT } = await import("@/lib/personal-agent");
     await seedPersonalAgent("user-1");
 
-    expect(resolveModelForTemplateMock).toHaveBeenCalledWith({
+    expect(resolveAvailableModelForTemplateMock).toHaveBeenCalledWith({
       hint: SMITHERS_MODEL_HINT,
       provider: "anthropic",
     });
@@ -640,7 +643,7 @@ describe("seedPersonalAgent", () => {
 
   it("falls back to claude-sonnet-4-6 when resolveModelForTemplate throws TemplateCapabilityUnavailableError", async () => {
     vi.mocked(getSettingMock).mockResolvedValue("anthropic");
-    resolveModelForTemplateMock.mockRejectedValue(
+    resolveAvailableModelForTemplateMock.mockRejectedValue(
       new TemplateCapabilityUnavailableError(["tools"], "anthropic", "https://docs.heypinchy.com")
     );
     const fakeAgent = {
