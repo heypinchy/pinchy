@@ -307,23 +307,35 @@ export const POST = withAdmin(async (request, _ctx, session) => {
   });
   writeWorkspaceFileInternal(agent.id, "USER.md", context);
 
-  await regenerateOpenClawConfig();
-
-  // Wait until OC's runtime has the new agent visible in `agents.list`.
-  // Pinchy's regenerate is fire-and-forget (`pushConfigInBackground`) and OC
-  // applies the hot reload asynchronously; without this gate the first
-  // dispatch after POST /api/agents can race the reload and fail with
-  // `invalid agent params: unknown agent id`. Best-effort with a 5 s cap so
-  // we don't block the interactive save flow if OC is restarting.
-  let client = null;
+  // Best-effort runtime apply: the agent row is already committed above, so a
+  // failed regeneration must NOT surface as a 500 that implies the agent
+  // wasn't created (#880) — the UI would show an error while a refresh reveals
+  // the agent exists. On failure we still return 201 with a non-blocking
+  // warning; OpenClaw reconciles on its next startup / config push.
+  let runtimeWarning: string | undefined;
   try {
-    client = getOpenClawClient();
-  } catch {
-    // OC client not initialised (rare in tests / pre-setup). Skip the wait.
+    await regenerateOpenClawConfig();
+
+    // Wait until OC's runtime has the new agent visible in `agents.list`.
+    // Pinchy's regenerate is fire-and-forget (`pushConfigInBackground`) and OC
+    // applies the hot reload asynchronously; without this gate the first
+    // dispatch after POST /api/agents can race the reload and fail with
+    // `invalid agent params: unknown agent id`. Best-effort with a 5 s cap so
+    // we don't block the interactive save flow if OC is restarting.
+    let client = null;
+    try {
+      client = getOpenClawClient();
+    } catch {
+      // OC client not initialised (rare in tests / pre-setup). Skip the wait.
+    }
+    await waitForAgentInRuntime(client, agent.id);
+  } catch (err) {
+    console.error("Failed to apply new agent config to the OpenClaw runtime:", err);
+    runtimeWarning =
+      "Agent created. Applying it to the runtime failed — this usually resolves on the next restart.";
   }
-  await waitForAgentInRuntime(client, agent.id);
 
   revalidatePath("/", "layout");
 
-  return NextResponse.json(agent, { status: 201 });
+  return NextResponse.json({ ...agent, warning: runtimeWarning }, { status: 201 });
 });

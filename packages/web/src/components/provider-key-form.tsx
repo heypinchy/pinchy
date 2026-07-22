@@ -286,9 +286,26 @@ export function ProviderKeyForm({
         throw new Error(message);
       }
 
+      // #880 — the route persists the key even when applying it to the OC
+      // runtime fails, and returns a non-blocking `warning` instead of a 500.
+      // Surface it as a warning toast so the save still reads as successful.
+      let warning: string | undefined;
+      try {
+        const data = await res.json();
+        if (typeof data?.warning === "string" && data.warning.length > 0) {
+          warning = data.warning;
+        }
+      } catch {
+        // No/!JSON body — treat as a plain success.
+      }
+
       setValidationStatus("success");
       form.reset();
-      toast.success(isUrlProvider ? "URL saved" : "API key saved");
+      if (warning) {
+        toast.warning(warning);
+      } else {
+        toast.success(isUrlProvider ? "URL saved" : "API key saved");
+      }
       triggerRestart();
       onSaved?.(provider, VISION_CAPABLE_PROVIDERS.has(provider));
       onSuccess(provider);

@@ -186,8 +186,22 @@ export async function POST(request: NextRequest) {
     }
   }
 
-  // Regenerate full OpenClaw config (includes agent list, provider env, model defaults)
-  await regenerateOpenClawConfig();
+  // Regenerate full OpenClaw config (includes agent list, provider env, model
+  // defaults). This is best-effort: the provider key/URL is already committed
+  // above, so a failed runtime apply must NOT surface as a 500 that implies
+  // nothing saved (#880). apsa v0.8.0 saw this fire on every call (EACCES on
+  // openclaw.json) — the setting persisted, the wizard showed an error, and a
+  // refresh revealed it had actually saved. On failure we still return
+  // success with a non-blocking warning; OpenClaw reconciles on its next
+  // startup / config push.
+  let runtimeWarning: string | undefined;
+  try {
+    await regenerateOpenClawConfig();
+  } catch (err) {
+    console.error("Failed to apply provider config to the OpenClaw runtime:", err);
+    runtimeWarning =
+      "Saved. Applying it to the agent runtime failed — this usually resolves on the next restart.";
+  }
   resetCache();
 
   // Wait until OC's runtime has Smithers visible in `agents.list`. Same race
@@ -209,15 +223,19 @@ export async function POST(request: NextRequest) {
   // while still failing fast if OC is genuinely broken. PR #445 CI showed
   // 23 s pass / 1.7 m fail on the same commit on the 5 s default —
   // textbook timing flake.
-  const smithersForWait = await db.query.agents.findFirst();
-  if (smithersForWait) {
-    let client = null;
-    try {
-      client = getOpenClawClient();
-    } catch {
-      // OC client not initialised (rare in tests / pre-setup). Skip the wait.
+  // Only worth waiting when the config actually regenerated — if it threw,
+  // OC's runtime won't be reloading and the poll would just burn its budget.
+  if (!runtimeWarning) {
+    const smithersForWait = await db.query.agents.findFirst();
+    if (smithersForWait) {
+      let client = null;
+      try {
+        client = getOpenClawClient();
+      } catch {
+        // OC client not initialised (rare in tests / pre-setup). Skip the wait.
+      }
+      await waitForAgentInRuntime(client, smithersForWait.id, 30000);
     }
-    await waitForAgentInRuntime(client, smithersForWait.id, 30000);
   }
 
   // Build a CLAUDE.md-compliant audit detail: snapshot the human-readable
@@ -227,6 +245,9 @@ export async function POST(request: NextRequest) {
   const detail: Record<string, unknown> = {
     provider: { id: provider, name: PROVIDERS[provider].name },
     authType: config.authType,
+    // The setting is committed regardless; record whether it also reached the
+    // OpenClaw runtime so the trail distinguishes "saved" from "saved+applied".
+    runtimeApplied: !runtimeWarning,
   };
   if (config.authType === "url" && body.url) {
     try {
@@ -248,5 +269,5 @@ export async function POST(request: NextRequest) {
     })
   );
 
-  return NextResponse.json({ success: true });
+  return NextResponse.json({ success: true, warning: runtimeWarning });
 }

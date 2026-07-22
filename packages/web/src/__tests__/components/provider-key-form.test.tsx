@@ -5,7 +5,9 @@ import "@testing-library/jest-dom";
 import { ProviderKeyForm } from "@/components/provider-key-form";
 import { toast } from "sonner";
 
-vi.mock("sonner", () => ({ toast: { success: vi.fn(), error: vi.fn() } }));
+vi.mock("sonner", () => ({
+  toast: { success: vi.fn(), error: vi.fn(), warning: vi.fn() },
+}));
 
 vi.mock("@/lib/github-issue", () => ({
   buildGitHubIssueUrl: vi.fn().mockReturnValue("https://github.com/test"),
@@ -89,6 +91,32 @@ describe("ProviderKeyForm", () => {
       expect(onSuccess).toHaveBeenCalled();
       expect(toast.success).toHaveBeenCalledWith("API key saved");
     });
+  });
+
+  it("shows a warning toast (not success) when the save reports a runtime warning (#880)", async () => {
+    vi.mocked(global.fetch).mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({
+        success: true,
+        warning: "Saved. Applying it to the agent runtime failed.",
+      }),
+    } as Response);
+
+    render(<ProviderKeyForm onSuccess={onSuccess} />);
+
+    fireEvent.click(screen.getByRole("button", { name: /anthropic/i }));
+    fireEvent.change(screen.getByLabelText(/api key/i), {
+      target: { value: "sk-ant-valid-key" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: /continue/i }));
+
+    await waitFor(() => {
+      // Still a success flow — onSuccess fires and no error toast.
+      expect(onSuccess).toHaveBeenCalled();
+      expect(toast.warning).toHaveBeenCalledWith("Saved. Applying it to the agent runtime failed.");
+    });
+    expect(toast.success).not.toHaveBeenCalled();
+    expect(toast.error).not.toHaveBeenCalled();
   });
 
   it("should show inline error message on failed validation", async () => {
