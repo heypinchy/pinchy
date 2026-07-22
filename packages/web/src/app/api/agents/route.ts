@@ -25,7 +25,8 @@ import { getOpenClawClient } from "@/server/openclaw-client";
 import { getSetting } from "@/lib/settings";
 import { type ProviderName } from "@/lib/providers";
 import { getDefaultModel } from "@/lib/provider-models";
-import { resolveModelForTemplate, TemplateCapabilityUnavailableError } from "@/lib/model-resolver";
+import { TemplateCapabilityUnavailableError } from "@/lib/model-resolver";
+import { resolveAvailableModelForTemplate } from "@/lib/model-resolver/resolve-available";
 import { appendAuditLog } from "@/lib/audit";
 import { deferAuditLog } from "@/lib/audit-deferred";
 import { getVisibleAgents } from "@/lib/visible-agents";
@@ -120,7 +121,7 @@ export const POST = withAdmin(async (request, _ctx, session) => {
 
   if (template.modelHint && defaultProvider) {
     try {
-      const resolved = await resolveModelForTemplate({
+      const resolved = await resolveAvailableModelForTemplate({
         hint: template.modelHint,
         provider: defaultProvider,
       });

@@ -8,7 +8,8 @@ import { validateOdooTemplate } from "@/lib/integrations/odoo-template-validatio
 import { getConnectionModels } from "@/lib/integrations/odoo-connection-models";
 import { getSetting } from "@/lib/settings";
 import { type ProviderName } from "@/lib/providers";
-import { resolveModelForTemplate, TemplateCapabilityUnavailableError } from "@/lib/model-resolver";
+import { TemplateCapabilityUnavailableError } from "@/lib/model-resolver";
+import { resolveAvailableModelForTemplate } from "@/lib/model-resolver/resolve-available";
 import { EMAIL_CONNECTION_TYPES } from "@/lib/integrations/oauth-providers";
 
 export const GET = withAuth(async () => {
@@ -58,7 +59,10 @@ export const GET = withAuth(async () => {
 
       if (template.modelHint && defaultProvider) {
         try {
-          await resolveModelForTemplate({ hint: template.modelHint, provider: defaultProvider });
+          await resolveAvailableModelForTemplate({
+            hint: template.modelHint,
+            provider: defaultProvider,
+          });
         } catch (err) {
           if (err instanceof TemplateCapabilityUnavailableError) {
             disabled = true;

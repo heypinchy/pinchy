@@ -128,13 +128,14 @@ const { mockResolveModelForTemplate } = vi.hoisted(() => ({
   }),
 }));
 
-vi.mock("@/lib/model-resolver", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("@/lib/model-resolver")>();
-  return {
-    ...actual,
-    resolveModelForTemplate: mockResolveModelForTemplate,
-  };
-});
+// The route resolves the agent's model through the live-availability wrapper
+// (#883). Mock that; the barrel stays real so TemplateCapabilityUnavailableError
+// is the genuine class. (mockResolveModelForTemplate keeps its name — it now
+// stands in for the wrapper, whose own live-catalog logic is unit-tested in
+// model-resolver/__tests__/resolve-available.)
+vi.mock("@/lib/model-resolver/resolve-available", () => ({
+  resolveAvailableModelForTemplate: mockResolveModelForTemplate,
+}));
 
 vi.mock("@/lib/personality-presets", () => ({
   getPersonalityPreset: vi.fn((id: string) => {

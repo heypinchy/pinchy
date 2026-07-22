@@ -105,13 +105,12 @@ const { mockResolveModelForTemplate: mockResolveTemplate } = vi.hoisted(() => ({
   }),
 }));
 
-vi.mock("@/lib/model-resolver", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("@/lib/model-resolver")>();
-  return {
-    ...actual,
-    resolveModelForTemplate: mockResolveTemplate,
-  };
-});
+// The route previews each template's model through the live-availability
+// wrapper (#883). Mock that; the barrel stays real for the genuine
+// TemplateCapabilityUnavailableError class.
+vi.mock("@/lib/model-resolver/resolve-available", () => ({
+  resolveAvailableModelForTemplate: mockResolveTemplate,
+}));
 
 import { inArray } from "drizzle-orm";
 import { GET } from "@/app/api/templates/route";
