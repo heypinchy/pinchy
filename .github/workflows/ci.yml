@@ -9,9 +9,9 @@ name: CI
 # themselves are never gated, so they always report.
 on:
   push:
-    branches: [main]
+    branches: [main, "release/**"]
   pull_request:
-    branches: [main]
+    branches: [main, "release/**"]
   # Merge queue. GitHub tests each queued PR on a `gh-readonly-queue/main/...`
   # merge ref (main + the PR, and speculatively + the entries ahead of it), so
   # the required checks run against the exact post-merge state. This is what lets

@@ -219,7 +219,7 @@ By participating in this project, you agree to our [Code of Conduct](CODE_OF_CON
 
 ## Releasing
 
-Pinchy uses [Semantic Versioning](https://semver.org/) and tags on `main`.
+Pinchy uses [Semantic Versioning](https://semver.org/). Releases are cut from a `release/X.Y` branch (GitLab-Flow style): `main` stays trunk, a `release/X.Y` branch hosts vX.Y.0 and its patches, and fixes land on `main` first and are cherry-picked to the release branch (see the `cut-pinchy-release` skill § "Release branches" for the full model).
 
 ### Testing a release candidate
 
@@ -281,8 +281,8 @@ The release script and CI enforce image builds, GHCR visibility, end-user instal
 
 ### Release steps
 
-1. Complete the checklist above on `main`.
-2. Run `pnpm release <new-version>` (e.g. `pnpm release 0.5.0`). The script verifies: clean working tree, on `main`, CI green, tag not taken, `upgrading.mdx` has the target-version section, `pnpm audit --audit-level=high --prod` passes, then bumps versions, commits, tags, and pushes.
+1. Complete the checklist above on the `release/X.Y` branch (upstream-first fixes cherry-picked from `main`).
+2. Run `pnpm release <new-version>` (e.g. `pnpm release 0.5.0`) from `release/X.Y`. The script verifies: clean working tree, on `main` or a `release/*` branch, CI green, tag not taken, `upgrading.mdx` has the target-version section, `pnpm audit --audit-level=high --prod` passes, then bumps versions, commits, tags, and pushes.
 3. GitHub Actions runs the release workflow: build + push images, verify GHCR visibility (anonymous pull test), run the end-user install smoke against published images, extract the upgrade notes from `upgrading.mdx`, create the GitHub Release (auto-generated notes with the upgrade-notes section prepended), deploy docs. Any failure means **the release is not installable for end-users — do not announce until fixed.**
 4. Review the auto-generated GitHub Release notes. The "Upgrade notes" section at the top comes from `upgrading.mdx` — if it looks wrong, edit the release on GitHub directly.
 5. **Deploy the release to the demo and production instances.** Published images do not deploy themselves — staging tracks `:next`, but demo/production pin `${PINCHY_VERSION}` and only move when an operator bumps it and pulls (until auto-deploy lands — [#184](https://github.com/heypinchy/pinchy/issues/184)). Per instance: bump `PINCHY_VERSION` in its `.env` → `docker compose pull && docker compose up -d && docker image prune -f` → verify `/api/version` + smoke. Mind cross-release migrations when skipping versions. See the `cut-pinchy-release` skill § "After the release" for details; treat production as a confirm-first outward action.
