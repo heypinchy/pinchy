@@ -303,6 +303,18 @@ EVAL_N=10 \
 OLLAMA_CLOUD_API_KEY=... pnpm -C packages/web eval:models
 ```
 
+Opt in to the paraphrase variants (#803) with `EVAL_PROMPT_VARIANTS` — the
+sweep then dispatches each listed variant `EVAL_VARIANT_RUNS` times per model
+(default 6) IN ADDITION to the primary's `EVAL_N`. Unset means primary-only,
+exactly the pre-variant sweep. Each (model, variant) cell resumes
+independently from the JSONL:
+
+```bash
+EVAL_PROMPT_VARIANTS="v1,v2" \
+EVAL_VARIANT_RUNS=6 \
+OLLAMA_CLOUD_API_KEY=... pnpm -C packages/web eval:models
+```
+
 ## Reading a scorecard
 
 `models` mode writes `packages/web/eval/results/hetzner-invoice-models.json`:

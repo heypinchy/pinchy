@@ -31,6 +31,7 @@ import { gradeRunForScenario } from "../src/lib/eval/graders";
 import { buildScorecard, type ScorecardEntry } from "../src/lib/eval/scorecard";
 import type {
   OdooMoveRecord,
+  PromptVariant,
   PromptVariantId,
   RunResult,
   RunTrajectory,
@@ -567,6 +568,18 @@ export async function runOnce(params: RunOnceParams): Promise<RunResult> {
   const { page, cookie, agentId, model } = params;
   const scenario = params.scenario ?? hetznerInvoiceScenario;
   const promptVariant = params.promptVariant ?? "primary";
+  // A prompt OVERRIDE combined with a non-default variant label is a labeling
+  // footgun: the override text gets dispatched while every persisted row
+  // claims the variant's wording, silently poisoning the variant comparison.
+  // Fail loudly before dispatching anything. `prompt` alone stays allowed —
+  // the selftest's trigger-prefixed prompts pass no promptVariant, so their
+  // rows keep the (grandfathered) "primary" stamp.
+  if (params.prompt !== undefined && promptVariant !== "primary") {
+    throw new Error(
+      `runOnce got BOTH a prompt override and promptVariant "${promptVariant}" — the override ` +
+        "would be dispatched while the rows record the variant's wording. Pass one or the other."
+    );
+  }
   const since = new Date().toISOString();
 
   // Explicit prompt override beats variant resolution (see RunOnceParams.prompt)
@@ -812,4 +825,66 @@ export function candidateModelsFromEnv(defaultModels: string[]): string[] {
 export function runsPerModelFromEnv(defaultN: number): number {
   const raw = Number(process.env.EVAL_N);
   return Number.isFinite(raw) && raw > 0 ? Math.floor(raw) : defaultN;
+}
+
+// ── Variant sweep configuration (#803, PR 3) ──────────────────────────────
+
+/**
+ * The paraphrase ids `EVAL_PROMPT_VARIANTS` may select. Deliberately excludes
+ * "primary": the primary always runs (at EVAL_N) — listing it would
+ * double-dispatch it at the variant run count.
+ */
+const SELECTABLE_VARIANT_IDS: readonly PromptVariant["id"][] = ["v1", "v2"];
+
+/**
+ * Parses `EVAL_PROMPT_VARIANTS` (comma-separated paraphrase ids, e.g.
+ * "v1,v2") into the variants the sweep dispatches IN ADDITION to the primary.
+ * Default (unset/empty) is NO variants — a sweep without the opt-in behaves
+ * exactly as before. Unknown ids, duplicates, and "primary" THROW here, before
+ * the sweep starts, rather than hours in when `resolvePromptForVariant` first
+ * sees the bad id (a typo'd sweep would otherwise burn the whole primary
+ * budget first).
+ */
+export function promptVariantsFromEnv(): PromptVariant["id"][] {
+  const raw = process.env.EVAL_PROMPT_VARIANTS;
+  if (!raw) return [];
+  const ids = raw
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean);
+  const selected: PromptVariant["id"][] = [];
+  for (const id of ids) {
+    if (!(SELECTABLE_VARIANT_IDS as readonly string[]).includes(id)) {
+      throw new Error(
+        `EVAL_PROMPT_VARIANTS contains "${id}" — allowed ids: ${SELECTABLE_VARIANT_IDS.join(", ")}` +
+          ` (the primary always runs and is configured via EVAL_N, so "primary" is not selectable)`
+      );
+    }
+    if (selected.includes(id as PromptVariant["id"])) {
+      throw new Error(`EVAL_PROMPT_VARIANTS lists "${id}" more than once`);
+    }
+    selected.push(id as PromptVariant["id"]);
+  }
+  return selected;
+}
+
+/** Per-variant run count from `EVAL_VARIANT_RUNS` (same shape as EVAL_N). */
+export function variantRunsPerModelFromEnv(defaultN: number): number {
+  const raw = Number(process.env.EVAL_VARIANT_RUNS);
+  return Number.isFinite(raw) && raw > 0 ? Math.floor(raw) : defaultN;
+}
+
+/**
+ * Counts the persisted runs for one (model, variant) cell — the variant-aware
+ * resume key. Counting per model alone would mistake variant rows for primary
+ * coverage on resume (e.g. 6 v1 runs "covering" the primary target and the
+ * needed primary runs getting skipped). Rows without the field are pre-#803
+ * primary dispatches (absence ≡ "primary", see RunResult.promptVariant).
+ */
+export function countRunsForVariant(
+  runs: RunResult[],
+  model: string,
+  variant: PromptVariantId
+): number {
+  return runs.filter((r) => r.model === model && (r.promptVariant ?? "primary") === variant).length;
 }

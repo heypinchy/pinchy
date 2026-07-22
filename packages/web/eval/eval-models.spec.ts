@@ -50,13 +50,16 @@ import {
   readExistingRuns,
   candidateModelsFromEnv,
   runsPerModelFromEnv,
+  promptVariantsFromEnv,
+  variantRunsPerModelFromEnv,
+  countRunsForVariant,
   injectOdooCreateFailure,
   injectOdooCreateSilentSuccess,
 } from "./run-eval";
 import { captureRunFingerprint } from "./fingerprint";
 import { makeTokenCollector } from "./token-usage";
 import { setupHetznerAgent } from "./eval-shared";
-import type { RunResult } from "../src/lib/eval/types";
+import type { PromptVariantId, RunResult } from "../src/lib/eval/types";
 
 // The curated candidate set for a public open-weight agent-reliability
 // benchmark (pinchy#669). Chosen for vendor breadth AND intra-family
@@ -204,6 +207,18 @@ test.describe("Eval-v1: model sweep (real Ollama Cloud)", () => {
     const candidates = candidateModelsFromEnv(DEFAULT_CANDIDATES);
     const n = runsPerModelFromEnv(5);
 
+    // Paraphrase-variant opt-in (#803, PR 3): EVAL_PROMPT_VARIANTS selects
+    // which variants to dispatch IN ADDITION to the primary; each runs at
+    // EVAL_VARIANT_RUNS per model (default 6, vs. the primary's EVAL_N).
+    // Default (unset) is primary-only — byte-identical to the pre-variant
+    // sweep. Each (variant, target) pair fills independently on resume.
+    const variantIds = promptVariantsFromEnv();
+    const variantN = variantRunsPerModelFromEnv(6);
+    const dispatchPlan: Array<{ variant: PromptVariantId; target: number }> = [
+      { variant: "primary", target: n },
+      ...variantIds.map((variant) => ({ variant, target: variantN })),
+    ];
+
     const { agentId } = await setupHetznerAgent(cookie);
 
     // A sweep-lived DB client for the #798 token join. Separate from the seeding
@@ -255,8 +270,18 @@ test.describe("Eval-v1: model sweep (real Ollama Cloud)", () => {
         const scenarioRuns: RunResult[] = [...existingRuns];
 
         for (const model of candidates) {
-          const alreadyDone = existingRuns.filter((r) => r.model === model).length;
-          if (alreadyDone >= n) continue; // fully covered by a previous run
+          // Resume counting keys on (model, variant) — absence ≡ primary — so
+          // the primary (n) and each variant (variantN) fill independently. A
+          // model-only count would mistake v1 rows for primary coverage and
+          // skip needed primary runs.
+          const pendingCells = dispatchPlan
+            .map(({ variant, target }) => ({
+              variant,
+              target,
+              alreadyDone: countRunsForVariant(existingRuns, model, variant),
+            }))
+            .filter(({ alreadyDone, target }) => alreadyDone < target);
+          if (pendingCells.length === 0) continue; // fully covered by a previous run
 
           // Per-model setup (pin + stack readiness) with retry; if the stack
           // stays unreachable, SKIP this model rather than aborting the sweep.
@@ -276,58 +301,61 @@ test.describe("Eval-v1: model sweep (real Ollama Cloud)", () => {
             continue;
           }
 
-          for (let i = alreadyDone; i < n; i++) {
-            const runStart = Date.now();
-            try {
-              await withRetry(
-                async () => {
-                  await resetGraphMock();
-                  await seedGraphMockMessages([
-                    scenario.graphSeedMessage,
-                    ...(scenario.extraGraphMessages ?? []),
-                  ]);
-                  await resetOdooMock();
-                  await seedOdooBaseline(scenario.odooBaseline);
-                  if (extraSetup) await extraSetup();
-                  await loginViaUI(page, getAdminEmail(), getAdminPassword());
-                },
-                `run-setup ${model} #${String(i)}`
-              );
-              const result = await runOnce({
-                page,
-                cookie,
-                agentId,
-                model,
-                scenario,
-                scenarioLabel: label,
-                collectTokens,
-              });
-              scenarioRuns.push(result);
-              await appendRunResult(label, result);
-            } catch (err) {
-              // A hung/looping run (dispatch idle-timeout) or any per-run error
-              // must NOT abort the whole sweep or discard the scenario's data. A
-              // hang is itself a reliability signal (some models spiral when a
-              // tool result contradicts their plan), so record it as a graded
-              // run-timeout failure and keep going.
-              const latencyMs = Date.now() - runStart;
-              console.warn(
-                `[eval] run ${String(i + 1)}/${String(n)} for ${model} / ${label} recorded as run-timeout: ${String(err)}`
-              );
-              const timeoutResult: RunResult = {
-                model,
-                passed: false,
-                tags: ["run-timeout"],
-                notes: [String(err)],
-                latencyMs,
-                scenario: label,
-                // This sweep dispatches primary-only (variant sweeps are a
-                // later concern); stamped so timeout rows state their wording
-                // like every row runOnce returns (#803, PR 3).
-                promptVariant: "primary",
-              };
-              scenarioRuns.push(timeoutResult);
-              await appendRunResult(label, timeoutResult);
+          for (const { variant, target, alreadyDone } of pendingCells) {
+            for (let i = alreadyDone; i < target; i++) {
+              const runStart = Date.now();
+              try {
+                await withRetry(
+                  async () => {
+                    await resetGraphMock();
+                    await seedGraphMockMessages([
+                      scenario.graphSeedMessage,
+                      ...(scenario.extraGraphMessages ?? []),
+                    ]);
+                    await resetOdooMock();
+                    await seedOdooBaseline(scenario.odooBaseline);
+                    if (extraSetup) await extraSetup();
+                    await loginViaUI(page, getAdminEmail(), getAdminPassword());
+                  },
+                  `run-setup ${model} [${variant}] #${String(i)}`
+                );
+                const result = await runOnce({
+                  page,
+                  cookie,
+                  agentId,
+                  model,
+                  scenario,
+                  scenarioLabel: label,
+                  promptVariant: variant,
+                  collectTokens,
+                });
+                scenarioRuns.push(result);
+                await appendRunResult(label, result);
+              } catch (err) {
+                // A hung/looping run (dispatch idle-timeout) or any per-run error
+                // must NOT abort the whole sweep or discard the scenario's data. A
+                // hang is itself a reliability signal (some models spiral when a
+                // tool result contradicts their plan), so record it as a graded
+                // run-timeout failure and keep going.
+                const latencyMs = Date.now() - runStart;
+                console.warn(
+                  `[eval] run ${String(i + 1)}/${String(target)} [${variant}] for ${model} / ${label} recorded as run-timeout: ${String(err)}`
+                );
+                const timeoutResult: RunResult = {
+                  model,
+                  passed: false,
+                  tags: ["run-timeout"],
+                  notes: [String(err)],
+                  latencyMs,
+                  scenario: label,
+                  // Stamp the DISPATCHED variant so a timed-out variant run
+                  // counts against ITS cell on resume, not the primary's
+                  // (#803, PR 3).
+                  promptVariant: variant,
+                };
+                scenarioRuns.push(timeoutResult);
+                await appendRunResult(label, timeoutResult);
+              }
             }
           }
         }
