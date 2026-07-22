@@ -6,6 +6,20 @@ import { ALLOWED_ATTACHMENT_MIMES, ALLOWED_TEXT_MIMES } from "@/lib/upload-valid
 import { EXTENSION_TO_MIME } from "@/lib/attachment-mime";
 
 /**
+ * The MIME types this serving route can actually stream — the union of the
+ * binary (magic-byte) and text allowlists. A file whose declared type is not in
+ * here will be rejected with 415 on download, so callers that DECIDE to deliver a
+ * file (agent → user delivery, #703) should gate on this first to avoid handing
+ * the user a chip that fails to open. It is a declared-MIME approximation of the
+ * route's real magic-byte check — good enough to filter obviously non-servable
+ * types (docx/xlsx/zip/octet-stream) without reading the bytes.
+ */
+export const SERVABLE_DELIVERED_MIMES: ReadonlySet<string> = new Set<string>([
+  ...ALLOWED_ATTACHMENT_MIMES,
+  ...ALLOWED_TEXT_MIMES,
+]);
+
+/**
  * Read a workspace file off disk and stream it back as an inline, MIME-validated
  * response. Shared by the two agent file-serving routes — user uploads
  * (`uploads/[filename]`) and agent-delivered artifacts (`artifacts/[filename]`) —

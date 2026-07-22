@@ -53,7 +53,8 @@ import {
 } from "@/server/silent-reply-buffer";
 import { db } from "@/db";
 import { agents, users, models, agentDeliveredFiles } from "@/db/schema";
-import { attachDeliveredFilesToHistory } from "@/server/delivery-marker";
+import { attachDeliveredFilesToHistory } from "@/server/delivered-file-history";
+import { SERVABLE_DELIVERED_MIMES } from "@/lib/serve-workspace-file";
 import { and, eq } from "drizzle-orm";
 import { isModelVisionCapable } from "@/lib/model-vision";
 import { resolveImageTurnModel, type VisionCandidate } from "@/lib/image-fallback";
@@ -1169,6 +1170,12 @@ export class ClientRouter {
     initialMessageId: string
   ): Promise<void> {
     let messageId = initialMessageId;
+    // The id the most recent turn actually streamed into. `messageId` rotates to
+    // a fresh id on each `done` (for the NEXT turn), so after the loop it no
+    // longer names any bubble the client rendered. The post-run delivery poll
+    // (#703) needs the streamed id to bind chips to the reply — capture it here,
+    // just before each rotation.
+    let lastStreamedMessageId = initialMessageId;
 
     // Per-turn rolling buffer for text chunks. We hold back any tail that
     // could still grow into a SILENT_REPLY_TOKEN, then either flush or
@@ -1522,6 +1529,9 @@ export class ClientRouter {
           // The completed turn is now in OpenClaw history; the next turn starts
           // with an empty resume buffer (updateMessageId clears the registry's).
           emittedContent = "";
+          // Remember the id this turn streamed into before rotating away from it,
+          // so the post-run delivery poll can bind chips to this reply (#703).
+          lastStreamedMessageId = messageId;
           messageId = crypto.randomUUID();
           // Tier 2b: keep the registry's view of the current messageId in
           // sync with the per-turn rotation so a reconnecting client gets
@@ -1552,7 +1562,7 @@ export class ClientRouter {
       // any file/image blocks into per-user download grants + chips. Wrapped so a
       // failed poll never breaks the run.
       try {
-        await this.deliverRunArtifacts(sessionKey, agent, clientWs, messageId);
+        await this.deliverRunArtifacts(sessionKey, agent, clientWs, lastStreamedMessageId);
       } catch (err) {
         console.error("[delivery] artifacts poll failed", err);
       }
@@ -1816,10 +1826,20 @@ export class ClientRouter {
    *
    * `artifacts.list` is cumulative across the whole session, so this runs after
    * every turn and must be idempotent: a grant already recorded for this user +
-   * agent + filename is skipped (no duplicate insert, audit, or chip).
+   * agent + filename is skipped (no duplicate insert, audit, or chip). Because
+   * the list is cumulative we fetch the caller's already-granted filenames ONCE
+   * per poll (not once per artifact) and diff in memory.
+   *
+   * Only files the serving route can actually stream are delivered — a type
+   * outside SERVABLE_DELIVERED_MIMES would 415 on download, so we never mint a
+   * grant/chip/success-audit for it (the chip would just fail to open).
    *
    * `userId` comes from `this.userId` (server-side), never from the artifact — a
    * plugin cannot deliver a file to anyone but the chat's own user.
+   *
+   * `messageId` is the id the run streamed its reply into (captured before the
+   * per-turn rotation), so the client binds the chip to that reply bubble rather
+   * than spawning a stray one.
    */
   private async deliverRunArtifacts(
     sessionKey: string,
@@ -1831,25 +1851,36 @@ export class ClientRouter {
     const artifacts =
       (res.payload as { artifacts?: Array<{ type?: string; title?: string; mimeType?: string }> })
         ?.artifacts ?? [];
-    for (const a of artifacts) {
-      if (a.type !== "file" && a.type !== "image") continue;
+
+    // Only file/image artifacts with a name are deliverable. Resolve the set
+    // BEFORE touching the DB so an ordinary turn (no artifacts — the common case)
+    // never runs a grant query.
+    const candidates = artifacts.filter(
+      (a): a is { type: string; title: string; mimeType?: string } =>
+        (a.type === "file" || a.type === "image") && !!a.title
+    );
+    if (candidates.length === 0) return;
+
+    // One batched lookup of this (agent, user)'s already-granted filenames — the
+    // idempotency set for a cumulative artifacts.list. `delivered` also absorbs
+    // titles minted within THIS poll so a duplicate title can't double-insert.
+    const priorGrants = await db
+      .select({ filename: agentDeliveredFiles.filename })
+      .from(agentDeliveredFiles)
+      .where(
+        and(eq(agentDeliveredFiles.agentId, agent.id), eq(agentDeliveredFiles.userId, this.userId))
+      );
+    const delivered = new Set(priorGrants.map((g) => g.filename));
+
+    for (const a of candidates) {
       const filename = a.title;
-      if (!filename) continue;
+      if (delivered.has(filename)) continue;
       const mimeType = a.mimeType ?? "application/octet-stream";
 
-      // Idempotent: skip if this user already has a grant for this file on this
-      // agent (artifacts.list is cumulative across the whole session).
-      const existing = await db
-        .select({ id: agentDeliveredFiles.id })
-        .from(agentDeliveredFiles)
-        .where(
-          and(
-            eq(agentDeliveredFiles.agentId, agent.id),
-            eq(agentDeliveredFiles.filename, filename),
-            eq(agentDeliveredFiles.userId, this.userId)
-          )
-        );
-      if (existing.length > 0) continue;
+      // Only deliver what the serving route can stream. A non-servable type
+      // (docx/xlsx/zip, or an unknown that defaulted to octet-stream) would 415
+      // on download — surfacing a chip that fails to open, with a success audit.
+      if (!SERVABLE_DELIVERED_MIMES.has(mimeType)) continue;
 
       try {
         await db.insert(agentDeliveredFiles).values({
@@ -1865,6 +1896,7 @@ export class ClientRouter {
         console.error("[delivery] failed to record delivery grant", err);
         continue;
       }
+      delivered.add(filename);
 
       const auditEntry = {
         actorType: "user" as const,

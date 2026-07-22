@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { attachDeliveredFilesToHistory } from "@/server/delivery-marker";
+import { attachDeliveredFilesToHistory } from "@/server/delivered-file-history";
 
 type Msg = {
   role: "user" | "assistant";

@@ -173,16 +173,47 @@ describe("ClientRouter file-delivery glue (artifacts.list poll)", () => {
     );
   });
 
-  it("defaults the mime type when the artifact omits it", async () => {
+  it("skips an artifact with an unknown mime type (defaults to octet-stream → not servable)", async () => {
+    // A missing mimeType defaults to application/octet-stream, which the serving
+    // route rejects (415). Delivering it would show a chip that fails to open, so
+    // the delivery path must not create a grant/chip/audit for it.
     const { router } = makeRouter([{ type: "file", title: "blob.dat" }]);
     await deliver(router, clientWs);
+    expect(mockInsertValues).not.toHaveBeenCalled();
+    expect(mockAppendAuditLog).not.toHaveBeenCalled();
+    expect(sentFrames().some((f) => f.type === "file")).toBe(false);
+  });
+
+  it("skips a file whose declared mime type is outside the serving allowlist (would 415)", async () => {
+    // #703 M2: the grant/chip/success-audit must agree with what the serving
+    // route can actually stream. A .docx is not in the MIME allowlist, so it must
+    // not be delivered — otherwise the user gets a chip that 415s on download
+    // while the audit claims success.
+    const { router } = makeRouter([
+      {
+        type: "file",
+        title: "contract.docx",
+        mimeType: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+      },
+    ]);
+    await deliver(router, clientWs);
+    expect(mockInsertValues).not.toHaveBeenCalled();
+    expect(mockAppendAuditLog).not.toHaveBeenCalled();
+    expect(sentFrames().some((f) => f.type === "file")).toBe(false);
+  });
+
+  it("delivers a servable text file (csv is in the allowlist)", async () => {
+    const { router } = makeRouter([{ type: "file", title: "export.csv", mimeType: "text/csv" }]);
+    await deliver(router, clientWs);
     expect(mockInsertValues).toHaveBeenCalledWith(
-      expect.objectContaining({ filename: "blob.dat", mimeType: "application/octet-stream" })
+      expect.objectContaining({ filename: "export.csv", mimeType: "text/csv" })
     );
   });
 
   it("skips an artifact already granted to this user (idempotent re-poll)", async () => {
-    mockGrantSelect.mockReturnValue([{ id: "existing-grant" }]);
+    // The batched grant lookup returns the filenames already granted to this
+    // (agent, user); a matching filename is skipped.
+    mockGrantSelect.mockReturnValue([{ filename: "invoice.pdf" }]);
     const { router } = makeRouter([
       { type: "file", title: "invoice.pdf", mimeType: "application/pdf" },
     ]);

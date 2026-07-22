@@ -86,8 +86,13 @@ vi.mock("@/db", () => ({
         findFirst: mockUserFindFirst,
       },
     },
-    // db.select().from(models).where(...) — used by listVisionCandidates on image turns.
+    // db.select().from(models).where(...) — used by listVisionCandidates on image
+    // turns AND by the #703 delivery glue's grant-existence lookup (both resolve
+    // to an array; [] means "no rows", which the delivery path reads as "no
+    // pre-existing grant").
     select: () => ({ from: () => ({ where: () => mockListVisionModels() }) }),
+    // db.insert(agentDeliveredFiles).values(...) — the #703 delivery grant write.
+    insert: () => ({ values: vi.fn().mockResolvedValue(undefined) }),
   },
 }));
 
@@ -114,6 +119,7 @@ vi.mock("@/lib/openclaw-config/write", () => ({
 
 vi.mock("drizzle-orm", () => ({
   eq: vi.fn((col, val) => ({ col, val })),
+  and: vi.fn((...conds) => ({ and: conds })),
 }));
 
 vi.mock("@/lib/audit", async (importOriginal) => {
@@ -207,6 +213,10 @@ function createMockOpenClawClient(connected = true) {
     // OC's runtime before re-dispatching.
     hasMethod: (method: string) => method === "agents.list",
     agents: { list: mockAgentsList },
+    // Native RPC surface (openclaw-node >= 0.13). The #703 delivery glue polls
+    // `artifacts.list` after a run; default to an empty artifact set so ordinary
+    // streaming tests deliver nothing. Delivery tests override this per-case.
+    request: vi.fn().mockResolvedValue({ payload: {} }),
     isConnected: connected,
   });
   return client;
@@ -689,6 +699,38 @@ describe("ClientRouter", () => {
     expect(textChunks).toHaveLength(2);
     expect(textChunks[0].content).toBe("Hello ");
     expect(textChunks[1].content).toBe("there!");
+  });
+
+  it("binds a live-delivered file chip to the assistant turn that streamed, not a rotated id (#703)", async () => {
+    // Regression guard: deliverRunArtifacts runs AFTER the stream loop, and the
+    // final `done` rotates messageId to a fresh id for the next turn. If we hand
+    // that fresh id to the delivery poll, the client can't match it to the reply
+    // bubble and spawns a stray empty bubble for the chip (and live placement
+    // then disagrees with the timestamp-based reload re-attach). The file frame's
+    // messageId MUST equal the id the reply streamed into (the `done` frame's id).
+    const clientWs = createMockClientWs();
+    mockOpenClawClient.request = vi.fn().mockResolvedValue({
+      payload: { artifacts: [{ type: "file", title: "invoice.pdf", mimeType: "application/pdf" }] },
+    });
+    async function* fakeStream() {
+      yield { type: "text" as const, text: "Here is your invoice." };
+      yield { type: "done" as const, text: "" };
+    }
+    mockChat.mockReturnValue(fakeStream());
+
+    await router.handleMessage(clientWs as any, {
+      type: "message",
+      content: "get the invoice",
+      agentId: "agent-1",
+    });
+
+    const frames = clientWs.sent.map((s) => JSON.parse(s));
+    const doneFrame = frames.find((f: any) => f.type === "done");
+    const fileFrame = frames.find((f: any) => f.type === "file");
+    expect(fileFrame).toBeTruthy();
+    expect(fileFrame.filename).toBe("invoice.pdf");
+    expect(doneFrame).toBeTruthy();
+    expect(fileFrame.messageId).toBe(doneFrame.messageId);
   });
 
   it("recovers from the cold-start 'Unknown model' dispatch race without surfacing an error", async () => {
