@@ -109,14 +109,17 @@ if (prevVersion) {
   upgradeNotesMsg = "no previous tag found (cannot resolve the 'from' version)";
 }
 
+const onReleasableBranch =
+  branch.out === "main" || /^release\//.test(branch.out);
+
 const ci = tryExec(
-  'gh run list --branch main --workflow CI --limit 1 --json conclusion --jq ".[0].conclusion"',
+  `gh run list --branch ${branch.out} --workflow CI --limit 1 --json conclusion --jq ".[0].conclusion"`,
 );
 const ciState = !ci.ok ? null : ci.out === "success" ? true : false;
 
 out("Auto-checked (also enforced by `pnpm release`):");
 out(
-  `  ${mark(branch.out === "main")} on main branch${branch.out === "main" ? "" : ` (on: ${branch.out || "?"})`}`,
+  `  ${mark(onReleasableBranch)} on main or release/* branch${onReleasableBranch ? ` (${branch.out})` : ` (on: ${branch.out || "?"})`}`,
 );
 out(`  ${mark(status.ok && status.out === "")} working tree clean`);
 out(
@@ -126,7 +129,7 @@ out(
   `  ${mark(upgradeNotesOk)} upgrade-notes section present${upgradeNotesOk ? "" : ` — ${upgradeNotesMsg}`}`,
 );
 out(
-  `  ${mark(ciState)} CI green on main${ciState === null ? " (could not query gh — check manually)" : ci.out ? ` (${ci.out})` : ""}`,
+  `  ${mark(ciState)} CI green on ${branch.out || "?"}${ciState === null ? " (could not query gh — check manually)" : ci.out ? ` (${ci.out})` : ""}`,
 );
 
 // ─── Manual gates — verify on staging, then check each off ────────────────────

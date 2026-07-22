@@ -10,7 +10,7 @@
  *   1. Validates the version (semver)
  *   2. Gates:
  *      - upgrading.mdx has a section for the target version
- *      - clean working tree, on main branch, CI green, tag not taken
+ *      - clean working tree, on main or a release/* branch, CI green, tag not taken
  *      - pnpm audit --audit-level=high --prod passes (or --skip-audit)
  *   3. Bumps version in root package.json, packages/web/package.json, and .env.example
  *   4. Commits, tags, and pushes
@@ -113,19 +113,21 @@ log("  ✔ Working tree clean");
 
 log("Checking branch...");
 const branch = exec("git branch --show-current");
-if (branch !== "main") {
-  fail(`Must release from main branch (currently on: ${branch})`);
+if (branch !== "main" && !/^release\//.test(branch)) {
+  fail(
+    `Must release from main or a release/* branch (currently on: ${branch})`,
+  );
 }
-log("  ✔ On main branch");
+log(`  ✔ On ${branch} branch`);
 
-log("Checking CI status on main...");
+log(`Checking CI status on ${branch}...`);
 const ciRun = exec(
-  'gh run list --branch main --workflow CI --limit 1 --json conclusion,headBranch --jq ".[0]"',
+  `gh run list --branch ${branch} --workflow CI --limit 1 --json conclusion,headBranch --jq ".[0]"`,
 );
 const ci = JSON.parse(ciRun);
 if (ci.conclusion !== "success") {
   fail(
-    `CI is not green on main (conclusion: ${ci.conclusion}). Fix CI before releasing.`,
+    `CI is not green on ${branch} (conclusion: ${ci.conclusion}). Fix CI before releasing.`,
   );
 }
 log("  ✔ CI green");
@@ -242,7 +244,7 @@ exec(`git tag ${tag}`);
 log(`  ✔ Tagged ${tag}`);
 
 log("Pushing...");
-exec("git push origin main");
+exec("git push origin HEAD");
 exec(`git push origin ${tag}`);
 log(`  ✔ Pushed\n`);
 
