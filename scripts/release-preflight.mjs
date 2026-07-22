@@ -24,7 +24,7 @@
  *   pnpm release <version> --verified=$(git rev-parse HEAD)
  */
 
-import { execSync } from "node:child_process";
+import { execSync, execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -34,6 +34,7 @@ import {
   assertUpgradingSectionExists,
   deriveStagingChecklist,
   checkReleaseVerification,
+  isReleasableBranch,
 } from "./lib/release-logic.mjs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -44,6 +45,23 @@ function tryExec(cmd) {
     return {
       ok: true,
       out: execSync(cmd, {
+        cwd: ROOT,
+        encoding: "utf8",
+        stdio: ["pipe", "pipe", "pipe"],
+      }).trim(),
+    };
+  } catch (e) {
+    return { ok: false, out: (e.stdout || e.message || "").toString().trim() };
+  }
+}
+
+// argv-array variant of tryExec — keeps a value (e.g. the branch name) out of
+// the shell, since git refnames can legally contain shell metacharacters.
+function tryExecFile(file, args) {
+  try {
+    return {
+      ok: true,
+      out: execFileSync(file, args, {
         cwd: ROOT,
         encoding: "utf8",
         stdio: ["pipe", "pipe", "pipe"],
@@ -109,17 +127,27 @@ if (prevVersion) {
   upgradeNotesMsg = "no previous tag found (cannot resolve the 'from' version)";
 }
 
-const onReleasableBranch =
-  branch.out === "main" || /^release\//.test(branch.out);
+const onReleasableBranch = isReleasableBranch(branch.out);
 
-const ci = tryExec(
-  `gh run list --branch ${branch.out} --workflow CI --limit 1 --json conclusion --jq ".[0].conclusion"`,
-);
+const ci = tryExecFile("gh", [
+  "run",
+  "list",
+  "--branch",
+  branch.out,
+  "--workflow",
+  "CI",
+  "--limit",
+  "1",
+  "--json",
+  "conclusion",
+  "--jq",
+  ".[0].conclusion",
+]);
 const ciState = !ci.ok ? null : ci.out === "success" ? true : false;
 
 out("Auto-checked (also enforced by `pnpm release`):");
 out(
-  `  ${mark(onReleasableBranch)} on main or release/* branch${onReleasableBranch ? ` (${branch.out})` : ` (on: ${branch.out || "?"})`}`,
+  `  ${mark(onReleasableBranch)} on main or release/X.Y branch${onReleasableBranch ? ` (${branch.out})` : ` (on: ${branch.out || "?"})`}`,
 );
 out(`  ${mark(status.ok && status.out === "")} working tree clean`);
 out(

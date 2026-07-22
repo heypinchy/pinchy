@@ -474,3 +474,45 @@ export function bumpReadmeComposePin(content, version) {
   }
   return content.replace(pattern, `$1v${version}$2`);
 }
+
+/** Matches a release branch: `release/X.Y` with numeric major/minor (e.g. `release/0.9`). */
+const RELEASE_BRANCH_RE = /^release\/\d+\.\d+$/;
+
+/**
+ * Whether a release may be cut from the given branch.
+ *
+ * Releases come off trunk (`main`) or a per-minor `release/X.Y` branch — nothing
+ * else (feature branches, worktree branches, a detached HEAD which reports as an
+ * empty string). Deliberately stricter than the `release/**` glob that triggers
+ * CI and pre-release: those may run on any release-ish branch, but the tag cut is
+ * the gated act and only the canonical `release/X.Y` shape may perform it.
+ *
+ * @param {string} branch - current branch name (`git branch --show-current`)
+ * @returns {boolean}
+ */
+export function isReleasableBranch(branch) {
+  return branch === "main" || RELEASE_BRANCH_RE.test(branch);
+}
+
+/**
+ * The moving image tag that pre-release.yml pushes for a branch.
+ *
+ * Staging tracks `:next` for `main`. A release branch must NOT push `:next` or it
+ * would flip staging between trunk and the release candidate; instead each
+ * `release/X.Y` gets its own `rc-X.Y` moving tag so two concurrent release
+ * branches never clobber each other's candidate image. The immutable
+ * `:sha-<short>` tag is pushed alongside in both cases (in the workflow).
+ *
+ * Mirrors — and is the single source of truth for — the `scripts/moving-tag.mjs`
+ * wrapper the workflow invokes. Kept tolerant of odd release-branch names (any
+ * remaining `/` collapses to `-`) so a candidate push never fails on the tag
+ * name; the strict `release/X.Y` gate lives in `isReleasableBranch` at cut time.
+ *
+ * @param {string} refName - the branch short name (`$GITHUB_REF_NAME`), e.g. "main" or "release/0.9"
+ * @returns {string} e.g. "next" or "rc-0.9"
+ */
+export function movingTagForRef(refName) {
+  if (refName === "main") return "next";
+  const rc = refName.replace(/^release\//, "").replaceAll("/", "-");
+  return `rc-${rc}`;
+}
