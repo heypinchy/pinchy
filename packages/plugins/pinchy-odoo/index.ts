@@ -2065,9 +2065,11 @@ function wrapReadResult(
 export const ODOO_READ_RESULT_BUDGET_CHARS = 30000;
 
 export const ODOO_READ_TRUNCATION_HINT =
-  "Result truncated to fit the model's context budget: `returned` of `total` " +
-  "matching records are included. Narrow the query with more specific `filters`, " +
-  "request fewer `fields`, or page through the rest with `offset`.";
+  "Result truncated to fit the model's context budget: the first `returned` of " +
+  "`total` matching records (in order) are included. To make the result smaller, " +
+  "request fewer `fields` (drop heavy ones like `description`) or narrow `filters`. " +
+  "To get the next page, re-read with `offset` set to this request's `offset` plus " +
+  "`returned`.";
 
 /**
  * Bound an `odoo_read` result to {@link ODOO_READ_RESULT_BUDGET_CHARS} so it can

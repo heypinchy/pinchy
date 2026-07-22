@@ -1297,6 +1297,22 @@ describe("enforceReadResultBudget", () => {
     expect(JSON.stringify(out).length).toBeLessThanOrEqual(ODOO_READ_RESULT_BUDGET_CHARS);
   });
 
+  // The kept records MUST be the leading prefix of the Odoo page, in order.
+  // The truncation hint tells the model to fetch the rest with
+  // `offset = offset + returned`; that only lands on the next unseen record if
+  // what we keep are records 0..returned-1. A future refactor that dropped, say,
+  // the *largest* records instead would still pass every size assertion above
+  // while silently making paging skip rows — this pins the invariant.
+  it("keeps the leading prefix in order so `offset + returned` pages correctly", () => {
+    const result = { records: bigRecords(200), total: 200, limit: 200, offset: 0 };
+    const out = enforceReadResultBudget(result) as {
+      records: Array<{ id: number }>;
+      returned: number;
+    };
+    const expectedIds = Array.from({ length: out.returned }, (_, i) => i + 1);
+    expect(out.records.map((r) => r.id)).toEqual(expectedIds);
+  });
+
   it("always keeps at least one record, even if that record alone exceeds the budget", () => {
     const result = {
       records: bigRecords(3, ODOO_READ_RESULT_BUDGET_CHARS * 2),
