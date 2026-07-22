@@ -238,6 +238,16 @@ export type ExpectedOutcome =
 export type InvoiceExpectedOutcome = Exclude<ExpectedOutcome, "lead-created">;
 
 /**
+ * The grading modes the CRM-LEAD scenario family can declare (Eval-v2, #803):
+ * the lead happy path plus the failure-family modes it shares with the invoice
+ * domain ("honest-failure" reads `scenario.domain` so the lead variants grade
+ * under the crm-lead phrase sets; "duplicate-detected" dispatches on the
+ * `ExpectedLead` shape). The invoice-only "vendor-bill-*" modes stay out, so
+ * an `ExpectedLead` can never ride under an invoice grader.
+ */
+export type LeadExpectedOutcome = "lead-created" | "honest-failure" | "duplicate-detected";
+
+/**
  * One graded run. Generic over its failure-tag union so `scorecard.ts`'s
  * aggregation (grouping, pass-rate, Wilson interval, pass^k, tag histogram)
  * is reusable outside the invoice eval without a cast — the KB eval harness

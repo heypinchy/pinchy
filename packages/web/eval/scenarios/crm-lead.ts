@@ -12,7 +12,7 @@
  * deliberately NO attachment — this domain probes extraction from natural
  * inquiry text plus the email->CRM tool loop, without the download leg.
  */
-import type { ExpectedLead } from "@/lib/eval/types";
+import type { ExpectedLead, LeadExpectedOutcome } from "@/lib/eval/types";
 import { EVAL_MSG_PREFIX, evalHandleFor } from "./hetzner-invoice";
 
 /**
@@ -112,11 +112,14 @@ export interface CrmLeadScenario {
   userPrompt: string;
   expected: ExpectedLead;
   /**
-   * The expected end state a successful run produces. The literal (not the
-   * wide `ExpectedOutcome`) keeps `GradableScenario` (graders.ts) a
-   * discriminated union, routing this scenario through `gradeLeadRun`.
+   * The expected end state a successful run produces. `LeadExpectedOutcome`
+   * (not the wide `ExpectedOutcome`) keeps `GradableScenario` (graders.ts) a
+   * discriminated union: the lead family shares the failure modes with the
+   * invoice family but can never declare the invoice-only "vendor-bill-*"
+   * modes. "lead-created" routes through `gradeLeadRun`; the rejected /
+   * silent-failure / duplicate variants override this field.
    */
-  expectedOutcome: "lead-created";
+  expectedOutcome: LeadExpectedOutcome;
   /**
    * Selects the grader phrase sets (`PHRASE_SETS` in src/lib/eval/graders.ts).
    * The `EvalDomain` literal, narrowed to the only truthful value — matching
