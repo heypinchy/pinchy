@@ -6,17 +6,39 @@ import { ALLOWED_ATTACHMENT_MIMES, ALLOWED_TEXT_MIMES } from "@/lib/upload-valid
 import { EXTENSION_TO_MIME } from "@/lib/attachment-mime";
 
 /**
+ * Binary MIME types that are safe to SERVE for download but are intentionally
+ * absent from ALLOWED_ATTACHMENT_MIMES because that set also gates uploads and
+ * these formats have no reader wired into pinchy_read yet (see the comment
+ * above ALLOWED_ATTACHMENT_MIMES in upload-validation.ts).
+ *
+ * xlsx (#788): the pinchy_generate_file tool renders these itself, so there's
+ * no unreadable-upload risk — the agent never has to read one back, only
+ * write and hand it to the user. xlsx is a zip container, but `file-type`
+ * content-sniffs the internal OOXML parts and returns this specific
+ * spreadsheet MIME rather than the generic `application/zip` (verified
+ * empirically against a real exceljs-rendered buffer, and against a real
+ * docx fixture, which sniffs to a distinct wordprocessingml MIME) — so this
+ * does not widen serving to arbitrary zip/docx/pptx content, only to
+ * spreadsheet-shaped OOXML.
+ */
+const DELIVERY_ONLY_BINARY_MIMES = new Set<string>([
+  "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+]);
+
+/**
  * The MIME types this serving route can actually stream — the union of the
- * binary (magic-byte) and text allowlists. A file whose declared type is not in
- * here will be rejected with 415 on download, so callers that DECIDE to deliver a
- * file (agent → user delivery, #703) should gate on this first to avoid handing
- * the user a chip that fails to open. It is a declared-MIME approximation of the
- * route's real magic-byte check — good enough to filter obviously non-servable
- * types (docx/xlsx/zip/octet-stream) without reading the bytes.
+ * binary (magic-byte) and text allowlists, plus DELIVERY_ONLY_BINARY_MIMES
+ * above. A file whose declared type is not in here will be rejected with 415
+ * on download, so callers that DECIDE to deliver a file (agent → user
+ * delivery, #703) should gate on this first to avoid handing the user a chip
+ * that fails to open. It is a declared-MIME approximation of the route's real
+ * magic-byte check — good enough to filter obviously non-servable types
+ * (docx/zip/octet-stream) without reading the bytes.
  */
 export const SERVABLE_DELIVERED_MIMES: ReadonlySet<string> = new Set<string>([
   ...ALLOWED_ATTACHMENT_MIMES,
   ...ALLOWED_TEXT_MIMES,
+  ...DELIVERY_ONLY_BINARY_MIMES,
 ]);
 
 /**
@@ -77,7 +99,10 @@ export async function streamWorkspaceFile(
     }
     servedMime = textMime;
   } else {
-    if (!ALLOWED_ATTACHMENT_MIMES.has(detected.mime)) {
+    if (
+      !ALLOWED_ATTACHMENT_MIMES.has(detected.mime) &&
+      !DELIVERY_ONLY_BINARY_MIMES.has(detected.mime)
+    ) {
       return new NextResponse("Unsupported media type", { status: 415 });
     }
     servedMime = detected.mime;

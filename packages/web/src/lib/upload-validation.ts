@@ -91,6 +91,17 @@ export const ALLOWED_ATTACHMENT_MIMES = new Set<string>([
   "text/vcard",
 ]);
 
+// xlsx is deliberately NOT in ALLOWED_ATTACHMENT_MIMES above, even though
+// agent-generated xlsx files are servable for download (#788) — see
+// serve-workspace-file.ts's DELIVERY_ONLY_BINARY_MIMES. ALLOWED_ATTACHMENT_MIMES
+// also gates *uploads* (validateUploadBuffer, below), and pinchy_read has no
+// xlsx extractor: an uploaded xlsx would fall through to
+// `buffer.toString("utf-8")` and hand the model unreadable binary garbage —
+// the same failure mode #321 documents for audio. Widening this shared set
+// would silently accept uploads the agent cannot read. If a future task wires
+// an xlsx reader (mirroring docx-extract.ts), add the MIME here too and it
+// will automatically also become servable via SERVABLE_DELIVERED_MIMES.
+
 // Text formats have no magic bytes, so fileTypeFromBuffer returns undefined.
 // These are validated by UTF-8 null-byte guard instead.
 //

@@ -1913,8 +1913,9 @@ export class ClientRouter {
       const mimeType = a.mimeType ?? "application/octet-stream";
 
       // Only deliver what the serving route can stream. A non-servable type
-      // (docx/xlsx/zip, or an unknown that defaulted to octet-stream) would 415
+      // (docx/zip, or an unknown that defaulted to octet-stream) would 415
       // on download — surfacing a chip that fails to open, with a success audit.
+      // xlsx IS servable (#788) — see SERVABLE_DELIVERED_MIMES.
       if (!SERVABLE_DELIVERED_MIMES.has(mimeType)) continue;
 
       try {

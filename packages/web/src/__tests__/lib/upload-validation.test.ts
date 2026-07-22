@@ -144,6 +144,17 @@ describe("validateUploadBuffer", () => {
     expect(ALLOWED_ATTACHMENT_MIMES.has("text/vcard")).toBe(true);
   });
 
+  // xlsx is servable for agent-generated file delivery (#788) but deliberately
+  // NOT upload-accepted — see the comment above ALLOWED_ATTACHMENT_MIMES for
+  // why (no xlsx reader wired for pinchy_read, mirroring the #321 audio gap).
+  it("does not accept xlsx uploads (no reader wired yet — servable-only, see serve-workspace-file.ts)", () => {
+    expect(
+      ALLOWED_ATTACHMENT_MIMES.has(
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+      )
+    ).toBe(false);
+  });
+
   // Audio is intentionally NOT in the whitelist yet — see #321 for the
   // follow-up that wires real transcription. Until then, accepting audio
   // would persist files the agent has no way to read.
