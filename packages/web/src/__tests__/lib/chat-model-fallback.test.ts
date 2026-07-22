@@ -4,7 +4,9 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 // three edges (is the provider configured? what is its LIVE default? is that
 // default blocked?), so we mock the edges and assert the chain.
 const getSetting = vi.fn<(key: string) => Promise<string | null>>();
-const getDefaultModel = vi.fn<(provider: string) => Promise<string | null>>();
+// getDefaultModel's real contract is Promise<string> — it never resolves null,
+// falling back to PROVIDERS[provider].defaultModel. Mock the true shape.
+const getDefaultModel = vi.fn<(provider: string) => Promise<string>>();
 const getAgentModelBlockReason = vi.fn<(model: string) => string | null>();
 
 vi.mock("@/lib/settings", () => ({ getSetting: (k: string) => getSetting(k) }));
@@ -42,7 +44,7 @@ describe("resolveChatModelFallbackChain", () => {
       key === "ollama_local_url" ? "http://host.docker.internal:11434" : null
     );
     getDefaultModel.mockImplementation(async (provider) =>
-      provider === "ollama-local" ? "ollama/qwen3" : null
+      provider === "ollama-local" ? "ollama/qwen3" : "unused/other-provider-default"
     );
     getAgentModelBlockReason.mockReturnValue(null);
 

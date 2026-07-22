@@ -66,13 +66,24 @@ export async function resolveChatModelFallbackChain(
   if (!key) return [];
 
   const liveDefault = await getDefaultModel(provider);
-  // No default, or the primary is still live and resolves to itself → nothing
-  // useful to add (emitting the primary as its own fallback is a dead entry).
+  // `getDefaultModel` contractually returns a non-empty string (it falls back to
+  // PROVIDERS[provider].defaultModel), so `!liveDefault` is a defensive guard
+  // against future contract drift. The load-bearing check is the equality: if the
+  // primary is still live it resolves to itself, and emitting the primary as its
+  // own fallback is a dead entry.
   if (!liveDefault || liveDefault === primaryModel) return [];
 
   // Chat fallbacks drive tool loops, so a blocklisted default (e.g. one that
   // mangles nested tool arguments) must never be handed out — unlike the vision
   // chain, whose slot only describes images and applies no blocklist.
+  //
+  // DELIBERATE non-recovery: if the provider's live default is itself
+  // blocklisted we return [] and the agent keeps its retired bare-string primary
+  // — so it stays dead rather than fall back to a tool-mangling model. A
+  // permanently-failing agent is the lesser evil versus one that silently
+  // corrupts tool calls, and this only bites when the balanced default itself is
+  // blocklisted (rare). The root fix for a stale catalog that still offers
+  // retired models as selectable defaults is tracked separately in #883.
   if (getAgentModelBlockReason(liveDefault)) return [];
 
   return [liveDefault];
