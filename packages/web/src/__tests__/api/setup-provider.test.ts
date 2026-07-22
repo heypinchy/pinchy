@@ -260,6 +260,12 @@ describe("POST /api/setup/provider", () => {
     expect(data.warning.length).toBeGreaterThan(0);
     // The persisted change must still have committed.
     expect(setSetting).toHaveBeenCalledWith("anthropic_api_key", "sk-ant-key", true);
+    // ...and the audit trail records that it did not reach the runtime.
+    const auditDetail = vi.mocked(appendAuditLog).mock.calls[0][0].detail as Record<
+      string,
+      unknown
+    >;
+    expect(auditDetail.runtimeApplied).toBe(false);
   });
 
   it("should not include a warning when config regeneration succeeds", async () => {
@@ -637,6 +643,8 @@ describe("POST /api/setup/provider", () => {
     expect(call.detail).toMatchObject({
       provider: { id: "anthropic", name: "Anthropic" },
       authType: "api-key",
+      // On the happy path the setting also reached the runtime (#880).
+      runtimeApplied: true,
     });
   });
 

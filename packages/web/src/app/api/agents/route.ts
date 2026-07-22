@@ -332,7 +332,25 @@ export const POST = withAdmin(async (request, _ctx, session) => {
   } catch (err) {
     console.error("Failed to apply new agent config to the OpenClaw runtime:", err);
     runtimeWarning =
-      "Agent created. Applying it to the runtime failed — this usually resolves on the next restart.";
+      "Agent created. Applying it to the runtime failed — check the server logs; it will retry on the next restart or config change.";
+    // The agent row is committed (the create is audited as success above), but
+    // it never reached the runtime. Record that as a distinct failure event so
+    // the trail shows "created but not applied" instead of silently implying a
+    // clean create (#880). deferAuditLog: the create already happened and must
+    // not be rolled back if this write fails.
+    deferAuditLog({
+      actorType: "user",
+      actorId: session.user.id!,
+      eventType: "config.changed",
+      resource: `agent:${agent.id}`,
+      detail: {
+        action: "runtime_apply_failed",
+        agentId: agent.id,
+        name: agent.name,
+        error: err instanceof Error ? err.message : String(err),
+      },
+      outcome: "failure",
+    });
   }
 
   revalidatePath("/", "layout");

@@ -192,6 +192,33 @@ describe("POST /api/agents audit logging", () => {
       },
     });
   });
+
+  it("audits a runtime-apply failure event when regeneration fails, keeping create success (#880)", async () => {
+    vi.mocked(regenerateOpenClawConfig).mockRejectedValueOnce(
+      new Error("EACCES: permission denied, open '/config/openclaw.json'")
+    );
+
+    const request = new NextRequest("http://localhost:7777/api/agents", {
+      method: "POST",
+      body: JSON.stringify({ name: "Test Agent", templateId: "custom" }),
+    });
+
+    const response = await POST(request, routeContext());
+    // The agent row committed, so the create still succeeds...
+    expect(response.status).toBe(201);
+    expect(appendAuditLog).toHaveBeenCalledWith(
+      expect.objectContaining({ eventType: "agent.created", outcome: "success" })
+    );
+    // ...but the trail also records that it never reached the runtime.
+    expect(appendAuditLog).toHaveBeenCalledWith(
+      expect.objectContaining({
+        eventType: "config.changed",
+        resource: "agent:new-agent-id",
+        outcome: "failure",
+        detail: expect.objectContaining({ action: "runtime_apply_failed" }),
+      })
+    );
+  });
 });
 
 // ── PATCH /api/agents/[agentId] — agent.updated audit ───────────────────
