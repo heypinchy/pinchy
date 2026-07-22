@@ -31,6 +31,7 @@ import {
   PROVIDER_REJECTED_GENERIC_PATTERN,
   isThoughtSignatureRejection,
   HTTP_5XX_PATTERN,
+  matchesRetirement,
 } from "@/server/error-patterns";
 import type { TransientReason } from "@/lib/schemas/chat-frames";
 
@@ -48,6 +49,7 @@ export type AgentErrorClass =
   | "failover_incomplete_stream"
   | "schema_rejection"
   | "model_unavailable"
+  | "model_retired"
   | "transient"
   | "provider_config"
   | "provider_rejected_generic"
@@ -88,13 +90,28 @@ export function classifySynthesisedError(reason: SynthesisedErrorReason): AgentE
  * Whether an agent error of this class should persist a durable "paused" banner
  * (chat_session_errors), versus showing inline only.
  *
- * The banner exists to re-surface an error a user might have MISSED — a one-off
- * or intermittent failure whose ephemeral live bubble died on a reload/reconnect
- * (see chat-error-banner.tsx / chat-states.mdx). For a PERSISTENT problem the
- * next attempt fails identically, so the error can't be missed and a sticky,
- * reappearing banner is pure annoyance — the exact staging complaint for a
- * retired model (bare "LLM request failed." → `unknown`) and for a bad provider
- * config. Those show inline only; everything retryable keeps the banner.
+ * The banner re-surfaces an error a user might have MISSED after a
+ * reload/reconnect (see chat-error-banner.tsx / chat-states.mdx). Two families
+ * qualify (#882):
+ *
+ *   1. Retryable/intermittent failures whose ephemeral live bubble died on a
+ *      reload — a fresh attempt may well succeed, so re-surface it on return.
+ *   2. Permanent AND ACTIONABLE failures — a retired model, a bad provider
+ *      config, an account-side provider rejection. These recur every attempt,
+ *      but the user (or an admin) CAN fix them, and the fix is exactly what the
+ *      banner names (which model died + how to change it; check the provider
+ *      config). This is the surface AGENTS.md's error-UI guidance prescribes for
+ *      a "permanent, actionable error". The banner is dismissible and is
+ *      auto-superseded on the next successful turn (see supersedeChatSessionErrors
+ *      in client-router), so it can't linger past the fix — the earlier
+ *      "sticky annoyance" concern only holds for a permanent NON-actionable
+ *      error, which is exactly the `unknown` bucket kept out below.
+ *
+ * Only `unknown` (a truly unrecognised string with no nameable cause or action)
+ * stays inline-only, to avoid banner noise for the long tail. A retired model
+ * whose token survives over the wire classifies as `model_retired` and persists;
+ * a fully collapsed "LLM request failed." with no token stays `unknown` and does
+ * not (there's nothing actionable to put in the banner).
  *
  * Exhaustive over `AgentErrorClass` (no `default`) so adding a future class is a
  * compile error until its durability is explicitly decided — same discipline as
@@ -109,15 +126,16 @@ export function shouldPersistDurableError(errorClass: AgentErrorClass): boolean 
     case "model_unavailable":
     case "schema_rejection":
     case "failover_incomplete_stream":
-      return true;
-    // Persistent — recurs every attempt until an admin changes something
-    // (model, provider config, provider account). The inline turn-failure is
-    // enough; a durable banner would just stick around and reappear on every
-    // navigation. `provider_rejected_generic` is an account-side rejection
-    // (billing/key/quota) that recurs identically until fixed, so it groups
-    // with provider_config here.
+    // Permanent but ACTIONABLE — the banner names the fix (retired model → change
+    // it; provider config / account rejection → check the provider settings) and
+    // clears on dismiss or the next success, so it helps rather than nags (#882).
+    case "model_retired":
     case "provider_config":
     case "provider_rejected_generic":
+      return true;
+    // Permanent and NON-actionable — a truly unrecognised failure with no
+    // nameable cause. Nothing useful to put in a durable banner, so it shows
+    // inline only.
     case "unknown":
       return false;
   }
@@ -144,6 +162,22 @@ export function classifyTransientReason(errorText: string): TransientReason {
 export function classifyAgentError(errorText: string): AgentErrorClass {
   if (FAILOVER_INCOMPLETE_STREAM_PATTERN.test(errorText)) {
     return "failover_incomplete_stream";
+  }
+  // Retirement (HTTP 410 / "retired" / "unknown model") is the most specific
+  // AVAILABILITY signal, so it's classified before the transient/5xx/config
+  // families below — mirroring the same precedence in `presentProviderError`
+  // and `getErrorHint`, which check `matchesRetirement` first. A retired model
+  // is permanent AND actionable (an admin must pick a different model), so it
+  // earns its own class rather than falling through to `unknown`: that both
+  // keeps the audit dashboards honest and lets `shouldPersistDurableError`
+  // surface the durable, model-naming banner the retired case needs (#882).
+  // Checked AFTER failover_incomplete_stream because that payload carries no
+  // retirement token, so the order is safe either way but reads as
+  // most-specific-first. See `matchesRetirement` for the token set and the
+  // note that a fully collapsed "LLM request failed." carries no token and so
+  // correctly stays `unknown`.
+  if (matchesRetirement(errorText)) {
+    return "model_retired";
   }
   if (isThoughtSignatureRejection(errorText)) {
     return "schema_rejection";

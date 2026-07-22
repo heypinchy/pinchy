@@ -89,6 +89,39 @@ describe("classifyAgentError", () => {
     expect(classifyAgentError("")).toBe("unknown");
   });
 
+  it.each([
+    ["HTTP 410: qwen3-vl:235b-instruct was retired"],
+    ["The model was retired by the provider"],
+    ["Unknown model: gpt-5-turbo"],
+    ["model_not_found"],
+    ["This model is no longer available"],
+    ["410"],
+  ])("classifies a retired/unavailable model as model_retired (#882): %s", (text) => {
+    // A provider that retires a model without notice makes every dispatch fail
+    // with an availability signal (HTTP 410 / "retired" / "unknown model").
+    // This is permanent AND actionable (an admin must pick a different model),
+    // so it earns its own class — distinct from `unknown` (unrecognised) and
+    // from `model_unavailable` (the transient HTTP-5xx "usually brief" case).
+    expect(classifyAgentError(text)).toBe("model_retired");
+  });
+
+  it("classifies model_retired before provider_config when both signals are present", () => {
+    // Retirement is the more specific, more actionable signal: if a model is
+    // unknown/retired, changing the model is the fix — telling the admin to
+    // check their API key would be the wrong guidance. Locks the precedence.
+    expect(classifyAgentError("Unknown model — also your api key looks invalid")).toBe(
+      "model_retired"
+    );
+  });
+
+  it("still classifies the token-less collapsed 'LLM request failed.' as unknown (#611)", () => {
+    // The real staging incident's stored providerError was the bare
+    // "LLM request failed." with NO retirement token surviving over the wire
+    // (an upstream OpenClaw limitation). Without a token, `matchesRetirement`
+    // can't fire, so it stays `unknown` — inline-only, no durable banner.
+    expect(classifyAgentError("LLM request failed.")).toBe("unknown");
+  });
+
   it("classifies transient before provider_config when text mentions 'exceeded'", () => {
     // Defensive: `rate limit exceeded` contains "exceeded" which would also
     // match the provider-config family. Mirrors the same precedence rule
@@ -158,12 +191,16 @@ describe("classifyAgentError", () => {
 });
 
 describe("shouldPersistDurableError", () => {
-  // The durable "paused" banner (chat_session_errors) exists to re-surface an
-  // error a user might have MISSED — a one-off/intermittent failure whose live
-  // bubble died on a reload/reconnect. For a PERSISTENT problem (a retired
-  // model, an over-large prompt, a bad provider config) the next attempt fails
-  // the same way, so the error can't be missed and a sticky, reappearing banner
-  // is pure annoyance. So we only persist the retryable/intermittent classes.
+  // The durable "paused" banner (chat_session_errors) re-surfaces an error a
+  // user might have MISSED after a reload/reconnect. Two families qualify (#882):
+  //   - retryable/intermittent failures whose live bubble died on reload, and
+  //   - permanent AND ACTIONABLE failures (a retired model, a bad provider
+  //     config, an account-side provider rejection) — the exact case AGENTS.md's
+  //     error-UI guidance prescribes a persistent, dismissible banner for. The
+  //     banner is dismissible and auto-superseded on the next successful turn, so
+  //     it can't linger past the fix.
+  // Only a truly unrecognised `unknown` (no known action) stays inline-only, to
+  // avoid banner noise for the long tail.
 
   const durableClasses: AgentErrorClass[] = [
     "transient",
@@ -171,29 +208,34 @@ describe("shouldPersistDurableError", () => {
     "model_unavailable",
     "schema_rejection",
     "failover_incomplete_stream",
-  ];
-  const nonDurableClasses: AgentErrorClass[] = [
+    "model_retired",
     "provider_config",
     "provider_rejected_generic",
-    "unknown",
   ];
+  const nonDurableClasses: AgentErrorClass[] = ["unknown"];
 
-  it.each(durableClasses)("persists a durable banner for retryable class: %s", (cls) => {
+  it.each(durableClasses)("persists a durable banner for class: %s", (cls) => {
     expect(shouldPersistDurableError(cls)).toBe(true);
   });
 
   it.each(nonDurableClasses)(
-    "does NOT persist a durable banner for persistent class: %s (shows inline only)",
+    "does NOT persist a durable banner for class: %s (shows inline only)",
     (cls) => {
       expect(shouldPersistDurableError(cls)).toBe(false);
     }
   );
 
-  it("keeps a retired model (unknown class) OUT of the durable banner", () => {
+  it("persists a retired model (model_retired) so the banner names the dead model (#882)", () => {
     // The reported staging bug: an agent pinned to a retired model 410s every
-    // turn; its providerError collapses to the bare "LLM request failed." which
-    // classifies as `unknown`. Retry can't help until an admin changes the
-    // model, so it must not create a sticky durable banner.
+    // turn and the chat showed nothing, chat_session_errors had 0 rows. A
+    // token-bearing retirement now classifies as model_retired and persists, so
+    // the durable banner re-surfaces which model died and how to change it.
+    expect(shouldPersistDurableError(classifyAgentError("HTTP 410: model was retired"))).toBe(true);
+  });
+
+  it("keeps the token-less collapsed 'LLM request failed.' OUT of the durable banner", () => {
+    // Without a retirement token surviving over the wire the string stays
+    // `unknown` — inline-only, no sticky banner for a cause we can't name.
     expect(shouldPersistDurableError(classifyAgentError("LLM request failed."))).toBe(false);
   });
 });

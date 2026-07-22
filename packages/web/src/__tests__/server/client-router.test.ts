@@ -377,6 +377,74 @@ describe("ClientRouter", () => {
     });
   });
 
+  describe("thrown run-level failure surfacing (#882)", () => {
+    it("classifies, audits, persists and richly surfaces a THROWN provider failure instead of a generic bubble", async () => {
+      // Some run-level failures reach Pinchy as a THROWN exception from the
+      // chat() generator (an RPC-level rejection OpenClaw raises instead of
+      // yielding an `error` chunk) rather than an in-stream error chunk. Before
+      // #882 this hit the send-handler catch and collapsed to the opaque
+      // "Something went wrong. Please try again." — no class, no audit, no
+      // durable row, no model name. It must now get the SAME rich treatment as
+      // an in-stream error chunk.
+      mockFindFirst.mockResolvedValue({ ...defaultAgent, model: "gpt-5-turbo" });
+      async function* stream() {
+        // A first chunk clears the dispatch-race first-chunk window, so the
+        // throw below propagates as a genuine mid-stream generator rejection.
+        yield {
+          type: "userMessagePersisted" as const,
+          clientMessageId: "cm-throw",
+          sessionKey: undefined,
+          persistedAt: 0,
+          runId: "r1",
+        };
+        throw new Error("FailoverError: HTTP 410 gpt-5-turbo was retired");
+      }
+      mockChat.mockReturnValue(stream());
+
+      const ws = createMockClientWs();
+      await router.handleMessage(ws as any, {
+        type: "message",
+        content: "do it",
+        agentId: "agent-1",
+        clientMessageId: "cm-throw",
+      });
+
+      const frames = ws.sent.map((s) => JSON.parse(s));
+      const errorFrame = frames.find((f) => f.type === "error");
+      expect(errorFrame).toBeDefined();
+      // Rich, cause-specific frame — NOT the generic sanitized bubble.
+      expect(errorFrame.message).not.toBe("Something went wrong. Please try again.");
+      expect(errorFrame.providerError).toBeTruthy();
+      // Names the dead model and the retirement cause (ask #3).
+      expect(errorFrame.providerError).toContain("gpt-5-turbo");
+      expect(errorFrame.providerError.toLowerCase()).toContain("retired");
+      expect(errorFrame.agentName).toBe("Smithers");
+      // Terminal failed liveness so the client never guesses failure from silence.
+      expect(frames.some((f) => f.type === "liveness" && f.state === "failed")).toBe(true);
+
+      // Durable record — the "chat_session_errors had 0 rows" fix. A retired
+      // model classifies as model_retired and persists so the banner re-surfaces
+      // after a reload.
+      expect(mockRecordChatSessionError).toHaveBeenCalledWith(
+        expect.objectContaining({
+          userId: "user-1",
+          agentId: "agent-1",
+          sessionKey: "agent:agent-1:direct:user-1",
+          agentName: "Smithers",
+          model: "gpt-5-turbo",
+          errorClass: "model_retired",
+        })
+      );
+      // Umbrella audit fired for the thrown failure too.
+      expect(mockAppendAuditLog).toHaveBeenCalledWith(
+        expect.objectContaining({
+          eventType: "chat.agent_error",
+          detail: expect.objectContaining({ errorClass: "model_retired" }),
+        })
+      );
+    });
+  });
+
   it("should return error when agent not found", async () => {
     const clientWs = createMockClientWs();
     mockFindFirst.mockResolvedValue(null);
