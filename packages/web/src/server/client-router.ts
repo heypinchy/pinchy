@@ -32,7 +32,7 @@ import {
 } from "@/server/model-unavailable-throttle";
 import { SessionCache } from "@/server/session-cache";
 import { resolveUserPlaceholder } from "@/server/user-placeholder";
-import { getErrorHint, presentProviderError } from "@/server/error-hints";
+import { getErrorHint, presentProviderError, cannedProviderMessage } from "@/server/error-hints";
 import { classifyModelError } from "@/server/model-error-classifier";
 import {
   classifyAgentError,
@@ -1925,17 +1925,23 @@ export class ClientRouter {
       providerError: args.providerError,
     });
 
-    // Security gate: a THROWN exception we don't recognise as a provider failure
-    // could be an internal Node/infra error (ECONNREFUSED, a host/IP, a stack
-    // trace) whose raw text must never reach the browser — the reason
-    // `sanitizeError` exists. Only errors matching a known provider-failure
-    // pattern (retired model, provider auth, transient, schema, …) are surfaced
-    // richly and persisted to the durable banner; an `unknown` throw falls back
-    // to the same sanitised generic bubble the send-handler catch produced. (An
-    // in-stream `error` chunk, by contrast, always carries provider-facing text
-    // by construction, so the chunk path presents it directly — this gate is
-    // specific to the thrown path where the source is not guaranteed safe.)
-    if (errorClass === "unknown") {
+    // Security gate for the THROWN path: `err.message` is NOT guaranteed to be
+    // provider-facing. A generator rejection can be an internal Node/infra error
+    // — a connection `ETIMEDOUT` carrying a host/IP, a Postgres auth failure, a
+    // stack trace — and `classifyAgentError` will happily label some of those
+    // `transient` ("timed out") or `provider_config` ("authenticat"), so a class
+    // check ALONE (e.g. `errorClass === "unknown"`) is not a safe filter. The
+    // real question is whether we can show a SAFE, cause-specific message without
+    // echoing the raw text: `cannedProviderMessage` returns one only for errors
+    // that `presentProviderError` fully REWRITES (retired model → names the
+    // model; context overflow; the #584 account-rejection envelope), and `null`
+    // for everything it would otherwise echo verbatim. On `null` we fall back to
+    // the generic, non-leaking bubble — and crucially DON'T persist, because the
+    // durable banner re-renders the stored raw text through `presentProviderError`
+    // on reload (a second leak vector). The in-stream `error` chunk path needs
+    // none of this: `chunk.text` is provider-facing by construction. (#882)
+    const safeMessage = cannedProviderMessage(args.providerError, args.agent.model ?? undefined);
+    if (safeMessage === null) {
       this.broadcastForRun(args.sessionKey, args.clientWs, {
         type: "error",
         message: GENERIC_RUN_FAILURE_MESSAGE,
@@ -1945,7 +1951,9 @@ export class ClientRouter {
     }
 
     // Durable banner (class-gated) + the audit-derived sideEffects flag reused by
-    // the live frame's retry gate. Best-effort; never throws.
+    // the live frame's retry gate. Best-effort; never throws. Safe to persist the
+    // raw text here: only a class with a canned rewrite reaches this point, so the
+    // reload path's `presentProviderError` rewrites it too and never echoes it.
     const sideEffects = await this.persistDurableChatError({
       agent: args.agent,
       sessionKey: args.sessionKey,
@@ -1959,18 +1967,23 @@ export class ClientRouter {
     this.broadcastForRun(args.sessionKey, args.clientWs, {
       type: "error",
       agentName: args.agent.name,
-      providerError: presentProviderError(args.providerError, args.agent.model ?? undefined),
+      // The canned rewrite, never the raw `err.message` — see the security gate
+      // above. `getErrorHint` only ever returns canned strings or null, so it's
+      // safe to derive off the raw text.
+      providerError: safeMessage,
       hint: getErrorHint(args.providerError, this.userRole),
       messageId: args.messageId,
       ...(modelUnavailable ? { modelUnavailable } : {}),
       ...(sideEffects ? { sideEffects: true } : {}),
     });
     // Authoritative liveness: a recognised thrown failure is terminal, so the
-    // client never falls back to a stuck-timer guess for it.
+    // client never falls back to a stuck-timer guess for it. Uses the SAFE
+    // presented text, never the raw `err.message`, so `reason` can't leak
+    // internal error text either.
     this.broadcastForRun(args.sessionKey, args.clientWs, {
       type: "liveness",
       state: "failed",
-      reason: args.providerError,
+      reason: safeMessage,
     });
   }
 
