@@ -3,7 +3,7 @@
   "name": "Pinchy Files",
   "description": "Scoped file access for Pinchy agents (KB + workspace).",
   "contracts": {
-    "tools": ["pinchy_ls", "pinchy_read", "pinchy_write"]
+    "tools": ["pinchy_ls", "pinchy_read", "pinchy_write", "pinchy_generate_file"]
   },
   "configSchema": {
     "type": "object",
