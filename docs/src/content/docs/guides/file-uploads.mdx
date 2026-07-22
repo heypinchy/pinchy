@@ -64,9 +64,23 @@ Both previews survive page reloads — the file lives in the agent workspace, no
 
 Files flow the other way too. When an agent produces or fetches a file — an email attachment it downloaded, a document it wrote — it hands the file straight back to you in chat as a downloadable chip, right next to its reply. PDFs and images preview inline exactly like your own uploads; anything else shows as a chip you can open. No "it's in your workspace, go find it" — the file is one click away in the conversation.
 
-Today this happens whenever an agent downloads an email attachment with `email_get_attachment`: the attachment lands in the workspace _and_ appears as a chip you can open. Generating files from data an agent has assembled — a CSV, a spreadsheet, a PDF report — is coming next ([issue #788](https://github.com/heypinchy/pinchy/issues/788)).
+Today this happens two ways: whenever an agent downloads an email attachment with `email_get_attachment`, and whenever an agent generates a file from data it already has. Both land in the workspace _and_ appear as a chip you can open.
 
 Delivered files are scoped to the chat they were delivered in: only you can download a file an agent handed to _your_ conversation, even on a shared agent where several people talk to the same agent. The chip reappears after a reload, just like your own attachments, because the authorization to download it is recorded durably — not held in browser memory.
+
+## Generating files
+
+An agent with Write Files permission can turn tabular data it already holds — records it looked up, numbers it calculated, a list it assembled — into a downloadable file, without you needing any special syntax. Just ask: "export these as a CSV," "make me a PDF report of this," "put the ledger in a spreadsheet."
+
+Three formats are supported:
+
+- **CSV** — UTF-8 with a BOM, so it opens correctly in Excel.
+- **XLSX** — a single-sheet Excel workbook. The agent can give the sheet a title.
+- **PDF** — a simple report: a heading followed by the table.
+
+This is a generic capability, not a per-integration exporter — it works the same way no matter where the data came from (a knowledge base search, an Odoo query, numbers the agent worked out itself). It doesn't do multi-sheet workbooks, styled PDF layouts, or bundling several files into a ZIP.
+
+Generated files are capped at 50,000 rows and 10 MB, and land in the agent's `workbench/` directory — the same zone `pinchy_write` uses for anything an agent produces. That means generating a file is gated on the same **Write Files** permission described in [Agent Permissions](/concepts/agent-permissions/): an agent that can't write files can't generate them either.
 
 ## Security
 

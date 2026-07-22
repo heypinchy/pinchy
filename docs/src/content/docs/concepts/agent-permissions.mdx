@@ -52,9 +52,9 @@ If an agent has **Fetch web pages** enabled alongside access to sensitive data (
 
 Powerful tools let the agent **change state outside the conversation** — write files to disk, mutate records in connected systems, send email. Only enable them if you understand the consequences.
 
-| Tool            | Tool ID        | What it does                                                                                                                                                                          |
-| --------------- | -------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **Write files** | `pinchy_write` | Save files into the agent's own `workbench/` directory (and the user-facing `uploads/`, kept writable for compatibility). Agents must explicitly request overwrite on existing files. |
+| Tool            | Tool ID                                | What it does                                                                                                                                                                                                                                                                                                                                                                        |
+| --------------- | -------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Write files** | `pinchy_write`, `pinchy_generate_file` | Save files into the agent's own `workbench/` directory (and the user-facing `uploads/`, kept writable for compatibility). `pinchy_generate_file` renders tabular data the agent already holds into a CSV, XLSX, or PDF and delivers it to you in chat — see [Generating files](/guides/file-uploads/#generating-files). Agents must explicitly request overwrite on existing files. |
 
 Powerful integration tools (Odoo write/delete, email draft/send) are covered in their own sections below.
 
