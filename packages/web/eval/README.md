@@ -483,7 +483,9 @@ instruction-following, not diligence). Only the register shifts, under fixed
 ids so per-variant results stay comparable across scenarios and sweeps:
 `v1` is terse-imperative, `v2` is conversational-formal.
 
-**Budget.** The primary keeps its n=12; variants run at n=4–6 per model
+**Budget.** The primary keeps its n=12 (the published dataset's per-cell
+convention — a real sweep sets `EVAL_N=12` explicitly; the code default is
+5); variants run at n=4–6 per model
 (default 6, `EVAL_VARIANT_RUNS`) and are reported separately — variants
 measure wording SENSITIVITY, never headline scores, so the cheaper n buys
 breadth without diluting the published series. The sweep-side opt-in
