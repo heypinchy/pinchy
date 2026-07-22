@@ -2048,6 +2048,80 @@ function wrapReadResult(
   return result;
 }
 
+/**
+ * Serialized-size ceiling for an `odoo_read` result, in characters.
+ *
+ * OpenClaw's runtime caps every tool result at `maxChars=64000` and the whole
+ * prompt history at `aggregateBudgetChars=256000`, replacing the overflow with a
+ * literal `[... N more characters truncated …]` marker spliced MID-JSON. A real
+ * `crm.lead` read on production reached ~509,000 chars — ~8× the per-result cap
+ * and ~2× the entire aggregate budget — so the model received corrupt JSON plus
+ * the marker and looped on "the results are truncated" (pinchy production, Piper
+ * agent, 2026-07-22). We bound the result well under 64000 so (a) our JSON is
+ * never cut mid-structure, and (b) several reads still fit inside the 256000
+ * aggregate before OpenClaw has to intervene. This mirrors the pre-emptive
+ * ceiling `openclaw-config/bootstrap-caps.ts` applies to instruction files.
+ */
+export const ODOO_READ_RESULT_BUDGET_CHARS = 30000;
+
+export const ODOO_READ_TRUNCATION_HINT =
+  "Result truncated to fit the model's context budget: `returned` of `total` " +
+  "matching records are included. Narrow the query with more specific `filters`, " +
+  "request fewer `fields`, or page through the rest with `offset`.";
+
+/**
+ * Bound an `odoo_read` result to {@link ODOO_READ_RESULT_BUDGET_CHARS} so it can
+ * never trip OpenClaw's blind mid-JSON truncation. A result that already fits is
+ * returned verbatim (same reference, no added keys — existing callers/tests see
+ * no change). An oversized result keeps the largest prefix of records that fits
+ * and returns a self-describing object: the original `total` (full Odoo match
+ * count) is preserved, `returned` gives the included count, `truncated: true`
+ * flags the cut, and `hint` tells the model how to get the rest. At least one
+ * record is always kept, even if that single record alone exceeds the budget, so
+ * the model can still make progress (and see the hint to drop heavy `fields`).
+ */
+export function enforceReadResultBudget(
+  result: unknown,
+  budget: number = ODOO_READ_RESULT_BUDGET_CHARS
+): unknown {
+  const records = getSearchReadRecords(result);
+  if (records.length === 0) return result;
+  if (JSON.stringify(result).length <= budget) return result;
+
+  const isObjectShape = isRecord(result) && Array.isArray(result.records);
+  const base: Record<string, unknown> = isObjectShape
+    ? { ...(result as Record<string, unknown>) }
+    : {};
+  delete base.records;
+  const total =
+    isObjectShape && typeof (result as Record<string, unknown>).total === "number"
+      ? ((result as Record<string, unknown>).total as number)
+      : records.length;
+
+  const build = (kept: OdooRecord[]) => ({
+    ...base,
+    records: kept,
+    total,
+    returned: kept.length,
+    truncated: true,
+    hint: ODOO_READ_TRUNCATION_HINT,
+  });
+
+  // Grow the kept set while the *actual* serialized length stays within budget
+  // (measuring the real output, not an estimate, so the result is provably under
+  // the ceiling). At least one record is always kept — even a lone record that
+  // busts the budget beats returning nothing, and the hint tells the model to
+  // drop heavy `fields`. We only reach this branch when the full result already
+  // exceeds the budget, so the loop always breaks before exhausting `records`.
+  const kept: OdooRecord[] = [];
+  for (const record of records) {
+    if (kept.length > 0 && JSON.stringify(build([...kept, record])).length > budget) break;
+    kept.push(record);
+  }
+
+  return build(kept);
+}
+
 async function reportAuthFailure(
   apiBaseUrl: string,
   connectionId: string,
@@ -2472,7 +2546,7 @@ const plugin = {
         return {
           name: "odoo_read",
           label: "Odoo Read",
-          description: `Query records from Odoo. Returns matching records with field selection and pagination. Always returns { records, total, limit, offset } so you know if there's more data. ${PRODUCT_REF_DISAMBIGUATION_HINT}`,
+          description: `Query records from Odoo. Returns matching records with field selection and pagination. Always returns { records, total, limit, offset } so you know if there's more data. If a result is too large for the context, it is trimmed to fit and flagged with { truncated: true, returned } — read \`returned\` of \`total\`, then narrow \`fields\`, tighten \`filters\`, or page with \`offset\` to get the rest rather than re-issuing the same broad read. ${PRODUCT_REF_DISAMBIGUATION_HINT}`,
           parameters: {
             type: "object",
             properties: {
@@ -2542,7 +2616,7 @@ const plugin = {
               });
 
               return {
-                content: [{ type: "text", text: JSON.stringify(result) }],
+                content: [{ type: "text", text: JSON.stringify(enforceReadResultBudget(result)) }],
               };
             } catch (error) {
               return errorResult(error, {
