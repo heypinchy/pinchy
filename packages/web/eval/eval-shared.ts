@@ -35,7 +35,7 @@ export const HETZNER_ALLOWED_TOOLS = [
   // already granted in the permission block below; odoo_count is a read op.
   "odoo_read",
   "odoo_count",
-];
+] as const;
 
 // No email_get_attachment: the crm-lead domain has no attachment leg — the
 // inquiry facts live in the email's free prose (see scenarios/crm-lead.ts).
@@ -46,7 +46,7 @@ export const CRM_ALLOWED_TOOLS = [
   "odoo_create",
   "odoo_read",
   "odoo_count",
-];
+] as const;
 
 interface EvalAgentSetup {
   agentId: string;
@@ -61,7 +61,7 @@ interface EvalAgentConfig {
   graphSeedMessage: Parameters<typeof seedGraphMockMessages>[0][number];
   odooBaseline: Parameters<typeof seedOdooBaseline>[0];
   odooPermissions: Array<{ model: string; operation: string }>;
-  allowedTools: string[];
+  allowedTools: readonly string[];
 }
 
 /**
@@ -155,11 +155,7 @@ async function setupEvalAgent(cookie: string, config: EvalAgentConfig): Promise<
  * the steps). Returns the agentId; the agent's model is NOT pinned here —
  * callers pin it per candidate model.
  */
-export async function setupHetznerAgent(cookie: string): Promise<{
-  agentId: string;
-  emailConnectionId: string;
-  odooConnectionId: string;
-}> {
+export async function setupHetznerAgent(cookie: string): Promise<EvalAgentSetup> {
   return setupEvalAgent(cookie, {
     emailConnectionName: "Eval-v1 Hetzner Microsoft",
     odooConnectionName: "Eval-v1 Hetzner Odoo",
@@ -185,11 +181,7 @@ export async function setupHetznerAgent(cookie: string): Promise<{
  * the lead loop. Same public shape; sibling variants re-seed per run exactly
  * like the Hetzner family (see `setupEvalAgent`).
  */
-export async function setupCrmAgent(cookie: string): Promise<{
-  agentId: string;
-  emailConnectionId: string;
-  odooConnectionId: string;
-}> {
+export async function setupCrmAgent(cookie: string): Promise<EvalAgentSetup> {
   return setupEvalAgent(cookie, {
     emailConnectionName: "Eval-v2 CRM Microsoft",
     odooConnectionName: "Eval-v2 CRM Odoo",
