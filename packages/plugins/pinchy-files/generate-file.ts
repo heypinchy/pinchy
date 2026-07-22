@@ -19,6 +19,9 @@ export interface GenerateFileResult {
 }
 
 const SUPPORTED_FORMATS: GenerateFileFormat[] = ["csv", "xlsx", "pdf"];
+
+// Memory-blowup guard: an agent could otherwise hand us an unbounded row
+// count and OOM the plugin process while buffering the rendered file.
 const MAX_ROWS = 50_000;
 
 function validateInput(input: GenerateFileInput): void {
@@ -45,14 +48,27 @@ function validateInput(input: GenerateFileInput): void {
 
 const CSV_BOM = "﻿";
 
-function serializeCell(value: CellValue): string {
+// CSV/spreadsheet formula injection (CWE-1236): Excel, Google Sheets, and
+// LibreOffice treat a cell beginning with any of these characters as a
+// formula to evaluate. These generated files land on a real user's machine,
+// so a string cell that starts with one is prefixed with a literal
+// apostrophe, which every mainstream spreadsheet app renders as "force text"
+// without displaying the apostrophe itself.
+const CSV_FORMULA_TRIGGER = /^[=+\-@\t\r]/;
+
+function serializeCellToString(value: CellValue): string {
   if (value === null) return "";
   if (typeof value === "number" || typeof value === "boolean") return String(value);
   return value;
 }
 
 function csvField(value: CellValue): string {
-  const raw = serializeCell(value);
+  let raw = serializeCellToString(value);
+  // Only string cells are at risk — numbers/booleans are serialized above
+  // and must stay literal (e.g. a numeric -5 must render as -5, not '-5).
+  if (typeof value === "string" && CSV_FORMULA_TRIGGER.test(raw)) {
+    raw = `'${raw}`;
+  }
   if (/["\r\n,]/.test(raw)) {
     return `"${raw.replace(/"/g, '""')}"`;
   }
@@ -64,8 +80,26 @@ function renderCsv(columns: string[], rows: CellValue[][]): Buffer {
   return Buffer.from(CSV_BOM + lines.join("\r\n") + "\r\n", "utf-8");
 }
 
-function serializeXlsxCell(value: CellValue): string | number | boolean {
+function serializeCellForXlsx(value: CellValue): string | number | boolean {
   return value === null ? "" : value;
+}
+
+// Characters exceljs (and Excel itself) forbid in a worksheet name, plus the
+// 31-character length cap. A user-supplied `title` is untrusted free text,
+// so we sanitize it locally rather than let addWorksheet() throw and crash
+// the whole render.
+const XLSX_SHEET_NAME_FORBIDDEN = /[*?:\\/[\]]/g;
+const XLSX_SHEET_NAME_MAX_LENGTH = 31;
+
+function sanitizeSheetName(title: string | undefined): string {
+  if (!title) return "Sheet1";
+  const sanitized = title
+    .replace(XLSX_SHEET_NAME_FORBIDDEN, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, XLSX_SHEET_NAME_MAX_LENGTH)
+    .trim();
+  return sanitized || "Sheet1";
 }
 
 async function renderXlsx(
@@ -74,11 +108,11 @@ async function renderXlsx(
   title: string | undefined
 ): Promise<Buffer> {
   const workbook = new ExcelJS.Workbook();
-  const worksheet = workbook.addWorksheet(title || "Sheet1");
+  const worksheet = workbook.addWorksheet(sanitizeSheetName(title));
   worksheet.addRow(columns);
   worksheet.getRow(1).font = { bold: true };
   for (const row of rows) {
-    worksheet.addRow(row.map(serializeXlsxCell));
+    worksheet.addRow(row.map(serializeCellForXlsx));
   }
   const arrayBuffer = await workbook.xlsx.writeBuffer();
   return Buffer.from(arrayBuffer);
@@ -105,12 +139,27 @@ function renderPdf(
     const pageWidth = doc.page.width - doc.page.margins.left - doc.page.margins.right;
     const colWidth = pageWidth / columns.length;
 
+    // pdfkit's `text()` word-wraps within `width` regardless of `lineBreak`
+    // (that option only skips auto-computing a *default* width when none is
+    // passed — pdfkit@0.19.1's LineWrapper never reads `options.lineBreak`
+    // once a width is given, verified against its source and empirically).
+    // Worse, without an explicit `height`, a wrapped cell's `maxY` defaults
+    // to the *page* bottom, so `ellipsis` never engages and pdfkit will
+    // happily auto-paginate mid-cell for a long enough string. Bounding both
+    // the header and every data cell to an explicit single-line `height`
+    // (with `ellipsis: true`) is what actually keeps them single-line: it
+    // makes truncation the hard stop instead of the page boundary.
+    doc.font("Helvetica-Bold").fontSize(10);
+    const HEADER_LINE_HEIGHT = doc.currentLineHeight(true);
+    doc.font("Helvetica").fontSize(9);
+    const ROW_LINE_HEIGHT = doc.currentLineHeight(true);
+
     const drawHeader = () => {
       const y = doc.y;
       doc.font("Helvetica-Bold").fontSize(10);
       let x = doc.page.margins.left;
       for (const col of columns) {
-        doc.text(col, x, y, { width: colWidth, ellipsis: true });
+        doc.text(col, x, y, { width: colWidth, height: HEADER_LINE_HEIGHT, ellipsis: true });
         x += colWidth;
       }
       doc
@@ -131,13 +180,15 @@ function renderPdf(
       }
       const y = doc.y;
       let x = doc.page.margins.left;
-      let maxRowHeight = 0;
       for (const cell of row) {
-        doc.text(serializeCell(cell), x, y, { width: colWidth, ellipsis: true });
-        maxRowHeight = Math.max(maxRowHeight, doc.y - y);
+        doc.text(serializeCellToString(cell), x, y, {
+          width: colWidth,
+          height: ROW_LINE_HEIGHT,
+          ellipsis: true,
+        });
         x += colWidth;
       }
-      doc.y = y + maxRowHeight;
+      doc.y = y + ROW_LINE_HEIGHT + 2;
     }
 
     doc.end();
