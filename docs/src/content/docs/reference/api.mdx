@@ -28,11 +28,14 @@ Service health check. **Public — no authentication required.** Suitable for lo
     "audit_hmac_secret": "envvar",
     "db_password": "default"
   },
-  "openclaw": { "connected": true }
+  "openclaw": { "connected": true },
+  "configRegeneration": { "ok": true }
 }
 ```
 
 `openclaw.connected` reflects whether the web process currently has a live WebSocket connection to the OpenClaw gateway — the dependency chat relies on. Top-level `status` deliberately stays `"ok"` even when `openclaw.connected` is `false`: brief disconnects during OpenClaw restarts (for example while applying a config change) are expected and self-heal, and flipping `status` would make the Docker healthcheck restart-loop the container during normal operation. Monitor `openclaw.connected` directly (or poll `/api/health/openclaw`) if you need alerting on gateway reachability specifically.
+
+`configRegeneration` reports the outcome of the most recent boot-time OpenClaw config regeneration. It is `{ "ok": true }` in normal operation. When a startup regeneration fails — most commonly because an image-only upgrade dropped the `openclaw-secrets` volume (see [Upgrading Pinchy](/guides/upgrading/)) — it becomes `{ "ok": false, "error": "<actionable message>", "at": "<ISO timestamp>" }`. This is the one signal that catches a **frozen config**: Pinchy still marks itself healthy so the OpenClaw container can start and hot-reload a fixed config later, so `status` stays `"ok"` and `openclaw.connected` can be `true` while new providers, agents, and model changes silently never take effect. `error` carries operator guidance only — never secret material. Alert on `configRegeneration.ok == false`. A later successful regeneration (for example after you fix the compose file and restart) clears it back to `{ "ok": true }`.
 
 ### `GET /api/health/openclaw`
 

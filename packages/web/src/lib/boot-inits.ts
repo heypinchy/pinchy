@@ -14,6 +14,8 @@ import { migrateSmithersSoul } from "@/lib/migrate-smithers-soul";
 import { markOpenClawConfigReady } from "@/lib/openclaw-config-ready";
 import { seedBuiltinModels } from "@/lib/model-capabilities/seed";
 import { loadModelCapabilityCache } from "@/lib/model-capabilities/cache";
+import { checkSecretsVolumeWritable } from "@/lib/openclaw-secrets";
+import { recordConfigRegenSuccess, recordConfigRegenFailure } from "@/lib/openclaw-config-health";
 
 /**
  * Runs all one-time boot initializations in the correct order and performs
@@ -137,6 +139,27 @@ export async function bootInits(): Promise<boolean> {
     );
   }
 
+  // Preflight the secrets volume BEFORE regenerateOpenClawConfig() reaches its
+  // writeSecretsFile() step. On an instance upgraded image-only (docker compose
+  // pull, keeping a pre-existing docker-compose.yml), the `openclaw-secrets`
+  // volume is absent and every regenerate throws EACCES mid-flight — freezing
+  // openclaw.json so new providers/agents/models never reach OpenClaw (#878).
+  // The generic "Failed to regenerate" catch below would only log a bare
+  // EACCES; surface the actionable cause loudly and early instead.
+  const secretsCheck = checkSecretsVolumeWritable();
+  if (!secretsCheck.ok) {
+    console.error(
+      "[pinchy] FATAL: OpenClaw secrets volume is not writable — config " +
+        "regeneration will fail and this instance will not pick up new " +
+        "providers, agents, or model changes until it is fixed.\n" +
+        secretsCheck.message
+    );
+    // Record it so /api/health flags the broken state even if setup is
+    // incomplete (regenerate is skipped below) — a successful regenerate
+    // clears it again. See recordConfigRegenSuccess/Failure (#879).
+    recordConfigRegenFailure(secretsCheck.message);
+  }
+
   let setupWasComplete = false;
   try {
     if (await isSetupComplete()) {
@@ -156,20 +179,28 @@ export async function bootInits(): Promise<boolean> {
 
       await regenerateOpenClawConfig();
       console.log("[pinchy] OpenClaw config regenerated from DB state");
+      // Clear any preflight-recorded failure: the boot regenerate completed.
+      recordConfigRegenSuccess();
       setupWasComplete = true;
     }
   } catch (err) {
-    console.error(
-      "[pinchy] Failed to regenerate OpenClaw config on startup:",
-      err instanceof Error ? err.message : err
-    );
+    const message = err instanceof Error ? err.message : String(err);
+    console.error("[pinchy] Failed to regenerate OpenClaw config on startup:", message);
+    // #879: readiness is marked below regardless (OpenClaw must be able to
+    // start), so record the failure separately. Without this, /api/health
+    // reports a perfectly healthy instance while config generation is broken —
+    // exactly the silent state observed on the apsa v0.8.0 box.
+    recordConfigRegenFailure(message);
   }
 
   // Signal the Docker Compose healthcheck that Pinchy has finished its startup
   // sequence. OpenClaw depends on this to start. Called unconditionally so the
   // healthcheck passes even on fresh installs (no setup yet) or when config
   // regeneration fails — OpenClaw will start with whatever config is on disk
-  // and hot-reload via inotify when the setup wizard writes a new one.
+  // and hot-reload via inotify when the setup wizard writes a new one. The
+  // regeneration OUTCOME is tracked separately via recordConfigRegen* above and
+  // surfaced through /api/health, so a green healthcheck no longer hides a
+  // broken config generation (#879).
   console.log("[pinchy] boot complete: OpenClaw container may now start");
   markOpenClawConfigReady();
 

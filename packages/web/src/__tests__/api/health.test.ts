@@ -1,17 +1,22 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { GET } from "@/app/api/health/route";
 import { openClawConnectionState } from "@/server/openclaw-connection-state";
+import { recordConfigRegenSuccess, recordConfigRegenFailure } from "@/lib/openclaw-config-health";
+
+const REGEN_STATE_KEY = "__pinchyOpenClawConfigRegenState";
 
 describe("GET /api/health", () => {
   const originalConnected = openClawConnectionState.connected;
 
   beforeEach(() => {
     openClawConnectionState.connected = false;
+    delete (globalThis as Record<string, unknown>)[REGEN_STATE_KEY];
   });
 
   afterEach(() => {
     vi.unstubAllEnvs();
     openClawConnectionState.connected = originalConnected;
+    delete (globalThis as Record<string, unknown>)[REGEN_STATE_KEY];
   });
 
   it("should return 200 with status ok", async () => {
@@ -85,6 +90,53 @@ describe("GET /api/health", () => {
 
       expect(response.status).toBe(200);
       expect(data.status).toBe("ok");
+    });
+  });
+
+  // Issue #879: readiness is marked even when the boot regenerate throws, so
+  // /api/health must expose the regeneration outcome — otherwise a frozen
+  // config (e.g. #878 missing-secrets-volume EACCES) is completely invisible
+  // to monitoring while the instance reports healthy.
+  describe("config regeneration outcome (#879)", () => {
+    it("reports configRegeneration ok when nothing has failed", async () => {
+      const response = await GET();
+      const data = await response.json();
+
+      expect(data.configRegeneration).toMatchObject({ ok: true });
+    });
+
+    it("surfaces a recorded regeneration failure with its actionable message", async () => {
+      recordConfigRegenFailure("your docker-compose.yml is missing the openclaw-secrets volume");
+
+      const response = await GET();
+      const data = await response.json();
+
+      expect(data.configRegeneration.ok).toBe(false);
+      expect(data.configRegeneration.error).toMatch(/openclaw-secrets volume/);
+    });
+
+    it("clears the failure once a later regeneration succeeds", async () => {
+      recordConfigRegenFailure("broken");
+      recordConfigRegenSuccess();
+
+      const response = await GET();
+      const data = await response.json();
+
+      expect(data.configRegeneration.ok).toBe(true);
+      expect(data.configRegeneration.error).toBeUndefined();
+    });
+
+    it("keeps top-level status 'ok' and HTTP 200 even when regeneration failed", async () => {
+      // Same rationale as the gateway-disconnect case: the boolean is for
+      // monitoring, not for flipping the Docker healthcheck into a restart loop.
+      recordConfigRegenFailure("broken");
+
+      const response = await GET();
+      const data = await response.json();
+
+      expect(response.status).toBe(200);
+      expect(data.status).toBe("ok");
+      expect(data.configRegeneration.ok).toBe(false);
     });
   });
 });

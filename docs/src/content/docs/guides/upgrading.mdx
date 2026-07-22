@@ -112,6 +112,32 @@ You don't need to worry about these — Pinchy handles them on every startup:
 - **New environment variables** — Check the release notes for any new variables. Pinchy won't crash if they're missing (features may just be disabled), but review them in your `.env` file.
 - **Docker Compose changes** — Most releases reuse the existing `docker-compose.yml` and only require bumping `PINCHY_VERSION` in `.env`. When a release does need a new compose file (new services or volumes), the release notes spell out the extra `curl` step. New volumes and services are then created automatically on first start.
 
+<Aside type="caution" title="Pulling images is not the same as pulling the compose file">
+  `docker compose pull` only fetches new **images** — it never touches your
+  `docker-compose.yml`. When a release adds a volume or service, keeping the old
+  compose file leaves that mount missing, and the new image can silently fail
+  against it. The clearest symptom of this is the `openclaw-secrets` volume
+  going missing: config regeneration then throws `EACCES: permission denied,
+  mkdir '/openclaw-secrets'` on every startup, so `openclaw.json` freezes at its
+  pre-upgrade content — **newly-created agents return `unknown agent id`, new
+  providers never activate, and model changes never take effect**, even though
+  the app otherwise looks healthy.
+
+If you see this, `docker compose logs pinchy` shows a `FATAL: OpenClaw secrets
+  volume is not writable` line pointing you here. Re-fetch the compose file for
+your pinned version and restart:
+
+```bash
+cd /opt/pinchy
+curl -fsSL https://raw.githubusercontent.com/heypinchy/pinchy/%%PINCHY_VERSION%%/docker-compose.yml -o docker-compose.yml
+docker compose up -d
+```
+
+Re-apply any custom `volumes:` mounts afterwards (or keep them in a
+`docker-compose.override.yml` so upgrades stay hands-off).
+
+</Aside>
+
 ## Restoring from backup
 
 If you need to roll back after an upgrade:
