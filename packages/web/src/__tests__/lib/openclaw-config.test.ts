@@ -866,6 +866,76 @@ describe("regenerateOpenClawConfig", () => {
     expect(config.agents.list[0].model).toBe("anthropic/claude-haiku-4-5-20251001");
   });
 
+  it("keys the chat fallback per agent id — one agent gets a chain, another a bare string (#881)", async () => {
+    // The resolver runs once per agent into a Map keyed by agent id; a mis-keyed
+    // lookup would hand agent B's chain to agent A. First agent's model has a
+    // live-default sibling (opus → haiku) so it gets { primary, fallbacks };
+    // second agent already IS the live default so it stays a bare string.
+    const agentsData = [
+      {
+        id: "uuid-agent-chain",
+        name: "Smithers",
+        model: "anthropic/claude-opus-4-7",
+        createdAt: new Date(),
+      },
+      {
+        id: "uuid-agent-bare",
+        name: "Penny",
+        model: "anthropic/claude-haiku-4-5-20251001",
+        createdAt: new Date(),
+      },
+    ];
+    mockedDb.select.mockReturnValue({
+      from: mockFrom(agentsData),
+    } as never);
+    mockedGetSetting.mockImplementation(async (key: string) =>
+      key === "anthropic_api_key" ? "sk-ant-decrypted" : null
+    );
+
+    await regenerateOpenClawConfig();
+
+    const config = JSON.parse(writtenOpenClawConfig(mockedWriteFileSync));
+    const byId = Object.fromEntries(
+      config.agents.list.map((a: { id: string; model: unknown }) => [a.id, a.model])
+    );
+
+    expect(byId["uuid-agent-chain"]).toEqual({
+      primary: "anthropic/claude-opus-4-7",
+      fallbacks: ["anthropic/claude-haiku-4-5-20251001"],
+    });
+    expect(byId["uuid-agent-bare"]).toBe("anthropic/claude-haiku-4-5-20251001");
+  });
+
+  it("keeps a retired chat model a bare string when the provider's live default is tools-blocklisted (#881)", async () => {
+    // apsa-shaped: a retired ollama-cloud primary whose provider's live default
+    // (minimax-m3) is itself tools-blocklisted. The resolver deliberately emits
+    // NO fallback rather than hand a tool loop a model that mangles nested tool
+    // args — so the agent keeps its bare string and does not silently recover
+    // onto a broken model. This exercises the real blocklist (not mocked here).
+    const agentsData = [
+      {
+        id: "uuid-agent-1",
+        name: "Smithers",
+        model: "ollama-cloud/gemini-3-flash-preview",
+        createdAt: new Date(),
+      },
+    ];
+    mockedDb.select.mockReturnValue({
+      from: mockFrom(agentsData),
+    } as never);
+    mockedGetSetting.mockImplementation(async (key: string) =>
+      key === "ollama_cloud_api_key" ? "sk-oc-decrypted" : null
+    );
+
+    await regenerateOpenClawConfig();
+
+    const config = JSON.parse(writtenOpenClawConfig(mockedWriteFileSync));
+
+    // getDefaultModel("ollama-cloud") → minimax-m3 (mock), which the tools
+    // blocklist rejects → no fallback → bare string kept.
+    expect(config.agents.list[0].model).toBe("ollama-cloud/gemini-3-flash-preview");
+  });
+
   it("excludes soft-deleted (tombstoned) agents from agents.list", async () => {
     const agentsData = [
       {
