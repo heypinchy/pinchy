@@ -55,6 +55,7 @@ import {
   BUILTIN_PROVIDER_API,
 } from "./provider-defaults";
 import { resolveDefaultVisionModelChain } from "./default-media-models";
+import { resolveChatModelFallbackChain } from "./chat-model-fallback";
 import { deepMerge } from "./deep-merge";
 import { buildGatewayBlock } from "./gateway";
 import { EMAIL_CONNECTION_TYPES } from "@/lib/integrations/oauth-providers";
@@ -507,11 +508,27 @@ export async function regenerateOpenClawConfig() {
   // agents map.
   let knowledgePluginAgents: Record<string, Record<string, never>> | undefined;
 
+  // Same-provider fallback chain for each agent's chat model (#881). A retired
+  // primary (Ollama 410) otherwise 410s forever with next=none because the
+  // model is written verbatim with no fallback and regeneration writes the same
+  // dead model back. Resolved ONCE per agent up front (the resolver is async;
+  // the map below is sync), keyed by agent id. Emitted as { primary, fallbacks }
+  // only when a usable fallback exists — otherwise the bare string is kept.
+  const chatModelFallbacks = new Map<string, string[]>(
+    await Promise.all(
+      liveAgents.map(
+        async (agent) =>
+          [agent.id, await resolveChatModelFallbackChain(agent.model)] as [string, string[]]
+      )
+    )
+  );
+
   const agentsList = liveAgents.map((agent) => {
+    const fallbacks = chatModelFallbacks.get(agent.id) ?? [];
     const agentEntry: Record<string, unknown> = {
       id: agent.id,
       name: agent.name,
-      model: agent.model,
+      model: fallbacks.length > 0 ? { primary: agent.model, fallbacks } : agent.model,
       workspace: getOpenClawWorkspacePath(agent.id),
       // Disable heartbeat by default: it fires LLM calls in the background
       // and racks up tokens even for idle agents. Set per-agent (NOT in

@@ -810,6 +810,62 @@ describe("regenerateOpenClawConfig", () => {
     });
   });
 
+  it("emits a same-provider { primary, fallbacks } chain for the chat model when its provider is configured (#881)", async () => {
+    // A retired chat model was written verbatim into agents.*.model with no
+    // fallback, so an Ollama 410 killed every run permanently. We now emit the
+    // provider's LIVE default (getDefaultModel mock → haiku) as a fallback
+    // OpenClaw retries — same provider only, no silent cross-provider switch.
+    const agentsData = [
+      {
+        id: "uuid-agent-1",
+        name: "Smithers",
+        model: "anthropic/claude-opus-4-7",
+        createdAt: new Date(),
+      },
+    ];
+    mockedDb.select.mockReturnValue({
+      from: mockFrom(agentsData),
+    } as never);
+    mockedGetSetting.mockImplementation(async (key: string) =>
+      key === "anthropic_api_key" ? "sk-ant-decrypted" : null
+    );
+
+    await regenerateOpenClawConfig();
+
+    const config = JSON.parse(writtenOpenClawConfig(mockedWriteFileSync));
+
+    expect(config.agents.list[0].model).toEqual({
+      primary: "anthropic/claude-opus-4-7",
+      fallbacks: ["anthropic/claude-haiku-4-5-20251001"],
+    });
+  });
+
+  it("keeps the chat model a bare string when no same-provider fallback resolves (#881)", async () => {
+    // The primary is already the provider's live default, so there is nothing
+    // useful to add — the emitted shape must stay a bare string, not a
+    // single-entry chain that just repeats the primary.
+    const agentsData = [
+      {
+        id: "uuid-agent-1",
+        name: "Smithers",
+        model: "anthropic/claude-haiku-4-5-20251001",
+        createdAt: new Date(),
+      },
+    ];
+    mockedDb.select.mockReturnValue({
+      from: mockFrom(agentsData),
+    } as never);
+    mockedGetSetting.mockImplementation(async (key: string) =>
+      key === "anthropic_api_key" ? "sk-ant-decrypted" : null
+    );
+
+    await regenerateOpenClawConfig();
+
+    const config = JSON.parse(writtenOpenClawConfig(mockedWriteFileSync));
+
+    expect(config.agents.list[0].model).toBe("anthropic/claude-haiku-4-5-20251001");
+  });
+
   it("excludes soft-deleted (tombstoned) agents from agents.list", async () => {
     const agentsData = [
       {
